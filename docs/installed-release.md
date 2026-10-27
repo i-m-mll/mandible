@@ -71,25 +71,90 @@ explicitly. Qualified Bun/Caddy live there too, while SQLite lives in
 `Contents/Frameworks`. The SQLite staging copy is writable for the bundle's
 attribute cleanup/signing; its qualified build-store source is untouched.
 
-The assembler retains the qualified Bun and SDK executable entitlements. After
-Tauri signs nested code, `finalizeAppPayload(app)` reapplies those role-specific
-entitlements and inventories its final
-shipped bytes, preserves signing metadata while signing the app envelope again,
-then verifies deep/strict signatures and the release inventory. This accounts
-for signature changes to native file digests while retaining original runtime
-qualification identity. Keeping Bun's JIT and library-loading entitlements is
-required for the packaged runtime to load SQLite under hardened signing; the
-GUI and native libraries do not receive those runtime entitlements. SQLite also
-checks its loaded native version/source ID.
-Acceptance and distribution containers must consume this finalized app. The
-current build command creates the `.app`; creating a DMG/archive must happen
-after finalization. Notarization and distributor signing require their configured
-credentials and final distribution qualification.
+The assembler retains the qualified Bun and SDK executable entitlements and
+stages the native service helper/descriptors before signing. One package owner,
+`scripts/build-desktop-app.mjs`, resolves the effective Tauri configuration and
+signing identity, asks Tauri to assemble with `--no-sign`, then calls
+`finishAppPackage(app, plan)`. Tauri's resource map, sidecars, frameworks and
+native app layout remain the assembly mechanism.
 
-The lifecycle lane stages its helper/descriptors before manifest finalization.
-Installed command registration and provider integrations use these resources;
-remaining command behavior changes are delivered by that lane, rather than
-shipping a Python runtime or depending on the developer checkout.
+Signing configuration follows the pinned Tauri CLI: the base configuration,
+macOS-specific configuration, ordered `--config` JSON/JSON5/TOML patches, then
+`APPLE_SIGNING_IDENTITY` over `bundle.macOS.signingIdentity`. A missing or
+empty identity is an error; `-` explicitly selects a local ad-hoc candidate.
+A configured distributor identity must select one available certificate; it
+never falls back to ad-hoc signing. `APPLE_CERTIFICATE` and
+`APPLE_CERTIFICATE_PASSWORD` optionally import a certificate into one temporary
+private keychain for the whole operation, with cleanup on success or failure.
+No global keychain search-list changes are needed. Source native previews
+explicitly select ad-hoc signing and do not consume distributor credentials.
+
+The order is fixed:
+
+1. Tauri assembles an unsigned app. Its automatic signing/notarization branch is
+   disabled, including when Apple credentials are present.
+2. `finalizeAppPayload(app, signer)` cleans attributes and signs every native
+   role with the one resolved identity. Bun and the SDK receive their retained
+   role-specific entitlements; SQLite receives no executable entitlements.
+3. The final native bytes are inventoried in `release.json`, then the outer app
+   receives its final signature using the configured app entitlements/hardened
+   runtime settings. Deep/strict signatures and the release inventory must pass.
+4. When complete notarization credentials are supplied, Apple's `notarytool`
+   submits that finished app, waits for acceptance, and `stapler` attaches and
+   validates its ticket. Only the supported stapling operation may change the
+   app after submission. Its manifest, sealed resources and main executable
+   hashes remain fixed, and signature/inventory verification runs again.
+5. Requested DMG/ZIP containers are created from the finished, optionally
+   stapled app using Apple's `hdiutil`/`ditto`. A distributor DMG is signed
+   with the same identity; it contains the notarized/stapled app. The receipt
+   describes app notarization, not an independently notarized DMG.
+
+The finalizer refuses any app that already has an app signature. Rebuilding
+requires fresh unsigned assembly; it cannot destructively re-sign a finalized
+or notarized package. No build step mutates app files after the final signature
+or modifies signed content after notarization. Existing generated container
+outputs are invalidated when a fresh unsigned assembly is finalized; failures
+never present a previous container as the new package.
+
+Notarization uses either `APPLE_ID`/`APPLE_PASSWORD`/`APPLE_TEAM_ID`, or
+`APPLE_API_KEY`/`APPLE_API_ISSUER` with `APPLE_API_KEY_PATH` (or Tauri's
+standard AuthKey search locations). Incomplete credentials, ad-hoc signing with
+distributor credentials, rejected submission, and submission timeouts fail
+clearly and preserve the signed app. There is no silent unsigned/ad-hoc or
+unnotarized distribution fallback. Without notarization credentials, the
+receipt records `not-requested`; public distributor qualification is not
+claimed. The wrapper rejects bypass options `--no-sign`, `--no-bundle` and
+asynchronous `--skip-stapling`.
+
+Commands:
+
+```sh
+# Local candidate with the repository's explicit ad-hoc configuration.
+bun run tauri:build -- --bundles app
+
+# Containers are produced only after app finalization and requested notarization.
+bun run tauri:build -- --bundles app,dmg --archive
+
+# Distributor configuration; credentials come from the build environment.
+bun run tauri:build -- --config release-signing.json --bundles app,dmg
+```
+
+The adjacent `Mandible.app.packaging.json` records the resolved certificate
+identity, app notarization state, final manifest/signature digests, container
+digests and operation order. Acceptance and retained-package delivery consume
+the finished app after this command returns. Bun's JIT/library-loading
+entitlements and SQLite's loaded native identity remain part of local runtime
+qualification. Real distributor certificate import, notarization/stapling and
+public distribution qualification require actual credentials and are not
+inferred from local ad-hoc evidence.
+
+The native extension-point decision follows the pinned
+[Tauri app bundler](https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.10.0/crates/tauri-bundler/src/bundle/macos/app.rs),
+[configuration precedence](https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.10.0/crates/tauri-cli/src/interface/rust.rs),
+and [Apple notarization workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow).
+Tauri 2.10 does not expose a callback between nested signing, the outer
+signature and notarization; post-Tauri mutation is therefore avoided by using
+its supported unsigned assembly path and Apple's signing/notarization tools.
 
 ## Behavioral proof
 
