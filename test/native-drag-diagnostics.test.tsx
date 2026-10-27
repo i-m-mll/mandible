@@ -34,6 +34,11 @@ it('reports actual event propagation and native errors without replacing the bri
     expect(read('error')).toContain('Failed to drag native window:');
     expect(read('error')).toContain('Real native command rejected');
     expect(consoleError).toHaveBeenCalledTimes(1);
+    console.error('Native IPC failure:', new TextEncoder().encode('Decoded native transport rejection').buffer);
+    expect(read('error')).toBe('Native IPC failure: Decoded native transport rejection');
+    const bytes = new TextEncoder().encode('prefix:typed rejection:suffix');
+    console.error(bytes.subarray(7, 22));
+    expect(read('error')).toBe('typed rejection');
     fireEvent.mouseDown(screen.getByRole('button', { name: 'Action' }), { button: 0 });
     expect(read('mouseBubble')).toMatchObject({ interactive: 'button', defaultPrevented: false });
     expect(drag).toHaveBeenCalledTimes(1);
