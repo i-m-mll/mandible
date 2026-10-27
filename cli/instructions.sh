@@ -42,7 +42,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const [root, op, ...args] = process.argv.slice(2);
-const SqliteDatabase = require(path.join(root, "src", "sqlite.ts")).default;
+const SqliteDatabase = require(path.join(root, "dist", "sqlite.js")).default;
 
 // Issue 24f0316 — the ledger database lives under the durable root, but this
 // helper must never create one: an empty file there would be adopted by the

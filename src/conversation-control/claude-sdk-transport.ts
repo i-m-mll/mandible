@@ -1,3 +1,4 @@
+import { installedResourceRoot, readInstalledRelease, releaseFile } from "../../scripts/installed-release.mjs";
 import { RUNTIME_SETTING_FIELDS } from "./types.js";
 import { managedQuestions, validQuestionAnswers } from "./questions.js";
 import { spawn } from "node:child_process";
@@ -85,7 +86,10 @@ export class ClaudeSdkTransport {
       else this.buffered.push(record);
       return {};
     };
+    const installed = installedResourceRoot();
+    const release = installed ? readInstalledRelease(installed) : null;
     const options: Options = {
+      ...(installed && release ? { pathToClaudeCodeExecutable: releaseFile(installed, release.native.claude) } : {}),
       abortController: this.abortController,
       cwd: request.cwd,
       env,
@@ -106,7 +110,7 @@ export class ClaudeSdkTransport {
       agentProgressSummaries: true,
       extraArgs: { "replay-user-messages": null },
       mcpServers: { mandible: { type: "stdio", command: process.execPath,
-        args: [resolve(dirname(fileURLToPath(import.meta.url)), "../channel-server/index.js")],
+        args: [installed && release ? releaseFile(installed, release.entrypoints.channel) : resolve(dirname(fileURLToPath(import.meta.url)), "../channel-server/index.js")],
         env: Object.fromEntries(Object.entries({ ...env, MANDIBLE_MANAGED_APP: "claude", MANDIBLE_SESSION_ID: providerId, MANDIBLE_SESSION_CWD: request.cwd ?? "", MANDIBLE_PROVIDER_SESSION_ID: providerId }).filter((entry): entry is [string, string] => typeof entry[1] === "string")),
       } },
       hooks: Object.fromEntries(["SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "SessionEnd"].map((name) => [name, [{ hooks: [executionHook] }]])),
