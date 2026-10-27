@@ -35,6 +35,8 @@
         : "The backend is healthy, but the secure dashboard is still starting.";
     }
     switch (status.state) {
+      case "background_permission_required":
+        return "Allow Mandible in System Settings → General → Login Items & Extensions to run its background services.";
       case "starting":
         return "Mandible is starting. This screen will continue checking both services.";
       case "port_conflict":
@@ -59,7 +61,8 @@
     gatewayLogFile.textContent = status.gateway_log_file || "-";
     startBtn.style.display = status.dashboard_ready ? "none" : "";
     startBtn.disabled = status.state === "port_conflict";
-    startBtn.textContent = status.state === "starting" ? "Starting…" : "Start Mandible";
+    startBtn.textContent = status.state === "background_permission_required" ? "Open System Settings"
+      : status.state === "starting" ? "Starting…" : "Start Mandible";
   }
 
   async function invoke(command, args) {
@@ -126,7 +129,7 @@
     clearPoll();
     setBusy(true);
     try {
-      const status = await invoke("daemon_start");
+      const status = await invoke(statusBadge.dataset.state === "background_permission_required" ? "daemon_background_settings" : "daemon_start");
       updateStatus(status);
       if (status.dashboard_ready) {
         await openDashboard();

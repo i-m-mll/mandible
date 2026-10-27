@@ -1,14 +1,17 @@
 export interface ServiceInstallationContext {
   home: string; accountHome: string; runtimeDir: string; domain: string;
+  bundleRoot?: string;
   serviceDir: string; privateServiceDir: string; backendLabel: string; gatewayLabel: string;
 }
 export interface LoadedService {
   loaded?: boolean; pid: number | null; program?: string; argv?: string[]; environment?: Record<string, string>;
   workingDirectory?: string; stdoutPath?: string; stderrPath?: string; keepAlive?: boolean;
+  bundleProgram?: string; parentBundleIdentifier?: string;
 }
 export interface ServiceDefinition {
   Label: string; Program?: string; ProgramArguments: string[]; EnvironmentVariables: Record<string, string>;
   WorkingDirectory: string; StandardOutPath: string; StandardErrorPath: string; KeepAlive: boolean; Comment?: string;
+  BundleProgram?: string; bundleRoot?: string; parentBundleIdentifier?: string;
 }
 export type ServiceKind = 'backend' | 'gateway';
 export interface ServiceDefinitionRefusal {
@@ -26,7 +29,7 @@ export type ServiceOwnershipRefusal = ServiceDefinitionRefusal & { category: 'ow
 export type ServiceDefinitionInspection = { ok: true; observations: ServiceObservation[] } | { ok: false; refusal: ServiceDefinitionRefusal };
 export type ServiceOwnershipInspection = { ok: true; observations: ServiceObservation[] } | { ok: false; refusal: ServiceOwnershipRefusal };
 export interface ServiceObservationOptions { desired?: Partial<Record<ServiceKind, ServiceDefinition>> }
-export function serviceInstallationContext(options?: { home?: string; accountHome?: string; domain?: string }): ServiceInstallationContext;
+export function serviceInstallationContext(options?: { home?: string; accountHome?: string; domain?: string; bundleRoot?: string }): ServiceInstallationContext;
 export function parseLoadedService(detail: string): LoadedService;
 export function differingServiceFields(record: ServiceDefinition, job: LoadedService): string[];
 export function loadedServiceMatches(record: ServiceDefinition, job: LoadedService): boolean;

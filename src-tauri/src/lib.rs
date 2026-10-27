@@ -227,6 +227,8 @@ struct DaemonStatus {
     gateway_state: String,
     gateway_error: Option<String>,
     gateway_log_file: String,
+    #[serde(default)]
+    background_services: std::collections::BTreeMap<String, String>,
 }
 
 static DAEMON_CONTROL_LOCK: Mutex<()> = Mutex::new(());
@@ -241,6 +243,9 @@ struct SecureLocalConnectionsStatus {
 }
 
 fn resolve_ca_setup_script(app: &AppHandle) -> Result<PathBuf, String> {
+    if let Some(resources) = installed_resources()? {
+        return require_installed_file(resources.join("scripts/local-ca-trust.mjs"));
+    }
     if let Ok(resources) = app.path().resource_dir() {
         let bundled = resources.join("local-ca-trust.mjs");
         if bundled.is_file() {
@@ -314,6 +319,9 @@ async fn secure_local_connections_setup(
 }
 
 fn resolve_ca_trust_helper(app: &AppHandle) -> Result<PathBuf, String> {
+    if let Some(resources) = installed_resources()? {
+        return require_installed_file(resources.join("../MacOS/mandible-trust-helper"));
+    }
     let script = resolve_ca_setup_script(app)?;
     let bundled = script.with_file_name("local-ca-trust-helper");
     if bundled.is_file() {
@@ -415,6 +423,11 @@ fn daemon_restart(app: AppHandle) -> Result<DaemonStatus, String> {
         .unwrap_or_else(|error| error.into_inner());
     let config = read_desktop_config(&app)?;
     run_local_runtime(&app, "restart", &config)
+}
+
+#[command]
+fn daemon_background_settings(app: AppHandle) -> Result<DaemonStatus, String> {
+    run_local_runtime(&app, "background-settings", &read_desktop_config(&app)?)
 }
 
 #[command]
@@ -625,6 +638,9 @@ fn run_local_runtime(
 }
 
 fn resolve_local_runtime_script(app: &AppHandle) -> Result<PathBuf, String> {
+    if let Some(resources) = installed_resources()? {
+        return require_installed_file(resources.join("scripts/local-runtime.mjs"));
+    }
     if let Ok(resources) = app.path().resource_dir() {
         let bundled = resources.join("local-runtime.mjs");
         if bundled.is_file() {
@@ -678,6 +694,9 @@ fn desktop_config_path(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 fn resolve_runtime_binary(app: &AppHandle) -> Result<PathBuf, String> {
+    if let Some(resources) = installed_resources()? {
+        return require_installed_file(resources.join("../MacOS/mandible-bun"));
+    }
     let bundled = app
         .path()
         .resource_dir()
@@ -733,6 +752,14 @@ fn resolve_runtime_binary(app: &AppHandle) -> Result<PathBuf, String> {
 
 fn runtime_command(app: &AppHandle) -> Result<Command, String> {
     let mut command = Command::new(resolve_runtime_binary(app)?);
+    if let Some(resources) = installed_resources()? {
+        command.env("MANDIBLE_RELEASE_ROOT", &resources);
+        command.env("MANDIBLE_SQLITE_LIBRARY", require_installed_file(resources.join("../Frameworks/libsqlite3.dylib"))?);
+        command.env("MANDIBLE_CA_TRUST_HELPER", require_installed_file(resources.join("../MacOS/mandible-trust-helper"))?);
+        command.env_remove("MANDIBLE_RUNTIME_ARCHIVE");
+        command.env_remove("MANDIBLE_SQLITE_LIBRARY_ARCHIVE");
+        return Ok(command);
+    }
     if let Ok(resources) = app.path().resource_dir() {
         if resources.join("scripts/bun-runtime.sh").is_file() {
             let archive = resources.join("runtime/sqlite.tar.gz");
@@ -747,6 +774,21 @@ fn runtime_command(app: &AppHandle) -> Result<Command, String> {
         }
     }
     Ok(command)
+}
+
+fn require_installed_file(path: PathBuf) -> Result<PathBuf, String> {
+    if path.is_file() { Ok(path) } else { Err(format!("Installed Mandible resource is missing: {}", path.display())) }
+}
+
+fn installed_resources() -> Result<Option<PathBuf>, String> {
+    let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+    let contents = executable.parent().and_then(Path::parent);
+    if let Some(contents) = contents.filter(|path| path.file_name().is_some_and(|name| name == "Contents")) {
+        let resources = contents.join("Resources");
+        require_installed_file(resources.join("release.json"))?;
+        return Ok(Some(resources));
+    }
+    Ok(None)
 }
 
 fn resolve_runtime_controller_working_directory(script: &Path) -> Result<PathBuf, String> {
@@ -946,6 +988,7 @@ pub fn run() {
             daemon_start,
             daemon_stop,
             daemon_restart,
+            daemon_background_settings,
             navigate_to_desktop_bootstrap,
             navigate_to_desktop_dashboard,
             secure_local_connections_status,

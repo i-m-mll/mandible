@@ -46,8 +46,13 @@ const HEALTH_TIMEOUT_MS = 900;
 const OPERATION_TIMEOUT_MS = 4500;
 const BODY_LIMIT = 256 * 1024;
 const MIGRATABLE_MAIN_EFFECT = "preferences:instance";
+const installedResources = process.env.MANDIBLE_RELEASE_ROOT;
+const installedModule = installedResources ? await import('./installed-release.mjs') : null;
+const installedRelease = installedModule?.readInstalledRelease(installedResources);
+if (installedModule) Object.assign(process.env, installedModule.installedRuntimeEnvironment(installedResources));
 
 function readProductionRecord() {
+  if (installedResources) return { root: installedResources, environment: readServiceConfiguration(INSTALLATION).configuration.environment };
   const installed = locateLaunchAgent(BACKEND_LABEL);
   if (!installed) throw new Error("Mandible's production LaunchAgent is not installed.");
   const { file, record } = installed;
@@ -63,7 +68,7 @@ function readProductionRecord() {
   return { root: path.resolve(root), environment: record.EnvironmentVariables ?? {} };
 }
 
-function readMainInstance(root) {
+export function readMainInstance(root) {
   if (!fs.existsSync(AUTHORITY_DB)) throw new Error(`Local-session authority is missing: ${AUTHORITY_DB}`);
   const requireFromProject = createRequire(path.join(root, "package.json"));
   const Database = requireFromProject(process.env.MANDIBLE_RUNTIME_HANDOFF_STORAGE || "./dist/sqlite.js").default;
@@ -577,7 +582,7 @@ export function classifyRuntimeStatus({ backend, gateway, backendPortOpen, gatew
   };
 }
 
-async function inspectRuntime({ launchMode = "on_demand", probeTimeoutMs = HEALTH_TIMEOUT_MS } = {}) {
+export async function inspectRuntime({ launchMode = "on_demand", probeTimeoutMs = HEALTH_TIMEOUT_MS } = {}) {
   const production = readProductionRecord();
   const main = readMainInstance(production.root);
   const expected = { installationId: main.installation_id, publicOrigin: PRODUCTION_ORIGIN, generation: main.backend_generation };
@@ -636,6 +641,7 @@ export function renderLaunchAgent({ label, programArguments, workingDirectory, e
 }
 
 function runtimeBinary(root) {
+  if (installedResources) return path.join(installedResources, '../MacOS/mandible-bun');
   return installationRuntime(root, INSTALLATION);
 }
 
@@ -1059,7 +1065,7 @@ export function reconcileMainRegistration(authority, instance, backendOrigin) {
   return false;
 }
 
-async function initializeMainRegistration(root) {
+export async function initializeMainRegistration(root) {
   if (!fs.existsSync(INSTALLATION_AUTHORITY)) {
     const result = spawnSync(runtimeBinary(root), [path.join(root, "scripts", "local-front-door.mjs"), "initialize"], {
       cwd: root,
@@ -1074,7 +1080,7 @@ async function initializeMainRegistration(root) {
   }
   const installationId = fs.readFileSync(INSTALLATION_AUTHORITY, "utf8").trim();
   if (!installationId) throw new Error("The installation authority id is empty.");
-  const generation = readBuildRevision(root);
+  const generation = installedRelease?.provenance.commit ?? readBuildRevision(root);
 
   const [authorityModule, policyModule] = await Promise.all([
     import(pathToFileURL(path.join(root, "dist", "client-auth", "session-authority.js")).href),
@@ -1114,6 +1120,17 @@ async function mainLocked() {
   const journal = journalPath ? JSON.parse(fs.readFileSync(journalPath, 'utf8')) : null;
   const directHandoff = !!journal && active?.journal === journalPath && active?.bindingDigest === journal.bindingDigest && journal.binding.home === HOME;
   if (active && !directHandoff && command !== 'status') throw new Error('A production runtime handoff is pending; preserve its owned service definitions.');
+  if (installedResources && !command?.startsWith('handoff-')) {
+    const launchMode = args.find(arg => arg.startsWith('--launch-mode='))?.split('=')[1] ?? 'on_demand';
+    if (!['manual', 'on_demand'].includes(launchMode)) throw new Error('Invalid launch mode.');
+    const { bundleRuntimeCommand } = await import('./bundle-services.mjs');
+    const status = await bundleRuntimeCommand(command, { context: INSTALLATION, release: installedRelease, launchMode,
+      initialize: initializeMainRegistration, inspect: inspectRuntime, configureGateway,
+      previewCount: registeredPreviewCount, reloadGateway: () => reloadCaddy(process.env.MANDIBLE_CADDY),
+      waitReady: mode => waitForRuntime(OPERATION_TIMEOUT_MS, mode) });
+    process.stdout.write(`${JSON.stringify(status)}\n`);
+    return;
+  }
   if (command === 'handoff-snapshot') {
     const rootIndex = args.indexOf('--root');
     process.stdout.write(`${JSON.stringify(captureRuntimeHandoff(args[rootIndex + 1] ?? process.cwd()))}\n`);
