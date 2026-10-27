@@ -202,6 +202,24 @@ it.each([false, true])('retains unconfirmed launch evidence and checks process c
   else expect(result.launch.processes).toEqual(evidence.processes);
 });
 
+it.each([false, true])('checks a pending launcher against an already bound process (replaced=%s)', async replaced => {
+  const f = recoveryFixture(startedAt => [startupLine(startedAt)]);
+  const file = path.join(handoffDirectory(f.binding.home, f.binding.requestId, f.binding.executionId), 'journal.json');
+  const processIdentity = { pid: process.pid, startedAt: f.processStartedAt, runs: 1 };
+  const journal = { ...f.failed, phase: 'verification-pending', launch: { id: 'bound-launch', enteredAt: Date.now(), processes: { backend: processIdentity } },
+    deadline: Date.now() + 30_000, environment: {} };
+  fs.writeFileSync(file, JSON.stringify(journal));
+  fs.writeFileSync(path.join(f.home, 'config/local-sessions/handoff-active.json'), JSON.stringify({ journal: file, bindingDigest: journal.bindingDigest }));
+  const pending = { ...processIdentity, pid: process.pid + Number(replaced), executable: 'xpcproxy' };
+  const result = await runRuntimeHandoffWorker(file, { verifyPublication: async () => {},
+    control: async () => { throw new RuntimeObservationError('starting', 'Native launcher is unconfirmed.', { pendingProcesses: { backend: pending } }, 'pending'); },
+  });
+  expect(result.phase).toBe(replaced ? 'failed' : 'verification-pending');
+  expect(result.launch.processes.backend).toEqual(processIdentity);
+  if (replaced) { expect(result.error).toContain('changed during its pending launch observation'); expect(result.launch.pendingProcesses).toBeUndefined(); }
+  else expect(result.launch.pendingProcesses.backend).toEqual(pending);
+});
+
 it('gives health coverage its full observation budget after readiness', async () => {
   const f = recoveryFixture(startedAt => [startupLine(startedAt)]);
   const binding = { ...f.failed.binding, oldProcess: { pid: 987653, startedAt: 'gone' } };

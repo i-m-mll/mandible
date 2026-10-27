@@ -450,10 +450,11 @@ function bindLaunchedProcesses(journal, evidence) {
   if (!journal.launch || journal.phase === 'failed') return;
   if (evidence.pendingProcesses) {
     for (const [name, pending] of Object.entries(evidence.pendingProcesses)) {
-      const prior = journal.launch.pendingProcesses?.[name];
-      if (prior && (prior.pid !== pending.pid || prior.startedAt && pending.startedAt && prior.startedAt !== pending.startedAt
-          || prior.runs && pending.runs > prior.runs)) throw observationFailure('process_changed',
-        'Native service process changed during its pending launch observation.', { prior, current: pending });
+      for (const prior of [journal.launch.pendingProcesses?.[name], journal.launch.processes?.[name]].filter(Boolean)) {
+        if (prior.pid !== pending.pid || prior.startedAt && pending.startedAt && prior.startedAt !== pending.startedAt
+            || prior.runs && pending.runs > prior.runs) throw observationFailure('process_changed',
+          'Native service process changed during its pending launch observation.', { prior, current: pending });
+      }
     }
     unchangedJournal(journal);
     save(journal, { launch: { ...journal.launch, pendingProcesses: { ...journal.launch.pendingProcesses, ...evidence.pendingProcesses } } });
