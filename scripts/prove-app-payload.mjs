@@ -8,6 +8,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { stageAppPayload } from './stage-app-payload.mjs';
 import { installedRuntimeEnvironment, verifyInstalledRelease } from './installed-release.mjs';
+import { installedExecutionProfile } from './installed-execution.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-installed-proof-')));
@@ -31,9 +32,7 @@ const environment = installedRuntimeEnvironment(stage.resources, { HOME: home, P
   MANDIBLE_INSTALLATION_ID: 'installed-payload-proof', MANDIBLE_BACKEND_GENERATION: release.provenance.commit,
   MANDIBLE_ALLOWED_EFFECTS: '["ledger:read"]', MANDIBLE_SOCKET: path.join(scratch, 'api.sock') });
 const sourceCheckout = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: root, encoding: 'utf8', timeout: 5000 }).stdout.trim();
-const denied = [root, path.dirname(sourceCheckout), path.join(os.homedir(), '.dotfiles'), path.join(os.homedir(), '.local/share/mandible/runtimes'),
-  path.join(os.homedir(), '.bun'), '/opt/homebrew', '/usr/local'];
-const profile = `(version 1)(allow default)\n${denied.map(p => `(deny file-read* (subpath ${JSON.stringify(fs.realpathSync(p))}))`).join('\n')}\n(deny file-write* (subpath ${JSON.stringify(stage.resources)}))\n(deny network-outbound (remote ip "*:80") (remote ip "*:443"))`;
+const profile = installedExecutionProfile({ checkout: root, commonDirectory: sourceCheckout, app: path.resolve(stage.resources, '../..') });
 const sandbox = (command, args, options = {}) => spawnSync('/usr/bin/sandbox-exec', ['-p', profile, command, ...args],
   { cwd: scratch, env: environment, encoding: 'utf8', timeout: 10_000, ...options });
 const log = fs.openSync(path.join(scratch, 'daemon.log'), 'w');
