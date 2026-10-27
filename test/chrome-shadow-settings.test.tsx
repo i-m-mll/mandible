@@ -6,7 +6,7 @@ import { useChromeShadowPreview } from '../ui/src/hooks/useChromeShadowPreview';
 import { ChromeShadowSettings } from '../ui/src/components/settings/ChromeShadowSettings';
 import { AppFrame } from '../ui/src/app-frame';
 import { App } from '../ui/src/app';
-import { CHROME_SHADOW_DEFAULTS, chromeShadowFrameStyles, chromeShadowPreviewKey } from '../ui/src/chrome-shadow';
+import { chromeShadowFrameStyles, chromeShadowPreviewKey } from '../ui/src/chrome-shadow';
 
 const key = chromeShadowPreviewKey(previewInstance);
 const seeded = JSON.stringify({ version: 1, theme: 'dark', overrides: { dark: { widthPx: 12, profile: 1, maxDarkness: 0.42 } } });
@@ -32,7 +32,7 @@ describe('preview chrome shadow controls', () => {
     expect(frame.style.getPropertyValue('--app-shadow-light-width')).toBe('12.25px');
     expect((screen.getByRole('spinbutton', { name: 'Width value' }) as HTMLInputElement).value).toBe('12.25');
     fireEvent.input(screen.getByRole('spinbutton', { name: 'Profile value' }), { target: { value: '1' } });
-    expect(frame.style.getPropertyValue('--app-shadow-light-linear')).toBe('rgba(0, 0, 0, 0) 0px, rgba(0, 0, 0, 0.03) 12.25px');
+    expect(frame.style.getPropertyValue('--app-shadow-light-linear')).toBe('rgba(0, 0, 0, 0) 0px, rgba(0, 0, 0, 0.04) 12.25px');
     fireEvent.change(screen.getByLabelText('Preview theme'), { target: { value: 'dark' } });
     fireEvent.input(screen.getByRole('slider', { name: 'Maximum darkness' }), { target: { value: '42.1' } });
     expect(frame.style.getPropertyValue('--app-shadow-dark-linear')).toContain('0.421');
@@ -59,7 +59,7 @@ describe('preview chrome shadow controls', () => {
     expect(JSON.parse(window.localStorage.getItem(key)!)).toEqual({ ...JSON.parse(seeded), theme: 'light' });
     fireEvent.click(screen.getByRole('button', { name: 'Copy parameters' }));
     await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Parameters copied.'));
-    const exported = { version: 1, light: CHROME_SHADOW_DEFAULTS.light, dark: { widthPx: 12, profile: 1, maxDarkness: 0.42 } };
+    const exported = { version: 1, light: { widthPx: 16, profile: 0.25, maxDarkness: 0.04 }, dark: { widthPx: 12, profile: 1, maxDarkness: 0.42 } };
     expect(JSON.parse(writeText.mock.calls[0]![0])).toEqual(exported);
     expect(JSON.parse((screen.getByLabelText('Chrome shadow parameters') as HTMLTextAreaElement).value)).toEqual(exported);
     writeText.mockRejectedValue(new Error('clipboard denied'));
@@ -75,7 +75,7 @@ describe('preview chrome shadow controls', () => {
     const input = screen.getByLabelText('Width value');
     fireEvent.input(input, { target: { value: '' } });
     expect((input as HTMLInputElement).value).toBe('');
-    expect(container.querySelector<HTMLElement>('.app-frame')!.style.getPropertyValue('--app-shadow-light-width')).toBe('5px');
+    expect(container.querySelector<HTMLElement>('.app-frame')!.style.getPropertyValue('--app-shadow-light-width')).toBe('16px');
     fireEvent.input(input, { target: { value: '8' } });
     expect(screen.getByRole('alert').textContent).toContain('could not be saved');
     expect(container.querySelector<HTMLElement>('.app-frame')!.style.getPropertyValue('--app-shadow-light-width')).toBe('8px');

@@ -25,7 +25,7 @@ describe('chrome shadow contract', () => {
 
   it('bounds finite stored parameters and rejects incompatible records', () => {
     expect(normalizeChromeShadow({ widthPx: 99, profile: -1, maxDarkness: NaN }, CHROME_SHADOW_DEFAULTS.light))
-      .toEqual({ widthPx: 32, profile: 0, maxDarkness: 0.03 });
+      .toEqual({ widthPx: 32, profile: 0, maxDarkness: 0.04 });
     expect(normalizeChromeShadow({ widthPx: 0, profile: Infinity, maxDarkness: 0.12345 }, CHROME_SHADOW_DEFAULTS.dark))
       .toEqual({ widthPx: 1, profile: 0.5, maxDarkness: 0.123 });
     expect(normalizeChromeShadowPreview({ version: 2, theme: 'light', overrides: { light: { widthPx: 9 } } }))
@@ -36,7 +36,7 @@ describe('chrome shadow contract', () => {
   });
 
   it('uses one outward alpha profile for straight and curved stops', () => {
-    const styles = chromeShadowFrameStyles();
+    const styles = chromeShadowFrameStyles({ light: { widthPx: 5, profile: 0.5, maxDarkness: 0.03 }, dark: CHROME_SHADOW_DEFAULTS.dark });
     expect(styles['--app-shadow-light-linear']).toBe('rgba(0, 0, 0, 0) 0px, rgba(0, 0, 0, 0.00432) 1.2px, rgba(0, 0, 0, 0.01248) 2.95px, rgba(0, 0, 0, 0.03) 5px');
     expect(styles['--app-shadow-light-radial']).toContain('rgba(0, 0, 0, 0.01248) calc(var(--radius-chat-surface) + 2.05px)');
     expect(styles['--app-shadow-dark-radial']).not.toMatch(/rgba\(0, 0, 0, (?!0\))/);

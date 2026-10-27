@@ -8,7 +8,7 @@ export type ChromeShadowPreviewState = {
 };
 
 export const CHROME_SHADOW_DEFAULTS: Readonly<ChromeShadowThemes> = {
-  light: { widthPx: 5, profile: 0.5, maxDarkness: 0.03 },
+  light: { widthPx: 16, profile: 0.25, maxDarkness: 0.04 },
   dark: { widthPx: 5, profile: 0.5, maxDarkness: 0 },
 };
 export const CHROME_SHADOW_PREVIEW_DEFAULTS: ChromeShadowPreviewState = { version: 1, overrides: {} };

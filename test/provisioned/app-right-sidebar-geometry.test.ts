@@ -13,7 +13,7 @@ import {
   VIEW_SIDEBAR_AUTO_COLLAPSE_WIDTH,
 } from '../../ui/src/app-shell';
 import { runChromium } from '../helpers/chromium';
-import type { ChromeShadowParameters } from '../../ui/src/chrome-shadow';
+import { CHROME_SHADOW_DEFAULTS, type ChromeShadowParameters } from '../../ui/src/chrome-shadow';
 
 type Surface = 'chat' | 'graph' | 'timeline' | 'console';
 type Result = Record<string, unknown> & { surface: Surface; width: number; theme: string };
@@ -295,9 +295,10 @@ describe('rendered workspace shadow', () => {
       type Rect = { left: number; right: number; top: number; bottom: number };
       const surface = result.paintSurface as { workspace: Rect; main: Rect; dock: Rect; radius: number; shadow: { width: string; height: string } };
       const { workspace, main, dock, radius } = surface;
-      expect(parseFloat(surface.shadow.width) - (workspace.right - workspace.left)).toBeCloseTo(5, 1);
-      expect(parseFloat(surface.shadow.height) - (workspace.bottom - workspace.top)).toBeCloseTo(5, 1);
-      const distances = [1.5, 2, 3, 4, 4.5, 6];
+      const width = CHROME_SHADOW_DEFAULTS[theme].widthPx;
+      expect(parseFloat(surface.shadow.width) - (workspace.right - workspace.left)).toBeCloseTo(width, 1);
+      expect(parseFloat(surface.shadow.height) - (workspace.bottom - workspace.top)).toBeCloseTo(width, 1);
+      const distances = [1.5, width * 0.4, width * 0.6, width * 0.8, width - 0.5, width + 1];
       const profiles = compareShadowPixels(directory, painted, baseline, result.width, {
         topSidebar: distances.map(distance => ({ distance, x: workspace.left + 96, y: workspace.top - distance })),
         topMain: distances.map(distance => ({ distance, x: (main.left + main.right) / 2, y: workspace.top - distance })),
@@ -315,8 +316,8 @@ describe('rendered workspace shadow', () => {
         ]),
         line: [workspace.left + 96, (main.left + main.right) / 2, (dock.left + dock.right) / 2].map(x => ({ distance: 0, x, y: workspace.top + 0.5 })),
         outside: [
-          { distance: 0, x: workspace.left - 6, y: workspace.top + 100 },
-          { distance: 0, x: workspace.left + 96, y: workspace.top - 6 },
+          { distance: 0, x: workspace.left - width - 1, y: workspace.top + 100 },
+          { distance: 0, x: workspace.left + 96, y: workspace.top - width - 1 },
           { distance: 0, x: workspace.right - 2, y: workspace.top + 100 },
           { distance: 0, x: (main.left + main.right) / 2, y: workspace.bottom - 2 },
         ],
