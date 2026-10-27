@@ -229,6 +229,10 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     if (provision.status !== 0 || provision.error) throw new Error('Private native Keychain provisioning failed.');
     const lookup = spawnSync(securityAdapter, ['find-generic-password', '-s', 'mandible-operator', '-w'], { encoding: 'utf8', timeout: 10000 });
     if (lookup.status !== 0 || lookup.stdout.trim() !== operatorToken.token) throw new Error('Private native Keychain credential readback failed.');
+    const requirePrivateCredential = () => {
+      const current = spawnSync(securityAdapter, ['find-generic-password', '-s', 'mandible-operator', '-w'], { encoding: 'utf8', timeout: 10000 });
+      if (current.status !== 0 || current.stdout.trim() !== operatorToken.token) throw new Error('Private native Keychain credential is unavailable before approval.');
+    };
     expect(keychainSelector('list-keychains')).toBe(keychainSearchBefore);
     expect(keychainSelector('default-keychain')).toBe(keychainDefaultBefore);
     const baseUrl = `http://127.0.0.1:${ports.backend}`;
@@ -279,6 +283,7 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
       const installed = JSON.parse(command('/usr/bin/plutil', ['-convert', 'json', '-o', '-', file!]));
       expect(loadedServiceMatches(installed, parseLoadedService(detail))).toBe(false);
     }
+    requirePrivateCredential();
     await approveBootstrapDelivery(operatorApi, request.id);
     await until(() => {
       const hook = db!.prepare('SELECT id, exit_code, output FROM auth_hook_executions WHERE auth_request_id=? AND hook_id=?').get(request.id, 'builtin-mandible-rebuild') as any;
@@ -337,6 +342,7 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     const secondDetail = await readBootstrapDelivery(agentApi, second.id);
     const secondAction = await fetch(`${baseUrl}/api/auth/request/${second.id}/actions`, { method: 'POST', headers: { ...agentApi.headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'checkpoint_add', target_issue_ref: secondIssue.id, payload: { kind: 'accepted-release', payload: { acceptanceId: secondAccepted.id, reference: secondAccepted.result.receipt } }, expected_revision: secondDetail.lifecycle_events.at(-1)!.revision, expected_custody_generation: secondDetail.lifecycle_events.at(-1)!.custody_generation }) });
     expect(secondAction.ok, JSON.stringify(await secondAction.json())).toBe(true);
+    requirePrivateCredential();
     await approveBootstrapDelivery(operatorApi, second.id);
     await until(() => {
       const hook = db!.prepare('SELECT id, exit_code, output FROM auth_hook_executions WHERE auth_request_id=? AND hook_id=?').get(second.id, 'builtin-mandible-rebuild') as any;
