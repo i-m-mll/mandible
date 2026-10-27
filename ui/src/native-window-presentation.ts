@@ -1,8 +1,10 @@
 import { useLayoutEffect, useState } from 'preact/hooks';
-import { getNativeWindowCapabilities, getWindowHost, listenNativeFrameChanges } from './api';
+import { getNativeWindowCapabilities, getWindowHost, listenNativeFrameChanges, type NativeWindowCapabilities } from './api';
 
-export function useNativeWindowPresentation(): number {
-  const [reservation, setReservation] = useState(0);
+type NativeWindowPresentation = Pick<NativeWindowCapabilities, 'trafficLightReservation' | 'liquidGlassRegular'>;
+
+export function useNativeWindowPresentation(): NativeWindowPresentation {
+  const [presentation, setPresentation] = useState<NativeWindowPresentation>({ trafficLightReservation: 0, liquidGlassRegular: false });
   useLayoutEffect(() => {
     const root = document.documentElement;
     const host = getWindowHost();
@@ -18,7 +20,8 @@ export function useNativeWindowPresentation(): number {
         root.style.setProperty('--app-frame-header-height', `${topBarHeight}px`);
         root.style.setProperty('--app-native-controls-reservation', `${trafficLightReservation}px`);
         if (liquidGlassRegular) root.dataset.nativeGlass = 'regular';
-        setReservation(trafficLightReservation);
+        else root.removeAttribute('data-native-glass');
+        setPresentation(current => current.trafficLightReservation === trafficLightReservation && current.liquidGlassRegular === liquidGlassRegular ? current : { trafficLightReservation, liquidGlassRegular });
       });
     };
     void refresh().catch(error => console.error('Failed to read native window capabilities:', error));
@@ -39,5 +42,5 @@ export function useNativeWindowPresentation(): number {
       root.style.removeProperty('--app-native-controls-reservation');
     };
   }, []);
-  return reservation;
+  return presentation;
 }

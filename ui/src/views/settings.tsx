@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import type { ComponentChildren, VNode } from 'preact';
 import { AppOperationalNoticeOutlet } from '../app-shell';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
+import { ChromeAppearanceSettings } from '../components/settings/ChromeAppearanceSettings';
+import type { ChromeAppearancePreviewController } from '../hooks/useChromeAppearancePreview';
 import { ManagedChatDefaults } from '../components/settings/ManagedChatDefaults';
 import { ChildRetentionSettings } from '../components/settings/ChildRetentionSettings';
 import { SettingsToggle as Toggle } from '../components/settings/SettingsToggle';
@@ -76,6 +78,7 @@ import {
 } from './settings-behavior';
 
 export type SettingsViewProps = {
+  chromeAppearancePreview?: ChromeAppearancePreviewController | null;
   settings: Record<string, string>;
   onSave: (key: string, value: string) => Promise<void>;
   loadError?: string | null;
@@ -149,6 +152,7 @@ const SETTINGS_SECTIONS = {
   workQueue: { id: 'settings-work-queue', title: 'Work Queue' },
   issues: { id: 'settings-issues', title: 'Issues' },
   appearance: { id: 'settings-appearance', title: 'Appearance' },
+  chromeAppearance: { id: 'settings-chrome-appearance', title: 'Chrome · Preview' },
   auth: { id: 'auth-settings', title: 'Approvals' },
   authHooks: { id: 'settings-auth-hooks', title: 'Approval Hooks' },
   signing: { id: 'settings-signing', title: 'Signing keys' },
@@ -186,6 +190,16 @@ function SettingsSectionHeader(props: {
       </div>
     </div>
   );
+}
+
+function setSettingsTrailingSpace(root: HTMLElement, content: HTMLElement, lastSection: HTMLElement | undefined): void {
+  const lastStyle = lastSection ? getComputedStyle(lastSection) : null;
+  const trailingSpace = lastSection && lastStyle ? Math.max(0, root.clientHeight
+    - lastSection.getBoundingClientRect().height
+    - parseFloat(lastStyle.marginBottom)
+    - parseFloat(getComputedStyle(root).paddingBottom)
+    - parseFloat(lastStyle.scrollMarginTop)) : 0;
+  content.style.paddingBottom = `${trailingSpace}px`;
 }
 
 function isInstructionTargetMode(value: string): value is InstructionTargetMode {
@@ -1637,6 +1651,8 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchMatches, setSearchMatches] = useState(0);
   const desktopShell = isDesktopShell();
+  const chromeAppearancePreview = instance?.role === 'preview' ? props.chromeAppearancePreview : null;
+  const chromePreviewVisible = Boolean(chromeAppearancePreview);
 
   useEffect(() => {
     if (typeof settings.protected_branches === 'string' && !initialized.current) {
@@ -2141,6 +2157,11 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
         </div>
       </SettingsSectionShell>,
 
+      ...(chromeAppearancePreview ? [<SettingsSectionShell key={SETTINGS_SECTIONS.chromeAppearance.id} section={SETTINGS_SECTIONS.chromeAppearance}>
+        <SettingsSectionHeader section={SETTINGS_SECTIONS.chromeAppearance} description="Changes apply immediately in this browser. Copy the values when you are ready." />
+        <ChromeAppearanceSettings controller={chromeAppearancePreview} />
+      </SettingsSectionShell>] : []),
+
       <SettingsSectionShell key={SETTINGS_SECTIONS.auth.id} section={SETTINGS_SECTIONS.auth}>
         <SettingsSectionHeader
           section={SETTINGS_SECTIONS.auth}
@@ -2249,7 +2270,10 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
   const handleSectionNavigation = useCallback((sectionId: string) => {
     const root = viewRef.current;
     const section = root?.querySelector<HTMLElement>(`#${sectionId}`);
-    if (!root || !section || section.hidden) return;
+    const content = root?.querySelector<HTMLElement>('.settings-view__content');
+    if (!root || !section || section.hidden || !content) return;
+    const sections = Array.from(content.querySelectorAll<HTMLElement>('.settings-view__section')).filter(item => !item.hidden);
+    setSettingsTrailingSpace(root, content, sections.at(-1));
     const alignment = parseFloat(getComputedStyle(section).scrollMarginTop) || 0;
     const top = root.scrollTop + section.getBoundingClientRect().top
       - root.getBoundingClientRect().top - root.clientTop - alignment;
@@ -2267,14 +2291,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       frame = 0;
       const sections = mountedSections().filter((section) => !section.hidden);
       // Short trailing sections must be able to reach the same reading line as earlier headings.
-      const lastSection = sections.at(-1);
-      const lastStyle = lastSection ? getComputedStyle(lastSection) : null;
-      const trailingSpace = lastSection && lastStyle ? Math.max(0, root.clientHeight
-        - lastSection.getBoundingClientRect().height
-        - parseFloat(lastStyle.marginBottom)
-        - parseFloat(getComputedStyle(root).paddingBottom)
-        - parseFloat(lastStyle.scrollMarginTop)) : 0;
-      content.style.paddingBottom = `${trailingSpace}px`;
+      setSettingsTrailingSpace(root, content, sections.at(-1));
       const rootTop = root.getBoundingClientRect().top + root.clientTop;
       let current: string | null = sections[0]?.id ?? null;
       for (const section of sections) {
@@ -2334,7 +2351,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       root.removeEventListener('scroll', scheduleUpdate);
       window.removeEventListener('resize', scheduleUpdate);
     };
-  }, [searchQuery, desktopShell]);
+  }, [searchQuery, desktopShell, chromePreviewVisible]);
 
   return (
     <div className="settings-view" ref={viewRef}>

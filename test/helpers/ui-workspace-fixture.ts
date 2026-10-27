@@ -322,7 +322,7 @@ export function appStartupFixtures(): FixtureHandler[] {
   ];
 }
 
-function stubRailSettingsFetch(initialSetting?: string, failPut = false): {
+function stubRailSettingsFetch(initialSetting?: string, failPut = false, additionalHandlers: FixtureHandler[] = []): {
   getStored: () => string | undefined;
   getCalls: ReturnType<typeof vi.fn>;
   putCalls: ReturnType<typeof vi.fn>;
@@ -338,6 +338,7 @@ function stubRailSettingsFetch(initialSetting?: string, failPut = false): {
   const getCalls = vi.fn();
   const putCalls = vi.fn();
   new StrictUiFixture('rail settings', [
+    ...additionalHandlers,
     { name: 'read rail order', method: 'GET', path: '/api/user-settings/app_rail_order', respond: ({ input, init }) => {
       getCalls(input, init);
       return jsonFixture(userSettingFixture('app_rail_order', stored ?? null, revision));

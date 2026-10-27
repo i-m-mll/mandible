@@ -1,17 +1,23 @@
 .app-frame {
+  --app-chrome-tint-percentage: var(--app-chrome-dark-tint-percentage);
+  --surface-glass-tint: color-mix(in srgb, var(--surface-chrome) var(--app-chrome-tint-percentage), transparent);
+  --app-boundary-shadow-paint-width: var(--app-shadow-dark-width);
+  --app-boundary-shadow-gradient-stops: var(--app-shadow-dark-linear);
+  --app-boundary-shadow-radial-stops: var(--app-shadow-dark-radial);
   display: grid;
+  isolation: isolate;
   grid-template-columns: var(--app-rail-width) minmax(0, 1fr);
   grid-template-rows: var(--app-frame-header-height) minmax(0, 1fr);
   flex: 1;
   min-height: 0;
   min-width: 0;
   --app-frame-navigation-gap: 2px;
-  --app-frame-left-width: var(--app-view-sidebar-width);
+  --app-frame-left-width: calc(var(--app-rail-width) + var(--app-view-sidebar-width));
   background: var(--surface-chrome);
 }
 .app-frame > .app-frame__bar {
   --app-header-height: var(--app-frame-header-height);
-  grid-column: 2;
+  grid-column: 1 / -1;
   grid-row: 1;
   display: flex;
   align-items: center;
@@ -27,11 +33,13 @@
   flex: 0 0 auto;
   min-width: max-content;
   gap: var(--app-frame-navigation-gap);
-  padding-inline: 8px;
+  padding-inline: 0 8px;
   height: 100%;
 }
 .app-frame--main-header.app-frame--left-open .app-frame__navigation { width: var(--app-frame-left-width); }
 .app-frame__native-controls { display: none; }
+.app-frame__logo { display: flex; align-items: center; justify-content: center; flex: none; width: var(--app-header-control-size); height: var(--app-header-control-size); margin-inline-start: calc((var(--app-rail-width) - var(--app-header-control-size)) / 2); color: var(--text-muted); }
+.app-frame__logo + .app-frame__button { margin-inline-start: var(--app-frame-controls-offset); }
 .app-frame__button {
   display: inline-flex;
   align-items: center;
@@ -46,8 +54,36 @@
   color: var(--text-muted);
   cursor: pointer;
 }
-.app-frame__button:is(:hover, :focus-visible) { background: var(--neutral-alpha-06); color: var(--text-primary); }
+.app-frame__button:is(:hover, :focus-visible) { color: var(--text-primary); }
 .app-frame__button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.app-frame > .app-frame__bar :is(.app-frame__button, .app-right-sidebar-toggle, .detail-pane-menu-trigger) {
+  --app-frame-icon-hit-size: var(--app-header-control-size);
+  --app-frame-icon-glyph-size: var(--app-header-control-icon-size);
+  --app-frame-icon-hover-color: var(--neutral-alpha-06);
+  position: relative;
+  isolation: isolate;
+  background: transparent;
+}
+.app-frame > .app-frame__bar .app-frame__history-button { --app-frame-icon-glyph-size: var(--app-frame-history-icon-size); }
+.app-frame > .app-frame__bar .detail-pane-menu-trigger {
+  --app-frame-icon-hit-size: 24px;
+  --app-frame-icon-hover-color: var(--neutral-alpha-08);
+}
+.app-frame > .app-frame__bar :is(.app-frame__button, .app-right-sidebar-toggle, .detail-pane-menu-trigger)::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: calc((var(--app-frame-icon-hit-size) + var(--app-frame-icon-glyph-size)) / 2);
+  height: calc((var(--app-frame-icon-hit-size) + var(--app-frame-icon-glyph-size)) / 2);
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: -1;
+}
+.app-frame > .app-frame__bar :is(.app-frame__button, .app-right-sidebar-toggle, .detail-pane-menu-trigger):is(:hover, :focus-visible, [aria-pressed='true'], [aria-expanded='true'])::before {
+  background: var(--app-frame-icon-hover-color);
+}
 .app-frame__main-header { position: relative; flex: 1 1 0; min-width: 0; height: 100%; }
 .app-frame__main-header .detail-pane-header { background: transparent; width: 100%; }
 .app-frame__main-header .detail-pane-header--compact .detail-pane-header__title { font-size: 13px; }
@@ -64,14 +100,54 @@
 .app-frame--right-open .app-frame__right::before {
   content: ''; position: absolute; width: 1px; height: 50%; top: 25%; left: 0; background: var(--border-muted); pointer-events: none;
 }
-.app-frame > .app-rail { grid-column: 1; grid-row: 1 / -1; border-right: 1px solid var(--border-muted); padding-top: 12px; background: transparent; }
-.app-frame > .app-layout { grid-column: 2; grid-row: 2; }
-:root[data-frame-presentation='macos-overlay'] .app-frame { --app-frame-left-width: calc(var(--app-rail-width) + var(--app-view-sidebar-width)); }
-:root[data-frame-presentation='macos-overlay'] .app-frame__bar { grid-column: 1 / -1; }
-:root[data-frame-presentation='macos-overlay'] .app-frame__navigation { padding-inline-start: 0; }
-:root[data-frame-presentation='macos-overlay'] .app-frame__native-controls { display: block; width: calc(var(--app-native-controls-reservation, 88px) - var(--app-header-control-icon-inline-inset) - var(--app-frame-navigation-gap)); flex: none; height: 100%; }
-:root[data-frame-presentation='macos-overlay'] .app-frame > .app-rail { grid-row: 2; border-right: 0; }
-:root[data-frame-presentation='macos-overlay'] .app-frame > .app-layout { border-top-left-radius: var(--radius-chat-surface); }
+.app-frame > .app-rail { grid-column: 1; grid-row: 2; border-right: 0; padding-top: var(--app-frame-controls-offset); background: transparent; }
+.app-frame > .app-layout { grid-column: 2; grid-row: 2; border-top-left-radius: var(--radius-chat-surface); }
+.app-frame::before {
+  content: '';
+  grid-column: 2;
+  grid-row: 2;
+  min-width: 0;
+  min-height: 0;
+  box-sizing: border-box;
+  border-top: 1px solid var(--app-boundary-line-color);
+  border-left: 1px solid var(--app-boundary-line-color);
+  border-top-left-radius: var(--radius-chat-surface);
+  z-index: calc(var(--z-app-subdivision) + 1);
+  pointer-events: none;
+}
+[data-theme='light'] .app-frame {
+  --app-chrome-tint-percentage: var(--app-chrome-light-tint-percentage);
+  --app-boundary-shadow-paint-width: var(--app-shadow-light-width);
+  --app-boundary-shadow-gradient-stops: var(--app-shadow-light-linear);
+  --app-boundary-shadow-radial-stops: var(--app-shadow-light-radial);
+}
+/* Isolation keeps the negative shadow above the frame material and below
+ * normal content. The disjoint layers meet at the rounded edge's tangents. */
+.app-frame::after {
+  --app-boundary-shadow-outer-radius: calc(var(--radius-chat-surface) + var(--app-boundary-shadow-paint-width));
+  content: '';
+  grid-column: 2;
+  grid-row: 2;
+  min-width: 0;
+  min-height: 0;
+  margin-block-start: calc(0px - var(--app-boundary-shadow-paint-width));
+  margin-inline-start: calc(0px - var(--app-boundary-shadow-paint-width));
+  border-top-left-radius: var(--app-boundary-shadow-outer-radius);
+  z-index: -1;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to bottom, var(--app-boundary-shadow-gradient-stops)),
+    linear-gradient(to right, var(--app-boundary-shadow-gradient-stops)),
+    radial-gradient(circle at right bottom, var(--app-boundary-shadow-radial-stops));
+  background-size:
+    calc(100% - var(--app-boundary-shadow-outer-radius)) var(--app-boundary-shadow-paint-width),
+    var(--app-boundary-shadow-paint-width) calc(100% - var(--app-boundary-shadow-outer-radius)),
+    var(--app-boundary-shadow-outer-radius) var(--app-boundary-shadow-outer-radius);
+  background-position: right top, left bottom, left top;
+  background-repeat: no-repeat;
+}
+:root[data-frame-presentation='macos-overlay'] .app-frame__native-controls { display: block; width: calc(var(--app-native-controls-reservation, 88px) - calc((var(--app-header-control-size) - var(--app-header-logo-size)) / 2) - var(--app-frame-navigation-gap)); flex: none; height: 100%; }
+:root[data-frame-presentation='macos-overlay'] .app-frame__native-controls + .app-frame__logo { margin-inline-start: 0; }
 :root[data-native-glass='regular'] .app-frame { background: var(--surface-glass-tint); }
 
 .app-frame__header-content { height: 100%; min-width: 0; }

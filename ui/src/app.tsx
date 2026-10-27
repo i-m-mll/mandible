@@ -1,4 +1,6 @@
 import { AppFrame } from './app-frame';
+import { useChromeAppearancePreview } from './hooks/useChromeAppearancePreview';
+import type { ChromeAppearanceTheme } from './chrome-appearance';
 import { useNativeWindowPresentation } from './native-window-presentation';
 import { browserResourceKeys, refreshBrowserResources } from './query/browserResources';
 import { BRIEFING_EVENT_VALUES, DASHBOARD_BADGE_COUNTS } from '../../src/contracts';
@@ -152,6 +154,7 @@ import {
   DarkThemeIcon,
   LightThemeIcon,
   SystemThemeIcon,
+  SettingsIcon,
 } from './components/icons/TabIcons';
 import {
   adoptAgentSessionFragment,
@@ -416,11 +419,11 @@ function setLastSeenStartupEpoch(epoch: string): void {
   }
 }
 
-function updateRootAppTheme(settings: Record<string, string>): () => void {
+function updateRootAppTheme(settings: Record<string, string>, previewTheme?: ChromeAppearanceTheme, onResolved?: (theme: ChromeAppearanceTheme) => void): () => void {
   if (typeof window === 'undefined' || typeof document === 'undefined') {
     return () => undefined;
   }
-  const mode = normalizeAppThemeMode(settings.app_theme);
+  const mode = previewTheme ?? normalizeAppThemeMode(settings.app_theme);
   void setDesktopWindowTheme(mode === 'system' ? null : mode).catch((error) => {
     console.error('Failed to update native window theme:', error);
   });
@@ -434,6 +437,7 @@ function updateRootAppTheme(settings: Record<string, string>): () => void {
     const terminalTheme = resolveTerminalTheme(resolvedTheme, terminalThemeId);
     document.documentElement.dataset.themeMode = mode;
     document.documentElement.dataset.theme = resolvedTheme;
+    onResolved?.(resolvedTheme);
     document.documentElement.dataset.terminalTheme = terminalThemeId;
     document.documentElement.style.setProperty('--terminal-bg', terminalTheme.background);
     document.documentElement.style.setProperty('--terminal-fg', terminalTheme.foreground);
@@ -608,16 +612,6 @@ function RebuildingSplash({
   );
 }
 
-function MandibleHeaderLogo(): JSX.Element {
-  return (
-    <span
-      className="app-header__logo"
-      style={{ '--app-header-logo-image': 'url("/header-logo.svg")' } as JSX.CSSProperties}
-      aria-hidden="true"
-    />
-  );
-}
-
 function App(): JSX.Element {
   const [agentationVisible, setAgentationVisible] = useState(() => {
     try { return window.localStorage.getItem('mandible.agentation.visible:v1') === 'true'; }
@@ -763,7 +757,7 @@ function App(): JSX.Element {
   ));
   const responsiveSidebarStateRef = useRef<ResponsiveSidebarThresholdState>(WIDE_RESPONSIVE_SIDEBAR_STATE);
   const rightSidebarToggleRef = useRef<HTMLButtonElement>(null);
-  const nativeControlsReservation = useNativeWindowPresentation();
+  const { trafficLightReservation: nativeControlsReservation, liquidGlassRegular } = useNativeWindowPresentation();
   const [frameHeaderHost, setFrameHeaderHost] = useState<HTMLDivElement | null>(null);
   const [frameHeaderOwners, setFrameHeaderOwners] = useState(0);
   const registerFrameHeader = useCallback(() => {
@@ -893,7 +887,9 @@ function App(): JSX.Element {
     hostAppTheme === null ? state.settings : { ...state.settings, app_theme: hostAppTheme }
   ), [hostAppTheme, state.settings]);
 
-  useEffect(() => updateRootAppTheme(effectiveSettings), [effectiveSettings]);
+  const [resolvedTheme, setResolvedTheme] = useState<ChromeAppearanceTheme>(() => document.documentElement.dataset.theme === 'light' ? 'light' : 'dark');
+  const chromeAppearancePreview = useChromeAppearancePreview(instanceInfo, resolvedTheme, liquidGlassRegular);
+  useEffect(() => updateRootAppTheme(effectiveSettings, chromeAppearancePreview.themeOverride, setResolvedTheme), [effectiveSettings, chromeAppearancePreview.themeOverride]);
 
   useEffect(() => {
     let active = true;
@@ -2791,6 +2787,7 @@ function App(): JSX.Element {
       )}
       <AppShellProvider value={appShellContext}>
         <AppFrame
+          chromeAppearance={chromeAppearancePreview.themes}
           nativeControlsReservation={nativeControlsReservation}
           layoutClassName={`app-layout--route-${route.tab}`}
           headerHostRef={setFrameHeaderHost}
@@ -2854,7 +2851,7 @@ function App(): JSX.Element {
                   href: '#/settings',
                   label: 'Settings',
                   title: 'Settings',
-                  icon: MandibleHeaderLogo,
+                  icon: SettingsIcon,
                 })}
               </nav>
           </aside>
@@ -3009,6 +3006,7 @@ function App(): JSX.Element {
         })())}
         {renderTabPanel('settings', (
           <LazySettingsView
+            chromeAppearancePreview={chromeAppearancePreview.controller}
             settings={effectiveSettings}
             onSave={handleSettingsSave}
             loadError={state.settingsLoadError}

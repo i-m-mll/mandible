@@ -34,7 +34,7 @@ function HeaderAction({ onChoose }: { onChoose(value: string): void }) {
   return <button onClick={() => onChoose(selected)}>Choose current item</button>;
 }
 function Harness() {
-  const reservation = useNativeWindowPresentation();
+  const { trafficLightReservation: reservation, liquidGlassRegular } = useNativeWindowPresentation();
   const [route, setRoute] = useState('chat');
   const [revision, setRevision] = useState(0);
   const [chosen, setChosen] = useState('');
@@ -47,6 +47,7 @@ function Harness() {
   return <>
     <button onClick={() => setRoute(route === 'chat' ? 'issue' : 'chat')}>Switch route</button>
     <button onClick={() => setRevision(n => n + 1)}>Reconcile</button>
+    <span aria-label="Liquid Glass available">{String(liquidGlassRegular)}</span>
     <output aria-label="Chosen item">{chosen}</output>
     <AppFrame nativeControlsReservation={reservation} rail={null} headerHostRef={setHost} hasMainHeader={owners > 0} viewSidebarAvailable={false} viewSidebarOpen={false} onViewSidebarToggle={() => undefined} rightSidebar={descriptor} rightSidebarOpen={open} onRightSidebarOpenChange={setOpen}>
       <section hidden={route !== 'chat'}>
@@ -124,7 +125,7 @@ it('establishes the native frame from host identity while capability and event a
   await waitFor(() => expect(errors).toHaveBeenCalledWith('Failed to read native window capabilities:', expect.any(Error)));
   expect(document.documentElement.dataset.framePresentation).toBe('macos-overlay');
   expect(within(bar).getByRole('button', { name: 'Back' })).toBe(back);
-  expect(back.previousElementSibling).toBeNull();
+  expect(back.previousElementSibling?.previousElementSibling).toBeNull();
 });
 
 it('changes only the native reservation through fullscreen entry and exit while preserving the frame and view intent', async () => {
@@ -139,19 +140,39 @@ it('changes only the native reservation through fullscreen entry and exit while 
   const back = within(bar).getByRole('button', { name: 'Back' });
   const draft = screen.getByRole('textbox', { name: 'Draft' });
   fireEvent.input(draft, { target: { value: 'Unsent native work' } });
-  await waitFor(() => expect(back.previousElementSibling?.tagName).toBe('SPAN'));
+  await waitFor(() => expect(back.previousElementSibling?.previousElementSibling?.tagName).toBe('SPAN'));
   expect(document.documentElement.dataset.framePresentation).toBe('macos-overlay');
-  capabilities = { ...windowed, trafficLightReservation: 0 };
+  expect(document.documentElement.dataset.nativeGlass).toBe('regular');
+  expect(screen.getByLabelText('Liquid Glass available').textContent).toBe('true');
+  capabilities = { ...windowed, trafficLightReservation: 0, liquidGlassRegular: false };
   refresh();
-  await waitFor(() => expect(back.previousElementSibling).toBeNull());
+  await waitFor(() => expect(back.previousElementSibling?.previousElementSibling).toBeNull());
+  expect(document.documentElement.hasAttribute('data-native-glass')).toBe(false);
+  expect(screen.getByLabelText('Liquid Glass available').textContent).toBe('false');
   expect(document.documentElement.dataset.framePresentation).toBe('macos-overlay');
   expect(within(bar).getByRole('button', { name: 'Back' })).toBe(back);
   capabilities = windowed;
   refresh();
-  await waitFor(() => expect(back.previousElementSibling?.tagName).toBe('SPAN'));
+  await waitFor(() => expect(back.previousElementSibling?.previousElementSibling?.tagName).toBe('SPAN'));
   expect(document.documentElement.dataset.framePresentation).toBe('macos-overlay');
   expect(screen.getByRole('banner', { name: 'Application controls' })).toBe(bar);
   expect((screen.getByRole('textbox', { name: 'Draft' }) as HTMLTextAreaElement).value).toBe('Unsent native work');
   view.unmount();
   expect(unsubscribe).toHaveBeenCalledOnce();
+  expect(document.documentElement.hasAttribute('data-native-glass')).toBe(false);
+});
+
+it('keeps the logo decorative and history controls connected to browser history', () => {
+  const back = vi.spyOn(window.history, 'back').mockImplementation(() => {});
+  const forward = vi.spyOn(window.history, 'forward').mockImplementation(() => {});
+  render(<Harness />);
+  const bar = screen.getByRole('banner', { name: 'Application controls' });
+  const backButton = within(bar).getByRole('button', { name: 'Back' });
+  const forwardButton = within(bar).getByRole('button', { name: 'Forward' });
+  expect(backButton.previousElementSibling?.getAttribute('aria-hidden')).toBe('true');
+  expect(backButton.previousElementSibling?.getAttribute('tabindex')).toBeNull();
+  fireEvent.click(backButton);
+  fireEvent.click(forwardButton);
+  expect(back).toHaveBeenCalledOnce();
+  expect(forward).toHaveBeenCalledOnce();
 });

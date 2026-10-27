@@ -3,6 +3,7 @@ import { DetailPaneMenuTrigger } from '../../../ui/src/components/shared/DetailP
 import { render } from 'preact';
 import { useCallback } from 'preact/hooks';
 import { AppFrame } from '../../../ui/src/app-frame';
+import { CHROME_APPEARANCE_DEFAULTS, normalizeChromeAppearance } from '../../../ui/src/chrome-appearance';
 import { ViewSidebar } from '../../../ui/src/components/ViewSidebar';
 import { useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 
@@ -18,7 +19,7 @@ import {
   type AppRightSidebarDescriptor,
 } from '../../../ui/src/app-shell';
 import { ChatActivity, ChatPreview, ChatSessionOverview } from '../../../ui/src/chat/ChatRightSidebar';
-import { VerticalArrowIcon } from '../../../ui/src/components/icons/VerticalArrowIcon';
+import { ArrowIcon } from '../../../ui/src/components/icons/ArrowIcon';
 import { DetailPaneHeader } from '../../../ui/src/components/shared/DetailPaneHeader';
 import { useIntrinsicOverflowGroup } from '../../../ui/src/hooks/useIntrinsicOverflowGroup';
 import { useAppRightSidebarState } from '../../../ui/src/right-sidebar-state';
@@ -83,7 +84,7 @@ function NativeTranscript(): JSX.Element {
             <div data-transcript-final-content style={{ height: 24 }}>Final transcript line</div>
           </div>
           <button type="button" className="chat-circle-action stream-renderer__scroll-btn" aria-label="Jump to latest" title="Jump to latest">
-            <VerticalArrowIcon direction="down" />
+            <ArrowIcon direction="down" />
           </button>
         </div>
       </div>
@@ -173,17 +174,27 @@ function Harness({ surface }: { surface: Surface }): JSX.Element {
   }, [stored.open, stored.width, surface, tab, streamRevision]);
   const deterministic = conversationLoadFailure(new ApiError('raw', 409, 'provider_metadata_missing'), true);
   const transient = conversationLoadFailure(new ApiError('raw', 503, 'provider_metadata_unavailable'), true);
+  const shadowOverride = new URLSearchParams(location.search).get('shadow');
+  const glassOverride = new URLSearchParams(location.search).get('glass');
+  const appearanceOverride = shadowOverride ? JSON.parse(shadowOverride) : {};
+  if (glassOverride !== null) appearanceOverride.glassTransparency = Number(glassOverride);
+  const chromeAppearance = shadowOverride || glassOverride !== null ? { light: normalizeChromeAppearance(appearanceOverride, CHROME_APPEARANCE_DEFAULTS.light), dark: normalizeChromeAppearance(appearanceOverride, CHROME_APPEARANCE_DEFAULTS.dark) } : undefined;
   const railMode = new URLSearchParams(location.search).has('fullRail') ? 'both' : 'icons';
   const railWidth = APP_RAIL_WIDTHS[railMode];
-  const nativeControlsReservation = document.documentElement.dataset.framePresentation === 'macos-overlay' ? 88 : 0;
+  const [nativeControlsReservation, setNativeControlsReservation] = useState(document.documentElement.dataset.framePresentation === 'macos-overlay' ? 88 : 0);
+  useLayoutEffect(() => {
+    const changeReservation = (event: Event) => setNativeControlsReservation((event as CustomEvent<number>).detail);
+    window.addEventListener('fixture-native-reservation', changeReservation);
+    return () => window.removeEventListener('fixture-native-reservation', changeReservation);
+  }, []);
   const { rightSidebarLayout: layout, viewSidebarWidth: effectiveLeft } = resolveAppFrameGeometry({ viewportWidth: window.innerWidth, railWidth, viewSidebarWidth: leftWidth, rightSidebar: descriptor, rightSidebarOpen: stored.open, nativeControlsReservation });
   return (
-    <div className={`app-shell ${railMode === 'icons' ? 'app-shell--rail-icons' : ''} native-fixture native-fixture--${surface}`} style={{ '--app-rail-width': `${railWidth}px`, '--app-view-sidebar-width': `${effectiveLeft}px`, '--app-right-sidebar-width': `${stored.open ? layout.effectiveWidth : 0}px` }}>
+    <div className={`app-shell ${railMode === 'icons' ? 'app-shell--rail-icons' : ''} native-fixture native-fixture--${surface}`} style={{ '--app-native-controls-reservation': `${nativeControlsReservation}px`, '--app-rail-width': `${railWidth}px`, '--app-view-sidebar-width': `${effectiveLeft}px`, '--app-right-sidebar-width': `${stored.open ? layout.effectiveWidth : 0}px` }}>
       <AppShellProvider value={{ active: true, rightSidebar: descriptor, frameHeaderHost: host, registerFrameHeader, registerRightSidebar: () => () => undefined, updateRightSidebar: () => undefined, registerInitialRouteLoad: () => undefined, setViewSidebarWidth: setLeftWidth, viewSidebarWidth: effectiveLeft }}>
-      <AppFrame headerHostRef={setHost} hasMainHeader={headerOwners > 0} viewSidebarAvailable viewSidebarOpen={viewSidebarOpen} onViewSidebarToggle={() => setViewSidebarOpen(open => !open)} rightSidebar={descriptor} rightSidebarOpen={stored.open} onRightSidebarOpenChange={setOpen} rightToggleRef={toggleRef} rail={<aside className="app-rail" />}>
+      <AppFrame chromeAppearance={chromeAppearance} nativeControlsReservation={nativeControlsReservation} headerHostRef={setHost} hasMainHeader={headerOwners > 0} viewSidebarAvailable viewSidebarOpen={viewSidebarOpen} onViewSidebarToggle={() => setViewSidebarOpen(open => !open)} rightSidebar={descriptor} rightSidebarOpen={stored.open} onRightSidebarOpenChange={setOpen} rightToggleRef={toggleRef} rail={<aside className="app-rail"><nav className="app-rail__nav" aria-label="Main navigation"><a className="app-rail__item" href="#/chat" aria-label="Chats"><TestIcon kind="chat" />{railMode === 'both' ? <span>Chats</span> : null}</a></nav></aside>}>
         <main className={`app-content app-content--${surface}`}>
           <div className="fixture-split">
-          <ViewSidebar storageKey="fixture-left" defaultWidth={280} minWidth={118} hidden={!viewSidebarOpen} ariaLabel="Fixture"><div>Left content</div></ViewSidebar>
+          <ViewSidebar storageKey="fixture-left" defaultWidth={280} minWidth={118} hidden={!viewSidebarOpen} ariaLabel="Fixture"><div data-paint-probe-content>Left content</div></ViewSidebar>
           {surface === 'chat' ? <ChatMain descriptor={descriptor} /> : <div className="native-main">{surface} main</div>}
           </div>
           {surface === 'console' ? <button type="button" data-stream-update onClick={() => setStreamRevision(value => value + 1)}>Stream update {streamRevision}</button> : null}

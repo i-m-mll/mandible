@@ -90,9 +90,11 @@
   --shadow-panel-top: 0 -10px 24px rgba(0, 0, 0, 0.18);
   --shadow-content-top: inset 0 18px 24px -28px rgba(0, 0, 0, 0.28);
   --shadow-composer: 0 0 18px rgba(0, 0, 0, 0.093);
+  --app-boundary-line-color: #272727;
   --app-header-inline-inset: 18px;
   --app-frame-header-height: 42px;
   --app-header-height: 48px;
+  --app-header-logo-size: 22px;
   --app-header-control-size: 34px;
   --app-header-control-icon-size: 18px;
   --app-header-control-icon-inline-inset: calc((var(--app-header-control-size) - var(--app-header-control-icon-size)) / 2);
@@ -105,7 +107,6 @@
   /* Tier 2: semantic tokens */
   --surface-main: #181818;
   --surface-chrome: #222222;
-  --surface-glass-tint: color-mix(in srgb, var(--surface-chrome) 72%, transparent);
   --surface-app: var(--surface-main);
   --surface-page: var(--surface-main);
   --surface-panel: var(--neutral-2);
@@ -325,6 +326,7 @@
   --shadow-rail: 10px 0 30px rgba(15, 23, 42, 0.08);
   --shadow-panel-top: 0 -10px 24px rgba(15, 23, 42, 0.08);
   --shadow-content-top: inset 0 18px 24px -28px rgba(15, 23, 42, 0.2);
+  --app-boundary-line-color: #eaeaeb;
   --app-divider: #D7D7D8;
   --app-divider-emphasis: #C6C6C7;
 

@@ -118,7 +118,7 @@ import { formatAbsoluteTime, truncate } from '../lib/format';
 import { useChatProjectDisclosure } from './chat-project-disclosure';
 import { acquireSharedSse } from '../sse-shared';
 import { PreviewIcon } from '../components/icons/TabIcons';
-import { VerticalArrowIcon } from '../components/icons/VerticalArrowIcon';
+import { ArrowIcon } from '../components/icons/ArrowIcon';
 import {
   preferredProjectCheckout,
   reconcileShownProjects,
@@ -924,7 +924,7 @@ function HorizontalDotsIcon(): JSX.Element {
 }
 
 export function ChatComposerSubmitIcon(): JSX.Element {
-  return <VerticalArrowIcon direction="up" strokeWidth={1} />;
+  return <ArrowIcon direction="up" strokeWidth={1} />;
 }
 
 // ── Detail View ──

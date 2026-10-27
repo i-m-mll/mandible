@@ -13,6 +13,20 @@ import { DetailPaneNotice } from '../ui/src/components/shared/DetailPaneNotice';
 
 describe('app shell', () => {
 
+  it('keeps Settings reachable from its rail control after moving the logo into the frame', async () => {
+    installMemoryLocalStorage();
+    stubRailSettingsFetch();
+    stubEventSource();
+    window.history.replaceState(null, '', '#/spaces');
+    render(h(App, {}));
+    const settings = await screen.findByRole('link', { name: 'Settings' });
+    settings.focus();
+    fireEvent.click(settings);
+    await waitFor(() => expect(settings.getAttribute('aria-current')).toBe('page'));
+    expect(window.location.hash).toContain('/settings');
+    expect(document.activeElement).toBe(settings);
+  });
+
   it('refetches a same-user SSE revision and ignores an already-applied echo', async () => {
     installMemoryLocalStorage();
     const firstOrder = JSON.stringify({

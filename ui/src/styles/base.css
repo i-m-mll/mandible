@@ -109,8 +109,8 @@ a {
   background: var(--surface-chrome);
 }
 .app-header__logo {
-  width: 22px;
-  height: 22px;
+  width: var(--app-header-logo-size);
+  height: var(--app-header-logo-size);
   display: block;
   background-color: currentColor;
   -webkit-mask: var(--app-header-logo-image) center / contain no-repeat;
