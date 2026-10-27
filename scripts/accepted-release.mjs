@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { installedFileIdentity, verifyInstalledRelease } from './installed-release.mjs';
+import { installedFileIdentity, readInstalledRelease, verifyInstalledRelease } from './installed-release.mjs';
 import { createOwnedRun, saveOwnedMetadata, withOwnedRunLock, ownedRunIdentityMatches, finalizeOwnedRun, cleanupOwnedRun } from './owned-run.mjs';
 
 export const ACCEPTED_RELEASE_SCHEMA = 'mandible-accepted-release@1';
@@ -65,7 +65,9 @@ export function resolveAcceptedRelease(reference, expectedCandidate) {
   const app = path.join(handle.root, receipt.package.path);
   if (applicationIdentity(app) !== receipt.package.sha256) throw new Error('Accepted application bytes changed.');
   const resources = path.join(app, 'Contents', 'Resources');
-  const shipped = verifyInstalledRelease(resources);
+  // Retention verified the inventory before sealing this receipt. The full-app
+  // digest above binds those same payload bytes and the manifest in one pass.
+  const shipped = readInstalledRelease(resources);
   if (JSON.stringify(shipped) !== JSON.stringify(receipt.shipped) || shipped.target !== receipt.target
       || shipped.provenance.commit !== receipt.candidate.pin_sha) throw new Error('Accepted application provenance changed.');
   return { receipt, app, resources };

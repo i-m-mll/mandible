@@ -15,7 +15,7 @@ import SqliteDatabase from '../../src/sqlite.js';
 import { createUser, setupOperator } from '../../src/users/store.js';
 import { localCaPaths, assertLocalCaIdentity, probeCurrentMacOsTrust } from '../../scripts/local-ca-trust.mjs';
 import { resolveAcceptedRelease, readAcceptedReleaseReceipt, applicationIdentity } from '../../scripts/accepted-release.mjs';
-import { readRuntimeHandoff } from '../../scripts/runtime-handoff.mjs';
+import { readRuntimeHandoff, readRuntimeHandoffPhase } from '../../scripts/runtime-handoff.mjs';
 import { parseLoadedService, loadedServiceMatches } from '../../scripts/local-runtime.mjs';
 import { configureSigningCredential, createAuthCheckRepo, createLedgerProject, git, registerWorkRepo } from '../helpers/auth-queue-fixtures.js';
 import { createLedgerIssue } from '../helpers/auth-queue-fixtures.js';
@@ -300,13 +300,14 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     expect(journal.binding.source).toBeUndefined();
     expect(fs.existsSync(poisonMarker)).toBe(false);
     await until(() => {
-      journal = readRuntimeHandoff(home, request.id, executionId);
-      if (journal?.phase === 'failed') throw new Error(journal.error);
+      const phase = readRuntimeHandoffPhase(home, request.id, executionId);
+      if (phase === 'failed') throw new Error(readRuntimeHandoff(home, request.id, executionId)!.error);
       const attempt = db!.prepare('SELECT exit_code, output FROM auth_hook_executions WHERE id=?').get(executionId) as any;
       if (!journal && attempt?.exit_code != null && ![0, 75].includes(attempt.exit_code)) throw new Error(`Old daemon hook refused handoff: ${attempt.output}`);
-      return journal?.phase === 'complete' || journal?.phase === 'acknowledged';
+      return phase === 'complete' || phase === 'acknowledged';
     }, 180000, 'Actual old-to-candidate convergence');
-    await until(() => readRuntimeHandoff(home, request.id, executionId)?.phase === 'acknowledged', 60000, 'Candidate hook receipt acknowledgment');
+    journal = readRuntimeHandoff(home, request.id, executionId);
+    await until(() => readRuntimeHandoffPhase(home, request.id, executionId) === 'acknowledged', 60000, 'Candidate hook receipt acknowledgment');
     expect(fs.existsSync(journal.binding.priorBackend.argv[1])).toBe(false);
     expect(fs.existsSync(xattrMarker)).toBe(false);
     const row = db.prepare('SELECT state, exit_code FROM auth_hook_executions WHERE id=?').get(executionId) as any; expect(row.state).toBe('complete'); expect(row.exit_code).toBe(0);
@@ -350,12 +351,12 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     await until(() => {
       const hook = db!.prepare('SELECT id, exit_code, output FROM auth_hook_executions WHERE auth_request_id=? AND hook_id=?').get(second.id, 'builtin-mandible-rebuild') as any;
       if (hook) executionId = hook.id;
-      journal = executionId ? readRuntimeHandoff(home, second.id, executionId) : null;
-      if (journal?.phase === 'failed') throw new Error(journal.error);
+      const phase = executionId ? readRuntimeHandoffPhase(home, second.id, executionId) : null;
+      if (phase === 'failed') throw new Error(readRuntimeHandoff(home, second.id, executionId)!.error);
       if (hook?.exit_code != null && ![0, 75].includes(hook.exit_code)) throw new Error(`Subsequent handoff refused: ${hook.output}`);
       const state = db!.prepare('SELECT status, error FROM auth_requests WHERE id=?').get(second.id) as any;
       if (['rejected', 'failed'].includes(state?.status)) throw new Error(`Subsequent publication failed: ${state.error}`);
-      return journal?.phase === 'acknowledged';
+      return phase === 'acknowledged';
     }, 120000, 'Native bundle-to-bundle acknowledgment');
     expect(applicationIdentity(nativeApp)).toBe(secondRetained.receipt.package.sha256);
     expect(fs.existsSync(retained.receipt.package.handle.root)).toBe(false);
