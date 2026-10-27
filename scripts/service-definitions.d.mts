@@ -16,7 +16,7 @@ export interface ServiceDefinition {
 export type ServiceKind = 'backend' | 'gateway';
 export interface ServiceDefinitionRefusal {
   service: ServiceKind; label: string;
-  category: 'ownership_conflict' | 'malformed_definition' | 'duplicate_label' | 'missing_definition' | 'unreadable_state' | 'definition_mismatch';
+  category: 'ownership_conflict' | 'malformed_definition' | 'duplicate_label' | 'missing_definition' | 'unreadable_state' | 'definition_mismatch' | 'starting';
   fields: string[]; message: string;
 }
 export interface InstalledServiceDefinition { file: string; bytesBase64: string; sha256: string; record: ServiceDefinition }
@@ -25,7 +25,7 @@ export interface ServiceObservation {
   loadedDefinition: ServiceDefinition | null; desired: ServiceDefinition | null;
   differences: { file: string; fields: string[] }[]; desiredDifferences: string[];
 }
-export type ServiceOwnershipRefusal = ServiceDefinitionRefusal & { category: 'ownership_conflict' | 'unreadable_state' };
+export type ServiceOwnershipRefusal = ServiceDefinitionRefusal & { category: 'ownership_conflict' | 'unreadable_state' | 'starting' };
 export type ServiceDefinitionInspection = { ok: true; observations: ServiceObservation[] } | { ok: false; refusal: ServiceDefinitionRefusal };
 export type ServiceOwnershipInspection = { ok: true; observations: ServiceObservation[] } | { ok: false; refusal: ServiceOwnershipRefusal };
 export interface ServiceObservationOptions { desired?: Partial<Record<ServiceKind, ServiceDefinition>> }

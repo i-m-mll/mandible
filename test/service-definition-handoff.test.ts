@@ -10,6 +10,38 @@ import { PRODUCTION_ORIGIN } from '../scripts/canonical-origin.mjs';
 let scratch: string;
 afterEach(() => { vi.doUnmock('node:child_process'); vi.doUnmock('../scripts/build-revision.mjs'); vi.unstubAllEnvs(); vi.resetModules(); if (scratch) fs.rmSync(scratch, { recursive: true, force: true }); });
 
+it('waits through the native launch executable transition and refuses a foreign executable', async () => {
+  scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'native-launch-transition-')));
+  const bundleRoot = path.join(scratch, 'Mandible.app');
+  const context = serviceInstallationContext({ home: path.join(scratch, 'home'), accountHome: scratch, bundleRoot });
+  const agents = path.join(bundleRoot, 'Contents/Library/LaunchAgents');
+  fs.mkdirSync(agents, { recursive: true });
+  for (const service of ['backend', 'gateway'] as const) fs.writeFileSync(path.join(agents, `${context[`${service}Label`]}.plist`), JSON.stringify({
+    Label: context[`${service}Label`], BundleProgram: 'Contents/MacOS/mandible-service', ProgramArguments: ['mandible-service', 'foreground', service],
+  }));
+  let executable = 'xpcproxy';
+  vi.doMock('node:child_process', async original => ({ ...await original<typeof import('node:child_process')>(), spawnSync: (binary: string, args: string[]) => {
+    if (binary === '/usr/bin/plutil') return { status: 0, stdout: fs.readFileSync(args.at(-1)!, 'utf8'), stderr: '' };
+    if (binary === '/bin/ps') return { status: 0, stdout: executable, stderr: '' };
+    if (binary === '/bin/launchctl') {
+      const service = args[1].endsWith(context.backendLabel) ? 'backend' : 'gateway';
+      return { status: 0, stdout: `service = {\n program identifier = Contents/MacOS/mandible-service (mode: 2)\n parent bundle identifier = bio.mll.mandible\n arguments = {\nmandible-service\nforeground\n${service}\n }\n pid = 42\n}`, stderr: '' };
+    }
+    throw new Error(`Unexpected command ${binary}`);
+  } }));
+  vi.resetModules();
+  const { inspectServiceDefinitionsSync } = await import('../scripts/service-definitions.mjs');
+  for (executable of ['xpcproxy', 'mandible-service']) {
+    const pending = inspectServiceDefinitionsSync(context);
+    expect(pending).toMatchObject({ ok: false, refusal: { category: 'starting' } });
+    if (!pending.ok) expect(pending.refusal.message).toContain(`PID 42 is still starting (${executable})`);
+  }
+  executable = path.join(bundleRoot, 'Contents/MacOS/mandible-bun');
+  expect(inspectServiceDefinitionsSync(context).ok).toBe(true);
+  executable = '/another/Mandible.app/Contents/MacOS/mandible-bun';
+  expect(inspectServiceDefinitionsSync(context)).toMatchObject({ ok: false, refusal: { category: 'ownership_conflict' } });
+});
+
 async function fixture({ absentGateway = false, stoppedBackend = false } = {}) {
   scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-definition-handoff-')));
   const home = path.join(scratch, 'installation');

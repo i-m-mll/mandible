@@ -157,15 +157,21 @@ function loadedJob(service, label, result, context) {
   if (result.status === 0) {
     const job = { loaded: true, ...parseLoadedService(result.stdout) };
     if (context.bundleRoot && job.bundleProgram) {
-      if (job.bundleProgram !== 'Contents/MacOS/mandible-service' || job.parentBundleIdentifier !== 'bio.mll.mandible') {
+      if (job.bundleProgram !== 'Contents/MacOS/mandible-service' || job.parentBundleIdentifier !== 'bio.mll.mandible'
+          || JSON.stringify(job.argv) !== JSON.stringify(['mandible-service', 'foreground', service])) {
         return refusal(service, label, 'ownership_conflict', [], 'The loaded service has a different native bundle identity.');
       }
       if (job.pid) {
         const executable = spawnSync('/bin/ps', ['-ww', '-p', String(job.pid), '-o', 'comm='], { encoding: 'utf8', timeout: 2500 });
         if (executable.error || executable.status !== 0) return refusal(service, label, 'unreadable_state', [], 'Cannot establish the loaded bundle process executable.');
         const actual = executable.stdout.trim();
+        // launchd publishes its PID before xpcproxy execs the native helper,
+        // whose initial comm can itself precede the full bundled Bun path.
+        if (['xpcproxy', '/usr/libexec/xpcproxy', 'mandible-service'].includes(actual)) {
+          return refusal(service, label, 'starting', ['processExecutable'], `Native service ${label} PID ${job.pid} is still starting (${actual}); bundle process ownership is not confirmed yet.`);
+        }
         if (![path.join(context.bundleRoot, 'Contents/MacOS/mandible-bun'), path.join(context.bundleRoot, 'Contents/MacOS/mandible-service')].includes(actual)) {
-          return refusal(service, label, 'ownership_conflict', [], 'The loaded process belongs to another bundle location; preserving it.');
+          return refusal(service, label, 'ownership_conflict', ['processExecutable'], `The loaded process PID ${job.pid} belongs to another bundle location (${actual}); preserving it.`);
         }
       } else {
         let owner;
