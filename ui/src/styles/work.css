@@ -169,6 +169,10 @@
   min-height: 32px;
 }
 
+.work-sidebar__footer .btn > span.app-icon {
+  font-size: 11px;
+}
+
 .work-sidebar__capability-note {
   grid-column: 1 / -1;
   color: var(--text-muted);
