@@ -326,12 +326,37 @@ async function exercisePreviewLifecycle(legacy = false) {
       assert.equal(read(stopped.file).ownership.outputs[0].disposition, 'pending');
     }
     const reused = await main(options); assert.equal(reused.status, 'already-running'); assert.equal(reused.ownership.runId, original.ownership.runId);
+    const metadataFile = path.join(original.previewRoot, 'metadata.json');
+    const staleReporting = read(metadataFile);
+    staleReporting.message = 'Refreshed historical-source to historical-target';
+    staleReporting.previousStartupCommit = { hash: 'historical-source' };
+    staleReporting.refreshedAt = '2000-01-01T00:00:00.000Z';
+    staleReporting.status = 'refreshed'; staleReporting.ok = true;
+    saveOwnedMetadata(metadataFile, staleReporting);
     fs.writeFileSync(path.join(repository, 'src', 'candidate.txt'), 'candidate'); git(['add', '.']); git(['commit', '-m', 'next candidate']);
     failReload = true;
     await assert.rejects(main(options), /Refresh failed/);
     last = read(path.join(original.previewRoot, 'metadata.json'));
     assert.equal(last.ownership.lifecycle.phase, 'failed-stopped'); assert.equal(snapshots, 1);
+    assert.equal(last.status, 'refresh-failed'); assert.equal(last.ok, false);
+    for (const key of ['message', 'previousStartupCommit', 'refreshedAt']) assert.equal(Object.hasOwn(last, key), false);
     last = await refreshPreview({ ...original.handle, revision: last.ownership.revision, effects });
+    const assertCurrentRefresh = result => {
+      assert.equal(result.status, 'refreshed'); assert.equal(result.ok, true);
+      assert.equal(result.ownership.lifecycle.phase, 'ready');
+      assert.equal(result.ownership.source.commit, git(['rev-parse', 'HEAD']));
+      assert.equal(result.health.startup_commit.hash, result.ownership.source.commit);
+      assert.equal(result.instanceEnv.MANDIBLE_BACKEND_GENERATION, result.ownership.source.commit);
+      assert.notEqual(result.refreshedAt, staleReporting.refreshedAt);
+      assert.ok(Number.isFinite(Date.parse(result.refreshedAt)));
+      for (const key of ['message', 'previousStartupCommit']) assert.equal(Object.hasOwn(result, key), false);
+    };
+    assertCurrentRefresh(last); assertCurrentRefresh(read(metadataFile));
+    const priorSource = last.ownership.source.commit;
+    fs.writeFileSync(path.join(repository, 'src', 'candidate.txt'), 'consecutive candidate'); git(['add', '.']); git(['commit', '-m', 'consecutive candidate']);
+    last = await refreshPreview({ ...original.handle, revision: last.ownership.revision, effects });
+    assertCurrentRefresh(last); assertCurrentRefresh(read(metadataFile));
+    assert.notEqual(last.ownership.source.commit, priorSource);
     assert.equal(last.status, 'refreshed'); assert.equal(last.db, original.db); assert.equal(last.port, original.port);
     assert.equal(last.ownership.runId, original.ownership.runId); assert.equal(snapshots, 1);
     assert.equal(fs.readFileSync(preference, 'utf8'), 'private preference');
