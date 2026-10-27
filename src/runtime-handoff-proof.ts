@@ -6,6 +6,7 @@ import { compiledBuildDigest, readBuildRevision, runtimeDependenciesDigest } fro
 import type { Db } from "./db.js";
 import { readGitCommitFacts } from "./git-object-facts.js";
 import { canonicalizeChangeMessage } from "./auth-change-message.js";
+import { acceptedReleaseSelection, type AcceptedReleaseSelection } from './accepted-release-selection.js';
 import { authorizedMergeSignerLines, extractAtomicMergeState, extractSuccessfulMergeCommitSha, verifyAuthorizedMergeCommitSignature } from "./auth-signature-verification.js";
 
 export interface RuntimePublicationBinding {
@@ -16,6 +17,8 @@ export interface RuntimePublicationBinding {
   root: string;
   source?: { root: string; commonGitDir: string; head: string; buildRevision: string; compiledDigest: string; dependencies: { root: string; digest: string }; runtime: { path: string; sha256: string }; files: Record<string, string> };
   sourceProjectId?: string;
+  acceptedRelease?: AcceptedReleaseSelection;
+  delivery?: 'accepted-release';
   mergeCommit?: string;
   mergeBase?: string;
   mergeHead?: string;
@@ -65,11 +68,20 @@ export async function verifyRuntimeHandoffPublication(db: Db, binding: RuntimePu
   const events = db.prepare("SELECT revision, snapshot_json, snapshot_sha256 FROM auth_request_lifecycle_events WHERE auth_request_id = ? AND next_status IN ('approved', 'executing') ORDER BY revision DESC").all(row.id) as Array<{ revision: number; snapshot_json: string; snapshot_sha256: string }>;
   const event = events[0];
   if (!event || createHash("sha256").update(event.snapshot_json).digest("hex") !== event.snapshot_sha256) fail("latest frozen approval snapshot is unavailable or corrupt");
-  const frozen = JSON.parse(event!.snapshot_json).request;
+  const snapshot = JSON.parse(event!.snapshot_json);
+  const frozen = snapshot.request;
   if (frozen.type !== "merge" || frozen.id !== row.id || frozen.approved_by_user_id !== row.approved_by_user_id || !frozen.merge_preflight_base_sha || !frozen.merge_head_sha || !frozen.merge_candidate_tree_sha) fail("frozen approved candidate is unavailable");
   const base = frozen.merge_preflight_base_sha as string;
   const head = frozen.merge_head_sha as string;
   const tree = frozen.merge_candidate_tree_sha as string;
+  const selected = binding.delivery === 'accepted-release' ? acceptedReleaseSelection(db, frozen, snapshot.actions ?? []) : null;
+  if (selected) {
+  if (binding.acceptedRelease && JSON.stringify(binding.acceptedRelease) !== JSON.stringify(selected.selection)) fail('accepted release selection changed');
+  const liveSelection = db.prepare('SELECT state, payload FROM auth_request_actions WHERE id = ? AND auth_request_id = ?').get(
+    snapshot.actions.find((action: any) => action.kind === 'checkpoint_add' && action.payload?.kind === 'accepted-release').id, row.id) as { state: string; payload: string } | undefined;
+  if (!liveSelection || !['staged', 'applied'].includes(liveSelection.state)
+      || JSON.stringify(JSON.parse(liveSelection.payload).payload) !== JSON.stringify(selected.selection)) fail('accepted release selection was removed or vetoed');
+  }
   if (binding.mergeBase && binding.mergeBase !== base || binding.mergeHead && binding.mergeHead !== head) fail("reviewed revisions differ");
   for (const field of ["command", "repo", "base_branch", "head_branch", "approved_by_user_id", "commit_message", "commit_message_digest", "approval_lease_id"]) {
     if (row[field] !== frozen[field]) fail(`frozen ${field} differs`);
@@ -114,5 +126,5 @@ export async function verifyRuntimeHandoffPublication(db: Db, binding: RuntimePu
   if (authorizedMergeSignerLines(db, row.approved_by_user_id, signature.credential_id).length === 0) fail("publication signer is no longer authorized");
   const frozenCandidate = { tree, snapshotRevision: event!.revision, snapshotDigest: event!.snapshot_sha256, signerCredentialId: signature.credential_id! };
   if (binding.frozenCandidate && (Object.keys(frozenCandidate) as Array<keyof typeof frozenCandidate>).some(key => binding.frozenCandidate![key] !== frozenCandidate[key])) fail("frozen proof binding differs");
-  return { mergeCommit: commit!, mergeBase: base, mergeHead: head, frozenCandidate, ...(sourceProjectId ? { sourceProjectId } : {}) };
+  return { mergeCommit: commit!, mergeBase: base, mergeHead: head, frozenCandidate, ...(selected ? { acceptedRelease: selected.selection } : {}), ...(sourceProjectId ? { sourceProjectId } : {}) };
 }

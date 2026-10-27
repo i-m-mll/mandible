@@ -7,6 +7,7 @@ import { applicationIdentity, retainAcceptedRelease, resolveAcceptedRelease } fr
 import { installedFileIdentity } from '../scripts/installed-release.mjs';
 import { createOwnedRun, withOwnedRunLock, saveOwnedMetadata, finalizeOwnedRun, cleanupOwnedRun } from '../scripts/owned-run.mjs';
 import { CandidateAcceptanceRuns } from '../src/candidate-acceptance.js';
+import { acceptedReleaseSelection } from '../src/accepted-release-selection.js';
 import { createAuthCheckRepo, createMigratedDb, insertSiblingMergeRequest } from './helpers/auth-queue-fixtures.js';
 
 it('retains the app that ran after scratch disposal and refuses changed selection or bytes', async () => {
@@ -51,6 +52,16 @@ it('retains the app that ran after scratch disposal and refuses changed selectio
       expect(row.status).toBe('passed');
       expect(row.result_json.length).toBeLessThan(64 * 1024);
       storedReference = JSON.parse(row.result_json).receipt;
+      const request = { id: 'request', merge_candidate_pin_sha: candidate.pin_sha, merge_candidate_tree_sha: candidate.tree_sha,
+        merge_preflight_base_sha: candidate.base_sha, merge_head_sha: candidate.head_sha };
+      const acceptance = db.prepare('SELECT id FROM auth_candidate_acceptances WHERE auth_request_id = ?').get('request') as { id: string };
+      const action = { kind: 'checkpoint_add', state: 'staged', payload: { kind: 'accepted-release', payload: { acceptanceId: acceptance.id, reference: storedReference } } };
+      expect(acceptedReleaseSelection(db, request, [action]).receipt.candidate).toEqual(candidate);
+      for (const actions of [[], [action, action], [{ ...action, state: 'vetoed' }]]) {
+        expect(() => acceptedReleaseSelection(db, request, actions)).toThrow('Exactly one non-vetoed');
+      }
+      expect(() => acceptedReleaseSelection(db, { ...request, id: 'different-request' }, [action])).toThrow('exact request and candidate');
+      expect(() => acceptedReleaseSelection(db, { ...request, merge_head_sha: 'f'.repeat(40) }, [action])).toThrow('exact request and candidate');
     } finally { db.close(); fs.rmSync(repo, { recursive: true, force: true }); }
     const selected = resolveAcceptedRelease(storedReference!, candidate);
     expect(fs.readFileSync(path.join(selected.resources, 'program'), 'utf8')).toBe('accepted program');

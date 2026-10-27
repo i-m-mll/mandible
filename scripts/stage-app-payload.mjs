@@ -98,6 +98,10 @@ export async function stageAppPayload(contents) {
   });
   stageBundleServices(contents, path.join(root, 'src-tauri/service-helper/target/release/mandible-service'));
   const runtime = run('/bin/sh', [path.join(root, 'scripts/bun-runtime.sh')]);
+  fs.mkdirSync(path.join(resources, 'handoff'), { recursive: true });
+  for (const [source, name] of [['src/sqlite.ts', 'sqlite.mjs'], ['src/runtime-handoff-proof.ts', 'proof.mjs'], ['scripts/runtime-handoff.mjs', 'helper.mjs']]) {
+    run(runtime, ['build', path.join(root, source), '--target', 'bun', '--outfile', path.join(resources, 'handoff', name)]);
+  }
   const sqlite = run(runtime, [path.join(root, 'scripts/sqlite-runtime-install.mjs')]);
   const caddy = installPinnedCaddy(path.join(os.homedir(), '.cache/mandible/package-tools'));
   if (hash(caddy) !== '425fb8342d05b06e98f6a438a2964401268df83345ad806103669fdd322bf80c') throw new Error('Caddy differs from the qualified darwin-arm64 release executable.');

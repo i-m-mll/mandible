@@ -14,6 +14,8 @@ export function serviceInstallationContext({ home = path.join(os.userInfo().home
   if (![home, accountHome].every(path.isAbsolute)) throw new Error('Installation and account homes must be absolute.');
   home = path.resolve(home);
   const runtimeDir = path.join(home, 'config/local-sessions');
+  const ownerFile = path.join(runtimeDir, 'bundle-owner.json');
+  if (!bundleRoot && fs.existsSync(ownerFile)) bundleRoot = JSON.parse(fs.readFileSync(ownerFile, 'utf8')).bundleRoot;
   const suffix = home === path.join(os.userInfo().homedir, '.mandible') ? '' : `.${createHash('sha256').update(home).digest('hex').slice(0, 8)}`;
   return { home, accountHome, runtimeDir, domain, bundleRoot, serviceDir: path.join(accountHome, 'Library/LaunchAgents'), privateServiceDir: path.join(runtimeDir, 'launch-agents'),
     backendLabel: `${bundleServiceLabel('backend')}${suffix}`, gatewayLabel: `${bundleServiceLabel('gateway')}${suffix}` };

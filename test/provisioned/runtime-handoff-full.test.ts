@@ -14,6 +14,7 @@ import { expect, it } from 'vitest';
 import SqliteDatabase from '../../src/sqlite.js';
 import { createUser, setupOperator } from '../../src/users/store.js';
 import { localCaPaths, assertLocalCaIdentity, probeCurrentMacOsTrust } from '../../scripts/local-ca-trust.mjs';
+import { resolveAcceptedRelease, applicationIdentity } from '../../scripts/accepted-release.mjs';
 import { readRuntimeHandoff } from '../../scripts/runtime-handoff.mjs';
 import { parseLoadedService, loadedServiceMatches } from '../../scripts/local-runtime.mjs';
 import { configureSigningCredential, createAuthCheckRepo, createLedgerProject, git, registerWorkRepo } from '../helpers/auth-queue-fixtures.js';
@@ -45,6 +46,16 @@ function archive(source: string, revision: string, destination: string) {
   command('/usr/bin/tar', ['-x', '-C', destination], { input: bytes });
 }
 function configurePorts(root: string, runtime: string, ports: { public: number; backend: number; admin: number }, env: NodeJS.ProcessEnv) {
+  const identifier = env.MANDIBLE_FIXTURE_IDENTIFIER!;
+  for (const relative of ['scripts/service-definitions.mjs', 'scripts/bundle-service-roles.mjs', 'src-tauri/tauri.conf.json']) {
+    const file = path.join(root, relative);
+    if (fs.existsSync(file)) fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replaceAll('bio.mll.mandible', identifier));
+  }
+  const stage = path.join(root, 'scripts/stage-app-payload.mjs');
+  if (fs.existsSync(stage)) {
+    const code = fs.readFileSync(stage, 'utf8').replace('fs.mkdirSync(resources, { recursive: true });', `fs.mkdirSync(resources, { recursive: true }); fs.writeFileSync(path.join(resources, 'service-fixture.json'), ${JSON.stringify(JSON.stringify({ accountHome: env.HOME }))});`);
+    fs.writeFileSync(stage, code);
+  }
   fs.writeFileSync(path.join(root, 'config/canonical-origin.json'), `${JSON.stringify({ production_origin: `https://app.mandible.localhost:${ports.public}`, default_backend_port: ports.backend }, null, 2)}\n`);
   const gateway = path.join(root, 'scripts/local-front-door.mjs');
   const text = fs.readFileSync(gateway, 'utf8');
@@ -67,7 +78,7 @@ it('converges the deployed daemon on the candidate through one ordinary signed d
   const oldRoot = path.dirname(command('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: process.cwd(), env: gitEnv }).trim());
   const markerPath = path.join(oldRoot, 'dist/build-revision.json');
   const oldMarker = JSON.parse(fs.readFileSync(prerequisite(fs.existsSync(markerPath) && markerPath, `deployed build marker ${markerPath}`), 'utf8'));
-  const oldRevision = prerequisite(oldMarker.commit as string | undefined, `commit in ${markerPath}`);
+  const oldRevision = command('git', ['rev-parse', 'ee279e58^{commit}'], { cwd: oldRoot, env: gitEnv }).trim();
   const candidate = command('git', ['rev-parse', '--verify', 'HEAD^{commit}'], { cwd: process.cwd(), env: gitEnv }).trim();
   // The runner isolates HOME, and Bun's os.userInfo() follows HOME, so the
   // operator's account home comes from the account database, as in bun-runtime.sh.
@@ -86,7 +97,7 @@ it('converges the deployed daemon on the candidate through one ordinary signed d
   const scratch = fs.realpathSync(fs.mkdtempSync('/tmp/mandible-upgrade-'));
   const repo = path.join(scratch, 'mandible');
   const initialRepo = createAuthCheckRepo(); fs.cpSync(initialRepo, repo, { recursive: true }); fs.rmSync(initialRepo, { recursive: true, force: true });
-  const userHome = path.join(scratch, 'user'); const home = path.join(scratch, 'installation');
+  const userHome = path.join(scratch, 'user'); const home = path.join(userHome, '.mandible');
   fs.mkdirSync(userHome); fs.mkdirSync(home);
   const privateKeychain = path.join(scratch, 'executor.keychain-db');
   const securityAdapter = path.join(scratch, 'private-security');
@@ -104,13 +115,14 @@ case "$#" in 3) ;; 4) [ "$4" = -w ] || exit 2 ;; *) exit 2 ;; esac
 exec /usr/bin/security "$@" ${quote(privateKeychain)}
 `, { mode: 0o700 });
   const ports = { public: await freePort(), backend: await freePort(), admin: await freePort() };
-  const env = { USER: process.env.USER, LANG: process.env.LANG || 'en_US.UTF-8', SHELL: '/bin/zsh', NODE_ENV: 'production', CI: 'true', TERM: 'dumb', HOME: userHome, MANDIBLE_HOME: home, MANDIBLE_SERVICE_ACCOUNT_HOME: userHome,
+  const fixtureIdentifier = `bio.mll.mandible.fixture.${randomBytes(8).toString('hex')}`;
+  const env = { MANDIBLE_FIXTURE_IDENTIFIER: fixtureIdentifier, USER: process.env.USER, LANG: process.env.LANG || 'en_US.UTF-8', SHELL: '/bin/zsh', NODE_ENV: 'production', CI: 'true', TERM: 'dumb', HOME: userHome, MANDIBLE_HOME: home, MANDIBLE_SERVICE_ACCOUNT_HOME: userHome,
     MANDIBLE_DB: path.join(home, 'mandible.db'), MANDIBLE_PORT: String(ports.backend), MANDIBLE_WORK_SCANNER_ROOTS: JSON.stringify([{ path: repo, depth: 0 }]),
     MANDIBLE_SECURITY_BIN: securityAdapter, MANDIBLE_RUNTIME: runtime, MANDIBLE_RUNTIME_ARCHIVE: archivePath, PATH: `${path.dirname(runtime)}:${process.env.PATH}`, GIT_OPTIONAL_LOCKS: '0' };
   const libraryInputs = Object.fromEntries(['MANDIBLE_SQLITE_LIBRARY', 'MANDIBLE_SQLITE_LIBRARY_ARCHIVE'].filter(key => process.env[key]).map(key => [key, process.env[key]!]));
   Object.assign(env, libraryInputs);
   const suffix = digest(home).slice(0, 8); const domain = `gui/${process.getuid!()}`;
-  const backendLabel = `bio.mll.mandible.local-session-production.${suffix}`; const gatewayLabel = `bio.mll.mandible.local-front-door.${suffix}`;
+  const backendLabel = `${fixtureIdentifier}.local-session-production`; const gatewayLabel = `${fixtureIdentifier}.local-front-door`;
   const ledger = path.join(home, 'mandible.db'); let db: SqliteDatabase | undefined; let candidateRoot = ''; let requestId = ''; let executionId = ''; let journal: any;
   const evidence = path.join(buildHome, '.cache', 'mandible/acceptance/upgrade-evidence'); fs.mkdirSync(evidence, { recursive: true });
   try {
@@ -125,6 +137,7 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     fs.mkdirSync(path.join(userHome, '.bun/install'), { recursive: true });
     command('/bin/cp', ['-c', '-R', bunCache, path.join(userHome, '.bun/install/cache')]);
     archive(oldRoot, oldRevision, repo);
+    fs.appendFileSync(path.join(repo, 'src/index.ts'), "\nawait import(new URL('../scripts/runtime-handoff.mjs', import.meta.url).href);\n");
     command('/bin/cp', ['-c', '-R', path.join(oldRoot, 'node_modules'), path.join(repo, 'node_modules')]);
     configurePorts(repo, runtime, ports, env);
     git(repo, ['add', '.']); git(repo, ['commit', '-m', 'Actual old daemon with isolated connection ports']);
@@ -153,6 +166,8 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     candidateRoot = fs.realpathSync(candidateBlock.split('\n').find(line => line.startsWith('worktree '))!.slice(9));
     for (const file of git(candidateRoot, ['ls-files', '-z']).split('\0').filter(Boolean)) fs.rmSync(path.join(candidateRoot, file), { force: true });
     archive(process.cwd(), candidate, candidateRoot); configurePorts(candidateRoot, runtime, ports, env);
+    const acceptanceProgram = path.join(candidateRoot, 'scripts/candidate-acceptance.mjs');
+    fs.writeFileSync(acceptanceProgram, fs.readFileSync(acceptanceProgram, 'utf8').replace('result.receipt = acceptedReference || receipt;', `result.receipt = acceptedReference || receipt; result.bootstrapOversized = 'x'.repeat(70000);`));
     git(candidateRoot, ['add', '-A']); git(candidateRoot, ['commit', '-m', 'Candidate source with isolated connection ports']);
     const nativeApp = path.join(scratch, 'Mandible.app');
     const poisonedShim = path.join(userHome, '.dotfiles/bin/mandible'); fs.mkdirSync(path.dirname(poisonedShim), { recursive: true });
@@ -226,6 +241,16 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     // Prove the service definition overrides an inherited old CLI selection.
     expect(installedPath.split(':')[0]).toBe(`${repo}/bin`);
     await acceptBootstrapDelivery(agentApi, request.id);
+    const accepted = readBootstrapAcceptanceEvidence(db, request.id)!;
+    const retained = resolveAcceptedRelease(accepted.result.receipt);
+    const requestDetail = await readBootstrapDelivery(agentApi, request.id);
+    const action = await fetch(`${baseUrl}/api/auth/request/${request.id}/actions`, { method: 'POST', headers: { ...agentApi.headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'checkpoint_add', target_issue_ref: issue.id, payload: { kind: 'accepted-release', payload: { acceptanceId: accepted.id, reference: accepted.result.receipt } }, expected_revision: requestDetail.lifecycle_events.at(-1)!.revision, expected_custody_generation: (requestDetail as any).custody_generation }) });
+    expect(action.ok, JSON.stringify(await action.json())).toBe(true);
+    const poisonBuild = path.join(scratch, 'build-after-acceptance');
+    const poisonScript = path.join(scratch, 'deny-build');
+    fs.writeFileSync(poisonScript, `#!/bin/sh\necho invoked > ${quote(poisonBuild)}\nexit 98\n`, { mode: 0o700 });
+    const denyBuildCommand = `MANDIBLE_POST_MERGE_DEPENDENCY_COMMAND=${quote(poisonScript)} MANDIBLE_POST_MERGE_BUILD_COMMAND=${quote(poisonScript)} MANDIBLE_DESKTOP_BUILD_COMMAND=${quote(poisonScript)} `;
+    db.prepare('UPDATE auth_hooks SET command = ? WHERE id = ?').run(denyBuildCommand + hookCommand, 'builtin-mandible-rebuild');
     // Owned drift introduced after acceptance must be absorbed by the ordinary
     // signed self-update. Neither repair nor retry is part of this flow.
     for (const label of [backendLabel, gatewayLabel]) {
@@ -268,12 +293,16 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     expect(fs.existsSync(poisonMarker)).toBe(false);
     const nativeRuns = db.prepare('SELECT hook_id, position, state, exit_code FROM auth_hook_executions WHERE auth_request_id=? AND position < 0 ORDER BY position').all(request.id) as any[];
     expect(nativeRuns.map(row => [row.position, row.state, row.exit_code])).toEqual([[-2, 'complete', 0], [-1, 'complete', 0]]);
-    const newJob = command('/bin/launchctl', ['print', `${domain}/${backendLabel}`]); expect(newJob).toContain(runtime); expect(newJob).toContain(`${repo}/bin`); expect(newJob).toContain(securityAdapter);
+    expect(applicationIdentity(nativeApp)).toBe(retained.receipt.package.sha256);
+    expect(fs.existsSync(poisonBuild)).toBe(false);
+    const newJob = command('/bin/launchctl', ['print', `${domain}/${backendLabel}`]); expect(newJob).toContain('mandible-service'); expect(newJob).toContain(fixtureIdentifier);
     for (const label of [backendLabel, gatewayLabel]) {
       const detail = command('/bin/launchctl', ['print', `${domain}/${label}`]);
-      const file = detail.split('\n').map(line => line.trim()).find(line => line.startsWith('path = '))?.slice(7);
-      expect(file).toBeTruthy();
-      expect(loadedServiceMatches(JSON.parse(command('/usr/bin/plutil', ['-convert', 'json', '-o', '-', file!])), parseLoadedService(detail))).toBe(true);
+      const file = path.join(nativeApp, 'Contents/Library/LaunchAgents', `${label}.plist`);
+      const nativeDefinition = JSON.parse(command('/usr/bin/plutil', ['-convert', 'json', '-o', '-', file]));
+      nativeDefinition.bundleRoot = nativeApp;
+      const loaded = parseLoadedService(detail); loaded.program = path.join(nativeApp, 'Contents/MacOS/mandible-service');
+      expect(loadedServiceMatches(nativeDefinition, loaded)).toBe(true);
     }
     fs.writeFileSync(path.join(evidence, `${Date.now()}.json`), JSON.stringify({ status: 'passed', topology: 'installed protected-root update', oldRevision, candidateRevision: candidate, fixturePorts: ports, runtimeHash: digest(fs.readFileSync(runtime)), oldLoadedDefinitionHash: digest(oldJob), oldGatewayLoadedDefinitionHash: digest(oldGatewayJob), sourceManifest, nativeHooks, executorCredentialStore: { kind: 'native private Keychain', adapterSha256: digest(fs.readFileSync(securityAdapter)), defaultUnchanged: true, searchListUnchanged: true }, bootstrapLoadedDefinitionHash: digest(bootstrapJob), finalRequest: { id: finalRequest.id, status: finalRequest.status, mergeHead: finalRequest.merge_head_sha, mergeCommit: git(repo, ['rev-parse', 'main']) }, newLoadedDefinitionHash: digest(newJob), journal: readRuntimeHandoff(home, request.id, executionId), sourceTransforms: ['private frontend/backend ports generated from config', 'private Caddy admin port'], shutdownTrigger: 'canonical managed self-update drain after independent handoff admission', note: 'Actual daemon transition; exact unmodified candidate paired desktop gate remains separately required.' }, null, 2));
   } catch (error) {

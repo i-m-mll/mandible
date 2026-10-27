@@ -16,6 +16,13 @@ const role = process.argv[2];
 if (!['backend', 'gateway'].includes(role)) throw new Error('Unknown foreground service role.');
 const admission = admitBundleOwner(context, release);
 if (!admission.ok || !admission.owner) throw new Error(admission.message || 'This bundle does not own the installation.');
+const activeFile = path.join(context.runtimeDir, 'handoff-active.json');
+if (fs.existsSync(activeFile)) {
+  const active = JSON.parse(fs.readFileSync(activeFile, 'utf8'));
+  const journal = JSON.parse(fs.readFileSync(active.journal, 'utf8'));
+  if (journal.bindingDigest !== active.bindingDigest) throw new Error('Runtime handoff owner changed.');
+  if (!journal.launch) process.exit(0);
+}
 const preference = readBundleLaunch(context);
 if (bundleLaunchAllowed(preference, bundleLoginSession(), role)) {
   const configuration = readServiceConfiguration(context).configuration;

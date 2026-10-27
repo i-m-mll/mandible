@@ -15,6 +15,8 @@ import { runtimeEnvironment } from './runtime-environment.mjs';
 import { readRuntimeHandoffLock, runtimeHandoffLockFile, runtimeHandoffLockRefusal, runtimeHandoffBindingDigest } from './runtime-handoff-lock.mjs';
 import { RuntimeObservationError, observationPending, decodeObservationError, runtimeObservationAcceptance } from './runtime-observation.mjs';
 import { withLifecycleLock, inspectLifecycleLock, assertLifecycleLockHeld, processIdentity as lockProcessIdentity } from './lifecycle-lock.mjs';
+import { acceptedApplication, verifyAcceptedApplication, acceptedInstallPaths } from './accepted-app-install.mjs';
+import { installedRuntimeEnvironment, releaseFile } from './installed-release.mjs';
 import { RUNTIME_HEALTH_PROBE_INTERVAL_MS } from './runtime-probe-cadence.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -22,8 +24,8 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const fileHash = file => hash(fs.readFileSync(file));
 const CONTROLLER_MODULES = ['lifecycle-lock.mjs', 'process-lock.mjs', 'canonical-origin.mjs', 'build-revision.mjs', 'local-ca-trust.mjs',
-  'pinned-caddy.mjs', 'runtime-environment.mjs', 'service-definitions.mjs', 'service-configuration.mjs', 'runtime-probe-cadence.mjs', 'runtime-observation.mjs'];
-const STAGED_HANDOFF_FILES = ['sqlite.mjs', 'proof.mjs', 'controller.mjs', 'helper.mjs', ...CONTROLLER_MODULES];
+  'pinned-caddy.mjs', 'runtime-environment.mjs', 'service-definitions.mjs', 'service-configuration.mjs', 'runtime-probe-cadence.mjs', 'runtime-observation.mjs', 'installed-release.mjs', 'bundle-services.mjs', 'bundle-service-roles.mjs', 'bundle-services.json', 'accepted-release.mjs', 'accepted-app-install.mjs', 'owned-run.mjs'];
+const STAGED_HANDOFF_FILES = ['desktop-relaunch.sh', 'sqlite.mjs', 'proof.mjs', 'controller.mjs', 'helper.mjs', ...CONTROLLER_MODULES];
 
 export function stageHandoffController(root, dir) {
   // Preserve CLI module boundaries: bundling guarded entrypoints changes their import.meta.url guards.
@@ -116,7 +118,7 @@ async function restoreDesktop(journal) {
     const log = path.join(path.dirname(journalFile(b)), 'convergence.log');
     try {
       assertObservationLease();
-      await runStage('/bin/bash', ['cli/install-desktop-app.sh', '--relaunch', b.nativeApp, 'mandible-app', '0'], {
+      await runStage('/bin/bash', [b.acceptedRelease ? path.join(path.dirname(journalFile(b)), 'desktop-relaunch.sh') : 'cli/install-desktop-app.sh', '--relaunch', b.nativeApp, 'mandible-app', '0'], {
         cwd: b.root,
         env: { ...journal.environment, MANDIBLE_RUNTIME_HANDOFF_JOURNAL: journalFile(b) },
         timeout: 15000,
@@ -194,8 +196,11 @@ async function controller(journal, command, currentVerifier = false, { until = h
   assertObservationLease();
   const binding = journal.binding;
   const env = { ...journal.environment, MANDIBLE_RUNTIME_HANDOFF_JOURNAL: journalFile(binding), GIT_OPTIONAL_LOCKS: '0' };
-  const installedController = journal.phase === 'acknowledged' || !!journal.cleanupStartedAt;
-  const script = currentVerifier ? path.join(path.dirname(fileURLToPath(import.meta.url)), 'local-runtime.mjs') : installedController ? path.join(binding.root, 'scripts/local-runtime.mjs') : path.join(path.dirname(journalFile(binding)), 'controller.mjs');
+  if (binding.acceptedRelease) {
+    delete env.MANDIBLE_RELEASE_ROOT;
+  }
+  const installedController = !binding.acceptedRelease && (journal.phase === 'acknowledged' || !!journal.cleanupStartedAt);
+  const script = currentVerifier && !binding.acceptedRelease ? path.join(path.dirname(fileURLToPath(import.meta.url)), 'local-runtime.mjs') : installedController ? path.join(binding.root, 'scripts/local-runtime.mjs') : path.join(path.dirname(journalFile(binding)), 'controller.mjs');
   if (installedController) delete env.MANDIBLE_RUNTIME_HANDOFF_STORAGE;
   const args = [script, command, '--root', binding.root, ...(command === 'handoff-verify' ? ['--until', String(until), ...(awaitReady ? ['--await-ready'] : [])] : [])];
   // Recovery runs inside the daemon that answers these health requests.
@@ -246,7 +251,16 @@ export async function armRuntimeHandoff(root) {
   const activeFile = runtimeHandoffLockFile(home);
   const lock = readRuntimeHandoffLock(home);
   if (lock) throw new Error(`Another handoff owns this installation; preserving it. ${runtimeHandoffLockRefusal(lock)}`);
-  const runtime = run('/bin/sh', [path.join(root, 'scripts/bun-runtime.sh')]);
+  const database = process.env.MANDIBLE_DB || path.join(home, 'mandible.db');
+  const preliminary = { delivery: 'accepted-release', root, requestId, executionId,
+    hookId: process.env.MANDIBLE_HOOK_ID, commandDigest: process.env.MANDIBLE_HOOK_COMMAND_DIGEST };
+  const { verifyRuntimeHandoffPublication } = await import(pathToFileURL(path.join(root, 'src/runtime-handoff-proof.ts')).href);
+  const { default: Database } = await import(pathToFileURL(path.join(root, 'src/sqlite.ts')).href);
+  const authority = new Database(database, { readonly: true, fileMustExist: true });
+  let approved;
+  try { approved = await verifyRuntimeHandoffPublication(authority, preliminary); } finally { authority.close(); }
+  const accepted = acceptedApplication({ acceptedRelease: approved.acceptedRelease });
+  const runtime = releaseFile(accepted.resources, accepted.receipt.shipped.native.bun);
   const dir = handoffDirectory(home, requestId, executionId);
   fs.mkdirSync(path.dirname(dir), { recursive: true, mode: 0o700 });
   const preparation = { requestId, executionId, root, runtime, runtimeHash: fileHash(runtime) };
@@ -259,23 +273,23 @@ export async function armRuntimeHandoff(root) {
     atomic(path.join(dir, 'preparation.json'), preparation);
   }
   const storage = path.join(dir, 'sqlite.mjs');
-  run(runtime, ['build', path.join(root, 'src/sqlite.ts'), '--target', 'bun', '--outfile', storage], { cwd: root });
-  const environment = { ...runtimeEnvironment({ runtime, root }), MANDIBLE_RUNTIME_HANDOFF_STORAGE: storage };
+  fs.copyFileSync(path.join(accepted.resources, 'handoff/sqlite.mjs'), storage);
+  const environment = { ...installedRuntimeEnvironment(accepted.resources, runtimeEnvironment({ runtime, root })), MANDIBLE_RUNTIME_HANDOFF_STORAGE: storage };
+  delete environment.MANDIBLE_RELEASE_ROOT;
   for (const key of Object.keys(environment)) if (/TOKEN|SECRET|KEYCHAIN|API_KEY/.test(key)) delete environment[key];
   const binding = { ...JSON.parse(run(runtime, [path.join(root, 'scripts/local-runtime.mjs'), 'handoff-snapshot', '--root', root], { env: environment, timeout: 30000 })),
-    requestId, executionId, hookId: process.env.MANDIBLE_HOOK_ID, commandDigest: process.env.MANDIBLE_HOOK_COMMAND_DIGEST,
+    delivery: 'accepted-release', requestId, executionId, hookId: process.env.MANDIBLE_HOOK_ID, commandDigest: process.env.MANDIBLE_HOOK_COMMAND_DIGEST,
     mergeBase: process.env.MANDIBLE_AUTH_MERGE_BASE_SHA || undefined, mergeHead: process.env.MANDIBLE_AUTH_MERGE_HEAD_SHA || undefined,
     mergeCommit: process.env.MANDIBLE_AUTH_MERGE_COMMIT_SHA || undefined,
     nativeApp: path.resolve(process.env.MANDIBLE_DESKTOP_INSTALL_PATH || '/Applications/Mandible.app'), desktopWasRunning: desktopRunning(path.resolve(process.env.MANDIBLE_DESKTOP_INSTALL_PATH || '/Applications/Mandible.app')),
     runtime: { path: runtime, version: run(runtime, ['--version']), sha256: fileHash(runtime) } };
   const journal = { schema: 'mandible-runtime-handoff@1', binding, bindingDigest: '', phase: 'preparing', attempts: 0,
     deadline: Date.now() + 30 * 60 * 1000, stages: {}, environment,
-    database: process.env.MANDIBLE_DB || path.join(home, 'mandible.db'),
+    database,
     helperLabel: `bio.mll.mandible.runtime-handoff.${hash(`${home}:${requestId}:${executionId}`).slice(0, 16)}` };
-  for (const [source, name] of [['src/runtime-handoff-proof.ts', 'proof.mjs'], ['scripts/runtime-handoff.mjs', 'helper.mjs']]) {
-    run(runtime, ['build', path.join(root, source), '--target', 'bun', '--outfile', path.join(dir, name)], { cwd: root });
-  }
+  for (const name of ['proof.mjs', 'helper.mjs']) fs.copyFileSync(path.join(accepted.resources, 'handoff', name), path.join(dir, name));
   stageHandoffController(root, dir);
+  fs.copyFileSync(path.join(root, 'cli/install-desktop-app.sh'), path.join(dir, 'desktop-relaunch.sh'));
   // Initial publication validation is read-only and precedes every mutation.
   Object.assign(binding, await publication(journal));
   binding.stagedFiles = Object.fromEntries(STAGED_HANDOFF_FILES.map(name => [name, fileHash(path.join(dir, name))]));
@@ -307,6 +321,11 @@ async function finishAdmission(journal) {
   const end = Date.now() + 5000;
   while (Date.now() < end && !readRuntimeHandoff(home, requestId, executionId)?.acknowledgedAt) await sleep(100);
   if (!readRuntimeHandoff(home, requestId, executionId)?.acknowledgedAt) throw new Error('Independent handoff helper did not acknowledge its journal.');
+  if (binding.priorBackend.definition?.BundleProgram) {
+    const current = readRuntimeHandoff(home, requestId, executionId);
+    save(current, { bridgeInstalled: true });
+    return current;
+  }
   const runner = binding.priorBackend.argv[1];
   if (path.resolve(runner) !== path.join(homeDirectory(home), 'production-runner.mjs')) throw new Error('Legacy runner does not belong to this installation.');
   const bridgeBytes = legacyHandoffBridge(journalFile(binding), `${binding.domain}/${journal.helperLabel}`, journal.deadline);
@@ -423,7 +442,8 @@ async function checkIncompleteEvidence(journal, available, files = {}) {
   const b = journal.binding;
   if (run('git', ['rev-parse', 'HEAD'], { cwd: b.root }) !== b.mergeCommit) throw observationFailure('installation_changed', 'Observed approved checkout changed.');
   for (const [file, expected] of Object.entries(files)) if (fileHash(file) !== expected) throw observationFailure('installation_changed', `Observed installation changed: ${file}`);
-  for (const marker of [path.join(b.root, 'dist/build-revision.json'), path.join(b.nativeApp, 'Contents/Resources/build-revision.json')]) {
+  if (b.acceptedRelease) verifyAcceptedApplication(b);
+  for (const marker of b.acceptedRelease ? [] : [path.join(b.root, 'dist/build-revision.json'), path.join(b.nativeApp, 'Contents/Resources/build-revision.json')]) {
     if (JSON.parse(fs.readFileSync(marker, 'utf8')).commit !== b.mergeCommit) throw observationFailure('installation_changed', 'Installed build differs from the handoff generation.');
   }
   if (available) bindLaunchedProcesses(journal, available);
@@ -451,6 +471,7 @@ export function recheckRuntimeObservation(journal, receipt) {
   if (startedAt(receipt.evidence.process.pid) !== receipt.evidence.process.startedAt) throw new Error('Observed daemon process changed.');
   if (run('git', ['rev-parse', 'HEAD'], { cwd: journal.binding.root }) !== journal.binding.mergeCommit) throw new Error('Observed approved checkout changed.');
   for (const [file, expected] of Object.entries(receipt.files)) if (fileHash(file) !== expected) throw new Error(`Observed installation changed: ${file}`);
+  if (journal.binding.acceptedRelease) verifyAcceptedApplication(journal.binding);
   requireDesktopForObservation(journal);
   const log = fs.statSync(receipt.evidence.daemonLog.path);
   if (log.dev !== receipt.evidence.daemonLog.dev || log.ino !== receipt.evidence.daemonLog.ino || log.size < receipt.evidence.daemonLog.size) throw new Error('Observed daemon log rotated or truncated.');
@@ -506,8 +527,10 @@ async function observeRuntimeHandoffOnce(journal, {
   const resources = path.join(b.nativeApp, 'Contents/Resources');
   const marker = path.join(b.root, 'dist/build-revision.json');
   const installedMarker = path.join(resources, 'build-revision.json');
-  if (JSON.stringify(JSON.parse(fs.readFileSync(marker))) !== JSON.stringify(JSON.parse(fs.readFileSync(installedMarker)))) throw new Error('Installed desktop differs from the handoff build.');
-  const fixedFiles = [marker, installedMarker, path.join(b.root, 'dist/index.js'), path.join(b.nativeApp, 'Contents/MacOS/mandible-app')];
+  if (b.acceptedRelease) verifyAcceptedApplication(b);
+  if (!b.acceptedRelease && JSON.stringify(JSON.parse(fs.readFileSync(marker))) !== JSON.stringify(JSON.parse(fs.readFileSync(installedMarker)))) throw new Error('Installed desktop differs from the handoff build.');
+  const fixedFiles = b.acceptedRelease ? [path.join(resources, 'release.json'), path.join(b.nativeApp, 'Contents/MacOS/mandible-app')]
+    : [marker, installedMarker, path.join(b.root, 'dist/index.js'), path.join(b.nativeApp, 'Contents/MacOS/mandible-app')];
   let files = Object.fromEntries(fixedFiles.map(file => [file, fileHash(file)]));
   let observed;
   try {
@@ -892,7 +915,14 @@ export async function runRuntimeHandoffWorker(file, {
     await control(journal, 'handoff-remove');
     const log = path.join(path.dirname(file), 'convergence.log');
     const env = { ...journal.environment, MANDIBLE_RUNTIME_HANDOFF_JOURNAL: file };
-    for (const [stage, binary, args, timeout] of [
+    if (b.acceptedRelease) {
+      await verifyPublication(journal);
+      if (!journal.desktopInstallation) save(journal, { desktopInstallation: { issuedAt: now(), prior: b.desktopWasRunning ? desktopIdentities(b.nativeApp) : [] } });
+      save(journal, { phase: 'desktop' });
+      const installed = JSON.parse(await control(journal, 'handoff-install'));
+      save(journal, { stages: { ...journal.stages, desktop: { completedAt: now(), ...installed } } });
+    }
+    for (const [stage, binary, args, timeout] of b.acceptedRelease ? [] : [
       ['dependencies', b.runtime.path, ['install', '--frozen-lockfile', '--force'], 180000],
       ['build', b.runtime.path, ['run', 'build'], 180000],
       ['desktop', '/bin/bash', ['cli/install-desktop-app.sh'], 600000],
