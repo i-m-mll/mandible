@@ -123,4 +123,3 @@ export function navigateAppHash(hash: string): void {
   if (new URL(hash, window.location.href).href !== window.location.href) pushAppHistory(hash);
 }
 export function replaceAppHistory(hash: string, state?: unknown, notify = true): void { appHistory().replace(hash, state, notify); }
-
