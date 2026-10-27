@@ -461,6 +461,20 @@ function bindLaunchedProcesses(journal, evidence) {
   }
 }
 
+async function consumeRuntimeEvidence(journal, read) {
+  try {
+    const evidence = await read();
+    bindLaunchedProcesses(journal, evidence);
+    return evidence;
+  } catch (error) {
+    if (observationPending(error) && error.evidence) bindLaunchedProcesses(journal, error.evidence);
+    throw error;
+  }
+}
+
+const readControllerEvidence = (journal, command, currentVerifier = false, options = {}, control = controller) =>
+  consumeRuntimeEvidence(journal, async () => JSON.parse(await control(journal, command, currentVerifier, options)));
+
 async function checkIncompleteEvidence(journal, available, files = {}) {
   assertObservationLease();
   const b = journal.binding;
@@ -470,10 +484,8 @@ async function checkIncompleteEvidence(journal, available, files = {}) {
   for (const marker of b.acceptedRelease ? [] : [path.join(b.root, 'dist/build-revision.json'), path.join(b.nativeApp, 'Contents/Resources/build-revision.json')]) {
     if (JSON.parse(fs.readFileSync(marker, 'utf8')).commit !== b.mergeCommit) throw observationFailure('installation_changed', 'Installed build differs from the handoff generation.');
   }
-  if (available) bindLaunchedProcesses(journal, available);
   if (!available?.process?.pid || !available.daemonLog) return;
   if (startedAt(available.process.pid) !== available.process.startedAt) throw observationFailure('process_changed', 'Observed daemon process changed.');
-  bindLaunchedProcesses(journal, available);
   const stat = fs.statSync(available.daemonLog.path);
   const currentLog = { ...available.daemonLog, size: stat.size };
   const covered = await resolveStderrLogCoverage(currentLog, available.process.startedAt);
@@ -543,8 +555,10 @@ async function observeRuntimeHandoffOnce(journal, {
   validateJournal(journal);
   exactActiveOwner(journal);
   const b = journal.binding;
-  const probeRuntime = probe ?? (async (until, signal) => JSON.parse(await controller(journal, 'handoff-verify', currentVerifier, { until, signal })));
-  const inspectEvidence = readEvidence ?? (probe ? null : async () => JSON.parse(await controller(journal, 'handoff-evidence', currentVerifier, { until: Date.now() + 5000 })));
+  const probeRuntime = probe ? (until, signal) => consumeRuntimeEvidence(journal, () => probe(until, signal))
+    : (until, signal) => readControllerEvidence(journal, 'handoff-verify', currentVerifier, { until, signal });
+  const inspectEvidence = readEvidence ? () => consumeRuntimeEvidence(journal, readEvidence)
+    : probe ? null : () => readControllerEvidence(journal, 'handoff-evidence', currentVerifier, { until: Date.now() + 5000 });
   let initialEvidence;
   let coverage;
   const resources = path.join(b.nativeApp, 'Contents/Resources');
@@ -556,7 +570,7 @@ async function observeRuntimeHandoffOnce(journal, {
   let files = Object.fromEntries(fixedFiles.map(file => [file, fileHash(file)]));
   let observed;
   try {
-    if (journal.launch && inspectEvidence) bindLaunchedProcesses(journal, await inspectEvidence());
+    if (journal.launch && inspectEvidence) await inspectEvidence();
     observed = await observeRuntimeHealthWindow({
     probe: async (until, signal) => {
       const value = await probeRuntime(until, signal);
@@ -627,7 +641,7 @@ async function runtimeRecoveryEvidenceKeyOnce(journal) {
   exactActiveOwner(journal);
   let evidence;
   try {
-    evidence = JSON.parse(await controller(journal, 'handoff-verify', true, { until: Date.now() + 5000 }));
+    evidence = await readControllerEvidence(journal, 'handoff-verify', true, { until: Date.now() + 5000 });
     const defects = assessRuntimeHealth(evidence.health).defects;
     if (defects.length) throw observationFailure('invalid_diagnostics', defects[0].message, { defects });
     if ([evidence.health.eventLoop, evidence.health.memory].some(interval => interval.intervalEndedAt > Date.now())) {
@@ -637,7 +651,7 @@ async function runtimeRecoveryEvidenceKeyOnce(journal) {
     if (observationPending(error)) {
       try {
         let available = error.evidence;
-        try { available = JSON.parse(await controller(journal, 'handoff-evidence', true, { until: Date.now() + 5000 })); }
+        try { available = await readControllerEvidence(journal, 'handoff-evidence', true, { until: Date.now() + 5000 }); }
         catch (inspectionError) { if (!observationPending(inspectionError)) throw inspectionError; available = inspectionError.evidence ?? available; }
         await checkIncompleteEvidence(journal, available);
         if (journal.phase !== 'failed') recordVerificationPending(journal, error);
@@ -766,7 +780,7 @@ export async function verifyRuntimeHandoffReceipt(journal, { probe = true } = {}
   for (const [file, expected] of Object.entries(journal.receipt.files)) if (fileHash(file) !== expected) throw new Error(`Converged file changed: ${file}`);
   // Recovery receipts were observed by this qualified verifier; old staged or
   // installed controllers may predate their process identity evidence.
-  const evidence = probe ? JSON.parse(await controller(journal, 'handoff-verify', !!journal.recovery)) : journal.receipt.evidence;
+  const evidence = probe ? await readControllerEvidence(journal, 'handoff-verify', !!journal.recovery) : journal.receipt.evidence;
   if (journal.receipt.evidence?.process && JSON.stringify(evidence.process) !== JSON.stringify(journal.receipt.evidence.process)) throw new Error('Converged daemon process changed after observation.');
   requireDesktopForObservation(journal);
   return { bindingDigest: journal.bindingDigest, evidence };
@@ -903,7 +917,7 @@ export async function runRuntimeHandoffWorker(file, {
     recordVerificationFailure(journal, new Error('Initial handoff execution budget exhausted before launch.'));
     return journal;
   }
-  const inspectEvidence = async () => JSON.parse(await control(journal, 'handoff-evidence', false, { until: now() + 5000 }));
+  const inspectEvidence = () => readControllerEvidence(journal, 'handoff-evidence', false, { until: now() + 5000 }, control);
   const verify = async initial => {
     await withRuntimeObservation(journal, async token => {
       await verifyPublication(journal);
@@ -914,16 +928,11 @@ export async function runRuntimeHandoffWorker(file, {
         save(journal, { phase: 'starting', launch: { id: randomBytes(12).toString('hex'), enteredAt: now() } });
         await control(journal, 'handoff-start', false, { until: journal.deadline });
       }
-      try { bindLaunchedProcesses(journal, await inspectEvidence()); }
+      try { await inspectEvidence(); }
       catch (error) {
         if (!observationPending(error)) throw error;
-        if (error.evidence) bindLaunchedProcesses(journal, error.evidence);
       }
-      try { await control(journal, 'handoff-verify', false, { until, awaitReady: true }); }
-      catch (error) {
-        if (observationPending(error) && error.evidence?.processes) bindLaunchedProcesses(journal, error.evidence);
-        throw error;
-      }
+      await readControllerEvidence(journal, 'handoff-verify', false, { until, awaitReady: true }, control);
       save(journal, { phase: 'observing', launch: { ...journal.launch, readyAt: journal.launch.readyAt ?? now() } });
       if (initial) await desktop(journal);
       const receipt = await observe(journal, { observerToken: token, deadlineMs: waitMs, readEvidence: inspectEvidence });

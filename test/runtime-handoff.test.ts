@@ -196,6 +196,42 @@ it('binds strictly qualified process evidence returned before health is ready', 
   expect(result).toMatchObject({ phase: 'verification-pending', launch: { processes } });
 });
 
+it('binds a successful readiness result before the next observation can adopt a replacement', async () => {
+  const f = recoveryFixture(startedAt => [startupLine(startedAt)]);
+  const binding = { ...f.failed.binding, oldProcess: { pid: 987653, startedAt: 'gone' } };
+  const file = path.join(handoffDirectory(binding.home, binding.requestId, binding.executionId), 'journal.json');
+  const journal = { ...f.failed, binding, bindingDigest: bindingDigest(binding), phase: 'armed', attempts: 0,
+    deadline: Date.now() + 30_000, bridgeInstalled: true, stages: {}, environment: {} };
+  fs.writeFileSync(file, JSON.stringify(journal));
+  fs.writeFileSync(path.join(binding.home, 'config/local-sessions/handoff-active.json'), JSON.stringify({ journal: file, bindingDigest: journal.bindingDigest }));
+  const backend = { pid: process.pid, startedAt: f.processStartedAt, runs: 1 };
+  const first = { pid: process.pid + 1, startedAt: 'first-gateway', runs: 1 };
+  let inspections = 0;
+  const evidence = f.evidence(diagnostics(1, f.fakeStart - 30, f.fakeStart - 10));
+  const result = await runRuntimeHandoffWorker(file, { verifyPublication: async () => {}, desktop: async () => {},
+    stage: async () => { fs.appendFileSync(path.join(path.dirname(file), 'convergence.log'), 'fixture stage\n'); },
+    control: async (_journal, command) => JSON.stringify({ ...evidence, processes: command === 'handoff-verify' ? { backend, gateway: first }
+      : command === 'handoff-evidence' && inspections++ ? { backend, gateway: { ...first, pid: first.pid + 1 } } : { backend } }),
+    observe: async (current, options) => ({ bindingDigest: current.bindingDigest, evidence: await options.readEvidence() }),
+  });
+  expect(result.phase).toBe('failed');
+  expect(result.error).toContain('Launched service process identity changed');
+  expect(result.launch.processes.gateway).toEqual(first);
+});
+
+it('binds pending qualified evidence before a fresh inspection replaces the diagnostic sample', async () => {
+  const f = recoveryFixture(startedAt => [startupLine(startedAt)]);
+  const journal = { ...f.failed, phase: 'observing', launch: { id: 'qualified-pending', enteredAt: Date.now() } };
+  const file = path.join(handoffDirectory(f.home, f.binding.requestId, f.binding.executionId), 'journal.json');
+  fs.writeFileSync(file, JSON.stringify(journal));
+  const processes = { backend: { pid: process.pid, startedAt: f.processStartedAt, runs: 1 } };
+  await expect(observeRuntimeHandoff(journal, {
+    probe: async () => { throw new RuntimeObservationError('starting', 'Health pending after qualification.', { processes }, 'pending'); },
+    readEvidence: async () => ({}),
+  })).rejects.toMatchObject({ code: 'starting' });
+  expect(readRuntimeHandoff(f.home, f.binding.requestId, f.binding.executionId).launch.processes).toEqual(processes);
+});
+
 it('gives health coverage its full observation budget after readiness', async () => {
   const f = recoveryFixture(startedAt => [startupLine(startedAt)]);
   const binding = { ...f.failed.binding, oldProcess: { pid: 987653, startedAt: 'gone' } };
