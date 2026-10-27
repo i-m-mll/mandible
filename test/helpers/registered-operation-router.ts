@@ -6,6 +6,7 @@ import { Router } from "../../src/server.js";
 import { isInlineManagedArtifactByteRequest, type OperationDescriptor } from "../../src/security/operation-policy.js";
 import type { InstanceInfo } from "../../src/types.js";
 import { CHILD_RETENTION_SETTINGS_SCHEMA } from "../../src/conversations/retention-contract.js";
+import { INTEGRATION_ACTION } from "../../src/optional-integrations.js";
 
 type Metadata = ReturnType<typeof registeredOperationMetadata>;
 type DescriptorFactory = (discoverModels: boolean) => OperationDescriptor[];
@@ -19,10 +20,10 @@ function descriptorFactory(entries: Metadata): DescriptorFactory {
   // authored source set once; instance-dependent choices are evaluated afresh.
   const source = `const descriptors = [${entries.map(entry => entry.expression).join(",\n")}]; descriptors;`;
   const expression = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-  const evaluate = new Function("z", "isInlineManagedArtifactByteRequest", "documentArtifactImportEffects", "documentHistoryImportEffects", "getDb", "discoverModels", "CHILD_RETENTION_SETTINGS_SCHEMA",
+  const evaluate = new Function("z", "isInlineManagedArtifactByteRequest", "documentArtifactImportEffects", "documentHistoryImportEffects", "getDb", "discoverModels", "CHILD_RETENTION_SETTINGS_SCHEMA", "INTEGRATION_ACTION",
     expression.replace(/descriptors;\s*$/, "return descriptors;"));
   const factory: DescriptorFactory = discoverModels => evaluate(z, isInlineManagedArtifactByteRequest,
-    documentArtifactImportEffects, documentHistoryImportEffects, noDatabase, discoverModels, CHILD_RETENTION_SETTINGS_SCHEMA);
+    documentArtifactImportEffects, documentHistoryImportEffects, noDatabase, discoverModels, CHILD_RETENTION_SETTINGS_SCHEMA, INTEGRATION_ACTION);
   factories.set(entries, factory);
   return factory;
 }

@@ -30,7 +30,7 @@ Mandible is an operations manager for AI agents. It consists of:
 - **Spaces, Timeline, and Graph** to organize, chronologize, and relate ledger entities.
 - **Reversible branch cleanup**: merged branches go to trash custody and can be restored, ignored files included.
 - **Sandboxed agents** reach the ledger through a file spool when they have no network access.
-- **Self-updating**: Mandible merges its own changes only after automated candidate acceptance, then hands the running daemon over to the new build.
+- **Guarded developer delivery**: Mandible merges its own changes only after exact candidate acceptance, then activates the accepted app. An ordinary public-release updater is not implemented.
 
 ## How it fits together
 
@@ -199,13 +199,28 @@ See [Agent integration](docs/getting-started/agent-integration.mdx) and [Agent t
 
 ## Install and run
 
-### Requirements
+### Install the Mac app
 
-- macOS (primary target; Linux is untested).
+The qualified packaged target is Apple silicon (arm64), macOS 15 or later.
+Drag the complete `Mandible.app` into `/Applications` and open it. First launch
+handles required runtime setup. Choose optional agent connections in Settings,
+or skip them and continue; the choice persists. The app includes its commands
+and generic help, with no source checkout, Bun, dotfiles, or private compiler
+required. Ordinary local access has no login, pairing, or expiry.
+
+Settings shows exact integration destinations and ownership conflicts. With no
+configured instruction destinations, no instruction files are edited. Durable
+data stays under `~/.mandible`; disposable caches stay under `~/.cache/mandible`.
+See [installation](docs/getting-started/installation.mdx). Linux, Windows, and an
+ordinary public-release updater remain follow-up work.
+
+### Development requirements
+
+- macOS; the packaged runtime is currently qualified on macOS 15 arm64.
 - Bun at the exact pinned build that `scripts/bun-runtime.sh` selects and verifies, with the SQLite dependency it provisions; see [Bun foundation](docs/bun-foundation.md).
 - git. A hardware-backed SSH signing key for approvals. Zellij or tmux for pane navigation. Rust and the Tauri CLI for the desktop app.
 
-### Build
+### Build from source (development)
 
 ```bash
 git clone <repo-url> mandible && cd mandible
@@ -215,7 +230,7 @@ bun install --frozen-lockfile
 bun run build            # daemon, channel server, and app
 ```
 
-### Run
+### Run from source (development)
 
 ```bash
 bun run start            # daemon on 127.0.0.1:29420; creates ~/.mandible/mandible.db and migrates it
@@ -224,7 +239,10 @@ mandible user setup      # the local operator; registers the global git signing 
 
 Browsers and the desktop use the HTTPS front door. Initialize it once with `bun run local-front-door -- initialize`, install the pinned Caddy with `bun run local-front-door -- install`, trust the local certificate root with `bun scripts/local-ca-trust.mjs setup`, then run it with `bun run local-front-door -- run` and open `https://app.mandible.localhost:19420`. Opening the app as the logged-in OS user never requires a login, and access never expires. See [Local browser access](docs/guides/local-browser-sessions.mdx).
 
-For the production installation, `bash cli/install-desktop-app.sh` installs the app bundle and the launchd services for the backend and gateway, and `bun scripts/local-runtime.mjs status|start|stop|restart` controls them. Build the desktop app with `bun run tauri:build`. See [Desktop app](docs/guides/desktop-app.mdx).
+Build the packaged app with `bun run tauri:build -- --bundles app`. Developer
+installations use the guarded [runtime handoff](docs/runtime-handoff.md) and
+[exact-candidate acceptance](docs/candidate-acceptance.md) contracts. Opening a
+second app does not replace an existing live source installation.
 
 The operator's signing key must be registered as an active `ssh_key` credential, or approvals refuse. `mandible user setup` reads the global `user.signingkey` only; register another key with `mandible user credential add <operator> --from-git-signingkey`.
 

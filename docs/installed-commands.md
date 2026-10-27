@@ -101,7 +101,8 @@ separate delivery gates.
 Invoking a source checkout's `bin/mandible` without an installed release selection
 uses that checkout's explicit development runtime and TypeScript helpers.
 Previews and builds retain their own source workflow. Instruction installation
-target defaults are unchanged by installed command support.
+uses only explicit configured destinations; an empty destination list writes no
+instruction files. Optional integration choices are available in Settings.
 
 After staging an app payload, run:
 

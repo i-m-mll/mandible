@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 
 import { SettingsView } from '../ui/src/views/settings';
+import { AgentIntegrations, IntegrationIntroduction } from '../ui/src/components/AgentIntegrations';
 import { DEFAULT_CHILD_RETENTION_SETTINGS } from '../src/conversations/retention-contract';
 
 beforeEach(() => {
@@ -15,6 +16,28 @@ beforeEach(() => {
 });
 
 describe('SettingsView', () => {
+
+  it('represents the installed integration state and dismisses optional setup after a saved choice', async () => {
+    let integration = { id: 'cli', label: 'Command shortcut', destination: '/tmp/profile/bin/mandible', status: 'absent', detail: '' };
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'PUT') integration = { ...integration, status: 'installed' };
+      return Response.json({ available: true, command: '/Applications/Mandible.app/Contents/Resources/bin/mandible', skill: 'generic skill', items: [integration] });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const onSave = vi.fn(async () => undefined);
+    const content = (settings: Record<string, string>) => h('div', {}, [
+      h(IntegrationIntroduction, { settings, onSave }), h(AgentIntegrations, { instance: mainInstance }),
+    ]);
+    const view = render(content({}));
+    fireEvent.click(await screen.findByRole('button', { name: 'Install' }));
+    expect(await screen.findByRole('button', { name: 'Remove' })).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledWith('/api/settings/integrations', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ id: 'cli', action: 'install' }) }));
+    fireEvent.click(screen.getByRole('button', { name: 'Skip for now' }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith('integrations.setup', 'skipped'));
+    view.rerender(content({ 'integrations.setup': 'skipped' }));
+    expect(screen.queryByRole('region', { name: 'Welcome to Mandible' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Remove' })).toBeTruthy();
+  });
 
   it('exposes and saves every app theme mode through the labelled Appearance select', async () => {
     const onSave = vi.fn(async () => undefined);
@@ -185,6 +208,10 @@ describe('SettingsView', () => {
     expect(screen.queryByRole('dialog', { name: 'Clean previous instruction target?' })).toBeNull();
     await waitFor(() => expect(screen.getByText('Saved in this preview copy. Target files were not changed and the post-export hook was not run.')).toBeTruthy());
     await waitFor(() => expect(onSave).toHaveBeenCalledWith('instructions.targets', JSON.stringify([targets[1]])));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove instruction target /tmp/old-claude.md' }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith('instructions.targets', '[]'));
+    expect(screen.queryByRole('dialog', { name: 'Clean previous instruction target?' })).toBeNull();
+
   });
 });
 
