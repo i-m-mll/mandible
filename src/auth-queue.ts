@@ -703,38 +703,55 @@ export class AuthQueue {
 
   private async reconcileRuntimeHandoffs(): Promise<void> {
     if (typeof this.hookManager.reconcileRuntimeHandoffs !== "function") return;
-    const ids = await this.hookManager.reconcileRuntimeHandoffs(
-      async (binding, proof) => (await this.adoptRuntimePublication(binding, proof)),
-      async (id, handoffError) => {
-        // The independent handoff that owned this rebuild has now failed.
+    try {
+      const ids = await this.hookManager.reconcileRuntimeHandoffs(
+        async (binding, proof) => (await this.adoptRuntimePublication(binding, proof)),
+        async (id, handoffError) => {
+          // The independent handoff that owned this rebuild has now failed.
+          const request = this.getRequestById(id);
+          if (request?.repo !== "mandible") return;
+          (await this.settleConvergence(request));
+          this.failRebuild(request, handoffError);
+        },
+        (id, error) => {
+          // Retained update state is not a fault of the observing daemon.
+          // Keep its incident visible while reconciliation retries.
+          authLog("warn", "auth_runtime_handoff_reconcile_stuck", { subsystem: "auth", auth_request_id: id, error });
+          try { this.handoffIncidents.set(id, raiseDaemonIncident(this.db, { task: `runtime-handoff-reconcile/${id}`, exitClass: "runner" }).incident_id); }
+          catch (incidentError) { authLog("error", "auth_runtime_handoff_incident_failed", { subsystem: "auth", auth_request_id: id, error: errorMessage(incidentError) ?? String(incidentError) }); }
+        },
+        (id) => {
+          authLog("info", "auth_runtime_handoff_reconcile_settled", { subsystem: "auth", auth_request_id: id });
+          const incidentId = this.handoffIncidents.get(id);
+          this.handoffIncidents.delete(id);
+          try { if (incidentId) resolveDaemonIncident(this.db, { incidentId, task: `runtime-handoff-reconcile/${id}` }); }
+          catch (incidentError) { authLog("error", "auth_runtime_handoff_incident_resolve_failed", { subsystem: "auth", auth_request_id: id, error: errorMessage(incidentError) ?? String(incidentError) }); }
+        },
+      );
+      for (const id of ids) {
         const request = this.getRequestById(id);
-        if (request?.repo !== "mandible") return;
-        (await this.settleConvergence(request));
-        this.failRebuild(request, handoffError);
-      },
-      (id, error) => {
-        // Retained update state is not a fault of the observing daemon.
-        // Keep its incident visible while reconciliation retries.
-        authLog("warn", "auth_runtime_handoff_reconcile_stuck", { subsystem: "auth", auth_request_id: id, error });
-        try { this.handoffIncidents.set(id, raiseDaemonIncident(this.db, { task: `runtime-handoff-reconcile/${id}`, exitClass: "runner" }).incident_id); }
-        catch (incidentError) { authLog("error", "auth_runtime_handoff_incident_failed", { subsystem: "auth", auth_request_id: id, error: errorMessage(incidentError) ?? String(incidentError) }); }
-      },
-      (id) => {
-        authLog("info", "auth_runtime_handoff_reconcile_settled", { subsystem: "auth", auth_request_id: id });
-        const incidentId = this.handoffIncidents.get(id);
-        this.handoffIncidents.delete(id);
-        try { if (incidentId) resolveDaemonIncident(this.db, { incidentId, task: `runtime-handoff-reconcile/${id}` }); }
-        catch (incidentError) { authLog("error", "auth_runtime_handoff_incident_resolve_failed", { subsystem: "auth", auth_request_id: id, error: errorMessage(incidentError) ?? String(incidentError) }); }
-      },
-    );
-    for (const id of ids) {
-      const request = this.getRequestById(id);
-      if (request && !(await this.successfulMergeEvidenceFailure(request))) {
-        (await this.finalizeSuccessfulMerge(request));
-        await this.afterConvergenceHook(request);
+        if (request && !(await this.successfulMergeEvidenceFailure(request))) {
+          (await this.finalizeSuccessfulMerge(request));
+          await this.afterConvergenceHook(request);
+        }
       }
+      if (ids.length > 0 && !this.runtimeHandoffLock()) await this.refreshPendingCandidates();
+    } finally { this.publishRuntimeVerificationChanges(); }
+  }
+
+  private lastRuntimeVerificationStatus: ReturnType<AuthHookManager['runtimeVerificationStatus']> = null;
+
+  private publishRuntimeVerificationChanges(): void {
+    if (typeof this.hookManager.runtimeVerificationStatus !== 'function') return;
+    const current = this.hookManager.runtimeVerificationStatus();
+    const previous = this.lastRuntimeVerificationStatus;
+    if (JSON.stringify(current) === JSON.stringify(previous)) return;
+    this.lastRuntimeVerificationStatus = current;
+    for (const id of new Set([previous?.requestId, current?.requestId])) {
+      if (!id) continue;
+      const request = this.getRequestById(id);
+      if (request) this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: { ...request, convergence: this.convergenceForRequest(id) } } });
     }
-    if (ids.length > 0 && !this.runtimeHandoffLock()) await this.refreshPendingCandidates();
   }
 
   /** Only an exact verified first-upgrade receipt may restore legacy cleared candidate fields. */
@@ -965,7 +982,7 @@ export class AuthQueue {
         });
       }
       return retirement;
-    } finally { finishObservation(); }
+    } finally { this.publishRuntimeVerificationChanges(); finishObservation(); }
   }
 
   /** Open the rebuild window that the UI splash and restart-availability track. */
@@ -5903,7 +5920,7 @@ export class AuthQueue {
         });
       });
       return (await this.afterConvergenceHook(this.getRequestById(request.id) ?? request));
-    } finally { finishObservation(); }
+    } finally { this.publishRuntimeVerificationChanges(); finishObservation(); }
   }
 
   /** Exact-id lookup with no prefix resolution and no expiry side effect. */

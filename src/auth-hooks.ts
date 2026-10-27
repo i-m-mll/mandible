@@ -44,6 +44,7 @@ import type {
   AuthConvergence,
   AuthConvergenceHookSummary,
   AuthConvergenceState,
+  AuthRuntimeVerification,
   AuthHook,
   AuthHookAlert,
   AuthHookExecutionResult,
@@ -762,10 +763,29 @@ export class AuthHookManager {
 
   convergenceForRequests(requestIds: string[]): Map<string, AuthConvergence> {
     const runs = this.listRunsForRequests(requestIds);
+    const pending = this.runtimeHandoffLock()?.verification;
     return new Map(requestIds.map(id => {
       const group = runs.get(id) ?? [];
-      return [id, { state: convergenceStateFromRuns(group), hooks: group.map(summarizeConvergenceRun) }];
+      const verification = pending && this.projectRuntimeVerification(pending, group);
+      return [id, { state: convergenceStateFromRuns(group), hooks: group.map(summarizeConvergenceRun),
+        ...(verification ? { runtime_verification: verification } : {}) }];
     }));
+  }
+
+  private projectRuntimeVerification(pending: NonNullable<RuntimeHandoffLock['verification']>, runs: AuthHookRun[]): AuthRuntimeVerification | null {
+    if (pending.hookId !== MANDIBLE_REBUILD_HOOK_ID) return null;
+    const run = runs.find(run => run.auth_request_id === pending.requestId && run.id === pending.executionId && run.hook_id === pending.hookId);
+    if (!run || run.state === 'complete' || run.command_digest !== pending.commandDigest
+        || !run.output.includes(`MANDIBLE_RUNTIME_HANDOFF_PENDING:${pending.bindingDigest}`)) return null;
+    return { phase: pending.phase, code: pending.code, reason: pending.reason };
+  }
+
+  runtimeVerificationStatus(): { requestId: string; executionId: string; bindingDigest: string; observation: AuthRuntimeVerification } | null {
+    const pending = this.runtimeHandoffLock()?.verification;
+    if (!pending) return null;
+    const run = this.getRun(pending.requestId, pending.hookId);
+    const observation = this.projectRuntimeVerification(pending, run ? [run] : []);
+    return observation ? { requestId: pending.requestId, executionId: pending.executionId, bindingDigest: pending.bindingDigest, observation } : null;
   }
 
   /**

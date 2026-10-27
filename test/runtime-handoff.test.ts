@@ -395,6 +395,46 @@ it.each(['backend-wait', 'desktop-wait', 'launch-ambiguous', 'backend-wait-deskt
   }
 });
 
+it.each([false, true])('waits for prelaunch ownership without publishing ambiguous launch history (expires=%s)', async expires => {
+  const f = recoveryFixture(startedAt => [startupLine(startedAt)]);
+  const binding = { ...f.failed.binding, oldProcess: { pid: 987653, startedAt: 'gone' } };
+  const file = path.join(handoffDirectory(binding.home, binding.requestId, binding.executionId), 'journal.json');
+  const journal = { ...f.failed, binding, bindingDigest: bindingDigest(binding), phase: 'armed', attempts: 0,
+    deadline: f.fakeStart + 2500, bridgeInstalled: true, stages: {}, environment: {} };
+  delete (journal as any).error;
+  fs.writeFileSync(file, JSON.stringify(journal));
+  fs.writeFileSync(path.join(binding.home, 'config/local-sessions/handoff-active.json'), JSON.stringify({ journal: file, bindingDigest: journal.bindingDigest }));
+  const entered = Promise.withResolvers<void>(); const release = Promise.withResolvers<void>();
+  const observer = withRuntimeObservation(journal, async () => { entered.resolve(); await release.promise; });
+  await entered.promise;
+  let time = f.fakeStart;
+  const evidence = f.evidence(diagnostics(1, f.fakeStart - 30, f.fakeStart - 10));
+  const control = vi.fn(async (current, command) => {
+    if (command === 'handoff-start') expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toMatchObject({ phase: 'starting', launch: { enteredAt: time } });
+    return JSON.stringify(evidence);
+  });
+  const stage = vi.fn(async () => { fs.appendFileSync(path.join(path.dirname(file), 'convergence.log'), 'fixture stage\n'); });
+  const wait = vi.fn(async milliseconds => {
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).not.toHaveProperty('launch');
+    expect(stage).toHaveBeenCalledTimes(4);
+    time += milliseconds;
+    if (!expires) { release.resolve(); await observer; }
+  });
+  try {
+    const result = await runRuntimeHandoffWorker(file, { now: () => time, wait, control, stage,
+      verifyPublication: async () => {}, desktop: async () => {}, observe: async current => ({ bindingDigest: current.bindingDigest }) });
+    expect(result.attempts).toBe(1);
+    expect(stage).toHaveBeenCalledTimes(4);
+    expect(control.mock.calls.filter(([, command]) => command === 'handoff-remove')).toHaveLength(1);
+    expect(control.mock.calls.filter(([, command]) => command === 'handoff-start')).toHaveLength(expires ? 0 : 1);
+    expect(wait).toHaveBeenCalled();
+    if (expires) {
+      expect(result).toMatchObject({ phase: 'failed', error: expect.stringContaining('execution budget exhausted before acquiring launch ownership') });
+      expect(result).not.toHaveProperty('launch');
+    } else expect(result.phase).toBe('complete');
+  } finally { release.resolve(); await observer; }
+});
+
 it.each(['verification-pending', 'failed'] as const)('checks concrete log faults before retaining an incomplete %s observation', async phase => {
   const f = recoveryFixture(startedAt => [startupLine(startedAt)]);
   const journal = { ...f.failed, phase, launch: { enteredAt: f.fakeStart - 1000 } };
@@ -750,7 +790,8 @@ it('runs the staged bundled helper without activating imported command-line entr
 /** Copy the handoff controller and the daemon modules it imports, as a qualified installation lays them out. */
 function installQualifiedController(home: string): string {
   const qualified = path.join(home, 'qualified'); fs.mkdirSync(qualified);
-  for (const name of ['runtime-handoff.mjs', 'runtime-handoff-lock.mjs', 'process-group-supervisor.mjs', 'runtime-log-assessment.mjs', 'runtime-environment.mjs', 'runtime-observation.mjs', 'lifecycle-lock.mjs', 'process-lock.mjs']) {
+  stageHandoffController(process.cwd(), qualified);
+  for (const name of ['runtime-handoff.mjs', 'runtime-handoff-lock.mjs', 'process-group-supervisor.mjs', 'runtime-log-assessment.mjs']) {
     fs.copyFileSync(path.join(process.cwd(), 'scripts', name), path.join(qualified, name));
   }
   fs.mkdirSync(path.join(home, 'src'));

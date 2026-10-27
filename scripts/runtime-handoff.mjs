@@ -12,9 +12,10 @@ import { createRuntimeLogAssessor } from './runtime-log-assessment.mjs';
 import { readStderrLogCoverage, resolveStderrLogCoverage } from '../src/stderr-log-chain.ts';
 import { observeRuntimeHealthCoverage, RuntimeHealthObservationError, assessRuntimeHealth } from '../src/runtime-health-contract.ts';
 import { runtimeEnvironment } from './runtime-environment.mjs';
-import { readRuntimeHandoffLock, runtimeHandoffLockFile, runtimeHandoffLockRefusal } from './runtime-handoff-lock.mjs';
+import { readRuntimeHandoffLock, runtimeHandoffLockFile, runtimeHandoffLockRefusal, runtimeHandoffBindingDigest } from './runtime-handoff-lock.mjs';
 import { RuntimeObservationError, observationPending, decodeObservationError, runtimeObservationAcceptance } from './runtime-observation.mjs';
 import { withLifecycleLock, inspectLifecycleLock, assertLifecycleLockHeld, processIdentity as lockProcessIdentity } from './lifecycle-lock.mjs';
+import { RUNTIME_HEALTH_PROBE_INTERVAL_MS } from './runtime-probe-cadence.mjs';
 
 const execFileAsync = promisify(execFile);
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -31,7 +32,7 @@ export function stageHandoffController(root, dir) {
   }
 }
 
-export const bindingDigest = binding => hash(JSON.stringify(binding));
+export const bindingDigest = runtimeHandoffBindingDigest;
 function atomic(file, value) {
   const temporary = `${file}.${process.pid}.tmp`;
   const fd = fs.openSync(temporary, 'wx', 0o600);
@@ -854,7 +855,12 @@ export async function runRuntimeHandoffWorker(file, {
     await withRuntimeObservation(journal, async token => {
       await verifyPublication(journal);
       const until = now() + waitMs;
-      if (initial) await control(journal, 'handoff-start', false, { until: journal.deadline });
+      if (initial) {
+        if (now() >= journal.deadline) throw new Error('Initial handoff execution budget exhausted before launch.');
+        unchangedJournal(journal);
+        save(journal, { phase: 'starting', launch: { id: randomBytes(12).toString('hex'), enteredAt: now() } });
+        await control(journal, 'handoff-start', false, { until: journal.deadline });
+      }
       try { bindLaunchedProcesses(journal, await inspectEvidence()); }
       catch (error) {
         if (!observationPending(error)) throw error;
@@ -902,13 +908,18 @@ export async function runRuntimeHandoffWorker(file, {
       await executeStage(binary, args, { cwd: b.root, env, timeout, log });
       save(journal, { stages: { ...journal.stages, [stage]: { completedAt: Date.now(), logDigest: fileHash(log) } } });
     }
-    await verifyPublication(journal);
-    if (now() > journal.deadline) throw new Error('Initial handoff execution budget exhausted before launch.');
-    save(journal, { phase: 'starting', launch: { id: randomBytes(12).toString('hex'), enteredAt: now() } });
-    await verify(true);
+    for (;;) {
+      try { await verify(true); break; }
+      catch (error) {
+        if (journal.launch || !['observer_busy', 'observer_lost'].includes(error.code)) throw error;
+        if (now() >= journal.deadline) throw new Error('Initial handoff execution budget exhausted before acquiring launch ownership.');
+        await wait(Math.min(RUNTIME_HEALTH_PROBE_INTERVAL_MS, journal.deadline - now()));
+      }
+    }
   } catch (error) {
     const latest = readRuntimeHandoff(b.home, b.requestId, b.executionId);
     if (['complete', 'acknowledged', 'retired'].includes(latest?.phase)) return latest;
+    if (!journal.launch) { recordVerificationFailure(journal, error); return journal; }
     if (error.code === 'observer_busy') return latest;
     try { return await withRuntimeObservation(journal, async () => {
       const current = readRuntimeHandoff(b.home, b.requestId, b.executionId);
