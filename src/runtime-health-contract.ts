@@ -1,4 +1,5 @@
 import { RUNTIME_HEALTH_PROBE_INTERVAL_MS } from "../scripts/runtime-probe-cadence.mjs";
+import { RuntimeObservationError } from "../scripts/runtime-observation.mjs";
 
 export const EVENT_LOOP_STALL_BUDGET_MS = 250;
 /**
@@ -39,13 +40,13 @@ export interface RuntimePerformanceRecord {
 
 const MAX_RETAINED_PERFORMANCE_FINDINGS = 20;
 
-export class RuntimeHealthObservationError extends Error {
+export class RuntimeHealthObservationError extends RuntimeObservationError {
   constructor(
-    public readonly code: string,
+    code: string,
     message: string,
-    public readonly evidence: unknown,
+    evidence: unknown,
   ) {
-    super(message);
+    super(code, message, evidence, ['observation_deadline', 'stale_diagnostics'].includes(code) ? 'pending' : 'failed');
     this.name = "RuntimeHealthObservationError";
   }
 }
@@ -74,10 +75,9 @@ export async function observeRuntimeHealthCoverage<T>(options: {
   try {
     value = await probeByDeadline(options.probe, deadline, now);
   } catch (error) {
-    if (error instanceof RuntimeHealthObservationError) throw error;
+    if (error instanceof RuntimeObservationError) throw error;
     throw new RuntimeHealthObservationError("probe_failed", `Runtime health probe failed: ${error instanceof Error ? error.message : String(error)}`, { startedAt, mustCover, deadline, lastSample: null });
   }
-  if (now() > deadline) throw new RuntimeHealthObservationError("observation_deadline", "Runtime health probe exceeded the observation deadline.", { startedAt, mustCover, deadline, lastSample: options.healthOf(value) });
   const initial = value;
   const firstHealth = options.healthOf(value);
   const trackers = { eventLoop: intervalTracker(), memory: intervalTracker() };
@@ -85,17 +85,17 @@ export async function observeRuntimeHealthCoverage<T>(options: {
   const performanceKeys = new Set<string>();
 
   for (;;) {
-    try { options.validate?.(value, initial); }
-    catch (error) {
-      if (error instanceof RuntimeHealthObservationError) throw error;
-      throw new RuntimeHealthObservationError("observation_changed", error instanceof Error ? error.message : String(error), { startedAt, mustCover, deadline, initial, current: value });
-    }
     const health = options.healthOf(value);
     for (const name of ["eventLoop", "memory"] as const) updateIntervalCoverage(trackers[name], health[name], name, startedAt, now());
     const assessment = assessRuntimeHealth(health);
     if (assessment.defects.length) throw new RuntimeHealthObservationError("invalid_diagnostics", assessment.defects[0]!.message, {
       startedAt, mustCover, deadline, defects: assessment.defects, initialSample: firstHealth, lastSample: health,
     });
+    try { options.validate?.(value, initial); }
+    catch (error) {
+      if (error instanceof RuntimeObservationError) throw error;
+      throw new RuntimeHealthObservationError("observation_changed", error instanceof Error ? error.message : String(error), { startedAt, mustCover, deadline, initial, current: value });
+    }
     for (const finding of assessment.performance) {
       const key = `${finding.code}:${(finding.sample as DiagnosticInterval).sequence}`;
       if (performanceKeys.has(key)) continue;
@@ -114,7 +114,7 @@ export async function observeRuntimeHealthCoverage<T>(options: {
     try {
       value = await probeByDeadline(options.probe, deadline, now);
     } catch (error) {
-      if (error instanceof RuntimeHealthObservationError) throw error;
+      if (error instanceof RuntimeObservationError) throw error;
       throw new RuntimeHealthObservationError("probe_failed", `Runtime health probe failed: ${error instanceof Error ? error.message : String(error)}`, { startedAt, mustCover, deadline, initialSample: firstHealth, lastSample: health });
     }
   }

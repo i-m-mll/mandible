@@ -81,7 +81,7 @@ import {
   type CandidateAcceptanceInput,
 } from "./candidate-acceptance.js";
 import type { AuthPublicationBlocker, CandidateAcceptanceProjection, ProtectedBaseAudit } from "./contracts.js";
-import { AUTH_HOOK_ENV_ALLOWLIST, AuthHookManager, authHookPath, formatHookExecutionResult, MANDIBLE_REBUILD_HOOK_ID } from "./auth-hooks.js";
+import { AUTH_HOOK_ENV_ALLOWLIST, AuthHookManager, authHookPath, formatHookExecutionResult, MANDIBLE_REBUILD_HOOK_ID, type RuntimeVerificationResult } from "./auth-hooks.js";
 import { getMandibleHome, getUserHome } from "./platform-paths.js";
 import {
   describeRecomputeRefusal,
@@ -5856,7 +5856,7 @@ export class AuthQueue {
    * Operator-initiated convergence retry: grant one more attempt to the failed
    * hooks of a merged request and run them. Never re-runs the merge.
    */
-  async retryHookConvergence(requestId: string, hookId?: string, recovery?: { mode: "verify-current"; actor: AuthLifecycleActor }): Promise<AuthConvergence> {
+  async retryHookConvergence(requestId: string, hookId?: string, recovery?: { mode: "verify-current"; actor: AuthLifecycleActor }): Promise<AuthConvergence & { verification?: RuntimeVerificationResult }> {
     const finishObservation = this.beginObservation();
     try {
       this.requireExternalEffects("Hook convergence retry");
@@ -5879,16 +5879,18 @@ export class AuthQueue {
           const owner = this.requestCustodyForActor(current, recovery.actor);
           if (JSON.stringify(authRequestSnapshot(this.db, request.id)) !== snapshot || owner?.custody_generation !== generation) throw new AuthQueueError('invalid_status', 'Request or custody changed during recovery observation.');
         };
+        let verification: RuntimeVerificationResult;
         try {
-          await this.hookManager.verifyCurrentRuntimeHandoff(request, recovery.actor, guard);
+          verification = await this.hookManager.verifyCurrentRuntimeHandoff(request, recovery.actor, guard);
         } catch (error) {
           if (error instanceof AuthQueueError) throw error;
           throw new AuthQueueError("recovery_refused", `Verification-only recovery refused: ${error instanceof Error ? error.message : String(error)}`);
         }
+        if (verification.outcome === 'pending') return { ...this.convergenceForRequest(request.id), verification };
         // Recovery settles this request only. Existing merge finalizers retain
         // their normal daemon lifecycle; a one-shot must not enqueue global work.
         await this.finalizerQueue.drain();
-        return (await this.afterConvergenceHook(this.requireRequest(request.id)));
+        return { ...await this.afterConvergenceHook(this.requireRequest(request.id)), verification };
       }
       if (this.hasPlannedRuntimeRebuild(request)) this.beginRebuildWindow(request.id);
       this.hookManager.grantRetry(request.id, hookId);

@@ -6,6 +6,7 @@ export interface RuntimeHandoffLock {
   executionId: string | null;
   phase: string | null;
   error: string | null;
+  lastObservation?: { outcome: 'pending'; code: string; reason: string; observedAt: number } | null;
 }
 export function runtimeHandoffLockFile(home: string): string;
 export function readRuntimeHandoffLock(home: string): RuntimeHandoffLock | null;

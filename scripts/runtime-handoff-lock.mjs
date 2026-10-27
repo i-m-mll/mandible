@@ -28,6 +28,7 @@ export function readRuntimeHandoffLock(home) {
     requestId: journal?.binding?.requestId ?? null,
     executionId: journal?.binding?.executionId ?? null,
     phase: typeof journal?.phase === 'string' ? journal.phase : null,
+    lastObservation: journal?.lastObservation ?? null,
     error: typeof journal?.error === 'string' ? journal.error : journalError ?? (owner ? null : 'Lock is not valid JSON'),
   };
 }
@@ -36,7 +37,7 @@ export function readRuntimeHandoffLock(home) {
 export function runtimeHandoffLockRefusal(lock) {
   const owner = lock.requestId ? `request ${lock.requestId.slice(0, 8)}` : 'an unknown request';
   const state = `${owner} is in phase ${lock.phase ?? 'unknown'}${lock.error ? ` (${lock.error})` : ''}`;
-  const next = lock.phase === 'failed'
+  const next = ['failed', 'verification-pending'].includes(lock.phase)
     ? `The daemon verifies and releases it by itself once the approved generation is running and healthy. If that generation never went live, the update has to be abandoned: \`mandible auth handoff retire --binding-digest ${lock.bindingDigest ?? '<digest>'} --reason <text>\`.`
     : 'The daemon is waiting for that handoff to converge and be acknowledged.';
   return `Runtime handoff lock ${lock.file} is not acknowledged: ${state}. A Mandible self-update cannot go live while it is held. ${next}`;

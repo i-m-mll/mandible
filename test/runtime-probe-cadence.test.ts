@@ -71,15 +71,15 @@ it('uses the same one-second default for immediate readiness and health coverage
   expect(observed).toEqual(readiness);
 });
 
-it('clips the readiness pause to its original deadline and reports the last actual generation', async () => {
+it('clips the readiness pause to its wait deadline and retains the last starting observation', async () => {
   let time = 0;
   const waits: number[] = [];
   const inspections: number[] = [];
   const result = await awaitHandoffReadiness('merge', 1_500, async () => {
     inspections.push(time);
-    return inspection(true, 'older');
+    return inspection(false);
   }, { now: () => time, wait: async (milliseconds: number) => { waits.push(milliseconds); time += milliseconds; } });
   expect(waits).toEqual([1_000, 500]);
   expect(inspections).toEqual([0, 1_000, 1_500]);
-  expect(result).toMatchObject({ exited: false, error: expect.stringContaining('older') });
+  expect(result).toMatchObject({ outcome: 'pending', exited: false, error: expect.stringContaining('starting') });
 });
