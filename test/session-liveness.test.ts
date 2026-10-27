@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { clearCodexTaskLivenessCache, parseCodexTaskLockLsof, withFreshCodexTaskLiveness } from "../src/codex-task-liveness.js";
 import { setDb, type Db } from "../src/db.js";
-import { resolveSessionAlias, sessionAliasLiveness } from "../src/session-liveness.js";
+import { readSessionAliasSources, resolveSessionAlias, sessionAliasLiveness, sessionAliasResolverFromSources } from "../src/session-liveness.js";
 import { classifyHolderLiveness } from "../src/work-unit-custody.js";
 import { WorkUnitReconciler } from "../src/work-unit-reconciler.js";
 import { mapWorkUnitRow } from "../src/work-unit-utils.js";
@@ -81,6 +81,25 @@ describe("canonical session liveness", () => {
   it("does not resolve an id Mandible has never recorded", () => {
     expect(resolveSessionAlias(db, "never-registered")).toBeNull();
     expect(sessionAliasLiveness(db, "never-registered")).toBe("stopped");
+  });
+
+  it("evaluates current task activity over cloned ledger inputs without another database read", () => {
+    seedAgent("ended", "stopped");
+    db.prepare(`INSERT INTO conversations (id, source, source_path, source_hash, source_mtime, title, started_at, session_id, created_at, updated_at)
+      VALUES ('snapshot-task', 'codex', '/tmp/task', 'hash', 1, 'Thread', '2026-01-01', ?, '2026-01-01', '2026-01-01')`).run(PROVIDER_THREAD);
+    nativeCodexFailure(db, "snapshot-task", PROVIDER_THREAD);
+    const sources = structuredClone(readSessionAliasSources(db, [PROVIDER_THREAD]));
+    const prepare = vi.spyOn(db, "prepare").mockImplementation(() => { throw new Error("liveness must not read the daemon database"); });
+    try {
+      for (const [status, liveness] of [["live", "live"], ["unavailable", "unknown"], ["not_live", "stopped"]] as const) {
+        const resolve = sessionAliasResolverFromSources(sources, { readCodexTaskLiveness: () => ({ status }) });
+        expect(resolve(PROVIDER_THREAD)).toMatchObject({
+          mandible_session_id: MANDIBLE_SESSION, provider_session_id: PROVIDER_THREAD, liveness,
+          execution: { state: { kind: "failure", error: { type: "usageLimitExceeded" } } },
+        });
+      }
+      expect(prepare).not.toHaveBeenCalled();
+    } finally { prepare.mockRestore(); }
   });
 });
 

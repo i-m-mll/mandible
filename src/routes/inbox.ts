@@ -1,20 +1,17 @@
 import type { LedgerReader } from "../ledger-reads/index.js";
-import { RESOLVED_STATUSES, type ContinuationRow, authActionOutcomes, parseWebhookData, getSessionRepoRoot, mapAuthResultRow, reminderOccurrenceItems, queryAuthResultsForSession, countAuthResultsForSession, hookAlertItems } from "../ledger-reads/inbox.js";
+import { RESOLVED_STATUSES, authActionOutcomes, countAuthResultsForSession, type InboxScope } from "../ledger-reads/inbox.js";
 import { forEachInEventLoopSlices } from "../event-loop-slices.js";
 import type { AuthQueue } from "../auth-queue.js";
 import { getDb, type Db } from "../db.js";
 import { resolveId } from "../entity-refs.js";
-import { listLedgerOpenIssues } from "../ledger/issue-projection.js";
 import type { SessionManager } from "../session-manager.js";
 import type { RouteOptions } from "../server.js";
 import { DOMAIN_EVENTS } from "../contracts.js";
 import { broadcast } from "../sse.js";
-import type { AuthRequestStatus, WebhookEventRow } from "../types.js";
+import type { AuthRequestStatus } from "../types.js";
 import type { WorkScanner } from "../work-scanner.js";
 import {
-  mapWorkUnitRow,
-  workUnitLiveness,
-  type WorkUnitWithLiveness,
+  workUnitLivenessFromSnapshot,
 } from "../work-unit-utils.js";
 import { sendJson } from "./http.js";
 import { resolveSessionIdAttributionResult } from "../identity/resolver.js";
@@ -162,181 +159,26 @@ export function registerInboxRoutes(
 ): void {
   const db = getDb();
 
-  // Bug: 8a281b3 — helper to get work units needing attention for inbox
-  function getWorkUnitsNeedingAttention(repoFilter?: string): WorkUnitWithLiveness[] {
-    const conditions = ["state IN ('open', 'committed')"];
-    const params: unknown[] = [];
-
-    if (repoFilter) {
-      conditions.push("repo_id = ?");
-      params.push(repoFilter);
-    }
-
-    const where = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
-    const rows = db
-      .prepare(`SELECT * FROM work_units${where} ORDER BY created_at DESC`)
-      .all(...params) as Record<string, unknown>[];
-
-    const workUnits = rows.map(mapWorkUnitRow);
-    const liveness = workUnitLiveness(db, workUnits, sessionManager);
-    return workUnits
-      .map((wu) => ({ ...wu, liveness: liveness(wu) }))
-      // Show work units that need attention: their agent has stopped. One whose
-      // liveness is unknown may still be worked on, so it is not offered.
-      .filter((wu) => wu.liveness.state === "stopped");
-  }
-
-  // Bug: 8a281b3 — helper to get work-unit continuations
-  // Bug: f3dbb3e — filter by open/committed state so resolved/abandoned units
-  // don't surface stale continuations
-  function getWorkUnitContinuations(repoFilter?: string): WorkUnitWithLiveness[] {
-    const conditions = ["continuation IS NOT NULL", "state IN ('open', 'committed')"];
-    const params: unknown[] = [];
-
-    if (repoFilter) {
-      conditions.push("repo_id = ?");
-      params.push(repoFilter);
-    }
-
-    const where = ` WHERE ${conditions.join(" AND ")}`;
-    const rows = db
-      .prepare(`SELECT * FROM work_units${where} ORDER BY continuation_at DESC`)
-      .all(...params) as Record<string, unknown>[];
-
-    const workUnits = rows.map(mapWorkUnitRow);
-    const liveness = workUnitLiveness(db, workUnits, sessionManager);
-    return workUnits
-      .map((wu) => ({ ...wu, liveness: liveness(wu) }))
-      // Only show continuations whose agent has stopped
-      .filter((wu) => wu.liveness.state === "stopped");
-  }
-
-  function ledgerOpenIssues(repoFilter?: string): Array<{
-    id: string;
-    title: string;
-    labels: string[];
-    repo_id?: string;
-    repo_name?: string;
-  }> {
-    if (!workScanner) return [];
-    return listLedgerOpenIssues(db, workScanner, repoFilter);
-  }
-
-
-  // GET /api/inbox — unified query of pending items for a branch
-  server.get("/api/inbox", (req, res) => {
-    const branch = getQueryParam(req, "branch");
-    const repo = getQueryParam(req, "repo");
-    const sessionId = getQueryParam(req, "session_id") ?? "";
-
-    // Continuations: ended/dead sessions with unacknowledged continuation notes
-    const continuations = branch
-      ? (db
-          .prepare(
-            `SELECT id, branch, continuation, ended_at FROM sessions
-             WHERE branch = ? AND continuation IS NOT NULL AND continuation_acked_by IS NULL
-               AND status IN ('ended', 'dead') AND id != ?
-             ORDER BY ended_at DESC`
-          )
-          .all(branch, sessionId) as ContinuationRow[])
-      : (db
-          .prepare(
-            `SELECT id, branch, continuation, ended_at FROM sessions
-             WHERE continuation IS NOT NULL AND continuation_acked_by IS NULL
-               AND status IN ('ended', 'dead')
-             ORDER BY ended_at DESC`
-          )
-          .all() as ContinuationRow[]);
-
-    // Bug: 4e32923 — three-tier auth_result query: owner session (tier 1),
-    // same project after grace (tier 2), global after grace (tier 3), and
-    // legacy unscoped rows (tier 0) broadcast as before for safety.
-    const repoRoot = sessionId ? getSessionRepoRoot(db, sessionId) : null;
-    const authResultTiers = queryAuthResultsForSession(db, {
-      sessionId,
-      repoRoot,
-      branch: branch ?? null,
-    });
-
-    // Bug: 8a281b3 — work units replace open issues as the primary "needs attention" signal
-    const workUnits = getWorkUnitsNeedingAttention(repo ?? undefined);
-    const workUnitContinuations = getWorkUnitContinuations(repo ?? undefined);
-
-    // Open issues: ledger-backed compatibility field, filtered by repo.
-    const openIssues = repo
-      ? ledgerOpenIssues(repo).map(({ id, title, labels }) => ({ id, title, labels }))
-      : [];
-
-    // Bug: 9f66ad9 — pending webhook events, optionally filtered by branch
-    const pendingWebhooks = branch
-      ? (db
-          .prepare(
-            `SELECT * FROM webhook_events
-             WHERE status = 'pending' AND target_branch = ?
-             ORDER BY created_at DESC LIMIT 50`
-          )
-          .all(branch) as WebhookEventRow[])
-      : (db
-          .prepare(
-            `SELECT * FROM webhook_events
-             WHERE status = 'pending'
-             ORDER BY created_at DESC LIMIT 50`
-          )
-          .all() as WebhookEventRow[]);
-
-    const reminderOccurrences = reminderOccurrenceItems(db, repo);
-    const hookAlerts = hookAlertItems(db, repo ?? null);
-
-    const total = continuations.length + authResultTiers.length + openIssues.length
-      + workUnits.length + workUnitContinuations.length + pendingWebhooks.length
-      + reminderOccurrences.length + hookAlerts.length;
-
-    sendJson(res, 200, {
-      continuations: continuations.map((row) => ({
-        session_id: row.id,
-        continuation: row.continuation,
-        branch: row.branch,
-        ended_at: row.ended_at,
-      })),
-      auth_results: authResultTiers.map(({ row, tier }) => mapAuthResultRow(db, row, tier, false)),
-      open_issues: openIssues,
-      work_units: workUnits,
-      work_unit_continuations: workUnitContinuations,
-      pending_webhooks: pendingWebhooks.map((row) => ({
-        id: row.id,
-        source: row.source,
-        event_type: row.event_type,
-        title: row.title,
-        priority: row.priority,
-        target_branch: row.target_branch,
-        target_issue: row.target_issue,
-        created_at: row.created_at,
-        // Issue 71a287e — the structured payload is what the dashboard alert
-        // renders (credential label, leak location, remediation commands). It
-        // never contains credential material.
-        data: parseWebhookData(row.data_json),
-      })),
-      managed_reminder_occurrences: reminderOccurrences,
-      // Issue 27241e6 — deduplicated convergence alerts: a merge landed but the
-      // repository is not live until its required hook succeeds.
-      hook_alerts: hookAlerts,
-      total,
-    });
-  }, { operation: { id: "get:/api/inbox", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
-
-  // GET /api/inbox/global — all unacknowledged items across all branches and repos
-  server.get("/api/inbox/global", async (req, res) => {
-    const sessionId = getQueryParam(req, "session_id") ?? "";
-
-    const payload = await reader.run("inbox_global", { sessionId, repos: workScanner?.getRepos() ?? null });
-    const liveness = workUnitLiveness(db, [...payload.work_units, ...payload.work_unit_continuations], sessionManager);
+  async function readInbox(sessionId: string, scope: InboxScope) {
+    const { payload, liveness: snapshot } = await reader.run("inbox", { sessionId, scope, repos: workScanner?.getRepos() ?? null });
+    const liveness = workUnitLivenessFromSnapshot(snapshot, sessionManager);
     const stopped = (units: typeof payload.work_units) => units
       .map(wu => ({ ...wu, liveness: liveness(wu) }))
       .filter(wu => wu.liveness.state === "stopped");
     const workUnits = stopped(payload.work_units);
     const continuations = stopped(payload.work_unit_continuations);
-    sendJson(res, 200, { ...payload, work_units: workUnits, work_unit_continuations: continuations,
-      total: payload.total - payload.work_units.length - payload.work_unit_continuations.length + workUnits.length + continuations.length });
+    return { ...payload, work_units: workUnits, work_unit_continuations: continuations,
+      total: payload.total - payload.work_units.length - payload.work_unit_continuations.length + workUnits.length + continuations.length };
+  }
+
+  server.get("/api/inbox", async (req, res) => {
+    sendJson(res, 200, await readInbox(getQueryParam(req, "session_id") ?? "", {
+      kind: "scoped", branch: getQueryParam(req, "branch") ?? null, repo: getQueryParam(req, "repo") ?? null,
+    }));
+  }, { operation: { id: "get:/api/inbox", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+
+  server.get("/api/inbox/global", async (req, res) => {
+    sendJson(res, 200, await readInbox(getQueryParam(req, "session_id") ?? "", { kind: "global" }));
   }, { operation: { id: "get:/api/inbox/global", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   // Bug: 4e32923 — GET /api/inbox/undelivered?target_session_id=<id> returns

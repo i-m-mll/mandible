@@ -7,7 +7,9 @@ import { getChannelRegistry } from "./channel-registry.js";
 import type { SessionManager } from "./session-manager.js";
 import {
   resolveSessionAlias,
-  sessionAliasResolverFor,
+  readSessionAliasSources,
+  sessionAliasResolverFromSources,
+  type SessionAliasSources,
   type SessionAliasResolution,
 } from "./session-liveness.js";
 import type { WorkUnit } from "./types.js";
@@ -64,18 +66,23 @@ interface BranchSession { id: string; status: string; last_active: string | null
 
 /** The rows the liveness rule reads for a set of work units, loaded together. */
 interface WorkUnitLivenessSources {
-  resolveSession: WorkUnitSessionResolver;
+  resolveSession(id: string): SessionAliasResolution | null;
   /** The most recently updated active or idle session on the branch. */
   branchSession(branch: string): BranchSession | undefined;
   /** A running console session driving the session, for one found by branch. */
   runningConsole(sessionId: string): string | undefined;
 }
 
-function workUnitLivenessSources(
+export interface WorkUnitLivenessSnapshot {
+  aliases: SessionAliasSources;
+  branchSessions: Map<string, BranchSession>;
+  consoles: Map<string, string>;
+}
+
+function readWorkUnitBranchSources(
   db: Db,
   workUnits: readonly WorkUnit[],
-  resolveSession: WorkUnitSessionResolver,
-): WorkUnitLivenessSources {
+): Pick<WorkUnitLivenessSnapshot, "branchSessions" | "consoles"> {
   const branches = [...new Set(workUnits
     .filter((workUnit) => workUnitSessionIds(workUnit).length === 0 && workUnit.branch)
     .map((workUnit) => workUnit.branch!))];
@@ -96,11 +103,21 @@ function workUnitLivenessSources(
     ).all(JSON.stringify([...byBranch.values()].map((row) => row.id))) as Array<{ id: string; mandible_session_id: string }>;
     for (const row of rows) if (!consoles.has(row.mandible_session_id)) consoles.set(row.mandible_session_id, row.id);
   }
+  return { branchSessions: byBranch, consoles };
+}
+
+export function readWorkUnitLivenessSnapshot(db: Db, workUnits: readonly WorkUnit[]): WorkUnitLivenessSnapshot {
   return {
-    resolveSession,
-    branchSession: (branch) => byBranch.get(branch),
-    runningConsole: (sessionId) => consoles.get(sessionId),
+    aliases: readSessionAliasSources(db, workUnits.flatMap(workUnitSessionIds)),
+    ...readWorkUnitBranchSources(db, workUnits),
   };
+}
+
+function livenessSources(
+  snapshot: Pick<WorkUnitLivenessSnapshot, "branchSessions" | "consoles">,
+  resolveSession: WorkUnitLivenessSources["resolveSession"],
+): WorkUnitLivenessSources {
+  return { resolveSession, branchSession: branch => snapshot.branchSessions.get(branch), runningConsole: id => snapshot.consoles.get(id) };
 }
 
 /** One identity-first liveness rule shared by work-unit routes and issue detail. */
@@ -110,11 +127,10 @@ export function computeWorkUnitLiveness(
   sessionManager?: SessionManager,
   sessionResolver: WorkUnitSessionResolver = resolveSessionAlias,
 ): WorkUnitLiveness {
-  return livenessFromSources(db, workUnit, workUnitLivenessSources(db, [workUnit], sessionResolver), sessionManager);
+  return livenessFromSources(workUnit, livenessSources(readWorkUnitBranchSources(db, [workUnit]), id => sessionResolver(db, id)), sessionManager);
 }
 
 function livenessFromSources(
-  db: Db,
   workUnit: WorkUnit,
   sources: WorkUnitLivenessSources,
   sessionManager?: SessionManager,
@@ -132,7 +148,7 @@ function livenessFromSources(
   // agent may still be working, whatever its other identities say.
   let notLive: { id: string; resolution: SessionAliasResolution } | null = null;
   for (const id of identityCandidates) {
-    const resolution = sources.resolveSession(db, id);
+    const resolution = sources.resolveSession(id);
     if (!resolution) continue;
     const provider = workUnit.worker_provider === "claude_code" ? "claude" : workUnit.worker_provider
       ?? (workUnit.assigned_session_id ? null : workUnit.provider);
@@ -240,8 +256,16 @@ export function workUnitLiveness(
   workUnits: readonly WorkUnit[],
   sessionManager?: SessionManager,
 ): (workUnit: WorkUnit) => WorkUnitLiveness {
-  const sources = workUnitLivenessSources(db, workUnits, sessionAliasResolverFor(db, workUnits.flatMap(workUnitSessionIds)));
-  return (workUnit) => livenessFromSources(db, workUnit, sources, sessionManager);
+  return workUnitLivenessFromSnapshot(readWorkUnitLivenessSnapshot(db, workUnits), sessionManager);
+}
+
+/** Evaluate current daemon-local activity over a ledger snapshot without further reads. */
+export function workUnitLivenessFromSnapshot(
+  snapshot: WorkUnitLivenessSnapshot,
+  sessionManager?: SessionManager,
+): (workUnit: WorkUnit) => WorkUnitLiveness {
+  const sources = livenessSources(snapshot, sessionAliasResolverFromSources(snapshot.aliases));
+  return (workUnit) => livenessFromSources(workUnit, sources, sessionManager);
 }
 
 /**
