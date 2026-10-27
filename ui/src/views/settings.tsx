@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import type { ComponentChildren } from 'preact';
+import type { ComponentChildren, VNode } from 'preact';
 import { AppOperationalNoticeOutlet } from '../app-shell';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { ChromeAppearanceSettings } from '../components/settings/ChromeAppearanceSettings';
@@ -136,8 +136,6 @@ const INSTRUCTION_TARGET_MODES = ['managed-block', 'standalone'] as const;
 type SettingsSectionDefinition = {
   id: string;
   title: string;
-  desktopOnly?: boolean;
-  previewOnly?: boolean;
 };
 
 const SETTINGS_SECTIONS = {
@@ -154,7 +152,7 @@ const SETTINGS_SECTIONS = {
   workQueue: { id: 'settings-work-queue', title: 'Work Queue' },
   issues: { id: 'settings-issues', title: 'Issues' },
   appearance: { id: 'settings-appearance', title: 'Appearance' },
-  chromeAppearance: { id: 'settings-chrome-appearance', title: 'Chrome · Preview', previewOnly: true },
+  chromeAppearance: { id: 'settings-chrome-appearance', title: 'Chrome · Preview' },
   auth: { id: 'auth-settings', title: 'Approvals' },
   authHooks: { id: 'settings-auth-hooks', title: 'Approval Hooks' },
   signing: { id: 'settings-signing', title: 'Signing keys' },
@@ -162,8 +160,6 @@ const SETTINGS_SECTIONS = {
   maintenance: { id: 'settings-maintenance', title: 'Maintenance' },
   backup: { id: 'settings-backup', title: 'Backup' },
 } as const;
-
-const SETTINGS_SECTION_LIST: readonly SettingsSectionDefinition[] = Object.values(SETTINGS_SECTIONS);
 
 function SettingsSectionShell(props: {
   section: SettingsSectionDefinition;
@@ -194,6 +190,16 @@ function SettingsSectionHeader(props: {
       </div>
     </div>
   );
+}
+
+function setSettingsTrailingSpace(root: HTMLElement, content: HTMLElement, lastSection: HTMLElement | undefined): void {
+  const lastStyle = lastSection ? getComputedStyle(lastSection) : null;
+  const trailingSpace = lastSection && lastStyle ? Math.max(0, root.clientHeight
+    - lastSection.getBoundingClientRect().height
+    - parseFloat(lastStyle.marginBottom)
+    - parseFloat(getComputedStyle(root).paddingBottom)
+    - parseFloat(lastStyle.scrollMarginTop)) : 0;
+  content.style.paddingBottom = `${trailingSpace}px`;
 }
 
 function isInstructionTargetMode(value: string): value is InstructionTargetMode {
@@ -1641,13 +1647,12 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
   const initialized = useRef(false);
   const quietInitialized = useRef(false);
   const viewRef = useRef<HTMLDivElement | null>(null);
-  const [activeSection, setActiveSection] = useState<string>(SETTINGS_SECTIONS.notifications.id);
+  const [activeSection, setActiveSection] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchMatches, setSearchMatches] = useState(0);
   const desktopShell = isDesktopShell();
   const chromeAppearancePreview = instance?.role === 'preview' ? props.chromeAppearancePreview : null;
   const chromePreviewVisible = Boolean(chromeAppearancePreview);
-  const visibleSections = SETTINGS_SECTION_LIST.filter((section) => (!section.desktopOnly || desktopShell) && (!section.previewOnly || chromePreviewVisible));
 
   useEffect(() => {
     if (typeof settings.protected_branches === 'string' && !initialized.current) {
@@ -1714,147 +1719,8 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
     }
   }, [instance, saveTypographySetting, showFeedback]);
 
-  const handleSectionNavigation = useCallback((sectionId: string) => {
-    setActiveSection(sectionId);
-    document.getElementById(sectionId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }, []);
-
-  useEffect(() => {
-    const root = viewRef.current;
-    const content = root?.querySelector('.settings-view__content');
-    if (!root || !content) return;
-    const query = searchQuery.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
-    const rowSelector = '[data-settings-searchable]';
-    const update = () => {
-      let matches = 0;
-      for (const section of Array.from(content.querySelectorAll<HTMLElement>('.settings-view__section'))) {
-        const candidates = Array.from(section.querySelectorAll<HTMLElement>(rowSelector)).filter((row) => (
-          !row.parentElement?.closest(rowSelector)
-        ));
-        let sectionMatches = 0;
-        for (const row of candidates) {
-          const sectionTitle = section.querySelector('.settings-view__section-title')?.textContent ?? '';
-          const searchableText = `${sectionTitle} ${row.textContent ?? ''} ${row.dataset.settingsSearchText ?? ''}`.toLocaleLowerCase();
-          const matched = query.length === 0 || query.every((term) => searchableText.includes(term));
-          row.hidden = !matched;
-          if (matched) {
-            sectionMatches += 1;
-            matches += 1;
-          }
-        }
-        section.hidden = query.length > 0 && sectionMatches === 0;
-        const tocLink = root.querySelector<HTMLElement>(`[aria-controls="${section.id}"]`);
-        if (tocLink) tocLink.hidden = section.hidden;
-      }
-      setSearchMatches(matches);
-      const firstVisibleSection = visibleSections.find((section) => {
-        const element = content.querySelector<HTMLElement>(`#${section.id}`);
-        return element && !element.hidden;
-      });
-      if (firstVisibleSection) {
-        setActiveSection((current) => content.querySelector<HTMLElement>(`#${current}`)?.hidden
-          ? firstVisibleSection.id
-          : current);
-      }
-    };
-    update();
-    const observer = new MutationObserver(update);
-    observer.observe(content, {
-      childList: true,
-      characterData: true,
-      attributes: true,
-      attributeFilter: ['data-settings-search-text'],
-      subtree: true,
-    });
-    return () => observer.disconnect();
-  }, [searchQuery, desktopShell, chromePreviewVisible]);
-
-  useEffect(() => {
-    const root = viewRef.current;
-    if (!root) return;
-    let frame = 0;
-    const updateActiveSection = () => {
-      frame = 0;
-      const rootTop = root.getBoundingClientRect().top;
-      const currentlyVisibleSections = visibleSections.filter((section) => {
-        const element = document.getElementById(section.id);
-        return element && !element.hidden;
-      });
-      let current = currentlyVisibleSections[0]?.id ?? SETTINGS_SECTIONS.notifications.id;
-      for (const section of currentlyVisibleSections) {
-        const element = document.getElementById(section.id);
-        if (element && element.getBoundingClientRect().top - rootTop <= 112) current = section.id;
-        else break;
-      }
-      setActiveSection(current);
-    };
-    const scheduleUpdate = () => {
-      if (!frame) frame = window.requestAnimationFrame(updateActiveSection);
-    };
-    updateActiveSection();
-    root.addEventListener('scroll', scheduleUpdate, { passive: true });
-    window.addEventListener('resize', scheduleUpdate);
-    return () => {
-      if (frame) window.cancelAnimationFrame(frame);
-      root.removeEventListener('scroll', scheduleUpdate);
-      window.removeEventListener('resize', scheduleUpdate);
-    };
-  }, [desktopShell, searchMatches, chromePreviewVisible]);
-
-  return (
-    <div className="settings-view" ref={viewRef}>
-      <div className="view-header">
-        <h2>Settings</h2>
-      </div>
-      <AppOperationalNoticeOutlet registerAsMain />
-      {loadError ? (
-        <DetailPaneNotice
-          severity="error"
-          source="settings-load"
-          title="Settings could not be loaded"
-          actions={<button type="button" onClick={onRefresh}>Retry</button>}
-        >
-          {loadError}
-        </DetailPaneNotice>
-      ) : null}
-
-      <div className="settings-view__layout">
-        <nav className="settings-view__toc" aria-label="Settings sections">
-          <div className="settings-view__search-label">
-            <input
-              type="search"
-              className="settings-view__input"
-              value={searchQuery}
-              onInput={(event) => setSearchQuery((event.target as HTMLInputElement).value)}
-              aria-label="Search individual settings"
-              placeholder="Find a setting"
-            />
-          </div>
-          {visibleSections.map((section) => {
-            if (section.desktopOnly && !desktopShell) return null;
-            const isActive = activeSection === section.id;
-            return (
-              <button
-                type="button"
-                className={`settings-view__toc-link${isActive ? ' settings-view__toc-link--active' : ''}`}
-                aria-controls={section.id}
-                aria-current={isActive ? 'location' : undefined}
-                onClick={() => handleSectionNavigation(section.id)}
-                key={section.id}
-              >
-                {section.title}
-              </button>
-            );
-          })}
-        </nav>
-
-        <div className="settings-view__content">
-          {searchQuery.trim() && searchMatches === 0 && (
-            <p className="settings-view__empty" role="status">No settings match “{searchQuery.trim()}”.</p>
-          )}
-
-      {/* ── Section 1: Notifications ── */}
-      <SettingsSectionShell section={SETTINGS_SECTIONS.notifications}>
+  const sectionViews: VNode<{ section: SettingsSectionDefinition }>[] = [
+      <SettingsSectionShell key={SETTINGS_SECTIONS.notifications.id} section={SETTINGS_SECTIONS.notifications}>
         <SettingsSectionHeader
           section={SETTINGS_SECTIONS.notifications}
           description="Desktop alerts when AI tools finish and are waiting for input."
@@ -1908,12 +1774,11 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             </div>
           </div>
         </div>
-      </SettingsSectionShell>
+      </SettingsSectionShell>,
 
-      <DesktopDaemonSection section={SETTINGS_SECTIONS.daemon} instance={instance} />
+      <DesktopDaemonSection key={SETTINGS_SECTIONS.daemon.id} section={SETTINGS_SECTIONS.daemon} instance={instance} />,
 
-      {/* ── Agent Hooks ── */}
-      <SettingsSectionShell section={SETTINGS_SECTIONS.agentHooks}>
+      <SettingsSectionShell key={SETTINGS_SECTIONS.agentHooks.id} section={SETTINGS_SECTIONS.agentHooks}>
         <SettingsSectionHeader
           section={SETTINGS_SECTIONS.agentHooks}
           description="PreToolUse safety hooks and subagent behavior."
@@ -1936,20 +1801,20 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             onSave={saveSetting}
           />
         </div>
-      </SettingsSectionShell>
+      </SettingsSectionShell>,
 
       <InstructionsDeliverySection
-        section={SETTINGS_SECTIONS.instructionDelivery}
+        key={SETTINGS_SECTIONS.instructionDelivery.id} section={SETTINGS_SECTIONS.instructionDelivery}
         settings={settings}
         onSave={saveSetting}
         readAllowed={instructionReadAllowed}
         settingsAllowed={instructionSettingsAllowed}
         exportRunsOnSave={exportRunsOnSave}
-      />
+      />,
 
-      <ProjectPermissionsSection section={SETTINGS_SECTIONS.projectPermissions} instance={instance} />
+      <ProjectPermissionsSection key={SETTINGS_SECTIONS.projectPermissions.id} section={SETTINGS_SECTIONS.projectPermissions} instance={instance} />,
 
-      <SettingsSectionShell section={SETTINGS_SECTIONS.briefings}>
+      <SettingsSectionShell key={SETTINGS_SECTIONS.briefings.id} section={SETTINGS_SECTIONS.briefings}>
         <SettingsSectionHeader
           section={SETTINGS_SECTIONS.briefings}
           description="Submission display behavior for Briefing review rounds."
@@ -1963,23 +1828,23 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             onSave={saveSetting}
           />
         </div>
-      </SettingsSectionShell>
+      </SettingsSectionShell>,
 
-      <SettingsSectionShell section={SETTINGS_SECTIONS.chatDefaults}>
+      <SettingsSectionShell key={SETTINGS_SECTIONS.chatDefaults.id} section={SETTINGS_SECTIONS.chatDefaults}>
         <SettingsSectionHeader section={SETTINGS_SECTIONS.chatDefaults} description="Choose the model, effort and permissions used for new chats. Existing chats keep their own choices." />
         <div className="settings-view__section-body">
           <ManagedChatDefaults canSave={canPerformOperation(instance, 'PUT', '/api/user-settings/managed_chat_defaults')} />
         </div>
-      </SettingsSectionShell>
+      </SettingsSectionShell>,
 
-      <SettingsSectionShell section={SETTINGS_SECTIONS.childCleanup}>
+      <SettingsSectionShell key={SETTINGS_SECTIONS.childCleanup.id} section={SETTINGS_SECTIONS.childCleanup}>
         <SettingsSectionHeader section={SETTINGS_SECTIONS.childCleanup} description="Archive stopped child chats while keeping their history available in Archived." />
         <div className="settings-view__section-body">
           <ChildRetentionSettings canSave={canPerformOperation(instance, 'PUT', '/api/settings/child-retention')} />
         </div>
-      </SettingsSectionShell>
+      </SettingsSectionShell>,
 
-      <SettingsSectionShell section={SETTINGS_SECTIONS.conversations}>
+      <SettingsSectionShell key={SETTINGS_SECTIONS.conversations.id} section={SETTINGS_SECTIONS.conversations}>
         <SettingsSectionHeader
           section={SETTINGS_SECTIONS.conversations}
           description="Disclosure defaults for the Chat sidebar."
@@ -2005,10 +1870,9 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             options={['preview', 'open']}
           />
         </div>
-      </SettingsSectionShell>
+      </SettingsSectionShell>,
 
-      {/* ── Section: Conversation Branching ── */}
-      <SettingsSectionShell section={SETTINGS_SECTIONS.conversationBranching}>
+      <SettingsSectionShell key={SETTINGS_SECTIONS.conversationBranching.id} section={SETTINGS_SECTIONS.conversationBranching}>
         <SettingsSectionHeader
           section={SETTINGS_SECTIONS.conversationBranching}
           description="How to handle resume when the conversation is already active in Console."
@@ -2037,10 +1901,9 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             </select>
           </div>
         </div>
-      </SettingsSectionShell>
+      </SettingsSectionShell>,
 
-      {/* ── Section: Work Queue ── Bug: cbbb3d9 */}
-      <SettingsSectionShell section={SETTINGS_SECTIONS.workQueue}>
+      <SettingsSectionShell key={SETTINGS_SECTIONS.workQueue.id} section={SETTINGS_SECTIONS.workQueue}>
         <SettingsSectionHeader
           section={SETTINGS_SECTIONS.workQueue}
           description="How to handle work-unit continuations (handoff notes from ended sessions)."
@@ -2069,10 +1932,9 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             </select>
           </div>
         </div>
-      </SettingsSectionShell>
+      </SettingsSectionShell>,
 
-      {/* ── Section: Issues ── */}
-      <SettingsSectionShell section={SETTINGS_SECTIONS.issues}>
+      <SettingsSectionShell key={SETTINGS_SECTIONS.issues.id} section={SETTINGS_SECTIONS.issues}>
         <SettingsSectionHeader
           section={SETTINGS_SECTIONS.issues}
           description="Defaults for the issue ledger browser."
@@ -2114,10 +1976,9 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             </div>
           </div>
         </div>
-      </SettingsSectionShell>
+      </SettingsSectionShell>,
 
-      {/* ── Section 4: Appearance ── */}
-      <SettingsSectionShell section={SETTINGS_SECTIONS.appearance}>
+      <SettingsSectionShell key={SETTINGS_SECTIONS.appearance.id} section={SETTINGS_SECTIONS.appearance}>
         <SettingsSectionHeader
           section={SETTINGS_SECTIONS.appearance}
           description="App display and shell launch defaults."
@@ -2294,14 +2155,14 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
           />
           <SettingsFeedback feedback={feedback} />
         </div>
-      </SettingsSectionShell>
+      </SettingsSectionShell>,
 
-      {chromeAppearancePreview ? <SettingsSectionShell section={SETTINGS_SECTIONS.chromeAppearance}>
+      ...(chromeAppearancePreview ? [<SettingsSectionShell key={SETTINGS_SECTIONS.chromeAppearance.id} section={SETTINGS_SECTIONS.chromeAppearance}>
         <SettingsSectionHeader section={SETTINGS_SECTIONS.chromeAppearance} description="Changes apply immediately in this browser. Copy the values when you are ready." />
         <ChromeAppearanceSettings controller={chromeAppearancePreview} />
-      </SettingsSectionShell> : null}
+      </SettingsSectionShell>] : []),
 
-      <SettingsSectionShell section={SETTINGS_SECTIONS.auth}>
+      <SettingsSectionShell key={SETTINGS_SECTIONS.auth.id} section={SETTINGS_SECTIONS.auth}>
         <SettingsSectionHeader
           section={SETTINGS_SECTIONS.auth}
           description="Approval display, queue retention, and hardware-backed delegated signing."
@@ -2333,9 +2194,9 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
           />
           <DelegatedSigningSection instance={instance} />
         </div>
-      </SettingsSectionShell>
+      </SettingsSectionShell>,
 
-      <SettingsSectionShell section={SETTINGS_SECTIONS.authHooks}>
+      <SettingsSectionShell key={SETTINGS_SECTIONS.authHooks.id} section={SETTINGS_SECTIONS.authHooks}>
         <SettingsSectionHeader
           section={SETTINGS_SECTIONS.authHooks}
           description="Repo-specific post-approval hook configuration."
@@ -2345,9 +2206,9 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             instance={instance}
           />
         </div>
-      </SettingsSectionShell>
+      </SettingsSectionShell>,
 
-      <SettingsSectionShell section={SETTINGS_SECTIONS.signing}>
+      <SettingsSectionShell key={SETTINGS_SECTIONS.signing.id} section={SETTINGS_SECTIONS.signing}>
         <SettingsSectionHeader
           section={SETTINGS_SECTIONS.signing}
           description="Register the public key Git uses to sign commits."
@@ -2355,10 +2216,9 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
         <div className="settings-view__section-body" data-testid="settings-signing-content">
           <SigningSettings instance={instance} />
         </div>
-      </SettingsSectionShell>
+      </SettingsSectionShell>,
 
-      {/* ── Section 5: Version Control ── */}
-      <SettingsSectionShell section={SETTINGS_SECTIONS.versionControl}>
+      <SettingsSectionShell key={SETTINGS_SECTIONS.versionControl.id} section={SETTINGS_SECTIONS.versionControl}>
         <SettingsSectionHeader
           section={SETTINGS_SECTIONS.versionControl}
           description="Comma-separated branch names that are pinned in the Work tab and used as the baseline for ahead/behind counts."
@@ -2382,10 +2242,9 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             <span className="settings-view__warning" role="status">Complete each branch name between commas.</span>
           )}
         </div>
-      </SettingsSectionShell>
+      </SettingsSectionShell>,
 
-      {/* ── Section 6: Maintenance ── */}
-      <SettingsSectionShell section={SETTINGS_SECTIONS.maintenance}>
+      <SettingsSectionShell key={SETTINGS_SECTIONS.maintenance.id} section={SETTINGS_SECTIONS.maintenance}>
         <SettingsSectionHeader
           section={SETTINGS_SECTIONS.maintenance}
           description="Log retention and housekeeping."
@@ -2402,10 +2261,150 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             suffix="days"
           />
         </div>
-      </SettingsSectionShell>
+      </SettingsSectionShell>,
 
-      {/* ── Section 7: Backup ── */}
-      <BackupSection section={SETTINGS_SECTIONS.backup} instance={instance} />
+      <BackupSection key={SETTINGS_SECTIONS.backup.id} section={SETTINGS_SECTIONS.backup} instance={instance} />
+  ];
+  const visibleSections = sectionViews.map((view) => view.props.section);
+
+  const handleSectionNavigation = useCallback((sectionId: string) => {
+    const root = viewRef.current;
+    const section = root?.querySelector<HTMLElement>(`#${sectionId}`);
+    const content = root?.querySelector<HTMLElement>('.settings-view__content');
+    if (!root || !section || section.hidden || !content) return;
+    const sections = Array.from(content.querySelectorAll<HTMLElement>('.settings-view__section')).filter(item => !item.hidden);
+    setSettingsTrailingSpace(root, content, sections.at(-1));
+    const alignment = parseFloat(getComputedStyle(section).scrollMarginTop) || 0;
+    const top = root.scrollTop + section.getBoundingClientRect().top
+      - root.getBoundingClientRect().top - root.clientTop - alignment;
+    root.scrollTo({ top, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
+  }, []);
+
+  useEffect(() => {
+    const root = viewRef.current;
+    const content = root?.querySelector<HTMLElement>('.settings-view__content');
+    if (!root || !content) return;
+    let frame = 0;
+    const query = searchQuery.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+    const mountedSections = () => Array.from(content.querySelectorAll<HTMLElement>('.settings-view__section'));
+    const updateActiveSection = () => {
+      frame = 0;
+      const sections = mountedSections().filter((section) => !section.hidden);
+      // Short trailing sections must be able to reach the same reading line as earlier headings.
+      setSettingsTrailingSpace(root, content, sections.at(-1));
+      const rootTop = root.getBoundingClientRect().top + root.clientTop;
+      let current: string | null = sections[0]?.id ?? null;
+      for (const section of sections) {
+        const alignment = parseFloat(getComputedStyle(section).scrollMarginTop) || 0;
+        if (section.getBoundingClientRect().top - rootTop <= alignment + 1) current = section.id;
+        else break;
+      }
+      setActiveSection(current);
+    };
+    const scheduleUpdate = () => {
+      if (!frame) frame = window.requestAnimationFrame(updateActiveSection);
+    };
+    const filterSections = () => {
+      let matches = 0;
+      const rowSelector = '[data-settings-searchable]';
+      for (const section of mountedSections()) {
+        const candidates = Array.from(section.querySelectorAll<HTMLElement>(rowSelector)).filter((row) => (
+          !row.parentElement?.closest(rowSelector)
+        ));
+        let sectionMatches = 0;
+        const sectionTitle = section.querySelector('.settings-view__section-title')?.textContent ?? '';
+        for (const row of candidates) {
+          const searchableText = `${sectionTitle} ${row.textContent ?? ''} ${row.dataset.settingsSearchText ?? ''}`.toLocaleLowerCase();
+          const matched = query.length === 0 || query.every((term) => searchableText.includes(term));
+          row.hidden = !matched;
+          if (matched) {
+            sectionMatches += 1;
+            matches += 1;
+          }
+        }
+        section.hidden = query.length > 0 && sectionMatches === 0;
+        const tocLink = root.querySelector<HTMLElement>(`[aria-controls="${section.id}"]`);
+        if (tocLink) tocLink.hidden = section.hidden;
+      }
+      setSearchMatches(matches);
+      scheduleUpdate();
+    };
+    filterSections();
+    const mutationObserver = new MutationObserver(filterSections);
+    mutationObserver.observe(content, {
+      childList: true,
+      characterData: true,
+      attributes: true,
+      attributeFilter: ['data-settings-search-text'],
+      subtree: true,
+    });
+    const resizeObserver = new ResizeObserver(scheduleUpdate);
+    resizeObserver.observe(root);
+    resizeObserver.observe(content);
+    for (const section of mountedSections()) resizeObserver.observe(section);
+    root.addEventListener('scroll', scheduleUpdate, { passive: true });
+    window.addEventListener('resize', scheduleUpdate);
+    return () => {
+      if (frame) window.cancelAnimationFrame(frame);
+      mutationObserver.disconnect();
+      resizeObserver.disconnect();
+      root.removeEventListener('scroll', scheduleUpdate);
+      window.removeEventListener('resize', scheduleUpdate);
+    };
+  }, [searchQuery, desktopShell, chromePreviewVisible]);
+
+  return (
+    <div className="settings-view" ref={viewRef}>
+      <div className="view-header">
+        <h2>Settings</h2>
+      </div>
+      <AppOperationalNoticeOutlet registerAsMain />
+      {loadError ? (
+        <DetailPaneNotice
+          severity="error"
+          source="settings-load"
+          title="Settings could not be loaded"
+          actions={<button type="button" onClick={onRefresh}>Retry</button>}
+        >
+          {loadError}
+        </DetailPaneNotice>
+      ) : null}
+
+      <div className="settings-view__layout">
+        <nav className="settings-view__toc" aria-label="Settings sections">
+          <div className="settings-view__search-label">
+            <input
+              type="search"
+              className="settings-view__input"
+              value={searchQuery}
+              onInput={(event) => setSearchQuery((event.target as HTMLInputElement).value)}
+              aria-label="Search individual settings"
+              placeholder="Find a setting"
+            />
+          </div>
+          {visibleSections.map((section) => {
+            const isActive = activeSection === section.id;
+            return (
+              <button
+                type="button"
+                className={`settings-view__toc-link${isActive ? ' settings-view__toc-link--active' : ''}`}
+                aria-controls={section.id}
+                aria-current={isActive ? 'location' : undefined}
+                onClick={() => handleSectionNavigation(section.id)}
+                key={section.id}
+              >
+                {section.title}
+              </button>
+            );
+          })}
+        </nav>
+
+        <div className="settings-view__content">
+          {searchQuery.trim() && searchMatches === 0 && (
+            <p className="settings-view__empty" role="status">No settings match “{searchQuery.trim()}”.</p>
+          )}
+
+          {sectionViews}
 
         </div>
       </div>

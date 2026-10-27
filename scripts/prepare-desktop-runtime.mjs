@@ -9,7 +9,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const selector = path.join(root, 'scripts/bun-runtime.sh');
 const archive = execFileSync('/bin/sh', [selector, '--archive'], { encoding: 'utf8' }).trim();
 const runtime = execFileSync('/bin/sh', [selector], { encoding: 'utf8' }).trim();
-const directory = path.join(root, 'src-tauri/resources/bun-runtime');
+const directory = process.env.MANDIBLE_DESKTOP_RUNTIME_DIR ?? path.join(root, 'src-tauri/resources/bun-runtime');
 fs.mkdirSync(directory, { recursive: true });
 const target = path.join(directory, 'bun.zip');
 const bytes = fs.readFileSync(archive);

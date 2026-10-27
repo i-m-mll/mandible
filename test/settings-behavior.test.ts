@@ -10,6 +10,7 @@ import { SettingsView } from '../ui/src/views/settings';
 import { DEFAULT_CHILD_RETENTION_SETTINGS } from '../src/conversations/retention-contract';
 
 beforeEach(() => {
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
   for (const instance of [mainInstance, previewInstance, preferenceWritablePreviewInstance]) bindTestInstanceCatalog(instance);
 });
 

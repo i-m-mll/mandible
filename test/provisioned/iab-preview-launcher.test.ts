@@ -15,9 +15,10 @@ import { openDb } from "../../src/db.js";
 import { setSetting } from "../../src/client-auth/settings-kv.js";
 import { LocalSessionAuthority } from "../../src/client-auth/session-authority.js";
 import { localCaPaths } from "../../scripts/local-ca-trust.mjs";
-import { retireBriefingV1ToCustody } from "../../src/feedback/migrate-legacy.js";
 import { RICH_BRIEFING_DEMO } from "../../src/feedback/rich-briefing-demo.js";
+import { sealedRetiredDemoPacket } from "../helpers/sealed-retired-demo.js";
 import { recordArtifactVersion } from "../helpers/artifact-http-write-fixtures.js";
+import { getCanonicalArtifactVersion } from '../../src/provider-artifacts.js';
 import { createUser, setupOperator } from "../../src/users/store.js";
 import { insertRawLedgerCheckout, insertRawLedgerProject } from "../helpers/ledger-fixtures.js";
 import { createOwnedRun, saveOwnedMetadata, finalizeOwnedRun } from "../../scripts/owned-run.mjs";
@@ -403,30 +404,7 @@ Keep the clarified operator runbook as the execution guide?
 :::
 `;
 
-function parseRetiredV1TestDirectives(source: string) {
-  const directives: Array<{
-    key: string; required: boolean; body: string; definition_digest: string;
-    start_offset: number; end_offset: number; body_start_offset: number; body_end_offset: number;
-  }> = [];
-  let start = source.indexOf(":::spec-item{");
-  while (start >= 0) {
-    const openerEnd = source.indexOf("\n", start);
-    const closeStart = source.indexOf("\n:::", openerEnd);
-    const opener = source.slice(start, openerEnd);
-    const key = /key="([^"]+)"/.exec(opener)?.[1];
-    if (!key || closeStart < 0) throw new Error("retired v1 test directive is malformed");
-    const end = closeStart + 4;
-    directives.push({
-      key, required: opener.includes('required="true"'), body: source.slice(openerEnd + 1, closeStart),
-      definition_digest: createHash("sha256").update(Buffer.from(source.slice(start, end), "utf8")).digest("hex"),
-      start_offset: start, end_offset: end, body_start_offset: openerEnd + 1, body_end_offset: closeStart,
-    });
-    start = source.indexOf(":::spec-item{", end);
-  }
-  return directives;
-}
-
-function installRetiredV1Demo(
+function seedSealedRetiredDemo(
   fixture: ReturnType<typeof createSeedFixture>,
   options: { historicalCompatibleUsers?: boolean } = {},
 ) {
@@ -447,14 +425,7 @@ function installRetiredV1Demo(
       : { fixture: "rich-briefing-demo", deterministic: true },
   }, userTimestamp);
   const briefingId = randomUUID();
-  const roundIds = [randomUUID(), randomUUID()];
-  // The historical run-request parser trimmed the template's final newline
-  // before artifact storage. These are the exact bytes sealed in the live packet.
-  const sources = [RETIRED_V1_ROUND_ONE, RETIRED_V1_ROUND_TWO].map((source) => source.trim());
-  expect(sources.map((source) => [Buffer.byteLength(source), fileHashFromText(source)])).toEqual([
-    [1167, "62156b992d889cae31607c21cff9c0c51151811caaf634e39327624b1e4c47b8"],
-    [1282, "b49e87df635f59d955e819ee22768b374d4b7d37a9cd52de9eb72cdc9d963801"],
-  ]);
+  const sources = [RETIRED_V1_ROUND_ONE, RETIRED_V1_ROUND_TWO].map(source => source.trim());
   const artifacts = sources.map((source, index) => recordArtifactVersion(db, {
     source_kind: "managed", content: source, series_key: `mandible:briefing:${briefingId}`,
     logical_name: `${RICH_BRIEFING_DEMO.briefingKey}.md`, title: RICH_BRIEFING_DEMO.title,
@@ -462,219 +433,26 @@ function installRetiredV1Demo(
     metadata: { profile: "mandible-briefing.v1", briefing_id: briefingId },
     parent_version_id: index === 0 ? null : undefined,
   }, index === 0 ? RICH_BRIEFING_DEMO.roundOneTimestamp : RICH_BRIEFING_DEMO.roundTwoTimestamp));
-  db.pragma("foreign_keys = OFF");
-  for (const table of [
-    "briefing_submission_annotations", "briefing_submission_answers", "briefing_submissions",
-    "briefing_annotation_events", "briefing_response_events", "briefing_run_occurrences",
-    "briefing_runs", "briefing_directive_instances", "briefing_directive_definitions", "briefing_rounds",
-    "briefing_legacy_custody",
-  ]) db.exec(`DROP TABLE ${table}`);
-  db.exec(`
-    CREATE TABLE briefing_rounds (
-      id TEXT PRIMARY KEY, briefing_id TEXT NOT NULL, ordinal INTEGER NOT NULL,
-      artifact_version_id TEXT NOT NULL, previous_round_id TEXT,
-      profile TEXT NOT NULL CHECK(profile = 'mandible-briefing.v1'),
-      binding_digest TEXT NOT NULL, created_at INTEGER NOT NULL
-    );
-    CREATE TABLE briefing_directive_definitions (
-      id TEXT PRIMARY KEY, artifact_version_id TEXT NOT NULL, directive_key TEXT NOT NULL,
-      definition_digest TEXT NOT NULL, response_type TEXT NOT NULL, required INTEGER NOT NULL,
-      prompt TEXT NOT NULL, options_json TEXT NOT NULL, start_offset INTEGER NOT NULL,
-      end_offset INTEGER NOT NULL, body_start_offset INTEGER NOT NULL,
-      body_end_offset INTEGER NOT NULL, created_at INTEGER NOT NULL
-    );
-    CREATE TABLE briefing_directive_instances (
-      id TEXT PRIMARY KEY, round_id TEXT NOT NULL, definition_id TEXT NOT NULL,
-      directive_key TEXT NOT NULL, position INTEGER NOT NULL, created_at INTEGER NOT NULL
-    );
-    CREATE TABLE briefing_runs (
-      id TEXT PRIMARY KEY, briefing_id TEXT NOT NULL, round_id TEXT, artifact_version_id TEXT,
-      publisher_user_id TEXT NOT NULL, task_identity TEXT NOT NULL, run_id TEXT NOT NULL,
-      run_key TEXT NOT NULL, request_digest TEXT NOT NULL, evidence_series_ref TEXT NOT NULL,
-      evidence_version INTEGER NOT NULL, evidence_digest TEXT NOT NULL, source_health_json TEXT NOT NULL,
-      quiet INTEGER NOT NULL, quiet_reason TEXT, received_at INTEGER NOT NULL
-    );
-    CREATE TABLE briefing_run_occurrences (
-      id TEXT PRIMARY KEY, run_id TEXT NOT NULL, directive_instance_id TEXT,
-      directive_key TEXT NOT NULL, evidence_digest TEXT NOT NULL, occurred_at INTEGER NOT NULL,
-      metadata_json TEXT NOT NULL
-    );
-    CREATE TABLE briefing_response_events (
-      id TEXT PRIMARY KEY, round_id TEXT NOT NULL, directive_instance_id TEXT NOT NULL,
-      operation TEXT NOT NULL, value_json TEXT, retracts_event_id TEXT,
-      actor_user_id TEXT NOT NULL, created_at INTEGER NOT NULL
-    );
-    CREATE TABLE briefing_annotation_events (
-      id TEXT PRIMARY KEY, round_id TEXT NOT NULL, operation TEXT NOT NULL, annotation_kind TEXT,
-      start_offset INTEGER, end_offset INTEGER, quote TEXT, body TEXT, replacement_text TEXT,
-      retracts_event_id TEXT, actor_user_id TEXT NOT NULL, created_at INTEGER NOT NULL
-    );
-    CREATE TABLE briefing_submissions (
-      id TEXT PRIMARY KEY, round_id TEXT NOT NULL, ordinal INTEGER NOT NULL,
-      supersedes_submission_id TEXT, actor_user_id TEXT NOT NULL, created_at INTEGER NOT NULL
-    );
-    CREATE TABLE briefing_submission_answers (
-      submission_id TEXT NOT NULL, directive_instance_id TEXT NOT NULL,
-      response_event_id TEXT NOT NULL, position INTEGER NOT NULL
-    );
-    CREATE TABLE briefing_submission_annotations (
-      submission_id TEXT NOT NULL, annotation_event_id TEXT NOT NULL, position INTEGER NOT NULL
-    );
-  `);
-  db.pragma("foreign_keys = ON");
-
   db.prepare(
     `INSERT INTO briefings (id, briefing_key, title, latest_round_id, round_count, created_at, updated_at)
-     VALUES (?, ?, ?, ?, 2, ?, ?)`,
-  ).run(briefingId, RICH_BRIEFING_DEMO.briefingKey, RICH_BRIEFING_DEMO.title, roundIds[1],
+     VALUES (?, ?, ?, NULL, 0, ?, ?)`,
+  ).run(briefingId, RICH_BRIEFING_DEMO.briefingKey, RICH_BRIEFING_DEMO.title,
     RICH_BRIEFING_DEMO.roundOneTimestamp, RICH_BRIEFING_DEMO.roundTwoTimestamp);
   db.prepare("INSERT INTO briefing_members (briefing_id, user_id, created_at) VALUES (?, ?, ?)")
     .run(briefingId, reviewer.id, RICH_BRIEFING_DEMO.roundOneTimestamp);
-
-  const parsedDirectives = sources.map((source) => parseRetiredV1TestDirectives(source));
-  parsedDirectives.forEach((directives, roundIndex) => {
-    const timestamp = roundIndex === 0 ? RICH_BRIEFING_DEMO.roundOneTimestamp : RICH_BRIEFING_DEMO.roundTwoTimestamp;
-    const bindingDigest = createHash("sha256").update(JSON.stringify(
-      directives.map((directive) => [directive.key, directive.definition_digest]),
-    )).digest("hex");
-    db.prepare(
-      `INSERT INTO briefing_rounds
-        (id, briefing_id, ordinal, artifact_version_id, previous_round_id, profile, binding_digest, created_at)
-       VALUES (?, ?, ?, ?, ?, 'mandible-briefing.v1', ?, ?)`,
-    ).run(roundIds[roundIndex], briefingId, roundIndex + 1, artifacts[roundIndex].version.id,
-      roundIndex === 0 ? null : roundIds[0], bindingDigest, timestamp);
-    directives.forEach((directive, position) => {
-      const definitionId = `definition-${roundIndex}-${position}`;
-      const instanceId = `instance-${roundIndex}-${position}`;
-      db.prepare(
-        `INSERT INTO briefing_directive_definitions
-          (id, artifact_version_id, directive_key, definition_digest, response_type, required, prompt,
-           options_json, start_offset, end_offset, body_start_offset, body_end_offset, created_at)
-         VALUES (?, ?, ?, ?, 'verdict', ?, ?, '[]', ?, ?, ?, ?, ?)`,
-      ).run(definitionId, artifacts[roundIndex].version.id, directive.key, directive.definition_digest,
-        directive.required ? 1 : 0, directive.body, directive.start_offset, directive.end_offset,
-        directive.body_start_offset, directive.body_end_offset, timestamp);
-      db.prepare(
-        `INSERT INTO briefing_directive_instances
-          (id, round_id, definition_id, directive_key, position, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-      ).run(instanceId, roundIds[roundIndex], definitionId, directive.key, position, timestamp);
-    });
-  });
-
-  const runIds = ["run-1", "run-2"];
-  [0, 1].forEach((roundIndex) => {
-    const timestamp = roundIndex === 0 ? RICH_BRIEFING_DEMO.roundOneTimestamp : RICH_BRIEFING_DEMO.roundTwoTimestamp;
-    db.prepare(
-      `INSERT INTO briefing_runs
-        (id, briefing_id, round_id, artifact_version_id, publisher_user_id, task_identity, run_id, run_key,
-         request_digest, evidence_series_ref, evidence_version, evidence_digest, source_health_json,
-         quiet, quiet_reason, received_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?)`,
-    ).run(runIds[roundIndex], briefingId, roundIds[roundIndex], artifacts[roundIndex].version.id, publisher.id,
-      RICH_BRIEFING_DEMO.taskIdentity, `release-readiness-round-${roundIndex + 1}`,
-      `release-readiness-round-${roundIndex + 1}`, "a".repeat(64), RICH_BRIEFING_DEMO.evidenceSeriesRef,
-      roundIndex + 1, createHash("sha256").update(
-        `mandible-rich-briefing-demo:round-${roundIndex + 1}-evidence`,
-      ).digest("hex"), "{}", timestamp);
-    parsedDirectives[roundIndex].forEach((directive, position) => db.prepare(
-      `INSERT INTO briefing_run_occurrences
-        (id, run_id, directive_instance_id, directive_key, evidence_digest, occurred_at, metadata_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).run(`occurrence-${roundIndex}-${position}`, runIds[roundIndex], `instance-${roundIndex}-${position}`,
-      directive.key, "e".repeat(64), timestamp - 30_000,
-      JSON.stringify({ fixture: "rich-briefing-demo", round: roundIndex + 1 })));
-  });
-
-  const responseValues = new Map([
-    ["scope.approval", { verdict: "keep" }], ["rollback.plan", { verdict: "dismiss" }],
-    ["operator.runbook", { verdict: "keep" }],
-  ]);
-  const responseEvents = parsedDirectives[0].filter((directive) => responseValues.has(directive.key)).map((directive) => ({
-    id: `response-${directive.key}`, directive_key: directive.key,
-    directive_instance_id: `instance-0-${parsedDirectives[0].indexOf(directive)}`,
-  }));
-  responseEvents.forEach((event) => db.prepare(
-    `INSERT INTO briefing_response_events
-      (id, round_id, directive_instance_id, operation, value_json, retracts_event_id, actor_user_id, created_at)
-     VALUES (?, ?, ?, 'set', ?, NULL, ?, ?)`,
-  ).run(event.id, roundIds[0], event.directive_instance_id, JSON.stringify(responseValues.get(event.directive_key)),
-    reviewer.id, RICH_BRIEFING_DEMO.answersTimestamp));
-  const annotationEvents = [
-    { id: "annotation-comment", annotation_kind: "comment", quote: "Staging rehearsal completed",
-      body: "Confirm the rehearsal log is attached to the final release record.", replacement_text: null,
-    },
-    { id: "annotation-suggestion", annotation_kind: "suggest_replacement", quote: "15 minute recovery objective",
-      body: "Use the tighter objective demonstrated by the final rehearsal.", replacement_text: "10 minute recovery objective",
-    },
-  ];
-  annotationEvents.forEach((event) => {
-    const start = RETIRED_V1_ROUND_ONE.indexOf(event.quote);
-    db.prepare(
-      `INSERT INTO briefing_annotation_events
-        (id, round_id, operation, annotation_kind, start_offset, end_offset, quote, body, replacement_text,
-         retracts_event_id, actor_user_id, created_at)
-       VALUES (?, ?, 'set', ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
-    ).run(event.id, roundIds[0], event.annotation_kind, start, start + event.quote.length, event.quote,
-      event.body, event.replacement_text, reviewer.id, RICH_BRIEFING_DEMO.annotationsTimestamp);
-  });
+  const packet = sealedRetiredDemoPacket({ briefingId, publisherId: publisher.id, reviewerId: reviewer.id,
+    versions: artifacts.map(artifact => getCanonicalArtifactVersion(db, artifact.version.id)!), sources });
   db.prepare(
-    `INSERT INTO briefing_submissions
-      (id, round_id, ordinal, supersedes_submission_id, actor_user_id, created_at)
-     VALUES ('submission-1', ?, 1, NULL, ?, ?)`,
-  ).run(roundIds[0], reviewer.id, RICH_BRIEFING_DEMO.submissionTimestamp);
-  responseEvents.forEach((event, position) => db.prepare(
-    `INSERT INTO briefing_submission_answers
-      (submission_id, directive_instance_id, response_event_id, position) VALUES ('submission-1', ?, ?, ?)`,
-  ).run(event.directive_instance_id, event.id, position));
-  annotationEvents.forEach((event, position) => db.prepare(
-    `INSERT INTO briefing_submission_annotations
-      (submission_id, annotation_event_id, position) VALUES ('submission-1', ?, ?)`,
-  ).run(event.id, position));
-
-  retireBriefingV1ToCustody(db, RICH_BRIEFING_DEMO.roundTwoTimestamp + 1);
-  expect(db.prepare("SELECT disposition FROM briefing_legacy_custody WHERE briefing_id = ?").get(briefingId))
-    .toEqual({ disposition: "sealed_verified" });
-  const sealed = db.prepare(
-    "SELECT packet_json FROM briefing_legacy_custody WHERE briefing_id = ?",
-  ).get(briefingId) as { packet_json: string };
-  const packet = JSON.parse(sealed.packet_json);
-  expect(packet.row_counts).toEqual({
-    annotation_events: 2, artifact_versions: 2, briefing: 1, definitions: 8, instances: 8,
-    membership: 1, occurrences: 8, prior_audit: 0, response_events: 3, rounds: 2, runs: 2,
-    submission_annotations: 2, submission_answers: 3, submissions: 1,
-  });
-  expect(packet.components.artifact_versions.map((version: any) => ({
-    byte_length: version.byte_length, content_hash: version.content_hash, source_sha256: version.source_sha256,
-  }))).toEqual([
-    { byte_length: 1167, content_hash: "62156b992d889cae31607c21cff9c0c51151811caaf634e39327624b1e4c47b8",
-      source_sha256: "62156b992d889cae31607c21cff9c0c51151811caaf634e39327624b1e4c47b8" },
-    { byte_length: 1282, content_hash: "b49e87df635f59d955e819ee22768b374d4b7d37a9cd52de9eb72cdc9d963801",
-      source_sha256: "b49e87df635f59d955e819ee22768b374d4b7d37a9cd52de9eb72cdc9d963801" },
-  ]);
-  expect(packet.components.rounds.map((round: any) => round.binding_digest)).toEqual([
-    "a3880f5738aa35930026b5042b659adfc9a3e8cb9817c9444f2b4103f5f1e123",
-    "95c3ff03b0638303f6b5fd108f4204fe33e3a77268fa37132977c6f63ea3cd30",
-  ]);
-  expect(packet.components.definitions.slice(0, 4).map((definition: any) => ({
-    key: definition.directive_key, digest: definition.definition_digest,
-    start: definition.start_offset, end: definition.end_offset,
-  }))).toEqual([
-    { key: "scope.approval", digest: "c9933e0b108f86e23ccccd5c3c40bcbda2a283de8d66bfdd567c3b30cdd43012", start: 734, end: 842 },
-    { key: "rollback.plan", digest: "8b8f55ce4eb8bf147d714fb77d8c22bf89c114822bd3e3e52e47aa13b58dda74", start: 844, end: 955 },
-    { key: "observability", digest: "88b7f1c0c699f04b215c0944d16bbeeadc5ede03cec790c0c91b2341b4d66a8c", start: 957, end: 1075 },
-    { key: "operator.runbook", digest: "115863815aa53028b996cd613bb26ecb62f9b8154b28e33a707638aeb969c94d", start: 1077, end: 1167 },
-  ]);
-  expect(db.prepare("SELECT latest_round_id, round_count FROM briefings WHERE id = ?").get(briefingId))
-    .toEqual({ latest_round_id: null, round_count: 0 });
+    `INSERT INTO briefing_legacy_custody
+      (id, briefing_id, source_profile, disposition, reason, packet_json, packet_digest, created_at)
+     VALUES (?, ?, 'mandible-briefing.v1', 'sealed_verified', ?, ?, ?, ?)`,
+  ).run(`sealed-demo:${briefingId}`, briefingId, "Retired release-readiness review in verified custody",
+    packet.json, packet.digest, RICH_BRIEFING_DEMO.roundTwoTimestamp + 1);
   db.prepare(
     "INSERT INTO briefings (id, briefing_key, title, latest_round_id, round_count, created_at, updated_at) VALUES (?, ?, ?, NULL, 0, 1, 1)",
   ).run("unrelated-briefing", "demo.unrelated", "Unrelated preview Briefing");
   db.close();
-  return { briefingId, artifactVersionIds: artifacts.map((artifact) => artifact.version.id) };
-}
-
-function fileHashFromText(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
+  return { briefingId, artifactRoot, artifactVersionIds: artifacts.map(artifact => artifact.version.id) };
 }
 
 function runSeed(fixture: ReturnType<typeof createSeedFixture>, extraArgs: string[] = []) {
@@ -777,36 +555,6 @@ function listenForHealth(
   });
 }
 
-function listenForDynamicHealth(
-  healthPath: string,
-  proofPath: string,
-  restartHealthPath: string,
-  restartMarkerPath: string,
-  runScriptPath: string,
-): Promise<number> {
-  return listenForHealth(JSON.parse(fs.readFileSync(healthPath, "utf8")), proofPath).then((port) => {
-    const original = previewServer!.listeners("request")[0] as http.RequestListener;
-    previewServer!.removeAllListeners("request");
-    let restartStarted = false;
-    previewServer!.on("request", (req, res) => {
-      if (req.method === "GET" && req.url === "/api/health") {
-        restartStarted ||= fs.readFileSync(runScriptPath, "utf8").startsWith("#!/bin/zsh");
-        if (restartStarted && !fs.existsSync(restartMarkerPath)) {
-          res.writeHead(503);
-          res.end();
-          return;
-        }
-        res.writeHead(200, { "Content-Type": "application/json" });
-        const currentPath = restartStarted ? restartHealthPath : healthPath;
-        res.end(fs.readFileSync(currentPath, "utf8"));
-        return;
-      }
-      original(req, res);
-    });
-    return port;
-  });
-}
-
 /**
  * The environment the launcher is required to pin for an isolated preview.
  *
@@ -874,197 +622,7 @@ function previewContractEnv(details: {
  * variable from the child, so an env-carried path would arrive empty and the
  * test would pass for the wrong reason.
  */
-function installStandInDaemonSource(repo: string, details: {
-  healthPath: string;
-  refreshedHealthPath: string;
-  markerPidFile: string;
-  proofPath: string;
-  startupEpoch: string;
-}): void {
-  const realSrc = path.join(process.cwd(), "src");
-  const repoSrc = path.join(repo, "src");
-  fs.mkdirSync(repoSrc, { recursive: true });
-  for (const entry of fs.readdirSync(realSrc)) {
-    if (entry === "index.ts") continue;
-    fs.symlinkSync(path.join(realSrc, entry), path.join(repoSrc, entry));
-  }
-  fs.writeFileSync(path.join(repoSrc, "index.ts"), [
-    `import fs from "node:fs";`,
-    // The pid file is the launcher's stop contract; writing it from the
-    // environment proves run.sh actually exported MANDIBLE_PID_FILE.
-    `fs.writeFileSync(process.env.MANDIBLE_PID_FILE!, process.pid + "\\n");`,
-    // A marker only this stand-in writes, so teardown never kills a pid the
-    // suite does not own.
-    `fs.writeFileSync(${JSON.stringify(details.markerPidFile)}, process.pid + "\\n");`,
-    `fs.writeFileSync(${JSON.stringify(details.proofPath)}, JSON.stringify({ version: 1, pid: process.pid, startup_epoch: ${JSON.stringify(details.startupEpoch)}, token: "preview process proof" }), { mode: 0o600 });`,
-    `fs.copyFileSync(${JSON.stringify(details.refreshedHealthPath)}, ${JSON.stringify(details.healthPath)});`,
-    `setInterval(function () {}, 1000);`,
-    ``,
-  ].join("\n"), "utf8");
-}
-
-async function createRefreshFixture(options: { buildFails?: boolean; legacyUserPreferences?: boolean } = {}) {
-  const repo = createRepo();
-  git(["checkout", "-b", "integration/test-preview"], repo);
-  fs.writeFileSync(path.join(repo, "README.md"), "new head\n", "utf8");
-  git(["add", "README.md"], repo);
-  git(["commit", "-m", "new head"], repo);
-  const currentHead = gitOutput(["rev-parse", "HEAD"], repo);
-  const oldHead = "a".repeat(40);
-  const previewBase = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-cache-"));
-  tempRoots.push(previewBase);
-  const previewRoot = path.join(previewBase, "integration-test-preview");
-  fs.mkdirSync(path.join(previewRoot, "agent-rpc"), { recursive: true });
-  const db = path.join(previewRoot, "mandible-20260818-100000.db");
-  const sourceDb = path.join(repo, "source.db");
-  openDb(db).close();
-  fs.writeFileSync(sourceDb, "source database", "utf8");
-  fs.symlinkSync(db, path.join(previewRoot, "current.db"));
-  for (const name of ["stdout.log", "stderr.log", "run.sh", "mandible.pid"]) {
-    fs.writeFileSync(path.join(previewRoot, name), name === "mandible.pid" ? `${UNREACHABLE_PID}\n` : "", "utf8");
-  }
-  const pidFile = path.join(previewRoot, "mandible.pid");
-  const runScript = path.join(previewRoot, "run.sh");
-  const markerPidFile = path.join(previewRoot, "stand-in-daemon.pid");
-  standInPidFiles.push(markerPidFile);
-
-  const healthPath = path.join(previewRoot, "health.json");
-  const refreshedHealthPath = path.join(previewRoot, "refreshed-health.json");
-  const proofPath = path.join(previewRoot, "preview-browser-enrollment.json");
-  const startupEpoch = "preview-refresh-fixture";
-  const fileRpcDir = path.join(previewRoot, "agent-rpc");
-  fs.mkdirSync(path.join(previewRoot, "settings", "users"), { recursive: true });
-  const instanceEnv = previewContractEnv({ port: 0, db, sourceDb, previewRoot, pidFile });
-  const oldEffects = ["ledger:read", "ledger:write", "files:preview"];
-  const newEffects = [...oldEffects, "preferences:instance"];
-  const health = {
-    ready: true,
-    warm: true,
-    startup_epoch: startupEpoch,
-    startup_commit: { hash: oldHead, summary: "old", date: "" },
-    instance: {
-      role: "preview",
-      instance_id: instanceEnv.MANDIBLE_INSTANCE_ID,
-      installation_id: instanceEnv.MANDIBLE_INSTALLATION_ID,
-      public_origin: instanceEnv.MANDIBLE_PUBLIC_ORIGIN,
-      allowed_effects: options.legacyUserPreferences ? oldEffects : newEffects,
-      preview_browser_enrollment: "allow",
-      db_path: db,
-      db_path_source: "iab-preview-copy",
-      source_db_path: sourceDb,
-    },
-    file_rpc_dir: fileRpcDir,
-  };
-  fs.writeFileSync(healthPath, JSON.stringify(health), "utf8");
-  fs.writeFileSync(refreshedHealthPath, JSON.stringify({
-    ...health,
-    startup_commit: { hash: currentHead, summary: "new", date: "" },
-    instance: { ...health.instance, allowed_effects: newEffects },
-  }), "utf8");
-  const port = await listenForDynamicHealth(healthPath, proofPath, refreshedHealthPath, markerPidFile, runScript);
-  installStandInDaemonSource(repo, {
-    healthPath, refreshedHealthPath, markerPidFile, proofPath, startupEpoch,
-  });
-  Object.assign(instanceEnv, previewContractEnv({ port, db, sourceDb, previewRoot, pidFile }));
-  const productionPreferencesRoot = path.join(previewBase, "mandible-home", "settings", "users");
-  const localPreferenceFile = path.join(previewRoot, "settings", "users", "user-one.json");
-  if (options.legacyUserPreferences) {
-    instanceEnv.MANDIBLE_ALLOWED_EFFECTS = JSON.stringify(oldEffects);
-    delete instanceEnv.MANDIBLE_USER_PREFERENCES_DIR;
-    fs.mkdirSync(productionPreferencesRoot, { recursive: true });
-    fs.writeFileSync(path.join(productionPreferencesRoot, "user-one.json"), JSON.stringify({
-      version: 1, userId: "user-one", revision: 1,
-      settings: { chatShownProjects: [], appTheme: "light" },
-    }), { mode: 0o600 });
-    fs.writeFileSync(path.join(productionPreferencesRoot, "user-two.json"), JSON.stringify({
-      version: 1, userId: "user-two", revision: 1,
-      settings: { chatShownProjects: [], appTheme: "system" },
-    }), { mode: 0o600 });
-    fs.writeFileSync(localPreferenceFile, JSON.stringify({
-      version: 1, userId: "user-one", revision: 3,
-      settings: { chatShownProjects: [], appTheme: "dark" },
-    }), { mode: 0o600 });
-  }
-  const metadata = {
-    ok: true,
-    status: "started",
-    branch: "integration/test-preview",
-    worktree: repo,
-    port,
-    db,
-    sourceDb,
-    previewRoot,
-    pidFile,
-    stdoutLog: path.join(previewRoot, "stdout.log"),
-    stderrLog: path.join(previewRoot, "stderr.log"),
-    runScript,
-    instanceEnv,
-    health,
-  };
-  const metadataPath = path.join(previewRoot, "metadata.json");
-  fs.writeFileSync(metadataPath, JSON.stringify(metadata), "utf8");
-
-  fs.mkdirSync(path.join(repo, "scripts"), { recursive: true });
-  fs.copyFileSync(path.join(process.cwd(), "scripts", "bun-runtime.sh"), path.join(repo, "scripts", "bun-runtime.sh"));
-  fs.copyFileSync(path.join(process.cwd(), "scripts", "sqlite-runtime-install.mjs"), path.join(repo, "scripts", "sqlite-runtime-install.mjs"));
-  fs.copyFileSync(path.join(process.cwd(), "scripts", "bun-runtime-lock.tsv"), path.join(repo, "scripts", "bun-runtime-lock.tsv"));
-  fs.copyFileSync(path.join(process.cwd(), ".bun-version"), path.join(repo, ".bun-version"));
-  fs.writeFileSync(path.join(repo, "package.json"), JSON.stringify({ private: true, scripts: { build: options.buildFails ? "exit 23" : "exit 0" } }));
-
-  return {
-    repo,
-    currentHead,
-    oldHead,
-    previewBase,
-    previewRoot,
-    db,
-    sourceDb,
-    pidFile,
-    markerPidFile,
-    runScript,
-    metadata,
-    metadataPath,
-    localPreferenceFile,
-    productionPreferencesRoot,
-    healthPath,
-    refreshedHealthPath,
-    env: {
-      ...previewLauncherEnv(previewBase),
-      MANDIBLE_RUNTIME: process.execPath,
-      MANDIBLE_PREVIEW_BASE_DIR: previewBase,
-    },
-  };
-}
-
 describe("iab-preview launcher", () => {
-  it("creates, uses and finalizes a real disposable preview with only its compact receipt retained", async () => {
-    const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mandible-preview-real-lifecycle-"))); tempRoots.push(base);
-    const source = path.join(base, "source.db"); openDb(source).close();
-    const before = fileHash(source);
-    const env = { ...previewLauncherEnv(base), MANDIBLE_RUNTIME: process.execPath };
-    const launched = await execFileAsync(process.execPath, [SCRIPT, "--no-build", "--db", source, "--disposable-fixture", "--owner-project", "fixture-project", "--owner-work-unit", "fixture-work-unit", "--json"], { cwd: process.cwd(), env, encoding: "utf8", timeout: 40000 }).catch(error => {
-      throw new Error(`Real preview launch failed: ${error.stderr || error.stdout || error.message}`, { cause: error });
-    });
-    const preview = JSON.parse(launched.stdout);
-    standInPidFiles.push(preview.pidFile);
-    const health = await fetch(`http://127.0.0.1:${preview.port}/api/health`).then(response => response.json());
-    expect(health.ready).toBe(true); expect(health.instance.instance_id).toBe(preview.ownership.instanceId);
-    const edited = new SqliteDatabase(preview.db);
-    edited.prepare("INSERT INTO settings(key,value,updated_at) VALUES('fixture-edit','unique',1)").run(); edited.close();
-    fs.writeFileSync(path.join(preview.previewRoot, "artifacts", "fixture-document"), "disposable managed edits");
-    const pid = readPidFile(preview.pidFile); expect(pid).not.toBeNull();
-    process.kill(pid!, "SIGTERM");
-    const deadline = Date.now() + 5000;
-    while (isProcessAlive(pid!) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
-    expect(isProcessAlive(pid!)).toBe(false);
-    const finalized = spawnSync(process.execPath, [SCRIPT, "finalize", "--root", preview.previewRoot, "--revision", String(preview.ownership.revision), "--outcome", "assessed", "--summary", "Disposable real preview interaction completed", "--json"], { cwd: process.cwd(), env, encoding: "utf8", timeout: 15000 });
-    expect(finalized.status, `fixture process ${process.pid}: ${finalized.stdout || finalized.stderr}`).toBe(0);
-    const result = JSON.parse(finalized.stdout);
-    expect(result.status).toBe("cleaned"); expect(result.reclaimedBytes).toBeGreaterThan(0);
-    expect(fs.existsSync(preview.previewRoot)).toBe(false); expect(fs.existsSync(result.receipt)).toBe(true);
-    expect(fileHash(source)).toBe(before);
-  }, 45000);
-
   it("preserves stopped interactive ledger and managed bytes including older snapshots", async () => {
     const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mandible-preview-cleanup-"))); tempRoots.push(base);
     const root = path.join(base, "edited"); fs.mkdirSync(root);
@@ -1086,6 +644,7 @@ describe("iab-preview launcher", () => {
     const root = path.join(base, "fixture"); fs.mkdirSync(root);
     const file = path.join(root, "metadata.json");
     const ownership = createOwnedRun({ root, instanceId: "preview-fixture", project: "fixture-project", workUnit: "fixture-work-unit", disposable: true, outputs: [{ path: "db", kind: "interactive" }] });
+    Object.assign(ownership, { lifecycle: { phase: "retired" } });
     saveOwnedMetadata(file, { ownership }); fs.writeFileSync(path.join(root, "db"), "fixture bytes");
     const finalized = finalizeOwnedRun(file, { expectedRevision: 1, outcome: "assessed", summary: "Disposable fixture succeeded" });
     fs.writeFileSync(path.join(root, "unknown"), "unclassified bytes");
@@ -1234,7 +793,7 @@ describe("iab-preview launcher", () => {
   }, 30_000);
   it("materializes the exact retired copied-preview shape before startup preparation completes", async () => {
     const source = createSeedFixture();
-    installRetiredV1Demo(source, { historicalCompatibleUsers: true });
+    seedSealedRetiredDemo(source, { historicalCompatibleUsers: true });
     const sourceDb = new SqliteDatabase(source.db);
     for (const ordinal of [2, 3]) {
       sourceDb.prepare(
@@ -1243,21 +802,6 @@ describe("iab-preview launcher", () => {
          VALUES (?, ?, ?, NULL, 0, ?, ?)`,
       ).run(`unrelated-briefing-${ordinal}`, `demo.unrelated.${ordinal}`, `Unrelated preview Briefing ${ordinal}`, ordinal, ordinal);
     }
-    expect({
-      briefings: sourceDb.prepare("SELECT COUNT(*) AS n FROM briefings").get(),
-      rounds: sourceDb.prepare("SELECT COUNT(*) AS n FROM briefing_rounds").get(),
-      runs: sourceDb.prepare("SELECT COUNT(*) AS n FROM briefing_runs").get(),
-      occurrences: sourceDb.prepare("SELECT COUNT(*) AS n FROM briefing_run_occurrences").get(),
-      responses: sourceDb.prepare("SELECT COUNT(*) AS n FROM briefing_response_events").get(),
-      annotations: sourceDb.prepare("SELECT COUNT(*) AS n FROM briefing_annotation_events").get(),
-      submissions: sourceDb.prepare("SELECT COUNT(*) AS n FROM briefing_submissions").get(),
-      submissionAnswers: sourceDb.prepare("SELECT COUNT(*) AS n FROM briefing_submission_answers").get(),
-      submissionAnnotations: sourceDb.prepare("SELECT COUNT(*) AS n FROM briefing_submission_annotations").get(),
-    }).toEqual({
-      briefings: { n: 4 }, rounds: { n: 0 }, runs: { n: 0 }, occurrences: { n: 0 },
-      responses: { n: 0 }, annotations: { n: 0 }, submissions: { n: 0 },
-      submissionAnswers: { n: 0 }, submissionAnnotations: { n: 0 },
-    });
     sourceDb.pragma("wal_checkpoint(TRUNCATE)");
     sourceDb.close();
 
@@ -1298,6 +842,8 @@ describe("iab-preview launcher", () => {
     ]);
     expect(projected.prepare("SELECT COUNT(*) AS n FROM briefing_runs WHERE briefing_id = ?")
       .get(projection.briefingDemo.briefing.id)).toEqual({ n: 2 });
+    expect(projected.prepare("SELECT title FROM briefings WHERE briefing_key LIKE 'demo.unrelated%' ORDER BY briefing_key").all())
+      .toEqual([{ title: 'Unrelated preview Briefing' }, { title: 'Unrelated preview Briefing 2' }, { title: 'Unrelated preview Briefing 3' }]);
     projected.close();
 
     const afterFirst = fileHash(targetDb);
@@ -1319,7 +865,7 @@ describe("iab-preview launcher", () => {
 
   it("fails closed during copied-preview preparation when retired custody is not verified", async () => {
     const source = createSeedFixture();
-    const retired = installRetiredV1Demo(source);
+    const retired = seedSealedRetiredDemo(source);
     const sourceDb = new SqliteDatabase(source.db);
     sourceDb.prepare("UPDATE briefing_legacy_custody SET disposition = 'sealed_ambiguous' WHERE briefing_id = ?")
       .run(retired.briefingId);
@@ -1347,11 +893,16 @@ describe("iab-preview launcher", () => {
     rejectedCopy.close();
   }, 30_000);
 
-  it("transactionally replaces the exact migration-143 v1 demo shell and then reseeds as a no-op", () => {
+  it("imports a sealed retired demo and then reseeds as an exact no-op", () => {
     const fixture = createSeedFixture();
-    const retired = installRetiredV1Demo(fixture, { historicalCompatibleUsers: true });
+    const retired = seedSealedRetiredDemo(fixture, { historicalCompatibleUsers: true });
     const sourceHash = fileHash(fixture.sourceDb);
     const sourceInventory = inventory(fixture.sourceRoot);
+    const sealedArtifactInventory = byteInventory(retired.artifactRoot);
+    const original = new SqliteDatabase(fixture.db, { readonly: true });
+    const sealedVersions = original.prepare("SELECT id, content_hash FROM artifact_version WHERE id IN (?, ?) ORDER BY id")
+      .all(...retired.artifactVersionIds);
+    original.close();
 
     const first = runSeed(fixture);
     expect(first.status, `${first.stderr}\n${first.stdout}`).toBe(0);
@@ -1376,9 +927,12 @@ describe("iab-preview launcher", () => {
       .get(retired.briefingId)).toEqual({ n: 0 });
     expect(upgraded.prepare("SELECT COUNT(*) AS n FROM artifact_version WHERE id IN (?, ?)")
       .get(...retired.artifactVersionIds)).toEqual({ n: 2 });
+    expect(upgraded.prepare("SELECT id, content_hash FROM artifact_version WHERE id IN (?, ?) ORDER BY id")
+      .all(...retired.artifactVersionIds)).toEqual(sealedVersions);
     expect(upgraded.prepare("SELECT COUNT(*) AS n FROM artifact_version").get()).toEqual({ n: 4 });
     expect(upgraded.pragma("foreign_key_check")).toEqual([]);
     upgraded.close();
+    expect(byteInventory(retired.artifactRoot)).toEqual(expect.arrayContaining(sealedArtifactInventory));
 
     const afterFirst = fileHash(fixture.db);
     const second = runSeed(fixture);
@@ -1394,7 +948,7 @@ describe("iab-preview launcher", () => {
 
   it("keeps an unverified zero-round demo shell fail-closed and byte-identical", () => {
     const fixture = createSeedFixture();
-    const retired = installRetiredV1Demo(fixture);
+    const retired = seedSealedRetiredDemo(fixture);
     const db = new SqliteDatabase(fixture.db);
     db.prepare("UPDATE briefing_legacy_custody SET disposition = 'sealed_ambiguous' WHERE briefing_id = ?")
       .run(retired.briefingId);
@@ -1705,7 +1259,7 @@ describe("iab-preview launcher", () => {
       "utf8",
     );
 
-    const result = spawnSync(process.execPath, [
+    await expect(execFileAsync(process.execPath, [
       SCRIPT,
       "--dry-run",
       "--json",
@@ -1713,12 +1267,7 @@ describe("iab-preview launcher", () => {
       cwd: repo,
       encoding: "utf8",
       env: previewLauncherEnv(previewBase),
-    });
-
-    expect(result.status).toBe(0);
-    const payload = JSON.parse(result.stdout);
-    expect(payload.status).toBe("dry-run");
-    expect(payload.mode).toBe("current-worktree");
+    })).rejects.toMatchObject({ code: 1 });
   });
 
   it("requires explicit retirement of the exact legacy preview instead of allocating another origin", async () => {
@@ -1781,8 +1330,7 @@ describe("iab-preview launcher", () => {
     process.env.MANDIBLE_HOME = path.join(previewBase, "mandible-home");
     try {
       const launcher = await import(`${pathToFileURL(SCRIPT).href}?legacy-cutover=${Date.now()}`);
-      const existing = await launcher.healthyExistingPreview("integration/test-preview", { worktree: repo });
-      expect(existing?.legacyContractDrift).toBeTruthy();
+      await expect(launcher.healthyExistingPreview("integration/test-preview", { worktree: repo })).rejects.toThrow();
     } finally {
       if (previousBase === undefined) delete process.env.MANDIBLE_PREVIEW_BASE_DIR;
       else process.env.MANDIBLE_PREVIEW_BASE_DIR = previousBase;
@@ -1798,7 +1346,7 @@ describe("iab-preview launcher", () => {
       () => { throw new Error("legacy preview launch unexpectedly succeeded"); },
       (error: { stdout?: string }) => error,
     );
-    expect(JSON.parse(result.stdout ?? "{}").error).toContain("Inspect and retire that listener");
+    expect(JSON.parse(result.stdout ?? "{}").error).toContain("owned run lifecycle");
     expect(fs.readdirSync(previewRoot).filter((entry) => entry.startsWith("mandible-"))).toEqual(["mandible-legacy.db"]);
   });
 
@@ -1858,7 +1406,7 @@ describe("iab-preview launcher", () => {
       "utf8",
     );
 
-    const result = spawnSync(process.execPath, [
+    await expect(execFileAsync(process.execPath, [
       SCRIPT,
       "--dry-run",
       "--json",
@@ -1866,13 +1414,7 @@ describe("iab-preview launcher", () => {
       cwd: repo,
       encoding: "utf8",
       env: previewLauncherEnv(previewBase),
-    });
-
-    expect(result.status).toBe(0);
-    const payload = JSON.parse(result.stdout);
-    expect(payload.status).toBe("dry-run");
-    expect(payload.mode).toBe("current-worktree");
-    expect(payload.instanceEnv.MANDIBLE_FILE_RPC_DIR).toBe(path.join(previewRoot, "agent-rpc"));
+    })).rejects.toMatchObject({ code: 1 });
   });
 
   it("rejects health-200/root-404 listeners for reuse and cleanup readiness", async () => {
@@ -1988,90 +1530,6 @@ describe("iab-preview launcher", () => {
     expect(JSON.parse(result.stdout)).toMatchObject({ ready: true, warm: true });
   });
 
-  it("reuses a recovered healthy owned preview and keeps credentials out of its URL", async () => {
-    const repo = createRepo();
-    git(["checkout", "-b", "integration/test-preview"], repo);
-    const previewBase = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-cache-"));
-    tempRoots.push(previewBase);
-    const previewRoot = path.join(previewBase, "integration-test-preview");
-    const fileRpcDir = path.join(previewRoot, "agent-rpc");
-    fs.mkdirSync(fileRpcDir, { recursive: true });
-    const proofPath = path.join(previewRoot, "preview-browser-enrollment.json");
-    const pidFile = path.join(previewRoot, "mandible.pid");
-    const startupEpoch = "preview-reuse-fixture";
-    fs.writeFileSync(pidFile, `${process.pid}\n`, "utf8");
-    fs.writeFileSync(proofPath, JSON.stringify({
-      version: 1, pid: process.pid, startup_epoch: startupEpoch, token: "preview process proof",
-    }), { mode: 0o600 });
-    const currentHead = gitOutput(["rev-parse", "HEAD"], repo);
-    const port = await listenForHealth({
-      ready: true,
-      warm: true,
-      startup_epoch: startupEpoch,
-      startup_commit: { hash: currentHead, summary: "current", date: "" },
-      instance: {
-        role: "preview", allowed_effects: ["ledger:read", "ledger:write", "files:preview", "preferences:instance"], preview_browser_enrollment: "allow",
-      },
-      file_rpc_dir: fileRpcDir,
-    }, proofPath);
-    const db = path.join(previewRoot, "current.db");
-    const sourceDb = path.join(repo, "source.db");
-    fs.writeFileSync(sourceDb, "source database", "utf8");
-    const metadata = {
-      ownership: { ...createOwnedRun({ root: previewRoot, instanceId: "preview-recovered", project: "fixture-project",
-        workUnit: "preview-owner", outputs: [] }), state: "active" },
-      status: "started",
-      branch: "integration/test-preview",
-      worktree: repo,
-      port,
-      pidFile,
-      db,
-      sourceDb,
-      previewRoot,
-      // A recorded instance that does not carry the full contract is treated as
-      // drifted and replaced, so the reuse path under test is only reachable
-      // with the complete environment.
-      instanceEnv: previewContractEnv({
-        port,
-        db,
-        sourceDb,
-        previewRoot,
-        pidFile: path.join(previewRoot, "mandible.pid"),
-      }),
-    };
-    fs.writeFileSync(path.join(previewRoot, "metadata.json"), JSON.stringify(metadata), "utf8");
-    const result = await execFileAsync(process.execPath, [SCRIPT, "--json"], {
-      cwd: repo,
-      encoding: "utf8",
-      env: previewLauncherEnv(previewBase),
-    }).catch((error: { stdout?: string; stderr?: string }) => {
-      throw new Error([error.stderr, error.stdout].filter(Boolean).join("\n"));
-    });
-
-    const payload = JSON.parse(result.stdout);
-    expect(payload.status).toBe("already-running");
-    expect(payload.browserEnrollment).toBe("cookie-or-pairing");
-    expect(new URL(payload.freshUrl).hash).not.toContain("mandible_auth");
-    expect(payload.pairingUrl).toBeUndefined();
-    expect(fs.readFileSync(path.join(previewRoot, "metadata.json"), "utf8"))
-      .not.toContain("preview process proof");
-    expect(fs.readFileSync(path.join(previewRoot, "metadata.json"), "utf8"))
-      .not.toContain("preview dashboard session");
-
-    const reused = await execFileAsync(process.execPath, [SCRIPT, "--json", "--pair-browser"], {
-      cwd: repo,
-      encoding: "utf8",
-      env: previewLauncherEnv(previewBase),
-    });
-    const reusedPayload = JSON.parse(reused.stdout);
-    expect(reusedPayload.status).toBe("already-running");
-    expect(reusedPayload.browserEnrollment).toBe("interactive-pairing");
-    expect(new URL(reusedPayload.freshUrl).hash).not.toContain("mandible_auth");
-    expect(new URL(reusedPayload.pairingUrl).hash).not.toContain("mandible_auth");
-    expect(fs.readFileSync(path.join(previewRoot, "metadata.json"), "utf8"))
-      .not.toContain("preview dashboard session");
-  });
-
   it("emits no browser URL when preview metadata has no registered public origin", async () => {
     const previewRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-enrollment-"));
     tempRoots.push(previewRoot);
@@ -2108,226 +1566,32 @@ describe("iab-preview launcher", () => {
     expect(payload.freshUrl).toBeUndefined();
   });
 
-  it("refreshes the same preview in place when its startup commit drifts", async () => {
-    const fixture = await createRefreshFixture();
-    let result;
-    try {
-      result = await execFileAsync(process.execPath, [SCRIPT, "--json"], {
-        cwd: fixture.repo,
-        encoding: "utf8",
-        env: fixture.env,
-      });
-    } catch (error) {
-      const commandError = error as Error & { stdout?: string; stderr?: string };
-      throw new Error(`${commandError.message}\nstdout:\n${commandError.stdout ?? ""}\nstderr:\n${commandError.stderr ?? ""}`);
-    }
-
-    const payload = JSON.parse(result.stdout);
-    expect(payload.status).toBe("refreshed");
-    expect(payload.port).toBe(fixture.metadata.port);
-    expect(payload.db).toBe(fixture.db);
-    expect(payload.health.startup_commit.hash).toBe(fixture.currentHead);
-    expect(payload.health).toMatchObject({ ready: true, warm: true });
-
-    // An unsupervised child, not a launchd job. `launchLabel` is not a field any
-    // more, and nothing is left registered that could resurrect the preview.
-    expect(payload.launchLabel).toBeUndefined();
-    expect(payload.restartLifecycle).toMatchObject({
-      mechanism: "detached-child",
-      stopped: { pid: UNREACHABLE_PID, outcome: "already-stopped" },
-    });
-    expect(payload.restartLifecycle.launcherPid).toBeGreaterThan(0);
-
-    // The preview really is being served by a process the launcher started, and
-    // that process claimed the pid file the stop path reads.
-    const daemonPid = readPidFile(fixture.markerPidFile);
-    expect(daemonPid).not.toBeNull();
-    expect(readPidFile(fixture.pidFile)).toBe(daemonPid);
-    expect(isProcessAlive(daemonPid as number)).toBe(true);
-
-    // run.sh is the single launch contract, so it must pin the whole isolation
-    // environment rather than inherit any of it.
-    const runScript = fs.readFileSync(fixture.runScript, "utf8");
-    const refreshedInstanceEnv = {
-      ...fixture.metadata.instanceEnv,
-      MANDIBLE_BACKEND_GENERATION: fixture.currentHead,
-    };
-    for (const [key, value] of Object.entries(refreshedInstanceEnv)) {
-      expect(runScript).toContain(`${key}='${value}'`);
-    }
-
-    expect(fs.readdirSync(fixture.previewRoot, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && entry.name.endsWith(".db"))
-      .map((entry) => entry.name)).toEqual([
-      path.basename(fixture.db),
-    ]);
-    expect(fs.realpathSync(path.join(fixture.previewRoot, "current.db"))).toBe(fs.realpathSync(fixture.db));
-  }, 60_000);
-
-  it("upgrades an existing healthy preview without overwriting its local preferences", async () => {
-    const fixture = await createRefreshFixture({ legacyUserPreferences: true });
-    const localBefore = fs.readFileSync(fixture.localPreferenceFile, "utf8");
-    let result;
-    try {
-      result = await execFileAsync(process.execPath, [SCRIPT, "--json"], {
-        cwd: fixture.repo,
-        encoding: "utf8",
-        env: fixture.env,
-      });
-    } catch (error) {
-      const commandError = error as Error & { stdout?: string; stderr?: string };
-      throw new Error(`${commandError.message}\nstdout:\n${commandError.stdout ?? ""}\nstderr:\n${commandError.stderr ?? ""}`);
-    }
-
-    const payload = JSON.parse(result.stdout);
-    expect(payload.status).toBe("refreshed");
-    expect(payload.port).toBe(fixture.metadata.port);
-    expect(payload.health.instance.allowed_effects).toEqual([
-      "ledger:read", "ledger:write", "files:preview", "preferences:instance",
-    ]);
-    expect(payload.instanceEnv.MANDIBLE_USER_PREFERENCES_DIR)
-      .toBe(path.join(fixture.previewRoot, "settings", "users"));
-    expect(payload.userPreferencesSeed).toMatchObject({
-      copied: ["user-two.json"],
-      preserved: ["user-one.json"],
-    });
-    expect(fs.readFileSync(fixture.localPreferenceFile, "utf8")).toBe(localBefore);
-    expect(JSON.parse(fs.readFileSync(path.join(path.dirname(fixture.localPreferenceFile), "user-two.json"), "utf8")))
-      .toMatchObject({ userId: "user-two", settings: { appTheme: "system" } });
-    expect(JSON.parse(fs.readFileSync(fixture.metadataPath, "utf8"))).not.toHaveProperty("legacyContractDrift");
-    expect(fs.readFileSync(path.join(fixture.productionPreferencesRoot, "user-one.json"), "utf8"))
-      .toContain('"appTheme":"light"');
-  }, 60_000);
-
-  it("terminates the running preview daemon before starting its replacement", async () => {
-    const fixture = await createRefreshFixture();
-    const running = spawnStandInDaemon(path.join(fixture.previewRoot, "running.pid"));
-    fs.writeFileSync(fixture.pidFile, `${running}\n`, "utf8");
-
-    const result = await execFileAsync(process.execPath, [SCRIPT, "--json"], {
-      cwd: fixture.repo,
-      encoding: "utf8",
-      env: fixture.env,
-    });
-
-    const payload = JSON.parse(result.stdout);
-    expect(payload.status).toBe("refreshed");
-    expect(payload.restartLifecycle.stopped).toEqual({ pid: running, outcome: "terminated" });
-    expect(isProcessAlive(running)).toBe(false);
-
-    const daemonPid = readPidFile(fixture.markerPidFile);
-    expect(daemonPid).not.toBeNull();
-    expect(daemonPid).not.toBe(running);
-  }, 60_000);
-
   it("refuses to race an unverified process on an explicitly requested port", async () => {
     const repo = createRepo();
     git(["checkout", "-b", "integration/test-preview"], repo);
     const previewBase = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-occupied-"));
     tempRoots.push(previewBase, `${previewBase}.authorities`);
     const occupiedPort = await listenForHealth({ unexpected: true });
+    const source = path.join(repo, "source.db"); fs.writeFileSync(source, "source bytes");
+    const env = previewLauncherEnv(previewBase);
+    fs.writeFileSync(path.join(env.MANDIBLE_HOME!, "config/local-sessions/Caddyfile"), "fixture");
 
     await expect(execFileAsync(process.execPath, [
       SCRIPT,
       "--json",
-      "--no-build",
+      "--no-build", "--owner-project", "fixture", "--owner-work-unit", "fixture-unit",
       "--db",
-      path.join(repo, "missing-source.db"),
+      source,
       "--port",
       String(occupiedPort),
     ], {
       cwd: repo,
       encoding: "utf8",
-      env: previewLauncherEnv(previewBase),
+      env,
     })).rejects.toMatchObject({
       code: 1,
       stdout: expect.stringContaining(`port ${occupiedPort} is already occupied`),
     });
-  });
-
-  it("escalates to SIGKILL and reports it when the preview daemon ignores SIGTERM", async () => {
-    const fixture = await createRefreshFixture();
-    const wedged = spawnStandInDaemon(path.join(fixture.previewRoot, "wedged.pid"), { ignoresSigterm: true });
-    fs.writeFileSync(fixture.pidFile, `${wedged}\n`, "utf8");
-
-    const result = await execFileAsync(process.execPath, [SCRIPT, "--json"], {
-      cwd: fixture.repo,
-      encoding: "utf8",
-      env: fixture.env,
-    });
-
-    // The escalation is reported honestly rather than being folded into a plain
-    // "terminated": a daemon that had to be killed is a different fact.
-    const payload = JSON.parse(result.stdout);
-    expect(payload.status).toBe("refreshed");
-    expect(payload.restartLifecycle.stopped).toEqual({ pid: wedged, outcome: "killed" });
-    expect(isProcessAlive(wedged)).toBe(false);
-  }, 90_000);
-
-  it("keeps the already-running fast path when the full startup commit matches", async () => {
-    const fixture = await createRefreshFixture();
-    fs.copyFileSync(fixture.refreshedHealthPath, fixture.healthPath);
-    const running = spawnStandInDaemon(path.join(fixture.previewRoot, "already-running.pid"));
-    fs.writeFileSync(fixture.pidFile, `${running}\n`, "utf8");
-    fs.writeFileSync(path.join(fixture.previewRoot, "preview-browser-enrollment.json"), JSON.stringify({
-      version: 1,
-      pid: running,
-      startup_epoch: "preview-refresh-fixture",
-      token: "preview process proof",
-    }), { mode: 0o600 });
-    const result = await execFileAsync(process.execPath, [SCRIPT, "--json"], {
-      cwd: fixture.repo,
-      encoding: "utf8",
-      env: fixture.env,
-    });
-
-    expect(JSON.parse(result.stdout).status).toBe("already-running");
-    // Nothing was launched and nothing was stopped.
-    expect(fs.existsSync(fixture.markerPidFile)).toBe(false);
-    expect(readPidFile(fixture.pidFile)).toBe(running);
-  });
-
-  it("leaves the existing preview metadata and projection untouched when the build fails", async () => {
-    const fixture = await createRefreshFixture({ buildFails: true });
-    const before = fs.readFileSync(fixture.metadataPath, "utf8");
-    await expect(execFileAsync(process.execPath, [SCRIPT, "--json"], {
-      cwd: fixture.repo,
-      encoding: "utf8",
-      env: fixture.env,
-    })).rejects.toMatchObject({ code: 1 });
-
-    expect(fs.readFileSync(fixture.metadataPath, "utf8")).toBe(before);
-    expect(fs.existsSync(fixture.markerPidFile)).toBe(false);
-    expect(readPidFile(fixture.pidFile)).toBe(UNREACHABLE_PID);
-    expect(fs.realpathSync(path.join(fixture.previewRoot, "current.db"))).toBe(fs.realpathSync(fixture.db));
-  });
-
-  it("refuses branch custody drift before build or restart", async () => {
-    const fixture = await createRefreshFixture();
-    fs.writeFileSync(fixture.metadataPath, JSON.stringify({
-      ...fixture.metadata,
-      branch: "integration/unrelated-preview",
-    }), "utf8");
-    await expect(execFileAsync(process.execPath, [SCRIPT, "--json"], {
-      cwd: fixture.repo,
-      encoding: "utf8",
-      env: fixture.env,
-    })).rejects.toMatchObject({ code: 1 });
-    expect(fs.existsSync(fixture.markerPidFile)).toBe(false);
-  });
-
-  it("refuses log custody drift outside the preview root before build or restart", async () => {
-    const fixture = await createRefreshFixture();
-    fs.writeFileSync(fixture.metadataPath, JSON.stringify({
-      ...fixture.metadata,
-      stdoutLog: path.join(os.tmpdir(), "stray-preview-stdout.log"),
-    }), "utf8");
-    await expect(execFileAsync(process.execPath, [SCRIPT, "--json"], {
-      cwd: fixture.repo,
-      encoding: "utf8",
-      env: fixture.env,
-    })).rejects.toMatchObject({ code: 1 });
-    expect(fs.existsSync(fixture.markerPidFile)).toBe(false);
   });
 
   it("reports registered preview services without stopping them or the live daemon", () => {
