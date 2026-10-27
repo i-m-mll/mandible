@@ -1,3 +1,5 @@
+import { RUNTIME_HEALTH_PROBE_INTERVAL_MS } from "../scripts/runtime-probe-cadence.mjs";
+
 export const EVENT_LOOP_STALL_BUDGET_MS = 250;
 /**
  * The most one request may block the event loop, judged per route by
@@ -106,7 +108,7 @@ export async function observeRuntimeHealthCoverage<T>(options: {
       return { value, observation: { startedAt, mustCover, completedAt: now(), deadline }, samples: { initial: firstHealth, last: health }, performance };
     }
     if (now() >= deadline) throw new RuntimeHealthObservationError("stale_diagnostics", "Runtime diagnostics did not produce contiguous fresh samples covering the observation.", { startedAt, mustCover, deadline, initialSample: firstHealth, lastSample: health });
-    await wait(options.pollMs ?? 1_000);
+    await wait(options.pollMs ?? RUNTIME_HEALTH_PROBE_INTERVAL_MS);
     if (now() > deadline) throw new RuntimeHealthObservationError("observation_deadline", "Runtime health observation exceeded its fixed deadline.", { startedAt, mustCover, deadline, initialSample: firstHealth, lastSample: health });
     if (now() === deadline) throw new RuntimeHealthObservationError("stale_diagnostics", "Runtime diagnostics did not produce contiguous fresh samples covering the observation.", { startedAt, mustCover, deadline, initialSample: firstHealth, lastSample: health });
     try {

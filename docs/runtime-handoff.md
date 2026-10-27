@@ -24,6 +24,9 @@ and warm at the exact merge generation, bounded by the handoff deadline. Every
 handoff health probe waits for the daemon's actual answer until that deadline
 (or one observation window for a recovery that outlived it); a slow answer is
 the daemon's state, not a failure. A refusal names the daemon's last answer.
+Readiness and observation inspect immediately, then pause one second after each
+answered inspection. This shared cadence leaves room for ordinary clients when
+each inspection probes both the backend and the front door.
 
 Completion requires the pinned executable in loaded launchd arguments, the
 exact applied merge generation through the production front door, matching

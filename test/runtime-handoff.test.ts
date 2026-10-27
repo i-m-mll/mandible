@@ -10,7 +10,7 @@ import { pathToFileURL } from 'node:url';
 import { createAuthCheckRepo, git } from './helpers/auth-queue-fixtures.js';
 import { createHash } from 'node:crypto';
 import { afterEach, expect, it, vi } from 'vitest';
-import { bindingDigest, handoffDirectory, observeFailedRuntimeHandoff, observeRuntimeHealthWindow, persistRuntimeRecoveryObservation, readRuntimeHandoff, readRuntimeRecoveryAttempts, runtimeHandoffDrainIdentity, verifyRuntimeHandoffReceipt } from '../scripts/runtime-handoff.mjs';
+import { bindingDigest, handoffDirectory, observeFailedRuntimeHandoff, observeRuntimeHealthWindow, persistRuntimeRecoveryObservation, readRuntimeHandoff, readRuntimeRecoveryAttempts, runtimeHandoffDrainIdentity, stageHandoffController, verifyRuntimeHandoffReceipt } from '../scripts/runtime-handoff.mjs';
 import { assessRuntimeLogs } from '../scripts/runtime-log-assessment.mjs';
 import { RuntimeHealthObservationError } from '../src/runtime-health-contract.ts';
 import { rotateStderrLogSegments } from '../src/daemon-log.ts';
@@ -465,8 +465,19 @@ function installQualifiedController(home: string): string {
   }
   fs.mkdirSync(path.join(home, 'src'));
   for (const name of ['runtime-health-contract.ts', 'stderr-log-chain.ts']) fs.copyFileSync(path.join(process.cwd(), 'src', name), path.join(home, 'src', name));
+  fs.mkdirSync(path.join(home, 'scripts'));
+  fs.copyFileSync(path.join(process.cwd(), 'scripts/runtime-probe-cadence.mjs'), path.join(home, 'scripts/runtime-probe-cadence.mjs'));
   return qualified;
 }
+
+it('loads a frozen handoff controller with its complete probe-cadence import closure', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-controller-closure-')); roots.push(home);
+  stageHandoffController(process.cwd(), home);
+  const runtime = execFileSync('/bin/sh', ['scripts/bun-runtime.sh'], { encoding: 'utf8' }).trim();
+  const program = `const {awaitHandoffReadiness}=await import(${JSON.stringify(pathToFileURL(path.join(home, 'controller.mjs')).href)}); console.log(typeof awaitHandoffReadiness);`;
+  expect(execFileSync(runtime, ['--eval', program], { encoding: 'utf8', timeout: STATE_DEADLINE_MS,
+    cwd: home, env: { ...process.env, MANDIBLE_HOME: path.join(home, 'private-home') } })).toBe('function\n');
+});
 
 it('replays accepted recovery with the qualified controller and still rejects a changed process', async () => {
   const { home, dir, binding, journal } = fixture();

@@ -1,0 +1,1 @@
+export const RUNTIME_HEALTH_PROBE_INTERVAL_MS: number;
