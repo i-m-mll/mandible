@@ -44,8 +44,10 @@ it('arms one independent helper under the deployed interpreter and survives help
     const files: Record<string, string> = Object.fromEntries(sources.map(name => [name, fs.readFileSync(path.join(process.cwd(), name), 'utf8')]));
     files['package.json'] = '{"type":"module"}\n'; files['dist/index.js'] = '// Owned admission-only fixture.\n';
     commitOnBranch(repo, 'feature/handoff', files);
+    const dependencies = spawnSync('/bin/cp', ['-c', '-R', path.join(process.cwd(), 'node_modules'), path.join(repo, 'node_modules')], { encoding: 'utf8', timeout: 15000 });
+    expect(dependencies.status, dependencies.stderr).toBe(0);
     const operator = configureSigningCredential(db, repo, 'ssh_key').operatorId;
-    fs.appendFileSync(path.join(repo, '.git/info/exclude'), '\n.mandible-test-signing-key*\n');
+    fs.appendFileSync(path.join(repo, '.git/info/exclude'), '\n.mandible-test-signing-key*\nnode_modules/\n');
     registerWorkRepo(db, repo); createLedgerProject(db, repo);
     db.prepare('UPDATE auth_hooks SET repo_pattern = ?, command = ? WHERE id = ?').run('*', 'exit 75', 'builtin-mandible-rebuild');
     vi.stubEnv('MANDIBLE_HOME', home);
