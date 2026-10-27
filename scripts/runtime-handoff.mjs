@@ -308,6 +308,8 @@ export async function armRuntimeHandoff(root) {
     deadline: Date.now() + 30 * 60 * 1000, stages: {}, environment,
     database,
     helperLabel: `bio.mll.mandible.runtime-handoff.${hash(`${home}:${requestId}:${executionId}`).slice(0, 16)}` };
+  if (!binding.priorBackend.definition?.BundleProgram) binding.legacyBridgeSha256 = hash(
+    legacyHandoffBridge(journalFile(binding), `${binding.domain}/${journal.helperLabel}`, journal.deadline));
   for (const name of ['proof.mjs', 'helper.mjs']) fs.copyFileSync(path.join(accepted.resources, 'handoff', name), path.join(dir, name));
   stageHandoffController(root, dir);
   fs.copyFileSync(path.join(root, 'cli/install-desktop-app.sh'), path.join(dir, 'desktop-relaunch.sh'));
@@ -350,6 +352,7 @@ async function finishAdmission(journal) {
   const runner = binding.priorBackend.argv[1];
   if (path.resolve(runner) !== path.join(homeDirectory(home), 'production-runner.mjs')) throw new Error('Legacy runner does not belong to this installation.');
   const bridgeBytes = legacyHandoffBridge(journalFile(binding), `${binding.domain}/${journal.helperLabel}`, journal.deadline);
+  if (binding.acceptedRelease && hash(bridgeBytes) !== binding.legacyBridgeSha256) throw new Error('Legacy bridge differs from its bound cleanup identity.');
   const runnerHash = fileHash(runner);
   if (runnerHash !== binding.priorBackend.runnerSha256 && runnerHash !== hash(bridgeBytes)) throw new Error('Legacy runner changed after admission; preserving it.');
   if (!fs.existsSync(path.join(dir, 'original-runner.mjs'))) {
@@ -790,6 +793,14 @@ export async function acknowledgeRuntimeHandoff(binding) {
     launchctl(['bootout', target]);
   }
   if (fs.existsSync(journal.helperPlist)) fs.unlinkSync(journal.helperPlist);
+  if (binding.acceptedRelease && binding.legacyBridgeSha256) {
+    const runner = binding.priorBackend.argv[1];
+    if (fs.existsSync(runner)) {
+      const stat = fs.lstatSync(runner);
+      if (!stat.isFile() || stat.isSymbolicLink() || fileHash(runner) !== binding.legacyBridgeSha256) throw new Error('Legacy bridge changed after drain; preserving it.');
+      fs.unlinkSync(runner);
+    }
+  }
   if (binding.acceptedRelease) await verifyAcceptedBytes(journal, true);
   // Compact accepted evidence remains; regenerated scripts and logs expire now.
   for (const name of [...Object.keys(binding.stagedFiles), 'helper.log', 'convergence.log', 'original-runner.mjs', 'preparation.json', 'bridge-process.json']) {

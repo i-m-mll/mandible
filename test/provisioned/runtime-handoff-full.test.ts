@@ -307,6 +307,7 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
       return journal?.phase === 'complete' || journal?.phase === 'acknowledged';
     }, 180000, 'Actual old-to-candidate convergence');
     await until(() => readRuntimeHandoff(home, request.id, executionId)?.phase === 'acknowledged', 60000, 'Candidate hook receipt acknowledgment');
+    expect(fs.existsSync(journal.binding.priorBackend.argv[1])).toBe(false);
     expect(fs.existsSync(xattrMarker)).toBe(false);
     const row = db.prepare('SELECT state, exit_code FROM auth_hook_executions WHERE id=?').get(executionId) as any; expect(row.state).toBe('complete'); expect(row.exit_code).toBe(0);
     const finalRequest = await readBootstrapDelivery(operatorApi, request.id); assertBootstrapOperatorProof(finalRequest, signing.operatorId, signing.credentialId);
