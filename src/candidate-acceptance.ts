@@ -202,7 +202,9 @@ export class CandidateAcceptanceRuns {
     this.changed(requestId);
     const outcome = await Promise.resolve().then(async () => {
       if (controller.signal.aborted) return { status: "failed" as const, result: null, error: "Acceptance stopped." };
-      return this.executor({ ...job.input(), signal: controller.signal });
+      const input = job.input();
+      return this.executor({ ...input, env: { ...input.env, MANDIBLE_ACCEPTANCE_ID: recordId, MANDIBLE_ACCEPTANCE_REQUEST: requestId,
+        MANDIBLE_ACCEPTANCE_BASE: candidate.base_sha, MANDIBLE_ACCEPTANCE_HEAD: candidate.head_sha }, signal: controller.signal });
     })
       .catch((error: unknown): CandidateAcceptanceOutcome => ({ status: "failed", result: null, error: error instanceof Error ? error.message : String(error) }));
     this.active = null;

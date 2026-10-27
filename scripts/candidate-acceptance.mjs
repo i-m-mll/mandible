@@ -6,7 +6,9 @@ import net from 'node:net';
 import http from 'node:http';
 import https from 'node:https';
 import { localCaPaths, assertLocalCaIdentity, probeCurrentMacOsTrust } from './local-ca-trust.mjs';
-import { installPinnedCaddy } from './pinned-caddy.mjs';
+import { installedRuntimeEnvironment, releaseFile, verifyInstalledRelease } from './installed-release.mjs';
+import { installedExecutionProfile } from './installed-execution.mjs';
+import { applicationIdentity, retainAcceptedRelease, resolveAcceptedRelease } from './accepted-release.mjs';
 import { createHash, randomBytes } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { runSupervisedCommand } from './process-group-supervisor.mjs';
@@ -19,7 +21,7 @@ import { readRuntimeHandoffLock, runtimeHandoffLockRefusal } from './runtime-han
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const sweepWorkDirectory = 'route-cost-work';
-export const acceptanceOwnedOutputs = ['home', 'Mandible.app', 'build.log', 'route-cost.json', 'route-cost.log', sweepWorkDirectory, 'daemon.log', 'desktop.log', 'gateway.log', 'Caddyfile'].map(path => ({ path, kind: 'generated' }));
+export const acceptanceOwnedOutputs = ['home', 'Mandible.app', 'build.log', 'route-cost.json', 'route-cost.log', sweepWorkDirectory, 'daemon.log', 'desktop.log', 'gateway.log', 'Caddyfile'].map(path => ({ path, kind: path === 'Mandible.app' ? 'interactive' : 'generated' }));
 export function routeCostSweepArgs(run) {
   return ['--no-install', path.join(root, 'scripts', 'route-cost-sweep.ts'), '--json', '--work-root', path.join(run, sweepWorkDirectory)];
 }
@@ -27,7 +29,7 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const sha256 = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
 function command(binary, args, options = {}) {
-  const result = spawnSync(binary, args, { cwd: root, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' }, encoding: 'utf8', ...options });
+  const result = spawnSync(binary, args, { cwd: root, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' }, encoding: 'utf8', timeout: 60_000, ...options });
   if (result.error || result.status !== 0) throw new Error(`${binary} ${args.join(' ')} failed: ${result.error?.message || result.stderr || result.status}`);
   return result.stdout?.trim();
 }
@@ -242,6 +244,9 @@ async function stopOwned(child) {
 async function main() {
   if (process.platform !== 'darwin') throw new Error('Packaged desktop acceptance requires macOS; evidence is unavailable on this platform.');
   const candidate = command('git', ['rev-parse', 'HEAD']);
+  const parents = command('git', ['show', '-s', '--format=%P', candidate]).split(' ');
+  const candidateBinding = { pin_sha: candidate, tree_sha: command('git', ['rev-parse', 'HEAD^{tree}']),
+    base_sha: process.env.MANDIBLE_ACCEPTANCE_BASE || parents[0], head_sha: process.env.MANDIBLE_ACCEPTANCE_HEAD || parents[1] || candidate };
   if (command('git', ['status', '--porcelain', '--untracked-files=all'])) throw new Error('Candidate acceptance requires a clean committed checkout.');
   const lock = readRuntimeHandoffLock(path.resolve(process.env.MANDIBLE_HOME || path.join(os.userInfo().homedir, '.mandible')));
   const initialBlocker = lock ? { code: 'runtime_handoff_lock', message: runtimeHandoffLockRefusal(lock) } : null;
@@ -267,11 +272,12 @@ async function main() {
   const home = path.join(run, 'home');
   createAcceptanceHome(home);
   const result = { schema: 'mandible-candidate-acceptance@1', scope: 'isolated production daemon and packaged dashboard; live installation and protected delivery excluded', status: 'failed', candidate, runtime, run, checks: {}, provenance: {} };
-  let daemon, desktop, gateway;
+  let daemon, desktop, gateway, testedPackageDigest;
+  let executionProfile;
   const files = [];
   const launch = (binary, args, env, name) => {
     const fd = fs.openSync(path.join(run, `${name}.log`), 'w'); files.push(fd);
-    const child = spawn(binary, args, { cwd: root, env, stdio: ['ignore', fd, fd] });
+    const child = spawn('/usr/bin/sandbox-exec', ['-p', executionProfile, binary, ...args], { cwd: run, env, stdio: ['ignore', fd, fd] });
     child.on('error', error => { result.checks[`${name}_launch_error`] = error.message; });
     return child;
   };
@@ -296,37 +302,31 @@ async function main() {
     await runSupervisedCommand(runtime, ['run', 'tauri:build', '--', '--bundles', 'app'], { cwd: root, env: { ...buildEnv, GIT_OPTIONAL_LOCKS: '0' }, stdio: ['ignore', buildLog, buildLog], timeout: 600000 });
     const builtApp = path.join(root, 'src-tauri', 'target', 'release', 'bundle', 'macos', 'Mandible.app');
     command('/usr/bin/codesign', ['--verify', '--deep', '--strict', builtApp]);
-    const app = path.join(run, 'Mandible.app'); fs.cpSync(builtApp, app, { recursive: true });
+    const app = path.join(run, 'Mandible.app'); fs.cpSync(builtApp, app, { recursive: true, verbatimSymlinks: true });
+    command('/usr/bin/codesign', ['--verify', '--deep', '--strict', app]);
     const resources = path.join(app, 'Contents', 'Resources');
-    const bundledMarker = JSON.parse(fs.readFileSync(path.join(resources, 'build-revision.json'), 'utf8'));
     const marker = JSON.parse(fs.readFileSync(path.join(root, 'dist', 'build-revision.json'), 'utf8'));
-    if (JSON.stringify(bundledMarker) !== JSON.stringify(marker)) throw new Error('Native package carries a different candidate marker.');
-    if (sha256(path.join(resources, '.bun-version')) !== sha256(path.join(root, '.bun-version')) || sha256(path.join(resources, 'scripts', 'bun-runtime.sh')) !== sha256(path.join(root, 'scripts', 'bun-runtime.sh'))) throw new Error('Native package has stale runtime selection resources');
-    if (sha256(path.join(resources, 'scripts/bun-runtime-lock.tsv')) !== sha256(path.join(root, 'scripts/bun-runtime-lock.tsv'))) throw new Error('Native package has stale runtime byte/revision pins');
-    if (sha256(path.join(resources, 'scripts/sqlite-runtime-install.mjs')) !== sha256(path.join(root, 'scripts/sqlite-runtime-install.mjs')) || sha256(path.join(resources, 'dist/sqlite-runtime.js')) !== sha256(path.join(root, 'dist/sqlite-runtime.js'))) throw new Error('Native package has stale stock SQLite provisioning resources');
-    const resourceEnv = { HOME: home, XDG_CACHE_HOME: path.join(home, 'runtime-cache'), XDG_DATA_HOME: path.join(home, 'runtime-data'), MANDIBLE_RUNTIME_STORE: path.join(home, 'runtime-data', 'mandible', 'runtimes'), PATH: '/usr/bin:/bin:/usr/sbin:/sbin', MANDIBLE_RUNTIME_ARCHIVE: path.join(resources, 'runtime/bun.zip'), MANDIBLE_SQLITE_LIBRARY_ARCHIVE: path.join(resources, 'runtime/sqlite.tar.gz') };
-    const packagedRuntime = command('/bin/sh', [path.join(resources, 'scripts/bun-runtime.sh')], { env: resourceEnv });
-    const packagedSqlite = command(packagedRuntime, [path.join(resources, 'scripts/sqlite-runtime-install.mjs')], { env: resourceEnv });
-    if (!packagedRuntime.startsWith(`${resourceEnv.MANDIBLE_RUNTIME_STORE}${path.sep}`) || !packagedSqlite.startsWith(`${resourceEnv.MANDIBLE_RUNTIME_STORE}${path.sep}`)) throw new Error('Packaged runtime escaped the owned durable data root.');
-    for (const name of ['local-runtime.mjs', 'runtime-probe-cadence.mjs', 'runtime-observation.mjs', 'lifecycle-lock.mjs', 'process-lock.mjs', 'runtime-environment.mjs', 'runtime-environment-path.mjs', 'canonical-origin.mjs', 'build-revision.mjs', 'pinned-caddy.mjs', 'local-ca-trust.mjs']) {
-      if (sha256(path.join(resources, name)) !== sha256(path.join(root, 'scripts', name))) throw new Error(`Native package has stale ${name}`);
-    }
-    result.provenance = { marker, daemon_sha256: sha256(path.join(root, 'dist', 'index.js')), native_sha256: sha256(path.join(app, 'Contents', 'MacOS', 'mandible-app')), harness_sha256: sha256(fileURLToPath(import.meta.url)), packaged_runtime_sha256: sha256(packagedRuntime), packaged_runtime_revision: command(packagedRuntime, ['--no-install', '--print', 'Bun.revision']), packaged_archive_sha256: sha256(path.join(resources, 'runtime/bun.zip')), packaged_sqlite_archive_sha256: sha256(path.join(resources, 'runtime/sqlite.tar.gz')), packaged_sqlite_sha256: sha256(packagedSqlite) };
+    const shipped = verifyInstalledRelease(resources);
+    if (shipped.provenance.commit !== candidate || shipped.provenance.source_digest !== marker.source_digest) throw new Error("Finalized package provenance differs from the candidate.");
+    const resourceEnv = installedRuntimeEnvironment(resources, { HOME: home, PATH: "/usr/bin:/bin:/usr/sbin:/sbin", TMPDIR: run });
+    const packagedRuntime = resourceEnv.MANDIBLE_RUNTIME;
+    testedPackageDigest = applicationIdentity(app);
+    executionProfile = installedExecutionProfile({ checkout: root, commonDirectory: command("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"]), app });
+    result.provenance = { marker, daemon_sha256: sha256(releaseFile(resources, shipped.entrypoints.daemon)), native_sha256: sha256(path.join(app, "Contents/MacOS/mandible-app")), harness_sha256: sha256(fileURLToPath(import.meta.url)), package_sha256: testedPackageDigest, shipped };
     const ports = new Set();
     while (ports.size < 3) ports.add(await freePort());
     const [port, publicPort, adminPort] = [...ports];
     const origin = `https://app.mandible.localhost:${publicPort}`;
     const caHome = option('--ca-home') || process.env.MANDIBLE_TEST_CA_HOME || process.env.MANDIBLE_HOME || path.join(os.homedir(), '.mandible');
     const ca = copyAcceptanceCa(caHome, home);
-    const gatewayBinary = installPinnedCaddy(home);
+    const gatewayBinary = releaseFile(resources, shipped.native.caddy);
     const gatewayConfig = path.join(run, 'Caddyfile');
     fs.writeFileSync(gatewayConfig, acceptanceGatewayConfig({ origin, backendPort: port, adminPort, storageRoot: ca.storageRoot }), { mode: 0o600 });
     result.provenance.ca_root_sha256 = sha256(ca.rootCert);
     result.provenance.gateway_sha256 = sha256(gatewayBinary);
     fs.writeFileSync(path.join(home, 'acceptance.json'), JSON.stringify({ home, origin, nonce }), { mode: 0o600 });
-    const env = { ...Object.fromEntries(Object.entries(buildEnv).filter(([key]) => !key.startsWith('MANDIBLE_'))), HOME: home, MANDIBLE_HOME: home, MANDIBLE_DB: path.join(home, 'mandible.db'), MANDIBLE_PORT: String(port), MANDIBLE_PUBLIC_ORIGIN: origin, MANDIBLE_INSTANCE_ROLE: 'main', MANDIBLE_INSTANCE_ID: instanceId, MANDIBLE_INSTALLATION_ID: instanceId, MANDIBLE_BACKEND_GENERATION: candidate, MANDIBLE_WORK_SCANNER_ROOTS: JSON.stringify([{ path: home, depth: 1 }]), MANDIBLE_PID_FILE: path.join(home, 'daemon.pid'), MANDIBLE_SOCKET: path.join(home, 'api.sock'), MANDIBLE_STDERR_LOG_PATH: path.join(run, 'daemon.log'), MANDIBLE_USER_PREFERENCES_DIR: path.join(home, 'settings', 'users'), MANDIBLE_CANDIDATE_ACCEPTANCE: path.join(home, 'acceptance.json') };
-    Object.assign(env, { XDG_CACHE_HOME: resourceEnv.XDG_CACHE_HOME, XDG_DATA_HOME: resourceEnv.XDG_DATA_HOME, MANDIBLE_RUNTIME_STORE: resourceEnv.MANDIBLE_RUNTIME_STORE });
-    daemon = launch(runtime, [path.join(root, 'dist', 'index.js')], env, 'daemon');
+    const env = { ...resourceEnv, HOME: home, MANDIBLE_HOME: home, MANDIBLE_DB: path.join(home, 'mandible.db'), MANDIBLE_PORT: String(port), MANDIBLE_PUBLIC_ORIGIN: origin, MANDIBLE_INSTANCE_ROLE: 'main', MANDIBLE_INSTANCE_ID: instanceId, MANDIBLE_INSTALLATION_ID: instanceId, MANDIBLE_BACKEND_GENERATION: candidate, MANDIBLE_WORK_SCANNER_ROOTS: JSON.stringify([{ path: home, depth: 1 }]), MANDIBLE_PID_FILE: path.join(home, 'daemon.pid'), MANDIBLE_SOCKET: path.join(home, 'api.sock'), MANDIBLE_STDERR_LOG_PATH: path.join(run, 'daemon.log'), MANDIBLE_USER_PREFERENCES_DIR: path.join(home, 'settings', 'users'), MANDIBLE_CANDIDATE_ACCEPTANCE: path.join(home, 'acceptance.json') };
+    daemon = launch(packagedRuntime, ['--no-install', releaseFile(resources, shipped.entrypoints.daemon)], env, 'daemon');
     // The gateway answers 502, and logs an error, for any request that reaches
     // it before its upstream is listening, so it starts only after the bind.
     await awaitReadiness(() => {
@@ -399,12 +399,25 @@ async function main() {
       result.status = 'failed'; result.cleanup_error = 'Owned process remains alive; scratch data preserved';
     } else {
       try {
-        const final = finalizeOwnedRun(metadataFile, { expectedRevision: ownership.revision, outcome: result.status === 'passed' ? 'assessed' : 'failed', summary: `${candidate}: ${result.status}${result.error ? ` — ${result.error}` : ''}; daemon and packaged Settings edit checked; raw-log SHA256 ${result.checks.log_digest}` });
+        let acceptedReference;
+        if (result.status === 'passed') {
+          const receipts = path.join(cache, '.receipts');
+          fs.mkdirSync(receipts, { recursive: true });
+          const evidence = path.join(receipts, `${ownership.runId}-acceptance.json`);
+          saveOwnedMetadata(evidence, result);
+          acceptedReference = await retainAcceptedRelease({ app: path.join(run, 'Mandible.app'),
+            storage: path.join(process.env.MANDIBLE_HOME || path.join(os.userInfo().homedir, '.mandible'), 'accepted-releases'), ownership, candidate: candidateBinding,
+            acceptance: { record_id: process.env.MANDIBLE_ACCEPTANCE_ID || null, request_id: process.env.MANDIBLE_ACCEPTANCE_REQUEST || null },
+            evidence: { receipt: evidence, sha256: sha256(evidence) }, expectedDigest: testedPackageDigest });
+        }
+        const final = finalizeOwnedRun(metadataFile, { expectedRevision: ownership.revision, outcome: result.status === 'passed' ? 'assessed' : 'failed',
+          ...(acceptedReference ? { disposition: 'transferred', destination: resolveAcceptedRelease(acceptedReference, candidateBinding).receipt.package.handle.root, transferReference: acceptedReference } : {}),
+          summary: `${candidate}: ${result.status}${result.error ? ` — ${result.error}` : ''}; daemon and packaged Settings edit checked; raw-log SHA256 ${result.checks.log_digest}` });
         result.checks.cleanup = cleanupOwnedRun(metadataFile, { apply: true });
         const receipt = final.ownership.receipt;
         if (result.checks.cleanup.action !== 'delete-owned' || result.checks.cleanup.remaining?.length) result.status = 'failed';
         saveOwnedMetadata(receipt, { ...JSON.parse(fs.readFileSync(receipt, 'utf8')), acceptance: result });
-        result.receipt = receipt;
+        result.receipt = acceptedReference || receipt;
       } catch (error) { result.status = 'failed'; result.cleanup_error = error.message; }
     }
     process.removeListener('SIGINT', interrupt); process.removeListener('SIGTERM', interrupt);

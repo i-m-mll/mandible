@@ -26,3 +26,8 @@ window-vibrancy = "0.8.1"
 objc2-web-kit = { version = "0.3.2", default-features = false, features = ["WKWebView"] }
 block2 = "0.6.2"
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSNotification", "NSOperation", "NSString", "block2"] }
+
+# Rust's Mach-O debug stripper can misalign LINKEDIT in host proc-macro dylibs.
+# https://github.com/rust-lang/rust/issues/157750
+[profile.release.build-override]
+strip = "none"
