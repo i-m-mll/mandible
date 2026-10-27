@@ -12,6 +12,14 @@ scratch=
 selector_dir=${0%/*}
 [ "$selector_dir" != "$0" ] || selector_dir=.
 root=$(CDPATH= cd -- "$selector_dir/.." && pwd)
+if [ -n "${MANDIBLE_RELEASE_ROOT:-}" ] || [ -f "$root/release.json" ] || [ -d "$root/../MacOS" ]; then
+  root=${MANDIBLE_RELEASE_ROOT:-$root}
+  runtime=$("$root/../MacOS/mandible-bun" --no-install "$root/scripts/installed-command.mjs" --runtime) || exit $?
+  if [ "$mode" = --archive ]; then echo 'Installed releases do not provision runtime archives' >&2; exit 1; fi
+  if [ "$mode" = --exec ]; then exec "$runtime" "$@"; fi
+  printf '%s\n' "$runtime"
+  exit 0
+fi
 IFS= read -r version < "$root/.bun-version"
 lock="$root/scripts/bun-runtime-lock.tsv"
 platform="$(uname -s)-$(uname -m)"

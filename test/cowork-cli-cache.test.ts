@@ -46,22 +46,17 @@ describe("Cowork CLI cache materializer", () => {
     const targetDir = path.join(tempDir, "complete-cli");
     const manifest = materializeCoworkCliCache({ sourceRoot: process.cwd(), targetDir });
     expect(manifest.schema).toBe("mandible-cowork-cli-cache@2");
-    const runtimeFiles = [
-      [".bun-version", "runtime/.bun-version"],
-      ["scripts/bun-runtime.sh", "runtime/scripts/bun-runtime.sh"],
-      ["scripts/bun-runtime-lock.tsv", "runtime/scripts/bun-runtime-lock.tsv"],
-      ["scripts/sqlite-runtime-install.mjs", "runtime/scripts/sqlite-runtime-install.mjs"],
-      ["src/sqlite-runtime.ts", "runtime/src/sqlite-runtime.ts"],
-    ];
-    for (const [source, cached] of runtimeFiles) {
-      expect(manifest.files).toContainEqual(expect.objectContaining({ source, path: cached }));
-      expect(fs.readFileSync(path.join(targetDir, cached))).toEqual(fs.readFileSync(source));
-    }
     expect(manifest.content_digest).toMatch(/^[a-f0-9]{64}$/);
     expect(materializeCoworkCliCache({ sourceRoot: process.cwd(), targetDir }).content_digest)
       .toBe(manifest.content_digest);
+    const archive = spawnSync(path.resolve("scripts/bun-runtime.sh"), ["--archive"], { encoding: "utf8", timeout: 30_000 });
+    expect(archive.status, archive.stderr).toBe(0);
+    const platform = process.arch === "arm64" ? "aarch64" : "x64";
+    const asset = `bun-${process.platform}-${platform}.zip`;
+    fs.mkdirSync(path.join(targetDir, "runtime/runtime"), { recursive: true });
+    fs.copyFileSync(archive.stdout.trim(), path.join(targetDir, "runtime/runtime", asset));
     const result = spawnSync("bash", [path.join(targetDir, "issue.sh"), "report"], {
-      encoding: "utf8", env: { ...process.env, MANDIBLE_CLI_DIR: targetDir },
+      encoding: "utf8", env: { ...process.env, MANDIBLE_CLI_DIR: targetDir }, timeout: 15_000,
     });
     expect(result.status, result.stderr).toBe(2);
     expect(result.stderr).toContain("Arguments do not match: mandible issue report");

@@ -87,140 +87,12 @@ json_quote() {
   jq -Rn --arg value "$1" '$value'
 }
 
-python_path() {
-  python3 - "$@" <<'PY'
-import os
-import sys
-
-cmd = sys.argv[1]
-if cmd == "abs":
-    print(os.path.abspath(os.path.expanduser(sys.argv[2])))
-elif cmd == "real":
-    print(os.path.realpath(os.path.expanduser(sys.argv[2])))
-elif cmd == "rel":
-    print(os.path.relpath(sys.argv[2], sys.argv[3]).replace(os.sep, "/"))
-PY
+artifact_path() {
+  "$(mandible_bun_runtime)" --no-install "$(mandible_cli_module cli/artifact-path)" "$@"
 }
 
-# Classify how a user-supplied path relates to its realpath so the CLI stores a
-# durable (non-disposable) file:// URI and records why (issue 2f9c3c3). This
-# mirrors the backend classifyLocalSymlink() so CLI dry-run plans match what
-# POST /api/artifacts/plan and registerLocalArtifactPath would store. Prints a
-# JSON LocalPathDecision (minus stored_uri, which the caller fills in).
-#   artifact_symlink_plan LEXICAL_ABS RESOLVED_REAL REAL_REPO_ROOT
 artifact_symlink_plan() {
-  python3 - "$1" "$2" "$3" <<'PY'
-import os
-import subprocess
-import sys
-import json
-
-lexical = sys.argv[1]
-real = sys.argv[2]
-real_root = sys.argv[3] or ""
-
-
-def git(directory, args):
-    try:
-        proc = subprocess.run(
-            ["git", "-C", directory, *args],
-            capture_output=True,
-            text=True,
-        )
-    except Exception:
-        return None
-    if proc.returncode != 0:
-        return None
-    out = proc.stdout.strip()
-    return out or None
-
-
-def toplevel(directory):
-    out = git(directory, ["rev-parse", "--show-toplevel"])
-    return os.path.abspath(out) if out else None
-
-
-def common_dir(directory):
-    out = git(directory, ["rev-parse", "--path-format=absolute", "--git-common-dir"])
-    return os.path.abspath(out) if out else None
-
-
-def lexical_worktree_dir(lex):
-    # First ancestor that is not itself a symlink: walking up past the leaf
-    # `_artifacts`-style directory symlink lands on the worktree the user wrote
-    # through (git still reports it as a linked worktree even when nested under
-    # the main repo), while stopping at the first real directory ignores benign
-    # prefix symlinks such as macOS /tmp -> /private/tmp.
-    directory = os.path.dirname(os.path.abspath(lex))
-    for _ in range(64):
-        try:
-            if not os.path.islink(directory):
-                return directory
-        except OSError:
-            return directory
-        parent = os.path.dirname(directory)
-        if parent == directory:
-            return None
-        directory = parent
-    return None
-
-
-symlink_resolved = lexical != real
-inside_worktree = bool(real_root)
-decision = {
-    "input_path": lexical,
-    "resolved_path": real,
-    "symlink_resolved": symlink_resolved,
-}
-
-if not symlink_resolved:
-    decision.update(
-        symlink_class="none",
-        worktree_substitution=False,
-        decision_warnings=[],
-        reason="input path is already a realpath; stored as-is",
-    )
-elif not inside_worktree:
-    decision.update(
-        symlink_class="outside_repo",
-        worktree_substitution=False,
-        decision_warnings=["outside_repo_symlink"],
-        reason="input traverses a symlink whose target is outside any git repo; "
-        "link custody is non-durable, use --managed",
-    )
-else:
-    root_abs = os.path.abspath(real_root)
-    real_common = common_dir(os.path.dirname(real))
-    lex_dir = lexical_worktree_dir(lexical)
-    lex_root = toplevel(lex_dir) if lex_dir else None
-    lex_common = common_dir(lex_dir) if lex_dir else None
-    if lex_common and real_common and lex_common != real_common:
-        decision.update(
-            symlink_class="cross_repo",
-            worktree_substitution=True,
-            decision_warnings=["cross_repo_symlink"],
-            reason="input traverses a symlink crossing into a different git "
-            "repository; stored the cross-repo realpath",
-        )
-    elif lex_root and root_abs and lex_root != root_abs:
-        decision.update(
-            symlink_class="same_repo_durable",
-            worktree_substitution=True,
-            decision_warnings=["symlink_resolved_to_durable_target"],
-            reason="input traverses a same-repo worktree symlink; stored the "
-            "persistent realpath so it survives feature-worktree deletion",
-        )
-    else:
-        decision.update(
-            symlink_class="prefix_only",
-            worktree_substitution=False,
-            decision_warnings=[],
-            reason="input differs from its realpath only by a path-prefix "
-            "symlink; stored the realpath",
-        )
-
-print(json.dumps(decision))
-PY
+  artifact_path symlink "$@"
 }
 
 stable_hash() {
@@ -319,7 +191,7 @@ classify_path() {
   local sha size media filename role warnings repo_locator uri canonical_ref recoverability availability git_json
   local symlink_json decision_codes path_decision
 
-  abs="$(python_path abs "$input")"
+  abs="$(artifact_path abs "$input")"
   if [[ ! -e "$abs" ]]; then
     jq -n --arg input "$input" '{input:$input, ok:false, error:"path_missing", warnings:[{code:"path_missing", message:"path does not exist"}]}'
     return
@@ -332,7 +204,7 @@ classify_path() {
   # Classify against the realpath (symlinks resolved) so a feature worktree's
   # disposable `_artifacts` symlink resolves to its persistent repo-root target
   # and the stored file:// URI survives worktree deletion (issue 2f9c3c3).
-  real="$(python_path real "$input")"
+  real="$(artifact_path real "$input")"
   dir="$(dirname "$real")"
   root="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true)"
   sha="$(stable_hash "$real")"
@@ -344,7 +216,7 @@ classify_path() {
   warnings='[]'
 
   if [[ -n "$root" ]]; then
-    rel="$(python_path rel "$real" "$root")"
+    rel="$(artifact_path rel "$real" "$root")"
     repo_id="$(repo_id_for_root "$root")"
     branch="$(git -C "$root" symbolic-ref --quiet --short HEAD 2>/dev/null || git -C "$root" rev-parse --short HEAD 2>/dev/null || true)"
     commit="$(git -C "$root" rev-parse HEAD 2>/dev/null || true)"
@@ -540,7 +412,7 @@ print_batch_human() {
 artifact_version_payload_for_path() {
   local payload="$1" path_arg="$2" issue_id_value="$3"
   local abs source_kind
-  abs="$(python_path abs "$path_arg")"
+  abs="$(artifact_path abs "$path_arg")"
   source_kind="$(printf '%s' "$payload" | jq -r 'if .metadata.git.tracked == true and (.metadata.git.repo_id // "") != "" then "tracked_repo" else "local_only" end')"
   printf '%s' "$payload" | jq \
     --arg source_kind "$source_kind" \
@@ -594,16 +466,7 @@ cmd_ingest_like() {
   [[ -z "$project" ]] || (( ! blob_only )) || die "--blob-only stores bytes without a logical artifact, so it takes no --project" 2
   if (( ! upload && ! blob_only )) && ! api_is_file_rpc; then
     local batch_payload batch_result
-    batch_payload="$(python3 - "$PWD" "$commit" "$project" "$artifact_target" "$mode" "$role" "$issue" "$dry_run" "$allow_local" "$allow_dirty" "${paths[@]}" <<'PYBATCH'
-import json, os, sys
-cwd, commit, project, artifact, mode, role, issue, dry_run, allow_local, allow_dirty, *paths = sys.argv[1:]
-body = dict(paths=paths if commit else [os.path.abspath(os.path.expanduser(p)) for p in paths], cwd=cwd,
-            dry_run=dry_run == '1')
-if mode: body['custody_mode'] = mode
-body.update({k: v for k, v in dict(commit=commit, project=project, artifact_id=artifact, role=role, issue=issue).items() if v})
-print(json.dumps(body))
-PYBATCH
-)"
+    batch_payload="$(artifact_path batch "$PWD" "$commit" "$project" "$artifact_target" "$mode" "$role" "$issue" "$dry_run" "$allow_local" "$allow_dirty" "${paths[@]}")"
     batch_result="$(artifact_api_request POST "/api/artifacts/ingest" "$batch_payload")" || return $?
     if (( json )); then printf '%s\n' "$batch_result" | jq .
     elif (( dry_run )); then printf '%s\n' "$batch_result" | jq '.plans'
@@ -631,7 +494,7 @@ PYBATCH
                    then ($payload + {content_transport:"daemon-visible path or file-RPC attachment (bytes omitted in dry-run)"})
                    else $payload end)}]')"
       elif (( ! blob_only )); then
-        abs="$(python_path abs "$path_arg")"
+        abs="$(artifact_path abs "$path_arg")"
         if (( upload )) || api_is_file_rpc; then
           version_payload="$(artifact_version_payload_for_upload "$payload" "${issue_id:-}" "$project")"
           version_payload="$(printf '%s' "$version_payload" | jq --arg id "$artifact_target" 'if $id == "" then . else . + {artifact_id:$id} end')"
@@ -655,7 +518,7 @@ PYBATCH
         fi
         registered="$(printf '%s' "$registered" | jq --argjson result "$(printf '%s' "$version_response" | jq '.result')" '. + [$result]')"
       elif (( needs_bytes )); then
-        abs="$(python_path abs "$path_arg")"
+        abs="$(artifact_path abs "$path_arg")"
         resp_tmp="$(mktemp)"
         resp_status="$(api_send_content POST "/api/artifacts/ingest" "$payload" "content_path" "$abs" "$resp_tmp")"
         if [[ "$resp_status" =~ ^2 ]]; then
@@ -1160,7 +1023,7 @@ cmd_record() {
   require_tools
   local abs=""
   if [[ -n "$input_path" ]]; then
-    abs="$(python_path abs "$input_path")"
+    abs="$(artifact_path abs "$input_path")"
     [[ -f "$abs" ]] || die "${RED}Not a regular file: ${abs}${RESET}" 1
   fi
   local payload
@@ -1251,7 +1114,7 @@ cmd_snapshot() {
   [[ -n "$issue" ]] && resolve_issue "$issue"
 
   local ref="${args[1]}" payload response artifact link_response result abs_from link_ref
-  abs_from="$(python_path abs "$from_path")"
+  abs_from="$(artifact_path abs "$from_path")"
   if api_is_file_rpc; then
     # Sandbox transport: bytes ride as a spool attachment, never inline base64
     # through argv/JSON (issue 833e972). The daemon injects content_path.

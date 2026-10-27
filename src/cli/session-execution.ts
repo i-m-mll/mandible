@@ -1,6 +1,6 @@
 import fs from "node:fs";
-import { localApiSocketPath } from "../src/local-api-socket.js";
-import { executionOutboxDir, projectExecutionEnvelope, writeExecutionOutboxEntry } from "../src/session-execution-outbox.js";
+import { localApiSocketPath } from "../local-api-socket.js";
+import { executionOutboxDir, projectExecutionEnvelope, writeExecutionOutboxEntry } from "../session-execution-outbox.js";
 
 function fail(message: string): never {
   process.stderr.write(`Mandible execution hook: ${message}\n`);

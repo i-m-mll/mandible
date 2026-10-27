@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { installPinnedCaddy } from './pinned-caddy.mjs';
+import { stageCoworkRuntime } from './stage-cowork-runtime.mjs';
 import { RELEASE_SCHEMA } from './installed-release.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -66,9 +67,10 @@ export async function stageAppPayload(contents) {
   if (`${process.platform}-${process.arch}` !== 'darwin-arm64') throw new Error('Only darwin-arm64 is qualified for installed payloads.');
   const resources = path.join(contents, 'Resources');
   fs.mkdirSync(resources, { recursive: true });
-  for (const relative of ['dist', 'ui/dist', 'cli', 'bin', 'config', '.bun-version', 'package.json', 'docs/cli-reference.md', 'ui/index.html', 'ui/manifest.json', 'ui/sw.js', 'ui/icon.svg', 'ui/header-logo.svg', 'ui/icon-192.png', 'ui/icon-512.png']) copy(path.join(root, relative), path.join(resources, relative));
+  for (const relative of ['dist', 'ui/dist', 'cli', 'bin', 'config', '.bun-version', 'package.json', 'docs/cli-reference.md', 'hooks/git/reference-transaction', 'ui/index.html', 'ui/manifest.json', 'ui/sw.js', 'ui/icon.svg', 'ui/header-logo.svg', 'ui/icon-192.png', 'ui/icon-512.png']) copy(path.join(root, relative), path.join(resources, relative));
   const packageCount = copyProductionDependencies(resources);
-  const scripts = new Set(['local-runtime.mjs', 'local-front-door.mjs', 'local-session-production-runner.mjs', 'runtime-handoff.mjs', 'installed-release.mjs', 'conversation-cutover-proof.mjs', 'project-db-snapshot.mjs', 'preview-custody.mjs']);
+  stageCoworkRuntime(root, resources);
+  const scripts = new Set(['local-runtime.mjs', 'local-front-door.mjs', 'local-session-production-runner.mjs', 'runtime-handoff.mjs', 'installed-release.mjs', 'conversation-cutover-proof.mjs', 'project-db-snapshot.mjs', 'preview-custody.mjs', 'installed-command.mjs']);
   for (const name of scripts) {
     const source = fs.readFileSync(path.join(root, 'scripts', name), 'utf8');
     for (const match of source.matchAll(/(?:from\s*|import\s*\()\s*['"]\.\/([^'"]+\.mjs)['"]/g)) scripts.add(match[1]);

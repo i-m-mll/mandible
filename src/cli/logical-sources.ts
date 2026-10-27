@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { getUserHome } from "../platform-paths.js";
 import {
@@ -5,7 +6,7 @@ import {
 } from "../conversations/logical-source.js";
 
 /** Native-log CLI bridge. Prefix metadata is partial and carries no content proof. */
-async function head(filename: string, count: number): Promise<unknown[]> {
+export async function head(filename: string, count: number): Promise<unknown[]> {
   const bytes = await readLogicalSourcePrefix(filename, 16 * 1024 * 1024);
   const lines = bytes.toString("utf8").split(/\r?\n/).slice(0, count);
   const records: unknown[] = [];
@@ -20,7 +21,7 @@ async function head(filename: string, count: number): Promise<unknown[]> {
   return records;
 }
 
-async function summary(filename: string) {
+export async function summary(filename: string) {
   const physical = await inspectSourceRepresentation(filename);
   const records = await head(filename, 200) as Array<{ type?: string; payload?: Record<string, unknown> }>;
   const meta = records.find((record) => record.type === "session_meta")?.payload;
@@ -33,7 +34,7 @@ async function summary(filename: string) {
   };
 }
 
-async function files() {
+export async function files() {
   const result: Awaited<ReturnType<typeof inspectSourceRepresentation>>[] = [];
   for (const name of ["sessions", "archived_sessions"]) {
     for await (const filename of discoverLogicalSources(path.join(getUserHome(), ".codex", name))) {
@@ -55,35 +56,38 @@ async function inputPaths(): Promise<string[]> {
   return JSON.parse(Buffer.concat(chunks).toString("utf8")) as string[];
 }
 
-const [operation, argument, count] = process.argv.slice(2);
-let result: unknown;
-if (operation === "head") result = await head(argument, Number(count ?? 200));
-else if (operation === "summary") result = await summary(argument);
-else if (operation === "list") result = (await files()).map((file) => file.path);
-else if (operation === "missing") {
-  const indexed = new Set(await inputPaths());
-  result = [];
-  for (const file of await files()) {
-    if (!indexed.has(file.path)) (result as unknown[]).push(await summary(file.path));
-  }
-}
-else if (operation === "inventory") {
-  const cutoff = Number(argument || 0);
-  const selected = (await files()).filter((file) => file.mtimeMs >= cutoff)
-    .sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, Number(count ?? 50));
-  result = await Promise.all(selected.map((file) => summary(file.path)));
-} else if (operation === "find") {
-  try {
-    result = (await inspectSourceRepresentation(argument)).path;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    result = null;
+async function main() {
+  const [operation, argument, count] = process.argv.slice(2);
+  let result: unknown;
+  if (operation === "head") result = await head(argument, Number(count ?? 200));
+  else if (operation === "summary") result = await summary(argument);
+  else if (operation === "list") result = (await files()).map((file) => file.path);
+  else if (operation === "missing") {
+    const indexed = new Set(await inputPaths());
+    result = [];
     for (const file of await files()) {
-      if (argument === path.basename(file.path) || (await summary(file.path)).session_id === argument) {
-        result = file.path;
-        break;
-      }
+      if (!indexed.has(file.path)) (result as unknown[]).push(await summary(file.path));
     }
   }
-} else throw new Error("unknown logical source bridge operation");
-console.log(JSON.stringify(result));
+  else if (operation === "inventory") {
+    const cutoff = Number(argument || 0);
+    const selected = (await files()).filter((file) => file.mtimeMs >= cutoff)
+      .sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, Number(count ?? 50));
+    result = await Promise.all(selected.map((file) => summary(file.path)));
+  } else if (operation === "find") {
+    try {
+      result = (await inspectSourceRepresentation(argument)).path;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      result = null;
+      for (const file of await files()) {
+        if (argument === path.basename(file.path) || (await summary(file.path)).session_id === argument) {
+          result = file.path;
+          break;
+        }
+      }
+    }
+  } else throw new Error("unknown logical source bridge operation");
+  console.log(JSON.stringify(result));
+}
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();

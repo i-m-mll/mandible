@@ -1,6 +1,12 @@
 {
   "schema_version": 2,
   "commands": {
+    "hook.ingest-nudge": {"route":["hook","ingest-nudge"],"grammar":{"kind":"sequence","items":[]}},
+    "hook.notification": {"route":["hook","notification"],"grammar":{"kind":"sequence","items":[]}},
+    "hook.statusline": {"route":["hook","statusline"],"grammar":{"kind":"sequence","items":[]}},
+    "hook.session-execution": {"route":["hook","session-execution"],"grammar":{"kind":"sequence","items":[{"kind":"argument","name":"provider","value":{"type":"enum","values":["claude","codex"]}}]}},
+    "channel": {"route":["channel"],"grammar":{"kind":"sequence","items":[]}},
+    "git-guard": {"route":["git-guard"],"grammar":{"kind":"sequence","items":[{"kind":"argument","name":"phase","value":{"type":"enum","values":["prepared","committed","aborted"]}}]}},
     "changes": {
       "route": ["changes"],
       "grammar": {
