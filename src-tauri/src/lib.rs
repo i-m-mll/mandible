@@ -240,22 +240,28 @@ struct SecureLocalConnectionsStatus {
     verified_at: Option<String>,
 }
 
+fn installed_resources(app: &AppHandle) -> Result<Option<PathBuf>, String> {
+    let resources = app.path().resource_dir().map_err(|e| e.to_string())?;
+    if resources.join("release.json").is_file() { return Ok(Some(resources)); }
+    if cfg!(debug_assertions) { return Ok(None); }
+    Err("Mandible's installed release manifest is missing".into())
+}
+
+fn installed_resource(root: &Path, section: &str, key: &str) -> Result<PathBuf, String> {
+    let bytes = std::fs::read(root.join("release.json")).map_err(|e| e.to_string())?;
+    let release: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    if release["schema"] != "mandible-installed-release@1" { return Err("Unsupported installed release".into()); }
+    let relative = release[section][key].as_str().ok_or("Installed resource is not declared")?;
+    if Path::new(relative).is_absolute() { return Err("Installed resource path must be relative".into()); }
+    let file = root.join(relative).canonicalize().map_err(|e| format!("Missing installed resource {key}: {e}"))?;
+    let contents = root.parent().ok_or("Installed resource root has no program directory")?.canonicalize().map_err(|e| e.to_string())?;
+    if !file.starts_with(contents) || !file.is_file() { return Err("Installed resource leaves the application".into()); }
+    Ok(file)
+}
+
 fn resolve_ca_setup_script(app: &AppHandle) -> Result<PathBuf, String> {
-    if let Ok(resources) = app.path().resource_dir() {
-        let bundled = resources.join("local-ca-trust.mjs");
-        if bundled.is_file() {
-            return Ok(bundled);
-        }
-    }
-    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .ok_or_else(|| "failed to resolve Mandible source root".to_string())?
-        .to_path_buf();
-    let script = repo.join("scripts").join("local-ca-trust.mjs");
-    if script.is_file() {
-        return Ok(script);
-    }
-    Err("secure-local-connections setup resource is missing from the desktop app".to_string())
+    if let Some(root) = installed_resources(app)? { return installed_resource(&root, "entrypoints", "trustSetup"); }
+    Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scripts/local-ca-trust.mjs"))
 }
 
 fn run_ca_setup_command(
@@ -314,20 +320,8 @@ async fn secure_local_connections_setup(
 }
 
 fn resolve_ca_trust_helper(app: &AppHandle) -> Result<PathBuf, String> {
-    let script = resolve_ca_setup_script(app)?;
-    let bundled = script.with_file_name("local-ca-trust-helper");
-    if bundled.is_file() {
-        return Ok(bundled);
-    }
-    let source = script
-        .parent()
-        .and_then(Path::parent)
-        .map(|root| root.join("src-tauri/resources/local-ca-trust-helper"))
-        .ok_or_else(|| "failed to resolve native trust helper source".to_string())?;
-    if source.is_file() {
-        return Ok(source);
-    }
-    Err("native macOS trust helper is missing from the desktop app".to_string())
+    if let Some(root) = installed_resources(app)? { return installed_resource(&root, "native", "trustHelper"); }
+    Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/local-ca-trust-helper"))
 }
 
 fn show_native_setup_result(app: &AppHandle, headline: &str, detail: &str) {
@@ -625,21 +619,8 @@ fn run_local_runtime(
 }
 
 fn resolve_local_runtime_script(app: &AppHandle) -> Result<PathBuf, String> {
-    if let Ok(resources) = app.path().resource_dir() {
-        let bundled = resources.join("local-runtime.mjs");
-        if bundled.is_file() {
-            return Ok(bundled);
-        }
-    }
-    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .ok_or_else(|| "failed to resolve Mandible source root".to_string())?
-        .join("scripts")
-        .join("local-runtime.mjs");
-    if repo.is_file() {
-        return Ok(repo);
-    }
-    Err("the shared Mandible runtime controller is missing from the desktop app".to_string())
+    if let Some(root) = installed_resources(app)? { return installed_resource(&root, "entrypoints", "controller"); }
+    Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scripts/local-runtime.mjs"))
 }
 
 fn read_desktop_config(app: &AppHandle) -> Result<DesktopConfig, String> {
@@ -678,73 +659,23 @@ fn desktop_config_path(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 fn resolve_runtime_binary(app: &AppHandle) -> Result<PathBuf, String> {
-    let bundled = app
-        .path()
-        .resource_dir()
-        .ok()
-        .map(|dir| dir.join("scripts/bun-runtime.sh"));
-    let packaged = bundled.filter(|path| path.is_file());
-    let script = packaged.clone().unwrap_or_else(|| {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scripts/bun-runtime.sh")
-    });
-    let mut command = Command::new("/bin/sh");
-    command.arg(&script);
-    if packaged.is_some() {
-        let archive = script
-            .parent()
-            .and_then(Path::parent)
-            .ok_or("packaged Bun selector has no resource root")?
-            .join("runtime/bun.zip");
-        if !archive.is_file() {
-            return Err(
-                "the verified offline Bun archive is missing from the desktop package".into(),
-            );
-        }
-        command.env_remove("MANDIBLE_RUNTIME");
-        command.env("MANDIBLE_RUNTIME_ARCHIVE", archive);
-        let sqlite_archive = script
-            .parent()
-            .and_then(Path::parent)
-            .ok_or("packaged SQLite selector has no resource root")?
-            .join("runtime/sqlite.tar.gz");
-        if !sqlite_archive.is_file() {
-            return Err(
-                "the verified offline SQLite archive is missing from the desktop package".into(),
-            );
-        }
-        command.env_remove("MANDIBLE_SQLITE_LIBRARY");
-        command.env("MANDIBLE_SQLITE_LIBRARY_ARCHIVE", sqlite_archive);
-    }
-    let output = command
-        .output()
-        .map_err(|error| format!("failed to select the pinned Bun runtime: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "failed to select the pinned Bun runtime: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    let runtime = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
-    if !runtime.is_absolute() || !runtime.is_file() {
-        return Err("Bun selector returned an invalid executable path".into());
-    }
-    Ok(runtime)
+    if let Some(root) = installed_resources(app)? { return installed_resource(&root, "native", "bun"); }
+    let selector = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scripts/bun-runtime.sh");
+    let output = Command::new("/bin/sh").arg(selector).output().map_err(|e| e.to_string())?;
+    if !output.status.success() { return Err(String::from_utf8_lossy(&output.stderr).into_owned()); }
+    Ok(PathBuf::from(String::from_utf8_lossy(&output.stdout).trim()))
 }
 
 fn runtime_command(app: &AppHandle) -> Result<Command, String> {
     let mut command = Command::new(resolve_runtime_binary(app)?);
-    if let Ok(resources) = app.path().resource_dir() {
-        if resources.join("scripts/bun-runtime.sh").is_file() {
-            let archive = resources.join("runtime/sqlite.tar.gz");
-            if !archive.is_file() {
-                return Err(
-                    "the verified offline SQLite archive is missing from the desktop package"
-                        .into(),
-                );
-            }
-            command.env_remove("MANDIBLE_SQLITE_LIBRARY");
-            command.env("MANDIBLE_SQLITE_LIBRARY_ARCHIVE", archive);
-        }
+    if let Some(root) = installed_resources(app)? {
+        command.env("MANDIBLE_RELEASE_ROOT", &root);
+        command.env("MANDIBLE_RUNTIME", installed_resource(&root, "native", "bun")?);
+        command.env("MANDIBLE_SQLITE_LIBRARY", installed_resource(&root, "native", "sqlite")?);
+        command.env("MANDIBLE_CADDY", installed_resource(&root, "native", "caddy")?);
+        command.env("MANDIBLE_CA_TRUST_HELPER", installed_resource(&root, "native", "trustHelper")?);
+        command.env_remove("MANDIBLE_SQLITE_LIBRARY_ARCHIVE");
+        command.env_remove("MANDIBLE_RUNTIME_ARCHIVE");
     }
     Ok(command)
 }

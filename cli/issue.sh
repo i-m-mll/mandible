@@ -1805,7 +1805,7 @@ cmd_refs() {
     backfill)
       local root
       root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-      exec "$("$root/scripts/bun-runtime.sh")" "$root/src/cli/issue-refs-backfill.ts" "$@"
+      exec "$("$root/scripts/bun-runtime.sh")" "$root/dist/cli/issue-refs-backfill.js" "$@"
       ;;
     ""|-h|--help)
       cat <<'REFS_USAGE'
@@ -1822,7 +1822,7 @@ REFS_USAGE
 cmd_markdown() {
   local root
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-  exec "$("$root/scripts/bun-runtime.sh")" "$root/src/cli/issue-markdown-tools.ts" "$@"
+  exec "$("$root/scripts/bun-runtime.sh")" "$root/dist/cli/issue-markdown-tools.js" "$@"
 }
 
 # --- Main ---

@@ -38,10 +38,11 @@
     "test:quarantine": "MANDIBLE_TEST_SUITE=quarantine scripts/bun-runtime.sh --exec --no-install scripts/run-vitest.js run",
     "test:coverage": "scripts/bun-runtime.sh --exec --no-install scripts/run-vitest.js run --coverage",
     "tauri": "scripts/bun-runtime.sh --exec --no-install node_modules/@tauri-apps/cli/tauri.js dev",
-    "tauri:build": "scripts/bun-runtime.sh --exec --no-install node_modules/@tauri-apps/cli/tauri.js build",
+    "tauri:build": "scripts/bun-runtime.sh --exec --no-install scripts/build-desktop-app.mjs",
     "native-preview": "scripts/bun-runtime.sh --exec scripts/native-preview.mjs",
     "fleet": "scripts/bun-runtime.sh --exec --no-install scripts/mandible-fleet.mjs",
-    "candidate-acceptance": "scripts/bun-runtime.sh --exec --no-install scripts/candidate-acceptance.mjs"
+    "candidate-acceptance": "scripts/bun-runtime.sh --exec --no-install scripts/candidate-acceptance.mjs",
+    "test:app-payload": "scripts/bun-runtime.sh --exec --no-install scripts/prove-app-payload.mjs"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.259",

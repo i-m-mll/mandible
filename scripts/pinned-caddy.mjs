@@ -1,3 +1,4 @@
+import { installedResourceRoot, readInstalledRelease, releaseFile } from './installed-release.mjs';
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -10,7 +11,10 @@ const RELEASES = Object.freeze({
   "darwin-arm64": { name: `caddy_${CADDY_VERSION}_mac_arm64.tar.gz`, sha256: "b37757be82ef630dddf359e6f1685731a1c657576ce80c469e0e3e6a8fb49e9d" },
 });
 
-export function pinnedCaddyBinary(home) { return path.join(home, "runtime", "caddy", CADDY_VERSION, "caddy"); }
+export function pinnedCaddyBinary(home) {
+  const installed = installedResourceRoot();
+  if (installed) return releaseFile(installed, readInstalledRelease(installed).native.caddy);
+  return path.join(home, "runtime", "caddy", CADDY_VERSION, "caddy"); }
 
 export function installPinnedCaddy(home) {
   const binary = pinnedCaddyBinary(home);

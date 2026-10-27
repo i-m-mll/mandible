@@ -12,7 +12,7 @@ usage() {
 
 if [[ "${1:-}" == "daemon" ]]; then
   shift
-  exec "$(mandible_bun_runtime)" "$SCRIPT_DIR/../src/cli/operational-logs.ts" "$@"
+  exec "$(mandible_bun_runtime)" "$SCRIPT_DIR/../dist/cli/operational-logs.js" "$@"
 fi
 
 mandible_prepare_syntax_runtime || exit $?
