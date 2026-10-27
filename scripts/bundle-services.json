@@ -1,0 +1,4 @@
+{
+  "backend": "local-session-production",
+  "gateway": "local-front-door"
+}

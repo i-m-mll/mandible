@@ -227,6 +227,8 @@ struct DaemonStatus {
     gateway_state: String,
     gateway_error: Option<String>,
     gateway_log_file: String,
+    #[serde(default)]
+    background_services: std::collections::BTreeMap<String, String>,
 }
 
 static DAEMON_CONTROL_LOCK: Mutex<()> = Mutex::new(());
@@ -409,6 +411,11 @@ fn daemon_restart(app: AppHandle) -> Result<DaemonStatus, String> {
         .unwrap_or_else(|error| error.into_inner());
     let config = read_desktop_config(&app)?;
     run_local_runtime(&app, "restart", &config)
+}
+
+#[command]
+fn daemon_background_settings(app: AppHandle) -> Result<DaemonStatus, String> {
+    run_local_runtime(&app, "background-settings", &read_desktop_config(&app)?)
 }
 
 #[command]
@@ -877,6 +884,7 @@ pub fn run() {
             daemon_start,
             daemon_stop,
             daemon_restart,
+            daemon_background_settings,
             navigate_to_desktop_bootstrap,
             navigate_to_desktop_dashboard,
             secure_local_connections_status,
