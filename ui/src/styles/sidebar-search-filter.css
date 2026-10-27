@@ -90,23 +90,14 @@
   color: var(--chrome-icon-hover-direct);
 }
 
-.sidebar-search-filter__clear svg {
+.sidebar-search-filter__clear .app-icon {
   width: 12px;
   height: 12px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
 }
 
-.sidebar-search-filter__trigger svg {
+.sidebar-search-filter__trigger .app-icon {
   width: 16px;
   height: 16px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 
 .sidebar-search-filter__badge {
@@ -253,7 +244,7 @@
   font-size: 11px;
 }
 
-.sidebar-search-filter__field select,
+.sidebar-search-filter__field :is(select, .native-select),
 .sidebar-search-filter__field input {
   width: 100%;
   min-width: 0;

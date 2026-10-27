@@ -1,3 +1,5 @@
+import { NativeSelect } from '../../components/shared/NativeSelect';
+import { Icon } from '../../components/icons/Icon';
 // SpaceCanvas — the NODE half of the editable Spaces canvas renderer (umbrella
 // de56ffa, child 1dfa2e1).
 //
@@ -1154,7 +1156,7 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
             aria-expanded={pickerMode === 'items'}
             data-testid="space-canvas-add-items"
           >
-            + Add items
+            <Icon name="add" /> Add items
           </button>
           <button
             type="button"
@@ -1628,7 +1630,7 @@ function CanvasEdgeInspector({
           <>
             <label className="space-canvas__field">
               <span>Ledger link</span>
-              <select
+              <NativeSelect
                 className="space-canvas__input"
                 data-testid="space-canvas-edge-link-type"
                 value={linkType}
@@ -1644,7 +1646,7 @@ function CanvasEdgeInspector({
                     {type}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
             </label>
             <button
               type="button"

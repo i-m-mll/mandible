@@ -340,24 +340,6 @@
   padding: 0;
 }
 
-.graph-token-select__remove::before,
-.graph-token-select__remove::after {
-  content: "";
-  position: absolute;
-  width: 8px;
-  height: 1.5px;
-  border-radius: 999px;
-  background: currentColor;
-}
-
-.graph-token-select__remove::before {
-  transform: rotate(45deg);
-}
-
-.graph-token-select__remove::after {
-  transform: rotate(-45deg);
-}
-
 .graph-token-select__remove:hover {
   background: var(--neutral-alpha-12);
   color: var(--text-primary);

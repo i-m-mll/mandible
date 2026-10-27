@@ -1,3 +1,4 @@
+import { NativeDisclosureIcon } from '../icons/NativeDisclosureIcon';
 // SHARED COMPONENT — used by BOTH Chat (StreamRenderer) and History (conversations.tsx).
 // Changes here affect BOTH views. If you modify rendering for one view,
 // the other MUST update automatically because they use this same component.
@@ -91,6 +92,7 @@ export function UserBubble({ text, provider }: UserBubbleProps): JSX.Element {
     return (
       <details className="instruction-message-block">
         <summary className="instruction-message-block__summary">
+          <NativeDisclosureIcon />
           <span className="instruction-message-block__label">{instruction.scope} {instruction.filename}</span>
           <span className="instruction-message-block__path">{instruction.path}</span>
         </summary>

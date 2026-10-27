@@ -1,3 +1,5 @@
+import { NativeSelect } from '../components/shared/NativeSelect';
+import { Icon } from '../components/icons/Icon';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { ComponentChildren, VNode } from 'preact';
 import { AppOperationalNoticeOutlet } from '../app-shell';
@@ -374,14 +376,6 @@ function useDebouncedSettingSave(
   return { saving, error };
 }
 
-function PlusIcon(): JSX.Element {
-  return <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></svg>;
-}
-
-function MinusIcon(): JSX.Element {
-  return <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 8h10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></svg>;
-}
-
 function NumberInput(props: {
   label: string;
   desc: string;
@@ -485,7 +479,7 @@ function SelectInput(props: {
           <span className="settings-view__badge--restart">shell restart</span>
         )}
       </div>
-      <select
+      <NativeSelect
         className="settings-view__select"
         value={current}
         onChange={handleChange}
@@ -494,7 +488,7 @@ function SelectInput(props: {
         {props.options.map((opt) => (
           <option key={opt} value={opt}>{opt}</option>
         ))}
-      </select>
+      </NativeSelect>
     </div>
   );
 }
@@ -712,7 +706,7 @@ function InstructionsDeliverySection(props: {
                   title={target.path}
                   aria-label={`Instruction target ${target.path}`}
                 />
-                <select
+                <NativeSelect
                   className="settings-view__select settings-view__select--compact"
                   value={target.mode}
                   disabled={!props.settingsAllowed || saving === 'instructions.delivery'}
@@ -724,7 +718,7 @@ function InstructionsDeliverySection(props: {
                 >
                   <option value="managed-block">Managed block</option>
                   <option value="standalone">Standalone</option>
-                </select>
+                </NativeSelect>
                 <button
                   type="button"
                   className="btn btn--sm settings-view__collection-action"
@@ -732,7 +726,7 @@ function InstructionsDeliverySection(props: {
                   disabled={!props.settingsAllowed || saving === 'instructions.delivery'}
                   aria-label={`Remove instruction target ${target.path}`}
                 >
-                  <MinusIcon />
+                  <Icon name="removeSetting" />
                 </button>
               </div>
             ))
@@ -748,7 +742,7 @@ function InstructionsDeliverySection(props: {
             disabled={!props.settingsAllowed || saving === 'instructions.delivery'}
             aria-label="New instruction target path"
           />
-          <select
+          <NativeSelect
             className="settings-view__select settings-view__select--compact"
             value={targetMode}
             disabled={!props.settingsAllowed || saving === 'instructions.delivery'}
@@ -760,7 +754,7 @@ function InstructionsDeliverySection(props: {
           >
             <option value="managed-block">Managed block</option>
             <option value="standalone">Standalone</option>
-          </select>
+          </NativeSelect>
           <button
             type="button"
             className="btn btn--active btn--sm settings-view__collection-action"
@@ -768,7 +762,7 @@ function InstructionsDeliverySection(props: {
             disabled={!props.settingsAllowed || saving === 'instructions.delivery'}
             aria-label="Add instruction target"
           >
-            <PlusIcon />
+            <Icon name="addSetting" />
           </button>
         </div>
 
@@ -1162,7 +1156,7 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition; insta
               Choose whether opening the desktop app should start Mandible automatically.
             </span>
           </div>
-          <select
+          <NativeSelect
             className="settings-view__select"
             value={status?.launch_mode ?? 'on_demand'}
             onChange={handleLaunchModeChange}
@@ -1173,7 +1167,7 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition; insta
                 {mode === 'on_demand' ? 'on demand' : 'manual'}
               </option>
             ))}
-          </select>
+          </NativeSelect>
         </div>
 
         <div className="settings-view__daemon-card" data-settings-searchable data-settings-search-text="local backend dashboard gateway daemon">
@@ -1422,7 +1416,7 @@ function BackupSection(props: { section: SettingsSectionDefinition; instance?: I
             <div className="settings-view__select-info">
               <span className="settings-view__select-label">Interval</span>
             </div>
-            <select
+            <NativeSelect
               className="settings-view__select"
               value={status.interval_hours}
               onChange={handleIntervalChange}
@@ -1431,7 +1425,7 @@ function BackupSection(props: { section: SettingsSectionDefinition; instance?: I
               <option value={6}>6h</option>
               <option value={12}>12h</option>
               <option value={24}>24h</option>
-            </select>
+            </NativeSelect>
           </div>
         )}
 
@@ -1572,14 +1566,14 @@ function ProjectPermissionsSection(props: { section: SettingsSectionDefinition; 
           <div className="settings-view__select-info">
             <span className="settings-view__select-label">Project</span>
           </div>
-          <select className="settings-view__select" value={selected}
+          <NativeSelect className="settings-view__select" value={selected}
             onChange={(event) => setSelected((event.target as HTMLSelectElement).value)}>
             {projects.map((project) => (
               <option key={project.id} value={project.project_key}>
                 {project.display_name || project.project_key}
               </option>
             ))}
-          </select>
+          </NativeSelect>
         </div>
         {access && (
           <>
@@ -1886,7 +1880,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
                 What to do when resuming a conversation that is already active in Console.
               </span>
             </div>
-            <select
+            <NativeSelect
               className="settings-view__select"
               value={settings.resume_conflict_policy ?? 'prompt'}
               onChange={async (e) => {
@@ -1898,7 +1892,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
               {RESUME_CONFLICT_POLICIES.map((p) => (
                 <option key={p} value={p}>{RESUME_CONFLICT_LABELS[p] ?? p}</option>
               ))}
-            </select>
+            </NativeSelect>
           </div>
         </div>
       </SettingsSectionShell>,
@@ -1917,7 +1911,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
                 When a session ends with a continuation, how should the work be resumed?
               </span>
             </div>
-            <select
+            <NativeSelect
               className="settings-view__select"
               value={settings.auto_resume_policy ?? 'manual'}
               onChange={async (e) => {
@@ -1929,7 +1923,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
               {AUTO_RESUME_POLICIES.map((p) => (
                 <option key={p} value={p}>{AUTO_RESUME_LABELS[p] ?? p}</option>
               ))}
-            </select>
+            </NativeSelect>
           </div>
         </div>
       </SettingsSectionShell>,
@@ -1999,7 +1993,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
                 <span className="settings-view__select-desc" id={`settings-${key}-description`}>{desc}</span>
               </div>
               <div className="settings-view__number-controls">
-                <select
+                <NativeSelect
                   id={`settings-${key}`}
                   className="settings-view__select"
                   aria-describedby={`settings-${key}-description`}
@@ -2008,7 +2002,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
                   onChange={(event) => void handleTypographyField(key, (event.target as HTMLSelectElement).value)}
                 >
                   {options.map(([value, text]) => <option value={value} key={value}>{text}</option>)}
-                </select>
+                </NativeSelect>
               </div>
             </div>
           ))}
@@ -2047,7 +2041,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
               <label className="settings-view__select-label" htmlFor="settings-app-theme">App theme</label>
               <span id="settings-app-theme-description" className="settings-view__select-desc">Follow the system appearance or pin Mandible to dark or light</span>
             </div>
-            <select
+            <NativeSelect
               id="settings-app-theme"
               className="settings-view__select"
               aria-describedby="settings-app-theme-description"
@@ -2063,7 +2057,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
               {APP_THEME_MODES.map((mode) => (
                 <option key={mode} value={mode}>{APP_THEME_LABELS[mode]}</option>
               ))}
-            </select>
+            </NativeSelect>
           </div>
           {([
             ['light', 'Light-mode terminal', 'Terminal palette used while Mandible is light'],
@@ -2078,7 +2072,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
                   <label className="settings-view__select-label" htmlFor={`settings-${key}`}>{label}</label>
                   <span id={descriptionId} className="settings-view__select-desc">{description}</span>
                 </div>
-                <select
+                <NativeSelect
                   id={`settings-${key}`}
                   className="settings-view__select"
                   aria-describedby={descriptionId}
@@ -2094,7 +2088,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
                   {TERMINAL_THEME_IDS.map((theme) => (
                     <option key={theme} value={theme}>{TERMINAL_THEME_LABELS[theme]}</option>
                   ))}
-                </select>
+                </NativeSelect>
               </div>
             );
           })}
@@ -2112,7 +2106,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
               <span className="settings-view__select-label">Header tabs</span>
               <span className="settings-view__select-desc">Show text labels, icons, or both in header tabs</span>
             </div>
-            <select
+            <NativeSelect
               className="settings-view__select"
               value={settings.header_display_mode ?? 'text'}
               onChange={async (e) => {
@@ -2124,7 +2118,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
               <option value="text">Text only</option>
               <option value="icons">Icons only</option>
               <option value="both">Both</option>
-            </select>
+            </NativeSelect>
           </div>
           <SelectInput
             label="Theme"

@@ -1,3 +1,4 @@
+import { Icon } from '../../components/icons/Icon';
 // Board / kanban renderer (umbrella de56ffa, child 4d4d364 / C17).
 //
 // A real board renderer over `space_occurrences` with renderer='board':
@@ -318,7 +319,7 @@ function BoardColumnView({
           aria-expanded={!collapsed}
           onClick={() => onToggleCollapse(column.key)}
         >
-          {collapsed ? '▶' : '▼'}
+          <Icon name={collapsed ? 'sectionCollapsed' : 'sectionExpanded'} />
         </button>
         {custom && renaming ? (
           <input
@@ -360,8 +361,8 @@ function BoardColumnView({
           title="Add items"
           onClick={() => onAddItemsToColumn(column.key)}
         >
-          +
-        </button>
+          <Icon name="add" />
+          </button>
         {custom ? (
           <button
             type="button"
@@ -370,7 +371,7 @@ function BoardColumnView({
             title="Delete custom column"
             onClick={() => onRemoveColumn(column.key)}
           >
-            {'×'}
+            <Icon name="dismiss" />
           </button>
         ) : null}
       </header>
@@ -849,7 +850,7 @@ export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountPro
             data-testid="space-board-add-items"
             onClick={() => openItemPicker(null)}
           >
-            + Add items
+            <Icon name="add" /> Add items
           </button>
           <AddColumnMenu busy={busy} onAddManual={onAddManual} onAddFilter={onAddFilter} />
           {pickerOpen ? (

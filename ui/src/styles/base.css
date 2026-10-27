@@ -75,7 +75,7 @@ a {
   content: '';
 }
 
-.chat-circle-action > svg {
+.chat-circle-action > .app-icon {
   position: relative;
   width: var(--chat-circle-action-icon-size);
   height: var(--chat-circle-action-icon-size);
@@ -134,7 +134,7 @@ a {
   cursor: pointer;
 }
 
-.app-right-sidebar-toggle > svg {
+.app-right-sidebar-toggle > .app-icon {
   width: var(--app-header-control-icon-size);
   height: var(--app-header-control-icon-size);
   flex: none;

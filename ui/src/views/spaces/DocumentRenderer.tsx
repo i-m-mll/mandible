@@ -1,3 +1,4 @@
+import { Icon } from '../../components/icons/Icon';
 import { useCallback, useMemo } from 'preact/hooks';
 
 import {
@@ -394,11 +395,12 @@ function DocBlockView({
         <button
           type="button"
           className="spaces-doc-block__toggle"
+          aria-label={isCollapsed ? 'Expand block' : 'Collapse block'}
           aria-expanded={!isCollapsed}
           onClick={() => onToggleCollapse(block.id)}
           data-testid="spaces-doc-block-toggle"
         >
-          {isCollapsed ? '▸' : '▾'}
+          <Icon name={isCollapsed ? 'disclosureTextCollapsed' : 'disclosureTextExpanded'} />
         </button>
       )}
       {isEmbed ? (

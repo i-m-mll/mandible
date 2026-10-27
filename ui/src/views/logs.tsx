@@ -1,3 +1,4 @@
+import { Icon } from '../components/icons/Icon';
 // Logs viewer tab — Bug: af91bdd
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { getLogs, invalidateApiGetCache, type LogEntry, type LogEntityFacetValue, type LogsResponse } from '../api';
@@ -265,7 +266,7 @@ function LogRow({
         <span className="log-row__event">{entry.event || message}</span>
         <span className="log-row__message">{message}</span>
         {hasDetail && (
-          <span className="log-row__expand" aria-hidden="true">{expanded ? '▾' : '▸'}</span>
+          <span className="log-row__expand" aria-hidden="true"><Icon name={expanded ? 'disclosureTextExpanded' : 'disclosureTextCollapsed'} /></span>
         )}
       </button>
       {expanded && hasDetail && (

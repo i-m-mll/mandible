@@ -1,3 +1,4 @@
+import { NativeSelect } from '../../components/shared/NativeSelect';
 import { useQuery } from '@tanstack/preact-query';
 import { queryClient } from '../../query/client';
 import { ROUTE_DATA_FRESH_MS } from '../../detail-cache';
@@ -642,13 +643,13 @@ export function BriefingDocumentRenderer({
           selector={round ? {
             label: round.publication_mode === 'published-report' ? 'Report history' : 'Round occurrence',
             control: (
-              <select
+              <NativeSelect
                 aria-label={round.publication_mode === 'published-report' ? 'Report history' : 'Round occurrence'}
                 value={round.selected_round_id}
                 onInput={(event) => onRoundChange?.(event.currentTarget.value === round.latest_round_id ? null : event.currentTarget.value)}
               >
                 {roundOptions.map(({ round: summary, label }) => <option key={summary.id} value={summary.id}>{label}</option>)}
-              </select>
+              </NativeSelect>
             ),
             selectedCanonicalRef: round.selected_round_id,
             copyLabel: 'Copy selected round reference',

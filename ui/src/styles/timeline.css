@@ -72,7 +72,7 @@
   text-transform: none;
 }
 
-.timeline-control select,
+.timeline-control :is(select, .native-select),
 .timeline-control input {
   height: 32px;
   min-width: 0;
@@ -141,14 +141,9 @@
   font-weight: 700;
 }
 
-.timeline-icon-button svg {
+.timeline-icon-button .app-icon {
   width: 16px;
   height: 16px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 
 .timeline-chip--active {

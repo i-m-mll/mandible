@@ -1,3 +1,4 @@
+import { Icon } from '../icons/Icon';
 import type { ComponentChildren, JSX } from 'preact';
 import { ContextualAction } from './ContextualAction';
 import { DisclosureChevronIcon } from './DisclosureChevronIcon';
@@ -201,73 +202,6 @@ export function SidebarGroupNode({
   );
 }
 
-export function SidebarNewChatIcon({ size = 14 }: { size?: number }): JSX.Element {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-      data-sidebar-action-icon="new-chat"
-    >
-      <path d="M5 4h10a2 2 0 0 1 2 2v3" />
-      <path d="M5 4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8" />
-      <path d="M17 13v8M13 17h8" />
-    </svg>
-  );
-}
-
-export function SidebarAddProjectIcon(): JSX.Element {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      aria-hidden="true"
-      data-sidebar-action-icon="add-project"
-    >
-      <path d="M12 5v14M5 12h14" />
-    </svg>
-  );
-}
-
 export function SidebarBriefingBundleIcon({ expanded, size = 14 }: { expanded: boolean; size?: number }): JSX.Element {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-      data-sidebar-group-icon="briefing-bundle"
-      data-sidebar-group-icon-state={expanded ? 'layers' : 'briefcase'}
-    >
-      {expanded ? (
-        <>
-          <path d="m12 2 9 5-9 5-9-5 9-5Z" />
-          <path d="m3 12 9 5 9-5" />
-          <path d="m3 17 9 5 9-5" />
-        </>
-      ) : (
-        <>
-          <rect x="2" y="7" width="20" height="14" rx="2" />
-          <path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-          <path d="M2 12h20" />
-        </>
-      )}
-    </svg>
-  );
+  return <Icon name={expanded ? 'briefingBundleExpanded' : 'briefingBundleCollapsed'} size={size} data-sidebar-group-icon="briefing-bundle" data-sidebar-group-icon-state={expanded ? 'layers' : 'briefcase'} />;
 }

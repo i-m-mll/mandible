@@ -1,0 +1,25 @@
+.native-select {
+  position: relative;
+  display: inline-grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  vertical-align: middle;
+}
+
+.native-select > select {
+  width: 100%;
+  min-width: 0;
+}
+
+.native-select__indicator {
+  position: absolute;
+  right: 18px;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  color: var(--text-muted);
+}
+
+.native-select[data-disabled] > .native-select__indicator {
+  opacity: 0.55;
+}

@@ -544,21 +544,6 @@
   display: none;
 }
 
-.repo-card__summary::after {
-  content: '▾';
-  font-size: 14px;
-  color: var(--text-muted);
-  transition: transform 0.2s ease;
-}
-
-.work-detail-card__header::after {
-  content: none;
-}
-
-.repo-card--collapsible:not([open]) .repo-card__summary::after {
-  transform: rotate(-90deg);
-}
-
 .repo-card__summary:hover {
   background: var(--neutral-alpha-03);
 }

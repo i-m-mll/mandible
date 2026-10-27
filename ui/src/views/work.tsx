@@ -1,3 +1,5 @@
+import { NativeSelect } from '../components/shared/NativeSelect';
+import { Icon } from '../components/icons/Icon';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import {
   createTrashEntry,
@@ -445,9 +447,11 @@ export function BranchRow({ branch, repoId, defaultBranch: _defaultBranch, expan
             <button
               type="button"
               className="tree-toggle"
+              aria-label={`${isExpanded ? 'Collapse' : 'Expand'} changes for ${branchName}`}
+              aria-expanded={isExpanded}
               onClick={() => onToggle(repoId, branchName)}
             >
-              {isExpanded ? '\u25BE' : '\u25B8'}
+              <Icon name={isExpanded ? 'disclosureTextExpanded' : 'disclosureTextCollapsed'} />
             </button>
           ) : null}
           <span className="branch-name">{branchName}</span>
@@ -464,16 +468,16 @@ export function BranchRow({ branch, repoId, defaultBranch: _defaultBranch, expan
             <span className="text-muted">even</span>
           ) : (
             <span className="ahead-behind">
-              <span className="ahead">&uarr;{aheadDefault}</span>
-              <span className="behind">&darr;{behindDefault}</span>
+              <span className="ahead"><Icon name="sortAscending" />{aheadDefault}</span>
+              <span className="behind"><Icon name="sortDescending" />{behindDefault}</span>
             </span>
           )}
         </td>
         <td>
           {hasUpstream ? (
             <span className="ahead-behind" title={upstreamTitle}>
-              {ahead > 0 && <span className="remote-ahead-badge" title="Ahead of remote">{'\u2601\u2191'}{ahead}</span>}
-              {behind > 0 && <span className="remote-behind-badge" title="Behind remote">{'\u2601\u2193'}{behind}</span>}
+              {ahead > 0 && <span className="remote-ahead-badge" title="Ahead of remote"><Icon name="remoteAhead" />{ahead}</span>}
+              {behind > 0 && <span className="remote-behind-badge" title="Behind remote"><Icon name="remoteBehind" />{behind}</span>}
               {ahead === 0 && behind === 0 && <span className="text-muted">even</span>}
             </span>
           ) : (
@@ -1443,14 +1447,14 @@ export function WorkOverviewView({
               <div className="work-filter-panel__sort">
                 <label>
                   <span>Sort</span>
-                  <select
+                  <NativeSelect
                     className="work-sort"
                     value={repoSortKey}
                     onChange={(event) => setRepoSortKey(event.currentTarget.value as RepoSortKey)}
                   >
                     <option value="activity">Last activity</option>
                     <option value="name">A-Z</option>
-                  </select>
+                  </NativeSelect>
                 </label>
                 <button
                   type="button"
@@ -1458,7 +1462,7 @@ export function WorkOverviewView({
                   onClick={() => setRepoSortDirection((direction) => direction === 'asc' ? 'desc' : 'asc')}
                   title="Reverse sort direction"
                 >
-                  {repoSortDirection === 'asc' ? '\u2191' : '\u2193'}
+                  <Icon name={repoSortDirection === 'asc' ? 'sortAscending' : 'sortDescending'} />
                 </button>
               </div>
                 </>
@@ -1508,7 +1512,7 @@ export function WorkOverviewView({
                   title={!canAddProject ? capabilityReason : undefined}
                   onClick={() => { setAddingRepo((v) => !v); setAddError(null); }}
                 >
-                  + Add project
+                  <Icon name="add" /> Add project
                 </button>
                 <button
                   type="button"
@@ -1523,7 +1527,7 @@ export function WorkOverviewView({
                     ? 'Authenticating...'
                     : pushState.active
                       ? `Pushing... (${pushState.completedCount ?? 0}/${pushState.repoCount ?? '?'})`
-                      : '\u2191\u2191 Push All'}
+                      : <><Icon name="pushAll" /> Push All</>}
                 </button>
                 {!canAddProject || !canPushAll ? (
                   <span className="work-sidebar__capability-note" role="status">
@@ -1651,8 +1655,8 @@ export function WorkOverviewView({
                           setSettingsOpenFor((prev) => prev === repoId ? null : repoId);
                         }}
                       >
-                        &#9881;
-                      </button>
+                        <Icon name="workSettings" />
+                        </button>
                     )}
                     metadata={(
                       <div className="repo-card__header-actions">
@@ -1664,10 +1668,10 @@ export function WorkOverviewView({
                           <span className="work-push-spinner" aria-label="Pushing" />
                         )}
                         {pushState.repoProgress.get(repoId) === 'done' && (
-                          <span className="work-push-done" title="Push complete">{'\u2713'}</span>
+                          <span className="work-push-done" title="Push complete"><Icon name="pushCompleted" label="Push complete" /></span>
                         )}
                         {pushState.repoProgress.get(repoId) === 'error' && (
-                          <span className="work-push-error" title="Push failed">{'\u2717'}</span>
+                          <span className="work-push-error" title="Push failed"><Icon name="pushFailed" label="Push failed" /></span>
                         )}
                         <button
                           type="button"
@@ -1677,7 +1681,7 @@ export function WorkOverviewView({
                           title={!canPushProject ? capabilityReason : 'Push this repo'}
                         >
                           <span className="work-repo-push-btn__label">
-                            {pushState.repoProgress.get(repoId) === 'pushing' ? 'Pushing...' : '\u2191 Push'}
+                            {pushState.repoProgress.get(repoId) === 'pushing' ? 'Pushing...' : <><Icon name="push" /> Push</>}
                           </span>
                         </button>
                         {isExcluded && (
@@ -1708,8 +1712,8 @@ export function WorkOverviewView({
                           aria-label="Close repo settings"
                           onClick={() => setSettingsOpenFor(null)}
                         >
-                          ×
-                        </button>
+                          <Icon name="dismiss" />
+                          </button>
                       </div>
                       <div className="repo-settings-strip">
                         <div className="repo-settings-strip__row">
@@ -1828,7 +1832,7 @@ export function WorkOverviewView({
                         }))
                       }
                     />
-                    <select
+                    <NativeSelect
                       className="repo-card__sort"
                       value={sortKey}
                       onChange={(event) =>
@@ -1841,7 +1845,7 @@ export function WorkOverviewView({
                       <option value="recency">Recent activity</option>
                       <option value="name">Branch name</option>
                       <option value="ahead">Ahead/behind</option>
-                    </select>
+                    </NativeSelect>
                   </div>
                   {(() => {
                     const activeBranch = selectedBranch;
@@ -1975,7 +1979,7 @@ export function WorkOverviewView({
                                   <span>{compareTo ? compareTo.slice(0, 12) : 'Select second commit'}</span>
                                 </div>
                                 <div className="work-compare-tray__actions">
-                                  <select
+                                  <NativeSelect
                                     className="work-compare-tray__mode"
                                     value={compareMode}
                                     disabled={!canCompare}
@@ -1984,7 +1988,7 @@ export function WorkOverviewView({
                                   >
                                     <option value="merge-base">Merge base</option>
                                     <option value="range">Range</option>
-                                  </select>
+                                  </NativeSelect>
                                   <button
                                     type="button"
                                     className="btn btn--xs btn--ghost"

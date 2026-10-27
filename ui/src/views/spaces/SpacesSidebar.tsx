@@ -1,3 +1,5 @@
+import { NativeSelect } from '../../components/shared/NativeSelect';
+import { Icon } from '../../components/icons/Icon';
 // SpacesSidebar — the Spaces home interaction sidebar (umbrella de56ffa,
 // child 6a4a69a).
 //
@@ -42,8 +44,8 @@ import { VIEW_SIDEBAR_GEOMETRY } from '../../view-sidebar-geometry';
 import { SidebarSearchFilterHeader } from '../../components/shared/SidebarSearchFilterHeader';
 import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
 import { SidebarItemRow, SidebarLeadingActionRow } from '../../components/shared/SidebarItemRow';
-import { SidebarGroupNode, SidebarNewChatIcon } from '../../components/shared/SidebarGroupNode';
-import { ProjectsIcon } from '../../components/icons/TabIcons';
+import { SidebarGroupNode } from '../../components/shared/SidebarGroupNode';
+
 import { SpaceTypeIndicator, spaceTypeLabel } from './SpaceTypeIndicator';
 import './SpacesSidebar.css';
 
@@ -255,12 +257,6 @@ export function defaultInitialSpaceId(groups: readonly SpaceGroup[]): string | n
     ?? orderedProjects.flatMap(({ group }) => group.spaces)[0]?.id
     ?? null;
 }
-
-const PlusIcon = (): JSX.Element => (
-  <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false">
-    <path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" />
-  </svg>
-);
 
 export function SpacesSidebar({
   hidden = false,
@@ -637,7 +633,7 @@ export function SpacesSidebar({
         {isTopLevel ? (
           <label className="spaces-tree__chooser-field">
             <span>Project</span>
-            <select
+            <NativeSelect
               className="spaces-tree__chooser-select"
               data-testid="space-create-project"
               value={chooserProjectId ?? ''}
@@ -654,7 +650,7 @@ export function SpacesSidebar({
                   {p.display_name || p.project_key || p.id}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           </label>
         ) : null}
         <div className="spaces-tree__chooser-actions">
@@ -762,7 +758,7 @@ export function SpacesSidebar({
         {/* keep test-id + content; scroll lives on .view-sidebar__body */}
         <SidebarLeadingActionRow
           label="New space"
-          icon={<SidebarNewChatIcon size={16} />}
+          icon={<Icon name="newChat" data-sidebar-action-icon="new-chat" size={16} />}
           testId="create-top-level"
           onPress={() => openChooser({ kind: 'top-level' })}
         />
@@ -797,7 +793,7 @@ export function SpacesSidebar({
               countVisibility="interaction"
               expanded={!isCollapsed}
               onToggle={() => toggleCollapse(kg.key)}
-              leadingIcon={<ProjectsIcon size={13} />}
+              leadingIcon={<Icon name="projects" size={13} />}
               testIds={{
                 root: `spaces-group-${kg.key}`,
                 heading: `spaces-group-toggle-${kg.key}`,
@@ -805,7 +801,7 @@ export function SpacesSidebar({
               }}
               action={{
                 label: `Create space in ${projectName}`,
-                icon: <PlusIcon />,
+                icon: <Icon name="addSpace" size={14} />,
                 onPress: () => openChooser({
                   kind: 'project',
                   projectId: kg.key,

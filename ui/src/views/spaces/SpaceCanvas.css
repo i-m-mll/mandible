@@ -505,7 +505,7 @@
   font: inherit;
 }
 
-select.space-canvas__input {
+:is(select, .native-select).space-canvas__input {
   width: 100%;
   min-height: 32px;
 }

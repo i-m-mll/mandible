@@ -429,7 +429,7 @@
 .conv-compose__attachment-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 15ch; }
 .conv-compose__attachment-remove { padding: 4px 7px; font-size: 16px; line-height: 1; }
 .conv-compose__add-attachment { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; min-width: 32px; min-height: 32px; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; padding: 0; }
-.conv-compose__add-attachment svg { width: 13.4px; height: 13.4px; }
+.conv-compose__add-attachment .app-icon { width: 13.4px; height: 13.4px; }
 .conv-compose__add-attachment:disabled { opacity: 0.4; cursor: default; }
 .conv-compose__preview { grid-template-columns: minmax(0, 1fr); overflow-wrap: anywhere; }
 .conv-compose__preview-modal { align-items: center; }
@@ -579,10 +579,9 @@
   padding: 0;
 }
 
-.conv-compose__run-options-trigger svg {
+.conv-compose__run-options-trigger .app-icon {
   width: 17px;
   height: 17px;
-  fill: currentColor;
 }
 
 .conv-compose__runtime--run-options-overflow .conv-compose__run-options-trigger {
@@ -1347,4 +1346,4 @@
 .composer-request pre { max-height: 140px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .composer-request > button { align-self: flex-start; }
 .composer-request-shelf__error { color: var(--status-danger-fg); }
-.conv-compose__stop svg { width: 20px; height: 20px; }
+.conv-compose__stop .app-icon { width: 20px; height: 20px; }

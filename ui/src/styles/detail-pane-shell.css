@@ -226,10 +226,9 @@
   color: var(--chrome-icon-hover-direct);
 }
 
-.detail-pane-menu-trigger svg {
+.detail-pane-menu-trigger .app-icon {
   width: 18px;
   height: 18px;
-  fill: currentColor;
 }
 
 .detail-pane-header--standard .detail-pane-header__topline-controls {
@@ -256,7 +255,7 @@
   min-width: 0;
 }
 
-.detail-pane-header__selector select {
+.detail-pane-header__selector :is(select, .native-select) {
   max-width: min(34ch, 45vw);
 }
 
@@ -389,7 +388,7 @@
   margin-left: 0;
 }
 
-.detail-pane-header--versioned .detail-pane-header__selector-control select {
+.detail-pane-header--versioned .detail-pane-header__selector-control :is(select, .native-select) {
   height: 30px;
   max-width: 180px;
 }
@@ -413,7 +412,7 @@
     margin-left: 0;
   }
 
-  .detail-pane-header__selector select {
+  .detail-pane-header__selector :is(select, .native-select) {
     flex: 1;
     max-width: 100%;
   }
@@ -428,7 +427,7 @@
 }
 
 @media (pointer: coarse) {
-  .detail-pane-header :is(button, select, a) {
+  .detail-pane-header :is(button, select, .native-select, a) {
     min-width: 44px;
     min-height: 44px;
   }

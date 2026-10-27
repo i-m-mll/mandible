@@ -1,0 +1,14 @@
+.native-disclosure-icon {
+  display: inline-flex;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.native-disclosure-icon__expanded,
+details[open] > summary .native-disclosure-icon__collapsed {
+  display: none;
+}
+
+details[open] > summary .native-disclosure-icon__expanded {
+  display: inline;
+}

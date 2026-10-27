@@ -1,3 +1,4 @@
+import { Icon } from '../components/icons/Icon';
 import { navigateAppHash } from '../app-history';
 // Inbox tab — sidebar+detail panel layout with chip filters and unified item list.
 // Bug: 4fa87d9 — inbox sidebar redesign
@@ -359,8 +360,8 @@ function ChipInput({
               onClick={() => onRemove(chip)}
               aria-label={`Remove filter ${chip.value}`}
             >
-              ×
-            </button>
+              <Icon name="dismiss" />
+              </button>
           </span>
         ))}
         <input
@@ -796,7 +797,7 @@ function CredentialLeakDetail({ item }: { item: InboxWebhookEvent }): JSX.Elemen
             href={`#/conversations?id=${encodeURIComponent(leak.conversation_id)}`}
             className="btn btn--ghost"
           >
-            View conversation &rarr;
+            View conversation <Icon name="openLink" />
           </a>
         )}
       </div>
@@ -846,7 +847,7 @@ function IssueDetail({ item }: { item: InboxIssue }): JSX.Element {
       )}
       <div className="inbox-detail__actions">
         <a href={href} className="btn btn--ghost">
-          View in Issues &rarr;
+          View in Issues <Icon name="openLink" />
         </a>
       </div>
     </div>
@@ -928,7 +929,7 @@ function ManagedReminderOccurrenceDetail({
           href={`#/tasks?task=${encodeURIComponent(`mandible-reminder:${item.task_id}`)}`}
           className="btn btn--ghost"
         >
-          View in Tasks &rarr;
+          View in Tasks <Icon name="openLink" />
         </a>
         <button
           type="button"

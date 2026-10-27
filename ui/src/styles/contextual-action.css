@@ -77,7 +77,7 @@
   transition: background 120ms ease, color 120ms ease;
 }
 
-.contextual-action--compact > svg {
+.contextual-action--compact > .app-icon {
   flex: none;
   width: 1em;
   height: 1em;

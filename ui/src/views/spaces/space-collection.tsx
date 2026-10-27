@@ -1,3 +1,4 @@
+import { Icon } from '../../components/icons/Icon';
 // Collection / list renderer (umbrella de56ffa, child C8 / issue fa83ec7).
 //
 // The first usable Spaces renderer: a list/tree view over collection
@@ -154,7 +155,7 @@ function CollectionRow({
               onToggle(occId);
             }}
           >
-            {isCollapsed ? '▶' : '▼'}
+            <Icon name={isCollapsed ? 'sectionCollapsed' : 'sectionExpanded'} />
           </button>
         ) : (
           <span className="space-collection__twisty space-collection__twisty--placeholder" aria-hidden="true" />
@@ -182,7 +183,7 @@ function CollectionRow({
             onRemove(occId);
           }}
         >
-          {'×'}
+          <Icon name="dismiss" />
         </button>
       </div>
       {hasChildren && !isCollapsed ? (
@@ -371,7 +372,7 @@ export function SpaceCollectionRenderer({ projectId, spaceId }: SpaceRendererMou
             data-testid="space-collection-add-items"
             onClick={() => setPickerOpen((open) => !open)}
           >
-            + Add items
+            <Icon name="add" /> Add items
           </button>
           {pickerOpen ? (
             <div className="space-collection__picker-anchor">
@@ -501,7 +502,7 @@ function CollectionBody({
                         onRemoveItem(item.id);
                       }}
                     >
-                      {'×'}
+                      <Icon name="dismiss" />
                     </button>
                   </div>
                 </li>

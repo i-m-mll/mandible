@@ -1,3 +1,4 @@
+import { Icon } from '../icons/Icon';
 import { useCallback, useEffect, useState } from 'preact/hooks';
 import {
   canPerformOperation,
@@ -116,7 +117,7 @@ export default function SigningSettings({ instance }: Props): JSX.Element {
               onClick={() => { setFormOpen((open) => !open); setMessage(null); }}
               disabled={busy}
             >
-              {formOpen ? '×' : <svg aria-hidden="true" viewBox="0 0 16 16" width="16" height="16"><path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg>}
+              {formOpen ? <Icon name="dismiss" /> : <Icon name="addSigningKey" size={16} />}
             </button>
           )}
         </div>

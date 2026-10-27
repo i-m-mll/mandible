@@ -18,7 +18,7 @@
   color: var(--text-muted);
 }
 
-.auth-toolbar__controls select {
+.auth-toolbar__controls :is(select, .native-select) {
   min-height: 32px;
 }
 
@@ -870,7 +870,7 @@
   padding: 0 12px 8px;
 }
 
-.auth-sidebar__type-filter select {
+.auth-sidebar__type-filter :is(select, .native-select) {
   width: 100%;
   min-height: 30px;
 }
@@ -1975,7 +1975,7 @@
   color: var(--accent-blue);
 }
 
-.auth-sidebar__sort select {
+.auth-sidebar__sort :is(select, .native-select) {
   min-height: 28px;
 }
 

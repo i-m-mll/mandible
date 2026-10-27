@@ -1,8 +1,8 @@
+import { Icon } from '../icons/Icon';
 import type { ActivityItem, ActivityKind } from '../../../../src/parsers/types';
 import { CompactActivityRow } from '../shared/ChatDisclosure';
 import type { DisplayActivityItem, ToolCallActivity } from '../stream-renderer/types';
-import { ChatIcon, HistoryIcon, InfoIcon, IssuesIcon, LightbulbIcon, MonitorIcon, TerminalIcon } from '../icons/TabIcons';
-import { ToolActivityIcon } from './ToolActivityIcon';
+
 import { plainActivityHeader } from './activityText';
 import { classifyTool, presentTool, summarizeToolRunParts } from './toolPresentation';
 
@@ -95,19 +95,19 @@ export function presentActivityItems(items: readonly DisplayActivityItem[]): Act
 
 function activityIcon(item: DisplayActivityItem): JSX.Element | undefined {
   if (item.type === 'provider-directive') {
-    return item.directive.kind === 'memory-citation' ? <HistoryIcon /> : <ChatIcon />;
+    return item.directive.kind === 'memory-citation' ? <Icon name="history" /> : <Icon name="chat" />;
   }
   if (item.type === 'tool-call-activity') {
-    return <ToolActivityIcon icon={presentTool(item.name, item.input, item.toolKind).icon} />;
+    return <Icon name={presentTool(item.name, item.input, item.toolKind).icon} />;
   }
-  if (item.type === 'thinking-block-activity') return <LightbulbIcon />;
+  if (item.type === 'thinking-block-activity') return <Icon name="thought" />;
   if (item.activity_kind === 'thinking' || item.activity_kind === 'reasoning-summary') {
-    return <LightbulbIcon />;
+    return <Icon name="thought" />;
   }
-  if (item.activity_kind === 'tool-progress' || item.activity_kind === 'tool-summary') return <TerminalIcon />;
-  if (item.activity_kind === 'information') return <InfoIcon />;
-  if (item.activity_kind === 'diagnostic') return <IssuesIcon />;
-  return <MonitorIcon />;
+  if (item.activity_kind === 'tool-progress' || item.activity_kind === 'tool-summary') return <Icon name="terminal" />;
+  if (item.activity_kind === 'information') return <Icon name="info" />;
+  if (item.activity_kind === 'diagnostic') return <Icon name="issues" />;
+  return <Icon name="monitor" />;
 }
 
 function activityDetailLines(

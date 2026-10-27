@@ -1,3 +1,4 @@
+import { Icon } from './components/icons/Icon';
 import { appTip } from './components/shared/AppHoverTips';
 import { createContext, type ComponentChildren, type Ref, type RefObject } from 'preact';
 import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
@@ -318,15 +319,6 @@ export function useRegisterAppRightSidebar(descriptor: AppRightSidebarDescriptor
   }, [active, descriptor, updateRightSidebar]);
 }
 
-export function RightSidebarIcon({ size = 18 }: { size?: number }): JSX.Element {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
-      <rect x="3" y="4" width="18" height="16" rx="2" />
-      <path d="M15 4v16" />
-    </svg>
-  );
-}
-
 export function appRightSidebarWidthBounds(
   minWidth: number | undefined,
   maxWidth: number | undefined,
@@ -400,7 +392,7 @@ export function AppRightSidebarToggleButton({
       {...appTip(label)}
       onClick={() => onOpenChange(!open)}
     >
-      <RightSidebarIcon />
+      <Icon name="rightSidebar" size={18} />
     </button>
   );
 }
@@ -515,12 +507,5 @@ export function AppRightSidebarSurface({
 }
 
 export function ViewSidebarIcon({ open, size = 18 }: { open: boolean; size?: number }): JSX.Element {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
-      <rect x="3" y="4" width="18" height="16" rx="2" />
-      {open ? <path d="M9 4v16" /> : null}
-      <path d={open ? 'M12 12h5' : 'M8 12h8'} />
-      <path d={open ? 'm14.5 9.5 2.5 2.5-2.5 2.5' : 'm10.5 9.5-2.5 2.5 2.5 2.5'} />
-    </svg>
-  );
+  return <Icon name={open ? 'hideViewSidebar' : 'showViewSidebar'} size={size} />;
 }

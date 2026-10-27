@@ -30,7 +30,7 @@
   color: var(--text-primary);
 }
 
-.icon-tab-list svg {
+.icon-tab-list .app-icon {
   width: 18px;
   height: 18px;
 }

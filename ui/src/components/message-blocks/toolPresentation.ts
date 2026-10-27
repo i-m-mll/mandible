@@ -1,29 +1,31 @@
+import type { IconName } from '../icons/Icon';
+
 export type ToolCategory =
   | 'read' | 'edit' | 'write' | 'delete' | 'move' | 'search' | 'execute'
   | 'javascript' | 'wait' | 'think' | 'fetch' | 'browser' | 'switch_mode' | 'other';
 
 export type ToolPresentation = {
   category: ToolCategory;
-  icon: string;
+  icon: IconName;
   phrase: string;
   target: string;
 };
 
-const DEFINITIONS: Record<ToolCategory, { icon: string; phrase: string; plural: string }> = {
-  read: { icon: '↗', phrase: 'Read a file', plural: 'Read some files' },
-  edit: { icon: '±', phrase: 'Edited a file', plural: 'Edited some files' },
-  write: { icon: '+', phrase: 'Wrote a file', plural: 'Wrote some files' },
-  delete: { icon: '−', phrase: 'Removed a file', plural: 'Removed some files' },
-  move: { icon: '→', phrase: 'Moved a file', plural: 'Moved some files' },
-  search: { icon: '⌕', phrase: 'Searched', plural: 'Searched several times' },
-  execute: { icon: 'terminal', phrase: 'Ran a command', plural: 'Ran some commands' },
-  javascript: { icon: 'javascript', phrase: 'Ran JavaScript', plural: 'Ran JavaScript several times' },
-  wait: { icon: 'wait', phrase: 'Waited', plural: 'Waited several times' },
+const DEFINITIONS: Record<ToolCategory, { icon: IconName; phrase: string; plural: string }> = {
+  read: { icon: 'toolRead', phrase: 'Read a file', plural: 'Read some files' },
+  edit: { icon: 'toolEdit', phrase: 'Edited a file', plural: 'Edited some files' },
+  write: { icon: 'toolWrite', phrase: 'Wrote a file', plural: 'Wrote some files' },
+  delete: { icon: 'toolDelete', phrase: 'Removed a file', plural: 'Removed some files' },
+  move: { icon: 'toolMove', phrase: 'Moved a file', plural: 'Moved some files' },
+  search: { icon: 'toolSearch', phrase: 'Searched', plural: 'Searched several times' },
+  execute: { icon: 'toolExecute', phrase: 'Ran a command', plural: 'Ran some commands' },
+  javascript: { icon: 'toolJavascript', phrase: 'Ran JavaScript', plural: 'Ran JavaScript several times' },
+  wait: { icon: 'history', phrase: 'Waited', plural: 'Waited several times' },
   think: { icon: 'thought', phrase: 'Thought', plural: 'Thought several times' },
-  fetch: { icon: '↓', phrase: 'Fetched a resource', plural: 'Fetched several resources' },
-  browser: { icon: '◎', phrase: 'Used the browser', plural: 'Used the browser several times' },
-  switch_mode: { icon: '→', phrase: 'Switched mode', plural: 'Switched modes several times' },
-  other: { icon: 'tool', phrase: 'Used a tool', plural: 'Used some tools' },
+  fetch: { icon: 'toolFetch', phrase: 'Fetched a resource', plural: 'Fetched several resources' },
+  browser: { icon: 'toolBrowser', phrase: 'Used the browser', plural: 'Used the browser several times' },
+  switch_mode: { icon: 'toolMove', phrase: 'Switched mode', plural: 'Switched modes several times' },
+  other: { icon: 'monitor', phrase: 'Used a tool', plural: 'Used some tools' },
 };
 
 /** Exact provider tool names with an unambiguous user-facing operation. */
@@ -52,9 +54,9 @@ const TOOL_NAME_CATEGORIES: Readonly<Record<string, ToolCategory>> = {
 };
 
 const TOOL_KIND_PRESENTATIONS: Readonly<Record<string, ToolPresentation>> = {
-  function_call: { category: 'other', icon: 'tool', phrase: 'Called a function', target: '' },
-  custom_tool_call: { category: 'other', icon: 'tool', phrase: 'Used a custom tool', target: '' },
-  claude_tool_use: { category: 'other', icon: 'tool', phrase: 'Used a tool', target: '' },
+  function_call: { category: 'other', icon: 'monitor', phrase: 'Called a function', target: '' },
+  custom_tool_call: { category: 'other', icon: 'monitor', phrase: 'Used a custom tool', target: '' },
+  claude_tool_use: { category: 'other', icon: 'monitor', phrase: 'Used a tool', target: '' },
 };
 
 function normalizedName(value: string | undefined): string {
@@ -199,6 +201,6 @@ export function summarizeToolRun(
 
 export function toolRunIcon(
   tools: ReadonlyArray<{ name: string; toolKind?: string }>,
-): string {
+): IconName {
   return presentTool(tools[0]?.name ?? '', {}, tools[0]?.toolKind).icon;
 }

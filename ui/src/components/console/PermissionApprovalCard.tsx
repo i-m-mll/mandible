@@ -1,3 +1,4 @@
+import { Icon } from '../icons/Icon';
 import type { JSX } from 'preact/jsx-runtime';
 import type {
   ConsoleBackendType,
@@ -99,7 +100,7 @@ export function PermissionApprovalCard({
   return (
     <section className={`permission-card permission-card--${variant}`} aria-label="Permission request">
       <div className="permission-card__header">
-        <span className="permission-card__icon" aria-hidden="true">!</span>
+        <span className="permission-card__icon" aria-hidden="true"><Icon name="permission" /></span>
         <div className="permission-card__titles">
           <div className="permission-card__eyebrow">Approval required</div>
           <div className="permission-card__title">{request.title || toolName}</div>
