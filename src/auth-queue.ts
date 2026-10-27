@@ -1057,7 +1057,7 @@ export class AuthQueue {
     const directory = join(getMandibleHome(), 'config', 'local-sessions', 'handoff', `${owner.requestId}-${owner.executionId}`);
     try {
       this.handoffCompletionWatcher = watch(directory, { persistent: false }, (_event, name) => {
-        if (this.disposed || name?.toString() !== 'journal.json') return;
+        if (this.disposed || !['journal.json', '.verification.lock'].includes(name?.toString() ?? '')) return;
         // This is only a wakeup hint. Reconciliation validates the binding,
         // publication, package, and live receipt under its observation lease.
         try {
