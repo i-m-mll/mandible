@@ -43,7 +43,7 @@ async function verifyAcceptedBytes(journal, cleanup = false) {
   const previous = cleanup ? acceptedInstallPaths(b).previous : '';
   const superseded = cleanup && b.bundleOwner?.acceptedRelease !== b.acceptedRelease.reference ? b.bundleOwner?.acceptedRelease || '' : '';
   await execFileAsync(b.runtime.path, [path.join(directory, 'verify-accepted-release.mjs'), b.acceptedRelease.reference, '', b.nativeApp,
-    previous, b.priorAppSha256 || '', superseded], { env: journal.environment, timeout: 60_000, maxBuffer: 1024 * 1024 });
+    previous, b.priorAppSha256 || '', superseded, cleanup ? 'cleanup' : 'verify'], { env: journal.environment, timeout: 60_000, maxBuffer: 1024 * 1024 });
 }
 
 function atomic(file, value) {

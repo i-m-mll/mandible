@@ -172,6 +172,9 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     archive(process.cwd(), candidate, candidateRoot); configurePorts(candidateRoot, runtime, ports, env);
     const acceptanceProgram = path.join(candidateRoot, 'scripts/candidate-acceptance.mjs');
     let acceptanceSource = fs.readFileSync(acceptanceProgram, 'utf8').replace('result.receipt = acceptedReference || receipt;', `result.receipt = acceptedReference || receipt; if (result.status === 'passed') result.bootstrapOversized = 'x'.repeat(70000);`);
+    const buildEnvironment = "  const buildEnv = { ...process.env, GIT_OPTIONAL_LOCKS: '0', PATH: `${path.dirname(runtime)}${path.delimiter}${process.env.PATH}` };";
+    if (!acceptanceSource.includes(buildEnvironment)) throw new Error('Stable native toolchain fixture transform requires review.');
+    acceptanceSource = acceptanceSource.replace(buildEnvironment, `${buildEnvironment}\n  Object.assign(buildEnv, ${JSON.stringify({ CARGO_HOME: fs.realpathSync(path.join(buildHome, '.cargo')), RUSTUP_HOME: fs.realpathSync(path.join(buildHome, '.rustup')) })});`);
     const nativeCache = process.env.MANDIBLE_BOOTSTRAP_CARGO_CACHE;
     if (nativeCache) {
       const cache = fs.realpathSync(nativeCache);
