@@ -157,6 +157,13 @@ export function handoffDirectory(home, requestId, executionId) {
   return path.join(homeDirectory(home), 'handoff', `${requestId}-${executionId}`);
 }
 function journalFile(binding) { return path.join(handoffDirectory(binding.home, binding.requestId, binding.executionId), 'journal.json'); }
+function observationFiles(binding) {
+  const resources = path.join(binding.nativeApp, 'Contents/Resources');
+  return binding.acceptedRelease
+    ? [path.join(resources, 'release.json'), path.join(binding.nativeApp, 'Contents/MacOS/mandible-app')]
+    : [path.join(binding.root, 'dist/build-revision.json'), path.join(resources, 'build-revision.json'),
+      path.join(binding.root, 'dist/index.js'), path.join(binding.nativeApp, 'Contents/MacOS/mandible-app')];
+}
 function validateJournal(journal) {
   if (journal?.schema !== 'mandible-runtime-handoff@1' || bindingDigest(journal.binding) !== journal.bindingDigest) throw new Error('Runtime handoff binding is malformed or changed.');
   if (journal.phase !== 'acknowledged' && fileHash(journal.binding.runtime.path) !== journal.binding.runtime.sha256) throw new Error('Pinned handoff runtime bytes changed.');
@@ -542,8 +549,7 @@ async function observeRuntimeHandoffOnce(journal, {
   const installedMarker = path.join(resources, 'build-revision.json');
   if (b.acceptedRelease) await verifyAcceptedBytes(journal);
   if (!b.acceptedRelease && JSON.stringify(JSON.parse(fs.readFileSync(marker))) !== JSON.stringify(JSON.parse(fs.readFileSync(installedMarker)))) throw new Error('Installed desktop differs from the handoff build.');
-  const fixedFiles = b.acceptedRelease ? [path.join(resources, 'release.json'), path.join(b.nativeApp, 'Contents/MacOS/mandible-app')]
-    : [marker, installedMarker, path.join(b.root, 'dist/index.js'), path.join(b.nativeApp, 'Contents/MacOS/mandible-app')];
+  const fixedFiles = observationFiles(b);
   let files = Object.fromEntries(fixedFiles.map(file => [file, fileHash(file)]));
   let observed;
   try {
@@ -646,10 +652,7 @@ async function runtimeRecoveryEvidenceKeyOnce(journal) {
     if (journal.phase !== 'failed') recordVerificationFailure(journal, error);
     throw error;
   }
-  const resources = path.join(journal.binding.nativeApp, 'Contents/Resources');
-  const files = [path.join(journal.binding.root, 'dist/build-revision.json'),
-    path.join(resources, 'build-revision.json'), path.join(journal.binding.root, 'dist/index.js'),
-    path.join(journal.binding.nativeApp, 'Contents/MacOS/mandible-app'), evidence.backend.file, evidence.gateway.file];
+  const files = [...observationFiles(journal.binding), evidence.backend.file, evidence.gateway.file];
   return { outcome: 'confirmed', key: hash(JSON.stringify({ process: evidence.process, backend: evidence.backend, gateway: evidence.gateway,
     daemonLog: { path: evidence.daemonLog.path, dev: evidence.daemonLog.dev, ino: evidence.daemonLog.ino },
     files: files.map(file => [file, fileHash(file)]) })) };
@@ -908,7 +911,7 @@ export async function runRuntimeHandoffWorker(file, {
       await control(journal, 'handoff-verify', false, { until, awaitReady: true });
       save(journal, { phase: 'observing', launch: { ...journal.launch, readyAt: journal.launch.readyAt ?? now() } });
       if (initial) await desktop(journal);
-      const receipt = await observe(journal, { observerToken: token, deadlineMs: Math.max(0, until - now()), readEvidence: inspectEvidence });
+      const receipt = await observe(journal, { observerToken: token, deadlineMs: waitMs, readEvidence: inspectEvidence });
       unchangedJournal(journal);
       save(journal, { phase: 'complete', receipt });
     });
