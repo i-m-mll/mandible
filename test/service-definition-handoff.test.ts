@@ -20,12 +20,14 @@ it('waits through the native launch executable transition and refuses a foreign 
     Label: context[`${service}Label`], BundleProgram: 'Contents/MacOS/mandible-service', ProgramArguments: ['mandible-service', 'foreground', service],
   }));
   let executable = 'xpcproxy';
+  let gatewayExecutable: string | null = null;
   vi.doMock('node:child_process', async original => ({ ...await original<typeof import('node:child_process')>(), spawnSync: (binary: string, args: string[]) => {
     if (binary === '/usr/bin/plutil') return { status: 0, stdout: fs.readFileSync(args.at(-1)!, 'utf8'), stderr: '' };
-    if (binary === '/bin/ps') return { status: 0, stdout: executable, stderr: '' };
+    if (binary === '/bin/ps') return { status: 0, stdout: args.at(-1) === 'lstart=' ? 'launch-start'
+      : args[args.indexOf('-p') + 1] === '52' ? gatewayExecutable ?? executable : executable, stderr: '' };
     if (binary === '/bin/launchctl') {
       const service = args[1].endsWith(context.backendLabel) ? 'backend' : 'gateway';
-      return { status: 0, stdout: `service = {\n program identifier = Contents/MacOS/mandible-service (mode: 2)\n parent bundle identifier = bio.mll.mandible\n arguments = {\nmandible-service\nforeground\n${service}\n }\n pid = 42\n}`, stderr: '' };
+      return { status: 0, stdout: `service = {\n program identifier = Contents/MacOS/mandible-service (mode: 2)\n parent bundle identifier = bio.mll.mandible\n arguments = {\nmandible-service\nforeground\n${service}\n }\n pid = ${service === 'backend' ? 42 : 52}\n}`, stderr: '' };
     }
     throw new Error(`Unexpected command ${binary}`);
   } }));
@@ -41,6 +43,9 @@ it('waits through the native launch executable transition and refuses a foreign 
   expect(inspectServiceDefinitionsSync(context).ok).toBe(true);
   executable = '/another/Mandible.app/Contents/MacOS/mandible-bun';
   expect(inspectServiceDefinitionsSync(context)).toMatchObject({ ok: false, refusal: { category: 'ownership_conflict' } });
+  gatewayExecutable = executable;
+  executable = 'xpcproxy';
+  expect(inspectServiceDefinitionsSync(context)).toMatchObject({ ok: false, refusal: { service: 'gateway', category: 'ownership_conflict' } });
 });
 
 async function fixture({ absentGateway = false, stoppedBackend = false } = {}) {
@@ -66,22 +71,26 @@ async function fixture({ absentGateway = false, stoppedBackend = false } = {}) {
   const files = new Map([backend, gateway].map(record => [record.Label, path.join(context.privateServiceDir, `${record.Label}.plist`)]));
   for (const record of [backend, gateway]) fs.writeFileSync(files.get(record.Label)!, JSON.stringify({ ...record,
     StandardErrorPath: path.join(scratch, 'disk-stderr.log'), EnvironmentVariables: { ...record.EnvironmentVariables, MANDIBLE_LAUNCH_MODE: 'on_demand', PATH: '/disk/tools', NODE_OPTIONS: '--max-old-space-size=900' } }));
-  const jobs = new Map([backend, gateway].map(record => [record.Label, { record, pid: record === backend ? 41 : 51 }]));
+  const jobs = new Map<string, { record: ServiceDefinition; pid: number; lastExit?: string }>([backend, gateway].map(record => [record.Label, { record, pid: record === backend ? 41 : 51, lastExit: '(never exited)' }]));
   if (absentGateway) { jobs.delete(gateway.Label); fs.unlinkSync(files.get(gateway.Label)!); }
   if (stoppedBackend) jobs.delete(backend.Label);
   let oldAlive = true;
+  let nativeStartingGateway = false;
   const bootouts: string[] = [];
   const spawnSync = vi.fn((binary: string, args: string[]) => {
     const result = (stdout = '', status = 0, stderr = '') => ({ status, stdout, stderr });
     if (binary === '/usr/bin/plutil') return result(fs.readFileSync(args.at(-1)!, 'utf8'));
-    if (binary === '/bin/ps') return result(args[1] === '41' ? oldAlive ? 'old-start' : '' : [...jobs.values()].some(job => String(job.pid) === args[1]) ? 'bridge-start' : '');
+    if (binary === '/usr/sbin/lsof') return result(`n${backend.StandardErrorPath}\n`);
+    if (binary === '/bin/ps') return result(args.includes('comm=') && nativeStartingGateway ? 'xpcproxy'
+      : args[1] === '41' ? oldAlive ? 'old-start' : '' : [...jobs.values()].some(job => String(job.pid) === args[1]) ? 'bridge-start' : '');
     if (binary !== '/bin/launchctl') throw new Error(`Unexpected external command ${binary}`);
     const label = args[1].slice(args[1].lastIndexOf('/') + 1);
     if (args[0] === 'print') {
       const job = jobs.get(label);
       if (!job) return result('', 113, 'Could not find service');
+      if (nativeStartingGateway && label === gateway.Label) return result(`service = {\n program identifier = Contents/MacOS/mandible-service (mode: 2)\n parent bundle identifier = bio.mll.mandible\n arguments = {\nmandible-service\nforeground\ngateway\n }\n pid = 51\n}`);
       const record = job.record;
-      return result(`service = {\n program = ${record.ProgramArguments[0]}\n arguments = {\n${record.ProgramArguments.join('\n')}\n }\n environment = {\n${Object.entries(record.EnvironmentVariables).map(([key, value]) => `${key} => ${value}`).join('\n')}\n }\n working directory = ${record.WorkingDirectory}\n stdout path = ${record.StandardOutPath}\n stderr path = ${record.StandardErrorPath}\n properties = keepalive\n pid = ${job.pid}\n}`);
+      return result(`service = {\n program = ${record.ProgramArguments[0]}\n arguments = {\n${record.ProgramArguments.join('\n')}\n }\n environment = {\n${Object.entries(record.EnvironmentVariables).map(([key, value]) => `${key} => ${value}`).join('\n')}\n }\n working directory = ${record.WorkingDirectory}\n stdout path = ${record.StandardOutPath}\n stderr path = ${record.StandardErrorPath}\n properties = keepalive\n runs = 1\n last exit code = ${job.lastExit ?? '(never exited)'}\n pid = ${job.pid}\n}`);
     }
     if (args[0] === 'bootout') {
       // The migration must be durable before launchd loses its loaded source.
@@ -106,8 +115,46 @@ async function fixture({ absentGateway = false, stoppedBackend = false } = {}) {
   fs.writeFileSync(path.join(context.runtimeDir, 'handoff-active.json'), JSON.stringify({ bindingDigest: 'fixture', journal }));
   vi.stubEnv('MANDIBLE_RUNTIME_HANDOFF_JOURNAL', journal);
   const drain = () => { oldAlive = false; jobs.set(backend.Label, { record: backend, pid: 42 }); fs.writeFileSync(path.join(dir, 'bridge-process.json'), JSON.stringify({ pid: 42, startedAt: 'bridge-start' })); };
-  return { controller, binding, backend, gateway, jobs, files, drain, bootouts, context };
+  return { controller, binding, backend, gateway, jobs, files, drain, bootouts, context, makeGatewayStarting: () => { nativeStartingGateway = true; } };
 }
+
+it('checks every bound role for absence before inspecting the remaining service ownership', async () => {
+  const { controller, binding, backend, jobs, makeGatewayStarting } = await fixture();
+  jobs.delete(backend.Label);
+  makeGatewayStarting();
+  expect(() => controller.inspectHandoffEvidence({ ...binding, nativeApp: path.join(scratch, 'Mandible.app'), acceptedRelease: { reference: 'not-read-before-bound-continuity' } }, { backend: { pid: 41, startedAt: 'old-start', runs: 1 } }))
+    .toThrowError(expect.objectContaining({ code: 'process_changed' }));
+});
+
+it('does not qualify a backend that already crashed and restarted before readiness', async () => {
+  const { controller, binding, backend, jobs } = await fixture();
+  jobs.get(backend.Label)!.lastExit = '1';
+  expect(() => controller.inspectHandoffEvidence(binding)).toThrowError(expect.objectContaining({ code: 'startup_failed' }));
+});
+
+it('returns strictly qualified process evidence when health remains pending', async () => {
+  const { controller, binding, backend, gateway, files } = await fixture();
+  for (const record of [backend, gateway]) fs.writeFileSync(files.get(record.Label)!, JSON.stringify(record));
+  fs.writeFileSync(backend.StandardErrorPath, '');
+  await expect(controller.verifyHandoffDefinitions(binding, { awaitReady: true, until: 0,
+    inspect: async () => ({ status: { dashboard_ready: false, state: 'starting' }, main: { backend_generation: binding.mergeCommit },
+      backendJob: { loaded: true, pid: 41, runs: 1 }, gatewayJob: { loaded: true, pid: 51, runs: 1 } }),
+  })).rejects.toMatchObject({ outcome: 'pending', evidence: { processes: { backend: { pid: 41, startedAt: 'old-start' }, gateway: { pid: 51, startedAt: 'bridge-start' } } } });
+});
+
+it('retains the first qualified process observation across readiness', async () => {
+  const { controller, binding, backend, gateway, jobs, files } = await fixture();
+  for (const record of [backend, gateway]) fs.writeFileSync(files.get(record.Label)!, JSON.stringify(record));
+  fs.writeFileSync(backend.StandardErrorPath, '');
+  await expect(controller.verifyHandoffDefinitions(binding, { awaitReady: true, until: Date.now() + 1000,
+    inspect: async () => {
+      jobs.set(backend.Label, { record: backend, pid: 42 });
+      return { status: { dashboard_ready: true, state: 'running' }, main: { backend_generation: binding.mergeCommit },
+        backendJob: { loaded: true, pid: 42, runs: 1 }, gatewayJob: { loaded: true, pid: 51, runs: 1 },
+        backend: { document: {} }, gateway: { document: {} } };
+    },
+  })).rejects.toMatchObject({ code: 'startup_failed', message: expect.stringContaining('process 41 exited and launchd started 42') });
+});
 
 it('captures loaded provenance, publishes bound migration before unload, and reloads gateway drift even when disk bytes already contain the candidate', async () => {
   const fixtureState = await fixture();

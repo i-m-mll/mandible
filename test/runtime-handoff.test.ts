@@ -176,7 +176,7 @@ function recoveryFixture(logLines: (processStartedAt: string, fakeStart: number)
 
 const startupLine = (processStartedAt: string) => JSON.stringify({ message: 'server_started', time: new Date(Date.parse(processStartedAt) + 1000).toISOString() });
 
-it.each([false, true])('retains unconfirmed launch evidence and checks process continuity (replaced=%s)', async replaced => {
+it('binds strictly qualified process evidence returned before health is ready', async () => {
   const f = recoveryFixture(startedAt => [startupLine(startedAt)]);
   const binding = { ...f.failed.binding, oldProcess: { pid: 987653, startedAt: 'gone' } };
   const file = path.join(handoffDirectory(binding.home, binding.requestId, binding.executionId), 'journal.json');
@@ -184,40 +184,16 @@ it.each([false, true])('retains unconfirmed launch evidence and checks process c
     deadline: Date.now() + 30_000, bridgeInstalled: true, stages: {}, environment: {} };
   fs.writeFileSync(file, JSON.stringify(journal));
   fs.writeFileSync(path.join(binding.home, 'config/local-sessions/handoff-active.json'), JSON.stringify({ journal: file, bindingDigest: journal.bindingDigest }));
-  const pending = { pid: process.pid, startedAt: f.processStartedAt, runs: 1, executable: 'xpcproxy' };
-  const options = { verifyPublication: async () => {}, desktop: async () => {},
-    stage: async () => { fs.appendFileSync(path.join(path.dirname(file), 'convergence.log'), 'fixture stage\n'); } };
-  const waiting = await runRuntimeHandoffWorker(file, { ...options, control: async (_journal, command) => {
-    if (['handoff-evidence', 'handoff-verify'].includes(command)) throw new RuntimeObservationError('starting', 'Native launcher is unconfirmed.', { pendingProcesses: { backend: pending } }, 'pending');
-    return '{}';
-  } });
-  expect(waiting).toMatchObject({ phase: 'verification-pending', launch: { pendingProcesses: { backend: pending } } });
-  expect(waiting.launch.processes).toBeUndefined();
-  const evidence = { ...f.evidence(diagnostics(1, f.fakeStart - 30, f.fakeStart - 10)),
-    processes: { backend: { pid: process.pid + Number(replaced), startedAt: f.processStartedAt, runs: 1 } } };
-  const observe = vi.fn(async current => ({ bindingDigest: current.bindingDigest, evidence }));
-  const result = await runRuntimeHandoffWorker(file, { ...options, control: async () => JSON.stringify(evidence), observe });
-  expect(result.phase).toBe(replaced ? 'failed' : 'complete');
-  if (replaced) { expect(result.error).toContain('changed after its pending launch observation'); expect(observe).not.toHaveBeenCalled(); }
-  else expect(result.launch.processes).toEqual(evidence.processes);
-});
-
-it.each([false, true])('checks a pending launcher against an already bound process (replaced=%s)', async replaced => {
-  const f = recoveryFixture(startedAt => [startupLine(startedAt)]);
-  const file = path.join(handoffDirectory(f.binding.home, f.binding.requestId, f.binding.executionId), 'journal.json');
-  const processIdentity = { pid: process.pid, startedAt: f.processStartedAt, runs: 1 };
-  const journal = { ...f.failed, phase: 'verification-pending', launch: { id: 'bound-launch', enteredAt: Date.now(), processes: { backend: processIdentity } },
-    deadline: Date.now() + 30_000, environment: {} };
-  fs.writeFileSync(file, JSON.stringify(journal));
-  fs.writeFileSync(path.join(f.home, 'config/local-sessions/handoff-active.json'), JSON.stringify({ journal: file, bindingDigest: journal.bindingDigest }));
-  const pending = { ...processIdentity, pid: process.pid + Number(replaced), executable: 'xpcproxy' };
+  const processes = { backend: { pid: process.pid, startedAt: f.processStartedAt, runs: 1 } };
   const result = await runRuntimeHandoffWorker(file, { verifyPublication: async () => {},
-    control: async () => { throw new RuntimeObservationError('starting', 'Native launcher is unconfirmed.', { pendingProcesses: { backend: pending } }, 'pending'); },
+    stage: async () => { fs.appendFileSync(path.join(path.dirname(file), 'convergence.log'), 'fixture stage\n'); },
+    control: async (_journal, command) => {
+      if (command === 'handoff-evidence') throw new RuntimeObservationError('starting', 'Unqualified launcher.', { refusal: { executable: 'xpcproxy' } }, 'pending');
+      if (command === 'handoff-verify') throw new RuntimeObservationError('starting', 'Health is not ready.', { processes }, 'pending');
+      return '{}';
+    },
   });
-  expect(result.phase).toBe(replaced ? 'failed' : 'verification-pending');
-  expect(result.launch.processes.backend).toEqual(processIdentity);
-  if (replaced) { expect(result.error).toContain('changed during its pending launch observation'); expect(result.launch.pendingProcesses).toBeUndefined(); }
-  else expect(result.launch.pendingProcesses.backend).toEqual(pending);
+  expect(result).toMatchObject({ phase: 'verification-pending', launch: { processes } });
 });
 
 it('gives health coverage its full observation budget after readiness', async () => {

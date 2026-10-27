@@ -448,23 +448,8 @@ function recordVerificationFailure(journal, error) {
 }
 function bindLaunchedProcesses(journal, evidence) {
   if (!journal.launch || journal.phase === 'failed') return;
-  if (evidence.pendingProcesses) {
-    for (const [name, pending] of Object.entries(evidence.pendingProcesses)) {
-      for (const prior of [journal.launch.pendingProcesses?.[name], journal.launch.processes?.[name]].filter(Boolean)) {
-        if (prior.pid !== pending.pid || prior.startedAt && pending.startedAt && prior.startedAt !== pending.startedAt
-            || prior.runs && pending.runs > prior.runs) throw observationFailure('process_changed',
-          'Native service process changed during its pending launch observation.', { prior, current: pending });
-      }
-    }
-    unchangedJournal(journal);
-    save(journal, { launch: { ...journal.launch, pendingProcesses: { ...journal.launch.pendingProcesses, ...evidence.pendingProcesses } } });
-  }
   if (!evidence.processes) return;
   for (const [name, identity] of Object.entries(evidence.processes)) {
-    const pending = journal.launch.pendingProcesses?.[name];
-    if (pending && (pending.pid !== identity.pid || pending.startedAt && pending.startedAt !== identity.startedAt || pending.runs && identity.runs > pending.runs)) {
-      throw observationFailure('process_changed', 'Native service process changed after its pending launch observation.', { pending, current: identity });
-    }
     if (journal.launch.processes?.[name] && JSON.stringify(journal.launch.processes[name]) !== JSON.stringify(identity)) {
       throw observationFailure('process_changed', 'Launched service process identity changed.', { expected: journal.launch.processes, current: evidence.processes });
     }
@@ -934,7 +919,11 @@ export async function runRuntimeHandoffWorker(file, {
         if (!observationPending(error)) throw error;
         if (error.evidence) bindLaunchedProcesses(journal, error.evidence);
       }
-      await control(journal, 'handoff-verify', false, { until, awaitReady: true });
+      try { await control(journal, 'handoff-verify', false, { until, awaitReady: true }); }
+      catch (error) {
+        if (observationPending(error) && error.evidence?.processes) bindLaunchedProcesses(journal, error.evidence);
+        throw error;
+      }
       save(journal, { phase: 'observing', launch: { ...journal.launch, readyAt: journal.launch.readyAt ?? now() } });
       if (initial) await desktop(journal);
       const receipt = await observe(journal, { observerToken: token, deadlineMs: waitMs, readEvidence: inspectEvidence });

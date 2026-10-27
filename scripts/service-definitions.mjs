@@ -195,7 +195,8 @@ function loadedJob(service, label, result, context) {
 function installedDefinition(file, bytes, record) { return { file, bytesBase64: bytes.toString('base64'), sha256: createHash('sha256').update(bytes).digest('hex'), record }; }
 const serviceFiles = (context, label) => [context.serviceDir, context.privateServiceDir,
   ...(context.bundleRoot ? [path.join(context.bundleRoot, 'Contents/Library/LaunchAgents')] : [])].map(dir => path.join(dir, `${label}.plist`));
-const combine = results => results.find(result => !result.ok) ?? { ok: true, observations: results.map(result => result.observation) };
+const combine = results => results.find(result => !result.ok && result.refusal.category !== 'starting')
+  ?? results.find(result => !result.ok) ?? { ok: true, observations: results.map(result => result.observation) };
 
 /** Read-only: no runtime resolution, installation, receipts, or daemon imports. */
 export async function inspectServiceDefinitions(context, options = {}) {
