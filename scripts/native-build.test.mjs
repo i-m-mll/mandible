@@ -136,6 +136,12 @@ test('stopped native run blocks remaining descendants then reacquires with profi
     await publishPreviewConsumer(reservation, { build: original });
     const worktree = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
     const staged = stageNativeBuild({ worktree, root: f.root, candidate: original });
+    const agents = path.join(staged.env.MANDIBLE_DESKTOP_PAYLOAD_CONTENTS, 'Library/LaunchAgents');
+    fs.mkdirSync(agents, { recursive: true });
+    fs.writeFileSync(path.join(agents, 'fixture.plist'), 'generated agent');
+    const stagedConfig = JSON.parse(fs.readFileSync(staged.configFile, 'utf8'));
+    const bundledAgents = path.resolve(staged.crate, stagedConfig.bundle.macOS.files['Library/LaunchAgents']);
+    assert.equal(fs.readFileSync(path.join(bundledAgents, 'fixture.plist'), 'utf8'), 'generated agent');
     fs.mkdirSync(staged.env.CARGO_TARGET_DIR, { recursive: true });
     const warm = path.join(staged.env.CARGO_TARGET_DIR, 'warm'); fs.writeFileSync(warm, 'compiled dependency');
     const stale = path.join(staged.crate, 'removed-source.rs'); fs.writeFileSync(stale, 'stale');

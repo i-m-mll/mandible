@@ -79,7 +79,8 @@ export function stageNativeBuild({ worktree, root, candidate }) {
   config.build = { ...config.build, beforeBuildCommand: null, beforeDevCommand: null, frontendDist: bootstrap };
   config.bundle = { ...config.bundle, resources, targets: ['app'],
     externalBin: config.bundle.externalBin.map(file => path.join(binaries, path.basename(file))),
-    macOS: { ...config.bundle.macOS, signingIdentity: '-', frameworks: [sqliteLibrary] } };
+    macOS: { ...config.bundle.macOS, signingIdentity: '-', frameworks: [sqliteLibrary],
+      files: { ...config.bundle.macOS.files, 'Library/LaunchAgents': path.join(payload, 'Library/LaunchAgents') } } };
   fs.writeFileSync(configFile, `${JSON.stringify(config, null, 2)}\n`);
   const bun = command('/bin/sh', [path.join(worktree, 'scripts/bun-runtime.sh')], worktree);
   const temporary = path.join(buildRoot, 'tmp'); fs.mkdirSync(temporary, { recursive: true });
