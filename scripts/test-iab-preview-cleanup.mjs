@@ -29,6 +29,7 @@ try {
   const file = path.join(generated, 'metadata.json');
   const ownership = createOwnedRun({ root: generated, instanceId: 'preview-fixture', project: 'fixture-project', workUnit: 'fixture-work-unit', disposable: true,
     outputs: [{ path: 'db', kind: 'interactive' }, { path: 'stdout.log', kind: 'generated' }] });
+  ownership.lifecycle = { phase: 'retired' };
   saveOwnedMetadata(file, { ownership });
   fs.writeFileSync(path.join(generated, 'db'), 'disposable fixture ledger'); fs.writeFileSync(path.join(generated, 'stdout.log'), 'raw fixture logs');
   const finalized = finalizeOwnedRun(file, { expectedRevision: 1, outcome: 'assessed', summary: 'Disposable preview fixture completed' });

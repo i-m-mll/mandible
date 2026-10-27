@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { composePath } from './runtime-environment.mjs';
 
 let pinned;
 /** Test children run on the pinned Bun whatever Bun launched the runner. */
@@ -79,7 +80,7 @@ export function createTestRuntime() {
     MANDIBLE_RUNTIME: bun,
     ...(archive ? { MANDIBLE_SQLITE_LIBRARY_ARCHIVE: archive } : {}),
     MANDIBLE_TEST_RUNTIME_ROOT: root,
-    PATH: toolchain?.path ?? process.env.PATH,
+    PATH: composePath([path.dirname(bun), ...(toolchain?.path ?? process.env.PATH ?? '').split(path.delimiter)]),
     MANDIBLE_TEST_GIT_EXECUTABLE: git?.executable,
   };
   for (const key of [

@@ -207,7 +207,9 @@ The probe only reads health, so it is safe against production.
 7. Finalize the preview as soon as the measurement is done:
 
    ```sh
-   bun scripts/iab-preview.mjs finalize --root "$ROOT" --revision "$(jq -r .ownership.revision "$ROOT/metadata.json")" \
+   bun run iab-preview -- finalize --root "$ROOT" \
+     --run-id "$(jq -r .ownership.runId "$ROOT/metadata.json")" \
+     --revision "$(jq -r .ownership.revision "$ROOT/metadata.json")" \
      --outcome assessed --disposition discard --summary 'CPU profile for <issue>' --json
    ```
 

@@ -21,7 +21,7 @@ function git(root, ...args) {
   return result;
 }
 
-function trackedSourceDigest(root) {
+export function trackedSourceDigest(root) {
   const listed = git(root, "ls-files", "-z", "--", ...SOURCE_PATHS);
   if (listed.status !== 0) throw new Error(`Cannot inventory the built daemon sources: ${listed.stderr.trim()}`);
   const files = listed.stdout.split("\0").filter(Boolean).sort();

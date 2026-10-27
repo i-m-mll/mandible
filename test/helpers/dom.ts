@@ -5,8 +5,11 @@
  */
 import { configure, createEvent, fireEvent as libraryFireEvent } from '@testing-library/preact';
 import { STATE_DEADLINE_MS } from './wait-until.js';
+import { guardFixtureWork } from './strict-ui-fixture.js';
+import { getConfig } from '@testing-library/dom';
 
-configure({ asyncUtilTimeout: STATE_DEADLINE_MS });
+const preactAsyncWrapper = getConfig().asyncWrapper;
+configure({ asyncUtilTimeout: STATE_DEADLINE_MS, asyncWrapper: callback => guardFixtureWork(() => preactAsyncWrapper(callback)) });
 
 export * from '@testing-library/preact';
 
