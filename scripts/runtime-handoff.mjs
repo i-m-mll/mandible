@@ -215,7 +215,7 @@ async function controller(journal, command, currentVerifier = false, { until = h
   const binding = journal.binding;
   const env = { ...journal.environment, MANDIBLE_RUNTIME_HANDOFF_JOURNAL: journalFile(binding), GIT_OPTIONAL_LOCKS: '0' };
   const installedController = journal.phase === 'acknowledged' || !!journal.cleanupStartedAt;
-  const script = currentVerifier && !binding.acceptedRelease ? path.join(path.dirname(fileURLToPath(import.meta.url)), 'local-runtime.mjs') : installedController ? path.join(binding.acceptedRelease ? path.join(binding.nativeApp, 'Contents/Resources') : binding.root, 'scripts/local-runtime.mjs') : path.join(path.dirname(journalFile(binding)), 'controller.mjs');
+  const script = currentVerifier ? path.join(path.dirname(fileURLToPath(import.meta.url)), 'local-runtime.mjs') : installedController ? path.join(binding.acceptedRelease ? path.join(binding.nativeApp, 'Contents/Resources') : binding.root, 'scripts/local-runtime.mjs') : path.join(path.dirname(journalFile(binding)), 'controller.mjs');
   if (installedController && binding.acceptedRelease) Object.assign(env, installedRuntimeEnvironment(path.join(binding.nativeApp, 'Contents/Resources'), env));
   if (installedController) delete env.MANDIBLE_RUNTIME_HANDOFF_STORAGE;
   const args = [script, command, '--root', binding.root, ...(command === 'handoff-verify' ? ['--until', String(until), ...(awaitReady ? ['--await-ready'] : [])] : [])];

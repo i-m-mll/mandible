@@ -176,6 +176,34 @@ function recoveryFixture(logLines: (processStartedAt: string, fakeStart: number)
 
 const startupLine = (processStartedAt: string) => JSON.stringify({ message: 'server_started', time: new Date(Date.parse(processStartedAt) + 1000).toISOString() });
 
+it('gives health coverage its full observation budget after readiness', async () => {
+  const f = recoveryFixture(startedAt => [startupLine(startedAt)]);
+  const binding = { ...f.failed.binding, oldProcess: { pid: 987653, startedAt: 'gone' } };
+  const file = path.join(handoffDirectory(binding.home, binding.requestId, binding.executionId), 'journal.json');
+  const journal = { ...f.failed, binding, bindingDigest: bindingDigest(binding), phase: 'armed', attempts: 0,
+    deadline: f.fakeStart + 1000, bridgeInstalled: true, stages: {}, environment: {} };
+  fs.writeFileSync(file, JSON.stringify(journal));
+  fs.writeFileSync(path.join(binding.home, 'config/local-sessions/handoff-active.json'), JSON.stringify({ journal: file, bindingDigest: journal.bindingDigest }));
+  let time = f.fakeStart;
+  let sequence = 0;
+  let prior = time + 30;
+  const result = await runRuntimeHandoffWorker(file, {
+    now: () => time, waitMs: 60,
+    verifyPublication: async () => {}, desktop: async () => {},
+    stage: async () => { fs.appendFileSync(path.join(path.dirname(file), 'convergence.log'), 'fixture stage\n'); },
+    control: async (_journal, command) => {
+      if (command === 'handoff-start') time += 30;
+      return JSON.stringify(f.evidence(diagnostics(1, time - 10, time)));
+    },
+    observe: (current, options) => observeRuntimeHandoff(current, { ...options,
+      observationMs: 31, now: () => time, wait: async () => { time += 10; },
+      probe: async () => { const start = prior; prior = time; return f.evidence(diagnostics(++sequence, start, time)); },
+    }),
+  });
+  expect(result.phase).toBe('complete');
+  expect(result.receipt.observation).toMatchObject({ startedAt: f.fakeStart + 30, mustCover: f.fakeStart + 61 });
+});
+
 it('runs real recovery observation through complete log and journal evidence', async () => {
   const { home, binding, executable, fakeStart, log, failed, evidence } = recoveryFixture((processStartedAt, fakeStart) => [
     startupLine(processStartedAt),
