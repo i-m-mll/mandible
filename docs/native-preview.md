@@ -28,6 +28,11 @@ Repeating setup reuses the matching live native attachment; a separate native
 instance requires the repository entrypoint's explicit new-instance option.
 The low-level launcher accepts `--new-instance true`.
 
+Pass `--initial-path '/path?query#fragment'` to open another root-relative path
+on the selected preview origin. The default is `/#/overview`. The native profile
+records the selected path as `initialPath`; stop the attachment before changing
+it, then launch again to preserve the same owned profile and build target.
+
 The host requires macOS 14 or newer for an isolated WebKit store, normal Tauri
 build prerequisites and the standard macOS build/inspection utilities. No
 trust installation, production bootstrap or production daemon startup occurs.

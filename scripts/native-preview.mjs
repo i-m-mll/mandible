@@ -91,7 +91,16 @@ async function until(predicate, message, deadlineMs = 15_000) {
   throw new Error(message);
 }
 
-export async function launchNativePreview({ branch, bundle, project, workUnit, agentSession, selected: supplied, newInstance = false }) {
+export function nativePreviewInitialPath(initialPath = '/#/overview') {
+  if (typeof initialPath !== 'string' || !initialPath.startsWith('/') || initialPath.startsWith('//')
+    || initialPath.includes('\\') || /[\u0000-\u001f\u007f-\u009f]/u.test(initialPath)) {
+    throw new Error('Native initial path must be a root-relative path on the selected preview origin');
+  }
+  return initialPath;
+}
+
+export async function launchNativePreview({ branch, bundle, project, workUnit, agentSession, initialPath, selected: supplied, newInstance = false }) {
+  initialPath = nativePreviewInitialPath(initialPath);
   if (process.platform !== 'darwin' || Number(run('/usr/bin/sw_vers', ['-productVersion']).split('.')[0]) < 14) {
     throw new Error('Visible native preview requires macOS 14+ for a separate WebKit store');
   }
@@ -129,6 +138,9 @@ export async function launchNativePreview({ branch, bundle, project, workUnit, a
       const stoppedLifetimeGone = current.status === 'stopped' && live !== null && processLifetimeMatches(current, live) === false;
       if (live !== null && !stoppedLifetimeGone) {
         if (live !== current.processIdentity || current.status !== 'visible') throw new Error('Native attachment is busy or its process identity changed');
+        if (nativePreviewInitialPath(current.initialPath) !== initialPath) {
+          throw new Error('Stop the native attachment before changing its initial path');
+        }
         if (current.build.commit !== candidate.commit || current.build.source_digest !== candidate.source_digest) {
           throw new Error('Stop the native attachment before rebuilding a changed candidate');
         }
@@ -185,10 +197,10 @@ export async function launchNativePreview({ branch, bundle, project, workUnit, a
       receipt.ownership = latest.ownership;
       if (resumed) {
         receipt.attempts ??= [];
-        receipt.attempts.push({ attemptId: receipt.attemptId, build: receipt.build, nativeBuild: receipt.nativeBuild, status: receipt.status, error: receipt.error, pid: receipt.pid });
+        receipt.attempts.push({ attemptId: receipt.attemptId, build: receipt.build, nativeBuild: receipt.nativeBuild, status: receipt.status, error: receipt.error, pid: receipt.pid, initialPath: receipt.initialPath });
         for (const key of ['pid', 'processIdentity', 'window', 'error', 'cleanupPending', 'stoppedAt']) delete receipt[key];
       }
-      receipt.attemptId = attemptId; receipt.reservation = reservation; receipt.build = candidate; receipt.status = 'preparing';
+      receipt.attemptId = attemptId; receipt.reservation = reservation; receipt.build = candidate; receipt.status = 'preparing'; receipt.initialPath = initialPath;
       saveOwnedMetadata(receiptFile, receipt);
       const sourceBundle = bundle ?? await buildNativePreview({ worktree: selected.worktree, root, candidate, receipt,
         save: () => saveOwnedMetadata(receiptFile, receipt), identity: processIdentity });
@@ -217,6 +229,7 @@ export async function launchNativePreview({ branch, bundle, project, workUnit, a
       saveOwnedMetadata(path.join(profile, 'native-preview.json'), {
         manifest: receipt.manifest, origin: receipt.origin, instanceId: receipt.instanceId,
         runId: ownership.runId, previewRunId: owner.runId, home: profile, windowTitle: receipt.windowTitle, agentSession: agentSession ?? null,
+        initialPath: receipt.initialPath,
       });
       saveOwnedMetadata(receiptFile, receipt);
       const stdout = fs.openSync(receipt.stdout, 'a', 0o600), stderr = fs.openSync(receipt.stderr, 'a', 0o600);
@@ -309,10 +322,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === script) {
       args[argv[i].slice(2)] = argv[i + 1];
     }
     let result;
-    if (command === 'launch') result = await launchNativePreview({ ...args, workUnit: args['work-unit'], newInstance: args['new-instance'] === 'true', agentSession: args['agent-session'] ?? process.env.CODEX_THREAD_ID });
+    if (command === 'launch') result = await launchNativePreview({ ...args, workUnit: args['work-unit'], newInstance: args['new-instance'] === 'true', agentSession: args['agent-session'] ?? process.env.CODEX_THREAD_ID, initialPath: args['initial-path'] });
     else if (command === 'stop') result = await stopNativePreview(args.receipt);
     else if (command === 'cleanup') result = await cleanupNativePreview(args.receipt, { disposition: args.disposition });
-    else throw new Error('Usage: bun run native-preview -- launch --branch <preview-branch> [--bundle <noninstalled.app>] --project <project-id> --work-unit <unit-id> [--agent-session <id>] | stop|cleanup --receipt <metadata.json>');
+    else throw new Error('Usage: bun run native-preview -- launch --branch <preview-branch> [--bundle <noninstalled.app>] --project <project-id> --work-unit <unit-id> [--agent-session <id>] [--initial-path </path>] | stop|cleanup --receipt <metadata.json>');
     console.log(JSON.stringify(result, null, 2));
   } catch (error) { console.error(JSON.stringify({ ok: false, error: String(error) })); process.exitCode = 1; }
 }
