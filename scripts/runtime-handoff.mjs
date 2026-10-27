@@ -295,6 +295,11 @@ export async function armRuntimeHandoff(root) {
     mergeCommit: process.env.MANDIBLE_AUTH_MERGE_COMMIT_SHA || undefined,
     nativeApp: path.resolve(process.env.MANDIBLE_DESKTOP_INSTALL_PATH || '/Applications/Mandible.app'), desktopWasRunning: desktopRunning(path.resolve(process.env.MANDIBLE_DESKTOP_INSTALL_PATH || '/Applications/Mandible.app')),
     runtime: { path: runtime, version: run(runtime, ['--version']), sha256: fileHash(runtime) } };
+  if (binding.bundleOwner) {
+    if (!process.env.MANDIBLE_DESKTOP_INSTALL_PATH) binding.nativeApp = binding.bundleOwner.bundleRoot;
+    if (binding.nativeApp !== binding.bundleOwner.bundleRoot) throw new Error('Accepted-package replacement must preserve the owning app location. Relocate it explicitly before publication.');
+    binding.desktopWasRunning = desktopRunning(binding.nativeApp);
+  }
   binding.priorAppSha256 = fs.existsSync(binding.nativeApp) ? applicationIdentity(binding.nativeApp) : null;
   const journal = { schema: 'mandible-runtime-handoff@1', binding, bindingDigest: '', phase: 'preparing', attempts: 0,
     deadline: Date.now() + 30 * 60 * 1000, stages: {}, environment,
