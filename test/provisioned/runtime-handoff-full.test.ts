@@ -180,7 +180,16 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
       const cache = fs.realpathSync(nativeCache);
       const buildCall = "    await runSupervisedCommand(runtime, ['run', 'tauri:build'";
       if (!acceptanceSource.includes(buildCall)) throw new Error('Native cache fixture transform requires review.');
-      acceptanceSource = acceptanceSource.replace(buildCall, `    if (!fs.existsSync(path.join(root, 'src-tauri/target'))) command('/bin/cp', ['-c', '-R', ${JSON.stringify(cache)}, path.join(root, 'src-tauri/target')]);\n${buildCall}`);
+      acceptanceSource = acceptanceSource.replace(buildCall, `    if (!fs.existsSync(path.join(root, 'src-tauri/target'))) {
+      command('/bin/cp', ['-c', '-R', ${JSON.stringify(cache)}, path.join(root, 'src-tauri/target')]);
+      // Tauri build-script metadata embeds absolute permission paths from its checkout.
+      for (const relative of ['release/build', 'release/.fingerprint']) {
+        const directory = path.join(root, 'src-tauri/target', relative);
+        if (fs.existsSync(directory)) for (const name of fs.readdirSync(directory)) {
+          if (/^(tauri-|mandible-app-)/.test(name)) fs.rmSync(path.join(directory, name), { recursive: true, force: true });
+        }
+      }
+    }\n${buildCall}`);
     }
     fs.writeFileSync(acceptanceProgram, acceptanceSource);
     const manifestFile = path.join(candidateRoot, 'package.json');
