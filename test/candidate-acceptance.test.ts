@@ -10,6 +10,7 @@ import { createAcceptanceHome, acceptanceGatewayConfig, acceptanceHealth, accept
 import { createHash } from 'node:crypto';
 import { createAuthCheckRepo, createMigratedDb, insertSiblingMergeRequest } from './helpers/auth-queue-fixtures.js';
 import { readBootstrapAcceptanceEvidence } from './helpers/bootstrap-delivery-api.js';
+import { CandidateAcceptanceRuns } from '../src/candidate-acceptance.js';
 import { STATE_DEADLINE_MS } from './helpers/wait-until.js';
 
 describe('production acceptance evidence', () => {
@@ -240,33 +241,42 @@ it('bounds persistent certificate startup and keeps unrelated gateway failures f
   }
 });
 
-it('preserves bounded nested acceptance diagnostics after the private installation is removed', () => {
+it.each([false, true])('records nested acceptance diagnostics through private cleanup (oversized=%s)', async oversized => {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-acceptance-evidence-'));
   const home = path.join(scratch, 'private'); fs.mkdirSync(home);
   const db = createMigratedDb();
   const repo = createAuthCheckRepo();
   try {
-    const daemonLog = `${'startup detail\n'.repeat(1000)}daemon failed startup`;
-    const gatewayLog = 'no certificate available for app.mandible.localhost';
+    const daemonLog = `${(oversized ? '\u001b' : 'startup detail\n').repeat(1000)}daemon failed startup`;
+    const gatewayLog = `${oversized ? '\u001b'.repeat(9000) : ''}no certificate available for app.mandible.localhost`;
     fs.writeFileSync(path.join(home, 'daemon.log'), daemonLog);
     fs.writeFileSync(path.join(home, 'gateway.log'), gatewayLog);
-    const result = { status: 'failed', candidate: 'exact-candidate', error: 'TLS alert', checks: {
+    const result = { status: 'failed', candidate: 'exact-candidate', error: 'TLS alert', ...(oversized ? { routeReport: 'route diagnostics'.repeat(5000) } : {}), checks: {
       initial_transport_error: { code: 'ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR', message: 'TLS alert' },
       failure_logs: acceptanceFailureLogs(home),
     } };
     insertSiblingMergeRequest(db, repo, 'outer-request', 'main');
-    db.prepare(`INSERT INTO auth_candidate_acceptances
-      (id,auth_request_id,pin_sha,tree_sha,base_sha,head_sha,status,started_at,finished_at,result_json,error)
-      VALUES ('nested-acceptance','outer-request','pin','tree','base','head','failed',1,2,?,'TLS alert')`).run(JSON.stringify(result));
+    const runs = new CandidateAcceptanceRuns(db, async () => ({ status: 'failed', result, error: result.error }), Date.now, () => {}, () => false);
+    runs.enqueue('outer-request', { pin_sha: 'pin', tree_sha: 'tree', base_sha: 'base', head_sha: 'head' },
+      () => ({ repoRoot: repo, pinSha: 'pin', projectId: 'private-project', workUnitId: 'private-unit', env: {} }));
+    await runs.idle();
     const packet = path.join(scratch, 'outer-failure.json');
     fs.writeFileSync(packet, JSON.stringify({ candidateAcceptance: readBootstrapAcceptanceEvidence(db, 'outer-request') }));
     fs.rmSync(home, { recursive: true });
     const retained = JSON.parse(fs.readFileSync(packet, 'utf8')).candidateAcceptance;
-    expect(retained).toMatchObject({ status: 'failed', result });
-    expect(retained.result.checks.failure_logs).toEqual([
-      { name: 'daemon', sha256: createHash('sha256').update(daemonLog).digest('hex'), bytes: Buffer.byteLength(daemonLog), excerpt: Buffer.from(daemonLog).subarray(-8000).toString('utf8') },
-      { name: 'gateway', sha256: createHash('sha256').update(gatewayLog).digest('hex'), bytes: Buffer.byteLength(gatewayLog), excerpt: gatewayLog },
-    ]);
+    expect(JSON.stringify(retained.result).length).toBeLessThanOrEqual(64 * 1024);
+    expect(retained).toMatchObject({ status: 'failed', result: { status: 'failed', candidate: result.candidate, error: result.error,
+      checks: { initial_transport_error: result.checks.initial_transport_error } } });
+    if (oversized) expect(retained.result.truncated).toBe(true);
+    for (const [name, content, diagnostic] of [
+      ['daemon', daemonLog, 'daemon failed startup'],
+      ['gateway', gatewayLog, 'no certificate available for app.mandible.localhost'],
+    ]) {
+      const log = retained.result.checks.failure_logs.find(entry => entry.name === name);
+      expect(log).toMatchObject({ name, sha256: createHash('sha256').update(content).digest('hex'), bytes: Buffer.byteLength(content) });
+      expect(content.endsWith(log.excerpt)).toBe(true);
+      expect(log.excerpt.endsWith(diagnostic)).toBe(true);
+    }
   } finally { db.close(); fs.rmSync(scratch, { recursive: true, force: true }); fs.rmSync(repo, { recursive: true, force: true }); }
 });
 
