@@ -37,7 +37,11 @@ A passing result is a pre-merge assessment. It does not attest delivery, converg
 
 Each run records its exact project, work-unit owner, instance and generated outputs before producing them. The shared owned-run lifecycle saves a compact receipt outside the scratch root and reclaims disposed raw material after assessment or failure. Unknown files, active consumers, identity drift and cleanup errors preserve the remaining bytes and fail the gate. The receipt contains source and executable hashes, the runtime, interaction evidence, log digest, shutdown results and cleanup outcome. Apparent unlinked bytes are reported separately from physical space recovery.
 
-The command reports missing platform or candidate prerequisites as `unavailable`, and execution, interaction, log or cleanup failures as `failed`; the daemon records either as a failed run with the reason. Only `passed` exits successfully. A failed assessment never authorizes rerunning a protected merge.
+The command reports missing platform or candidate prerequisites as `unavailable`, and execution, interaction, log or cleanup failures as `failed`; the daemon records either as a failed run with the reason. Only `passed` exits successfully. An incomplete health observation never passes
+this finite gate. Event-loop stalls, lag warnings, memory warnings, concrete
+errors and non-HTTP event storms retain their acceptance policy. Aggregate HTTP
+method/route volume is diagnostic: bounded counts, peaks and statuses remain in
+the evidence without treating independent healthy clients as a feedback loop. A failed assessment never authorizes rerunning a protected merge.
 
 Co-Authored-By: Codex (GPT-5) <codex@openai.com>
 Co-Authored-By: Codex (GPT) <codex@openai.com>

@@ -50,6 +50,7 @@ import {
   type ReadUserIdentity,
 } from '../api';
 import { exhausted } from '../../../src/exhaustive';
+import type { AuthConvergence } from '../../../src/types';
 import {
   AUTH_REQUEST_TYPES,
   type AuthRequestType,
@@ -169,6 +170,7 @@ export type AuthRequest = {
   base_audit?: ProtectedBaseAudit | null;
   action_count?: number;
   actions?: AuthRequestAction[];
+  convergence?: AuthConvergence | null;
   [key: string]: unknown;
 };
 
@@ -402,21 +404,10 @@ function getStatusLabel(request: AuthRequest): string {
 /**
  * Issue 27241e6 — convergence is the second half of "delivered". `Completed`
  * on its own only says the merge landed; these three values say whether the
- * registered post-merge hooks actually made the machine live.
+ * registered post-merge work has been confirmed.
  */
-type ConvergenceHookSummary = {
-  hook_id?: string;
-  label?: string;
-  state?: string;
-  required?: boolean;
-  attempts?: number;
-  max_attempts?: number;
-  exit_code?: number | null;
-};
-
-type ConvergenceSummary = {
+type ConvergenceSummary = AuthConvergence & {
   state: 'complete' | 'pending' | 'failed';
-  hooks: ConvergenceHookSummary[];
 };
 
 function getConvergence(request: AuthRequest): ConvergenceSummary | null {
@@ -424,8 +415,7 @@ function getConvergence(request: AuthRequest): ConvergenceSummary | null {
   if (!raw || typeof raw !== 'object') return null;
   const state = (raw as { state?: unknown }).state;
   if (state !== 'complete' && state !== 'pending' && state !== 'failed') return null;
-  const hooks = (raw as { hooks?: unknown }).hooks;
-  return { state, hooks: Array.isArray(hooks) ? (hooks as ConvergenceHookSummary[]) : [] };
+  return { ...raw, state, hooks: Array.isArray(raw.hooks) ? raw.hooks : [] };
 }
 
 function convergenceTitle(convergence: ConvergenceSummary): string {
@@ -441,7 +431,7 @@ function convergenceTitle(convergence: ConvergenceSummary): string {
   const heading = convergence.state === 'complete'
     ? 'Merged and every registered post-merge hook succeeded.'
     : convergence.state === 'pending'
-      ? 'Merged. A registered post-merge hook has not finished yet, so this machine is not live.'
+      ? 'Merged. Post-merge work or runtime verification is not yet confirmed.'
       : 'Merged. A required post-merge hook failed, so this machine is not live. Issue closures are withheld.';
   return hooks ? `${heading}\n\n${hooks}` : heading;
 }
@@ -918,6 +908,7 @@ function AuthRequestDetail({
   const completedConvergence = status === 'completed'
     ? getConvergence(request)
     : null;
+  const runtimeVerification = completedConvergence?.runtime_verification;
   const statusClass = getStatusClass(request);
   const publicationBlocker = request.publication_blocker ?? null;
   const acceptance = status === 'pending' ? request.candidate_acceptance ?? null : null;
@@ -1120,6 +1111,11 @@ function AuthRequestDetail({
       subheader={subheader}
       notice={<>
         {notice}
+        {runtimeVerification && (
+          <DetailPaneNotice severity="info" density="compact" title="Update verification is pending">
+            {runtimeVerification.reason}
+          </DetailPaneNotice>
+        )}
         {viewMode === 'diff' && request.diff_summary !== undefined && targetToken && unmatchedTarget === targetToken && (
           <DetailPaneNotice severity="warning" density="compact">
             This request has no captured change matching the selected before/after paths.

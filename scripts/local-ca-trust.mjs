@@ -7,6 +7,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { acquireProcessLock as acquireKernelProcessLock } from "./process-lock.mjs";
 import { CADDY_VERSION, installPinnedCaddy, pinnedCaddyBinary } from "./pinned-caddy.mjs";
 
 const SCHEMA = "mandible-local-ca-trust@1";
@@ -155,59 +156,15 @@ async function recoverGatewayIntent(paths, context) {
   fs.rmSync(intentPath(paths));
 }
 
-const LOCK_BUSY = 75;
-const DEAD_OWNER_GRACE_MS = 2000;
-
-function processAlive(pid) {
-  try { process.kill(pid, 0); return true; } catch (error) { return error?.code === "EPERM"; }
-}
-
-/** The lock is held by a holder whose owner has died and has not yet seen its stdin close. */
-function lockOwnerDead(ownerFile) {
-  const pid = existsEntry(ownerFile) ? Number(fs.readFileSync(ownerFile, "utf8")) : NaN;
-  return Number.isInteger(pid) && pid > 0 && !processAlive(pid);
-}
-
-async function startLockHolder(lockFile) {
-  const holderSource = "process.stdout.write('LOCKED\\n'); process.stdin.resume(); process.stdin.on('end', () => process.exit(0));";
-  const holder = spawn("/usr/bin/lockf", ["-t", "0", "-k", lockFile, process.execPath, "--input-type=module", "-e", holderSource], { stdio: ["pipe", "pipe", "pipe"] });
-  let diagnostic = "";
-  holder.stderr.on("data", (chunk) => { diagnostic = `${diagnostic}${chunk}`.slice(-4000); });
-  const busy = await new Promise((resolve, reject) => {
-    let output = "";
-    const timeout = setTimeout(() => reject(new Error("Process-lifetime CA setup lock did not become ready.")), 5000);
-    holder.stdout.on("data", (chunk) => { output += chunk; if (output.includes("LOCKED\n")) { clearTimeout(timeout); resolve(false); } });
-    holder.once("exit", (code) => {
-      clearTimeout(timeout);
-      if (code === LOCK_BUSY) resolve(true);
-      else reject(new Error(`Secure-local-connections setup is already in progress or the macOS lock failed: ${diagnostic.trim()}`));
-    });
-    holder.once("error", (error) => { clearTimeout(timeout); reject(error); });
-  }).catch((error) => { holder.stdin.end(); holder.kill("SIGTERM"); throw error; });
-  return { holder, busy, diagnostic: () => diagnostic };
-}
-
 async function acquireProcessLock(paths) {
   if (process.platform !== "darwin") throw new Error("Secure local connections setup currently requires macOS.");
   fs.mkdirSync(paths.authorityDir, { recursive: true, mode: 0o700 });
   if (existsEntry(path.join(paths.authorityDir, ".ca-setup.lock"))) throw new Error("A legacy CA setup directory lock remains; inspect that exact prior attempt before using the new setup action.");
-  const lockFile = path.join(paths.authorityDir, ".ca-setup.process.lock");
-  const ownerFile = path.join(paths.authorityDir, ".ca-setup.process.owner");
-  if (existsEntry(lockFile)) regularBytes(lockFile, "process-lifetime CA setup lock");
-  // A live owner is refused at once. A dead owner's holder exits once it reads
-  // EOF on stdin, so a retry right after a crash waits briefly for that release.
-  const deadline = Date.now() + DEAD_OWNER_GRACE_MS;
-  let attempt = await startLockHolder(lockFile);
-  while (attempt.busy && lockOwnerDead(ownerFile) && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    attempt = await startLockHolder(lockFile);
-  }
-  if (attempt.busy) throw new Error(`Secure-local-connections setup is already in progress or the macOS lock failed: ${attempt.diagnostic().trim()}`);
-  const { holder } = attempt;
-  const diagnostic = attempt.diagnostic;
+  const kernel = await acquireKernelProcessLock(path.join(paths.authorityDir, ".ca-setup.process.lock"), {
+    ownerFile: path.join(paths.authorityDir, ".ca-setup.process.owner"), label: "Secure-local-connections setup",
+  });
+  const { assertHeld } = kernel;
   try {
-    fs.writeFileSync(ownerFile, String(process.pid), { mode: 0o600 });
-    const assertHeld = () => { if (holder.exitCode !== null || holder.signalCode !== null) throw new Error("Process-lifetime CA setup lock was lost; stopping setup effects."); };
     return {
       assertHeld,
       publishGatewayIntent: (binary) => {
@@ -222,14 +179,9 @@ async function acquireProcessLock(paths) {
         return intent;
       },
       closeGatewayIntent: () => recoverGatewayIntent(paths, { assertHeld }),
-      release: async () => {
-        holder.stdin.end();
-        if (holder.exitCode === null && holder.signalCode === null) await Promise.race([new Promise((resolve) => holder.once("exit", resolve)), new Promise((resolve) => setTimeout(resolve, 2000))]);
-        if (holder.exitCode === null && holder.signalCode === null) { holder.kill("SIGKILL"); throw new Error("CA setup lock holder did not exit after setup; it was terminated."); }
-        if (holder.exitCode !== 0) throw new Error(`CA setup lock holder failed: ${diagnostic().trim()}`);
-      },
+      release: kernel.release,
     };
-  } catch (error) { holder.stdin.end(); holder.kill("SIGTERM"); throw error; }
+  } catch (error) { await kernel.release(); throw error; }
 }
 
 // The CLI and desktop use the real macOS lock; mocked state tests supply their own adapter.

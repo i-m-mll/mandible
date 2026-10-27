@@ -25,7 +25,7 @@ try {
   const project = resolveProjectRef(db, request.repo);
   if (!project.ok) throw new Error('Request project is unavailable or ambiguous.');
   requireProjectAccess(db, { client_identity: resolvedApiTokenIdentity(identity, 'in_process', PRODUCTION_EFFECTS) }, project.project.id, 'write');
-  const convergence = await queue.retryHookConvergence(request.id, undefined, { mode: 'verify-current',
+  const { verification, ...convergence } = await queue.retryHookConvergence(request.id, undefined, { mode: 'verify-current',
     actor: { user_id: identity.user.id, credential_id: identity.credentialId, evidence_method: 'api_token', authority_path: option === '--operator-recovery' ? 'operator_recovery' : 'custodian' } });
-  process.stdout.write(JSON.stringify({ request_id: request.id, convergence }) + '\n');
+  process.stdout.write(JSON.stringify({ request_id: request.id, convergence, verification }) + '\n');
 } finally { queue.dispose(); db.close(); }

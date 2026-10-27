@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { withLifecycleLock, processIdentity } from './lifecycle-lock.mjs';
+import { withLifecycleLock, processIdentity, assertLifecycleLockHeld } from './lifecycle-lock.mjs';
 export { processIdentity, recoverLifecycleLock } from './lifecycle-lock.mjs';
 
 export const OWNED_RUN_SCHEMA = 'mandible-owned-run@1';
@@ -42,6 +42,7 @@ export function createOwnedRun({ root, instanceId, project, workUnit, outputs, d
 }
 
 export function saveOwnedMetadata(file, metadata) {
+  assertLifecycleLockHeld();
   const temp = `${file}.partial-${process.pid}`;
   const fd = fs.openSync(temp, 'wx', 0o600);
   try { fs.writeFileSync(fd, `${JSON.stringify(metadata, null, 2)}\n`); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { composePath } from './runtime-environment.mjs';
+import { assertLifecycleLockHeld } from './lifecycle-lock.mjs';
 
 const overrides = new Set(['MANDIBLE_DB', 'MANDIBLE_PID_FILE', 'MANDIBLE_STDERR_LOG_PATH', 'MANDIBLE_SQLITE_LIBRARY', 'MANDIBLE_SQLITE_LIBRARY_ARCHIVE', 'MANDIBLE_SECURITY_BIN', 'NODE_OPTIONS']);
 const absolute = value => typeof value === 'string' && path.isAbsolute(value) && !/[\0\r\n$`~]/.test(value);
@@ -46,6 +47,7 @@ export function readServiceConfiguration(context, legacyEnvironment = {}, root) 
 }
 
 export function publishServiceConfiguration(file, configuration) {
+  assertLifecycleLockHeld();
   const contents = `${JSON.stringify(validateServiceConfiguration(configuration), null, 2)}\n`;
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const temporary = `${file}.${process.pid}.tmp`;

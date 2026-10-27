@@ -1488,6 +1488,13 @@ export interface AuthConvergenceHookSummary {
 export interface AuthConvergence {
   state: AuthConvergenceState;
   hooks: AuthConvergenceHookSummary[];
+  runtime_verification?: AuthRuntimeVerification;
+}
+
+export interface AuthRuntimeVerification {
+  phase: 'verification-pending';
+  code: string;
+  reason: string;
 }
 
 export interface AuthHookAlert {

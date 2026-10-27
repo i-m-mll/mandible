@@ -9,6 +9,7 @@ import { createRequire } from "node:module";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { fileRpc, runCli, scratchDir, startStubDaemon, type StubHandler } from "./helpers/cli-process.js";
+import type { AuthConvergence } from "../src/types.js";
 
 const syntax = createRequire(import.meta.url)("../cli/command-syntax.cjs");
 
@@ -130,5 +131,82 @@ describe("auth action", () => {
     for (const result of sent) expect(result.status, result.stderr).toBe(0);
     expect(responder.requests.map((request) => request.body)).toEqual(Object.keys(forms).map(() =>
       expect.objectContaining({ expected_revision: 4, expected_custody_generation: 3 })));
+  });
+});
+
+describe("auth handoff verification", () => {
+  const requestId = "12345678-1234-4123-8123-123456789abc";
+  const pendingReason = "The backend is ready, but the updated desktop has not been observed. Quit and reopen the installed app.";
+  const originalFailure = "Candidate daemon reported a concrete SQLite constraint failure.";
+  const convergence = (state: "pending" | "failed" | "complete"): AuthConvergence => ({
+    state,
+    hooks: [{ hook_id: "builtin-mandible-rebuild", label: "Runtime update", state, required: true,
+      attempts: 1, max_attempts: 1, exit_code: state === "failed" ? 1 : null,
+      failure: state === "failed" ? originalFailure : null, command_digest: "fixture-command",
+      started_at: 1, finished_at: state === "pending" ? null : 2 }],
+  });
+
+  it.each(["pending", "failed"] as const)("keeps an incomplete recovery separate from %s convergence", async state => {
+    const response = { request_id: requestId, convergence: convergence(state),
+      verification: { outcome: "pending", reason: pendingReason, retainedFailure: state === "failed" } };
+    const { env, responder } = fileRpc(() => ({ status: 200, body: response }));
+    cleanups.push(() => responder.stop());
+    const [human, json] = await Promise.all([
+      runCli(["auth", "handoff", "recover", requestId], { env }),
+      runCli(["auth", "handoff", "recover", requestId, "--json"], { env }),
+    ]);
+
+    expect(human.status, human.stderr).toBe(0);
+    expect(human.stdout).toMatch(/verification.*(?:pending|unconfirmed)/i);
+    expect(human.stdout).toContain(pendingReason);
+    expect(human.stdout).not.toMatch(/\brecovered\b/i);
+    if (state === "failed") expect(human.stdout).toContain(originalFailure);
+    else expect(human.stdout).not.toContain(originalFailure);
+    expect(json.status, json.stderr).toBe(0);
+    expect(JSON.parse(json.stdout)).toEqual(response);
+    expect(responder.requests.map(({ method, path, body }) => ({ method, path, body }))).toEqual(
+      Array.from({ length: 2 }, () => ({ method: "POST", path: `/api/auth/request/${requestId}/retry-convergence`,
+        body: { mode: "verify-current", operator_recovery: false } })),
+    );
+  });
+
+  it("reports recovery only after confirmation and sends the explicit operator recovery flag", async () => {
+    const response = { request_id: requestId, convergence: convergence("complete"), verification: { outcome: "confirmed" } };
+    const { env, responder } = fileRpc(() => ({ status: 200, body: response }));
+    cleanups.push(() => responder.stop());
+    const result = await runCli(["auth", "handoff", "recover", requestId, "--operator-recovery"], { env });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toMatch(/\brecovered\b/i);
+    expect(result.stdout).toContain("complete");
+    expect(result.stdout).not.toMatch(/verification.*(?:pending|unconfirmed)/i);
+    expect(responder.requests.map(({ method, path, body }) => ({ method, path, body }))).toEqual([
+      { method: "POST", path: `/api/auth/request/${requestId}/retry-convergence`, body: { mode: "verify-current", operator_recovery: true } },
+    ]);
+  });
+
+  it.each(["verification-pending", "failed"])("shows the last pending observation without hiding a %s lock", async phase => {
+    const response = { lock: { file: "/fixture/runtime-handoff.lock", requestId, phase,
+      journalPath: "/fixture/handoff/journal.json", bindingDigest: "a".repeat(64),
+      ...(phase === "failed" ? { error: originalFailure } : {}),
+      lastObservation: { outcome: "pending", reason: pendingReason, observedAt: 3 } } };
+    const { env, responder } = fileRpc(() => ({ status: 200, body: response }));
+    cleanups.push(() => responder.stop());
+    const [human, json] = await Promise.all([
+      runCli(["auth", "handoff", "status"], { env }),
+      runCli(["auth", "handoff", "status", "--json"], { env }),
+    ]);
+
+    expect(human.status, human.stderr).toBe(0);
+    expect(human.stdout).toMatch(/lock held/i);
+    expect(human.stdout).toContain(phase);
+    expect(human.stdout).toMatch(/verification.*(?:pending|unconfirmed)/i);
+    expect(human.stdout).toContain(pendingReason);
+    if (phase === "failed") expect(human.stdout).toContain(originalFailure);
+    expect(json.status, json.stderr).toBe(0);
+    expect(JSON.parse(json.stdout)).toEqual(response);
+    expect(responder.requests.map(({ method, path }) => ({ method, path }))).toEqual([
+      { method: "GET", path: "/api/runtime-handoff/lock" }, { method: "GET", path: "/api/runtime-handoff/lock" },
+    ]);
   });
 });
