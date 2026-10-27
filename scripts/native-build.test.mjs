@@ -44,10 +44,12 @@ test('native bundle must match current selected backend source bytes and exact c
     assert.throws(() => verifyNativeSelection({ instanceEnv: { MANDIBLE_BACKEND_GENERATION: candidate.commit },
       ownership: { source: { ...candidate, source_digest: 'f'.repeat(64) } } }, candidate), /generation.source identity/);
     const bundle = path.join(f.root, 'fixture.app'); fs.mkdirSync(path.join(bundle, 'Contents/Resources'), { recursive: true });
-    const marker = path.join(bundle, 'Contents/Resources/build-revision.json');
-    fs.writeFileSync(marker, JSON.stringify({ ...candidate, commit: 'a'.repeat(40) }));
+    const marker = path.join(bundle, 'Contents/Resources/release.json');
+    const release = { schema: 'mandible-installed-release@1', version: 'fixture', target: `${process.platform}-${process.arch}`,
+      layout: { kind: 'macos-app', roots: { resources: '.' } }, entrypoints: {}, native: {}, files: {}, provenance: candidate };
+    fs.writeFileSync(marker, JSON.stringify({ ...release, provenance: { ...candidate, commit: 'a'.repeat(40) } }));
     assert.throws(() => verifyNativeBundle(bundle, candidate), /differs/);
-    fs.writeFileSync(marker, JSON.stringify(candidate));
+    fs.writeFileSync(marker, JSON.stringify(release));
     assert.deepEqual(verifyNativeBundle(bundle, candidate), candidate);
     fs.writeFileSync(path.join(f.root, 'package.json'), '{"changed":true}');
     assert.throws(() => nativeCandidate(f.root), /sources differ/);

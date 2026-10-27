@@ -26,7 +26,7 @@ export function inventoryRelease(resources, release) {
     }
   };
   visit(resources);
-  for (const relative of Object.values(release.native)) {
+  for (const relative of [...Object.values(release.native), ...Object.values(release.resources ?? {})]) {
     const file = path.resolve(resources, relative);
     files[relative] = installedFileIdentity(file);
   }
@@ -98,13 +98,13 @@ export async function stageAppPayload(contents) {
   const signing = {};
   for (const [role, executable] of Object.entries({ bun: runtime, claude: sdkNative })) {
     const relative = `signing/${role}-entitlements.plist`;
-    const entitlements = execFileSync('/usr/bin/codesign', ['-d', '--entitlements', '-', executable], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] });
+    const entitlements = execFileSync('/usr/bin/codesign', ['-d', '--entitlements', '-', '--xml', executable], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] });
     if (!entitlements.includes('<plist')) throw new Error(`Qualified ${role} runtime has no signing entitlements.`);
     fs.mkdirSync(path.join(resources, 'signing'), { recursive: true });
     fs.writeFileSync(path.join(resources, relative), entitlements);
     signing[role] = relative;
   }
-  for (const [name, source] of Object.entries({ bun: runtime, caddy, sqlite, claude: sdkNative, trustHelper: path.join(root, 'src-tauri/resources/local-ca-trust-helper') })) {
+  for (const [name, source] of Object.entries({ bun: runtime, caddy, sqlite, claude: sdkNative, trustHelper: process.env.MANDIBLE_DESKTOP_TRUST_HELPER ?? path.join(root, 'src-tauri/resources/local-ca-trust-helper') })) {
     const destination = path.resolve(resources, native[name]);
     copy(source, destination);
     fs.chmodSync(destination, name === 'sqlite' ? 0o644 : 0o755);
@@ -133,7 +133,7 @@ esac
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const contents = path.resolve(process.argv[2] ?? path.join(root, 'src-tauri/resources/app-payload/Contents'));
+  const contents = path.resolve(process.argv[2] ?? process.env.MANDIBLE_DESKTOP_PAYLOAD_CONTENTS ?? path.join(root, 'src-tauri/resources/app-payload/Contents'));
   fs.rmSync(contents, { recursive: true, force: true });
   process.stdout.write(`${JSON.stringify(await stageAppPayload(contents))}\n`);
 }

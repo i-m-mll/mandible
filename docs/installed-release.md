@@ -32,7 +32,10 @@ manifest cannot contain its own signature digest.
 
 Native roles are `bun`, `sqlite`, `caddy`, `claude`, `trustHelper`, and the
 lifecycle lane's `serviceHelper`. The service roles become part of the assembled
-release when that lane adds its helper and fixed service descriptors.
+release when that lane adds its helper and fixed service descriptors. Additional
+non-native resource roles use `resources`; for service descriptors outside
+Resources, the native adapter declares their program root and the assembler
+includes those roles in the shipped file inventory.
 
 `scripts/installed-release.mjs` and its declaration file export:
 

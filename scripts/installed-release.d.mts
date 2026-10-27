@@ -5,7 +5,8 @@ export interface InstalledRelease {
   layout: { kind: 'macos-app'; roots: Record<string, string> };
   provenance: { commit: string; source_digest: string; summary: string; date: string; bun_revision: string };
   entrypoints: Record<'daemon' | 'cli' | 'channel' | 'controller' | 'trustSetup', string> & { service?: string };
-  native: Record<'bun' | 'sqlite' | 'caddy' | 'claude' | 'trustHelper', string>;
+  native: Record<'bun' | 'sqlite' | 'caddy' | 'claude' | 'trustHelper', string> & { serviceHelper?: string };
+  resources?: Record<string, string>;
   signing: Record<string, string>;
   files: Record<string, { sha256: string; size: number }>;
 }

@@ -16,9 +16,12 @@ cp src-tauri/bootstrap/bootstrap.js "$bootstrap_output/bootstrap.js"
 cp src-tauri/bootstrap/canonical-origin.js "$bootstrap_output/canonical-origin.js"
 "$runtime" scripts/stage-app-payload.mjs
 triple="$(rustc -vV | sed -n 's/^host: //p')"
-mkdir -p src-tauri/binaries
+payload_contents="${MANDIBLE_DESKTOP_PAYLOAD_CONTENTS:-src-tauri/resources/app-payload/Contents}"
+binaries="${MANDIBLE_DESKTOP_BINARIES_DIR:-src-tauri/binaries}"
+sqlite_library="${MANDIBLE_DESKTOP_SQLITE_LIBRARY:-src-tauri/resources/libsqlite3.dylib}"
+mkdir -p "$binaries"
 for name in mandible-bun mandible-caddy mandible-claude mandible-trust-helper; do
-  cp "src-tauri/resources/app-payload/Contents/MacOS/$name" "src-tauri/binaries/$name-$triple"
+  cp "$payload_contents/MacOS/$name" "$binaries/$name-$triple"
 done
-cp -f src-tauri/resources/app-payload/Contents/Frameworks/libsqlite3.dylib src-tauri/resources/libsqlite3.dylib
+cp -f "$payload_contents/Frameworks/libsqlite3.dylib" "$sqlite_library"
 echo "desktop bootstrap and complete app payload generated"

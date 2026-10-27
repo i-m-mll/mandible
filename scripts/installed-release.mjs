@@ -60,7 +60,7 @@ export function readInstalledRelease(root) {
       || !/^[a-f0-9]{64}$/.test(release.provenance?.source_digest ?? '')
       || release.target !== `${process.platform}-${process.arch}` || typeof release.version !== 'string'
       || !release.files || !release.entrypoints || !release.native) throw new Error('Invalid or incompatible installed Mandible release.');
-  for (const relative of [...Object.values(release.entrypoints), ...Object.values(release.native)]) {
+  for (const relative of [...Object.values(release.entrypoints), ...Object.values(release.native), ...Object.values(release.resources ?? {})]) {
     if (!/^[a-f0-9]{64}$/.test(release.files[relative]?.sha256 ?? '')) throw new Error(`Unidentified installed resource: ${relative}`);
     releaseFile(root, relative, release.layout);
   }
