@@ -1,6 +1,6 @@
+import { Icon } from '../icons/Icon';
 import { CompactActivityRow } from '../shared/ChatDisclosure';
 import { plainActivityHeader } from './activityText';
-import { LightbulbIcon } from '../icons/TabIcons';
 
 export type ThinkingBlockProps = {
   content: string;
@@ -25,7 +25,7 @@ export function ThinkingBlock({
   return (
     <CompactActivityRow
       className="thinking-block"
-      icon={<LightbulbIcon />}
+      icon={<Icon name="thought" />}
       summary={summary}
       memberRefs={memberRefs}
       disclosure={remaining.length > 0 || detailsAvailable ? {

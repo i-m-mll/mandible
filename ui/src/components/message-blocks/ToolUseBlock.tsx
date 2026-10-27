@@ -1,3 +1,5 @@
+import { Icon } from '../icons/Icon';
+import type { IconName } from '../icons/Icon';
 import { useMemo } from 'preact/hooks';
 import { computeDiffStats, FileEditBlock } from './FileEditBlock';
 import { MessageActions } from '../shared/MessageActions';
@@ -5,7 +7,6 @@ import { OverflowFade } from '../shared/OverflowFade';
 import type { PersistedBlockSource } from '../stream-renderer/types';
 import { CompactActivityRow } from '../shared/ChatDisclosure';
 import { presentTool, toolInputObject, toolTarget, type ToolCategory } from './toolPresentation';
-import { ToolActivityIcon } from './ToolActivityIcon';
 
 export type ToolResultContent =
   | string
@@ -48,7 +49,7 @@ export type ToolVisualKind = ToolCategory;
 
 export type ToolVisual = {
   kind: ToolVisualKind;
-  icon: string;
+  icon: IconName;
   verb: string;
   target: string;
 };
@@ -331,7 +332,7 @@ export function ToolCard({
       data-member-refs={memberRefs}
     >
       <CompactActivityRow
-        icon={<ToolActivityIcon icon={visual.icon} />}
+        icon={<Icon name={visual.icon} />}
         summary={summary}
         memberRefs={memberRefs}
         disclosure={{

@@ -1,3 +1,4 @@
+import { Icon } from '../../components/icons/Icon';
 import { createPortal } from 'preact/compat';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 
@@ -473,7 +474,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
     <span className={`briefing-annotation-action${matches.length > 0 ? ' briefing-annotation-action--populated' : ''}`}>
       <ContextualAction aria-label={label} title={matches.length > 0 ? `${title} · ${matches.length}` : title}
         aria-expanded={editor?.start === nextEditor.start && editor?.end === nextEditor.end}
-        disabled={!canInteract && matches.length === 0} onClick={() => openEditor(nextEditor)}><CommentIcon /></ContextualAction>
+        disabled={!canInteract && matches.length === 0} onClick={() => openEditor(nextEditor)}><Icon name="comment" /></ContextualAction>
       {matches.length > 0 ? <span className="briefing-annotation-action__count" aria-hidden="true">{matches.length}</span> : null}
     </span>
   );
@@ -489,8 +490,8 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
       const verdict = current && 'verdict' in current ? current.verdict : null;
       control = (
         <div id={controlId} className="briefing-directive__compact-controls briefing-directive__verdict" role="group" aria-labelledby={promptId} aria-required={item.revision.required} aria-describedby={describedBy}>
-          <ContextualAction presentation="compact" aria-label="Keep" title="Keep" aria-pressed={verdict === 'keep'} disabled={!canInteract} onClick={() => onDirectiveValue?.(item.id, { verdict: 'keep' })}><CheckIcon /></ContextualAction>
-          <ContextualAction presentation="compact" aria-label="Dismiss" title="Dismiss" aria-pressed={verdict === 'dismiss'} disabled={!canInteract} onClick={() => onDirectiveValue?.(item.id, { verdict: 'dismiss' })}><DismissIcon /></ContextualAction>
+          <ContextualAction presentation="compact" aria-label="Keep" title="Keep" aria-pressed={verdict === 'keep'} disabled={!canInteract} onClick={() => onDirectiveValue?.(item.id, { verdict: 'keep' })}><Icon name="keep" /></ContextualAction>
+          <ContextualAction presentation="compact" aria-label="Dismiss" title="Dismiss" aria-pressed={verdict === 'dismiss'} disabled={!canInteract} onClick={() => onDirectiveValue?.(item.id, { verdict: 'dismiss' })}><Icon name="discard" /></ContextualAction>
         </div>
       );
     } else if (type === 'single_choice' || type === 'multi_choice') {
@@ -561,10 +562,10 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
       control = selectedVariant ? (
         <div id={controlId} className="briefing-directive__compact-controls briefing-directive__variant-controls" role="group" aria-label={`Text variant: ${selectedVariant.label}`} aria-required={item.revision.required} aria-describedby={describedBy}>
           <ContextualAction presentation="compact" aria-label="Previous text variant" disabled={!canInteract || selectedIndex === 0}
-            onClick={() => onDirectiveValue?.(item.id, { option_key: variants[selectedIndex - 1].key })}><PreviousIcon /></ContextualAction>
+            onClick={() => onDirectiveValue?.(item.id, { option_key: variants[selectedIndex - 1].key })}><Icon name="previousChange" /></ContextualAction>
           <span><small>{selectedIndex + 1} of {variants.length}</small></span>
           <ContextualAction presentation="compact" aria-label="Next text variant" disabled={!canInteract || selectedIndex === variants.length - 1}
-            onClick={() => onDirectiveValue?.(item.id, { option_key: variants[selectedIndex + 1].key })}><NextIcon /></ContextualAction>
+            onClick={() => onDirectiveValue?.(item.id, { option_key: variants[selectedIndex + 1].key })}><Icon name="nextChange" /></ContextualAction>
         </div>
       ) : null;
     }
@@ -583,7 +584,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
           aria-describedby={promptId} disabled={!canInteract} onClick={() => {
             setTextEdits((edits) => ({ ...edits, [item.id]: '' }));
             onDirectiveValue?.(item.id, null);
-          }}><ClearIcon /></ContextualAction>
+          }}><Icon name="clearVerdict" /></ContextualAction>
       ) : null}
     </span>
   );
@@ -626,9 +627,9 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
               ? `${changedEntityIndexes.length} changed`
               : `${currentChangedIndex + 1} of ${changedEntityIndexes.length} changed`}</span>
             <ContextualAction presentation="compact" aria-label="Previous changed entity" title="Previous changed entity"
-              onClick={() => navigateChanged(-1)}><PreviousIcon /></ContextualAction>
+              onClick={() => navigateChanged(-1)}><Icon name="previousChange" /></ContextualAction>
             <ContextualAction presentation="compact" aria-label="Next changed entity" title="Next changed entity"
-              onClick={() => navigateChanged(1)}><NextIcon /></ContextualAction>
+              onClick={() => navigateChanged(1)}><Icon name="nextChange" /></ContextualAction>
           </nav>
         ) : null}
         <div ref={renderedRef} className="briefing-document__source-tree briefing-document__prose rendered-markdown" dangerouslySetInnerHTML={{ __html: renderedMarkdown }} />
@@ -827,7 +828,7 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
                           {editable ? (
                             <span className="briefing-annotation-history__actions contextual-action-group">
                               <ContextualAction aria-label={`Edit annotation by ${annotationActor(annotation)}: ${summary}`}
-                                title="Edit annotation" onClick={() => openExisting(annotation)}><EditIcon /></ContextualAction>
+                                title="Edit annotation" onClick={() => openExisting(annotation)}><Icon name="editAnnotation" /></ContextualAction>
                             </span>
                           ) : null}
                         </li>
@@ -844,34 +845,6 @@ export function BriefingDocumentPanel({ briefingId, briefingTitle, roundId, roun
       <div className="briefing-document__status" role="status" aria-live="polite">{editor ? '' : status}</div>
     </section>
   );
-}
-
-function CheckIcon(): JSX.Element {
-  return <svg aria-hidden="true" viewBox="0 0 16 16"><path d="m3 8.5 3 3 7-7" /></svg>;
-}
-
-function DismissIcon(): JSX.Element {
-  return <svg aria-hidden="true" viewBox="0 0 16 16"><path d="m4 4 8 8M12 4l-8 8" /></svg>;
-}
-
-function ClearIcon(): JSX.Element {
-  return <svg aria-hidden="true" viewBox="0 0 16 16"><path d="M3.5 10.5 9.75 4.25a1.4 1.4 0 0 1 2 0l1 1a1.4 1.4 0 0 1 0 2L7.25 12.75H5.5zM8 6l3 3M7.25 12.75H13" /></svg>;
-}
-
-function CommentIcon(): JSX.Element {
-  return <svg aria-hidden="true" viewBox="0 0 16 16"><path d="M3 3.5h10v7H7l-3.5 2.5v-2.5H3z" /></svg>;
-}
-
-function EditIcon(): JSX.Element {
-  return <svg aria-hidden="true" viewBox="0 0 16 16"><path d="m3 11.5-.5 2 2-.5 7.75-7.75-1.5-1.5zM9.75 4.75l1.5 1.5" /></svg>;
-}
-
-function PreviousIcon(): JSX.Element {
-  return <svg aria-hidden="true" viewBox="0 0 16 16"><path d="m10 3-5 5 5 5" /></svg>;
-}
-
-function NextIcon(): JSX.Element {
-  return <svg aria-hidden="true" viewBox="0 0 16 16"><path d="m6 3 5 5-5 5" /></svg>;
 }
 
 export default BriefingDocumentPanel;

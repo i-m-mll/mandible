@@ -146,14 +146,9 @@
   display: none;
 }
 
-.ledger-metadata-popover summary svg {
+.ledger-metadata-popover summary .app-icon {
   width: 13px;
   height: 13px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 
 .ledger-metadata-popover summary:hover,
@@ -259,15 +254,10 @@
   background: var(--neutral-alpha-06);
 }
 
-.ledger-copy-ref-button svg,
-.ledger-icon-button svg {
+.ledger-copy-ref-button .app-icon,
+.ledger-icon-button .app-icon {
   width: 14px;
   height: 14px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 
 .ledger-issue-actions-menu {

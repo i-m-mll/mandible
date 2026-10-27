@@ -1,3 +1,4 @@
+import { Icon } from '../../components/icons/Icon';
 // Space seed dialog (umbrella de56ffa, child 27a5026).
 //
 // Filter-driven seeding for a Space. The dialog offers the §6.2 seed sources
@@ -244,8 +245,8 @@ export function SpaceSeedDialog({
             aria-label="Close seed dialog"
             onClick={onClose}
           >
-            ×
-          </button>
+            <Icon name="dismiss" />
+            </button>
         ) : null}
       </header>
 

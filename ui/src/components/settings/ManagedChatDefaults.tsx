@@ -1,3 +1,4 @@
+import { NativeSelect } from '../shared/NativeSelect';
 import { useEffect, useState } from 'preact/hooks';
 import { getManagedChatDefaults, updateManagedChatDefaults } from '../../api';
 import { MANAGED_CHAT_PROVIDERS, managedChatDefaultDescriptors, type ManagedChatDefaults as Defaults } from '../../../../src/managed-chat-defaults';
@@ -36,9 +37,9 @@ export function ManagedChatDefaults({ canSave }: { canSave: boolean }): JSX.Elem
               {id === 'model' ? <>
                 <input aria-label={`${name} model`} value={value} list={`chat-default-models-${provider}`} onInput={event => edit(event.currentTarget.value)} />
                 <datalist id={`chat-default-models-${provider}`}>{option.choices.map(choice => <option value={choice.value}>{choice.label}</option>)}</datalist>
-              </> : <select aria-label={`${name} ${option.label}`} value={value} onChange={event => edit(event.currentTarget.value)}>
+              </> : <NativeSelect aria-label={`${name} ${option.label}`} value={value} onChange={event => edit(event.currentTarget.value)}>
                 {option.choices.map(choice => <option value={choice.value}>{choice.label}</option>)}
-              </select>}
+              </NativeSelect>}
             </label>;
           })}
         </fieldset>;

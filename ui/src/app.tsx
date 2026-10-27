@@ -1,3 +1,4 @@
+import { Icon, type IconName } from './components/icons/Icon';
 import { AppHoverTips, appTip } from './components/shared/AppHoverTips';
 import { NativeTopBarBand } from './components/NativeTopBarBand';
 import { pushAppHistory, replaceAppHistory } from './app-history';
@@ -110,7 +111,7 @@ import {
   type ResponsiveSidebarThresholdState,
 } from './app-shell';
 import { useAppRightSidebarState } from './right-sidebar-state';
-import { PreviewIcon } from './components/icons/TabIcons';
+
 import {
   AUTH_AUTO_RETURN_TO_OVERVIEW_SETTING,
   AUTH_AUTO_SHOW_CONSOLE_SETTING,
@@ -144,22 +145,7 @@ import {
   viewSidebarGeometryForRoute,
   type ViewSidebarWidths,
 } from './view-sidebar-geometry';
-import {
-  ChatIcon,
-  IssuesIcon,
-  InboxIcon,
-  AuthIcon,
-  ArtifactsIcon,
-  GraphIcon,
-  TimelineIcon,
-  LogsIcon,
-  ProjectsIcon,
-  SessionOverviewIcon,
-  DarkThemeIcon,
-  LightThemeIcon,
-  SystemThemeIcon,
-  SettingsIcon,
-} from './components/icons/TabIcons';
+
 import {
   adoptAgentSessionFragment,
   getAgentPageBinding,
@@ -459,7 +445,6 @@ function updateRootAppTheme(settings: Record<string, string>, previewTheme?: Chr
   return () => query.removeEventListener('change', apply);
 }
 
-
 type NavItem = {
   tab: Route['tab'];
   href: string;
@@ -467,7 +452,7 @@ type NavItem = {
   title: string;
   badge?: number;
   badgeClass?: string;
-  icon: (props: { size?: number }) => JSX.Element;
+  icon: IconName;
 };
 
 type AppRailPreviewOrder = string[];
@@ -500,54 +485,6 @@ const RESIZE_RAIL_TABS = new Set<Route['tab']>([
   'timeline',
   'work',
 ]);
-
-function SpacesIcon({ size = 18 }: { size?: number }): JSX.Element {
-  // Lucide-style "layout-grid": Spaces are an authored grid of surfaces.
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="3" y="3" width="7" height="7" rx="1" />
-      <rect x="14" y="3" width="7" height="7" rx="1" />
-      <rect x="3" y="14" width="7" height="7" rx="1" />
-      <rect x="14" y="14" width="7" height="7" rx="1" />
-    </svg>
-  );
-}
-
-function BriefingIcon({ size = 18 }: { size?: number }): JSX.Element {
-  // Lucide-style "newspaper": the Briefing is a reviewed daily report.
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M4 4h13a1 1 0 0 1 1 1v13a2 2 0 0 0 2 2H5a2 2 0 0 1-2-2V5a1 1 0 0 1 1-1z" />
-      <path d="M7 8h7" />
-      <path d="M7 12h7" />
-      <path d="M7 16h4" />
-    </svg>
-  );
-}
-
-function ExperimentalIcon({ size = 16 }: { size?: number }): JSX.Element {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M9 3h6" />
-      <path d="M10 3v6l-5 9a2 2 0 0 0 1.75 3h10.5A2 2 0 0 0 19 18l-5-9V3" />
-      <path d="M8 15h8" />
-    </svg>
-  );
-}
-
-function TasksIcon({ size = 18 }: { size?: number }): JSX.Element {
-  // Lucide-style "calendar-clock": recurring work on a schedule, observed.
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M8 2v4" />
-      <path d="M16 2v4" />
-      <path d="M3 10h18" />
-      <path d="M21 13V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h7" />
-      <circle cx="18" cy="18" r="4" />
-      <path d="M18 16.5V18l1 1" />
-    </svg>
-  );
-}
 
 function parseHashRoute(): Route {
   if (typeof window === 'undefined') {
@@ -835,7 +772,7 @@ function App(): JSX.Element {
     kind: 'panel',
     title: 'Preview',
     ariaLabel: 'Preview',
-    icon: <PreviewIcon size={18} />,
+    icon: <Icon name="preview" size={18} />,
     content: <p className="app-right-sidebar__empty">Select an item to preview it.</p>,
     open: fallbackRightSidebarState.open,
     width: fallbackRightSidebarState.width,
@@ -2250,7 +2187,7 @@ function App(): JSX.Element {
     href: '#/overview',
     label: 'Session',
     title: 'Session Overview',
-    icon: SessionOverviewIcon,
+    icon: 'sessionOverview',
   };
   const showSessionOverviewNav = agentPageBinding !== null;
 
@@ -2262,14 +2199,14 @@ function App(): JSX.Element {
       label: 'Chat',
       title: 'Chat',
       badge: badges.console,
-      icon: ChatIcon,
+      icon: 'chat',
     },
     {
       tab: 'timeline',
       href: '#/timeline',
       label: 'Timeline',
       title: 'Timeline',
-      icon: TimelineIcon,
+      icon: 'timeline',
     },
     {
       tab: 'auth',
@@ -2278,35 +2215,35 @@ function App(): JSX.Element {
       title: 'Approvals',
       badge: badges.auth,
       badgeClass: 'tab-badge--auth',
-      icon: AuthIcon,
+      icon: 'auth',
     },
     {
       tab: 'issues',
       href: '#/issues',
       label: 'Issues',
       title: 'Issues',
-      icon: IssuesIcon,
+      icon: 'issues',
     },
     {
       tab: 'artifacts',
       href: '#/artifacts',
       label: 'Artifacts',
       title: 'Artifacts',
-      icon: ArtifactsIcon,
+      icon: 'artifacts',
     },
     {
       tab: 'spaces',
       href: '#/spaces',
       label: 'Spaces',
       title: 'Spaces',
-      icon: SpacesIcon,
+      icon: 'spaces',
     },
     {
       tab: 'briefing',
       href: '#/briefing',
       label: 'Briefing',
       title: 'Briefing',
-      icon: BriefingIcon,
+      icon: 'briefing',
     },
     {
       tab: 'inbox',
@@ -2314,7 +2251,7 @@ function App(): JSX.Element {
       label: 'Inbox',
       title: 'Inbox',
       badge: badges.inbox,
-      icon: InboxIcon,
+      icon: 'inbox',
     },
   ];
 
@@ -2325,14 +2262,14 @@ function App(): JSX.Element {
       label: 'Projects',
       title: 'Projects',
       badge: badges.work,
-      icon: ProjectsIcon,
+      icon: 'projects',
     },
     {
       tab: 'graph',
       href: '#/graph',
       label: 'Graph',
       title: 'Graph',
-      icon: GraphIcon,
+      icon: 'graph',
     },
     {
       tab: 'tasks',
@@ -2341,7 +2278,7 @@ function App(): JSX.Element {
       title: 'Tasks',
       badge: badges.tasks,
       badgeClass: 'tab-badge--tasks-attention',
-      icon: TasksIcon,
+      icon: 'tasks',
     },
   ];
   const logsNavItem: NavItem = {
@@ -2349,7 +2286,7 @@ function App(): JSX.Element {
     href: '#/logs',
     label: 'Logs',
     title: 'Logs',
-    icon: LogsIcon,
+    icon: 'logs',
   };
 
   const previewMutationsRejected = Boolean(instanceInfo && instanceInfo.allowed_effects?.includes('maintenance:shared') !== true);
@@ -2597,7 +2534,6 @@ function App(): JSX.Element {
   };
 
   const renderRailItem = (item: NavItem, reorderable = false, group: AppRailGroup = 'primary'): JSX.Element => {
-    const Icon = item.icon;
     const active = !startupDestinationPending && route.tab === item.tab;
     const dragging = railDrag?.active && railDrag.itemId === item.tab;
     const dropTarget = railDrag?.active && railDrag.overId === item.tab;
@@ -2639,7 +2575,7 @@ function App(): JSX.Element {
         }}
       >
         <span className="app-rail__icon">
-          <Icon size={18} />
+          <Icon name={item.icon} size={18} />
         </span>
         {railDisplayMode === 'both' && <span className="app-rail__label">{item.label}</span>}
 
@@ -2681,10 +2617,10 @@ function App(): JSX.Element {
   const appThemeLabel = appThemeMode === 'system' ? 'System' : appThemeMode === 'light' ? 'Light' : 'Dark';
   const nextAppThemeLabel = nextAppThemeMode === 'system' ? 'System' : nextAppThemeMode === 'light' ? 'Light' : 'Dark';
   const appThemeIcon = appThemeMode === 'system'
-    ? <SystemThemeIcon size={18} />
+    ? <Icon name="themeSystem" size={18} />
     : appThemeMode === 'light'
-      ? <LightThemeIcon size={18} />
-      : <DarkThemeIcon size={18} />;
+      ? <Icon name="themeLight" size={18} />
+      : <Icon name="themeDark" size={18} />;
   const renderTabPanel = (tab: RenderableTab, children: ComponentChildren): JSX.Element | null => {
     if (startupDestinationPending || !accessEverReady || !visitedTabs.has(tab)) return null;
     const active = route.tab === tab;
@@ -2745,8 +2681,8 @@ function App(): JSX.Element {
             onClick={() => setRebuildFailure(null)}
             aria-label="Dismiss update failure"
           >
-            ×
-          </button>
+            <Icon name="dismiss" />
+            </button>
         </div>
       )}
       {daemonWarm === false && (
@@ -2781,8 +2717,8 @@ function App(): JSX.Element {
             onClick={handleToastDismiss}
             aria-label="Dismiss daemon reload notification"
           >
-            ×
-          </button>
+            <Icon name="dismiss" />
+            </button>
         </div>
       )}
       <AppShellProvider value={appShellContext}>
@@ -2813,7 +2749,7 @@ function App(): JSX.Element {
                 {state.settings.show_experimental_features !== 'false' ? (
                   <div className="app-rail__experimental" aria-label="Experimental features">
                     <div className="app-rail__experimental-header" title="Experimental features">
-                      <ExperimentalIcon />
+                      <Icon name="experimental" />
                     </div>
                     <div className="app-rail__group" data-rail-group="experimental">
                       {orderedRailItems(true).map((item) => renderRailItem(item, true, 'secondary'))}
@@ -2852,7 +2788,7 @@ function App(): JSX.Element {
                   href: '#/settings',
                   label: 'Settings',
                   title: 'Settings',
-                  icon: SettingsIcon,
+                  icon: 'settings',
                 })}
               </nav>
           </aside>

@@ -120,7 +120,7 @@
   letter-spacing: 0.5px;
 }
 
-.auth-hooks-panel__form-row select {
+.auth-hooks-panel__form-row :is(select, .native-select) {
   width: 100%;
   min-height: 32px;
 }

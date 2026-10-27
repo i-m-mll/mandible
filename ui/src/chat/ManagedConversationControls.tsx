@@ -1,3 +1,4 @@
+import { Icon } from '../components/icons/Icon';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { ConversationControlSnapshot, ConversationRuntimeOptions } from '../api';
 import type { ManagedPermissionRequest, ConversationRunOption, RuntimeSettingsApplication } from '../../../src/conversation-control/types';
@@ -264,6 +265,6 @@ export function ManagedConversationStopButton({ state }: { state: ReturnType<typ
   const stopping = state.interruptPending || state.execution.phase === 'stopping';
   return <button type="button" className="chat-circle-action conv-compose__send conv-compose__stop"
     disabled={state.busy || stopping} title={stopping ? 'Stopping…' : 'Stop turn'} aria-label={stopping ? 'Stopping…' : 'Stop turn'} onClick={state.interrupt}>
-    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1" /></svg>
+    <Icon name="chatStop" size={12} />
   </button>;
 }

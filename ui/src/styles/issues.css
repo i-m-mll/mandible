@@ -50,7 +50,7 @@
   padding: 0;
 }
 
-.artifacts-advanced__field select {
+.artifacts-advanced__field :is(select, .native-select) {
   width: 100%;
   min-height: 34px;
 }
@@ -267,8 +267,7 @@
   background: var(--neutral-alpha-06);
 }
 
-.artifact-detail__actions-item--active::after {
-  content: '\2713';
+.artifact-detail__actions-item-check {
   color: var(--accent-blue);
 }
 
@@ -347,13 +346,9 @@
   color: var(--text-primary);
 }
 
-.artifact-detail__modal-close svg {
+.artifact-detail__modal-close .app-icon {
   width: 18px;
   height: 18px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
 }
 
 .artifact-detail__pane {

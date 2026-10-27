@@ -1,3 +1,4 @@
+import { Icon, type IconName } from '../icons/Icon';
 export type PlanEntryStatus = 'pending' | 'in_progress' | 'completed';
 
 export type PlanEntry = {
@@ -105,11 +106,9 @@ export function latestPlanIndex(blocks: Array<{ type: string }>): number {
   return -1;
 }
 
-function statusGlyph(status: PlanEntryStatus): string {
-  if (status === 'completed') return '✓';
-  if (status === 'in_progress') return '•';
-  return '○';
-}
+const statusIcons = {
+  completed: 'planCompleted', in_progress: 'planInProgress', pending: 'planPending',
+} satisfies Record<PlanEntryStatus, IconName>;
 
 export function PlanBlock({ content }: PlanBlockProps): JSX.Element {
   const entries = parsePlanEntries(content);
@@ -119,13 +118,13 @@ export function PlanBlock({ content }: PlanBlockProps): JSX.Element {
   return (
     <section className="plan-card" aria-label="Plan">
       <div className="plan-card__header">
-        <span className="plan-card__icon" aria-hidden="true">P</span>
+        <span className="plan-card__icon" aria-hidden="true"><Icon name="plan" /></span>
         <span className="plan-card__title">Plan</span>
       </div>
       <ol className="plan-card__list">
         {entries.map((entry, index) => (
           <li key={`${entry.status}-${index}-${entry.text}`} className={`plan-card__item plan-card__item--${entry.status}`}>
-            <span className="plan-card__status" aria-hidden="true">{statusGlyph(entry.status)}</span>
+            <span className="plan-card__status" aria-hidden="true"><Icon name={statusIcons[entry.status]} /></span>
             <span className="plan-card__text">{entry.text}</span>
             {entry.priority && <span className="plan-card__priority">{entry.priority}</span>}
           </li>

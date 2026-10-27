@@ -1,3 +1,4 @@
+import { Icon } from '../icons/Icon';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { artifactLinkBadgeLabel, formatAbsoluteTime, formatRelativeTime } from '../../lib/format';
 import { renderInlineMarkdown } from '../../lib/markdown';
@@ -1233,7 +1234,7 @@ function MetadataDisclosure({
       onToggle={(event) => setOpen(event.currentTarget.open)}
     >
       <summary aria-label={label} title={label}>
-        <MetadataIcon />
+        <Icon name="issueMetadata" />
       </summary>
       <div className="ledger-metadata-popover__panel" style={{ left: `${panelOffset}px` }}>{children}</div>
     </details>
@@ -1442,7 +1443,7 @@ function AuthEvidenceModal({
         <div className="ledger-issue-modal__header">
           <h3>Approval Evidence</h3>
           <button type="button" className="ledger-icon-button" aria-label="Close auth evidence" onClick={onClose}>
-            <CloseIcon />
+            <Icon name="close" />
           </button>
         </div>
         <AuthEvidenceShelf
@@ -1668,23 +1669,4 @@ function authEvidenceLinkLabel(auth: LedgerIssueDetailAuthRequest): string {
   if (auth.link_type === 'resolves' || auth.link_type === 'fixed_by') return 'resolved by';
   if (auth.link_type === 'references') return 'referenced by';
   return `${auth.link_type.replace(/_/g, ' ')} by`;
-}
-
-function MetadataIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <circle cx="12" cy="12" r="9" />
-      <path d="M12 17v-5" />
-      <path d="M12 8h.01" />
-    </svg>
-  );
-}
-
-function CloseIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="m18 6-12 12" />
-      <path d="m6 6 12 12" />
-    </svg>
-  );
 }

@@ -1,3 +1,5 @@
+import { NativeSelect } from '../components/shared/NativeSelect';
+import { Icon } from '../components/icons/Icon';
 import { navigateAppHash } from '../app-history';
 import { Fragment, type ComponentChildren } from 'preact';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
@@ -13,7 +15,7 @@ import { useAppRightSidebarState } from '../right-sidebar-state';
 import { refreshAbandoned } from '../lib/coalesced-refresh';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
-import { PreviewIcon } from '../components/icons/TabIcons';
+
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { LedgerRenderedBody } from '../components/ledger/LedgerRenderedBody';
 import { AttributionIdentity } from '../components/shared/DetailHeaderIdentity';
@@ -806,51 +808,6 @@ function aggregateAccessibleLabel(interval: TimelineAggregateInterval): string {
     ? `at ${formatDateTime(interval.startTime)}`
     : `from ${formatDateTime(interval.startTime)} to ${formatDateTime(interval.endTime)}`;
   return `Aggregate marker for ${interval.issue.display_id} ${interval.issue.title}, ${interval.eventCount} ${interval.eventCount === 1 ? 'event' : 'events'} ${range}`;
-}
-
-function ZoomOutIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <circle cx="11" cy="11" r="7" />
-      <path d="M8 11h6" />
-      <path d="m16 16 4 4" />
-    </svg>
-  );
-}
-
-function ZoomInIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <circle cx="11" cy="11" r="7" />
-      <path d="M8 11h6" />
-      <path d="M11 8v6" />
-      <path d="m16 16 4 4" />
-    </svg>
-  );
-}
-
-function FitTimelineIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path d="M4 9V4h5" />
-      <path d="M20 9V4h-5" />
-      <path d="M4 15v5h5" />
-      <path d="M20 15v5h-5" />
-      <path d="M8 12h8" />
-    </svg>
-  );
-}
-
-function AddTimelineRowIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path d="M5 7h8" />
-      <path d="M5 12h8" />
-      <path d="M5 17h8" />
-      <path d="M18 9v6" />
-      <path d="M15 12h6" />
-    </svg>
-  );
 }
 
 export function TimelineView({ repos, params = {}, sidebarHidden = false, refreshToken = 0 }: TimelineViewProps): JSX.Element {
@@ -1799,7 +1756,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false, refres
     id: 'timeline-inspector',
     kind: 'panel' as const,
     title: 'Timeline inspector',
-    icon: <PreviewIcon size={18} />,
+    icon: <Icon name="preview" size={18} />,
     ariaLabel: 'Timeline inspector',
     open: inspectorSidebar.open,
     width: inspectorSidebar.width,
@@ -1825,25 +1782,25 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false, refres
             <div className="timeline-toolbar">
               <label className="timeline-control">
                 <span>Project</span>
-                <select
+                <NativeSelect
                   value={projectRef}
                   onChange={(event) => handleProjectChange((event.currentTarget as HTMLSelectElement).value)}
                 >
                   {repos.length === 0 ? <option value={projectRef}>{projectRef}</option> : repos.map((repo) => (
                     <option key={repoId(repo)} value={repoId(repo)}>{repoTitle(repo)}</option>
                   ))}
-                </select>
+                </NativeSelect>
               </label>
               <label className="timeline-control">
                 <span>Roots</span>
-                <select
+                <NativeSelect
                   value={viewState.rootPolicy}
                   onChange={(event) => updateState({ rootPolicy: (event.currentTarget as HTMLSelectElement).value as TimelineRootPolicy })}
                 >
                   <option value="coordination_and_explicit">Trackers + explicit</option>
                   <option value="coordination">Trackers</option>
                   <option value="explicit">Explicit</option>
-                </select>
+                </NativeSelect>
               </label>
               <label className="timeline-control timeline-control--wide">
                 <span>Explicit</span>
@@ -1855,14 +1812,14 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false, refres
               </label>
               <label className="timeline-control">
                 <span>Density</span>
-                <select
+                <NativeSelect
                   value={viewState.density}
                   onChange={(event) => updateState({ density: (event.currentTarget as HTMLSelectElement).value as TimelineDensity })}
                 >
                   <option value="compact">Compact</option>
                   <option value="comfortable">Comfortable</option>
                   <option value="expanded">Expanded</option>
-                </select>
+                </NativeSelect>
               </label>
               <label className="timeline-control">
                 <span>From</span>
@@ -1968,7 +1925,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false, refres
                 aria-label="Zoom out"
                 title="Zoom out"
               >
-                <ZoomOutIcon />
+                <Icon name="zoomOut" />
               </button>
               <button
                 type="button"
@@ -1977,7 +1934,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false, refres
                 aria-label="Zoom in"
                 title="Zoom in"
               >
-                <ZoomInIcon />
+                <Icon name="zoomIn" />
               </button>
               <button
                 type="button"
@@ -1986,7 +1943,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false, refres
                 aria-label="Fit all"
                 title="Fit all"
               >
-                <FitTimelineIcon />
+                <Icon name="fitTimeline" />
               </button>
               <button
                 type="button"
@@ -1995,7 +1952,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false, refres
                 aria-label="Add row"
                 title="Add row"
               >
-                <AddTimelineRowIcon />
+                <Icon name="addTimelineRow" />
               </button>
             </div>
           </div>
