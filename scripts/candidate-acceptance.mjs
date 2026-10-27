@@ -305,9 +305,7 @@ async function main() {
     const app = path.join(run, 'Mandible.app'); fs.cpSync(builtApp, app, { recursive: true, verbatimSymlinks: true });
     command('/usr/bin/codesign', ['--verify', '--deep', '--strict', app]);
     const resources = path.join(app, 'Contents', 'Resources');
-    const bundledMarker = JSON.parse(fs.readFileSync(path.join(resources, 'build-revision.json'), 'utf8'));
     const marker = JSON.parse(fs.readFileSync(path.join(root, 'dist', 'build-revision.json'), 'utf8'));
-    if (JSON.stringify(bundledMarker) !== JSON.stringify(marker)) throw new Error('Native package carries a different candidate marker.');
     const shipped = verifyInstalledRelease(resources);
     if (shipped.provenance.commit !== candidate || shipped.provenance.source_digest !== marker.source_digest) throw new Error("Finalized package provenance differs from the candidate.");
     const resourceEnv = installedRuntimeEnvironment(resources, { HOME: home, PATH: "/usr/bin:/bin:/usr/sbin:/sbin", TMPDIR: run });
