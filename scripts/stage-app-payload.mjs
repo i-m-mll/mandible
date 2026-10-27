@@ -71,7 +71,7 @@ export async function stageAppPayload(contents) {
   if (provenance.source_digest !== trackedSourceDigest(root)) throw new Error('Build inputs changed after compilation. Run the source build before staging the app.');
   const resources = path.join(contents, 'Resources');
   fs.mkdirSync(resources, { recursive: true });
-  for (const relative of ['dist', 'ui/dist', 'cli', 'bin', 'config', '.bun-version', 'bun.lock', 'package.json', 'docs/cli-reference.md', 'hooks/git/reference-transaction', 'ui/index.html', 'ui/manifest.json', 'ui/sw.js', 'ui/icon.svg', 'ui/header-logo.svg', 'ui/icon-192.png', 'ui/icon-512.png']) copy(path.join(root, relative), path.join(resources, relative));
+  for (const relative of ['dist', 'ui/dist', 'cli', 'bin', 'config', '.bun-version', 'bun.lock', 'package.json', 'docs/cli-reference.md', 'hooks', 'ui/index.html', 'ui/manifest.json', 'ui/sw.js', 'ui/icon.svg', 'ui/header-logo.svg', 'ui/icon-192.png', 'ui/icon-512.png']) copy(path.join(root, relative), path.join(resources, relative));
   const packageCount = copyProductionDependencies(resources);
   stageCoworkRuntime(root, resources);
   const scripts = new Set(['local-runtime.mjs', 'bundle-service.mjs', 'local-front-door.mjs', 'local-session-production-runner.mjs', 'runtime-handoff.mjs', 'installed-release.mjs', 'conversation-cutover-proof.mjs', 'project-db-snapshot.mjs', 'preview-custody.mjs', 'installed-command.mjs']);
