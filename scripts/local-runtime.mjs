@@ -17,6 +17,7 @@ import { readBuildRevision, compiledBuildDigest, runtimeDependenciesDigest } fro
 import { serviceInstallationContext, parseLoadedService, loadedServiceMatches, ownsServiceDefinition, inspectServiceDefinitionsSync, matchingServiceDefinitions, loadedServiceDefinition, runtimeHandoffReadiness } from "./service-definitions.mjs";
 import { installationRuntime, servicePath, readServiceConfiguration, publishServiceConfiguration, validateServiceConfiguration } from "./service-configuration.mjs";
 import { withInstallationGatewayLock } from './lifecycle-lock.mjs';
+import { RUNTIME_HEALTH_PROBE_INTERVAL_MS } from './runtime-probe-cadence.mjs';
 export { parseLoadedService, loadedServiceMatches } from "./service-definitions.mjs";
 
 const ACCOUNT_HOME = os.userInfo().homedir;
@@ -394,7 +395,10 @@ export function handoffServiceExit(started, inspection) {
  * inspection waits for the daemon's answer; the short pause only paces
  * refused or not-ready answers.
  */
-export async function awaitHandoffReadiness(mergeCommit, until, inspect, { pauseMs = 200, now = Date.now } = {}) {
+export async function awaitHandoffReadiness(mergeCommit, until, inspect, {
+  pauseMs = RUNTIME_HEALTH_PROBE_INTERVAL_MS, now = Date.now,
+  wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),
+} = {}) {
   let started = null;
   for (;;) {
     const inspection = await inspect(handoffProbeTimeout(until, now()));
@@ -403,7 +407,7 @@ export async function awaitHandoffReadiness(mergeCommit, until, inspect, { pause
     started ??= Object.fromEntries([['backend', inspection.backendJob], ['gateway', inspection.gatewayJob]].map(([name, job]) => [name, { pid: job.pid, runs: job.runs }]));
     const error = handoffFrontDoorError(inspection, mergeCommit);
     if (!error || inspection.status.state === 'port_conflict' || now() >= until) return { inspection, error, exited: false };
-    await new Promise(resolve => setTimeout(resolve, Math.min(pauseMs, Math.max(0, until - now()))));
+    await wait(Math.min(pauseMs, Math.max(0, until - now())));
   }
 }
 

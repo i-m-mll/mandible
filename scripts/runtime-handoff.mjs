@@ -18,6 +18,17 @@ const execFileAsync = promisify(execFile);
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const fileHash = file => hash(fs.readFileSync(file));
+const CONTROLLER_MODULES = ['lifecycle-lock.mjs', 'canonical-origin.mjs', 'build-revision.mjs', 'local-ca-trust.mjs',
+  'pinned-caddy.mjs', 'runtime-environment.mjs', 'service-definitions.mjs', 'service-configuration.mjs', 'runtime-probe-cadence.mjs'];
+const STAGED_HANDOFF_FILES = ['sqlite.mjs', 'proof.mjs', 'controller.mjs', 'helper.mjs', ...CONTROLLER_MODULES];
+
+export function stageHandoffController(root, dir) {
+  // Preserve CLI module boundaries: bundling guarded entrypoints changes their import.meta.url guards.
+  for (const [source, name] of [['local-runtime.mjs', 'controller.mjs'], ...CONTROLLER_MODULES.map(name => [name, name])]) {
+    fs.copyFileSync(path.join(root, 'scripts', source), path.join(dir, name));
+  }
+}
+
 export const bindingDigest = binding => hash(JSON.stringify(binding));
 function atomic(file, value) {
   const temporary = `${file}.${process.pid}.tmp`;
@@ -185,7 +196,7 @@ export async function armRuntimeHandoff(root) {
   if (fs.existsSync(dir)) {
     const prior = JSON.parse(fs.readFileSync(path.join(dir, 'preparation.json'), 'utf8'));
     if (JSON.stringify(prior) !== JSON.stringify(preparation)) throw new Error('Existing preparation belongs to different handoff bytes.');
-    for (const name of fs.readdirSync(dir)) if (!['preparation.json', 'sqlite.mjs', 'proof.mjs', 'controller.mjs', 'lifecycle-lock.mjs', 'helper.mjs', 'canonical-origin.mjs', 'build-revision.mjs', 'local-ca-trust.mjs', 'pinned-caddy.mjs', 'runtime-environment.mjs', 'service-definitions.mjs', 'service-configuration.mjs'].includes(name) || fs.lstatSync(path.join(dir, name)).isSymbolicLink()) throw new Error('Unknown handoff preparation material; preserving it.');
+    for (const name of fs.readdirSync(dir)) if (!['preparation.json', ...STAGED_HANDOFF_FILES].includes(name) || fs.lstatSync(path.join(dir, name)).isSymbolicLink()) throw new Error('Unknown handoff preparation material; preserving it.');
   } else {
     fs.mkdirSync(dir, { mode: 0o700 });
     atomic(path.join(dir, 'preparation.json'), preparation);
@@ -207,12 +218,10 @@ export async function armRuntimeHandoff(root) {
   for (const [source, name] of [['src/runtime-handoff-proof.ts', 'proof.mjs'], ['scripts/runtime-handoff.mjs', 'helper.mjs']]) {
     run(runtime, ['build', path.join(root, source), '--target', 'bun', '--outfile', path.join(dir, name)], { cwd: root });
   }
-  // Preserve CLI module boundaries: bundling several guarded CLI entrypoints
-  // would make their import.meta.url guards all refer to the same entry file.
-  for (const [source, name] of [['local-runtime.mjs', 'controller.mjs'], ...['lifecycle-lock.mjs', 'canonical-origin.mjs', 'build-revision.mjs', 'local-ca-trust.mjs', 'pinned-caddy.mjs', 'runtime-environment.mjs', 'service-definitions.mjs', 'service-configuration.mjs'].map(name => [name, name])]) fs.copyFileSync(path.join(root, 'scripts', source), path.join(dir, name));
+  stageHandoffController(root, dir);
   // Initial publication validation is read-only and precedes every mutation.
   Object.assign(binding, await publication(journal));
-  binding.stagedFiles = Object.fromEntries(['sqlite.mjs', 'proof.mjs', 'controller.mjs', 'lifecycle-lock.mjs', 'helper.mjs', 'canonical-origin.mjs', 'build-revision.mjs', 'local-ca-trust.mjs', 'pinned-caddy.mjs', 'runtime-environment.mjs', 'service-definitions.mjs', 'service-configuration.mjs'].map(name => [name, fileHash(path.join(dir, name))]));
+  binding.stagedFiles = Object.fromEntries(STAGED_HANDOFF_FILES.map(name => [name, fileHash(path.join(dir, name))]));
   journal.bindingDigest = bindingDigest(binding);
   const helper = path.join(dir, 'helper.mjs');
   const service = path.join(homeDirectory(home), 'launch-agents', `${journal.helperLabel}.plist`);

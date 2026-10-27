@@ -50,6 +50,7 @@
       "../dist/build-revision.json": "build-revision.json",
       "../scripts/local-ca-trust.mjs": "local-ca-trust.mjs",
       "../scripts/local-runtime.mjs": "local-runtime.mjs",
+      "../scripts/runtime-probe-cadence.mjs": "runtime-probe-cadence.mjs",
       "../scripts/lifecycle-lock.mjs": "lifecycle-lock.mjs",
       "../scripts/runtime-environment.mjs": "runtime-environment.mjs",
       "../scripts/service-definitions.mjs": "service-definitions.mjs",
