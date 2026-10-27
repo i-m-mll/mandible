@@ -79,7 +79,7 @@
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-  font: 400 var(--text-md)/1.35 var(--font-sans);
+  font: 400 calc(var(--text-md) + var(--chrome-text-increment, 0px))/1.35 var(--font-sans);
   text-align: left;
 }
 
@@ -217,6 +217,7 @@
 }
 
 .sidebar-group-node__leading {
+  font-size: var(--text-md);
   width: 16px;
   height: 16px;
   display: inline-flex;
@@ -238,7 +239,7 @@
   color: var(--text-chrome-muted);
   cursor: pointer;
   font: inherit;
-  font-size: var(--text-md);
+  font-size: calc(var(--text-md) + var(--chrome-text-increment, 0px));
   text-align: left;
 }
 
@@ -247,7 +248,7 @@
   padding: 6px 7px 6px var(--sidebar-title-column-inset, 7px);
   color: var(--text-disabled);
   font: inherit;
-  font-size: var(--text-md);
+  font-size: calc(var(--text-md) + var(--chrome-text-increment, 0px));
   text-align: left;
 }
 

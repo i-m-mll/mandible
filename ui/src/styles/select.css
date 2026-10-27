@@ -4,7 +4,7 @@ select {
   border-radius: 8px;
   background-color: var(--bg-card);
   color: var(--text-primary);
-  font: 13px/1.2 var(--font-sans);
+  font: calc(13px + var(--chrome-text-increment, 0px))/1.2 var(--font-sans);
   letter-spacing: normal;
   text-transform: none;
   cursor: pointer;

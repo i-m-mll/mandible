@@ -106,7 +106,7 @@
   color: var(--text-muted);
   padding: 5px 12px;
   border-radius: 999px;
-  font-size: 12px;
+  font-size: calc(12px + var(--chrome-text-increment, 0px));
   font-family: var(--font-sans);
   cursor: pointer;
   display: inline-flex;
@@ -127,7 +127,7 @@
 }
 
 .conv-filter-btn__count {
-  font-size: 11px;
+  font-size: calc(11px + var(--chrome-text-increment, 0px));
   opacity: 0.7;
 }
 
@@ -693,6 +693,10 @@
   color: var(--accent-blue);
   opacity: 0.7;
   font-size: 0.9em;
+}
+
+.app-frame__bar .conv-subagent-indicator {
+  font-size: calc(13px * 0.9);
 }
 
 .conv-parent-link {

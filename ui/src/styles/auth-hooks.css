@@ -14,7 +14,7 @@
   color: var(--text-secondary);
   padding: 4px 10px;
   border-radius: 4px;
-  font-size: 11px;
+  font-size: calc(11px + var(--chrome-text-increment, 0px));
   cursor: pointer;
   width: 100%;
   transition: background 0.15s, color 0.15s;
