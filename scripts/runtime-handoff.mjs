@@ -733,7 +733,7 @@ function recoveryHelperQuiescent(journal) {
   }
 }
 
-function recoveryInstalledPackage(journal) {
+function recoveryInstalledPackage(journal, { allowRunning = false } = {}) {
   const b = journal.binding;
   const accepted = verifyAcceptedApplication(b);
   const context = serviceInstallationContext({ home: b.home, bundleRoot: b.nativeApp });
@@ -742,7 +742,7 @@ function recoveryInstalledPackage(journal) {
   if (startedAt(b.oldProcess.pid) === b.oldProcess.startedAt) throw new Error('Original production process has not drained.');
   const definitions = matchingServiceDefinitions(inspectServiceDefinitionsSync(context));
   if (!definitions.ok) throw new Error(definitions.refusal.message);
-  if (definitions.observations.some(item => item.job.pid)) throw new Error('A service is already running; recovery start is observation-only.');
+  if (!allowRunning && definitions.observations.some(item => item.job.pid)) throw new Error('A service is already running; recovery start is observation-only.');
   return { packageSha256: accepted.receipt.package.sha256, owner: admission.owner };
 }
 
@@ -764,7 +764,7 @@ async function startRecoveryPackage(journal, until, token) {
 /** Start one exact approved installed package without rewriting its retained failure. */
 export async function startFailedRuntimeHandoff(file, { bindingDigest: expected, actor }, {
   verifyPublication = publication, inspectInstalled = recoveryInstalledPackage, helperQuiescent = recoveryHelperQuiescent,
-  start = startRecoveryPackage, now = Date.now,
+  start = startRecoveryPackage, desktop = restoreDesktop, now = Date.now,
 } = {}) {
   const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
   let journal = readRuntimeHandoff(raw.binding.home, raw.binding.requestId, raw.binding.executionId);
@@ -792,13 +792,41 @@ export async function startFailedRuntimeHandoff(file, { bindingDigest: expected,
       unchangedJournal(journal);
       save(journal, { launch: { ...journal.launch, processes: result.processes },
         recoveryStart: { ...attempt, state: 'started', completedAt: now(), result } });
-      return journal;
     } catch (error) {
       unchangedJournal(journal);
       save(journal, { recoveryStart: { ...attempt, state: 'failed', completedAt: now(), error: pendingMetadata(error) } });
       throw error;
     }
+    await desktop(journal);
+    return journal;
   }));
+}
+
+/** Continue the actual desktop relaunch after a successful recovery service start. */
+export async function restoreFailedRuntimeHandoffDesktop(file, { bindingDigest: expected, actor }, {
+  verifyPublication = publication, helperQuiescent = recoveryHelperQuiescent,
+  inspectInstalled = journal => recoveryInstalledPackage(journal, { allowRunning: true }), desktop = restoreDesktop,
+} = {}) {
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  let journal = readRuntimeHandoff(raw.binding.home, raw.binding.requestId, raw.binding.executionId);
+  if (journal?.bindingDigest !== expected || path.resolve(file) !== journalFile(journal.binding)) throw new Error('Recovery handoff binding changed.');
+  if (!actor || typeof actor !== 'object' || !Object.keys(actor).length) throw new Error('Desktop recovery requires attributed intent.');
+  return withRuntimeObservation(journal, async () => {
+    journal = unchangedJournal(journal);
+    if (journal.phase !== 'failed' || journal.recoveryStart?.state !== 'started' || journal.launch?.id !== journal.recoveryStart.id) {
+      throw new Error('Desktop recovery requires the exact successful recovery start.');
+    }
+    await helperQuiescent(journal);
+    await verifyPublication(journal);
+    const installed = await inspectInstalled(journal);
+    if (installed.packageSha256 !== journal.recoveryStart.packageSha256 || JSON.stringify(installed.owner) !== JSON.stringify(journal.recoveryStart.owner)) {
+      throw new Error('Installed recovery package or owner changed.');
+    }
+    unchangedJournal(journal);
+    save(journal, { recoveryStart: { ...journal.recoveryStart, desktopRequestedBy: actor } });
+    await desktop(journal);
+    return journal;
+  });
 }
 
 // The caller holds the hook acceptance SQLite transaction while persisting this
@@ -1111,9 +1139,9 @@ export async function runRuntimeHandoffWorker(file, {
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const [command, file, expected, actor] = process.argv.slice(2);
-  (command === 'recovery-start' ? startFailedRuntimeHandoff(file, { bindingDigest: expected, actor: JSON.parse(actor) }).then(j => {
+  (['recovery-start', 'recovery-desktop'].includes(command) ? (command === 'recovery-start' ? startFailedRuntimeHandoff : restoreFailedRuntimeHandoffDesktop)(file, { bindingDigest: expected, actor: JSON.parse(actor) }).then(j => {
     process.stdout.write(`${JSON.stringify({ phase: j.phase, recoveryStart: j.recoveryStart })}\n`);
   }) : command === 'worker' ? runRuntimeHandoffWorker(file) : command === 'arm' ? armRuntimeHandoff(path.resolve(file || process.cwd())).then(j => {
     if (j) { process.stderr.write(`MANDIBLE_RUNTIME_HANDOFF_PENDING:${j.bindingDigest}\n`); process.exitCode = 75; }
-  }) : Promise.reject(new Error('Usage: runtime-handoff.mjs arm <root>|worker <journal>|recovery-start <journal> <binding-digest> <actor-json>'))).catch(error => { process.stderr.write(`${error.message}\n`); process.exitCode = 1; });
+  }) : Promise.reject(new Error('Usage: runtime-handoff.mjs arm <root>|worker <journal>|recovery-start|recovery-desktop <journal> <binding-digest> <actor-json>'))).catch(error => { process.stderr.write(`${error.message}\n`); process.exitCode = 1; });
 }

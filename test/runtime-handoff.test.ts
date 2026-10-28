@@ -11,7 +11,7 @@ import { pathToFileURL } from 'node:url';
 import { createAuthCheckRepo, git } from './helpers/auth-queue-fixtures.js';
 import { createHash } from 'node:crypto';
 import { afterEach, expect, it, vi } from 'vitest';
-import { bindingDigest, handoffDirectory, observeFailedRuntimeHandoff, observeRuntimeHandoff, observeRuntimeHealthWindow, persistRuntimeRecoveryObservation, readRuntimeHandoff, readRuntimeRecoveryAttempts, runtimeHandoffDrainIdentity, runRuntimeHandoffWorker, withRuntimeObservation, retireFailedRuntimeHandoff, stageHandoffController, verifyRuntimeHandoffReceipt, startFailedRuntimeHandoff } from '../scripts/runtime-handoff.mjs';
+import { bindingDigest, handoffDirectory, observeFailedRuntimeHandoff, observeRuntimeHandoff, observeRuntimeHealthWindow, persistRuntimeRecoveryObservation, readRuntimeHandoff, readRuntimeRecoveryAttempts, runtimeHandoffDrainIdentity, runRuntimeHandoffWorker, withRuntimeObservation, retireFailedRuntimeHandoff, stageHandoffController, verifyRuntimeHandoffReceipt, startFailedRuntimeHandoff, restoreFailedRuntimeHandoffDesktop } from '../scripts/runtime-handoff.mjs';
 import { assessRuntimeLogs } from '../scripts/runtime-log-assessment.mjs';
 import { RuntimeObservationError } from '../scripts/runtime-observation.mjs';
 import { RuntimeHealthObservationError } from '../src/runtime-health-contract.ts';
@@ -77,6 +77,30 @@ it.each(['owner', 'candidate', 'helper'])('refuses recovery start before recordi
   })).rejects.toThrow(`${fault} changed`);
   expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual(failed);
   expect(start).not.toHaveBeenCalled();
+});
+
+it('continues desktop recovery only for the same approved started package and attributes the actual relaunch', async () => {
+  const f = fixture();
+  const binding = { ...f.binding, acceptedRelease: { reference: 'fixture' } };
+  const journal = { ...f.journal, binding, bindingDigest: bindingDigest(binding), phase: 'failed', error: 'original failure',
+    launch: { id: 'actual-start' }, recoveryStart: { id: 'actual-start', state: 'started', packageSha256: 'exact', owner: { id: 'owned' } } };
+  const file = path.join(f.dir, 'journal.json');
+  fs.writeFileSync(file, JSON.stringify(journal));
+  fs.writeFileSync(path.join(f.home, 'config/local-sessions/handoff-active.json'), JSON.stringify({ journal: file, bindingDigest: journal.bindingDigest }));
+  const actor = { provider: 'test' };
+  const desktop = vi.fn(async () => {
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toMatchObject({ phase: 'failed', error: 'original failure',
+      recoveryStart: { desktopRequestedBy: actor } });
+  });
+  const options = { helperQuiescent: vi.fn(), verifyPublication: vi.fn(async () => undefined),
+    inspectInstalled: () => ({ packageSha256: 'changed', owner: { id: 'owned' } }), desktop };
+  await expect(restoreFailedRuntimeHandoffDesktop(file, { bindingDigest: journal.bindingDigest, actor }, options)).rejects.toThrow('package or owner changed');
+  expect(desktop).not.toHaveBeenCalled();
+  expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual(journal);
+  await restoreFailedRuntimeHandoffDesktop(file, { bindingDigest: journal.bindingDigest, actor }, {
+    ...options, inspectInstalled: () => ({ packageSha256: 'exact', owner: { id: 'owned' } }),
+  });
+  expect(desktop).toHaveBeenCalledOnce();
 });
 
 function diagnostics(sequence: number, intervalStartedAt: number, intervalEndedAt: number, maxMs = 0, warning = false) {
