@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 export class RuntimeObservationError extends Error {
   constructor(code, message, evidence, outcome = 'failed') {
     super(message);
@@ -40,14 +42,42 @@ export function runtimeObservationAcceptance(run, journal) {
   if (!run || run.id !== b.executionId || run.auth_request_id !== b.requestId
       || run.hook_id !== b.hookId || run.command_digest !== b.commandDigest) return 'inconsistent';
   if (run.state !== 'complete') return ['pending', 'running', 'failed'].includes(run.state) ? 'unaccepted' : 'inconsistent';
-  const marker = journal.recovery ? `MANDIBLE_RUNTIME_RECOVERY_ACCEPTED:${journal.recovery.digest}`
+  const current = runtimeHandoffDisposition(journal);
+  const marker = current ? runtimeReceiptAcceptanceMarker(journal)
+    : journal.recovery ? `MANDIBLE_RUNTIME_RECOVERY_ACCEPTED:${journal.recovery.digest}`
     : `MANDIBLE_RUNTIME_HANDOFF_ACCEPTED:${journal.bindingDigest}`;
-  return run.output.includes(marker) ? 'accepted' : 'inconsistent';
+  return marker && run.output.split('\n').includes(marker) ? 'accepted' : 'inconsistent';
+}
+
+export function runtimeHandoffDisposition(journal) {
+  const attempt = journal.attempt;
+  if (!attempt) return null;
+  return { attemptId: attempt.id,
+    mutation: attempt.fence ? 'fenced' : attempt.state === 'running' ? 'active' : 'quiescent',
+    runtime: attempt.state === 'complete' ? 'complete' : attempt.state === 'failed' ? 'failed' : 'pending',
+    receipt: attempt.receipt, receiptDigest: attempt.receiptDigest,
+    cleanup: journal.cleanup ?? { state: 'pending' } };
+}
+
+export function runtimeReceiptAcceptanceMarker(journal) {
+  const current = runtimeHandoffDisposition(journal);
+  if (!current || current.runtime !== 'complete' || !current.receiptDigest || !current.receipt) return null;
+  if (current.receipt.schema !== 'mandible-runtime-receipt@1' || current.receipt.bindingDigest !== journal.bindingDigest
+      || current.receipt.attemptId !== current.attemptId
+      || createHash('sha256').update(JSON.stringify(current.receipt)).digest('hex') !== current.receiptDigest) return null;
+  return `MANDIBLE_RUNTIME_RECEIPT_ACCEPTED:${journal.bindingDigest}:${current.attemptId}:${current.receiptDigest}`;
 }
 
 export function runtimeVerificationDisposition(run, journal) {
   const acceptance = runtimeObservationAcceptance(run, journal);
   if (acceptance === 'inconsistent') return 'inconsistent';
+  const current = runtimeHandoffDisposition(journal);
+  if (current) {
+    if (current.runtime === 'complete') return acceptance === 'accepted'
+      ? current.mutation === 'fenced' && current.cleanup.state === 'complete' ? 'confirmed' : 'acknowledge'
+      : runtimeReceiptAcceptanceMarker(journal) ? 'await_acceptance' : 'inconsistent';
+    return acceptance === 'accepted' ? 'inconsistent' : current.runtime === 'pending' ? 'helper_pending' : 'observe';
+  }
   if (journal.phase === 'retired') return 'retired';
   if (journal.phase === 'acknowledged') return acceptance === 'accepted' ? 'confirmed' : 'inconsistent';
   if (journal.phase === 'complete') return acceptance === 'accepted' ? 'acknowledge' : 'await_acceptance';

@@ -8,6 +8,7 @@ export interface LoadedService {
   loaded?: boolean; pid: number | null; program?: string; argv?: string[]; environment?: Record<string, string>;
   workingDirectory?: string; stdoutPath?: string; stderrPath?: string; keepAlive?: boolean;
   bundleProgram?: string; parentBundleIdentifier?: string;
+  startedAt?: string; executable?: string; runs?: number; lastExit?: string | null;
 }
 export interface ServiceDefinition {
   Label: string; Program?: string; ProgramArguments: string[]; EnvironmentVariables: Record<string, string>;
@@ -30,7 +31,7 @@ export interface ServiceObservation {
 export type ServiceOwnershipRefusal = ServiceDefinitionRefusal & { category: 'ownership_conflict' | 'unreadable_state' | 'starting' };
 export type ServiceDefinitionInspection = { ok: true; observations: ServiceObservation[] } | { ok: false; refusal: ServiceDefinitionRefusal };
 export type ServiceOwnershipInspection = { ok: true; observations: ServiceObservation[] } | { ok: false; refusal: ServiceOwnershipRefusal };
-export interface ServiceObservationOptions { desired?: Partial<Record<ServiceKind, ServiceDefinition>>; until?: number }
+export interface ServiceObservationOptions { desired?: Partial<Record<ServiceKind, ServiceDefinition>>; until?: number; services?: ServiceKind[] }
 export function serviceInstallationContext(options?: { home?: string; accountHome?: string; domain?: string; bundleRoot?: string; bundleIdentifier?: string }): ServiceInstallationContext;
 export function assertBundleServiceIdentity(context: ServiceInstallationContext, until?: number): void;
 export function parseLoadedService(detail: string): LoadedService;

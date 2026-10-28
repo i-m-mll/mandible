@@ -58,7 +58,8 @@ export function parseLoadedService(detail) {
     program: field('program'),
     bundleProgram: field('program identifier')?.replace(/ \(mode: \d+\)$/, ''), parentBundleIdentifier: field('parent bundle identifier'),
     workingDirectory: field('working directory'), stdoutPath: field('stdout path'), stderrPath: field('stderr path'),
-    keepAlive: /\bkeepalive\b/.test(field('properties') ?? ''), pid: Number(field('pid')) || null };
+    keepAlive: /\bkeepalive\b/.test(field('properties') ?? ''), pid: Number(field('pid')) || null,
+    runs: Number(field('runs')) || 0, lastExit: field('last exit code') ?? null };
 }
 
 export function differingServiceFields(record, job) {
@@ -194,7 +195,15 @@ function loadedJob(service, label, result, context, until) {
         const actual = executable.stdout.trim();
         // launchd publishes its PID before xpcproxy execs the native helper,
         // whose initial comm can itself precede the full bundled Bun path.
-        if (['xpcproxy', 'mandible-service'].includes(actual)) {
+        const manifest = JSON.parse(fs.readFileSync(path.join(context.bundleRoot, 'Contents/Resources/release.json'), 'utf8'));
+        // Installed-release@1 originally used the Bun gateway parent (d7a60c03).
+        // New packages declare the final exec role in their accepted manifest.
+        const executableRole = manifest.serviceExecutables?.[service] ?? 'bun';
+        if (!['bun', 'caddy'].includes(executableRole) || service === 'backend' && executableRole !== 'bun') return refusal(service, label, 'unreadable_state', [], 'Invalid expected service executable role.');
+        const expectedExecutable = path.resolve(context.bundleRoot, 'Contents/Resources', manifest.native[executableRole]);
+        if (expectedExecutable !== path.join(context.bundleRoot, 'Contents/MacOS', `mandible-${executableRole}`)) return refusal(service, label, 'unreadable_state', [], 'Expected service executable leaves its native role.');
+        if (['xpcproxy', 'mandible-service', path.join(context.bundleRoot, 'Contents/MacOS/mandible-service'),
+          ...(executableRole === 'caddy' ? ['mandible-bun', path.join(context.bundleRoot, 'Contents/MacOS/mandible-bun')] : [])].includes(actual)) {
           const birth = spawnSync('/bin/ps', ['-p', String(job.pid), '-o', 'lstart='], { encoding: 'utf8', timeout: runtimeObservationTimeout(until, 2500) });
           const pending = refusal(service, label, 'starting', ['processExecutable'], `Native service ${label} PID ${job.pid} is still starting (${actual}); bundle process ownership is not confirmed yet.`);
           pending.refusal.evidence = { service, label, executable: actual, pid: job.pid,
@@ -203,9 +212,13 @@ function loadedJob(service, label, result, context, until) {
             bundleProgram: job.bundleProgram, parentBundleIdentifier: job.parentBundleIdentifier };
           return pending;
         }
-        if (![path.join(context.bundleRoot, 'Contents/MacOS/mandible-bun'), path.join(context.bundleRoot, 'Contents/MacOS/mandible-service')].includes(actual)) {
+        if (actual !== expectedExecutable) {
           return refusal(service, label, 'ownership_conflict', ['processExecutable'], `The loaded process PID ${job.pid} belongs to another bundle location (${actual}); preserving it.`);
         }
+        const birth = spawnSync('/bin/ps', ['-p', String(job.pid), '-o', 'lstart='], { encoding: 'utf8', timeout: runtimeObservationTimeout(until, 2500) });
+        if (birth.error || birth.status !== 0 || !birth.stdout.trim()) return refusal(service, label, 'unreadable_state', [], 'Cannot establish the loaded bundle process birth.');
+        job.startedAt = birth.stdout.trim();
+        job.executable = actual;
       } else {
         let owner;
         try { owner = JSON.parse(fs.readFileSync(path.join(context.runtimeDir, 'bundle-owner.json'), 'utf8')); } catch { /* No ownership evidence is a refusal below. */ }
@@ -227,7 +240,7 @@ const combine = results => results.find(result => !result.ok && result.refusal.c
 
 /** Read-only: no runtime resolution, installation, receipts, or daemon imports. */
 export async function inspectServiceDefinitions(context, options = {}) {
-  return combine(await Promise.all(['backend', 'gateway'].map(async service => {
+  return combine(await Promise.all((options.services ?? ['backend', 'gateway']).map(async service => {
     const label = context[`${service}Label`];
     try {
       const installed = [];
@@ -251,7 +264,7 @@ export async function inspectServiceDefinitions(context, options = {}) {
 
 /** Controller-only synchronous entry point, with the same classifier and contract. */
 export function inspectServiceDefinitionsSync(context, options = {}) {
-  return combine(['backend', 'gateway'].map(service => {
+  return combine((options.services ?? ['backend', 'gateway']).map(service => {
     const label = context[`${service}Label`];
     try {
       const installed = [];

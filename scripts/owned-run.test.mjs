@@ -47,6 +47,32 @@ test('native cleanup signals only its owned executable and preserves the selecte
 });
 
 const idle = { inspect: () => ({ idle: true }) };
+test('wholly disposable generated scratch deletes extra files without following links, only after consumers close', async () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-generated-run-'));
+  const root = path.join(base, 'run'); fs.mkdirSync(root);
+  const outside = path.join(base, 'keep'); fs.writeFileSync(outside, 'outside');
+  const metadataFile = path.join(root, 'metadata.json');
+  const log = path.join(root, 'log'); fs.writeFileSync(log, 'generated');
+  const ownership = createOwnedRun({ root, instanceId: 'fixture', project: 'fixture', workUnit: 'fixture', disposable: true, outputs: [{ path: 'log', kind: 'generated' }] });
+  saveOwnedMetadata(metadataFile, { ownership });
+  const child = spawn(process.execPath, ['--eval', `require('fs').openSync(${JSON.stringify(log)}, 'r'); console.log('ready'); setInterval(() => {}, 1000)`], { stdio: ['ignore', 'pipe', 'inherit'] });
+  try {
+    await new Promise((resolve, reject) => { child.stdout.once('data', resolve); child.once('error', reject); });
+    const final = finalizeOwnedRun(metadataFile, { expectedRevision: 1, outcome: 'failed', summary: 'Disposable scratch finished' }, { inspect: () => { throw new Error('Consumer inspection belongs to deletion'); } });
+    fs.writeFileSync(path.join(root, 'extra'), 'generated after disposition');
+    fs.symlinkSync(outside, path.join(root, 'link'));
+    assert.equal(cleanupOwnedRun(metadataFile, { apply: true }).action, 'skip');
+    assert.equal(fs.existsSync(log), true);
+    const exited = new Promise(resolve => child.once('exit', resolve)); child.kill(); await exited;
+    assert.equal(cleanupOwnedRun(metadataFile).action, 'delete-owned');
+    assert.equal(fs.existsSync(log), true);
+    assert.equal(cleanupOwnedRun(metadataFile, { apply: true }).action, 'delete-owned');
+    assert.equal(fs.existsSync(root), false);
+    assert.equal(fs.readFileSync(outside, 'utf8'), 'outside');
+    assert.equal(JSON.parse(fs.readFileSync(final.ownership.receipt)).cleanup, 'completed');
+  } finally { if (child.exitCode === null && child.signalCode === null) child.kill(); fs.rmSync(base, { recursive: true, force: true }); }
+});
+
 function fixture(disposable = false) {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-owned-run-'));
   const root = path.join(base, 'run'); fs.mkdirSync(root);

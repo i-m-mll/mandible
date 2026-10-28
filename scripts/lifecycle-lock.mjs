@@ -63,6 +63,7 @@ export async function inspectLifecycleLock(root) {
 }
 
 export async function withLifecycleLock(root, operation, { recoverStale = false } = {}) {
+  const ancestor = ownershipScope.getStore();
   const lock = lockPath(root);
   const guard = await acquireOwnershipGuard(root);
   let published;
@@ -81,7 +82,8 @@ export async function withLifecycleLock(root, operation, { recoverStale = false 
     fs.renameSync(temporary, lock);
     temporary = null;
     published = { stat: fs.lstatSync(lock), bytes: JSON.stringify(owner) };
-    return await ownershipScope.run({ assertHeld: guard.assertHeld }, () => operation(owner.token, guard.assertHeld));
+    const assertHeld = () => { ancestor?.assertHeld(); guard.assertHeld(); };
+    return await ownershipScope.run({ assertHeld }, () => operation(owner.token, assertHeld));
   } finally {
     let lost;
     try {
@@ -135,5 +137,5 @@ export async function withInstallationGatewayLock(home, operation) {
     assertHeld();
     return result;
   }
-  return withLifecycleLock(root, operation);
+  return withLifecycleLock(root, operation, { recoverStale: true });
 }

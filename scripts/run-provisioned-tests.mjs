@@ -33,8 +33,7 @@ const RESOURCES = {
   // Headless Chrome process trees reach about 2 GB, and concurrent launches
   // contend for startup until geometry checks become load tests.
   chromium: { rssLimitKiB: 4_000_000 },
-  // Fixture launchd jobs share the operator's GUI domain, and the full handoff
-  // builds the deployed revision inside its own tree.
+  // Fixture launchd jobs share the operator's GUI domain.
   launchd: { rssLimitKiB: 4_000_000 },
 };
 
@@ -47,7 +46,7 @@ function declaredResource(file) {
 }
 
 /** macOS lockf, launchd and native descriptor inspection. */
-const DARWIN_ONLY = new Set(["local-ca-lockf.test.ts", "runtime-handoff-launchd.test.ts", "service-definition-reconciliation.test.ts", "runtime-handoff-full.test.ts", "sqlite-close-lifetime.test.ts", "accepted-app-install.test.ts"]);
+const DARWIN_ONLY = new Set(["local-ca-lockf.test.ts", "service-definition-reconciliation.test.ts", "sqlite-close-lifetime.test.ts", "accepted-app-install.test.ts"]);
 
 function suiteFiles() {
   return readdirSync(path.join(root, SUITE_DIR))

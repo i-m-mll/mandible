@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { installedFileIdentity, readInstalledRelease, verifyInstalledRelease } from './installed-release.mjs';
-import { createOwnedRun, saveOwnedMetadata, withOwnedRunLock, ownedRunIdentityMatches, finalizeOwnedRun, cleanupOwnedRun } from './owned-run.mjs';
+import { installedFileIdentity, readInstalledRelease } from './installed-release.mjs';
+import { createOwnedRun, saveOwnedMetadata, withOwnedRunLock, ownedRunIdentityMatches, finalizeOwnedRun, cleanupOwnedRun, inspectRunConsumers } from './owned-run.mjs';
 
 export const ACCEPTED_RELEASE_SCHEMA = 'mandible-accepted-release@1';
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -65,8 +65,8 @@ export function resolveAcceptedRelease(reference, expectedCandidate) {
   const app = path.join(handle.root, receipt.package.path);
   if (applicationIdentity(app) !== receipt.package.sha256) throw new Error('Accepted application bytes changed.');
   const resources = path.join(app, 'Contents', 'Resources');
-  // Retention verified the inventory before sealing this receipt. The full-app
-  // digest above binds those same payload bytes and the manifest in one pass.
+  // Acceptance verified the inventory before exercise and revalidated the app
+  // before sealing. Its full-app digest binds the payload and manifest together.
   const shipped = readInstalledRelease(resources);
   if (JSON.stringify(shipped) !== JSON.stringify(receipt.shipped) || shipped.target !== receipt.target
       || shipped.provenance.commit !== receipt.candidate.pin_sha) throw new Error('Accepted application provenance changed.');
@@ -76,7 +76,7 @@ export function resolveAcceptedRelease(reference, expectedCandidate) {
 /** Explicit delivery-owner disposal; pending acceptances never expire as cache material. */
 export async function disposeAcceptedRelease(reference, expectedCandidate, reason) {
   if (!reason?.trim()) throw new Error('Accepted release disposal requires an owner reason.');
-  const { receipt } = resolveAcceptedRelease(reference, expectedCandidate);
+  const receipt = readAcceptedReleaseReceipt(reference, expectedCandidate);
   const root = receipt.package.handle.root;
   return withOwnedRunLock(root, async () => {
     resolveAcceptedRelease(reference, expectedCandidate);
@@ -87,10 +87,9 @@ export async function disposeAcceptedRelease(reference, expectedCandidate, reaso
   });
 }
 
-/** Transfer the app that actually ran to durable owned-run custody before disposing scratch. */
-export async function retainAcceptedRelease({ app, storage, ownership, candidate, acceptance, evidence, expectedDigest }) {
-  validateCandidate(candidate);
-  if (applicationIdentity(app) !== expectedDigest) throw new Error('Application changed during acceptance.');
+/** Durable custody precedes exercise; only an accepted receipt grants acceptance. */
+export async function createPendingRelease({ storage, ownership }) {
+  if (!/^[a-zA-Z0-9-]+$/.test(ownership.runId) || !ownership.instanceId || !ownership.project || !ownership.workUnit) throw new Error('Pending release requires an exact owner.');
   fs.mkdirSync(storage, { recursive: true, mode: 0o700 });
   const retained = path.join(fs.realpathSync(storage), ownership.runId);
   fs.mkdirSync(retained, { mode: 0o700 });
@@ -98,26 +97,49 @@ export async function retainAcceptedRelease({ app, storage, ownership, candidate
     const owner = createOwnedRun({ root: retained, runId: ownership.runId, instanceId: ownership.instanceId,
       project: ownership.project, workUnit: ownership.workUnit, outputs: [{ path: 'Mandible.app', kind: 'interactive' }] });
     saveOwnedMetadata(path.join(retained, 'metadata.json'), { ownership: owner });
-    try {
-    fs.cpSync(app, path.join(retained, 'Mandible.app'), { recursive: true, verbatimSymlinks: true });
-    if (applicationIdentity(path.join(retained, 'Mandible.app')) !== expectedDigest) throw new Error('Retained application differs from the accepted application.');
-    const shipped = verifyInstalledRelease(path.join(retained, 'Mandible.app/Contents/Resources'));
+    const app = path.join(retained, 'Mandible.app');
+    return { root: retained, runId: owner.runId, ownership: owner, app, resources: path.join(app, 'Contents/Resources') };
+  });
+}
+
+function pendingOwner(pending) {
+  const metadataFile = path.join(pending.root, 'metadata.json');
+  const metadata = JSON.parse(fs.readFileSync(metadataFile, 'utf8'));
+  if (!ownedRunIdentityMatches(pending.root, pending.ownership)
+      || JSON.stringify(metadata.ownership) !== JSON.stringify(pending.ownership)
+      || pending.runId !== pending.ownership.runId || pending.root !== pending.ownership.root
+      || pending.app !== path.join(pending.root, 'Mandible.app')
+      || pending.resources !== path.join(pending.app, 'Contents/Resources')) throw new Error('Pending release owner changed.');
+  const receiptFile = path.join(path.dirname(pending.root), '.receipts', `${pending.runId}-accepted-release.json`);
+  if (fs.existsSync(receiptFile)) throw new Error('Pending release already has an accepted receipt.');
+  return { metadataFile, receiptFile, ownership: metadata.ownership };
+}
+
+/** Seal the exercised app in place; the result is valid only for this operation. */
+export async function retainAcceptedRelease({ pending, candidate, acceptance, evidence, expectedDigest, shipped }) {
+  validateCandidate(candidate);
+  return withOwnedRunLock(pending.root, async () => {
+    const { receiptFile, ownership } = pendingOwner(pending);
+    if (fs.readdirSync(pending.root).some(name => !['Mandible.app', 'metadata.json'].includes(name))) throw new Error('Pending release contains unknown entries.');
+    const consumers = inspectRunConsumers(pending.root);
+    if (!consumers.idle) throw new Error(consumers.reason);
+    if (applicationIdentity(pending.app) !== expectedDigest) throw new Error('Application changed during acceptance.');
+    const manifest = readInstalledRelease(pending.resources);
+    if (JSON.stringify(manifest) !== JSON.stringify(shipped) || manifest.provenance.commit !== candidate.pin_sha) throw new Error('Accepted application provenance changed.');
     const receipt = { schema: ACCEPTED_RELEASE_SCHEMA, acceptance: { ...acceptance, run_id: ownership.runId }, candidate,
-      target: shipped.target, shipped, package: { custody: 'owned-run', handle: { root: retained, runId: ownership.runId }, path: 'Mandible.app', sha256: expectedDigest },
+      target: shipped.target, shipped, package: { custody: 'owned-run', handle: { root: pending.root, runId: ownership.runId }, path: 'Mandible.app', sha256: expectedDigest },
       retention: { project: ownership.project, work_unit: ownership.workUnit, policy: 'Explicit owner disposal after delivery or abandonment; not cache material.' }, evidence };
-    const receipts = path.join(path.dirname(retained), '.receipts');
-    fs.mkdirSync(receipts, { recursive: true, mode: 0o700 });
-    const file = path.join(receipts, `${ownership.runId}-accepted-release.json`);
-    saveOwnedMetadata(file, receipt);
-    const reference = referenceFor(file);
-    resolveAcceptedRelease(reference, candidate);
-    return reference;
-    } catch (error) {
-      const metadataFile = path.join(retained, 'metadata.json');
-      finalizeOwnedRun(metadataFile, { expectedRevision: owner.revision, outcome: 'failed', disposition: 'discard', summary: `Release transfer failed: ${error.message}` });
-      const cleanup = cleanupOwnedRun(metadataFile, { apply: true });
-      if (cleanup.action !== 'delete-owned' || cleanup.remaining?.length) throw new Error(`Release transfer failed: ${error.message}; cleanup preserved material: ${JSON.stringify(cleanup)}`);
-      throw error;
-    }
+    fs.mkdirSync(path.dirname(receiptFile), { recursive: true, mode: 0o700 });
+    saveOwnedMetadata(receiptFile, receipt);
+    return { reference: referenceFor(receiptFile), receipt, root: pending.root, app: pending.app, resources: pending.resources, digest: expectedDigest };
+  });
+}
+
+export async function disposePendingRelease(pending, expectedDigest, reason) {
+  return withOwnedRunLock(pending.root, async () => {
+    const { metadataFile, ownership } = pendingOwner(pending);
+    if (expectedDigest && applicationIdentity(pending.app) !== expectedDigest) throw new Error('Pending application changed; preserving owned material.');
+    finalizeOwnedRun(metadataFile, { expectedRevision: ownership.revision, outcome: 'failed', disposition: 'discard', summary: reason });
+    return cleanupOwnedRun(metadataFile, { apply: true });
   });
 }

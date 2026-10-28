@@ -15,6 +15,8 @@ it.each(['bio.mll.mandible', 'bio.mll.mandible.fixture.private'])('qualifies exp
   const bundleRoot = path.join(scratch, 'Mandible.app');
   fs.mkdirSync(path.join(bundleRoot, 'Contents'), { recursive: true });
   fs.writeFileSync(path.join(bundleRoot, 'Contents/Info.plist'), `<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${identifier}</string></dict></plist>`);
+  fs.mkdirSync(path.join(bundleRoot, 'Contents/Resources'), { recursive: true });
+  fs.writeFileSync(path.join(bundleRoot, 'Contents/Resources/release.json'), JSON.stringify({ native: { bun: '../MacOS/mandible-bun', caddy: '../MacOS/mandible-caddy' } }));
   const context = serviceInstallationContext({ home: path.join(scratch, 'home'), accountHome: scratch, bundleRoot });
   const agents = path.join(bundleRoot, 'Contents/Library/LaunchAgents');
   fs.mkdirSync(agents, { recursive: true });
@@ -48,6 +50,10 @@ it.each(['bio.mll.mandible', 'bio.mll.mandible.fixture.private'])('qualifies exp
     if (!pending.ok) expect(pending.refusal.message).toContain(`PID 42 is still starting (${executable})`);
   }
   executable = path.join(bundleRoot, 'Contents/MacOS/mandible-bun');
+  expect(inspectServiceDefinitionsSync(context).ok).toBe(true);
+  fs.writeFileSync(path.join(bundleRoot, 'Contents/Resources/release.json'), JSON.stringify({ native: { bun: '../MacOS/mandible-bun', caddy: '../MacOS/mandible-caddy' }, serviceExecutables: { backend: 'bun', gateway: 'caddy' } }));
+  expect(inspectServiceDefinitionsSync(context)).toMatchObject({ ok: false, refusal: { service: 'gateway', category: 'starting' } });
+  gatewayExecutable = path.join(bundleRoot, 'Contents/MacOS/mandible-caddy');
   expect(inspectServiceDefinitionsSync(context).ok).toBe(true);
   const clock = vi.spyOn(Date, 'now').mockReturnValue(1000);
   try {
@@ -143,14 +149,21 @@ it('checks every bound role for absence before inspecting the remaining service 
   const { controller, binding, backend, jobs, makeGatewayStarting } = await fixture();
   jobs.delete(backend.Label);
   makeGatewayStarting();
-  expect(() => controller.inspectHandoffEvidence({ ...binding, nativeApp: path.join(scratch, 'Mandible.app'), acceptedRelease: { reference: 'not-read-before-bound-continuity' } }, { backend: { pid: 41, startedAt: 'old-start', runs: 1 } }))
+  expect(() => controller.inspectHandoffEvidence(binding, { backend: { pid: 41, startedAt: 'old-start', runs: 1 } }))
     .toThrowError(expect.objectContaining({ code: 'process_changed' }));
 });
 
-it('does not qualify a backend that already crashed and restarted before readiness', async () => {
-  const { controller, binding, backend, jobs } = await fixture();
-  jobs.get(backend.Label)!.lastExit = '1';
-  expect(() => controller.inspectHandoffEvidence(binding)).toThrowError(expect.objectContaining({ code: 'startup_failed' }));
+it('qualifies a live owned process despite historical exit status and refuses its later replacement or exit', async () => {
+  const { controller, binding, backend, gateway, jobs, files } = await fixture();
+  for (const record of [backend, gateway]) fs.writeFileSync(files.get(record.Label)!, JSON.stringify(record));
+  fs.writeFileSync(backend.StandardErrorPath, '');
+  jobs.get(backend.Label)!.lastExit = '0';
+  const evidence = controller.inspectHandoffEvidence(binding);
+  expect(evidence.processes.backend).toMatchObject({ pid: 41, startedAt: 'old-start', runs: 1 });
+  jobs.set(backend.Label, { record: backend, pid: 42, lastExit: '0' });
+  expect(() => controller.inspectHandoffEvidence(binding, evidence.processes)).toThrowError(expect.objectContaining({ code: 'process_changed' }));
+  jobs.delete(backend.Label);
+  expect(() => controller.inspectHandoffEvidence(binding, evidence.processes)).toThrowError(expect.objectContaining({ code: 'process_changed' }));
 });
 
 it('returns strictly qualified process evidence when health remains pending', async () => {

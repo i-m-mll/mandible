@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import { createOwnedRun, saveOwnedMetadata } from '../scripts/owned-run.mjs';
 import { runSupervisedCommand } from '../scripts/process-group-supervisor.mjs';
 import { createAuthCheckRepo, createMigratedDb, insertSiblingMergeRequest } from './helpers/auth-queue-fixtures.js';
-import { readBootstrapAcceptanceEvidence } from './helpers/bootstrap-delivery-api.js';
+import { readCandidateAcceptanceEvidence } from './helpers/candidate-acceptance-evidence.js';
 import { CandidateAcceptanceRuns } from '../src/candidate-acceptance.js';
 import { STATE_DEADLINE_MS } from './helpers/wait-until.js';
 import { acceptanceDeadline } from '../scripts/acceptance-deadline.mjs';
@@ -134,7 +134,7 @@ it.each(['before', 'during', 'within'] as const)('includes retained-package bind
       expect(input.env.MANDIBLE_ACCEPTANCE_DEADLINE).toBe('61000');
       now = stage === 'before' ? 61000 : 59000;
       return { status: 'passed', result: { status: 'passed' }, error: null };
-    }, () => now, () => {}, () => false, () => () => {
+    }, () => now, () => {}, () => () => {
       bound = true;
       db.prepare("UPDATE auth_requests SET title = 'bound' WHERE id = 'deadline-request'").run();
       now = stage === 'during' ? 61000 : 60000;
@@ -419,12 +419,12 @@ it.each([false, true])('records nested acceptance diagnostics through private cl
       failure_logs: acceptanceFailureLogs(home),
     } };
     insertSiblingMergeRequest(db, repo, 'outer-request', 'main');
-    const runs = new CandidateAcceptanceRuns(db, async () => ({ status: 'failed', result, error: result.error }), Date.now, () => {}, () => false);
+    const runs = new CandidateAcceptanceRuns(db, async () => ({ status: 'failed', result, error: result.error }), Date.now, () => {});
     runs.enqueue('outer-request', { pin_sha: 'pin', tree_sha: 'tree', base_sha: 'base', head_sha: 'head' },
       () => ({ repoRoot: repo, pinSha: 'pin', projectId: 'private-project', workUnitId: 'private-unit', env: {} }));
     await runs.idle();
     const packet = path.join(scratch, 'outer-failure.json');
-    fs.writeFileSync(packet, JSON.stringify({ candidateAcceptance: readBootstrapAcceptanceEvidence(db, 'outer-request') }));
+    fs.writeFileSync(packet, JSON.stringify({ candidateAcceptance: readCandidateAcceptanceEvidence(db, 'outer-request') }));
     fs.rmSync(home, { recursive: true });
     const retained = JSON.parse(fs.readFileSync(packet, 'utf8')).candidateAcceptance;
     expect(JSON.stringify(retained.result).length).toBeLessThanOrEqual(64 * 1024);
