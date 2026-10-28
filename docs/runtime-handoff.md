@@ -12,11 +12,14 @@ acknowledges its journal before a dependency-free bridge replaces the old
 managed runner. Hook status 75 means handoff pending; it never means convergence
 is complete.
 
-The helper waits for the exact old process and its start identity to disappear.
-It then unloads the owned backend definition, runs frozen install, build,
-desktop installation and instruction export, and loads the candidate service
-definitions. Desktop installation cannot start the backend during this
-transition. A changed owned gateway definition is reloaded explicitly.
+New developer deliveries freeze an exact passing acceptance row and immutable
+package receipt through an ordinary signed checkpoint action. See
+[accepted package delivery](accepted-package-delivery.md) for selection staging.
+The helper waits for the exact old process and its start identity to disappear,
+removes its owned legacy or native service definitions, and installs the retained
+signed app without rebuilding. Native services start only after the durable
+possible-launch boundary. Historical source-build journals retain their original
+execution and recovery contract.
 
 Starting the candidate services only starts them. The helper then awaits the
 started daemon's readiness: it inspects the front door until it answers ready

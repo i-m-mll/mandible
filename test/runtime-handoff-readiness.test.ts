@@ -31,8 +31,20 @@ function inspection(ready: boolean, generation = "merge", backend: { pid: number
     main: { backend_generation: generation },
     backendJob: { loaded: true, runs: 1, lastExit: "(never exited)", ...backend },
     gatewayJob: { loaded: true, pid: 7, runs: 3, lastExit: "0" },
+    qualifiedProcesses: backend.pid ? { backend: { pid: backend.pid, runs: backend.runs ?? 1 } } : {},
   };
 }
+
+it('does not admit raw launcher PIDs into process continuity or ready health', async () => {
+  let time = 0;
+  const unqualified = (pid: number) => ({ ...inspection(true, 'merge', { pid }), qualifiedProcesses: {},
+    nativeOwnershipPending: { message: 'Native launcher ownership is unconfirmed.' } });
+  const answers = [unqualified(41), unqualified(42), inspection(true, 'merge', { pid: 42 })];
+  const inspect = vi.fn(async () => answers.shift()!);
+  const result = await awaitHandoffReadiness('merge', 10000, inspect, { now: () => time, wait: async ms => { time += ms; } });
+  expect(result).toMatchObject({ outcome: 'confirmed', error: null, exited: false });
+  expect(inspect).toHaveBeenCalledTimes(3);
+});
 
 it.each([true, false])('keeps startup pending before the first PID is observed (loaded=%s)', async loaded => {
   let time = 100;

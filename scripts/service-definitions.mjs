@@ -14,6 +14,8 @@ export function serviceInstallationContext({ home = path.join(os.userInfo().home
   if (![home, accountHome].every(path.isAbsolute)) throw new Error('Installation and account homes must be absolute.');
   home = path.resolve(home);
   const runtimeDir = path.join(home, 'config/local-sessions');
+  const ownerFile = path.join(runtimeDir, 'bundle-owner.json');
+  if (!bundleRoot && fs.existsSync(ownerFile)) bundleRoot = JSON.parse(fs.readFileSync(ownerFile, 'utf8')).bundleRoot;
   const suffix = home === path.join(os.userInfo().homedir, '.mandible') ? '' : `.${createHash('sha256').update(home).digest('hex').slice(0, 8)}`;
   return { home, accountHome, runtimeDir, domain, bundleRoot, serviceDir: path.join(accountHome, 'Library/LaunchAgents'), privateServiceDir: path.join(runtimeDir, 'launch-agents'),
     backendLabel: `${bundleServiceLabel('backend')}${suffix}`, gatewayLabel: `${bundleServiceLabel('gateway')}${suffix}` };
@@ -155,15 +157,27 @@ function loadedJob(service, label, result, context) {
   if (result.status === 0) {
     const job = { loaded: true, ...parseLoadedService(result.stdout) };
     if (context.bundleRoot && job.bundleProgram) {
-      if (job.bundleProgram !== 'Contents/MacOS/mandible-service' || job.parentBundleIdentifier !== 'bio.mll.mandible') {
+      if (job.bundleProgram !== 'Contents/MacOS/mandible-service' || job.parentBundleIdentifier !== 'bio.mll.mandible'
+          || JSON.stringify(job.argv) !== JSON.stringify(['mandible-service', 'foreground', service])) {
         return refusal(service, label, 'ownership_conflict', [], 'The loaded service has a different native bundle identity.');
       }
       if (job.pid) {
         const executable = spawnSync('/bin/ps', ['-ww', '-p', String(job.pid), '-o', 'comm='], { encoding: 'utf8', timeout: 2500 });
         if (executable.error || executable.status !== 0) return refusal(service, label, 'unreadable_state', [], 'Cannot establish the loaded bundle process executable.');
         const actual = executable.stdout.trim();
+        // launchd publishes its PID before xpcproxy execs the native helper,
+        // whose initial comm can itself precede the full bundled Bun path.
+        if (['xpcproxy', 'mandible-service'].includes(actual)) {
+          const birth = spawnSync('/bin/ps', ['-p', String(job.pid), '-o', 'lstart='], { encoding: 'utf8', timeout: 2500 });
+          const pending = refusal(service, label, 'starting', ['processExecutable'], `Native service ${label} PID ${job.pid} is still starting (${actual}); bundle process ownership is not confirmed yet.`);
+          pending.refusal.evidence = { service, label, executable: actual, pid: job.pid,
+            startedAt: birth.status === 0 ? birth.stdout.trim() : null,
+            runs: Number(result.stdout.match(/\bruns = (\d+)/)?.[1]) || 0,
+            bundleProgram: job.bundleProgram, parentBundleIdentifier: job.parentBundleIdentifier };
+          return pending;
+        }
         if (![path.join(context.bundleRoot, 'Contents/MacOS/mandible-bun'), path.join(context.bundleRoot, 'Contents/MacOS/mandible-service')].includes(actual)) {
-          return refusal(service, label, 'ownership_conflict', [], 'The loaded process belongs to another bundle location; preserving it.');
+          return refusal(service, label, 'ownership_conflict', ['processExecutable'], `The loaded process PID ${job.pid} belongs to another bundle location (${actual}); preserving it.`);
         }
       } else {
         let owner;
@@ -181,7 +195,8 @@ function loadedJob(service, label, result, context) {
 function installedDefinition(file, bytes, record) { return { file, bytesBase64: bytes.toString('base64'), sha256: createHash('sha256').update(bytes).digest('hex'), record }; }
 const serviceFiles = (context, label) => [context.serviceDir, context.privateServiceDir,
   ...(context.bundleRoot ? [path.join(context.bundleRoot, 'Contents/Library/LaunchAgents')] : [])].map(dir => path.join(dir, `${label}.plist`));
-const combine = results => results.find(result => !result.ok) ?? { ok: true, observations: results.map(result => result.observation) };
+const combine = results => results.find(result => !result.ok && result.refusal.category !== 'starting')
+  ?? results.find(result => !result.ok) ?? { ok: true, observations: results.map(result => result.observation) };
 
 /** Read-only: no runtime resolution, installation, receipts, or daemon imports. */
 export async function inspectServiceDefinitions(context, options = {}) {

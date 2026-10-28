@@ -74,7 +74,7 @@ export async function stageAppPayload(contents) {
   for (const relative of ['dist', 'ui/dist', 'cli', 'bin', 'config', '.bun-version', 'bun.lock', 'package.json', 'docs/cli-reference.md', 'hooks', 'ui/index.html', 'ui/manifest.json', 'ui/sw.js', 'ui/icon.svg', 'ui/header-logo.svg', 'ui/icon-192.png', 'ui/icon-512.png']) copy(path.join(root, relative), path.join(resources, relative));
   const packageCount = copyProductionDependencies(resources);
   stageCoworkRuntime(root, resources);
-  const scripts = new Set(['local-runtime.mjs', 'bundle-service.mjs', 'local-front-door.mjs', 'local-session-production-runner.mjs', 'runtime-handoff.mjs', 'installed-release.mjs', 'conversation-cutover-proof.mjs', 'project-db-snapshot.mjs', 'preview-custody.mjs', 'installed-command.mjs']);
+  const scripts = new Set(['local-runtime.mjs', 'bundle-service.mjs', 'local-front-door.mjs', 'local-session-production-runner.mjs', 'runtime-handoff.mjs', 'verify-accepted-release.mjs', 'installed-release.mjs', 'conversation-cutover-proof.mjs', 'project-db-snapshot.mjs', 'preview-custody.mjs', 'installed-command.mjs']);
   const discoverScripts = directory => {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
       const file = path.join(directory, entry.name);
@@ -98,6 +98,10 @@ export async function stageAppPayload(contents) {
   });
   stageBundleServices(contents, path.join(root, 'src-tauri/service-helper/target/release/mandible-service'));
   const runtime = run('/bin/sh', [path.join(root, 'scripts/bun-runtime.sh')]);
+  fs.mkdirSync(path.join(resources, 'handoff'), { recursive: true });
+  for (const [source, name] of [['src/sqlite.ts', 'sqlite.mjs'], ['src/runtime-handoff-proof.ts', 'proof.mjs'], ['scripts/runtime-handoff.mjs', 'helper.mjs']]) {
+    run(runtime, ['build', path.join(root, source), '--target', 'bun', '--outfile', path.join(resources, 'handoff', name)]);
+  }
   const sqlite = run(runtime, [path.join(root, 'scripts/sqlite-runtime-install.mjs')]);
   const caddy = installPinnedCaddy(path.join(os.homedir(), '.cache/mandible/package-tools'));
   if (hash(caddy) !== '425fb8342d05b06e98f6a438a2964401268df83345ad806103669fdd322bf80c') throw new Error('Caddy differs from the qualified darwin-arm64 release executable.');

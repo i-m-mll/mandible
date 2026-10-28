@@ -376,7 +376,10 @@ async function main() {
       },
     });
     result.status = 'passed';
-  } catch (error) { result.error = error.message; }
+  } catch (error) {
+    result.error = error.message;
+    if (error.evidence) result.failure = { code: error.code, evidence: error.evidence };
+  }
   finally {
     for (const child of [desktop, gateway, daemon]) {
       try { await stopOwned(child); } catch (error) { result.status = 'failed'; result.cleanup_error = error.message; }

@@ -11,7 +11,7 @@ import { DOMAIN_EVENTS } from "./contracts.js";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { childOutput } from "./child-observation.js";
-import { accessSync, constants as fsConstants, existsSync, realpathSync, readFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, realpathSync, readFileSync, watch, type FSWatcher } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import SqliteDatabase from "./sqlite.js";
@@ -614,6 +614,9 @@ export class AuthQueue {
   // post-merge finalizers (Stage 3) off the event loop after auth:resolved.
   private readonly finalizerQueue: FinalizerQueue;
   private expiryTimer: ReturnType<typeof setInterval> | null = null;
+  private handoffCompletionWatcher: FSWatcher | null = null;
+  private handoffCompletionPending = false;
+  private handoffCompletionWakeupUntil = 0;
   private disposed = false;
   // Bug: 4db692a — tracks whether the daemon is about to restart after a
   // self-merge. Exposed via isRebuilding so the health endpoint can include
@@ -691,6 +694,7 @@ export class AuthQueue {
   }
 
   private async startRecovery(): Promise<void> {
+    this.watchRuntimeHandoffCompletion();
     await this.reconcileRuntimeHandoffs();
     if (this.disposed || !this.isDbOpen()) return;
     (await this.recoverSelfMergeShutdown());
@@ -758,7 +762,8 @@ export class AuthQueue {
   private async adoptRuntimePublication(binding: RuntimePublicationBinding, proof: Awaited<ReturnType<typeof verifyRuntimeHandoffPublication>>): Promise<() => void> {
     const request = this.requireRequest(binding.requestId);
     const observed = this.observationToken(request.id, request);
-    (await verifyRuntimeHandoffPublication(this.db, binding));
+    // The reconciliation caller just verified this exact proof. The returned
+    // commit callback still compares the request observation before mutation.
     if (request.status === 'completed' && request.exit_code === 0) {
       if (request.merge_preflight_base_sha !== proof.mergeBase || request.merge_head_sha !== proof.mergeHead || request.merge_candidate_tree_sha !== proof.frozenCandidate.tree || (await this.successfulMergeEvidenceFailure(request))) throw new Error('Completed publication does not exactly match retained runtime proof.');
       return () => this.assertObservation(request.id, observed);
@@ -1048,6 +1053,37 @@ export class AuthQueue {
     this.expiryTimer.unref();
   }
 
+  private watchRuntimeHandoffCompletion(): void {
+    const owner = this.runtimeHandoffLock();
+    if (!owner || this.handoffCompletionWatcher) return;
+    const directory = join(getMandibleHome(), 'config', 'local-sessions', 'handoff', `${owner.requestId}-${owner.executionId}`);
+    try {
+      this.handoffCompletionWatcher = watch(directory, { persistent: false }, (_event, name) => {
+        if (this.disposed || !['journal.json', '.verification.lock'].includes(name?.toString() ?? '')) return;
+        // This is only a wakeup hint. Reconciliation validates the binding,
+        // publication, package, and live receipt under its observation lease.
+        try {
+          const journal = JSON.parse(readFileSync(join(directory, 'journal.json'), 'utf8'));
+          if (['acknowledged', 'retired'].includes(journal.phase)) {
+            this.handoffCompletionWatcher?.close(); this.handoffCompletionWatcher = null;
+            return;
+          }
+          if (journal.phase !== 'complete') return;
+        } catch { return; } // Atomic replacement may precede the next rename event.
+        this.handoffCompletionWakeupUntil ||= Date.now() + 60_000;
+        if (Date.now() >= this.handoffCompletionWakeupUntil) return;
+        this.handoffCompletionPending = true;
+        void this.convergeWhileIdle();
+      });
+      this.handoffCompletionWatcher.on('error', error => {
+        authLog('warn', 'auth_handoff_completion_watch_failed', { subsystem: 'auth', error: errorMessage(error) });
+        this.handoffCompletionWatcher?.close(); this.handoffCompletionWatcher = null;
+      });
+    } catch (error) {
+      authLog('warn', 'auth_handoff_completion_watch_failed', { subsystem: 'auth', error: errorMessage(error) });
+    }
+  }
+
   /** Daemon incidents this queue raised and resolves once their condition clears. */
   private readonly handoffIncidents = new Map<string, string>();
   private idleConvergenceIncident: string | null = null;
@@ -1076,6 +1112,7 @@ export class AuthQueue {
     for (const controller of this.operatorProofInFlight.values()) controller.abort();
     this.operatorProofs.clear();
     this.stopExpiryTimer();
+    this.handoffCompletionWatcher?.close(); this.handoffCompletionWatcher = null;
     await Promise.allSettled([
       this.startupRecovery, this.expiryReconciliation, ...this.phaseRuns, ...this.observations, ...this.queuedAdmissions,
       this.finalizerQueue.drain(), this.acceptanceRuns?.stop(),
@@ -5798,9 +5835,12 @@ export class AuthQueue {
       if (this.convergenceSweepInFlight) return;
       this.convergenceSweepInFlight = true;
       try {
-        await this.reconcileRuntimeHandoffs();
-        await this.runConvergenceSweep(limit);
-        await this.resumeDeferredLedgerActions();
+        do {
+          this.handoffCompletionPending = false;
+          await this.reconcileRuntimeHandoffs();
+          await this.runConvergenceSweep(limit);
+          await this.resumeDeferredLedgerActions();
+        } while (this.handoffCompletionPending && !this.disposed && this.isDbOpen());
       } finally {
         this.convergenceSweepInFlight = false;
       }
