@@ -95,3 +95,21 @@ it("uses real paging metadata for one advancing continuation and records selecte
     groups: [{ key: "project-a", conversations: [{}], total: 51, next_cursor: "next" }],
   }).continuation?.url).toBe("/api/conversations/sidebar?limit=50&group_key=project-a&cursor=next");
 });
+
+it("starts measurement preparation under elevated historical load and still rejects incomplete source data", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "sweep-load-context-"));
+  const preload = path.join(root, "load.mjs");
+  const report = path.join(root, "report.json");
+  fs.writeFileSync(preload, "import os from 'node:os'; os.loadavg = () => [140, 140, 140]; os.availableParallelism = () => 14;\n");
+  try {
+    await expect(runSupervisedCommand(process.execPath, ["--preload", preload, path.resolve("scripts/route-cost-sweep.ts"),
+      "--representative", "--budget-ms", "10000", "--work-root", root, "--report-file", report,
+      "--source-db", path.join(root, "missing.db"), "--json"], {
+      env: { ...process.env, MANDIBLE_SWEEP_WORKER: "1" }, capture: true, timeout: 3000, graceMs: 100,
+    })).rejects.toMatchObject({ exitCode: 2, processGroupSettled: true });
+    expect(JSON.parse(fs.readFileSync(report, "utf8"))).toMatchObject({ complete: false,
+      error: expect.stringContaining("source ledger does not exist"), load: { start: 140, end: 140, cpus: 14 },
+      progress: { phase_ms: { snapshot: expect.any(Number) } },
+    });
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

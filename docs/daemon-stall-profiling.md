@@ -53,9 +53,9 @@ does not run a build or restart. Resolve service-definition drift through the
 lifecycle command before retrying. A held handoff lock must be resolved through
 its owning handoff first.
 
-Measure only when the machine is quiet: check `uptime` and require the 1-minute
-load average to be below the core count (`sysctl -n hw.ncpu`). On a saturated
-machine the daemon is starved and every timing is noise.
+Record host load as timing context. The 1-minute load average includes past
+activity and does not establish current contention. Judge the actual handler
+turns, event-loop stalls and required readings.
 
 ## Recover convergence after a repair
 
@@ -298,11 +298,9 @@ Useful options:
   It does not enable profiling or native packaging.
 - `--report-file` selects the atomic report path outside disposable scratch data.
 
-When the 1-minute load average is at or above the core count, the sweep allows
-at most five seconds of admission waiting within its total deadline. Sustained
-overload fails as an unsuitable environment before measurement. The report
-records load observations and wait duration. `--ignore-load` explicitly skips
-admission; it does not change the route verdict or make a diagnostic qualify.
+The report records 1-minute load observations and core count as diagnostic
+context. Load does not delay or reject measurement. Required readings,
+handler-turn and event-loop-stall budgets determine qualification.
 
 ### Reproduce cold ledger reads
 
