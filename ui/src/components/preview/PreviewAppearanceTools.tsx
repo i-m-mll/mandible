@@ -7,7 +7,6 @@ import { Icon } from '../icons/Icon';
 import { appTip } from '../shared/AppHoverTips';
 import { DetailPaneShell } from '../shared/DetailPaneShell';
 import { DetailPaneHeader } from '../shared/DetailPaneHeader';
-import { NativeSelect } from '../shared/NativeSelect';
 import { OverlayCloseButton } from '../shared/OverlayCloseButton';
 import { PreviewCopyNotice } from '../shared/PreviewCopyNotice';
 import { ChromeAppearanceActions, ChromeAppearanceControls } from './ChromeAppearanceControls';
@@ -149,11 +148,6 @@ function AppearancePanel({ instance, controller }: { instance: InstanceInfo; con
             aria-label="Move preview appearance" {...appTip('Drag to move, or use arrow keys')}
             onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag} onLostPointerCapture={endDrag} onKeyDown={moveKeys}>Preview appearance</button>}
             actions={<>
-              <NativeSelect className="preview-appearance-panel__placement" aria-label="Move panel to corner" value="" onChange={event => {
-                const corner = event.currentTarget.value;
-                move({ x: corner.endsWith('right') ? bounds.x + bounds.width : bounds.x, y: corner.startsWith('bottom') ? bounds.y + bounds.height : bounds.y });
-                event.currentTarget.value = '';
-              }}><option value="" disabled>Move</option>{['top-left', 'top-right', 'bottom-left', 'bottom-right'].map(corner => <option key={corner} value={corner}>{corner.replace('-', ' ')}</option>)}</NativeSelect>
               <button type="button" className="overlay-close-button" aria-label={state.collapsed ? 'Expand preview appearance' : 'Collapse preview appearance'}
                 aria-expanded={!state.collapsed} onClick={event => { finishDrag(); event.currentTarget.focus(); setState(current => ({ ...current, collapsed: !current.collapsed })); }}>
                 <Icon name={state.collapsed ? 'disclosureTextCollapsed' : 'disclosureTextExpanded'} />
