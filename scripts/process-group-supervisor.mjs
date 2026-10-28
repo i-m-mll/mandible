@@ -11,8 +11,8 @@ export async function runSupervisedCommand(binary, args, { cwd, env, stdio, time
     timer = setTimeout(() => { timedOut = true; void supervisor.stopActive().catch(error => { cleanupError = error; }); }, timeout);
     const result = await supervisor.settle(child);
     if (cleanupError) throw cleanupError;
-    if (timedOut) throw Object.assign(new Error(`${binary} ${args[0]} exceeded its ${timeout}ms stage deadline.`), { code: 'STAGE_DEADLINE' });
-    if (result.code !== 0) throw new Error(`${binary} ${args[0]} failed: ${result.signal || result.code}; inspect the retained build log.`);
+    if (timedOut) throw Object.assign(new Error(`${binary} ${args[0]} exceeded its ${timeout}ms stage deadline.`), { code: 'STAGE_DEADLINE', processGroupSettled: true });
+    if (result.code !== 0) throw Object.assign(new Error(`${binary} ${args[0]} failed: ${result.signal || result.code}; inspect the retained build log.`), { processGroupSettled: true, exitCode: result.code });
   } finally {
     clearTimeout(timer);
     await supervisor.close();

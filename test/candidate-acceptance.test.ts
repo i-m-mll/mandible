@@ -6,7 +6,7 @@ import path from 'node:path';
 import https from 'node:https';
 import net from 'node:net';
 import { spawnSync } from 'node:child_process';
-import { createAcceptanceHome, acceptanceGatewayConfig, acceptanceHealth, acceptanceFailureLogs, assessAcceptanceLogs, awaitAcceptanceGatewayReadiness, awaitReadiness, loopbackListening, observeAcceptanceHealth } from '../scripts/candidate-acceptance.mjs';
+import { acceptanceSummary, compactAcceptanceResult, routeCostCheck, createAcceptanceHome, acceptanceGatewayConfig, acceptanceHealth, acceptanceFailureLogs, assessAcceptanceLogs, awaitAcceptanceGatewayReadiness, awaitReadiness, loopbackListening, observeAcceptanceHealth } from '../scripts/candidate-acceptance.mjs';
 import { createHash } from 'node:crypto';
 import { createAuthCheckRepo, createMigratedDb, insertSiblingMergeRequest } from './helpers/auth-queue-fixtures.js';
 import { readBootstrapAcceptanceEvidence } from './helpers/bootstrap-delivery-api.js';
@@ -14,6 +14,28 @@ import { CandidateAcceptanceRuns } from '../src/candidate-acceptance.js';
 import { STATE_DEADLINE_MS } from './helpers/wait-until.js';
 
 describe('production acceptance evidence', () => {
+  it('retains known route evidence without claiming unperformed acceptance phases', () => {
+    const initial = { trial: 0, pass: 1, status: 200, worst_turn_ms: 6.6 };
+    const route = routeCostCheck(JSON.stringify({ complete: false, counts: { measured: 173 },
+      measured: [{ method: 'GET', path: '/api/auth/queue', trials: [{ trial: 0, first_call_turn_ms: 6.6, warm_turn_ms: 3.2 }], requests: [initial] }],
+      offenders: [], excepted: [], exception_problems: [], unclassified: [], failed_requests: [] }));
+    const result = { candidate: 'candidate', status: 'failed', error: 'Route-cost sweep timed out',
+      checks: { route_cost: route, log_digest: 'retained-log-digest' }, provenance: {} };
+    expect(route.measured[0].initial_readings).toEqual([initial]);
+    const summary = acceptanceSummary(result);
+    expect(summary).toContain('failed — Route-cost sweep timed out');
+    expect(summary).toContain('173 routes measured');
+    expect(summary).toContain('retained-log-digest');
+    expect(summary).toContain('package verification not completed');
+    expect(summary).toContain('daemon readiness not completed');
+    expect(summary).toContain('packaged Settings edit not completed');
+    expect(summary).not.toContain('daemon readiness checked');
+    expect(summary).not.toContain('packaged Settings edit checked');
+    const output = compactAcceptanceResult({ ...result, receipt: 'retained-receipt', provenance: { details: 'large manifest'.repeat(10_000) } });
+    expect(JSON.stringify(output).length).toBeLessThan(64 * 1024);
+    expect(output).toMatchObject({ receipt: 'retained-receipt', checks: { route_cost: { complete: false, counts: { measured: 173 } } } });
+  });
+
   it('rejects closed-database shutdown errors and event storms', () => {
     const stopped = JSON.stringify({ level: 'info', message: 'server_stopped' });
     const closedDb = JSON.stringify({ level: 'error', message: 'work_scanner_repo_scan_failed', error: 'The database connection is not open' });
@@ -249,8 +271,13 @@ it.each([false, true])('records nested acceptance diagnostics through private cl
   try {
     const daemonLog = `${(oversized ? '\u001b' : 'startup detail\n').repeat(1000)}daemon failed startup`;
     const gatewayLog = `${oversized ? '\u001b'.repeat(9000) : ''}no certificate available for app.mandible.localhost`;
+    const routeLog = 'measured 173 routes; confirmation incomplete';
+    const previewLog = 'source preview startup incomplete';
     fs.writeFileSync(path.join(home, 'daemon.log'), daemonLog);
     fs.writeFileSync(path.join(home, 'gateway.log'), gatewayLog);
+    fs.writeFileSync(path.join(home, 'route-cost.log'), routeLog);
+    fs.mkdirSync(path.join(home, 'route-cost-work'));
+    fs.writeFileSync(path.join(home, 'route-cost-work/source-preview.log'), previewLog);
     const result = { status: 'failed', candidate: 'exact-candidate', error: 'TLS alert', ...(oversized ? { routeReport: 'route diagnostics'.repeat(5000) } : {}), checks: {
       initial_transport_error: { code: 'ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR', message: 'TLS alert' },
       failure_logs: acceptanceFailureLogs(home),
@@ -271,6 +298,8 @@ it.each([false, true])('records nested acceptance diagnostics through private cl
     for (const [name, content, diagnostic] of [
       ['daemon', daemonLog, 'daemon failed startup'],
       ['gateway', gatewayLog, 'no certificate available for app.mandible.localhost'],
+      ['route-cost', routeLog, 'confirmation incomplete'],
+      ['source-preview', previewLog, 'startup incomplete'],
     ]) {
       const log = retained.result.checks.failure_logs.find(entry => entry.name === name);
       expect(log).toMatchObject({ name, sha256: createHash('sha256').update(content).digest('hex'), bytes: Buffer.byteLength(content) });

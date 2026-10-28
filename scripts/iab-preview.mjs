@@ -1627,7 +1627,7 @@ function sourceConversationStructureCachePath() {
  * previews keep that private index across code refreshes because a selected
  * source read may have advanced it beyond main.
  */
-export async function seedProjectedConversationStructureCache({ sourceCache, targetCache, projectedDb, preserveExisting = false }) {
+export async function seedProjectedConversationStructureCache({ sourceCache, targetCache, projectedDb, preserveExisting = false, signal }) {
   const preserveTarget = preserveExisting && fs.existsSync(targetCache);
   if (!preserveTarget && !fs.existsSync(sourceCache)) {
     return { status: "unavailable", source: sourceCache, target: targetCache, conversations: 0, blocks: 0 };
@@ -1640,7 +1640,7 @@ export async function seedProjectedConversationStructureCache({ sourceCache, tar
 
     const source = new SqliteDatabase(sourceCache, { readonly: true, fileMustExist: true });
     try {
-      await source.backup(targetCache);
+      await source.backup(targetCache, { signal });
     } finally {
       source.close();
     }

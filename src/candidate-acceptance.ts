@@ -225,10 +225,10 @@ export class CandidateAcceptanceRuns {
     }
     if (result && result.length > MAX_RESULT_CHARS) {
       const value = outcome.result as Record<string, unknown>;
-      const checks = value?.checks as { initial_transport_error?: { code?: unknown; message?: unknown }; failure_logs?: unknown } | undefined;
+      const checks = value?.checks as { initial_transport_error?: { code?: unknown; message?: unknown }; failure_logs?: unknown; route_cost?: Record<string, unknown> } | undefined;
       const text = (field: unknown, limit: number) => typeof field === 'string' ? field.slice(0, limit) : null;
       const failureLogs = Array.isArray(checks?.failure_logs) ? checks.failure_logs
-        .filter(log => log && (log.name === 'daemon' || log.name === 'gateway')).slice(0, 2)
+        .filter(log => log && ['daemon', 'gateway', 'route-cost', 'source-preview'].includes(log.name)).slice(0, 4)
         .map(log => ({ name: log.name, sha256: text(log.sha256, 64), bytes: typeof log.bytes === 'number' ? log.bytes : null,
           excerpt: typeof log.excerpt === 'string' ? log.excerpt.slice(-4000) : null })) : undefined;
       result = JSON.stringify({ truncated: true, status: text(value?.status, 16), candidate: text(value?.candidate, 128),
@@ -237,6 +237,13 @@ export class CandidateAcceptanceRuns {
             code: text(checks.initial_transport_error.code, 64), message: text(checks.initial_transport_error.message, 512),
           } } : {}),
           ...(failureLogs ? { failure_logs: failureLogs } : {}),
+          ...(checks?.route_cost ? { route_cost: {
+            complete: checks.route_cost.complete, diagnostic: checks.route_cost.diagnostic,
+            error: text(checks.route_cost.error, 512), counts: checks.route_cost.counts, progress: checks.route_cost.progress,
+            pending_confirmations: Array.isArray(checks.route_cost.pending_confirmations) ? checks.route_cost.pending_confirmations.slice(0, 32) : undefined,
+            routes_not_run: Array.isArray(checks.route_cost.routes_not_run) ? checks.route_cost.routes_not_run.slice(0, 32) : undefined,
+            source_stderr: text(checks.route_cost.source_stderr, 4000),
+          } } : {}),
         } });
     }
     const close = this.db.prepare(
