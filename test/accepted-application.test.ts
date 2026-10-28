@@ -50,7 +50,18 @@ it('carries prepared authority through exchange without rereading app bytes, exp
   const f = fixture();
   let prepared: any;
   await withInstallationGatewayLock(f.binding.home, (_token, assertHeld) => {
-    prepared = prepareAcceptedApplication(f.binding, { attemptId: 'attempt-one', assertHeld });
+    let stage: any;
+    expect(() => prepareAcceptedApplication(f.binding, { attemptId: 'attempt-one', assertHeld,
+      onStageCreated: created => {
+        stage = created;
+        fs.writeFileSync(path.join(created.path, 'partial'), 'interrupted copy');
+        fs.symlinkSync(f.app, path.join(created.path, 'partial-link'));
+        throw new Error('Interrupted after stage publication.');
+      } })).toThrow('Interrupted after stage publication');
+    prepared = prepareAcceptedApplication(f.binding, { attemptId: 'attempt-one', assertHeld, stageIdentity: stage.identity });
+    expect(prepared.identity).toEqual(stage.identity);
+    expect(fs.existsSync(path.join(stage.path, 'partial'))).toBe(false);
+    expect(fs.existsSync(path.join(f.app, 'Contents/Resources/program'))).toBe(true);
     const originalRead = fs.readFileSync;
     const read = vi.spyOn(fs, 'readFileSync').mockImplementation((...args: any[]) => {
       if (typeof args[0] === 'string' && (args[0].startsWith(prepared.staging) || args[0].startsWith(f.binding.nativeApp))) throw new Error('Application bytes were read twice.');

@@ -4,13 +4,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { createHash, randomBytes } from 'node:crypto';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { runSupervisedCommand } from './process-group-supervisor.mjs';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { createRuntimeLogAssessor } from './runtime-log-assessment.mjs';
-import { readStderrLogCoverage, resolveStderrLogCoverage } from '../src/stderr-log-chain.ts';
-import { observeRuntimeHealthCoverage, RuntimeHealthObservationError, assessRuntimeHealth } from '../src/runtime-health-contract.ts';
 import { runtimeEnvironment } from './runtime-environment.mjs';
 import { readRuntimeHandoffLock, runtimeHandoffLockFile, runtimeHandoffLockRefusal, runtimeHandoffBindingDigest } from './runtime-handoff-lock.mjs';
 import { RuntimeObservationError, observationPending, runtimeObservationAcceptance } from './runtime-observation.mjs';
@@ -18,12 +15,11 @@ import { withLifecycleLock, withInstallationGatewayLock, inspectLifecycleLock, a
 import { acceptedInstallPaths, preparedApplicationContext, applicationRootIdentity, prepareAcceptedApplication, installAcceptedApplication } from './accepted-app-install.mjs';
 import { serviceInstallationContext, inspectServiceDefinitionsSync, matchingServiceDefinitions, parseLoadedService } from './service-definitions.mjs';
 import { admitBundleOwner } from './bundle-services.mjs';
-import { installedRuntimeEnvironment, installedFileIdentity, readInstalledRelease, releaseFile } from './installed-release.mjs';
+import { installedResourceRoot, installedRuntimeEnvironment, installedFileIdentity, readInstalledRelease, releaseFile } from './installed-release.mjs';
 import { readAcceptedReleaseReceipt, disposeAcceptedRelease } from './accepted-release.mjs';
 import { ownedRunReceipt, inspectRunConsumers } from './owned-run.mjs';
 import SqliteDatabase from '../src/sqlite.ts';
 import { verifyRuntimeHandoffAuthority } from '../src/runtime-handoff-proof.ts';
-import { RUNTIME_HEALTH_PROBE_INTERVAL_MS } from './runtime-probe-cadence.mjs';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -63,7 +59,7 @@ function preparedLease(journal) {
 function installedApplication(journal) {
   const scope = acceptedOperations.getStore();
   if (!scope || scope.bindingDigest !== journal.bindingDigest) throw new Error('Application verification requires its owned operation.');
-  scope.prepared ??= prepareAcceptedApplication(journal.binding, { until: handoffAnswerDeadline(journal),
+  scope.prepared ??= prepareAcceptedApplication(journal.binding, { until: (journal.attempt?.deadline ?? journal.deadline),
     attemptId: journal.attempt.id, assertHeld: preparedLease(journal), phase: 'installed',
     stageIdentity: journal.attempt.effects.prepare?.stageIdentity ?? journal.attempt.receipt?.installed?.identity });
   const application = preparedApplicationContext(scope.prepared, journal.binding);
@@ -203,13 +199,6 @@ export function handoffDirectory(home, requestId, executionId) {
   return path.join(homeDirectory(home), 'handoff', `${requestId}-${executionId}`);
 }
 function journalFile(binding) { return path.join(handoffDirectory(binding.home, binding.requestId, binding.executionId), 'journal.json'); }
-function observationFiles(binding) {
-  const resources = path.join(binding.nativeApp, 'Contents/Resources');
-  return binding.acceptedRelease
-    ? [path.join(resources, 'release.json'), path.join(binding.nativeApp, 'Contents/MacOS/mandible-app')]
-    : [path.join(binding.root, 'dist/build-revision.json'), path.join(resources, 'build-revision.json'),
-      path.join(binding.root, 'dist/index.js'), path.join(binding.nativeApp, 'Contents/MacOS/mandible-app')];
-}
 function validateJournal(journal) {
   if (journal?.schema !== 'mandible-runtime-handoff@1' || bindingDigest(journal.binding) !== journal.bindingDigest) throw new Error('Runtime handoff binding is malformed or changed.');
   return journal;
@@ -246,18 +235,8 @@ function save(journal, changes) {
   atomic(journalFile(journal.binding), journal);
   scope.baseline = journalState(journal);
 }
-const OBSERVATION_MS = 31000;
-const OBSERVATION_DEADLINE_MS = 62000;
-
 function observationFailure(code, message, evidence) {
-  return new RuntimeHealthObservationError(code, message, evidence);
-}
-/**
- * How long a verification waits for the daemon's actual answer: the handoff
- * deadline, or one observation window for a recovery that outlived it.
- */
-function handoffAnswerDeadline(journal, now = Date.now()) {
-  return Math.max(journal.deadline ?? 0, now + OBSERVATION_MS);
+  return new RuntimeObservationError(code, message, evidence);
 }
 async function ownedNativeContext(journal) {
   const api = await import('./local-runtime.mjs');
@@ -267,7 +246,7 @@ async function ownedNativeContext(journal) {
     domain: b.domain, bundleRoot: b.nativeApp, bundleIdentifier: scope.prepared?.bundleIdentifier });
   return scope.context;
 }
-async function controller(journal, command, currentVerifier = false, { until = handoffAnswerDeadline(journal), awaitReady = false, signal } = {}) {
+async function controller(journal, command, currentVerifier = false, { until = (journal.attempt?.deadline ?? journal.deadline), awaitReady = false, signal } = {}) {
   assertObservationLease(journal);
   const api = await import('./local-runtime.mjs');
   const scope = acceptedOperations.getStore();
@@ -609,19 +588,6 @@ function pendingMetadata(error) {
   return { outcome: 'pending', code: error.code, reason: error.message.slice(0, 2000), observedAt: Date.now(),
     evidence: encoded.length <= 16_384 ? JSON.parse(encoded) : { summary: encoded.slice(0, 16_384), truncated: true } };
 }
-export function recordVerificationPending(journal, error) {
-  unchangedJournal(journal);
-  if (journal.phase === 'failed') return journal;
-  save(journal, { phase: 'verification-pending', error: undefined, lastObservation: pendingMetadata(error) });
-  return journal;
-}
-function recordVerificationFailure(journal, error) {
-  unchangedJournal(journal);
-  save(journal, { phase: 'failed', error: error.message,
-    failure: { phase: journal.phase, code: error instanceof RuntimeObservationError ? error.code : 'handoff_failed',
-      message: error.message, evidence: error instanceof RuntimeObservationError ? error.evidence : null, failedAt: Date.now() } });
-  return journal;
-}
 function bindLaunchedProcesses(journal, evidence) {
   if (journal.attempt) {
     if (!evidence.processes) return;
@@ -671,258 +637,6 @@ const readControllerEvidence = (journal, command, currentVerifier = false, optio
     }
   });
 
-async function checkIncompleteEvidence(journal, available, files = {}) {
-  assertObservationLease(journal);
-  const b = journal.binding;
-  if (!b.acceptedRelease && run('git', ['rev-parse', 'HEAD'], { cwd: b.root }) !== b.mergeCommit) throw observationFailure('installation_changed', 'Observed approved checkout changed.');
-  for (const [file, expected] of Object.entries(files)) if (fileHash(file) !== expected) throw observationFailure('installation_changed', `Observed installation changed: ${file}`);
-  if (b.acceptedRelease) await verifyAcceptedBytes(journal);
-  for (const marker of b.acceptedRelease ? [] : [path.join(b.root, 'dist/build-revision.json'), path.join(b.nativeApp, 'Contents/Resources/build-revision.json')]) {
-    if (JSON.parse(fs.readFileSync(marker, 'utf8')).commit !== b.mergeCommit) throw observationFailure('installation_changed', 'Installed build differs from the handoff generation.');
-  }
-  if (!available?.process?.pid || !available.daemonLog) return;
-  if (startedAt(available.process.pid) !== available.process.startedAt) throw observationFailure('process_changed', 'Observed daemon process changed.');
-  const stat = fs.statSync(available.daemonLog.path);
-  const currentLog = { ...available.daemonLog, size: stat.size };
-  const covered = await resolveStderrLogCoverage(currentLog, available.process.startedAt);
-  const assessor = createRuntimeLogAssessor();
-  await readStderrLogCoverage(covered, currentLog, assessor.add);
-  const assessment = assessor.finish();
-  if (assessment.failures.length) throw observationFailure('log_assessment_failed', `Convergence logs failed assessment: ${assessment.failures.join('; ')}`, { failures: assessment.failures });
-}
-
-export function recheckRuntimeObservation(journal, receipt) {
-  validateJournal(journal);
-  exactActiveOwner(journal);
-  if (journal.recovery) {
-    const { digest, ...observation } = journal.recovery;
-    if (hash(JSON.stringify(observation)) !== digest) throw new Error('Recovery observation digest differs.');
-  }
-  const retained = readRuntimeHandoff(journal.binding.home, journal.binding.requestId, journal.binding.executionId);
-  if (!retained || retained.bindingDigest !== journal.bindingDigest || (journal.recovery && retained.recovery?.digest !== journal.recovery.digest)) throw new Error('Retained runtime observation changed.');
-  if (startedAt(receipt.evidence.process.pid) !== receipt.evidence.process.startedAt) throw new Error('Observed daemon process changed.');
-  if (!journal.binding.acceptedRelease && run('git', ['rev-parse', 'HEAD'], { cwd: journal.binding.root }) !== journal.binding.mergeCommit) throw new Error('Observed approved checkout changed.');
-  for (const [file, expected] of Object.entries(receipt.files)) if (fileHash(file) !== expected) throw new Error(`Observed installation changed: ${file}`);
-  requireDesktopForObservation(journal);
-  const log = fs.statSync(receipt.evidence.daemonLog.path);
-  if (log.dev !== receipt.evidence.daemonLog.dev || log.ino !== receipt.evidence.daemonLog.ino || log.size < receipt.evidence.daemonLog.size) throw new Error('Observed daemon log rotated or truncated.');
-}
-
-export async function observeRuntimeHealthWindow({
-  probe,
-  now = Date.now,
-  wait = sleep,
-  observationMs = OBSERVATION_MS,
-  deadlineMs = OBSERVATION_DEADLINE_MS,
-  validateEvidence,
-  live,
-}) {
-  let lastLogSize = null;
-  const result = await observeRuntimeHealthCoverage({
-    probe,
-    healthOf: value => value.health ?? {},
-    validate: (value, initial) => {
-      if (JSON.stringify(value.process) !== JSON.stringify(initial.process)) throw observationFailure('process_changed', 'Candidate runtime process changed during observation.', { initial: initial.process, current: value.process });
-      if (JSON.stringify([value.backend, value.gateway]) !== JSON.stringify([initial.backend, initial.gateway])) throw observationFailure('definition_changed', 'Candidate runtime service definitions changed during observation.', { initial: [initial.backend, initial.gateway], current: [value.backend, value.gateway] });
-      if (value.daemonLog.dev !== initial.daemonLog.dev || value.daemonLog.ino !== initial.daemonLog.ino || (lastLogSize !== null && value.daemonLog.size < lastLogSize)) throw observationFailure('log_changed', 'Candidate runtime log rotated or truncated during observation.', { initial: initial.daemonLog, current: value.daemonLog });
-      lastLogSize = value.daemonLog.size;
-      validateEvidence?.(value);
-    },
-    now,
-    wait,
-    observationMs,
-    deadlineMs,
-    live,
-  });
-  return { evidence: result.value, observation: result.observation, samples: result.samples, performance: result.performance };
-}
-
-export async function observeRuntimeHandoff(journal, options = {}) {
-  return withRuntimeObservation(journal, () => observeRuntimeHandoffOnce(journal, options), options.observerToken);
-}
-
-async function observeRuntimeHandoffOnce(journal, {
-  currentVerifier = false,
-  now = Date.now,
-  wait = sleep,
-  probe,
-  observationMs = OBSERVATION_MS,
-  deadlineMs = OBSERVATION_DEADLINE_MS,
-  readEvidence,
-  live,
-  desktopReady = () => true,
-} = {}) {
-  validateJournal(journal);
-  exactActiveOwner(journal);
-  const b = journal.binding;
-  const probeRuntime = probe ? (until, signal) => consumeRuntimeEvidence(journal, () => probe(until, signal))
-    : (until, signal) => readControllerEvidence(journal, 'handoff-verify', currentVerifier, { until, signal });
-  const inspectEvidence = readEvidence ? () => consumeRuntimeEvidence(journal, readEvidence)
-    : probe ? null : () => readControllerEvidence(journal, 'handoff-evidence', currentVerifier, { until: Date.now() + 5000 });
-  let initialEvidence;
-  let coverage;
-  const resources = path.join(b.nativeApp, 'Contents/Resources');
-  const marker = path.join(b.root, 'dist/build-revision.json');
-  const installedMarker = path.join(resources, 'build-revision.json');
-  if (b.acceptedRelease) await verifyAcceptedBytes(journal);
-  if (!b.acceptedRelease && JSON.stringify(JSON.parse(fs.readFileSync(marker))) !== JSON.stringify(JSON.parse(fs.readFileSync(installedMarker)))) throw new Error('Installed desktop differs from the handoff build.');
-  const fixedFiles = observationFiles(b);
-  let files = Object.fromEntries(fixedFiles.map(file => [file, fileHash(file)]));
-  let observed;
-  try {
-    if (journal.launch && inspectEvidence) await inspectEvidence();
-    observed = await observeRuntimeHealthWindow({
-    probe: async (until, signal) => {
-      const value = await probeRuntime(until, signal);
-      if (!value.process?.startupEpoch || !value.daemonLog) throw observationFailure('process_unavailable', 'Current-process observation is unavailable.', value);
-      if (path.resolve(value.health.instance.db_path) !== path.resolve(journal.database)) throw observationFailure('process_changed', 'Observed production database identity differs.', { expected: journal.database, actual: value.health.instance.db_path });
-      if (!initialEvidence) {
-        initialEvidence = value;
-        coverage = await resolveStderrLogCoverage(value.daemonLog, value.process.startedAt);
-        files = { ...files, ...Object.fromEntries([value.backend.file, value.gateway.file].map(file => [file, fileHash(file)])) };
-      }
-      if (journal.launch && journal.phase !== 'failed' && !journal.launch.readyAt) {
-        unchangedJournal(journal);
-        save(journal, { launch: { ...journal.launch, readyAt: now() } });
-      }
-      return value;
-    },
-    now,
-    wait,
-    observationMs,
-    deadlineMs,
-    live,
-    validateEvidence: () => { if (desktopReady()) requireDesktopForObservation(journal); },
-  }); } catch (error) {
-    if (!observationPending(error)) throw error;
-    let available = initialEvidence ?? error.evidence;
-    if (inspectEvidence) {
-      try { available = await inspectEvidence(); }
-      catch (inspectionError) { if (!observationPending(inspectionError)) throw inspectionError; available = inspectionError.evidence ?? available; }
-    }
-    await checkIncompleteEvidence(journal, available, files);
-    throw error;
-  }
-  const evidence = observed.evidence;
-  const assessor = createRuntimeLogAssessor();
-  const daemonLog = await readStderrLogCoverage(coverage, evidence.daemonLog, assessor.add);
-  const assessment = assessor.finish();
-  if (assessment.failures.length) throw observationFailure('log_assessment_failed', `Convergence logs failed assessment: ${assessment.failures.join('; ')}`, {
-    observation: observed.observation,
-    failures: assessment.failures,
-    initialSample: observed.samples.initial,
-    lastSample: observed.samples.last,
-  });
-  const log = path.join(path.dirname(journalFile(b)), 'convergence.log');
-  const receipt = { bindingDigest: journal.bindingDigest, evidence, files, completedAt: now(), observation: observed.observation,
-    samples: observed.samples,
-    performance: {
-      healthFindings: observed.performance,
-      logEvents: assessment.diagnostics.health_events,
-      httpRequests: assessment.diagnostics.http_requests,
-    },
-    logDigest: fs.existsSync(log) ? fileHash(log) : null, daemonLogDigest: daemonLog.sha256, daemonLogBytes: daemonLog.bytes, daemonLogOffset: coverage.offset, daemonLogSegments: coverage.segments };
-  if (b.acceptedRelease) await verifyAcceptedBytes(journal);
-  recheckRuntimeObservation(journal, receipt);
-  return receipt;
-}
-
-/** A bounded current-generation probe gates the expensive recovery health window. */
-export async function runtimeRecoveryEvidenceKey(journal) {
-  try { return await withRuntimeObservation(journal, () => runtimeRecoveryEvidenceKeyOnce(journal)); }
-  catch (error) { if (error.code === 'observer_busy') return null; throw error; }
-}
-
-async function runtimeRecoveryEvidenceKeyOnce(journal) {
-  const current = readRuntimeHandoff(journal.binding.home, journal.binding.requestId, journal.binding.executionId);
-  if (!current || current.bindingDigest !== journal.bindingDigest) throw new Error('Runtime handoff binding changed before evidence ownership was acquired.');
-  Object.assign(journal, current);
-  if (journal.phase === 'retired') return null;
-  if (['complete', 'acknowledged'].includes(journal.phase)) return { outcome: 'confirmed', key: hash(JSON.stringify({ phase: journal.phase, receipt: journal.receipt, recovery: journal.recovery })) };
-  exactActiveOwner(journal);
-  let evidence;
-  try {
-    evidence = await readControllerEvidence(journal, 'handoff-verify', true, { until: Date.now() + 5000 });
-    const defects = assessRuntimeHealth(evidence.health).defects;
-    if (defects.length) throw observationFailure('invalid_diagnostics', defects[0].message, { defects });
-    if ([evidence.health.eventLoop, evidence.health.memory].some(interval => interval.intervalEndedAt > Date.now())) {
-      throw observationFailure('future_diagnostics', 'Runtime diagnostics end in the future.', { health: evidence.health });
-    }
-  } catch (error) {
-    if (observationPending(error)) {
-      try {
-        let available = error.evidence;
-        try { available = await readControllerEvidence(journal, 'handoff-evidence', true, { until: Date.now() + 5000 }); }
-        catch (inspectionError) { if (!observationPending(inspectionError)) throw inspectionError; available = inspectionError.evidence ?? available; }
-        await checkIncompleteEvidence(journal, available);
-        if (journal.phase !== 'failed') recordVerificationPending(journal, error);
-      } catch (concrete) {
-        if (journal.phase !== 'failed') recordVerificationFailure(journal, concrete);
-        throw concrete;
-      }
-      const inspection = error.evidence?.inspection;
-      const key = hash(JSON.stringify({ code: error.code, launch: journal.launch?.processes,
-        state: inspection && { status: inspection.status.state, generation: inspection.main.backend_generation,
-          backend: inspection.backendJob, gateway: inspection.gatewayJob,
-          backendCode: inspection.backend.code, gatewayCode: inspection.gateway.code } }));
-      return { outcome: 'pending', key, reason: error.message };
-    }
-    if (journal.phase !== 'failed') recordVerificationFailure(journal, error);
-    throw error;
-  }
-  const files = [...observationFiles(journal.binding), evidence.backend.file, evidence.gateway.file];
-  return { outcome: 'confirmed', key: hash(JSON.stringify({ process: evidence.process, backend: evidence.backend, gateway: evidence.gateway,
-    daemonLog: { path: evidence.daemonLog.path, dev: evidence.daemonLog.dev, ino: evidence.daemonLog.ino },
-    files: files.map(file => [file, fileHash(file)]) })) };
-}
-
-export async function observeFailedRuntimeHandoff(journal, actor, observationOptions = {}) {
-  return withRuntimeObservation(journal, token => observeFailedRuntimeHandoffOwned(journal, actor, { ...observationOptions, observerToken: token }), observationOptions.observerToken);
-}
-async function observeFailedRuntimeHandoffOwned(journal, actor, observationOptions) {
-  if (journal.attempt) {
-    return withRuntimeObservation(journal, async token => {
-      unchangedJournal(journal);
-      await publication(journal);
-      const enteredAt = Date.now();
-      const receipt = await observeRuntimeHandoff(journal, { ...observationOptions, observerToken: token, observationMs: 0,
-        live: { startedAt: enteredAt, through: () => enteredAt } });
-      const current = { ...receipt, schema: 'mandible-runtime-receipt@1', attemptId: journal.attempt.id,
-        desktop: journal.attempt.effects.desktop ?? { required: false } };
-      save(journal, { attempt: { ...journal.attempt, state: 'complete', completedAt: Date.now(), receipt: current,
-        receiptDigest: hash(JSON.stringify(current)), observedBy: actor } });
-      return journal;
-    }, observationOptions.observerToken);
-  }
-  if (!['failed', 'verification-pending', 'starting', 'observing'].includes(journal.phase)) throw new Error('Current-runtime verification requires a retained pending or failed handoff.');
-  if (journal.phase !== 'failed' && !journal.launch) throw new Error('Pending verification has no durable launch boundary.');
-  const wasFailed = journal.phase === 'failed';
-  const failure = wasFailed ? retainedFailure(journal) : null;
-  let receipt;
-  try {
-    receipt = await observeRuntimeHandoff(journal, { ...observationOptions, currentVerifier: true });
-  } catch (error) {
-    const current = readRuntimeHandoff(journal.binding.home, journal.binding.requestId, journal.binding.executionId);
-    if (error.code !== 'observer_busy' && current?.bindingDigest === journal.bindingDigest) {
-      if (wasFailed && current.phase === 'failed' && hash(JSON.stringify(retainedFailure(current))) === hash(JSON.stringify(failure))) {
-        recordRecoveryAttempt(current, actor, failure, error);
-      } else if (!wasFailed && journalState(current) === journalState(journal)) {
-        if (observationPending(error)) recordVerificationPending(current, error);
-        else recordVerificationFailure(current, error);
-      }
-    }
-    throw error;
-  }
-  const current = readRuntimeHandoff(journal.binding.home, journal.binding.requestId, journal.binding.executionId);
-  if (!current || current.bindingDigest !== journal.bindingDigest
-    || (wasFailed ? current.phase !== 'failed' || hash(JSON.stringify(retainedFailure(current))) !== hash(JSON.stringify(failure))
-      : journalState(current) !== journalState(journal))) throw new Error('Retained handoff changed during verification observation.');
-  const recovery = { actor, observedAt: Date.now(), failure, failureDigest: hash(JSON.stringify(failure)), receipt,
-    priorPhase: current.phase, ...(!wasFailed ? { baseState: journalState(current) } : {}) };
-  recovery.digest = hash(JSON.stringify(recovery));
-  return { ...current, recovery };
-}
-
 export async function startFailedRuntimeHandoff(file, { bindingDigest: expected, actor }, options = {}) {
   const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
   if (raw.bindingDigest !== expected || !actor || typeof actor !== 'object' || !Object.keys(actor).length) throw new Error('Recovery requires the exact binding and attributed intent.');
@@ -931,41 +645,8 @@ export async function startFailedRuntimeHandoff(file, { bindingDigest: expected,
 
 export const restoreFailedRuntimeHandoffDesktop = startFailedRuntimeHandoff;
 
-// The caller holds the hook acceptance SQLite transaction while persisting this
-// receipt. The recovery receipt itself is persisted only in this transaction.
-export function persistRuntimeRecoveryObservation(journal) {
-  const current = readRuntimeHandoff(journal.binding.home, journal.binding.requestId, journal.binding.executionId);
-  if (!current || current.bindingDigest !== journal.bindingDigest
-    || (journal.recovery.baseState ? journalState(current) !== journal.recovery.baseState
-      : current.phase !== 'failed' || hash(JSON.stringify(retainedFailure(current))) !== journal.recovery.failureDigest)) throw new Error('Retained handoff changed before observation persistence.');
-  save(current, { recovery: journal.recovery });
-}
-
 function retainedFailure(journal) {
   return journal?.recovery?.failure ?? journal?.failure ?? { phase: journal?.phase, error: journal?.error, attempts: journal?.attempts, updatedAt: journal?.updatedAt };
-}
-
-function recordRecoveryAttempt(journal, actor, failure, error) {
-  assertObservationLease(journal);
-  const directory = path.join(handoffDirectory(journal.binding.home, journal.binding.requestId, journal.binding.executionId), 'recovery-attempts');
-  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const attemptedAt = Date.now();
-  const attempt = {
-    attemptedAt,
-    actor,
-    failedPhase: journal.phase,
-    failure,
-    outcome: observationPending(error) ? 'pending' : 'failed',
-    code: error instanceof RuntimeObservationError ? error.code : 'recovery_observation_failed',
-    message: error instanceof Error ? error.message : String(error),
-    evidence: error instanceof RuntimeObservationError ? error.evidence : null,
-  };
-  const file = path.join(directory, `${String(attemptedAt).padStart(16, '0')}-${randomBytes(8).toString('hex')}.json`);
-  const fd = fs.openSync(file, 'wx', 0o600);
-  try { fs.writeFileSync(fd, `${JSON.stringify(attempt)}\n`); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-  const files = fs.readdirSync(directory).filter(name => name.endsWith('.json')).sort();
-  for (const expired of files.slice(0, -10)) fs.rmSync(path.join(directory, expired));
-  return attempt;
 }
 
 export function readRuntimeRecoveryAttempts(home, requestId, executionId) {
@@ -982,18 +663,6 @@ async function readRuntimeObservationAcceptance(journal) {
     if (state === 'inconsistent') throw new Error('Runtime observation acceptance is unresolved or inconsistent; preserving its evidence and owner.');
     return state;
   } finally { db.close(); }
-}
-
-export async function completeRuntimeHandoffRecovery(journal) {
-  const current = readRuntimeHandoff(journal.binding.home, journal.binding.requestId, journal.binding.executionId);
-  if (current?.phase === 'complete' || current?.phase === 'acknowledged') return current;
-  if (!current?.recovery || !['failed', 'verification-pending', 'starting', 'observing'].includes(current.phase)
-    || current.recovery.digest !== journal.recovery.digest) throw new Error('Verification observation changed before acceptance.');
-  if (await readRuntimeObservationAcceptance(current) !== 'accepted') throw new Error('Recovery hook acceptance has not committed.');
-  await publication(current);
-  recheckRuntimeObservation(current, current.recovery.receipt);
-  save(current, { phase: 'complete', receipt: current.recovery.receipt });
-  return current;
 }
 
 const verifiedReceipts = new WeakMap();
@@ -1140,15 +809,24 @@ export async function cleanupRuntimeHandoff(file) {
     }
   }
 }
-export function scheduleRuntimeHandoffCleanup(journal) {
+export async function scheduleRuntimeHandoffCleanup(journal) {
   if (currentReceipt(journal).schema !== 'mandible-runtime-receipt@2' || !journal.attempt.fence) throw new Error('Only terminal delivery cleanup can be scheduled.');
+  const resources = installedResourceRoot();
+  if (!resources) throw new Error('Cleanup requires the current trusted installed runtime.');
+  const release = readInstalledRelease(resources);
+  const runtime = releaseFile(resources, release.native.bun, release.layout);
+  const helper = releaseFile(resources, 'handoff/helper.mjs', release.layout);
   const log = fs.openSync(path.join(path.dirname(journalFile(journal.binding)), 'cleanup.log'), 'a', 0o600);
   try {
-    const child = spawn(journal.binding.runtime.path, [helperPath(journal), 'cleanup', journalFile(journal.binding)], {
-      cwd: path.dirname(journalFile(journal.binding)), env: journal.environment, detached: true, stdio: ['ignore', log, log],
+    await runSupervisedCommand(runtime, [helper, 'cleanup', journalFile(journal.binding)], {
+      cwd: path.dirname(journalFile(journal.binding)),
+      env: installedRuntimeEnvironment(resources, { ...process.env, MANDIBLE_HOME: journal.binding.home }),
+      stdio: ['ignore', log, log], timeout: 30_000, graceMs: 250,
     });
-    child.once('error', error => process.stderr.write(`Runtime cleanup remains pending: ${error.message}\n`));
-    child.unref();
+    const current = readRuntimeHandoff(journal.binding.home, journal.binding.requestId, journal.binding.executionId);
+    if (!current || current.bindingDigest !== journal.bindingDigest || current.attempt?.receiptDigest !== journal.attempt.receiptDigest) throw new Error('Cleanup result no longer belongs to its terminal receipt.');
+    currentReceipt(current);
+    return { cleanup: current.cleanup?.state === 'complete' ? 'complete' : 'pending' };
   } finally { fs.closeSync(log); }
 }
 export function runtimeHandoffNeedsAcknowledgment(journal) {

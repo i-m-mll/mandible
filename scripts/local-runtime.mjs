@@ -838,27 +838,6 @@ export function inspectHandoffEvidence(binding, expectedProcesses = null, option
   return evidence;
 }
 
-/** Bind a real current incarnation to the recorded recovery launch, never to exit history. */
-export function qualifyRecoveryHandoffProcesses(journal, { until = Date.now() + 5000 } = {}) {
-  const { binding, launch, recoveryStart } = journal;
-  if (!recoveryStart || recoveryStart.id !== launch?.id || recoveryStart.enteredAt !== launch.enteredAt) throw new Error('Recovery launch identity changed.');
-  const context = bundleContext(binding);
-  const inspection = matchingServiceDefinitions(inspectServiceDefinitionsSync(context));
-  if (!inspection.ok) throw new Error(inspection.refusal.message);
-  const processes = {};
-  for (const observation of inspection.observations) {
-    const role = observation.service;
-    const current = readBundleProcess(context, role, { until });
-    if (runtimeProcessChanged(launch.processes?.[role], current)) throw new RuntimeObservationError('process_changed', `Recovery ${role} process changed.`, { expected: launch.processes?.[role], current });
-    if (!current?.pid || !current.startedAt) throw new RuntimeObservationError('starting', `Recovery ${role} process is not yet confirmed.`, null, 'pending');
-    if (!Number.isFinite(Date.parse(current.startedAt)) || Date.parse(current.startedAt) < Math.floor(launch.enteredAt / 1000) * 1000) {
-      throw new RuntimeObservationError('process_changed', `Recovery ${role} predates its authorized launch.`, { current, enteredAt: launch.enteredAt });
-    }
-    processes[role] = current;
-  }
-  return inspectHandoffEvidence(binding, processes).processes;
-}
-
 export async function verifyHandoffDefinitions(binding, { context, prepared, assertHeld, startupEpoch, probe, until = Date.now(), awaitReady = false, expectedProcesses = null, expectedServing = false,
   inspect: inspectStatus = probeTimeoutMs => inspectRuntime({ launchMode: binding.priorBackend.launchMode, probeTimeoutMs }),
 } = {}) {

@@ -2,8 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { expect, it } from 'vitest';
-import { admitRuntimeHandoff, bindingDigest, recordVerificationPending, withRuntimeObservation } from '../scripts/runtime-handoff.mjs';
-import { RuntimeObservationError } from '../scripts/runtime-observation.mjs';
+import { admitRuntimeHandoff, bindingDigest, withRuntimeObservation } from '../scripts/runtime-handoff.mjs';
 import { fixture, launch, admissionScenario } from './helpers/runtime-handoff-admission.js';
 
 it('serializes single-lease admission, resumes pre-bootstrap publication, and refuses fenced resurrection', () => admissionScenario(2));
@@ -25,20 +24,19 @@ it.each(['preparation', 'owner'] as const)('refuses drain after %s failure and d
   }
   f.predecessor.send('check'); expect((await f.predecessor.event('drain')).identity).toBeNull();
   expect(worker.events.some(event => event.event === 'effect')).toBe(false);
-  expect(() => recordVerificationPending(f.read(), new RuntimeObservationError('fixture', 'Unowned', null, 'pending'))).toThrow(expect.objectContaining({ code: 'observer_lost' }));
 });
 
 it('rejects another journal scope and an uncoordinated write inside the current epoch', async () => {
   const f = await fixture();
   await withRuntimeObservation(f.journal, async () => {
     const other = { ...f.journal, binding: { ...f.journal.binding, executionId: 'another-execution' } };
-    expect(() => recordVerificationPending(other, new RuntimeObservationError('fixture', 'Wrong journal', null, 'pending'))).toThrow(expect.objectContaining({ code: 'observer_lost' }));
     await expect(withRuntimeObservation(other, async () => {})).rejects.toMatchObject({ code: 'observer_lost' });
     fs.writeFileSync(f.file, JSON.stringify({ ...f.read(), foreignWrite: true }));
-    await expect(withRuntimeObservation(f.read(), async () => {})).rejects.toMatchObject({ code: 'observer_busy' });
     const active = { journal: f.file, bindingDigest: f.journal.bindingDigest };
     fs.writeFileSync(f.active, JSON.stringify(active));
-    expect(() => recordVerificationPending(f.read(), new RuntimeObservationError('fixture', 'Changed epoch', null, 'pending'))).toThrow(expect.objectContaining({ code: 'observation_changed' }));
+    const changed = fs.readFileSync(f.file, 'utf8');
+    await expect(admitRuntimeHandoff(f.read(), { verifyPublication: async () => {} })).rejects.toMatchObject({ code: 'observer_busy' });
+    expect(fs.readFileSync(f.file, 'utf8')).toBe(changed);
   });
 });
 

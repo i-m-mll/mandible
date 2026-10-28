@@ -69,13 +69,20 @@ export function prepareAcceptedApplication(binding, { until, attemptId, assertHe
       fs.mkdirSync(paths.staging, { mode: 0o700 });
       stageIdentity = applicationRootIdentity(paths.staging);
       onStageCreated?.({ path: paths.staging, identity: stageIdentity });
-      assertHeld();
-      const result = spawnSync('/usr/bin/ditto', [path.join(receipt.package.handle.root, receipt.package.path), paths.staging], { timeout: runtimeObservationTimeout(until, 60_000), encoding: 'utf8' });
-      if (result.error || result.status !== 0) throw new Error(`Accepted app copy failed: ${result.error?.message || result.stderr}`);
+    } else if (!stageIdentity) throw new Error('Existing application stage has no recorded owner.');
+    assertHeld();
+    sameRoot(paths.staging, stageIdentity);
+    for (const entry of fs.readdirSync(paths.staging)) {
       assertHeld();
       sameRoot(paths.staging, stageIdentity);
-      fs.chmodSync(paths.staging, fs.lstatSync(path.join(receipt.package.handle.root, receipt.package.path)).mode & 0o777);
-    } else if (!stageIdentity) throw new Error('Existing application stage has no recorded owner.');
+      fs.rmSync(path.join(paths.staging, entry), { recursive: true });
+    }
+    const source = path.join(receipt.package.handle.root, receipt.package.path);
+    const result = spawnSync('/usr/bin/ditto', [source, paths.staging], { timeout: runtimeObservationTimeout(until, 60_000), encoding: 'utf8' });
+    if (result.error || result.status !== 0) throw new Error(`Accepted app copy failed: ${result.error?.message || result.stderr}`);
+    assertHeld();
+    sameRoot(paths.staging, stageIdentity);
+    fs.chmodSync(paths.staging, fs.lstatSync(source).mode & 0o777);
   }
   assertHeld();
   runtimeObservationTimeout(until, 60_000);

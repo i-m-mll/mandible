@@ -67,23 +67,3 @@ export function runtimeReceiptAcceptanceMarker(journal) {
       || createHash('sha256').update(JSON.stringify(current.receipt)).digest('hex') !== current.receiptDigest) return null;
   return `MANDIBLE_RUNTIME_RECEIPT_ACCEPTED:${journal.bindingDigest}:${current.attemptId}:${current.receiptDigest}`;
 }
-
-export function runtimeVerificationDisposition(run, journal) {
-  const acceptance = runtimeObservationAcceptance(run, journal);
-  if (acceptance === 'inconsistent') return 'inconsistent';
-  const current = runtimeHandoffDisposition(journal);
-  if (current) {
-    if (current.runtime === 'complete') return acceptance === 'accepted'
-      ? current.mutation === 'fenced' && (current.receipt.schema === 'mandible-runtime-receipt@2' || current.cleanup.state === 'complete') ? 'confirmed' : 'acknowledge'
-      : runtimeReceiptAcceptanceMarker(journal) ? 'await_acceptance' : 'inconsistent';
-    return acceptance === 'accepted' ? 'inconsistent' : current.runtime === 'pending' ? 'helper_pending' : 'observe';
-  }
-  if (journal.phase === 'retired') return 'retired';
-  if (journal.phase === 'acknowledged') return acceptance === 'accepted' ? 'confirmed' : 'inconsistent';
-  if (journal.phase === 'complete') return acceptance === 'accepted' ? 'acknowledge' : 'await_acceptance';
-  if (['armed', 'unloading', 'dependencies', 'build', 'desktop', 'instructions'].includes(journal.phase)) return acceptance === 'unaccepted' ? 'helper_pending' : 'inconsistent';
-  if (!['failed', 'verification-pending', 'starting', 'observing'].includes(journal.phase)) return 'inconsistent';
-  if (acceptance === 'accepted') return journal.recovery ? 'complete_accepted' : 'inconsistent';
-  if (journal.phase !== 'failed' && (!journal.launch || typeof journal.launch !== 'object' || !Number.isFinite(journal.launch.enteredAt))) return 'inconsistent';
-  return 'observe';
-}
