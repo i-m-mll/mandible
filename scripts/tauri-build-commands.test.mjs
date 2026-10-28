@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { resolveAppSigning } from './app-signing.mjs';
-import { tauriCompileArguments, tauriBundleArguments } from './tauri-build-commands.mjs';
+import { tauriCompileArguments, tauriBundleArguments, assembleDesktopApplication } from './tauri-build-commands.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -55,4 +55,36 @@ test('bootstrap preparation preserves unchanged native inputs and updates change
     assert.equal(fs.readFileSync(path.join(fixture, 'src-tauri/dist/index.html'), 'utf8'), 'index.html');
     assert.equal(fs.statSync(path.join(fixture, 'src-tauri/dist/bootstrap.css')).mtimeMs, 100_000);
   } finally { fs.rmSync(fixture, { recursive: true, force: true }); }
+});
+
+test('assembly waits for both independent stages and cancels and joins a failed sibling', async () => {
+  const started = [];
+  const complete = {};
+  const run = async (_program, args) => {
+    const phase = args[1] === 'build' ? 'native' : args[1] === 'bundle' ? 'bundle' : 'payload';
+    started.push(phase);
+    if (phase !== 'bundle') await new Promise(resolve => { complete[phase] = resolve; });
+  };
+  const pending = assembleDesktopApplication(root, [], [], { run });
+  assert.deepEqual(started, ['native', 'payload']);
+  complete.native();
+  await Promise.resolve();
+  assert.deepEqual(started, ['native', 'payload']);
+  complete.payload();
+  await pending;
+  assert.deepEqual(started, ['native', 'payload', 'bundle']);
+
+  const original = new Error('payload preparation failed');
+  let joined = false;
+  let assembled = false;
+  const fail = async (_program, args, { signal }) => {
+    if (args[1] === 'bundle') { assembled = true; return; }
+    if (args[1] !== 'build') throw original;
+    await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
+    joined = true;
+    throw new Error('native sibling stopped');
+  };
+  await assert.rejects(assembleDesktopApplication(root, [], [], { run: fail }), error => error === original);
+  assert.equal(joined, true);
+  assert.equal(assembled, false);
 });

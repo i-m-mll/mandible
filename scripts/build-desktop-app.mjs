@@ -1,10 +1,9 @@
 #!/usr/bin/env bun
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
 import { resolveAppSigning } from './app-signing.mjs';
 import { finishAppPackage } from './finish-app-package.mjs';
-import { tauriCompileArguments, tauriBundleArguments } from './tauri-build-commands.mjs';
+import { assembleDesktopApplication } from './tauri-build-commands.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const supplied = process.argv.slice(2);
@@ -36,12 +35,7 @@ for (let index = 0; index < options.length; index++) {
 const plan = resolveAppSigning(root, configs);
 const bundles = selectedBundles ?? plan.config.bundle?.targets ?? ['app'];
 if (!Array.isArray(bundles) || bundles.some(bundle => !['app', 'dmg'].includes(bundle))) throw new Error('Mac package targets must be app and/or dmg.');
-for (const command of [tauriCompileArguments(args, cargoArguments), tauriBundleArguments(args)]) {
-  const result = spawnSync(process.execPath, [path.join(root, 'node_modules/@tauri-apps/cli/tauri.js'), ...command],
-    { cwd: root, env: process.env, stdio: 'inherit', timeout: 600_000 });
-  if (result.error) throw result.error;
-  if (result.status !== 0) process.exit(result.status ?? 1);
-}
+await assembleDesktopApplication(root, args, cargoArguments);
 const target = options.findIndex(option => ['--target', '-t'].includes(option) || option.startsWith('--target='));
 const targetTriple = target < 0 ? null : options[target].startsWith('--target=') ? options[target].slice('--target='.length) : options[target + 1];
 const targetDirectory = process.env.CARGO_TARGET_DIR ?? path.join(root, 'src-tauri/target');

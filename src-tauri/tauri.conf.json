@@ -5,8 +5,7 @@
   "build": {
     "frontendDist": "dist",
     "beforeDevCommand": "scripts/make-dist.sh && sh scripts/stage-desktop-package.sh",
-    "beforeBuildCommand": "scripts/make-dist.sh",
-    "beforeBundleCommand": "sh scripts/stage-desktop-package.sh"
+    "beforeBuildCommand": "scripts/make-dist.sh"
   },
   "app": {
     "withGlobalTauri": true,

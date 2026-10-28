@@ -5,7 +5,6 @@
 set -e
 runtime="$(scripts/bun-runtime.sh --bun-only)"
 export PATH="$(dirname "$runtime"):$PATH"
-"$runtime" run build
 "$runtime" scripts/generate-canonical-origin.mjs --check
 bootstrap_output="${MANDIBLE_DESKTOP_BOOTSTRAP_DIR:-src-tauri/dist}"
 mkdir -p "$bootstrap_output"

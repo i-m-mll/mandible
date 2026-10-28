@@ -22,3 +22,27 @@ export function tauriBundleArguments(options) {
   }
   return [...args, '--bundles', 'app', '--no-sign'];
 }
+import path from 'node:path';
+import { runSupervisedCommand } from './process-group-supervisor.mjs';
+
+
+/** Native compilation and the source payload converge before one package assembly. */
+export async function assembleDesktopApplication(root, options, cargoArguments, { run = runSupervisedCommand, env = process.env } = {}) {
+  const controller = new AbortController();
+  const interrupt = () => controller.abort();
+  process.once('SIGINT', interrupt); process.once('SIGTERM', interrupt);
+  const cli = path.join(root, 'node_modules/@tauri-apps/cli/tauri.js');
+  const settings = { cwd: root, env, stdio: 'inherit', timeout: 600_000, signal: controller.signal };
+  let failure;
+  try {
+    await Promise.allSettled([
+      run(process.execPath, [cli, ...tauriCompileArguments(options, cargoArguments)], settings),
+      run('/bin/sh', [path.join(root, 'scripts/stage-desktop-package.sh')], settings),
+    ].map(operation => operation.catch(error => { failure ??= error; controller.abort(); throw error; })));
+    if (failure) throw failure;
+    await run(process.execPath, [cli, ...tauriBundleArguments(options)], settings);
+  } finally {
+    controller.abort();
+    process.removeListener('SIGINT', interrupt); process.removeListener('SIGTERM', interrupt);
+  }
+}
