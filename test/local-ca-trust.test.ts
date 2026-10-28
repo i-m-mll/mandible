@@ -39,10 +39,10 @@ describe("one-time local CA trust", () => {
 
   it("renders only temporary loopback setup listeners with pinned storage and no automatic trust", () => {
     const fx = fixture();
-    const config = setupCaddyfile(fx.paths.storageRoot, 30111, 30112);
+    const config = setupCaddyfile(fx.paths.storageRoot, 30112);
     expect(config).toContain(`storage file_system ${JSON.stringify(fx.paths.storageRoot)}`);
     expect(config).toContain("skip_install_trust");
-    expect(config).toContain("admin 127.0.0.1:30111");
+    expect(config).toContain("admin off");
     expect(config).toContain("bind 127.0.0.1");
     expect(config).not.toMatch(/:1941[9]|:19420|:19421|:2019/);
   });

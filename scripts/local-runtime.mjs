@@ -19,6 +19,7 @@ import { installationRuntime, servicePath, readServiceConfiguration, publishServ
 import { withInstallationGatewayLock, assertLifecycleLockHeld } from './lifecycle-lock.mjs';
 import { RUNTIME_HEALTH_PROBE_INTERVAL_MS } from './runtime-probe-cadence.mjs';
 import { RuntimeObservationError } from './runtime-observation.mjs';
+import { reloadGatewayConfiguration, gatewayAdminNeedsRestart } from './gateway-admin.mjs';
 export { parseLoadedService, loadedServiceMatches } from "./service-definitions.mjs";
 
 const ACCOUNT_HOME = os.userInfo().homedir;
@@ -349,6 +350,13 @@ export async function removeHandoffDefinitions(binding) {
 export async function startHandoffDefinitions(binding) {
   assertHandoffInstallation(binding);
   if (readBuildRevision(binding.root) !== binding.mergeCommit) throw new Error('Runtime handoff build differs from its applied merge.');
+  if (await gatewayAdminNeedsRestart(HOME)) {
+    const production = readProductionRecord();
+    await prepareGateway(production);
+    await reconcileServiceDefinitions(production, readMainInstance(production.root), binding.priorBackend.launchMode, {
+      services: ['gateway'], running: ['gateway'], restart: ['gateway'], handoff: true,
+    });
+  }
   for (const label of [BACKEND_LABEL, GATEWAY_LABEL]) {
     const observation = observeOwnedService(label === BACKEND_LABEL ? 'backend' : 'gateway');
     const installed = observation.installed.length === 1 ? observation.installed[0] : null;
@@ -903,7 +911,8 @@ function ensureGatewayBinary() {
   if (!fs.existsSync(binary) || !fs.statSync(binary).isFile()) throw new Error(`The pinned HTTPS gateway is missing: ${binary}`);
 }
 
-function configureGateway(root) {
+async function configureGateway(root) {
+  const adminRestartRequired = await gatewayAdminNeedsRestart(HOME);
   const script = path.join(root, "scripts", "local-front-door.mjs");
   const result = spawnSync(runtimeBinary(root), [script, "configure"], {
     cwd: root,
@@ -913,15 +922,11 @@ function configureGateway(root) {
   if (result.error || result.status !== 0) {
     throw new Error(`Could not prepare the trusted dashboard gateway: ${(result.stderr || result.error?.message || "configuration failed").trim()}`);
   }
+  return { adminRestartRequired };
 }
 
 function reloadCaddy(binary) {
-  const result = spawnSync(binary, ["reload", "--config", path.join(RUNTIME_DIR, "Caddyfile"), "--adapter", "caddyfile"], {
-    encoding: "utf8", timeout: 5000, maxBuffer: 1024 * 1024,
-  });
-  if (result.error || result.status !== 0) {
-    throw new Error(`The trusted dashboard gateway reload failed: ${(result.stderr || result.error?.message || "unknown failure").trim()}`);
-  }
+  reloadGatewayConfiguration(binary, HOME, path.join(RUNTIME_DIR, 'Caddyfile'));
 }
 
 async function waitForRuntime(deadlineMs = OPERATION_TIMEOUT_MS, launchMode = "on_demand", additionalReadiness = () => true) {
@@ -945,7 +950,7 @@ function restartOwnedJob(label) {
 
 function prepareGateway(production) {
   ensureGatewayBinary();
-  configureGateway(production.root);
+  return configureGateway(production.root);
 }
 
 async function startRuntime({ launchMode = installedLaunchMode() } = {}) {
@@ -954,9 +959,11 @@ async function startRuntime({ launchMode = installedLaunchMode() } = {}) {
   const registration = await initializeMainRegistration(current.production.root);
   current = await inspectRuntime({ launchMode });
   if (current.backendPortOpen && !current.backendJob.loaded) throw new Error('The production backend is not owned by Mandible; preserving it.');
-  if (!current.trusted.error) prepareGateway(current.production);
+  const gateway = !current.trusted.error ? await prepareGateway(current.production) : null;
   await reconcileServiceDefinitions(current.production, current.main, launchMode, {
-    running: current.trusted.error ? ['backend'] : ['backend', 'gateway'], restart: registration.legacyEffectsMigrated ? ['backend'] : [],
+    running: current.trusted.error ? ['backend'] : ['backend', 'gateway'], restart: [
+      ...(registration.legacyEffectsMigrated ? ['backend'] : []), ...(gateway?.adminRestartRequired ? ['gateway'] : []),
+    ],
   });
   const ready = await waitForRuntime(OPERATION_TIMEOUT_MS, launchMode, candidate => !registration.legacyEffectsMigrated
     || sameEffectList(candidate.backend.document?.instance?.allowed_effects, candidate.main.effectCeiling));
@@ -1005,9 +1012,9 @@ async function restartRuntime({ launchMode = installedLaunchMode() } = {}) {
   current = await inspectRuntime({ launchMode });
   const beforeEpoch = current.backend.document?.startup_epoch;
   if (current.backendPortOpen && !current.backendJob.loaded) throw new Error('The production backend is not owned by Mandible; preserving it.');
-  if (!current.trusted.error) prepareGateway(current.production);
+  const gateway = !current.trusted.error ? await prepareGateway(current.production) : null;
   await reconcileServiceDefinitions(current.production, current.main, launchMode, {
-    running: current.trusted.error ? ['backend'] : ['backend', 'gateway'], restart: ['backend'],
+    running: current.trusted.error ? ['backend'] : ['backend', 'gateway'], restart: ['backend', ...(gateway?.adminRestartRequired ? ['gateway'] : [])],
   });
   current = await waitForRuntime(OPERATION_TIMEOUT_MS, launchMode, candidate => candidate.backend.document?.startup_epoch !== beforeEpoch);
   if (!current.backend.ok || !current.backend.document?.startup_epoch || beforeEpoch && current.backend.document.startup_epoch === beforeEpoch) throw new Error('Restart did not confirm a ready backend with a new startup epoch.');
@@ -1021,9 +1028,10 @@ async function reloadGatewayRuntime({ launchMode = installedLaunchMode(), ifConf
   if (initial.status.state === 'port_conflict') throw new Error(initial.status.detail);
   if (initial.trusted.error) throw new Error(initial.trusted.error);
   assertLifecycleMutation();
-  prepareGateway(initial.production);
-  const reconciled = await reconcileServiceDefinitions(initial.production, initial.main, launchMode, { services: ['gateway'], running: ['gateway'] });
-  if (!reconciled.gatewayChanged && reconciled.wasGatewayLoaded) reloadCaddy(pinnedCaddyBinary(HOME));
+  const gateway = await prepareGateway(initial.production);
+  const reconciled = await reconcileServiceDefinitions(initial.production, initial.main, launchMode, { services: ['gateway'], running: ['gateway'],
+    restart: gateway.adminRestartRequired ? ['gateway'] : [] });
+  if (!gateway.adminRestartRequired && !reconciled.gatewayChanged && reconciled.wasGatewayLoaded) reloadCaddy(pinnedCaddyBinary(HOME));
   assertInstalledDefinitions();
   const inspected = await inspectRuntime({ launchMode });
   if (!inspected.gatewayPortOpen) throw new Error('Shared gateway listener is unavailable after reconciliation');
@@ -1127,6 +1135,7 @@ async function mainLocked() {
     const status = await bundleRuntimeCommand(command, { context: INSTALLATION, release: installedRelease, launchMode,
       initialize: initializeMainRegistration, inspect: inspectRuntime, configureGateway,
       previewCount: registeredPreviewCount, reloadGateway: () => reloadCaddy(process.env.MANDIBLE_CADDY),
+      restartGateway: () => { observeOwnedService('gateway'); restartOwnedJob(GATEWAY_LABEL); },
       waitReady: mode => waitForRuntime(OPERATION_TIMEOUT_MS, mode) });
     process.stdout.write(`${JSON.stringify(status)}\n`);
     return;

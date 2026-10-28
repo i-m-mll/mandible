@@ -24,7 +24,7 @@ export interface BundleRuntimeObservation {
 export function bundleRuntimeCommand(command: string, options: {
   context: BundleContext; release: BundleRelease; launchMode: 'manual' | 'on_demand';
   initialize(root: string): Promise<unknown>; inspect(options: { launchMode: string }): Promise<BundleRuntimeObservation>;
-  configureGateway(root: string): void; reloadGateway(): void; previewCount(root: string): number;
+  configureGateway(root: string): { adminRestartRequired: boolean } | Promise<{ adminRestartRequired: boolean }>; reloadGateway(): void; restartGateway(): void; previewCount(root: string): number;
   waitReady(launchMode: string): Promise<BundleRuntimeObservation>;
   control?: typeof nativeServiceControl; session?: typeof bundleLoginSession;
   observe?: (context: ServiceInstallationContext) => ServiceDefinitionInspection;

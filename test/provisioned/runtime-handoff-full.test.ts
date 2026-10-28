@@ -48,8 +48,9 @@ function configurePorts(root: string, runtime: string, ports: { public: number; 
   fs.writeFileSync(path.join(root, 'config/canonical-origin.json'), `${JSON.stringify({ production_origin: `https://app.mandible.localhost:${ports.public}`, default_backend_port: ports.backend }, null, 2)}\n`);
   const gateway = path.join(root, 'scripts/local-front-door.mjs');
   const text = fs.readFileSync(gateway, 'utf8');
-  if (!text.includes('admin 127.0.0.1:2019')) throw new Error('Fixture admin-port transform requires review for this source revision.');
-  fs.writeFileSync(gateway, text.replaceAll('admin 127.0.0.1:2019', `admin 127.0.0.1:${ports.admin}`));
+  if (text.includes('admin 127.0.0.1:2019')) {
+    fs.writeFileSync(gateway, text.replaceAll('admin 127.0.0.1:2019', `admin 127.0.0.1:${ports.admin}`));
+  } else if (!text.includes('prepareGatewayAdmin(home).address')) throw new Error('Fixture gateway administration transform requires review for this source revision.');
   const generator = path.join(root, 'scripts/generate-canonical-origin.mjs');
   const generatorSource = fs.readFileSync(generator, 'utf8');
   if (!generatorSource.includes('origin.port !== "19420"')) throw new Error('Fixture origin guard transform requires review for this source revision.');

@@ -90,7 +90,7 @@ export function nativeServiceControl(context, operation, role) {
 }
 
 export async function bundleRuntimeCommand(command, { context, release, launchMode, initialize, inspect, configureGateway,
-  reloadGateway, previewCount, waitReady,
+  reloadGateway, restartGateway, previewCount, waitReady,
   control = nativeServiceControl, session = bundleLoginSession, observe = inspectServiceDefinitionsSync }) {
   if (control === nativeServiceControl && (context.home !== path.join(os.userInfo().homedir, '.mandible')
       || context.accountHome !== os.userInfo().homedir || process.env.MANDIBLE_INSTANCE_ROLE === 'preview')) {
@@ -149,9 +149,12 @@ export async function bundleRuntimeCommand(command, { context, release, launchMo
       control(context, 'register', 'backend');
       const current = await inspect({ launchMode });
       if (!current.trusted.error) {
-        configureGateway(current.production.root);
+        const gateway = await configureGateway(current.production.root);
         control(context, 'register', 'gateway');
-        if (inspection.observations.some(item => item.service === 'gateway' && item.job.loaded) && !relocating) reloadGateway();
+        if (inspection.observations.some(item => item.service === 'gateway' && item.job.loaded) && !relocating) {
+          if (gateway.adminRestartRequired) restartGateway();
+          else reloadGateway();
+        }
       }
     }
   }

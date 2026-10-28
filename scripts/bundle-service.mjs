@@ -7,6 +7,7 @@ import { serviceInstallationContext } from './service-definitions.mjs';
 import { readServiceConfiguration, servicePath } from './service-configuration.mjs';
 import { admitBundleOwner, readBundleLaunch, bundleLaunchAllowed, bundleLoginSession } from './bundle-services.mjs';
 import { installedRuntimeEnvironment, readInstalledRelease, releaseFile } from './installed-release.mjs';
+import { prepareGatewayAdmin } from './gateway-admin.mjs';
 
 const root = process.env.MANDIBLE_RELEASE_ROOT;
 if (!root || !path.isAbsolute(root)) throw new Error('Foreground services require an explicit installed release root.');
@@ -43,6 +44,7 @@ if (bundleLaunchAllowed(preference, bundleLoginSession(), role)) {
     process.argv = [runtime, entry];
     await import(pathToFileURL(entry).href);
   } else {
+    prepareGatewayAdmin(context.home);
     if (!fs.existsSync(path.join(context.runtimeDir, 'Caddyfile'))) throw new Error('Gateway configuration is missing.');
     const child = spawn(environment.MANDIBLE_CADDY, ['run', '--config', path.join(context.runtimeDir, 'Caddyfile'), '--adapter', 'caddyfile'],
       { cwd: context.runtimeDir, env: process.env, stdio: 'inherit' });
