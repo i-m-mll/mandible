@@ -10,11 +10,11 @@ import { PRODUCTION_ORIGIN } from '../scripts/canonical-origin.mjs';
 let scratch: string;
 afterEach(() => { vi.doUnmock('node:child_process'); vi.doUnmock('../scripts/build-revision.mjs'); vi.unstubAllEnvs(); vi.resetModules(); if (scratch) fs.rmSync(scratch, { recursive: true, force: true }); });
 
-it('waits through the native launch executable transition and refuses a foreign executable', async () => {
+it.each(['bio.mll.mandible', 'bio.mll.mandible.fixture.private'])('qualifies expected bundle %s through native startup and refuses foreign ownership', async identifier => {
   scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'native-launch-transition-')));
   const bundleRoot = path.join(scratch, 'Mandible.app');
   fs.mkdirSync(path.join(bundleRoot, 'Contents'), { recursive: true });
-  fs.writeFileSync(path.join(bundleRoot, 'Contents/Info.plist'), '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>bio.mll.mandible</string></dict></plist>');
+  fs.writeFileSync(path.join(bundleRoot, 'Contents/Info.plist'), `<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${identifier}</string></dict></plist>`);
   const context = serviceInstallationContext({ home: path.join(scratch, 'home'), accountHome: scratch, bundleRoot });
   const agents = path.join(bundleRoot, 'Contents/Library/LaunchAgents');
   fs.mkdirSync(agents, { recursive: true });
@@ -22,7 +22,7 @@ it('waits through the native launch executable transition and refuses a foreign 
     Label: context[`${service}Label`], BundleProgram: 'Contents/MacOS/mandible-service', ProgramArguments: ['mandible-service', 'foreground', service],
   }));
   let executable = 'xpcproxy';
-  let parentIdentifier = 'bio.mll.mandible';
+  let parentIdentifier = identifier;
   let gatewayExecutable: string | null = null;
   const observedTimeouts: number[] = [];
   vi.doMock('node:child_process', async original => ({ ...await original<typeof import('node:child_process')>(), spawnSync: (binary: string, args: string[], options: { timeout?: number } = {}) => {
@@ -44,7 +44,7 @@ it('waits through the native launch executable transition and refuses a foreign 
   for (executable of ['xpcproxy', 'mandible-service']) {
     const pending = inspectServiceDefinitionsSync(context);
     expect(pending).toMatchObject({ ok: false, refusal: { category: 'starting', evidence: { pid: 42, executable,
-      service: 'backend', label: context.backendLabel, bundleProgram: 'Contents/MacOS/mandible-service', parentBundleIdentifier: 'bio.mll.mandible' } } });
+      service: 'backend', label: context.backendLabel, bundleProgram: 'Contents/MacOS/mandible-service', parentBundleIdentifier: identifier } } });
     if (!pending.ok) expect(pending.refusal.message).toContain(`PID 42 is still starting (${executable})`);
   }
   executable = path.join(bundleRoot, 'Contents/MacOS/mandible-bun');
@@ -61,7 +61,7 @@ it('waits through the native launch executable transition and refuses a foreign 
   } finally { clock.mockRestore(); }
   parentIdentifier = 'bio.mll.foreign';
   expect(inspectServiceDefinitionsSync(context)).toMatchObject({ ok: false, refusal: { category: 'ownership_conflict' } });
-  parentIdentifier = 'bio.mll.mandible';
+  parentIdentifier = identifier;
   executable = '/another/Mandible.app/Contents/MacOS/mandible-bun';
   expect(inspectServiceDefinitionsSync(context)).toMatchObject({ ok: false, refusal: { category: 'ownership_conflict' } });
   gatewayExecutable = executable;

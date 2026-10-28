@@ -16,7 +16,7 @@ import { readBundleProcess } from '../../scripts/local-runtime.mjs';
 import { stageBundleServices } from '../../scripts/prepare-bundle-services.mjs';
 import { withLifecycleLock, processIdentity } from '../../scripts/lifecycle-lock.mjs';
 import { runSupervisedCommand } from '../../scripts/process-group-supervisor.mjs';
-import { runtimeProcessChanged } from '../../scripts/runtime-observation.mjs';
+import { RuntimeObservationError, runtimeProcessChanged } from '../../scripts/runtime-observation.mjs';
 import type { ServiceKind } from '../../scripts/service-definitions.mjs';
 import type { RuntimeProcessIdentity } from '../../scripts/runtime-observation.mjs';
 
@@ -56,6 +56,7 @@ it('replaces retained signed bundles through real native service startup, qualif
   const references: string[] = [];
   const generations: unknown[] = [];
   let sourceRevision: string | null = null;
+  let failureDiagnostic: { json_excerpt: string; truncated: boolean } | null = null;
   console.info('native_bundle_replacement_started', JSON.stringify({ identifier, root, started, deadline }));
   const runtime = process.env.MANDIBLE_RUNTIME;
   const supervised = async (args: string[], phase: string, until = workUntil) => {
@@ -230,6 +231,13 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
       });
       previousReference = reference;
     }
+  } catch (error) {
+    const serialized = JSON.stringify(error instanceof RuntimeObservationError ? error.toJSON()
+      : { name: error instanceof Error ? error.name : 'UnknownError', message: String(error) },
+    (key, value) => key === 'observations' && Array.isArray(value) ? value.slice(-4) : value);
+    failureDiagnostic = { json_excerpt: serialized.slice(0, 16_000), truncated: serialized.length > 16_000 };
+    console.error('native_bundle_replacement_failed', JSON.stringify(failureDiagnostic));
+    throw error;
   } finally {
     const teardownStarted = Date.now();
     let cleaned = false;
@@ -249,7 +257,7 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
       // An unconfirmed service stop retains its exact app and evidence.
       if (cleaned) fs.rmSync(root, { recursive: true, force: true });
       console.info('native_bundle_replacement_proof', JSON.stringify({ scope: 'private SMAppService replacement; no product daemon, GUI, ledger or approval API',
-        source_revision: sourceRevision, identifier, generations, command_costs: costs,
+        source_revision: sourceRevision, identifier, generations, command_costs: costs, failure: failureDiagnostic,
         clock_origin: 'provisioned runner entry; external wall includes earlier runtime selector/import startup',
         runner_entry_elapsed_ms: Date.now() - started, teardown_ms: Date.now() - teardownStarted,
         target_ms: 60_000, deadline_ms: 20_000, teardown_reserve_ms: 5_000,
