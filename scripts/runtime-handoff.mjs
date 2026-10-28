@@ -22,7 +22,7 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const fileHash = file => hash(fs.readFileSync(file));
 const CONTROLLER_MODULES = ['lifecycle-lock.mjs', 'process-lock.mjs', 'canonical-origin.mjs', 'build-revision.mjs', 'local-ca-trust.mjs',
-  'pinned-caddy.mjs', 'runtime-environment.mjs', 'service-definitions.mjs', 'service-configuration.mjs', 'runtime-probe-cadence.mjs', 'runtime-observation.mjs'];
+  'pinned-caddy.mjs', 'gateway-admin.mjs', 'runtime-environment.mjs', 'service-definitions.mjs', 'service-configuration.mjs', 'runtime-probe-cadence.mjs', 'runtime-observation.mjs'];
 const STAGED_HANDOFF_FILES = ['sqlite.mjs', 'proof.mjs', 'controller.mjs', 'helper.mjs', ...CONTROLLER_MODULES];
 
 export function stageHandoffController(root, dir) {

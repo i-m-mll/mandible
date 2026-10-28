@@ -107,7 +107,7 @@ it('routes only the exact private HTTPS dashboard and retains certificate valida
     await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve));
     const port = (server.address() as import('node:net').AddressInfo).port;
     const origin = `https://app.mandible.localhost:${port}`;
-    const config = acceptanceGatewayConfig({ origin, backendPort: 12345, adminPort: 12346, storageRoot: home });
+    const config = acceptanceGatewayConfig({ origin, backendPort: 12345, storageRoot: home });
     expect(config).toContain(`${origin} {`);
     expect(config).toContain('skip_install_trust');
     expect(config).toContain('tls internal');
@@ -116,9 +116,9 @@ it('routes only the exact private HTTPS dashboard and retains certificate valida
     await expect(acceptanceHealth(origin, path.join(home, 'root.crt'))).resolves.toEqual({ ready: true });
     await expect(acceptanceHealth(origin, path.join(home, 'unrelated.crt'))).rejects.toThrow();
     for (const denied of ['http://127.0.0.1:12347', 'https://other.mandible.localhost:12347', `${origin}/path`, 'https://app.mandible.localhost']) {
-      expect(() => acceptanceGatewayConfig({ origin: denied, backendPort: 12345, adminPort: 12346, storageRoot: home })).toThrow('exact Mandible HTTPS');
+      expect(() => acceptanceGatewayConfig({ origin: denied, backendPort: 12345, storageRoot: home })).toThrow('exact Mandible HTTPS');
     }
-    expect(() => acceptanceGatewayConfig({ origin, backendPort: port, adminPort: 12346, storageRoot: home })).toThrow('distinct valid ports');
+    expect(() => acceptanceGatewayConfig({ origin, backendPort: port, storageRoot: home })).toThrow('distinct valid ports');
   } finally {
     if (server) await new Promise<void>(resolve => server!.close(() => resolve()));
     fs.rmSync(home, { recursive: true, force: true });

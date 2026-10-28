@@ -26,15 +26,11 @@ it.each(['cold', 'cached'])('validates the private HTTPS gateway with a %s leaf 
     const ca = copyAcceptanceCa(sourceHome, home);
     if (leaf === 'cold') fs.rmSync(path.join(ca.storageRoot, 'certificates'), { recursive: true, force: true });
     await new Promise<void>(resolve => backend.listen(0, '127.0.0.1', resolve));
-    const ports = new Set<number>();
-    while (ports.size < 2) {
-      const listener = net.createServer(); await new Promise<void>(resolve => listener.listen(0, '127.0.0.1', resolve));
-      ports.add((listener.address() as net.AddressInfo).port); await new Promise<void>(resolve => listener.close(() => resolve()));
-    }
-    const [publicPort, adminPort] = [...ports];
+    const listener = net.createServer(); await new Promise<void>(resolve => listener.listen(0, '127.0.0.1', resolve));
+    const publicPort = (listener.address() as net.AddressInfo).port; await new Promise<void>(resolve => listener.close(() => resolve()));
     const origin = `https://app.mandible.localhost:${publicPort}`;
     const config = path.join(scratch, 'Caddyfile');
-    fs.writeFileSync(config, acceptanceGatewayConfig({ origin, backendPort: (backend.address() as net.AddressInfo).port, adminPort, storageRoot: ca.storageRoot }));
+    fs.writeFileSync(config, acceptanceGatewayConfig({ origin, backendPort: (backend.address() as net.AddressInfo).port, storageRoot: ca.storageRoot }));
     const log = path.join(scratch, 'gateway.log'); fd = fs.openSync(log, 'w');
     gateway = spawn(binary, ['run', '--config', config, '--adapter', 'caddyfile'], {
       env: { ...process.env, HOME: home, MANDIBLE_HOME: home }, stdio: ['ignore', fd, fd],

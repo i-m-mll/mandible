@@ -14,9 +14,9 @@ const SCHEMA = "mandible-local-ca-trust@1";
 const INTENT_SCHEMA = "mandible-local-ca-gateway-intent@1";
 const SETUP_HOST = "setup.mandible.localhost";
 
-export function setupCaddyfile(storageRoot, adminPort, sitePort) {
-  if (![adminPort, sitePort].every((port) => Number.isInteger(port) && port > 0 && port < 65536) || adminPort === sitePort) throw new Error("Temporary setup ports must be distinct valid loopback ports.");
-  return `{\n  admin 127.0.0.1:${adminPort}\n  storage file_system ${JSON.stringify(storageRoot)}\n  local_certs\n  skip_install_trust\n  auto_https disable_redirects\n}\n\nhttps://${SETUP_HOST}:${sitePort} {\n  bind 127.0.0.1\n  tls internal\n  respond "mandible-local-ca-ready"\n}\n`;
+export function setupCaddyfile(storageRoot, sitePort) {
+  if (!Number.isInteger(sitePort) || sitePort <= 0 || sitePort >= 65536) throw new Error("Temporary setup requires a valid loopback port.");
+  return `{\n  admin off\n  storage file_system ${JSON.stringify(storageRoot)}\n  local_certs\n  skip_install_trust\n  auto_https disable_redirects\n}\n\nhttps://${SETUP_HOST}:${sitePort} {\n  bind 127.0.0.1\n  tls internal\n  respond "mandible-local-ca-ready"\n}\n`;
 }
 
 export function localCaPaths(home) {
@@ -254,14 +254,13 @@ async function bootstrapCaddy(paths, context) {
   const binary = installPinnedCaddy(paths.home);
   fs.mkdirSync(paths.storageRoot, { recursive: true, mode: 0o700 });
   if (!fs.lstatSync(paths.storageRoot).isDirectory()) throw new Error("Installation Caddy storage is not a directory.");
-  const adminPort = await freePort();
   const sitePort = await freePort();
-  if (adminPort === sitePort || [19419, 19420, 19421, 2019].includes(adminPort) || [19419, 19420, 19421, 2019].includes(sitePort)) throw new Error("Temporary setup ports collided with a public or ordinary gateway port; retry setup.");
+  if ([19419, 19420, 19421].includes(sitePort)) throw new Error("Temporary setup port collided with a public gateway port; retry setup.");
   context.assertHeld();
   const intent = context.publishGatewayIntent(binary);
   const tempDir = intent.temp_dir;
   const config = intent.config;
-  fs.writeFileSync(config, setupCaddyfile(paths.storageRoot, adminPort, sitePort), { mode: 0o600 });
+  fs.writeFileSync(config, setupCaddyfile(paths.storageRoot, sitePort), { mode: 0o600 });
   const child = spawn(binary, ["run", "--config", config, "--adapter", "caddyfile"], { stdio: ["ignore", "pipe", "pipe"] });
   let output = "";
   for (const stream of [child.stdout, child.stderr]) stream.on("data", (chunk) => { output = `${output}${chunk}`.slice(-8000); });

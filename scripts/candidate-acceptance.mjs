@@ -73,12 +73,12 @@ export function createAcceptanceHome(home) {
   fs.mkdirSync(home, { mode: 0o700 });
 }
 
-export function acceptanceGatewayConfig({ origin, backendPort, adminPort, storageRoot }) {
+export function acceptanceGatewayConfig({ origin, backendPort, storageRoot }) {
   const url = new URL(origin);
   if (url.protocol !== 'https:' || url.hostname !== 'app.mandible.localhost' || !url.port || url.origin !== origin) throw new Error('Acceptance requires an exact Mandible HTTPS origin.');
-  const ports = [Number(url.port), backendPort, adminPort];
-  if (!ports.every(port => Number.isInteger(port) && port > 0 && port < 65536) || new Set(ports).size !== 3 || !path.isAbsolute(storageRoot)) throw new Error('Acceptance gateway requires distinct valid ports and owned absolute storage.');
-  return `{\n  admin 127.0.0.1:${adminPort}\n  storage file_system ${JSON.stringify(storageRoot)}\n  local_certs\n  skip_install_trust\n  auto_https disable_redirects\n}\n\n${origin} {\n  bind 127.0.0.1 ::1\n  tls internal\n  header -Server\n  reverse_proxy http://127.0.0.1:${backendPort} {\n    header_up -X-Mandible-Target-Instance\n    header_up -X-Mandible-Session-Context\n  }\n}\n`;
+  const ports = [Number(url.port), backendPort];
+  if (!ports.every(port => Number.isInteger(port) && port > 0 && port < 65536) || new Set(ports).size !== 2 || !path.isAbsolute(storageRoot)) throw new Error('Acceptance gateway requires distinct valid ports and owned absolute storage.');
+  return `{\n  admin off\n  storage file_system ${JSON.stringify(storageRoot)}\n  local_certs\n  skip_install_trust\n  auto_https disable_redirects\n}\n\n${origin} {\n  bind 127.0.0.1 ::1\n  tls internal\n  header -Server\n  reverse_proxy http://127.0.0.1:${backendPort} {\n    header_up -X-Mandible-Target-Instance\n    header_up -X-Mandible-Session-Context\n  }\n}\n`;
 }
 
 /** Acceptance's log verdict: runtime log failures plus every health event, since a stall on the fixture is the code's. */
@@ -314,14 +314,14 @@ async function main() {
     executionProfile = installedExecutionProfile({ checkout: root, commonDirectory: command("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"]), app });
     result.provenance = { marker, daemon_sha256: sha256(releaseFile(resources, shipped.entrypoints.daemon)), native_sha256: sha256(path.join(app, "Contents/MacOS/mandible-app")), harness_sha256: sha256(fileURLToPath(import.meta.url)), package_sha256: testedPackageDigest, shipped };
     const ports = new Set();
-    while (ports.size < 3) ports.add(await freePort());
-    const [port, publicPort, adminPort] = [...ports];
+    while (ports.size < 2) ports.add(await freePort());
+    const [port, publicPort] = [...ports];
     const origin = `https://app.mandible.localhost:${publicPort}`;
     const caHome = option('--ca-home') || process.env.MANDIBLE_TEST_CA_HOME || process.env.MANDIBLE_HOME || path.join(os.homedir(), '.mandible');
     const ca = copyAcceptanceCa(caHome, home);
     const gatewayBinary = releaseFile(resources, shipped.native.caddy);
     const gatewayConfig = path.join(run, 'Caddyfile');
-    fs.writeFileSync(gatewayConfig, acceptanceGatewayConfig({ origin, backendPort: port, adminPort, storageRoot: ca.storageRoot }), { mode: 0o600 });
+    fs.writeFileSync(gatewayConfig, acceptanceGatewayConfig({ origin, backendPort: port, storageRoot: ca.storageRoot }), { mode: 0o600 });
     result.provenance.ca_root_sha256 = sha256(ca.rootCert);
     result.provenance.gateway_sha256 = sha256(gatewayBinary);
     fs.writeFileSync(path.join(home, 'acceptance.json'), JSON.stringify({ home, origin, nonce }), { mode: 0o600 });

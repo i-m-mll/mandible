@@ -21,7 +21,8 @@ function fixture() {
   const options = { context, release, launchMode: 'manual', session: () => 'login-1',
     initialize: async () => { events.push('initialize'); },
     inspect, waitReady: inspect, previewCount: () => 0, reloadGateway: () => { events.push('reload-gateway'); },
-    configureGateway: () => { events.push('gateway-config'); },
+    configureGateway: () => { events.push('gateway-config'); return { adminRestartRequired: false }; },
+    restartGateway: () => { events.push('restart-gateway'); },
     observe: () => ({ ok: true, observations: [] }),
     control: (_: unknown, operation: string, role: string) => { if (operation !== 'status') events.push(`${operation}:${role}`); return { status: 'not_registered' }; },
   };
