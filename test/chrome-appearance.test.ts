@@ -25,16 +25,16 @@ describe('chrome shadow contract', () => {
 
   it('bounds finite stored parameters and rejects incompatible records', () => {
     expect(normalizeChromeAppearance({ widthPx: 99, profile: -1, maxDarkness: NaN }, CHROME_APPEARANCE_DEFAULTS.light))
-      .toEqual({ widthPx: 32, profile: 0, maxDarkness: 0.04, glassTransparency: 0.12 });
+      .toEqual({ widthPx: 32, profile: 0, maxDarkness: 0.04, glassTransparency: 0.12, textIncrementPt: 2 });
     expect(normalizeChromeAppearance({ widthPx: 0, profile: Infinity, maxDarkness: 0.12345 }, CHROME_APPEARANCE_DEFAULTS.dark))
-      .toEqual({ widthPx: 1, profile: 0.5, maxDarkness: 0.123, glassTransparency: 0.12 });
+      .toEqual({ widthPx: 1, profile: 0.5, maxDarkness: 0.123, glassTransparency: 0.12, textIncrementPt: 2 });
     expect(normalizeChromeAppearancePreview({ version: 2, theme: 'light', overrides: { light: { widthPx: 9 } } }))
       .toEqual({ version: 1, overrides: {} });
     const state = normalizeChromeAppearancePreview({ version: 1, theme: 'invalid', overrides: { light: { widthPx: 8.3 } } });
     expect(effectiveChromeAppearances(state)).toEqual({ light: { ...CHROME_APPEARANCE_DEFAULTS.light, widthPx: 8.25 }, dark: CHROME_APPEARANCE_DEFAULTS.dark });
     expect(JSON.parse(exportChromeAppearances(effectiveChromeAppearances(state)))).toEqual({ version: 1, ...effectiveChromeAppearances(state) });
     const priorRecord = normalizeChromeAppearancePreview({ version: 1, theme: 'dark', overrides: { dark: { widthPx: 12, profile: 1, maxDarkness: 0.42 } } });
-    expect(priorRecord).toEqual({ version: 1, theme: 'dark', overrides: { dark: { widthPx: 12, profile: 1, maxDarkness: 0.42, glassTransparency: 0.12 } } });
+    expect(priorRecord).toEqual({ version: 1, theme: 'dark', overrides: { dark: { widthPx: 12, profile: 1, maxDarkness: 0.42, glassTransparency: 0.12, textIncrementPt: 2 } } });
     expect(normalizeChromeAppearancePreview({ version: 1, overrides: { light: { glassTransparency: 0.28 } } }).overrides.light?.glassTransparency).toBe(0.28);
     expect(normalizeChromeAppearance({ glassTransparency: Infinity }, CHROME_APPEARANCE_DEFAULTS.light).glassTransparency).toBe(0.12);
     expect(normalizeChromeAppearance({ glassTransparency: 2 }, CHROME_APPEARANCE_DEFAULTS.light).glassTransparency).toBe(1);
@@ -43,7 +43,7 @@ describe('chrome shadow contract', () => {
   });
 
   it('uses one outward alpha profile for straight and curved stops', () => {
-    const styles = chromeAppearanceFrameStyles({ light: { widthPx: 5, profile: 0.5, maxDarkness: 0.03, glassTransparency: 0.12 }, dark: CHROME_APPEARANCE_DEFAULTS.dark });
+    const styles = chromeAppearanceFrameStyles({ light: { widthPx: 5, profile: 0.5, maxDarkness: 0.03, glassTransparency: 0.12, textIncrementPt: 2 }, dark: CHROME_APPEARANCE_DEFAULTS.dark });
     expect(styles['--app-shadow-light-linear']).toBe('rgba(0, 0, 0, 0) 0px, rgba(0, 0, 0, 0.00432) 1.2px, rgba(0, 0, 0, 0.01248) 2.95px, rgba(0, 0, 0, 0.03) 5px');
     expect(styles['--app-shadow-light-radial']).toContain('rgba(0, 0, 0, 0.01248) calc(var(--radius-chat-surface) + 2.05px)');
     expect(styles['--app-shadow-dark-radial']).not.toMatch(/rgba\(0, 0, 0, (?!0\))/);

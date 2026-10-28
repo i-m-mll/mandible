@@ -32,7 +32,7 @@ textarea::placeholder {
 }
 
 :is(.app-frame__bar, .app-rail, .view-sidebar) {
-  --chrome-text-increment: 2pt;
+  --chrome-text-increment: var(--app-chrome-text-increment);
   font-size: calc(var(--font-ui-size) + var(--chrome-text-increment));
 }
 

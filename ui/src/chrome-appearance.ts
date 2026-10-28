@@ -1,5 +1,5 @@
 export type ChromeAppearanceTheme = 'light' | 'dark';
-export type ChromeAppearanceParameters = { widthPx: number; profile: number; maxDarkness: number; glassTransparency: number };
+export type ChromeAppearanceParameters = { widthPx: number; profile: number; maxDarkness: number; glassTransparency: number; textIncrementPt: number };
 export type ChromeShadowParameters = Pick<ChromeAppearanceParameters, 'widthPx' | 'profile' | 'maxDarkness'>;
 export type ChromeAppearanceThemes = Record<ChromeAppearanceTheme, ChromeAppearanceParameters>;
 export type ChromeAppearancePreviewState = {
@@ -9,8 +9,8 @@ export type ChromeAppearancePreviewState = {
 };
 
 export const CHROME_APPEARANCE_DEFAULTS: Readonly<ChromeAppearanceThemes> = {
-  light: { widthPx: 16, profile: 0.25, maxDarkness: 0.04, glassTransparency: 0.12 },
-  dark: { widthPx: 5, profile: 0.5, maxDarkness: 0, glassTransparency: 0.12 },
+  light: { widthPx: 16, profile: 0.25, maxDarkness: 0.04, glassTransparency: 0.12, textIncrementPt: 2 },
+  dark: { widthPx: 5, profile: 0.5, maxDarkness: 0, glassTransparency: 0.12, textIncrementPt: 2 },
 };
 export const CHROME_APPEARANCE_PREVIEW_DEFAULTS: ChromeAppearancePreviewState = { version: 1, overrides: {} };
 export const CHROME_APPEARANCE_LIMITS = {
@@ -18,6 +18,7 @@ export const CHROME_APPEARANCE_LIMITS = {
   profile: { min: 0, max: 1, step: 0.01 },
   maxDarkness: { min: 0, max: 1, step: 0.001 },
   glassTransparency: { min: 0, max: 1, step: 0.01 },
+  textIncrementPt: { min: 0, max: 6, step: 0.25 },
 } as const;
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -97,6 +98,7 @@ export function chromeAppearanceFrameStyles(themes: Readonly<ChromeAppearanceThe
   for (const theme of ['light', 'dark'] as const) {
     const parameters = themes[theme];
     const samples = chromeShadowSamples(parameters);
+    styles[`--app-chrome-${theme}-text-increment`] = `${number(parameters.textIncrementPt)}pt`;
     styles[`--app-chrome-${theme}-tint-percentage`] = `${number((1 - parameters.glassTransparency) * 100)}%`;
     styles[`--app-shadow-${theme}-width`] = `${number(parameters.widthPx)}px`;
     styles[`--app-shadow-${theme}-linear`] = [...samples].reverse().map(({ distancePx, alpha }) => `${color(alpha)} ${number(parameters.widthPx - distancePx)}px`).join(', ');
