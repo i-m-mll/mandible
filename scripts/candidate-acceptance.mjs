@@ -377,7 +377,7 @@ async function main() {
     catch (error) { result.phases[name].status = 'failed'; result.phases[name].error = error.message; throw error; }
     finally { result.phases[name].elapsed_ms = Date.now() - start; }
   };
-  if (diagnostic) result.diagnostic = { qualifying: false, source: diagnostic, deadline_ms: 90_000 };
+  if (diagnostic) result.diagnostic = { qualifying: false, source: diagnostic, deadline_ms: 60_000 };
   let daemon, desktop, gateway, stallProbe, diagnosticDeadline, testedPackageDigest;
   let passiveHealth, passiveError;
   const passiveController = new AbortController();
@@ -435,7 +435,7 @@ async function main() {
     const env = { ...resourceEnv, HOME: home, MANDIBLE_HOME: home, MANDIBLE_DB: path.join(home, 'mandible.db'), MANDIBLE_PORT: String(port), MANDIBLE_PUBLIC_ORIGIN: origin, MANDIBLE_INSTANCE_ROLE: 'main', MANDIBLE_INSTANCE_ID: instanceId, MANDIBLE_INSTALLATION_ID: instanceId, MANDIBLE_BACKEND_GENERATION: candidate, MANDIBLE_WORK_SCANNER_ROOTS: JSON.stringify([{ path: home, depth: 1 }]), MANDIBLE_PID_FILE: path.join(home, 'daemon.pid'), MANDIBLE_SOCKET: path.join(home, 'api.sock'), MANDIBLE_STDERR_LOG_PATH: path.join(run, 'daemon.log'), MANDIBLE_USER_PREFERENCES_DIR: path.join(home, 'settings', 'users'), MANDIBLE_CANDIDATE_ACCEPTANCE: path.join(home, 'acceptance.json') };
     daemon = launch(packagedRuntime, [...(diagnostic ? ['--cpu-prof', `--cpu-prof-dir=${diagnostics}`, '--cpu-prof-name=daemon.cpuprofile'] : []), '--no-install', releaseFile(resources, shipped.entrypoints.daemon)], env, 'daemon');
     if (diagnostic) {
-      diagnosticDeadline = setTimeout(interrupt, 90_000);
+      diagnosticDeadline = setTimeout(interrupt, budget.remaining());
       result.diagnostic.started_at = Date.now();
     }
     // The gateway answers 502, and logs an error, for any request that reaches
@@ -484,7 +484,7 @@ async function main() {
       const out = fs.openSync(path.join(diagnostics, 'probe.jsonl'), 'w'); files.push(out);
       const err = fs.openSync(path.join(diagnostics, 'probe.stderr'), 'w'); files.push(err);
       stallProbe = spawn(runtime, [path.join(root, 'scripts/daemon-stall-probe.mjs'), '--socket', health.local_socket_path,
-        '--pid', String(daemon.pid), '--duration', '90', '--sample', '--sample-max', '4', '--out', diagnostics, '--json'],
+        '--pid', String(daemon.pid), '--duration', String(Math.max(1, Math.floor(budget.remaining() / 1000))), '--sample', '--sample-max', '4', '--out', diagnostics, '--json'],
         { cwd: run, env: buildEnv, stdio: ['ignore', out, err] });
       stallProbe.on('error', error => { result.checks.probe_launch_error = error.message; });
     }
