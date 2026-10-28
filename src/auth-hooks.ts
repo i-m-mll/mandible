@@ -87,7 +87,7 @@ export interface RuntimeHandoffClient {
   runtimeHandoffDrainIdentity?(journal: RuntimeHandoffJournal): string | null;
   acknowledgeRuntimeHandoff(binding: RuntimePublicationBinding, options?: { verifiedReceipt?: unknown; acceptedReceiptDigest?: string }): Promise<unknown>;
   runtimeHandoffNeedsAcknowledgment?(journal: RuntimeHandoffJournal): boolean | Promise<boolean>;
-  scheduleRuntimeHandoffCleanup?(journal: RuntimeHandoffJournal): unknown | Promise<unknown>;
+  scheduleRuntimeHandoffCleanup?(journal: RuntimeHandoffJournal): Promise<{ cleanup: 'complete' | 'pending'; reason?: string }>;
   closeQuiescentRuntimeHandoff?(home: string, options: { actor: unknown }): Promise<{
     outcome: 'released' | 'blocked' | 'none'; requestId?: string; executionId?: string; reason?: string }>;
   retireFailedRuntimeHandoff(home: string, input: { bindingDigest: string; actor: unknown; reason: string }): unknown;
@@ -112,6 +112,7 @@ export const AUTH_HOOK_MAX_ATTEMPTS = 3;
 
 /** Persisted hook output is bounded so one runaway hook cannot bloat the DB. */
 const MAX_PERSISTED_OUTPUT_CHARS = 64 * 1024;
+const RUNTIME_CLEANUP_RETRY_MS = 1000;
 
 export function authHookTimeoutMs(hookId: string): number {
   return hookId === "builtin-mandible-rebuild"
@@ -300,7 +301,8 @@ export class AuthHookManager {
   private readonly serviceDefinitionInspector: typeof inspectServiceDefinitions;
   /** Immutable publication intents; absence is never cached because publication precedes bootstrap. */
   private readonly deliveryIntents = new Map<string, RuntimeDeliveryIntent>();
-  private readonly cleanupScheduled = new Set<string>();
+  private readonly cleanupInFlight = new Set<string>();
+  private readonly cleanupRetries = new Map<string, { after: number; error: Error }>();
   /**
    * Requests whose reconciliation keeps failing on a terminal run, which cannot
    * record the failure, valued by the failure classes reported. Such a run is
@@ -427,10 +429,28 @@ export class AuthHookManager {
     return journal;
   }
 
+  /** Reconciliation owns retry cadence; completion belongs to the cleanup child and journal. */
+  private reconcileDeliveryCleanup(runtime: RuntimeHandoffClient, journal: RuntimeHandoffJournal, digest: string, explicit: boolean): Error | undefined {
+    if (journal.cleanup?.state === 'complete') { this.cleanupRetries.delete(digest); return; }
+    const retry = this.cleanupRetries.get(digest);
+    if (this.cleanupInFlight.has(digest) || !explicit && retry && Date.now() < retry.after) return retry?.error;
+    if (!runtime.scheduleRuntimeHandoffCleanup) return new Error('Runtime delivery cleanup scheduler is unavailable.');
+    this.cleanupInFlight.add(digest);
+    const pending = (error: unknown) => {
+      this.cleanupRetries.set(digest, { after: Date.now() + RUNTIME_CLEANUP_RETRY_MS,
+        error: error instanceof Error ? error : new Error(String(error)) });
+    };
+    void Promise.resolve().then(() => runtime.scheduleRuntimeHandoffCleanup!(journal)).then(result => {
+      if (result.cleanup === 'complete') this.cleanupRetries.delete(digest);
+      else pending(new Error(result.reason || 'Runtime delivery cleanup remains pending.'));
+    }).catch(pending).finally(() => this.cleanupInFlight.delete(digest));
+    return retry?.error;
+  }
+
   private async consumeRuntimeDelivery(
     runtime: RuntimeHandoffClient, run: AuthHookRun, journal: RuntimeHandoffJournal,
     adopt: (binding: RuntimePublicationBinding, proof: Awaited<ReturnType<typeof verifyRuntimeHandoffAuthority>>) => Promise<() => void>,
-    guard: () => void,
+    guard: () => void, explicitCleanupRetry = false,
   ): Promise<RuntimeVerificationResult & { adopted?: boolean; disposalError?: unknown }> {
     const current = runtimeHandoffDisposition(journal);
     if (current?.runtime !== 'complete') return { outcome: 'pending',
@@ -475,11 +495,7 @@ export class AuthHookManager {
         }) as { release?: string } | undefined;
         releasePending = released?.release === 'pending';
       }
-      if (!releasePending && journal.cleanup?.state !== 'complete' && !this.cleanupScheduled.has(current.receiptDigest!)
-          && runtime.scheduleRuntimeHandoffCleanup) {
-        await runtime.scheduleRuntimeHandoffCleanup(journal);
-        this.cleanupScheduled.add(current.receiptDigest!);
-      }
+      if (!releasePending) disposalError = this.reconcileDeliveryCleanup(runtime, journal, current.receiptDigest!, explicitCleanupRetry);
     } catch (error) { disposalError = error; }
     return { outcome: 'confirmed', adopted, disposalError };
   }
@@ -495,7 +511,7 @@ export class AuthHookManager {
       const run = this.getRun(request.id, MANDIBLE_REBUILD_HOOK_ID);
       if (!run?.runtime_delivery) throw new Error('Request has no durable runtime-delivery intent.');
       const runtime: RuntimeHandoffClient = this.handoffClient ?? await import(new URL('../scripts/runtime-handoff.mjs', import.meta.url).href);
-      const result = await this.consumeRuntimeDelivery(runtime, run, await this.readDeliveryJournal(runtime, run), adopt, guard);
+      const result = await this.consumeRuntimeDelivery(runtime, run, await this.readDeliveryJournal(runtime, run), adopt, guard, true);
       return result.outcome === 'confirmed' ? { outcome: 'confirmed' } : result;
     } catch (error) {
       if (!observationPending(error)) throw error;
