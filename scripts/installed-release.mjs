@@ -65,6 +65,7 @@ export function readInstalledRelease(root) {
     releaseFile(root, relative, release.layout);
   }
   if (release.serviceExecutables && (release.serviceExecutables.backend !== 'bun' || release.serviceExecutables.gateway !== 'caddy')) throw new Error('Invalid native service executable contract.');
+  if (release.serviceControlProtocol !== undefined && release.serviceControlProtocol !== 2) throw new Error('Unsupported native service control protocol.');
   return release;
 }
 

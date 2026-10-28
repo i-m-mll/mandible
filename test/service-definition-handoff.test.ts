@@ -135,7 +135,7 @@ async function fixture({ absentGateway = false, stoppedBackend = false } = {}) {
   vi.doMock('../scripts/build-revision.mjs', () => ({ readBuildRevision: () => generation }));
   vi.resetModules();
   const controller = await import('../scripts/local-runtime.mjs');
-  const binding = { ...controller.captureRuntimeHandoff(scratch), requestId: 'request', executionId: 'execution', mergeCommit: generation, runtime: { path: '/runtime/bun' } };
+  const binding = { ...controller.captureRuntimeHandoff(scratch, { context, storageModule: storage }), requestId: 'request', executionId: 'execution', mergeCommit: generation, runtime: { path: '/runtime/bun' } };
   const dir = path.join(context.runtimeDir, 'handoff/request-execution'); fs.mkdirSync(dir, { recursive: true });
   const journal = path.join(dir, 'journal.json');
   fs.writeFileSync(journal, JSON.stringify({ bindingDigest: 'fixture', binding }));
