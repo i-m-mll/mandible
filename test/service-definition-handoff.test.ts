@@ -15,6 +15,8 @@ it.each(['bio.mll.mandible', 'bio.mll.mandible.fixture.private'])('qualifies exp
   const bundleRoot = path.join(scratch, 'Mandible.app');
   fs.mkdirSync(path.join(bundleRoot, 'Contents'), { recursive: true });
   fs.writeFileSync(path.join(bundleRoot, 'Contents/Info.plist'), `<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${identifier}</string></dict></plist>`);
+  fs.mkdirSync(path.join(bundleRoot, 'Contents/Resources'), { recursive: true });
+  fs.writeFileSync(path.join(bundleRoot, 'Contents/Resources/release.json'), JSON.stringify({ native: { bun: '../MacOS/mandible-bun', caddy: '../MacOS/mandible-caddy' } }));
   const context = serviceInstallationContext({ home: path.join(scratch, 'home'), accountHome: scratch, bundleRoot });
   const agents = path.join(bundleRoot, 'Contents/Library/LaunchAgents');
   fs.mkdirSync(agents, { recursive: true });
@@ -48,6 +50,10 @@ it.each(['bio.mll.mandible', 'bio.mll.mandible.fixture.private'])('qualifies exp
     if (!pending.ok) expect(pending.refusal.message).toContain(`PID 42 is still starting (${executable})`);
   }
   executable = path.join(bundleRoot, 'Contents/MacOS/mandible-bun');
+  expect(inspectServiceDefinitionsSync(context).ok).toBe(true);
+  fs.writeFileSync(path.join(bundleRoot, 'Contents/Resources/release.json'), JSON.stringify({ native: { bun: '../MacOS/mandible-bun', caddy: '../MacOS/mandible-caddy' }, serviceExecutables: { backend: 'bun', gateway: 'caddy' } }));
+  expect(inspectServiceDefinitionsSync(context)).toMatchObject({ ok: false, refusal: { service: 'gateway', category: 'starting' } });
+  gatewayExecutable = path.join(bundleRoot, 'Contents/MacOS/mandible-caddy');
   expect(inspectServiceDefinitionsSync(context).ok).toBe(true);
   const clock = vi.spyOn(Date, 'now').mockReturnValue(1000);
   try {
@@ -143,7 +149,7 @@ it('checks every bound role for absence before inspecting the remaining service 
   const { controller, binding, backend, jobs, makeGatewayStarting } = await fixture();
   jobs.delete(backend.Label);
   makeGatewayStarting();
-  expect(() => controller.inspectHandoffEvidence({ ...binding, nativeApp: path.join(scratch, 'Mandible.app'), acceptedRelease: { reference: 'not-read-before-bound-continuity' } }, { backend: { pid: 41, startedAt: 'old-start', runs: 1 } }))
+  expect(() => controller.inspectHandoffEvidence(binding, { backend: { pid: 41, startedAt: 'old-start', runs: 1 } }))
     .toThrowError(expect.objectContaining({ code: 'process_changed' }));
 });
 

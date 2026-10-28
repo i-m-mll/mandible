@@ -6,6 +6,7 @@ export interface InstalledRelease {
   provenance: { commit: string; source_digest: string; summary: string; date: string; bun_revision: string };
   entrypoints: Record<'daemon' | 'cli' | 'channel' | 'controller' | 'trustSetup' | 'service', string>;
   native: Record<'bun' | 'sqlite' | 'caddy' | 'claude' | 'trustHelper' | 'serviceHelper', string>;
+  serviceExecutables?: Record<'backend' | 'gateway', 'bun' | 'caddy'>;
   resources?: Record<string, string>;
   signing: Record<string, string>;
   files: Record<string, { sha256: string; size: number }>;
