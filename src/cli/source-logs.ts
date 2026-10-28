@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { readLogicalSourcePrefix, inspectSourceRepresentation } from "../conversations/logical-source.js";
 import { parseBound } from "../conversation-block-filters.js";
-import SqliteDatabase from "../sqlite.js";
+import { withCliReadOnlyDatabase } from "./read-only-database.js";
 import { getUserHome } from "../platform-paths.js";
 import { files as codexFiles, head as codexHead, summary as codexSummary } from "./logical-sources.js";
 import { parseCommand, stringOption, numberOption, flagOption } from "./grammar.js";
@@ -53,15 +53,13 @@ async function summary(source: string, filename: string): Promise<Summary> {
   }
   return result;
 }
-function indexed(): Array<Record<string, any>> {
+async function indexed(): Promise<Array<Record<string, any>>> {
   const filename = process.env.MANDIBLE_DB!;
   if (!fs.existsSync(filename)) return [];
-  const db = new SqliteDatabase(filename, { readonly: true, timeout: 5000 });
-  try {
-    db.pragma("query_only = ON");
+  return withCliReadOnlyDatabase(filename, db => {
     const source = provider === "claude" ? "claude_code" : provider;
     return db.prepare(`SELECT id, source, source_path, source_hash, source_mtime, session_id, title, block_count, updated_at FROM conversations WHERE source_path IS NOT NULL AND source_path != ''${source === "all" ? "" : " AND source = ?"}`).all(...(source === "all" ? [] : [source])) as Array<Record<string, any>>;
-  } finally { db.close(); }
+  });
 }
 function blocks(args: string[]): number {
   const extension = path.extname(fileURLToPath(import.meta.url));
@@ -106,14 +104,14 @@ async function main(): Promise<number> {
   const catalog = await files();
   if (operation === "orphans") {
     const present = new Set(catalog.map(([, filename]) => filename));
-    const rows = indexed().filter(row => !present.has(row.source_path) && !fs.existsSync(row.source_path)).sort((a, b) => String(b.updated_at ?? "").localeCompare(String(a.updated_at ?? "")));
+    const rows = (await indexed()).filter(row => !present.has(row.source_path) && !fs.existsSync(row.source_path)).sort((a, b) => String(b.updated_at ?? "").localeCompare(String(a.updated_at ?? "")));
     if (json) console.log(JSON.stringify(rows, null, 2));
     else for (const row of rows) console.log(`${row.source}\t${row.id.slice(0, 8)}\t${row.session_id || "-"}\t${row.source_path}`);
     return 0;
   }
   let selected = catalog;
   if (operation === "missing") {
-    const present = new Set(indexed().map(row => row.source_path));
+    const present = new Set((await indexed()).map(row => row.source_path));
     selected = catalog.filter(([, filename]) => !present.has(filename));
   } else if (operation === "inventory") {
     const since = stringOption(parsed, "since");

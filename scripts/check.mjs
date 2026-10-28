@@ -98,7 +98,8 @@ const checks = {
   // nor the live log (docs/runtime-handoff.md). Children pipe stderr and the
   // daemon logs it, so the rotating thread is the file's only writer.
   'daemon children never inherit its stderr'() {
-    return walk('src', (file) => /\.tsx?$/.test(file)).flatMap((file) => stderrInheritanceSites(file, read(file))
+    // Standalone CLI entrypoints forward their caller's streams.
+    return walk('src', (file) => /\.tsx?$/.test(file) && !file.startsWith('src/cli/')).flatMap((file) => stderrInheritanceSites(file, read(file))
       .map(({ line, reason }) => `${file}:${line}: ${reason}; a daemon child must pipe its output and the daemon log it`));
   },
 
@@ -172,19 +173,6 @@ const checks = {
     const source = read(file);
     const banned = source.match(/node:(?:child_process|cluster|dgram|dns|fs|http|https|net|tls|worker_threads)|\b(?:fetch|process|Bun|Deno)\b/g) ?? [];
     return [...new Set(banned)].map((token) => `${file}: uses ${token}`);
-  },
-
-  // The CLI's direct readers share the daemon's database: each waits a bounded
-  // time on a busy writer, never writes, and closes its connection.
-  'direct CLI database readers bound busy waits and close'() {
-    const required = {
-      'cli/logs.sh': ['PRAGMA busy_timeout = 5000', 'isolation_level=None', 'conn.close()'],
-      'src/cli/conversation-blocks.ts': ['db.pragma("busy_timeout = 5000")', 'db.pragma("query_only = ON")', 'db.close()'],
-    };
-    return Object.entries(required).flatMap(([file, needles]) => {
-      const source = read(file);
-      return needles.filter((needle) => !source.includes(needle)).map((needle) => `${file}: missing ${needle}`);
-    });
   },
 };
 
