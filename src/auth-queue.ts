@@ -140,6 +140,7 @@ import { applyApprovedCustodyTransfer } from "./work-unit-custody.js";
 import { raiseDaemonIncident, resolveDaemonIncident } from "./operational-incidents.js";
 import { promoteBriefingGroupProposal } from "./feedback/briefing-groups.js";
 import { appendAuthLifecycleEvent, listAuthLifecycleEvents, authRequestInitiatingOrigin } from "./auth-lifecycle.js";
+import { acceptedReleaseSelection, bindAcceptedRelease } from "./accepted-release-selection.js";
 import { authPublicationSnapshot, authRequestSnapshot, authSnapshotDigest } from "./auth-request-snapshot.js";
 import type {
   AuthConvergence,
@@ -670,7 +671,8 @@ export class AuthQueue {
     this.restartFn = options.restartFn ?? (() => process.exit(0));
     this.restartAvailability = options.restartAvailability;
     this.acceptanceRuns = options.candidateAcceptanceExecutor
-      ? new CandidateAcceptanceRuns(this.db, options.candidateAcceptanceExecutor, this.now, (requestId) => this.candidateAcceptanceChanged(requestId), () => this.runtimeHandoffLock() !== null)
+      ? new CandidateAcceptanceRuns(this.db, options.candidateAcceptanceExecutor, this.now, (requestId) => this.candidateAcceptanceChanged(requestId), () => this.runtimeHandoffLock() !== null,
+        (requestId, candidate) => this.prepareAcceptanceFinalization(requestId, candidate))
       : null;
     // Before anything can start a run: rows a previous daemon left running were interrupted.
     this.acceptanceRuns?.start();
@@ -881,7 +883,7 @@ export class AuthQueue {
     const blocker = lock ? { message: runtimeHandoffLockRefusal(lock) } : null;
     if (blocker) throw new AuthQueueError("merge_check_failed", blocker.message);
     authLog("info", "auth_candidate_acceptance_started", { subsystem: "auth", auth_request_id: request.id, pin_sha: candidate.pin_sha });
-    runs.enqueue(request.id, candidate, () => this.acceptanceInput(request, candidate.pin_sha));
+    runs.enqueue(request.id, candidate, () => this.acceptanceInput(this.requireRequest(request.id), candidate.pin_sha));
     return this.candidateAcceptanceForRequest(request)!;
   }
 
@@ -895,6 +897,33 @@ export class AuthQueue {
     for (const key of AUTH_HOOK_ENV_ALLOWLIST) if (process.env[key] !== undefined) env[key] = process.env[key];
     env.HOME = home;
     return { repoRoot: request.cwd!, pinSha, projectId: project.project.id, workUnitId: request.custody_work_unit_id, env };
+  }
+
+  private prepareAcceptanceFinalization(requestId: string, candidate: CandidateAcceptanceCandidate): (recordId: string) => void {
+    const request = this.requireRequest(requestId);
+    const assertCandidate = () => {
+      const current = this.requireRequest(requestId);
+      const exact = this.acceptanceCandidate(current);
+      if (current.status !== 'pending' || !this.candidateAcceptanceApplies(current) || !exact
+          || Object.keys(candidate).some(key => candidate[key as keyof CandidateAcceptanceCandidate] !== exact[key as keyof CandidateAcceptanceCandidate])) {
+        throw new Error('Acceptance no longer belongs to the pending exact candidate.');
+      }
+      const custody = current.custody_work_unit_id ? this.db.prepare(
+        'SELECT auth_request_id, state, ledger_issue_id FROM work_units WHERE id = ?',
+      ).get(current.custody_work_unit_id) as { auth_request_id: string; state: string; ledger_issue_id: string | null } | undefined : undefined;
+      if (!custody || custody.auth_request_id !== current.id || custody.state !== 'committed' || !custody.ledger_issue_id) {
+        throw new Error('Acceptance requires the request-bound committed delivery work unit and canonical ledger issue.');
+      }
+      return { current, targetIssue: custody.ledger_issue_id };
+    };
+    assertCandidate();
+    this.currentLifecycleSnapshot(requestId);
+    const observed = this.observationToken(requestId, request);
+    return recordId => {
+      this.assertObservation(requestId, observed);
+      const { current, targetIssue } = assertCandidate();
+      bindAcceptedRelease(this.db, current, recordId, targetIssue, this.now());
+    };
   }
 
   private candidateAcceptanceChanged(requestId: string): void {
@@ -3475,6 +3504,10 @@ export class AuthQueue {
     const acceptance = this.candidateAcceptanceForRequest(request);
     const refusal = acceptance && candidateAcceptanceRefusal(acceptance, request.id);
     if (refusal) throw new AuthQueueError("merge_check_failed", `${refusal} No protected state changed.`);
+    if (acceptance) {
+      try { acceptedReleaseSelection(this.db, request, listAuthRequestActions(this.db, request.id), false); }
+      catch (error) { throw new AuthQueueError('merge_check_failed', `Accepted package selection is not ready: ${error instanceof Error ? error.message : String(error)}`); }
+    }
     return request;
   }
 

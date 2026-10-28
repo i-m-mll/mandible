@@ -63,9 +63,25 @@ The result's existing string `receipt` field carries
 `resolveAcceptedRelease(reference, expectedCandidate)` verifies that exact
 receipt, evidence, custody identity, whole app and shipped inventory/provenance;
 it returns `{receipt, app, resources}` or refuses. It never selects a newer run
-or rebuilds bytes. An old authority supplies no acceptance row/request IDs to
-the harness, so those two fields are null; authorized activation must bind the
-exact external acceptance row and its `result.receipt` in the frozen request.
+or rebuilds bytes.
+
+The daemon binds a passing acceptance automatically as one `checkpoint_add`
+action with `kind: accepted-release`, targeted at the request-bound delivery
+work unit's canonical issue. The verdict, selection, and system `revised`
+lifecycle event commit atomically before readiness is broadcast. The selection
+is covered by the ordinary approval signature. Approval checks the exact
+candidate, receipt and evidence without hashing the app in the daemon; frozen
+execution verifies and installs the selected bytes without rebuilding.
+Retries replace an untouched system-derived selection in place. A veto, manual
+edit, or deletion is preserved and requires explicit reconciliation. Stale
+request, candidate, lifecycle, or custody changes fail finalization.
+
+For the first upgrade from a legacy authority only, a prearmed custodian uses
+`scripts/stage-accepted-release.mjs` after acceptance passes, with the normal
+credential, lifecycle revision and custody-generation checks. That old daemon
+cannot bind atomically, and supplies null acceptance row/request IDs to the
+harness. The helper binds its exact external row and `result.receipt` before
+approval. Once upgraded, subsequent deliveries use automatic binding.
 
 Retention is one app per passing acceptance, owned by the delivery work unit.
 These directories are durable release material, not cache entries. Generic

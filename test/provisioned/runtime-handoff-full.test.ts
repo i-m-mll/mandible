@@ -371,8 +371,10 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     const secondAccepted = readBootstrapAcceptanceEvidence(db, second.id)!;
     const secondRetained = resolveAcceptedRelease(secondAccepted.result.receipt);
     const secondDetail = await readBootstrapDelivery(agentApi, second.id);
-    const secondAction = await fetch(`${baseUrl}/api/auth/request/${second.id}/actions`, { method: 'POST', headers: { ...agentApi.headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'checkpoint_add', target_issue_ref: secondIssue.id, payload: { kind: 'accepted-release', payload: { acceptanceId: secondAccepted.id, reference: secondAccepted.result.receipt } }, expected_revision: secondDetail.lifecycle_events.at(-1)!.revision, expected_custody_generation: secondDetail.lifecycle_events.at(-1)!.custody_generation }) });
-    expect(secondAction.ok, JSON.stringify(await secondAction.json())).toBe(true);
+    const secondSelections = db.prepare("SELECT target_issue_ref, payload FROM auth_request_actions WHERE auth_request_id = ? AND kind = 'checkpoint_add'")
+      .all(second.id).map((row: any) => ({ ...row, payload: JSON.parse(row.payload) })).filter((row: any) => row.payload.kind === 'accepted-release');
+    expect(secondSelections).toEqual([{ target_issue_ref: secondIssue.id, payload: { kind: 'accepted-release', payload: { acceptanceId: secondAccepted.id, reference: secondAccepted.result.receipt } } }]);
+    expect(secondDetail.lifecycle_events.at(-1)).toMatchObject({ event_type: 'revised', authority_path: 'system', evidence_method: 'system_internal' });
     requirePrivateCredential();
     await approveBootstrapDelivery(operatorApi, second.id);
     await waitForDelivery(second.id);

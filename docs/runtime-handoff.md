@@ -13,8 +13,10 @@ managed runner. Hook status 75 means handoff pending; it never means convergence
 is complete.
 
 New developer deliveries freeze an exact passing acceptance row and immutable
-package receipt through an ordinary signed checkpoint action. See
-[accepted package delivery](accepted-package-delivery.md) for selection staging.
+package receipt through an ordinary signed checkpoint action. Acceptance binds
+that action automatically before exposing readiness. See
+[accepted package delivery](accepted-package-delivery.md) for the automatic path
+and the first legacy upgrade's custodian bridge.
 The helper waits for the exact old process and its start identity to disappear,
 removes its owned legacy or native service definitions, and installs the retained
 signed app without rebuilding. Native services start only after the durable
