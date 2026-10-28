@@ -161,7 +161,7 @@ async function exercisePreviewLifecycle(legacy = false) {
   db.exec(`CREATE TABLE instance_registrations (instance_id TEXT PRIMARY KEY, installation_id TEXT, role TEXT,
     public_origin TEXT, backend_origin TEXT, backend_generation TEXT, effect_ceiling_json TEXT, writable_roots_json TEXT, updated_at INTEGER)`);
   fs.mkdirSync(path.join(repository, 'scripts')); fs.mkdirSync(path.join(repository, 'src'));
-  for (const name of ['bun-runtime.sh', 'bun-runtime-lock.tsv', 'sqlite-runtime-install.mjs']) fs.copyFileSync(path.join(sourceRoot, 'scripts', name), path.join(repository, 'scripts', name));
+  for (const name of ['bun-runtime.sh', 'bun-runtime-lock.tsv', 'sqlite-runtime-install.mjs', 'installed-release.mjs']) fs.copyFileSync(path.join(sourceRoot, 'scripts', name), path.join(repository, 'scripts', name));
   fs.copyFileSync(path.join(sourceRoot, 'src/sqlite-runtime.ts'), path.join(repository, 'src/sqlite-runtime.ts'));
   fs.copyFileSync(path.join(sourceRoot, '.bun-version'), path.join(repository, '.bun-version'));
   fs.writeFileSync(path.join(repository, 'package.json'), '{}');
@@ -390,7 +390,7 @@ async function exercisePreviewLifecycle(legacy = false) {
 }
 
 test('owned setup reuses its run, refresh preserves private edits, interrupted refresh retries, and teardown retires its serving route', () => exercisePreviewLifecycle());
-test('legacy owner adoption preserves runtime and both native profiles, retries partial bindings and uses ordinary refresh', { timeout: 15000 }, () => exercisePreviewLifecycle(true));
+test('legacy owner adoption preserves runtime and both native profiles, retries partial bindings and uses ordinary refresh', () => exercisePreviewLifecycle(true));
 
 async function legacyNative(parent, root, live) {
   fs.mkdirSync(root); const profile = path.join(root, 'profile'); fs.mkdirSync(profile);
