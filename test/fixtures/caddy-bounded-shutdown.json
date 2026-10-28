@@ -1,0 +1,64 @@
+{
+  "evidence": {
+    "reference": "artifact-version:831590f40d90",
+    "sha256": "b73cc259b352be91773f3fa1335f827b9e0c36d266210e1a7602ab3be6ae437b",
+    "source": "431b8b39"
+  },
+  "contract": "gateway-connection-shutdown",
+  "graceMs": 1000,
+  "elapsedMs": 1004,
+  "idleConnections": 2,
+  "activeStreams": 2,
+  "finiteResponse": "completed",
+  "exitCode": 0,
+  "shutdown": [
+    {
+      "level": "info",
+      "ts": 1793227771.284276,
+      "msg": "shutting down apps, then terminating",
+      "signal": "SIGTERM"
+    },
+    {
+      "level": "warn",
+      "ts": 1793227771.284287,
+      "msg": "exiting; byeee!! 👋",
+      "signal": "SIGTERM"
+    },
+    {
+      "level": "info",
+      "ts": 1793227771.284309,
+      "logger": "http",
+      "msg": "servers shutting down; grace period initiated",
+      "duration": 1
+    },
+    {
+      "level": "error",
+      "ts": 1793227772.28515,
+      "logger": "http",
+      "msg": "server shutdown",
+      "error": "server graceful shutdown 1s timeout",
+      "addresses": [
+        "127.0.0.1:59488",
+        "[::1]:59488"
+      ]
+    },
+    {
+      "level": "error",
+      "ts": 1793227772.285138,
+      "logger": "http",
+      "msg": "server shutdown",
+      "error": "server graceful shutdown 1s timeout",
+      "addresses": [
+        "127.0.0.1:59487",
+        "[::1]:59487"
+      ]
+    },
+    {
+      "level": "info",
+      "ts": 1793227772.285295,
+      "msg": "shutdown complete",
+      "signal": "SIGTERM",
+      "exit_code": 0
+    }
+  ]
+}
