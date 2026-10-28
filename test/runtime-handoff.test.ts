@@ -169,9 +169,9 @@ it('resumes an installed-before-launch interruption through the same recorded at
   });
   const desktop = vi.fn(async () => { effects.push('desktop'); });
   const observe = vi.fn(async (journal, options) => {
-    expect(options.observationMs).toBe(0);
-    while (options.live.through() === null) await Promise.resolve();
-    return { bindingDigest: journal.bindingDigest, evidence: { processes: identities }, files: {} };
+    expect(desktop).toHaveBeenCalledOnce();
+    expect(options.until).toBe(journal.attempt.deadline);
+    return { schema: 'mandible-runtime-receipt@2', bindingDigest: journal.bindingDigest, services: identities };
   });
   const options = { actor: { provider: 'fixture' }, prepare, install, control, desktop, observe, verifyPublication: vi.fn(async () => {}) };
   const first = await runRuntimeHandoffWorker(f.file, options);
@@ -180,7 +180,7 @@ it('resumes an installed-before-launch interruption through the same recorded at
   const resumed = await runRuntimeHandoffWorker(f.file, options);
   expect(resumed.attempt.id).toBe(first.attempt.id);
   expect(resumed).toMatchObject({ phase: 'complete', error: 'original failure', failure: f.journal.failure,
-    attempt: { state: 'complete', receipt: { schema: 'mandible-runtime-receipt@1', attemptId: first.attempt.id } } });
+    attempt: { state: 'complete', fence: { reason: 'terminal-completion' }, receipt: { schema: 'mandible-runtime-receipt@2', attemptId: first.attempt.id } } });
   expect(effects).toEqual(['prepare', 'drain', 'replace', 'prepare', 'services', 'desktop']);
   await runRuntimeHandoffWorker(f.file, options);
   expect(desktop).toHaveBeenCalledOnce(); expect(observe).toHaveBeenCalledOnce();

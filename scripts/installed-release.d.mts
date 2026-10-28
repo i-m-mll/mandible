@@ -7,6 +7,7 @@ export interface InstalledRelease {
   entrypoints: Record<'daemon' | 'cli' | 'channel' | 'controller' | 'trustSetup' | 'service', string>;
   native: Record<'bun' | 'sqlite' | 'caddy' | 'claude' | 'trustHelper' | 'serviceHelper', string>;
   serviceExecutables?: Record<'backend' | 'gateway', 'bun' | 'caddy'>;
+  serviceControlProtocol?: 2;
   resources?: Record<string, string>;
   signing: Record<string, string>;
   files: Record<string, { sha256: string; size: number }>;

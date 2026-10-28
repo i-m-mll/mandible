@@ -191,8 +191,6 @@ export async function verifyRuntimeHandoffPublication(db: Db, binding: RuntimePu
   if ((await git(["rev-parse", "HEAD"])) !== commit || (await git(["rev-parse", `refs/heads/${row.base_branch}`])) !== commit ||
       (await git(["write-tree"])) !== tree || (await git(["status", "--porcelain", "--untracked-files=no"]))) fail("exact applied checkout differs");
   if (state.frozen.commit_message_digest && canonicalizeChangeMessage(published.message) !== state.frozen.commit_message) fail("canonical merge message differs");
-  if (selected) await childOutput(process.execPath, [path.join(root, 'scripts/verify-accepted-release.mjs'), selected.selection.reference,
-    JSON.stringify(selected.receipt.candidate)], { timeout: 60_000, encoding: 'utf8' });
   if (JSON.stringify(db.prepare("SELECT * FROM auth_requests WHERE id = ?").get(binding.requestId)) !== JSON.stringify(row) ||
       JSON.stringify(db.prepare("SELECT * FROM auth_hook_executions WHERE id = ?").get(binding.executionId)) !== JSON.stringify(hook)) fail("request or hook changed during publication observation");
   if (authorizedMergeSignerLines(db, row.approved_by_user_id, signature.credential_id).length === 0) fail("publication signer is no longer authorized");

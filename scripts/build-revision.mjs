@@ -103,7 +103,7 @@ export function readBuildRevision(root) {
   return marker.commit;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && path.basename(process.argv[1]) === 'build-revision.mjs' && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const command = process.argv[2];
   if (command === "source-paths") process.stdout.write(`${SOURCE_PATHS.join("\n")}\n`);
