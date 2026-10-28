@@ -16,12 +16,12 @@ PATH="$(dirname "$runtime"):$PATH" "$runtime" run candidate-acceptance -- \
 
 The project and delivery work unit come from the live Mandible registry. The coordinator supplies its integration work unit for the final gate. No preview, installed application, LaunchAgent, or production database is restarted or replaced.
 
-The separate route-cost sweep measures handlers against a copied snapshot of the
-live ledger. The packaged runtime phase uses a fresh isolated home and fixture
+The representative route-cost sweep measures handlers against one full, unpruned
+snapshot of the live ledger, with applicable projected conversation caches. The packaged runtime phase uses a fresh isolated home and fixture
 ledger. This gate therefore includes production-data coverage through the sweep,
 while keeping packaged runtime state isolated.
 
-The command builds the finalized application through the installed-release assembler, verifies its signature, resource inventory and candidate provenance, then starts the application's shipped Bun/daemon and Caddy directly. It does not register or upgrade SMAppService jobs. Daemon, gateway and GUI run with the checkout, dotfiles, Homebrew and developer runtime stores denied, and the application read-only. It verifies the exact instance, generation, startup commit and epoch. It creates an operator fixture through that daemon's private socket. The packaged webview uses an isolated, nonpersistent browser store, opens Settings, changes the app theme, and checks the persisted preference revision. The window remains open through a full event-loop diagnostics interval. Daemon and native logs are assessed after owned processes stop, including shutdown.
+The command builds the finalized application through the installed-release assembler, verifies its signature, resource inventory and candidate provenance, then starts the application's shipped Bun/daemon and Caddy directly. It does not register or upgrade SMAppService jobs. Daemon, gateway and GUI run with the checkout, dotfiles, Homebrew and developer runtime stores denied, and the application read-only. It verifies the exact instance, generation, startup commit and epoch. It creates an operator fixture through that daemon's private socket. The packaged webview uses an isolated, nonpersistent browser store, opens Settings, changes the app theme, and checks the persisted preference revision. The window remains open until a fresh completed production diagnostics interval covers the actual end of the interaction. The ordinary 30-second production sampler is unchanged; acceptance adds no fixed soak after the interaction. Daemon and native logs are assessed after owned processes stop, including shutdown.
 
 The packaged app runs unattended: in acceptance mode its window is never shown, never takes focus, and the app has no Dock icon or menu bar (macOS activation policy `Prohibited`, set before launch). The webview still loads and drives the dashboard.
 
@@ -131,6 +131,58 @@ errors and non-HTTP event storms retain their acceptance policy. Aggregate HTTP
 method/route volume is diagnostic: bounded counts, peaks and statuses remain in
 the evidence without treating independent healthy clients as a feedback loop. A failed assessment never authorizes rerunning a protected merge.
 
+## Bounded verification
+
+Final verification budgets are source checks at most 10 seconds, the separate
+native fixture at most 20 seconds, and automatic package/runtime acceptance at
+most 60 seconds including a 5-second cleanup and receipt reserve. Their aggregate
+budget is at most 90 seconds, with a roughly 60-second target. These are limits,
+not measured timings or a claim that qualification has run.
+
+The executor establishes one absolute 60-second deadline before checkout,
+runtime resolution, and frozen dependency preparation. It passes that deadline
+to the candidate's own script. Retained-package binding and acceptance-row
+finalization after the script share that deadline; a binding overrun rolls back
+the passing verdict and selection. Every nested command consumes the remaining
+budget; the script stops active work before the cleanup reserve. A legacy
+installed executor cannot retroactively bound preparation before it starts the
+candidate script or binding after it exits: that first result explicitly
+identifies its cap as candidate-script scope. Report the actual acceptance row's start-to-finish time
+separately from the script elapsed time. A deadline, stale health reading,
+incomplete required data, failed request, or incomplete cleanup fails the gate.
+
+Acceptance builds and signs the application once through `tauri:build` and the
+installed-release assembler. After exact packaged readiness, passive health
+probes run while a representative sweep uses at most 20 seconds including its
+own preparation and cleanup. The sweep classifies the whole router catalog,
+then selects required variants from its existing request plans. One source
+preview lifetime serves first and warm passes; there is no second ledger
+snapshot, restore, fixed idle baseline, or confirmation loop. Explicit full
+sweeps and confirmations remain diagnostic tools.
+
+Required variants are Timeline default and closed, existing Graph modes at
+limit 120, artifacts limit 500 and series summary limit 200, auth queue,
+heaviest eligible umbrella status, largest eligible session overview, heaviest
+briefing detail, conversation sidebar limit 50 and full-text search, largest
+eligible indexed conversation structure and blocks limit 200, and all work
+units. Existing eligible entity selectors retain their source freshness and
+readability requirements. Reports include full table counts, selected entity
+sizes, and returned/available paging counts. An advertised continuation adds
+one measured continuation page in that family. A valid first page or fast
+completion is sufficient when no continuation is advertised; internal batching
+invariants remain unit-test responsibilities.
+
+Any required first or warm call reaching 100 ms of event-loop drift fails;
+production health retains its 250 ms limit. Packaged Settings interaction runs
+only after route timing. The final health observer uses zero additional soak
+and the remaining active budget, requiring a fresh completed interval covering
+the interaction, valid contiguous sequences, stable startup epoch, and existing
+performance checks. Missing the next production tick fails within the original
+deadline instead of extending it. Phase results, partial route readings,
+bounded stderr, cleanup outcome and the durable owned-run receipt remain
+available on failure. The finished application that ran supplies exact package
+evidence and retained release custody.
+
 ## Diagnostic replay
 
 For an authorized investigation, the same packaged execution pipeline can reuse
@@ -144,7 +196,7 @@ bun scripts/candidate-acceptance.mjs --project <project> --work-unit <unit> \
 This verifies the failed run's package digest, candidate and shipped inventory,
 then skips all builds and the route sweep. The unchanged GUI/setup/health checks
 run with Bun CPU profiling and the private-socket stall probe/native sampler.
-The runtime has a 90-second deadline. Output always has schema
+The same total 60-second deadline and cleanup reserve apply to the diagnostic runtime. Output always has schema
 `mandible-candidate-diagnostic@1`, status `diagnostic`, and `qualifying: false`;
 it exits nonzero and cannot supply passing candidate acceptance or an accepted
 release. `observation_status` records the underlying check verdict.
