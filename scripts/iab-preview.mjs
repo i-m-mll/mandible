@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { withOwnedRunLock, createOwnedRun, saveOwnedMetadata, finalizeOwnedRun, cleanupOwnedRun, ownedRunIdentityMatches, ownedRunHandle, ownedRunReceipt, processIdentity } from "./owned-run.mjs";
 import { previewPaths, previewBaseDir, nativePreviewBaseDir, verifyPreviewConsumerStopped } from "./preview-custody.mjs";
 import { adoptLegacyPreview } from './preview-legacy.mjs';
-import { previewRegistration, reconcilePreviewRegistration } from './preview-registration.mjs';
+import { previewRegistration, reconcilePreviewRegistration, retirePreviewRegistration } from './preview-registration.mjs';
 import { serviceInstallationContext } from './service-definitions.mjs';
 import { readBundleOwner, readBundleLaunch, admitBundleOwner } from './bundle-services.mjs';
 import { installedRuntimeEnvironment, readInstalledRelease, releaseFile } from './installed-release.mjs';
@@ -1368,6 +1368,14 @@ async function refreshExistingPreview(existing, details) {
   const validated = validateRefreshContract(existing, preview, details);
   const run = existing.ownership;
   if (run.lifecycle.teardown) throw new Error("Teardown intent prevents refresh");
+  if (run.lifecycle.phase === 'refresh-failed') {
+    await stopPreviewProcess(existing);
+    await retirePreviewRegistration({ home: mandibleHome(), runId: run.runId,
+      registrations: [run.lifecycle.registration, run.lifecycle.refresh?.previous, run.lifecycle.refresh?.desired],
+      reload: details.options.effects?.reloadGateway ?? reloadLocalFrontDoor });
+    run.lifecycle.phase = 'failed-stopped';
+    persistPreview(existing);
+  }
   const previous = ['failed-stopped', 'retired'].includes(run.lifecycle.phase) ? null : run.lifecycle.registration;
   delete existing.message;
   delete existing.previousStartupCommit;
