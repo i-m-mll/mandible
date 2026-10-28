@@ -6,7 +6,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthQueue } from "../src/auth-queue.js";
 import type { RuntimeHandoffJournal } from "../src/auth-hooks.js";
-import { validateRuntimeSource, verifyRuntimeHandoffPublication, verifyRuntimeHandoffAuthority } from "../src/runtime-handoff-proof.js";
+import { validateRuntimeSource, verifyRuntimeHandoffPublication, freezeRuntimeHandoffPublication, verifyRuntimeHandoffAuthority } from "../src/runtime-handoff-proof.js";
 import { mintApiToken } from "../src/client-auth/tokens.js";
 import { addOrUpdateCheckout } from "../src/ledger/project-registry.js";
 import { getAttributionEvidence } from "../src/users/store.js";
@@ -110,7 +110,7 @@ describe("protected delivery evidence", () => {
     expect(hooks.getRun(request.id, run.hook_id)?.state).toBe("running");
     const binding = { requestId: request.id, executionId: run.id, hookId: run.hook_id, commandDigest: run.command_digest, root: repo };
     const receipt = { schema: "mandible-runtime-receipt@1", bindingDigest: "a".repeat(64), attemptId: "current-attempt", health: "candidate" };
-    journal = { schema: "mandible-runtime-handoff@1", binding: { ...binding, ...(await verifyRuntimeHandoffPublication(db, binding)) },
+    journal = { schema: "mandible-runtime-handoff@1", binding: { ...binding, ...(await freezeRuntimeHandoffPublication(db, binding)) },
       bindingDigest: "a".repeat(64), phase: "failed", error: "historical prelaunch failure",
       attempt: { id: receipt.attemptId, actor: {}, enteredAt: 1, deadline: 2, state: "complete", effects: {}, receipt,
         receiptDigest: createHash("sha256").update(JSON.stringify(receipt)).digest("hex") }, cleanup: { state: "pending" } };
@@ -165,7 +165,7 @@ describe("protected delivery evidence", () => {
     expect(hooks.convergence(next.id).state).toBe("pending");
   });
 
-  it("keeps frozen authority after checkout movement while refusing new publication and corrupt proof", async () => {
+  it("settles frozen publication evidence after the real checkout disappears while initial admission and corrupt proof refuse", async () => {
     (await queue.dispose());
     const hooks = createInstalledServiceHookManager(db);
     db.prepare("UPDATE auth_hooks SET repo_pattern = ?, command = ? WHERE id = ?").run("*", "exit 75", "builtin-mandible-rebuild");
@@ -177,7 +177,10 @@ describe("protected delivery evidence", () => {
     const legacyOutput = publication.output.split("\n").find(line => line.startsWith("MANDIBLE_MERGE_RESULT "))!;
     db.prepare("UPDATE auth_requests SET output = ?, merge_preflight_base_sha = NULL, merge_candidate_tree_sha = NULL, merge_candidate_pin_sha = NULL, merge_atomic_enabled = 0 WHERE id = ?").run(legacyOutput, request.id);
     const binding = { requestId: request.id, executionId: run.id, hookId: run.hook_id, commandDigest: run.command_digest, root: repo };
-    const proof = (await verifyRuntimeHandoffPublication(db, binding));
+    const originalRequest = db.prepare("SELECT status, execution_evidence_id FROM auth_requests WHERE id = ?").get(request.id);
+    const proof = (await freezeRuntimeHandoffPublication(db, binding));
+    expect(db.prepare("SELECT status, execution_evidence_id FROM auth_requests WHERE id = ?").get(request.id)).toEqual(originalRequest);
+    expect((await freezeRuntimeHandoffPublication(db, { ...binding, ...proof })).publicationEvidence).toEqual(proof.publicationEvidence);
     expect(proof).toMatchObject({ mergeCommit: publication.mergeSha, mergeBase: request.merge_preflight_base_sha, mergeHead: request.merge_head_sha, frozenCandidate: { tree: request.merge_candidate_tree_sha } });
     const restore = tamperLooseGitObject(repo, publication.mergeSha, object => { object[object.indexOf(Buffer.from("\n\n")) + 2]! ^= 1; });
     try { await expect((async () => (await verifyRuntimeHandoffPublication(db, { ...binding, ...proof }))())).rejects.toThrow("does not match its object id"); }
@@ -187,10 +190,31 @@ describe("protected delivery evidence", () => {
     await expect((async () => (await verifyRuntimeHandoffPublication(db, { ...binding, source: { root: repo, commonGitDir: git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]), head: request.merge_head_sha!, buildRevision: request.merge_head_sha!, compiledDigest: "f".repeat(64), dependencies: { root: repo, digest: "f".repeat(64) }, files: {}, runtime: { path: process.execPath, sha256: "f".repeat(64) } } }))())).rejects.toThrow("unregistered");
     git(repo, ["update-ref", "refs/heads/main", request.merge_preflight_base_sha!, publication.mergeSha]);
     await expect((async () => (await verifyRuntimeHandoffPublication(db, { ...binding, ...proof }))())).rejects.toThrow("checkout differs");
-    await expect(verifyRuntimeHandoffAuthority(db, { ...binding, ...proof })).resolves.toMatchObject(proof);
-    await expect(verifyRuntimeHandoffAuthority(db, binding)).rejects.toThrow("frozen publication");
-    await expect(verifyRuntimeHandoffAuthority(db, { ...binding, ...proof,
-      frozenCandidate: { ...proof.frozenCandidate, snapshotDigest: "f".repeat(64) } })).rejects.toThrow("frozen proof binding differs");
+    const moved = `${repo}-unavailable`;
+    fs.renameSync(repo, moved);
+    try {
+      expect(fs.existsSync(repo)).toBe(false);
+      await expect(verifyRuntimeHandoffPublication(db, { ...binding, ...proof })).rejects.toThrow();
+      await expect(verifyRuntimeHandoffAuthority(db, { ...binding, ...proof })).resolves.toMatchObject(proof);
+      await expect(verifyRuntimeHandoffAuthority(db, binding)).rejects.toThrow("frozen publication");
+      await expect(verifyRuntimeHandoffAuthority(db, { ...binding, ...proof,
+        publicationEvidence: { ...proof.publicationEvidence, digest: "f".repeat(64) } })).rejects.toThrow("frozen publication evidence differs");
+      await expect(verifyRuntimeHandoffAuthority(db, { ...binding, ...proof,
+        publicationEvidence: { ...proof.publicationEvidence, evidenceId: "missing-publication-record" } })).rejects.toThrow("frozen publication evidence differs");
+      await expect(verifyRuntimeHandoffAuthority(db, { ...binding, ...proof,
+        frozenCandidate: { ...proof.frozenCandidate, snapshotDigest: "f".repeat(64) } })).rejects.toThrow("frozen proof binding differs");
+      db.prepare("UPDATE user_credentials SET status = 'revoked' WHERE id = ?").run(proof.frozenCandidate.signerCredentialId);
+      await expect(verifyRuntimeHandoffAuthority(db, { ...binding, ...proof })).rejects.toThrow("signer is no longer authorized");
+      db.prepare("UPDATE user_credentials SET status = 'active' WHERE id = ?").run(proof.frozenCandidate.signerCredentialId);
+      const adoption = queue as unknown as { adoptRuntimePublication: (retained: typeof binding, frozen: typeof proof) => Promise<() => void> };
+      const commitAdoption = await adoption.adoptRuntimePublication({ ...binding, ...proof }, proof);
+      db.transaction(commitAdoption).immediate();
+      expect(await queue.getRequest(request.id)).toMatchObject({ status: "completed", exit_code: 0,
+        execution_evidence_id: proof.publicationEvidence.evidenceId, merge_candidate_tree_sha: proof.frozenCandidate.tree });
+      const adopted = db.prepare("SELECT * FROM auth_requests WHERE id = ?").get(request.id);
+      db.transaction(await adoption.adoptRuntimePublication({ ...binding, ...proof }, proof)).immediate();
+      expect(db.prepare("SELECT * FROM auth_requests WHERE id = ?").get(request.id)).toEqual(adopted);
+    } finally { fs.renameSync(moved, repo); }
   });
 
 
@@ -381,7 +405,7 @@ describe('runtime convergence recovery', () => {
     const run = hooks.getRun(request.id, 'builtin-mandible-rebuild')!;
     db.prepare("UPDATE auth_hook_executions SET state = 'failed' WHERE id = ?").run(run.id);
     const binding = { requestId: request.id, executionId: run.id, hookId: run.hook_id, commandDigest: run.command_digest, root: repo };
-    journal = { schema: 'mandible-runtime-handoff@1', binding: { ...binding, ...(await verifyRuntimeHandoffPublication(db, binding)) }, bindingDigest: 'a'.repeat(64), phase: 'failed' };
+    journal = { schema: 'mandible-runtime-handoff@1', binding: { ...binding, ...(await freezeRuntimeHandoffPublication(db, binding)) }, bindingDigest: 'a'.repeat(64), phase: 'failed' };
     const credential = mintApiToken(db, 'private-pepper', operatorId).credential;
     const actor = { user_id: operatorId, credential_id: credential.id, evidence_method: 'api_token' as const, authority_path: 'operator_recovery' as const };
     return { hooks, request, run, issue, actor, observation, recheck, ack, restart, journal, persist };

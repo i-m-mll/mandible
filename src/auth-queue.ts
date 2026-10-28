@@ -66,7 +66,7 @@ import {
 } from "./auth-change-message.js";
 import type { AuthHook, RebuildFailure } from "./types.js";
 import type { RuntimePublicationBinding } from "./runtime-handoff-proof.js";
-import { validateRuntimeSource, verifyRuntimeHandoffPublication } from "./runtime-handoff-proof.js";
+import { validateRuntimeSource, verifyRuntimeHandoffAuthority } from "./runtime-handoff-proof.js";
 import { runtimeHandoffLockRefusal, type RuntimeHandoffLock } from "../scripts/runtime-handoff-lock.mjs";
 import { runtimeHandoffDisposition } from "../scripts/runtime-observation.mjs";
 import { authRequestChangesBuildInputs } from "./runtime-build-scope.js";
@@ -762,31 +762,37 @@ export class AuthQueue {
   }
 
   /** Only an exact verified first-upgrade receipt may restore legacy cleared candidate fields. */
-  private async adoptRuntimePublication(binding: RuntimePublicationBinding, proof: Awaited<ReturnType<typeof verifyRuntimeHandoffPublication>>): Promise<() => void> {
+  private async adoptRuntimePublication(binding: RuntimePublicationBinding, proof: Awaited<ReturnType<typeof verifyRuntimeHandoffAuthority>>): Promise<() => void> {
     const request = this.requireRequest(binding.requestId);
     const observed = this.observationToken(request.id, request);
-    // The reconciliation caller just verified this exact proof. The returned
-    // commit callback still compares the request observation before mutation.
-    if (request.status === 'completed' && request.exit_code === 0) {
-      if (request.merge_preflight_base_sha !== proof.mergeBase || request.merge_head_sha !== proof.mergeHead || request.merge_candidate_tree_sha !== proof.frozenCandidate.tree || (await this.successfulMergeEvidenceFailure(request))) throw new Error('Completed publication does not exactly match retained runtime proof.');
-      return () => this.assertObservation(request.id, observed);
-    }
+    const reference = proof.publicationEvidence;
+    const evidence = getAttributionEvidence(this.db, reference.evidenceId);
+    if (!evidence || evidence.evidence_method !== 'credential_signature' || evidence.details.runtime_publication_digest !== reference.digest
+        || evidence.details.commit_sha !== proof.mergeCommit || evidence.details.auth_request_id !== request.id
+        || evidence.details.verified !== true || evidence.details.publication_verified !== true
+        || evidence.credential_id !== proof.frozenCandidate.signerCredentialId) throw new Error('Frozen publication evidence differs before adoption.');
+    const guard = () => {
+      this.assertObservation(request.id, observed);
+      this.assertPublicationAuthority(this.requireRequest(request.id), evidence.credential_id);
+    };
+    if (request.status === 'completed' && request.exit_code === 0 && request.execution_evidence_id === reference.evidenceId
+        && request.merge_preflight_base_sha === proof.mergeBase && request.merge_head_sha === proof.mergeHead
+        && request.merge_candidate_tree_sha === proof.frozenCandidate.tree) return guard;
     const priorSnapshot = authRequestSnapshot(this.db, request.id);
     const prepared = extractAtomicMergeState(request.output).prepared;
     const output = prepared ? request.output : `${request.output}\nMANDIBLE_MERGE_PREPARED ${JSON.stringify({ merge_sha: proof.mergeCommit, base_sha: proof.mergeBase, head_sha: proof.mergeHead, tree_sha: proof.frozenCandidate.tree })}\nMANDIBLE_MERGE_APPLIED ${JSON.stringify({ merge_sha: proof.mergeCommit, base_sha: proof.mergeBase })}`;
-    const commitEvidence = await this.prepareSuccessfulSignatureEvidence({ ...request, status: "completed", exit_code: 0, output, merge_preflight_base_sha: proof.mergeBase, merge_head_sha: proof.mergeHead, merge_candidate_tree_sha: proof.frozenCandidate.tree });
     return () => {
-      this.assertObservation(request.id, observed);
-    this.db.prepare("UPDATE auth_requests SET status = 'completed', exit_code = 0, merge_preflight_base_sha = ?, merge_head_sha = ?, merge_candidate_tree_sha = ?, merge_atomic_enabled = 1, output = ?, resolved_at = COALESCE(resolved_at, ?), updated_at = ? WHERE id = ?").run(
-      proof.mergeBase, proof.mergeHead, proof.frozenCandidate.tree, output, this.now(), this.now(), request.id,
-    );
-    const evidenced = commitEvidence(this.requireRequest(request.id));
-    appendAuthLifecycleEvent(this.db, {
-      requestId: request.id, eventType: request.status === "completed" ? "revised" : "completed", priorStatus: request.status, nextStatus: "completed", priorSnapshot,
-      actor: { user_id: systemAction().user_id, evidence_method: "execution_evidence", evidence_id: evidenced.execution_evidence_id, authority_path: "system" },
-      reason: "Adopted exact signed publication and externally verified first-upgrade runtime receipt; no merge replay.", occurredAt: this.now(),
-    });
-      };
+      guard();
+      const changed = this.db.prepare("UPDATE auth_requests SET status = 'completed', exit_code = 0, merge_preflight_base_sha = ?, merge_head_sha = ?, merge_candidate_tree_sha = ?, merge_atomic_enabled = 1, output = ?, execution_evidence_id = ?, resolved_at = COALESCE(resolved_at, ?), updated_at = ? WHERE id = ? AND execution_evidence_id IS ?").run(
+        proof.mergeBase, proof.mergeHead, proof.frozenCandidate.tree, output, reference.evidenceId, this.now(), this.now(), request.id, request.execution_evidence_id,
+      );
+      if (changed.changes !== 1) throw new Error('Publication evidence pointer changed before adoption.');
+      appendAuthLifecycleEvent(this.db, {
+        requestId: request.id, eventType: request.status === "completed" ? "revised" : "completed", priorStatus: request.status, nextStatus: "completed", priorSnapshot,
+        actor: { user_id: systemAction().user_id, evidence_method: "execution_evidence", evidence_id: reference.evidenceId, authority_path: "system" },
+        reason: "Adopted exact signed publication and externally verified first-upgrade runtime receipt; no merge replay.", occurredAt: this.now(),
+      });
+    };
   }
 
   /** Bug: 4db692a — whether the daemon is shutting down for a self-merge rebuild. */
