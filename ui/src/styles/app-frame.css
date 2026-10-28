@@ -1,4 +1,5 @@
 .app-frame {
+  --app-chrome-text-increment: var(--app-chrome-dark-text-increment);
   --app-chrome-tint-percentage: var(--app-chrome-dark-tint-percentage);
   --surface-glass-tint: color-mix(in srgb, var(--surface-chrome) var(--app-chrome-tint-percentage), transparent);
   --app-boundary-shadow-paint-width: var(--app-shadow-dark-width);
@@ -116,6 +117,7 @@
   pointer-events: none;
 }
 [data-theme='light'] .app-frame {
+  --app-chrome-text-increment: var(--app-chrome-light-text-increment);
   --app-chrome-tint-percentage: var(--app-chrome-light-tint-percentage);
   --app-boundary-shadow-paint-width: var(--app-shadow-light-width);
   --app-boundary-shadow-gradient-stops: var(--app-shadow-light-linear);

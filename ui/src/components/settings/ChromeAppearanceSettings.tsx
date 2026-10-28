@@ -34,7 +34,7 @@ function ParameterInput({ name, field, controller, percent = false, helper, disa
       <input className="settings-view__number-input" type="number" aria-label={`${name} value`} min={limits.min * scale} max={limits.max * scale} step={limits.step * scale}
         disabled={disabled}
         value={draft} onInput={(event) => update(event.currentTarget.value)} onBlur={() => setDraft(String(value))} />
-      <span aria-hidden="true">{percent ? '%' : field === 'widthPx' ? 'px' : ''}</span>
+      <span aria-hidden="true">{percent ? '%' : field === 'widthPx' ? 'px' : field === 'textIncrementPt' ? 'pt' : ''}</span>
     </div>
   </div>;
 }
@@ -62,6 +62,8 @@ export function ChromeAppearanceSettings({ controller }: { controller: ChromeApp
     <ParameterInput name="Maximum darkness" field="maxDarkness" controller={controller} percent />
     <ParameterInput name="Liquid Glass transparency" field="glassTransparency" controller={controller} percent disabled={!controller.liquidGlassAvailable}
       helper={controller.liquidGlassAvailable ? 'Higher values reveal more native glass through the chrome tint.' : 'Available in the macOS preview window.'} />
+    <ParameterInput name="UI font size" field="textIncrementPt" controller={controller}
+      helper="Points added to sidebar and top-bar text. Content text and icons keep their size." />
     {controller.theme === 'dark' && controller.themes.dark.maxDarkness === 0 ? <p className="settings-view__select-desc" data-settings-searchable>Dark shadow is off</p> : null}
     <div className="chrome-appearance-settings__export" data-settings-searchable>
       <div className="chrome-appearance-settings__actions">

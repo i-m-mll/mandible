@@ -63,7 +63,7 @@ describe('preview chrome appearance controls', () => {
     expect((screen.getByLabelText('Liquid Glass transparency value') as HTMLInputElement).value).toBe('100');
     fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
     expect((screen.getByLabelText('Liquid Glass transparency value') as HTMLInputElement).value).toBe('12');
-    expect(JSON.parse(window.localStorage.getItem(key)!).overrides).toEqual({ dark: { widthPx: 12, profile: 1, maxDarkness: 0.42, glassTransparency: 0.65 } });
+    expect(JSON.parse(window.localStorage.getItem(key)!).overrides).toEqual({ dark: { widthPx: 12, profile: 1, maxDarkness: 0.42, glassTransparency: 0.65, textIncrementPt: 2 } });
   });
 
   it('reacts to the existing native capability owner and removes the material when Regular glass becomes unavailable', async () => {
@@ -97,12 +97,15 @@ describe('preview chrome appearance controls', () => {
     const { container, rerender, unmount } = render(<Harness />);
     const frame = container.querySelector<HTMLElement>('.app-frame')!;
     const originalFrame = frame;
+    fireEvent.input(screen.getByRole('slider', { name: 'UI font size' }), { target: { value: '3.25' } });
+    expect(frame.style.getPropertyValue('--app-chrome-light-text-increment')).toBe('3.25pt');
     fireEvent.input(screen.getByRole('slider', { name: 'Width' }), { target: { value: '12.25' } });
     expect(frame.style.getPropertyValue('--app-shadow-light-width')).toBe('12.25px');
     expect((screen.getByRole('spinbutton', { name: 'Width value' }) as HTMLInputElement).value).toBe('12.25');
     fireEvent.input(screen.getByRole('spinbutton', { name: 'Profile value' }), { target: { value: '1' } });
     expect(frame.style.getPropertyValue('--app-shadow-light-linear')).toBe('rgba(0, 0, 0, 0) 0px, rgba(0, 0, 0, 0.04) 12.25px');
     fireEvent.change(screen.getByLabelText('Preview theme'), { target: { value: 'dark' } });
+    fireEvent.input(screen.getByRole('spinbutton', { name: 'UI font size value' }), { target: { value: '4.5' } });
     fireEvent.input(screen.getByRole('slider', { name: 'Maximum darkness' }), { target: { value: '42.1' } });
     expect(frame.style.getPropertyValue('--app-shadow-dark-linear')).toContain('0.421');
     expect(screen.queryByText('Dark shadow is off')).toBeNull();
@@ -114,7 +117,11 @@ describe('preview chrome appearance controls', () => {
     unmount();
     render(<Harness />);
     expect((screen.getByLabelText('Maximum darkness value') as HTMLInputElement).value).toBe('42.1');
-    expect(JSON.parse(window.localStorage.getItem(key)!)).toMatchObject({ theme: 'dark', overrides: { light: { widthPx: 12.25, profile: 1 }, dark: { maxDarkness: 0.421 } } });
+    expect((screen.getByLabelText('UI font size value') as HTMLInputElement).value).toBe('4.5');
+    expect(JSON.parse(window.localStorage.getItem(key)!)).toMatchObject({ theme: 'dark', overrides: { light: { widthPx: 12.25, profile: 1, textIncrementPt: 3.25 }, dark: { maxDarkness: 0.421, textIncrementPt: 4.5 } } });
+    fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
+    expect((screen.getByLabelText('UI font size value') as HTMLInputElement).value).toBe('2');
+    expect(JSON.parse(window.localStorage.getItem(key)!).overrides).toEqual({ light: { widthPx: 12.25, profile: 1, maxDarkness: 0.04, glassTransparency: 0.12, textIncrementPt: 3.25 } });
   });
 
   it('resets only the edited override and exports both effective themes without local bookkeeping', async () => {
@@ -125,10 +132,10 @@ describe('preview chrome appearance controls', () => {
     fireEvent.change(screen.getByLabelText('Preview theme'), { target: { value: 'light' } });
     fireEvent.input(screen.getByLabelText('Width value'), { target: { value: '8' } });
     fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
-    expect(JSON.parse(window.localStorage.getItem(key)!)).toEqual({ ...JSON.parse(seeded), theme: 'light', overrides: { dark: { widthPx: 12, profile: 1, maxDarkness: 0.42, glassTransparency: 0.12 } } });
+    expect(JSON.parse(window.localStorage.getItem(key)!)).toEqual({ ...JSON.parse(seeded), theme: 'light', overrides: { dark: { widthPx: 12, profile: 1, maxDarkness: 0.42, glassTransparency: 0.12, textIncrementPt: 2 } } });
     fireEvent.click(screen.getByRole('button', { name: 'Copy parameters' }));
     await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Parameters copied.'));
-    const exported = { version: 1, light: { widthPx: 16, profile: 0.25, maxDarkness: 0.04, glassTransparency: 0.12 }, dark: { widthPx: 12, profile: 1, maxDarkness: 0.42, glassTransparency: 0.12 } };
+    const exported = { version: 1, light: { widthPx: 16, profile: 0.25, maxDarkness: 0.04, glassTransparency: 0.12, textIncrementPt: 2 }, dark: { widthPx: 12, profile: 1, maxDarkness: 0.42, glassTransparency: 0.12, textIncrementPt: 2 } };
     expect(JSON.parse(writeText.mock.calls[0]![0])).toEqual(exported);
     expect(JSON.parse((screen.getByLabelText('Chrome parameters') as HTMLTextAreaElement).value)).toEqual(exported);
     writeText.mockRejectedValue(new Error('clipboard denied'));
