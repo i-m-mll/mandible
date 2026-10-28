@@ -539,7 +539,6 @@ export function inspectHandoffEvidence(binding, expectedProcesses = null) {
     if (runtimeProcessChanged(expected, identity)) {
       throw new RuntimeObservationError('process_changed', `Candidate ${name} process exited or was unloaded.`, { job, expected });
     }
-    if ((!job.pid || name === 'backend' && !expected?.pid) && job.lastExit && job.lastExit !== NEVER_EXITED) throw new RuntimeObservationError('startup_failed', `Candidate ${name} process exited before readiness.`, { job });
     if (!job.pid) { waiting = `Candidate ${name} launch is not yet confirmed.`; continue; }
     if (!identity.startedAt) {
       if (expected?.pid) throw new RuntimeObservationError('process_changed', `Candidate ${name} process exited.`, { job, expected });
@@ -571,6 +570,27 @@ export function inspectHandoffEvidence(binding, expectedProcesses = null) {
     daemonLog: { path: logPath, dev: log.dev, ino: log.ino, size: log.size } };
   if (waiting) throw new RuntimeObservationError('starting', waiting, evidence, 'pending');
   return evidence;
+}
+
+/** Bind a real current incarnation to the recorded recovery launch, never to exit history. */
+export function qualifyRecoveryHandoffProcesses(journal, { until = Date.now() + 5000 } = {}) {
+  const { binding, launch, recoveryStart } = journal;
+  if (!recoveryStart || recoveryStart.id !== launch?.id || recoveryStart.enteredAt !== launch.enteredAt) throw new Error('Recovery launch identity changed.');
+  const context = bundleContext(binding);
+  const inspection = matchingServiceDefinitions(inspectServiceDefinitionsSync(context));
+  if (!inspection.ok) throw new Error(inspection.refusal.message);
+  const processes = {};
+  for (const observation of inspection.observations) {
+    const role = observation.service;
+    const current = readBundleProcess(context, role, { until });
+    if (runtimeProcessChanged(launch.processes?.[role], current)) throw new RuntimeObservationError('process_changed', `Recovery ${role} process changed.`, { expected: launch.processes?.[role], current });
+    if (!current?.pid || !current.startedAt) throw new RuntimeObservationError('starting', `Recovery ${role} process is not yet confirmed.`, null, 'pending');
+    if (!Number.isFinite(Date.parse(current.startedAt)) || Date.parse(current.startedAt) < Math.floor(launch.enteredAt / 1000) * 1000) {
+      throw new RuntimeObservationError('process_changed', `Recovery ${role} predates its authorized launch.`, { current, enteredAt: launch.enteredAt });
+    }
+    processes[role] = current;
+  }
+  return inspectHandoffEvidence(binding, processes).processes;
 }
 
 export async function verifyHandoffDefinitions(binding, { until = Date.now(), awaitReady = false, expectedProcesses = null, expectedServing = false,
@@ -1230,12 +1250,14 @@ async function mainLocked() {
     const untilIndex = args.indexOf('--until');
     const until = untilIndex >= 0 ? Number(args[untilIndex + 1]) : Date.now();
     if (!Number.isFinite(until)) throw new Error('Runtime handoff verification requires a numeric --until deadline.');
+    const recoveryQualified = journal.recoveryStart?.qualifiedAt && journal.recoveryStart.id === journal.launch?.id;
+    const expectedProcesses = journal.phase === 'failed' && !recoveryQualified ? null : journal.launch?.processes;
     const result = command === 'handoff-install' ? installAcceptedApplication(journal.binding, bundleContext(journal.binding))
       : command === 'handoff-remove' ? await removeHandoffDefinitions(journal.binding)
       : command === 'handoff-start' ? await startHandoffDefinitions(journal.binding, { until: journal.deadline, processes: { ...journal.launch?.processes } })
-        : command === 'handoff-evidence' ? inspectHandoffEvidence(journal.binding, journal.phase === 'failed' ? null : journal.launch?.processes)
+        : command === 'handoff-evidence' ? inspectHandoffEvidence(journal.binding, expectedProcesses)
           : await verifyHandoffDefinitions(journal.binding, { until, awaitReady: args.includes('--await-ready'),
-            expectedProcesses: journal.phase === 'failed' ? null : journal.launch?.processes,
+            expectedProcesses,
             expectedServing: !!journal.launch?.readyAt || ['failed', 'complete', 'acknowledged'].includes(journal.phase) });
     process.stdout.write(`${JSON.stringify(result ?? { removed: true })}\n`);
     return;

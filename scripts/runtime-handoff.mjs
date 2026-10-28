@@ -452,7 +452,7 @@ function recordVerificationFailure(journal, error) {
   return journal;
 }
 function bindLaunchedProcesses(journal, evidence) {
-  if (!journal.launch || journal.phase === 'failed') return;
+  if (!journal.launch || journal.phase === 'failed' && !(journal.recoveryStart?.qualifiedAt && journal.recoveryStart.id === journal.launch.id)) return;
   if (!evidence.processes) return;
   for (const [name, identity] of Object.entries(evidence.processes)) {
     if (journal.launch.processes?.[name] && JSON.stringify(journal.launch.processes[name]) !== JSON.stringify(identity)) {
@@ -761,10 +761,15 @@ async function startRecoveryPackage(journal, until, token) {
   return JSON.parse(result.stdout);
 }
 
+async function recoveryCurrentProcesses(journal) {
+  const { qualifyRecoveryHandoffProcesses } = await import('./local-runtime.mjs');
+  return qualifyRecoveryHandoffProcesses(journal);
+}
+
 /** Start one exact approved installed package without rewriting its retained failure. */
 export async function startFailedRuntimeHandoff(file, { bindingDigest: expected, actor }, {
   verifyPublication = publication, inspectInstalled = recoveryInstalledPackage, helperQuiescent = recoveryHelperQuiescent,
-  start = startRecoveryPackage, desktop = restoreDesktop, now = Date.now,
+  start = startRecoveryPackage, qualify = recoveryCurrentProcesses, desktop = restoreDesktop, now = Date.now,
 } = {}) {
   const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
   let journal = readRuntimeHandoff(raw.binding.home, raw.binding.requestId, raw.binding.executionId);
@@ -789,9 +794,17 @@ export async function startFailedRuntimeHandoff(file, { bindingDigest: expected,
       ...(journal.binding.desktopWasRunning ? { desktopPrior: desktopIdentities(journal.binding.nativeApp) } : {}) }, recoveryStart: attempt });
     try {
       const result = await start(journal, attempt.deadline, token);
+      let processes;
+      for (;;) {
+        try { processes = await qualify(journal); break; }
+        catch (error) {
+          if (!observationPending(error) || now() >= attempt.deadline) throw error;
+          await sleep(Math.min(25, attempt.deadline - now()));
+        }
+      }
       unchangedJournal(journal);
-      save(journal, { launch: { ...journal.launch, processes: result.processes },
-        recoveryStart: { ...attempt, state: 'started', completedAt: now(), result } });
+      save(journal, { launch: { ...journal.launch, processes },
+        recoveryStart: { ...attempt, state: 'started', qualifiedAt: now(), completedAt: now(), result: { ...result, processes } } });
     } catch (error) {
       unchangedJournal(journal);
       save(journal, { recoveryStart: { ...attempt, state: 'failed', completedAt: now(), error: pendingMetadata(error) } });
@@ -805,7 +818,7 @@ export async function startFailedRuntimeHandoff(file, { bindingDigest: expected,
 /** Continue the actual desktop relaunch after a successful recovery service start. */
 export async function restoreFailedRuntimeHandoffDesktop(file, { bindingDigest: expected, actor }, {
   verifyPublication = publication, helperQuiescent = recoveryHelperQuiescent,
-  inspectInstalled = journal => recoveryInstalledPackage(journal, { allowRunning: true }), desktop = restoreDesktop,
+  inspectInstalled = journal => recoveryInstalledPackage(journal, { allowRunning: true }), qualify = recoveryCurrentProcesses, desktop = restoreDesktop,
 } = {}) {
   const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
   let journal = readRuntimeHandoff(raw.binding.home, raw.binding.requestId, raw.binding.executionId);
@@ -823,7 +836,10 @@ export async function restoreFailedRuntimeHandoffDesktop(file, { bindingDigest: 
       throw new Error('Installed recovery package or owner changed.');
     }
     unchangedJournal(journal);
-    save(journal, { recoveryStart: { ...journal.recoveryStart, desktopRequestedBy: actor } });
+    const processes = await qualify(journal);
+    unchangedJournal(journal);
+    save(journal, { launch: { ...journal.launch, processes }, recoveryStart: { ...journal.recoveryStart,
+      result: { ...journal.recoveryStart.result, processes }, qualifiedAt: Date.now(), desktopRequestedBy: actor } });
     await desktop(journal);
     return journal;
   });

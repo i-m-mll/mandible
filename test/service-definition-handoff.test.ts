@@ -147,10 +147,17 @@ it('checks every bound role for absence before inspecting the remaining service 
     .toThrowError(expect.objectContaining({ code: 'process_changed' }));
 });
 
-it('does not qualify a backend that already crashed and restarted before readiness', async () => {
-  const { controller, binding, backend, jobs } = await fixture();
-  jobs.get(backend.Label)!.lastExit = '1';
-  expect(() => controller.inspectHandoffEvidence(binding)).toThrowError(expect.objectContaining({ code: 'startup_failed' }));
+it('qualifies a live owned process despite historical exit status and refuses its later replacement or exit', async () => {
+  const { controller, binding, backend, gateway, jobs, files } = await fixture();
+  for (const record of [backend, gateway]) fs.writeFileSync(files.get(record.Label)!, JSON.stringify(record));
+  fs.writeFileSync(backend.StandardErrorPath, '');
+  jobs.get(backend.Label)!.lastExit = '0';
+  const evidence = controller.inspectHandoffEvidence(binding);
+  expect(evidence.processes.backend).toMatchObject({ pid: 41, startedAt: 'old-start', runs: 1 });
+  jobs.set(backend.Label, { record: backend, pid: 42, lastExit: '0' });
+  expect(() => controller.inspectHandoffEvidence(binding, evidence.processes)).toThrowError(expect.objectContaining({ code: 'process_changed' }));
+  jobs.delete(backend.Label);
+  expect(() => controller.inspectHandoffEvidence(binding, evidence.processes)).toThrowError(expect.objectContaining({ code: 'process_changed' }));
 });
 
 it('returns strictly qualified process evidence when health remains pending', async () => {

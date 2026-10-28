@@ -55,7 +55,8 @@ it('durably records one recovery start for an approved installed package while p
     return { processes: { backend: { pid: 42 } } };
   });
   const options = { helperQuiescent: vi.fn(), verifyPublication: vi.fn(async () => ({ mergeCommit: 'approved' })),
-    inspectInstalled: vi.fn(() => ({ packageSha256: 'exact', owner: { installationId: 'owner' } })), start, now: () => 1000 };
+    inspectInstalled: vi.fn(() => ({ packageSha256: 'exact', owner: { installationId: 'owner' } })), start,
+    qualify: vi.fn(() => ({ backend: { pid: 42 }, gateway: { pid: 43 } })), now: () => 1000 };
   const intent = { bindingDigest: failed.bindingDigest, actor: { provider: 'test' } };
   expect(await startFailedRuntimeHandoff(file, intent, options)).toMatchObject({ phase: 'failed', error: failed.error,
     failure: failed.failure, deadline: 1, recoveryStart: { state: 'started' }, launch: { processes: { backend: { pid: 42 } } } });
@@ -93,7 +94,8 @@ it('continues desktop recovery only for the same approved started package and at
       recoveryStart: { desktopRequestedBy: actor } });
   });
   const options = { helperQuiescent: vi.fn(), verifyPublication: vi.fn(async () => undefined),
-    inspectInstalled: () => ({ packageSha256: 'changed', owner: { id: 'owned' } }), desktop };
+    inspectInstalled: () => ({ packageSha256: 'changed', owner: { id: 'owned' } }),
+    qualify: () => ({ backend: { pid: 42 }, gateway: { pid: 43 } }), desktop };
   await expect(restoreFailedRuntimeHandoffDesktop(file, { bindingDigest: journal.bindingDigest, actor }, options)).rejects.toThrow('package or owner changed');
   expect(desktop).not.toHaveBeenCalled();
   expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual(journal);
