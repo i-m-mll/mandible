@@ -18,11 +18,12 @@ import { serviceInstallationContext, parseLoadedService, loadedServiceMatches, o
 import { installationRuntime, servicePath, readServiceConfiguration, publishServiceConfiguration, validateServiceConfiguration } from "./service-configuration.mjs";
 import { withInstallationGatewayLock, assertLifecycleLockHeld } from './lifecycle-lock.mjs';
 import { RUNTIME_HEALTH_PROBE_INTERVAL_MS } from './runtime-probe-cadence.mjs';
-import { RuntimeObservationError } from './runtime-observation.mjs';
+import { RuntimeObservationError, runtimeProcessChanged } from './runtime-observation.mjs';
 import { reloadGatewayConfiguration, gatewayAdminNeedsRestart } from './gateway-admin.mjs';
 export { parseLoadedService, loadedServiceMatches } from "./service-definitions.mjs";
 
 import { readBundleOwner, nativeServiceControl, readBundleLaunch, bundleLoginSession } from './bundle-services.mjs';
+import { reconcileBundleServiceStart, BUNDLE_SERVICE_START_TIMEOUT_MS } from './bundle-service-start.mjs';
 import { verifyAcceptedApplication, inspectAcceptedApplication, installAcceptedApplication } from './accepted-app-install.mjs';
 
 const ACCOUNT_HOME = os.userInfo().homedir;
@@ -370,7 +371,12 @@ export async function removeHandoffDefinitions(binding) {
   }
 }
 
-export async function startHandoffDefinitions(binding) {
+function readBundleProcess(context, role) {
+  const job = inspectJob(context[`${role}Label`]);
+  return job.loaded && job.pid ? { pid: job.pid, startedAt: processStart(job.pid), runs: job.runs } : null;
+}
+
+export async function startHandoffDefinitions(binding, { until = Date.now() + BUNDLE_SERVICE_START_TIMEOUT_MS, processes = {} } = {}) {
   assertHandoffInstallation(binding);
   if (binding.acceptedRelease) {
     const accepted = verifyAcceptedApplication(binding);
@@ -381,10 +387,10 @@ export async function startHandoffDefinitions(binding) {
     fs.writeFileSync(path.join(RUNTIME_DIR, 'bundle-launch.json'), JSON.stringify({ enabled: true, gatewayEnabled: true, launchMode: binding.priorBackend.launchMode, session: bundleLoginSession() }), { mode: 0o600 });
     await configureGateway(root);
     for (const role of ['backend', 'gateway']) {
-      const result = nativeServiceControl(context, 'register', role);
-      if (result.status !== 'enabled') throw new RuntimeObservationError('background_permission_required', 'Allow Mandible background services in System Settings.', result, 'pending');
+      const result = await reconcileBundleServiceStart(context, role, { until, control: nativeServiceControl, readProcess: readBundleProcess, processes });
+      if (!result.ok) throw result.error;
     }
-    return { started: [BACKEND_LABEL, GATEWAY_LABEL], packageSha256: accepted.receipt.package.sha256 };
+    return { started: [BACKEND_LABEL, GATEWAY_LABEL], packageSha256: accepted.receipt.package.sha256, processes };
   }
   if (readBuildRevision(binding.root) !== binding.mergeCommit) throw new Error('Runtime handoff build differs from its applied merge.');
   if (await gatewayAdminNeedsRestart(HOME)) {
@@ -528,19 +534,16 @@ export function inspectHandoffEvidence(binding, expectedProcesses = null) {
   let waiting = null;
   for (const [name, job] of [['backend', backendJob], ['gateway', gatewayJob]]) {
     const expected = expectedProcesses?.[name];
-    if ((!job.loaded && expected?.pid) || (!job.pid && expected?.pid)) {
+    const identity = job.pid ? { pid: job.pid, startedAt: processStart(job.pid), runs: job.runs } : null;
+    if (runtimeProcessChanged(expected, identity)) {
       throw new RuntimeObservationError('process_changed', `Candidate ${name} process exited or was unloaded.`, { job, expected });
     }
     if ((!job.pid || name === 'backend' && !expected?.pid) && job.lastExit && job.lastExit !== NEVER_EXITED) throw new RuntimeObservationError('startup_failed', `Candidate ${name} process exited before readiness.`, { job });
     if (!job.pid) { waiting = `Candidate ${name} launch is not yet confirmed.`; continue; }
-    const identity = { pid: job.pid, startedAt: processStart(job.pid), runs: job.runs };
     if (!identity.startedAt) {
       if (expected?.pid) throw new RuntimeObservationError('process_changed', `Candidate ${name} process exited.`, { job, expected });
       waiting = `Candidate ${name} launch is not yet confirmed.`;
       continue;
-    }
-    if (expected?.pid && (expected.pid !== identity.pid || expected.startedAt !== identity.startedAt || identity.runs > expected.runs)) {
-      throw new RuntimeObservationError('process_changed', `Candidate ${name} process was replaced.`, { expected, current: identity });
     }
     processes[name] = identity;
   }
@@ -1207,6 +1210,7 @@ async function mainLocked() {
     const status = await bundleRuntimeCommand(command, { context: INSTALLATION, release: installedRelease, launchMode,
       initialize: initializeMainRegistration, inspect: inspectRuntime, configureGateway,
       previewCount: registeredPreviewCount, reloadGateway: () => reloadCaddy(process.env.MANDIBLE_CADDY),
+      readProcess: readBundleProcess,
       restartGateway: () => { observeOwnedService('gateway'); restartOwnedJob(GATEWAY_LABEL); },
       waitReady: mode => waitForRuntime(OPERATION_TIMEOUT_MS, mode) });
     process.stdout.write(`${JSON.stringify(status)}\n`);
@@ -1227,7 +1231,7 @@ async function mainLocked() {
     if (!Number.isFinite(until)) throw new Error('Runtime handoff verification requires a numeric --until deadline.');
     const result = command === 'handoff-install' ? installAcceptedApplication(journal.binding, bundleContext(journal.binding))
       : command === 'handoff-remove' ? await removeHandoffDefinitions(journal.binding)
-      : command === 'handoff-start' ? await startHandoffDefinitions(journal.binding)
+      : command === 'handoff-start' ? await startHandoffDefinitions(journal.binding, { until: journal.deadline, processes: { ...journal.launch?.processes } })
         : command === 'handoff-evidence' ? inspectHandoffEvidence(journal.binding, journal.phase === 'failed' ? null : journal.launch?.processes)
           : await verifyHandoffDefinitions(journal.binding, { until, awaitReady: args.includes('--await-ready'),
             expectedProcesses: journal.phase === 'failed' ? null : journal.launch?.processes,

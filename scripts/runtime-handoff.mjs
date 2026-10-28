@@ -25,7 +25,7 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const fileHash = file => hash(fs.readFileSync(file));
 const CONTROLLER_MODULES = ['lifecycle-lock.mjs', 'process-lock.mjs', 'canonical-origin.mjs', 'build-revision.mjs', 'local-ca-trust.mjs',
-  'pinned-caddy.mjs', 'gateway-admin.mjs', 'runtime-environment.mjs', 'service-definitions.mjs', 'service-configuration.mjs', 'runtime-probe-cadence.mjs', 'runtime-observation.mjs', 'installed-release.mjs', 'bundle-services.mjs', 'bundle-service-roles.mjs', 'bundle-services.json', 'accepted-release.mjs', 'accepted-app-install.mjs', 'owned-run.mjs', 'verify-accepted-release.mjs'];
+  'pinned-caddy.mjs', 'gateway-admin.mjs', 'runtime-environment.mjs', 'service-definitions.mjs', 'service-configuration.mjs', 'runtime-probe-cadence.mjs', 'runtime-observation.mjs', 'installed-release.mjs', 'bundle-services.mjs', 'bundle-service-start.mjs', 'bundle-service-roles.mjs', 'bundle-services.json', 'accepted-release.mjs', 'accepted-app-install.mjs', 'owned-run.mjs', 'verify-accepted-release.mjs'];
 const STAGED_HANDOFF_FILES = ['desktop-relaunch.sh', 'sqlite.mjs', 'proof.mjs', 'controller.mjs', 'helper.mjs', ...CONTROLLER_MODULES];
 
 export function stageHandoffController(root, dir) {
@@ -926,7 +926,7 @@ export async function runRuntimeHandoffWorker(file, {
         if (now() >= journal.deadline) throw new Error('Initial handoff execution budget exhausted before launch.');
         unchangedJournal(journal);
         save(journal, { phase: 'starting', launch: { id: randomBytes(12).toString('hex'), enteredAt: now() } });
-        await control(journal, 'handoff-start', false, { until: journal.deadline });
+        await readControllerEvidence(journal, 'handoff-start', false, { until: journal.deadline }, control);
       }
       try { await inspectEvidence(); }
       catch (error) {

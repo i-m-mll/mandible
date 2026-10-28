@@ -14,6 +14,11 @@ export class RuntimeObservationError extends Error {
 
 export const observationPending = error => error instanceof RuntimeObservationError && error.outcome === 'pending';
 
+export function runtimeProcessChanged(expected, current) {
+  return !!expected?.pid && (!current?.pid || !current.startedAt || expected.pid !== current.pid
+    || expected.startedAt !== current.startedAt || current.runs > expected.runs);
+}
+
 export function decodeObservationError(text) {
   let value;
   try { value = JSON.parse(text); } catch { return null; }

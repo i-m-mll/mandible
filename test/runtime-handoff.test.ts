@@ -176,7 +176,7 @@ function recoveryFixture(logLines: (processStartedAt: string, fakeStart: number)
 
 const startupLine = (processStartedAt: string) => JSON.stringify({ message: 'server_started', time: new Date(Date.parse(processStartedAt) + 1000).toISOString() });
 
-it('binds strictly qualified process evidence returned before health is ready', async () => {
+it.each(['start-success', 'start-pending', 'verify-pending'])('binds strictly qualified process evidence before health is ready (%s)', async source => {
   const f = recoveryFixture(startedAt => [startupLine(startedAt)]);
   const binding = { ...f.failed.binding, oldProcess: { pid: 987653, startedAt: 'gone' } };
   const file = path.join(handoffDirectory(binding.home, binding.requestId, binding.executionId), 'journal.json');
@@ -188,8 +188,10 @@ it('binds strictly qualified process evidence returned before health is ready', 
   const result = await runRuntimeHandoffWorker(file, { verifyPublication: async () => {},
     stage: async () => { fs.appendFileSync(path.join(path.dirname(file), 'convergence.log'), 'fixture stage\n'); },
     control: async (_journal, command) => {
+      if (command === 'handoff-start' && source === 'start-success') return JSON.stringify({ processes });
+      if (command === 'handoff-start' && source === 'start-pending') throw new RuntimeObservationError('registration_inconsistent', 'Registration pending.', { processes }, 'pending');
       if (command === 'handoff-evidence') throw new RuntimeObservationError('starting', 'Unqualified launcher.', { refusal: { executable: 'xpcproxy' } }, 'pending');
-      if (command === 'handoff-verify') throw new RuntimeObservationError('starting', 'Health is not ready.', { processes }, 'pending');
+      if (command === 'handoff-verify') throw new RuntimeObservationError('starting', 'Health is not ready.', source === 'verify-pending' ? { processes } : {}, 'pending');
       return '{}';
     },
   });

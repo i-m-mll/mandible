@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { admitBundleOwner, bundleLaunchAllowed, bundleRuntimeCommand, readBundleOwner } from '../scripts/bundle-services.mjs';
 import { serviceInstallationContext } from '../scripts/service-definitions.mjs';
+import { RuntimeObservationError } from '../scripts/runtime-observation.mjs';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
@@ -23,6 +24,8 @@ function fixture() {
     inspect, waitReady: inspect, previewCount: () => 0, reloadGateway: () => { events.push('reload-gateway'); },
     configureGateway: () => { events.push('gateway-config'); return { adminRestartRequired: false }; },
     restartGateway: () => { events.push('restart-gateway'); },
+    readProcess: () => null,
+    startService: async (_: unknown, role: string) => { events.push(`register:${role}`); return { ok: true }; },
     observe: () => ({ ok: true, observations: [] }),
     control: (_: unknown, operation: string, role: string) => { if (operation !== 'status') events.push(`${operation}:${role}`); return { status: 'not_registered' }; },
   };
@@ -62,10 +65,11 @@ it('keeps manual starts within their login session and never overrides native de
   const { options, events } = fixture();
   await bundleRuntimeCommand('start', options);
   events.length = 0;
-  const result = await bundleRuntimeCommand('start', { ...options, control: (_: unknown, operation: string) => {
+  await expect(bundleRuntimeCommand('start', { ...options,
+    startService: async () => ({ ok: false, error: new RuntimeObservationError('background_permission_required', 'Allow background services.', null, 'pending') }),
+    control: (_: unknown, operation: string) => {
     if (operation !== 'status') events.push(operation);
     return { status: 'requires_approval' };
-  } });
-  expect(result.state).toBe('background_permission_required');
+  } })).rejects.toMatchObject({ code: 'background_permission_required', outcome: 'pending' });
   expect(events).not.toContain('unregister');
 });

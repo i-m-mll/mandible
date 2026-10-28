@@ -6,6 +6,7 @@ import { assertLifecycleLockHeld, processIdentity } from './lifecycle-lock.mjs';
 import { inspectServiceDefinitionsSync } from './service-definitions.mjs';
 import { readServiceConfiguration, publishServiceConfiguration } from './service-configuration.mjs';
 import { readInstalledRelease, releaseFile } from './installed-release.mjs';
+import { reconcileBundleServiceStart, BUNDLE_SERVICE_START_TIMEOUT_MS } from './bundle-service-start.mjs';
 
 const ownerFile = context => path.join(context.runtimeDir, 'bundle-owner.json');
 const launchFile = context => path.join(context.runtimeDir, 'bundle-launch.json');
@@ -82,15 +83,12 @@ export function nativeServiceControl(context, operation, role) {
   if (result.error || result.status !== 0) throw new Error(`Native ${role} ${operation} failed: ${result.stderr || result.error?.message}`);
   const status = JSON.parse(result.stdout);
   if (status.service !== role || status.label !== context[`${role}Label`] || !['not_registered', 'enabled', 'requires_approval', 'not_found'].includes(status.status)) throw new Error('Native service returned invalid identity/status.');
-  if (operation === 'register' && status.status === 'enabled' && status.registration_changed === false) {
-    const started = spawnSync('/bin/launchctl', ['kickstart', `${context.domain}/${status.label}`], { encoding: 'utf8', timeout: 2500 });
-    if (started.error || started.status !== 0) throw new Error(`Cannot start the registered ${role}: ${started.stderr || started.error?.message}`);
-  }
   return status;
 }
 
 export async function bundleRuntimeCommand(command, { context, release, launchMode, initialize, inspect, configureGateway,
-  reloadGateway, restartGateway, previewCount, waitReady,
+  reloadGateway, restartGateway, previewCount, waitReady, readProcess,
+  startService = reconcileBundleServiceStart, registrationUntil = Date.now() + BUNDLE_SERVICE_START_TIMEOUT_MS,
   control = nativeServiceControl, session = bundleLoginSession, observe = inspectServiceDefinitionsSync }) {
   if (control === nativeServiceControl && (context.home !== path.join(os.userInfo().homedir, '.mandible')
       || context.accountHome !== os.userInfo().homedir || process.env.MANDIBLE_INSTANCE_ROLE === 'preview')) {
@@ -98,6 +96,7 @@ export async function bundleRuntimeCommand(command, { context, release, launchMo
   }
   if (!['status', 'start', 'stop', 'restart', 'install', 'repair', 'remove', 'configure-launch-mode', 'reload-gateway', 'background-settings'].includes(command)) throw new Error('Unsupported bundle lifecycle operation.');
   const mutating = command !== 'status';
+  const processes = {};
   const admission = admitBundleOwner(context, release, { relocation: command === 'repair' });
   if (!admission.ok) throw new Error(admission.message);
   const relocating = command === 'repair' && admission.owner?.bundleRoot !== undefined && admission.owner.bundleRoot !== context.bundleRoot;
@@ -146,11 +145,13 @@ export async function bundleRuntimeCommand(command, { context, release, launchMo
     if (enabled) {
       const before = await inspect({ launchMode });
       if (before.status.state === 'port_conflict' || before.backendPortOpen && !before.backendJob.loaded) throw new Error('A listener is not owned by this installation; preserving it.');
-      control(context, 'register', 'backend');
+      const backend = await startService(context, 'backend', { until: registrationUntil, control, observe, readProcess, processes });
+      if (!backend.ok) throw backend.error;
       const current = await inspect({ launchMode });
       if (!current.trusted.error) {
         const gateway = await configureGateway(current.production.root);
-        control(context, 'register', 'gateway');
+        const startedGateway = await startService(context, 'gateway', { until: registrationUntil, control, observe, readProcess, processes });
+        if (!startedGateway.ok) throw startedGateway.error;
         if (inspection.observations.some(item => item.service === 'gateway' && item.job.loaded) && !relocating) {
           if (gateway.adminRestartRequired) restartGateway();
           else reloadGateway();

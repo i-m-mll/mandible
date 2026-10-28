@@ -44,6 +44,29 @@ readiness. Ordinary local OS-user access has no expiring session.
 
 ## Lifecycle and delivery boundary
 
+Registration and job startup use `reconcileBundleServiceStart` for both desktop
+operations and accepted-package activation. SMAppService `enabled` does not prove
+that the named launchd job exists. An absent job is observed again on the existing
+runtime cadence; it is never kickstarted. `not_found` and `not_registered` admit
+one registration attempt per observed state transition. Only an exact owned native
+definition admits start, and a running owned job needs no kickstart. Permission
+denial and foreign/mismatched definitions remain refusals.
+
+One deadline covers registration reconciliation across both roles and all native
+state transitions. Accepted activation passes the original journal deadline into
+the initial `handoff-start`; it does not stop after a shorter observation window
+and leave a needed registration to verification-only recovery. Interactive startup
+uses one 20-second registration budget.
+Failure to converge returns typed `registration_inconsistent` pending evidence
+containing native status, owned-job observations and attempted actions. It does
+not unregister, reinstall, reset the budget or alter the retained delivery journal.
+The runtime's existing generation/health evidence still decides readiness.
+Unqualified launcher PID/birth/run observations remain diagnostic. Strictly owned
+process identities use the shared continuity rule and travel with successful or
+pending startup evidence into the existing handoff observer. A qualified process
+cannot disappear, change identity or increase its launch count while a sibling
+is pending without producing a refusal.
+
 `scripts/local-runtime.mjs` selects the bundle adapter only in explicit
 installed context. It retains the installation gateway lock, pending-handoff
 guard, shared service inspector and existing readiness classifier. Source
