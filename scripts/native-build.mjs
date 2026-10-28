@@ -5,6 +5,9 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { nativeProcessGroupMembers } from './native-process-group.mjs';
 import { trackedSourceDigest } from './build-revision.mjs';
+import { verifyInstalledRelease } from './installed-release.mjs';
+import { finalizeAppPayload } from './finalize-app-payload.mjs';
+import { resolveAppSigning, openAppSigner } from './app-signing.mjs';
 
 function command(command, args, cwd) {
   const result = spawnSync(command, args, { cwd, encoding: 'utf8', timeout: 10_000 });
@@ -31,7 +34,7 @@ export function verifyNativeSelection(selected, candidate) {
 }
 
 export function verifyNativeBundle(bundle, candidate) {
-  const marker = JSON.parse(fs.readFileSync(path.join(bundle, 'Contents/Resources/build-revision.json'), 'utf8'));
+  const marker = verifyInstalledRelease(path.join(bundle, 'Contents/Resources')).provenance;
   if (marker.commit !== candidate.commit || marker.source_digest !== candidate.source_digest) {
     throw new Error('Native bundle build identity differs from the selected backend candidate');
   }
@@ -68,17 +71,16 @@ export function stageNativeBuild({ worktree, root, candidate }) {
   const config = JSON.parse(fs.readFileSync(configFile, 'utf8'));
   const generated = path.join(buildRoot, 'generated');
   const bootstrap = path.join(generated, 'bootstrap');
-  const runtime = path.join(generated, 'bun-runtime');
+  const payload = path.join(generated, 'app-payload/Contents');
+  const binaries = path.join(generated, 'binaries');
+  const sqliteLibrary = path.join(generated, 'libsqlite3.dylib');
   const trustHelper = path.join(generated, 'local-ca-trust-helper');
-  const resources = {};
-  for (const [file, destination] of Object.entries(config.bundle.resources)) {
-    const original = path.resolve(worktree, 'src-tauri', file);
-    const generatedFile = file.startsWith('resources/bun-runtime/') ? path.join(runtime, path.basename(file))
-      : file === 'resources/local-ca-trust-helper' ? trustHelper : original;
-    resources[generatedFile] = destination;
-  }
+  const resources = { [path.join(payload, 'Resources') + '/']: './' };
   config.build = { ...config.build, beforeBuildCommand: null, beforeDevCommand: null, frontendDist: bootstrap };
-  config.bundle = { ...config.bundle, resources, targets: ['app'] };
+  config.bundle = { ...config.bundle, resources, targets: ['app'],
+    externalBin: config.bundle.externalBin.map(file => path.join(binaries, path.basename(file))),
+    macOS: { ...config.bundle.macOS, signingIdentity: '-', frameworks: [sqliteLibrary],
+      files: { ...config.bundle.macOS.files, 'Library/LaunchAgents': path.join(payload, 'Library/LaunchAgents') } } };
   fs.writeFileSync(configFile, `${JSON.stringify(config, null, 2)}\n`);
   const bun = command('/bin/sh', [path.join(worktree, 'scripts/bun-runtime.sh')], worktree);
   const temporary = path.join(buildRoot, 'tmp'); fs.mkdirSync(temporary, { recursive: true });
@@ -86,7 +88,8 @@ export function stageNativeBuild({ worktree, root, candidate }) {
     CARGO_TARGET_DIR: path.join(buildRoot, 'target'), CARGO_BUILD_BUILD_DIR: path.join(buildRoot, 'intermediates'),
     TMPDIR: temporary, TMP: temporary, TEMP: temporary, MANDIBLE_DESKTOP_TRUST_CACHE: path.join(buildRoot, 'swift-cache'),
     CARGO_PROFILE_DEV_DEBUG: '0', MANDIBLE_DESKTOP_BOOTSTRAP_DIR: bootstrap,
-    MANDIBLE_DESKTOP_RUNTIME_DIR: runtime, MANDIBLE_DESKTOP_TRUST_HELPER: trustHelper };
+    MANDIBLE_DESKTOP_PAYLOAD_CONTENTS: payload, MANDIBLE_DESKTOP_BINARIES_DIR: binaries,
+    MANDIBLE_DESKTOP_SQLITE_LIBRARY: sqliteLibrary, MANDIBLE_DESKTOP_TRUST_HELPER: trustHelper };
   const toolchain = nativeToolchain(worktree);
   const fingerprint = createHash('sha256').update(JSON.stringify({ candidate, config, toolchain,
     profile: 'dev-debug-0', cargoBuildDir: env.CARGO_BUILD_BUILD_DIR, cargoTargetDir: env.CARGO_TARGET_DIR })).digest('hex');
@@ -151,9 +154,11 @@ export async function buildNativePreview({ worktree, root, candidate, receipt, s
     log: path.join(root, 'build.log'), budgetMs, receipt, save, identity }).then(ms => { receipt.nativeBuild.phases[name] = ms; save(); });
   await phase('prepare', '/bin/sh', [path.join(worktree, 'scripts/make-dist.sh')], worktree, 60_000);
   receipt.nativeBuild.status = 'compiling'; save();
-  await phase('compile', staged.bun, [path.join(worktree, 'node_modules/@tauri-apps/cli/tauri.js'), 'build', '--debug', '--bundles', 'app', '--ci', '--', '--locked',
+  await phase('compile', staged.bun, [path.join(worktree, 'node_modules/@tauri-apps/cli/tauri.js'), 'build', '--debug', '--bundles', 'app', '--no-sign', '--ci', '--', '--locked',
     '--config', `build.build-dir=${JSON.stringify(staged.env.CARGO_BUILD_BUILD_DIR)}`], staged.source, 600_000);
   if (JSON.stringify(nativeCandidate(worktree)) !== JSON.stringify(candidate)) throw new Error('Native candidate sources changed during compilation');
+  const signer = openAppSigner(resolveAppSigning(staged.source, [], {}));
+  try { finalizeAppPayload(staged.bundle, signer); } finally { signer.close(); }
   verifyNativeBundle(staged.bundle, candidate);
   receipt.nativeBuild.status = 'built'; receipt.nativeBuild.bundle = staged.bundle; save();
   return staged.bundle;

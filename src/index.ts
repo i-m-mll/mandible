@@ -106,6 +106,7 @@ import { WorkUnitReconciler } from "./work-unit-reconciler.js";
 import { ChildRetentionScheduler } from "./conversations/retention.js";
 import { defaultCodexNativeArchiveAdapter } from "./conversation-control/codex-native-archive.js";
 import { getChannelRegistry } from "./channel-registry.js";
+import { installedResourceRoot, readInstalledRelease, verifyInstalledRelease } from "../scripts/installed-release.mjs";
 import { materializeCoworkCliCache } from "./cowork-cli-cache.js";
 import { startProtectedBranchGuardProjection } from "./protected-branch-guard.js";
 import type { Logger, StartupCommitInfo } from "./types.js";
@@ -164,6 +165,8 @@ export function startIngestionAfterStartupWorkScan(
 }
 
 export async function startDaemon(options: StartOptions = {}): Promise<DaemonHandle> {
+  const installed = installedResourceRoot();
+  if (installed) verifyInstalledRelease(installed);
   // Bug: 645f8a8 — arm the readiness gate before any startup work. Health
   // reports ready:false from the moment the listener accepts connections until
   // critical init completes below, so a page loaded mid-startup keeps the
@@ -822,6 +825,8 @@ function getPort(): number {
 }
 
 function resolveVersion(): string {
+  const installed = installedResourceRoot();
+  if (installed) return readInstalledRelease(installed).version;
   if (process.env.npm_package_version) {
     return process.env.npm_package_version;
   }
@@ -846,6 +851,11 @@ function resolveMandibleRoot(): string {
 const MANDIBLE_ROOT = resolveMandibleRoot();
 
 function readStartupCommit(logger: Logger): Promise<StartupCommitInfo> {
+  const installed = installedResourceRoot();
+  if (installed) {
+    const { commit, summary, date } = readInstalledRelease(installed).provenance;
+    return Promise.resolve({ hash: commit, summary, date });
+  }
   return new Promise((resolve) => {
     // Run against the mandible repo root with no path filter — every commit
     // here is a mandible commit. The old path (.config/mcp-servers/mandible/)

@@ -1,114 +1,95 @@
 # Installation
 
-Mandible runs as a Bun daemon on your workstation. There's no hosted version --- it's designed to be local-first, managing agent sessions and auth requests for repositories on your machine.
+Mandible runs locally on your Mac. The currently qualified packaged target is
+Apple silicon (arm64) on macOS 15 or later. Linux and Windows packages and an
+ordinary public-release updater are follow-up work, not implemented support.
 
-## System requirements
+## Install the Mac app
 
-- **Bun** at the exact version in `.bun-version`; `scripts/bun-runtime.sh` selects and verifies it
-- **macOS** (primary target; Linux should work but is untested)
-- **git** (for branch scanning, worktree detection, and auth merges)
-- **A C++ toolchain** if `node-pty` needs to compile on your platform
+1. Drag the complete `Mandible.app` bundle into `/Applications`.
+2. Open Mandible. First launch handles the required local runtime and background
+   service setup. Follow any macOS prompts for background-service or local
+   certificate permission.
+3. Continue into the app. The introduction offers **Choose integrations** and
+   **Skip for now**. Either choice lets you keep using Mandible.
 
-### Optional
+The packaged app includes its runtime, commands, and help resources. Running it
+requires no source checkout, Bun installation, personal dotfiles, or instruction
+compiler. Opening Mandible grants the logged-in OS user access; there is no
+login, pairing, or expiring user session. Agent identities and human approval
+requirements remain separate from ordinary local access.
 
-- **YubiKey or GPG signing key** for authenticated merges (the auth queue works without one, but merges won't be cryptographically signed)
-- **Zellij or tmux** for terminal multiplexer integration (session navigation, pane discovery)
-- **Tauri CLI** (`@tauri-apps/cli`) if you want the native macOS desktop wrapper
+## Optional agent connections
 
-## Clone and build
+**Settings → Agent integrations** shows the exact destinations and current state
+of the command-line shortcut, Claude hooks and status line, Claude MCP channel,
+and generic Mandible skills for Claude and Codex. Install only the connections
+you want. You can copy the command or skill without installing it. Restart the
+external agent after changing its integration.
 
-```bash
+The installed public command is:
+
+```sh
+/Applications/Mandible.app/Contents/Resources/bin/mandible help
+```
+
+The optional shortcut is `~/.local/bin/mandible`; that directory must be on your
+shell's `PATH`. Registrations store the installed app's path. If you move the
+app, review the displayed destinations and refresh or explicitly reconfigure
+the affected registrations.
+
+**Settings → Instruction Delivery** controls explicit destinations for the
+generated command reference. With no configured destinations, Mandible edits no
+instruction files. Existing destination lists, modes, and post-export commands
+are preserved. Managed blocks preserve surrounding user text. Symlinks and
+edited standalone files produce ownership conflicts instead of being replaced.
+Your personal skills, roles, worktree conventions, signing policy, and other
+instructions remain yours.
+
+Skipping or completing the optional setup persists across refreshes and app
+restarts. These controls remain available in Settings. An optional integration
+refresh failure is reported separately from required runtime activation.
+
+## Local data
+
+Durable data and configuration, including the ledger, authority, and preferences,
+live under `~/.mandible`. Disposable runtime and preview caches live under
+`~/.cache/mandible`. Replacing the app does not reset that data. The app's
+immutable program files stay inside `Mandible.app`.
+
+The desktop and local browser use `https://app.mandible.localhost:19420`. The
+daemon's private loopback backend defaults to `127.0.0.1:29420`. See
+[local browser access](../guides/local-browser-sessions.mdx).
+
+## Development from source
+
+These commands are for developing Mandible, not installing the packaged app.
+Use Git, the exact Bun revision selected by `scripts/bun-runtime.sh`, and the
+platform toolchains required to build native components. Frozen installs use
+`bun.lock`; SQLite uses the qualified native library through `src/sqlite.ts`.
+See the [Bun runtime contract](../bun-foundation.md).
+
+```sh
 git clone <repo-url> mandible
 cd mandible
 runtime="$(scripts/bun-runtime.sh)"
 export PATH="$(dirname "$runtime"):$PATH"
 "$runtime" install --frozen-lockfile
 "$runtime" run build
+"$runtime" run test
 ```
 
-SQLite uses Bun’s built-in `node:sqlite` through the shared `src/sqlite.ts` boundary. The install retains `node-pty` for pseudo-terminal support; the postinstall script sets its helper permissions. The frozen install consumes `bun.lock`. See [Bun runtime contract](../bun-foundation.md) for the runtime and storage rules.
+`bun run dev` watches daemon TypeScript and UI sources. To create or reuse an
+isolated browser preview, run `bun run iab-preview -- --json`. Source and preview
+instances do not install global agent connections through Settings. The
+preview's instruction-delivery changes stay in its copied database and do not
+edit target files or run post-export commands.
 
-The build step does three things:
+`bun run tauri:build -- --bundles app` assembles and finalizes the Mac app.
+Production qualification uses [exact-candidate acceptance](../candidate-acceptance.md);
+a development build or preview does not substitute for that gate. Existing
+developer installations migrate through the guarded
+[runtime handoff](../runtime-handoff.md), not by opening a second app against
+their live writer.
 
-1. Compiles the daemon TypeScript to `dist/` via `tsc`
-2. Compiles the MCP channel server TypeScript to `dist/channel-server/`
-3. Bundles the Preact SPA into `ui/dist/` via esbuild
-
-## Environment variables
-
-| Variable | Default | Description |
-|---|---|---|
-| `MANDIBLE_PORT` | `29420` | Private loopback HTTP/SSE/WebSocket port the daemon listens on |
-| `MANDIBLE_DB` | `~/.mandible/mandible.db` | Path to the SQLite database |
-| `LOG_LEVEL` | `info` | Logging verbosity: `debug`, `info`, `warn`, `error` |
-
-The daemon binds to `127.0.0.1` only --- it is not accessible from other machines on the network.
-
-## Verify the installation
-
-```bash
-# Start the daemon
-"$(scripts/bun-runtime.sh)" run start
-
-# In another terminal, check the health endpoint
-curl http://127.0.0.1:29420/api/health
-```
-
-You should see a JSON response like:
-
-```json
-{
-  "status": "ok",
-  "uptime": 1.234,
-  "version": "0.1.0",
-  "startup_commit": {
-    "hash": "bd1a661...",
-    "summary": "last commit message",
-    "date": "2026-03-22 ..."
-  }
-}
-```
-
-The `startup_commit` field shows the Mandible commit that's currently running, useful for verifying you're on the right version after an update.
-
-## Database location
-
-On first start, the daemon creates a SQLite database at `~/.mandible/mandible.db`. This database stores:
-
-- Session records (active, ended, dead)
-- Auth request queue and history
-- Conversation transcripts (gzip-compressed)
-- Work unit state
-- Console session configuration
-- Settings and preferences
-- Push history
-
-The database uses WAL (Write-Ahead Logging) mode for fast concurrent reads from the dashboard while the daemon writes. Schema migrations are applied automatically on startup --- you never need to run them manually.
-
-## Development mode
-
-For working on Mandible itself:
-
-```bash
-# Watch both TypeScript and UI for changes
-bun run dev
-
-# Or watch just the UI (faster iteration on dashboard changes)
-bun run build:watch
-
-# Run tests
-bun run test
-```
-
-The `dev` command runs `tsc --watch` and `esbuild --watch` in parallel. UI changes are rebuilt in milliseconds; TypeScript changes require a daemon restart to take effect.
-
-## Tauri desktop wrapper (optional)
-
-Mandible includes an optional Tauri shell that wraps the dashboard in a native macOS window:
-
-```bash
-bun run tauri       # Development mode
-bun run tauri:build # Build the .app bundle
-```
-
-The desktop opens the registered HTTPS front door and controls the persistent local runtime. Install the production bundle and its LaunchAgents with `bash cli/install-desktop-app.sh`; use the supported runtime controller to inspect or restart them.
+Co-Authored-By: Codex (GPT) <codex@openai.com>

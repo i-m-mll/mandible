@@ -507,6 +507,15 @@ a {
   backdrop-filter: blur(8px);
 }
 
+.daemon-toast--introduction {
+  width: max-content;
+  max-width: min(720px, calc(100vw - 32px));
+  flex-wrap: wrap;
+  background: var(--surface-card);
+  color: var(--text-primary);
+  border-color: var(--border-default);
+}
+
 .daemon-toast--failure {
   max-width: min(720px, calc(100vw - 32px));
   background: color-mix(in srgb, var(--accent-red) 12%, transparent);

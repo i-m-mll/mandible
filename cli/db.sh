@@ -1,6 +1,6 @@
-#!/bin/sh
+#!/bin/bash
 # mandible db: read-only SQL access to the live ledger database.
 set -eu
 
-repo_root=$(cd "${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/.." && pwd -P)
-exec "$("$repo_root/scripts/bun-runtime.sh")" --no-install "$repo_root/src/cli/db-read.ts" "$@"
+source "$(cd "$(dirname "$0")" && pwd -P)/command-syntax.sh"
+exec "$(mandible_bun_runtime)" --no-install "$(mandible_cli_module cli/db-read)" "$@"

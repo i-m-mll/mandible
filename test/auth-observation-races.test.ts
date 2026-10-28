@@ -256,10 +256,11 @@ for (const change of ["description", "skip"] as const) {
   });
 }
 
-for (const change of ["description", "command", "authority", "custody", "withdraw"] as const) {
+for (const change of ["description", "command", "authority", "custody", "withdraw", "accepted package"] as const) {
   it(`invalidates a held operator proof after ${change} changes`, async () => {
     const f = await fixture();
     const custody = change === "custody" ? bindCustody(f) : null;
+    if (change === 'accepted package') recordPassingCandidateAcceptance(f.db, f.request.id, true);
     const held = holdChild((kind, _program, args) => kind === "spawn" && args.includes("sign") && args.includes("mandible-auth"));
     const approval = f.queue.approveWithOperatorProof(f.request.id, f.signing.operatorId);
     try {
@@ -269,6 +270,7 @@ for (const change of ["description", "command", "authority", "custody", "withdra
       if (change === "authority") f.db.prepare("UPDATE user_credentials SET status = 'revoked' WHERE id = ?").run(f.signing.credentialId);
       if (custody) f.db.prepare("UPDATE work_units SET custody_generation = custody_generation + 1 WHERE id = ?").run(custody);
       if (change === "withdraw") await f.queue.reject(f.request.id, "Operator cancelled while signing.");
+      if (change === 'accepted package') recordPassingCandidateAcceptance(f.db, f.request.id, true);
       held.release();
       await expect(approval).rejects.toBeDefined();
       expect(f.calls()).toBe(0);

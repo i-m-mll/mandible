@@ -10,9 +10,11 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { waitUntilPasses } from "./helpers/wait-until.js";
 import { AuthQueue } from "../src/auth-queue.js";
+import { acceptedReleaseReceiptFixture } from './helpers/accepted-release-fixture.js';
+import { acceptedReleaseSelection, bindAcceptedRelease } from '../src/accepted-release-selection.js';
 import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { collectAuthMergeReview } from "../src/auth-change-report.js";
-import { latestCandidateAcceptance, type CandidateAcceptanceInput, type CandidateAcceptanceOutcome } from "../src/candidate-acceptance.js";
+import { CandidateAcceptanceRuns, latestCandidateAcceptance, type CandidateAcceptanceInput, type CandidateAcceptanceOutcome } from "../src/candidate-acceptance.js";
 import { setDb } from "../src/db.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import type { AuthRequestInput, SseEvent } from "../src/types.js";
@@ -87,6 +89,13 @@ function acceptanceExecutor(input: CandidateAcceptanceInput) {
   return new Promise<CandidateAcceptanceOutcome>((settle) => {
     runs.push({ input, settle });
     input.signal.addEventListener("abort", () => settle({ status: "failed", result: null, error: "stopped" }));
+  }).then(outcome => {
+    if (outcome.status !== 'passed') return outcome;
+    const row = db.prepare('SELECT pin_sha, tree_sha, base_sha, head_sha FROM auth_candidate_acceptances WHERE id = ?')
+      .get(input.env.MANDIBLE_ACCEPTANCE_ID!) as import('../src/candidate-acceptance.js').CandidateAcceptanceCandidate;
+    if (outcome.result && typeof outcome.result === 'object' && 'receipt' in outcome.result) return outcome;
+    return { ...outcome, result: { ...outcome.result as object, receipt: acceptedReleaseReceiptFixture(home, row,
+      { record_id: input.env.MANDIBLE_ACCEPTANCE_ID!, request_id: input.env.MANDIBLE_ACCEPTANCE_REQUEST! }, input.workUnitId) } };
   });
 }
 
@@ -167,6 +176,124 @@ describe("runtime handoff lock gate", () => {
     await queue.refreshPendingCandidates();
     await waitUntilPasses(() => expect(runs).toHaveLength(1));
     expect(runs[0]!.input.pinSha).toBe((await queue.getRequest(replacement.id))!.merge_candidate_pin_sha);
+  });
+});
+
+describe('automatic accepted-package binding', () => {
+  it('supports the one-time legacy custodian bridge, then selects the next delivery automatically', async () => {
+    const first = await submit();
+    await waitUntilPasses(() => expect(runs).toHaveLength(1));
+    await queue.dispose();
+    const candidate = { pin_sha: first.merge_candidate_pin_sha!, tree_sha: first.merge_candidate_tree_sha!,
+      base_sha: first.merge_preflight_base_sha!, head_sha: first.merge_head_sha! };
+    // The old authority records the compact reference but cannot bind it.
+    const reference = acceptedReleaseReceiptFixture(home, candidate, undefined, first.custody_work_unit_id!);
+    const legacy = new CandidateAcceptanceRuns(db, async () => ({ status: 'passed', result: { receipt: reference }, error: null }), Date.now, () => {}, () => false);
+    legacy.start();
+    legacy.enqueue(first.id, candidate, () => ({ repoRoot: repo, pinSha: candidate.pin_sha, projectId, workUnitId: first.custody_work_unit_id!, env: {} }));
+    await legacy.idle();
+    expect(db.prepare('SELECT id FROM auth_request_actions WHERE auth_request_id = ?').all(first.id)).toEqual([]);
+    const accepted = db.prepare("SELECT id FROM auth_candidate_acceptances WHERE auth_request_id = ? AND status = 'passed'").get(first.id) as { id: string };
+    queue = new AuthQueue({ db, hookManager: createInstalledServiceHookManager(db, { serviceDefinitionInspector: inspector }), backgroundMaintenance: false,
+      executor: async () => new Promise(() => {}), candidateAcceptanceExecutor: acceptanceExecutor });
+    await expect(queue.approveWithOperatorProof(first.id, operatorId)).rejects.toThrow('Accepted package selection is not ready');
+    const revision = queue.listLifecycleEvents(first.id).at(-1)!.revision;
+    queue.addAction(first.id, { kind: 'checkpoint_add', target_issue_ref: issue.id,
+      payload: { kind: 'accepted-release', payload: { acceptanceId: accepted.id, reference } } },
+      { user_id: operatorId, credential_id: credentialId, evidence_method: 'api_token' }, revision, 1);
+    expect(acceptedReleaseSelection(db, (await queue.getRequest(first.id))!, queue.listActions(first.id), false).selection.reference).toBe(reference);
+    expect(queue.listLifecycleEvents(first.id).at(-1)!.authority_path).toBe('custodian');
+    await queue.approveWithOperatorProof(first.id, operatorId);
+    expect((await queue.getRequest(first.id))!.approved_by_user_id).toBe(operatorId);
+    // An upgraded authority's subsequent request requires no staging call.
+    const second = await submit('feature/other');
+    await waitUntilPasses(() => expect(runs).toHaveLength(2));
+    runs[1].settle({ status: 'passed', result: {}, error: null });
+    await queue.drainCandidateAcceptances();
+    expect(await acceptanceOf(second.id)).toMatchObject({ state: 'passed' });
+    expect(queue.listActions(second.id)).toHaveLength(1);
+    expect(queue.listLifecycleEvents(second.id).at(-1)).toMatchObject({ authority_path: 'system', event_type: 'revised' });
+    expect(queue.listActions(first.id)[0].payload.payload).toEqual({ acceptanceId: accepted.id, reference });
+  });
+
+  it('commits one selection and canonical revision with a compacted pass, then replays without revision', async () => {
+    const request = await submit();
+    await waitUntilPasses(() => expect(runs).toHaveLength(1));
+    runs[0].settle({ status: 'passed', result: { diagnostics: 'x'.repeat(70_000) }, error: null });
+    await queue.drainCandidateAcceptances();
+    const accepted = db.prepare('SELECT id, status, result_json FROM auth_candidate_acceptances WHERE auth_request_id = ? ORDER BY rowid DESC LIMIT 1')
+      .get(request.id) as { id: string; status: string; result_json: string };
+    expect(accepted.status).toBe('passed');
+    expect(accepted.result_json!.length).toBeLessThan(64 * 1024);
+    const actions = queue.listActions(request.id);
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({ target_issue_ref: issue.id, state: 'staged', payload: {
+      kind: 'accepted-release', payload: { acceptanceId: accepted.id, reference: JSON.parse(accepted.result_json!).receipt },
+    } });
+    const revisions = queue.listLifecycleEvents(request.id);
+    expect(revisions.at(-1)).toMatchObject({ event_type: 'revised', authority_path: 'system', evidence_method: 'system_internal' });
+    expect(JSON.parse(revisions.at(-1)!.prior_snapshot_json!).actions).toEqual([]);
+    bindAcceptedRelease(db, (await queue.getRequest(request.id))!, accepted.id, issue.id, Date.now());
+    expect(queue.listLifecycleEvents(request.id)).toHaveLength(revisions.length);
+    expect(queue.listActions(request.id)).toEqual(actions);
+  });
+
+  it.each(['custody', 'lifecycle', 'pin', 'receipt', 'package owner'] as const)('fails finalization on a changed %s without a passed or running orphan', async change => {
+    const request = await submit();
+    await waitUntilPasses(() => expect(runs).toHaveLength(1));
+    if (change === 'custody') db.prepare('UPDATE work_units SET custody_generation = custody_generation + 1 WHERE id = ?').run(request.custody_work_unit_id);
+    if (change === 'lifecycle') await queue.update(request.id, { title: 'Explicit pending revision' });
+    if (change === 'pin') db.prepare('UPDATE auth_requests SET merge_candidate_pin_sha = ? WHERE id = ?').run('f'.repeat(40), request.id);
+    const wrongOwner = change === 'package owner' ? { receipt: acceptedReleaseReceiptFixture(home, {
+      pin_sha: request.merge_candidate_pin_sha!, tree_sha: request.merge_candidate_tree_sha!, base_sha: request.merge_preflight_base_sha!, head_sha: request.merge_head_sha!,
+    }) } : {};
+    runs[0].settle({ status: 'passed', result: change === 'receipt' ? { receipt: 'invalid' } : wrongOwner, error: null });
+    await queue.drainCandidateAcceptances();
+    expect(latestCandidateAcceptance(db, request.id)).toMatchObject({ status: 'failed', error: expect.stringContaining('finalization failed') });
+    expect(queue.listActions(request.id)).toEqual([]);
+    expect(db.prepare("SELECT id FROM auth_candidate_acceptances WHERE status IN ('running', 'passed')").all()).toEqual([]);
+  });
+
+  it('rolls back the selection and verdict when the canonical revision cannot be written', async () => {
+    const request = await submit();
+    await waitUntilPasses(() => expect(runs).toHaveLength(1));
+    const revisions = queue.listLifecycleEvents(request.id);
+    db.exec("CREATE TRIGGER refuse_binding_revision BEFORE INSERT ON auth_request_lifecycle_events BEGIN SELECT RAISE(ABORT, 'revision fixture failure'); END");
+    runs[0].settle({ status: 'passed', result: {}, error: null });
+    await queue.drainCandidateAcceptances();
+    expect(latestCandidateAcceptance(db, request.id)).toMatchObject({ status: 'failed', error: expect.stringContaining('revision fixture failure') });
+    expect(queue.listActions(request.id)).toEqual([]);
+    expect(queue.listLifecycleEvents(request.id)).toEqual(revisions);
+  });
+
+  it.each(['unchanged', 'veto', 'edit', 'delete'] as const)('reconciles a new candidate while preserving an %s selection', async change => {
+    const request = await submit();
+    await waitUntilPasses(() => expect(runs).toHaveLength(1));
+    runs[0].settle({ status: 'passed', result: {}, error: null });
+    await queue.drainCandidateAcceptances();
+    const initial = queue.listActions(request.id)[0];
+    const actor = { user_id: operatorId, credential_id: credentialId, evidence_method: 'api_token' as const };
+    const revision = queue.listLifecycleEvents(request.id).at(-1)!.revision;
+    if (change === 'veto') queue.setActionVeto(request.id, initial.id, true, actor, revision, 1);
+    if (change === 'edit') queue.updateAction(request.id, initial.id, { ...initial, payload: { kind: 'accepted-release', payload: { ...initial.payload.payload, reference: 'explicit selection' } } }, actor, revision, 1);
+    if (change === 'delete') queue.deleteAction(request.id, initial.id, actor, revision, 1);
+    const before = queue.listActions(request.id);
+    advanceMainViaAuthorizedMerge(db, repo, 'feature/other', 'merge-other');
+    await queue.refreshPendingCandidates();
+    await waitUntilPasses(() => expect(runs).toHaveLength(2));
+    runs[1].settle({ status: 'passed', result: {}, error: null });
+    await queue.drainCandidateAcceptances();
+    const latest = db.prepare('SELECT id, status FROM auth_candidate_acceptances WHERE auth_request_id = ? ORDER BY rowid DESC LIMIT 1')
+      .get(request.id) as { id: string; status: string };
+    if (change === 'unchanged') {
+      expect(latest.status).toBe('passed');
+      expect(queue.listActions(request.id)).toHaveLength(1);
+      expect(queue.listActions(request.id)[0]).toMatchObject({ id: initial.id, payload: { payload: { acceptanceId: latest.id } } });
+    } else {
+      expect(latest.status).toBe('failed');
+      expect(queue.listActions(request.id)).toEqual(before);
+      await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow('acceptance');
+    }
   });
 });
 

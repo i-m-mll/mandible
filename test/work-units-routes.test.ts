@@ -631,6 +631,43 @@ describe("work unit routes", () => {
     expect(db.prepare("SELECT assigned_session_id FROM work_units WHERE id = ?").get(units[0])).toEqual({ assigned_session_id: null });
   });
 
+  it("uses a fresh active claim after release without reactivating history or accepting active ambiguity", async () => {
+    const agent = createUser(db, { slug: "reclaim-owner", kind: "agent", display_name: "Owner" });
+    const credential = addCredential(db, agent.id, { type: "api_token", fingerprint: "reclaim-owner" });
+    const owned = new Router({ clientAuth: {
+      authenticate: token => token === "own" ? { user_id: agent.id, slug: agent.slug, method: "api_token", source: "in_process",
+        credential_id: credential.id, effect_ceiling: PRODUCTION_EFFECTS } : null,
+      mode: () => "strict", recordUnattributedWrite: () => undefined,
+    } });
+    registerWorkUnitRoutes(owned, {} as never);
+    const body = { issue_id: "release-issue", repo_id: "mandible", branch: "feature/reclaim" };
+    const call = (url: string, value: Record<string, unknown>) => owned.invoke({ method: "POST", url, credential: "own", body: value });
+    const check = () => owned.invoke({ method: "GET", credential: "own",
+      url: "/api/work-units/custody-check?repo_id=mandible&branch=feature/reclaim&issue_id=release-issue" });
+    const original = await call("/api/work-units/claim", body);
+    expect(original.status).toBe(201);
+    const originalId = (original.body as { id: string }).id;
+    expect((await call("/api/work-units/release", { id: originalId, expected_generation: 1 })).status).toBe(200);
+    const history = db.prepare("SELECT * FROM work_units WHERE id = ?").get(originalId);
+    expect((await check()).body).toMatchObject({ may_commit: true, work_unit: null });
+    const replacement = await call("/api/work-units/claim", body);
+    expect(replacement.status).toBe(201);
+    const replacementId = (replacement.body as { id: string }).id;
+    expect(replacementId).not.toBe(originalId);
+    expect((await check()).body).toMatchObject({ may_commit: true, work_unit: { id: replacementId, state: "open" } });
+    const activated = await call("/api/work-units/activate", body);
+    expect(activated.status).toBe(200);
+    expect(activated.body).toMatchObject({ id: replacementId, state: "committed" });
+    expect((await check()).status).toBe(200);
+    expect(db.prepare("SELECT * FROM work_units WHERE id = ?").get(originalId)).toEqual(history);
+
+    db.prepare(`INSERT INTO work_units (id, issue_id, repo_id, branch, state, created_at, ledger_issue_id)
+      SELECT 'duplicate-active', issue_id, repo_id, branch, 'open', created_at, ledger_issue_id FROM work_units WHERE id = ?`).run(replacementId);
+    expect((await check()).status).toBe(409);
+    expect((await call("/api/work-units/activate", body)).status).toBe(409);
+    expect(db.prepare("SELECT * FROM work_units WHERE id = ?").get(originalId)).toEqual(history);
+  });
+
   it("guards exact releases and authority-bearing updates without changing sibling assignments", async () => {
     const agent = createUser(db, { slug: "release-owner", kind: "agent", display_name: "Owner" });
     const own = addCredential(db, agent.id, { type: "api_token", fingerprint: "release-own" });

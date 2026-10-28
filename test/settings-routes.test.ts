@@ -124,6 +124,12 @@ describe("settings routes", () => {
       client_identity: identity,
     }, put);
     expect(put.statusCode).toBe(200);
+    const choice = createResponse();
+    await firstRoutes.handler("PUT", "/api/settings/:key")({
+      method: "PUT", url: "/api/settings/integrations.setup", params: { key: "integrations.setup" }, query: {},
+      body: { value: "skipped" }, client_identity: identity,
+    }, choice);
+    expect(choice.statusCode).toBe(200);
     db.close();
 
     db = new SqliteDatabase(dbPath);
@@ -140,7 +146,7 @@ describe("settings routes", () => {
     }, get);
 
     expect(get.statusCode).toBe(200);
-    expect(get.payload).toMatchObject({ app_rail_order: value });
+    expect(get.payload).toMatchObject({ app_rail_order: value, "integrations.setup": "skipped" });
     db.close();
   });
 
@@ -165,6 +171,9 @@ describe("settings routes", () => {
     const routes = new TestRoutes();
     registerSettingsRoutes(routes, "preview");
 
+    const fresh = createResponse();
+    await routes.handler("GET", "/api/settings/instructions-delivery")({ method: "GET", url: "/api/settings/instructions-delivery", params: {}, query: {} }, fresh);
+    expect(fresh.payload).toMatchObject({ targets: [], configuredTargets: false });
     const target = path.join(tempHome, "custom", "AGENTS.md");
     const response = createResponse();
     await routes.handler("PUT", "/api/settings/instructions-delivery")({
@@ -194,6 +203,16 @@ describe("settings routes", () => {
     expect(db.prepare("SELECT value FROM settings WHERE key = ?").get("instructions.targets")).toEqual({
       value: JSON.stringify([{ path: target, mode: "standalone" }]),
     });
+    const liveRoutes = new TestRoutes();
+    registerSettingsRoutes(liveRoutes);
+    fs.writeFileSync(fakeCli, "#!/usr/bin/env bash\necho optional-compiler-failed >&2\nexit 7\n");
+    const optionalFailure = createResponse();
+    await liveRoutes.handler("PUT", "/api/settings/instructions-delivery")({
+      method: "PUT", url: "/api/settings/instructions-delivery", params: {}, query: {},
+      body: { targets: [], postExport: "private-compiler" }, client_identity: identity,
+    }, optionalFailure);
+    expect(optionalFailure.statusCode).toBe(200);
+    expect(optionalFailure.payload).toMatchObject({ targets: [], postExport: "private-compiler", configuration_saved: true, export: { ok: false, stderr: expect.stringContaining("optional-compiler-failed") } });
     db.close();
   });
 });

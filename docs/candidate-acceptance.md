@@ -10,7 +10,7 @@ PATH="$(dirname "$runtime"):$PATH" "$runtime" run candidate-acceptance -- \
 
 The project and delivery work unit come from the live Mandible registry. The coordinator supplies its integration work unit for the final gate. No preview, installed application, LaunchAgent, or production database is restarted or replaced.
 
-The command builds both components, verifies the package signature and bundled source marker, launches its own daemon at a free loopback port, and verifies the exact instance, generation, startup commit and epoch. It creates an operator fixture through that daemon's private socket. The packaged webview uses an isolated, nonpersistent browser store, opens Settings, changes the app theme, and checks the persisted preference revision. The window remains open through a full event-loop diagnostics interval. Daemon and native logs are assessed after owned processes stop, including shutdown.
+The command builds the finalized application through the installed-release assembler, verifies its signature, resource inventory and candidate provenance, then launches its own daemon and gateway from the application's shipped Bun, JavaScript and Caddy. Daemon, gateway and GUI run with the checkout, dotfiles, Homebrew and developer runtime stores denied, and the application read-only. It verifies the exact instance, generation, startup commit and epoch. It creates an operator fixture through that daemon's private socket. The packaged webview uses an isolated, nonpersistent browser store, opens Settings, changes the app theme, and checks the persisted preference revision. The window remains open through a full event-loop diagnostics interval. Daemon and native logs are assessed after owned processes stop, including shutdown.
 
 The packaged app runs unattended: in acceptance mode its window is never shown, never takes focus, and the app has no Dock icon or menu bar (macOS activation policy `Prohibited`, set before launch). The webview still loads and drives the dashboard.
 
@@ -37,11 +37,92 @@ A passing result is a pre-merge assessment. It does not attest delivery, converg
 
 Each run records its exact project, work-unit owner, instance and generated outputs before producing them. The shared owned-run lifecycle saves a compact receipt outside the scratch root and reclaims disposed raw material after assessment or failure. Unknown files, active consumers, identity drift and cleanup errors preserve the remaining bytes and fail the gate. The receipt contains source and executable hashes, the runtime, interaction evidence, log digest, shutdown results and cleanup outcome. Apparent unlinked bytes are reported separately from physical space recovery.
 
+Passing runs transfer the complete application that ran into durable owned-run
+custody at `<authority-home>/accepted-releases/<run-id>/Mandible.app` before
+scratch cleanup. The transfer checks every file, mode and symbolic link against
+the pre-launch whole-app digest. No build or reassembly occurs during transfer.
+Only a passing acceptance row authorizes selection of its receipt. A transfer
+or cleanup failure fails the row; any preserved material remains owned by its
+delivery work unit.
+
+`scripts/accepted-release.mjs` and its declaration file define the single
+`mandible-accepted-release@1` receipt and resolver. The immutable receipt binds:
+
+- `acceptance`: unique owned-run ID and the daemon's acceptance row/request IDs
+  when supplied by the authority;
+- `candidate`: exact `pin_sha`, `tree_sha`, `base_sha` and `head_sha`;
+- `target` and `shipped`: the finalized installed-release manifest;
+- `package`: `owned-run` custody handle, `Mandible.app` relative path and whole
+  app SHA-256;
+- `retention`: canonical project, delivery work-unit owner and disposal policy;
+- `evidence`: immutable bounded acceptance evidence file and its SHA-256.
+
+The result's existing string `receipt` field carries
+`accepted-release:<receipt-sha256>:<base64url-absolute-receipt-path>` (at most
+512 characters). It survives the legacy authority's 64 KiB result compaction.
+`resolveAcceptedRelease(reference, expectedCandidate)` verifies that exact
+receipt, evidence, custody identity, whole app and shipped inventory/provenance;
+it returns `{receipt, app, resources}` or refuses. It never selects a newer run
+or rebuilds bytes.
+
+The daemon binds a passing acceptance automatically as one `checkpoint_add`
+action with `kind: accepted-release`, targeted at the request-bound delivery
+work unit's canonical issue. The verdict, selection, and system `revised`
+lifecycle event commit atomically before readiness is broadcast. The selection
+is covered by the ordinary approval signature. Approval checks the exact
+candidate, receipt and evidence without hashing the app in the daemon; frozen
+execution verifies and installs the selected bytes without rebuilding.
+Retries replace an untouched system-derived selection in place. A veto, manual
+edit, or deletion is preserved and requires explicit reconciliation. Stale
+request, candidate, lifecycle, or custody changes fail finalization.
+
+For the first upgrade from a legacy authority only, a prearmed custodian uses
+`scripts/stage-accepted-release.mjs` after acceptance passes, with the normal
+credential, lifecycle revision and custody-generation checks. That old daemon
+cannot bind atomically, and supplies null acceptance row/request IDs to the
+harness. The helper binds its exact external row and `result.receipt` before
+approval. Once upgraded, subsequent deliveries use automatic binding.
+
+Retention is one app per passing acceptance, owned by the delivery work unit.
+These directories are durable release material, not cache entries. Generic
+owned-run cleanup refuses their unresolved interactive outputs. After delivery
+or abandonment the owner calls `disposeAcceptedRelease(reference, candidate,
+reason)`, which explicitly finalizes the retained run with a discard disposition
+and uses ordinary owned-run cleanup. Pending approval never
+expires retained bytes. Acceptance evidence and compact cleanup receipts remain
+available after package disposal. The immutable accepted-release receipt also
+remains in `<authority-home>/accepted-releases/.receipts/<run-id>-accepted-release.json`,
+outside the package cleanup root; its original reference and hash do not change.
+
 The command reports missing platform or candidate prerequisites as `unavailable`, and execution, interaction, log or cleanup failures as `failed`; the daemon records either as a failed run with the reason. Only `passed` exits successfully. An incomplete health observation never passes
 this finite gate. Event-loop stalls, lag warnings, memory warnings, concrete
 errors and non-HTTP event storms retain their acceptance policy. Aggregate HTTP
 method/route volume is diagnostic: bounded counts, peaks and statuses remain in
 the evidence without treating independent healthy clients as a feedback loop. A failed assessment never authorizes rerunning a protected merge.
+
+## Diagnostic replay
+
+For an authorized investigation, the same packaged execution pipeline can reuse
+an existing finalized app from a failed run:
+
+```sh
+bun scripts/candidate-acceptance.mjs --project <project> --work-unit <unit> \
+  --diagnostic-receipt <failed-owned-run-receipt.json> --diagnostic-app <Mandible.app>
+```
+
+This verifies the failed run's package digest, candidate and shipped inventory,
+then skips all builds and the route sweep. The unchanged GUI/setup/health checks
+run with Bun CPU profiling and the private-socket stall probe/native sampler.
+The runtime has a 90-second deadline. Output always has schema
+`mandible-candidate-diagnostic@1`, status `diagnostic`, and `qualifying: false`;
+it exits nonzero and cannot supply passing candidate acceptance or an accepted
+release. `observation_status` records the underlying check verdict.
+
+Profiles, probe records and full fixture logs transfer to an evidence owned run
+under `acceptance/diagnostics/<run-id>` before scratch is reclaimed. The owning
+work unit retains this interactive evidence until it is registered as an
+artifact or explicitly discarded with ordinary owned-run finalization/cleanup.
+The original failed acceptance row and receipt remain unchanged.
 
 Co-Authored-By: Codex (GPT-5) <codex@openai.com>
 Co-Authored-By: Codex (GPT) <codex@openai.com>

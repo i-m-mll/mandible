@@ -11,7 +11,7 @@ import { DOMAIN_EVENTS } from "./contracts.js";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { childOutput } from "./child-observation.js";
-import { accessSync, constants as fsConstants, existsSync, realpathSync, readFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, realpathSync, readFileSync, watch, type FSWatcher } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import SqliteDatabase from "./sqlite.js";
@@ -140,6 +140,7 @@ import { applyApprovedCustodyTransfer } from "./work-unit-custody.js";
 import { raiseDaemonIncident, resolveDaemonIncident } from "./operational-incidents.js";
 import { promoteBriefingGroupProposal } from "./feedback/briefing-groups.js";
 import { appendAuthLifecycleEvent, listAuthLifecycleEvents, authRequestInitiatingOrigin } from "./auth-lifecycle.js";
+import { acceptedReleaseSelection, bindAcceptedRelease } from "./accepted-release-selection.js";
 import { authPublicationSnapshot, authRequestSnapshot, authSnapshotDigest } from "./auth-request-snapshot.js";
 import type {
   AuthConvergence,
@@ -614,6 +615,9 @@ export class AuthQueue {
   // post-merge finalizers (Stage 3) off the event loop after auth:resolved.
   private readonly finalizerQueue: FinalizerQueue;
   private expiryTimer: ReturnType<typeof setInterval> | null = null;
+  private handoffCompletionWatcher: FSWatcher | null = null;
+  private handoffCompletionPending = false;
+  private handoffCompletionWakeupUntil = 0;
   private disposed = false;
   // Bug: 4db692a — tracks whether the daemon is about to restart after a
   // self-merge. Exposed via isRebuilding so the health endpoint can include
@@ -667,7 +671,8 @@ export class AuthQueue {
     this.restartFn = options.restartFn ?? (() => process.exit(0));
     this.restartAvailability = options.restartAvailability;
     this.acceptanceRuns = options.candidateAcceptanceExecutor
-      ? new CandidateAcceptanceRuns(this.db, options.candidateAcceptanceExecutor, this.now, (requestId) => this.candidateAcceptanceChanged(requestId), () => this.runtimeHandoffLock() !== null)
+      ? new CandidateAcceptanceRuns(this.db, options.candidateAcceptanceExecutor, this.now, (requestId) => this.candidateAcceptanceChanged(requestId), () => this.runtimeHandoffLock() !== null,
+        (requestId, candidate) => this.prepareAcceptanceFinalization(requestId, candidate))
       : null;
     // Before anything can start a run: rows a previous daemon left running were interrupted.
     this.acceptanceRuns?.start();
@@ -691,6 +696,7 @@ export class AuthQueue {
   }
 
   private async startRecovery(): Promise<void> {
+    this.watchRuntimeHandoffCompletion();
     await this.reconcileRuntimeHandoffs();
     if (this.disposed || !this.isDbOpen()) return;
     (await this.recoverSelfMergeShutdown());
@@ -758,7 +764,8 @@ export class AuthQueue {
   private async adoptRuntimePublication(binding: RuntimePublicationBinding, proof: Awaited<ReturnType<typeof verifyRuntimeHandoffPublication>>): Promise<() => void> {
     const request = this.requireRequest(binding.requestId);
     const observed = this.observationToken(request.id, request);
-    (await verifyRuntimeHandoffPublication(this.db, binding));
+    // The reconciliation caller just verified this exact proof. The returned
+    // commit callback still compares the request observation before mutation.
     if (request.status === 'completed' && request.exit_code === 0) {
       if (request.merge_preflight_base_sha !== proof.mergeBase || request.merge_head_sha !== proof.mergeHead || request.merge_candidate_tree_sha !== proof.frozenCandidate.tree || (await this.successfulMergeEvidenceFailure(request))) throw new Error('Completed publication does not exactly match retained runtime proof.');
       return () => this.assertObservation(request.id, observed);
@@ -876,7 +883,7 @@ export class AuthQueue {
     const blocker = lock ? { message: runtimeHandoffLockRefusal(lock) } : null;
     if (blocker) throw new AuthQueueError("merge_check_failed", blocker.message);
     authLog("info", "auth_candidate_acceptance_started", { subsystem: "auth", auth_request_id: request.id, pin_sha: candidate.pin_sha });
-    runs.enqueue(request.id, candidate, () => this.acceptanceInput(request, candidate.pin_sha));
+    runs.enqueue(request.id, candidate, () => this.acceptanceInput(this.requireRequest(request.id), candidate.pin_sha));
     return this.candidateAcceptanceForRequest(request)!;
   }
 
@@ -890,6 +897,33 @@ export class AuthQueue {
     for (const key of AUTH_HOOK_ENV_ALLOWLIST) if (process.env[key] !== undefined) env[key] = process.env[key];
     env.HOME = home;
     return { repoRoot: request.cwd!, pinSha, projectId: project.project.id, workUnitId: request.custody_work_unit_id, env };
+  }
+
+  private prepareAcceptanceFinalization(requestId: string, candidate: CandidateAcceptanceCandidate): (recordId: string) => void {
+    const request = this.requireRequest(requestId);
+    const assertCandidate = () => {
+      const current = this.requireRequest(requestId);
+      const exact = this.acceptanceCandidate(current);
+      if (current.status !== 'pending' || !this.candidateAcceptanceApplies(current) || !exact
+          || Object.keys(candidate).some(key => candidate[key as keyof CandidateAcceptanceCandidate] !== exact[key as keyof CandidateAcceptanceCandidate])) {
+        throw new Error('Acceptance no longer belongs to the pending exact candidate.');
+      }
+      const custody = current.custody_work_unit_id ? this.db.prepare(
+        'SELECT auth_request_id, state, ledger_issue_id FROM work_units WHERE id = ?',
+      ).get(current.custody_work_unit_id) as { auth_request_id: string; state: string; ledger_issue_id: string | null } | undefined : undefined;
+      if (!custody || custody.auth_request_id !== current.id || custody.state !== 'committed' || !custody.ledger_issue_id) {
+        throw new Error('Acceptance requires the request-bound committed delivery work unit and canonical ledger issue.');
+      }
+      return { current, targetIssue: custody.ledger_issue_id };
+    };
+    assertCandidate();
+    this.currentLifecycleSnapshot(requestId);
+    const observed = this.observationToken(requestId, request);
+    return recordId => {
+      this.assertObservation(requestId, observed);
+      const { current, targetIssue } = assertCandidate();
+      bindAcceptedRelease(this.db, current, recordId, targetIssue, this.now());
+    };
   }
 
   private candidateAcceptanceChanged(requestId: string): void {
@@ -1048,6 +1082,37 @@ export class AuthQueue {
     this.expiryTimer.unref();
   }
 
+  private watchRuntimeHandoffCompletion(): void {
+    const owner = this.runtimeHandoffLock();
+    if (!owner || this.handoffCompletionWatcher) return;
+    const directory = join(getMandibleHome(), 'config', 'local-sessions', 'handoff', `${owner.requestId}-${owner.executionId}`);
+    try {
+      this.handoffCompletionWatcher = watch(directory, { persistent: false }, (_event, name) => {
+        if (this.disposed || !['journal.json', '.verification.lock'].includes(name?.toString() ?? '')) return;
+        // This is only a wakeup hint. Reconciliation validates the binding,
+        // publication, package, and live receipt under its observation lease.
+        try {
+          const journal = JSON.parse(readFileSync(join(directory, 'journal.json'), 'utf8'));
+          if (['acknowledged', 'retired'].includes(journal.phase)) {
+            this.handoffCompletionWatcher?.close(); this.handoffCompletionWatcher = null;
+            return;
+          }
+          if (journal.phase !== 'complete') return;
+        } catch { return; } // Atomic replacement may precede the next rename event.
+        this.handoffCompletionWakeupUntil ||= Date.now() + 60_000;
+        if (Date.now() >= this.handoffCompletionWakeupUntil) return;
+        this.handoffCompletionPending = true;
+        void this.convergeWhileIdle();
+      });
+      this.handoffCompletionWatcher.on('error', error => {
+        authLog('warn', 'auth_handoff_completion_watch_failed', { subsystem: 'auth', error: errorMessage(error) });
+        this.handoffCompletionWatcher?.close(); this.handoffCompletionWatcher = null;
+      });
+    } catch (error) {
+      authLog('warn', 'auth_handoff_completion_watch_failed', { subsystem: 'auth', error: errorMessage(error) });
+    }
+  }
+
   /** Daemon incidents this queue raised and resolves once their condition clears. */
   private readonly handoffIncidents = new Map<string, string>();
   private idleConvergenceIncident: string | null = null;
@@ -1076,6 +1141,7 @@ export class AuthQueue {
     for (const controller of this.operatorProofInFlight.values()) controller.abort();
     this.operatorProofs.clear();
     this.stopExpiryTimer();
+    this.handoffCompletionWatcher?.close(); this.handoffCompletionWatcher = null;
     await Promise.allSettled([
       this.startupRecovery, this.expiryReconciliation, ...this.phaseRuns, ...this.observations, ...this.queuedAdmissions,
       this.finalizerQueue.drain(), this.acceptanceRuns?.stop(),
@@ -3438,6 +3504,10 @@ export class AuthQueue {
     const acceptance = this.candidateAcceptanceForRequest(request);
     const refusal = acceptance && candidateAcceptanceRefusal(acceptance, request.id);
     if (refusal) throw new AuthQueueError("merge_check_failed", `${refusal} No protected state changed.`);
+    if (acceptance) {
+      try { acceptedReleaseSelection(this.db, request, listAuthRequestActions(this.db, request.id), false); }
+      catch (error) { throw new AuthQueueError('merge_check_failed', `Accepted package selection is not ready: ${error instanceof Error ? error.message : String(error)}`); }
+    }
     return request;
   }
 
@@ -5798,9 +5868,12 @@ export class AuthQueue {
       if (this.convergenceSweepInFlight) return;
       this.convergenceSweepInFlight = true;
       try {
-        await this.reconcileRuntimeHandoffs();
-        await this.runConvergenceSweep(limit);
-        await this.resumeDeferredLedgerActions();
+        do {
+          this.handoffCompletionPending = false;
+          await this.reconcileRuntimeHandoffs();
+          await this.runConvergenceSweep(limit);
+          await this.resumeDeferredLedgerActions();
+        } while (this.handoffCompletionPending && !this.disposed && this.isDbOpen());
       } finally {
         this.convergenceSweepInFlight = false;
       }

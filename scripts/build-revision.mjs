@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { readInstalledRelease } from './installed-release.mjs';
 
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -78,6 +79,7 @@ export function writeBuildRevision(root) {
 }
 
 export function readBuildRevision(root) {
+  if (fs.existsSync(path.join(root, 'release.json'))) return readInstalledRelease(root).provenance.commit;
   const file = path.join(root, "dist", "build-revision.json");
   let marker;
   try { marker = JSON.parse(fs.readFileSync(file, "utf8")); }

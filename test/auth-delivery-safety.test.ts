@@ -51,7 +51,7 @@ function prepareMergeFixture() {
 async function submitMerge(issueClosures: string[] = []) {
   const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,  type: "merge", title: "Publish exact delivery", command: "mandible auth merge feature/delivery --into main",
     repo: path.basename(repo), cwd: repo, head_branch: "feature/delivery", merge_head_sha: git(repo, ["rev-parse", "feature/delivery"]), base_branch: "main", execution_mode: "local", issue_closures: issueClosures }));
-  recordPassingCandidateAcceptance(db, request.id);
+  recordPassingCandidateAcceptance(db, request.id, queue.candidateAcceptanceForRequest(request) !== null);
   return request;
 }
 

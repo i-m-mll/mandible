@@ -1,8 +1,15 @@
 # First run
 
-After [installing](/docs/getting-started/installation) and building Mandible, start the daemon and take a tour of the dashboard.
+After [installing](/docs/getting-started/installation), open Mandible. The Mac app
+sets up its required runtime on first launch. The optional introduction lets you
+choose agent connections in Settings or skip them and continue. Skipping or
+completing setup persists across refreshes and restarts. No instruction files
+are edited until destinations are explicitly configured.
 
-## Starting the daemon
+The logged-in OS user has local access without login, pairing, or expiry.
+Human approval and agent identity remain distinct from local app access.
+
+## Starting a development daemon
 
 ```bash
 "$(scripts/bun-runtime.sh)" run start
@@ -16,7 +23,7 @@ The daemon logs structured JSON to stderr. On startup you'll see:
 {"level":"info","message":"server_started","time":"...","port":29420}
 ```
 
-Complete the [secure local connection setup](../guides/local-browser-sessions.mdx), then open the dashboard at [https://app.mandible.localhost:19420](https://app.mandible.localhost:19420).
+For source development, complete the [secure local connection setup](../guides/local-browser-sessions.mdx), then open the dashboard at [https://app.mandible.localhost:19420](https://app.mandible.localhost:19420).
 
 ## What happens on first start
 

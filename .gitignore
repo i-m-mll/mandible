@@ -14,3 +14,7 @@ AGENT_HANDOFF.md
 .playwright-mcp/
 .DS_Store
 .zellij-session
+
+src-tauri/resources/app-payload/
+src-tauri/binaries/
+src-tauri/resources/libsqlite3.dylib

@@ -5,7 +5,7 @@
  * The daemon runs the candidate's own `scripts/candidate-acceptance.mjs` on the
  * exact retained merge candidate (the pin commit whose parents are the reviewed
  * base and head) and records the outcome bound to that candidate. Approval
- * accepts only a passing record whose tree, base and head equal the request's
+ * accepts only a passing record whose pin, tree, base and head equal the request's
  * current candidate, so any base or head movement makes a result stale.
  */
 import { randomUUID } from "node:crypto";
@@ -89,7 +89,7 @@ export function candidateAcceptanceProjection(
   candidate: CandidateAcceptanceCandidate | null,
   open: boolean,
 ): CandidateAcceptanceProjection {
-  const current = record && candidate && record.tree_sha === candidate.tree_sha
+  const current = record && candidate && record.pin_sha === candidate.pin_sha && record.tree_sha === candidate.tree_sha
     && record.base_sha === candidate.base_sha && record.head_sha === candidate.head_sha ? record : null;
   if (open) return { state: "running", reason: null, started_at: current?.status === "running" ? current.started_at : null, finished_at: null };
   if (!record) return { state: "none", reason: null, started_at: null, finished_at: null };
@@ -128,6 +128,8 @@ export class CandidateAcceptanceRuns {
     private readonly now: () => number,
     private readonly changed: (requestId: string) => void,
     private readonly handoffLocked: () => boolean,
+    /** Capture live authority before execution; reconcile synchronously inside the verdict transaction. */
+    private readonly prepareFinalization?: (requestId: string, candidate: CandidateAcceptanceCandidate) => (recordId: string) => void,
   ) {}
 
   /** Fail the rows a previous daemon left running; a restart interrupted them. */
@@ -200,18 +202,27 @@ export class CandidateAcceptanceRuns {
     const controller = new AbortController();
     this.active = { requestId, pinSha: candidate.pin_sha, recordId, controller };
     this.changed(requestId);
+    let finalize: ((recordId: string) => void) | undefined;
     const outcome = await Promise.resolve().then(async () => {
       if (controller.signal.aborted) return { status: "failed" as const, result: null, error: "Acceptance stopped." };
-      return this.executor({ ...job.input(), signal: controller.signal });
+      finalize = this.prepareFinalization?.(requestId, candidate);
+      const input = job.input();
+      return this.executor({ ...input, env: { ...input.env, MANDIBLE_ACCEPTANCE_ID: recordId, MANDIBLE_ACCEPTANCE_REQUEST: requestId,
+        MANDIBLE_ACCEPTANCE_BASE: candidate.base_sha, MANDIBLE_ACCEPTANCE_HEAD: candidate.head_sha }, signal: controller.signal });
     })
       .catch((error: unknown): CandidateAcceptanceOutcome => ({ status: "failed", result: null, error: error instanceof Error ? error.message : String(error) }));
     this.active = null;
-    this.finish(requestId, recordId, outcome);
+    this.finish(requestId, recordId, outcome, finalize);
   }
 
-  private finish(requestId: string, recordId: string, outcome: CandidateAcceptanceOutcome): void {
+  private finish(requestId: string, recordId: string, outcome: CandidateAcceptanceOutcome, finalize?: (recordId: string) => void): void {
     if (this.stopped) return;
-    let result = outcome.result == null ? null : JSON.stringify(outcome.result);
+    let result: string | null;
+    try { result = outcome.result == null ? null : JSON.stringify(outcome.result) ?? null; }
+    catch (error) {
+      result = null;
+      outcome = { status: 'failed', result: null, error: `Invalid acceptance result: ${error instanceof Error ? error.message : String(error)}` };
+    }
     if (result && result.length > MAX_RESULT_CHARS) {
       const value = outcome.result as Record<string, unknown>;
       const checks = value?.checks as { initial_transport_error?: { code?: unknown; message?: unknown }; failure_logs?: unknown } | undefined;
@@ -228,9 +239,22 @@ export class CandidateAcceptanceRuns {
           ...(failureLogs ? { failure_logs: failureLogs } : {}),
         } });
     }
-    const closed = this.db.prepare(
+    const close = this.db.prepare(
       "UPDATE auth_candidate_acceptances SET status = ?, finished_at = ?, result_json = ?, error = ? WHERE id = ? AND status = 'running'",
-    ).run(outcome.status, this.now(), result, outcome.error, recordId).changes === 1;
+    );
+    let closed: boolean;
+    try {
+      closed = this.db.transaction(() => {
+        const changed = close.run(outcome.status, this.now(), result, outcome.error, recordId).changes === 1;
+        // The receipt selection and lifecycle revision commit with the verdict.
+        // A replay of an already terminal row must not revise the request.
+        if (changed && outcome.status === 'passed') finalize?.(recordId);
+        return changed;
+      })();
+    } catch (error) {
+      closed = close.run('failed', this.now(), result,
+        `Acceptance finalization failed: ${error instanceof Error ? error.message : String(error)}`, recordId).changes === 1;
+    }
     if (closed) this.changed(requestId);
   }
 }

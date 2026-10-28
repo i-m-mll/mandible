@@ -102,6 +102,7 @@ function healthRequest() {
       },
     );
     req.on("error", error => { outcome = error.message; });
+    req.setTimeout(2000, () => req.destroy(new Error('Stall probe request exceeded 2000 ms')));
     req.on("close", () => resolve(outcome));
     req.end();
   });
@@ -118,8 +119,10 @@ function startSample(stallStart) {
   const child = spawn("sample", [String(daemonPid), String(sampleSeconds), "1", "-mayDie", "-file", file], {
     stdio: "ignore",
   });
-  child.on("exit", () => { sampleRunning = false; });
+  const deadline = setTimeout(() => child.kill('SIGTERM'), (sampleSeconds + 2) * 1000);
+  child.on("exit", () => { clearTimeout(deadline); sampleRunning = false; });
   child.on("error", error => {
+    clearTimeout(deadline);
     sampleRunning = false;
     console.error(`daemon-stall-probe: sample failed: ${error.message}`);
   });
