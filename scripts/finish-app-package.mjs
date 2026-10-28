@@ -17,7 +17,7 @@ export function finishAppPackage(app, plan, { dmg = false, archive = false } = {
     const sealed = [path.join(resources, 'release.json'), path.join(app, 'Contents/Info.plist'), path.join(app, 'Contents/_CodeSignature/CodeResources')];
     const executable = signer.run('/usr/bin/plutil', ['-extract', 'CFBundleExecutable', 'raw', '-o', '-', path.join(app, 'Contents/Info.plist')]).trim();
     sealed.push(path.join(app, 'Contents/MacOS', executable));
-    const signatures = sealed.map(digest);
+    const beforeNotarization = plan.notarization ? sealed.map(digest) : null;
     let notarization = 'not-requested';
     if (plan.notarization) {
       const submission = path.join(signer.temporary, 'submission.zip');
@@ -31,7 +31,8 @@ export function finishAppPackage(app, plan, { dmg = false, archive = false } = {
       signer.run('/usr/bin/xcrun', ['stapler', 'validate', app]);
       notarization = 'accepted-and-stapled';
     }
-    if (sealed.some((file, index) => digest(file) !== signatures[index])) throw new Error('Signed app content changed after finalization. Distribution refused.');
+    const signatures = sealed.map(digest);
+    if (beforeNotarization && signatures.some((digest, index) => digest !== beforeNotarization[index])) throw new Error('Signed app content changed after finalization. Distribution refused.');
     verifyInstalledRelease(resources);
     signer.run('/usr/bin/codesign', ['--verify', '--deep', '--strict', app]);
     const containers = [];

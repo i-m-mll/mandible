@@ -3,19 +3,23 @@ import { expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { applicationIdentity, retainAcceptedRelease, resolveAcceptedRelease, disposeAcceptedRelease } from '../scripts/accepted-release.mjs';
-import { installedFileIdentity } from '../scripts/installed-release.mjs';
-import { createOwnedRun, withOwnedRunLock, saveOwnedMetadata, finalizeOwnedRun, cleanupOwnedRun } from '../scripts/owned-run.mjs';
+import { applicationIdentity, createPendingRelease, retainAcceptedRelease, resolveAcceptedRelease, disposeAcceptedRelease, disposePendingRelease } from '../scripts/accepted-release.mjs';
+import { installedFileIdentity, verifyInstalledRelease } from '../scripts/installed-release.mjs';
+import { createOwnedRun, withOwnedRunLock, saveOwnedMetadata } from '../scripts/owned-run.mjs';
 import { CandidateAcceptanceRuns } from '../src/candidate-acceptance.js';
-import { diagnosticReplayPackage } from '../scripts/candidate-acceptance.mjs';
+import { diagnosticReplayPackage, finalizeAcceptance, acceptanceOwnedOutputs } from '../scripts/candidate-acceptance.mjs';
+import { acceptanceDeadline } from '../scripts/acceptance-deadline.mjs';
 import { acceptedReleaseSelection } from '../src/accepted-release-selection.js';
 import { createAuthCheckRepo, createMigratedDb, insertSiblingMergeRequest } from './helpers/auth-queue-fixtures.js';
 
-it('retains the app that ran after scratch disposal and refuses changed selection or bytes', async () => {
+it('seals the exercised app in place after scratch disposal and refuses changed selection or bytes', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'accepted-release-'));
   try {
     const scratch = path.join(root, 'scratch');
-    const resources = path.join(scratch, 'Mandible.app/Contents/Resources');
+    fs.mkdirSync(scratch);
+    const ownership = createOwnedRun({ root: scratch, instanceId: 'proof', project: 'project', workUnit: 'work-unit', disposable: true, outputs: acceptanceOwnedOutputs });
+    const pending = await createPendingRelease({ storage: path.join(root, 'retained'), ownership });
+    const { resources, app } = pending;
     fs.mkdirSync(resources, { recursive: true });
     const program = path.join(resources, 'program');
     fs.writeFileSync(program, 'accepted program');
@@ -27,26 +31,33 @@ it('retains the app that ran after scratch disposal and refuses changed selectio
     fs.writeFileSync(evidence, JSON.stringify({ status: 'passed', candidate: candidate.pin_sha }));
     const failedReceipt = path.join(root, 'failed.json');
     const failed = { schema: 'mandible-owned-run@1', acceptance: { schema: 'mandible-candidate-acceptance@1', status: 'failed',
-      candidate: candidate.pin_sha, provenance: { marker: { source_digest: 'e'.repeat(64) }, package_sha256: applicationIdentity(path.join(scratch, 'Mandible.app')) } } };
+      candidate: candidate.pin_sha, provenance: { marker: { source_digest: 'e'.repeat(64) }, package_sha256: applicationIdentity(app) } } };
     fs.writeFileSync(failedReceipt, JSON.stringify(failed));
-    expect(diagnosticReplayPackage(failedReceipt, path.join(scratch, 'Mandible.app')).candidate).toBe(candidate.pin_sha);
+    expect(diagnosticReplayPackage(failedReceipt, app).candidate).toBe(candidate.pin_sha);
     failed.acceptance.candidate = 'f'.repeat(40);
     fs.writeFileSync(failedReceipt, JSON.stringify(failed));
-    expect(() => diagnosticReplayPackage(failedReceipt, path.join(scratch, 'Mandible.app'))).toThrow('exact failed acceptance');
+    expect(() => diagnosticReplayPackage(failedReceipt, app)).toThrow('exact failed acceptance');
+    const inode = fs.statSync(program).ino;
+    const shipped = verifyInstalledRelease(resources);
+    const digest = applicationIdentity(app);
+    expect(fs.existsSync(path.join(root, 'retained', '.receipts', `${pending.runId}-accepted-release.json`))).toBe(false);
     let reference = '';
     await withOwnedRunLock(scratch, async () => {
-      const ownership = createOwnedRun({ root: scratch, instanceId: 'proof', project: 'project', workUnit: 'work-unit', disposable: true,
-        outputs: [{ path: 'Mandible.app', kind: 'generated' }] });
       const metadata = path.join(scratch, 'metadata.json');
       saveOwnedMetadata(metadata, { ownership });
-      const input = { app: path.join(scratch, 'Mandible.app'), storage: path.join(root, 'retained'), ownership, candidate,
-        acceptance: { record_id: null, request_id: null }, evidence: { receipt: evidence, sha256: installedFileIdentity(evidence).sha256 },
-        expectedDigest: applicationIdentity(path.join(scratch, 'Mandible.app')) };
-      await expect(retainAcceptedRelease({ ...input, expectedDigest: '0'.repeat(64) })).rejects.toThrow('changed during acceptance');
-      reference = await retainAcceptedRelease(input);
-      finalizeOwnedRun(metadata, { expectedRevision: 1, outcome: 'assessed', summary: 'proof' }, { inspect: () => ({ idle: true }) });
-      expect(cleanupOwnedRun(metadata, { apply: true, inspect: () => ({ idle: true }) }).remaining).toEqual([]);
+      await expect(retainAcceptedRelease({ pending, candidate, shipped, acceptance: { record_id: null, request_id: null },
+        evidence: { receipt: evidence, sha256: installedFileIdentity(evidence).sha256 }, expectedDigest: '0'.repeat(64) })).rejects.toThrow('changed during acceptance');
+      const budget = acceptanceDeadline({});
+      fs.mkdirSync(path.join(root, '.receipts'), { recursive: true });
+      saveOwnedMetadata(path.join(root, '.receipts', `${ownership.runId}-acceptance.json`), { status: 'passed', provenance: { shipped } });
+      const result = await finalizeAcceptance({ metadataFile: metadata, run: scratch, cache: root, ownership, pendingPackage: pending,
+        candidateBinding: candidate, testedPackageDigest: digest, deadlineEnv: budget.env,
+        result: { status: 'passed', provenance: { shipped }, checks: {}, phases: {}, budget: budget.reading() } });
+      expect(result.status).toBe('passed');
+      expect(result.checks.cleanup).toMatchObject({ action: 'delete-owned', remaining: [] });
+      reference = result.receipt;
     });
+    expect(fs.statSync(program).ino).toBe(inode);
     expect(fs.existsSync(scratch)).toBe(false);
     expect(reference.length).toBeLessThanOrEqual(512);
     const db = createMigratedDb();
@@ -89,5 +100,57 @@ it('retains the app that ran after scratch disposal and refuses changed selectio
     expect(fs.existsSync(selected.receipt.package.handle.root)).toBe(false);
     expect(fs.readFileSync(receiptFile)).toEqual(receiptBytes);
     expect(fs.existsSync(evidence)).toBe(true);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+it('disposes only the exact pending package and preserves changed or unknown retained material', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pending-release-'));
+  try {
+    const pending = await createPendingRelease({ storage: root, ownership: { runId: 'pending', instanceId: 'proof', project: 'project', workUnit: 'unit' } });
+    fs.mkdirSync(pending.app);
+    const program = path.join(pending.app, 'program');
+    fs.writeFileSync(program, 'exercised');
+    const digest = applicationIdentity(pending.app);
+    fs.writeFileSync(program, 'changed');
+    await expect(disposePendingRelease(pending, digest, 'Failed acceptance')).rejects.toThrow('changed');
+    expect(fs.existsSync(program)).toBe(true);
+    fs.writeFileSync(program, 'exercised');
+    fs.writeFileSync(path.join(pending.root, 'unknown'), 'preserve');
+    const result = await disposePendingRelease(pending, digest, 'Failed acceptance');
+    expect(result.remaining).toEqual(['unknown']);
+    expect(fs.readFileSync(path.join(pending.root, 'unknown'), 'utf8')).toBe('preserve');
+    const failed = await createPendingRelease({ storage: root, ownership: { runId: 'failed', instanceId: 'proof', project: 'project', workUnit: 'unit' } });
+    fs.mkdirSync(failed.app);
+    fs.writeFileSync(path.join(failed.app, 'partial-copy'), 'unaccepted');
+    expect(await disposePendingRelease(failed, undefined, 'Copy failed')).toMatchObject({ action: 'delete-owned', remaining: [] });
+    expect(fs.existsSync(failed.root)).toBe(false);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+it('cleans disposable scratch independently when a failed pending package is disposed or preserved', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'failed-package-finalization-'));
+  try {
+    for (const changed of [false, true]) {
+      const scratch = path.join(root, String(changed)); fs.mkdirSync(scratch);
+      const ownership = createOwnedRun({ root: scratch, instanceId: 'proof', project: 'project', workUnit: 'unit', disposable: true, outputs: acceptanceOwnedOutputs });
+      const pending = await createPendingRelease({ storage: path.join(root, 'packages'), ownership });
+      fs.mkdirSync(pending.app);
+      const program = path.join(pending.app, 'program'); fs.writeFileSync(program, 'exercised');
+      const digest = applicationIdentity(pending.app);
+      if (changed) fs.writeFileSync(program, 'changed');
+      fs.writeFileSync(path.join(scratch, 'extra-generated'), 'scratch');
+      const metadataFile = path.join(scratch, 'metadata.json');
+      saveOwnedMetadata(metadataFile, { ownership });
+      const budget = acceptanceDeadline({});
+      const result = await finalizeAcceptance({ metadataFile, run: scratch, cache: root, ownership, pendingPackage: pending,
+        testedPackageDigest: digest, deadlineEnv: budget.env,
+        result: { status: 'failed', provenance: {}, checks: {}, phases: {}, budget: budget.reading() } });
+      expect(result.status).toBe('failed');
+      expect(result.checks.cleanup).toMatchObject({ action: 'delete-owned', remaining: [] });
+      expect(fs.existsSync(scratch)).toBe(false);
+      expect(fs.existsSync(pending.app)).toBe(changed);
+      expect(result.checks.package_cleanup.action).toBe(changed ? 'skip' : 'delete-owned');
+      expect(fs.existsSync(path.join(root, 'packages/.receipts', `${pending.runId}-accepted-release.json`))).toBe(false);
+    }
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
