@@ -29,6 +29,45 @@ export interface RuntimePublicationBinding {
   publicationEvidence?: { evidenceId: string; digest: string };
 }
 
+export interface RuntimeDeliveryReference {
+  publicationEvidence: { evidenceId: string; digest: string };
+  journal: string;
+}
+
+type RuntimeHookIdentity = Pick<RuntimePublicationBinding, "requestId" | "executionId" | "hookId" | "commandDigest">;
+export interface RuntimeDeliveryIntent {
+  publicationEvidence: { evidenceId: string; digest: string };
+  publication: ReturnType<typeof publicationPayload>;
+}
+
+/** Intent is historical ownership, independently of today's signing permission. */
+export function findRuntimeDeliveryIntents(db: Db, hooks: readonly RuntimeHookIdentity[]): Map<string, RuntimeDeliveryIntent> {
+  const found = new Map<string, RuntimeDeliveryIntent>();
+  if (!hooks.length) return found;
+  const expected = new Map(hooks.map(hook => [hook.executionId, hook]));
+  const rows = db.prepare(`SELECT id FROM attribution_evidence
+    WHERE evidence_method = 'credential_signature'
+      AND json_extract(details_json, '$.runtime_publication.schema') = 'mandible-runtime-publication@1'
+      AND json_extract(details_json, '$.runtime_publication.executionId') IN (${[...expected].map(() => "?").join(",")})
+    ORDER BY id`).all(...expected.keys()) as Array<{ id: string }>;
+  for (const row of rows) {
+    const evidence = getAttributionEvidence(db, row.id)!;
+    const publication = evidence.details.runtime_publication as RuntimeDeliveryIntent["publication"];
+    const hook = expected.get(publication.executionId)!;
+    const hash = digest(publication);
+    if (publication.requestId !== hook.requestId || publication.hookId !== hook.hookId || publication.commandDigest !== hook.commandDigest
+        || evidence.details.runtime_publication_digest !== hash) throw new Error("Stored runtime delivery intent differs from its hook.");
+    const prior = found.get(hook.executionId);
+    if (prior && prior.publicationEvidence.digest !== hash) throw new Error("Conflicting runtime delivery intents name this hook.");
+    if (!prior) found.set(hook.executionId, { publicationEvidence: { evidenceId: evidence.id, digest: hash }, publication });
+  }
+  return found;
+}
+
+export function findRuntimeDeliveryIntent(db: Db, hook: RuntimeHookIdentity): RuntimeDeliveryIntent | null {
+  return findRuntimeDeliveryIntents(db, [hook]).get(hook.executionId) ?? null;
+}
+
 export type RuntimeSourceReadiness =
   | { ok: true; projectId: string; commonGitDir: string }
   | { ok: false; reason: string };

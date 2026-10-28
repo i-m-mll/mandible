@@ -1,4 +1,5 @@
 // --- Core daemon types (P1) ---
+import type { RuntimeDeliveryReference } from "./runtime-handoff-proof.js";
 
 // --- Contracts owned by contracts.ts -------------------------------------
 // These were byte-equivalent second declarations. contracts.ts is the module
@@ -1423,6 +1424,7 @@ export interface AuthHookExecutionResult {
   exit_code: number | null;
   output: string;
   duration_ms: number;
+  runtime_delivery?: RuntimeDeliveryReference | null;
 }
 
 /**
@@ -1454,6 +1456,7 @@ export interface AuthHookRun {
   command: string;
   /** SHA-256 of the snapshotted command, so hook edits after the fact are visible. */
   command_digest: string;
+  runtime_delivery: RuntimeDeliveryReference | null;
   position: number;
   required: boolean;
   state: AuthHookRunState;

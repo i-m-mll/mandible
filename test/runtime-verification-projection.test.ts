@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { afterEach, expect, it, vi } from 'vitest';
+import { addAttributionEvidence } from '../src/users/store.js';
 import { AuthHookManager } from '../src/auth-hooks.js';
 import { AuthQueue } from '../src/auth-queue.js';
 import { authHistory } from '../src/ledger-reads/auth-history.js';
@@ -22,7 +23,11 @@ function fixture() {
   const requestId = 'projection-request'; const executionId = 'projection-execution';
   db.prepare(`INSERT INTO auth_requests (id, type, command, title, status, exit_code, repo, created_at, updated_at, expires_at)
     VALUES (?, 'merge', 'mandible auth merge feature/x --into main', 'Self update', 'completed', 0, 'mandible', 1, 1, 9999999999999)`).run(requestId);
-  const binding = { home, requestId, executionId, hookId: 'builtin-mandible-rebuild', commandDigest: 'c'.repeat(64) };
+  const identity = { home, requestId, executionId, hookId: 'builtin-mandible-rebuild', commandDigest: 'c'.repeat(64) };
+  const publication = { schema: 'mandible-runtime-publication@1', ...identity };
+  const publicationDigest = createHash('sha256').update(JSON.stringify(publication)).digest('hex');
+  const evidence = addAttributionEvidence(db, { evidence_method: 'credential_signature', details: { runtime_publication: publication, runtime_publication_digest: publicationDigest } });
+  const binding = { ...identity, publicationEvidence: { evidenceId: evidence.id, digest: publicationDigest } };
   const digest = runtimeHandoffBindingDigest(binding);
   db.prepare(`INSERT INTO auth_hook_executions (id, auth_request_id, hook_id, command, command_digest, state, attempts, exit_code, output, created_at, updated_at)
     VALUES (?, ?, ?, 'rebuild', ?, 'pending', 1, 75, ?, 1, 1)`).run(executionId, requestId, binding.hookId, binding.commandDigest, `MANDIBLE_RUNTIME_HANDOFF_PENDING:${digest}`);
@@ -70,13 +75,11 @@ it('publishes existing auth updates only for meaningful projection changes and c
   expect((updates().at(-1)?.data as { request: { convergence: unknown } }).request.convergence).not.toHaveProperty('runtime_verification');
 });
 
-it.each(['owner', 'command', 'acceptance', 'retirement', 'schema', 'marker'] as const)('refuses a stale pending instruction after %s changes', change => {
+it.each(['owner', 'acceptance', 'retirement', 'schema'] as const)('refuses a stale pending instruction after %s changes', change => {
   const f = fixture();
   if (change === 'owner') fs.writeFileSync(f.active, JSON.stringify({ journal: f.file, bindingDigest: '0'.repeat(64) }));
-  if (change === 'command') f.db.prepare('UPDATE auth_hook_executions SET command_digest = ? WHERE id = ?').run('d'.repeat(64), f.executionId);
   if (change === 'acceptance') f.db.prepare("UPDATE auth_hook_executions SET state = 'complete' WHERE id = ?").run(f.executionId);
   if (change === 'schema') { f.journal.schema = 'unknown'; f.write(); }
-  if (change === 'marker') f.db.prepare('UPDATE auth_hook_executions SET output = ? WHERE id = ?').run(`MANDIBLE_RUNTIME_HANDOFF_PENDING:${'0'.repeat(64)}`, f.executionId);
   if (change === 'retirement') fs.writeFileSync(path.join(f.dir, 'retirement.json'), JSON.stringify({ schema: 'mandible-runtime-handoff-retirement@1',
     requestId: f.requestId, executionId: f.executionId, bindingDigest: f.digest, journalSha256: createHash('sha256').update(fs.readFileSync(f.file)).digest('hex') }));
   expect(f.queue.convergenceForRequest(f.requestId)).not.toHaveProperty('runtime_verification');
@@ -99,5 +102,19 @@ it('clears a failed transition without inferring a current instruction from hist
   expect(fs.readFileSync(f.file)).toEqual(bytes);
   expect(f.hooks.getRun(f.requestId, f.binding.hookId)?.state).toBe('failed');
   fs.writeFileSync(path.join(directory, '0002.json'), JSON.stringify({ ...attempt, outcome: 'failed', message: 'known process exit' }));
+  expect(f.queue.convergenceForRequest(f.requestId)).not.toHaveProperty('runtime_verification');
+});
+
+it('keeps a durable pending instruction after hook output is replaced', () => {
+  const f = fixture();
+  f.db.prepare("UPDATE auth_hook_executions SET output = '' WHERE id = ?").run(f.executionId);
+  expect(f.queue.convergenceForRequest(f.requestId).runtime_verification?.reason).toBe(f.journal.lastObservation.reason);
+});
+
+it('refuses a hook command that differs from its immutable delivery intent', () => {
+  const f = fixture();
+  f.hooks.getRun(f.requestId, f.binding.hookId);
+  f.db.prepare('UPDATE auth_hook_executions SET command_digest = ? WHERE id = ?').run('d'.repeat(64), f.executionId);
+  expect(() => f.hooks.getRun(f.requestId, f.binding.hookId)).toThrow('reference no longer matches');
   expect(f.queue.convergenceForRequest(f.requestId)).not.toHaveProperty('runtime_verification');
 });
