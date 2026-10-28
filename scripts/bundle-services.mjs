@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { assertLifecycleLockHeld, processIdentity } from './lifecycle-lock.mjs';
+import { runtimeObservationTimeout } from './runtime-observation.mjs';
 import { inspectServiceDefinitionsSync, assertBundleServiceIdentity } from './service-definitions.mjs';
 import { readServiceConfiguration, publishServiceConfiguration } from './service-configuration.mjs';
 import { readInstalledRelease, releaseFile } from './installed-release.mjs';
@@ -56,18 +57,19 @@ export function admitBundleOwner(context, release, { relocation = false } = {}) 
 }
 
 /** The delivery journal authorizes replacement; this boundary proves the old writer is gone. */
-export function adoptBundleRelease(context, release, expectedOwner, acceptedRelease) {
+export function adoptBundleRelease(context, release, expectedOwner, acceptedRelease, { until } = {}) {
   assertLifecycleLockHeld();
-  assertBundleServiceIdentity(context);
+  assertBundleServiceIdentity(context, until);
   const current = readBundleOwner(context);
   if (JSON.stringify(current) !== JSON.stringify(expectedOwner)) throw new Error('Bundle owner changed after handoff capture.');
-  const inspection = inspectServiceDefinitionsSync(context);
+  const inspection = inspectServiceDefinitionsSync(context, { until });
   if (!inspection.ok) throw new Error(inspection.refusal.message);
   if (inspection.observations.some(item => item.job.pid || item.installed.some(definition => !definition.record.BundleProgram))) {
     throw new Error('Bundle adoption requires stopped writers and removal of legacy service definitions.');
   }
   const installationId = fs.readFileSync(path.join(context.home, 'config/client-auth/authority-id'), 'utf8').trim();
   if (current && current.installationId !== installationId) throw new Error('Bundle owner belongs to another installation authority.');
+  runtimeObservationTimeout(until, 2500);
   publish(ownerFile(context), { schema: 'mandible-bundle-owner@1', bundleRoot: context.bundleRoot, installationId,
     generation: release.provenance.commit, sourceDigest: release.provenance.source_digest, ...(acceptedRelease ? { acceptedRelease } : {}) });
   return readBundleOwner(context);

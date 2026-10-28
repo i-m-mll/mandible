@@ -126,6 +126,10 @@ not an additional allocation beyond the shared verification schedule.
 The allocation is at most 10 seconds for source checks, 20 seconds for the
 native replacement fixture including a five-second teardown reserve, and
 60 seconds for automatic acceptance including its five-second cleanup reserve.
+The native fixture's clock starts in the existing provisioned launcher before
+private runtime and Vitest startup; the test consumes the remaining allowance.
+Installation, registration observation and retained-package disposal share that
+original deadline rather than starting new per-operation budgets.
 
 The legacy-to-bundle bootstrap remains historical migration coverage. Repeating
 its old-source build and two full package acceptances is not a prerequisite for

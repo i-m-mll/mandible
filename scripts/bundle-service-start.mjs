@@ -38,7 +38,7 @@ export async function reconcileBundleServiceStart(context, role, { until, contro
     let native, inspection;
     try {
       const changed = continuity(); if (changed) return changed;
-      native = control(context, 'status', role); inspection = observe(context, { until });
+      native = control(context, 'status', role, { until }); inspection = observe(context, { until });
       const replaced = continuity(); if (replaced) return replaced;
     }
     catch (error) { return fail('service_observation_failed', error.message); }
@@ -80,7 +80,7 @@ export async function reconcileBundleServiceStart(context, role, { until, contro
       } else if (['not_found', 'not_registered'].includes(native.status) && !registered && now() < until) {
         registered = true;
         assertLifecycleLockHeld();
-        try { sample.registration = control(context, 'register', role); }
+        try { sample.registration = control(context, 'register', role, { until }); }
         catch (error) { return fail('service_registration_failed', error.message); }
         if (sample.registration.status === 'requires_approval') return fail('background_permission_required', 'Allow Mandible background services in System Settings.', 'pending');
       }

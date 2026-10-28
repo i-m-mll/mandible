@@ -6,7 +6,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { expect, it } from 'vitest';
-import { retainAcceptedRelease, applicationIdentity, readAcceptedReleaseReceipt, disposeAcceptedRelease } from '../../scripts/accepted-release.mjs';
+import { retainAcceptedRelease, applicationIdentity, readAcceptedReleaseReceipt } from '../../scripts/accepted-release.mjs';
 import { installAcceptedApplication, acceptedInstallPaths } from '../../scripts/accepted-app-install.mjs';
 import { installedFileIdentity } from '../../scripts/installed-release.mjs';
 import { serviceInstallationContext, inspectServiceDefinitionsSync, matchingServiceDefinitions } from '../../scripts/service-definitions.mjs';
@@ -22,9 +22,13 @@ import type { RuntimeProcessIdentity } from '../../scripts/runtime-observation.m
 
 it('replaces retained signed bundles through real native service startup, qualified drain and exact package custody', async () => {
   if (process.platform !== 'darwin') throw new Error('The native replacement proof requires macOS.');
-  const started = Date.now();
-  // Includes helper provisioning and teardown, below the common 60s hang guard.
-  const deadline = started + 20_000;
+  // The existing provisioned launcher starts this clock before private runtime
+  // and Vitest setup. No fresh allowance begins when the test body starts.
+  const started = Number(process.env.MANDIBLE_NATIVE_PROOF_STARTED_AT);
+  const deadline = Number(process.env.MANDIBLE_NATIVE_PROOF_UNTIL);
+  if (!Number.isFinite(started) || deadline !== started + 20_000 || Date.now() >= deadline) {
+    throw new Error('Run the native proof through test:provisioned with its original command deadline.');
+  }
   const workUntil = deadline - 5_000;
   const costs: Array<{ phase: string; ms: number }> = [];
   const checkDeadline = (phase: string, until = workUntil) => {
@@ -50,6 +54,23 @@ it('replaces retained signed bundles through real native service startup, qualif
   const roles: ServiceKind[] = ['backend', 'gateway'];
   const references: string[] = [];
   const generations: unknown[] = [];
+  let sourceRevision: string | null = null;
+  console.info('native_bundle_replacement_started', JSON.stringify({ identifier, root, started, deadline }));
+  const runtime = process.env.MANDIBLE_RUNTIME;
+  const supervised = async (args: string[], phase: string, until = workUntil) => {
+    checkDeadline(phase, until);
+    const before = Date.now();
+    const logFile = path.join(root, `${phase.replaceAll(/[^a-zA-Z0-9]/g, '-')}.log`);
+    const log = fs.openSync(logFile, 'w');
+    try {
+      await runSupervisedCommand(runtime!, args, { cwd: process.cwd(), env: process.env,
+        stdio: ['ignore', log, log], timeout: until - Date.now(), graceMs: 100 });
+      checkDeadline(phase, until);
+    } catch (error) {
+      console.error('native_fixture_phase_failed', { phase, error: String(error), excerpt: fs.readFileSync(logFile, 'utf8').slice(-4000) });
+      throw error;
+    } finally { fs.closeSync(log); costs.push({ phase, ms: Date.now() - before }); }
+  };
   let qualified: Partial<Record<ServiceKind, RuntimeProcessIdentity>> = {};
   const waitFor = async (phase: string, predicate: () => boolean, until = workUntil) => {
     for (;;) {
@@ -71,8 +92,9 @@ it('replaces retained signed bundles through real native service startup, qualif
     await waitFor('qualified native service drain', () => stopped(until), until);
   };
   try {
-    const runtime = process.env.MANDIBLE_RUNTIME;
     if (!runtime) throw new Error('Run through the pinned provisioned test runner.');
+    sourceRevision = run('git', ['rev-parse', 'HEAD'], 'source revision').trim();
+    if (run('git', ['status', '--porcelain', '--untracked-files=all'], 'source checkout check').trim()) throw new Error('Native qualification requires a clean committed source checkout.');
     const helperTarget = path.resolve(process.env.CARGO_TARGET_DIR || 'src-tauri/service-helper/target');
     // Current checkout, once, with Cargo's ordinary persistent target and
     // fingerprints. No installed helper or hidden prebuild substitutes for it.
@@ -145,9 +167,9 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
       await withLifecycleLock(home, async () => {
         if (index) await stop(workUntil);
         checkDeadline(`generation ${pin} install admission`);
-        installAcceptedApplication(binding, context);
+        installAcceptedApplication(binding, context, { until: workUntil });
         checkDeadline(`generation ${pin} install`);
-        installAcceptedApplication(binding, context);
+        installAcceptedApplication(binding, context, { until: workUntil });
         checkDeadline(`generation ${pin} install replay`);
         qualified = {};
         for (const role of roles) {
@@ -186,7 +208,7 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
         const previous = acceptedInstallPaths(binding).previous;
         if (index) expect(applicationIdentity(previous)).toBe(binding.priorAppSha256);
         checkDeadline(`generation ${pin} disposal admission`);
-        run(runtime, ['scripts/verify-accepted-release.mjs', reference, JSON.stringify(candidate), app, previous,
+        await supervised(['scripts/verify-accepted-release.mjs', reference, JSON.stringify(candidate), app, previous,
           binding.priorAppSha256 ?? '', previousReference], `verify/dispose ${pin}`);
         expect(fs.existsSync(previous)).toBe(false);
         if (previousReference) expect(fs.existsSync(readAcceptedReleaseReceipt(previousReference).package.handle.root)).toBe(false);
@@ -212,9 +234,9 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
         checkDeadline('final disposal admission', deadline);
         const receipt = readAcceptedReleaseReceipt(reference);
         if (fs.existsSync(receipt.package.handle.root)) {
-          const disposed = await disposeAcceptedRelease(reference, receipt.candidate, 'Private native fixture complete');
+          await supervised(['scripts/verify-accepted-release.mjs', reference, JSON.stringify(receipt.candidate), '', '', '', reference, 'cleanup'], 'final retained package disposal', deadline);
           checkDeadline('final disposal', deadline);
-          expect(disposed.remaining).toEqual([]);
+          expect(fs.existsSync(receipt.package.handle.root)).toBe(false);
         }
       }
       cleaned = true;
@@ -222,7 +244,7 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
       // An unconfirmed service stop retains its exact app and evidence.
       if (cleaned) fs.rmSync(root, { recursive: true, force: true });
       console.info('native_bundle_replacement_proof', JSON.stringify({ scope: 'private SMAppService replacement; no product daemon, GUI, ledger or approval API',
-        identifier, generations, command_costs: costs, whole_ms: Date.now() - started, teardown_ms: Date.now() - teardownStarted,
+        source_revision: sourceRevision, identifier, generations, command_costs: costs, whole_ms: Date.now() - started, teardown_ms: Date.now() - teardownStarted,
         target_ms: 60_000, deadline_ms: 20_000, teardown_reserve_ms: 5_000,
         cleanup: cleaned ? 'complete' : 'unconfirmed', retained_root: cleaned ? null : root }));
     }
