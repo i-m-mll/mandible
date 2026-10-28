@@ -1,6 +1,7 @@
 export interface ServiceInstallationContext {
   home: string; accountHome: string; runtimeDir: string; domain: string;
   bundleRoot?: string;
+  bundleIdentifier?: string;
   serviceDir: string; privateServiceDir: string; backendLabel: string; gatewayLabel: string;
 }
 export interface LoadedService {
@@ -29,8 +30,9 @@ export interface ServiceObservation {
 export type ServiceOwnershipRefusal = ServiceDefinitionRefusal & { category: 'ownership_conflict' | 'unreadable_state' | 'starting' };
 export type ServiceDefinitionInspection = { ok: true; observations: ServiceObservation[] } | { ok: false; refusal: ServiceDefinitionRefusal };
 export type ServiceOwnershipInspection = { ok: true; observations: ServiceObservation[] } | { ok: false; refusal: ServiceOwnershipRefusal };
-export interface ServiceObservationOptions { desired?: Partial<Record<ServiceKind, ServiceDefinition>> }
-export function serviceInstallationContext(options?: { home?: string; accountHome?: string; domain?: string; bundleRoot?: string }): ServiceInstallationContext;
+export interface ServiceObservationOptions { desired?: Partial<Record<ServiceKind, ServiceDefinition>>; until?: number }
+export function serviceInstallationContext(options?: { home?: string; accountHome?: string; domain?: string; bundleRoot?: string; bundleIdentifier?: string }): ServiceInstallationContext;
+export function assertBundleServiceIdentity(context: ServiceInstallationContext, until?: number): void;
 export function parseLoadedService(detail: string): LoadedService;
 export function differingServiceFields(record: ServiceDefinition, job: LoadedService): string[];
 export function loadedServiceMatches(record: ServiceDefinition, job: LoadedService): boolean;

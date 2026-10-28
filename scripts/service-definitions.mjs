@@ -5,10 +5,28 @@ import { createHash } from 'node:crypto';
 import { execFile, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { bundleServiceLabel } from './bundle-service-roles.mjs';
+import { runtimeObservationTimeout } from './runtime-observation.mjs';
 
 const execute = promisify(execFile);
 
-export function serviceInstallationContext({ home = path.join(os.userInfo().homedir, '.mandible'), accountHome, domain = `gui/${process.getuid?.() ?? 0}`, bundleRoot = process.env.MANDIBLE_RELEASE_ROOT ? path.resolve(process.env.MANDIBLE_RELEASE_ROOT, '../..') : undefined } = {}) {
+function bundleIdentifierAt(bundleRoot, until) {
+  const result = spawnSync('/usr/bin/plutil', ['-extract', 'CFBundleIdentifier', 'raw', '-o', '-', path.join(bundleRoot, 'Contents/Info.plist')],
+    { encoding: 'utf8', timeout: runtimeObservationTimeout(until, 2500) });
+  if (result.error || result.status !== 0 || !/^[A-Za-z0-9.-]+$/.test(result.stdout.trim())) {
+    throw new Error(`Cannot read the expected service bundle identity: ${result.stderr || result.error?.message || 'Invalid CFBundleIdentifier'}`);
+  }
+  return result.stdout.trim();
+}
+
+/** The expected app supplies identity; launchd observations never choose it. */
+export function assertBundleServiceIdentity(context, until) {
+  if (!context.bundleRoot || !context.bundleIdentifier) throw new Error('Bundle services require an expected app identity.');
+  if (bundleIdentifierAt(context.bundleRoot, until) !== context.bundleIdentifier) {
+    throw new Error('The expected service bundle identity differs from its Info.plist.');
+  }
+}
+
+export function serviceInstallationContext({ home = path.join(os.userInfo().homedir, '.mandible'), accountHome, domain = `gui/${process.getuid?.() ?? 0}`, bundleRoot = process.env.MANDIBLE_RELEASE_ROOT ? path.resolve(process.env.MANDIBLE_RELEASE_ROOT, '../..') : undefined, bundleIdentifier } = {}) {
   const ownerHome = os.userInfo().homedir;
   accountHome ??= path.resolve(home) !== path.join(ownerHome, '.mandible') ? process.env.MANDIBLE_SERVICE_ACCOUNT_HOME || ownerHome : ownerHome;
   if (![home, accountHome].every(path.isAbsolute)) throw new Error('Installation and account homes must be absolute.');
@@ -16,9 +34,17 @@ export function serviceInstallationContext({ home = path.join(os.userInfo().home
   const runtimeDir = path.join(home, 'config/local-sessions');
   const ownerFile = path.join(runtimeDir, 'bundle-owner.json');
   if (!bundleRoot && fs.existsSync(ownerFile)) bundleRoot = JSON.parse(fs.readFileSync(ownerFile, 'utf8')).bundleRoot;
-  const suffix = home === path.join(os.userInfo().homedir, '.mandible') ? '' : `.${createHash('sha256').update(home).digest('hex').slice(0, 8)}`;
-  return { home, accountHome, runtimeDir, domain, bundleRoot, serviceDir: path.join(accountHome, 'Library/LaunchAgents'), privateServiceDir: path.join(runtimeDir, 'launch-agents'),
-    backendLabel: `${bundleServiceLabel('backend')}${suffix}`, gatewayLabel: `${bundleServiceLabel('gateway')}${suffix}` };
+  if (bundleRoot) {
+    const info = path.join(bundleRoot, 'Contents/Info.plist');
+    // Explicit construction supports an app not installed yet. Once present,
+    // its identity must agree before service inspection or native control.
+    if (!bundleIdentifier) bundleIdentifier = bundleIdentifierAt(bundleRoot);
+    else if (fs.existsSync(info)) assertBundleServiceIdentity({ bundleRoot, bundleIdentifier });
+    if (!/^[A-Za-z0-9.-]+$/.test(bundleIdentifier)) throw new Error('Invalid expected service bundle identity.');
+  } else if (bundleIdentifier) throw new Error('A bundle identity requires an expected app path.');
+  const suffix = bundleRoot || home === path.join(os.userInfo().homedir, '.mandible') ? '' : `.${createHash('sha256').update(home).digest('hex').slice(0, 8)}`;
+  return { home, accountHome, runtimeDir, domain, bundleRoot, bundleIdentifier, serviceDir: path.join(accountHome, 'Library/LaunchAgents'), privateServiceDir: path.join(runtimeDir, 'launch-agents'),
+    backendLabel: `${bundleServiceLabel('backend', bundleIdentifier)}${suffix}`, gatewayLabel: `${bundleServiceLabel('gateway', bundleIdentifier)}${suffix}` };
 }
 
 export function parseLoadedService(detail) {
@@ -62,7 +88,7 @@ export function ownsServiceDefinition(context, service, record) {
   if (record.BundleProgram) {
     return !!context.bundleRoot && record.BundleProgram === 'Contents/MacOS/mandible-service'
       && JSON.stringify(argv) === JSON.stringify(['mandible-service', 'foreground', service])
-      && (!record.parentBundleIdentifier || record.parentBundleIdentifier === 'bio.mll.mandible')
+      && !!context.bundleIdentifier && (!record.parentBundleIdentifier || record.parentBundleIdentifier === context.bundleIdentifier)
       && (!record.Program || record.Program === path.join(context.bundleRoot, record.BundleProgram));
   }
   if (!Array.isArray(argv) || !argv.every(value => typeof value === 'string') || !path.isAbsolute(argv[0] ?? '')) return false;
@@ -113,7 +139,7 @@ export function assessServiceObservation(context, service, installed, job, { des
   const label = context[`${service}Label`];
   const loadedDefinition = job.loaded ? loadedServiceDefinition(label, job) : null;
   for (const [source, record] of [...installed.map(item => [item.file, item.record]), ...(loadedDefinition ? [['loaded', loadedDefinition]] : [])]) {
-    if (source === 'loaded' && record.BundleProgram && (!job.program || job.parentBundleIdentifier !== 'bio.mll.mandible')) {
+    if (source === 'loaded' && record.BundleProgram && (!job.program || !context.bundleIdentifier || job.parentBundleIdentifier !== context.bundleIdentifier)) {
       return refusal(service, label, 'unreadable_state', [], 'Native bundle ownership evidence is incomplete; preserving the registration.');
     }
     if (!completeDefinition(record)) return refusal(service, label, 'unreadable_state', [], `Ownership evidence for ${source} service ${label} is incomplete; preserving it.`);
@@ -153,22 +179,23 @@ export function matchingServiceDefinitions(inspection) {
   return inspection;
 }
 
-function loadedJob(service, label, result, context) {
+function loadedJob(service, label, result, context, until) {
   if (result.status === 0) {
     const job = { loaded: true, ...parseLoadedService(result.stdout) };
     if (context.bundleRoot && job.bundleProgram) {
-      if (job.bundleProgram !== 'Contents/MacOS/mandible-service' || job.parentBundleIdentifier !== 'bio.mll.mandible'
+      assertBundleServiceIdentity(context, until);
+      if (job.bundleProgram !== 'Contents/MacOS/mandible-service' || !context.bundleIdentifier || job.parentBundleIdentifier !== context.bundleIdentifier
           || JSON.stringify(job.argv) !== JSON.stringify(['mandible-service', 'foreground', service])) {
         return refusal(service, label, 'ownership_conflict', [], 'The loaded service has a different native bundle identity.');
       }
       if (job.pid) {
-        const executable = spawnSync('/bin/ps', ['-ww', '-p', String(job.pid), '-o', 'comm='], { encoding: 'utf8', timeout: 2500 });
+        const executable = spawnSync('/bin/ps', ['-ww', '-p', String(job.pid), '-o', 'comm='], { encoding: 'utf8', timeout: runtimeObservationTimeout(until, 2500) });
         if (executable.error || executable.status !== 0) return refusal(service, label, 'unreadable_state', [], 'Cannot establish the loaded bundle process executable.');
         const actual = executable.stdout.trim();
         // launchd publishes its PID before xpcproxy execs the native helper,
         // whose initial comm can itself precede the full bundled Bun path.
         if (['xpcproxy', 'mandible-service'].includes(actual)) {
-          const birth = spawnSync('/bin/ps', ['-p', String(job.pid), '-o', 'lstart='], { encoding: 'utf8', timeout: 2500 });
+          const birth = spawnSync('/bin/ps', ['-p', String(job.pid), '-o', 'lstart='], { encoding: 'utf8', timeout: runtimeObservationTimeout(until, 2500) });
           const pending = refusal(service, label, 'starting', ['processExecutable'], `Native service ${label} PID ${job.pid} is still starting (${actual}); bundle process ownership is not confirmed yet.`);
           pending.refusal.evidence = { service, label, executable: actual, pid: job.pid,
             startedAt: birth.status === 0 ? birth.stdout.trim() : null,
@@ -208,15 +235,15 @@ export async function inspectServiceDefinitions(context, options = {}) {
         let bytes;
         try { bytes = await fs.promises.readFile(file); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
         let record;
-        try { record = JSON.parse((await execute('/usr/bin/plutil', ['-convert', 'json', '-o', '-', file], { timeout: 2500, maxBuffer: 1024 * 1024 })).stdout); }
+        try { record = JSON.parse((await execute('/usr/bin/plutil', ['-convert', 'json', '-o', '-', file], { timeout: runtimeObservationTimeout(options.until, 2500), maxBuffer: 1024 * 1024 })).stdout); }
         catch (error) { return refusal(service, label, 'unreadable_state', [], `Cannot establish ownership of ${file}: ${error.message}`); }
         if (record.BundleProgram) record.bundleRoot = context.bundleRoot;
         installed.push(installedDefinition(file, bytes, record));
       }
       let result;
-      try { result = { status: 0, ...await execute('/bin/launchctl', ['print', `${context.domain}/${label}`], { timeout: 2500, maxBuffer: 1024 * 1024 }) }; }
+      try { result = { status: 0, ...await execute('/bin/launchctl', ['print', `${context.domain}/${label}`], { timeout: runtimeObservationTimeout(options.until, 2500), maxBuffer: 1024 * 1024 }) }; }
       catch (error) { result = { status: error.code, stdout: error.stdout ?? '', stderr: error.stderr || error.message }; }
-      const loaded = loadedJob(service, label, result, context);
+      const loaded = loadedJob(service, label, result, context, options.until);
       return loaded.ok ? assessServiceObservation(context, service, installed, loaded.job, { ...options, desired: options.desired?.[service] }) : loaded;
     } catch (error) { return refusal(service, label, 'unreadable_state', [], `Cannot inspect ${label}: ${error.message}`); }
   })));
@@ -231,15 +258,15 @@ export function inspectServiceDefinitionsSync(context, options = {}) {
       for (const file of serviceFiles(context, label)) {
         let bytes;
         try { bytes = fs.readFileSync(file); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
-        const parsed = spawnSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', file], { encoding: 'utf8', timeout: 2500 });
+        const parsed = spawnSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', file], { encoding: 'utf8', timeout: runtimeObservationTimeout(options.until, 2500) });
         let record;
         try { if (parsed.error || parsed.status !== 0) throw new Error(parsed.stderr || parsed.error?.message); record = JSON.parse(parsed.stdout); }
         catch (error) { return refusal(service, label, 'unreadable_state', [], `Cannot establish ownership of ${file}: ${error.message}`); }
         if (record.BundleProgram) record.bundleRoot = context.bundleRoot;
         installed.push(installedDefinition(file, bytes, record));
       }
-      const result = spawnSync('/bin/launchctl', ['print', `${context.domain}/${label}`], { encoding: 'utf8', timeout: 2500 });
-      const loaded = loadedJob(service, label, { ...result, stderr: result.error?.message || result.stderr || '' }, context);
+      const result = spawnSync('/bin/launchctl', ['print', `${context.domain}/${label}`], { encoding: 'utf8', timeout: runtimeObservationTimeout(options.until, 2500) });
+      const loaded = loadedJob(service, label, { ...result, stderr: result.error?.message || result.stderr || '' }, context, options.until);
       return loaded.ok ? assessServiceObservation(context, service, installed, loaded.job, { ...options, desired: options.desired?.[service] }) : loaded;
     } catch (error) { return refusal(service, label, 'unreadable_state', [], `Cannot inspect ${label}: ${error.message}`); }
   }));

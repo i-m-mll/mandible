@@ -24,7 +24,7 @@ export function stageBundleServices(contents, helper, identifier = 'bio.mll.mand
 <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
 <key>ThrottleInterval</key><integer>10</integer>
 <key>ExitTimeOut</key><integer>20</integer>
-<key>ProcessType</key><string>Background</string>
+<key>ProcessType</key><string>Interactive</string>
 </dict></plist>
 `);
   }

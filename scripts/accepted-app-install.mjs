@@ -5,6 +5,7 @@ import { applicationIdentity, resolveAcceptedRelease, readAcceptedReleaseReceipt
 import { readInstalledRelease } from './installed-release.mjs';
 import { assertLifecycleLockHeld } from './lifecycle-lock.mjs';
 import { adoptBundleRelease, readBundleOwner } from './bundle-services.mjs';
+import { runtimeObservationTimeout } from './runtime-observation.mjs';
 
 export function acceptedApplication(binding) {
   if (!binding.acceptedRelease) throw new Error('Handoff has no frozen accepted release.');
@@ -29,9 +30,12 @@ export function acceptedInstallPaths(binding) {
 }
 
 /** Runs only after the exact captured writer and owned service jobs have drained. */
-export function installAcceptedApplication(binding, context) {
+export function installAcceptedApplication(binding, context, { until } = {}) {
   assertLifecycleLockHeld();
+  const check = () => runtimeObservationTimeout(until, 60_000);
+  check();
   const accepted = acceptedApplication(binding);
+  check();
   const owner = readBundleOwner(context);
   const installedOwner = owner?.generation === accepted.receipt.shipped.provenance.commit
     && owner?.sourceDigest === accepted.receipt.shipped.provenance.source_digest && owner?.bundleRoot === context.bundleRoot
@@ -39,24 +43,31 @@ export function installAcceptedApplication(binding, context) {
   if (!installedOwner && JSON.stringify(owner) !== JSON.stringify(binding.bundleOwner ?? null)) throw new Error('Bundle ownership changed during installation.');
   const paths = acceptedInstallPaths(binding);
   if (fs.existsSync(binding.nativeApp) && applicationIdentity(binding.nativeApp) === accepted.receipt.package.sha256) {
-    if (!installedOwner) adoptBundleRelease(context, accepted.receipt.shipped, owner, binding.acceptedRelease.reference);
+    check();
+    if (!installedOwner) adoptBundleRelease(context, accepted.receipt.shipped, owner, binding.acceptedRelease.reference, { until });
+    check();
     return { packageSha256: accepted.receipt.package.sha256, ...paths };
   }
   if (installedOwner || fs.existsSync(paths.previous) && fs.existsSync(binding.nativeApp)) throw new Error('Installation paths changed after package replacement.');
   fs.mkdirSync(path.dirname(binding.nativeApp), { recursive: true });
   if (!fs.existsSync(paths.staging)) {
-    const result = spawnSync('/usr/bin/ditto', [accepted.app, paths.staging], { timeout: 60_000, encoding: 'utf8' });
+    const result = spawnSync('/usr/bin/ditto', [accepted.app, paths.staging], { timeout: check(), encoding: 'utf8' });
     if (result.error || result.status !== 0) throw new Error(`Accepted app copy failed: ${result.error?.message || result.stderr}`);
   }
   if (applicationIdentity(paths.staging) !== accepted.receipt.package.sha256) throw new Error('Staged application differs from the exact accepted package.');
-  const signed = spawnSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', paths.staging], { timeout: 30_000, encoding: 'utf8' });
+  check();
+  const signed = spawnSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', paths.staging], { timeout: runtimeObservationTimeout(until, 30_000), encoding: 'utf8' });
   if (signed.error || signed.status !== 0) throw new Error(`Accepted application signature failed: ${signed.error?.message || signed.stderr}`);
   if (fs.existsSync(binding.nativeApp)) {
     if (applicationIdentity(binding.nativeApp) !== binding.priorAppSha256) throw new Error('Prior installed application changed after admission.');
+    check();
     fs.renameSync(binding.nativeApp, paths.previous);
   } else if (binding.priorAppSha256 && !fs.existsSync(paths.previous)) throw new Error('Prior installed application disappeared after admission.');
+  check();
   fs.renameSync(paths.staging, binding.nativeApp);
   verifyAcceptedApplication(binding);
-  adoptBundleRelease(context, accepted.receipt.shipped, owner, binding.acceptedRelease.reference);
+  check();
+  adoptBundleRelease(context, accepted.receipt.shipped, owner, binding.acceptedRelease.reference, { until });
+  check();
   return { packageSha256: accepted.receipt.package.sha256, ...paths };
 }

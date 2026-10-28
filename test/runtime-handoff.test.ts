@@ -176,7 +176,7 @@ function recoveryFixture(logLines: (processStartedAt: string, fakeStart: number)
 
 const startupLine = (processStartedAt: string) => JSON.stringify({ message: 'server_started', time: new Date(Date.parse(processStartedAt) + 1000).toISOString() });
 
-it('binds strictly qualified process evidence returned before health is ready', async () => {
+it.each(['start-success', 'start-pending', 'verify-pending'])('binds strictly qualified process evidence before health is ready (%s)', async source => {
   const f = recoveryFixture(startedAt => [startupLine(startedAt)]);
   const binding = { ...f.failed.binding, oldProcess: { pid: 987653, startedAt: 'gone' } };
   const file = path.join(handoffDirectory(binding.home, binding.requestId, binding.executionId), 'journal.json');
@@ -188,15 +188,17 @@ it('binds strictly qualified process evidence returned before health is ready', 
   const result = await runRuntimeHandoffWorker(file, { verifyPublication: async () => {},
     stage: async () => { fs.appendFileSync(path.join(path.dirname(file), 'convergence.log'), 'fixture stage\n'); },
     control: async (_journal, command) => {
+      if (command === 'handoff-start' && source === 'start-success') return JSON.stringify({ processes });
+      if (command === 'handoff-start' && source === 'start-pending') throw new RuntimeObservationError('registration_inconsistent', 'Registration pending.', { processes }, 'pending');
       if (command === 'handoff-evidence') throw new RuntimeObservationError('starting', 'Unqualified launcher.', { refusal: { executable: 'xpcproxy' } }, 'pending');
-      if (command === 'handoff-verify') throw new RuntimeObservationError('starting', 'Health is not ready.', { processes }, 'pending');
+      if (command === 'handoff-verify') throw new RuntimeObservationError('starting', 'Health is not ready.', source === 'verify-pending' ? { processes } : {}, 'pending');
       return '{}';
     },
   });
   expect(result).toMatchObject({ phase: 'verification-pending', launch: { processes } });
 });
 
-it('binds a successful readiness result before the next observation can adopt a replacement', async () => {
+it.each(['handoff-start', 'handoff-verify'])('binds a successful JSON %s result before the next observation can adopt a replacement', async bindingCommand => {
   const f = recoveryFixture(startedAt => [startupLine(startedAt)]);
   const binding = { ...f.failed.binding, oldProcess: { pid: 987653, startedAt: 'gone' } };
   const file = path.join(handoffDirectory(binding.home, binding.requestId, binding.executionId), 'journal.json');
@@ -210,13 +212,43 @@ it('binds a successful readiness result before the next observation can adopt a 
   const evidence = f.evidence(diagnostics(1, f.fakeStart - 30, f.fakeStart - 10));
   const result = await runRuntimeHandoffWorker(file, { verifyPublication: async () => {}, desktop: async () => {},
     stage: async () => { fs.appendFileSync(path.join(path.dirname(file), 'convergence.log'), 'fixture stage\n'); },
-    control: async (_journal, command) => JSON.stringify({ ...evidence, processes: command === 'handoff-verify' ? { backend, gateway: first }
-      : command === 'handoff-evidence' && inspections++ ? { backend, gateway: { ...first, pid: first.pid + 1 } } : { backend } }),
+    control: async (_journal, command) => JSON.stringify({ ...evidence, processes: command === bindingCommand ? { backend, gateway: first }
+      : command === 'handoff-evidence' && (bindingCommand === 'handoff-start' || inspections++) ? { backend, gateway: { ...first, pid: first.pid + 1 } } : { backend } }),
     observe: async (current, options) => ({ bindingDigest: current.bindingDigest, evidence: await options.readEvidence() }),
   });
   expect(result.phase).toBe('failed');
   expect(result.error).toContain('Launched service process identity changed');
   expect(result.launch.processes.gateway).toEqual(first);
+});
+
+it('refuses continuation when the startup deadline loses a qualified identity in transport', async () => {
+  const f = recoveryFixture(startedAt => [startupLine(startedAt)]);
+  const binding = { ...f.failed.binding, oldProcess: { pid: 987653, startedAt: 'gone' } };
+  const file = path.join(handoffDirectory(binding.home, binding.requestId, binding.executionId), 'journal.json');
+  const journal = { ...f.failed, binding, bindingDigest: bindingDigest(binding), phase: 'armed', attempts: 0,
+    deadline: f.fakeStart + 1000, bridgeInstalled: true, stages: {}, environment: {} };
+  fs.writeFileSync(file, JSON.stringify(journal));
+  fs.writeFileSync(path.join(binding.home, 'config/local-sessions/handoff-active.json'), JSON.stringify({ journal: file, bindingDigest: journal.bindingDigest }));
+  let time = f.fakeStart;
+  let qualifiedInChild;
+  const control = vi.fn(async (_journal, command, _current, options) => {
+    if (command !== 'handoff-start') return '{}';
+    expect(options.until).toBe(journal.deadline);
+    qualifiedInChild = { backend: { pid: process.pid, startedAt: f.processStartedAt, runs: 1 } };
+    time = journal.deadline;
+    // The child qualified backend while gateway stayed pending, but its final
+    // response was killed before that map reached the parent.
+    throw new RuntimeObservationError('observation_deadline', 'Startup transport expired.', { until: options.until }, 'pending');
+  });
+  const options = { now: () => time, verifyPublication: async () => {}, control,
+    stage: async () => { fs.appendFileSync(path.join(path.dirname(file), 'convergence.log'), 'fixture stage\n'); } };
+  const result = await runRuntimeHandoffWorker(file, options);
+  expect(qualifiedInChild).toHaveProperty('backend.pid', process.pid);
+  expect(result).toMatchObject({ phase: 'failed', failure: { code: 'startup_evidence_lost' } });
+  control.mockClear();
+  const resumed = await runRuntimeHandoffWorker(file, options);
+  expect(resumed.phase).toBe('failed');
+  expect(control).not.toHaveBeenCalled();
 });
 
 it('binds pending qualified evidence before a fresh inspection replaces the diagnostic sample', async () => {
@@ -375,7 +407,7 @@ it.each(['external-reopen', 'issued-ambiguous', 'old-shell', 'closed', 'known-ex
   expect(relaunch).not.toHaveBeenCalled();
 });
 
-it.each(['backend-wait', 'desktop-wait', 'launch-ambiguous', 'backend-wait-desktop-outstanding'] as const)('continues after its execution budget without replaying effects: %s', async pendingAt => {
+it.each(['backend-wait', 'desktop-wait', 'backend-wait-desktop-outstanding'] as const)('continues after its execution budget without replaying effects: %s', async pendingAt => {
   const f = recoveryFixture(startedAt => [startupLine(startedAt)]);
   const binding = { ...f.failed.binding, desktopWasRunning: pendingAt === 'desktop-wait' || pendingAt === 'backend-wait-desktop-outstanding', oldProcess: { pid: 987653, startedAt: 'gone' } };
   const file = path.join(handoffDirectory(binding.home, binding.requestId, binding.executionId), 'journal.json');
@@ -412,7 +444,7 @@ it.each(['backend-wait', 'desktop-wait', 'launch-ambiguous', 'backend-wait-deskt
     if (command === 'handoff-start') {
       expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toMatchObject({ phase: 'starting', launch: { enteredAt: f.fakeStart } });
     }
-    if (first && (command === 'handoff-verify' && pendingAt.startsWith('backend-wait') || command === 'handoff-start' && pendingAt === 'launch-ambiguous')) { first = false; throw new RuntimeObservationError('observation_deadline', 'probe wait expired', { lastRealSample: sample }, 'pending'); }
+    if (first && command === 'handoff-verify' && pendingAt.startsWith('backend-wait')) { first = false; throw new RuntimeObservationError('observation_deadline', 'probe wait expired', { lastRealSample: sample }, 'pending'); }
     return JSON.stringify(evidence);
   });
   const stage = vi.fn(async () => { fs.appendFileSync(path.join(path.dirname(file), 'convergence.log'), 'fixture stage\n'); });

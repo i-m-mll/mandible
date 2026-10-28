@@ -9,16 +9,15 @@
  * current candidate, so any base or head movement makes a result stale.
  */
 import { randomUUID } from "node:crypto";
-import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { promisify } from "node:util";
 import type { CandidateAcceptanceProjection } from "./contracts.js";
 import { getDaemonLogger } from "./daemon-log.js";
 import type { Db } from "./db.js";
 import { getUserHome } from "./platform-paths.js";
+import { acceptanceDeadline, ACCEPTANCE_TOTAL_MS } from "../scripts/acceptance-deadline.mjs";
 
-const execFileAsync = promisify(execFile);
+import { runSupervisedCommand, type SupervisedCommandFailure } from "../scripts/process-group-supervisor.mjs";
 
 export const CANDIDATE_ACCEPTANCE_INTERRUPTED = "Interrupted by a daemon restart.";
 
@@ -57,8 +56,17 @@ export interface CandidateAcceptanceOutcome {
 export type CandidateAcceptanceExecutor = (input: CandidateAcceptanceInput) => Promise<CandidateAcceptanceOutcome>;
 
 const MAX_RESULT_CHARS = 64 * 1024;
-const INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
-const ACCEPTANCE_TIMEOUT_MS = 30 * 60 * 1000;
+
+function subprocessFailureEvidence(error: unknown): Record<string, unknown> | null {
+  if (!error || typeof error !== "object" || !("processGroupSettled" in error)) return null;
+  const failure = error as SupervisedCommandFailure;
+  return { exit_code: failure.exitCode, code: failure.code, signal: failure.signal,
+    timed_out: failure.timedOut, aborted: failure.aborted, duration_ms: failure.durationMs,
+    process_group_settled: failure.processGroupSettled,
+    stdout: failure.stdout?.slice(-4096), stderr: failure.stderr?.slice(-4096),
+    stdout_truncated: failure.stdoutTruncated || (failure.stdout?.length ?? 0) > 4096,
+    stderr_truncated: failure.stderrTruncated || (failure.stderr?.length ?? 0) > 4096 };
+}
 
 /** Stored acceptance inputs; the queue overlays its live waiting/running state. */
 export interface CandidateAcceptanceRead {
@@ -195,10 +203,12 @@ export class CandidateAcceptanceRuns {
     this.waiting.delete(requestId);
     const { candidate } = job;
     const recordId = randomUUID();
+    const startedAt = this.now();
+    const deadline = startedAt + ACCEPTANCE_TOTAL_MS;
     this.db.prepare(
       `INSERT INTO auth_candidate_acceptances (id, auth_request_id, pin_sha, tree_sha, base_sha, head_sha, status, started_at)
        VALUES (?, ?, ?, ?, ?, ?, 'running', ?)`,
-    ).run(recordId, requestId, candidate.pin_sha, candidate.tree_sha, candidate.base_sha, candidate.head_sha, this.now());
+    ).run(recordId, requestId, candidate.pin_sha, candidate.tree_sha, candidate.base_sha, candidate.head_sha, startedAt);
     const controller = new AbortController();
     this.active = { requestId, pinSha: candidate.pin_sha, recordId, controller };
     this.changed(requestId);
@@ -208,14 +218,15 @@ export class CandidateAcceptanceRuns {
       finalize = this.prepareFinalization?.(requestId, candidate);
       const input = job.input();
       return this.executor({ ...input, env: { ...input.env, MANDIBLE_ACCEPTANCE_ID: recordId, MANDIBLE_ACCEPTANCE_REQUEST: requestId,
+        MANDIBLE_ACCEPTANCE_STARTED_AT: String(startedAt), MANDIBLE_ACCEPTANCE_DEADLINE: String(deadline),
         MANDIBLE_ACCEPTANCE_BASE: candidate.base_sha, MANDIBLE_ACCEPTANCE_HEAD: candidate.head_sha }, signal: controller.signal });
     })
-      .catch((error: unknown): CandidateAcceptanceOutcome => ({ status: "failed", result: null, error: error instanceof Error ? error.message : String(error) }));
+      .catch((error: unknown): CandidateAcceptanceOutcome => ({ status: "failed", result: subprocessFailureEvidence(error) ? { subprocess: subprocessFailureEvidence(error) } : null, error: error instanceof Error ? error.message : String(error) }));
     this.active = null;
-    this.finish(requestId, recordId, outcome, finalize);
+    this.finish(requestId, recordId, outcome, finalize, deadline);
   }
 
-  private finish(requestId: string, recordId: string, outcome: CandidateAcceptanceOutcome, finalize?: (recordId: string) => void): void {
+  private finish(requestId: string, recordId: string, outcome: CandidateAcceptanceOutcome, finalize?: (recordId: string) => void, deadline?: number): void {
     if (this.stopped) return;
     let result: string | null;
     try { result = outcome.result == null ? null : JSON.stringify(outcome.result) ?? null; }
@@ -225,10 +236,10 @@ export class CandidateAcceptanceRuns {
     }
     if (result && result.length > MAX_RESULT_CHARS) {
       const value = outcome.result as Record<string, unknown>;
-      const checks = value?.checks as { initial_transport_error?: { code?: unknown; message?: unknown }; failure_logs?: unknown } | undefined;
+      const checks = value?.checks as { initial_transport_error?: { code?: unknown; message?: unknown }; failure_logs?: unknown; route_cost?: Record<string, unknown> } | undefined;
       const text = (field: unknown, limit: number) => typeof field === 'string' ? field.slice(0, limit) : null;
       const failureLogs = Array.isArray(checks?.failure_logs) ? checks.failure_logs
-        .filter(log => log && (log.name === 'daemon' || log.name === 'gateway')).slice(0, 2)
+        .filter(log => log && ['daemon', 'gateway', 'route-cost', 'source-preview'].includes(log.name)).slice(0, 4)
         .map(log => ({ name: log.name, sha256: text(log.sha256, 64), bytes: typeof log.bytes === 'number' ? log.bytes : null,
           excerpt: typeof log.excerpt === 'string' ? log.excerpt.slice(-4000) : null })) : undefined;
       result = JSON.stringify({ truncated: true, status: text(value?.status, 16), candidate: text(value?.candidate, 128),
@@ -237,6 +248,13 @@ export class CandidateAcceptanceRuns {
             code: text(checks.initial_transport_error.code, 64), message: text(checks.initial_transport_error.message, 512),
           } } : {}),
           ...(failureLogs ? { failure_logs: failureLogs } : {}),
+          ...(checks?.route_cost ? { route_cost: {
+            complete: checks.route_cost.complete, diagnostic: checks.route_cost.diagnostic,
+            error: text(checks.route_cost.error, 512), counts: checks.route_cost.counts, progress: checks.route_cost.progress,
+            pending_confirmations: Array.isArray(checks.route_cost.pending_confirmations) ? checks.route_cost.pending_confirmations.slice(0, 32) : undefined,
+            routes_not_run: Array.isArray(checks.route_cost.routes_not_run) ? checks.route_cost.routes_not_run.slice(0, 32) : undefined,
+            source_stderr: text(checks.route_cost.source_stderr, 4000),
+          } } : {}),
         } });
     }
     const close = this.db.prepare(
@@ -245,10 +263,13 @@ export class CandidateAcceptanceRuns {
     let closed: boolean;
     try {
       closed = this.db.transaction(() => {
+        if (outcome.status === 'passed' && deadline !== undefined && this.now() >= deadline) throw new Error('Acceptance total deadline exceeded before retained-package binding.');
         const changed = close.run(outcome.status, this.now(), result, outcome.error, recordId).changes === 1;
         // The receipt selection and lifecycle revision commit with the verdict.
         // A replay of an already terminal row must not revise the request.
         if (changed && outcome.status === 'passed') finalize?.(recordId);
+        if (changed && outcome.status === 'passed' && deadline !== undefined && this.now() >= deadline) throw new Error('Acceptance total deadline exceeded during retained-package binding.');
+        if (changed) this.db.prepare("UPDATE auth_candidate_acceptances SET finished_at = ? WHERE id = ?").run(this.now(), recordId);
         return changed;
       })();
     } catch (error) {
@@ -263,8 +284,8 @@ export function acceptanceCheckoutPath(): string {
   return path.join(getUserHome(), ".cache", "mandible", "acceptance", "checkout");
 }
 
-async function git(cwd: string, args: string[], env: NodeJS.ProcessEnv, signal: AbortSignal): Promise<string> {
-  const { stdout } = await execFileAsync("git", args, { cwd, env: { ...env, GIT_OPTIONAL_LOCKS: "0" }, encoding: "utf8", timeout: 120_000, maxBuffer: 4 * 1024 * 1024, signal });
+async function git(cwd: string, args: string[], env: NodeJS.ProcessEnv, signal: AbortSignal, timeout: number, deadline: number): Promise<string> {
+  const { stdout } = await runSupervisedCommand("git", args, { cwd, env: { ...env, GIT_OPTIONAL_LOCKS: "0" }, capture: true, timeout, deadline, graceMs: 750, maxBuffer: 4 * 1024 * 1024, signal });
   return stdout.trim();
 }
 
@@ -275,39 +296,42 @@ async function git(cwd: string, args: string[], env: NodeJS.ProcessEnv, signal: 
  */
 export const runCandidateAcceptance: CandidateAcceptanceExecutor = async (input) => {
   const { signal } = input;
+  const budget = acceptanceDeadline(input.env);
+  input = { ...input, env: { ...input.env, ...budget.env } };
   const checkout = acceptanceCheckoutPath();
-  const common = fs.realpathSync(await git(input.repoRoot, ["rev-parse", "--path-format=absolute", "--git-common-dir"], input.env, signal));
+  const common = fs.realpathSync(await git(input.repoRoot, ["rev-parse", "--path-format=absolute", "--git-common-dir"], input.env, signal, budget.remaining(), budget.deadline));
   if (!fs.existsSync(checkout)) {
     fs.mkdirSync(path.dirname(checkout), { recursive: true, mode: 0o700 });
-    await git(input.repoRoot, ["worktree", "add", "--detach", checkout, input.pinSha], input.env, signal);
+    await git(input.repoRoot, ["worktree", "add", "--detach", checkout, input.pinSha], input.env, signal, budget.remaining(), budget.deadline);
   } else {
-    const owner = fs.realpathSync(await git(checkout, ["rev-parse", "--path-format=absolute", "--git-common-dir"], input.env, signal));
+    const owner = fs.realpathSync(await git(checkout, ["rev-parse", "--path-format=absolute", "--git-common-dir"], input.env, signal, budget.remaining(), budget.deadline));
     if (owner !== common) throw new Error(`Acceptance checkout ${checkout} belongs to another repository; preserving it.`);
-    await git(checkout, ["checkout", "--detach", "--force", input.pinSha], input.env, signal);
-    await git(checkout, ["clean", "-ffd"], input.env, signal);
+    await git(checkout, ["checkout", "--detach", "--force", input.pinSha], input.env, signal, budget.remaining(), budget.deadline);
+    await git(checkout, ["clean", "-ffd"], input.env, signal, budget.remaining(), budget.deadline);
   }
-  if (await git(checkout, ["rev-parse", "HEAD"], input.env, signal) !== input.pinSha) throw new Error("Acceptance checkout is not at the exact candidate.");
-  const { stdout: runtimeOut } = await execFileAsync("/bin/sh", [path.join(checkout, "scripts", "bun-runtime.sh")], { cwd: checkout, env: input.env, encoding: "utf8", timeout: INSTALL_TIMEOUT_MS, signal });
+  if (await git(checkout, ["rev-parse", "HEAD"], input.env, signal, budget.remaining(), budget.deadline) !== input.pinSha) throw new Error("Acceptance checkout is not at the exact candidate.");
+  const { stdout: runtimeOut } = await runSupervisedCommand("/bin/sh", [path.join(checkout, "scripts", "bun-runtime.sh")], { cwd: checkout, env: input.env, capture: true, timeout: budget.remaining(), deadline: budget.deadline, graceMs: 750, signal });
   const runtime = runtimeOut.trim();
   // The candidate's own canonical runtime PATH: pinned runtime and checkout
   // CLI, then native macOS tools (a Homebrew `xattr` breaks app bundling),
   // then Cargo and the inherited hook PATH.
-  const { stdout: runtimePath } = await execFileAsync(runtime, [path.join(checkout, "scripts", "runtime-environment-path.mjs"), runtime, checkout], { cwd: checkout, env: input.env, encoding: "utf8", timeout: 30_000, signal });
+  const { stdout: runtimePath } = await runSupervisedCommand(runtime, [path.join(checkout, "scripts", "runtime-environment-path.mjs"), runtime, checkout], { cwd: checkout, env: input.env, capture: true, timeout: budget.remaining(), deadline: budget.deadline, graceMs: 750, signal });
   const env = { ...input.env, MANDIBLE_RUNTIME: runtime, PATH: runtimePath.trim() };
-  await execFileAsync(runtime, ["install", "--frozen-lockfile"], { cwd: checkout, env, encoding: "utf8", timeout: INSTALL_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024, signal });
-  // Not detached: stopping the daemon's service stops an in-flight run too. The
-  // acceptance command stops its owned daemon, gateway and app on SIGTERM.
-  const run = await execFileAsync(runtime, [path.join(checkout, "scripts", "candidate-acceptance.mjs"), "--project", input.projectId, "--work-unit", input.workUnitId],
-    { cwd: checkout, env, encoding: "utf8", timeout: ACCEPTANCE_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024, killSignal: "SIGTERM", signal })
-    .then(({ stdout, stderr }) => ({ code: 0 as number | null, stdout, stderr }))
-    .catch((error: { code?: unknown; stdout?: string; stderr?: string }) => ({ code: typeof error.code === "number" ? error.code : null, stdout: error.stdout ?? "", stderr: error.stderr ?? "" }));
+  await runSupervisedCommand(runtime, ["install", "--frozen-lockfile"], { cwd: checkout, env, capture: true, timeout: budget.remaining(), deadline: budget.deadline, graceMs: 750, maxBuffer: 16 * 1024 * 1024, signal });
+  // The candidate gets its cleanup reserve; the supervisor reserves TERM/KILL/join
+  // inside the same hard deadline if graceful candidate cleanup cannot finish.
+  const run = await runSupervisedCommand(runtime, [path.join(checkout, "scripts", "candidate-acceptance.mjs"), "--project", input.projectId, "--work-unit", input.workUnitId],
+    { cwd: checkout, env, capture: true, timeout: budget.remaining(true), deadline: budget.deadline, graceMs: 750, maxBuffer: 16 * 1024 * 1024, signal })
+    .then(result => ({ ...result, failure: null as string | null, diagnostics: null as Record<string, unknown> | null }))
+    .catch((error: SupervisedCommandFailure) => ({ code: error.exitCode ?? null, stdout: error.stdout ?? "", stderr: error.stderr ?? "", failure: error.message, diagnostics: subprocessFailureEvidence(error) }));
   const parse = (text: string): Record<string, unknown> | null => {
     try { return JSON.parse(text) as Record<string, unknown>; } catch { return null; }
   };
-  const result = parse(run.stdout.trim()) ?? parse(run.stderr.trim().split("\n").at(-1) ?? "");
-  if (run.code === 0 && result?.status === "passed" && result.candidate === input.pinSha) return { status: "passed", result, error: null };
+  const parsed = parse(run.stdout.trim()) ?? parse(run.stderr.trim().split("\n").at(-1) ?? "");
+  const result = run.failure ? { ...parsed, subprocess: run.diagnostics } : parsed;
+  if (Date.now() >= budget.deadline) return { status: "failed", result, error: "Acceptance total deadline exceeded, including preparation and cleanup." };
+  if (!run.failure && run.code === 0 && result?.status === "passed" && result.candidate === input.pinSha) return { status: "passed", result, error: null };
   const reason = (typeof result?.error === "string" && result.error) || (typeof result?.cleanup_error === "string" && result.cleanup_error)
-    || (result?.status === "passed" ? "Acceptance passed for a different candidate revision." : null)
-    || run.stderr.trim().split("\n").slice(-5).join("\n") || `Acceptance exited with ${run.code}.`;
+    || run.failure || (result?.status === "passed" ? "Acceptance passed for a different candidate revision." : null) || run.stderr.trim().split("\n").slice(-5).join("\n") || `Acceptance exited with ${run.code}.`;
   return { status: "failed", result, error: result?.status === "unavailable" ? `Acceptance was unavailable: ${reason}` : reason };
 };

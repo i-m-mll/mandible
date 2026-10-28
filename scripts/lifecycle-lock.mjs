@@ -4,17 +4,18 @@ import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { acquireProcessLock, ProcessLockBusyError, ProcessLockLostError } from './process-lock.mjs';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { runtimeObservationTimeout } from './runtime-observation.mjs';
 
 const ownershipScope = new AsyncLocalStorage();
 export function assertLifecycleLockHeld() { ownershipScope.getStore()?.assertHeld(); }
 
-export function processIdentity(pid) {
+export function processIdentity(pid, { until } = {}) {
   assertLifecycleLockHeld();
-  return readProcessIdentity(pid);
+  return readProcessIdentity(pid, until);
 }
-function readProcessIdentity(pid) {
+function readProcessIdentity(pid, until) {
   if (!Number.isInteger(pid) || pid <= 1) throw new Error('Invalid owned process PID');
-  const result = spawnSync('/bin/ps', ['-ww', '-p', String(pid), '-o', 'lstart=', '-o', 'command='], { encoding: 'utf8', timeout: 5000 });
+  const result = spawnSync('/bin/ps', ['-ww', '-p', String(pid), '-o', 'lstart=', '-o', 'command='], { encoding: 'utf8', timeout: runtimeObservationTimeout(until, 5000) });
   if (result.status === 1 && !result.stdout.trim()) return null;
   if (result.error || result.status !== 0) throw new Error(`Cannot inspect owned process: ${result.error?.message ?? result.stderr}`);
   return result.stdout.trim();

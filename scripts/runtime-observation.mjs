@@ -14,6 +14,19 @@ export class RuntimeObservationError extends Error {
 
 export const observationPending = error => error instanceof RuntimeObservationError && error.outcome === 'pending';
 
+/** Bound each observation by the caller's original deadline. */
+export function runtimeObservationTimeout(until, maximumMs) {
+  if (until === undefined) return maximumMs;
+  const remaining = until - Date.now();
+  if (remaining <= 0) throw new RuntimeObservationError('observation_deadline', 'Runtime observation deadline exceeded.', null, 'pending');
+  return Math.max(1, Math.min(maximumMs, remaining));
+}
+
+export function runtimeProcessChanged(expected, current) {
+  return !!expected?.pid && (!current?.pid || !current.startedAt || expected.pid !== current.pid
+    || expected.startedAt !== current.startedAt || current.runs > expected.runs);
+}
+
 export function decodeObservationError(text) {
   let value;
   try { value = JSON.parse(text); } catch { return null; }

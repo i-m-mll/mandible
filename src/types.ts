@@ -104,6 +104,7 @@ export interface StartupCommitInfo {
 }
 
 export interface HealthResponse {
+  current?: import("./runtime-health-contract.js").CurrentRuntimeHealth;
   status: "ok";
   uptime: number;
   version: string;

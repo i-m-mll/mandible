@@ -4,7 +4,7 @@
   "identifier": "bio.mll.mandible",
   "build": {
     "frontendDist": "dist",
-    "beforeDevCommand": "scripts/make-dist.sh",
+    "beforeDevCommand": "scripts/make-dist.sh && sh scripts/stage-desktop-package.sh",
     "beforeBuildCommand": "scripts/make-dist.sh"
   },
   "app": {

@@ -44,6 +44,38 @@ readiness. Ordinary local OS-user access has no expiring session.
 
 ## Lifecycle and delivery boundary
 
+Registration and job startup use `reconcileBundleServiceStart` for both desktop
+operations and accepted-package activation. SMAppService `enabled` does not prove
+that the named launchd job exists. An absent job is observed again on the existing
+runtime cadence; it is never kickstarted. `not_found` and `not_registered` admit
+one registration attempt per observed state transition. Only an exact owned native
+definition admits start, and a running owned job needs no kickstart. Permission
+denial and foreign/mismatched definitions remain refusals.
+
+One deadline covers registration reconciliation across both roles and all native
+state transitions. Accepted activation passes the original journal deadline into
+the initial `handoff-start`; it does not stop after a shorter observation window
+and leave a needed registration to verification-only recovery. Interactive startup
+uses one 20-second registration budget.
+Failure to converge returns typed `registration_inconsistent` pending evidence
+containing native status, owned-job observations and attempted actions. It does
+not unregister, reinstall, reset the budget or alter the retained delivery journal.
+Interactive operations return a daemon status with `registration_pending`, retry
+guidance and structured registration evidence; permission pending retains
+`background_permission_required`. Ownership and continuity failures remain errors
+and take precedence over permission pending. Accepted handoff preserves the typed
+pending exception transport.
+The startup controller allows five seconds after the logical deadline to deliver
+its final response without extending registration authority. Loss of that response
+fails the journal with `startup_evidence_lost`; observation-only continuation cannot
+adopt a replacement after a qualified identity may have been lost in transport.
+The runtime's existing generation/health evidence still decides readiness.
+Unqualified launcher PID/birth/run observations remain diagnostic. Strictly owned
+process identities use the shared continuity rule and travel with successful or
+pending startup evidence into the existing handoff observer. A qualified process
+cannot disappear, change identity or increase its launch count while a sibling
+is pending without producing a refusal.
+
 `scripts/local-runtime.mjs` selects the bundle adapter only in explicit
 installed context. It retains the installation gateway lock, pending-handoff
 guard, shared service inspector and existing readiness classifier. Source
@@ -84,7 +116,11 @@ process exits, then unregisters and removes the fixture. It uses a signed
 fixture-only resource for an isolated home, admitted only by a
 `bio.mll.mandible.fixture.*` bundle identifier. It never uses production labels
 or production state. The helper crate and fixture run independently of a full
-Tauri/payload rebuild. Full daemon, gateway, GUI, replacement and clean-machine
-qualification belongs to exact-candidate package acceptance.
+Tauri/payload rebuild. [Package/runtime acceptance](candidate-acceptance.md)
+checks the exact app's daemon, gateway and GUI through direct bundled-process
+launches. It bypasses the SMAppService upgrade transition. The separate
+source-transformed [two-hop lifecycle fixture](runtime-handoff.md#verification)
+qualifies that transition with private identities/homes; actual post-approval
+handoff verifies convergence of the exact retained package.
 
 Co-Authored-By: Codex (GPT) <codex@openai.com>

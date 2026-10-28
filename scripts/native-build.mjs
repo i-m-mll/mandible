@@ -8,6 +8,7 @@ import { trackedSourceDigest } from './build-revision.mjs';
 import { verifyInstalledRelease } from './installed-release.mjs';
 import { finalizeAppPayload } from './finalize-app-payload.mjs';
 import { resolveAppSigning, openAppSigner } from './app-signing.mjs';
+import { tauriCompileArguments, tauriBundleArguments } from './tauri-build-commands.mjs';
 
 function command(command, args, cwd) {
   const result = spawnSync(command, args, { cwd, encoding: 'utf8', timeout: 10_000 });
@@ -76,7 +77,7 @@ export function stageNativeBuild({ worktree, root, candidate }) {
   const sqliteLibrary = path.join(generated, 'libsqlite3.dylib');
   const trustHelper = path.join(generated, 'local-ca-trust-helper');
   const resources = { [path.join(payload, 'Resources') + '/']: './' };
-  config.build = { ...config.build, beforeBuildCommand: null, beforeDevCommand: null, frontendDist: bootstrap };
+  config.build = { ...config.build, beforeBuildCommand: null, beforeDevCommand: null, beforeBundleCommand: null, frontendDist: bootstrap };
   config.bundle = { ...config.bundle, resources, targets: ['app'],
     externalBin: config.bundle.externalBin.map(file => path.join(binaries, path.basename(file))),
     macOS: { ...config.bundle.macOS, signingIdentity: '-', frameworks: [sqliteLibrary],
@@ -154,8 +155,12 @@ export async function buildNativePreview({ worktree, root, candidate, receipt, s
     log: path.join(root, 'build.log'), budgetMs, receipt, save, identity }).then(ms => { receipt.nativeBuild.phases[name] = ms; save(); });
   await phase('prepare', '/bin/sh', [path.join(worktree, 'scripts/make-dist.sh')], worktree, 60_000);
   receipt.nativeBuild.status = 'compiling'; save();
-  await phase('compile', staged.bun, [path.join(worktree, 'node_modules/@tauri-apps/cli/tauri.js'), 'build', '--debug', '--bundles', 'app', '--no-sign', '--ci', '--', '--locked',
-    '--config', `build.build-dir=${JSON.stringify(staged.env.CARGO_BUILD_BUILD_DIR)}`], staged.source, 600_000);
+  const cli = path.join(worktree, 'node_modules/@tauri-apps/cli/tauri.js');
+  const options = ['--debug', '--ci'];
+  await phase('compile', staged.bun, [cli, ...tauriCompileArguments(options, ['--', '--locked',
+    '--config', `build.build-dir=${JSON.stringify(staged.env.CARGO_BUILD_BUILD_DIR)}`])], staged.source, 600_000);
+  await phase('prepare-package', '/bin/sh', [path.join(worktree, 'scripts/stage-desktop-package.sh')], worktree, 60_000);
+  await phase('bundle', staged.bun, [cli, ...tauriBundleArguments(options)], staged.source, 60_000);
   if (JSON.stringify(nativeCandidate(worktree)) !== JSON.stringify(candidate)) throw new Error('Native candidate sources changed during compilation');
   const signer = openAppSigner(resolveAppSigning(staged.source, [], {}));
   try { finalizeAppPayload(staged.bundle, signer); } finally { signer.close(); }

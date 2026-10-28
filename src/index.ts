@@ -426,10 +426,15 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     // Bug: 645f8a8 — report lifecycle-owned readiness in health.
     isReady: () => isDaemonReady(),
     isWarm: () => isDaemonWarm(),
-    // Health reads the last periodic sample instead of collecting a fresh one.
+    // Health retains periodic samples and reads the same active collectors without resetting them.
     // A per-request eventLoopDiagnostics.sample() reset the underlying interval
     // histogram on every /api/health poll, discarding the window the 30 s timer
     // relies on for lag detection. Issue: 0d81726.
+    getCurrentDiagnostics: async () => {
+      const current = await eventLoopDiagnostics.currentAfterTurn();
+      const observedAt = current.eventLoop.intervalEndedAt;
+      return { ...current, observedAt, memory: memoryDiagnostics.current(observedAt) };
+    },
     getMemoryDiagnostics: () => memoryDiagnostics.snapshot(),
     getEventLoopDiagnostics: () => eventLoopDiagnostics.snapshot(),
     readEventLoopTurnMs: () => eventLoopDiagnostics.readTurnMs(),

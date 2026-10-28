@@ -11,8 +11,8 @@ export function readBundleLaunch(context: ServiceInstallationContext): BundleLau
 export function bundleLoginSession(): string;
 export function bundleLaunchAllowed(preference: BundleLaunch | null, session: string, role?: ServiceKind): boolean;
 export function admitBundleOwner(context: BundleContext, release: BundleRelease, options?: { relocation?: boolean }): BundleAdmission;
-export function adoptBundleRelease(context: BundleContext, release: BundleRelease, expectedOwner: BundleOwner | null, acceptedRelease?: string): BundleOwner;
-export function nativeServiceControl(context: BundleContext, operation: 'status' | 'register' | 'unregister' | 'settings', role: ServiceKind): NativeServiceObservation;
+export function adoptBundleRelease(context: BundleContext, release: BundleRelease, expectedOwner: BundleOwner | null, acceptedRelease?: string, options?: { until?: number }): BundleOwner;
+export function nativeServiceControl(context: BundleContext, operation: 'status' | 'register' | 'unregister' | 'settings', role: ServiceKind, options?: { until?: number }): NativeServiceObservation;
 export interface BundleRuntimeObservation {
   status: { state: string; healthy: boolean; [key: string]: unknown };
   trusted: { error?: string | null };
@@ -27,5 +27,7 @@ export function bundleRuntimeCommand(command: string, options: {
   configureGateway(root: string): { adminRestartRequired: boolean } | Promise<{ adminRestartRequired: boolean }>; reloadGateway(): void; restartGateway(): void; previewCount(root: string): number;
   waitReady(launchMode: string): Promise<BundleRuntimeObservation>;
   control?: typeof nativeServiceControl; session?: typeof bundleLoginSession;
+  readProcess: Parameters<typeof import('./bundle-service-start.mjs').reconcileBundleServiceStart>[2]['readProcess'];
+  startService?: typeof import('./bundle-service-start.mjs').reconcileBundleServiceStart; registrationUntil?: number;
   observe?: (context: ServiceInstallationContext) => ServiceDefinitionInspection;
 }): Promise<Record<string, unknown>>;
