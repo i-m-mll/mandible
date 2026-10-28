@@ -22,7 +22,7 @@ import { readRuntimeHandoffLock, runtimeHandoffLockRefusal } from './runtime-han
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const sweepWorkDirectory = 'route-cost-work';
-export const acceptanceOwnedOutputs = ['home', 'Mandible.app', 'build.log', 'route-cost.json', 'route-cost.log', sweepWorkDirectory, 'daemon.log', 'desktop.log', 'gateway.log', 'Caddyfile'].map(path => ({ path, kind: path === 'Mandible.app' ? 'interactive' : 'generated' }));
+export const acceptanceOwnedOutputs = ['home', 'Mandible.app', 'build.log', 'route-cost.json', 'route-cost.log', sweepWorkDirectory, 'daemon.log', 'desktop.log', 'gateway.log', 'Caddyfile', 'finalization.json'].map(path => ({ path, kind: path === 'Mandible.app' ? 'interactive' : 'generated' }));
 export function routeCostSweepArgs(run, budgetMs = 20_000) {
   return ['--no-install', path.join(root, 'scripts', 'route-cost-sweep.ts'), '--json', '--work-root', path.join(run, sweepWorkDirectory),
     '--report-file', path.join(run, sweepWorkDirectory, 'progress.json'), '--representative', '--budget-ms', String(Math.min(20_000, budgetMs))];
@@ -192,10 +192,10 @@ export async function observeAcceptanceHealth({
   return result.value;
 }
 
-export function copyAcceptanceCa(sourceHome, home) {
+export function copyAcceptanceCa(sourceHome, home, { timeoutMs = 5000 } = {}) {
   const source = localCaPaths(sourceHome);
   if (assertLocalCaIdentity(source).state !== 'trusted') throw new Error('Acceptance requires an already trusted installation CA; run explicit secure-local-connections setup first.');
-  probeCurrentMacOsTrust(source);
+  probeCurrentMacOsTrust(source, { timeoutMs });
   const ca = localCaPaths(home);
   fs.mkdirSync(path.dirname(ca.installationAuthority), { recursive: true });
   fs.copyFileSync(source.installationAuthority, ca.installationAuthority);
@@ -331,6 +331,61 @@ async function stopOwned(child, remaining) {
   }
 }
 
+export async function finalizeAcceptance({ metadataFile, result, candidateBinding, testedPackageDigest, diagnostic, diagnostics, cache, run, ownership, deadlineEnv }) {
+  const deadline = acceptanceDeadline(deadlineEnv);
+  deadline.remaining(true);
+  const reading = () => ({ ...deadline.reading(), scope: result.budget.scope });
+  let ownedReceipt;
+  try {
+    let acceptedReference;
+    let diagnosticDestination;
+    if (diagnostic) {
+      for (const name of ['daemon', 'desktop', 'gateway']) {
+        const log = path.join(run, `${name}.log`);
+        if (fs.existsSync(log)) fs.copyFileSync(log, path.join(diagnostics, `${name}.log`));
+      }
+      saveOwnedMetadata(path.join(diagnostics, 'result.json'), diagnosticReport(result));
+      diagnosticDestination = await retainDiagnosticEvidence(run, ownership);
+      result.diagnostic.evidence_root = diagnosticDestination;
+    }
+    if (result.status === 'passed' && !diagnostic) {
+      const receipts = path.join(cache, '.receipts');
+      fs.mkdirSync(receipts, { recursive: true });
+      const evidence = path.join(receipts, `${ownership.runId}-acceptance.json`);
+      saveOwnedMetadata(evidence, result);
+      acceptedReference = await retainAcceptedRelease({ app: path.join(run, 'Mandible.app'),
+        storage: path.join(process.env.MANDIBLE_HOME || path.join(os.userInfo().homedir, '.mandible'), 'accepted-releases'), ownership, candidate: candidateBinding,
+        acceptance: { record_id: process.env.MANDIBLE_ACCEPTANCE_ID || null, request_id: process.env.MANDIBLE_ACCEPTANCE_REQUEST || null },
+        evidence: { receipt: evidence, sha256: sha256(evidence) }, expectedDigest: testedPackageDigest });
+    }
+    const final = finalizeOwnedRun(metadataFile, { expectedRevision: ownership.revision, outcome: result.status === 'passed' ? 'assessed' : 'failed',
+      ...(diagnosticDestination ? { disposition: 'transferred', destination: diagnosticDestination, transferReference: `diagnostic:${ownership.runId}` } : {}),
+      ...(acceptedReference ? { disposition: 'transferred', destination: resolveAcceptedRelease(acceptedReference, candidateBinding).receipt.package.handle.root, transferReference: acceptedReference } : {}),
+      summary: acceptanceSummary(result) });
+    const receipt = final.ownership.receipt;
+    ownedReceipt = receipt;
+    result.receipt = acceptedReference || receipt;
+    result.budget = reading();
+    saveOwnedMetadata(receipt, { ...JSON.parse(fs.readFileSync(receipt, 'utf8')), acceptance: diagnostic ? diagnosticReport(result) : result });
+    result.checks.cleanup = cleanupOwnedRun(metadataFile, { apply: true });
+    if (result.checks.cleanup.action !== 'delete-owned' || result.checks.cleanup.remaining?.length) result.status = 'failed';
+    result.budget = reading();
+    if (Date.now() >= deadline.deadline) { result.status = 'failed'; result.cleanup_error = 'Acceptance total deadline exceeded during cleanup/receipt.'; }
+    saveOwnedMetadata(receipt, { ...JSON.parse(fs.readFileSync(receipt, 'utf8')), acceptance: diagnostic ? diagnosticReport(result) : result });
+    result.receipt = acceptedReference || receipt;
+
+  } catch (error) { result.status = 'failed'; result.cleanup_error = error.message; }
+  finally {
+    result.budget = reading();
+    if (result.phases.finalization) {
+      result.phases.finalization.status = result.checks.cleanup?.action === 'delete-owned' && !result.checks.cleanup.remaining?.length && !result.cleanup_error ? 'passed' : 'failed';
+      result.phases.finalization.elapsed_ms = Date.now() - result.phases.finalization.started_at;
+    }
+    if (ownedReceipt) saveOwnedMetadata(ownedReceipt, { ...JSON.parse(fs.readFileSync(ownedReceipt, 'utf8')), acceptance: diagnostic ? diagnosticReport(result) : result });
+  }
+  return result;
+}
+
 async function main() {
   const budget = acceptanceDeadline();
   const boundedCommand = (binary, args, options = {}) => command(binary, args, { ...options, timeout: budget.remaining() });
@@ -399,7 +454,7 @@ async function main() {
     let builtApp = diagnostic?.app;
     if (!diagnostic) {
     const buildLog = fs.openSync(path.join(run, 'build.log'), 'w'); files.push(buildLog);
-    await phase('package_build', () => runSupervisedCommand(runtime, ['run', 'tauri:build', '--', '--bundles', 'app'], { cwd: root, env: buildEnv, stdio: ['ignore', buildLog, buildLog], timeout: budget.remaining(), graceMs: 500 }));
+    await phase('package_build', () => runSupervisedCommand(runtime, ['run', 'tauri:build', '--', '--bundles', 'app'], { cwd: root, env: buildEnv, stdio: ['ignore', buildLog, buildLog], timeout: budget.remaining(), graceMs: 500, deadline: budget.deadline - 3000 }));
     if (readBuildRevision(root) !== candidate) throw new Error('Built daemon revision does not match the exact candidate.');
     builtApp = path.join(root, 'src-tauri', 'target', 'release', 'bundle', 'macos', 'Mandible.app');
     }
@@ -425,7 +480,7 @@ async function main() {
     const [port, publicPort] = [...ports];
     const origin = `https://app.mandible.localhost:${publicPort}`;
     const caHome = option('--ca-home') || process.env.MANDIBLE_TEST_CA_HOME || process.env.MANDIBLE_HOME || path.join(os.homedir(), '.mandible');
-    const ca = copyAcceptanceCa(caHome, home);
+    const ca = copyAcceptanceCa(caHome, home, { timeoutMs: Math.min(5000, budget.remaining()) });
     const gatewayBinary = releaseFile(resources, shipped.native.caddy);
     const gatewayConfig = path.join(run, 'Caddyfile');
     fs.writeFileSync(gatewayConfig, acceptanceGatewayConfig({ origin, backendPort: port, storageRoot: ca.storageRoot }), { mode: 0o600 });
@@ -471,7 +526,8 @@ async function main() {
     const routeCostFile = path.join(run, 'route-cost.json');
     const routeCostOut = fs.openSync(routeCostFile, 'w'); files.push(routeCostOut);
     const routeCostLog = fs.openSync(path.join(run, 'route-cost.log'), 'w'); files.push(routeCostLog);
-    const sweepFailure = await runSupervisedCommand(runtime, routeCostSweepArgs(run, budget.remaining()), { cwd: root, env: buildEnv, stdio: ['ignore', routeCostOut, routeCostLog], timeout: Math.min(20_000, budget.remaining()), graceMs: 500 }).then(() => null, error => error);
+    const sweepTotal = Math.min(20_000, budget.remaining());
+    const sweepFailure = await runSupervisedCommand(runtime, routeCostSweepArgs(run, sweepTotal), { cwd: root, env: buildEnv, stdio: ['ignore', routeCostOut, routeCostLog], timeout: Math.max(1, sweepTotal - 1600), graceMs: 750, deadline: Math.min(budget.deadline - 5000, Date.now() + sweepTotal) }).then(() => null, error => error);
     const progressFile = path.join(run, sweepWorkDirectory, 'progress.json');
     result.checks.route_cost = routeCostCheck(fs.readFileSync(fs.existsSync(progressFile) ? progressFile : routeCostFile, 'utf8'));
     if (sweepFailure) throw new Error(`Route-cost sweep failed: ${result.checks.route_cost
@@ -494,7 +550,7 @@ async function main() {
         let bytes = ''; response.on('data', chunk => { bytes += chunk; });
         response.on('end', () => response.statusCode === 200 ? resolve() : reject(new Error(`Fixture bootstrap HTTP ${response.statusCode}: ${bytes}`)));
       });
-      request.setTimeout(5000, () => request.destroy(new Error('Fixture bootstrap timed out')));
+      request.setTimeout(Math.min(5000, budget.remaining()), () => request.destroy(new Error('Fixture bootstrap timed out')));
       request.on('error', reject); request.end(body);
     });
     result.phases.desktop_interaction = { status: 'running', started_at: Date.now() };
@@ -560,45 +616,32 @@ async function main() {
     if (![stallProbe, daemon, desktop, gateway].every(child => !child || child.exitCode !== null || child.signalCode !== null)) {
       result.status = 'failed'; result.cleanup_error = 'Owned process remains alive; scratch data preserved';
     } else {
+      result.phases.finalization = { status: 'running', started_at: Date.now() };
+      const evidence = path.join(cache, '.receipts', `${ownership.runId}-acceptance.json`);
+      fs.mkdirSync(path.dirname(evidence), { recursive: true });
+      result.budget = budget.reading();
+      saveOwnedMetadata(evidence, result);
+      result.receipt = evidence;
+      const input = path.join(run, 'finalization.json');
+      saveOwnedMetadata(input, { metadataFile, result, candidateBinding, testedPackageDigest, diagnostic, diagnostics, cache, run, ownership, deadlineEnv: budget.env });
       try {
-        budget.remaining(true);
-        let acceptedReference;
-        let diagnosticDestination;
-        if (diagnostic) {
-          for (const name of ['daemon', 'desktop', 'gateway']) {
-            const log = path.join(run, `${name}.log`);
-            if (fs.existsSync(log)) fs.copyFileSync(log, path.join(diagnostics, `${name}.log`));
-          }
-          saveOwnedMetadata(path.join(diagnostics, 'result.json'), diagnosticReport(result));
-          diagnosticDestination = await retainDiagnosticEvidence(run, ownership);
-          result.diagnostic.evidence_root = diagnosticDestination;
-        }
-        if (result.status === 'passed' && !diagnostic) {
-          const receipts = path.join(cache, '.receipts');
-          fs.mkdirSync(receipts, { recursive: true });
-          const evidence = path.join(receipts, `${ownership.runId}-acceptance.json`);
-          saveOwnedMetadata(evidence, result);
-          acceptedReference = await retainAcceptedRelease({ app: path.join(run, 'Mandible.app'),
-            storage: path.join(process.env.MANDIBLE_HOME || path.join(os.userInfo().homedir, '.mandible'), 'accepted-releases'), ownership, candidate: candidateBinding,
-            acceptance: { record_id: process.env.MANDIBLE_ACCEPTANCE_ID || null, request_id: process.env.MANDIBLE_ACCEPTANCE_REQUEST || null },
-            evidence: { receipt: evidence, sha256: sha256(evidence) }, expectedDigest: testedPackageDigest });
-        }
-        const final = finalizeOwnedRun(metadataFile, { expectedRevision: ownership.revision, outcome: result.status === 'passed' ? 'assessed' : 'failed',
-          ...(diagnosticDestination ? { disposition: 'transferred', destination: diagnosticDestination, transferReference: `diagnostic:${ownership.runId}` } : {}),
-          ...(acceptedReference ? { disposition: 'transferred', destination: resolveAcceptedRelease(acceptedReference, candidateBinding).receipt.package.handle.root, transferReference: acceptedReference } : {}),
-          summary: acceptanceSummary(result) });
-        const receipt = final.ownership.receipt;
-        result.receipt = acceptedReference || receipt;
-        result.budget = budget.reading();
-        saveOwnedMetadata(receipt, { ...JSON.parse(fs.readFileSync(receipt, 'utf8')), acceptance: diagnostic ? diagnosticReport(result) : result });
-        result.checks.cleanup = cleanupOwnedRun(metadataFile, { apply: true });
-        if (result.checks.cleanup.action !== 'delete-owned' || result.checks.cleanup.remaining?.length) result.status = 'failed';
-        result.budget = budget.reading();
-        if (Date.now() >= budget.deadline) { result.status = 'failed'; result.cleanup_error = 'Acceptance total deadline exceeded during cleanup/receipt.'; }
-        saveOwnedMetadata(receipt, { ...JSON.parse(fs.readFileSync(receipt, 'utf8')), acceptance: diagnostic ? diagnosticReport(result) : result });
-        result.receipt = acceptedReference || receipt;
-        budget.remaining(true);
-      } catch (error) { result.status = 'failed'; result.cleanup_error = error.message; }
+        const remaining = budget.remaining(true);
+        const completed = await runSupervisedCommand(runtime, [fileURLToPath(import.meta.url), '--finalize-owned-run', input], {
+          cwd: root, env: buildEnv, capture: true, maxBuffer: 1024 * 1024,
+          timeout: Math.max(1, remaining - 600), graceMs: 250, deadline: budget.deadline,
+        });
+        Object.assign(result, JSON.parse(completed.stdout));
+      } catch (error) {
+        result.status = 'failed'; result.cleanup_error = error.message;
+        result.phases.finalization.status = 'failed';
+        result.phases.finalization.elapsed_ms = Date.now() - result.phases.finalization.started_at;
+        result.checks.finalization_stderr = error.stderr?.slice(-4000);
+        const receipt = path.join(cache, '.receipts', `${ownership.runId}.json`);
+        if (fs.existsSync(receipt)) result.receipt = receipt;
+        const retainedReceipt = path.join(process.env.MANDIBLE_HOME || path.join(os.userInfo().homedir, '.mandible'), 'accepted-releases', '.receipts', `${ownership.runId}-accepted-release.json`);
+        if (!fs.existsSync(retainedReceipt)) saveOwnedMetadata(evidence, result);
+        if (fs.existsSync(receipt)) saveOwnedMetadata(receipt, { ...JSON.parse(fs.readFileSync(receipt, 'utf8')), acceptance: result });
+      }
     }
     result.budget = budget.reading();
     if (Date.now() >= budget.deadline) { result.status = 'failed'; result.cleanup_error = 'Acceptance total deadline exceeded during cleanup/receipt.'; }
@@ -612,4 +655,9 @@ async function main() {
   });
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main().catch(error => { console.error(JSON.stringify({ status: 'unavailable', error: error.message })); process.exitCode = 1; });
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const execution = process.argv[2] === '--finalize-owned-run'
+    ? finalizeAcceptance(JSON.parse(fs.readFileSync(process.argv[3], 'utf8'))).then(result => { process.stdout.write(JSON.stringify(result)); process.exitCode = 0; })
+    : main();
+  execution.catch(error => { console.error(JSON.stringify({ status: 'unavailable', error: error.message })); process.exitCode = 1; });
+}

@@ -151,6 +151,14 @@ identifies its cap as candidate-script scope. Report the actual acceptance row's
 separately from the script elapsed time. A deadline, stale health reading,
 incomplete required data, failed request, or incomplete cleanup fails the gate.
 
+Retaining the finished package and finalizing and reclaiming its scratch run
+execute in a supervised subprocess of the same candidate script, using the
+existing owned-run and accepted-release helpers. The original deadline includes
+copying, hashing, consumer inspection, descendants, and receipt writing. A
+bounded evidence file is retained before that work starts; interruption leaves
+owned material for inspection and fails acceptance. Nested supervisors allow
+the inner TERM/KILL/join to finish before an outer process can be killed.
+
 Acceptance builds and signs the application once through `tauri:build` and the
 installed-release assembler. After exact packaged readiness, passive health
 probes run while a representative sweep uses at most 20 seconds including its

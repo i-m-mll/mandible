@@ -3,7 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { expect, it } from "vitest";
 import { parseSweepOptions, planRoute, representativeResponse, selectRepresentatives } from "../scripts/route-cost-sweep.ts";
-import { acceptanceOwnedOutputs, routeCostSweepArgs } from "../scripts/candidate-acceptance.mjs";
+import { acceptanceOwnedOutputs, routeCostSweepArgs, finalizeAcceptance } from "../scripts/candidate-acceptance.mjs";
+import { acceptanceDeadline } from "../scripts/acceptance-deadline.mjs";
 import { createOwnedRun, saveOwnedMetadata, finalizeOwnedRun, cleanupOwnedRun } from "../scripts/owned-run.mjs";
 
 
@@ -32,6 +33,28 @@ it("reclaims interrupted sweep data and authority through acceptance ownership",
   } finally {
     fs.rmSync(base, { recursive: true, force: true });
   }
+});
+
+it("finalizes failed source evidence without claiming a package pass and preserves the receipt after cleanup", async () => {
+  const cache = fs.mkdtempSync(path.join(os.tmpdir(), "acceptance-finalization-"));
+  const run = path.join(cache, "run");
+  fs.mkdirSync(run);
+  fs.mkdirSync(path.join(run, "home"));
+  fs.writeFileSync(path.join(run, "home", "fixture"), "generated fixture");
+  const ownership = createOwnedRun({ root: run, instanceId: "finalization-test", project: "project", workUnit: "unit", disposable: true, outputs: acceptanceOwnedOutputs });
+  const metadataFile = path.join(run, "metadata.json");
+  saveOwnedMetadata(metadataFile, { ownership });
+  const budget = acceptanceDeadline({});
+  try {
+    const result = await finalizeAcceptance({ metadataFile, run, cache, ownership, deadlineEnv: budget.env,
+      result: { status: "failed", candidate: "candidate", error: "request failed", checks: {}, phases: { finalization: { status: "running", started_at: Date.now() } }, budget: { ...budget.reading(), scope: "candidate-script" } },
+    });
+    expect(result.status).toBe("failed");
+    expect(result.checks.cleanup).toMatchObject({ action: "delete-owned", remaining: [] });
+    expect(fs.existsSync(path.join(run, "home", "fixture"))).toBe(false);
+    const receipt = JSON.parse(fs.readFileSync(result.receipt, "utf8"));
+    expect(receipt.acceptance).toMatchObject({ status: "failed", budget: { scope: "candidate-script" }, phases: { finalization: { status: "passed" } } });
+  } finally { fs.rmSync(cache, { recursive: true, force: true }); }
 });
 
 it("requires the whole catalog to be classified and every release family to be available", () => {

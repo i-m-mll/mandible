@@ -1556,7 +1556,7 @@ async function supervisedMain() {
     await runSweepWorker(parentBudget, process.execPath, ["--no-install", fileURLToPath(import.meta.url), ...process.argv.slice(2),
       "--work-root", owned, "--report-file", reportFile], {
       cwd: REPO_ROOT, env: { ...process.env, MANDIBLE_SWEEP_WORKER: "1", MANDIBLE_SWEEP_STARTED_AT: String(started) },
-      stdio: "inherit",
+      stdio: "inherit", graceMs: opts.representative ? 250 : undefined,
     });
     processesJoined = true;
     normalExit = true;
