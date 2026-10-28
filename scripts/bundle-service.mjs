@@ -7,6 +7,7 @@ import { serviceInstallationContext } from './service-definitions.mjs';
 import { readServiceConfiguration, servicePath } from './service-configuration.mjs';
 import { admitBundleOwner, readBundleLaunch, bundleLaunchAllowed, bundleLoginSession } from './bundle-services.mjs';
 import { installedRuntimeEnvironment, readInstalledRelease, releaseFile } from './installed-release.mjs';
+import { PRODUCTION_ORIGIN } from './canonical-origin.mjs';
 
 const root = process.env.MANDIBLE_RELEASE_ROOT;
 if (!root || !path.isAbsolute(root)) throw new Error('Foreground services require an explicit installed release root.');
@@ -33,7 +34,7 @@ if (bundleLaunchAllowed(preference, bundleLoginSession(), role)) {
     MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR: context.runtimeDir,
     MANDIBLE_CLIENT_AUTH_DIR: path.join(context.home, 'config/client-auth'),
     MANDIBLE_CONTEXT_VERIFICATION_KEY: path.join(context.runtimeDir, 'context-verification-key.pem'),
-    MANDIBLE_LAUNCH_MODE: preference.launchMode, MANDIBLE_BASE: 'https://app.mandible.localhost:19420',
+    MANDIBLE_LAUNCH_MODE: preference.launchMode, MANDIBLE_BASE: PRODUCTION_ORIGIN,
     GIT_OPTIONAL_LOCKS: '0' });
   if (role === 'backend') {
     const { readMainInstance } = await import('./local-runtime.mjs');
