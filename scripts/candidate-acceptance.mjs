@@ -24,7 +24,22 @@ import { readRuntimeHandoffLock, runtimeHandoffLockRefusal } from './runtime-han
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const sweepWorkDirectory = 'route-cost-work';
 const applicationPolicyProgram = '/usr/sbin/taskpolicy';
-const applicationPolicyArgs = (binary, args) => ['-a', binary, ...args];
+export function acceptanceApplicationPolicy() {
+  const budget = acceptanceDeadline();
+  budget.remaining(true);
+  if (process.platform !== 'darwin') throw new Error('Packaged desktop acceptance requires macOS; evidence is unavailable on this platform.');
+  const scope = process.env.MANDIBLE_ACCEPTANCE_CLOCK_SCOPE ?? budget.reading().scope;
+  if (process.env.MANDIBLE_ACCEPTANCE_APPLICATION_POLICY_PID !== String(process.pid)) {
+    process.execve(applicationPolicyProgram, [applicationPolicyProgram, '-a', process.execPath, ...process.execArgv, ...process.argv.slice(1)], {
+      ...process.env,
+      ...(process.env.MANDIBLE_ACCEPTANCE_DEADLINE === undefined ? budget.env : {}),
+      MANDIBLE_ACCEPTANCE_APPLICATION_POLICY_PID: String(process.pid),
+      MANDIBLE_ACCEPTANCE_CLOCK_SCOPE: scope,
+    });
+    throw new Error('Candidate application-policy exec unexpectedly returned before owned state');
+  }
+  return { ...budget, reading: () => ({ ...budget.reading(), scope }) };
+}
 export const acceptanceOwnedOutputs = ['home', 'Mandible.app', 'build.log', 'route-cost.json', 'route-cost.log', sweepWorkDirectory, 'daemon.log', 'desktop.log', 'gateway.log', 'Caddyfile', 'finalization.json'].map(path => ({ path, kind: path === 'Mandible.app' ? 'interactive' : 'generated' }));
 export function routeCostSweepArgs(run, budgetMs = 20_000) {
   return ['--no-install', path.join(root, 'scripts', 'route-cost-sweep.ts'), '--json', '--work-root', path.join(run, sweepWorkDirectory),
@@ -392,10 +407,8 @@ export async function finalizeAcceptance({ metadataFile, result, candidateBindin
   return result;
 }
 
-async function main() {
-  const budget = acceptanceDeadline();
+async function main(budget) {
   const boundedCommand = (binary, args, options = {}) => command(binary, args, { ...options, timeout: budget.remaining() });
-  if (process.platform !== 'darwin') throw new Error('Packaged desktop acceptance requires macOS; evidence is unavailable on this platform.');
   const option = name => { const index = process.argv.indexOf(name); return index >= 0 ? process.argv[index + 1] : undefined; };
   const diagnostic = option('--diagnostic-receipt') || option('--diagnostic-app')
     ? diagnosticReplayPackage(option('--diagnostic-receipt'), option('--diagnostic-app')) : null;
@@ -450,7 +463,7 @@ async function main() {
   const files = [];
   const launch = (binary, args, env, name) => {
     const fd = fs.openSync(path.join(run, `${name}.log`), 'w'); files.push(fd);
-    const child = spawn(applicationPolicyProgram, applicationPolicyArgs('/usr/bin/sandbox-exec', ['-p', executionProfile, binary, ...args]), { cwd: run, env, stdio: ['ignore', fd, fd] });
+    const child = spawn('/usr/bin/sandbox-exec', ['-p', executionProfile, binary, ...args], { cwd: run, env, stdio: ['ignore', fd, fd] });
     child.on('error', error => { result.checks[`${name}_launch_error`] = error.message; });
     return child;
   };
@@ -462,7 +475,7 @@ async function main() {
     let builtApp = diagnostic?.app;
     if (!diagnostic) {
     const buildLog = fs.openSync(path.join(run, 'build.log'), 'w'); files.push(buildLog);
-    await phase('package_build', () => runSupervisedCommand(applicationPolicyProgram, applicationPolicyArgs(runtime, ['run', 'tauri:build', '--', '--bundles', 'app']), { cwd: root, env: buildEnv, stdio: ['ignore', buildLog, buildLog], timeout: budget.remaining(), graceMs: 250, deadline: budget.deadline - 3000 }));
+    await phase('package_build', () => runSupervisedCommand(runtime, ['run', 'tauri:build', '--', '--bundles', 'app'], { cwd: root, env: buildEnv, stdio: ['ignore', buildLog, buildLog], timeout: budget.remaining(), graceMs: 250, deadline: budget.deadline - 3000 }));
     if (readBuildRevision(root) !== candidate) throw new Error('Built daemon revision does not match the exact candidate.');
     builtApp = path.join(root, 'src-tauri', 'target', 'release', 'bundle', 'macos', 'Mandible.app');
     }
@@ -543,7 +556,7 @@ async function main() {
     const routeCostOut = fs.openSync(routeCostFile, 'w'); files.push(routeCostOut);
     const routeCostLog = fs.openSync(path.join(run, 'route-cost.log'), 'w'); files.push(routeCostLog);
     const sweepTotal = Math.min(20_000, budget.remaining());
-    const sweepFailure = await runSupervisedCommand(applicationPolicyProgram, applicationPolicyArgs(runtime, routeCostSweepArgs(run, sweepTotal)), { cwd: root, env: buildEnv, stdio: ['ignore', routeCostOut, routeCostLog], timeout: Math.max(1, sweepTotal - 700), graceMs: 300, deadline: Math.min(budget.deadline - 5000, Date.now() + sweepTotal) }).then(() => null, error => error);
+    const sweepFailure = await runSupervisedCommand(runtime, routeCostSweepArgs(run, sweepTotal), { cwd: root, env: buildEnv, stdio: ['ignore', routeCostOut, routeCostLog], timeout: Math.max(1, sweepTotal - 700), graceMs: 300, deadline: Math.min(budget.deadline - 5000, Date.now() + sweepTotal) }).then(() => null, error => error);
     const progressFile = path.join(run, sweepWorkDirectory, 'progress.json');
     result.checks.route_cost = routeCostCheck(fs.readFileSync(fs.existsSync(progressFile) ? progressFile : routeCostFile, 'utf8'));
     if (sweepFailure) throw new Error(`Route-cost sweep failed: ${result.checks.route_cost
@@ -665,8 +678,12 @@ async function main() {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const execution = process.argv[2] === '--finalize-owned-run'
-    ? finalizeAcceptance(JSON.parse(fs.readFileSync(process.argv[3], 'utf8'))).then(result => { process.stdout.write(JSON.stringify(result)); process.exitCode = 0; })
-    : main();
+  const execution = (async () => {
+    const budget = acceptanceApplicationPolicy();
+    if (process.argv[2] === '--finalize-owned-run') {
+      const result = await finalizeAcceptance(JSON.parse(fs.readFileSync(process.argv[3], 'utf8')));
+      process.stdout.write(JSON.stringify(result)); process.exitCode = 0;
+    } else await main(budget);
+  })();
   execution.catch(error => { console.error(JSON.stringify({ status: 'unavailable', error: error.message })); process.exitCode = 1; });
 }
