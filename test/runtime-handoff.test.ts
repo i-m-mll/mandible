@@ -198,7 +198,7 @@ it.each(['start-success', 'start-pending', 'verify-pending'])('binds strictly qu
   expect(result).toMatchObject({ phase: 'verification-pending', launch: { processes } });
 });
 
-it('binds a successful readiness result before the next observation can adopt a replacement', async () => {
+it.each(['handoff-start', 'handoff-verify'])('binds a successful JSON %s result before the next observation can adopt a replacement', async bindingCommand => {
   const f = recoveryFixture(startedAt => [startupLine(startedAt)]);
   const binding = { ...f.failed.binding, oldProcess: { pid: 987653, startedAt: 'gone' } };
   const file = path.join(handoffDirectory(binding.home, binding.requestId, binding.executionId), 'journal.json');
@@ -212,8 +212,8 @@ it('binds a successful readiness result before the next observation can adopt a 
   const evidence = f.evidence(diagnostics(1, f.fakeStart - 30, f.fakeStart - 10));
   const result = await runRuntimeHandoffWorker(file, { verifyPublication: async () => {}, desktop: async () => {},
     stage: async () => { fs.appendFileSync(path.join(path.dirname(file), 'convergence.log'), 'fixture stage\n'); },
-    control: async (_journal, command) => JSON.stringify({ ...evidence, processes: command === 'handoff-verify' ? { backend, gateway: first }
-      : command === 'handoff-evidence' && inspections++ ? { backend, gateway: { ...first, pid: first.pid + 1 } } : { backend } }),
+    control: async (_journal, command) => JSON.stringify({ ...evidence, processes: command === bindingCommand ? { backend, gateway: first }
+      : command === 'handoff-evidence' && (bindingCommand === 'handoff-start' || inspections++) ? { backend, gateway: { ...first, pid: first.pid + 1 } } : { backend } }),
     observe: async (current, options) => ({ bindingDigest: current.bindingDigest, evidence: await options.readEvidence() }),
   });
   expect(result.phase).toBe('failed');

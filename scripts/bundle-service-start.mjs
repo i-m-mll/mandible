@@ -49,10 +49,6 @@ export async function reconcileBundleServiceStart(context, role, { until, contro
     } : null, refusal: inspection.ok ? null : inspection.refusal };
     observations.push(sample);
     if (!inspection.ok && inspection.refusal.category !== 'starting') return fail(inspection.refusal.category, inspection.refusal.message);
-    if (native.status === 'requires_approval') return fail('background_permission_required', 'Allow Mandible background services in System Settings.', 'pending');
-    if (now() >= until) break;
-    if (native.status !== previousStatus) registered = false;
-    previousStatus = native.status;
     if (inspection.ok) {
       const matching = matchingServiceDefinitions(inspection);
       if (!matching.ok) return fail(matching.refusal.category, matching.refusal.message);
@@ -61,6 +57,12 @@ export async function reconcileBundleServiceStart(context, role, { until, contro
           || observed.job.program !== path.join(context.bundleRoot, 'Contents/MacOS/mandible-service'))) {
         return fail('ownership_conflict', `The loaded ${role} is not the expected bundle-owned native service.`);
       }
+    }
+    if (native.status === 'requires_approval') return fail('background_permission_required', 'Allow Mandible background services in System Settings.', 'pending');
+    if (now() >= until) break;
+    if (native.status !== previousStatus) registered = false;
+    previousStatus = native.status;
+    if (inspection.ok) {
       if (!observed.job.loaded) startAttempted = false;
       if (native.status === 'enabled' && observed.job.loaded) {
         if (observed.job.pid) {

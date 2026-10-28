@@ -7,6 +7,7 @@ import { inspectServiceDefinitionsSync } from './service-definitions.mjs';
 import { readServiceConfiguration, publishServiceConfiguration } from './service-configuration.mjs';
 import { readInstalledRelease, releaseFile } from './installed-release.mjs';
 import { reconcileBundleServiceStart, BUNDLE_SERVICE_START_TIMEOUT_MS } from './bundle-service-start.mjs';
+import { observationPending } from './runtime-observation.mjs';
 
 const ownerFile = context => path.join(context.runtimeDir, 'bundle-owner.json');
 const launchFile = context => path.join(context.runtimeDir, 'bundle-launch.json');
@@ -97,6 +98,15 @@ export async function bundleRuntimeCommand(command, { context, release, launchMo
   if (!['status', 'start', 'stop', 'restart', 'install', 'repair', 'remove', 'configure-launch-mode', 'reload-gateway', 'background-settings'].includes(command)) throw new Error('Unsupported bundle lifecycle operation.');
   const mutating = command !== 'status';
   const processes = {};
+  const startPendingStatus = async error => {
+    if (!observationPending(error)) throw error;
+    const current = await inspect({ launchMode });
+    return { ...current.status,
+      state: error.code === 'background_permission_required' ? error.code : 'registration_pending',
+      detail: `${error.message}${error.code === 'registration_inconsistent' ? ' Retry Start to reconcile registration again; no service was replaced.' : ''}`,
+      background_services: Object.fromEntries(['backend', 'gateway'].map(role => [role, control(context, 'status', role).status])),
+      service_registration: error.toJSON() };
+  };
   const admission = admitBundleOwner(context, release, { relocation: command === 'repair' });
   if (!admission.ok) throw new Error(admission.message);
   const relocating = command === 'repair' && admission.owner?.bundleRoot !== undefined && admission.owner.bundleRoot !== context.bundleRoot;
@@ -146,12 +156,12 @@ export async function bundleRuntimeCommand(command, { context, release, launchMo
       const before = await inspect({ launchMode });
       if (before.status.state === 'port_conflict' || before.backendPortOpen && !before.backendJob.loaded) throw new Error('A listener is not owned by this installation; preserving it.');
       const backend = await startService(context, 'backend', { until: registrationUntil, control, observe, readProcess, processes });
-      if (!backend.ok) throw backend.error;
+      if (!backend.ok) return startPendingStatus(backend.error);
       const current = await inspect({ launchMode });
       if (!current.trusted.error) {
         const gateway = await configureGateway(current.production.root);
         const startedGateway = await startService(context, 'gateway', { until: registrationUntil, control, observe, readProcess, processes });
-        if (!startedGateway.ok) throw startedGateway.error;
+        if (!startedGateway.ok) return startPendingStatus(startedGateway.error);
         if (inspection.observations.some(item => item.service === 'gateway' && item.job.loaded) && !relocating) {
           if (gateway.adminRestartRequired) restartGateway();
           else reloadGateway();

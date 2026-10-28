@@ -50,14 +50,14 @@ it.each([
   } } });
 });
 
-it.each(['permission', 'foreign', 'mismatched'] as const)('refuses %s evidence without registration or start', async kind => {
+it.each(['permission', 'foreign', 'mismatched', 'permission-foreign', 'permission-mismatched'] as const)('refuses %s evidence without registration or start', async kind => {
   const time = clock();
   const result = await reconcileBundleServiceStart(context, 'backend', { ...time, until: 3000, readProcess: process,
     control: (_context, operation, role) => {
       expect(operation).toBe('status');
-      return { service: role, label: context.backendLabel, status: kind === 'permission' ? 'requires_approval' : 'enabled', registration_changed: false };
-    }, observe: () => kind === 'foreign' ? inspection(true, 42, '/foreign/Mandible.app/Contents/MacOS/mandible-service')
-      : kind === 'mismatched' ? inspection(true, 42, program, ['mandible-service', 'foreground', 'gateway']) : inspection(),
+      return { service: role, label: context.backendLabel, status: kind.startsWith('permission') ? 'requires_approval' : 'enabled', registration_changed: false };
+    }, observe: () => kind.endsWith('foreign') ? inspection(true, 42, '/foreign/Mandible.app/Contents/MacOS/mandible-service')
+      : kind.endsWith('mismatched') ? inspection(true, 42, program, ['mandible-service', 'foreground', 'gateway']) : inspection(),
     start: () => { throw new Error('Refused state cannot start'); },
   });
   expect(result).toMatchObject({ ok: false, error: { code: kind === 'permission' ? 'background_permission_required' : 'ownership_conflict' } });

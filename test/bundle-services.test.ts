@@ -70,6 +70,20 @@ it('keeps manual starts within their login session and never overrides native de
     control: (_: unknown, operation: string) => {
     if (operation !== 'status') events.push(operation);
     return { status: 'requires_approval' };
-  } })).rejects.toMatchObject({ code: 'background_permission_required', outcome: 'pending' });
+  } })).resolves.toMatchObject({ state: 'background_permission_required',
+    service_registration: { code: 'background_permission_required', outcome: 'pending' } });
   expect(events).not.toContain('unregister');
+});
+
+it('returns actionable registration pending status and evidence while ownership failures remain errors', async () => {
+  const { options } = fixture();
+  const evidence = { observations: [{ native: { status: 'enabled' }, job: { loaded: false } }] };
+  await expect(bundleRuntimeCommand('start', { ...options,
+    startService: async () => ({ ok: false, error: new RuntimeObservationError('registration_inconsistent', 'Registration did not converge.', evidence, 'pending') }),
+    waitReady: async () => { throw new Error('Pending registration must not begin another readiness budget'); },
+  })).resolves.toMatchObject({ state: 'registration_pending', detail: expect.stringContaining('Retry Start'),
+    service_registration: { outcome: 'pending', code: 'registration_inconsistent', evidence } });
+  await expect(bundleRuntimeCommand('start', { ...options,
+    startService: async () => ({ ok: false, error: new RuntimeObservationError('ownership_conflict', 'Foreign service.', evidence) }),
+  })).rejects.toMatchObject({ code: 'ownership_conflict', outcome: 'failed' });
 });

@@ -60,6 +60,11 @@ uses one 20-second registration budget.
 Failure to converge returns typed `registration_inconsistent` pending evidence
 containing native status, owned-job observations and attempted actions. It does
 not unregister, reinstall, reset the budget or alter the retained delivery journal.
+Interactive operations return a daemon status with `registration_pending`, retry
+guidance and structured registration evidence; permission pending retains
+`background_permission_required`. Ownership and continuity failures remain errors
+and take precedence over permission pending. Accepted handoff preserves the typed
+pending exception transport.
 The runtime's existing generation/health evidence still decides readiness.
 Unqualified launcher PID/birth/run observations remain diagnostic. Strictly owned
 process identities use the shared continuity rule and travel with successful or
