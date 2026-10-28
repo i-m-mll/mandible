@@ -9,6 +9,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { acquireProcessLock as acquireKernelProcessLock } from "./process-lock.mjs";
 import { CADDY_VERSION, installPinnedCaddy, pinnedCaddyBinary } from "./pinned-caddy.mjs";
+import { gatewayGlobalOptions } from "./gateway-config.mjs";
 
 const SCHEMA = "mandible-local-ca-trust@1";
 const INTENT_SCHEMA = "mandible-local-ca-gateway-intent@1";
@@ -16,7 +17,7 @@ const SETUP_HOST = "setup.mandible.localhost";
 
 export function setupCaddyfile(storageRoot, sitePort) {
   if (!Number.isInteger(sitePort) || sitePort <= 0 || sitePort >= 65536) throw new Error("Temporary setup requires a valid loopback port.");
-  return `{\n  admin off\n  storage file_system ${JSON.stringify(storageRoot)}\n  local_certs\n  skip_install_trust\n  auto_https disable_redirects\n}\n\nhttps://${SETUP_HOST}:${sitePort} {\n  bind 127.0.0.1\n  tls internal\n  respond "mandible-local-ca-ready"\n}\n`;
+  return `${gatewayGlobalOptions({ storageRoot })}\n\nhttps://${SETUP_HOST}:${sitePort} {\n  bind 127.0.0.1\n  tls internal\n  respond "mandible-local-ca-ready"\n}\n`;
 }
 
 export function localCaPaths(home) {

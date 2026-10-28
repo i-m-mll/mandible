@@ -18,6 +18,7 @@ import { withOwnedRunLock, createOwnedRun, saveOwnedMetadata, finalizeOwnedRun, 
 import { readBuildRevision } from './build-revision.mjs';
 import { acceptanceDeadline } from './acceptance-deadline.mjs';
 import { observeRuntimeHealthCoverage, RuntimeHealthObservationError } from '../src/runtime-health-contract.ts';
+import { gatewayCaddyfile } from './gateway-config.mjs';
 
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -119,7 +120,8 @@ export function acceptanceGatewayConfig({ origin, backendPort, storageRoot }) {
   if (url.protocol !== 'https:' || url.hostname !== 'app.mandible.localhost' || !url.port || url.origin !== origin) throw new Error('Acceptance requires an exact Mandible HTTPS origin.');
   const ports = [Number(url.port), backendPort];
   if (!ports.every(port => Number.isInteger(port) && port > 0 && port < 65536) || new Set(ports).size !== 2 || !path.isAbsolute(storageRoot)) throw new Error('Acceptance gateway requires distinct valid ports and owned absolute storage.');
-  return `{\n  admin off\n  storage file_system ${JSON.stringify(storageRoot)}\n  local_certs\n  skip_install_trust\n  auto_https disable_redirects\n}\n\n${origin} {\n  bind 127.0.0.1 ::1\n  tls internal\n  header -Server\n  reverse_proxy http://127.0.0.1:${backendPort} {\n    header_up -X-Mandible-Target-Instance\n    header_up -X-Mandible-Session-Context\n  }\n}\n`;
+  return gatewayCaddyfile([{ role: 'main', instance_id: 'acceptance', public_origin: origin,
+    backend_origin: `http://127.0.0.1:${backendPort}` }], { storageRoot });
 }
 
 /** Acceptance's log verdict: runtime log failures plus every health event, since a stall on the fixture is the code's. */

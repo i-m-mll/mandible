@@ -1,3 +1,8 @@
+/** HTTP streams can reconnect; durable work drains in the backend. */
+export function gatewayGlobalOptions({ adminAddress = null, storageRoot }) {
+  return `{\n  admin ${adminAddress === null ? 'off' : JSON.stringify(adminAddress)}\n  storage file_system ${JSON.stringify(storageRoot)}\n  grace_period 1s\n  local_certs\n  skip_install_trust\n  auto_https disable_redirects\n}`;
+}
+
 export function gatewayCaddyfile(instances, { adminAddress, storageRoot }) {
   const production = instances.find((entry) => entry.role === "main");
   if (!production) throw new Error("The production instance is not registered.");
@@ -11,7 +16,7 @@ export function gatewayCaddyfile(instances, { adminAddress, storageRoot }) {
   }
   const productionBackend = new URL(production.backend_origin);
   const productionPublic = new URL(production.public_origin);
-  const globalOptions = `{\n  admin ${JSON.stringify(adminAddress)}\n  storage file_system ${JSON.stringify(storageRoot)}\n  local_certs\n  skip_install_trust\n  auto_https disable_redirects\n}`;
+  const globalOptions = gatewayGlobalOptions({ adminAddress, storageRoot });
   const blocks = instances.map((entry) => {
     const publicUrl = new URL(entry.public_origin);
     const backendUrl = new URL(entry.backend_origin);

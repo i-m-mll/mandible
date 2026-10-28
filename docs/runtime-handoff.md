@@ -94,6 +94,16 @@ captured processes have drained. Migration also captures and drains the original
 Bun gateway's exact Caddy child. It never falls through to a raw launchd parser
 that interprets a BundleProgram job as an ordinary Program job.
 
+All generated Caddy configurations share a one-second HTTP shutdown grace,
+including production, preview hosts, candidate acceptance, and temporary CA setup.
+On SIGTERM, Caddy stops accepting connections, closes idle connections, allows
+finite responses to finish during that second, then closes remaining streams and
+cleans up its storage and modules. Event streams reconnect after the update;
+connection lifetime does not represent durable application work. Backend
+transactions and jobs retain their own drain contract; native service
+unregistration still waits for captured processes to exit. The HTTP grace also
+applies when a configuration reload removes an HTTP server.
+
 A historical terminal update does not prevent ordinary use of its authorized
 installed runtime. Service startup uses the current attempt's service intent and
 ready observation rather than an old failed phase or lifetime exit status.
