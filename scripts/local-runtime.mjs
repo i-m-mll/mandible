@@ -378,7 +378,7 @@ export async function startHandoffDefinitions(binding) {
     Object.assign(process.env, (await import('./installed-release.mjs')).installedRuntimeEnvironment(root));
     await initializeMainRegistration(root);
     fs.writeFileSync(path.join(RUNTIME_DIR, 'bundle-launch.json'), JSON.stringify({ enabled: true, gatewayEnabled: true, launchMode: binding.priorBackend.launchMode, session: bundleLoginSession() }), { mode: 0o600 });
-    configureGateway(root);
+    await configureGateway(root);
     for (const role of ['backend', 'gateway']) {
       const result = nativeServiceControl(context, 'register', role);
       if (result.status !== 'enabled') throw new RuntimeObservationError('background_permission_required', 'Allow Mandible background services in System Settings.', result, 'pending');
