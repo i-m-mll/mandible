@@ -336,7 +336,7 @@ function systemTrustEffects(paths) {
   };
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
+if (process.argv[1] && path.basename(process.argv[1]) === 'local-ca-trust.mjs' && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
   const paths = localCaPaths(process.env.MANDIBLE_HOME || path.join(os.homedir(), ".mandible"));
   try {
     const command = process.argv[2] ?? "status";
