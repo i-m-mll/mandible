@@ -1,6 +1,12 @@
-# Production candidate acceptance
+# Package/runtime acceptance
 
-Run the production daemon and packaged desktop from one clean, committed candidate:
+The approval view labels the existing candidate gate **Package/runtime
+acceptance**. It checks exact package bytes and runtime behavior in an isolated
+instance; a pass does not establish that an installed upgrade will converge.
+The CLI command is `candidate-acceptance`; stored/API fields use
+`candidate_acceptance`.
+
+Run the bundled daemon and packaged desktop from one clean, committed candidate:
 
 ```sh
 runtime=$(scripts/bun-runtime.sh)
@@ -10,7 +16,12 @@ PATH="$(dirname "$runtime"):$PATH" "$runtime" run candidate-acceptance -- \
 
 The project and delivery work unit come from the live Mandible registry. The coordinator supplies its integration work unit for the final gate. No preview, installed application, LaunchAgent, or production database is restarted or replaced.
 
-The command builds the finalized application through the installed-release assembler, verifies its signature, resource inventory and candidate provenance, then launches its own daemon and gateway from the application's shipped Bun, JavaScript and Caddy. Daemon, gateway and GUI run with the checkout, dotfiles, Homebrew and developer runtime stores denied, and the application read-only. It verifies the exact instance, generation, startup commit and epoch. It creates an operator fixture through that daemon's private socket. The packaged webview uses an isolated, nonpersistent browser store, opens Settings, changes the app theme, and checks the persisted preference revision. The window remains open through a full event-loop diagnostics interval. Daemon and native logs are assessed after owned processes stop, including shutdown.
+The separate route-cost sweep measures handlers against a copied snapshot of the
+live ledger. The packaged runtime phase uses a fresh isolated home and fixture
+ledger. This gate therefore includes production-data coverage through the sweep,
+while keeping packaged runtime state isolated.
+
+The command builds the finalized application through the installed-release assembler, verifies its signature, resource inventory and candidate provenance, then starts the application's shipped Bun/daemon and Caddy directly. It does not register or upgrade SMAppService jobs. Daemon, gateway and GUI run with the checkout, dotfiles, Homebrew and developer runtime stores denied, and the application read-only. It verifies the exact instance, generation, startup commit and epoch. It creates an operator fixture through that daemon's private socket. The packaged webview uses an isolated, nonpersistent browser store, opens Settings, changes the app theme, and checks the persisted preference revision. The window remains open through a full event-loop diagnostics interval. Daemon and native logs are assessed after owned processes stop, including shutdown.
 
 The packaged app runs unattended: in acceptance mode its window is never shown, never takes focus, and the app has no Dock icon or menu bar (macOS activation policy `Prohibited`, set before launch). The webview still loads and drives the dashboard.
 
@@ -33,7 +44,25 @@ Approval of a request within that scope requires a passing result for its exact 
 
 A record is written when a run starts, as `running`, and ends `passed` or `failed` with a reason. A newer candidate or a resolution of the request aborts the open run and fails it with the reason. A run a daemon restart interrupted is failed at the next start and runs again. The request view shows the state (`none`, `running`, `passed`, `failed` or `stale`) with any reason. `mandible auth acceptance show <request>` reports it with the local time the current run started, and `mandible auth acceptance run <request>` reruns a failed or stale result after a cause outside the candidate is fixed.
 
-A passing result is a pre-merge assessment. It does not attest delivery, convergence, native Connections setup, secure gateway trust, or every product workflow. The gate checks meaningful editing in the packaged application; affected feature lanes still supply their own focused behavior evidence.
+A passing result is a pre-merge package/runtime assessment. It does not attest
+the SMAppService upgrade transition, installation adoption, delivery convergence,
+native Connections setup, secure gateway trust, or every product workflow.
+Exact unmodified package bytes are checked here and again during the actual
+post-approval handoff. Upgrade lifecycle qualification uses the separate
+[two-hop private fixture](runtime-handoff.md#verification), whose source is
+transformed for private identities, homes and ports; it does not prove identical
+unmodified source/package bytes.
+
+Before presenting approval, the coordinator requires a clean current-source
+two-hop upgrade witness retained as a managed artifact. An earlier witness that
+needed recovery demonstrates recovery, not a clean current-source upgrade.
+Keep the pending request's verification explicit: **Upgrade qualification:
+pending until a clean current-source two-hop witness is retained as a managed
+artifact.** Once that artifact exists, revise the request message through the
+normal guarded revision before approval. Upgrade qualification is a coordinator
+review requirement, distinct from the automated package/runtime gate. See
+[upgrade qualification](accepted-package-delivery.md#qualification)
+for the command and evidence boundary.
 
 Each run records its exact project, work-unit owner, instance and generated outputs before producing them. The shared owned-run lifecycle saves a compact receipt outside the scratch root and reclaims disposed raw material after assessment or failure. Unknown files, active consumers, identity drift and cleanup errors preserve the remaining bytes and fail the gate. The receipt contains source and executable hashes, the runtime, interaction evidence, log digest, shutdown results and cleanup outcome. Apparent unlinked bytes are reported separately from physical space recovery.
 

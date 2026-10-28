@@ -82,14 +82,37 @@ not a fixed observation duration. Preserving a failed fixture leaves its helper
 running until its own bounded work exits; an explicit helper stop is an
 interruption case.
 
-The [managed qualification proof](https://app.mandible.localhost:19420/artifact/artifact-version:84f710aad45e?sidebar=hidden&agent_session=01a17e9c)
+The earlier [managed recovery witness](https://app.mandible.localhost:19420/artifact/artifact-version:84f710aad45e?sidebar=hidden&agent_session=01a17e9c)
 records both accepted app receipts, native deliveries, exact installed bytes,
 superseded-package disposal, and automatic recovery after a test-induced helper
 interruption. Its status is `functional-pass-after-fixture-timing-failure`: the
 former second-delivery 120-second total wait failed and interrupted its helper.
 The later acknowledgment proves recovery, not an uninterrupted pass of that
 wait. The phase-only fixture correction has focused tests; the full native
-fixture was not rebuilt for that test-only correction. Integration still requires
-the repository's exact final-candidate acceptance gate.
+fixture was not rebuilt for that test-only correction. This witness does not
+qualify a clean upgrade from current source.
+
+Before presenting approval, the coordinator requires a clean current-source
+witness for both legacy-to-bundle and bundle-to-bundle upgrades, retained as a
+source-bound managed artifact. After explicit human retirement of any retained
+failed handoff lock, run the existing full fixture; both hops are one test:
+
+```sh
+bun run test:provisioned test/provisioned/runtime-handoff-full.test.ts
+```
+
+The fixture transforms source for random private application/service identities,
+homes and ports. It qualifies the lifecycle transition under that isolation;
+it does not establish exact unmodified candidate bytes. [Package/runtime
+acceptance](candidate-acceptance.md) starts bundled Bun/Caddy directly in a fresh
+home and checks exact package/runtime behavior, while its separate route sweep
+uses copied live-ledger data. Actual post-approval handoff verifies installation
+and convergence of the exact accepted package.
+
+Until the clean source-bound witness exists, the pending request verification
+must say **Upgrade qualification: pending until a clean current-source two-hop
+witness is retained as a managed artifact.** Once it exists, reference that
+artifact through the normal guarded request-message revision before approval.
+A passing package/runtime result does not replace this review requirement.
 
 Co-Authored-By: Codex (GPT) <codex@openai.com>

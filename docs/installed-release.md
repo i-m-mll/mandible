@@ -171,8 +171,11 @@ developer dependency/runtime stores, Homebrew and ambient Bun. Its isolated
 home contains its own ledger, authority, socket and caches; app resources are
 read-only. It requires ready/warm daemon health with shipped provenance, the
 bundled UI, a ledger-worker request, a CLI SQLite query, native SDK execution,
-and MCP initialization. This is the payload gate. Integrated candidate
-acceptance still owns native service lifetime, GUI interaction, installation
-adoption and accepted-package activation.
+and MCP initialization. This is the payload gate. [Package/runtime acceptance](candidate-acceptance.md)
+also drives the packaged GUI, but starts Bun/Caddy directly in a fresh isolated
+home. Native upgrade transitions require the separate source-transformed
+[two-hop lifecycle fixture](runtime-handoff.md#verification); the actual
+post-approval handoff verifies installation and convergence of the exact retained
+package. A package/runtime pass alone does not attest that upgrade.
 
 Co-Authored-By: Codex (GPT) <codex@openai.com>

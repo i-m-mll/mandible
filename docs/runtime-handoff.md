@@ -257,36 +257,35 @@ private installation directory and unique labels, using a stub old daemon and a
 stub rebuild hook. It verifies supervision, bridge ordering, helper crash
 recovery and repeated admission without dependency mutation.
 
-`runtime-handoff-full` is the one pre-merge run of the real post-merge handoff.
-It archives the deployed revision named by the canonical root's
-`dist/build-revision.json`, clones that root's installed dependencies, and
-starts the actual old daemon on the pinned Bun in a private installation. The
-candidate is `HEAD` of the checkout under test, committed on a `wt` branch of
-the private canonical root. A durable private agent submits one issue-linked
-request through the normal HTTP API, candidate acceptance runs, and the
-private operator approves through the ordinary action-bound signing challenge.
-Both private plists are drifted after acceptance and before approval; the
-ordinary update must reconcile them and acknowledge its receipt.
-The old protected-root executor keeps serving until the reviewed request merges
-the candidate; then `cli/post-merge-build-dist.sh` hands off independently
-under launchd. The test verifies the canonical independent handoff, the exact
-new health generation, the loaded service definition, durable acknowledgment,
-native `xattr` precedence over a poisoned PATH entry, and that a poisoned old
-CLI shim is never used. Every managed self-update follows this sequence.
+`runtime-handoff-full` exercises legacy-to-bundle and bundle-to-bundle
+upgrades in one test. Run the existing full command above without a hop selector.
+It starts the real baseline authority in a private installation, submits
+issue-linked delivery requests through the ordinary API, and approves each
+through the private operator signing challenge. The first hop uses the legacy
+custodian bridge; the second uses automatic accepted-release binding. It checks
+native service transition, installed package identity, generation, durable
+acknowledgment and superseded-package disposal. Builds after acceptance are
+denied so the handoff must install the retained bytes.
 
-The operator's installation and toolchain are read, never changed: the trusted
-CA snapshot under `~/.mandible` is copied into private storage with its digests
-preserved, the Bun dependency cache is cloned, and the Cargo and Rustup
-directories are referenced. The configured native Git hooks are copied into
-the private repository. Isolation transforms only the fixture copies: the
-generated frontend and backend ports, the generator's expected frontend port,
-and the Caddy admin port. Unique installation-directory hashes give distinct
-launchd labels, the desktop install path is private, and the OS trust store and
-Keychain search list are unchanged. Teardown stops only the fixture's jobs and
-deletes its data. Compact success or failure evidence goes to
-`~/.cache/mandible/acceptance/upgrade-evidence`. The paired production daemon
-and desktop gate still runs on the exact unmodified candidate; this fixture
-does not claim identical source bytes after its port transforms.
+The fixture copies and transforms current source for random private application
+and service identities, homes and connection ports. It copies the trusted CA
+snapshot and dependencies and references the configured toolchain; the
+operator installation, OS trust store and Keychain search list are unchanged.
+Teardown stops only fixture jobs. Its source manifest and compact success or
+failure evidence go to `~/.cache/mandible/acceptance/upgrade-evidence`.
+This is source-transformed lifecycle qualification. Exact unmodified package
+bytes are covered separately by [package/runtime acceptance](candidate-acceptance.md)
+and the actual post-approval handoff.
+
+Before the coordinator presents approval, both hops must complete cleanly on
+current source and the source-bound witness must be retained as a managed
+artifact. A witness completed through recovery is recovery evidence, not that
+clean upgrade witness. While a failed handoff lock is retained, native
+qualification remains pending until its explicit human retirement; do not
+start a native run merely to refresh the evidence. The request verification
+must state upgrade qualification is pending until the witness exists, then be
+updated through the normal guarded message revision before approval. See
+[upgrade qualification](accepted-package-delivery.md#qualification).
 
 Verification-only recovery uses the same retained hook row, publication proof,
 pending or failed handoff journal, receipt verifier, and convergence settlement. It never
