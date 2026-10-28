@@ -1,22 +1,68 @@
 import process from "node:process";
 import { spawn, spawnSync } from 'node:child_process';
 
-export async function runSupervisedCommand(binary, args, { cwd, env, stdio, timeout, graceMs } = {}) {
-  const supervisor = new ProcessGroupSupervisor({ graceMs });
-  let timer; let timedOut = false; let cleanupError;
+export async function runSupervisedCommand(binary, args, { cwd, env, stdio, timeout, graceMs = 1_500, deadline, signal, capture = false, maxBuffer = 1024 * 1024 } = {}) {
+  const startedAt = Date.now();
+  const hardDeadline = deadline ?? (Number.isFinite(timeout) ? startedAt + timeout + 2 * graceMs : Infinity);
+  const supervisor = new ProcessGroupSupervisor({ graceMs, deadline: hardDeadline, handleSignals: !signal });
+  let timer; let timedOut = false; let aborted = false; let failure; let settled = false; let launched = false; let child;
+  let result = { code: null, signal: null };
+  const streams = { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
+  const truncated = { stdout: false, stderr: false };
+  const collect = name => chunk => {
+    const bytes = Buffer.concat([streams[name], Buffer.from(chunk)]);
+    if (bytes.length > maxBuffer) truncated[name] = true;
+    streams[name] = bytes.subarray(Math.max(0, bytes.length - maxBuffer));
+  };
+  const abort = () => { aborted = true; void supervisor.stopActive().catch(() => {}); };
   try {
-    const child = spawn(binary, args, { cwd, env, detached: true, stdio });
+    if (!Number.isSafeInteger(maxBuffer) || maxBuffer <= 0 || !Number.isFinite(graceMs) || graceMs < 0
+      || deadline !== undefined && !Number.isFinite(deadline) || timeout !== undefined && (!Number.isFinite(timeout) || timeout <= 0)) throw new Error('Invalid supervised command bounds.');
+    if (signal?.aborted) { aborted = true; throw new Error('Command aborted before spawn.'); }
+    const workMs = Math.min(timeout ?? Infinity, hardDeadline - startedAt - 2 * graceMs);
+    if (workMs <= 0) { timedOut = true; throw new Error('Command deadline has no remaining execution and cleanup budget.'); }
+    child = spawn(binary, args, { cwd, env, detached: true, stdio: capture ? ['ignore', 'pipe', 'pipe'] : stdio });
+    launched = Boolean(child.pid);
+    const closed = new Promise(resolve => child.once('close', resolve));
+    if (capture) {
+      child.stdout.on('data', collect('stdout'));
+      child.stderr.on('data', collect('stderr'));
+    }
     if (!child.pid) await waitForExit(child);
     supervisor.attach(child);
-    timer = setTimeout(() => { timedOut = true; void supervisor.stopActive().catch(error => { cleanupError = error; }); }, timeout);
-    const result = await supervisor.settle(child);
-    if (cleanupError) throw cleanupError;
-    if (timedOut) throw Object.assign(new Error(`${binary} ${args[0]} exceeded its ${timeout}ms stage deadline.`), { code: 'STAGE_DEADLINE', processGroupSettled: true });
-    if (result.code !== 0) throw Object.assign(new Error(`${binary} ${args[0]} failed: ${result.signal || result.code}; inspect the retained build log.`), { processGroupSettled: true, exitCode: result.code });
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
+    if (Number.isFinite(workMs)) timer = setTimeout(() => { timedOut = true; void supervisor.stopActive().catch(() => {}); }, workMs);
+    result = await supervisor.settle(child);
+    await beforeDeadline(closed, hardDeadline, 'joining command output');
+    settled = true;
+    if (timedOut || Date.now() >= hardDeadline) { timedOut = true; throw new Error(`${binary} ${args[0]} exceeded its stage deadline.`); }
+    if (aborted) throw new Error(`${binary} ${args[0]} was aborted.`);
+    if (result.code !== 0) throw new Error(`${binary} ${args[0]} failed: ${result.signal || result.code}; inspect the retained build log.`);
+  } catch (error) {
+    failure = error;
   } finally {
     clearTimeout(timer);
-    await supervisor.close();
+    signal?.removeEventListener('abort', abort);
+    try { await supervisor.close(); }
+    catch (error) { failure = new AggregateError([...(failure ? [failure] : []), error], 'Command process group cleanup failed.'); settled = false; }
   }
+  const completed = { code: child?.exitCode ?? result.code, signal: child?.signalCode ?? result.signal, stdout: streams.stdout.toString('utf8'), stderr: streams.stderr.toString('utf8'),
+    stdoutTruncated: truncated.stdout, stderrTruncated: truncated.stderr,
+    durationMs: Date.now() - startedAt, processGroupSettled: !launched || settled };
+  if (failure) throw Object.assign(failure, { ...completed, code: timedOut ? 'STAGE_DEADLINE' : aborted ? 'ABORT_ERR' : failure.code,
+    exitCode: completed.code, timedOut, aborted });
+  return completed;
+}
+
+async function beforeDeadline(promise, deadline, phase) {
+  if (!Number.isFinite(deadline)) return promise;
+  let timer;
+  try {
+    return await Promise.race([promise, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`Process-group deadline reached while ${phase}.`)), Math.max(0, deadline - Date.now()));
+    })]);
+  } finally { clearTimeout(timer); }
 }
 
 const SIGNAL_EXIT_CODES = { SIGINT: 130, SIGTERM: 143 };
@@ -31,8 +77,8 @@ function waitForExit(child) {
   });
 }
 
-function groupMembers(groupId) {
-  const result = spawnSync("/bin/ps", ["-axo", "pid=,pgid=,uid=,stat="], { encoding: "utf8", timeout: 1_000 });
+function groupMembers(groupId, deadline = Infinity) {
+  const result = spawnSync("/bin/ps", ["-axo", "pid=,pgid=,uid=,stat="], { encoding: "utf8", timeout: Math.max(1, Math.min(1_000, deadline - Date.now())) });
   if (result.error || result.status !== 0) throw new Error(`Cannot inspect process group ${groupId}.`, { cause: result.error || new Error(result.stderr) });
   return result.stdout.trim().split("\n").filter(Boolean).map((line) => {
     const [pid, pgid, uid, state] = line.trim().split(/\s+/);
@@ -55,13 +101,13 @@ function groupFailure(error, { child, groupId }, inspection, probes) {
   });
 }
 
-function signalGroup(active, signal) {
+function signalGroup(active, signal, deadline = Infinity) {
   const { child, groupId } = active;
   if (!groupId) return;
   let inspection;
   if (child.exitCode !== null || child.signalCode !== null) {
     let members;
-    try { members = groupMembers(groupId); }
+    try { members = groupMembers(groupId, deadline); }
     catch (error) {
       throw groupFailure(error, active, { error: { message: error.message, cause: error.cause?.message } }, [{ signal, outcome: 'not-sent' }]);
     }
@@ -77,7 +123,7 @@ function signalGroup(active, signal) {
   } catch (error) {
     if (error?.code === 'ESRCH') return;
     if (error?.code === 'EPERM' && process.platform === 'darwin') {
-      try { if (!groupExists(active)) return; }
+      try { if (!groupExists(active, deadline)) return; }
       catch (observationError) {
         throw groupFailure(observationError, active, observationError.processGroup?.inspection ?? inspection, [
           { signal, outcome: error.code }, ...(observationError.processGroup?.probes ?? []),
@@ -88,7 +134,7 @@ function signalGroup(active, signal) {
   }
 }
 
-function groupExists(active) {
+function groupExists(active, deadline = Infinity) {
   const { groupId } = active;
   if (!groupId) return false;
   try {
@@ -98,7 +144,7 @@ function groupExists(active) {
     if (error?.code === 'ESRCH') return false;
     if (error?.code === 'EPERM' && process.platform === 'darwin') {
       let members;
-      try { members = groupMembers(groupId); }
+      try { members = groupMembers(groupId, deadline); }
       catch (inspectionError) {
         throw groupFailure(error, active, { error: { message: inspectionError.message, cause: inspectionError.cause?.message } }, [{ signal: 0, outcome: error.code }]);
       }
@@ -120,11 +166,11 @@ function groupExists(active) {
   }
 }
 
-async function waitForGroupExit(active, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (groupExists(active)) {
+async function waitForGroupExit(active, timeoutMs, hardDeadline = Infinity) {
+  const deadline = Math.min(Date.now() + timeoutMs, hardDeadline);
+  while (groupExists(active, deadline)) {
     if (Date.now() >= deadline) return false;
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await new Promise((resolve) => setTimeout(resolve, Math.min(20, Math.max(0, deadline - Date.now()))));
   }
   return true;
 }
@@ -134,16 +180,20 @@ export class ProcessGroupSupervisor {
   #cleanup = null;
   #interrupted = null;
   #graceMs;
+  #deadline;
   #handlers;
 
-  constructor({ graceMs = 1_500 } = {}) {
+  constructor({ graceMs = 1_500, deadline = Infinity, handleSignals = true } = {}) {
+    this.#deadline = deadline;
     this.#graceMs = graceMs;
     this.#handlers = {
       SIGINT: () => this.#requestSignal("SIGINT"),
       SIGTERM: () => this.#requestSignal("SIGTERM"),
     };
-    process.on("SIGINT", this.#handlers.SIGINT);
-    process.on("SIGTERM", this.#handlers.SIGTERM);
+    if (handleSignals) {
+      process.on("SIGINT", this.#handlers.SIGINT);
+      process.on("SIGTERM", this.#handlers.SIGTERM);
+    }
   }
 
   interruptedSignal() {
@@ -168,7 +218,7 @@ export class ProcessGroupSupervisor {
       const result = await waitForExit(child);
       if (this.#cleanup) {
         await this.#cleanup;
-      } else if (this.#active?.child === child && groupExists(this.#active)) {
+      } else if (this.#active?.child === child && groupExists(this.#active, this.#deadline)) {
         await this.stopActive("SIGTERM");
       }
       return result;
@@ -204,14 +254,15 @@ export class ProcessGroupSupervisor {
 
   async #terminate(active, signal) {
     const { child, groupId } = active;
-    signalGroup(active, signal);
+    signalGroup(active, signal, this.#deadline);
     const leaderExit = waitForExit(child);
-    if (!await waitForGroupExit(active, this.#graceMs)) {
-      signalGroup(active, "SIGKILL");
-      if (!await waitForGroupExit(active, this.#graceMs)) {
+    const termGrace = Math.min(this.#graceMs, Math.max(0, (this.#deadline - Date.now()) / 2));
+    if (!await waitForGroupExit(active, termGrace, this.#deadline)) {
+      signalGroup(active, "SIGKILL", this.#deadline);
+      if (!await waitForGroupExit(active, this.#graceMs, this.#deadline)) {
         throw new Error(`Process group ${groupId} survived SIGKILL.`);
       }
     }
-    await leaderExit;
+    await beforeDeadline(leaderExit, this.#deadline, "joining the group leader");
   }
 }

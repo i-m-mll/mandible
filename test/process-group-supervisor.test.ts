@@ -16,16 +16,41 @@ afterEach(() => {
   for (const root of temporaryRoots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
-it('bounds a stage whose process ignores graceful termination', async () => {
+it('joins an ignoring-TERM command and descendant inside the inherited deadline, retaining bounded output on deadline or abort', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-stage-timeout-'));
   temporaryRoots.push(root);
-  const pidFile = path.join(root, 'stage.pid');
-  await expect(runSupervisedCommand(process.execPath, ['-e', `
-    require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
-    process.on('SIGTERM', () => {});
-    setInterval(() => {}, 1000);
-  `], { timeout: 1000, graceMs: 100, stdio: 'ignore' })).rejects.toThrow('stage deadline');
-  expect(isAlive(Number(fs.readFileSync(pidFile, 'utf8')))).toBe(false);
+  for (const trigger of ['deadline', 'abort']) {
+    const pidFile = path.join(root, `${trigger}.pid`);
+    const childFile = path.join(root, `${trigger}.child`);
+    const controller = new AbortController();
+    const deadline = Date.now() + 1500;
+    const completed = runSupervisedCommand(process.execPath, ['-e', `
+      const fs = require('node:fs');
+      process.on('SIGTERM', () => {});
+      fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+      process.stdout.write('x'.repeat(512) + 'stdout-tail'); process.stderr.write('partial-stderr');
+      require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(`
+        process.on('SIGTERM', () => {});
+        require('node:fs').writeFileSync(${JSON.stringify(childFile)}, String(process.pid));
+        setInterval(() => {}, 1000);
+      `)}], { stdio: 'ignore' });
+      setInterval(() => {}, 1000);
+    `], { timeout: 1000, deadline, graceMs: 100, capture: true, maxBuffer: 64, signal: controller.signal })
+      .then(() => { throw new Error('Ignoring command unexpectedly succeeded'); }, error => error);
+    if (trigger === 'abort') {
+      await waitUntil(() => fs.existsSync(childFile), 'the owned descendant to start');
+      controller.abort();
+    }
+    const failure = await completed;
+    expect(failure).toMatchObject({ code: trigger === 'abort' ? 'ABORT_ERR' : 'STAGE_DEADLINE',
+      aborted: trigger === 'abort', timedOut: trigger === 'deadline', processGroupSettled: true,
+      stderr: 'partial-stderr', stdoutTruncated: true });
+    expect(failure.stdout).toHaveLength(64);
+    expect(failure.stdout.endsWith('stdout-tail')).toBe(true);
+    expect(Date.now()).toBeLessThan(deadline);
+    expect(isAlive(Number(fs.readFileSync(pidFile, 'utf8')))).toBe(false);
+    expect(isAlive(Number(fs.readFileSync(childFile, 'utf8')))).toBe(false);
+  }
 });
 
 it.each(["signal", "watchdog"] as const)("terminates the launcher shard group through the outer %s path", async (trigger) => {
