@@ -6,8 +6,10 @@ import path from 'node:path';
 import https from 'node:https';
 import net from 'node:net';
 import { spawnSync } from 'node:child_process';
-import { acceptanceApplicationPolicy, acceptanceSummary, compactAcceptanceResult, routeCostCheck, createAcceptanceHome, acceptanceGatewayConfig, acceptanceHealth, acceptanceFailureLogs, assessAcceptanceLogs, awaitAcceptanceGatewayReadiness, awaitReadiness, loopbackListening, observeAcceptanceHealth } from '../scripts/candidate-acceptance.mjs';
+import { acceptanceApplicationPolicy, acceptanceSummary, compactAcceptanceResult, acceptanceScope, acceptanceOwnedOutputs, createAcceptanceHome, acceptanceGatewayConfig, acceptanceHealth, acceptanceFailureLogs, assessAcceptanceLogs, awaitAcceptanceGatewayReadiness, awaitReadiness, loopbackListening, observeAcceptanceHealth } from '../scripts/candidate-acceptance.mjs';
 import { createHash } from 'node:crypto';
+import { createOwnedRun, saveOwnedMetadata } from '../scripts/owned-run.mjs';
+import { runSupervisedCommand } from '../scripts/process-group-supervisor.mjs';
 import { createAuthCheckRepo, createMigratedDb, insertSiblingMergeRequest } from './helpers/auth-queue-fixtures.js';
 import { readBootstrapAcceptanceEvidence } from './helpers/bootstrap-delivery-api.js';
 import { CandidateAcceptanceRuns } from '../src/candidate-acceptance.js';
@@ -149,17 +151,16 @@ it.each(['before', 'during', 'within'] as const)('includes retained-package bind
 });
 
 describe('production acceptance evidence', () => {
-  it('retains known route evidence without claiming unperformed acceptance phases', () => {
+  it('preserves historical failed evidence without adding route claims to bundle acceptance', () => {
     const initial = { trial: 0, pass: 1, status: 200, worst_turn_ms: 6.6 };
-    const route = routeCostCheck(JSON.stringify({ complete: false, counts: { measured: 173 },
-      measured: [{ method: 'GET', path: '/api/auth/queue', trials: [{ trial: 0, first_call_turn_ms: 6.6, warm_turn_ms: 3.2 }], requests: [initial] }],
-      offenders: [], excepted: [], exception_problems: [], unclassified: [], failed_requests: [] }));
+    const route = { complete: false, counts: { measured: 173 },
+      measured: [{ route: 'GET /api/auth/queue', initial_readings: [initial] }] };
     const result = { candidate: 'candidate', status: 'failed', error: 'Route-cost sweep timed out',
       checks: { route_cost: route, log_digest: 'retained-log-digest' }, provenance: {} };
     expect(route.measured[0].initial_readings).toEqual([initial]);
     const summary = acceptanceSummary(result);
     expect(summary).toContain('failed — Route-cost sweep timed out');
-    expect(summary).toContain('173 routes measured');
+    expect(summary).not.toContain('routes measured');
     expect(summary).toContain('retained-log-digest');
     expect(summary).toContain('package verification not completed');
     expect(summary).toContain('daemon readiness not completed');
@@ -456,4 +457,42 @@ it('assesses periodic events by rate while retaining complete lifetime error evi
   const error = JSON.stringify({ level: 'error', message: 'database_closed', time: new Date(start).toISOString() });
   expect(assessAcceptanceLogs([error, ...cadence].join('\n')).failures).toEqual([error]);
   expect(assessAcceptanceLogs([JSON.stringify({ message: 'server_started' }), ...cadence, JSON.stringify({ message: 'server_started' })].join('\n')).failures).toEqual(['Daemon restarted during acceptance']);
+});
+
+it("keeps large shipped inventories in the full receipt and returns bounded finalization JSON after cleanup", async () => {
+  const cache = fs.mkdtempSync(path.join(os.tmpdir(), "acceptance-finalization-"));
+  const run = path.join(cache, "run");
+  fs.mkdirSync(run);
+  fs.mkdirSync(path.join(run, "home"));
+  fs.writeFileSync(path.join(run, "home", "fixture"), "generated fixture");
+  const ownership = createOwnedRun({ root: run, instanceId: "finalization-test", project: "project", workUnit: "unit", disposable: true, outputs: acceptanceOwnedOutputs });
+  const metadataFile = path.join(run, "metadata.json");
+  saveOwnedMetadata(metadataFile, { ownership });
+  const budget = acceptanceDeadline({});
+  const provenance = { shipped: { files: Object.fromEntries(Array.from({ length: 10_000 }, (_, index) => [
+    `dist/module-${index}.js`, { sha256: "a".repeat(64), size: 42 },
+  ])) } };
+  expect(Buffer.byteLength(JSON.stringify(provenance))).toBeGreaterThan(1024 * 1024);
+  try {
+    const input = path.join(run, "finalization.json");
+    saveOwnedMetadata(input, { metadataFile, run, cache, ownership, deadlineEnv: budget.env,
+      result: { status: "failed", candidate: "candidate", scope: acceptanceScope, error: "request failed", provenance, checks: { health_coverage: { mode: "live production collectors" } }, phases: { finalization: { status: "running", started_at: Date.now() } }, budget: { ...budget.reading(), scope: "candidate-script" } },
+    });
+    const completed = await runSupervisedCommand(process.execPath, [path.resolve("scripts/candidate-acceptance.mjs"), "--finalize-owned-run", input], {
+      capture: true, maxBuffer: 1024 * 1024, timeout: 2000, graceMs: 250, deadline: Date.now() + 3000,
+    });
+    const result = JSON.parse(completed.stdout);
+    expect(completed.stdoutTruncated).toBe(false);
+    expect(Buffer.byteLength(completed.stdout)).toBeLessThan(60 * 1024);
+    expect(result.truncated).toBe(true);
+    expect(result.scope).toBe(acceptanceScope);
+    expect(result.checks.health_coverage.mode).toBe("live production collectors");
+    expect(acceptanceSummary(result)).not.toContain("route sweep");
+    expect(result.status).toBe("failed");
+    expect(result.checks.cleanup).toMatchObject({ action: "delete-owned", remaining: [] });
+    expect(fs.existsSync(path.join(run, "home", "fixture"))).toBe(false);
+    const receipt = JSON.parse(fs.readFileSync(result.receipt, "utf8"));
+    expect(receipt.acceptance).toMatchObject({ status: "failed", budget: { scope: "candidate-script" }, phases: { finalization: { status: "passed" } } });
+    expect(Object.keys(receipt.acceptance.provenance.shipped.files)).toHaveLength(10_000);
+  } finally { fs.rmSync(cache, { recursive: true, force: true }); }
 });

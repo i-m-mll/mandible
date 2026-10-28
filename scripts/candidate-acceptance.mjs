@@ -16,13 +16,14 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as abortableDelay } from 'node:timers/promises';
 import { withOwnedRunLock, createOwnedRun, saveOwnedMetadata, finalizeOwnedRun, cleanupOwnedRun } from './owned-run.mjs';
 import { readBuildRevision } from './build-revision.mjs';
-import { acceptanceDeadline, ACCEPTANCE_CLEANUP_MS } from './acceptance-deadline.mjs';
+import { acceptanceDeadline } from './acceptance-deadline.mjs';
 import { observeRuntimeHealthCoverage, RuntimeHealthObservationError } from '../src/runtime-health-contract.ts';
 
 import { readRuntimeHandoffLock, runtimeHandoffLockRefusal } from './runtime-handoff-lock.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const sweepWorkDirectory = 'route-cost-work';
+const legacySweepWorkDirectory = 'route-cost-work';
+export const acceptanceScope = 'exact signed shipped package, isolated bundled-runtime Settings persistence, contemporaneous production health/memory/lag, supervised shutdown/logs, exact-byte retention and cleanup; excludes full-corpus source-preview performance and installed upgrade convergence';
 const applicationPolicyProgram = '/usr/sbin/taskpolicy';
 export function acceptanceApplicationPolicy() {
   const budget = acceptanceDeadline();
@@ -40,11 +41,7 @@ export function acceptanceApplicationPolicy() {
   }
   return { ...budget, reading: () => ({ ...budget.reading(), scope }) };
 }
-export const acceptanceOwnedOutputs = ['home', 'Mandible.app', 'build.log', 'route-cost.json', 'route-cost.log', sweepWorkDirectory, 'daemon.log', 'desktop.log', 'gateway.log', 'Caddyfile', 'finalization.json'].map(path => ({ path, kind: path === 'Mandible.app' ? 'interactive' : 'generated' }));
-export function routeCostSweepArgs(run) {
-  return ['--no-install', path.join(root, 'scripts', 'route-cost-sweep.ts'), '--json', '--work-root', path.join(run, sweepWorkDirectory),
-    '--report-file', path.join(run, sweepWorkDirectory, 'progress.json'), '--representative'];
-}
+export const acceptanceOwnedOutputs = ['home', 'Mandible.app', 'build.log', 'daemon.log', 'desktop.log', 'gateway.log', 'Caddyfile', 'finalization.json'].map(path => ({ path, kind: path === 'Mandible.app' ? 'interactive' : 'generated' }));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const sha256 = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
@@ -56,60 +53,9 @@ function command(binary, args, options = {}) {
 
 import { assessRuntimeLogs } from './runtime-log-assessment.mjs';
 
-/** The acceptance record of a route-cost sweep report; null when the sweep printed none. */
-export function routeCostCheck(text) {
-  if (!text.trim()) return null;
-  const report = JSON.parse(text);
-  const route = entry => `${entry.method} ${entry.path}`;
-  return {
-    schema: report.schema,
-    complete: report.complete,
-    diagnostic: report.diagnostic,
-    representative: report.representative,
-    fixtures: report.fixtures,
-    revision: report.revision,
-    error: report.error,
-    progress: report.progress,
-    pending_confirmations: report.pending_confirmations,
-    routes_not_run: report.routes_not_run,
-    source_stderr: report.source_stderr,
-    judging_rule: report.judging_rule,
-    confirmation_trials: report.confirmation_trials,
-    load: report.load,
-    threshold_ms: report.threshold_ms,
-    counts: report.counts,
-    measured: report.measured.map(entry => {
-      const initial = entry.initial_readings ?? (entry.requests ?? entry.readings ?? []).filter(reading => reading.trial === 0);
-      return { route: route(entry), first_call_turn_ms: entry.first_call_turn_ms, warm_turn_ms: entry.warm_turn_ms,
-        trials: entry.trials, initial_readings: initial.slice(0, 8), initial_readings_omitted: entry.initial_readings_omitted ?? Math.max(0, initial.length - 8) };
-    }),
-    offenders: report.offenders.map(entry => ({ route: route(entry), first_call_turn_ms: entry.first_call_turn_ms, warm_turn_ms: entry.warm_turn_ms })),
-    excepted: report.excepted.map(entry => ({ route: route(entry), issue: entry.issue, first_call_turn_ms: entry.first_call_turn_ms, warm_turn_ms: entry.warm_turn_ms })),
-    exception_problems: report.exception_problems,
-    remeasured: report.measured.filter(entry => entry.trials.length > 1).map(entry => ({ route: route(entry), trials: entry.trials })),
-    unclassified: report.unclassified.map(route),
-    failed_requests: report.failed_requests.map(entry => `${entry.url} (trial ${entry.trial}, pass ${entry.pass}): ${entry.status} ${String(entry.error).slice(0, 200)}`),
-  };
-}
-
-/** The sweep's reasons for failing, in the order a reader acts on them. */
-export function routeCostVerdict(check) {
-  const reasons = [
-    ...(check.complete !== true ? [`sweep incomplete${check.error ? `: ${check.error}` : ''}`] : []),
-    ...(check.diagnostic ? ['nonqualifying diagnostic'] : []),
-    ...check.offenders.map(entry => `${entry.route} blocked the loop ${entry.first_call_turn_ms} ms on first call, ${entry.warm_turn_ms} ms warm`),
-    ...check.failed_requests.slice(0, 3).map(entry => `request failed: ${entry}`),
-    ...(check.failed_requests.length > 3 ? [`${check.failed_requests.length - 3} more failed requests`] : []),
-    ...check.unclassified.map(route => `${route} is unclassified`),
-    ...check.exception_problems.map(entry => `exception for ${entry.route} (${entry.issue}): ${entry.problem}`),
-  ];
-  return reasons.length > 0 ? reasons.join('; ') : 'the report names no failure; see route-cost.log';
-}
-
 export function acceptanceSummary(result) {
   const checks = result.checks ?? {};
   const phases = [
-    checks.route_cost ? `route sweep report retained (${checks.route_cost.counts.measured} routes measured)` : 'route sweep report unavailable',
     result.provenance?.package_sha256 ? 'package provenance verified' : 'package verification not completed',
     checks.readiness ? 'daemon readiness checked' : 'daemon readiness not completed',
     checks.desktop_interaction?.passed ? 'packaged Settings edit checked' : 'packaged Settings edit not completed',
@@ -122,9 +68,9 @@ export function compactAcceptanceResult(result) {
   if (JSON.stringify(result).length <= 60 * 1024) return result;
   const checks = result.checks ?? {};
   const route = checks.route_cost;
-  return { schema: result.schema, truncated: true, status: result.status, candidate: result.candidate,
+  return { schema: result.schema, truncated: true, status: result.status, candidate: result.candidate, scope: result.scope,
     budget: result.budget, phases: result.phases, error: result.error?.slice(0, 512), cleanup_error: result.cleanup_error?.slice(0, 512), receipt: result.receipt,
-    checks: { readiness: checks.readiness, desktop_interaction: checks.desktop_interaction,
+    checks: { readiness: checks.readiness, desktop_interaction: checks.desktop_interaction, health_coverage: checks.health_coverage,
       log_digest: checks.log_digest, log_bytes: checks.log_bytes, cleanup: checks.cleanup,
       initial_transport_error: checks.initial_transport_error,
       failure_logs: checks.failure_logs?.map(log => ({ ...log, excerpt: log.excerpt.slice(-1000) })),
@@ -205,7 +151,7 @@ export async function observeAcceptanceHealth({
     deadlineMs,
     live,
   });
-  onEvidence({ mode: live ? 'live production collectors through actual interaction and route join' : 'completed periodic intervals', observation: result.observation, samples: result.samples, performance: result.performance,
+  onEvidence({ mode: live ? 'live production collectors through actual packaged interaction completion' : 'completed periodic intervals', observation: result.observation, samples: result.samples, performance: result.performance,
     periodic_windows_completed: Math.max(0, (result.samples.last.eventLoop?.sequence ?? 0) - (result.samples.initial.eventLoop?.sequence ?? 0)) });
   // A performance finding on the owned fixture fails acceptance.
   const [finding] = result.performance.findings;
@@ -305,7 +251,7 @@ export function awaitAcceptanceGatewayReadiness(probe, isReady, { onInitialTlsEr
 }
 
 export function acceptanceFailureLogs(run) {
-  const sweepWork = path.join(run, sweepWorkDirectory);
+  const sweepWork = path.join(run, legacySweepWorkDirectory);
   const sourceLogs = fs.existsSync(path.join(sweepWork, 'source-preview.log')) ? [{ name: 'source-preview', file: path.join(sweepWork, 'source-preview.log') }] : fs.existsSync(sweepWork) ? fs.readdirSync(sweepWork).filter(name => name.startsWith('run-'))
     .map(name => ({ name: 'source-preview', file: path.join(sweepWork, name, 'stderr.log') })) : [];
   return [...['daemon', 'gateway', 'route-cost'].map(name => ({ name, file: path.join(run, `${name}.log`) })), ...sourceLogs.slice(-1)].flatMap(({ name, file }) => {
@@ -349,25 +295,6 @@ async function stopOwned(child, remaining) {
     child.kill('SIGKILL');
     await until(() => child.exitCode !== null || child.signalCode !== null, Math.min(1000, remaining()), 'Owned process termination');
     throw error;
-  }
-}
-
-/** Join the two independent owned operations before their shared finalization. */
-export async function joinAcceptanceWork(routes, interaction, controller, stopInteraction) {
-  let failure;
-  const start = operation => Promise.resolve().then(operation).catch(error => {
-    failure ??= error;
-    controller.abort(error);
-    throw error;
-  });
-  const tasks = [start(routes), start(interaction)];
-  try { await Promise.all(tasks); }
-  catch (error) {
-    let cleanupError;
-    try { await stopInteraction(); } catch (caught) { cleanupError = caught; }
-    await Promise.allSettled(tasks);
-    if (cleanupError) throw new AggregateError([failure, cleanupError], `${failure.message}; sibling shutdown failed: ${cleanupError.message}`);
-    throw failure ?? error;
   }
 }
 
@@ -459,7 +386,7 @@ async function main(budget) {
   saveOwnedMetadata(metadataFile, { ownership, candidate });
   const home = path.join(run, 'home');
   createAcceptanceHome(home);
-  const result = { schema: 'mandible-candidate-acceptance@1', scope: 'isolated production daemon and packaged dashboard; live installation and protected delivery excluded', status: 'failed', candidate, runtime, run, checks: {}, provenance: {} };
+  const result = { schema: 'mandible-candidate-acceptance@1', scope: acceptanceScope, status: 'failed', candidate, runtime, run, checks: {}, provenance: {} };
   result.budget = budget.reading();
   result.phases = {};
   const phase = async (name, operation) => {
@@ -474,8 +401,7 @@ async function main(budget) {
   let daemon, desktop, gateway, stallProbe, diagnosticDeadline, testedPackageDigest;
   let passiveHealth, passiveError;
   let interactionCompletedAt = null;
-  let workJoinedAt = null;
-  const workController = new AbortController();
+  const interactionController = new AbortController();
   const passiveController = new AbortController();
   const interactionWake = new AbortController();
   const diagnostics = path.join(run, 'diagnostics');
@@ -489,7 +415,7 @@ async function main(budget) {
     return child;
   };
   let interrupted = false;
-  const interrupt = () => { interrupted = true; workController.abort(new Error('Acceptance interrupted or deadline reached.')); daemon?.kill('SIGTERM'); desktop?.kill('SIGTERM'); gateway?.kill('SIGTERM'); stallProbe?.kill('SIGTERM'); };
+  const interrupt = () => { interrupted = true; interactionController.abort(new Error('Acceptance interrupted or deadline reached.')); daemon?.kill('SIGTERM'); desktop?.kill('SIGTERM'); gateway?.kill('SIGTERM'); stallProbe?.kill('SIGTERM'); };
   process.once('SIGINT', interrupt); process.once('SIGTERM', interrupt);
   const deadlineTimer = setTimeout(() => { result.error = 'Acceptance total deadline reached; cleanup reserve started.'; interrupt(); }, budget.remaining());
   try {
@@ -557,7 +483,7 @@ async function main(budget) {
     result.phases.readiness.elapsed_ms = Date.now() - result.phases.readiness.started_at;
     if (!health.current) throw new Error('Production live collector diagnostics are unavailable at readiness.');
     passiveHealth = observeAcceptanceHealth({
-      live: { startedAt: health.current.observedAt, through: () => workJoinedAt },
+      live: { startedAt: health.current.observedAt, through: () => interactionCompletedAt },
       deadlineMs: budget.remaining(),
       wait: async ms => {
         try { await abortableDelay(ms, undefined, { signal: AbortSignal.any([passiveController.signal, interactionWake.signal]) }); }
@@ -566,74 +492,51 @@ async function main(budget) {
       probe: async (_deadline, signal) => {
         if (passiveController.signal.aborted) throw passiveController.signal.reason;
         const current = await probe(AbortSignal.any([signal, passiveController.signal]));
-        if (current.startup_epoch !== health.startup_epoch) throw new Error('Daemon startup epoch changed during route/UI measurement.');
+        if (current.startup_epoch !== health.startup_epoch) throw new Error('Daemon startup epoch changed during packaged interaction.');
         if (desktop && (desktop.exitCode !== null || desktop.signalCode !== null)) throw new Error('Packaged app closed during acceptance observation.');
         return current;
       },
       onEvidence: evidence => { result.checks.health_coverage = evidence; },
-    }).catch(error => { if (!passiveController.signal.aborted) { passiveError = error; workController.abort(error); } });
-    const routes = async () => {
-      if (diagnostic) return;
-      await phase('representative_routes', async () => {
-        const routeCostFile = path.join(run, 'route-cost.json');
-        const routeCostOut = fs.openSync(routeCostFile, 'w'); files.push(routeCostOut);
-        const routeCostLog = fs.openSync(path.join(run, 'route-cost.log'), 'w'); files.push(routeCostLog);
-        const sweepFailure = await runSupervisedCommand(runtime, routeCostSweepArgs(run), { cwd: root, env: { ...buildEnv,
-          MANDIBLE_SWEEP_STARTED_AT: String(budget.started), MANDIBLE_SWEEP_WORK_DEADLINE: String(budget.deadline - ACCEPTANCE_CLEANUP_MS), MANDIBLE_SWEEP_CLEANUP_DEADLINE: String(budget.deadline) },
-          stdio: ['ignore', routeCostOut, routeCostLog], signal: workController.signal, timeout: budget.remaining(), graceMs: 300, deadline: budget.deadline }).then(() => null, error => error);
-        const progressFile = path.join(run, sweepWorkDirectory, 'progress.json');
-        result.checks.route_cost = routeCostCheck(fs.readFileSync(fs.existsSync(progressFile) ? progressFile : routeCostFile, 'utf8'));
-        if (sweepFailure) throw new Error(`Route-cost sweep failed: ${result.checks.route_cost
-          ? routeCostVerdict(result.checks.route_cost)
-          : `it exited (${sweepFailure.message}) without a report: ${fs.readFileSync(path.join(run, 'route-cost.log'), 'utf8').split('\n').filter(line => line.trim() && !/^\s+at /.test(line)).slice(-8).join(' | ')}`}`);
-        if (!result.checks.route_cost || result.checks.route_cost.complete !== true || result.checks.route_cost.diagnostic || !result.checks.route_cost.representative || result.checks.route_cost.revision !== candidate) throw new Error('Route-cost sweep did not produce a complete qualifying report.');
-        });
-    };
+    }).catch(error => { if (!passiveController.signal.aborted) { passiveError = error; interactionController.abort(error); } });
     if (passiveError) throw passiveError;
-    const interaction = async () => {
-      workController.signal.throwIfAborted();
-      if (!health.local_socket_path?.startsWith(`${home}${path.sep}`)) throw new Error('Fixture bootstrap socket escapes its isolated home.');
-      if (diagnostic) {
-        const out = fs.openSync(path.join(diagnostics, 'probe.jsonl'), 'w'); files.push(out);
-        const err = fs.openSync(path.join(diagnostics, 'probe.stderr'), 'w'); files.push(err);
-        stallProbe = spawn(runtime, [path.join(root, 'scripts/daemon-stall-probe.mjs'), '--socket', health.local_socket_path,
-          '--pid', String(daemon.pid), '--duration', String(Math.max(1, Math.floor(budget.remaining() / 1000))), '--sample', '--sample-max', '4', '--out', diagnostics, '--json'],
-          { cwd: run, env: buildEnv, stdio: ['ignore', out, err] });
-        stallProbe.on('error', error => { result.checks.probe_launch_error = error.message; });
-      }
-      await new Promise((resolve, reject) => {
-        const body = JSON.stringify({ slug: 'candidate-operator', display_name: 'Candidate operator', email: 'candidate@example.invalid' });
-        const request = http.request({ signal: workController.signal, socketPath: health.local_socket_path, path: '/api/users/setup', method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, response => {
-          let bytes = ''; response.on('data', chunk => { bytes += chunk; });
-          response.on('end', () => response.statusCode === 200 ? resolve() : reject(new Error(`Fixture bootstrap HTTP ${response.statusCode}: ${bytes}`)));
-        });
-        request.setTimeout(Math.min(5000, budget.remaining()), () => request.destroy(new Error('Fixture bootstrap timed out')));
-        request.on('error', reject); request.end(body);
+    interactionController.signal.throwIfAborted();
+    if (!health.local_socket_path?.startsWith(`${home}${path.sep}`)) throw new Error('Fixture bootstrap socket escapes its isolated home.');
+    if (diagnostic) {
+      const out = fs.openSync(path.join(diagnostics, 'probe.jsonl'), 'w'); files.push(out);
+      const err = fs.openSync(path.join(diagnostics, 'probe.stderr'), 'w'); files.push(err);
+      stallProbe = spawn(runtime, [path.join(root, 'scripts/daemon-stall-probe.mjs'), '--socket', health.local_socket_path,
+        '--pid', String(daemon.pid), '--duration', String(Math.max(1, Math.floor(budget.remaining() / 1000))), '--sample', '--sample-max', '4', '--out', diagnostics, '--json'],
+        { cwd: run, env: buildEnv, stdio: ['ignore', out, err] });
+      stallProbe.on('error', error => { result.checks.probe_launch_error = error.message; });
+    }
+    await new Promise((resolve, reject) => {
+      const body = JSON.stringify({ slug: 'candidate-operator', display_name: 'Candidate operator', email: 'candidate@example.invalid' });
+      const request = http.request({ signal: interactionController.signal, socketPath: health.local_socket_path, path: '/api/users/setup', method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, response => {
+        let bytes = ''; response.on('data', chunk => { bytes += chunk; });
+        response.on('end', () => response.statusCode === 200 ? resolve() : reject(new Error(`Fixture bootstrap HTTP ${response.statusCode}: ${bytes}`)));
       });
-      workController.signal.throwIfAborted();
-      result.phases.desktop_interaction = { status: 'running', started_at: Date.now() };
-      desktop = launch(path.join(app, 'Contents', 'MacOS', 'mandible-app'), [], env, 'desktop');
-      const evidencePath = path.join(home, 'desktop-evidence.json');
-      await until(async () => {
-        workController.signal.throwIfAborted();
-        const current = await probe(workController.signal);
-        if (current.startup_epoch !== health.startup_epoch) throw new Error('Daemon startup epoch changed during acceptance.');
-        if (desktop.exitCode !== null || desktop.signalCode !== null) throw new Error('Packaged app exited before its interaction completed.');
-        return fs.existsSync(evidencePath);
-      }, Math.min(45_000, budget.remaining()), 'Packaged dashboard setup persistence and Settings edit');
-      interactionCompletedAt = Math.ceil(fs.statSync(evidencePath).mtimeMs);
-      if (!Number.isFinite(interactionCompletedAt) || interactionCompletedAt < health.current.observedAt || interactionCompletedAt > Date.now()) throw new Error('Packaged interaction completion timestamp is outside its observed workload.');
-      const evidence = JSON.parse(fs.readFileSync(evidencePath, 'utf8'));
-      if (!evidence.passed || !evidence.rendered || !evidence.edit || evidence.setup?.skipped !== 'skipped' || evidence.setup?.completed !== 'complete' || evidence.setup?.reloads !== 2 || !evidence.setup?.promptDismissedAfterReload || !evidence.setup?.integrationsUnchanged) throw new Error(`Packaged interaction failed: ${JSON.stringify(evidence)}`);
-      result.checks.desktop_interaction = evidence;
-      result.checks.desktop_interaction_completed_at = interactionCompletedAt;
-      result.phases.desktop_interaction.status = 'passed';
-      result.phases.desktop_interaction.elapsed_ms = Date.now() - result.phases.desktop_interaction.started_at;
-    };
-    await joinAcceptanceWork(routes, interaction, workController, () => Promise.all([
-      stopOwned(desktop, () => budget.remaining(true)), stopOwned(stallProbe, () => budget.remaining(true)),
-    ]));
-    workJoinedAt = Date.now();
+      request.setTimeout(Math.min(5000, budget.remaining()), () => request.destroy(new Error('Fixture bootstrap timed out')));
+      request.on('error', reject); request.end(body);
+    });
+    interactionController.signal.throwIfAborted();
+    result.phases.desktop_interaction = { status: 'running', started_at: Date.now() };
+    desktop = launch(path.join(app, 'Contents', 'MacOS', 'mandible-app'), [], env, 'desktop');
+    const evidencePath = path.join(home, 'desktop-evidence.json');
+    await until(async () => {
+      interactionController.signal.throwIfAborted();
+      const current = await probe(interactionController.signal);
+      if (current.startup_epoch !== health.startup_epoch) throw new Error('Daemon startup epoch changed during acceptance.');
+      if (desktop.exitCode !== null || desktop.signalCode !== null) throw new Error('Packaged app exited before its interaction completed.');
+      return fs.existsSync(evidencePath);
+    }, Math.min(45_000, budget.remaining()), 'Packaged dashboard setup persistence and Settings edit');
+    interactionCompletedAt = Math.ceil(fs.statSync(evidencePath).mtimeMs);
+    if (!Number.isFinite(interactionCompletedAt) || interactionCompletedAt < health.current.observedAt || interactionCompletedAt > Date.now()) throw new Error('Packaged interaction completion timestamp is outside its observed workload.');
+    const evidence = JSON.parse(fs.readFileSync(evidencePath, 'utf8'));
+    if (!evidence.passed || !evidence.rendered || !evidence.edit || evidence.setup?.skipped !== 'skipped' || evidence.setup?.completed !== 'complete' || evidence.setup?.reloads !== 2 || !evidence.setup?.promptDismissedAfterReload || !evidence.setup?.integrationsUnchanged) throw new Error(`Packaged interaction failed: ${JSON.stringify(evidence)}`);
+    result.checks.desktop_interaction = evidence;
+    result.checks.desktop_interaction_completed_at = interactionCompletedAt;
+    result.phases.desktop_interaction.status = 'passed';
+    result.phases.desktop_interaction.elapsed_ms = Date.now() - result.phases.desktop_interaction.started_at;
     interactionWake.abort();
     await phase('health_coverage', async () => {
       await passiveHealth;
@@ -648,7 +551,7 @@ async function main(budget) {
   finally {
     if (diagnosticDeadline) clearTimeout(diagnosticDeadline);
     clearTimeout(deadlineTimer);
-    workController.abort();
+    interactionController.abort();
     passiveController.abort();
     await passiveHealth;
     for (const phase of Object.values(result.phases)) if (phase.status === 'running') { phase.status = 'failed'; phase.error = result.error || 'Interrupted'; phase.elapsed_ms = Date.now() - phase.started_at; }
