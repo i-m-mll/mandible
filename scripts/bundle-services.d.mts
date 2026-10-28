@@ -4,7 +4,7 @@ export interface BundleRelease { provenance: { commit: string; source_digest: st
 export interface BundleOwner { schema: 'mandible-bundle-owner@1'; bundleRoot: string; installationId: string; generation: string; sourceDigest: string; acceptedRelease?: string }
 export interface BundleLaunch { enabled: boolean; gatewayEnabled?: boolean; launchMode: 'manual' | 'on_demand'; session?: string }
 export type NativeServiceStatus = 'not_registered' | 'enabled' | 'requires_approval' | 'not_found';
-export interface NativeServiceObservation { service: ServiceKind; label: string; status: NativeServiceStatus; registration_changed: boolean }
+export interface NativeServiceObservation { service: ServiceKind; label: string; status: NativeServiceStatus; registration_changed: boolean; unregistration_completed?: boolean }
 export type BundleAdmission = { ok: true; owner: BundleOwner | null } | { ok: false; code: 'ownership_conflict' | 'replacement_required'; message: string };
 export function readBundleOwner(context: ServiceInstallationContext): BundleOwner | null;
 export function readBundleLaunch(context: ServiceInstallationContext): BundleLaunch;
@@ -13,6 +13,7 @@ export function bundleLaunchAllowed(preference: BundleLaunch | null, session: st
 export function admitBundleOwner(context: BundleContext, release: BundleRelease, options?: { relocation?: boolean }): BundleAdmission;
 export function adoptBundleRelease(context: BundleContext, release: BundleRelease, expectedOwner: BundleOwner | null, acceptedRelease?: string, options?: { until?: number }): BundleOwner;
 export function nativeServiceControl(context: BundleContext, operation: 'status' | 'register' | 'unregister' | 'settings', role: ServiceKind, options?: { until?: number }): NativeServiceObservation;
+export function nativeServiceControls(context: BundleContext, operation: 'status' | 'register' | 'unregister' | 'settings', roles: ServiceKind[], options?: { until?: number; release?: import('./installed-release.mjs').InstalledRelease }): Partial<Record<ServiceKind, NativeServiceObservation>>;
 export interface BundleRuntimeObservation {
   status: { state: string; healthy: boolean; [key: string]: unknown };
   trusted: { error?: string | null };

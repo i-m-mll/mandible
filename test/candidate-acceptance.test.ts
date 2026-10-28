@@ -5,8 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import https from 'node:https';
 import net from 'node:net';
-import { spawnSync } from 'node:child_process';
-import { acceptanceApplicationPolicy, acceptanceSummary, compactAcceptanceResult, acceptanceScope, acceptanceOwnedOutputs, createAcceptanceHome, acceptanceGatewayConfig, acceptanceHealth, acceptanceFailureLogs, assessAcceptanceLogs, awaitAcceptanceGatewayReadiness, awaitReadiness, loopbackListening, observeAcceptanceHealth } from '../scripts/candidate-acceptance.mjs';
+import { spawn, spawnSync } from 'node:child_process';
+import { acceptanceApplicationPolicy, acceptanceSummary, compactAcceptanceResult, acceptanceScope, acceptanceOwnedOutputs, createAcceptanceHome, acceptanceGatewayConfig, acceptanceHealth, acceptanceFailureLogs, assessAcceptanceLogs, awaitAcceptanceGatewayReadiness, awaitReadiness, loopbackListening, observeAcceptanceHealth, stopOwned } from '../scripts/candidate-acceptance.mjs';
 import { createHash } from 'node:crypto';
 import { createOwnedRun, saveOwnedMetadata } from '../scripts/owned-run.mjs';
 import { runSupervisedCommand } from '../scripts/process-group-supervisor.mjs';
@@ -185,6 +185,49 @@ describe('production acceptance evidence', () => {
     expect(assessAcceptanceLogs(JSON.stringify({ level: 'warn', message: 'optional_provider_unavailable' })).failures).toEqual([]);
     expect(assessAcceptanceLogs(JSON.stringify({ level: 'warn', message: 'daemon_event_loop_stall', max_ms: 3700 })).failures)
       .toEqual([expect.stringContaining('daemon_event_loop_stall')]);
+  });
+
+  it('retains real Caddy cutoff evidence only for the matching owned successful SIGTERM shutdown', () => {
+    const saved = JSON.parse(fs.readFileSync('test/fixtures/caddy-bounded-shutdown.json', 'utf8'));
+    const rows = saved.shutdown as Array<Record<string, any>>;
+    const text = rows.map(row => JSON.stringify(row)).join('\n');
+    const cutoffs = rows.filter(row => row.level === 'error');
+    const context = { process: { owned: true, role: 'gateway', pid: 42 },
+      shutdown: { pid: 42, signal: 'SIGTERM', requestedAt: Math.floor(rows[0]!.ts * 1000) - 1,
+        exitedAt: Math.ceil(rows.at(-1)!.ts * 1000) + 1, exitCode: 0, exitSignal: null, graceSeconds: 1 } };
+    const assessed = assessAcceptanceLogs(text, context);
+    expect(assessed.failures).toEqual([]);
+    expect(assessed.diagnostics.gateway_shutdown.cutoff_errors).toEqual(cutoffs);
+    for (const invalid of [
+      undefined,
+      { ...context, process: { ...context.process, owned: false } },
+      { ...context, process: { ...context.process, pid: 43 } },
+      { ...context, shutdown: { ...context.shutdown, signal: 'SIGINT' } },
+      { ...context, shutdown: { ...context.shutdown, exitCode: 1 } },
+    ]) expect(assessAcceptanceLogs(text, invalid).failures).toEqual(cutoffs.map(row => JSON.stringify(row)));
+    expect(assessAcceptanceLogs(rows.slice(0, -1).map(row => JSON.stringify(row)).join('\n'), context).failures).toHaveLength(2);
+    expect(assessAcceptanceLogs(JSON.stringify(cutoffs[0]), context).failures).toHaveLength(1);
+    const runningError = JSON.stringify({ level: 'error', logger: 'http', msg: 'upstream failed' });
+    const closedDatabase = JSON.stringify({ level: 'error', message: 'database connection is not open' });
+    expect(assessAcceptanceLogs([runningError, text, closedDatabase].join('\n'), context).failures).toEqual([runningError, closedDatabase]);
+  });
+
+  it('lets owned children finish beyond one second within the cleanup budget and force-stops an unresponsive child', async () => {
+    await Promise.all([1100, null].map(async finishAfter => {
+      const child = spawn(process.execPath, ['--eval',
+        `process.on('SIGTERM', () => ${finishAfter === null ? '{}' : `setTimeout(() => process.exit(0), ${finishAfter})`}); process.stdout.write('ready'); setInterval(() => {}, 1000);`],
+      { stdio: ['ignore', 'pipe', 'pipe'] });
+      const safety = setTimeout(() => child.kill('SIGKILL'), 3000);
+      try {
+        await new Promise<void>((resolve, reject) => { child.stdout.once('data', () => resolve()); child.once('error', reject); child.once('exit', () => reject(new Error('Child exited before readiness'))); });
+        const deadline = Date.now() + (finishAfter === null ? 1000 : 3000);
+        const remaining = () => Math.max(1, deadline - Date.now());
+        if (finishAfter === null) {
+          await expect(stopOwned(child, remaining)).rejects.toThrow('Owned process shutdown');
+          expect(child.signalCode).toBe('SIGKILL');
+        } else expect(await stopOwned(child, remaining)).toMatchObject({ pid: child.pid, signal: 'SIGTERM', exitCode: 0, exitSignal: null });
+      } finally { clearTimeout(safety); if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); }
+    }));
   });
 });
 

@@ -9,7 +9,7 @@ import SqliteDatabase from "../src/sqlite.ts";
 import { fileURLToPath } from "node:url";
 import { CADDY_VERSION, installPinnedCaddy, pinnedCaddyBinary } from "./pinned-caddy.mjs";
 import { assertLocalCaIdentity, localCaPaths, probeCurrentMacOsTrust } from "./local-ca-trust.mjs";
-import { withInstallationGatewayLock } from './lifecycle-lock.mjs';
+import { withInstallationGatewayLock, assertLifecycleLockHeld } from './lifecycle-lock.mjs';
 import { prepareGatewayAdmin } from './gateway-admin.mjs';
 import { gatewayCaddyfile } from './gateway-config.mjs';
 
@@ -19,7 +19,7 @@ const authorityDir = path.join(home, "config", "local-sessions");
 const authorityDb = path.join(authorityDir, "sessions.db");
 const installationAuthorityDir = path.join(home, "config", "client-auth");
 const installationAuthorityFile = path.join(installationAuthorityDir, "authority-id");
-const binary = pinnedCaddyBinary(home);
+const defaultBinary = () => pinnedCaddyBinary(home);
 const configPath = path.join(authorityDir, "Caddyfile");
 const command = process.argv[2] ?? "status";
 
@@ -27,9 +27,9 @@ function fail(message) {
   throw new Error(message);
 }
 
-function readInstances() {
-  if (!fs.existsSync(authorityDb)) fail(`Local session authority is not initialized: ${authorityDb}`);
-  const db = new SqliteDatabase(authorityDb, { readonly: true, fileMustExist: true });
+function readInstances(file = authorityDb) {
+  if (!fs.existsSync(file)) fail(`Local session authority is not initialized: ${file}`);
+  const db = new SqliteDatabase(file, { readonly: true, fileMustExist: true });
   try {
     return db.prepare("SELECT * FROM instance_registrations ORDER BY role, instance_id").all();
   } finally {
@@ -59,18 +59,25 @@ function install() {
   try { installPinnedCaddy(home); } catch (error) { fail(error.message); }
 }
 
-function configure() {
-  requireTrustedCa({ verifyNative: false });
-  fs.mkdirSync(authorityDir, { recursive: true, mode: 0o700 });
-  const config = gatewayCaddyfile(readInstances(), { adminAddress: prepareGatewayAdmin(home).address, storageRoot: caPaths.storageRoot });
+export function configureLocalFrontDoor(context, { binary = pinnedCaddyBinary(context.home), assertHeld } = {}) {
+  if (typeof assertHeld !== 'function') throw new Error('Gateway configuration requires explicit mutation ownership.');
+  assertHeld();
+  const paths = localCaPaths(context.home);
+  const ca = assertLocalCaIdentity(paths);
+  if (ca.state !== 'trusted') fail('Secure local connections are not set up.');
+  fs.mkdirSync(paths.authorityDir, { recursive: true, mode: 0o700 });
+  const config = gatewayCaddyfile(readInstances(path.join(paths.authorityDir, 'sessions.db')), {
+    adminAddress: prepareGatewayAdmin(context.home).address, storageRoot: paths.storageRoot });
   if (fs.existsSync(binary)) {
-    const adapted = spawnSync(binary, ["adapt", "--config", "-", "--adapter", "caddyfile"], {
-      input: config, encoding: "utf8", timeout: 5000, maxBuffer: 8 * 1024 * 1024,
+    const adapted = spawnSync(binary, ['adapt', '--config', '-', '--adapter', 'caddyfile'], {
+      input: config, encoding: 'utf8', timeout: 5000, maxBuffer: 8 * 1024 * 1024,
     });
-    if (adapted.status !== 0) fail(`Local HTTPS configuration is invalid: ${adapted.stderr.trim()}`);
+    if (adapted.error || adapted.status !== 0) fail(`Local HTTPS configuration is invalid: ${adapted.stderr || adapted.error?.message}`);
   }
-  fs.writeFileSync(configPath, config, { mode: 0o600 });
-  fs.chmodSync(configPath, 0o600);
+  assertHeld();
+  const destination = path.join(paths.authorityDir, 'Caddyfile');
+  fs.writeFileSync(destination, config, { mode: 0o600 });
+  fs.chmodSync(destination, 0o600);
 }
 
 function requireTrustedCa({ verifyNative = true } = {}) {
@@ -97,7 +104,7 @@ if (command === "initialize") {
 } else if (command === "install") {
   install();
 } else if (command === "configure") {
-  configure();
+  configureLocalFrontDoor({ home }, { binary: defaultBinary(), assertHeld: assertLifecycleLockHeld });
 } else if (command === "reload") {
   runRuntimeCommand("reload-gateway", process.argv.slice(3));
 } else if (command === "run") {
@@ -106,13 +113,16 @@ if (command === "initialize") {
 } else if (command === "status") {
   let ca;
   try { ca = assertLocalCaIdentity(caPaths); } catch (error) { fail(error.message); }
-  process.stdout.write(`${JSON.stringify({ version: CADDY_VERSION, binary, config: configPath, installed: fs.existsSync(binary), instances: fs.existsSync(authorityDb) ? readInstances().length : 0, ca })}\n`);
+  process.stdout.write(`${JSON.stringify({ version: CADDY_VERSION, binary: defaultBinary(), config: configPath, installed: fs.existsSync(defaultBinary()), instances: fs.existsSync(authorityDb) ? readInstances().length : 0, ca })}\n`);
 } else {
   fail("Usage: local-front-door.mjs initialize|install|configure|reload [--if-configured]|run|status");
 }
 }
 
+if (process.argv[1] && path.basename(process.argv[1]) === 'local-front-door.mjs' && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
 try {
   if (['initialize', 'install', 'configure'].includes(command)) await withInstallationGatewayLock(home, () => main());
   else await main();
 } catch (error) { process.stderr.write(`${error.message}\n`); process.exitCode = 1; }
+
+}

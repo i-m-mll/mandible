@@ -143,7 +143,7 @@ esac
     qualification: { bun_sha256: hash(runtime), sqlite_sha256: hash(sqlite), caddy_sha256: hash(caddy) },
     entrypoints: { daemon: 'dist/index.js', cli: 'bin/mandible', channel: 'dist/channel-server/index.js', controller: 'scripts/local-runtime.mjs', trustSetup: 'scripts/local-ca-trust.mjs', service: 'scripts/bundle-service.mjs' },
     resources: { ...Object.fromEntries(['backend', 'gateway'].map(role => [`${role}Agent`, `../Library/LaunchAgents/${bundleServiceLabel(role)}.plist`])), mandibleSkill: 'cli/skills/mandible/SKILL.md' },
-    serviceExecutables: { backend: 'bun', gateway: 'caddy' }, native, signing };
+    serviceExecutables: { backend: 'bun', gateway: 'caddy' }, serviceControlProtocol: 2, native, signing };
   fs.writeFileSync(path.join(resources, 'release.json'), `${JSON.stringify(inventoryRelease(resources, release), null, 2)}\n`);
   return { resources, packageCount, release };
 }

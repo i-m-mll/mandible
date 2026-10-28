@@ -76,20 +76,41 @@ export function adoptBundleRelease(context, release, expectedOwner, acceptedRele
 }
 
 export function nativeServiceControl(context, operation, role, { until = Date.now() + 10_000 } = {}) {
-  if (!['status', 'register', 'unregister', 'settings'].includes(operation) || !['backend', 'gateway'].includes(role)) throw new Error('Invalid native service operation.');
+  return nativeServiceControls(context, operation, [role], { until })[role];
+}
+
+export function nativeServiceControls(context, operation, roles, { until = Date.now() + 10_000, release } = {}) {
+  if (!['status', 'register', 'unregister', 'settings'].includes(operation) || !roles.length
+      || new Set(roles).size !== roles.length || roles.some(role => !['backend', 'gateway'].includes(role))) throw new Error('Invalid native service operation.');
   if (operation !== 'status') assertLifecycleLockHeld();
   assertBundleServiceIdentity(context, until);
   const resources = path.join(context.bundleRoot, 'Contents/Resources');
-  const release = readInstalledRelease(resources);
+  release ??= readInstalledRelease(resources);
   const helper = releaseFile(resources, release.native.serviceHelper, release.layout);
   if (Date.now() >= until) throw new Error('Native service operation deadline exceeded.');
-  const result = spawnSync(helper, [operation, role], {
-    encoding: 'utf8', timeout: Math.max(1, Math.min(10_000, until - Date.now())), env: { HOME: context.accountHome, PATH: '/usr/bin:/bin:/usr/sbin:/sbin' },
+  const invoke = requested => spawnSync(helper, [operation, ...requested], {
+    encoding: 'utf8', timeout: Math.max(1, until - Date.now()), env: { HOME: context.accountHome, PATH: '/usr/bin:/bin:/usr/sbin:/sbin' },
   });
-  if (result.error || result.status !== 0) throw new Error(`Native ${role} ${operation} failed: ${result.stderr || result.error?.message}`);
-  const status = JSON.parse(result.stdout);
-  if (status.service !== role || status.label !== context[`${role}Label`] || !['not_registered', 'enabled', 'requires_approval', 'not_found'].includes(status.status)) throw new Error('Native service returned invalid identity/status.');
-  return status;
+  const decode = requested => {
+    if (Date.now() >= until) throw new Error('Native service operation deadline exceeded.');
+    const result = invoke(requested);
+    if (result.error || result.status !== 0) throw new Error(`Native ${requested.join('/')} ${operation} failed: ${result.stderr || result.error?.message}`);
+    return JSON.parse(result.stdout);
+  };
+  const protocol = release.serviceControlProtocol ?? 1;
+  if (![1, 2].includes(protocol)) throw new Error('Unsupported native service control protocol.');
+  // The installed v1 predecessor ignores extra roles; its captured writers still require a separate drain.
+  const statuses = protocol === 1 ? roles.map(role => decode([role])) : (() => {
+    const result = decode(roles); return roles.length === 1 ? [result] : result.services;
+  })();
+  if (!Array.isArray(statuses) || statuses.length !== roles.length) throw new Error('Native service returned an invalid role set.');
+  for (const [index, role] of roles.entries()) {
+    const status = statuses[index];
+    if (status.service !== role || status.label !== context[`${role}Label`] || !['not_registered', 'enabled', 'requires_approval', 'not_found'].includes(status.status)
+        || protocol === 2 && operation === 'unregister' && (status.unregistration_completed !== true
+          || !['not_registered', 'not_found'].includes(status.status))) throw new Error('Native service returned invalid identity/status or incomplete unregister.');
+  }
+  return Object.fromEntries(statuses.map(status => [status.service, status]));
 }
 
 export async function bundleRuntimeCommand(command, { context, release, launchMode, initialize, inspect, configureGateway,
