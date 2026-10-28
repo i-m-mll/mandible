@@ -53,6 +53,7 @@ it('keeps the app interactive and retains independent appearance and panel inten
   expect({ left: initial.style.left, top: initial.style.top }).toEqual(initialPosition);
   fireEvent.click(screen.getByRole('button', { name: 'Expand preview appearance' }));
   fireEvent.input(screen.getByLabelText('UI font size value'), { target: { value: '3.75' } });
+  expect({ left: initial.style.left, top: initial.style.top }).toEqual(initialPosition);
   fireEvent.click(screen.getByRole('button', { name: 'Underlying action 0' }));
   expect(screen.getByRole('button', { name: 'Underlying action 1' })).toBeTruthy();
   const panel = screen.getByRole('dialog', { name: 'Preview appearance' });
@@ -67,7 +68,9 @@ it('keeps the app interactive and retains independent appearance and panel inten
   expect(stored.position).toEqual({ x: Number.parseFloat(panel.style.left), y: Number.parseFloat(panel.style.top) });
   fireEvent.click(screen.getByRole('button', { name: 'Collapse preview appearance' }));
   expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Expand preview appearance' }));
-  fireEvent.change(screen.getByLabelText('Move panel to corner'), { target: { value: 'bottom-right' } });
+  pointer(handle, 'pointerdown', 500, 500);
+  pointer(handle, 'pointermove', 5000, 5000);
+  pointer(handle, 'pointerup', 5000, 5000);
   fireEvent.click(screen.getByRole('button', { name: 'Expand preview appearance' }));
   expect(panel.getBoundingClientRect().bottom).toBeLessThanOrEqual(innerHeight - 8);
   fireEvent.keyDown(handle, { key: 'ArrowLeft' });
