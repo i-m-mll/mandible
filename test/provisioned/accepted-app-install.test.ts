@@ -6,9 +6,9 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { expect, it } from 'vitest';
-import { retainAcceptedRelease, applicationIdentity, readAcceptedReleaseReceipt } from '../../scripts/accepted-release.mjs';
+import { createPendingRelease, retainAcceptedRelease, applicationIdentity, readAcceptedReleaseReceipt } from '../../scripts/accepted-release.mjs';
 import { installAcceptedApplication, acceptedInstallPaths } from '../../scripts/accepted-app-install.mjs';
-import { installedFileIdentity } from '../../scripts/installed-release.mjs';
+import { installedFileIdentity, verifyInstalledRelease } from '../../scripts/installed-release.mjs';
 import { serviceInstallationContext, inspectServiceDefinitionsSync, matchingServiceDefinitions } from '../../scripts/service-definitions.mjs';
 import { readBundleOwner, nativeServiceControl } from '../../scripts/bundle-services.mjs';
 import { reconcileBundleServiceStart } from '../../scripts/bundle-service-start.mjs';
@@ -163,8 +163,11 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
       const evidence = path.join(root, `evidence-${pin}`);
       fs.writeFileSync(evidence, JSON.stringify({ scope: 'private native service replacement fixture', generation: candidate.pin_sha }));
       checkDeadline(`generation ${pin} retention admission`);
-      const reference = await retainAcceptedRelease({ app: built, storage: path.join(root, 'retained'), ownership: { runId: randomUUID(), instanceId: 'fixture', project: 'mandible', workUnit: 'fixture' },
-        candidate, acceptance: { record_id: null, request_id: null }, evidence: { receipt: evidence, sha256: installedFileIdentity(evidence).sha256 }, expectedDigest: applicationIdentity(built) });
+      const pending = await createPendingRelease({ storage: path.join(root, 'retained'), ownership: { runId: randomUUID(), instanceId: 'fixture', project: 'mandible', workUnit: 'fixture' } });
+      fs.cpSync(built, pending.app, { recursive: true, verbatimSymlinks: true });
+      const { reference } = await retainAcceptedRelease({ pending,
+        candidate, acceptance: { record_id: null, request_id: null }, evidence: { receipt: evidence, sha256: installedFileIdentity(evidence).sha256 },
+        expectedDigest: applicationIdentity(pending.app), shipped: verifyInstalledRelease(pending.resources) });
       references.push(reference);
       checkDeadline(`generation ${pin} retention`);
       fs.rmSync(scratch, { recursive: true });

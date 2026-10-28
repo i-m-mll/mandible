@@ -29,7 +29,8 @@ export function inventoryRelease(resources, release) {
     }
   };
   visit(resources);
-  for (const relative of [...Object.values(release.native), ...Object.values(release.resources ?? {})]) {
+  for (const relative of new Set([...Object.values(release.native), ...Object.values(release.resources ?? {})])) {
+    if (Object.hasOwn(files, relative)) continue;
     const file = path.resolve(resources, relative);
     files[relative] = installedFileIdentity(file);
   }

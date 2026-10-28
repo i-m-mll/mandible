@@ -168,10 +168,13 @@ export function finalizeOwnedRun(metadataFile, { expectedRevision, outcome, conv
   if (!['accepted', 'assessed', 'failed', 'abandoned'].includes(outcome) || !summary?.trim()) throw new Error('Finalization requires a terminal outcome and compact summary');
   if (outcome === 'accepted' && !converged) throw new Error('Accepted cleanup requires completed convergence');
   if (run.state === 'terminal' && run.outputs.every(output => output.disposition === 'disposable')) throw new Error('Run already finalized; retry cleanup instead');
-  const consumers = inspect(root);
-  if (!consumers.idle) throw new Error(consumers.reason);
+  const disposableGenerated = run.disposable && run.outputs.every(output => output.kind === 'generated');
+  if (!disposableGenerated) {
+    const consumers = inspect(root);
+    if (!consumers.idle) throw new Error(consumers.reason);
+  }
   const outputs = run.outputs.map(output => {
-    const manifest = inventory(root, output.path, output.kind === 'interactive');
+    const manifest = disposableGenerated ? [] : inventory(root, output.path, output.kind === 'interactive');
     if (output.kind === 'interactive' && manifest.length) {
       if (disposition === 'transferred') {
         if (!transferReference?.trim()) throw new Error('Transfer requires the established accepted output reference');
@@ -221,6 +224,13 @@ export function cleanupOwnedRun(metadataFile, { apply = false, inspect = inspect
   const { receipt } = finalization;
   const consumers = inspect(root);
   if (!consumers.idle) return blocked(consumers.reason);
+  if (run.disposable && run.outputs.every(output => output.kind === 'generated' && output.disposition === 'disposable')) {
+    if (!apply) return { action: 'delete-owned', reason: 'terminal disposable generated run may be removed', bytes: null, reclaimedBytes: null };
+    if (!identityMatches(root, run) || readOwnedMetadata(metadataFile).ownership.revision !== run.revision) return blocked('owned root or metadata revision changed');
+    fs.rmSync(root, { recursive: true });
+    saveOwnedMetadata(run.receipt, { ...receipt, cleanup: 'completed', remaining: [], physicalRecovery: 'not measured' });
+    return { action: 'delete-owned', reason: 'terminal disposable generated run removed', bytes: null, reclaimedBytes: null, remaining: [], receipt: run.receipt };
+  }
   if (receipt.disposition === 'transferred') {
     for (const output of run.outputs.filter(output => output.kind === 'interactive')) verifyTransfer(root, output.manifest, receipt.destination);
   }
