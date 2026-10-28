@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { CONFIRMATION_TRIALS, judgeRoute, trialTurns, writeReplayPlan } from "./route-cost-judgment.ts";
 import { evictFileCache } from "./evict-file-cache.ts";
-import { SweepBudget, writeSweepProgress, runSweepWorker } from "./route-cost-budget.ts";
+import { SweepBudget, sweepBudgetForEnvironment, writeSweepProgress, runSweepWorker } from "./route-cost-budget.ts";
 import SqliteDatabase from "../src/sqlite.ts";
 import { isProtectedIdentitySettingKey } from "../src/settings-key-policy.js";
 import { numericSourceExtent } from "../src/conversations/source-observer.ts";
@@ -1220,8 +1220,8 @@ async function main() {
   const totalMs = Number(opts["budget-ms"]);
   if (!Number.isFinite(totalMs) || totalMs <= 5_000 || (opts.diagnostic && totalMs > 45_000)) throw new Error("Invalid total sweep budget; diagnostics require at most 45000 ms including cleanup");
   if (opts.diagnostic && (opts["cpu-prof"] || opts["fresh-each"] || opts.evict || opts.only)) throw new Error("Diagnostic plan is fixed: auth queue, no profiler/eviction/fresh-each/route override");
-  if (opts.representative && (opts.diagnostic || opts["cpu-prof"] || opts["fresh-each"] || opts.evict || opts.only || passes !== 2 || thresholdMs !== HANDLER_TURN_BUDGET_MS || totalMs > 20_000)) throw new Error("Representative plan requires two passes, the production threshold, <=20000ms and no diagnostic/only/fresh-each/eviction/profile overrides");
-  budget = new SweepBudget(totalMs, 5_000, Date.now, Number(process.env.MANDIBLE_SWEEP_STARTED_AT) || Date.now());
+  if (opts.representative && (opts.diagnostic || opts["cpu-prof"] || opts["fresh-each"] || opts.evict || opts.only || passes !== 2 || thresholdMs !== HANDLER_TURN_BUDGET_MS)) throw new Error("Representative plan requires two passes, the production threshold and no diagnostic/only/fresh-each/eviction/profile overrides");
+  budget = sweepBudgetForEnvironment(totalMs);
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "");
   const workRoot = path.resolve(opts["work-root"] ?? path.join(os.homedir(), ".cache", "mandible", "route-cost-sweep"));
   fs.mkdirSync(workRoot, { recursive: true, mode: 0o700 });
@@ -1535,14 +1535,15 @@ function printReport(report: Record<string, any>) {
 }
 
 async function supervisedMain() {
-  const started = Date.now();
-  const totalMs = Number(opts["budget-ms"]);
+  const requestedMs = Number(opts["budget-ms"]);
+  const parentBudget = sweepBudgetForEnvironment(requestedMs);
+  const started = parentBudget.started;
+  const totalMs = parentBudget.totalMs;
   if (!Number.isFinite(totalMs) || totalMs <= 5_000 || (opts.diagnostic && totalMs > 45_000)) throw new Error("Invalid sweep total budget");
   const workRoot = path.resolve(opts["work-root"] ?? path.join(os.homedir(), ".cache", "mandible", "route-cost-sweep"));
   fs.mkdirSync(workRoot, { recursive: true, mode: 0o700 });
   const owned = fs.mkdtempSync(path.join(workRoot, "owned-"));
   const reportFile = path.resolve(opts["report-file"] ?? path.join(workRoot, `${path.basename(owned)}.json`));
-  const parentBudget = new SweepBudget(totalMs, 5_000, Date.now, started);
   let failed: string | undefined;
   let processesJoined = false;
   let normalExit = false;
@@ -1566,7 +1567,7 @@ async function supervisedMain() {
     const sourceLog = path.join(owned, "source-preview.log");
     const interruptedLog = fs.readdirSync(owned).filter(name => name.startsWith("run-")).map(name => path.join(owned, name, "stderr.log")).find(file => fs.existsSync(file));
     if (fs.existsSync(sourceLog) || interruptedLog) fs.writeFileSync(path.join(workRoot, "source-preview.log"), tail(fs.existsSync(sourceLog) ? sourceLog : interruptedLog!));
-    const cleanupAdmitted = processesJoined && Date.now() < started + totalMs - 1_000;
+    const cleanupAdmitted = processesJoined && Date.now() < parentBudget.deadline;
     if (!opts.keep && cleanupAdmitted) fs.rmSync(owned, { recursive: true, force: true });
     if (fs.existsSync(reportFile)) {
       const report = JSON.parse(fs.readFileSync(reportFile, "utf8"));

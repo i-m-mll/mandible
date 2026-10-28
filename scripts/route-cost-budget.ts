@@ -58,10 +58,25 @@ export class SweepBudget {
 
   progress() {
     return { started_at: this.started, phase_started_at: this.phaseStarted, elapsed_ms: this.now() - this.started, budget_ms: this.totalMs, cleanup_reserve_ms: this.reserveMs,
+      work_deadline: this.deadline - this.reserveMs, cleanup_deadline: this.deadline,
       phase: this.phase, phase_elapsed_ms: this.now() - this.phaseStarted, completed_phases: this.completed, phase_ms: this.totals };
   }
 
   close() { clearTimeout(this.timer); }
+}
+
+/** Embedded sweeps consume the owner's original work and cleanup windows. */
+export function sweepBudgetForEnvironment(totalMs: number, env: NodeJS.ProcessEnv = process.env, now = Date.now) {
+  const started = env.MANDIBLE_SWEEP_STARTED_AT === undefined ? now() : Number(env.MANDIBLE_SWEEP_STARTED_AT);
+  const work = env.MANDIBLE_SWEEP_WORK_DEADLINE;
+  const cleanup = env.MANDIBLE_SWEEP_CLEANUP_DEADLINE;
+  if (!Number.isFinite(started)) throw new Error("Invalid sweep start time");
+  if (work === undefined && cleanup === undefined) return new SweepBudget(totalMs, 5_000, now, started);
+  const workDeadline = Number(work);
+  const cleanupDeadline = Number(cleanup);
+  if (!Number.isFinite(started) || !Number.isFinite(workDeadline) || !Number.isFinite(cleanupDeadline)
+    || started >= workDeadline || workDeadline > cleanupDeadline) throw new Error("Invalid inherited sweep deadlines");
+  return new SweepBudget(cleanupDeadline - started, cleanupDeadline - workDeadline, now, started);
 }
 
 export function writeSweepProgress(file: string, report: unknown) {

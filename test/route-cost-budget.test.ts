@@ -3,7 +3,29 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { expect, it } from 'vitest';
-import { SweepBudget, writeSweepProgress, runSweepWorker } from '../scripts/route-cost-budget.ts';
+import { SweepBudget, sweepBudgetForEnvironment, writeSweepProgress, runSweepWorker } from '../scripts/route-cost-budget.ts';
+
+it('inherits the original work and cleanup deadlines without adding a sweep cap or reserve', () => {
+  let now = 31_000;
+  const env = { MANDIBLE_SWEEP_STARTED_AT: '1000', MANDIBLE_SWEEP_WORK_DEADLINE: '56000', MANDIBLE_SWEEP_CLEANUP_DEADLINE: '61000' };
+  const parent = sweepBudgetForEnvironment(900_000, env, () => now);
+  const worker = sweepBudgetForEnvironment(900_000, env, () => now);
+  const standalone = sweepBudgetForEnvironment(45_000, {}, () => now);
+  try {
+    expect(standalone.remaining()).toBe(40_000);
+    expect(standalone.deadline).toBe(76_000);
+    expect(parent.remaining()).toBe(25_000);
+    expect(worker.remaining()).toBe(25_000);
+    now = 52_000;
+    expect(worker.remaining()).toBe(4000);
+    expect(worker.deadline).toBe(parent.deadline);
+    now = 56_000;
+    expect(() => worker.remaining()).toThrow('deadline');
+    expect(worker.remaining(true)).toBe(5000);
+    now = 61_000;
+    expect(() => worker.remaining(true)).toThrow('deadline');
+  } finally { parent.close(); worker.close(); standalone.close(); }
+});
 
 it('keeps one deadline across phases and reserves cleanup while retaining partial evidence', async () => {
   let now = 0;

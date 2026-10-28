@@ -160,9 +160,11 @@ owned material for inspection and fails acceptance. Nested supervisors allow
 the inner TERM/KILL/join to finish before an outer process can be killed.
 
 Acceptance builds and signs the application once through `tauri:build` and the
-installed-release assembler. After exact packaged readiness, passive health
-probes run while a representative sweep uses at most 20 seconds including its
-own preparation and cleanup. The sweep classifies the whole router catalog,
+installed-release assembler. After exact packaged readiness, live health,
+packaged Settings interaction, and the independent source-preview route sweep
+run concurrently. The embedded sweep consumes the original acceptance work and
+cleanup deadlines, with no separate duration cap or second cleanup reserve.
+Standalone sweeps retain their own budget. The sweep classifies the whole router catalog,
 then selects required variants from its existing request plans. One source
 preview lifetime serves first and warm passes; there is no second ledger
 snapshot, restore, fixed idle baseline, or confirmation loop. Explicit full
@@ -181,16 +183,17 @@ completion is sufficient when no continuation is advertised; internal batching
 invariants remain unit-test responsibilities.
 
 Any required first or warm call reaching 100 ms of event-loop drift fails;
-production health retains its 250 ms limit. Packaged Settings interaction runs
-only after route timing. Starting at readiness, the observer reads current
+production health retains its 250 ms limit. Either workload failing cancels and
+joins its sibling before finalization. Starting at readiness, the observer reads current
 production event-loop and memory diagnostics without resetting the collectors,
 advancing completed sequence numbers, changing warning state, or logging on
 GET. The health response also retains the last completed periodic window.
 Checks enforce continuous coverage across a periodic reset, stable startup
 epoch and exact generation, lag/stall classification, and current memory
-thresholds. Settings completion wakes the abortable poll; one fresh request
-begun after that actual completion lets the existing collector run for a turn
-before the final read. The original active deadline still applies.
+thresholds. The common workload join wakes the abortable poll; one fresh request
+begun afterward lets the existing collector run for a turn before the final
+read. Settings completion retains its actual evidence timestamp, and window
+liveness and epoch remain checked through the common join. The original active deadline still applies.
 
 This proves contemporaneous workload responsiveness and current memory. A run
 finishing before the first reporting tick does not exercise that periodic

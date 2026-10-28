@@ -17,7 +17,7 @@ it("reclaims interrupted sweep data and authority through acceptance ownership",
     const args = routeCostSweepArgs(run);
     const options = parseSweepOptions(args.slice(2));
     expect(options.representative).toBe(true);
-    expect(options["budget-ms"]).toBe("20000");
+    expect(args).not.toContain("--budget-ms");
     const workRoot = options["work-root"]!;
     expect(acceptanceOwnedOutputs).toContainEqual({ path: path.relative(run, workRoot), kind: "generated" });
     const sweep = path.join(workRoot, "run-interrupted");
