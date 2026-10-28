@@ -11,7 +11,7 @@ import { pathToFileURL } from 'node:url';
 import { createAuthCheckRepo, git } from './helpers/auth-queue-fixtures.js';
 import { createHash } from 'node:crypto';
 import { afterEach, expect, it, vi } from 'vitest';
-import { bindingDigest, handoffDirectory, observeFailedRuntimeHandoff, observeRuntimeHandoff, observeRuntimeHealthWindow, persistRuntimeRecoveryObservation, readRuntimeHandoff, readRuntimeRecoveryAttempts, runtimeHandoffDrainIdentity, runRuntimeHandoffWorker, withRuntimeObservation, retireFailedRuntimeHandoff, stageHandoffController, verifyRuntimeHandoffReceipt } from '../scripts/runtime-handoff.mjs';
+import { bindingDigest, handoffDirectory, observeFailedRuntimeHandoff, observeRuntimeHandoff, observeRuntimeHealthWindow, persistRuntimeRecoveryObservation, readRuntimeHandoff, readRuntimeRecoveryAttempts, runtimeHandoffDrainIdentity, runRuntimeHandoffWorker, withRuntimeObservation, retireFailedRuntimeHandoff, stageHandoffController, verifyRuntimeHandoffReceipt, startFailedRuntimeHandoff } from '../scripts/runtime-handoff.mjs';
 import { assessRuntimeLogs } from '../scripts/runtime-log-assessment.mjs';
 import { RuntimeObservationError } from '../scripts/runtime-observation.mjs';
 import { RuntimeHealthObservationError } from '../src/runtime-health-contract.ts';
@@ -39,6 +39,45 @@ function fixture() {
   fs.writeFileSync(path.join(dir, 'journal.json'), JSON.stringify(journal));
   return { home, dir, binding, journal };
 }
+
+it('durably records one recovery start for an approved installed package while preserving the original failure', async () => {
+  const f = fixture();
+  const binding = { ...f.binding, acceptedRelease: { reference: 'fixture' }, stagedFiles: {} };
+  const failed = { ...f.journal, binding, bindingDigest: bindingDigest(binding), phase: 'failed', deadline: 1,
+    error: 'unload failed', failure: { phase: 'unloading', message: 'unload failed' } };
+  const file = path.join(f.dir, 'journal.json');
+  fs.writeFileSync(file, JSON.stringify(failed));
+  fs.writeFileSync(path.join(f.home, 'config/local-sessions/handoff-active.json'), JSON.stringify({ journal: file, bindingDigest: failed.bindingDigest }));
+  const start = vi.fn(async (_journal, until) => {
+    expect(until).toBe(31_000);
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toMatchObject({ phase: 'failed', deadline: 1,
+      error: failed.error, failure: failed.failure, launch: { enteredAt: 1000, recoveryStart: true }, recoveryStart: { state: 'starting' } });
+    return { processes: { backend: { pid: 42 } } };
+  });
+  const options = { helperQuiescent: vi.fn(), verifyPublication: vi.fn(async () => ({ mergeCommit: 'approved' })),
+    inspectInstalled: vi.fn(() => ({ packageSha256: 'exact', owner: { installationId: 'owner' } })), start, now: () => 1000 };
+  const intent = { bindingDigest: failed.bindingDigest, actor: { provider: 'test' } };
+  expect(await startFailedRuntimeHandoff(file, intent, options)).toMatchObject({ phase: 'failed', error: failed.error,
+    failure: failed.failure, deadline: 1, recoveryStart: { state: 'started' }, launch: { processes: { backend: { pid: 42 } } } });
+  await expect(startFailedRuntimeHandoff(file, intent, options)).rejects.toThrow('unlaunched');
+  expect(start).toHaveBeenCalledOnce();
+});
+
+it.each(['owner', 'candidate', 'helper'])('refuses recovery start before recording launch when %s verification fails', async fault => {
+  const f = fixture();
+  const binding = { ...f.binding, acceptedRelease: { reference: 'fixture' }, stagedFiles: {} };
+  const failed = { ...f.journal, binding, bindingDigest: bindingDigest(binding), phase: 'failed', error: 'retained failure' };
+  const file = path.join(f.dir, 'journal.json');
+  fs.writeFileSync(file, JSON.stringify(failed));
+  fs.writeFileSync(path.join(f.home, 'config/local-sessions/handoff-active.json'), JSON.stringify({ journal: file, bindingDigest: failed.bindingDigest }));
+  const check = (stage: string) => { if (stage === fault) throw new Error(`${stage} changed`); };
+  const start = vi.fn();
+  await expect(startFailedRuntimeHandoff(file, { bindingDigest: failed.bindingDigest, actor: { provider: 'test' } }, {
+    helperQuiescent: () => check('helper'), verifyPublication: async () => check('candidate'), inspectInstalled: () => check('owner'), start,
+  })).rejects.toThrow(`${fault} changed`);
+  expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual(failed);
+  expect(start).not.toHaveBeenCalled();
+});
 
 function diagnostics(sequence: number, intervalStartedAt: number, intervalEndedAt: number, maxMs = 0, warning = false) {
   return {

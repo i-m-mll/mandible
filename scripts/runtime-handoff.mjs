@@ -14,8 +14,10 @@ import { observeRuntimeHealthCoverage, RuntimeHealthObservationError, assessRunt
 import { runtimeEnvironment } from './runtime-environment.mjs';
 import { readRuntimeHandoffLock, runtimeHandoffLockFile, runtimeHandoffLockRefusal, runtimeHandoffBindingDigest } from './runtime-handoff-lock.mjs';
 import { RuntimeObservationError, observationPending, decodeObservationError, runtimeObservationAcceptance } from './runtime-observation.mjs';
-import { withLifecycleLock, inspectLifecycleLock, assertLifecycleLockHeld, processIdentity as lockProcessIdentity } from './lifecycle-lock.mjs';
-import { acceptedApplication, acceptedInstallPaths } from './accepted-app-install.mjs';
+import { withLifecycleLock, withInstallationGatewayLock, inspectLifecycleLock, assertLifecycleLockHeld, processIdentity as lockProcessIdentity } from './lifecycle-lock.mjs';
+import { acceptedApplication, acceptedInstallPaths, verifyAcceptedApplication } from './accepted-app-install.mjs';
+import { serviceInstallationContext, inspectServiceDefinitionsSync, matchingServiceDefinitions } from './service-definitions.mjs';
+import { admitBundleOwner } from './bundle-services.mjs';
 import { installedRuntimeEnvironment, releaseFile } from './installed-release.mjs';
 import { applicationIdentity } from './accepted-release.mjs';
 import { RUNTIME_HEALTH_PROBE_INTERVAL_MS } from './runtime-probe-cadence.mjs';
@@ -719,6 +721,86 @@ export async function observeFailedRuntimeHandoff(journal, actor, observationOpt
   return { ...current, recovery };
 }
 
+function recoveryHelperQuiescent(journal) {
+  const result = spawnSync('/bin/launchctl', ['print', `${journal.binding.domain}/${journal.helperLabel}`], { encoding: 'utf8', timeout: 2500 });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    if (/Could not find service|service not found/i.test(result.stderr)) return;
+    throw new Error('Cannot establish original handoff helper state.');
+  }
+  if (!result.stdout.includes(path.join(path.dirname(journalFile(journal.binding)), 'helper.mjs')) || /\bpid = \d+/.test(result.stdout)) {
+    throw new Error('Original handoff helper is live or has changed; preserving it.');
+  }
+}
+
+function recoveryInstalledPackage(journal) {
+  const b = journal.binding;
+  const accepted = verifyAcceptedApplication(b);
+  const context = serviceInstallationContext({ home: b.home, bundleRoot: b.nativeApp });
+  const admission = admitBundleOwner(context, accepted.receipt.shipped);
+  if (!admission.ok || admission.owner?.acceptedRelease !== b.acceptedRelease.reference) throw new Error(admission.message || 'Installed accepted-package owner changed.');
+  if (startedAt(b.oldProcess.pid) === b.oldProcess.startedAt) throw new Error('Original production process has not drained.');
+  const definitions = matchingServiceDefinitions(inspectServiceDefinitionsSync(context));
+  if (!definitions.ok) throw new Error(definitions.refusal.message);
+  if (definitions.observations.some(item => item.job.pid)) throw new Error('A service is already running; recovery start is observation-only.');
+  return { packageSha256: accepted.receipt.package.sha256, owner: admission.owner };
+}
+
+async function startRecoveryPackage(journal, until, token) {
+  const root = path.join(journal.binding.nativeApp, 'Contents/Resources');
+  const environment = installedRuntimeEnvironment(root, journal.environment);
+  const script = `import fs from 'node:fs';
+    const journal = JSON.parse(fs.readFileSync(${JSON.stringify(journalFile(journal.binding))}, 'utf8'));
+    const {startHandoffDefinitions} = await import(${JSON.stringify(pathToFileURL(path.join(root, 'scripts/local-runtime.mjs')).href)});
+    const result = await startHandoffDefinitions(journal.binding, {until: ${until}});
+    process.stdout.write(JSON.stringify(result));`;
+  const result = await runSupervisedCommand(environment.MANDIBLE_RUNTIME, ['--eval', script], {
+    cwd: journal.binding.root, env: { ...environment, MANDIBLE_RUNTIME_HANDOFF_JOURNAL: journalFile(journal.binding), MANDIBLE_GATEWAY_LOCK_TOKEN: token },
+    capture: true, maxBuffer: 2 * 1024 * 1024, timeout: Math.max(1, until - Date.now()), graceMs: 100, deadline: until + 500,
+  });
+  return JSON.parse(result.stdout);
+}
+
+/** Start one exact approved installed package without rewriting its retained failure. */
+export async function startFailedRuntimeHandoff(file, { bindingDigest: expected, actor }, {
+  verifyPublication = publication, inspectInstalled = recoveryInstalledPackage, helperQuiescent = recoveryHelperQuiescent,
+  start = startRecoveryPackage, now = Date.now,
+} = {}) {
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  let journal = readRuntimeHandoff(raw.binding.home, raw.binding.requestId, raw.binding.executionId);
+  if (journal?.bindingDigest !== expected || path.resolve(file) !== journalFile(journal.binding)) throw new Error('Recovery handoff binding changed.');
+  if (!actor || typeof actor !== 'object' || !Object.keys(actor).length) throw new Error('Recovery start requires attributed intent.');
+  return withInstallationGatewayLock(journal.binding.home, token => withRuntimeObservation(journal, async () => {
+    journal = unchangedJournal(journal);
+    if (journal.phase !== 'failed' || journal.launch || journal.recovery || !journal.binding.acceptedRelease) throw new Error('Recovery start requires an unlaunched failed accepted-package handoff.');
+    for (const [name, digest] of Object.entries(journal.binding.stagedFiles)) {
+      if (fileHash(path.join(path.dirname(file), name)) !== digest) throw new Error(`Staged handoff bytes changed: ${name}`);
+    }
+    await helperQuiescent(journal);
+    const published = await verifyPublication(journal);
+    const installed = await inspectInstalled(journal);
+    unchangedJournal(journal);
+    await helperQuiescent(journal);
+    const enteredAt = now();
+    const attempt = { schema: 'mandible-runtime-recovery-start@1', id: randomBytes(12).toString('hex'), actor,
+      enteredAt, deadline: enteredAt + 30_000, failureDigest: hash(JSON.stringify(retainedFailure(journal))),
+      publication: published, ...installed, state: 'starting' };
+    save(journal, { launch: { id: attempt.id, enteredAt, recoveryStart: true,
+      ...(journal.binding.desktopWasRunning ? { desktopPrior: desktopIdentities(journal.binding.nativeApp) } : {}) }, recoveryStart: attempt });
+    try {
+      const result = await start(journal, attempt.deadline, token);
+      unchangedJournal(journal);
+      save(journal, { launch: { ...journal.launch, processes: result.processes },
+        recoveryStart: { ...attempt, state: 'started', completedAt: now(), result } });
+      return journal;
+    } catch (error) {
+      unchangedJournal(journal);
+      save(journal, { recoveryStart: { ...attempt, state: 'failed', completedAt: now(), error: pendingMetadata(error) } });
+      throw error;
+    }
+  }));
+}
+
 // The caller holds the hook acceptance SQLite transaction while persisting this
 // receipt. The recovery receipt itself is persisted only in this transaction.
 export function persistRuntimeRecoveryObservation(journal) {
@@ -1028,8 +1110,10 @@ export async function runRuntimeHandoffWorker(file, {
   return journal;
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const [command, file] = process.argv.slice(2);
-  (command === 'worker' ? runRuntimeHandoffWorker(file) : command === 'arm' ? armRuntimeHandoff(path.resolve(file || process.cwd())).then(j => {
+  const [command, file, expected, actor] = process.argv.slice(2);
+  (command === 'recovery-start' ? startFailedRuntimeHandoff(file, { bindingDigest: expected, actor: JSON.parse(actor) }).then(j => {
+    process.stdout.write(`${JSON.stringify({ phase: j.phase, recoveryStart: j.recoveryStart })}\n`);
+  }) : command === 'worker' ? runRuntimeHandoffWorker(file) : command === 'arm' ? armRuntimeHandoff(path.resolve(file || process.cwd())).then(j => {
     if (j) { process.stderr.write(`MANDIBLE_RUNTIME_HANDOFF_PENDING:${j.bindingDigest}\n`); process.exitCode = 75; }
-  }) : Promise.reject(new Error('Usage: runtime-handoff.mjs arm <root>|worker <journal>'))).catch(error => { process.stderr.write(`${error.message}\n`); process.exitCode = 1; });
+  }) : Promise.reject(new Error('Usage: runtime-handoff.mjs arm <root>|worker <journal>|recovery-start <journal> <binding-digest> <actor-json>'))).catch(error => { process.stderr.write(`${error.message}\n`); process.exitCode = 1; });
 }
