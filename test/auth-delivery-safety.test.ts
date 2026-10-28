@@ -71,8 +71,8 @@ describe("protected delivery evidence", () => {
     let journal: RuntimeHandoffJournal | null = null;
     let corrupt = false;
     let active = true;
-    let duringProbe = () => {};
-    const probe = vi.fn(async () => { duringProbe(); return {}; });
+    let duringProbe: () => void | Promise<void> = () => {};
+    const probe = vi.fn(async () => { await duringProbe(); return {}; });
     const release = vi.fn(async () => {
       if (release.mock.calls.length === 1) throw new Error('Active pointer release interrupted');
       active = false; return { release: 'complete' };
@@ -123,9 +123,14 @@ describe("protected delivery evidence", () => {
     await hooks.reconcileRuntimeHandoffs(adopt, failed, stuck);
     expect(stuck).toHaveBeenLastCalledWith(request.id, 'Corrupt referenced journal');
     corrupt = false;
-    const receipt = { schema: "mandible-runtime-receipt@1", bindingDigest: "a".repeat(64), attemptId: "current-attempt", health: "candidate" };
+    const receipt = { schema: 'mandible-runtime-receipt@2', bindingDigest: 'a'.repeat(64), attemptId: 'current-attempt',
+      approved: { reference: 'fixture-accepted-release', packageSha256: 'b'.repeat(64), publicationEvidence: proof.publicationEvidence },
+      installed: { root: '/fixture/Mandible.app', identity: { dev: 1, ino: 2 } },
+      services: { backend: { pid: 41, startedAt: 'backend-start', runs: 1 }, gateway: { pid: 42, startedAt: 'gateway-start', runs: 1 } },
+      startup: { epoch: 'startup-epoch', generation: publication.mergeSha, database: '/fixture/mandible.db' },
+      desktop: { required: false }, completedAt: 1 };
     journal = { schema: "mandible-runtime-handoff@1", binding, bindingDigest: receipt.bindingDigest, phase: "failed", error: "historical prelaunch failure",
-      attempt: { id: receipt.attemptId, actor: {}, enteredAt: 1, deadline: 2, state: "complete", effects: {}, receipt,
+      attempt: { id: receipt.attemptId, actor: {}, enteredAt: 1, deadline: 2, state: "complete", fence: { closedAt: 1 }, effects: {}, receipt,
         receiptDigest: createHash("sha256").update(JSON.stringify(receipt)).digest("hex") }, cleanup: { state: "pending" } };
     await hooks.reconcileRuntimeHandoffs(adopt, failed, stuck);
     expect(stuck).toHaveBeenLastCalledWith(request.id, expect.stringContaining('signer is no longer authorized'));
@@ -134,6 +139,12 @@ describe("protected delivery evidence", () => {
     expect(probe).not.toHaveBeenCalled();
     db.prepare("UPDATE user_credentials SET status = 'active' WHERE id = ?").run(proof.frozenCandidate.signerCredentialId);
     expect(runtimeObservationAcceptance({ ...run, state: 'complete', output: `MANDIBLE_RUNTIME_HANDOFF_ACCEPTED:${journal.bindingDigest}` }, journal)).toBe('inconsistent');
+    const receiptDigest = journal.attempt!.receiptDigest!;
+    journal.attempt!.receiptDigest = 'f'.repeat(64);
+    await hooks.reconcileRuntimeHandoffs(adopt, failed, stuck);
+    expect(stuck).toHaveBeenLastCalledWith(request.id, expect.stringContaining('receipt identity is unavailable or corrupt'));
+    expect(probe).not.toHaveBeenCalled();
+    journal.attempt!.receiptDigest = receiptDigest;
     // Receipt verification may yield; both hook identity and signer authority must still hold at CAS.
     duringProbe = () => { db.prepare('UPDATE auth_hook_executions SET attempts = 2 WHERE id = ?').run(run.id); };
     await hooks.reconcileRuntimeHandoffs(adopt, failed, stuck);
@@ -144,23 +155,34 @@ describe("protected delivery evidence", () => {
     await queue.resumeHookConvergence();
     expect(hooks.getRun(request.id, run.hook_id)?.state).toBe('running');
     db.prepare("UPDATE user_credentials SET status = 'active' WHERE id = ?").run(proof.frozenCandidate.signerCredentialId);
-    duringProbe = () => {};
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    duringProbe = async () => { if (probe.mock.calls.length === 3) { entered.resolve(); await resume.promise; } };
+    const competingCommit = vi.fn();
+    const verifying = hooks.verifyCurrentRuntimeHandoff(request, {}, () => {}, async () => competingCommit);
+    await entered.promise;
     // The queue commits publication and exact receipt together, then closes the requested issue.
     await queue.resumeHookConvergence();
     expect(hooks.getRun(request.id, run.hook_id)).toMatchObject({ state: 'complete', exit_code: 0, attempts: 1, attempt_history: history });
     expect(await queue.getRequest(request.id)).toMatchObject({ status: 'completed', exit_code: 0 });
     expect(db.prepare("SELECT status FROM ledger_issues WHERE id = ?").get(issue.id)).toEqual({ status: 'closed' });
     expect(getAttributionEvidence(db, (await queue.getRequest(request.id))!.execution_evidence_id!)?.details.publication_verified).toBe(true);
-    expect(probe).toHaveBeenCalledTimes(3);
+    expect(probe).toHaveBeenCalledTimes(4);
     expect(release).toHaveBeenCalledTimes(1);
     expect(cleanup).not.toHaveBeenCalled();
     // Accepted replay has no current-authority/probe dependency and cleanup remains independent debt.
     db.prepare("UPDATE user_credentials SET status = 'revoked' WHERE id = ?").run(proof.frozenCandidate.signerCredentialId);
+    // A competing verifier observes the exact committed receipt and does not adopt twice.
+    resume.resolve();
+    expect(await verifying).toEqual({ outcome: 'confirmed' });
+    expect(competingCommit).not.toHaveBeenCalled();
     await queue.resumeHookConvergence();
     await queue.resumeHookConvergence();
-    expect(probe).toHaveBeenCalledTimes(3);
+    expect(probe).toHaveBeenCalledTimes(4);
     expect(release).toHaveBeenCalledTimes(2);
     expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(await hooks.verifyCurrentRuntimeHandoff(request, {}, () => {}, adopt)).toEqual({ outcome: 'confirmed' });
+    expect(probe).toHaveBeenCalledTimes(4);
     journal = null;
     await queue.resumeHookConvergence();
     expect(hooks.getRun(request.id, run.hook_id)?.state).toBe('complete');

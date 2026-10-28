@@ -336,7 +336,7 @@ export class AuthHookManager {
       if (intent && (intent.publication.requestId !== row.auth_request_id || intent.publication.hookId !== row.hook_id
           || intent.publication.commandDigest !== row.command_digest)) throw new Error("Runtime delivery reference no longer matches its hook.");
       const run = mapRunRow(row, null);
-      if (intent) run.runtime_delivery = { publicationEvidence: intent.publicationEvidence, journal: this.handoffPath(run) };
+      if (intent) run.runtime_delivery = { publicationEvidence: { ...intent.publicationEvidence }, journal: this.handoffPath(run) };
       return run;
     });
   }
@@ -449,9 +449,10 @@ export class AuthHookManager {
       verifiedReceipt = await runtime.verifyRuntimeHandoffReceipt(journal, { probe: true });
       const latestJournal = await this.readDeliveryJournal(runtime, run);
       if (runtimeReceiptAcceptanceMarker(latestJournal) !== marker) throw new Error('Terminal runtime receipt changed during verification.');
-      this.db.transaction(() => {
+      adopted = this.db.transaction(() => {
         guard();
         const latest = this.getRun(run.auth_request_id, run.hook_id);
+        if (runtimeObservationAcceptance(latest, latestJournal) === 'accepted') return false;
         if (!latest || latest.id !== run.id || latest.command_digest !== run.command_digest || latest.attempts !== run.attempts
             || latest.state !== run.state || JSON.stringify(latest.runtime_delivery) !== JSON.stringify(run.runtime_delivery)) {
           throw new Error('Runtime hook changed before receipt acceptance.');
@@ -461,8 +462,8 @@ export class AuthHookManager {
         const changed = this.db.prepare("UPDATE auth_hook_executions SET state = 'complete', exit_code = 0, output = ?, finished_at = ?, updated_at = ? WHERE id = ? AND state = ? AND attempts = ? AND command_digest = ?").run(
           truncateOutput(`${latest.output}\n${marker}\n${JSON.stringify(current.receipt)}`), now, now, latest.id, run.state, run.attempts, run.command_digest);
         if (changed.changes !== 1) throw new Error('Runtime receipt compare-and-swap was not applied.');
+        return true;
       }).immediate();
-      adopted = true;
     }
     let disposalError: unknown;
     try {
