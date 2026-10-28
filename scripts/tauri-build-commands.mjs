@@ -1,3 +1,6 @@
+import path from 'node:path';
+import { runSupervisedCommand } from './process-group-supervisor.mjs';
+
 /** Keep package inventory out of Cargo inputs; all generated-context settings remain. */
 const compileConfiguration = JSON.stringify({ bundle: {
   resources: null, externalBin: null, macOS: { files: null, frameworks: null },
@@ -22,10 +25,6 @@ export function tauriBundleArguments(options) {
   }
   return [...args, '--bundles', 'app', '--no-sign'];
 }
-import path from 'node:path';
-import { runSupervisedCommand } from './process-group-supervisor.mjs';
-
-
 /** Native compilation and the source payload converge before one package assembly. */
 export async function assembleDesktopApplication(root, options, cargoArguments, { run = runSupervisedCommand, env = process.env } = {}) {
   const controller = new AbortController();
