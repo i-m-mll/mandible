@@ -7,6 +7,7 @@ import { applicationIdentity, retainAcceptedRelease, resolveAcceptedRelease, dis
 import { installedFileIdentity } from '../scripts/installed-release.mjs';
 import { createOwnedRun, withOwnedRunLock, saveOwnedMetadata, finalizeOwnedRun, cleanupOwnedRun } from '../scripts/owned-run.mjs';
 import { CandidateAcceptanceRuns } from '../src/candidate-acceptance.js';
+import { diagnosticReplayPackage } from '../scripts/candidate-acceptance.mjs';
 import { acceptedReleaseSelection } from '../src/accepted-release-selection.js';
 import { createAuthCheckRepo, createMigratedDb, insertSiblingMergeRequest } from './helpers/auth-queue-fixtures.js';
 
@@ -24,6 +25,14 @@ it('retains the app that ran after scratch disposal and refuses changed selectio
       provenance: { commit: candidate.pin_sha, source_digest: 'e'.repeat(64) }, entrypoints: { daemon: 'program' }, native: {}, files: { program: installedFileIdentity(program) } }));
     const evidence = path.join(root, 'evidence.json');
     fs.writeFileSync(evidence, JSON.stringify({ status: 'passed', candidate: candidate.pin_sha }));
+    const failedReceipt = path.join(root, 'failed.json');
+    const failed = { schema: 'mandible-owned-run@1', acceptance: { schema: 'mandible-candidate-acceptance@1', status: 'failed',
+      candidate: candidate.pin_sha, provenance: { marker: { source_digest: 'e'.repeat(64) }, package_sha256: applicationIdentity(path.join(scratch, 'Mandible.app')) } } };
+    fs.writeFileSync(failedReceipt, JSON.stringify(failed));
+    expect(diagnosticReplayPackage(failedReceipt, path.join(scratch, 'Mandible.app')).candidate).toBe(candidate.pin_sha);
+    failed.acceptance.candidate = 'f'.repeat(40);
+    fs.writeFileSync(failedReceipt, JSON.stringify(failed));
+    expect(() => diagnosticReplayPackage(failedReceipt, path.join(scratch, 'Mandible.app'))).toThrow('exact failed acceptance');
     let reference = '';
     await withOwnedRunLock(scratch, async () => {
       const ownership = createOwnedRun({ root: scratch, instanceId: 'proof', project: 'project', workUnit: 'work-unit', disposable: true,
