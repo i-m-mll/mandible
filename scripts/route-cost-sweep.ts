@@ -11,7 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { CONFIRMATION_TRIALS, judgeRoute, trialTurns, waitForLoad, writeReplayPlan } from "./route-cost-judgment.ts";
+import { CONFIRMATION_TRIALS, judgeRoute, trialTurns, writeReplayPlan } from "./route-cost-judgment.ts";
 import { evictFileCache } from "./evict-file-cache.ts";
 import { SweepBudget, writeSweepProgress, runSweepWorker } from "./route-cost-budget.ts";
 import SqliteDatabase from "../src/sqlite.ts";
@@ -52,7 +52,6 @@ unclassified, or when a request does not succeed.
   --fresh-each          Start a fresh daemon for each route, so every first call is cold
   --evict               Evict snapshot DB/WAL cache before first calls (macOS; timing report only)
   --cpu-prof            Profile the daemon and attribute each offender's window
-  --ignore-load         Skip the bounded wait for load below the core count
   --keep                Keep the sweep root (snapshot, logs, profile)
   --json                Print the result as JSON on stdout`;
 
@@ -72,7 +71,6 @@ export function parseSweepOptions(args: string[]) {
       "cpu-prof": { type: "boolean", default: false },
       "fresh-each": { type: "boolean", default: false },
       evict: { type: "boolean", default: false },
-      "ignore-load": { type: "boolean", default: false },
       keep: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
@@ -1241,11 +1239,13 @@ async function main() {
   let complete = false;
   let finalReport: Record<string, any> | undefined;
   let fixtureSizes: unknown;
+  const load = { start: os.loadavg()[0], cpus: os.availableParallelism() };
   const trialsOf = (entry: Planned) => [...new Set(entry.measured.map(reading => reading.trial))]
     .map(trial => entry.measured.filter(reading => reading.trial === trial));
   const progressReport = () => ({
     schema: "mandible-route-cost-sweep@2", revision, threshold_ms: thresholdMs, confirmation_trials: opts.representative ? 0 : CONFIRMATION_TRIALS,
     complete, diagnostic: Boolean(opts.diagnostic), representative: Boolean(opts.representative), fixtures: fixtureSizes, error: failure, progress: budget.progress(),
+    load: { ...load, end: os.loadavg()[0] },
     counts: { routes: planned.length, measured: planned.filter(entry => entry.measured.length).length,
       requests: planned.reduce((sum, entry) => sum + entry.measured.length, 0) },
     offenders: [], excepted: [], exception_problems: [], unclassified: [], failed_requests: [],
@@ -1286,11 +1286,6 @@ async function main() {
   process.once("SIGTERM", onSigterm);
 
   try {
-    const cpus = os.availableParallelism();
-    const load = await phase("load_admission", () => waitForLoad({ cpus, readLoad: () => os.loadavg()[0],
-      maxWaitMs: Math.min(5_000, budget.remaining()), wait: ms => budget.wait(ms),
-      ...(opts["ignore-load"] ? { maxWaitMs: 0 } : {}) }));
-    if (load.measurement_start >= cpus && !opts["ignore-load"]) throw new Error(`Unsuitable environment: load ${load.measurement_start} remains at or above ${cpus} cores after bounded admission`);
     const snapshotStarted = performance.now();
     await phase("snapshot", () => snapshot(sourceDb, dbCopy));
     await phase("snapshot_sanitize", () => sanitizePreviewDatabase(dbCopy));
@@ -1513,7 +1508,7 @@ function attributeProfile(profileDir: string, planned: Planned[], trial: number)
 function printReport(report: Record<string, any>) {
   const lines: string[] = [];
   lines.push(`revision ${report.revision.slice(0, 8)}; load ${report.load.start} -> ${report.load.end} on ${report.load.cpus} cores; threshold ${report.threshold_ms} ms`);
-  lines.push(`load wait ${report.load.waited_ms} ms; measurement-start load ${report.load.measurement_start}; ${report.counts.remeasured} routes remeasured in ${report.confirmation_trials} fresh trials each`);
+  lines.push(`${report.counts.remeasured} routes remeasured in ${report.confirmation_trials} fresh trials each`);
   lines.push(`${report.counts.routes} routes: ${report.counts.measured} measured, ${report.counts.skipped} skipped, ${report.counts.unclassified} unclassified; ${report.counts.requests} requests, ${report.counts.failed_requests} failed`);
   lines.push(`daemon startup ${report.daemon_startup_ms.length === 1 ? report.daemon_startup_ms[0] : `max ${Math.max(...report.daemon_startup_ms)}`} ms; longest idle turn ${report.idle_baseline_ms} ms over ${BASELINE_MS / 1000} s`);
   if (report.evict) lines.push("OS file cache evicted before first calls; timing results are report-only (no confirmation trials or budget gate)");
