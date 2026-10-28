@@ -222,8 +222,11 @@ async function controller(journal, command, currentVerifier = false, { until = h
   // Recovery runs inside the daemon that answers these health requests.
   // Keep its event loop available while the bounded controller probes it.
   try {
+    // Startup mutations still end at journal.deadline. Allow its final typed
+    // response to cross that boundary before terminating the transport.
+    const responseUntil = until + (command === 'handoff-start' ? 5000 : 0);
     const result = await execFileAsync(binding.runtime.path, args, {
-      cwd: binding.root, env, timeout: Math.max(1, until - Date.now()), signal, maxBuffer: 2 * 1024 * 1024, encoding: 'utf8',
+      cwd: binding.root, env, timeout: Math.max(1, responseUntil - Date.now()), signal, maxBuffer: 2 * 1024 * 1024, encoding: 'utf8',
     });
     assertObservationLease();
     return result.stdout.trim();
@@ -473,7 +476,18 @@ async function consumeRuntimeEvidence(journal, read) {
 }
 
 const readControllerEvidence = (journal, command, currentVerifier = false, options = {}, control = controller) =>
-  consumeRuntimeEvidence(journal, async () => JSON.parse(await control(journal, command, currentVerifier, options)));
+  consumeRuntimeEvidence(journal, async () => {
+    try { return JSON.parse(await control(journal, command, currentVerifier, options)); }
+    catch (error) {
+      // A killed startup may have qualified identities that never reached us.
+      // Verification cannot safely adopt a later process as the first identity.
+      if (command === 'handoff-start' && error.code === 'observation_deadline') {
+        throw new RuntimeObservationError('startup_evidence_lost',
+          'Startup response was lost; preserve the failed journal for explicit recovery.', error.evidence);
+      }
+      throw error;
+    }
+  });
 
 async function checkIncompleteEvidence(journal, available, files = {}) {
   assertObservationLease();

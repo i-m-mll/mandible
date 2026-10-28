@@ -221,6 +221,36 @@ it.each(['handoff-start', 'handoff-verify'])('binds a successful JSON %s result 
   expect(result.launch.processes.gateway).toEqual(first);
 });
 
+it('refuses continuation when the startup deadline loses a qualified identity in transport', async () => {
+  const f = recoveryFixture(startedAt => [startupLine(startedAt)]);
+  const binding = { ...f.failed.binding, oldProcess: { pid: 987653, startedAt: 'gone' } };
+  const file = path.join(handoffDirectory(binding.home, binding.requestId, binding.executionId), 'journal.json');
+  const journal = { ...f.failed, binding, bindingDigest: bindingDigest(binding), phase: 'armed', attempts: 0,
+    deadline: f.fakeStart + 1000, bridgeInstalled: true, stages: {}, environment: {} };
+  fs.writeFileSync(file, JSON.stringify(journal));
+  fs.writeFileSync(path.join(binding.home, 'config/local-sessions/handoff-active.json'), JSON.stringify({ journal: file, bindingDigest: journal.bindingDigest }));
+  let time = f.fakeStart;
+  let qualifiedInChild;
+  const control = vi.fn(async (_journal, command, _current, options) => {
+    if (command !== 'handoff-start') return '{}';
+    expect(options.until).toBe(journal.deadline);
+    qualifiedInChild = { backend: { pid: process.pid, startedAt: f.processStartedAt, runs: 1 } };
+    time = journal.deadline;
+    // The child qualified backend while gateway stayed pending, but its final
+    // response was killed before that map reached the parent.
+    throw new RuntimeObservationError('observation_deadline', 'Startup transport expired.', { until: options.until }, 'pending');
+  });
+  const options = { now: () => time, verifyPublication: async () => {}, control,
+    stage: async () => { fs.appendFileSync(path.join(path.dirname(file), 'convergence.log'), 'fixture stage\n'); } };
+  const result = await runRuntimeHandoffWorker(file, options);
+  expect(qualifiedInChild).toHaveProperty('backend.pid', process.pid);
+  expect(result).toMatchObject({ phase: 'failed', failure: { code: 'startup_evidence_lost' } });
+  control.mockClear();
+  const resumed = await runRuntimeHandoffWorker(file, options);
+  expect(resumed.phase).toBe('failed');
+  expect(control).not.toHaveBeenCalled();
+});
+
 it('binds pending qualified evidence before a fresh inspection replaces the diagnostic sample', async () => {
   const f = recoveryFixture(startedAt => [startupLine(startedAt)]);
   const journal = { ...f.failed, phase: 'observing', launch: { id: 'qualified-pending', enteredAt: Date.now() } };
@@ -377,7 +407,7 @@ it.each(['external-reopen', 'issued-ambiguous', 'old-shell', 'closed', 'known-ex
   expect(relaunch).not.toHaveBeenCalled();
 });
 
-it.each(['backend-wait', 'desktop-wait', 'launch-ambiguous', 'backend-wait-desktop-outstanding'] as const)('continues after its execution budget without replaying effects: %s', async pendingAt => {
+it.each(['backend-wait', 'desktop-wait', 'backend-wait-desktop-outstanding'] as const)('continues after its execution budget without replaying effects: %s', async pendingAt => {
   const f = recoveryFixture(startedAt => [startupLine(startedAt)]);
   const binding = { ...f.failed.binding, desktopWasRunning: pendingAt === 'desktop-wait' || pendingAt === 'backend-wait-desktop-outstanding', oldProcess: { pid: 987653, startedAt: 'gone' } };
   const file = path.join(handoffDirectory(binding.home, binding.requestId, binding.executionId), 'journal.json');
@@ -414,7 +444,7 @@ it.each(['backend-wait', 'desktop-wait', 'launch-ambiguous', 'backend-wait-deskt
     if (command === 'handoff-start') {
       expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toMatchObject({ phase: 'starting', launch: { enteredAt: f.fakeStart } });
     }
-    if (first && (command === 'handoff-verify' && pendingAt.startsWith('backend-wait') || command === 'handoff-start' && pendingAt === 'launch-ambiguous')) { first = false; throw new RuntimeObservationError('observation_deadline', 'probe wait expired', { lastRealSample: sample }, 'pending'); }
+    if (first && command === 'handoff-verify' && pendingAt.startsWith('backend-wait')) { first = false; throw new RuntimeObservationError('observation_deadline', 'probe wait expired', { lastRealSample: sample }, 'pending'); }
     return JSON.stringify(evidence);
   });
   const stage = vi.fn(async () => { fs.appendFileSync(path.join(path.dirname(file), 'convergence.log'), 'fixture stage\n'); });

@@ -65,6 +65,10 @@ guidance and structured registration evidence; permission pending retains
 `background_permission_required`. Ownership and continuity failures remain errors
 and take precedence over permission pending. Accepted handoff preserves the typed
 pending exception transport.
+The startup controller allows five seconds after the logical deadline to deliver
+its final response without extending registration authority. Loss of that response
+fails the journal with `startup_evidence_lost`; observation-only continuation cannot
+adopt a replacement after a qualified identity may have been lost in transport.
 The runtime's existing generation/health evidence still decides readiness.
 Unqualified launcher PID/birth/run observations remain diagnostic. Strictly owned
 process identities use the shared continuity rule and travel with successful or
