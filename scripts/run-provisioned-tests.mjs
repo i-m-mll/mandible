@@ -20,6 +20,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SUITE_DIR = "test/provisioned";
 const LAUNCHER = `${SUITE_DIR}/iab-preview-launcher.test.ts`;
 const NATIVE_REPLACEMENT = `${SUITE_DIR}/accepted-app-install.test.ts`;
+const NATIVE_TERMINATION_MARGIN_MS = 2500;
 const RSS_LIMIT_KIB = 950_000;
 const RSS_SAMPLE_MS = 500;
 const UNMEASURED_GRACE_MS = 60_000;
@@ -166,30 +167,35 @@ export async function runUnits(units, {
         const started = performance.now();
         const commandStartedAt = unit.nativeProofStartedAt ?? Date.now();
         const until = path.normalize(unit.args[0] ?? '') === NATIVE_REPLACEMENT ? commandStartedAt + 20_000 : null;
+        const phaseSupervisor = until ? new ProcessGroupSupervisor({ graceMs: 100 }) : supervisor;
         let deadlineTimer;
         let deadlineStop;
         let deadlineReached = false;
         if (until) deadlineTimer = setTimeout(() => {
           deadlineReached = true;
-          deadlineStop = supervisor.stopActive('SIGTERM').then(() => null, error => error);
-        }, Math.max(0, until - Date.now()));
+          deadlineStop = phaseSupervisor.stopActive('SIGTERM').then(() => null, error => error);
+        }, Math.max(0, until - NATIVE_TERMINATION_MARGIN_MS - Date.now()));
         let outcome;
         try { outcome = await executeTestPhase({
-          supervisor,
+          supervisor: phaseSupervisor,
           rssLimitKiB: unit.resource ? RESOURCES[unit.resource].rssLimitKiB : rssLimitKiB,
           measureRssKiB,
           monitorIntervalMs,
           unmeasuredGraceMs: UNMEASURED_GRACE_MS,
           spawnChild: (env) => {
-            if (until && Date.now() >= until) throw new Error('Native replacement command deadline exceeded during runner preparation.');
+            if (until && Date.now() >= until - NATIVE_TERMINATION_MARGIN_MS) throw new Error('Native replacement termination margin reached during runner preparation.');
             const child = spawnUnit(unit, { ...env, ...(until ? {
               MANDIBLE_NATIVE_PROOF_STARTED_AT: String(commandStartedAt), MANDIBLE_NATIVE_PROOF_UNTIL: String(until),
+              MANDIBLE_NATIVE_PROOF_CLEANUP_UNTIL: String(until - NATIVE_TERMINATION_MARGIN_MS),
             } : {}) });
             child.stdout?.on("data", (chunk) => output.push(chunk));
             child.stderr?.on("data", (chunk) => output.push(chunk));
             return child;
           },
-        }); } finally { clearTimeout(deadlineTimer); }
+        }); } finally {
+          if (phaseSupervisor !== supervisor) await phaseSupervisor.close();
+          clearTimeout(deadlineTimer);
+        }
         const stopError = await deadlineStop;
         if (until && (deadlineReached || Date.now() >= until || stopError)) {
           outcome = { ...outcome, status: 'error', error: stopError || new Error('Native replacement command exceeded its original 20000ms deadline, including runner startup and cleanup.') };

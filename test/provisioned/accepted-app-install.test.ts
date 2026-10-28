@@ -26,7 +26,8 @@ it('replaces retained signed bundles through real native service startup, qualif
   // and Vitest setup. No fresh allowance begins when the test body starts.
   const started = Number(process.env.MANDIBLE_NATIVE_PROOF_STARTED_AT);
   const deadline = Number(process.env.MANDIBLE_NATIVE_PROOF_UNTIL);
-  if (!Number.isFinite(started) || deadline !== started + 20_000 || Date.now() >= deadline) {
+  const cleanupUntil = Number(process.env.MANDIBLE_NATIVE_PROOF_CLEANUP_UNTIL);
+  if (!Number.isFinite(started) || deadline !== started + 20_000 || cleanupUntil !== deadline - 2500 || Date.now() >= deadline) {
     throw new Error('Run the native proof through test:provisioned with its original command deadline.');
   }
   const workUntil = deadline - 5_000;
@@ -63,8 +64,10 @@ it('replaces retained signed bundles through real native service startup, qualif
     const logFile = path.join(root, `${phase.replaceAll(/[^a-zA-Z0-9]/g, '-')}.log`);
     const log = fs.openSync(logFile, 'w');
     try {
+      const timeout = until - Date.now() - 500;
+      if (timeout <= 0) throw new Error(`Native replacement termination allowance exhausted before ${phase}.`);
       await runSupervisedCommand(runtime!, args, { cwd: process.cwd(), env: process.env,
-        stdio: ['ignore', log, log], timeout: until - Date.now(), graceMs: 100 });
+        stdio: ['ignore', log, log], timeout, graceMs: 100 });
       checkDeadline(phase, until);
     } catch (error) {
       console.error('native_fixture_phase_failed', { phase, error: String(error), excerpt: fs.readFileSync(logFile, 'utf8').slice(-4000) });
@@ -103,10 +106,12 @@ it('replaces retained signed bundles through real native service startup, qualif
     const helperLog = fs.openSync(path.join(root, 'helper-build.log'), 'w');
     try {
       if (Date.now() >= workUntil) throw new Error('Native replacement deadline exceeded before helper build.');
+      const timeout = workUntil - Date.now() - 500;
+      if (timeout <= 0) throw new Error('Native replacement termination allowance exhausted before helper build.');
       await runSupervisedCommand('cargo', ['build', '--locked', '--release', '--manifest-path', path.resolve('src-tauri/service-helper/Cargo.toml')], {
         cwd: process.cwd(), env: { ...process.env, CARGO_HOME: process.env.CARGO_HOME || path.join(toolchainHome, '.cargo'),
           RUSTUP_HOME: process.env.RUSTUP_HOME || path.join(toolchainHome, '.rustup') },
-        stdio: ['ignore', helperLog, helperLog], timeout: workUntil - Date.now(), graceMs: 500,
+        stdio: ['ignore', helperLog, helperLog], timeout, graceMs: 100,
       });
     } catch (error) {
       console.error('native_fixture_helper_build_failed', fs.readFileSync(path.join(root, 'helper-build.log'), 'utf8').slice(-4000));
@@ -229,13 +234,13 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
     const teardownStarted = Date.now();
     let cleaned = false;
     try {
-      if (fs.existsSync(app)) await withLifecycleLock(home, () => stop(deadline));
+      if (fs.existsSync(app)) await withLifecycleLock(home, () => stop(cleanupUntil));
       for (const reference of references) {
-        checkDeadline('final disposal admission', deadline);
+        checkDeadline('final disposal admission', cleanupUntil);
         const receipt = readAcceptedReleaseReceipt(reference);
         if (fs.existsSync(receipt.package.handle.root)) {
-          await supervised(['scripts/verify-accepted-release.mjs', reference, JSON.stringify(receipt.candidate), '', '', '', reference, 'cleanup'], 'final retained package disposal', deadline);
-          checkDeadline('final disposal', deadline);
+          await supervised(['scripts/verify-accepted-release.mjs', reference, JSON.stringify(receipt.candidate), '', '', '', reference, 'cleanup'], 'final retained package disposal', cleanupUntil);
+          checkDeadline('final disposal', cleanupUntil);
           expect(fs.existsSync(receipt.package.handle.root)).toBe(false);
         }
       }
@@ -244,10 +249,13 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
       // An unconfirmed service stop retains its exact app and evidence.
       if (cleaned) fs.rmSync(root, { recursive: true, force: true });
       console.info('native_bundle_replacement_proof', JSON.stringify({ scope: 'private SMAppService replacement; no product daemon, GUI, ledger or approval API',
-        source_revision: sourceRevision, identifier, generations, command_costs: costs, whole_ms: Date.now() - started, teardown_ms: Date.now() - teardownStarted,
+        source_revision: sourceRevision, identifier, generations, command_costs: costs,
+        clock_origin: 'provisioned runner entry; external wall includes earlier runtime selector/import startup',
+        runner_entry_elapsed_ms: Date.now() - started, teardown_ms: Date.now() - teardownStarted,
         target_ms: 60_000, deadline_ms: 20_000, teardown_reserve_ms: 5_000,
+        termination_margin_ms: deadline - cleanupUntil,
         cleanup: cleaned ? 'complete' : 'unconfirmed', retained_root: cleaned ? null : root }));
     }
-    checkDeadline('final cleanup', deadline);
+    checkDeadline('final cleanup', cleanupUntil);
   }
 });

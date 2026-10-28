@@ -92,7 +92,7 @@ qualify a clean upgrade from current source.
 The focused current-source proof extends the retained installer fixture:
 
 ```sh
-bun run test:provisioned test/provisioned/accepted-app-install.test.ts
+/usr/bin/time -p timeout --kill-after=1 19 bun run test:provisioned test/provisioned/accepted-app-install.test.ts
 ```
 
 It builds the current checkout's small native service helper once and stages
@@ -126,8 +126,12 @@ not an additional allocation beyond the shared verification schedule.
 The allocation is at most 10 seconds for source checks, 20 seconds for the
 native replacement fixture including a five-second teardown reserve, and
 60 seconds for automatic acceptance including its five-second cleanup reserve.
-The native fixture's clock starts in the existing provisioned launcher before
-private runtime and Vitest startup; the test consumes the remaining allowance.
+The external wall measurement and hard cap include runtime selector/import and
+launcher startup: TERM at 19 seconds leaves one second for KILL within the
+20-second allocation. The internal clock starts at provisioned runner entry
+before private runtime and Vitest startup; it does not measure earlier startup.
+The runner begins bounded TERM/KILL/join/reporting before its original deadline;
+the test consumes the remaining allowance.
 Installation, registration observation and retained-package disposal share that
 original deadline rather than starting new per-operation budgets.
 
