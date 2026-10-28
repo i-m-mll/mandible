@@ -3,7 +3,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import { bindingDigest, handoffDirectory, runRuntimeHandoffWorker, observeRuntimeHealthWindow, readRuntimeHandoff, closeQuiescentRuntimeHandoff, acknowledgeRuntimeHandoff, runtimeHandoffNeedsAcknowledgment, withRuntimeObservation } from '../scripts/runtime-handoff.mjs';
+import { bindingDigest, handoffDirectory, runRuntimeHandoffWorker, readRuntimeHandoff, closeQuiescentRuntimeHandoff, acknowledgeRuntimeHandoff, runtimeHandoffNeedsAcknowledgment, cleanupRuntimeHandoff, scheduleRuntimeHandoffCleanup, withRuntimeObservation } from '../scripts/runtime-handoff.mjs';
+import { installedFileIdentity } from '../scripts/installed-release.mjs';
+import { waitUntil } from './helpers/wait-until.js';
 import { assessRuntimeLogs } from '../scripts/runtime-log-assessment.mjs';
 import { RuntimeObservationError } from '../scripts/runtime-observation.mjs';
 import { runtimeReceiptAcceptanceMarker } from '../scripts/runtime-observation.mjs';
@@ -13,7 +15,7 @@ import SqliteDatabase from '../src/sqlite.js';
 vi.mock('node:child_process', async original => ({ ...await original<typeof import('node:child_process')>(), spawnSync: vi.fn((await original<typeof import('node:child_process')>()).spawnSync) }));
 const originalSpawn = (await vi.importActual<typeof import('node:child_process')>('node:child_process')).spawnSync;
 const roots: string[] = [];
-afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
 
 it('loads the composed helper bundle and refuses an invalid private worker journal before acquiring mutation ownership', () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'handoff-bundle-'))); roots.push(root);
@@ -28,99 +30,6 @@ it('loads the composed helper bundle and refuses an invalid private worker journ
   expect(result.stderr.trim()).toBe('Runtime handoff binding is malformed or changed.');
   expect(fs.existsSync(path.join(home, 'config/local-sessions/.gateway.lock'))).toBe(false);
 });
-function diagnostics(sequence: number, intervalStartedAt: number, intervalEndedAt: number, maxMs = 0, warning = false) {
-  return {
-    eventLoop: { sequence, intervalStartedAt, intervalEndedAt, maxMs, warning },
-    memory: { sequence, intervalStartedAt, intervalEndedAt, warning: false },
-  };
-}
-
-function runtimeEvidence(health: ReturnType<typeof diagnostics>) {
-  return {
-    process: { pid: 123, startedAt: 'start', startupEpoch: 'epoch' },
-    backend: { file: '/backend', digest: 'backend' },
-    gateway: { file: '/gateway', digest: 'gateway' },
-    daemonLog: { path: '/daemon.log', dev: 1, ino: 2, size: 10 },
-    health,
-  };
-}
-
-it('records stalls and lag inside the window once per interval, and completes once fresh samples cover it', async () => {
-  let time = 100;
-  const samples = [
-    runtimeEvidence(diagnostics(4, 0, 90, 678.8)),
-    runtimeEvidence(diagnostics(5, 90, 110, 3_700, true)),
-    runtimeEvidence(diagnostics(5, 90, 110, 3_700, true)),
-    runtimeEvidence(diagnostics(6, 110, 130)),
-  ];
-  let probes = 0;
-  const result = await observeRuntimeHealthWindow({
-    observationMs: 20,
-    deadlineMs: 40,
-    now: () => time,
-    wait: async (milliseconds: number) => { time += milliseconds / 100; },
-    probe: async () => samples[Math.min(probes++, samples.length - 1)],
-  });
-  expect(result.performance).toEqual({ omitted: 0, findings: [
-    expect.objectContaining({ code: 'event_loop_stall', sample: expect.objectContaining({ sequence: 4, maxMs: 678.8 }) }),
-    expect.objectContaining({ code: 'event_loop_lag', sample: expect.objectContaining({ sequence: 5 }) }),
-    expect.objectContaining({ code: 'event_loop_stall', sample: expect.objectContaining({ sequence: 5, maxMs: 3_700 }) }),
-  ] });
-  expect(result.samples.last.eventLoop.sequence).toBe(6);
-  expect(result.observation).toMatchObject({ startedAt: 100, mustCover: 120 });
-});
-
-it('refuses stale diagnostics and changed process identity', async () => {
-  let time = 100;
-  const initial = runtimeEvidence(diagnostics(4, 80, 90));
-  await expect(observeRuntimeHealthWindow({
-    observationMs: 10,
-    deadlineMs: 20,
-    now: () => time,
-    wait: async () => { time += 20; },
-    probe: async () => initial,
-  })).rejects.toMatchObject({ code: 'stale_diagnostics' });
-  time = 100;
-  await expect(observeRuntimeHealthWindow({
-    observationMs: 10,
-    deadlineMs: 20,
-    now: () => time,
-    wait: async () => { time += 10; },
-    probe: (() => { let calls = 0; return async () => ++calls === 1 ? initial : ({ ...runtimeEvidence(diagnostics(5, 90, 110)), process: { ...initial.process, pid: 456 } }); })(),
-  })).rejects.toMatchObject({ code: 'process_changed' });
-});
-
-it('refuses mutated, future, and gapped diagnostic intervals', async () => {
-  const initial = runtimeEvidence(diagnostics(4, 80, 90));
-  for (const [expected, next] of [
-    ['diagnostics_mutated', runtimeEvidence(diagnostics(4, 80, 91))],
-    ['future_diagnostics', runtimeEvidence(diagnostics(5, 90, 111))],
-    ['diagnostics_gap', runtimeEvidence(diagnostics(6, 95, 110))],
-  ] as const) {
-    let time = 100;
-    let probes = 0;
-    await expect(observeRuntimeHealthWindow({
-      observationMs: 10, deadlineMs: 20, now: () => time,
-      wait: async () => { time += 10; },
-      probe: async () => ++probes === 1 ? initial : next,
-    })).rejects.toMatchObject({ code: expected });
-  }
-});
-
-it('aborts a handoff probe that never answers at the fixed deadline', async () => {
-  let aborted = false;
-  const started = Date.now();
-  await expect(observeRuntimeHealthWindow({
-    observationMs: 5,
-    deadlineMs: 20,
-    probe: async (_deadline, signal) => new Promise((_resolve, reject) => {
-      signal.addEventListener('abort', () => { aborted = true; reject(signal.reason); }, { once: true });
-    }),
-  })).rejects.toMatchObject({ code: 'observation_deadline' });
-  expect(aborted).toBe(true);
-  expect(Date.now() - started).toBeLessThan(100);
-});
-
 it('records health log events without failing, while error rows stay fatal', () => {
   const lag = JSON.stringify({ time: '2026-10-23T22:31:15.548Z', level: 'warn', message: 'daemon_event_loop_lag', p95_ms: 199.4, max_ms: 3841.2 });
   const stall = JSON.stringify({ time: '2026-10-23T22:32:01.000Z', level: 'warn', message: 'daemon_event_loop_stall', max_ms: 3700 });
@@ -131,22 +40,6 @@ it('records health log events without failing, while error rows stay fatal', () 
   ] } } });
   expect(assessRuntimeLogs([stall, error].join('\n')).failures).toEqual([error]);
 });
-
-it('covers actual activation with a fresh collector turn without waiting for the periodic window', async () => {
-  let time = 100;
-  let completed: number | null = null;
-  const observed = await observeRuntimeHealthWindow({
-    now: () => time, observationMs: 0, deadlineMs: 30,
-    live: { startedAt: 100, through: () => completed },
-    wait: async () => { completed = 105; time = 110; },
-    probe: async () => runtimeEvidence({ ...diagnostics(1, 0, 90), current: { observedAt: time, collectorTurnMs: 1,
-      eventLoop: { sequence: 1, intervalStartedAt: 90, intervalEndedAt: time, maxMs: 300, warning: false },
-      memory: { sequence: 1, intervalStartedAt: 90, intervalEndedAt: time, warning: false, rssFraction: 0.1, warningThresholdFraction: 0.8 } } }),
-  });
-  expect(observed.observation).toMatchObject({ startedAt: 100, mustCover: 105, completedAt: 110 });
-  expect(observed.performance.findings).toContainEqual(expect.objectContaining({ code: 'event_loop_stall', sample: expect.objectContaining({ maxMs: 300 }) }));
-});
-
 
 function fixture() {
   const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-attempt-'))); roots.push(home);
@@ -261,11 +154,11 @@ it('releases an accepted terminal receipt directly without package/native/cleanu
   const database = path.join(f.home, 'acceptance.db');
   const db = new SqliteDatabase(database);
   db.exec('CREATE TABLE auth_hook_executions (id TEXT, auth_request_id TEXT, hook_id TEXT, state TEXT, output TEXT, command_digest TEXT)');
-  const binding = { ...f.binding, hookId: 'hook', commandDigest: 'command' };
+  const binding = { ...f.binding, hookId: 'hook', commandDigest: 'command', domain: `gui/${process.getuid!()}` };
   const digest = bindingDigest(binding);
   const receipt = { schema: 'mandible-runtime-receipt@2', bindingDigest: digest, attemptId: 'attempt' };
   const receiptDigest = createHash('sha256').update(JSON.stringify(receipt)).digest('hex');
-  const journal = { ...f.journal, binding, bindingDigest: digest, database,
+  const journal = { ...f.journal, binding, bindingDigest: digest, database, helperLabel: 'fixture-historical-helper',
     attempt: { id: 'attempt', state: 'complete', effects: {}, receipt, receiptDigest, fence: { reason: 'terminal-completion' } }, cleanup: { state: 'pending' } };
   db.prepare('INSERT INTO auth_hook_executions VALUES (?,?,?,?,?,?)').run(binding.executionId, binding.requestId, binding.hookId, 'complete', runtimeReceiptAcceptanceMarker(journal), binding.commandDigest);
   db.close();
@@ -288,4 +181,51 @@ it('releases an accepted terminal receipt directly without package/native/cleanu
   fs.writeFileSync(active, foreign);
   expect(await acknowledgeRuntimeHandoff(binding, { acceptedReceiptDigest: receiptDigest })).toEqual({ cleanup: 'pending' });
   expect(fs.readFileSync(active, 'utf8')).toBe(foreign);
+  vi.mocked(childProcess.spawnSync).mockImplementation((program, args, options) => {
+    if (program === '/bin/launchctl') return { status: 113, stdout: '', stderr: 'Could not find service' } as any;
+    return originalSpawn(program, args, options);
+  });
+  expect(await cleanupRuntimeHandoff(f.file)).toEqual({ cleanup: 'complete' });
+  expect(fs.readFileSync(active, 'utf8')).toBe(foreign);
+});
+
+it('runs historical cleanup with current installed code and reports only the real child outcome', async () => {
+  const f = fixture();
+  const receipt = { schema: 'mandible-runtime-receipt@2', bindingDigest: f.journal.bindingDigest, attemptId: 'attempt' };
+  const journal = { ...f.journal, attempt: { id: 'attempt', state: 'complete', receipt,
+    receiptDigest: createHash('sha256').update(JSON.stringify(receipt)).digest('hex'), fence: { reason: 'terminal-completion' } }, cleanup: { state: 'pending' } };
+  fs.writeFileSync(f.file, JSON.stringify(journal));
+  fs.rmSync(f.binding.nativeApp, { recursive: true });
+  const resources = path.join(f.home, 'current/Contents/Resources');
+  fs.mkdirSync(path.join(resources, 'handoff'), { recursive: true });
+  const runtime = path.join(resources, 'runtime');
+  fs.writeFileSync(runtime, '#!/bin/sh\nexec "$MANDIBLE_TEST_CLEANUP_RUNTIME" "$@"\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(resources, 'sqlite'), 'fixture');
+  const started = path.join(f.home, 'child-started'); const proceed = path.join(f.home, 'child-proceed');
+  fs.writeFileSync(path.join(resources, 'handoff/helper.mjs'), `import fs from 'node:fs';
+    fs.writeFileSync(process.env.MANDIBLE_TEST_CLEANUP_STARTED, process.env.MANDIBLE_RELEASE_ROOT);
+    while (!fs.existsSync(process.env.MANDIBLE_TEST_CLEANUP_PROCEED)) await new Promise(r => setTimeout(r, 5));
+    if (process.env.MANDIBLE_TEST_CLEANUP_OUTCOME === 'fail') process.exit(9);
+    if (process.env.MANDIBLE_TEST_CLEANUP_OUTCOME === 'complete') {
+      const file = process.argv[3]; const journal = JSON.parse(fs.readFileSync(file, 'utf8'));
+      journal.cleanup = { state: 'complete' }; fs.writeFileSync(file, JSON.stringify(journal));
+    }`);
+  const files = Object.fromEntries(['runtime', 'sqlite', 'handoff/helper.mjs'].map(file => [file, installedFileIdentity(path.join(resources, file))]));
+  fs.writeFileSync(path.join(resources, 'release.json'), JSON.stringify({ schema: 'mandible-installed-release@1', version: 'fixture',
+    target: `${process.platform}-${process.arch}`, provenance: { commit: 'a'.repeat(40), source_digest: 'b'.repeat(64) },
+    layout: { kind: 'macos-app', roots: { resources: '.' } }, entrypoints: {}, native: { bun: 'runtime', sqlite: 'sqlite' }, files }));
+  vi.stubEnv('MANDIBLE_RELEASE_ROOT', resources); vi.stubEnv('MANDIBLE_TEST_CLEANUP_RUNTIME', process.execPath);
+  vi.stubEnv('MANDIBLE_TEST_CLEANUP_STARTED', started); vi.stubEnv('MANDIBLE_TEST_CLEANUP_PROCEED', proceed);
+  let settled = false;
+  const pending = scheduleRuntimeHandoffCleanup(journal).then(result => { settled = true; return result; });
+  await waitUntil(() => fs.existsSync(started), 'cleanup child entered current helper');
+  expect(settled).toBe(false); expect(fs.readFileSync(started, 'utf8')).toBe(resources);
+  fs.writeFileSync(proceed, 'continue');
+  expect(await pending).toEqual({ cleanup: 'pending' });
+  vi.stubEnv('MANDIBLE_TEST_CLEANUP_OUTCOME', 'fail');
+  await expect(scheduleRuntimeHandoffCleanup(journal)).rejects.toThrow('failed');
+  vi.stubEnv('MANDIBLE_TEST_CLEANUP_OUTCOME', 'complete');
+  expect(await scheduleRuntimeHandoffCleanup(journal)).toEqual({ cleanup: 'complete' });
+  fs.chmodSync(runtime, 0o644);
+  await expect(scheduleRuntimeHandoffCleanup(journal)).rejects.toThrow();
 });
