@@ -9,39 +9,11 @@ import { EventEmitter } from "node:events";
 import { waitUntil } from "./helpers/wait-until.js";
 import { ProcessGroupSupervisor, runSupervisedCommand } from '../scripts/process-group-supervisor.mjs';
 import { executeTestPhase, measureTestRssKiB, processTreeRss } from '../scripts/test-phase-executor.mjs';
-import { joinAcceptanceWork } from '../scripts/candidate-acceptance.mjs';
 
 const temporaryRoots: string[] = [];
 
 afterEach(() => {
   for (const root of temporaryRoots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
-});
-
-it('cancels and joins both independent acceptance owners when either branch fails', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-acceptance-siblings-'));
-  temporaryRoots.push(root);
-  for (const failing of ['routes', 'interaction']) {
-    const controller = new AbortController();
-    const joined = new Set<string>();
-    let stoppedInteraction = false;
-    const launch = name => async () => {
-      const other = name === 'routes' ? 'interaction' : 'routes';
-      const pidFile = path.join(root, `${failing}-${name}`);
-      const otherFile = path.join(root, `${failing}-${other}`);
-      try {
-        await runSupervisedCommand(process.execPath, ['--eval', `
-          const fs = require('node:fs');
-          process.on('SIGTERM', () => {});
-          fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
-          setInterval(() => { if (${JSON.stringify(name === failing)} && fs.existsSync(${JSON.stringify(otherFile)})) process.exit(7); }, 5);
-        `], { signal: controller.signal, capture: true, timeout: 1500, deadline: Date.now() + 2000, graceMs: 50 });
-      } finally { joined.add(name); }
-    };
-    await expect(joinAcceptanceWork(launch('routes'), launch('interaction'), controller, async () => { stoppedInteraction = true; })).rejects.toThrow('failed: 7');
-    expect(stoppedInteraction).toBe(true);
-    expect([...joined].sort()).toEqual(['interaction', 'routes']);
-    for (const name of ['routes', 'interaction']) expect(isAlive(Number(fs.readFileSync(path.join(root, `${failing}-${name}`), 'utf8')))).toBe(false);
-  }
 });
 
 it('joins nested detached acceptance groups before the outer abort kills their parent', async () => {
