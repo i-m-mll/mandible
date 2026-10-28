@@ -212,7 +212,7 @@ it('consumes durable acceptance without probing a removed package, fences the he
   const db = new SqliteDatabase(database);
   db.exec('CREATE TABLE auth_hook_executions (id TEXT, auth_request_id TEXT, hook_id TEXT, state TEXT, output TEXT, command_digest TEXT)');
   const bridge = path.join(f.home, 'bridge.mjs'); fs.writeFileSync(bridge, 'foreign');
-  const binding = { ...f.binding, hookId: 'hook', commandDigest: 'command', acceptedRelease: undefined, domain: 'gui/fixture',
+  const binding = { ...f.binding, hookId: 'hook', commandDigest: 'command', acceptedRelease: undefined, domain: `gui/${process.getuid!()}`,
     priorBackend: { argv: ['/runtime', bridge] }, legacyBridgeSha256: createHash('sha256').update('bridge').digest('hex') };
   const digest = bindingDigest(binding);
   const receipt = { schema: 'mandible-runtime-receipt@1', bindingDigest: digest, attemptId: 'attempt', files: {} };

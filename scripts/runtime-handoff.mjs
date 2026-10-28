@@ -893,6 +893,9 @@ function helperPath(journal) {
 }
 async function fenceHelper(journal) {
   assertObservationLease();
+  if (!/^gui\/\d+$/.test(journal.binding.domain ?? '') || !/^[a-zA-Z0-9.-]+$/.test(journal.helperLabel ?? '')
+    || !path.isAbsolute(journal.binding.runtime?.path ?? '')) throw new Error('Helper ownership identity is incomplete.');
+  if (journal.helperPlist && journal.helperPlist !== path.join(homeDirectory(journal.binding.home), 'launch-agents', `${journal.helperLabel}.plist`)) throw new Error('Helper registration path is outside its owner.');
   const target = journal.binding.domain + '/' + journal.helperLabel;
   const loaded = spawnSync('/bin/launchctl', ['print', target], { encoding: 'utf8', timeout: 2500 });
   if (loaded.error) throw loaded.error;
@@ -1070,6 +1073,17 @@ function saveEffect(journal, name, changes) {
   const attempt = journal.attempt;
   save(journal, { attempt: { ...attempt, effects: { ...attempt.effects, [name]: { ...attempt.effects[name], ...changes } } } });
 }
+function archiveAttempt(journal) {
+  const attempt = journal.attempt;
+  if (!/^[a-zA-Z0-9_-]{8,128}$/.test(attempt.id)) throw new Error('Invalid attempt history identity.');
+  const directory = path.join(path.dirname(journalFile(journal.binding)), 'attempts');
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const file = path.join(directory, `${attempt.id}.json`);
+  const record = { schema: 'mandible-runtime-attempt-history@1', bindingDigest: journal.bindingDigest, attempt };
+  if (fs.existsSync(file)) {
+    if (JSON.stringify(JSON.parse(fs.readFileSync(file, 'utf8'))) !== JSON.stringify(record)) throw new Error('Attempt history changed.');
+  } else atomic(file, record);
+}
 
 /** Initial delivery and interrupted delivery reconcile the same observed effects. */
 export async function runRuntimeHandoffWorker(file, {
@@ -1089,6 +1103,7 @@ export async function runRuntimeHandoffWorker(file, {
     await verifyPublication(journal);
     if (!journal.attempt || journal.attempt.state === 'failed') {
       if (journal.attempt?.state === 'failed' && !actor) return journal;
+      if (journal.attempt) archiveAttempt(journal);
       save(journal, { attempt: { id: randomBytes(12).toString('hex'), actor: actor ?? { requestId: journal.binding.requestId, executionId: journal.binding.executionId },
         enteredAt: now(), deadline: now() + waitMs, state: 'running', effects: {} }, cleanup: { state: 'pending' } });
     }
@@ -1121,6 +1136,7 @@ export async function runRuntimeHandoffWorker(file, {
       const started = await readControllerEvidence(journal, 'handoff-start', false, { until }, control);
       saveEffect(journal, 'services', { completedAt: now(), processes: started.processes });
       await readControllerEvidence(journal, 'handoff-verify', false, { until, awaitReady: true }, control);
+      saveEffect(journal, 'services', { readyAt: journal.attempt.effects.services.readyAt ?? now() });
       const activationStartedAt = now();
       let activationCompletedAt = null;
       const activation = Promise.resolve().then(async () => {

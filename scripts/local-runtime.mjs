@@ -1334,7 +1334,8 @@ async function mainLocked() {
         : command === 'handoff-evidence' ? inspectHandoffEvidence(journal.binding, expectedProcesses)
           : await verifyHandoffDefinitions(journal.binding, { until, awaitReady: args.includes('--await-ready'),
             expectedProcesses,
-            expectedServing: !!journal.launch?.readyAt || ['failed', 'complete', 'acknowledged'].includes(journal.phase) });
+            expectedServing: journal.attempt ? !!journal.attempt.effects.services?.readyAt || journal.attempt.state === 'complete'
+              : !!journal.launch?.readyAt || ['failed', 'complete', 'acknowledged'].includes(journal.phase) });
     process.stdout.write(`${JSON.stringify(result ?? { removed: true })}\n`);
     return;
   }
