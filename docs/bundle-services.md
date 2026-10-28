@@ -116,7 +116,11 @@ process exits, then unregisters and removes the fixture. It uses a signed
 fixture-only resource for an isolated home, admitted only by a
 `bio.mll.mandible.fixture.*` bundle identifier. It never uses production labels
 or production state. The helper crate and fixture run independently of a full
-Tauri/payload rebuild. Full daemon, gateway, GUI, replacement and clean-machine
-qualification belongs to exact-candidate package acceptance.
+Tauri/payload rebuild. [Package/runtime acceptance](candidate-acceptance.md)
+checks the exact app's daemon, gateway and GUI through direct bundled-process
+launches. It bypasses the SMAppService upgrade transition. The separate
+source-transformed [two-hop lifecycle fixture](runtime-handoff.md#verification)
+qualifies that transition with private identities/homes; actual post-approval
+handoff verifies convergence of the exact retained package.
 
 Co-Authored-By: Codex (GPT) <codex@openai.com>

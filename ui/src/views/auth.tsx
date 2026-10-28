@@ -438,12 +438,13 @@ function convergenceTitle(convergence: ConvergenceSummary): string {
 
 /** Issue 7d83fe5 — label and pill class of a pending runtime self-update's acceptance, which approval requires. */
 const ACCEPTANCE_PILLS: Record<CandidateAcceptanceProjection['state'], [string, string]> = {
-  none: ['Acceptance not run', 'status-pill--dismissed'],
-  running: ['Acceptance running', 'status-pill--pending'],
-  passed: ['Acceptance passed', 'status-pill--success'],
-  failed: ['Acceptance failed', 'status-pill--failed'],
-  stale: ['Acceptance stale', 'status-pill--expired'],
+  none: ['Package/runtime acceptance not run', 'status-pill--dismissed'],
+  running: ['Package/runtime acceptance running', 'status-pill--pending'],
+  passed: ['Package/runtime acceptance passed', 'status-pill--success'],
+  failed: ['Package/runtime acceptance failed', 'status-pill--failed'],
+  stale: ['Package/runtime acceptance stale', 'status-pill--expired'],
 };
+const ACCEPTANCE_SCOPE = 'Checks the packaged app in an isolated instance. Installed upgrade qualification is separate.';
 
 function getStatusClass(request: AuthRequest): string {
   const status = getAuthStatus(request);
@@ -1145,7 +1146,7 @@ function AuthRequestDetail({
                 {statusLabel}
               </span>
               {acceptance && (
-                <span className={`status-pill ${acceptancePill}`} title={acceptance.reason ?? undefined}>
+                <span className={`status-pill ${acceptancePill}`} title={`${ACCEPTANCE_SCOPE}${acceptance.reason ? ` ${acceptance.reason}` : ''}`}>
                   {acceptanceLabel}
                 </span>
               )}
