@@ -76,7 +76,7 @@ export function resolveAcceptedRelease(reference, expectedCandidate) {
 /** Explicit delivery-owner disposal; pending acceptances never expire as cache material. */
 export async function disposeAcceptedRelease(reference, expectedCandidate, reason) {
   if (!reason?.trim()) throw new Error('Accepted release disposal requires an owner reason.');
-  const { receipt } = resolveAcceptedRelease(reference, expectedCandidate);
+  const receipt = readAcceptedReleaseReceipt(reference, expectedCandidate);
   const root = receipt.package.handle.root;
   return withOwnedRunLock(root, async () => {
     resolveAcceptedRelease(reference, expectedCandidate);
