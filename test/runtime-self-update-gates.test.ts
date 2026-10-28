@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import * as childProcess from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { waitUntilPasses } from "./helpers/wait-until.js";
 import { AuthQueue } from "../src/auth-queue.js";
@@ -28,6 +29,8 @@ import {
   advanceMainViaAuthorizedMerge, approveFixtureRequest, commitOnBranch, configureSigningCredential, createAuthCheckRepo, createLedgerIssue, createLedgerProject,
   createMigratedDb, git, publishFixtureExecution, registerWorkRepo, waitForStatus,
 } from "./helpers/auth-queue-fixtures.js";
+vi.mock('node:child_process', async original => ({ ...await original<typeof import('node:child_process')>(), spawnSync: vi.fn((await original<typeof import('node:child_process')>()).spawnSync) }));
+const actualSpawnSync = (await vi.importActual<typeof import('node:child_process')>('node:child_process')).spawnSync;
 
 let repo: string;
 let home: string;
@@ -41,13 +44,17 @@ let runs: AcceptanceRun[];
 let inspector: ReturnType<typeof createServiceDefinitionInspector>;
 
 /** A failed handoff journal and the lock that names it, as the incident left them. */
-function holdHandoffLock(phase = "failed") {
+function holdHandoffLock(phase = "failed", qualifiedHelper = false) {
   const requestId = "f3ecce00-0000-4000-8000-000000000000";
   const executionId = "44059845-0000-4000-8000-000000000000";
   const dir = path.join(home, "config", "local-sessions", "handoff", `${requestId}-${executionId}`);
   fs.mkdirSync(dir, { recursive: true });
-  const binding = { home, requestId, executionId, root: repo, hookId: "builtin-mandible-rebuild" };
-  const journal = { schema: "mandible-runtime-handoff@1", binding, bindingDigest: bindingDigest(binding), phase, error: phase === "failed" ? "Candidate runtime readiness failed" : undefined, attempts: 1, updatedAt: 1 };
+  const binding = { home, requestId, executionId, root: repo, hookId: "builtin-mandible-rebuild",
+    ...(qualifiedHelper ? { domain: `gui/${process.getuid!()}`, runtime: { path: process.execPath } } : {}) };
+  const journal = { schema: "mandible-runtime-handoff@1", binding, bindingDigest: bindingDigest(binding), phase, error: phase === "failed" ? "Candidate runtime readiness failed" : undefined, attempts: 1, updatedAt: 1,
+    ...(qualifiedHelper ? { helperLabel: 'bio.mll.mandible.fixture.retirement' } : {}) };
+  if (qualifiedHelper) vi.mocked(childProcess.spawnSync).mockImplementation((binary, args, options) => binary === '/bin/launchctl'
+    ? { status: 113, stdout: '', stderr: 'Could not find service' } as any : actualSpawnSync(binary, args, options));
   const journalPath = path.join(dir, "journal.json");
   fs.writeFileSync(journalPath, `${JSON.stringify(journal)}\n`);
   const lockPath = path.join(home, "config", "local-sessions", "handoff-active.json");
@@ -619,7 +626,7 @@ describe("failed handoff retirement", () => {
     await expect(retireFailedRuntimeHandoff(home, { bindingDigest: armed.digest, actor: { user_id: "operator" }, reason: "stale" })).rejects.toThrow(/Only a failed/);
     fs.rmSync(path.join(home, "config"), { recursive: true });
 
-    const held = holdHandoffLock();
+    const held = holdHandoffLock('failed', true);
     const lockBytes = fs.readFileSync(held.lockPath);
     const journalBytes = fs.readFileSync(held.journalPath);
     await expect(retireFailedRuntimeHandoff(home, { bindingDigest: "e".repeat(64), actor: {}, reason: "stale" })).rejects.toThrow(/different binding digest/);
@@ -633,7 +640,7 @@ describe("failed handoff retirement", () => {
 
   it("requires the operator at the retirement route", async () => {
     setDb(db);
-    const held = holdHandoffLock();
+    const held = holdHandoffLock('failed', true);
     const request = await submit();
     await waitUntilPasses(() => expect(runs).toHaveLength(1));
     const agent = createUser(db, { slug: "retire-agent", display_name: "Retire agent", kind: "agent" });

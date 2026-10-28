@@ -179,7 +179,7 @@ it('resumes an installed-before-launch interruption through the same recorded at
   expect(effects).toEqual(['prepare', 'drain', 'replace']);
   const resumed = await runRuntimeHandoffWorker(f.file, options);
   expect(resumed.attempt.id).toBe(first.attempt.id);
-  expect(resumed).toMatchObject({ phase: 'failed', error: 'original failure', failure: f.journal.failure,
+  expect(resumed).toMatchObject({ phase: 'complete', error: 'original failure', failure: f.journal.failure,
     attempt: { state: 'complete', receipt: { schema: 'mandible-runtime-receipt@1', attemptId: first.attempt.id } } });
   expect(effects).toEqual(['prepare', 'drain', 'replace', 'prepare', 'services', 'desktop']);
   await runRuntimeHandoffWorker(f.file, options);
@@ -235,7 +235,7 @@ it('consumes durable acceptance without probing a removed package, fences the he
   });
   expect(fs.existsSync(active)).toBe(false);
   const completed = readRuntimeHandoff(f.home, binding.requestId, binding.executionId);
-  expect(completed).toMatchObject({ phase: 'failed', error: 'original failure', attempt: { state: 'complete', fence: { reason: 'receipt-accepted' } }, cleanup: { state: 'pending' } });
+  expect(completed).toMatchObject({ phase: 'complete', error: 'original failure', attempt: { state: 'complete', fence: { reason: 'receipt-accepted' } }, cleanup: { state: 'pending' } });
   fs.writeFileSync(bridge, 'bridge');
   await withRuntimeObservation(completed, () => acknowledgeRuntimeHandoff(binding, { acceptedReceiptDigest: receiptDigest }));
   expect(readRuntimeHandoff(f.home, binding.requestId, binding.executionId)?.cleanup.state).toBe('complete');

@@ -184,7 +184,8 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
       const dir = handoffDirectory(home, binding.requestId, binding.executionId); fs.mkdirSync(dir, { recursive: true });
       const file = path.join(dir, 'journal.json');
       fs.writeFileSync(file, JSON.stringify({ schema: 'mandible-runtime-handoff@1', binding, bindingDigest: bindingDigest(binding), phase: 'armed',
-        deadline: workUntil, bridgeInstalled: true, attempt: { id: 'native-attempt-' + index, enteredAt: Date.now(), deadline: workUntil, state: 'running', effects: {} } }));
+        deadline: workUntil, bridgeInstalled: true, admission: { attemptId: 'native-attempt-' + index, publication: 'published' },
+        attempt: { id: 'native-attempt-' + index, enteredAt: Date.now(), deadline: workUntil, state: 'running', effects: {} } }));
       fs.writeFileSync(path.join(home, 'config/local-sessions/handoff-active.json'), JSON.stringify({ journal: file, bindingDigest: bindingDigest(binding) }));
       let nativeRuntime;
       let interrupted = false;
