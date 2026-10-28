@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { resolveAppSigning } from './app-signing.mjs';
 import { finishAppPackage } from './finish-app-package.mjs';
+import { tauriCompileArguments, tauriBundleArguments } from './tauri-build-commands.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const supplied = process.argv.slice(2);
@@ -35,14 +36,16 @@ for (let index = 0; index < options.length; index++) {
 const plan = resolveAppSigning(root, configs);
 const bundles = selectedBundles ?? plan.config.bundle?.targets ?? ['app'];
 if (!Array.isArray(bundles) || bundles.some(bundle => !['app', 'dmg'].includes(bundle))) throw new Error('Mac package targets must be app and/or dmg.');
-args.push('--bundles', 'app', '--no-sign', ...cargoArguments);
-const result = spawnSync(process.execPath, [path.join(root, 'node_modules/@tauri-apps/cli/tauri.js'), 'build', ...args],
-  { cwd: root, env: process.env, stdio: 'inherit', timeout: 600_000 });
-if (result.error) throw result.error;
-if (result.status !== 0) process.exit(result.status ?? 1);
-const target = options.indexOf('--target');
+for (const command of [tauriCompileArguments(args, cargoArguments), tauriBundleArguments(args)]) {
+  const result = spawnSync(process.execPath, [path.join(root, 'node_modules/@tauri-apps/cli/tauri.js'), ...command],
+    { cwd: root, env: process.env, stdio: 'inherit', timeout: 600_000 });
+  if (result.error) throw result.error;
+  if (result.status !== 0) process.exit(result.status ?? 1);
+}
+const target = options.findIndex(option => ['--target', '-t'].includes(option) || option.startsWith('--target='));
+const targetTriple = target < 0 ? null : options[target].startsWith('--target=') ? options[target].slice('--target='.length) : options[target + 1];
 const targetDirectory = process.env.CARGO_TARGET_DIR ?? path.join(root, 'src-tauri/target');
-const profile = args.includes('--debug') ? 'debug' : 'release';
-const app = path.join(targetDirectory, ...(target >= 0 ? [options[target + 1]] : []), profile, 'bundle/macos', `${plan.config.productName ?? 'Mandible'}.app`);
+const profile = args.some(option => ['--debug', '-d'].includes(option)) ? 'debug' : 'release';
+const app = path.join(targetDirectory, ...(targetTriple ? [targetTriple] : []), profile, 'bundle/macos', `${plan.config.productName ?? 'Mandible'}.app`);
 const receipt = finishAppPackage(app, plan, { dmg: bundles.includes('dmg'), archive });
 process.stdout.write(`Finished app package (${receipt.notarization}): ${app}\n`);
