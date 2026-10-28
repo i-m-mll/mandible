@@ -8,7 +8,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import SqliteDatabase from '../src/sqlite.ts';
 import { createOwnedRun, saveOwnedMetadata, finalizeOwnedRun, cleanupOwnedRun, processIdentity, recoverLifecycleLock, withOwnedRunLock } from './owned-run.mjs';
 import { acquirePreviewConsumer, publishPreviewConsumer, releasePreviewConsumer } from './preview-custody.mjs';
-import { reconcilePreviewRegistration } from './preview-registration.mjs';
+import { reconcilePreviewRegistration, retirePreviewRegistration } from './preview-registration.mjs';
 import { main, refreshPreview, previewStatus, stopPreview, healthyExistingPreview, finalizePreview, stopPreviewProcess } from './iab-preview.mjs';
 import { trackedSourceDigest } from './build-revision.mjs';
 import { createHash } from 'node:crypto';
@@ -84,7 +84,17 @@ test('exact registration retirement retries a failed gateway reload and preserve
     await assert.rejects(request(row, null, async () => { throw new Error('gateway unavailable'); }), /unavailable/);
     assert.equal(db.prepare('SELECT * FROM instance_registrations WHERE instance_id = ?').get(row.instance_id), undefined);
     assert.equal((await fetch(`${origin}/${row.instance_id}`)).status, 200);
-    await request(row, null);
+    await assert.rejects(retirePreviewRegistration({ home, runId: 'other-run', registrations: [row], reload }), /custody differs/);
+    await assert.rejects(retirePreviewRegistration({ home, runId: 'fixture-run', registrations: [{ ...row, backend_generation: 'unrecorded' }], reload }), /custody differs/);
+    const bindingFile = path.join(authority, 'preview-bindings', `${row.instance_id}.json`);
+    const pending = read(bindingFile);
+    saveOwnedMetadata(bindingFile, { ...pending, runId: 'foreign-retired-run', state: 'retired' });
+    await assert.rejects(retirePreviewRegistration({ home, runId: 'fixture-run', registrations: [row], reload }), /custody differs/);
+    assert.equal(read(bindingFile).runId, 'foreign-retired-run');
+    saveOwnedMetadata(bindingFile, { ...pending, desired: { ...row, backend_generation: 'unrecorded' } });
+    await assert.rejects(retirePreviewRegistration({ home, runId: 'fixture-run', registrations: [row], reload }), /custody differs/);
+    saveOwnedMetadata(bindingFile, pending);
+    await retirePreviewRegistration({ home, runId: 'fixture-run', registrations: [{ ...row, backend_generation: 'new-candidate' }, row], reload });
     assert.equal((await fetch(`${origin}/${row.instance_id}`)).status, 404);
     assert.equal((await fetch(`${origin}/${survivor.instance_id}`)).status, 200);
     assert.equal((await fetch(`${origin}/production`)).status, 200);
@@ -206,7 +216,7 @@ async function exercisePreviewLifecycle(legacy = false) {
     },
     projectSnapshot: async ({ sourceDb, dbCopy }) => { snapshots++; fs.copyFileSync(sourceDb, dbCopy); return { fixture: true }; },
     reloadGateway: async () => {
-      if (failReload) { failReload = false; throw new Error('Interrupted gateway refresh'); }
+      if (failReload) { failReload--; throw new Error('Interrupted gateway refresh'); }
       routes = new Map(db.prepare('SELECT instance_id, backend_origin FROM instance_registrations').all().map(row => [row.instance_id, row.backend_origin]));
     },
     verifyPublic: async metadata => {
@@ -334,10 +344,10 @@ async function exercisePreviewLifecycle(legacy = false) {
     staleReporting.status = 'refreshed'; staleReporting.ok = true;
     saveOwnedMetadata(metadataFile, staleReporting);
     fs.writeFileSync(path.join(repository, 'src', 'candidate.txt'), 'candidate'); git(['add', '.']); git(['commit', '-m', 'next candidate']);
-    failReload = true;
+    failReload = 2;
     await assert.rejects(main(options), /Refresh failed/);
     last = read(path.join(original.previewRoot, 'metadata.json'));
-    assert.equal(last.ownership.lifecycle.phase, 'failed-stopped'); assert.equal(snapshots, 1);
+    assert.equal(last.ownership.lifecycle.phase, 'refresh-failed'); assert.equal(snapshots, 1);
     assert.equal(last.status, 'refresh-failed'); assert.equal(last.ok, false);
     for (const key of ['message', 'previousStartupCommit', 'refreshedAt']) assert.equal(Object.hasOwn(last, key), false);
     last = await refreshPreview({ ...original.handle, revision: last.ownership.revision, effects });
