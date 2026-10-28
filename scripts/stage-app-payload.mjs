@@ -100,7 +100,7 @@ export async function stageAppPayload(contents) {
   stageBundleServices(contents, path.join(root, 'src-tauri/service-helper/target/release/mandible-service'));
   const runtime = run('/bin/sh', [path.join(root, 'scripts/bun-runtime.sh')]);
   fs.mkdirSync(path.join(resources, 'handoff'), { recursive: true });
-  for (const [source, name] of [['src/sqlite.ts', 'sqlite.mjs'], ['src/runtime-handoff-proof.ts', 'proof.mjs'], ['scripts/runtime-handoff.mjs', 'helper.mjs']]) {
+  for (const [source, name] of [['scripts/runtime-handoff.mjs', 'helper.mjs']]) {
     run(runtime, ['build', path.join(root, source), '--target', 'bun', '--outfile', path.join(resources, 'handoff', name)]);
   }
   const sqlite = run(runtime, [path.join(root, 'scripts/sqlite-runtime-install.mjs')]);
@@ -137,7 +137,7 @@ case "\${1:-}" in
 esac
 `, { mode: 0o755 });
   const commitInfo = run('git', ['show', '-s', '--format=%s%n%cI', provenance.commit]).split('\n');
-  const release = { schema: RELEASE_SCHEMA, version: JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version,
+  const release = { schema: RELEASE_SCHEMA, handoff_protocol: 2, version: JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version,
     layout: { kind: 'macos-app', roots: { resources: '.', executables: '../MacOS', libraries: '../Frameworks', agents: '../Library/LaunchAgents' } },
     target: `${process.platform}-${process.arch}`, provenance: { ...provenance, summary: commitInfo[0], date: commitInfo[1], bun_revision: run(runtime, ['--revision']) },
     qualification: { bun_sha256: hash(runtime), sqlite_sha256: hash(sqlite), caddy_sha256: hash(caddy) },

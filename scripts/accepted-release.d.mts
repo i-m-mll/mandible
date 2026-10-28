@@ -14,7 +14,7 @@ export const ACCEPTED_RELEASE_SCHEMA: string;
 export function applicationIdentity(app: string): string;
 export function readAcceptedReleaseReceipt(reference: string, expectedCandidate?: AcceptedReleaseCandidate): AcceptedReleaseReceipt;
 export function resolveAcceptedRelease(reference: string, expectedCandidate?: AcceptedReleaseCandidate): { receipt: AcceptedReleaseReceipt; app: string; resources: string };
-export function disposeAcceptedRelease(reference: string, expectedCandidate: AcceptedReleaseCandidate, reason: string): Promise<{ action: string; reason: string; remaining?: string[] }>;
+export function disposeAcceptedRelease(reference: string, expectedCandidate: AcceptedReleaseCandidate, reason: string, options?: { home?: string; assertHeld?: () => void }): Promise<{ action: string; reason: string; remaining?: string[] }>;
 export interface PendingRelease {
   root: string; runId: string; app: string; resources: string;
   ownership: { root: string; runId: string; instanceId: string; project: string; workUnit: string; [key: string]: unknown };

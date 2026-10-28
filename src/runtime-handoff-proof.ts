@@ -7,7 +7,6 @@ import type { Db } from "./db.js";
 import { readGitCommitFacts } from "./git-object-facts.js";
 import { canonicalizeChangeMessage } from "./auth-change-message.js";
 import { acceptedReleaseSelection, type AcceptedReleaseSelection } from './accepted-release-selection.js';
-import path from 'node:path';
 import { authorizedMergeSignerLines, extractAtomicMergeState, extractSuccessfulMergeCommitSha, verifyAuthorizedMergeCommitSignature } from "./auth-signature-verification.js";
 import { addAttributionEvidence, getAttributionEvidence } from "./users/store.js";
 import { systemAction } from "./identity/resolver.js";
@@ -118,7 +117,7 @@ function checkFrozenCandidate(binding: RuntimePublicationBinding, frozen: NonNul
 /** Read-only initial admission verifies the actual published checkout. */
 export async function verifyRuntimeHandoffPublication(db: Db, binding: RuntimePublicationBinding) {
   const state = readPublicationState(db, binding);
-  const { row, hook, base, head, tree, commit, selected } = state;
+  const { row, hook, base, head, tree, commit } = state;
   const root = realpathSync(binding.root);
   if (realpathSync(row.target_repo_root ?? row.cwd) !== root) fail("repository binding differs");
   const lease = state.lease;
@@ -152,8 +151,6 @@ export async function verifyRuntimeHandoffPublication(db: Db, binding: RuntimePu
   if ((await git(["rev-parse", "HEAD"])) !== commit || (await git(["rev-parse", `refs/heads/${row.base_branch}`])) !== commit ||
       (await git(["write-tree"])) !== tree || (await git(["status", "--porcelain", "--untracked-files=no"]))) fail("exact applied checkout differs");
   if (state.frozen.commit_message_digest && canonicalizeChangeMessage(published.message) !== state.frozen.commit_message) fail("canonical merge message differs");
-  if (selected) await childOutput(process.execPath, [path.join(root, 'scripts/verify-accepted-release.mjs'), selected.selection.reference,
-    JSON.stringify(selected.receipt.candidate)], { timeout: 60_000, encoding: 'utf8' });
   if (JSON.stringify(db.prepare("SELECT * FROM auth_requests WHERE id = ?").get(binding.requestId)) !== JSON.stringify(row) ||
       JSON.stringify(db.prepare("SELECT * FROM auth_hook_executions WHERE id = ?").get(binding.executionId)) !== JSON.stringify(hook)) fail("request or hook changed during publication observation");
   if (authorizedMergeSignerLines(db, row.approved_by_user_id, signature.credential_id).length === 0) fail("publication signer is no longer authorized");

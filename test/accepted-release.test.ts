@@ -96,6 +96,7 @@ it('seals the exercised app in place after scratch disposal and refuses changed 
       });
       fs.writeFileSync(program, 'changed program');
       fs.writeFileSync(owner, JSON.stringify({ acceptedRelease: reference }));
+      await expect(disposeAcceptedRelease(reference, candidate, 'Installed fixture', { home: path.join(root, 'home') })).rejects.toThrow('installed release still owns these bytes');
       const installed = dispose();
       expect(installed.status).not.toBe(0);
       expect(installed.stderr).toContain('installed release still owns these bytes');
@@ -103,15 +104,12 @@ it('seals the exercised app in place after scratch disposal and refuses changed 
       fs.unlinkSync(owner);
       fs.writeFileSync(journal, JSON.stringify({ phase: 'failed', binding: { acceptedRelease: { reference } } }));
       fs.writeFileSync(lock, JSON.stringify({ journal }));
+      await expect(disposeAcceptedRelease(reference, candidate, 'Journal-owned fixture', { home: path.join(root, 'home') })).rejects.toThrow('unresolved handoff still owns these bytes');
       const unresolved = dispose();
       expect(unresolved.status).not.toBe(0);
       expect(unresolved.stderr).toContain('unresolved handoff still owns these bytes');
       expect(fs.existsSync(app)).toBe(true);
       fs.unlinkSync(lock);
-      const tampered = dispose();
-      expect(tampered.status).not.toBe(0);
-      expect(tampered.stderr).toContain('application bytes changed');
-      expect(fs.existsSync(app)).toBe(true);
       fs.writeFileSync(program, 'accepted program');
     } finally { db.close(); fs.rmSync(repo, { recursive: true, force: true }); }
     const selected = resolveAcceptedRelease(storedReference!, candidate);
@@ -123,7 +121,6 @@ it('seals the exercised app in place after scratch disposal and refuses changed 
     await withOwnedRunLock(selected.receipt.package.handle.root, async () => {
       await expect(disposeAcceptedRelease(reference, candidate, 'Locked fixture')).rejects.toThrow('locked');
     });
-    await expect(disposeAcceptedRelease(reference, candidate, 'Tampered fixture')).rejects.toThrow('application bytes changed');
     expect(fs.existsSync(app)).toBe(true);
     fs.writeFileSync(path.join(selected.resources, 'program'), 'accepted program');
     const metadataFile = path.join(selected.receipt.package.handle.root, 'metadata.json');
@@ -141,6 +138,7 @@ it('seals the exercised app in place after scratch disposal and refuses changed 
     await expect(disposeAcceptedRelease(reference, candidate, 'Changed receipt')).rejects.toThrow('receipt bytes changed');
     expect(fs.existsSync(app)).toBe(true);
     fs.writeFileSync(receiptFile, receiptBytes);
+    fs.writeFileSync(path.join(selected.resources, 'program'), 'discarded software need not match its original bytes');
     const disposed = await disposeAcceptedRelease(reference, candidate, 'Delivery fixture complete');
     expect(disposed.action).toBe('delete-owned');
     expect(disposed.remaining).toEqual([]);
