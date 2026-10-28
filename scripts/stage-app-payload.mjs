@@ -142,7 +142,8 @@ esac
     target: `${process.platform}-${process.arch}`, provenance: { ...provenance, summary: commitInfo[0], date: commitInfo[1], bun_revision: run(runtime, ['--revision']) },
     qualification: { bun_sha256: hash(runtime), sqlite_sha256: hash(sqlite), caddy_sha256: hash(caddy) },
     entrypoints: { daemon: 'dist/index.js', cli: 'bin/mandible', channel: 'dist/channel-server/index.js', controller: 'scripts/local-runtime.mjs', trustSetup: 'scripts/local-ca-trust.mjs', service: 'scripts/bundle-service.mjs' },
-    resources: { ...Object.fromEntries(['backend', 'gateway'].map(role => [`${role}Agent`, `../Library/LaunchAgents/${bundleServiceLabel(role)}.plist`])), mandibleSkill: 'cli/skills/mandible/SKILL.md' }, native, signing };
+    resources: { ...Object.fromEntries(['backend', 'gateway'].map(role => [`${role}Agent`, `../Library/LaunchAgents/${bundleServiceLabel(role)}.plist`])), mandibleSkill: 'cli/skills/mandible/SKILL.md' },
+    serviceExecutables: { backend: 'bun', gateway: 'caddy' }, native, signing };
   fs.writeFileSync(path.join(resources, 'release.json'), `${JSON.stringify(inventoryRelease(resources, release), null, 2)}\n`);
   return { resources, packageCount, release };
 }

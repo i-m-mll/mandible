@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { spawn } from 'node:child_process';
 import { serviceInstallationContext } from './service-definitions.mjs';
 import { readServiceConfiguration, servicePath } from './service-configuration.mjs';
 import { admitBundleOwner, readBundleLaunch, bundleLaunchAllowed, bundleLoginSession } from './bundle-services.mjs';
@@ -23,7 +22,8 @@ if (fs.existsSync(activeFile)) {
   const active = JSON.parse(fs.readFileSync(activeFile, 'utf8'));
   const journal = JSON.parse(fs.readFileSync(active.journal, 'utf8'));
   if (journal.bindingDigest !== active.bindingDigest) throw new Error('Runtime handoff owner changed.');
-  if (!journal.launch) process.exit(0);
+  if (journal.attempt?.state === 'running' && !journal.attempt.effects?.services?.issuedAt) process.exit(0);
+  if (!journal.attempt && !journal.launch && !['failed', 'complete', 'acknowledged', 'retired'].includes(journal.phase)) process.exit(0);
 }
 const preference = readBundleLaunch(context);
 if (bundleLaunchAllowed(preference, bundleLoginSession(), role)) {
@@ -54,12 +54,8 @@ if (bundleLaunchAllowed(preference, bundleLoginSession(), role)) {
   } else {
     prepareGatewayAdmin(context.home);
     if (!fs.existsSync(path.join(context.runtimeDir, 'Caddyfile'))) throw new Error('Gateway configuration is missing.');
-    const child = spawn(environment.MANDIBLE_CADDY, ['run', '--config', path.join(context.runtimeDir, 'Caddyfile'), '--adapter', 'caddyfile'],
-      { cwd: context.runtimeDir, env: process.env, stdio: 'inherit' });
-    const forward = signal => child.kill(signal);
-    process.on('SIGTERM', () => forward('SIGTERM'));
-    process.on('SIGINT', () => forward('SIGINT'));
-    child.on('error', error => { throw error; });
-    child.on('exit', (code, signal) => { process.exitCode = signal ? 1 : code; });
+    process.chdir(context.runtimeDir);
+    process.execve(environment.MANDIBLE_CADDY, [environment.MANDIBLE_CADDY, 'run', '--config', path.join(context.runtimeDir, 'Caddyfile'), '--adapter', 'caddyfile'], process.env);
+    throw new Error('Gateway exec unexpectedly returned.');
   }
 }

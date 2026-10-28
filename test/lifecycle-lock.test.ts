@@ -4,7 +4,7 @@ import path from 'node:path';
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { inspectLifecycleLock, recoverLifecycleLock, withLifecycleLock, withInstallationGatewayLock } from '../scripts/lifecycle-lock.mjs';
+import { inspectLifecycleLock, recoverLifecycleLock, withLifecycleLock, withInstallationGatewayLock, assertLifecycleLockHeld } from '../scripts/lifecycle-lock.mjs';
 import { saveOwnedMetadata } from '../scripts/owned-run.mjs';
 import { testRuntimeRoot } from './helpers/runtime-isolation';
 import { STATE_DEADLINE_MS, waitUntil } from './helpers/wait-until';
@@ -127,6 +127,23 @@ describe.skipIf(process.platform !== 'darwin')('lifecycle lock ownership', () =>
     expect(fs.existsSync(metadata)).toBe(false);
     await withLifecycleLock(f.root, () => saveOwnedMetadata(metadata, { recovered: true }), { recoverStale: true });
     expect(JSON.parse(fs.readFileSync(metadata, 'utf8'))).toEqual({ recovered: true });
+  });
+
+  it('keeps an inner observation lease bound to its installation lease lifetime', async () => {
+    const f = fixture();
+    await expect(withLifecycleLock(f.root, async () => {
+      const gateway = JSON.parse(fs.readFileSync(f.ownerFile, 'utf8'));
+      await withLifecycleLock(path.join(f.root, 'observation'), async () => {
+        process.kill(gateway.guardPid, 'SIGKILL');
+        await waitUntil(() => {
+          try { assertLifecycleLockHeld(); return false; }
+          catch (error) { if ((error as { code?: string }).code === 'PROCESS_LOCK_LOST') return true; throw error; }
+        }, 'ancestor installation loss to stop the observation');
+        expect(() => saveOwnedMetadata(path.join(f.root, 'forbidden.json'), { mutated: true })).toThrow(expect.objectContaining({ code: 'PROCESS_LOCK_LOST' }));
+      });
+    }, { recoverStale: true })).rejects.toMatchObject({ code: 'PROCESS_LOCK_LOST' });
+    expect(fs.existsSync(path.join(f.root, 'forbidden.json'))).toBe(false);
+    expect(await inspectLifecycleLock(f.root)).toEqual({ state: 'free' });
   });
 
   it('keeps delegated gateway effects bound to the exact kernel holder lifetime', async () => {

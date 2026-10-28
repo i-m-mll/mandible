@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import { createOwnedRun, saveOwnedMetadata } from '../scripts/owned-run.mjs';
 import { runSupervisedCommand } from '../scripts/process-group-supervisor.mjs';
 import { createAuthCheckRepo, createMigratedDb, insertSiblingMergeRequest } from './helpers/auth-queue-fixtures.js';
-import { readBootstrapAcceptanceEvidence } from './helpers/bootstrap-delivery-api.js';
+import { readCandidateAcceptanceEvidence } from './helpers/candidate-acceptance-evidence.js';
 import { CandidateAcceptanceRuns } from '../src/candidate-acceptance.js';
 import { STATE_DEADLINE_MS } from './helpers/wait-until.js';
 import { acceptanceDeadline } from '../scripts/acceptance-deadline.mjs';
@@ -424,7 +424,7 @@ it.each([false, true])('records nested acceptance diagnostics through private cl
       () => ({ repoRoot: repo, pinSha: 'pin', projectId: 'private-project', workUnitId: 'private-unit', env: {} }));
     await runs.idle();
     const packet = path.join(scratch, 'outer-failure.json');
-    fs.writeFileSync(packet, JSON.stringify({ candidateAcceptance: readBootstrapAcceptanceEvidence(db, 'outer-request') }));
+    fs.writeFileSync(packet, JSON.stringify({ candidateAcceptance: readCandidateAcceptanceEvidence(db, 'outer-request') }));
     fs.rmSync(home, { recursive: true });
     const retained = JSON.parse(fs.readFileSync(packet, 'utf8')).candidateAcceptance;
     expect(JSON.stringify(retained.result).length).toBeLessThanOrEqual(64 * 1024);

@@ -64,6 +64,7 @@ export function readInstalledRelease(root) {
     if (!/^[a-f0-9]{64}$/.test(release.files[relative]?.sha256 ?? '')) throw new Error(`Unidentified installed resource: ${relative}`);
     releaseFile(root, relative, release.layout);
   }
+  if (release.serviceExecutables && (release.serviceExecutables.backend !== 'bun' || release.serviceExecutables.gateway !== 'caddy')) throw new Error('Invalid native service executable contract.');
   return release;
 }
 
