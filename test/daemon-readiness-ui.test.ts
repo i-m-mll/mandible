@@ -25,8 +25,10 @@ describe("daemon splash predicates", () => {
       [{ rebuilding: true, ready: true }, true],
       [{ ready: false }, true],
       [{}, true],
-      [{ ready: true }, false],
-      [{ ready: true, rebuilding: false }, false],
+      [{ ready: true }, true],
+      [{ status: 'failed', ready: true }, true],
+      [{ status: 'ok', ready: true, warm: false }, false],
+      [{ status: 'ok', ready: true, rebuilding: false }, false],
     ];
     for (const [health, expected] of cases) expect(daemonNeedsSplash(health), JSON.stringify(health)).toBe(expected);
   });
@@ -47,10 +49,10 @@ describe("daemon splash predicates", () => {
   });
 
   it("releases an announced rebuild only on a new epoch and recovers a missed rebuild from epoch drift", () => {
-    expect(daemonIsReadyAfterEpoch({ ready: true, startup_epoch: oldEpoch }, oldEpoch, true)).toBe(false);
-    expect(daemonIsReadyAfterEpoch({ ready: true }, oldEpoch, true)).toBe(false);
-    expect(daemonIsReadyAfterEpoch({ ready: true, startup_epoch: newEpoch }, oldEpoch, true)).toBe(true);
-    expect(daemonIsReadyAfterEpoch({ ready: true }, null, false)).toBe(true);
+    expect(daemonIsReadyAfterEpoch({ status: 'ok', ready: true, startup_epoch: oldEpoch }, oldEpoch, true)).toBe(false);
+    expect(daemonIsReadyAfterEpoch({ status: 'ok', ready: true }, oldEpoch, true)).toBe(false);
+    expect(daemonIsReadyAfterEpoch({ status: 'ok', ready: true, warm: false, startup_epoch: newEpoch }, oldEpoch, true)).toBe(true);
+    expect(daemonIsReadyAfterEpoch({ status: 'ok', ready: true }, null, false)).toBe(true);
     expect(shouldEnterSplashOnBackgroundProbe(
       { ready: true, startup_epoch: newEpoch, startup_commit: { hash: oldEpoch } },
       oldEpoch,
@@ -60,7 +62,7 @@ describe("daemon splash predicates", () => {
 
   it("does not strand a manual restart: bare epoch drift releases without a new commit", () => {
     const requireNewCommit = splashRequiresNewCommit(false);
-    const restarted = { ready: true, startup_epoch: newEpoch, startup_commit: { hash: oldEpoch } };
+    const restarted = { status: 'ok', ready: true, startup_epoch: newEpoch, startup_commit: { hash: oldEpoch } };
     expect(splashRequiresNewCommit(true)).toBe(true);
     expect(daemonEpochChanged(restarted, oldEpoch)).toBe(true);
     expect(daemonIsReadyAfterEpoch(restarted, oldEpoch, true)).toBe(true);
@@ -68,11 +70,12 @@ describe("daemon splash predicates", () => {
   });
 
   it("arms the stall escape only for a healthy daemon held past the window", () => {
-    const healthy = { ready: true, warm: true, startup_epoch: oldEpoch, startup_commit: { hash: oldEpoch } };
+    const healthy = { status: 'ok', ready: true, warm: true, startup_epoch: oldEpoch, startup_commit: { hash: oldEpoch } };
     expect(stallEscapeReady(healthy, 20_000, 15_000)).toBe(true);
     expect(stallEscapeReady(healthy, 5_000, 15_000)).toBe(false);
     expect(stallEscapeReady({ ...healthy, rebuilding: true }, 30_000, 15_000)).toBe(false);
-    expect(stallEscapeReady({ ...healthy, warm: false }, 30_000, 15_000)).toBe(false);
+    expect(stallEscapeReady({ ...healthy, warm: false }, 30_000, 15_000)).toBe(true);
+    expect(stallEscapeReady({ ...healthy, status: 'failed' }, 30_000, 15_000)).toBe(false);
     expect(stallEscapeReady({ ...healthy, ready: false }, 30_000, 15_000)).toBe(false);
     expect(stallEscapeReady(null, 30_000, 15_000)).toBe(false);
   });

@@ -78,6 +78,8 @@ describe("supervised runtime readiness", () => {
 
   it("accepts only a ready health document for the exact installed backend", () => {
     expect(healthDocumentError(health(), expected)).toBeNull();
+    expect(healthDocumentError(health({ warm: false }), expected)).toBeNull();
+    expect(healthDocumentError(health({ status: 'failed', warm: true }), expected)).toContain('not ready');
     expect(healthDocumentError(null, expected)).toContain("malformed");
     expect(healthDocumentError(health({ ready: false }), expected)).toContain("not ready");
     expect(healthDocumentError(health({ instance: { ...health().instance, installation_id: "other" } }), expected)).toContain("different");

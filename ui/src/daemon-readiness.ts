@@ -17,6 +17,7 @@
 
 /** The subset of `/api/health` the splash decision depends on. */
 export interface DaemonHealthSnapshot {
+  status?: string;
   /** Old daemon is shutting down for a self-merge rebuild. */
   rebuilding?: boolean;
   /** Issue a09b4d2 — a merged self-update whose rebuild or runtime handoff failed. */
@@ -49,14 +50,14 @@ export interface DaemonHealthSnapshot {
  * NOT ready for normal use). A `null` snapshot means the health fetch failed —
  * keep the splash up and keep polling.
  *
- * Splash persists while: health fetch fails, OR `rebuilding === true`, OR
+ * Splash persists while: health is unavailable or not ok, OR `rebuilding === true`, OR
  * `ready !== true`.
  */
 export function daemonNeedsSplash(health: DaemonHealthSnapshot | null | undefined): boolean {
   if (!health) {
     return true;
   }
-  if (health.rebuilding === true) {
+  if (health.status !== 'ok' || health.rebuilding === true) {
     return true;
   }
   return health.ready !== true;
@@ -175,7 +176,7 @@ export function splashRequiresNewCommit(announcedRebuild: boolean): boolean {
  *
  * Bug: afaea18 — a stall must never be permanent (dataful-UX policy: a healthy
  * daemon behind a full-page splash the user cannot exit is a bug). Once the
- * (restarted) daemon is ready and warm and is NOT rebuilding — i.e. it is
+ * (restarted) daemon is ready and is NOT rebuilding — i.e. it is
  * healthy on the current commit — and has stayed that way for at least
  * `minStallMs`, the splash must offer a "continue anyway" escape that records
  * the current epoch/commit as last-seen and reloads. This covers an announced
@@ -189,7 +190,6 @@ export function stallEscapeReady(
 ): boolean {
   return (
     daemonIsReady(health)
-    && daemonIsWarm(health)
     && health?.rebuilding !== true
     && stalledForMs >= minStallMs
   );
