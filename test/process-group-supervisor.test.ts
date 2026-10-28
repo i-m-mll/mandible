@@ -16,6 +16,48 @@ afterEach(() => {
   for (const root of temporaryRoots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
+it('joins nested detached acceptance groups before the outer abort kills their parent', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-nested-abort-'));
+  temporaryRoots.push(root);
+  const helper = new URL('../scripts/process-group-supervisor.mjs', import.meta.url).href;
+  const leaf = `import fs from 'node:fs'; process.on('SIGTERM', () => {}); fs.writeFileSync(${JSON.stringify(path.join(root, 'worker'))}, String(process.pid)); setInterval(() => {}, 1000);`;
+  const wrap = (name: string, child: string, graceMs: number) => `
+    import fs from 'node:fs';
+    import { runSupervisedCommand } from ${JSON.stringify(helper)};
+    fs.writeFileSync(${JSON.stringify(path.join(root, name))}, String(process.pid));
+    setInterval(() => {}, 1000);
+    await runSupervisedCommand(process.execPath, ['--input-type=module', '-e', ${JSON.stringify(child)}],
+      { timeout: 3000, deadline: Number(process.env.TEST_NESTED_DEADLINE), graceMs: ${graceMs}, stdio: 'inherit' })
+      .catch(() => { process.stderr.write(${JSON.stringify(name + '-joined\n')}); });
+  `;
+  const controller = new AbortController();
+  const deadline = Date.now() + 4000;
+  const completed = runSupervisedCommand(process.execPath, ['--input-type=module', '-e', wrap('candidate', wrap('route', leaf, 100), 300)], {
+    env: { ...process.env, TEST_NESTED_DEADLINE: String(deadline) }, capture: true, signal: controller.signal,
+    timeout: 3000, deadline, graceMs: 750,
+  }).then(() => { throw new Error('Ignoring parent unexpectedly succeeded'); }, error => error);
+  try {
+    await waitUntil(() => fs.existsSync(path.join(root, 'worker')), 'the nested detached worker to start');
+    controller.abort();
+    const failure = await completed;
+    expect(failure).toMatchObject({ code: 'ABORT_ERR', processGroupSettled: true });
+    expect(failure.stderr).toContain('route-joined');
+    expect(failure.stderr).toContain('candidate-joined');
+    for (const name of ['worker', 'route', 'candidate']) expect(isAlive(Number(fs.readFileSync(path.join(root, name), 'utf8')))).toBe(false);
+    expect(Date.now()).toBeLessThan(deadline);
+  } finally {
+    controller.abort();
+    await completed;
+    for (const name of ['worker', 'route', 'candidate']) {
+      const file = path.join(root, name);
+      if (fs.existsSync(file)) {
+        const pid = Number(fs.readFileSync(file, 'utf8'));
+        if (isAlive(pid)) process.kill(-pid, 'SIGKILL');
+      }
+    }
+  }
+});
+
 it('joins an ignoring-TERM command and descendant inside the inherited deadline, retaining bounded output on deadline or abort', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-stage-timeout-'));
   temporaryRoots.push(root);

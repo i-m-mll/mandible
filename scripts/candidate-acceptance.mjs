@@ -454,7 +454,7 @@ async function main() {
     let builtApp = diagnostic?.app;
     if (!diagnostic) {
     const buildLog = fs.openSync(path.join(run, 'build.log'), 'w'); files.push(buildLog);
-    await phase('package_build', () => runSupervisedCommand(runtime, ['run', 'tauri:build', '--', '--bundles', 'app'], { cwd: root, env: buildEnv, stdio: ['ignore', buildLog, buildLog], timeout: budget.remaining(), graceMs: 500, deadline: budget.deadline - 3000 }));
+    await phase('package_build', () => runSupervisedCommand(runtime, ['run', 'tauri:build', '--', '--bundles', 'app'], { cwd: root, env: buildEnv, stdio: ['ignore', buildLog, buildLog], timeout: budget.remaining(), graceMs: 250, deadline: budget.deadline - 3000 }));
     if (readBuildRevision(root) !== candidate) throw new Error('Built daemon revision does not match the exact candidate.');
     builtApp = path.join(root, 'src-tauri', 'target', 'release', 'bundle', 'macos', 'Mandible.app');
     }
@@ -527,7 +527,7 @@ async function main() {
     const routeCostOut = fs.openSync(routeCostFile, 'w'); files.push(routeCostOut);
     const routeCostLog = fs.openSync(path.join(run, 'route-cost.log'), 'w'); files.push(routeCostLog);
     const sweepTotal = Math.min(20_000, budget.remaining());
-    const sweepFailure = await runSupervisedCommand(runtime, routeCostSweepArgs(run, sweepTotal), { cwd: root, env: buildEnv, stdio: ['ignore', routeCostOut, routeCostLog], timeout: Math.max(1, sweepTotal - 1600), graceMs: 750, deadline: Math.min(budget.deadline - 5000, Date.now() + sweepTotal) }).then(() => null, error => error);
+    const sweepFailure = await runSupervisedCommand(runtime, routeCostSweepArgs(run, sweepTotal), { cwd: root, env: buildEnv, stdio: ['ignore', routeCostOut, routeCostLog], timeout: Math.max(1, sweepTotal - 700), graceMs: 300, deadline: Math.min(budget.deadline - 5000, Date.now() + sweepTotal) }).then(() => null, error => error);
     const progressFile = path.join(run, sweepWorkDirectory, 'progress.json');
     result.checks.route_cost = routeCostCheck(fs.readFileSync(fs.existsSync(progressFile) ? progressFile : routeCostFile, 'utf8'));
     if (sweepFailure) throw new Error(`Route-cost sweep failed: ${result.checks.route_cost
