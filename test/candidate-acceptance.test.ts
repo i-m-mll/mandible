@@ -12,6 +12,69 @@ import { createAuthCheckRepo, createMigratedDb, insertSiblingMergeRequest } from
 import { readBootstrapAcceptanceEvidence } from './helpers/bootstrap-delivery-api.js';
 import { CandidateAcceptanceRuns } from '../src/candidate-acceptance.js';
 import { STATE_DEADLINE_MS } from './helpers/wait-until.js';
+import { acceptanceDeadline } from '../scripts/acceptance-deadline.mjs';
+
+it('inherits the preparation deadline without renewing its cleanup reserve', () => {
+  let now = 1000;
+  const executor = acceptanceDeadline({}, () => now);
+  now += 12_000;
+  const script = acceptanceDeadline(executor.env, () => now);
+  expect(script.deadline).toBe(executor.deadline);
+  expect(script.remaining()).toBe(43_000);
+  now = executor.deadline - 5000;
+  expect(() => script.remaining()).toThrow('cleanup reserve');
+  expect(script.remaining(true)).toBe(5000);
+  expect(script.reading().scope).toContain('executor');
+  now = executor.deadline;
+  expect(() => script.remaining(true)).toThrow('cleanup');
+  expect(() => acceptanceDeadline({ MANDIBLE_ACCEPTANCE_DEADLINE: '90000', MANDIBLE_ACCEPTANCE_STARTED_AT: '1' }, () => 1)).toThrow('Invalid acceptance deadline');
+});
+
+it('zero-soak acceptance still requires a fresh interval covering the completed interaction', async () => {
+  let time = 100;
+  const health = (sequence: number, start: number, end: number) => ({ startup_epoch: 'epoch',
+    eventLoop: { sequence, intervalStartedAt: start, intervalEndedAt: end, warning: false, maxMs: 0 },
+    memory: { sequence, intervalStartedAt: start, intervalEndedAt: end, warning: false },
+  });
+  let probes = 0;
+  await expect(observeAcceptanceHealth({ observationMs: 0, deadlineMs: 20, now: () => time,
+    wait: async () => { time += 5; }, probe: async () => ++probes === 1 ? health(1, 80, 90) : health(2, 90, 105),
+  })).resolves.toEqual(health(2, 90, 105));
+  expect(probes).toBe(2);
+  time = 100;
+  await expect(observeAcceptanceHealth({ observationMs: 0, deadlineMs: 20, now: () => time,
+    wait: async () => { time += 5; }, probe: async () => health(1, 80, 90),
+  })).rejects.toMatchObject({ code: 'stale_diagnostics' });
+});
+
+it.each(['before', 'during', 'within'] as const)('includes retained-package binding in the acceptance-row deadline (%s)', async stage => {
+  const db = createMigratedDb();
+  const repo = createAuthCheckRepo();
+  let now = 1000;
+  let bound = false;
+  try {
+    insertSiblingMergeRequest(db, repo, 'deadline-request', 'main');
+    const original = db.prepare("SELECT title FROM auth_requests WHERE id = 'deadline-request'").get();
+    const runs = new CandidateAcceptanceRuns(db, async input => {
+      expect(input.env.MANDIBLE_ACCEPTANCE_STARTED_AT).toBe('1000');
+      expect(input.env.MANDIBLE_ACCEPTANCE_DEADLINE).toBe('61000');
+      now = stage === 'before' ? 61000 : 59000;
+      return { status: 'passed', result: { status: 'passed' }, error: null };
+    }, () => now, () => {}, () => false, () => () => {
+      bound = true;
+      db.prepare("UPDATE auth_requests SET title = 'bound' WHERE id = 'deadline-request'").run();
+      now = stage === 'during' ? 61000 : 60000;
+    });
+    runs.enqueue('deadline-request', { pin_sha: 'pin', tree_sha: 'tree', base_sha: 'base', head_sha: 'head' },
+      () => ({ repoRoot: repo, pinSha: 'pin', projectId: 'project', workUnitId: 'unit', env: {} }));
+    await runs.idle();
+    const row = db.prepare("SELECT status, finished_at, error FROM auth_candidate_acceptances WHERE auth_request_id = 'deadline-request'").get() as any;
+    expect(row.status).toBe(stage === 'within' ? 'passed' : 'failed');
+    expect(row.finished_at).toBe(now);
+    expect(bound).toBe(stage !== 'before');
+    expect(db.prepare("SELECT title FROM auth_requests WHERE id = 'deadline-request'").get()).toEqual(stage === 'within' ? { title: 'bound' } : original);
+  } finally { db.close(); fs.rmSync(repo, { recursive: true, force: true }); }
+});
 
 describe('production acceptance evidence', () => {
   it('retains known route evidence without claiming unperformed acceptance phases', () => {

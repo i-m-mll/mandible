@@ -45,6 +45,7 @@ unclassified, or when a request does not succeed.
   --work-root <path>    Parent directory for this sweep's private working files
   --budget-ms <n>       Total budget including preparation and cleanup
   --diagnostic         Nonqualifying auth-queue phase probe, at most one confirmation
+  --representative     Qualifying required release families, two passes, one lifetime, no confirmations
   --threshold-ms <n>    Fail at or above this turn (default HANDLER_TURN_BUDGET_MS)
   --passes <n>          Requests per variant; the first is cold (default 2)
   --only <regex>        Exercise only routes whose path matches; others report as excluded
@@ -64,6 +65,7 @@ export function parseSweepOptions(args: string[]) {
       "budget-ms": { type: "string", default: "900000" },
       "report-file": { type: "string" },
       diagnostic: { type: "boolean", default: false },
+      representative: { type: "boolean", default: false },
       "threshold-ms": { type: "string", default: String(HANDLER_TURN_BUDGET_MS) },
       passes: { type: "string", default: "2" },
       only: { type: "string" },
@@ -123,6 +125,7 @@ interface SweepRequest {
   label: string;
   url: PerPass<string>;
   body?: PerPass<unknown>;
+  continuation?: boolean;
 }
 type Plan =
   | { kind: "exercise"; requests: SweepRequest[] }
@@ -531,6 +534,38 @@ export function planRoute(route: CatalogRoute, allowedEffects: Set<string>, fx: 
   return { kind: "exercise", requests: [req(route.path)] };
 }
 
+/** Select from the classified request plans; this is a release policy, not another route registry. */
+export function selectRepresentatives(planned: Planned[], fx: Fixtures): Planned[] {
+  const required = new Map<string, (request: SweepRequest) => boolean>([
+    ["POST /api/timeline/project", () => true],
+    ["GET /api/graph", request => String(request.url).includes("limit=120")],
+    ["GET /api/artifacts", request => String(request.url).includes("limit=500")],
+    ["GET /api/artifacts/series", request => String(request.url).includes("summary=true")],
+    ["GET /api/auth/queue", () => true],
+    ["GET /api/ledger/issues/:issueId/umbrella-status", request => String(request.url).includes("deep=1")],
+    ["GET /api/sessions/:id/overview", () => true],
+    ["GET /api/briefings/:briefingId", () => true],
+    ["GET /api/conversations/sidebar", request => String(request.url).includes("limit=50")],
+    ["GET /api/conversations/:id/structure", request => String(request.url) === `/api/conversations/${fx.bigConversation}/structure`],
+    ["GET /api/conversations/:id/blocks", request => String(request.url) === `/api/conversations/${fx.bigConversation}/blocks?limit=200`],
+    ["GET /api/work-units", request => String(request.url).includes("state=all")],
+  ]);
+  const unclassified = planned.filter(entry => entry.plan.kind === "unclassified");
+  if (unclassified.length) throw new Error(`Unclassified catalog: ${unclassified.map(entry => `${entry.route.method} ${entry.route.path}`).join(", ")}`);
+  const selected = planned.map(entry => {
+    const key = `${entry.route.method} ${entry.route.path}`;
+    const select = required.get(key);
+    if (!select) return { ...entry, plan: skip("classified; outside release representatives") };
+    required.delete(key);
+    if (entry.plan.kind !== "exercise") throw new Error(`Required family unavailable: ${key} (${entry.plan.reason})`);
+    const requests = entry.plan.requests.filter(select);
+    if (!requests.length) throw new Error(`Required variants unavailable: ${key}`);
+    return { ...entry, plan: { kind: "exercise" as const, requests } };
+  });
+  if (required.size) throw new Error(`Required families absent from catalog: ${[...required.keys()].join(", ")}`);
+  return selected;
+}
+
 // --- fixtures --------------------------------------------------------------
 
 type Fixtures = ReturnType<typeof readFixtures>;
@@ -589,8 +624,8 @@ export function readFixtures(dbPath: string) {
   const issue = lazy((db) => one<{ id: string; short_id: string }>(db, "issue", `
       SELECT i.id, i.short_id FROM ledger_issues i JOIN ledger_comments c ON c.issue_id = i.id
       WHERE i.project_id = ? AND i.short_id != '' GROUP BY i.id ORDER BY count(*) DESC LIMIT 1`, project().id));
-  const umbrella = lazy((db) => one<{ id: string }>(db, "umbrella", `
-      SELECT i.id FROM ledger_issues i JOIN ledger_issue_relationships r ON r.source_issue_id = i.id
+  const umbrella = lazy((db) => one<{ id: string; children: number }>(db, "umbrella", `
+      SELECT i.id, count(*) AS children FROM ledger_issues i JOIN ledger_issue_relationships r ON r.source_issue_id = i.id
       WHERE i.kind = 'umbrella' AND r.relationship_type = 'parent_child' GROUP BY i.id ORDER BY count(*) DESC LIMIT 1`));
   const umbrellaChildren = lazy((db) => (db.prepare(`
       SELECT target_issue_id FROM ledger_issue_relationships WHERE source_issue_id = ? AND relationship_type = 'parent_child'
@@ -627,9 +662,9 @@ export function readFixtures(dbPath: string) {
   });
   const bigConversations = lazy((db) => {
     const value = (db.prepare(`
-      SELECT c.id, c.session_id, ${INDEXED_SOURCE_COLUMNS} ${INDEXED_SOURCE_JOINS}
+      SELECT c.id, c.session_id, c.block_count, ${INDEXED_SOURCE_COLUMNS} ${INDEXED_SOURCE_JOINS}
        AND c.started_at >= datetime('now', '-3 days')
-       ORDER BY c.block_count DESC LIMIT 200`).all({ idle_before: Date.now() - FIXTURE_IDLE_MS }) as (IndexedSourceRow & { id: string; session_id: string })[])
+       ORDER BY c.block_count DESC LIMIT 200`).all({ idle_before: Date.now() - FIXTURE_IDLE_MS }) as (IndexedSourceRow & { id: string; session_id: string; block_count: number })[])
       .filter(sourceIsIndexed).slice(0, 1);
     if (value.length === 0) throw new MissingFixture("conversation");
     return value;
@@ -707,6 +742,17 @@ export function readFixtures(dbPath: string) {
     get conversations() { return [...bigConversations().map((row) => row.id), recentConversation().id]; },
     get bigConversation() { return bigConversations()[0].id; },
     get bigConversationSession() { return bigConversations()[0].session_id; },
+    get sizes() {
+      const db = new SqliteDatabase(dbPath, { readonly: true, fileMustExist: true });
+      try {
+        const count = (table: string) => (db.prepare(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }).n;
+        const tables = Object.fromEntries(["ledger_issues", "ledger_comments", "sessions", "conversations", "artifact", "artifact_version", "work_units", "briefings", "auth_requests"].map(table => [table, count(table)]));
+        return { tables, selected: { umbrella: umbrella(),
+          session: { id: session().id, children: (db.prepare("SELECT count(*) AS n FROM sessions WHERE parent_id = ?").get(session().id) as { n: number }).n },
+          briefing: { id: briefing().id, rounds: (db.prepare("SELECT round_count AS n FROM briefings WHERE id = ?").get(briefing().id) as { n: number }).n },
+          conversation: { id: bigConversations()[0].id, blocks: bigConversations()[0].block_count } } };
+      } finally { db.close(); }
+    },
     get consoleSession() { return consoleSession()?.id ?? null; },
     get spawn() { return spawn()?.id ?? null; },
     get space() { return space()?.id ?? null; },
@@ -802,6 +848,7 @@ interface Response {
   status: number;
   bytes: number;
   head: string;
+  json?: unknown;
 }
 
 function socketRequest(socketPath: string, method: string, url: string, body?: unknown): Promise<Response> {
@@ -820,11 +867,16 @@ function socketRequest(socketPath: string, method: string, url: string, body?: u
     }, (response) => {
       let bytes = 0;
       let head = "";
+      let json = "";
       response.on("data", (chunk: Buffer) => {
         bytes += chunk.length;
+        if (opts.representative && bytes <= 16 * 1024 * 1024) json += chunk.toString("utf8");
         if (head.length < 400) head += chunk.toString("utf8", 0, Math.min(chunk.length, 400 - head.length));
       });
-      response.on("end", () => resolve({ status: response.statusCode ?? 0, bytes, head }));
+      response.on("end", () => {
+        try { resolve({ status: response.statusCode ?? 0, bytes, head, ...(opts.representative && response.statusCode === 200 ? { json: JSON.parse(json) } : {}) }); }
+        catch (error) { reject(new Error(`Representative response is invalid JSON or exceeds 16MiB: ${String(error)}`)); }
+      });
       response.on("error", reject);
     });
     request.on("error", reject);
@@ -898,7 +950,35 @@ interface Measured {
   t0: number;
   t1: number;
   worstTurnMs: number;
+  response?: ReturnType<typeof representativeResponse>["evidence"];
   error?: string;
+}
+
+/** Existing paging contracts supply continuation inputs and selected cardinality. */
+export function representativeResponse(request: SweepRequest, value: unknown) {
+  if (!value || typeof value !== "object") throw new Error(`Missing representative response: ${request.label}`);
+  const data = value as Record<string, any>;
+  const counts = Object.fromEntries(Object.entries(data).filter(([, rows]) => Array.isArray(rows)).map(([key, rows]) => [key, (rows as unknown[]).length]));
+  const groups = Array.isArray(data.groups) ? data.groups.map((group: any) => ({ key: group.key, returned: group.conversations?.length, total: group.total, more: Boolean(group.next_cursor) })) : undefined;
+  const evidence = { returned: Array.isArray(value) ? value.length : counts, total: data.total, offset: data.offset, limit: data.limit, page: data.page, groups };
+  let continuation: SweepRequest | undefined;
+  const url = new URL(String(request.url), "http://localhost");
+  if (data.page?.next_row_offset != null) {
+    if (!Number.isInteger(data.page.next_row_offset) || data.page.next_row_offset <= (data.page.row_offset ?? 0)) throw new Error("Timeline continuation did not advance");
+    continuation = { label: `${request.label} continuation`, url: request.url, body: { ...(request.body as object), row_offset: data.page.next_row_offset }, continuation: true };
+  } else if (data.truncated === true && Array.isArray(data.blocks)) {
+    if (!data.blocks.length || !Number.isInteger(data.offset) || !Number.isInteger(data.total)) throw new Error("Block page did not advance");
+    url.searchParams.set("offset", String(data.offset + data.blocks.length));
+    continuation = { label: `${request.label} continuation`, url: url.pathname + url.search, continuation: true };
+  } else if (Array.isArray(data.groups)) {
+    const next = [...data.groups].filter(group => group.next_cursor).sort((a, b) => b.total - a.total)[0];
+    if (next) {
+      url.searchParams.set("group_key", next.key);
+      url.searchParams.set("cursor", next.next_cursor);
+      continuation = { label: `${request.label} continuation`, url: url.pathname + url.search, continuation: true };
+    }
+  }
+  return { evidence, continuation };
 }
 
 /**
@@ -1000,7 +1080,7 @@ async function measureSession(run: Run, planned: Planned[], profile: boolean, tr
   let stopped = false;
   try {
     await readTurn(daemon.socketPath);
-    await phase("idle_baseline", () => budget.wait(BASELINE_MS));
+    if (!opts.representative) await phase("idle_baseline", () => budget.wait(BASELINE_MS));
     const baselineMs = await readTurn(daemon.socketPath);
     const measure = async (entry: Planned, request: SweepRequest, pass: number, record = true) => {
       if (opts.evict && pass === 1 && record) {
@@ -1015,9 +1095,11 @@ async function measureSession(run: Run, planned: Planned[], profile: boolean, tr
       const started = performance.now();
       const url = typeof request.url === "function" ? request.url(pass) : request.url;
       const result: Measured = { trial, label: request.label, url, pass, status: 0, bytes: 0, durationMs: 0, t0, t1: t0, worstTurnMs: 0 };
+      let received: Response | undefined;
       try {
         const body = typeof request.body === "function" ? request.body(pass) : request.body;
         const response = await phase("request", () => socketRequest(daemon.socketPath, entry.route.method, url, body));
+        received = response;
         result.status = response.status;
         result.bytes = response.bytes;
         if (response.status >= 400) result.error = response.head;
@@ -1029,6 +1111,12 @@ async function measureSession(run: Run, planned: Planned[], profile: boolean, tr
       try { result.worstTurnMs = await phase("settle", () => settle(daemon.socketPath, result)); }
       catch (error) { result.error ??= `settle incomplete: ${error instanceof Error ? error.message : String(error)}`; throw error; }
       finally { checkpoint(); }
+      if (opts.representative && received?.status === 200) {
+        const projected = representativeResponse(request, received.json);
+        result.response = projected.evidence;
+        if (pass === 1 && !request.continuation && projected.continuation && entry.plan.kind === "exercise") entry.plan.requests.push(projected.continuation);
+        checkpoint();
+      }
       return result;
     };
     const requestsOf = (entry: Planned) => (entry.plan.kind === "exercise" ? entry.plan.requests : []);
@@ -1134,6 +1222,7 @@ async function main() {
   const totalMs = Number(opts["budget-ms"]);
   if (!Number.isFinite(totalMs) || totalMs <= 5_000 || (opts.diagnostic && totalMs > 45_000)) throw new Error("Invalid total sweep budget; diagnostics require at most 45000 ms including cleanup");
   if (opts.diagnostic && (opts["cpu-prof"] || opts["fresh-each"] || opts.evict || opts.only)) throw new Error("Diagnostic plan is fixed: auth queue, no profiler/eviction/fresh-each/route override");
+  if (opts.representative && (opts.diagnostic || opts["cpu-prof"] || opts["fresh-each"] || opts.evict || opts.only || passes !== 2 || thresholdMs !== HANDLER_TURN_BUDGET_MS || totalMs > 20_000)) throw new Error("Representative plan requires two passes, the production threshold, <=20000ms and no diagnostic/only/fresh-each/eviction/profile overrides");
   budget = new SweepBudget(totalMs, 5_000, Date.now, Number(process.env.MANDIBLE_SWEEP_STARTED_AT) || Date.now());
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "");
   const workRoot = path.resolve(opts["work-root"] ?? path.join(os.homedir(), ".cache", "mandible", "route-cost-sweep"));
@@ -1151,11 +1240,12 @@ async function main() {
   let failure: string | undefined;
   let complete = false;
   let finalReport: Record<string, any> | undefined;
+  let fixtureSizes: unknown;
   const trialsOf = (entry: Planned) => [...new Set(entry.measured.map(reading => reading.trial))]
     .map(trial => entry.measured.filter(reading => reading.trial === trial));
   const progressReport = () => ({
-    schema: "mandible-route-cost-sweep@2", revision, threshold_ms: thresholdMs, confirmation_trials: CONFIRMATION_TRIALS,
-    complete, diagnostic: Boolean(opts.diagnostic), error: failure, progress: budget.progress(),
+    schema: "mandible-route-cost-sweep@2", revision, threshold_ms: thresholdMs, confirmation_trials: opts.representative ? 0 : CONFIRMATION_TRIALS,
+    complete, diagnostic: Boolean(opts.diagnostic), representative: Boolean(opts.representative), fixtures: fixtureSizes, error: failure, progress: budget.progress(),
     counts: { routes: planned.length, measured: planned.filter(entry => entry.measured.length).length,
       requests: planned.reduce((sum, entry) => sum + entry.measured.length, 0) },
     offenders: [], excepted: [], exception_problems: [], unclassified: [], failed_requests: [],
@@ -1214,7 +1304,7 @@ async function main() {
     await phase("cache_preparation", () => copySqlite(path.join(os.homedir(), ".cache", "mandible", "conversations", "search-cache.db"), path.join(conversationsDir, "search-cache.db")));
     const cacheSnapshot = path.join(root, "seeded-conversations");
     fs.mkdirSync(conversationsDir, { recursive: true });
-    await phase("cache_preparation", () => fs.cpSync(conversationsDir, cacheSnapshot, { recursive: true }));
+    if (!opts.representative) await phase("cache_preparation", () => fs.cpSync(conversationsDir, cacheSnapshot, { recursive: true }));
     seedPreviewUserPreferences({ previewRoot: root });
     fs.mkdirSync(path.join(root, "artifacts"), { recursive: true });
     log(`snapshot of ${sourceDb} in ${Math.round(performance.now() - snapshotStarted)} ms`);
@@ -1241,21 +1331,27 @@ async function main() {
       );
       planned = instance.operations.routes.map((route) => ({ route,
         plan: opts.diagnostic && route.method !== "GET" ? { kind: "skip" as const, reason: "nonqualifying diagnostic GET only" } : planRoute(route, allowedEffects, fixtures), measured: [] }));
+      if (opts.representative) {
+        const sizes = fixtures.sizes;
+        fixtureSizes = sizes;
+        if (Object.values(sizes.tables).some(count => count < 1) || sizes.selected.conversation.blocks < 1) throw new Error("Required representative data is missing; full-data qualification is incomplete");
+        planned = selectRepresentatives(planned, fixtures);
+      }
       checkpoint();
     } finally {
-      if (!opts.diagnostic) await stopDaemon(catalogDaemon.child, 30_000);
+      if (!opts.diagnostic && !opts.representative) await stopDaemon(catalogDaemon.child, 30_000);
     }
 
     const exercised = planned.filter((entry) => entry.plan.kind === "exercise")
       .sort((a, b) => writeOrder(a.route) - writeOrder(b.route));
     const readSnapshot = path.join(root, "before-measurement.db");
-    await phase("snapshot", () => snapshot(dbCopy, readSnapshot));
+    if (!opts.representative) await phase("snapshot", () => snapshot(dbCopy, readSnapshot));
     const sessions = opts["fresh-each"]
       ? await sequential(exercised.map((entry) => () => measureSession(run, [entry], opts["cpu-prof"]!)))
-      : [await measureSession(run, planned, opts["cpu-prof"]!, 0, [], opts.diagnostic ? catalogDaemon : undefined)];
+      : [await measureSession(run, planned, opts["cpu-prof"]!, 0, [], opts.diagnostic || opts.representative ? catalogDaemon : undefined)];
     log(`measured ${exercised.length} routes over ${sessions.length} daemon start(s)`);
 
-    suspects = opts.evict ? [] : exercised.filter((entry) => judgeRoute(trialsOf(entry), thresholdMs).overBudget);
+    suspects = opts.evict || opts.representative ? [] : exercised.filter((entry) => judgeRoute(trialsOf(entry), thresholdMs).overBudget);
     checkpoint();
     // Checkpoint before retries: exception validity belongs to the main snapshot.
     const exceptionIssues = openIssueStatus(dbCopy, Object.values(BUDGET_EXCEPTIONS).map((entry) => entry.issue));
@@ -1317,10 +1413,11 @@ async function main() {
       profile: entry.profile ?? null,
     });
     const loadEnd = os.loadavg()[0];
-    complete = !opts.diagnostic;
+    complete = !opts.diagnostic && (!opts.representative || exercised.every(entry => entry.plan.kind === "exercise" && entry.measured.length === entry.plan.requests.length * passes));
+    if (!complete && !opts.diagnostic) throw new Error("Required representative readings are incomplete");
     const report = {
       schema: "mandible-route-cost-sweep@2",
-      complete, diagnostic: Boolean(opts.diagnostic), progress: budget.progress(),
+      complete, diagnostic: Boolean(opts.diagnostic), representative: Boolean(opts.representative), fixtures: fixtureSizes, progress: budget.progress(),
       revision,
       source_db: sourceDb,
       threshold_ms: thresholdMs,
@@ -1329,8 +1426,8 @@ async function main() {
       fresh_each: Boolean(opts["fresh-each"]),
       evict: Boolean(opts.evict),
       timing_gate: !opts.evict,
-      confirmation_trials: opts.evict ? 0 : CONFIRMATION_TRIALS,
-      judging_rule: opts.evict ? "report only; OS cache evicted before each first call" : "same call kind reaches threshold in main and every confirmation trial",
+      confirmation_trials: opts.evict || opts.representative ? 0 : CONFIRMATION_TRIALS,
+      judging_rule: opts.representative ? "any first or warm call reaches threshold; no confirmation" : opts.evict ? "report only; OS cache evicted before each first call" : "same call kind reaches threshold in main and every confirmation trial",
       load: { ...load, end: loadEnd },
       daemon_startup_ms: sessions.map((session) => session.startupMs),
       idle_baseline_ms: Math.max(...sessions.map((session) => session.baselineMs)),
@@ -1363,7 +1460,7 @@ async function main() {
           const turns = trialTurns(readings);
           return { trial: readings[0].trial, first_call_turn_ms: turns.firstCallMs, warm_turn_ms: turns.warmMs };
         }),
-        requests: entry.measured.map(({ label, trial, pass, status, bytes, durationMs, worstTurnMs, t0, t1 }) => ({ label, trial, pass, status, bytes, duration_ms: durationMs, settled_ms: t1 - t0, worst_turn_ms: worstTurnMs })),
+        requests: entry.measured.map(({ label, trial, pass, status, bytes, durationMs, worstTurnMs, t0, t1, response }) => ({ label, trial, pass, status, bytes, duration_ms: durationMs, settled_ms: t1 - t0, worst_turn_ms: worstTurnMs, response })),
       })),
       root: opts.keep ? root : null,
     };
@@ -1459,7 +1556,7 @@ async function supervisedMain() {
     await runSweepWorker(parentBudget, process.execPath, ["--no-install", fileURLToPath(import.meta.url), ...process.argv.slice(2),
       "--work-root", owned, "--report-file", reportFile], {
       cwd: REPO_ROOT, env: { ...process.env, MANDIBLE_SWEEP_WORKER: "1", MANDIBLE_SWEEP_STARTED_AT: String(started) },
-      stdio: "inherit",
+      stdio: "inherit", graceMs: opts.representative ? 100 : undefined,
     });
     processesJoined = true;
     normalExit = true;
