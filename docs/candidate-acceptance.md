@@ -21,7 +21,7 @@ snapshot of the live ledger, with applicable projected conversation caches. The 
 ledger. This gate therefore includes production-data coverage through the sweep,
 while keeping packaged runtime state isolated.
 
-The command builds the finalized application through the installed-release assembler, verifies its signature, resource inventory and candidate provenance, then starts the application's shipped Bun/daemon and Caddy directly. It does not register or upgrade SMAppService jobs. Daemon, gateway and GUI run with the checkout, dotfiles, Homebrew and developer runtime stores denied, and the application read-only. It verifies the exact instance, generation, startup commit and epoch. It creates an operator fixture through that daemon's private socket. The packaged webview uses an isolated, nonpersistent browser store, opens Settings, changes the app theme, and checks the persisted preference revision. The window remains open until a fresh completed production diagnostics interval covers the actual end of the interaction. The ordinary 30-second production sampler is unchanged; acceptance adds no fixed soak after the interaction. Daemon and native logs are assessed after owned processes stop, including shutdown.
+The command builds the finalized application through the installed-release assembler, verifies its signature, resource inventory and candidate provenance, then starts the application's shipped Bun/daemon and Caddy directly. It does not register or upgrade SMAppService jobs. Daemon, gateway and GUI run with the checkout, dotfiles, Homebrew and developer runtime stores denied, and the application read-only. It verifies the exact instance, generation, startup commit and epoch. It creates an operator fixture through that daemon's private socket. The packaged webview uses an isolated, nonpersistent browser store, opens Settings, changes the app theme, and checks the persisted preference revision. The window remains open until a fresh observation from the same production collectors covers the actual end of the interaction, after one collector turn accounts for just-completed blocking work. The ordinary 30-second reporting sampler is unchanged; acceptance does not wait for that reporting tick. Daemon and native logs are assessed after owned processes stop, including shutdown.
 
 The packaged app runs unattended: in acceptance mode its window is never shown, never takes focus, and the app has no Dock icon or menu bar (macOS activation policy `Prohibited`, set before launch). The webview still loads and drives the dashboard.
 
@@ -182,11 +182,22 @@ invariants remain unit-test responsibilities.
 
 Any required first or warm call reaching 100 ms of event-loop drift fails;
 production health retains its 250 ms limit. Packaged Settings interaction runs
-only after route timing. The final health observer uses zero additional soak
-and the remaining active budget, requiring a fresh completed interval covering
-the interaction, valid contiguous sequences, stable startup epoch, and existing
-performance checks. Missing the next production tick fails within the original
-deadline instead of extending it. Phase results, partial route readings,
+only after route timing. Starting at readiness, the observer reads current
+production event-loop and memory diagnostics without resetting the collectors,
+advancing completed sequence numbers, changing warning state, or logging on
+GET. The health response also retains the last completed periodic window.
+Checks enforce continuous coverage across a periodic reset, stable startup
+epoch and exact generation, lag/stall classification, and current memory
+thresholds. Settings completion wakes the abortable poll; one fresh request
+begun after that actual completion lets the existing collector run for a turn
+before the final read. The original active deadline still applies.
+
+This proves contemporaneous workload responsiveness and current memory. A run
+finishing before the first reporting tick does not exercise that periodic
+callback; results record how many periodic windows actually completed during
+observation. The collector contract regression separately checks that live
+reads preserve completed evidence, periodic reset, and warning behavior.
+Phase results, partial route readings,
 bounded stderr, cleanup outcome and the durable owned-run receipt remain
 available on failure. The finished application that ran supplies exact package
 evidence and retained release custody.
