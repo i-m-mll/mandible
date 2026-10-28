@@ -5985,7 +5985,8 @@ export class AuthQueue {
         };
         let verification: RuntimeVerificationResult;
         try {
-          verification = await this.hookManager.verifyCurrentRuntimeHandoff(request, recovery.actor, guard);
+          verification = await this.hookManager.verifyCurrentRuntimeHandoff(request, recovery.actor, guard,
+            (binding, proof) => this.adoptRuntimePublication(binding, proof));
         } catch (error) {
           if (error instanceof AuthQueueError) throw error;
           throw new AuthQueueError("recovery_refused", `Verification-only recovery refused: ${error instanceof Error ? error.message : String(error)}`);

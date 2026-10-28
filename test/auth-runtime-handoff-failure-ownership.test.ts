@@ -1,5 +1,7 @@
 // @vitest-environment node
 import fs from "node:fs";
+import { createHash } from "node:crypto";
+import { addAttributionEvidence } from "../src/users/store.js";
 import path from "node:path";
 import { expect, it, vi } from "vitest";
 import { AuthHookManager } from "../src/auth-hooks.js";
@@ -38,7 +40,17 @@ it("owns failure convergence through its rejection after recording the failed ha
     VALUES ('failure-request', 'merge', 'mandible auth merge feature/x --into main', 'Private failure', 'completed', 0, 'fixture', ?, ?, ?)`).run(now, now, now + 60_000);
   db.prepare(`INSERT INTO auth_hook_executions (id, auth_request_id, hook_id, command, command_digest, state, attempts, exit_code, output, created_at, updated_at)
     VALUES ('failure-run', 'failure-request', 'builtin-mandible-rebuild', 'rebuild', ?, 'pending', 1, 75, ?, ?, ?)`).run("c".repeat(64), `MANDIBLE_RUNTIME_HANDOFF_PENDING:${"a".repeat(64)}`, now, now);
-  const hooks = new AuthHookManager(db);
+  const binding = { requestId: 'failure-request', executionId: 'failure-run', hookId: 'builtin-mandible-rebuild', commandDigest: 'c'.repeat(64), root: '/fixture' };
+  const publication = { schema: 'mandible-runtime-publication@1', ...binding };
+  const digest = createHash('sha256').update(JSON.stringify(publication)).digest('hex');
+  const evidence = addAttributionEvidence(db, { evidence_method: 'credential_signature', details: { runtime_publication: publication, runtime_publication_digest: digest } });
+  const journal = { schema: 'mandible-runtime-handoff@1', binding: { ...binding, publicationEvidence: { evidenceId: evidence.id, digest } },
+    bindingDigest: 'a'.repeat(64), phase: 'failed', error: 'Producer failed before launch',
+    attempt: { id: 'attempt', actor: {}, enteredAt: 1, deadline: 2, state: 'failed', effects: {} } };
+  const hooks = new AuthHookManager(db, { handoffClient: {
+    readRuntimeHandoff: () => journal, readRuntimeHandoffPhase: () => journal.phase,
+    verifyRuntimeHandoffReceipt: async () => {}, acknowledgeRuntimeHandoff: async () => {},
+  } });
   const entered = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   const sentinel = new Error("Failure convergence rejected");
@@ -55,7 +67,7 @@ it("owns failure convergence through its rejection after recording the failed ha
   void reconciliation.then(() => { settled = true; }, () => { settled = true; });
   try {
     await entered.promise;
-    expect(onFailed).toHaveBeenCalledExactlyOnceWith("failure-request", "The retained runtime handoff journal is unavailable");
+    expect(onFailed).toHaveBeenCalledExactlyOnceWith("failure-request", "Producer failed before launch");
     const failed = hooks.getRun("failure-request", "builtin-mandible-rebuild");
     expect(failed).toMatchObject({ state: "failed", attempts: 1, exit_code: 75 });
     expect(db.prepare("SELECT status, exit_code FROM auth_requests WHERE id = ?").get("failure-request"))
