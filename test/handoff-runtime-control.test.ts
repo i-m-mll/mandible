@@ -5,7 +5,7 @@ import path from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 
 let scratch: string;
-afterEach(() => { vi.resetModules(); vi.doUnmock('../scripts/accepted-app-install.mjs'); vi.doUnmock('../scripts/bundle-services.mjs'); vi.doUnmock('node:child_process'); if (scratch) fs.rmSync(scratch, { recursive: true, force: true }); });
+afterEach(() => { vi.resetModules(); vi.doUnmock('../scripts/accepted-app-install.mjs'); vi.doUnmock('../scripts/bundle-services.mjs'); vi.doUnmock('../scripts/service-definitions.mjs'); vi.doUnmock('node:child_process'); if (scratch) fs.rmSync(scratch, { recursive: true, force: true }); });
 
 it('imports direct runtime operations in a shipped helper bundle without executing CLI adapters', async () => {
   scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'handoff-import-'));
@@ -44,24 +44,56 @@ async function fixture() {
   } }));
   const batch = vi.fn((_context, _operation, roles) => Object.fromEntries(roles.map(role => [role, { status: 'enabled' }])));
   vi.doMock('../scripts/bundle-services.mjs', async original => ({ ...await original(), nativeServiceControls: batch, bundleLoginSession: () => 'session' }));
-  const jobs = { backend: { pid: 41, executable: path.join(app, 'Contents/MacOS/mandible-bun') }, gateway: { pid: 51, executable: path.join(app, 'Contents/MacOS/mandible-caddy') } };
+  vi.doMock('../scripts/service-definitions.mjs', async original => ({ ...await original(), inspectServiceDefinitionsSync: () => ({ ok: true, observations: [] }) }));
+  const jobs = { backend: { loaded: true, pid: 41 as number | null, foreign: false, executable: path.join(app, 'Contents/MacOS/mandible-bun') }, gateway: { loaded: true, pid: 51 as number | null, foreign: false, executable: path.join(app, 'Contents/MacOS/mandible-caddy') } };
   const birth = 'Wed Oct 28 18:08:18 2026';
   const commands: string[] = [];
   vi.doMock('node:child_process', async original => ({ ...await original(), spawnSync: (binary, args) => {
     commands.push(`${binary} ${args.join(' ')}`);
     if (binary === '/bin/launchctl') {
       const role = args[1].endsWith('.backend') ? 'backend' : 'gateway';
-      return { status: 0, stdout: `service = {\n program identifier = Contents/MacOS/mandible-service (mode: 2)\n parent bundle identifier = bio.mll.fixture\n arguments = {\nmandible-service\nforeground\n${role}\n }\n pid = ${jobs[role].pid}\n runs = 1\n last exit code = 17\n}`, stderr: '' };
+      if (args[0] === 'kickstart') { jobs[role].pid = role === 'backend' ? 41 : 51; return { status: 0, stdout: '', stderr: '' }; }
+      if (!jobs[role].loaded) return { status: 113, stdout: '', stderr: 'Could not find service' };
+      return { status: 0, stdout: `service = {\n program identifier = Contents/MacOS/mandible-service (mode: 2)\n parent bundle identifier = ${jobs[role].foreign ? 'foreign.app' : 'bio.mll.fixture'}\n arguments = {\nmandible-service\nforeground\n${role}\n }\n${jobs[role].pid ? ` pid = ${jobs[role].pid}\n` : ''} runs = 1\n last exit code = 17\n}`, stderr: '' };
     }
-    if (binary === '/bin/ps') return { status: 0, stdout: Object.values(jobs).map(job => `${job.pid} ${birth} ${job.executable}`).join('\n'), stderr: '' };
+    if (binary === '/bin/ps') {
+      const live = Object.values(jobs).filter(job => job.loaded && job.pid);
+      if (args.at(-1) === 'lstart=') return { status: live.some(job => String(job.pid) === args[1]) ? 0 : 1, stdout: live.some(job => String(job.pid) === args[1]) ? birth : '', stderr: '' };
+      return { status: 0, stdout: live.map(job => `${job.pid} ${birth} ${job.executable}`).join('\n'), stderr: '' };
+    }
     throw new Error(`Unexpected process: ${binary}`);
   } }));
   vi.resetModules();
   const api = await import('../scripts/local-runtime.mjs');
-  const binding = { home, nativeApp: app, domain: context.domain, backendLabel: context.backendLabel, gatewayLabel: context.gatewayLabel, installationId: 'installation', publicOrigin: main.public_origin, acceptedRelease: { reference: 'approved' }, serviceConfiguration: { configuration: { environment: { MANDIBLE_DB: path.join(home, 'mandible.db') } } } };
+  const binding = { home, nativeApp: app, domain: context.domain, backendLabel: context.backendLabel, gatewayLabel: context.gatewayLabel, installationId: 'installation', publicOrigin: main.public_origin, acceptedRelease: { reference: 'approved' }, serviceConfiguration: { configuration: { environment: { MANDIBLE_DB: path.join(home, 'mandible.db') } } }, requestId: 'request', executionId: 'execution', oldProcess: { pid: 999999, startedAt: 'old' }, priorBackend: { launchMode: 'manual' } };
+  const journal = { binding, bindingDigest: 'binding', attempt: { id: 'attempt', state: 'running' } };
+  const journalFile = path.join(runtimeDir, 'handoff/request-execution/journal.json');
+  fs.mkdirSync(path.dirname(journalFile), { recursive: true });
+  fs.writeFileSync(journalFile, JSON.stringify(journal));
+  fs.writeFileSync(path.join(runtimeDir, 'handoff-active.json'), JSON.stringify({ bindingDigest: journal.bindingDigest, journal: journalFile }));
   const health = { status: 'ok', ready: true, warm: true, startup_epoch: 'epoch', instance: { ...main, db_path: path.join(home, 'mandible.db') } };
-  return { api, binding, context, prepared, assertHeld, health, commands, jobs, birth, batch };
+  return { api, binding, journal, context, prepared, assertHeld, health, commands, jobs, birth, batch };
 }
+
+it.each(['settling registration', 'owned dormant job', 'permission refusal', 'foreign job', 'other role replacement'])('direct start preserves progress and ownership for %s', async scenario => {
+  const fx = await fixture();
+  fx.jobs.backend.loaded = scenario === 'owned dormant job'; fx.jobs.backend.pid = null;
+  let status = 'enabled';
+  fx.batch.mockImplementation((_context, operation, roles) => {
+    if (scenario === 'permission refusal') status = 'requires_approval';
+    if (operation === 'status' && scenario === 'settling registration') status = status === 'enabled' ? 'not_found' : status;
+    if (operation === 'register' && status === 'not_found') { fx.jobs.backend.loaded = true; fx.jobs.backend.pid = 41; status = 'enabled'; }
+    if (scenario === 'foreign job') { fx.jobs.backend.loaded = true; fx.jobs.backend.foreign = true; }
+    if (operation === 'status' && scenario === 'other role replacement') fx.jobs.gateway.pid = 52;
+    return Object.fromEntries(roles.map(role => [role, { status }]));
+  });
+  const result = fx.api.startHandoffDefinitions(fx.binding, { context: fx.context, journal: fx.journal, prepared: fx.prepared,
+    assertHeld: fx.assertHeld, until: Date.now() + 1000, initialize: async () => {}, configure: async () => {} });
+  const failure = { 'permission refusal': 'background_permission_required', 'foreign job': 'ownership_conflict', 'other role replacement': 'process_changed' }[scenario];
+  if (failure) await expect(result).rejects.toMatchObject({ code: failure });
+  else await expect(result).resolves.toMatchObject({ processes: { backend: { pid: 41 }, gateway: { pid: 51 } } });
+  if (scenario !== 'owned dormant job') expect(fx.commands.some(command => command.includes('kickstart'))).toBe(false);
+});
 
 it('polls only exact database/generation/epoch HTTPS health under explicit ownership', async () => {
   const fx = await fixture();

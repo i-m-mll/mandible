@@ -7,10 +7,25 @@ import { RUNTIME_HEALTH_PROBE_INTERVAL_MS } from './runtime-probe-cadence.mjs';
 
 export const BUNDLE_SERVICE_START_TIMEOUT_MS = 20_000;
 
-function startOwnedJob(context, role, until) {
+export function startOwnedJob(context, role, until) {
   assertLifecycleLockHeld();
   const result = spawnSync('/bin/launchctl', ['kickstart', `${context.domain}/${context[`${role}Label`]}`], { encoding: 'utf8', timeout: runtimeObservationTimeout(until, 2500) });
   return { ok: !result.error && result.status === 0, status: result.status, error: result.error?.message || result.stderr?.trim() || null };
+}
+
+/** Progress only from registration transitions or an exact owned dormant job. */
+export function bundleServiceStartAction(state, nativeStatus, job) {
+  if (nativeStatus !== state.previousStatus) state.registered = false;
+  state.previousStatus = nativeStatus;
+  if (!job) return null;
+  if (!job.loaded) state.startAttempted = false;
+  if (nativeStatus === 'enabled' && job.loaded) {
+    if (!job.pid && !state.startAttempted) { state.startAttempted = true; return 'start'; }
+  } else if (['not_found', 'not_registered'].includes(nativeStatus) && !state.registered) {
+    state.registered = true;
+    return 'register';
+  }
+  return null;
 }
 
 /** Registration status is permission evidence; only the exact observed job admits start. */
@@ -31,9 +46,7 @@ export async function reconcileBundleServiceStart(context, role, { until, contro
     }
     return null;
   };
-  let previousStatus;
-  let registered = false;
-  let startAttempted = false;
+  const progress = {};
   while (now() < until) {
     let native, inspection;
     try {
@@ -60,10 +73,8 @@ export async function reconcileBundleServiceStart(context, role, { until, contro
     }
     if (native.status === 'requires_approval') return fail('background_permission_required', 'Allow Mandible background services in System Settings.', 'pending');
     if (now() >= until) break;
-    if (native.status !== previousStatus) registered = false;
-    previousStatus = native.status;
+    const action = bundleServiceStartAction(progress, native.status, observed?.job);
     if (inspection.ok) {
-      if (!observed.job.loaded) startAttempted = false;
       if (native.status === 'enabled' && observed.job.loaded) {
         if (observed.job.pid) {
           const current = readProcess(context, role, { until });
@@ -72,13 +83,11 @@ export async function reconcileBundleServiceStart(context, role, { until, contro
             return { ok: true, observation: sample, processes: { ...processes } };
           }
         }
-        if (!observed.job.pid && !startAttempted && now() < until) {
-          startAttempted = true;
+        if (action === 'start' && now() < until) {
           try { sample.start = start(context, role, until); } catch (error) { return fail('service_start_failed', error.message); }
           if (sample.start.ok) return { ok: true, observation: sample, processes: { ...processes } };
         }
-      } else if (['not_found', 'not_registered'].includes(native.status) && !registered && now() < until) {
-        registered = true;
+      } else if (action === 'register' && now() < until) {
         assertLifecycleLockHeld();
         try { sample.registration = control(context, 'register', role, { until }); }
         catch (error) { return fail('service_registration_failed', error.message); }
