@@ -306,6 +306,7 @@ async function main() {
   const home = path.join(run, 'home');
   createAcceptanceHome(home);
   const result = { schema: 'mandible-candidate-acceptance@1', scope: 'isolated production daemon and packaged dashboard; live installation and protected delivery excluded', status: 'failed', candidate, runtime, run, checks: {}, provenance: {} };
+  if (diagnostic) result.diagnostic = { qualifying: false, source: diagnostic, deadline_ms: 90_000 };
   let daemon, desktop, gateway, stallProbe, diagnosticDeadline, testedPackageDigest;
   const diagnostics = path.join(run, 'diagnostics');
   if (diagnostic) fs.mkdirSync(diagnostics, { mode: 0o700 });
@@ -369,7 +370,7 @@ async function main() {
     daemon = launch(packagedRuntime, [...(diagnostic ? ['--cpu-prof', `--cpu-prof-dir=${diagnostics}`, '--cpu-prof-name=daemon.cpuprofile'] : []), '--no-install', releaseFile(resources, shipped.entrypoints.daemon)], env, 'daemon');
     if (diagnostic) {
       diagnosticDeadline = setTimeout(interrupt, 90_000);
-      result.diagnostic = { qualifying: false, source: diagnostic, started_at: Date.now(), deadline_ms: 90_000 };
+      result.diagnostic.started_at = Date.now();
     }
     // The gateway answers 502, and logs an error, for any request that reaches
     // it before its upstream is listening, so it starts only after the bind.
@@ -449,6 +450,7 @@ async function main() {
     result.checks.log_bytes = Buffer.byteLength(logs);
     if (result.checks.log_failures.length) result.status = 'failed';
     result.checks.shutdown = { daemon_exit: daemon?.exitCode, daemon_signal: daemon?.signalCode, desktop_exit: desktop?.exitCode, desktop_signal: desktop?.signalCode, gateway_exit: gateway?.exitCode, gateway_signal: gateway?.signalCode };
+    if (diagnostic) Object.assign(result.checks.shutdown, { probe_exit: stallProbe?.exitCode, probe_signal: stallProbe?.signalCode });
     if ([daemon, gateway].some(child => child && (child.exitCode !== 0 || child.signalCode))) result.status = 'failed';
     if (result.status !== 'passed') result.checks.failure_logs = acceptanceFailureLogs(run);
     if (![stallProbe, daemon, desktop, gateway].every(child => !child || child.exitCode !== null || child.signalCode !== null)) {
