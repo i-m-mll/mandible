@@ -54,7 +54,7 @@ it('retains the app that ran after scratch disposal and refuses changed selectio
     let storedReference: string;
     try {
       insertSiblingMergeRequest(db, repo, 'request', 'main');
-      const runs = new CandidateAcceptanceRuns(db, async () => ({ status: 'passed', result: { status: 'passed', receipt: reference, diagnostics: 'x'.repeat(70_000) }, error: null }), Date.now, () => {}, () => false);
+      const runs = new CandidateAcceptanceRuns(db, async () => ({ status: 'passed', result: { status: 'passed', receipt: reference, diagnostics: 'x'.repeat(70_000) }, error: null }), Date.now, () => {});
       runs.enqueue('request', candidate, () => ({ repoRoot: repo, pinSha: candidate.pin_sha, projectId: 'project', workUnitId: 'work-unit', env: {} }));
       await runs.idle();
       const row = db.prepare('SELECT status, result_json FROM auth_candidate_acceptances WHERE auth_request_id = ?').get('request') as { status: string; result_json: string };

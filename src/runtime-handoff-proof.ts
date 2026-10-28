@@ -55,6 +55,18 @@ export async function validateRuntimeSource(db: Db, sourcePath: string, destinat
 
 /** Read-only, narrowly bound first-upgrade proof. A journal never authorizes a merge. */
 export async function verifyRuntimeHandoffPublication(db: Db, binding: RuntimePublicationBinding) {
+  return verifyRuntimeAuthority(db, binding, true);
+}
+
+/** Continuing an approved target uses its frozen publication, not today's checkout. */
+export async function verifyRuntimeHandoffAuthority(db: Db, binding: RuntimePublicationBinding) {
+  if (!binding.frozenCandidate || !binding.mergeCommit || !binding.mergeBase || !binding.mergeHead) {
+    throw new Error("Runtime handoff authority refused: frozen publication binding is unavailable");
+  }
+  return verifyRuntimeAuthority(db, binding, false);
+}
+
+async function verifyRuntimeAuthority(db: Db, binding: RuntimePublicationBinding, publication: boolean) {
   const fail = (reason: string): never => { throw new Error(`Runtime handoff publication refused: ${reason}`); };
   const row = db.prepare("SELECT * FROM auth_requests WHERE id = ?").get(binding.requestId) as Record<string, any> | undefined;
   const hook = db.prepare("SELECT * FROM auth_hook_executions WHERE id = ?").get(binding.executionId) as Record<string, any> | undefined;
@@ -99,7 +111,7 @@ export async function verifyRuntimeHandoffPublication(db: Db, binding: RuntimePu
   const gitAt = async (cwd: string, args: string[]) => (await childOutput("git", args, { cwd, env, encoding: "utf8", timeout: 5000 })).trim();
   const git = async (args: string[]) => (await gitAt(root, args));
   let sourceProjectId: string | undefined;
-  if (binding.source) {
+  if (publication && binding.source) {
     const source = binding.source;
     const sourceRoot = realpathSync(source.root);
     const readiness = (await validateRuntimeSource(db, sourceRoot, root));
@@ -118,11 +130,11 @@ export async function verifyRuntimeHandoffPublication(db: Db, binding: RuntimePu
     if (readBuildRevision(sourceRoot) !== source.buildRevision || compiledBuildDigest(sourceRoot) !== source.compiledDigest) fail("retained installed source build changed");
   }
   const published = (await readGitCommitFacts(root, commit!, { env, timeout: 5000 }));
-  if (published.parents.join(" ") !== `${base} ${head}` || published.tree !== tree ||
-      (await git(["rev-parse", "HEAD"])) !== commit || (await git(["rev-parse", `refs/heads/${row.base_branch}`])) !== commit ||
-      (await git(["write-tree"])) !== tree || (await git(["status", "--porcelain", "--untracked-files=no"]))) fail("exact applied checkout differs");
+  if (published.parents.join(" ") !== `${base} ${head}` || published.tree !== tree) fail("published candidate object differs");
+  if (publication && ((await git(["rev-parse", "HEAD"])) !== commit || (await git(["rev-parse", `refs/heads/${row.base_branch}`])) !== commit ||
+      (await git(["write-tree"])) !== tree || (await git(["status", "--porcelain", "--untracked-files=no"])))) fail("exact applied checkout differs");
   if (frozen.commit_message_digest && canonicalizeChangeMessage(published.message) !== frozen.commit_message) fail("canonical merge message differs");
-  if (selected) await childOutput(process.execPath, [path.join(root, 'scripts/verify-accepted-release.mjs'), selected.selection.reference,
+  if (publication && selected) await childOutput(process.execPath, [path.join(root, 'scripts/verify-accepted-release.mjs'), selected.selection.reference,
     JSON.stringify(selected.receipt.candidate)], { timeout: 60_000, encoding: 'utf8' });
   if (JSON.stringify(db.prepare("SELECT * FROM auth_requests WHERE id = ?").get(binding.requestId)) !== JSON.stringify(row) ||
       JSON.stringify(db.prepare("SELECT * FROM auth_hook_executions WHERE id = ?").get(binding.executionId)) !== JSON.stringify(hook)) fail("request or hook changed during publication observation");

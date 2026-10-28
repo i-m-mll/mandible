@@ -134,7 +134,7 @@ it.each(['before', 'during', 'within'] as const)('includes retained-package bind
       expect(input.env.MANDIBLE_ACCEPTANCE_DEADLINE).toBe('61000');
       now = stage === 'before' ? 61000 : 59000;
       return { status: 'passed', result: { status: 'passed' }, error: null };
-    }, () => now, () => {}, () => false, () => () => {
+    }, () => now, () => {}, () => () => {
       bound = true;
       db.prepare("UPDATE auth_requests SET title = 'bound' WHERE id = 'deadline-request'").run();
       now = stage === 'during' ? 61000 : 60000;
@@ -419,7 +419,7 @@ it.each([false, true])('records nested acceptance diagnostics through private cl
       failure_logs: acceptanceFailureLogs(home),
     } };
     insertSiblingMergeRequest(db, repo, 'outer-request', 'main');
-    const runs = new CandidateAcceptanceRuns(db, async () => ({ status: 'failed', result, error: result.error }), Date.now, () => {}, () => false);
+    const runs = new CandidateAcceptanceRuns(db, async () => ({ status: 'failed', result, error: result.error }), Date.now, () => {});
     runs.enqueue('outer-request', { pin_sha: 'pin', tree_sha: 'tree', base_sha: 'base', head_sha: 'head' },
       () => ({ repoRoot: repo, pinSha: 'pin', projectId: 'private-project', workUnitId: 'private-unit', env: {} }));
     await runs.idle();

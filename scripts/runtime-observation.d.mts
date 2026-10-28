@@ -16,7 +16,15 @@ export function runtimeObservationAcceptance(run: {
   binding: { executionId: string; requestId: string; hookId: string; commandDigest: string };
   bindingDigest: string;
   recovery?: { digest: string };
+  attempt?: { id: string; state: 'running' | 'complete' | 'failed'; receipt?: unknown; receiptDigest?: string; fence?: unknown };
+  cleanup?: { state: 'pending' | 'complete' | 'failed' };
 }): 'accepted' | 'unaccepted' | 'inconsistent';
 export function runtimeVerificationDisposition(
   run: Parameters<typeof runtimeObservationAcceptance>[0], journal: Parameters<typeof runtimeObservationAcceptance>[1] & { phase: string; launch?: unknown },
 ): 'inconsistent' | 'retired' | 'confirmed' | 'helper_pending' | 'acknowledge' | 'await_acceptance' | 'complete_accepted' | 'observe';
+export function runtimeHandoffDisposition(journal: {
+  attempt?: { id: string; state: 'running' | 'complete' | 'failed'; receipt?: unknown; receiptDigest?: string; fence?: unknown };
+  cleanup?: { state: 'pending' | 'complete' | 'failed' };
+}): { attemptId: string; mutation: 'active' | 'quiescent' | 'fenced'; runtime: 'pending' | 'complete' | 'failed';
+  receipt?: unknown; receiptDigest?: string; cleanup: { state: 'pending' | 'complete' | 'failed' } } | null;
+export function runtimeReceiptAcceptanceMarker(journal: Parameters<typeof runtimeObservationAcceptance>[1]): string | null;

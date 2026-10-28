@@ -19,7 +19,6 @@ import { readBuildRevision } from './build-revision.mjs';
 import { acceptanceDeadline } from './acceptance-deadline.mjs';
 import { observeRuntimeHealthCoverage, RuntimeHealthObservationError } from '../src/runtime-health-contract.ts';
 
-import { readRuntimeHandoffLock, runtimeHandoffLockRefusal } from './runtime-handoff-lock.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const legacySweepWorkDirectory = 'route-cost-work';
@@ -363,13 +362,6 @@ async function main(budget) {
   const candidateBinding = { pin_sha: candidate, tree_sha: boundedCommand('git', ['rev-parse', `${candidate}^{tree}`]),
     base_sha: process.env.MANDIBLE_ACCEPTANCE_BASE || parents[0], head_sha: process.env.MANDIBLE_ACCEPTANCE_HEAD || parents[1] || candidate };
   if (boundedCommand('git', ['status', '--porcelain', '--untracked-files=all'])) throw new Error('Candidate acceptance requires a clean committed checkout.');
-  const lock = readRuntimeHandoffLock(path.resolve(process.env.MANDIBLE_HOME || path.join(os.userInfo().homedir, '.mandible')));
-  const initialBlocker = lock ? { code: 'runtime_handoff_lock', message: runtimeHandoffLockRefusal(lock) } : null;
-  if (initialBlocker) {
-    process.stdout.write(`${JSON.stringify({ status: 'failed', candidate, publication_blocker: initialBlocker, error: initialBlocker.message })}\n`);
-    process.exitCode = 1;
-    return;
-  }
   const runtime = boundedCommand('/bin/sh', [path.join(root, 'scripts', 'bun-runtime.sh')]);
   const buildEnv = { ...process.env, GIT_OPTIONAL_LOCKS: '0', PATH: `${path.dirname(runtime)}${path.delimiter}${process.env.PATH}` };
   const cache = path.join(os.homedir(), '.cache', 'mandible', 'acceptance');

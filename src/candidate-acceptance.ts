@@ -135,7 +135,6 @@ export class CandidateAcceptanceRuns {
     private readonly executor: CandidateAcceptanceExecutor,
     private readonly now: () => number,
     private readonly changed: (requestId: string) => void,
-    private readonly handoffLocked: () => boolean,
     /** Capture live authority before execution; reconcile synchronously inside the verdict transaction. */
     private readonly prepareFinalization?: (requestId: string, candidate: CandidateAcceptanceCandidate) => (recordId: string) => void,
   ) {}
@@ -162,7 +161,7 @@ export class CandidateAcceptanceRuns {
     this.schedule(requestId);
   }
 
-  /** Resume runs deferred by a handoff once the installation is available. */
+  /** Schedule waiting isolated runs after the current run. */
   resume(): void {
     for (const requestId of this.waiting.keys()) this.schedule(requestId);
   }
@@ -199,7 +198,6 @@ export class CandidateAcceptanceRuns {
   private async next(requestId: string): Promise<void> {
     const job = this.waiting.get(requestId);
     if (!job || this.stopped) return;
-    if (this.handoffLocked()) return;
     this.waiting.delete(requestId);
     const { candidate } = job;
     const recordId = randomUUID();
