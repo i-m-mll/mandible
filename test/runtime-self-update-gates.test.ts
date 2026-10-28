@@ -635,7 +635,7 @@ describe("failed handoff retirement", () => {
     setDb(db);
     const held = holdHandoffLock();
     const request = await submit();
-    expect(runs).toHaveLength(0);
+    await waitUntilPasses(() => expect(runs).toHaveLength(1));
     const agent = createUser(db, { slug: "retire-agent", display_name: "Retire agent", kind: "agent" });
     const agentRouter = authenticatedTestRouter(agent);
     registerAuthRoutes(agentRouter, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
