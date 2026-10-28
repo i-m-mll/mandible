@@ -53,14 +53,16 @@ post-approval handoff. Upgrade lifecycle qualification uses the separate
 transformed for private identities, homes and ports; it does not prove identical
 unmodified source/package bytes.
 
-Before presenting approval, the coordinator requires a clean current-source
-two-hop upgrade witness retained as a managed artifact. An earlier witness that
-needed recovery demonstrates recovery, not a clean current-source upgrade.
-Keep the pending request's verification explicit: **Upgrade qualification:
-pending until a clean current-source two-hop witness is retained as a managed
-artifact.** Once that artifact exists, revise the request message through the
-normal guarded revision before approval. Upgrade qualification is a coordinator
-review requirement, distinct from the automated package/runtime gate. See
+For this bundle-service repair, before presenting approval the coordinator
+requires a clean current-source two-hop upgrade witness retained as a managed
+artifact. An earlier witness that needed recovery demonstrates recovery, not a
+clean current-source upgrade. Keep this repair's pending request verification
+explicit: **Upgrade qualification for this bundle-service repair: pending until
+a clean current-source two-hop witness is retained as a managed artifact.** Once
+that artifact exists, revise the request message through the normal guarded
+revision before approval. Future affected upgrades after migration exercise the
+ongoing bundle-to-bundle contract, without a permanent legacy-bootstrap
+requirement. Upgrade qualification is separate from the automated package/runtime gate. See
 [upgrade qualification](accepted-package-delivery.md#qualification)
 for the command and evidence boundary.
 

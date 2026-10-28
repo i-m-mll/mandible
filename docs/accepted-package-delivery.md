@@ -92,10 +92,11 @@ wait. The phase-only fixture correction has focused tests; the full native
 fixture was not rebuilt for that test-only correction. This witness does not
 qualify a clean upgrade from current source.
 
-Before presenting approval, the coordinator requires a clean current-source
-witness for both legacy-to-bundle and bundle-to-bundle upgrades, retained as a
-source-bound managed artifact. After explicit human retirement of any retained
-failed handoff lock, run the existing full fixture; both hops are one test:
+For this bundle-service repair, before presenting approval the coordinator
+requires a clean current-source witness for both legacy-to-bundle and
+bundle-to-bundle upgrades, retained as a source-bound managed artifact. After
+explicit human retirement of the retained failed handoff lock, run the existing
+full fixture; both hops are one test:
 
 ```sh
 bun run test:provisioned test/provisioned/runtime-handoff-full.test.ts
@@ -109,10 +110,15 @@ home and checks exact package/runtime behavior, while its separate route sweep
 uses copied live-ledger data. Actual post-approval handoff verifies installation
 and convergence of the exact accepted package.
 
-Until the clean source-bound witness exists, the pending request verification
-must say **Upgrade qualification: pending until a clean current-source two-hop
-witness is retained as a managed artifact.** Once it exists, reference that
-artifact through the normal guarded request-message revision before approval.
-A passing package/runtime result does not replace this review requirement.
+Until this repair's clean source-bound witness exists, its pending request
+verification must say **Upgrade qualification for this bundle-service repair:
+pending until a clean current-source two-hop witness is retained as a managed
+artifact.** Once it exists, reference that artifact through the normal guarded
+request-message revision before approval. A passing package/runtime result does
+not replace this repair's review requirement.
+
+After migration, future affected upgrade work exercises the ongoing
+bundle-to-bundle contract. The obsolete legacy bootstrap is not a permanent
+requirement for every subsequent approval.
 
 Co-Authored-By: Codex (GPT) <codex@openai.com>

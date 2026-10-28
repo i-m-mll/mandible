@@ -277,14 +277,17 @@ This is source-transformed lifecycle qualification. Exact unmodified package
 bytes are covered separately by [package/runtime acceptance](candidate-acceptance.md)
 and the actual post-approval handoff.
 
-Before the coordinator presents approval, both hops must complete cleanly on
-current source and the source-bound witness must be retained as a managed
-artifact. A witness completed through recovery is recovery evidence, not that
-clean upgrade witness. While a failed handoff lock is retained, native
-qualification remains pending until its explicit human retirement; do not
-start a native run merely to refresh the evidence. The request verification
-must state upgrade qualification is pending until the witness exists, then be
-updated through the normal guarded message revision before approval. See
+For this bundle-service repair, both hops must complete cleanly on current
+source and the source-bound witness must be retained as a managed artifact
+before the coordinator presents approval. A witness completed through recovery
+is recovery evidence, not that clean upgrade witness. While this repair's failed
+handoff lock is retained, native qualification remains pending until its explicit
+human retirement; do not start a native run merely to refresh the evidence.
+This repair's request verification must state upgrade qualification is pending
+until the witness exists, then be updated through the normal guarded message
+revision before approval. After migration, future affected upgrade work exercises
+the ongoing bundle-to-bundle contract; the legacy bootstrap is not a permanent
+prerequisite for subsequent approvals. See
 [upgrade qualification](accepted-package-delivery.md#qualification).
 
 Verification-only recovery uses the same retained hook row, publication proof,
