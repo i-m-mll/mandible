@@ -6,6 +6,7 @@ import path from 'node:path';
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
+import { once } from 'node:events';
 import { spawn, spawnSync } from 'node:child_process';
 import { gatewayCaddyfile } from './gateway-config.mjs';
 import { prepareGatewayAdmin, gatewayAdminNeedsRestart, reloadGatewayConfiguration } from './gateway-admin.mjs';
@@ -109,4 +110,98 @@ test('refuses an unsafe admin directory or substituted socket without replacing 
     assert.throws(() => prepareGatewayAdmin(home), /owner-only socket/);
     assert.equal(fs.readFileSync(endpoint.socket, 'utf8'), 'preserve');
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('finishes local responses but bounds open main/preview streams during graceful shutdown', { timeout: 10000 }, async () => {
+  const binary = pinnedCaddyBinary(path.join(os.userInfo().homedir, '.mandible'));
+  assert.ok(fs.existsSync(binary), 'Provision the pinned Caddy before this explicit native contract.');
+  const home = fs.realpathSync(fs.mkdtempSync('/tmp/mandible-gw-drain-'));
+  const storageRoot = path.join(home, 'storage');
+  const clients = [];
+  const agents = [];
+  let pendingResponse;
+  let pendingReached;
+  const pending = new Promise(resolve => { pendingReached = resolve; });
+  const backend = http.createServer((request, response) => {
+    if (request.url === '/api/client-auth/forward-auth') response.end();
+    else if (request.url === '/stream') {
+      response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      response.write('data: connected\n\n');
+    } else if (request.url === '/pending') { pendingResponse = response; pendingReached(); }
+    else response.end('ready');
+  });
+  let gateway;
+  let deadline;
+  let output = '';
+  try {
+    const backendPort = await listen(backend);
+    const ports = new Set(); while (ports.size < 2) ports.add(await freePort());
+    const [mainPort, previewPort] = [...ports];
+    const instances = [
+      { role: 'main', instance_id: 'production', public_origin: `https://app.mandible.localhost:${mainPort}`, backend_origin: `http://127.0.0.1:${backendPort}` },
+      { role: 'preview', instance_id: 'drain-preview', public_origin: `https://preview-drain.mandible.localhost:${previewPort}`, backend_origin: `http://127.0.0.1:${backendPort}` },
+    ];
+    const config = path.join(home, 'Caddyfile');
+    const endpoint = prepareGatewayAdmin(home);
+    fs.writeFileSync(config, gatewayCaddyfile(instances, { storageRoot, adminAddress: endpoint.address }));
+    for (const text of [fs.readFileSync(config, 'utf8'), acceptanceGatewayConfig({ origin: instances[0].public_origin, backendPort, storageRoot }), setupCaddyfile(storageRoot, mainPort)]) {
+      const adapted = spawnSync(binary, ['adapt', '--config', '-', '--adapter', 'caddyfile'], { input: text, encoding: 'utf8', timeout: 2500 });
+      assert.equal(adapted.status, 0, adapted.stderr);
+      assert.equal(JSON.parse(adapted.stdout).apps.http.grace_period, 1e9, 'Every generated HTTP server shares the connection grace policy');
+    }
+    gateway = spawn(binary, ['run', '--config', config, '--adapter', 'caddyfile'], {
+      env: { HOME: home, PATH: '/usr/bin:/bin', XDG_CONFIG_HOME: path.join(home, 'xdg') }, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const exited = new Promise(resolve => gateway.once('exit', (code, signal) => resolve({ code, signal })));
+    let beganGrace;
+    const grace = new Promise(resolve => { beganGrace = resolve; });
+    for (const stream of [gateway.stdout, gateway.stderr]) stream.on('data', chunk => {
+      output = (output + chunk).slice(-16000);
+      if (output.includes('servers shutting down; grace period initiated')) beganGrace();
+    });
+    const request = (entry, route, agent = false) => new Promise((resolve, reject) => {
+      const url = new URL(entry.public_origin);
+      const client = https.get({ hostname: '127.0.0.1', port: url.port, servername: url.hostname, headers: { Host: url.host },
+        path: route, ca: fs.readFileSync(path.join(storageRoot, 'pki/authorities/local/root.crt')), agent }, resolve);
+      clients.push(client); client.on('error', reject);
+    });
+    const body = async response => { let text = ''; for await (const chunk of response) text += chunk; return text; };
+    await until(async () => (await body(await request(instances[0], '/ready'))) === 'ready');
+    const streams = [];
+    const streamErrors = [];
+    const idleSockets = [];
+    for (const entry of instances) {
+      const agent = new https.Agent({ keepAlive: true }); agents.push(agent);
+      const idle = await request(entry, '/ready', agent); idleSockets.push(idle.socket);
+      assert.equal(await body(idle), 'ready');
+      const stream = await request(entry, '/stream'); streams.push(stream);
+      stream.on('error', error => streamErrors.push(error));
+      await once(stream, 'data');
+    }
+    const response = request(instances[0], '/pending').then(body);
+    await pending;
+    const started = performance.now();
+    deadline = setTimeout(() => gateway.kill('SIGKILL'), 4000);
+    gateway.kill('SIGTERM');
+    await grace;
+    pendingResponse.end('completed');
+    assert.equal(await response, 'completed', 'A finite in-flight response can finish during grace');
+    assert.deepEqual(await exited, { code: 0, signal: null }, output);
+    const elapsedMs = performance.now() - started;
+    assert.ok(elapsedMs < 3000, `Graceful shutdown took ${elapsedMs}ms`);
+    await until(() => streams.every(stream => stream.destroyed) && idleSockets.every(socket => socket.destroyed));
+    assert.ok(streamErrors.every(error => error.code === 'ECONNRESET'), 'Only connection closure errors are expected on interrupted streams');
+    const shutdown = output.trim().split('\n').map(line => JSON.parse(line))
+      .filter(row => row.signal === 'SIGTERM' || row.msg === 'servers shutting down; grace period initiated' || row.msg === 'server shutdown');
+    console.log(JSON.stringify({ contract: 'gateway-connection-shutdown', graceMs: 1000, elapsedMs: Math.round(elapsedMs),
+      idleConnections: idleSockets.length, activeStreams: streams.length, finiteResponse: 'completed', exitCode: 0, shutdown }));
+  } catch (error) { error.message += `\nPrivate gateway log: ${output}`; throw error; }
+  finally {
+    clearTimeout(deadline);
+    for (const client of clients) client.destroy();
+    for (const agent of agents) agent.destroy();
+    if (gateway?.exitCode === null && gateway.signalCode === null) { gateway.kill('SIGKILL'); await once(gateway, 'exit'); }
+    backend.closeAllConnections(); await close(backend);
+    fs.rmSync(home, { recursive: true, force: true });
+  }
 });
