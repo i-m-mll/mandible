@@ -131,7 +131,7 @@ afterEach(async () => {
 });
 
 describe("runtime handoff lock gate", () => {
-  it("admits checks and supersession while exposing the publication blocker, then launches one acceptance after release", async () => {
+  it("accepts isolated candidates under failed production history while preserving publication exclusion", async () => {
     const lock = holdHandoffLock();
     const check = (await queue.checkMergeIndependence({ repo: path.basename(repo), cwd: repo, base_branch: "main", head_branch: "feature/other" }));
     expect(check).toMatchObject({
@@ -144,7 +144,7 @@ describe("runtime handoff lock gate", () => {
 
     const original = await submit();
     expect(await queue.publicationBlockerForRequest(original)).toEqual(check.publication_blocker);
-    expect(runs).toHaveLength(0);
+    await waitUntilPasses(() => expect(runs).toHaveLength(1));
 
     git(repo, ["checkout", "feature/self-update"]);
     fs.writeFileSync(path.join(repo, "runtime.txt"), "revised while publication is blocked\n");
@@ -157,7 +157,7 @@ describe("runtime handoff lock gate", () => {
     });
     expect((await queue.getRequest(original.id))?.status).toBe("superseded");
     expect((await queue.getRequest(replacement.id))?.status).toBe("pending");
-    expect(runs).toHaveLength(0);
+    await waitUntilPasses(() => expect(runs).toHaveLength(2));
     await expect(queue.approveWithOperatorProof(replacement.id, operatorId)).rejects.toThrow(/Runtime handoff lock/);
 
     // A request admitted to the repo chain before the lock appeared is parked
@@ -174,8 +174,8 @@ describe("runtime handoff lock gate", () => {
     db.prepare("UPDATE auth_hooks SET repo_pattern = ? WHERE id = 'builtin-mandible-rebuild'").run(path.basename(repo));
     fs.unlinkSync(lock.lockPath);
     await queue.refreshPendingCandidates();
-    await waitUntilPasses(() => expect(runs).toHaveLength(1));
-    expect(runs[0]!.input.pinSha).toBe((await queue.getRequest(replacement.id))!.merge_candidate_pin_sha);
+    expect(runs).toHaveLength(2);
+    expect(runs[1]!.input.pinSha).toBe((await queue.getRequest(replacement.id))!.merge_candidate_pin_sha);
   });
 });
 
@@ -188,7 +188,7 @@ describe('automatic accepted-package binding', () => {
       base_sha: first.merge_preflight_base_sha!, head_sha: first.merge_head_sha! };
     // The old authority records the compact reference but cannot bind it.
     const reference = acceptedReleaseReceiptFixture(home, candidate, undefined, first.custody_work_unit_id!);
-    const legacy = new CandidateAcceptanceRuns(db, async () => ({ status: 'passed', result: { receipt: reference }, error: null }), Date.now, () => {}, () => false);
+    const legacy = new CandidateAcceptanceRuns(db, async () => ({ status: 'passed', result: { receipt: reference }, error: null }), Date.now, () => {});
     legacy.start();
     legacy.enqueue(first.id, candidate, () => ({ repoRoot: repo, pinSha: candidate.pin_sha, projectId, workUnitId: first.custody_work_unit_id!, env: {} }));
     await legacy.idle();
@@ -524,7 +524,7 @@ describe("candidate acceptance gate", () => {
     expect(runs[1]!.input.pinSha).toBe((await queue.getRequest(replacement.id))!.merge_candidate_pin_sha);
   });
 
-  it("re-pins a candidate the handoff lock left stale and runs its acceptance once the lock is released, with no approval", async () => {
+  it("re-pins and accepts a new candidate independently of a retained production handoff", async () => {
     commitOnBranch(repo, "feature/sibling", { "sibling.txt": "sibling\n" });
     const request = (await submit());
     await waitUntilPasses(() => expect(runs).toHaveLength(1));
@@ -532,7 +532,7 @@ describe("candidate acceptance gate", () => {
     await queue.drainCandidateAcceptances();
 
     // A self-update merge moves main while its handoff holds the lock. Safe
-    // review work re-pins the sibling, but no candidate runtime may launch.
+    // review work re-pins and qualifies the sibling in its isolated runtime.
     const lock = holdHandoffLock("complete");
     advanceMainViaAuthorizedMerge(db, repo, "feature/sibling", "merge-sibling");
     const finalizer = queue as unknown as { revalidatePendingMergeRequestsSerialized(request: unknown): Promise<void> };
@@ -541,9 +541,9 @@ describe("candidate acceptance gate", () => {
     const blockedPin = (await queue.getRequest(request.id))!.merge_candidate_pin_sha;
     expect(blockedPin).not.toBe(runs[0]!.input.pinSha);
     expect((await queue.getRequest(request.id))!.merge_preflight_base_sha).toBe(git(repo, ["rev-parse", "main"]));
-    expect(runs).toHaveLength(1);
+    await waitUntilPasses(() => expect(runs).toHaveLength(2));
 
-    // The first idle tick after release launches the one missing acceptance.
+    // Releasing the production owner does not duplicate its acceptance.
     fs.unlinkSync(lock.lockPath);
     await queue.refreshPendingCandidates();
     const repinned = (await queue.getRequest(request.id))!;
