@@ -77,7 +77,14 @@ describe("protected delivery evidence", () => {
       if (release.mock.calls.length === 1) throw new Error('Active pointer release interrupted');
       active = false; return { release: 'complete' };
     });
-    const cleanup = vi.fn(async () => {});
+    const cleanupJobs: Array<ReturnType<typeof Promise.withResolvers<{ cleanup: 'complete' | 'pending' }>>> = [];
+    const cleanup = vi.fn(async () => {
+      const job = Promise.withResolvers<{ cleanup: 'complete' | 'pending' }>();
+      cleanupJobs.push(job);
+      const result = await job.promise;
+      if (result.cleanup === 'complete') journal!.cleanup = { state: 'complete' };
+      return result;
+    });
     const hooks = createInstalledServiceHookManager(db, { handoffClient: {
       readRuntimeHandoff: () => { if (corrupt) throw new Error('Corrupt referenced journal'); return journal; },
       readRuntimeHandoffPhase: () => journal?.phase,
@@ -182,6 +189,26 @@ describe("protected delivery evidence", () => {
     expect(release).toHaveBeenCalledTimes(2);
     expect(cleanup).toHaveBeenCalledTimes(1);
     expect(await hooks.verifyCurrentRuntimeHandoff(request, {}, () => {}, adopt)).toEqual({ outcome: 'confirmed' });
+    expect(cleanup).toHaveBeenCalledTimes(1); // An explicit check cannot duplicate the running child.
+    cleanupJobs[0].reject(new Error('Cleanup child failed to spawn'));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    await queue.resumeHookConvergence();
+    expect(cleanup).toHaveBeenCalledTimes(1); // Ordinary sweeps respect the short retry cooldown.
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 2000);
+    try { await queue.resumeHookConvergence(); } finally { clock.mockRestore(); }
+    expect(cleanup).toHaveBeenCalledTimes(2);
+    expect(await hooks.verifyCurrentRuntimeHandoff(request, {}, () => {}, adopt)).toEqual({ outcome: 'confirmed' });
+    expect(cleanup).toHaveBeenCalledTimes(2);
+    cleanupJobs[1].resolve({ cleanup: 'pending' }); // A completed child can leave transient disposal debt.
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(await hooks.verifyCurrentRuntimeHandoff(request, {}, () => {}, adopt)).toEqual({ outcome: 'confirmed' });
+    expect(cleanup).toHaveBeenCalledTimes(3); // Explicit reconciliation can retry before the cooldown expires.
+    cleanupJobs[2].resolve({ cleanup: 'complete' });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    await queue.resumeHookConvergence();
+    expect(cleanup).toHaveBeenCalledTimes(3);
+    expect(hooks.getRun(request.id, run.hook_id)?.state).toBe('complete');
+    expect(await queue.getRequest(request.id)).toMatchObject({ status: 'completed', exit_code: 0 });
     expect(probe).toHaveBeenCalledTimes(4);
     journal = null;
     await queue.resumeHookConvergence();
