@@ -3,6 +3,7 @@ import { expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { applicationIdentity, createPendingRelease, retainAcceptedRelease, resolveAcceptedRelease, disposeAcceptedRelease, disposePendingRelease } from '../scripts/accepted-release.mjs';
 import { installedFileIdentity, verifyInstalledRelease } from '../scripts/installed-release.mjs';
 import { createOwnedRun, withOwnedRunLock, saveOwnedMetadata } from '../scripts/owned-run.mjs';
@@ -10,7 +11,8 @@ import { CandidateAcceptanceRuns } from '../src/candidate-acceptance.js';
 import { diagnosticReplayPackage, finalizeAcceptance, acceptanceOwnedOutputs } from '../scripts/candidate-acceptance.mjs';
 import { acceptanceDeadline } from '../scripts/acceptance-deadline.mjs';
 import { acceptedReleaseSelection } from '../src/accepted-release-selection.js';
-import { createAuthCheckRepo, createMigratedDb, insertSiblingMergeRequest } from './helpers/auth-queue-fixtures.js';
+import { createAuthCheckRepo, insertSiblingMergeRequest } from './helpers/auth-queue-fixtures.js';
+import { createMigratedDb } from './helpers/ledger-fixtures.js';
 
 it('seals the exercised app in place after scratch disposal and refuses changed selection or bytes', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'accepted-release-'));
@@ -60,7 +62,8 @@ it('seals the exercised app in place after scratch disposal and refuses changed 
     expect(fs.statSync(program).ino).toBe(inode);
     expect(fs.existsSync(scratch)).toBe(false);
     expect(reference.length).toBeLessThanOrEqual(512);
-    const db = createMigratedDb();
+    const database = path.join(root, 'ledger.db');
+    const db = createMigratedDb({ path: database, operator: { slug: 'auth-test-operator' }, now: 1 });
     const repo = createAuthCheckRepo();
     let storedReference: string;
     try {
@@ -82,17 +85,61 @@ it('seals the exercised app in place after scratch disposal and refuses changed 
       }
       expect(() => acceptedReleaseSelection(db, { ...request, id: 'different-request' }, [action])).toThrow('exact request and candidate');
       expect(() => acceptedReleaseSelection(db, { ...request, merge_head_sha: 'f'.repeat(40) }, [action])).toThrow('exact request and candidate');
+      db.prepare("UPDATE auth_requests SET status = 'rejected' WHERE id = 'request'").run();
+      const runtimeDir = path.join(root, 'home/config/local-sessions');
+      fs.mkdirSync(runtimeDir, { recursive: true });
+      const owner = path.join(runtimeDir, 'bundle-owner.json');
+      const lock = path.join(runtimeDir, 'handoff-active.json');
+      const journal = path.join(runtimeDir, 'journal.json');
+      const dispose = () => spawnSync(process.execPath, [path.resolve('scripts/dispose-accepted-release.mjs'), 'request', acceptance.id, 'Abandoned fixture'], {
+        env: { ...process.env, MANDIBLE_HOME: path.join(root, 'home'), MANDIBLE_DB: database, MANDIBLE_RELEASE_ROOT: '' }, encoding: 'utf8', timeout: 5000,
+      });
+      fs.writeFileSync(program, 'changed program');
+      fs.writeFileSync(owner, JSON.stringify({ acceptedRelease: reference }));
+      const installed = dispose();
+      expect(installed.status).not.toBe(0);
+      expect(installed.stderr).toContain('installed release still owns these bytes');
+      expect(fs.existsSync(app)).toBe(true);
+      fs.unlinkSync(owner);
+      fs.writeFileSync(journal, JSON.stringify({ phase: 'failed', binding: { acceptedRelease: { reference } } }));
+      fs.writeFileSync(lock, JSON.stringify({ journal }));
+      const unresolved = dispose();
+      expect(unresolved.status).not.toBe(0);
+      expect(unresolved.stderr).toContain('unresolved handoff still owns these bytes');
+      expect(fs.existsSync(app)).toBe(true);
+      fs.unlinkSync(lock);
+      const tampered = dispose();
+      expect(tampered.status).not.toBe(0);
+      expect(tampered.stderr).toContain('application bytes changed');
+      expect(fs.existsSync(app)).toBe(true);
+      fs.writeFileSync(program, 'accepted program');
     } finally { db.close(); fs.rmSync(repo, { recursive: true, force: true }); }
     const selected = resolveAcceptedRelease(storedReference!, candidate);
     expect(fs.readFileSync(path.join(selected.resources, 'program'), 'utf8')).toBe('accepted program');
     expect(() => resolveAcceptedRelease(reference, { ...candidate, head_sha: 'f'.repeat(40) })).toThrow('different candidate');
+    await expect(disposeAcceptedRelease(reference, { ...candidate, head_sha: 'f'.repeat(40) }, 'Wrong candidate')).rejects.toThrow('different candidate');
     fs.writeFileSync(path.join(selected.resources, 'program'), 'changed program');
     expect(() => resolveAcceptedRelease(reference, candidate)).toThrow('application bytes changed');
+    await withOwnedRunLock(selected.receipt.package.handle.root, async () => {
+      await expect(disposeAcceptedRelease(reference, candidate, 'Locked fixture')).rejects.toThrow('locked');
+    });
+    await expect(disposeAcceptedRelease(reference, candidate, 'Tampered fixture')).rejects.toThrow('application bytes changed');
+    expect(fs.existsSync(app)).toBe(true);
     fs.writeFileSync(path.join(selected.resources, 'program'), 'accepted program');
+    const metadataFile = path.join(selected.receipt.package.handle.root, 'metadata.json');
+    const metadataBytes = fs.readFileSync(metadataFile);
+    const metadata = JSON.parse(metadataBytes.toString());
+    metadata.ownership.workUnit = 'different-owner';
+    fs.writeFileSync(metadataFile, JSON.stringify(metadata));
+    await expect(disposeAcceptedRelease(reference, candidate, 'Changed custody')).rejects.toThrow('owner changed');
+    expect(fs.existsSync(app)).toBe(true);
+    fs.writeFileSync(metadataFile, metadataBytes);
     const receiptFile = Buffer.from(reference.split(':')[2], 'base64url').toString('utf8');
     const receiptBytes = fs.readFileSync(receiptFile);
     fs.writeFileSync(receiptFile, '{}');
     expect(() => resolveAcceptedRelease(reference, candidate)).toThrow('receipt bytes changed');
+    await expect(disposeAcceptedRelease(reference, candidate, 'Changed receipt')).rejects.toThrow('receipt bytes changed');
+    expect(fs.existsSync(app)).toBe(true);
     fs.writeFileSync(receiptFile, receiptBytes);
     const disposed = await disposeAcceptedRelease(reference, candidate, 'Delivery fixture complete');
     expect(disposed.action).toBe('delete-owned');

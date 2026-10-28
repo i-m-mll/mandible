@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import Database from '../src/sqlite.ts';
-import { resolveAcceptedRelease, disposeAcceptedRelease } from './accepted-release.mjs';
+import { readAcceptedReleaseReceipt, disposeAcceptedRelease } from './accepted-release.mjs';
 import { readRuntimeHandoffLock } from './runtime-handoff-lock.mjs';
 import { readBundleOwner } from './bundle-services.mjs';
 import { serviceInstallationContext } from './service-definitions.mjs';
@@ -21,7 +21,7 @@ try {
       || rows[0].auth_request_id !== requests[0].id || rows[0].status !== 'passed') throw new Error('Only the exact retained package of an abandoned request can be disposed.');
   const row = rows[0]; reference = JSON.parse(row.result_json).receipt;
   candidate = Object.fromEntries(['pin_sha', 'tree_sha', 'base_sha', 'head_sha'].map(key => [key, row[key]]));
-  resolveAcceptedRelease(reference, candidate);
+  readAcceptedReleaseReceipt(reference, candidate);
   if (readBundleOwner(serviceInstallationContext({ home }))?.acceptedRelease === reference) throw new Error('The installed release still owns these bytes.');
   const lock = readRuntimeHandoffLock(home);
   if (lock?.journalPath && JSON.parse(fs.readFileSync(lock.journalPath, 'utf8')).binding.acceptedRelease?.reference === reference) throw new Error('An unresolved handoff still owns these bytes.');
