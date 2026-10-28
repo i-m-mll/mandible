@@ -3,8 +3,9 @@ import os from "node:os";
 import path from "node:path";
 import { expect, it } from "vitest";
 import { parseSweepOptions, planRoute, representativeResponse, selectRepresentatives } from "../scripts/route-cost-sweep.ts";
-import { acceptanceOwnedOutputs, routeCostSweepArgs, finalizeAcceptance } from "../scripts/candidate-acceptance.mjs";
+import { acceptanceOwnedOutputs, routeCostSweepArgs } from "../scripts/candidate-acceptance.mjs";
 import { acceptanceDeadline } from "../scripts/acceptance-deadline.mjs";
+import { runSupervisedCommand } from "../scripts/process-group-supervisor.mjs";
 import { createOwnedRun, saveOwnedMetadata, finalizeOwnedRun, cleanupOwnedRun } from "../scripts/owned-run.mjs";
 
 
@@ -46,9 +47,14 @@ it("finalizes failed source evidence without claiming a package pass and preserv
   saveOwnedMetadata(metadataFile, { ownership });
   const budget = acceptanceDeadline({});
   try {
-    const result = await finalizeAcceptance({ metadataFile, run, cache, ownership, deadlineEnv: budget.env,
+    const input = path.join(run, "finalization.json");
+    saveOwnedMetadata(input, { metadataFile, run, cache, ownership, deadlineEnv: budget.env,
       result: { status: "failed", candidate: "candidate", error: "request failed", checks: {}, phases: { finalization: { status: "running", started_at: Date.now() } }, budget: { ...budget.reading(), scope: "candidate-script" } },
     });
+    const completed = await runSupervisedCommand(process.execPath, [path.resolve("scripts/candidate-acceptance.mjs"), "--finalize-owned-run", input], {
+      capture: true, maxBuffer: 1024 * 1024, timeout: 2000, graceMs: 250, deadline: Date.now() + 3000,
+    });
+    const result = JSON.parse(completed.stdout);
     expect(result.status).toBe("failed");
     expect(result.checks.cleanup).toMatchObject({ action: "delete-owned", remaining: [] });
     expect(fs.existsSync(path.join(run, "home", "fixture"))).toBe(false);
