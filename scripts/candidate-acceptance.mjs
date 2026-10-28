@@ -84,6 +84,26 @@ export function createAcceptanceHome(home) {
   fs.mkdirSync(home, { mode: 0o700 });
 }
 
+async function verifyPackagedUpdaterEntrypoint({ resources, runtime, environment, home, profile, budget }) {
+  const privateHome = path.join(home, 'updater-entrypoint');
+  const journal = path.join(privateHome, 'config/local-sessions/handoff/invalid-request-invalid-execution/journal.json');
+  fs.mkdirSync(path.dirname(journal), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(journal, JSON.stringify({ schema: 'invalid', bindingDigest: '0'.repeat(64),
+    binding: { home: privateHome, requestId: 'invalid-request', executionId: 'invalid-execution' } }), { mode: 0o600 });
+  try {
+    await runSupervisedCommand('/usr/bin/sandbox-exec', ['-p', profile, runtime, '--no-install', path.join(resources, 'handoff/helper.mjs'), 'worker', journal], {
+      env: { ...environment, MANDIBLE_HOME: privateHome }, cwd: privateHome, capture: true, maxBuffer: 16 * 1024,
+      timeout: budget.remaining(), graceMs: 250, deadline: budget.deadline - 3000,
+    });
+  } catch (error) {
+    if (error.exitCode === 1 && error.processGroupSettled && error.stderr?.trim() === 'Runtime handoff binding is malformed or changed.') {
+      return { status: 'passed', exit_code: 1, refusal: error.stderr.trim() };
+    }
+    throw new Error(`Packaged updater did not reach its journal-validation boundary: ${error.stderr || error.message}`);
+  }
+  throw new Error('Packaged updater accepted an invalid journal.');
+}
+
 export function diagnosticReplayPackage(receiptFile, app) {
   if (!receiptFile || !app) throw new Error('Diagnostic replay requires both --diagnostic-receipt and --diagnostic-app.');
   const source = JSON.parse(fs.readFileSync(receiptFile, 'utf8'));
@@ -443,6 +463,8 @@ async function main(budget) {
     testedPackageDigest = applicationIdentity(app);
     if (diagnostic && testedPackageDigest !== diagnostic.sha256) throw new Error('Diagnostic package changed while copying.');
     executionProfile = installedExecutionProfile({ checkout: root, commonDirectory: boundedCommand("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"]), app });
+    if (!diagnostic) result.checks.updater_entrypoint = await verifyPackagedUpdaterEntrypoint({ resources, runtime: packagedRuntime,
+      environment: resourceEnv, home, profile: executionProfile, budget });
     result.provenance = { marker, daemon_sha256: sha256(releaseFile(resources, shipped.entrypoints.daemon)), native_sha256: sha256(path.join(app, "Contents/MacOS/mandible-app")), harness_sha256: sha256(fileURLToPath(import.meta.url)), package_sha256: testedPackageDigest, shipped };
     result.phases.package_verification.status = 'passed';
     result.phases.package_verification.elapsed_ms = Date.now() - result.phases.package_verification.started_at;

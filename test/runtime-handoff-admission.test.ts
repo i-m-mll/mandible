@@ -36,15 +36,16 @@ function launch(mode: string, file: string) {
       return null;
     }, `${mode} ${name}`) };
 }
-async function fixture() {
+async function fixture(protocol = 2) {
   const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-admission-'))); roots.push(home);
   const binding = { home, requestId: 'request-fixture', executionId: 'execution-fixture', nativeApp: path.join(home, 'Mandible.app'),
     acceptedRelease: { reference: 'fixture' }, bundleOwner: { bundleRoot: path.join(home, 'Mandible.app') },
     priorBackend: { definition: { BundleProgram: 'Contents/MacOS/mandible-service' } }, runtime: { path: runtime },
+    predecessorHandoffProtocol: protocol,
     updater: { helper: path.resolve('test/helpers/runtime-handoff-admission-process.mjs') }, domain: `gui/${process.getuid!()}` };
   const dir = handoffDirectory(home, binding.requestId, binding.executionId); fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'journal.json');
-  const predecessor = launch('predecessor', file);
+  const predecessor = launch(protocol === 1 ? 'predecessor-v1' : 'predecessor', file);
   const oldProcess = await predecessor.event('ready');
   const fullBinding = { ...binding, oldProcess: { pid: oldProcess.pid, startedAt: oldProcess.startedAt } };
   const journal = { schema: 'mandible-runtime-handoff@1', binding: fullBinding, bindingDigest: bindingDigest(fullBinding), phase: 'preparing',
@@ -55,8 +56,8 @@ async function fixture() {
     active: path.join(home, 'config/local-sessions/handoff-active.json') };
 }
 
-it('serializes real producer/worker admission, resumes pre-bootstrap publication, and refuses fenced resurrection', async () => {
-  const f = await fixture();
+async function admissionScenario(protocol: number) {
+  const f = await fixture(protocol);
   const interrupted = launch('producer', f.file); await interrupted.event('bootstrap');
   const armed = f.read();
   expect(armed.bridgeInstalled).toBe(true); expect(armed.acknowledgedAt).toBeNull();
@@ -76,13 +77,16 @@ it('serializes real producer/worker admission, resumes pre-bootstrap publication
   f.predecessor.events.length = 0; f.predecessor.send('check');
   expect((await f.predecessor.event('drain')).identity).toContain(armed.attempt.id);
   f.predecessor.send('exit'); await worker.event('done');
+  expect(fs.existsSync(path.join(f.dir, '.verification.lock'))).toBe(false);
   expect(f.read().attempt.state).toBe('complete');
   const closer = launch('close', f.file); expect(await closer.event('closed')).toMatchObject({ outcome: 'released' });
   expect(fs.existsSync(f.active)).toBe(false);
   const replay = launch('producer', f.file); await replay.event('done');
   expect(replay.events.some(event => event.event === 'bootstrap')).toBe(false);
   expect(fs.existsSync(f.active)).toBe(false);
-});
+}
+it('serializes single-lease admission, resumes pre-bootstrap publication, and refuses fenced resurrection', () => admissionScenario(2));
+it.skipIf(!process.env.MANDIBLE_TEST_V1_READER)('admits the saved actual v1 predecessor and releases its real compatibility lock after exit', () => admissionScenario(1));
 
 it.each(['preparation', 'owner'] as const)('refuses drain after %s failure and does not publish an unowned recovery write', async fault => {
   const f = await fixture(); const producer = launch('producer', f.file); await producer.event('bootstrap');

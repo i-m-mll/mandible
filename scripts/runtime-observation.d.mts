@@ -8,6 +8,18 @@ export class RuntimeObservationError extends Error {
 export function observationPending(error: unknown): error is RuntimeObservationError;
 export function runtimeObservationTimeout(until: number | undefined, maximumMs: number): number;
 export interface RuntimeProcessIdentity { pid: number; startedAt: string | null; runs: number }
+export interface RuntimeTerminalReceipt {
+  schema: 'mandible-runtime-receipt@2';
+  bindingDigest: string;
+  attemptId: string;
+  approved: { reference: string; packageSha256: string; publicationEvidence: { evidenceId: string; digest: string } };
+  installed: { root: string; identity: { dev: number; ino: number } };
+  services: { backend: RuntimeProcessIdentity; gateway: RuntimeProcessIdentity };
+  startup: { epoch: string; generation: string; database: string };
+  desktop: { required?: boolean; identity?: { pid: number; startedAt: string; [key: string]: unknown }; [key: string]: unknown };
+  completedAt: number;
+  diagnostics?: { daemonLog?: unknown };
+}
 export function runtimeProcessChanged(expected: RuntimeProcessIdentity | null | undefined, current: RuntimeProcessIdentity | null): boolean;
 export function decodeObservationError(text: string): RuntimeObservationError | null;
 export function runtimeObservationAcceptance(run: {
