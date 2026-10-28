@@ -3,7 +3,7 @@ import { installMemoryLocalStorage, stubEventSource, stubRailSettingsFetch, prev
 import { cleanup, fireEvent, screen, waitFor, act } from './helpers/dom.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useChromeAppearancePreview } from '../ui/src/hooks/useChromeAppearancePreview';
-import { ChromeAppearanceSettings } from '../ui/src/components/settings/ChromeAppearanceSettings';
+import { ChromeAppearanceActions, ChromeAppearanceControls } from '../ui/src/components/preview/ChromeAppearanceControls';
 import { AppFrame } from '../ui/src/app-frame';
 import { App } from '../ui/src/app';
 import * as api from '../ui/src/api';
@@ -26,7 +26,7 @@ function Harness({ role = 'preview', instanceId = previewInstance.instance_id, o
   return <AppFrame navigation={{ canBack: true, canForward: true, href: '', entryId: 'fixture', revision: 0, back: () => window.history.back(), forward: () => window.history.forward() }} chromeAppearance={preview.themes} nativeControlsReservation={0} rail={null} headerHostRef={null} hasMainHeader={false}
     viewSidebarAvailable={false} viewSidebarOpen={false} onViewSidebarToggle={() => undefined} rightSidebar={null} rightSidebarOpen={false} onRightSidebarOpenChange={() => undefined}>
     <span aria-label="theme override">{preview.themeOverride ?? 'none'}</span>
-    {open && preview.controller ? <ChromeAppearanceSettings controller={preview.controller} /> : null}
+    {open && preview.controller ? <><ChromeAppearanceControls controller={preview.controller} /><ChromeAppearanceActions controller={preview.controller} /></> : null}
   </AppFrame>;
 }
 
@@ -77,6 +77,7 @@ describe('preview chrome appearance controls', () => {
     vi.spyOn(api, 'getNativeWindowCapabilities').mockImplementation(async () => ({ framePresentation: 'macos-overlay', liquidGlassRegular: regular, topBarHeight: 42, trafficLightReservation: 88 }));
     vi.spyOn(api, 'listenNativeFrameChanges').mockImplementation(async callback => { refresh = callback; return () => undefined; });
     const { container } = render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview appearance' }));
     const slider = await screen.findByRole('slider', { name: 'Liquid Glass transparency' }) as HTMLInputElement;
     await waitFor(() => expect(slider.disabled).toBe(false));
     const frame = container.querySelector<HTMLElement>('.app-frame')!;
@@ -99,9 +100,9 @@ describe('preview chrome appearance controls', () => {
     const originalFrame = frame;
     fireEvent.input(screen.getByRole('slider', { name: 'UI font size' }), { target: { value: '3.25' } });
     expect(frame.style.getPropertyValue('--app-chrome-light-text-increment')).toBe('3.25pt');
-    fireEvent.input(screen.getByRole('slider', { name: 'Width' }), { target: { value: '12.25' } });
+    fireEvent.input(screen.getByRole('slider', { name: 'Shadow width' }), { target: { value: '12.25' } });
     expect(frame.style.getPropertyValue('--app-shadow-light-width')).toBe('12.25px');
-    expect((screen.getByRole('spinbutton', { name: 'Width value' }) as HTMLInputElement).value).toBe('12.25');
+    expect((screen.getByRole('spinbutton', { name: 'Shadow width value' }) as HTMLInputElement).value).toBe('12.25');
     fireEvent.input(screen.getByRole('spinbutton', { name: 'Profile value' }), { target: { value: '1' } });
     expect(frame.style.getPropertyValue('--app-shadow-light-linear')).toBe('rgba(0, 0, 0, 0) 0px, rgba(0, 0, 0, 0.04) 12.25px');
     fireEvent.change(screen.getByLabelText('Preview theme'), { target: { value: 'dark' } });
@@ -130,7 +131,7 @@ describe('preview chrome appearance controls', () => {
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
     render(<Harness />);
     fireEvent.change(screen.getByLabelText('Preview theme'), { target: { value: 'light' } });
-    fireEvent.input(screen.getByLabelText('Width value'), { target: { value: '8' } });
+    fireEvent.input(screen.getByLabelText('Shadow width value'), { target: { value: '8' } });
     fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
     expect(JSON.parse(window.localStorage.getItem(key)!)).toEqual({ ...JSON.parse(seeded), theme: 'light', overrides: { dark: { widthPx: 12, profile: 1, maxDarkness: 0.42, glassTransparency: 0.12, textIncrementPt: 2 } } });
     fireEvent.click(screen.getByRole('button', { name: 'Copy parameters' }));
@@ -148,7 +149,7 @@ describe('preview chrome appearance controls', () => {
     installMemoryLocalStorage();
     vi.spyOn(window.localStorage, 'setItem').mockImplementation(() => { throw new Error('quota'); });
     const { container } = render(<Harness glassAvailable />);
-    const input = screen.getByLabelText('Width value');
+    const input = screen.getByLabelText('Shadow width value');
     fireEvent.input(input, { target: { value: '' } });
     expect((input as HTMLInputElement).value).toBe('');
     expect(container.querySelector<HTMLElement>('.app-frame')!.style.getPropertyValue('--app-shadow-light-width')).toBe('16px');
@@ -188,14 +189,14 @@ describe('preview chrome appearance controls', () => {
     window.__MANDIBLE_BOOTSTRAP__ = { instance: previewInstance };
     window.history.replaceState(null, '', '#/settings');
     const { container } = render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview appearance' }));
     const select = await screen.findByLabelText('Preview theme');
-    expect(screen.getByRole('button', { name: 'Chrome · Preview' })).toBeTruthy();
     fireEvent.change(select, { target: { value: 'dark' } });
     await waitFor(() => expect(document.documentElement.dataset.theme).toBe('dark'));
-    fireEvent.input(screen.getByLabelText('Width value'), { target: { value: '10.5' } });
+    fireEvent.input(screen.getByLabelText('Shadow width value'), { target: { value: '10.5' } });
     fireEvent.click(screen.getByRole('link', { name: 'Spaces' }));
     fireEvent.click(screen.getByRole('link', { name: 'Settings' }));
-    await waitFor(() => expect((screen.getByLabelText('Width value') as HTMLInputElement).value).toBe('10.5'));
+    await waitFor(() => expect((screen.getByLabelText('Shadow width value') as HTMLInputElement).value).toBe('10.5'));
     act(() => events.emit({ type: 'settings:updated', data: { settings: { app_theme: 'light' } } }));
     expect(container.querySelector<HTMLElement>('.app-frame')!.style.getPropertyValue('--app-shadow-dark-width')).toBe('10.5px');
     expect(document.documentElement.dataset.theme).toBe('dark');
@@ -211,7 +212,7 @@ describe('preview chrome appearance controls', () => {
     window.history.replaceState(null, '', '#/settings');
     const { container } = render(<App />);
     await screen.findByRole('heading', { name: 'Appearance' });
-    expect(screen.queryByRole('button', { name: 'Chrome · Preview' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Preview appearance' })).toBeNull();
     expect(screen.queryByLabelText('Preview theme')).toBeNull();
     expect(document.documentElement.dataset.theme).toBe('light');
     expect(container.querySelector<HTMLElement>('.app-frame')!.style.getPropertyValue('--app-shadow-dark-width')).toBe('5px');

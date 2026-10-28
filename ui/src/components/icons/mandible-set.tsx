@@ -451,6 +451,7 @@ export const mandibleSet = {
   removeToken: TokenRemove,
   selectIndicator: SelectIndicator,
   warning: glyphIcon('⚠'),
+  paintbrush: svgIcon(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="m14 4 6 6-8 8-6-6z" /><path d="m17 7 4-4M6 12c-3 1-2 5-4 7 4 1 8 0 10-1M5 16l3 3" /></svg>),
   permission: glyphIcon("!"),
   historyBack: svgIcon(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round"><path d="m11 6-6 6 6 6" /><path d="M5 12h14" /></svg>),
   historyForward: svgIcon(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round"><path d="m13 6 6 6-6 6" /><path d="M19 12H5" /></svg>),

@@ -1,6 +1,5 @@
 import { render } from 'preact';
 import { SettingsView } from '../../../ui/src/views/settings';
-import { useChromeAppearancePreview } from '../../../ui/src/hooks/useChromeAppearancePreview';
 import type { InstanceInfo } from '../../../ui/src/api';
 import { DEFAULT_CHILD_RETENTION_SETTINGS } from '../../../src/conversations/retention-contract';
 
@@ -26,8 +25,7 @@ let mode: 'unknown' | 'preview' | 'main' = 'unknown';
 const previewInstance: InstanceInfo = { role: 'preview', instance_id: 'settings-navigation-preview', installation_id: 'fixture', public_origin: location.origin, backend_generation: 'fixture', allowed_effects: ['ledger:read'], writable_roots: [], db_path: null, db_path_source: null };
 function SettingsProof({ mode }: { mode: 'unknown' | 'preview' | 'main' }): JSX.Element {
   const instance = mode === 'unknown' ? null : { ...previewInstance, role: mode };
-  const preview = useChromeAppearancePreview(instance, 'light', false);
-  return <SettingsView settings={{}} onSave={async () => undefined} instance={instance} chromeAppearancePreview={preview.controller} />;
+  return <SettingsView settings={{}} onSave={async () => undefined} instance={instance} />;
 }
 const refresh = () => render(<SettingsProof mode={mode} />, host);
 refresh();
@@ -114,27 +112,8 @@ Object.assign(window, { runSettingsNavigationProof: async () => {
   await jump('settings-child-cleanup');
   mode = 'preview';
   refresh();
-  await until('Preview Chrome did not become navigable', () => !!nav('settings-chrome-appearance') && !!section('settings-chrome-appearance'));
-  const sectionOrder = Array.from(root.querySelectorAll<HTMLElement>('.settings-view__section'), item => item.id);
-  const navigationOrder = Array.from(root.querySelectorAll<HTMLElement>('.settings-view__toc-link'), item => item.getAttribute('aria-controls'));
-  if (JSON.stringify(sectionOrder) !== JSON.stringify(navigationOrder)
-    || sectionOrder.indexOf('settings-chrome-appearance') !== sectionOrder.indexOf('settings-appearance') + 1) {
-    throw new Error('Preview Chrome is not in the shared rendered/navigation order');
-  }
-  await jump('settings-chrome-appearance');
-  const chrome = section('settings-chrome-appearance');
-  const width = chrome.querySelector<HTMLInputElement>('input[type=range]')!;
-  width.value = '17'; width.dispatchEvent(new Event('input', { bubbles: true }));
-  await until('Tuning remounted or moved the active section', () => section('settings-chrome-appearance') === chrome && atTarget('settings-chrome-appearance'));
-  filter('Liquid Glass');
-  await until('Chrome search lost its active section', () => active() === nav('settings-chrome-appearance') && nav('settings-appearance').hidden);
-  filter('');
-  await until('Unfilter did not reveal the final section', () => !nav('settings-backup').hidden && !section('settings-backup').hidden);
   await jump('settings-backup');
   mode = 'main'; refresh();
-  await until('Production retained preview Chrome', () => !nav('settings-chrome-appearance') && !section('settings-chrome-appearance') && !!active() && !section(active()!.getAttribute('aria-controls')!).hidden);
-  mode = 'preview'; refresh();
-  await until('Preview section lost its local value after capability reconciliation', () => !!section('settings-chrome-appearance') && section('settings-chrome-appearance').querySelector<HTMLInputElement>('input[type=range]')?.value === '17');
-  await jump('settings-chrome-appearance');
+  await until('Instance reconciliation lost Settings selection', () => !!active() && !section(active()!.getAttribute('aria-controls')!).hidden);
   if (unmodeledRequests.length) throw new Error('Unmodeled requests: ' + unmodeledRequests.join(', '));
 } });
