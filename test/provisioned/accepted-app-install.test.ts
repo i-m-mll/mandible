@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { expect, it } from 'vitest';
 import { createPendingRelease, retainAcceptedRelease, applicationIdentity, readAcceptedReleaseReceipt } from '../../scripts/accepted-release.mjs';
 import { acceptedInstallPaths } from '../../scripts/accepted-app-install.mjs';
@@ -111,6 +112,18 @@ it('replaces retained signed bundles through real native service startup, qualif
     const credentials = path.join(home, 'config/client-auth/credentials');
     fs.writeFileSync(authority, 'preserved-authority');
     fs.writeFileSync(credentials, 'preserved-credentials');
+    const predecessor = spawn('/bin/sleep', ['30'], { stdio: 'ignore' });
+    const terminated = once(predecessor, 'exit');
+    let initialProcess: { pid: number; startedAt: string };
+    try {
+      await once(predecessor, 'spawn');
+      initialProcess = { pid: predecessor.pid!, startedAt: run('/bin/ps', ['-p', String(predecessor.pid), '-o', 'lstart='], 'capture initial process birth').trim() };
+      expect(initialProcess.startedAt).not.toBe('');
+    } finally {
+      predecessor.kill('SIGTERM');
+      await terminated;
+    }
+    expect(processIdentity(initialProcess.pid, { until: workUntil })).toBeNull();
     let prior: ReturnType<typeof readBundleOwner> = null;
     let previousReference = '';
     for (const [index, pin] of ['a', 'b'].entries()) {
@@ -165,7 +178,7 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
         runtime: { path: runtime, sha256: installedFileIdentity(runtime).sha256 }, installationId: 'preserved-authority',
         domain: context.domain, backendLabel: context.backendLabel, gatewayLabel: context.gatewayLabel,
         priorBackend: { ...previousServices.backend, launchMode: 'manual' }, priorGateway: previousServices.gateway,
-        oldProcess: previousServices.backend?.process ?? { pid: 999999, startedAt: 'absent' }, desktopWasRunning: false };
+        oldProcess: previousServices.backend?.process ?? initialProcess, desktopWasRunning: false };
       const dir = handoffDirectory(home, binding.requestId, binding.executionId); fs.mkdirSync(dir, { recursive: true });
       const file = path.join(dir, 'journal.json');
       fs.writeFileSync(file, JSON.stringify({ schema: 'mandible-runtime-handoff@1', binding, bindingDigest: bindingDigest(binding), phase: 'armed',
@@ -173,7 +186,7 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
       fs.writeFileSync(path.join(home, 'config/local-sessions/handoff-active.json'), JSON.stringify({ journal: file, bindingDigest: bindingDigest(binding) }));
       let nativeRuntime;
       let interrupted = false;
-      const readAccess = async () => {
+      const readAccess = async (awaitReady = false) => {
         const processes = Object.fromEntries(roles.map(role => [role, readBundleProcess(context, role, { until: workUntil })]));
         if (roles.some(role => !processes[role]?.startedAt)) throw new Error('Native process qualification is missing.');
         const heartbeatFile = path.join(accountHome, '.cache/mandible/backend.json');
@@ -181,12 +194,24 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
           && JSON.parse(fs.readFileSync(heartbeatFile, 'utf8')).generation === candidate.pin_sha);
         const heartbeat = JSON.parse(fs.readFileSync(heartbeatFile, 'utf8'));
         expect(heartbeat.pid).toBe(processes.backend.pid);
-        const status = await new Promise<number>((resolve, reject) => {
+        expect(heartbeat.role).toBe('backend');
+        expect(heartbeat.root).toBe(path.join(app, 'Contents/Resources'));
+        const probeGateway = () => new Promise<number>((resolve, reject) => {
           const request = http.get({ socketPath: path.join(context.runtimeDir, 'fixture-caddy.sock'), path: '/config/' }, response => { response.resume(); response.on('end', () => resolve(response.statusCode!)); });
           request.setTimeout(Math.max(1, workUntil - Date.now()), () => request.destroy(new Error('Native gateway access deadline.')));
           request.on('error', reject);
         });
+        let status: number;
+        for (;;) {
+          try { status = await probeGateway(); break; }
+          catch (error) {
+            if (!awaitReady || !['ENOENT', 'ECONNREFUSED'].includes(error.code)) throw error;
+            checkDeadline('native gateway readiness');
+            await new Promise(resolve => setTimeout(resolve, Math.min(25, workUntil - Date.now())));
+          }
+        }
         expect(status).toBe(200);
+        for (const role of roles) if (runtimeProcessChanged(processes[role], readBundleProcess(context, role, { until: workUntil }))) throw new Error(`Qualified ${role} process changed during native access.`);
         return { processes, heartbeat, gatewayAdmin: status };
       };
       const control = async (journal, command, _currentVerifier, options) => {
@@ -206,7 +231,7 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
           processes: journal.attempt.effects.services?.processes ?? {}, initialize: async () => {}, configure: async () => {
             fs.writeFileSync(path.join(context.runtimeDir, 'fixture-caddy.json'), JSON.stringify({ admin: { listen: 'unix/' + path.join(context.runtimeDir, 'fixture-caddy.sock') }, apps: {} }));
           } }));
-        return JSON.stringify(await readAccess());
+        return JSON.stringify(await readAccess(options.awaitReady));
         } finally { if (priorJournal === undefined) delete process.env.MANDIBLE_RUNTIME_HANDOFF_JOURNAL; else process.env.MANDIBLE_RUNTIME_HANDOFF_JOURNAL = priorJournal; }
       };
       const options = { control, verifyPublication: async () => {}, waitMs: Math.max(1, workUntil - Date.now()),
