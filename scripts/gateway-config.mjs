@@ -1,6 +1,8 @@
 /** HTTP streams can reconnect; durable work drains in the backend. */
+export const GATEWAY_GRACE_SECONDS = 1;
+
 export function gatewayGlobalOptions({ adminAddress = null, storageRoot }) {
-  return `{\n  admin ${adminAddress === null ? 'off' : JSON.stringify(adminAddress)}\n  storage file_system ${JSON.stringify(storageRoot)}\n  grace_period 1s\n  local_certs\n  skip_install_trust\n  auto_https disable_redirects\n}`;
+  return `{\n  admin ${adminAddress === null ? 'off' : JSON.stringify(adminAddress)}\n  storage file_system ${JSON.stringify(storageRoot)}\n  grace_period ${GATEWAY_GRACE_SECONDS}s\n  local_certs\n  skip_install_trust\n  auto_https disable_redirects\n}`;
 }
 
 export function gatewayCaddyfile(instances, { adminAddress, storageRoot }) {
