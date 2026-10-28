@@ -64,7 +64,7 @@ it('arms one independent helper under the deployed interpreter and survives help
     expect(await hooks.publicationBlocker(true)).toBeNull();
     queue = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: false, executor: async () => new Promise(() => {}) });
     const request = (await queue.submit({ ...AUTH_MERGE_REVIEW, type: 'merge', title: 'Isolated runtime handoff', command: 'mandible auth merge feature/handoff --into main', cwd: repo, repo: 'mandible', base_branch: 'main', head_branch: 'feature/handoff', merge_head_sha: git(repo, ['rev-parse', 'feature/handoff']), execution_mode: 'local' }));
-    recordPassingCandidateAcceptance(db, request.id);
+    recordPassingCandidateAcceptance(db, request.id, true);
     await queue.approveWithOperatorProof(request.id, operator);
     const published = publishTestCandidate(repo, (await queue.getRequest(request.id))!);
     db.prepare('UPDATE auth_requests SET output = ? WHERE id = ?').run(published.output.split('\n').find(line => line.startsWith('MANDIBLE_MERGE_RESULT ')), request.id);

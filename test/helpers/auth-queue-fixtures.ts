@@ -30,6 +30,8 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { acceptedReleaseReceiptFixture } from './accepted-release-fixture.js';
+import { bindAcceptedRelease } from '../../src/accepted-release-selection.js';
 import { afterAll, afterEach, expect, vi } from "vitest";
 import { assessServiceObservation, serviceInstallationContext, type inspectServiceDefinitions } from "../../scripts/service-definitions.mjs";
 
@@ -607,18 +609,27 @@ export function insertWorkUnit(
  * acceptance. Tests about later delivery stages state this precondition; the
  * acceptance gate itself is covered by test/runtime-self-update-gates.test.ts.
  */
-export function recordPassingCandidateAcceptance(db: Db, requestId: string): void {
+export function recordPassingCandidateAcceptance(db: Db, requestId: string, selectPackage = false): void {
   const request = db.prepare("SELECT * FROM auth_requests WHERE id = ?").get(requestId) as Record<string, string | null>;
   if (!request.merge_candidate_tree_sha || !request.merge_candidate_pin_sha || !request.merge_head_sha) return;
   const base = request.merge_preflight_base_sha ?? git(request.cwd!, ["rev-parse", request.base_branch!]);
-  db.prepare(`INSERT INTO auth_candidate_acceptances (id, auth_request_id, pin_sha, tree_sha, base_sha, head_sha, status, started_at, finished_at)
-    VALUES (?, ?, ?, ?, ?, ?, 'passed', ?, ?)`).run(randomUUID(), requestId, request.merge_candidate_pin_sha, request.merge_candidate_tree_sha, base, request.merge_head_sha, Date.now(), Date.now());
+  const id = randomUUID();
+  const reference = selectPackage ? acceptedReleaseReceiptFixture(path.join(request.cwd!, '.git', 'accepted-fixture'),
+    { pin_sha: request.merge_candidate_pin_sha, tree_sha: request.merge_candidate_tree_sha, base_sha: base, head_sha: request.merge_head_sha },
+    { record_id: id, request_id: requestId }, request.custody_work_unit_id ?? 'fixture') : null;
+  db.prepare(`INSERT INTO auth_candidate_acceptances (id, auth_request_id, pin_sha, tree_sha, base_sha, head_sha, status, started_at, finished_at, result_json)
+    VALUES (?, ?, ?, ?, ?, ?, 'passed', ?, ?, ?)`).run(id, requestId, request.merge_candidate_pin_sha, request.merge_candidate_tree_sha, base, request.merge_head_sha, Date.now(), Date.now(), reference ? JSON.stringify({ receipt: reference }) : null);
+  if (selectPackage) {
+    const issue = db.prepare('SELECT id FROM ledger_issues LIMIT 1').get() as { id: string } | undefined;
+    const target = issue?.id ?? createLedgerIssue(db, createLedgerProject(db, request.cwd!).project.id, 'accepted', 'Accepted fixture').id;
+    bindAcceptedRelease(db, request as unknown as import('../../src/types.js').AuthRequest, id, target, Date.now());
+  }
 }
 
 /** Obtain genuine operator proof in a private fixture repository. */
 export async function approveFixtureRequest(queue: AuthQueue, id: string): Promise<ReturnType<AuthQueue['approve']>> {
   const db = (queue as unknown as { db: Db }).db;
-  recordPassingCandidateAcceptance(db, id);
+  recordPassingCandidateAcceptance(db, id, queue.candidateAcceptanceForRequest((await queue.getRequest(id))!) !== null);
   let request = (await queue.getRequest(id))!;
   // Command-state tests need a real signing context even when their command
   // has no repository semantics. Set it through the normal pending edit API.

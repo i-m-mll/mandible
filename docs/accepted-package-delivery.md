@@ -6,19 +6,34 @@ identifies source publication. These are separate commits with the same reviewed
 tree. Installed runtime execution requires neither Git nor its source checkout.
 The registered source project remains an explicit input to developer publication.
 
-After candidate acceptance passes, stage its exact selection before approval:
+Candidate acceptance automatically binds its exact retained package before
+exposing a passing verdict. One ordinary `checkpoint_add` action has checkpoint
+kind `accepted-release`, payload `{acceptanceId, reference}`, and the request-bound
+delivery work unit's canonical issue as its target. The passing acceptance,
+selection and system `revised` lifecycle event commit together. Approval validates
+the compact receipt and evidence; whole-package verification stays in bounded
+child processes.
+
+An identical replay changes neither action nor revision. A new passing acceptance
+updates an untouched system-derived selection in place. Manual edits, deletions
+and vetoes remain user intent and require explicit reconciliation. Candidate,
+lifecycle or custody changes during acceptance fail finalization. The action
+must remain staged and non-vetoed when approval freezes it. It records accepted
+release evidence; convergence and issue closure remain separate obligations.
+
+The first upgrade from a legacy authority has one explicit bridge: a prearmed
+custodian stages the exact selection after acceptance passes and before approval:
 
 ```sh
 bun scripts/stage-accepted-release.mjs REQUEST ACCEPTANCE ISSUE REVISION CUSTODY_GENERATION
 ```
 
 Use the request's current lifecycle revision and work-unit custody generation.
-The command validates the named passing acceptance and retained package, then
+The old daemon cannot bind atomically, so this bridge has a brief pass-before-bind
+window. The command validates the named passing acceptance and retained package, then
 uses the existing authenticated `mandible auth action add` operation to stage
-one `checkpoint_add` action with checkpoint kind `accepted-release` and payload
-`{acceptanceId, reference}`. The action must remain staged and non-vetoed when
-approval freezes it. It records accepted release evidence; convergence and issue
-closure remain separate obligations.
+the selection with normal credential and compare-and-swap checks. Subsequent
+deliveries under the upgraded authority bind automatically.
 
 The frozen approval/execution snapshot, exact acceptance row and compact receipt
 must agree on request and candidate pin/tree/base/head. The immutable receipt
