@@ -13,6 +13,8 @@ afterEach(() => { vi.doUnmock('node:child_process'); vi.doUnmock('../scripts/bui
 it('waits through the native launch executable transition and refuses a foreign executable', async () => {
   scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'native-launch-transition-')));
   const bundleRoot = path.join(scratch, 'Mandible.app');
+  fs.mkdirSync(path.join(bundleRoot, 'Contents'), { recursive: true });
+  fs.writeFileSync(path.join(bundleRoot, 'Contents/Info.plist'), '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>bio.mll.mandible</string></dict></plist>');
   const context = serviceInstallationContext({ home: path.join(scratch, 'home'), accountHome: scratch, bundleRoot });
   const agents = path.join(bundleRoot, 'Contents/Library/LaunchAgents');
   fs.mkdirSync(agents, { recursive: true });
@@ -20,14 +22,20 @@ it('waits through the native launch executable transition and refuses a foreign 
     Label: context[`${service}Label`], BundleProgram: 'Contents/MacOS/mandible-service', ProgramArguments: ['mandible-service', 'foreground', service],
   }));
   let executable = 'xpcproxy';
+  let parentIdentifier = 'bio.mll.mandible';
   let gatewayExecutable: string | null = null;
-  vi.doMock('node:child_process', async original => ({ ...await original<typeof import('node:child_process')>(), spawnSync: (binary: string, args: string[]) => {
-    if (binary === '/usr/bin/plutil') return { status: 0, stdout: fs.readFileSync(args.at(-1)!, 'utf8'), stderr: '' };
+  const observedTimeouts: number[] = [];
+  vi.doMock('node:child_process', async original => ({ ...await original<typeof import('node:child_process')>(), spawnSync: (binary: string, args: string[], options: { timeout?: number } = {}) => {
+    if (options.timeout !== undefined) observedTimeouts.push(options.timeout);
+    if (binary === '/usr/bin/plutil') {
+      const bytes = fs.readFileSync(args.at(-1)!, 'utf8');
+      return { status: 0, stdout: args.includes('-extract') ? bytes.match(/<string>([^<]+)<\/string>/)![1] : bytes, stderr: '' };
+    }
     if (binary === '/bin/ps') return { status: 0, stdout: args.at(-1) === 'lstart=' ? 'launch-start'
       : args[args.indexOf('-p') + 1] === '52' ? gatewayExecutable ?? executable : executable, stderr: '' };
     if (binary === '/bin/launchctl') {
       const service = args[1].endsWith(context.backendLabel) ? 'backend' : 'gateway';
-      return { status: 0, stdout: `service = {\n program identifier = Contents/MacOS/mandible-service (mode: 2)\n parent bundle identifier = bio.mll.mandible\n arguments = {\nmandible-service\nforeground\n${service}\n }\n pid = ${service === 'backend' ? 42 : 52}\n}`, stderr: '' };
+      return { status: 0, stdout: `service = {\n program identifier = Contents/MacOS/mandible-service (mode: 2)\n parent bundle identifier = ${parentIdentifier}\n arguments = {\nmandible-service\nforeground\n${service}\n }\n pid = ${service === 'backend' ? 42 : 52}\n}`, stderr: '' };
     }
     throw new Error(`Unexpected command ${binary}`);
   } }));
@@ -41,6 +49,19 @@ it('waits through the native launch executable transition and refuses a foreign 
   }
   executable = path.join(bundleRoot, 'Contents/MacOS/mandible-bun');
   expect(inspectServiceDefinitionsSync(context).ok).toBe(true);
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(1000);
+  try {
+    const before = observedTimeouts.length;
+    expect(inspectServiceDefinitionsSync(context, { until: 1040 }).ok).toBe(true);
+    expect(observedTimeouts.slice(before).length).toBeGreaterThan(0);
+    expect(observedTimeouts.slice(before).every(timeout => timeout > 0 && timeout <= 40)).toBe(true);
+    const beforeExpired = observedTimeouts.length;
+    expect(inspectServiceDefinitionsSync(context, { until: 999 })).toMatchObject({ ok: false, refusal: { category: 'unreadable_state' } });
+    expect(observedTimeouts).toHaveLength(beforeExpired);
+  } finally { clock.mockRestore(); }
+  parentIdentifier = 'bio.mll.foreign';
+  expect(inspectServiceDefinitionsSync(context)).toMatchObject({ ok: false, refusal: { category: 'ownership_conflict' } });
+  parentIdentifier = 'bio.mll.mandible';
   executable = '/another/Mandible.app/Contents/MacOS/mandible-bun';
   expect(inspectServiceDefinitionsSync(context)).toMatchObject({ ok: false, refusal: { category: 'ownership_conflict' } });
   gatewayExecutable = executable;

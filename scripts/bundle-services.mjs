@@ -3,7 +3,8 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { assertLifecycleLockHeld, processIdentity } from './lifecycle-lock.mjs';
-import { inspectServiceDefinitionsSync } from './service-definitions.mjs';
+import { runtimeObservationTimeout } from './runtime-observation.mjs';
+import { inspectServiceDefinitionsSync, assertBundleServiceIdentity } from './service-definitions.mjs';
 import { readServiceConfiguration, publishServiceConfiguration } from './service-configuration.mjs';
 import { readInstalledRelease, releaseFile } from './installed-release.mjs';
 import { reconcileBundleServiceStart, BUNDLE_SERVICE_START_TIMEOUT_MS } from './bundle-service-start.mjs';
@@ -56,30 +57,34 @@ export function admitBundleOwner(context, release, { relocation = false } = {}) 
 }
 
 /** The delivery journal authorizes replacement; this boundary proves the old writer is gone. */
-export function adoptBundleRelease(context, release, expectedOwner, acceptedRelease) {
+export function adoptBundleRelease(context, release, expectedOwner, acceptedRelease, { until } = {}) {
   assertLifecycleLockHeld();
+  assertBundleServiceIdentity(context, until);
   const current = readBundleOwner(context);
   if (JSON.stringify(current) !== JSON.stringify(expectedOwner)) throw new Error('Bundle owner changed after handoff capture.');
-  const inspection = inspectServiceDefinitionsSync(context);
+  const inspection = inspectServiceDefinitionsSync(context, { until });
   if (!inspection.ok) throw new Error(inspection.refusal.message);
   if (inspection.observations.some(item => item.job.pid || item.installed.some(definition => !definition.record.BundleProgram))) {
     throw new Error('Bundle adoption requires stopped writers and removal of legacy service definitions.');
   }
   const installationId = fs.readFileSync(path.join(context.home, 'config/client-auth/authority-id'), 'utf8').trim();
   if (current && current.installationId !== installationId) throw new Error('Bundle owner belongs to another installation authority.');
+  runtimeObservationTimeout(until, 2500);
   publish(ownerFile(context), { schema: 'mandible-bundle-owner@1', bundleRoot: context.bundleRoot, installationId,
     generation: release.provenance.commit, sourceDigest: release.provenance.source_digest, ...(acceptedRelease ? { acceptedRelease } : {}) });
   return readBundleOwner(context);
 }
 
-export function nativeServiceControl(context, operation, role) {
+export function nativeServiceControl(context, operation, role, { until = Date.now() + 10_000 } = {}) {
   if (!['status', 'register', 'unregister', 'settings'].includes(operation) || !['backend', 'gateway'].includes(role)) throw new Error('Invalid native service operation.');
   if (operation !== 'status') assertLifecycleLockHeld();
+  assertBundleServiceIdentity(context, until);
   const resources = path.join(context.bundleRoot, 'Contents/Resources');
   const release = readInstalledRelease(resources);
   const helper = releaseFile(resources, release.native.serviceHelper, release.layout);
+  if (Date.now() >= until) throw new Error('Native service operation deadline exceeded.');
   const result = spawnSync(helper, [operation, role], {
-    encoding: 'utf8', timeout: 10_000, env: { HOME: context.accountHome, PATH: '/usr/bin:/bin:/usr/sbin:/sbin' },
+    encoding: 'utf8', timeout: Math.max(1, Math.min(10_000, until - Date.now())), env: { HOME: context.accountHome, PATH: '/usr/bin:/bin:/usr/sbin:/sbin' },
   });
   if (result.error || result.status !== 0) throw new Error(`Native ${role} ${operation} failed: ${result.stderr || result.error?.message}`);
   const status = JSON.parse(result.stdout);
@@ -92,9 +97,10 @@ export async function bundleRuntimeCommand(command, { context, release, launchMo
   startService = reconcileBundleServiceStart, registrationUntil = Date.now() + BUNDLE_SERVICE_START_TIMEOUT_MS,
   control = nativeServiceControl, session = bundleLoginSession, observe = inspectServiceDefinitionsSync }) {
   if (control === nativeServiceControl && (context.home !== path.join(os.userInfo().homedir, '.mandible')
-      || context.accountHome !== os.userInfo().homedir || process.env.MANDIBLE_INSTANCE_ROLE === 'preview')) {
+      || context.accountHome !== os.userInfo().homedir || context.bundleIdentifier !== 'bio.mll.mandible' || process.env.MANDIBLE_INSTANCE_ROLE === 'preview')) {
     throw new Error('Isolated instances cannot inspect or register production bundle services.');
   }
+  if (control === nativeServiceControl) assertBundleServiceIdentity(context);
   if (!['status', 'start', 'stop', 'restart', 'install', 'repair', 'remove', 'configure-launch-mode', 'reload-gateway', 'background-settings'].includes(command)) throw new Error('Unsupported bundle lifecycle operation.');
   const mutating = command !== 'status';
   const processes = {};

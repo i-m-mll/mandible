@@ -2,14 +2,14 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { assertLifecycleLockHeld } from './lifecycle-lock.mjs';
 import { inspectServiceDefinitionsSync, matchingServiceDefinitions } from './service-definitions.mjs';
-import { RuntimeObservationError, runtimeProcessChanged } from './runtime-observation.mjs';
+import { RuntimeObservationError, runtimeProcessChanged, runtimeObservationTimeout } from './runtime-observation.mjs';
 import { RUNTIME_HEALTH_PROBE_INTERVAL_MS } from './runtime-probe-cadence.mjs';
 
 export const BUNDLE_SERVICE_START_TIMEOUT_MS = 20_000;
 
-function startOwnedJob(context, role) {
+function startOwnedJob(context, role, until) {
   assertLifecycleLockHeld();
-  const result = spawnSync('/bin/launchctl', ['kickstart', `${context.domain}/${context[`${role}Label`]}`], { encoding: 'utf8', timeout: 2500 });
+  const result = spawnSync('/bin/launchctl', ['kickstart', `${context.domain}/${context[`${role}Label`]}`], { encoding: 'utf8', timeout: runtimeObservationTimeout(until, 2500) });
   return { ok: !result.error && result.status === 0, status: result.status, error: result.error?.message || result.stderr?.trim() || null };
 }
 
@@ -23,7 +23,7 @@ export async function reconcileBundleServiceStart(context, role, { until, contro
     error: new RuntimeObservationError(code, message, { service: role, label, until, observations, processes: { ...processes } }, outcome) });
   const continuity = () => {
     for (const [service, expected] of Object.entries(processes)) {
-      const current = readProcess(context, service);
+      const current = readProcess(context, service, { until });
       if (runtimeProcessChanged(expected, current)) {
         observations.push({ at: now(), service, expected, current });
         return fail('process_changed', `Qualified ${service} process changed during service registration.`);
@@ -38,7 +38,7 @@ export async function reconcileBundleServiceStart(context, role, { until, contro
     let native, inspection;
     try {
       const changed = continuity(); if (changed) return changed;
-      native = control(context, 'status', role); inspection = observe(context);
+      native = control(context, 'status', role, { until }); inspection = observe(context, { until });
       const replaced = continuity(); if (replaced) return replaced;
     }
     catch (error) { return fail('service_observation_failed', error.message); }
@@ -66,7 +66,7 @@ export async function reconcileBundleServiceStart(context, role, { until, contro
       if (!observed.job.loaded) startAttempted = false;
       if (native.status === 'enabled' && observed.job.loaded) {
         if (observed.job.pid) {
-          const current = readProcess(context, role);
+          const current = readProcess(context, role, { until });
           if (current?.pid === observed.job.pid && current.startedAt) {
             processes[role] = current;
             return { ok: true, observation: sample, processes: { ...processes } };
@@ -74,13 +74,13 @@ export async function reconcileBundleServiceStart(context, role, { until, contro
         }
         if (!observed.job.pid && !startAttempted && now() < until) {
           startAttempted = true;
-          try { sample.start = start(context, role); } catch (error) { return fail('service_start_failed', error.message); }
+          try { sample.start = start(context, role, until); } catch (error) { return fail('service_start_failed', error.message); }
           if (sample.start.ok) return { ok: true, observation: sample, processes: { ...processes } };
         }
       } else if (['not_found', 'not_registered'].includes(native.status) && !registered && now() < until) {
         registered = true;
         assertLifecycleLockHeld();
-        try { sample.registration = control(context, 'register', role); }
+        try { sample.registration = control(context, 'register', role, { until }); }
         catch (error) { return fail('service_registration_failed', error.message); }
         if (sample.registration.status === 'requires_approval') return fail('background_permission_required', 'Allow Mandible background services in System Settings.', 'pending');
       }

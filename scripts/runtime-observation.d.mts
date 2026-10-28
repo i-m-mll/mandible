@@ -6,6 +6,7 @@ export class RuntimeObservationError extends Error {
   toJSON(): { schema: string; outcome: 'pending' | 'failed'; code: string; message: string; evidence: unknown };
 }
 export function observationPending(error: unknown): error is RuntimeObservationError;
+export function runtimeObservationTimeout(until: number | undefined, maximumMs: number): number;
 export interface RuntimeProcessIdentity { pid: number; startedAt: string | null; runs: number }
 export function runtimeProcessChanged(expected: RuntimeProcessIdentity | null | undefined, current: RuntimeProcessIdentity | null): boolean;
 export function decodeObservationError(text: string): RuntimeObservationError | null;

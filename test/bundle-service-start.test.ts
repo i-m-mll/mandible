@@ -2,7 +2,7 @@ import { expect, it } from 'vitest';
 import { reconcileBundleServiceStart } from '../scripts/bundle-service-start.mjs';
 import { assessServiceObservation, serviceInstallationContext } from '../scripts/service-definitions.mjs';
 
-const context = { ...serviceInstallationContext({ home: '/fixture/state', accountHome: '/fixture/account' }), bundleRoot: '/fixture/Mandible.app' };
+const context = serviceInstallationContext({ home: '/fixture/state', accountHome: '/fixture/account', bundleRoot: '/fixture/Mandible.app', bundleIdentifier: 'bio.mll.mandible' });
 const argv = ['mandible-service', 'foreground', 'backend'];
 const program = `${context.bundleRoot}/Contents/MacOS/mandible-service`;
 const process = () => ({ pid: 42, startedAt: 'owned-start', runs: 1 });

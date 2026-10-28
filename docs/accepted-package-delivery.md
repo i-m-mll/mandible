@@ -73,14 +73,11 @@ daemon continues serving requests during convergence.
 
 ## Qualification
 
-Both delivery topologies use the same fixture phase budgets: approval to durable
-helper admission, 60 seconds; admission to completion, 180 seconds; completion to
-final acknowledgment, 60 seconds. Concrete failures stop the wait immediately.
-These fixture budgets do not change the product's 31-second diagnostic coverage
-requirement within its 62-second observation deadline. The deadline is a ceiling,
-not a fixed observation duration. Preserving a failed fixture leaves its helper
-running until its own bounded work exits; an explicit helper stop is an
-interruption case.
+Qualification combines one exact finished-package acceptance with one focused
+real macOS bundle-to-bundle service replacement proof. The package gate owns
+the product daemon, packaged interaction and diagnostic coverage. The native
+replacement proof covers the separate installation and SMAppService boundary;
+it does not repeat package acceptance, a route sweep, or a diagnostic soak.
 
 The earlier [managed recovery witness](https://app.mandible.localhost:19420/artifact/artifact-version:84f710aad45e?sidebar=hidden&agent_session=01a17e9c)
 records both accepted app receipts, native deliveries, exact installed bytes,
@@ -92,33 +89,54 @@ wait. The phase-only fixture correction has focused tests; the full native
 fixture was not rebuilt for that test-only correction. This witness does not
 qualify a clean upgrade from current source.
 
-For this bundle-service repair, before presenting approval the coordinator
-requires a clean current-source witness for both legacy-to-bundle and
-bundle-to-bundle upgrades, retained as a source-bound managed artifact. After
-explicit human retirement of the retained failed handoff lock, run the existing
-full fixture; both hops are one test:
+The focused current-source proof extends the retained installer fixture:
 
 ```sh
-bun run test:provisioned test/provisioned/runtime-handoff-full.test.ts
+/usr/bin/time -p timeout --kill-after=1 19 bun run test:provisioned test/provisioned/accepted-app-install.test.ts
 ```
 
-The fixture transforms source for random private application/service identities,
-homes and ports. It qualifies the lifecycle transition under that isolation;
-it does not establish exact unmodified candidate bytes. [Package/runtime
-acceptance](candidate-acceptance.md) starts bundled Bun/Caddy directly in a fresh
-home and checks exact package/runtime behavior, while its separate route sweep
-uses copied live-ledger data. Actual post-approval handoff verifies installation
-and convergence of the exact accepted package.
+It builds the current checkout's small native service helper once and stages
+two tiny ad-hoc signed bundles with a bundled Bun runtime. Both roles start
+through the production native-control, inspector and registration reconciler.
+Per-role generation and PID heartbeats agree with qualified process identities.
+The first generation's writers must stop before the production retained-app
+installer replaces it; the second generation must start with exact retained
+package bytes, matching installation authority and release ownership. Previous
+package disposal and final service teardown are checked. Provisioning, signing,
+helper process cleanup and disposal are counted in the emitted phase costs.
+An unconfirmed service stop preserves the app and evidence.
 
-Until this repair's clean source-bound witness exists, its pending request
-verification must say **Upgrade qualification for this bundle-service repair:
-pending until a clean current-source two-hop witness is retained as a managed
-artifact.** Once it exists, reference that artifact through the normal guarded
-request-message revision before approval. A passing package/runtime result does
-not replace this repair's review requirement.
+Isolation uses a random private bundle identity, account home, app path and
+heartbeat payload through the existing native helper's fixture namespace. The
+expected identity comes from that app's Info.plist; observed jobs cannot select
+their own trusted identity. No production service, ledger, GUI, protected merge
+API or full application build participates in this proof, and production source
+is not rewritten to substitute the namespace. It does not establish exact
+unmodified product package bytes. [Package/runtime acceptance](candidate-acceptance.md)
+and the actual post-approval handoff retain that obligation.
 
-After migration, future affected upgrade work exercises the ongoing
-bundle-to-bundle contract. The obsolete legacy bootstrap is not a permanent
-requirement for every subsequent approval.
+Retain the source-bound native proof before creating the canonical request and
+reference it in that request's initial review message. The request links its
+automatic exact-package acceptance result directly; passing acceptance requires
+no prose edit, manual package binding or rebuild. The ordinary
+warm-toolchain verification design targets 60 seconds with a 90-second whole-path
+ceiling, including source/package preparation, proofs and a teardown reserve.
+That is a design budget, not a measured result; one proof's local deadline is
+not an additional allocation beyond the shared verification schedule.
+The allocation is at most 10 seconds for source checks, 20 seconds for the
+native replacement fixture including a five-second teardown reserve, and
+60 seconds for automatic acceptance including its five-second cleanup reserve.
+The external wall measurement and hard cap include runtime selector/import and
+launcher startup: TERM at 19 seconds leaves one second for KILL within the
+20-second allocation. The internal clock starts at provisioned runner entry
+before private runtime and Vitest startup; it does not measure earlier startup.
+The runner begins bounded TERM/KILL/join/reporting before its original deadline;
+the test consumes the remaining allowance.
+Installation, registration observation and retained-package disposal share that
+original deadline rather than starting new per-operation budgets.
+
+The legacy-to-bundle bootstrap remains historical migration coverage. Repeating
+its old-source build and two full package acceptances is not a prerequisite for
+subsequent bundle-to-bundle repair qualification.
 
 Co-Authored-By: Codex (GPT) <codex@openai.com>
