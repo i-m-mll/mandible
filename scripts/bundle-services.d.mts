@@ -27,5 +27,7 @@ export function bundleRuntimeCommand(command: string, options: {
   configureGateway(root: string): { adminRestartRequired: boolean } | Promise<{ adminRestartRequired: boolean }>; reloadGateway(): void; restartGateway(): void; previewCount(root: string): number;
   waitReady(launchMode: string): Promise<BundleRuntimeObservation>;
   control?: typeof nativeServiceControl; session?: typeof bundleLoginSession;
+  readProcess: Parameters<typeof import('./bundle-service-start.mjs').reconcileBundleServiceStart>[2]['readProcess'];
+  startService?: typeof import('./bundle-service-start.mjs').reconcileBundleServiceStart; registrationUntil?: number;
   observe?: (context: ServiceInstallationContext) => ServiceDefinitionInspection;
 }): Promise<Record<string, unknown>>;
