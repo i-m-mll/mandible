@@ -922,6 +922,7 @@ export interface ServerOptions {
   // Optional second-tier readiness source. Omitted servers are warm by default
   // for backward compatibility with existing embedders and tests.
   isWarm?: () => boolean;
+  getCurrentDiagnostics?: () => Promise<import("./runtime-health-contract.js").CurrentRuntimeHealth>;
   getMemoryDiagnostics?: () => DaemonMemorySnapshot;
   getEventLoopDiagnostics?: () => EventLoopLagSnapshot;
   readEventLoopTurnMs?: () => number;
@@ -941,7 +942,8 @@ export function createServer(options: ServerOptions, transport: "http" | "local-
   const uiDistDir = options.uiDistDir ?? UI_DIST_DIR;
 
   if (transport === "http") {
-  router.get("/api/health", (_req, res) => {
+  router.get("/api/health", async (_req, res) => {
+    const current = await options.getCurrentDiagnostics?.();
     const startupCommit =
       getStartupInfo() ?? { hash: "unknown", summary: "unknown", date: "" };
     // Bug: 4db692a — include rebuilding flag so the UI health poll can
@@ -956,6 +958,7 @@ export function createServer(options: ServerOptions, transport: "http" | "local-
     const warm = isWarm?.() ?? true;
     const payload: HealthResponse = {
       status: "ok",
+      ...(current ? { current } : {}),
       uptime: process.uptime(),
       version,
       ...(options.startupEpoch ? { startup_epoch: options.startupEpoch } : {}),

@@ -13,10 +13,11 @@ import { createHash, randomBytes } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { runSupervisedCommand } from './process-group-supervisor.mjs';
 import { fileURLToPath } from 'node:url';
+import { setTimeout as abortableDelay } from 'node:timers/promises';
 import { withOwnedRunLock, createOwnedRun, saveOwnedMetadata, finalizeOwnedRun, cleanupOwnedRun } from './owned-run.mjs';
 import { readBuildRevision } from './build-revision.mjs';
 import { acceptanceDeadline } from './acceptance-deadline.mjs';
-import { observeRuntimeHealthCoverage, RuntimeHealthObservationError, assessRuntimeHealth } from '../src/runtime-health-contract.ts';
+import { observeRuntimeHealthCoverage, RuntimeHealthObservationError } from '../src/runtime-health-contract.ts';
 
 import { readRuntimeHandoffLock, runtimeHandoffLockRefusal } from './runtime-handoff-lock.mjs';
 
@@ -172,6 +173,7 @@ export async function observeAcceptanceHealth({
   observationMs = 0,
   deadlineMs = 62_000,
   onEvidence = () => {},
+  live,
 }) {
   const result = await observeRuntimeHealthCoverage({
     probe,
@@ -184,8 +186,10 @@ export async function observeAcceptanceHealth({
     pollMs: 500,
     observationMs,
     deadlineMs,
+    live,
   });
-  onEvidence({ observation: result.observation, samples: result.samples, performance: result.performance });
+  onEvidence({ mode: live ? 'live production collectors through actual interaction completion' : 'completed periodic intervals', observation: result.observation, samples: result.samples, performance: result.performance,
+    periodic_windows_completed: Math.max(0, (result.samples.last.eventLoop?.sequence ?? 0) - (result.samples.initial.eventLoop?.sequence ?? 0)) });
   // A performance finding on the owned fixture fails acceptance.
   const [finding] = result.performance.findings;
   if (finding) throw new RuntimeHealthObservationError(finding.code, finding.message, { observation: result.observation, performance: result.performance });
@@ -435,7 +439,9 @@ async function main() {
   if (diagnostic) result.diagnostic = { qualifying: false, source: diagnostic, deadline_ms: 60_000 };
   let daemon, desktop, gateway, stallProbe, diagnosticDeadline, testedPackageDigest;
   let passiveHealth, passiveError;
+  let interactionCompletedAt = null;
   const passiveController = new AbortController();
+  const interactionWake = new AbortController();
   const diagnostics = path.join(run, 'diagnostics');
   if (diagnostic) fs.mkdirSync(diagnostics, { mode: 0o700 });
   let executionProfile;
@@ -513,15 +519,23 @@ async function main() {
     result.checks.readiness = { startup_epoch: health.startup_epoch, instance_id: health.instance.instance_id, origin };
     result.phases.readiness.status = 'passed';
     result.phases.readiness.elapsed_ms = Date.now() - result.phases.readiness.started_at;
-    passiveHealth = (async () => {
-      while (!passiveController.signal.aborted) {
-        const current = await probe(passiveController.signal);
+    if (!health.current) throw new Error('Production live collector diagnostics are unavailable at readiness.');
+    passiveHealth = observeAcceptanceHealth({
+      live: { startedAt: health.current.observedAt, through: () => interactionCompletedAt },
+      deadlineMs: budget.remaining(),
+      wait: async ms => {
+        try { await abortableDelay(ms, undefined, { signal: AbortSignal.any([passiveController.signal, interactionWake.signal]) }); }
+        catch (error) { if (passiveController.signal.aborted || !interactionWake.signal.aborted) throw error; }
+      },
+      probe: async (_deadline, signal) => {
+        if (passiveController.signal.aborted) throw passiveController.signal.reason;
+        const current = await probe(AbortSignal.any([signal, passiveController.signal]));
         if (current.startup_epoch !== health.startup_epoch) throw new Error('Daemon startup epoch changed during route/UI measurement.');
-        const assessment = assessRuntimeHealth(current);
-        if (assessment.defects.length || assessment.performance.length) throw new Error(`Passive runtime health failed: ${JSON.stringify(assessment)}`);
-        await delay(Math.min(500, budget.remaining()));
-      }
-    })().catch(error => { if (!passiveController.signal.aborted) passiveError = error; });
+        if (desktop && (desktop.exitCode !== null || desktop.signalCode !== null)) throw new Error('Packaged app closed during acceptance observation.');
+        return current;
+      },
+      onEvidence: evidence => { result.checks.health_coverage = evidence; },
+    }).catch(error => { if (!passiveController.signal.aborted) passiveError = error; });
     if (!diagnostic) await phase('representative_routes', async () => {
     const routeCostFile = path.join(run, 'route-cost.json');
     const routeCostOut = fs.openSync(routeCostFile, 'w'); files.push(routeCostOut);
@@ -535,6 +549,7 @@ async function main() {
       : `it exited (${sweepFailure.message}) without a report: ${fs.readFileSync(path.join(run, 'route-cost.log'), 'utf8').split('\n').filter(line => line.trim() && !/^\s+at /.test(line)).slice(-8).join(' | ')}`}`);
     if (!result.checks.route_cost || result.checks.route_cost.complete !== true || result.checks.route_cost.diagnostic || !result.checks.route_cost.representative || result.checks.route_cost.revision !== candidate) throw new Error('Route-cost sweep did not produce a complete qualifying report.');
     });
+    if (passiveError) throw passiveError;
     if (!health.local_socket_path?.startsWith(`${home}${path.sep}`)) throw new Error('Fixture bootstrap socket escapes its isolated home.');
     if (diagnostic) {
       const out = fs.openSync(path.join(diagnostics, 'probe.jsonl'), 'w'); files.push(out);
@@ -562,27 +577,19 @@ async function main() {
       if (desktop.exitCode !== null || desktop.signalCode !== null) throw new Error('Packaged app exited before its interaction completed.');
       return fs.existsSync(evidencePath);
     }, Math.min(45_000, budget.remaining()), 'Packaged dashboard setup persistence and Settings edit');
+    interactionCompletedAt = Math.ceil(fs.statSync(evidencePath).mtimeMs);
+    if (!Number.isFinite(interactionCompletedAt) || interactionCompletedAt < health.current.observedAt || interactionCompletedAt > Date.now()) throw new Error('Packaged interaction completion timestamp is outside its observed workload.');
+    interactionWake.abort();
     const evidence = JSON.parse(fs.readFileSync(evidencePath, 'utf8'));
     if (!evidence.passed || !evidence.rendered || !evidence.edit || evidence.setup?.skipped !== 'skipped' || evidence.setup?.completed !== 'complete' || evidence.setup?.reloads !== 2 || !evidence.setup?.promptDismissedAfterReload || !evidence.setup?.integrationsUnchanged) throw new Error(`Packaged interaction failed: ${JSON.stringify(evidence)}`);
     result.checks.desktop_interaction = evidence;
+    result.checks.desktop_interaction_completed_at = interactionCompletedAt;
     result.phases.desktop_interaction.status = 'passed';
     result.phases.desktop_interaction.elapsed_ms = Date.now() - result.phases.desktop_interaction.started_at;
-    passiveController.abort();
-    await passiveHealth;
-    if (passiveError) throw passiveError;
-    // Observe beyond the requested interval until one completed sampler window
-    // proves coverage of its end. The deadline is fixed, so a stalled or stale
-    // sampler fails instead of extending its own acceptance indefinitely.
-    await phase('health_coverage', () => observeAcceptanceHealth({
-      observationMs: 0, deadlineMs: budget.remaining(),
-      probe: async (_deadline, signal) => {
-        const current = await probe(signal);
-        if (current.startup_epoch !== health.startup_epoch) throw new Error('Daemon startup epoch changed after interaction.');
-        if (desktop.exitCode !== null || desktop.signalCode !== null) throw new Error('Packaged app closed during acceptance observation.');
-        return current;
-      },
-      onEvidence: evidence => { result.checks.health_coverage = evidence; },
-    }));
+    await phase('health_coverage', async () => {
+      await passiveHealth;
+      if (passiveError) throw passiveError;
+    });
     if (interrupted) throw new Error('Acceptance interrupted or total deadline reached.');
     result.status = 'passed';
   } catch (error) {

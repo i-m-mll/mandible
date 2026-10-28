@@ -33,7 +33,7 @@ export class EventLoopLagDiagnostics {
   private turnTimer: ReturnType<typeof setInterval> | null = null;
   private turnMaxMs = 0;
 
-  constructor(logger: Logger, resolutionMs = 20, now = Date.now()) {
+  constructor(logger: Logger, private readonly resolutionMs = 20, now = Date.now()) {
     this.logger = logger;
     this.histogram = monitorEventLoopDelay({ resolution: resolutionMs });
     this.histogram.enable();
@@ -41,34 +41,41 @@ export class EventLoopLagDiagnostics {
     this.last = emptySnapshot(now);
   }
 
-  sample(intervalEndedAt = Date.now()): EventLoopLagSnapshot {
+  /** Read the active histogram without changing the periodic window or warning state. */
+  current(intervalEndedAt = Date.now()): EventLoopLagSnapshot {
     const p50Ms = finiteMilliseconds(this.histogram.percentile(50));
     const p95Ms = finiteMilliseconds(this.histogram.percentile(95));
     const maxMs = finiteMilliseconds(this.histogram.max);
-    this.highWaterMs = Math.max(this.highWaterMs, maxMs);
-
-    if (maxMs >= EVENT_LOOP_STALL_BUDGET_MS) {
-      this.logger("warn", "daemon_event_loop_stall", { max_ms: maxMs, p95_ms: p95Ms, budget_ms: EVENT_LOOP_STALL_BUDGET_MS });
-    }
-    if (!this.warning && p95Ms >= WARNING_THRESHOLD_MS) {
-      this.warning = true;
-      this.logger("warn", "daemon_event_loop_lag", { p95_ms: p95Ms, max_ms: maxMs });
-    } else if (this.warning && p95Ms < WARNING_CLEAR_MS) {
-      this.warning = false;
-      this.logger("info", "daemon_event_loop_recovered", { p95_ms: p95Ms, max_ms: maxMs });
-    }
-
-    this.last = {
-      sequence: ++this.sequence,
+    return {
+      sequence: this.sequence,
       intervalStartedAt: this.intervalStartedAt,
       intervalEndedAt,
-      p50Ms,
-      p95Ms,
-      maxMs,
-      highWaterMs: this.highWaterMs,
-      warning: this.warning,
+      p50Ms, p95Ms, maxMs,
+      highWaterMs: Math.max(this.highWaterMs, maxMs),
+      warning: this.warning ? p95Ms >= WARNING_CLEAR_MS : p95Ms >= WARNING_THRESHOLD_MS,
       backgroundBackoffMs: backoffForLag(p95Ms),
     };
+  }
+
+  /** Allow the existing collector to account for the just-completed loop turn. */
+  async currentAfterTurn(): Promise<{ collectorTurnMs: number; eventLoop: EventLoopLagSnapshot }> {
+    await new Promise(resolve => setTimeout(resolve, this.resolutionMs));
+    return { collectorTurnMs: this.resolutionMs, eventLoop: this.current() };
+  }
+
+  sample(intervalEndedAt = Date.now()): EventLoopLagSnapshot {
+    const current = this.current(intervalEndedAt);
+    if (current.maxMs >= EVENT_LOOP_STALL_BUDGET_MS) {
+      this.logger("warn", "daemon_event_loop_stall", { max_ms: current.maxMs, p95_ms: current.p95Ms, budget_ms: EVENT_LOOP_STALL_BUDGET_MS });
+    }
+    if (!this.warning && current.warning) {
+      this.logger("warn", "daemon_event_loop_lag", { p95_ms: current.p95Ms, max_ms: current.maxMs });
+    } else if (this.warning && !current.warning) {
+      this.logger("info", "daemon_event_loop_recovered", { p95_ms: current.p95Ms, max_ms: current.maxMs });
+    }
+    this.warning = current.warning;
+    this.highWaterMs = current.highWaterMs;
+    this.last = { ...current, sequence: ++this.sequence };
     this.intervalStartedAt = intervalEndedAt;
     this.histogram.reset();
     return { ...this.last };
