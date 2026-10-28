@@ -36,7 +36,7 @@ it("reclaims interrupted sweep data and authority through acceptance ownership",
   }
 });
 
-it("finalizes failed source evidence without claiming a package pass and preserves the receipt after cleanup", async () => {
+it("keeps large shipped inventories in the full receipt and returns bounded finalization JSON after cleanup", async () => {
   const cache = fs.mkdtempSync(path.join(os.tmpdir(), "acceptance-finalization-"));
   const run = path.join(cache, "run");
   fs.mkdirSync(run);
@@ -46,20 +46,28 @@ it("finalizes failed source evidence without claiming a package pass and preserv
   const metadataFile = path.join(run, "metadata.json");
   saveOwnedMetadata(metadataFile, { ownership });
   const budget = acceptanceDeadline({});
+  const provenance = { shipped: { files: Object.fromEntries(Array.from({ length: 10_000 }, (_, index) => [
+    `dist/module-${index}.js`, { sha256: "a".repeat(64), size: 42 },
+  ])) } };
+  expect(Buffer.byteLength(JSON.stringify(provenance))).toBeGreaterThan(1024 * 1024);
   try {
     const input = path.join(run, "finalization.json");
     saveOwnedMetadata(input, { metadataFile, run, cache, ownership, deadlineEnv: budget.env,
-      result: { status: "failed", candidate: "candidate", error: "request failed", checks: {}, phases: { finalization: { status: "running", started_at: Date.now() } }, budget: { ...budget.reading(), scope: "candidate-script" } },
+      result: { status: "failed", candidate: "candidate", error: "request failed", provenance, checks: {}, phases: { finalization: { status: "running", started_at: Date.now() } }, budget: { ...budget.reading(), scope: "candidate-script" } },
     });
     const completed = await runSupervisedCommand(process.execPath, [path.resolve("scripts/candidate-acceptance.mjs"), "--finalize-owned-run", input], {
       capture: true, maxBuffer: 1024 * 1024, timeout: 2000, graceMs: 250, deadline: Date.now() + 3000,
     });
     const result = JSON.parse(completed.stdout);
+    expect(completed.stdoutTruncated).toBe(false);
+    expect(Buffer.byteLength(completed.stdout)).toBeLessThan(60 * 1024);
+    expect(result.truncated).toBe(true);
     expect(result.status).toBe("failed");
     expect(result.checks.cleanup).toMatchObject({ action: "delete-owned", remaining: [] });
     expect(fs.existsSync(path.join(run, "home", "fixture"))).toBe(false);
     const receipt = JSON.parse(fs.readFileSync(result.receipt, "utf8"));
     expect(receipt.acceptance).toMatchObject({ status: "failed", budget: { scope: "candidate-script" }, phases: { finalization: { status: "passed" } } });
+    expect(Object.keys(receipt.acceptance.provenance.shipped.files)).toHaveLength(10_000);
   } finally { fs.rmSync(cache, { recursive: true, force: true }); }
 });
 

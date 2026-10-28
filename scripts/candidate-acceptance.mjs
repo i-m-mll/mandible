@@ -652,7 +652,9 @@ async function main(budget) {
           cwd: root, env: buildEnv, capture: true, maxBuffer: 1024 * 1024,
           timeout: Math.max(1, remaining - 600), graceMs: 250, deadline: budget.deadline,
         });
-        Object.assign(result, JSON.parse(completed.stdout));
+        if (completed.stdoutTruncated) throw new Error('Finalizer exceeded its bounded result transport.');
+        const finalized = JSON.parse(completed.stdout);
+        Object.assign(result, finalized, { checks: { ...result.checks, ...finalized.checks } });
       } catch (error) {
         result.status = 'failed'; result.cleanup_error = error.message;
         result.phases.finalization.status = 'failed';
@@ -682,7 +684,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     const budget = acceptanceApplicationPolicy();
     if (process.argv[2] === '--finalize-owned-run') {
       const result = await finalizeAcceptance(JSON.parse(fs.readFileSync(process.argv[3], 'utf8')));
-      process.stdout.write(JSON.stringify(result)); process.exitCode = 0;
+      process.stdout.write(JSON.stringify(compactAcceptanceResult(result))); process.exitCode = 0;
     } else await main(budget);
   })();
   execution.catch(error => { console.error(JSON.stringify({ status: 'unavailable', error: error.message })); process.exitCode = 1; });
