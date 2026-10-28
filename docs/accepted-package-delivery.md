@@ -56,4 +56,25 @@ withdrawn, superseded or expired request. Retained packages are not cache materi
 Whole-package verification and disposal run in bounded child processes so the
 daemon continues serving requests during convergence.
 
+## Qualification
+
+Both delivery topologies use the same fixture phase budgets: approval to durable
+helper admission, 60 seconds; admission to completion, 180 seconds; completion to
+final acknowledgment, 60 seconds. Concrete failures stop the wait immediately.
+These fixture budgets do not change the product's 31-second diagnostic coverage
+requirement within its 62-second observation deadline. The deadline is a ceiling,
+not a fixed observation duration. Preserving a failed fixture leaves its helper
+running until its own bounded work exits; an explicit helper stop is an
+interruption case.
+
+The [managed qualification proof](https://app.mandible.localhost:19420/artifact/artifact-version:84f710aad45e?sidebar=hidden&agent_session=01a17e9c)
+records both accepted app receipts, native deliveries, exact installed bytes,
+superseded-package disposal, and automatic recovery after a test-induced helper
+interruption. Its status is `functional-pass-after-fixture-timing-failure`: the
+former second-delivery 120-second total wait failed and interrupted its helper.
+The later acknowledgment proves recovery, not an uninterrupted pass of that
+wait. The phase-only fixture correction has focused tests; the full native
+fixture was not rebuilt for that test-only correction. Integration still requires
+the repository's exact final-candidate acceptance gate.
+
 Co-Authored-By: Codex (GPT) <codex@openai.com>

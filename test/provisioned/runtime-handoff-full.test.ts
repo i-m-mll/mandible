@@ -16,6 +16,7 @@ import { createUser, setupOperator } from '../../src/users/store.js';
 import { localCaPaths, assertLocalCaIdentity, probeCurrentMacOsTrust } from '../../scripts/local-ca-trust.mjs';
 import { resolveAcceptedRelease, readAcceptedReleaseReceipt, applicationIdentity } from '../../scripts/accepted-release.mjs';
 import { readRuntimeHandoff, readRuntimeHandoffPhase } from '../../scripts/runtime-handoff.mjs';
+import { waitForHandoffPhases } from '../helpers/runtime-handoff-phase-wait.js';
 import { parseLoadedService, loadedServiceMatches } from '../../scripts/local-runtime.mjs';
 import { configureSigningCredential, createAuthCheckRepo, createLedgerProject, git, registerWorkRepo } from '../helpers/auth-queue-fixtures.js';
 import { createLedgerIssue } from '../helpers/auth-queue-fixtures.js';
@@ -305,30 +306,33 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
       const installed = JSON.parse(command('/usr/bin/plutil', ['-convert', 'json', '-o', '-', file!]));
       expect(loadedServiceMatches(installed, parseLoadedService(detail))).toBe(false);
     }
+    const waitForDelivery = async (id: string) => {
+      let observedPhase: string | null = null;
+      let current: any = null;
+      await waitForHandoffPhases({ read: () => {
+        const hook = db!.prepare('SELECT id, exit_code, output FROM auth_hook_executions WHERE auth_request_id=? AND hook_id=?').get(id, 'builtin-mandible-rebuild') as any;
+        if (hook) executionId = hook.id;
+        const phase = executionId ? readRuntimeHandoffPhase(home, id, executionId) : null;
+        // Poll phase hints cheaply; validate the journal on transitions and
+        // until its independent helper has durably admitted the publication.
+        if (phase && (phase !== observedPhase || !current?.bridgeInstalled)) current = readRuntimeHandoff(home, id, executionId);
+        observedPhase = phase;
+        journal = current;
+        const state = db!.prepare('SELECT status, exit_code, error, output FROM auth_requests WHERE id=?').get(id) as any;
+        let failure = phase === 'failed' ? current?.error || 'Runtime handoff failed.' : null;
+        if (hook?.exit_code != null && ![0, 75].includes(hook.exit_code)) failure ||= `Handoff hook refused: ${hook.output}`;
+        if (state && (['rejected', 'failed'].includes(state.status) || state.status === 'completed' && state.exit_code !== 0 && !current?.bridgeInstalled)) {
+          failure ||= `Publication failed: ${state.error || state.output?.slice(-4000) || state.status}`;
+        }
+        return { admitted: !!current?.bridgeInstalled, phase, failure };
+      } });
+    };
     requirePrivateCredential();
     await approveBootstrapDelivery(operatorApi, request.id);
-    await until(() => {
-      const hook = db!.prepare('SELECT id, exit_code, output FROM auth_hook_executions WHERE auth_request_id=? AND hook_id=?').get(request.id, 'builtin-mandible-rebuild') as any;
-      if (hook) executionId = hook.id;
-      journal = executionId ? readRuntimeHandoff(home, request.id, executionId) : null;
-      if (journal?.phase === 'failed') throw new Error(journal.error);
-      if (hook?.exit_code != null && ![0, 75].includes(hook.exit_code)) throw new Error(`Handoff admission hook failed: ${hook.output}`);
-      const state = db!.prepare('SELECT status, exit_code, error, output FROM auth_requests WHERE id=?').get(request.id) as any;
-      if (state && (['rejected', 'failed'].includes(state.status) || (state.status === 'completed' && state.exit_code !== 0)) && !journal?.bridgeInstalled) throw new Error(`Request ended before handoff: ${JSON.stringify({ ...state, output: state.output?.slice(-4000) })}`);
-      return !!journal?.bridgeInstalled;
-    }, 60000, 'Candidate executor source-root handoff admission');
+    await waitForDelivery(request.id);
     expect(journal.binding.root).toBe(repo);
     expect(journal.binding.source).toBeUndefined();
     expect(fs.existsSync(poisonMarker)).toBe(false);
-    await until(() => {
-      const phase = readRuntimeHandoffPhase(home, request.id, executionId);
-      if (phase === 'failed') throw new Error(readRuntimeHandoff(home, request.id, executionId)!.error);
-      const attempt = db!.prepare('SELECT exit_code, output FROM auth_hook_executions WHERE id=?').get(executionId) as any;
-      if (!journal && attempt?.exit_code != null && ![0, 75].includes(attempt.exit_code)) throw new Error(`Old daemon hook refused handoff: ${attempt.output}`);
-      return phase === 'complete' || phase === 'acknowledged';
-    }, 180000, 'Actual old-to-candidate convergence');
-    journal = readRuntimeHandoff(home, request.id, executionId);
-    await until(() => readRuntimeHandoffPhase(home, request.id, executionId) === 'acknowledged', 60000, 'Candidate hook receipt acknowledgment');
     expect(fs.existsSync(journal.binding.priorBackend.argv[1])).toBe(false);
     expect(fs.existsSync(xattrMarker)).toBe(false);
     const row = db.prepare('SELECT state, exit_code FROM auth_hook_executions WHERE id=?').get(executionId) as any; expect(row.state).toBe('complete'); expect(row.exit_code).toBe(0);
@@ -370,16 +374,7 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
     expect(secondAction.ok, JSON.stringify(await secondAction.json())).toBe(true);
     requirePrivateCredential();
     await approveBootstrapDelivery(operatorApi, second.id);
-    await until(() => {
-      const hook = db!.prepare('SELECT id, exit_code, output FROM auth_hook_executions WHERE auth_request_id=? AND hook_id=?').get(second.id, 'builtin-mandible-rebuild') as any;
-      if (hook) executionId = hook.id;
-      const phase = executionId ? readRuntimeHandoffPhase(home, second.id, executionId) : null;
-      if (phase === 'failed') throw new Error(readRuntimeHandoff(home, second.id, executionId)!.error);
-      if (hook?.exit_code != null && ![0, 75].includes(hook.exit_code)) throw new Error(`Subsequent handoff refused: ${hook.output}`);
-      const state = db!.prepare('SELECT status, error FROM auth_requests WHERE id=?').get(second.id) as any;
-      if (['rejected', 'failed'].includes(state?.status)) throw new Error(`Subsequent publication failed: ${state.error}`);
-      return phase === 'acknowledged';
-    }, 120000, 'Native bundle-to-bundle acknowledgment');
+    await waitForDelivery(second.id);
     expect(applicationIdentity(nativeApp)).toBe(secondRetained.receipt.package.sha256);
     expect(fs.existsSync(retained.receipt.package.handle.root)).toBe(false);
     expect(readAcceptedReleaseReceipt(accepted.result.receipt).package.sha256).toBe(firstDelivery.packageSha256);
@@ -403,8 +398,8 @@ exec /usr/bin/security "$@" ${quote(privateKeychain)}
   } finally {
     db?.close();
     if (!succeeded && process.env.MANDIBLE_BOOTSTRAP_PRESERVE_FAILED === '1') {
-      if (requestId && executionId) spawnSync('/bin/launchctl', ['bootout', `${domain}/bio.mll.mandible.runtime-handoff.${digest(`${home}:${requestId}:${executionId}`).slice(0, 16)}`], { timeout: 5000 });
-      fs.writeFileSync(path.join(evidence, 'preserved-fixture.json'), JSON.stringify({ root: scratch, repo, home, userHome, nativeApp, candidateRoot, privateKeychain, requestId, executionId, backendLabel, gatewayLabel, domain, keychainSearchBefore, keychainDefaultBefore }, null, 2));
+      fs.writeFileSync(path.join(evidence, 'preserved-fixture.json'), JSON.stringify({ root: scratch, repo, home, userHome, nativeApp, candidateRoot, privateKeychain, requestId, executionId, backendLabel, gatewayLabel, domain, keychainSearchBefore, keychainDefaultBefore,
+        helperDisposition: 'Preserved until its own bounded work exits; no test-induced bootout.' }, null, 2));
     } else {
     const nativeHelper = path.join(nativeApp, 'Contents/MacOS/mandible-service');
     if (fs.existsSync(nativeHelper)) for (const role of ['gateway', 'backend']) {
