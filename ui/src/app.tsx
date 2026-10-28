@@ -1849,7 +1849,7 @@ function App(): JSX.Element {
     if (!splashActive) return;
     const POLL_MS = 2_000;
     // Bug: afaea18 — how long the daemon must stay healthy on the same commit
-    // (ready+warm, not rebuilding) before the stall is judged non-transient and
+    // (ready, not rebuilding) before the stall is judged non-transient and
     // the "continue anyway" escape is surfaced.
     const STALL_ESCAPE_MS = 15_000;
     let intervalId: number | null = null;

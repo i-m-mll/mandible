@@ -129,7 +129,7 @@ export function healthDocumentObservation(document, expected) {
     || instance.backend_generation !== expected.generation) {
     return { ok: false, code: 'wrong_instance', error: 'The service response belongs to a different Mandible instance or build.' };
   }
-  if (document.status !== 'ok' || document.ready !== true || document.warm !== true) {
+  if (document.status !== 'ok' || document.ready !== true) {
     return { ok: false, code: 'not_ready', error: 'The service responded, but Mandible is not ready yet.' };
   }
   return { ok: true, document };
