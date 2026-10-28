@@ -65,7 +65,7 @@ it('carries prepared authority through exchange without rereading app bytes, exp
   expect(() => preparedApplicationContext(prepared, f.binding)).toThrow();
   fs.writeFileSync(path.join(f.binding.nativeApp, 'Contents/Resources/program'), 'changed after lease');
   await withInstallationGatewayLock(f.binding.home, (_token, assertHeld) => {
-    expect(() => prepareAcceptedApplication(f.binding, { attemptId: 'attempt-one', assertHeld, phase: 'installed' })).toThrow('differs from the exact accepted package');
+    expect(() => prepareAcceptedApplication(f.binding, { attemptId: 'attempt-one', assertHeld, phase: 'installed', stageIdentity: prepared.identity })).toThrow('differs from the exact accepted package');
   });
 });
 

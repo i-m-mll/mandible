@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import { bindingDigest, handoffDirectory, runRuntimeHandoffWorker, observeRuntimeHealthWindow, readRuntimeHandoff, closeQuiescentRuntimeHandoff, acknowledgeRuntimeHandoff, withRuntimeObservation } from '../scripts/runtime-handoff.mjs';
+import { bindingDigest, handoffDirectory, runRuntimeHandoffWorker, observeRuntimeHealthWindow, readRuntimeHandoff, closeQuiescentRuntimeHandoff, acknowledgeRuntimeHandoff, runtimeHandoffNeedsAcknowledgment, withRuntimeObservation } from '../scripts/runtime-handoff.mjs';
 import { assessRuntimeLogs } from '../scripts/runtime-log-assessment.mjs';
 import { RuntimeObservationError } from '../scripts/runtime-observation.mjs';
 import { runtimeReceiptAcceptanceMarker } from '../scripts/runtime-observation.mjs';
@@ -14,6 +14,20 @@ vi.mock('node:child_process', async original => ({ ...await original<typeof impo
 const originalSpawn = (await vi.importActual<typeof import('node:child_process')>('node:child_process')).spawnSync;
 const roots: string[] = [];
 afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
+
+it('loads the composed helper bundle and refuses an invalid private worker journal before acquiring mutation ownership', () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'handoff-bundle-'))); roots.push(root);
+  const helper = path.join(root, 'helper.mjs');
+  childProcess.execFileSync(process.execPath, ['build', path.resolve('scripts/runtime-handoff.mjs'), '--target', 'bun', '--outfile', helper], { timeout: 20_000, stdio: 'pipe' });
+  const home = path.join(root, 'home');
+  const file = path.join(handoffDirectory(home, 'invalid-request', 'invalid-execution'), 'journal.json');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ schema: 'invalid', bindingDigest: '0'.repeat(64), binding: { home, requestId: 'invalid-request', executionId: 'invalid-execution' } }));
+  const result = originalSpawn(process.execPath, [helper, 'worker', file], { env: { ...process.env, MANDIBLE_HOME: home }, encoding: 'utf8', timeout: 5000 });
+  expect(result.status, result.stderr).toBe(1);
+  expect(result.stderr.trim()).toBe('Runtime handoff binding is malformed or changed.');
+  expect(fs.existsSync(path.join(home, 'config/local-sessions/.gateway.lock'))).toBe(false);
+});
 function diagnostics(sequence: number, intervalStartedAt: number, intervalEndedAt: number, maxMs = 0, warning = false) {
   return {
     eventLoop: { sequence, intervalStartedAt, intervalEndedAt, maxMs, warning },
@@ -240,4 +254,38 @@ it('consumes durable acceptance without probing a removed package, fences the he
   await withRuntimeObservation(completed, () => acknowledgeRuntimeHandoff(binding, { acceptedReceiptDigest: receiptDigest }));
   expect(readRuntimeHandoff(f.home, binding.requestId, binding.executionId)?.cleanup.state).toBe('complete');
   expect(calls).toEqual(['print']);
+});
+
+it('releases an accepted terminal receipt directly without package/native/cleanup work, preserves foreign ownership, and rejects changed receipt bytes', async () => {
+  const f = fixture();
+  const database = path.join(f.home, 'acceptance.db');
+  const db = new SqliteDatabase(database);
+  db.exec('CREATE TABLE auth_hook_executions (id TEXT, auth_request_id TEXT, hook_id TEXT, state TEXT, output TEXT, command_digest TEXT)');
+  const binding = { ...f.binding, hookId: 'hook', commandDigest: 'command' };
+  const digest = bindingDigest(binding);
+  const receipt = { schema: 'mandible-runtime-receipt@2', bindingDigest: digest, attemptId: 'attempt' };
+  const receiptDigest = createHash('sha256').update(JSON.stringify(receipt)).digest('hex');
+  const journal = { ...f.journal, binding, bindingDigest: digest, database,
+    attempt: { id: 'attempt', state: 'complete', effects: {}, receipt, receiptDigest, fence: { reason: 'terminal-completion' } }, cleanup: { state: 'pending' } };
+  db.prepare('INSERT INTO auth_hook_executions VALUES (?,?,?,?,?,?)').run(binding.executionId, binding.requestId, binding.hookId, 'complete', runtimeReceiptAcceptanceMarker(journal), binding.commandDigest);
+  db.close();
+  const bytes = JSON.stringify(journal); fs.writeFileSync(f.file, bytes);
+  const active = path.join(f.home, 'config/local-sessions/handoff-active.json');
+  fs.writeFileSync(active, JSON.stringify({ journal: f.file, bindingDigest: digest }));
+  fs.rmSync(binding.nativeApp, { recursive: true });
+  vi.mocked(childProcess.spawnSync).mockImplementation((program, args, options) => {
+    if (program === '/bin/launchctl') throw new Error('Terminal receipt adoption must not control native services.');
+    return originalSpawn(program, args, options);
+  });
+  fs.writeFileSync(f.file, JSON.stringify({ ...journal, attempt: { ...journal.attempt, receiptDigest: '0'.repeat(64) } }));
+  await expect(acknowledgeRuntimeHandoff(binding, { acceptedReceiptDigest: receiptDigest })).rejects.toThrow('completion receipt differs');
+  expect(fs.existsSync(active)).toBe(true);
+  fs.writeFileSync(f.file, bytes);
+  expect(await acknowledgeRuntimeHandoff(binding, { acceptedReceiptDigest: receiptDigest })).toEqual({ cleanup: 'pending' });
+  expect(runtimeHandoffNeedsAcknowledgment(journal)).toBe(false);
+  expect(fs.readFileSync(f.file, 'utf8')).toBe(bytes);
+  const foreign = JSON.stringify({ journal: path.join(f.home, 'foreign.json'), bindingDigest: 'f'.repeat(64) });
+  fs.writeFileSync(active, foreign);
+  expect(await acknowledgeRuntimeHandoff(binding, { acceptedReceiptDigest: receiptDigest })).toEqual({ cleanup: 'pending' });
+  expect(fs.readFileSync(active, 'utf8')).toBe(foreign);
 });

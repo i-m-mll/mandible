@@ -7,7 +7,6 @@ import type { Db } from "./db.js";
 import { readGitCommitFacts } from "./git-object-facts.js";
 import { canonicalizeChangeMessage } from "./auth-change-message.js";
 import { acceptedReleaseSelection, type AcceptedReleaseSelection } from './accepted-release-selection.js';
-import path from 'node:path';
 import { authorizedMergeSignerLines, extractAtomicMergeState, extractSuccessfulMergeCommitSha, verifyAuthorizedMergeCommitSignature } from "./auth-signature-verification.js";
 import { addAttributionEvidence, getAttributionEvidence } from "./users/store.js";
 import { systemAction } from "./identity/resolver.js";
@@ -118,7 +117,7 @@ function checkFrozenCandidate(binding: RuntimePublicationBinding, frozen: NonNul
 /** Read-only initial admission verifies the actual published checkout. */
 export async function verifyRuntimeHandoffPublication(db: Db, binding: RuntimePublicationBinding) {
   const state = readPublicationState(db, binding);
-  const { row, hook, base, head, tree, commit, selected } = state;
+  const { row, hook, base, head, tree, commit } = state;
   const root = realpathSync(binding.root);
   if (realpathSync(row.target_repo_root ?? row.cwd) !== root) fail("repository binding differs");
   const lease = state.lease;

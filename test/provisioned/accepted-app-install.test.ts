@@ -7,7 +7,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { expect, it } from 'vitest';
 import { createPendingRelease, retainAcceptedRelease, applicationIdentity, readAcceptedReleaseReceipt } from '../../scripts/accepted-release.mjs';
-import { acceptedInstallPaths } from '../../scripts/accepted-app-install.mjs';
+import { acceptedInstallPaths, applicationRootIdentity, preparedApplicationContext } from '../../scripts/accepted-app-install.mjs';
 import { installedFileIdentity, verifyInstalledRelease } from '../../scripts/installed-release.mjs';
 import { serviceInstallationContext, inspectServiceDefinitionsSync, matchingServiceDefinitions } from '../../scripts/service-definitions.mjs';
 import { readBundleOwner, nativeServiceControls } from '../../scripts/bundle-services.mjs';
@@ -184,7 +184,7 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
       if (before && !before.ok) throw new Error(before.refusal.message);
       const previousServices = Object.fromEntries((before?.observations ?? []).map(item => [item.service, { argv: item.job.argv, definition: item.loadedDefinition, process: { pid: item.job.pid, startedAt: item.job.startedAt } }]));
       const binding = { home, root: path.join(root, 'absent-checkout'), nativeApp: app, requestId: 'request-' + index, executionId: 'execution-' + index,
-        acceptedRelease: { reference }, bundleOwner: prior, priorAppSha256: index ? applicationIdentity(app) : null,
+        acceptedRelease: { reference }, bundleOwner: prior, priorAppIdentity: index ? applicationRootIdentity(app) : null,
         runtime: { path: runtime, sha256: installedFileIdentity(runtime).sha256 }, installationId: 'preserved-authority',
         domain: context.domain, backendLabel: context.backendLabel, gatewayLabel: context.gatewayLabel,
         priorBackend: { ...previousServices.backend, launchMode: 'manual' }, priorGateway: previousServices.gateway,
@@ -237,7 +237,14 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
         return JSON.stringify(await readAccess(options.awaitReady));
       };
       const options = { context, control, verifyPublication: async () => {}, waitMs: Math.max(1, workUntil - Date.now()),
-        observe: async journal => ({ bindingDigest: journal.bindingDigest, evidence: await readAccess(), files: {}, completedAt: Date.now() }) };
+        observe: async (journal, { prepared }) => {
+          const application = preparedApplicationContext(prepared, binding);
+          const access = await readAccess();
+          return { schema: 'mandible-runtime-receipt@2', bindingDigest: journal.bindingDigest,
+            approved: { reference, packageSha256: application.digest }, installed: { root: app, identity: application.identity },
+            services: access.processes, desktop: { required: false },
+            startup: { epoch: 'private-native-fixture', generation: candidate.pin_sha, database: path.join(home, 'mandible.db') }, completedAt: Date.now() };
+        } };
       let completed = await runRuntimeHandoffWorker(file, options);
       if (index) {
         expect(completed.attempt.state, JSON.stringify(completed.attempt.lastObservation)).toBe('running');
@@ -255,10 +262,10 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
         expect(applicationIdentity(app)).toBe(receipt.package.sha256);
         checkDeadline(`generation ${pin} exact installed bytes`);
         const previous = acceptedInstallPaths(binding).previous;
-        if (index) expect(applicationIdentity(previous)).toBe(binding.priorAppSha256);
+        if (index) expect(applicationRootIdentity(previous)).toEqual(binding.priorAppIdentity);
         checkDeadline(`generation ${pin} disposal admission`);
         await supervised(['scripts/verify-accepted-release.mjs', reference, JSON.stringify(candidate), app, previous,
-          binding.priorAppSha256 ?? '', previousReference], `verify/dispose ${pin}`);
+          JSON.stringify(binding.priorAppIdentity), previousReference], `verify/dispose ${pin}`);
         expect(fs.existsSync(previous)).toBe(false);
         if (previousReference) expect(fs.existsSync(readAcceptedReleaseReceipt(previousReference).package.handle.root)).toBe(false);
         expect(fs.readFileSync(authority, 'utf8')).toBe('preserved-authority');

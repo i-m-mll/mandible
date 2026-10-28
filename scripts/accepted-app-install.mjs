@@ -54,23 +54,33 @@ export function preparedApplicationContext(prepared, binding) {
 }
 
 /** Validate the replacement at its final-volume staging path while the old app serves. */
-export function prepareAcceptedApplication(binding, { until, attemptId, assertHeld, phase = 'staged' } = {}) {
+export function prepareAcceptedApplication(binding, { until, attemptId, assertHeld, phase = 'staged', stageIdentity, onStageCreated } = {}) {
   if (typeof assertHeld !== 'function' || !attemptId) throw new Error('Preparation requires an owned attempt and live lease.');
   assertHeld();
   const receipt = readAcceptedReleaseReceipt(binding.acceptedRelease?.reference);
   const paths = acceptedInstallPaths(binding);
   if (!['staged', 'installed'].includes(phase)) throw new Error('Unknown application preparation phase.');
   const installed = phase === 'installed';
+  if (installed && !stageIdentity) throw new Error('Installed target has no recorded prepared owner.');
   if (!installed) {
     fs.mkdirSync(path.dirname(binding.nativeApp), { recursive: true });
     if (!fs.existsSync(paths.staging)) {
+      if (stageIdentity) throw new Error('Owned application stage disappeared.');
+      fs.mkdirSync(paths.staging, { mode: 0o700 });
+      stageIdentity = applicationRootIdentity(paths.staging);
+      onStageCreated?.({ path: paths.staging, identity: stageIdentity });
+      assertHeld();
       const result = spawnSync('/usr/bin/ditto', [path.join(receipt.package.handle.root, receipt.package.path), paths.staging], { timeout: runtimeObservationTimeout(until, 60_000), encoding: 'utf8' });
       if (result.error || result.status !== 0) throw new Error(`Accepted app copy failed: ${result.error?.message || result.stderr}`);
-    }
+      assertHeld();
+      sameRoot(paths.staging, stageIdentity);
+      fs.chmodSync(paths.staging, fs.lstatSync(path.join(receipt.package.handle.root, receipt.package.path)).mode & 0o777);
+    } else if (!stageIdentity) throw new Error('Existing application stage has no recorded owner.');
   }
   assertHeld();
   runtimeObservationTimeout(until, 60_000);
   const target = installed ? binding.nativeApp : paths.staging;
+  if (stageIdentity) sameRoot(target, stageIdentity);
   const identity = applicationRootIdentity(target);
   if (applicationIdentity(target) !== receipt.package.sha256) throw new Error('Prepared application differs from the exact accepted package.');
   const bundleIdentifier = serviceInstallationContext({ home: binding.home ?? path.dirname(binding.nativeApp), bundleRoot: target }).bundleIdentifier;

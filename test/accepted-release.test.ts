@@ -96,6 +96,7 @@ it('seals the exercised app in place after scratch disposal and refuses changed 
       });
       fs.writeFileSync(program, 'changed program');
       fs.writeFileSync(owner, JSON.stringify({ acceptedRelease: reference }));
+      await expect(disposeAcceptedRelease(reference, candidate, 'Installed fixture', { home: path.join(root, 'home') })).rejects.toThrow('installed release still owns these bytes');
       const installed = dispose();
       expect(installed.status).not.toBe(0);
       expect(installed.stderr).toContain('installed release still owns these bytes');
@@ -103,6 +104,7 @@ it('seals the exercised app in place after scratch disposal and refuses changed 
       fs.unlinkSync(owner);
       fs.writeFileSync(journal, JSON.stringify({ phase: 'failed', binding: { acceptedRelease: { reference } } }));
       fs.writeFileSync(lock, JSON.stringify({ journal }));
+      await expect(disposeAcceptedRelease(reference, candidate, 'Journal-owned fixture', { home: path.join(root, 'home') })).rejects.toThrow('unresolved handoff still owns these bytes');
       const unresolved = dispose();
       expect(unresolved.status).not.toBe(0);
       expect(unresolved.stderr).toContain('unresolved handoff still owns these bytes');
