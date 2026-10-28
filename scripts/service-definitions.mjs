@@ -139,7 +139,7 @@ export function assessServiceObservation(context, service, installed, job, { des
   const label = context[`${service}Label`];
   const loadedDefinition = job.loaded ? loadedServiceDefinition(label, job) : null;
   for (const [source, record] of [...installed.map(item => [item.file, item.record]), ...(loadedDefinition ? [['loaded', loadedDefinition]] : [])]) {
-    if (source === 'loaded' && record.BundleProgram && (!job.program || job.parentBundleIdentifier !== 'bio.mll.mandible')) {
+    if (source === 'loaded' && record.BundleProgram && (!job.program || !context.bundleIdentifier || job.parentBundleIdentifier !== context.bundleIdentifier)) {
       return refusal(service, label, 'unreadable_state', [], 'Native bundle ownership evidence is incomplete; preserving the registration.');
     }
     if (!completeDefinition(record)) return refusal(service, label, 'unreadable_state', [], `Ownership evidence for ${source} service ${label} is incomplete; preserving it.`);
