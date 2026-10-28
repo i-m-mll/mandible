@@ -84,5 +84,29 @@ errors and non-HTTP event storms retain their acceptance policy. Aggregate HTTP
 method/route volume is diagnostic: bounded counts, peaks and statuses remain in
 the evidence without treating independent healthy clients as a feedback loop. A failed assessment never authorizes rerunning a protected merge.
 
+## Diagnostic replay
+
+For an authorized investigation, the same packaged execution pipeline can reuse
+an existing finalized app from a failed run:
+
+```sh
+bun scripts/candidate-acceptance.mjs --project <project> --work-unit <unit> \
+  --diagnostic-receipt <failed-owned-run-receipt.json> --diagnostic-app <Mandible.app>
+```
+
+This verifies the failed run's package digest, candidate and shipped inventory,
+then skips all builds and the route sweep. The unchanged GUI/setup/health checks
+run with Bun CPU profiling and the private-socket stall probe/native sampler.
+The runtime has a 90-second deadline. Output always has schema
+`mandible-candidate-diagnostic@1`, status `diagnostic`, and `qualifying: false`;
+it exits nonzero and cannot supply passing candidate acceptance or an accepted
+release. `observation_status` records the underlying check verdict.
+
+Profiles, probe records and full fixture logs transfer to an evidence owned run
+under `acceptance/diagnostics/<run-id>` before scratch is reclaimed. The owning
+work unit retains this interactive evidence until it is registered as an
+artifact or explicitly discarded with ordinary owned-run finalization/cleanup.
+The original failed acceptance row and receipt remain unchanged.
+
 Co-Authored-By: Codex (GPT-5) <codex@openai.com>
 Co-Authored-By: Codex (GPT) <codex@openai.com>

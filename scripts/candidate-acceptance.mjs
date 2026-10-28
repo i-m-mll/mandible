@@ -73,6 +73,37 @@ export function createAcceptanceHome(home) {
   fs.mkdirSync(home, { mode: 0o700 });
 }
 
+export function diagnosticReplayPackage(receiptFile, app) {
+  if (!receiptFile || !app) throw new Error('Diagnostic replay requires both --diagnostic-receipt and --diagnostic-app.');
+  const source = JSON.parse(fs.readFileSync(receiptFile, 'utf8'));
+  const failed = source.acceptance;
+  const shipped = verifyInstalledRelease(path.join(app, 'Contents/Resources'));
+  if (source.schema !== 'mandible-owned-run@1' || failed?.status !== 'failed'
+      || failed.schema !== 'mandible-candidate-acceptance@1'
+      || applicationIdentity(app) !== failed.provenance?.package_sha256
+      || shipped.provenance.commit !== failed.candidate
+      || shipped.provenance.source_digest !== failed.provenance.marker?.source_digest) throw new Error('Diagnostic package does not match the exact failed acceptance.');
+  return { app: fs.realpathSync(app), candidate: failed.candidate, marker: failed.provenance.marker,
+    sha256: failed.provenance.package_sha256, receipt: fs.realpathSync(receiptFile), receipt_sha256: sha256(receiptFile) };
+}
+
+export function diagnosticReport(result) {
+  return { ...result, schema: 'mandible-candidate-diagnostic@1', status: 'diagnostic',
+    diagnostic: { ...result.diagnostic, qualifying: false, observation_status: result.status } };
+}
+
+async function retainDiagnosticEvidence(run, ownership) {
+  const destination = path.join(path.dirname(run), 'diagnostics', ownership.runId);
+  fs.mkdirSync(destination, { recursive: true, mode: 0o700 });
+  await withOwnedRunLock(destination, async () => {
+    const owner = createOwnedRun({ root: destination, runId: ownership.runId, instanceId: ownership.instanceId,
+      project: ownership.project, workUnit: ownership.workUnit, outputs: [{ path: 'diagnostics', kind: 'interactive' }] });
+    saveOwnedMetadata(path.join(destination, 'metadata.json'), { ownership: owner });
+    fs.cpSync(path.join(run, 'diagnostics'), path.join(destination, 'diagnostics'), { recursive: true });
+  });
+  return destination;
+}
+
 export function acceptanceGatewayConfig({ origin, backendPort, storageRoot }) {
   const url = new URL(origin);
   if (url.protocol !== 'https:' || url.hostname !== 'app.mandible.localhost' || !url.port || url.origin !== origin) throw new Error('Acceptance requires an exact Mandible HTTPS origin.');
@@ -243,9 +274,12 @@ async function stopOwned(child) {
 
 async function main() {
   if (process.platform !== 'darwin') throw new Error('Packaged desktop acceptance requires macOS; evidence is unavailable on this platform.');
-  const candidate = command('git', ['rev-parse', 'HEAD']);
+  const option = name => { const index = process.argv.indexOf(name); return index >= 0 ? process.argv[index + 1] : undefined; };
+  const diagnostic = option('--diagnostic-receipt') || option('--diagnostic-app')
+    ? diagnosticReplayPackage(option('--diagnostic-receipt'), option('--diagnostic-app')) : null;
+  const candidate = diagnostic?.candidate || command('git', ['rev-parse', 'HEAD']);
   const parents = command('git', ['show', '-s', '--format=%P', candidate]).split(' ');
-  const candidateBinding = { pin_sha: candidate, tree_sha: command('git', ['rev-parse', 'HEAD^{tree}']),
+  const candidateBinding = { pin_sha: candidate, tree_sha: command('git', ['rev-parse', `${candidate}^{tree}`]),
     base_sha: process.env.MANDIBLE_ACCEPTANCE_BASE || parents[0], head_sha: process.env.MANDIBLE_ACCEPTANCE_HEAD || parents[1] || candidate };
   if (command('git', ['status', '--porcelain', '--untracked-files=all'])) throw new Error('Candidate acceptance requires a clean committed checkout.');
   const lock = readRuntimeHandoffLock(path.resolve(process.env.MANDIBLE_HOME || path.join(os.userInfo().homedir, '.mandible')));
@@ -260,19 +294,21 @@ async function main() {
   const cache = path.join(os.homedir(), '.cache', 'mandible', 'acceptance');
   fs.mkdirSync(cache, { recursive: true });
   const run = fs.mkdtempSync(path.join(cache, 'candidate-'));
-  const option = name => { const index = process.argv.indexOf(name); return index >= 0 ? process.argv[index + 1] : undefined; };
   const project = option('--project'); const workUnit = option('--work-unit');
   if (!project || !workUnit) { fs.rmdirSync(run); throw new Error('Candidate acceptance requires --project <canonical-id> and --work-unit <canonical-id>'); }
   return withOwnedRunLock(run, async () => {
   const nonce = randomBytes(32).toString('hex');
   const instanceId = `acceptance-${nonce.slice(0, 16)}`;
-  const ownership = createOwnedRun({ root: run, instanceId, project, workUnit, disposable: true, outputs: acceptanceOwnedOutputs });
+  const outputs = diagnostic ? [...acceptanceOwnedOutputs.map(output => ({ ...output, kind: 'generated' })), { path: 'diagnostics', kind: 'interactive' }] : acceptanceOwnedOutputs;
+  const ownership = createOwnedRun({ root: run, instanceId, project, workUnit, disposable: true, outputs });
   const metadataFile = path.join(run, 'metadata.json');
   saveOwnedMetadata(metadataFile, { ownership, candidate });
   const home = path.join(run, 'home');
   createAcceptanceHome(home);
   const result = { schema: 'mandible-candidate-acceptance@1', scope: 'isolated production daemon and packaged dashboard; live installation and protected delivery excluded', status: 'failed', candidate, runtime, run, checks: {}, provenance: {} };
-  let daemon, desktop, gateway, testedPackageDigest;
+  let daemon, desktop, gateway, stallProbe, diagnosticDeadline, testedPackageDigest;
+  const diagnostics = path.join(run, 'diagnostics');
+  if (diagnostic) fs.mkdirSync(diagnostics, { mode: 0o700 });
   let executionProfile;
   const files = [];
   const launch = (binary, args, env, name) => {
@@ -282,9 +318,11 @@ async function main() {
     return child;
   };
   let interrupted = false;
-  const interrupt = () => { interrupted = true; daemon?.kill('SIGTERM'); desktop?.kill('SIGTERM'); gateway?.kill('SIGTERM'); };
+  const interrupt = () => { interrupted = true; daemon?.kill('SIGTERM'); desktop?.kill('SIGTERM'); gateway?.kill('SIGTERM'); stallProbe?.kill('SIGTERM'); };
   process.once('SIGINT', interrupt); process.once('SIGTERM', interrupt);
   try {
+    let builtApp = diagnostic?.app;
+    if (!diagnostic) {
     const buildLog = fs.openSync(path.join(run, 'build.log'), 'w'); files.push(buildLog);
     await runSupervisedCommand(runtime, ['run', 'build'], { cwd: root, env: { ...buildEnv, GIT_OPTIONAL_LOCKS: '0' }, stdio: ['ignore', buildLog, buildLog], timeout: 180000 });
     if (readBuildRevision(root) !== candidate) throw new Error('Built daemon revision does not match the exact candidate.');
@@ -300,17 +338,19 @@ async function main() {
       ? routeCostVerdict(result.checks.route_cost)
       : `it exited (${sweepFailure.message}) without a report: ${fs.readFileSync(path.join(run, 'route-cost.log'), 'utf8').split('\n').filter(line => line.trim() && !/^\s+at /.test(line)).slice(-8).join(' | ')}`}`);
     await runSupervisedCommand(runtime, ['run', 'tauri:build', '--', '--bundles', 'app'], { cwd: root, env: { ...buildEnv, GIT_OPTIONAL_LOCKS: '0' }, stdio: ['ignore', buildLog, buildLog], timeout: 600000 });
-    const builtApp = path.join(root, 'src-tauri', 'target', 'release', 'bundle', 'macos', 'Mandible.app');
+    builtApp = path.join(root, 'src-tauri', 'target', 'release', 'bundle', 'macos', 'Mandible.app');
+    }
     command('/usr/bin/codesign', ['--verify', '--deep', '--strict', builtApp]);
     const app = path.join(run, 'Mandible.app'); fs.cpSync(builtApp, app, { recursive: true, verbatimSymlinks: true });
     command('/usr/bin/codesign', ['--verify', '--deep', '--strict', app]);
     const resources = path.join(app, 'Contents', 'Resources');
-    const marker = JSON.parse(fs.readFileSync(path.join(root, 'dist', 'build-revision.json'), 'utf8'));
+    const marker = diagnostic?.marker || JSON.parse(fs.readFileSync(path.join(root, 'dist', 'build-revision.json'), 'utf8'));
     const shipped = verifyInstalledRelease(resources);
     if (shipped.provenance.commit !== candidate || shipped.provenance.source_digest !== marker.source_digest) throw new Error("Finalized package provenance differs from the candidate.");
     const resourceEnv = installedRuntimeEnvironment(resources, { HOME: home, PATH: "/usr/bin:/bin:/usr/sbin:/sbin", TMPDIR: run });
     const packagedRuntime = resourceEnv.MANDIBLE_RUNTIME;
     testedPackageDigest = applicationIdentity(app);
+    if (diagnostic && testedPackageDigest !== diagnostic.sha256) throw new Error('Diagnostic package changed while copying.');
     executionProfile = installedExecutionProfile({ checkout: root, commonDirectory: command("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"]), app });
     result.provenance = { marker, daemon_sha256: sha256(releaseFile(resources, shipped.entrypoints.daemon)), native_sha256: sha256(path.join(app, "Contents/MacOS/mandible-app")), harness_sha256: sha256(fileURLToPath(import.meta.url)), package_sha256: testedPackageDigest, shipped };
     const ports = new Set();
@@ -326,7 +366,11 @@ async function main() {
     result.provenance.gateway_sha256 = sha256(gatewayBinary);
     fs.writeFileSync(path.join(home, 'acceptance.json'), JSON.stringify({ home, origin, nonce }), { mode: 0o600 });
     const env = { ...resourceEnv, HOME: home, MANDIBLE_HOME: home, MANDIBLE_DB: path.join(home, 'mandible.db'), MANDIBLE_PORT: String(port), MANDIBLE_PUBLIC_ORIGIN: origin, MANDIBLE_INSTANCE_ROLE: 'main', MANDIBLE_INSTANCE_ID: instanceId, MANDIBLE_INSTALLATION_ID: instanceId, MANDIBLE_BACKEND_GENERATION: candidate, MANDIBLE_WORK_SCANNER_ROOTS: JSON.stringify([{ path: home, depth: 1 }]), MANDIBLE_PID_FILE: path.join(home, 'daemon.pid'), MANDIBLE_SOCKET: path.join(home, 'api.sock'), MANDIBLE_STDERR_LOG_PATH: path.join(run, 'daemon.log'), MANDIBLE_USER_PREFERENCES_DIR: path.join(home, 'settings', 'users'), MANDIBLE_CANDIDATE_ACCEPTANCE: path.join(home, 'acceptance.json') };
-    daemon = launch(packagedRuntime, ['--no-install', releaseFile(resources, shipped.entrypoints.daemon)], env, 'daemon');
+    daemon = launch(packagedRuntime, [...(diagnostic ? ['--cpu-prof', `--cpu-prof-dir=${diagnostics}`, '--cpu-prof-name=daemon.cpuprofile'] : []), '--no-install', releaseFile(resources, shipped.entrypoints.daemon)], env, 'daemon');
+    if (diagnostic) {
+      diagnosticDeadline = setTimeout(interrupt, 90_000);
+      result.diagnostic = { qualifying: false, source: diagnostic, started_at: Date.now(), deadline_ms: 90_000 };
+    }
     // The gateway answers 502, and logs an error, for any request that reaches
     // it before its upstream is listening, so it starts only after the bind.
     await awaitReadiness(() => {
@@ -346,6 +390,14 @@ async function main() {
         onInitialTlsError: error => { result.checks.initial_transport_error ??= error; } });
     result.checks.readiness = { startup_epoch: health.startup_epoch, instance_id: health.instance.instance_id, origin };
     if (!health.local_socket_path?.startsWith(`${home}${path.sep}`)) throw new Error('Fixture bootstrap socket escapes its isolated home.');
+    if (diagnostic) {
+      const out = fs.openSync(path.join(diagnostics, 'probe.jsonl'), 'w'); files.push(out);
+      const err = fs.openSync(path.join(diagnostics, 'probe.stderr'), 'w'); files.push(err);
+      stallProbe = spawn(runtime, [path.join(root, 'scripts/daemon-stall-probe.mjs'), '--socket', health.local_socket_path,
+        '--pid', String(daemon.pid), '--duration', '90', '--sample', '--sample-max', '4', '--out', diagnostics, '--json'],
+        { cwd: run, env: buildEnv, stdio: ['ignore', out, err] });
+      stallProbe.on('error', error => { result.checks.probe_launch_error = error.message; });
+    }
     await new Promise((resolve, reject) => {
       const body = JSON.stringify({ slug: 'candidate-operator', display_name: 'Candidate operator', email: 'candidate@example.invalid' });
       const request = http.request({ socketPath: health.local_socket_path, path: '/api/users/setup', method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, response => {
@@ -381,7 +433,8 @@ async function main() {
     if (error.evidence) result.failure = { code: error.code, evidence: error.evidence };
   }
   finally {
-    for (const child of [desktop, gateway, daemon]) {
+    if (diagnosticDeadline) clearTimeout(diagnosticDeadline);
+    for (const child of [stallProbe, desktop, gateway, daemon]) {
       try { await stopOwned(child); } catch (error) { result.status = 'failed'; result.cleanup_error = error.message; }
     }
     for (const fd of files) fs.closeSync(fd);
@@ -398,12 +451,22 @@ async function main() {
     result.checks.shutdown = { daemon_exit: daemon?.exitCode, daemon_signal: daemon?.signalCode, desktop_exit: desktop?.exitCode, desktop_signal: desktop?.signalCode, gateway_exit: gateway?.exitCode, gateway_signal: gateway?.signalCode };
     if ([daemon, gateway].some(child => child && (child.exitCode !== 0 || child.signalCode))) result.status = 'failed';
     if (result.status !== 'passed') result.checks.failure_logs = acceptanceFailureLogs(run);
-    if (![daemon, desktop, gateway].every(child => !child || child.exitCode !== null || child.signalCode !== null)) {
+    if (![stallProbe, daemon, desktop, gateway].every(child => !child || child.exitCode !== null || child.signalCode !== null)) {
       result.status = 'failed'; result.cleanup_error = 'Owned process remains alive; scratch data preserved';
     } else {
       try {
         let acceptedReference;
-        if (result.status === 'passed') {
+        let diagnosticDestination;
+        if (diagnostic) {
+          for (const name of ['daemon', 'desktop', 'gateway']) {
+            const log = path.join(run, `${name}.log`);
+            if (fs.existsSync(log)) fs.copyFileSync(log, path.join(diagnostics, `${name}.log`));
+          }
+          saveOwnedMetadata(path.join(diagnostics, 'result.json'), diagnosticReport(result));
+          diagnosticDestination = await retainDiagnosticEvidence(run, ownership);
+          result.diagnostic.evidence_root = diagnosticDestination;
+        }
+        if (result.status === 'passed' && !diagnostic) {
           const receipts = path.join(cache, '.receipts');
           fs.mkdirSync(receipts, { recursive: true });
           const evidence = path.join(receipts, `${ownership.runId}-acceptance.json`);
@@ -414,16 +477,20 @@ async function main() {
             evidence: { receipt: evidence, sha256: sha256(evidence) }, expectedDigest: testedPackageDigest });
         }
         const final = finalizeOwnedRun(metadataFile, { expectedRevision: ownership.revision, outcome: result.status === 'passed' ? 'assessed' : 'failed',
+          ...(diagnosticDestination ? { disposition: 'transferred', destination: diagnosticDestination, transferReference: `diagnostic:${ownership.runId}` } : {}),
           ...(acceptedReference ? { disposition: 'transferred', destination: resolveAcceptedRelease(acceptedReference, candidateBinding).receipt.package.handle.root, transferReference: acceptedReference } : {}),
           summary: `${candidate}: ${result.status}${result.error ? ` — ${result.error}` : ''}; daemon and packaged Settings edit checked; raw-log SHA256 ${result.checks.log_digest}` });
         result.checks.cleanup = cleanupOwnedRun(metadataFile, { apply: true });
         const receipt = final.ownership.receipt;
         if (result.checks.cleanup.action !== 'delete-owned' || result.checks.cleanup.remaining?.length) result.status = 'failed';
-        saveOwnedMetadata(receipt, { ...JSON.parse(fs.readFileSync(receipt, 'utf8')), acceptance: result });
+        saveOwnedMetadata(receipt, { ...JSON.parse(fs.readFileSync(receipt, 'utf8')), acceptance: diagnostic ? diagnosticReport(result) : result });
         result.receipt = acceptedReference || receipt;
       } catch (error) { result.status = 'failed'; result.cleanup_error = error.message; }
     }
     process.removeListener('SIGINT', interrupt); process.removeListener('SIGTERM', interrupt);
+  }
+  if (diagnostic) {
+    Object.assign(result, diagnosticReport(result));
   }
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   process.exitCode = result.status === 'passed' ? 0 : 1;
