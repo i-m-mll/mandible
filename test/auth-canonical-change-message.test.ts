@@ -347,14 +347,17 @@ describe("canonical change message envelope validation", () => {
 });
 
 describe("auth request CLI change message composition", () => {
-  function submitAndCapture(args: string[], port: number): Promise<ProcResult> {
-    return runAsync(CLI, args, repo, {
+  function submitAndCapture(args: string[], port: number, releaseRoot?: string): Promise<ProcResult> {
+    const executable = releaseRoot ? "/bin/zsh" : CLI;
+    const cliArgs = releaseRoot ? [path.join(process.cwd(), "cli", "main.zsh"), ...args] : args;
+    return runAsync(executable, cliArgs, repo, {
       ...process.env,
       HOME: homeDir,
       MANDIBLE_PORT: String(port),
       MANDIBLE_BASE: `http://127.0.0.1:${port}`,
       ZELLIJ: "",
       TMUX: "",
+      ...(releaseRoot ? { MANDIBLE_RELEASE_ROOT: releaseRoot } : {}),
     });
   }
 
@@ -418,6 +421,19 @@ describe("auth request CLI change message composition", () => {
   it("composes the canonical template from prose plus machine-owned parts", async () => {
     const server = await submitServer();
     try {
+      const releaseRoot = path.join(homeDir, "release", "Resources");
+      const nativeDir = path.join(homeDir, "release", "MacOS");
+      fs.mkdirSync(releaseRoot, { recursive: true });
+      fs.mkdirSync(nativeDir, { recursive: true });
+      const runtime = spawnSync(path.join(process.cwd(), "scripts", "bun-runtime.sh"), ["--bun-only"], {
+        encoding: "utf8",
+      });
+      expect(runtime.status, runtime.stderr).toBe(0);
+      fs.symlinkSync(runtime.stdout.trim(), path.join(nativeDir, "mandible-bun"));
+      // Supply the installed runtime lookup while exercising source CLI generation.
+      fs.mkdirSync(path.join(releaseRoot, "scripts"));
+      fs.writeFileSync(path.join(releaseRoot, "scripts", "installed-command.mjs"),
+        `process.stdout.write(${JSON.stringify(runtime.stdout)});\n`);
       const messageFile = path.join(homeDir, "message.txt");
       fs.writeFileSync(
         messageFile,
@@ -452,11 +468,13 @@ describe("auth request CLI change message composition", () => {
           "--no-watch",
         ],
         server.port,
+        releaseRoot,
       );
 
-      expect(result.status).toBe(0);
+      expect(result.status, result.stderr).toBe(0);
       expect(server.bodies).toHaveLength(1);
       const body = server.bodies[0]!;
+      expect(body.command).toBe("mandible auth merge feature/canonical --into main");
       expect(body.canonical_message).toBe(true);
       expect(body.verification).toBe("Focused vitest suites pass.");
       // The closure issue is referenced, never closed, by the message: closure

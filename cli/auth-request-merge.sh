@@ -575,9 +575,7 @@ fi
 
 # --- Build command and metadata ---
 
-local command_path=mandible
-if [[ -n "${MANDIBLE_RELEASE_ROOT:-}" ]]; then command_path="$MANDIBLE_RELEASE_ROOT/bin/mandible"; fi
-printf -v command '%q auth merge %q --into %q' "$command_path" "$branch" "$base_branch"
+printf -v command 'mandible auth merge %q --into %q' "$branch" "$base_branch"
 head_branch="$branch"
 execution_mode="daemon"
 
