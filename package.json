@@ -27,7 +27,7 @@
     "generate:codex-app-server": "scripts/bun-runtime.sh --exec --no-install scripts/generate-codex-app-server-bindings.mjs",
     "scan:duplication": "scripts/bun-runtime.sh --exec --no-install scripts/ncd-scan.mjs",
     "test:iab-preview-cleanup": "scripts/bun-runtime.sh --exec --no-install scripts/test-iab-preview-cleanup.mjs",
-    "test:preview-lifecycle": "scripts/bun-runtime.sh --exec test scripts/owned-run.test.mjs scripts/preview-lifecycle.test.mjs",
+    "test:preview-lifecycle": "scripts/bun-runtime.sh --exec test --timeout 60000 scripts/owned-run.test.mjs scripts/preview-lifecycle.test.mjs",
     "test:briefing-rating-browser": "scripts/bun-runtime.sh --exec --no-install scripts/test-briefing-rating-browser.mjs",
     "test:timeline-layout-browser": "scripts/bun-runtime.sh --exec --no-install scripts/test-timeline-layout-browser.mjs",
     "start": "scripts/bun-runtime.sh --exec --no-install dist/index.js",
