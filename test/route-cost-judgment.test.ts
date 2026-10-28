@@ -48,6 +48,16 @@ describe("route-cost confirmation", () => {
     expect(judgeRoute([trial(140, 11), trial(11, 140), trial(140, 11), trial(11, 140)], 100).overBudget).toBe(false);
   });
 
+  it("can stop confirmations once both observed minima are below budget", () => {
+    const observed = [trial(140, 120), trial(11, 140)];
+    expect(judgeRoute(observed, 100).overBudget).toBe(true);
+    observed.push(trial(150, 15));
+    expect(judgeRoute(observed, 100).overBudget).toBe(false);
+    for (const later of [trial(500, 500), trial(100, 100), trial(1, 1)]) {
+      expect(judgeRoute([...observed, later], 100).overBudget).toBe(false);
+    }
+  });
+
   it("includes the main reading and every confirmation in the verdict", () => {
     expect(judgeRoute([trial(11, 186), trial(140, 11), trial(140, 11), trial(140, 11)], 100).overBudget).toBe(false);
     expect(judgeRoute([trial(186, 11), trial(140, 11), trial(11, 11), trial(140, 11)], 100).overBudget).toBe(false);

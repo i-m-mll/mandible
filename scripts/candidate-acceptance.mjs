@@ -23,7 +23,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const sweepWorkDirectory = 'route-cost-work';
 export const acceptanceOwnedOutputs = ['home', 'Mandible.app', 'build.log', 'route-cost.json', 'route-cost.log', sweepWorkDirectory, 'daemon.log', 'desktop.log', 'gateway.log', 'Caddyfile'].map(path => ({ path, kind: path === 'Mandible.app' ? 'interactive' : 'generated' }));
 export function routeCostSweepArgs(run) {
-  return ['--no-install', path.join(root, 'scripts', 'route-cost-sweep.ts'), '--json', '--work-root', path.join(run, sweepWorkDirectory)];
+  return ['--no-install', path.join(root, 'scripts', 'route-cost-sweep.ts'), '--json', '--work-root', path.join(run, sweepWorkDirectory),
+    '--report-file', path.join(run, sweepWorkDirectory, 'progress.json')];
 }
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const sha256 = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
@@ -43,11 +44,23 @@ export function routeCostCheck(text) {
   const route = entry => `${entry.method} ${entry.path}`;
   return {
     schema: report.schema,
+    complete: report.complete,
+    diagnostic: report.diagnostic,
+    error: report.error,
+    progress: report.progress,
+    pending_confirmations: report.pending_confirmations,
+    routes_not_run: report.routes_not_run,
+    source_stderr: report.source_stderr,
     judging_rule: report.judging_rule,
     confirmation_trials: report.confirmation_trials,
     load: report.load,
     threshold_ms: report.threshold_ms,
     counts: report.counts,
+    measured: report.measured.map(entry => {
+      const initial = entry.initial_readings ?? (entry.requests ?? entry.readings ?? []).filter(reading => reading.trial === 0);
+      return { route: route(entry), first_call_turn_ms: entry.first_call_turn_ms, warm_turn_ms: entry.warm_turn_ms,
+        trials: entry.trials, initial_readings: initial.slice(0, 8), initial_readings_omitted: entry.initial_readings_omitted ?? Math.max(0, initial.length - 8) };
+    }),
     offenders: report.offenders.map(entry => ({ route: route(entry), first_call_turn_ms: entry.first_call_turn_ms, warm_turn_ms: entry.warm_turn_ms })),
     excepted: report.excepted.map(entry => ({ route: route(entry), issue: entry.issue, first_call_turn_ms: entry.first_call_turn_ms, warm_turn_ms: entry.warm_turn_ms })),
     exception_problems: report.exception_problems,
@@ -60,6 +73,8 @@ export function routeCostCheck(text) {
 /** The sweep's reasons for failing, in the order a reader acts on them. */
 export function routeCostVerdict(check) {
   const reasons = [
+    ...(check.complete !== true ? [`sweep incomplete${check.error ? `: ${check.error}` : ''}`] : []),
+    ...(check.diagnostic ? ['nonqualifying diagnostic'] : []),
     ...check.offenders.map(entry => `${entry.route} blocked the loop ${entry.first_call_turn_ms} ms on first call, ${entry.warm_turn_ms} ms warm`),
     ...check.failed_requests.slice(0, 3).map(entry => `request failed: ${entry}`),
     ...(check.failed_requests.length > 3 ? [`${check.failed_requests.length - 3} more failed requests`] : []),
@@ -67,6 +82,34 @@ export function routeCostVerdict(check) {
     ...check.exception_problems.map(entry => `exception for ${entry.route} (${entry.issue}): ${entry.problem}`),
   ];
   return reasons.length > 0 ? reasons.join('; ') : 'the report names no failure; see route-cost.log';
+}
+
+export function acceptanceSummary(result) {
+  const checks = result.checks ?? {};
+  const phases = [
+    checks.route_cost ? `route sweep report retained (${checks.route_cost.counts.measured} routes measured)` : 'route sweep report unavailable',
+    result.provenance?.package_sha256 ? 'package provenance verified' : 'package verification not completed',
+    checks.readiness ? 'daemon readiness checked' : 'daemon readiness not completed',
+    checks.desktop_interaction?.passed ? 'packaged Settings edit checked' : 'packaged Settings edit not completed',
+  ];
+  if (checks.log_digest) phases.push(`raw-log SHA256 ${checks.log_digest}`);
+  return `${result.candidate}: ${result.status}${result.error ? ` — ${result.error}` : ''}; ${phases.join('; ')}`;
+}
+
+export function compactAcceptanceResult(result) {
+  if (JSON.stringify(result).length <= 60 * 1024) return result;
+  const checks = result.checks ?? {};
+  const route = checks.route_cost;
+  return { schema: result.schema, truncated: true, status: result.status, candidate: result.candidate,
+    error: result.error?.slice(0, 512), cleanup_error: result.cleanup_error?.slice(0, 512), receipt: result.receipt,
+    checks: { readiness: checks.readiness, desktop_interaction: checks.desktop_interaction,
+      log_digest: checks.log_digest, log_bytes: checks.log_bytes, cleanup: checks.cleanup,
+      initial_transport_error: checks.initial_transport_error,
+      failure_logs: checks.failure_logs?.map(log => ({ ...log, excerpt: log.excerpt.slice(-1000) })),
+      route_cost: route ? { complete: route.complete, diagnostic: route.diagnostic, error: route.error?.slice(0, 512),
+        progress: route.progress, counts: route.counts, pending_confirmations: route.pending_confirmations?.slice(0, 32),
+        routes_not_run: route.routes_not_run?.slice(0, 32), source_stderr: route.source_stderr?.slice(-1000) } : route,
+    } };
 }
 
 export function createAcceptanceHome(home) {
@@ -235,12 +278,22 @@ export function awaitAcceptanceGatewayReadiness(probe, isReady, { onInitialTlsEr
 }
 
 export function acceptanceFailureLogs(run) {
-  return ['daemon', 'gateway'].flatMap(name => {
-    const file = path.join(run, `${name}.log`);
+  const sweepWork = path.join(run, sweepWorkDirectory);
+  const sourceLogs = fs.existsSync(path.join(sweepWork, 'source-preview.log')) ? [{ name: 'source-preview', file: path.join(sweepWork, 'source-preview.log') }] : fs.existsSync(sweepWork) ? fs.readdirSync(sweepWork).filter(name => name.startsWith('run-'))
+    .map(name => ({ name: 'source-preview', file: path.join(sweepWork, name, 'stderr.log') })) : [];
+  return [...['daemon', 'gateway', 'route-cost'].map(name => ({ name, file: path.join(run, `${name}.log`) })), ...sourceLogs.slice(-1)].flatMap(({ name, file }) => {
     if (!fs.existsSync(file)) return [];
-    const bytes = fs.readFileSync(file);
-    return [{ name, sha256: createHash('sha256').update(bytes).digest('hex'), bytes: bytes.length,
-      excerpt: bytes.subarray(Math.max(0, bytes.length - 8000)).toString('utf8') }];
+    const fd = fs.openSync(file, 'r');
+    try {
+      const bytes = fs.fstatSync(fd).size;
+      const hash = createHash('sha256');
+      const buffer = Buffer.alloc(64 * 1024);
+      let read;
+      while ((read = fs.readSync(fd, buffer)) > 0) hash.update(buffer.subarray(0, read));
+      const excerpt = Buffer.alloc(Math.min(bytes, 8000));
+      fs.readSync(fd, excerpt, 0, excerpt.length, Math.max(0, bytes - excerpt.length));
+      return [{ name, sha256: hash.digest('hex'), bytes, excerpt: excerpt.toString('utf8') }];
+    } finally { fs.closeSync(fd); }
   });
 }
 
@@ -334,10 +387,12 @@ async function main() {
     const routeCostOut = fs.openSync(routeCostFile, 'w'); files.push(routeCostOut);
     const routeCostLog = fs.openSync(path.join(run, 'route-cost.log'), 'w'); files.push(routeCostLog);
     const sweepFailure = await runSupervisedCommand(runtime, routeCostSweepArgs(run), { cwd: root, env: buildEnv, stdio: ['ignore', routeCostOut, routeCostLog], timeout: 900000 }).then(() => null, error => error);
-    result.checks.route_cost = routeCostCheck(fs.readFileSync(routeCostFile, 'utf8'));
+    const progressFile = path.join(run, sweepWorkDirectory, 'progress.json');
+    result.checks.route_cost = routeCostCheck(fs.readFileSync(fs.existsSync(progressFile) ? progressFile : routeCostFile, 'utf8'));
     if (sweepFailure) throw new Error(`Route-cost sweep failed: ${result.checks.route_cost
       ? routeCostVerdict(result.checks.route_cost)
       : `it exited (${sweepFailure.message}) without a report: ${fs.readFileSync(path.join(run, 'route-cost.log'), 'utf8').split('\n').filter(line => line.trim() && !/^\s+at /.test(line)).slice(-8).join(' | ')}`}`);
+    if (!result.checks.route_cost || result.checks.route_cost.complete !== true || result.checks.route_cost.diagnostic) throw new Error('Route-cost sweep did not produce a complete qualifying report.');
     await runSupervisedCommand(runtime, ['run', 'tauri:build', '--', '--bundles', 'app'], { cwd: root, env: { ...buildEnv, GIT_OPTIONAL_LOCKS: '0' }, stdio: ['ignore', buildLog, buildLog], timeout: 600000 });
     builtApp = path.join(root, 'src-tauri', 'target', 'release', 'bundle', 'macos', 'Mandible.app');
     }
@@ -481,9 +536,10 @@ async function main() {
         const final = finalizeOwnedRun(metadataFile, { expectedRevision: ownership.revision, outcome: result.status === 'passed' ? 'assessed' : 'failed',
           ...(diagnosticDestination ? { disposition: 'transferred', destination: diagnosticDestination, transferReference: `diagnostic:${ownership.runId}` } : {}),
           ...(acceptedReference ? { disposition: 'transferred', destination: resolveAcceptedRelease(acceptedReference, candidateBinding).receipt.package.handle.root, transferReference: acceptedReference } : {}),
-          summary: `${candidate}: ${result.status}${result.error ? ` — ${result.error}` : ''}; daemon and packaged Settings edit checked; raw-log SHA256 ${result.checks.log_digest}` });
-        result.checks.cleanup = cleanupOwnedRun(metadataFile, { apply: true });
+          summary: acceptanceSummary(result) });
         const receipt = final.ownership.receipt;
+        saveOwnedMetadata(receipt, { ...JSON.parse(fs.readFileSync(receipt, 'utf8')), acceptance: diagnostic ? diagnosticReport(result) : result });
+        result.checks.cleanup = cleanupOwnedRun(metadataFile, { apply: true });
         if (result.checks.cleanup.action !== 'delete-owned' || result.checks.cleanup.remaining?.length) result.status = 'failed';
         saveOwnedMetadata(receipt, { ...JSON.parse(fs.readFileSync(receipt, 'utf8')), acceptance: diagnostic ? diagnosticReport(result) : result });
         result.receipt = acceptedReference || receipt;
@@ -494,7 +550,7 @@ async function main() {
   if (diagnostic) {
     Object.assign(result, diagnosticReport(result));
   }
-  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify(compactAcceptanceResult(result), null, 2)}\n`);
   process.exitCode = result.status === 'passed' ? 0 : 1;
   });
 }

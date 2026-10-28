@@ -248,6 +248,9 @@ budget gate. Candidate acceptance runs it before the native build.
   cites an issue that is open in the snapshot. Within a trial, each call kind
   uses the maximum across request variants and, for warm calls, later passes.
   The reported first-call and warm turns are the minima of these trial maxima.
+  Confirmation stops once both observed minima are below budget: later trials
+  cannot raise either minimum. A still-over-budget route needs all three
+  confirmations; an unfinished sweep never qualifies.
 - Every confirmation restores the single saved database from before measurement.
   Write confirmations start a fresh daemon and replay every exercised earlier
   write in `WRITES` order, unmeasured, with the main session's requests and pass
@@ -259,6 +262,12 @@ budget gate. Candidate acceptance runs it before the native build.
   number (0 is the main pass), per-trial first/warm maxima, the confirmation
   rule, and load observations. Candidate acceptance retains the per-trial maxima
   for remeasured routes, including spikes discarded by confirmation.
+  An atomic report is updated during preparation and after readings, retaining
+  phase totals, pending routes/confirmations, completed trials and recent
+  readings if the run fails. Each route retains its last eight readings in a
+  partial report, with an omission count; the final report retains all requests.
+  Report files are bounded to 1 MiB. Candidate receipts retain the partial
+  report projection and bounded sweep/source-preview stderr before cleanup.
 - It also fails on any request that does not succeed (including confirmations),
   invalid or obsolete budget exceptions, and on any non-GET route,
   or GET route with path parameters, that has neither requests nor a skip
@@ -277,12 +286,23 @@ Useful options:
 - `--cpu-prof` attributes each offender's window with
   `cpuprofile-windows.mjs`.
 - `--keep` retains the snapshot, logs and profile.
+- `--budget-ms` bounds the whole sweep, including preparation and cleanup.
+  The current ceiling remains 900000 ms; this is separate from the final
+  qualification budget decision. Five seconds are reserved for termination,
+  cleanup and reporting. An existing process-group supervisor owns the sweep
+  worker, so synchronous SQLite/cache work cannot block deadline enforcement.
+- `--diagnostic --budget-ms 45000` is a nonqualifying phase probe of
+  `GET /api/auth/queue`, with at most one initial and one confirmation daemon
+  lifetime. It reuses the catalog daemon for the initial measurement and never
+  produces qualifying acceptance, even when the observed route is below budget.
+  It does not enable profiling or native packaging.
+- `--report-file` selects the atomic report path outside disposable scratch data.
 
-When the 1-minute load average is at or above the core count, the sweep polls
-every five seconds for up to three minutes. It then measures even if load stays
-high; load alone never fails the gate. The report records initial load, load
-after the wait, final load, core count, and time spent waiting. `--ignore-load`
-skips this wait. Confirmation trials handle isolated scheduling spikes.
+When the 1-minute load average is at or above the core count, the sweep allows
+at most five seconds of admission waiting within its total deadline. Sustained
+overload fails as an unsuitable environment before measurement. The report
+records load observations and wait duration. `--ignore-load` explicitly skips
+admission; it does not change the route verdict or make a diagnostic qualify.
 
 ### Reproduce cold ledger reads
 

@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { CONFIRMATION_TRIALS, judgeRoute, trialTurns, waitForLoad, writeReplayPlan } from "./route-cost-judgment.ts";
 import { evictFileCache } from "./evict-file-cache.ts";
+import { SweepBudget, writeSweepProgress, runSweepWorker } from "./route-cost-budget.ts";
 import SqliteDatabase from "../src/sqlite.ts";
 import { isProtectedIdentitySettingKey } from "../src/settings-key-policy.js";
 import { numericSourceExtent } from "../src/conversations/source-observer.ts";
@@ -42,6 +43,8 @@ unclassified, or when a request does not succeed.
 
   --source-db <path>    Ledger to snapshot (default: the installation ledger, MANDIBLE_DB or MANDIBLE_HOME/mandible.db)
   --work-root <path>    Parent directory for this sweep's private working files
+  --budget-ms <n>       Total budget including preparation and cleanup
+  --diagnostic         Nonqualifying auth-queue phase probe, at most one confirmation
   --threshold-ms <n>    Fail at or above this turn (default HANDLER_TURN_BUDGET_MS)
   --passes <n>          Requests per variant; the first is cold (default 2)
   --only <regex>        Exercise only routes whose path matches; others report as excluded
@@ -58,6 +61,9 @@ export function parseSweepOptions(args: string[]) {
     options: {
       "source-db": { type: "string" },
       "work-root": { type: "string" },
+      "budget-ms": { type: "string", default: "900000" },
+      "report-file": { type: "string" },
+      diagnostic: { type: "boolean", default: false },
       "threshold-ms": { type: "string", default: String(HANDLER_TURN_BUDGET_MS) },
       passes: { type: "string", default: "2" },
       only: { type: "string" },
@@ -83,10 +89,10 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 const TURN_ROUTE = "/api/diagnostics/event-loop-turn";
 const SETTLE_MS = 50;
 const QUIET_MS = 20;
-const QUIET_DEADLINE_MS = 600_000;
 const BASELINE_MS = 5_000;
-const READY_TIMEOUT_MS = 180_000;
-const REQUEST_TIMEOUT_MS = 180_000;
+let budget: SweepBudget;
+let checkpoint = () => {};
+const phase = <T>(name: string, operation: () => T | Promise<T>) => budget.measure(name, checkpoint, operation);
 
 const thresholdMs = Number(opts["threshold-ms"]);
 const passes = Number(opts.passes);
@@ -94,7 +100,7 @@ if (!(thresholdMs > 0) || !Number.isInteger(passes) || passes < 1) {
   console.error("route-cost-sweep: --threshold-ms must be positive and --passes a positive integer");
   process.exit(2);
 }
-const only = opts.only ? new RegExp(opts.only) : null;
+const only = opts.diagnostic ? /^\/api\/auth\/queue$/ : opts.only ? new RegExp(opts.only) : null;
 const sourceDb = path.resolve(opts["source-db"] ?? resolveLedgerDbPath());
 
 function log(message: string) {
@@ -760,7 +766,7 @@ async function snapshot(source: string, target: string) {
   if (!fs.existsSync(source)) throw new Error(`source ledger does not exist: ${source}`);
   const db = new SqliteDatabase(source, { readonly: true, fileMustExist: true });
   try {
-    await db.backup(target);
+    await db.backup(target, { signal: budget.controller.signal });
   } finally {
     db.close();
   }
@@ -798,7 +804,8 @@ interface Response {
   head: string;
 }
 
-function socketRequest(socketPath: string, method: string, url: string, body?: unknown, timeoutMs = REQUEST_TIMEOUT_MS): Promise<Response> {
+function socketRequest(socketPath: string, method: string, url: string, body?: unknown): Promise<Response> {
+  budget.remaining();
   return new Promise((resolve, reject) => {
     const payload = body === undefined ? null : JSON.stringify(body);
     const request = http.request({
@@ -809,7 +816,7 @@ function socketRequest(socketPath: string, method: string, url: string, body?: u
         host: "localhost",
         ...(payload === null ? {} : { "content-type": "application/json", "content-length": Buffer.byteLength(payload) }),
       },
-      timeout: timeoutMs,
+      signal: budget.controller.signal,
     }, (response) => {
       let bytes = 0;
       let head = "";
@@ -820,7 +827,6 @@ function socketRequest(socketPath: string, method: string, url: string, body?: u
       response.on("end", () => resolve({ status: response.statusCode ?? 0, bytes, head }));
       response.on("error", reject);
     });
-    request.on("timeout", () => request.destroy(new Error(`timed out after ${timeoutMs} ms`)));
     request.on("error", reject);
     request.end(payload ?? undefined);
   });
@@ -828,7 +834,8 @@ function socketRequest(socketPath: string, method: string, url: string, body?: u
 
 async function socketJson<T>(socketPath: string, url: string): Promise<T> {
   return new Promise((resolve, reject) => {
-    http.get({ socketPath, path: url, headers: { host: "localhost" } }, (response) => {
+    budget.remaining();
+    http.get({ socketPath, path: url, headers: { host: "localhost" }, signal: budget.controller.signal }, (response) => {
       const chunks: Buffer[] = [];
       response.on("data", (chunk: Buffer) => chunks.push(chunk));
       response.on("end", () => {
@@ -840,29 +847,38 @@ async function socketJson<T>(socketPath: string, url: string): Promise<T> {
   });
 }
 
-async function waitFor<T>(label: string, timeoutMs: number, check: () => Promise<T | null>, daemon: ChildProcess, stderrLog: string): Promise<T> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+async function waitFor<T>(label: string, check: () => Promise<T | null>, daemon: ChildProcess, stderrLog: string): Promise<T> {
+  for (;;) {
+    budget.remaining();
     if (daemon.exitCode !== null || daemon.signalCode !== null) {
       throw new Error(`daemon exited (${daemon.exitCode ?? daemon.signalCode}) before ${label}:\n${tail(stderrLog)}`);
     }
     const value = await check().catch(() => null);
     if (value !== null) return value;
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await budget.wait(250);
   }
-  throw new Error(`daemon not ${label} within ${timeoutMs} ms:\n${tail(stderrLog)}`);
 }
 
 function tail(file: string) {
-  return fs.existsSync(file) ? fs.readFileSync(file, "utf8").split("\n").slice(-40).join("\n") : "";
+  if (!fs.existsSync(file)) return "";
+  const fd = fs.openSync(file, "r");
+  try {
+    const size = fs.fstatSync(fd).size;
+    const bytes = Buffer.alloc(Math.min(size, 8192));
+    fs.readSync(fd, bytes, 0, bytes.length, Math.max(0, size - bytes.length));
+    return bytes.toString("utf8").split("\n").slice(-40).join("\n");
+  } finally { fs.closeSync(fd); }
 }
 
 function stopDaemon(daemon: ChildProcess, timeoutMs: number): Promise<void> {
   if (daemon.exitCode !== null || daemon.signalCode !== null) return Promise.resolve();
   return new Promise((resolve) => {
-    const kill = setTimeout(() => daemon.kill("SIGKILL"), timeoutMs);
+    const started = Date.now();
+    const kill = setTimeout(() => daemon.kill("SIGKILL"), Math.min(timeoutMs, Math.max(1, budget.deadline - Date.now())));
     daemon.once("exit", () => {
       clearTimeout(kill);
+      budget.totals.shutdown = (budget.totals.shutdown ?? 0) + Date.now() - started;
+      checkpoint();
       resolve();
     });
     daemon.kill("SIGTERM");
@@ -894,14 +910,11 @@ interface Measured {
 async function settle(socketPath: string, result: Measured): Promise<number> {
   let worstMs = 0;
   for (;;) {
-    await new Promise((resolve) => setTimeout(resolve, SETTLE_MS));
+    await budget.wait(SETTLE_MS);
     const turnMs = await readTurn(socketPath);
     worstMs = Math.max(worstMs, turnMs);
     result.t1 = Date.now();
     if (turnMs < QUIET_MS) return worstMs;
-    if (result.t1 - result.t0 > QUIET_DEADLINE_MS) {
-      throw new Error(`daemon still blocking ${turnMs} ms turns ${QUIET_DEADLINE_MS / 1000} s after ${result.url}`);
-    }
   }
 }
 
@@ -966,10 +979,10 @@ async function startDaemon(run: Run, profile: boolean): Promise<Daemon> {
   fs.closeSync(stderrFd);
   const socketPath = localApiSocketPath({ role: "preview", instance_id: run.env.MANDIBLE_INSTANCE_ID });
   try {
-    await waitFor("ready and warm", READY_TIMEOUT_MS, async () => {
+    await phase("startup", () => waitFor("ready and warm", async () => {
       const value = await socketJson<{ ready?: boolean; warm?: boolean; startup_commit?: { hash?: string } }>(socketPath, "/api/health");
       return value.ready && value.warm ? value : null;
-    }, child, run.stderrLog);
+    }, child, run.stderrLog));
   } catch (error) {
     await stopDaemon(child, 30_000);
     throw error;
@@ -982,12 +995,12 @@ async function startDaemon(run: Run, profile: boolean): Promise<Daemon> {
  * variant of the given routes `passes` times (the first pass is each
  * variant's first call since startup), then stop it.
  */
-async function measureSession(run: Run, planned: Planned[], profile: boolean, trial = 0, replay: Planned[] = []) {
-  const daemon = await startDaemon(run, profile);
+async function measureSession(run: Run, planned: Planned[], profile: boolean, trial = 0, replay: Planned[] = [], existing?: Daemon) {
+  const daemon = existing ?? await startDaemon(run, profile);
   let stopped = false;
   try {
     await readTurn(daemon.socketPath);
-    await new Promise((resolve) => setTimeout(resolve, BASELINE_MS));
+    await phase("idle_baseline", () => budget.wait(BASELINE_MS));
     const baselineMs = await readTurn(daemon.socketPath);
     const measure = async (entry: Planned, request: SweepRequest, pass: number, record = true) => {
       if (opts.evict && pass === 1 && record) {
@@ -1004,7 +1017,7 @@ async function measureSession(run: Run, planned: Planned[], profile: boolean, tr
       const result: Measured = { trial, label: request.label, url, pass, status: 0, bytes: 0, durationMs: 0, t0, t1: t0, worstTurnMs: 0 };
       try {
         const body = typeof request.body === "function" ? request.body(pass) : request.body;
-        const response = await socketRequest(daemon.socketPath, entry.route.method, url, body);
+        const response = await phase("request", () => socketRequest(daemon.socketPath, entry.route.method, url, body));
         result.status = response.status;
         result.bytes = response.bytes;
         if (response.status >= 400) result.error = response.head;
@@ -1012,8 +1025,10 @@ async function measureSession(run: Run, planned: Planned[], profile: boolean, tr
         result.error = error instanceof Error ? error.message : String(error);
       }
       result.durationMs = Math.round(performance.now() - started);
-      result.worstTurnMs = await settle(daemon.socketPath, result);
       if (record) entry.measured.push(result);
+      try { result.worstTurnMs = await phase("settle", () => settle(daemon.socketPath, result)); }
+      catch (error) { result.error ??= `settle incomplete: ${error instanceof Error ? error.message : String(error)}`; throw error; }
+      finally { checkpoint(); }
       return result;
     };
     const requestsOf = (entry: Planned) => (entry.plan.kind === "exercise" ? entry.plan.requests : []);
@@ -1116,18 +1131,51 @@ function isWrite(route: CatalogRoute): boolean {
 }
 
 async function main() {
-  const cpus = os.availableParallelism();
-  if (os.loadavg()[0] >= cpus && !opts["ignore-load"]) log("waiting up to 180 s for the 1-minute load average to fall below the core count");
-  const load = await waitForLoad({ cpus, readLoad: () => os.loadavg()[0], ...(opts["ignore-load"] ? { maxWaitMs: 0 } : {}) });
-  if (load.measurement_start >= cpus) log(`measuring under load ${load.measurement_start.toFixed(2)} on ${cpus} cores; fresh trials will confirm suspected offenders`);
-
+  const totalMs = Number(opts["budget-ms"]);
+  if (!Number.isFinite(totalMs) || totalMs <= 5_000 || (opts.diagnostic && totalMs > 45_000)) throw new Error("Invalid total sweep budget; diagnostics require at most 45000 ms including cleanup");
+  if (opts.diagnostic && (opts["cpu-prof"] || opts["fresh-each"] || opts.evict || opts.only)) throw new Error("Diagnostic plan is fixed: auth queue, no profiler/eviction/fresh-each/route override");
+  budget = new SweepBudget(totalMs, 5_000, Date.now, Number(process.env.MANDIBLE_SWEEP_STARTED_AT) || Date.now());
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "");
   const workRoot = path.resolve(opts["work-root"] ?? path.join(os.homedir(), ".cache", "mandible", "route-cost-sweep"));
   fs.mkdirSync(workRoot, { recursive: true, mode: 0o700 });
   const root = fs.mkdtempSync(path.join(workRoot, `run-${stamp}-`));
   const dbCopy = path.join(root, "mandible.db");
-  const revision = spawnSync("git", ["rev-parse", "HEAD"], { cwd: REPO_ROOT, encoding: "utf8" }).stdout.trim();
+  const revision = spawnSync("git", ["rev-parse", "HEAD"], { cwd: REPO_ROOT, encoding: "utf8", timeout: budget.remaining() }).stdout.trim();
+  const reportFile = path.resolve(opts["report-file"] ?? path.join(workRoot, `${path.basename(root)}.json`));
+  fs.mkdirSync(path.dirname(reportFile), { recursive: true });
+  let planned: Planned[] = [];
+  let suspects: Planned[] = [];
+  const confirmed = new Set<Planned>();
+  const completedTrials = new Map<Planned, number>();
+  const earlyStops = new Map<Planned, string>();
+  let failure: string | undefined;
+  let complete = false;
+  let finalReport: Record<string, any> | undefined;
+  const trialsOf = (entry: Planned) => [...new Set(entry.measured.map(reading => reading.trial))]
+    .map(trial => entry.measured.filter(reading => reading.trial === trial));
+  const progressReport = () => ({
+    schema: "mandible-route-cost-sweep@2", revision, threshold_ms: thresholdMs, confirmation_trials: CONFIRMATION_TRIALS,
+    complete, diagnostic: Boolean(opts.diagnostic), error: failure, progress: budget.progress(),
+    counts: { routes: planned.length, measured: planned.filter(entry => entry.measured.length).length,
+      requests: planned.reduce((sum, entry) => sum + entry.measured.length, 0) },
+    offenders: [], excepted: [], exception_problems: [], unclassified: [], failed_requests: [],
+    pending_confirmations: suspects.filter(entry => !confirmed.has(entry)).map(entry => `${entry.route.method} ${entry.route.path}`),
+    routes_not_run: planned.filter(entry => entry.plan.kind === "exercise" && entry.measured.filter(reading => reading.trial === 0).length < entry.plan.requests.length * passes)
+      .map(entry => `${entry.route.method} ${entry.route.path}`),
+    measured: planned.filter(entry => entry.measured.length).map(entry => ({ method: entry.route.method, path: entry.route.path,
+      trials: trialsOf(entry).map(readings => ({ trial: readings[0].trial,
+        first_call_turn_ms: trialTurns(readings).firstCallMs, warm_turn_ms: trialTurns(readings).warmMs })),
+      completed_confirmation_trials: completedTrials.get(entry) ?? 0, early_stop: earlyStops.get(entry),
+      initial_readings: entry.measured.filter(reading => reading.trial === 0).slice(0, 8),
+      initial_readings_omitted: Math.max(0, entry.measured.filter(reading => reading.trial === 0).length - 8),
+      readings: entry.measured.slice(-8), readings_omitted: Math.max(0, entry.measured.length - 8) })),
+    source_stderr: tail(path.join(root, "stderr.log")),
+  });
+  checkpoint = () => writeSweepProgress(reportFile, finalReport ? { ...finalReport, progress: budget.progress(), source_stderr: tail(path.join(root, "stderr.log")) } : progressReport());
+  checkpoint();
+  log(`partial report: ${reportFile}`);
   const cleanup = () => {
+    if (fs.existsSync(path.join(root, "stderr.log"))) fs.writeFileSync(path.join(workRoot, "source-preview.log"), tail(path.join(root, "stderr.log")));
     if (!opts.keep) fs.rmSync(root, { recursive: true, force: true });
     else log(`kept ${root}`);
   };
@@ -1136,6 +1184,8 @@ async function main() {
     interrupted = true;
     void Promise.all([...activeDaemons].map((daemon) => stopDaemon(daemon, 2_000)))
       .then(() => {
+        failure = `Sweep interrupted by ${signal}`;
+        checkpoint();
         cleanup();
         process.exit(signal === "SIGINT" ? 130 : 143);
       });
@@ -1146,19 +1196,25 @@ async function main() {
   process.once("SIGTERM", onSigterm);
 
   try {
+    const cpus = os.availableParallelism();
+    const load = await phase("load_admission", () => waitForLoad({ cpus, readLoad: () => os.loadavg()[0],
+      maxWaitMs: Math.min(5_000, budget.remaining()), wait: ms => budget.wait(ms),
+      ...(opts["ignore-load"] ? { maxWaitMs: 0 } : {}) }));
+    if (load.measurement_start >= cpus && !opts["ignore-load"]) throw new Error(`Unsuitable environment: load ${load.measurement_start} remains at or above ${cpus} cores after bounded admission`);
     const snapshotStarted = performance.now();
-    await snapshot(sourceDb, dbCopy);
-    sanitizePreviewDatabase(dbCopy);
+    await phase("snapshot", () => snapshot(sourceDb, dbCopy));
+    await phase("snapshot_sanitize", () => sanitizePreviewDatabase(dbCopy));
     const conversationsDir = path.join(root, "conversations");
-    await seedProjectedConversationStructureCache({
+    await phase("cache_preparation", () => seedProjectedConversationStructureCache({
       sourceCache: path.join(os.homedir(), ".cache", "mandible", "conversations", "structure.db"),
       targetCache: path.join(conversationsDir, "structure.db"),
       projectedDb: dbCopy,
-    });
-    await copySqlite(path.join(os.homedir(), ".cache", "mandible", "conversations", "search-cache.db"), path.join(conversationsDir, "search-cache.db"));
+      signal: budget.controller.signal,
+    }));
+    await phase("cache_preparation", () => copySqlite(path.join(os.homedir(), ".cache", "mandible", "conversations", "search-cache.db"), path.join(conversationsDir, "search-cache.db")));
     const cacheSnapshot = path.join(root, "seeded-conversations");
     fs.mkdirSync(conversationsDir, { recursive: true });
-    fs.cpSync(conversationsDir, cacheSnapshot, { recursive: true });
+    await phase("cache_preparation", () => fs.cpSync(conversationsDir, cacheSnapshot, { recursive: true }));
     seedPreviewUserPreferences({ previewRoot: root });
     fs.mkdirSync(path.join(root, "artifacts"), { recursive: true });
     log(`snapshot of ${sourceDb} in ${Math.round(performance.now() - snapshotStarted)} ms`);
@@ -1176,31 +1232,31 @@ async function main() {
     // The catalog and fixtures come from a daemon that is discarded, so the
     // measured daemons start with no route ever having been called.
     const catalogDaemon = await startDaemon(run, false);
-    let planned: Planned[];
     try {
-      const instance = await socketJson<{ instance: { allowed_effects: string[] }; operations: { routes: CatalogRoute[] } }>(catalogDaemon.socketPath, "/api/instance");
+      const instance = await phase("catalog", () => socketJson<{ instance: { allowed_effects: string[] }; operations: { routes: CatalogRoute[] } }>(catalogDaemon.socketPath, "/api/instance"));
       const allowedEffects = new Set(instance.instance.allowed_effects);
-      const fixtures = readFixtures(dbCopy);
+      const fixtures = await phase("fixtures", () => readFixtures(dbCopy));
       fixtures.routeManifest = routeManifest(
         (await socketJson<{ routes?: InspectedRoute[] }>(catalogDaemon.socketPath, "/api/briefing-destination-routes")).routes ?? [],
       );
-      planned = instance.operations.routes.map((route) => ({ route, plan: planRoute(route, allowedEffects, fixtures), measured: [] }));
+      planned = instance.operations.routes.map((route) => ({ route,
+        plan: opts.diagnostic && route.method !== "GET" ? { kind: "skip" as const, reason: "nonqualifying diagnostic GET only" } : planRoute(route, allowedEffects, fixtures), measured: [] }));
+      checkpoint();
     } finally {
-      await stopDaemon(catalogDaemon.child, 30_000);
+      if (!opts.diagnostic) await stopDaemon(catalogDaemon.child, 30_000);
     }
 
     const exercised = planned.filter((entry) => entry.plan.kind === "exercise")
       .sort((a, b) => writeOrder(a.route) - writeOrder(b.route));
     const readSnapshot = path.join(root, "before-measurement.db");
-    await snapshot(dbCopy, readSnapshot);
+    await phase("snapshot", () => snapshot(dbCopy, readSnapshot));
     const sessions = opts["fresh-each"]
       ? await sequential(exercised.map((entry) => () => measureSession(run, [entry], opts["cpu-prof"]!)))
-      : [await measureSession(run, planned, opts["cpu-prof"]!)];
+      : [await measureSession(run, planned, opts["cpu-prof"]!, 0, [], opts.diagnostic ? catalogDaemon : undefined)];
     log(`measured ${exercised.length} routes over ${sessions.length} daemon start(s)`);
 
-    const trialsOf = (entry: Planned) => [...new Set(entry.measured.map((reading) => reading.trial))]
-      .map((trial) => entry.measured.filter((reading) => reading.trial === trial));
-    const suspects = opts.evict ? [] : exercised.filter((entry) => judgeRoute(trialsOf(entry), thresholdMs).overBudget);
+    suspects = opts.evict ? [] : exercised.filter((entry) => judgeRoute(trialsOf(entry), thresholdMs).overBudget);
+    checkpoint();
     // Checkpoint before retries: exception validity belongs to the main snapshot.
     const exceptionIssues = openIssueStatus(dbCopy, Object.values(BUDGET_EXCEPTIONS).map((entry) => entry.issue));
     const writesByKey = new Map(exercised.filter((entry) => isWrite(entry.route))
@@ -1211,10 +1267,19 @@ async function main() {
           .map((key) => writesByKey.get(key)!)
         : [];
       log(`confirming ${entry.route.method} ${entry.route.path} in ${CONFIRMATION_TRIALS} fresh trials`);
-      for (let trial = 1; trial <= CONFIRMATION_TRIALS; trial += 1) {
-        restoreSweepSnapshot(readSnapshot, dbCopy, cacheSnapshot, conversationsDir);
+      for (let trial = 1; trial <= (opts.diagnostic ? 1 : CONFIRMATION_TRIALS); trial += 1) {
+        await phase("restore", () => restoreSweepSnapshot(readSnapshot, dbCopy, cacheSnapshot, conversationsDir));
         sessions.push(await measureSession(run, [entry], opts["cpu-prof"]!, trial, replay));
+        completedTrials.set(entry, trial);
+        if (!judgeRoute(trialsOf(entry), thresholdMs).overBudget) {
+          earlyStops.set(entry, "Both call kinds are below budget; later minima cannot reverse the verdict");
+          confirmed.add(entry);
+          checkpoint();
+          break;
+        }
       }
+      if (completedTrials.get(entry) === CONFIRMATION_TRIALS) confirmed.add(entry);
+      checkpoint();
     }
 
     const routeResult = (entry: Planned) => {
@@ -1252,8 +1317,10 @@ async function main() {
       profile: entry.profile ?? null,
     });
     const loadEnd = os.loadavg()[0];
+    complete = !opts.diagnostic;
     const report = {
       schema: "mandible-route-cost-sweep@2",
+      complete, diagnostic: Boolean(opts.diagnostic), progress: budget.progress(),
       revision,
       source_db: sourceDb,
       threshold_ms: thresholdMs,
@@ -1290,6 +1357,8 @@ async function main() {
         first_call_turn_ms: firstCallMs,
         cold_cache_turn_ms: opts.evict ? firstCallMs : null,
         warm_turn_ms: warmMs,
+        completed_confirmation_trials: completedTrials.get(entry) ?? 0,
+        early_stop: earlyStops.get(entry),
         trials: trialsOf(entry).map((readings) => {
           const turns = trialTurns(readings);
           return { trial: readings[0].trial, first_call_turn_ms: turns.firstCallMs, warm_turn_ms: turns.warmMs };
@@ -1298,11 +1367,20 @@ async function main() {
       })),
       root: opts.keep ? root : null,
     };
-
-    if (opts.json) console.log(JSON.stringify(report, null, 2));
-    else printReport(report);
-    return (opts.evict || (offenders.length === 0 && exceptionProblems.length === 0)) && unclassified.length === 0 && failedRequests.length === 0 ? 0 : 1;
+    finalReport = report;
+    checkpoint();
+    if (!opts.json) printReport(report);
+    else if (process.env.MANDIBLE_SWEEP_WORKER !== "1") console.log(JSON.stringify(report, null, 2));
+    return complete && (opts.evict || (offenders.length === 0 && exceptionProblems.length === 0)) && unclassified.length === 0 && failedRequests.length === 0 ? 0 : 1;
+  } catch (error) {
+    failure = error instanceof Error ? error.message : String(error);
+    checkpoint();
+    if (opts.json && process.env.MANDIBLE_SWEEP_WORKER !== "1") console.log(JSON.stringify(progressReport()));
+    throw error;
   } finally {
+    await Promise.all([...activeDaemons].map(daemon => stopDaemon(daemon, 2_000)));
+    checkpoint();
+    budget.close();
     if (!interrupted) {
       process.removeListener("SIGINT", onSigint);
       process.removeListener("SIGTERM", onSigterm);
@@ -1330,7 +1408,7 @@ function attributeProfile(profileDir: string, planned: Planned[], trial: number)
       path.join(profileDir, profile),
       "--window", `${new Date(pick.t0).toISOString()},${pick.t1 - pick.t0 + SETTLE_MS}`,
       "--top", "8",
-    ], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    ], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: budget.remaining() });
     entry.profile = (result.stdout || result.stderr).trim();
   }
 }
@@ -1364,8 +1442,67 @@ function printReport(report: Record<string, any>) {
   console.log(lines.join("\n"));
 }
 
+async function supervisedMain() {
+  const started = Date.now();
+  const totalMs = Number(opts["budget-ms"]);
+  if (!Number.isFinite(totalMs) || totalMs <= 5_000 || (opts.diagnostic && totalMs > 45_000)) throw new Error("Invalid sweep total budget");
+  const workRoot = path.resolve(opts["work-root"] ?? path.join(os.homedir(), ".cache", "mandible", "route-cost-sweep"));
+  fs.mkdirSync(workRoot, { recursive: true, mode: 0o700 });
+  const owned = fs.mkdtempSync(path.join(workRoot, "owned-"));
+  const reportFile = path.resolve(opts["report-file"] ?? path.join(workRoot, `${path.basename(owned)}.json`));
+  const parentBudget = new SweepBudget(totalMs, 5_000, Date.now, started);
+  let failed: string | undefined;
+  let processesJoined = false;
+  let normalExit = false;
+  let qualifying = false;
+  try {
+    await runSweepWorker(parentBudget, process.execPath, ["--no-install", fileURLToPath(import.meta.url), ...process.argv.slice(2),
+      "--work-root", owned, "--report-file", reportFile], {
+      cwd: REPO_ROOT, env: { ...process.env, MANDIBLE_SWEEP_WORKER: "1", MANDIBLE_SWEEP_STARTED_AT: String(started) },
+      stdio: "inherit",
+    });
+    processesJoined = true;
+    normalExit = true;
+  } catch (error) {
+    processesJoined = Boolean((error as { processGroupSettled?: boolean }).processGroupSettled);
+    normalExit = typeof (error as { exitCode?: number }).exitCode === "number";
+    failed = error instanceof Error ? error.message : String(error);
+  }
+  finally {
+    const cleanupStarted = Date.now();
+    parentBudget.close();
+    const sourceLog = path.join(owned, "source-preview.log");
+    const interruptedLog = fs.readdirSync(owned).filter(name => name.startsWith("run-")).map(name => path.join(owned, name, "stderr.log")).find(file => fs.existsSync(file));
+    if (fs.existsSync(sourceLog) || interruptedLog) fs.writeFileSync(path.join(workRoot, "source-preview.log"), tail(fs.existsSync(sourceLog) ? sourceLog : interruptedLog!));
+    const cleanupAdmitted = processesJoined && Date.now() < started + totalMs - 1_000;
+    if (!opts.keep && cleanupAdmitted) fs.rmSync(owned, { recursive: true, force: true });
+    if (fs.existsSync(reportFile)) {
+      const report = JSON.parse(fs.readFileSync(reportFile, "utf8"));
+      const elapsed = Date.now() - started;
+      if (!normalExit || elapsed > totalMs) { report.complete = false; report.error ??= failed ?? "Sweep total budget exceeded during cleanup"; }
+      else if (opts.diagnostic && report.diagnostic && !report.error) failed = undefined;
+      if (!cleanupAdmitted && !opts.keep) {
+        report.complete = false;
+        report.cleanup_error = processesJoined ? "Cleanup reserve insufficient; owned scratch preserved" : "Owned process group did not settle; scratch preserved";
+        report.error ??= report.cleanup_error;
+      }
+      report.root = opts.keep || !cleanupAdmitted ? owned : null;
+      report.progress.cleanup_complete = !opts.keep && cleanupAdmitted;
+      if (!normalExit) report.progress.interrupted_phase = report.progress.phase;
+      report.progress.elapsed_ms = elapsed;
+      report.progress.phase_elapsed_ms = Date.now() - report.progress.phase_started_at;
+      report.progress.phase_ms.supervised_cleanup = Date.now() - cleanupStarted;
+      writeSweepProgress(reportFile, report);
+      qualifying = report.complete === true && !report.diagnostic && !report.cleanup_error && (opts.keep || report.progress.cleanup_complete);
+      if (opts.json) console.log(JSON.stringify(report, null, 2));
+    }
+  }
+  if (failed) throw new Error(failed);
+  return qualifying ? 0 : 1;
+}
+
 if (import.meta.main) {
-  main().then((code) => { if (!interrupted) process.exit(code); }, (error) => {
+  (process.env.MANDIBLE_SWEEP_WORKER === "1" ? main() : supervisedMain()).then((code) => { if (!interrupted) process.exit(code); }, (error) => {
     log(error instanceof Error ? error.stack ?? error.message : String(error));
     if (!interrupted) process.exit(2);
   });
