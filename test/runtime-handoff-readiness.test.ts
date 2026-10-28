@@ -11,7 +11,7 @@ import { afterEach, expect, it, vi } from "vitest";
 vi.mock("../src/runtime-handoff-proof.js", async (original) => ({
   ...await original<typeof import("../src/runtime-handoff-proof.js")>(),
   // The fixture has no signed publication; the proof has its own tests.
-  verifyRuntimeHandoffPublication: () => ({}),
+  verifyRuntimeHandoffAuthority: () => ({}),
 }));
 
 import { awaitHandoffReadiness, handoffProbeTimeout, probeJson } from "../scripts/local-runtime.mjs";
@@ -25,14 +25,42 @@ import { fileRpc, runCli } from "./helpers/cli-process.js";
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.unstubAllEnvs(); });
 
-function inspection(ready: boolean, generation = "merge", backend: { pid: number | null; runs?: number; lastExit?: string } = { pid: 41 }) {
+function inspection(ready: boolean, generation = "merge", backend: { pid: number | null; loaded?: boolean; runs?: number; lastExit?: string } = { pid: 41 }) {
   return {
     status: { dashboard_ready: ready, state: ready ? "running" : "starting", detail: ready ? null : "Backend: The service responded, but Mandible is not ready yet." },
     main: { backend_generation: generation },
     backendJob: { loaded: true, runs: 1, lastExit: "(never exited)", ...backend },
     gatewayJob: { loaded: true, pid: 7, runs: 3, lastExit: "0" },
+    qualifiedProcesses: backend.pid ? { backend: { pid: backend.pid, runs: backend.runs ?? 1 } } : {},
   };
 }
+
+it('does not admit raw launcher PIDs into process continuity or ready health', async () => {
+  let time = 0;
+  const unqualified = (pid: number) => ({ ...inspection(true, 'merge', { pid }), qualifiedProcesses: {},
+    nativeOwnershipPending: { message: 'Native launcher ownership is unconfirmed.' } });
+  const answers = [unqualified(41), unqualified(42), inspection(true, 'merge', { pid: 42 })];
+  const inspect = vi.fn(async () => answers.shift()!);
+  const result = await awaitHandoffReadiness('merge', 10000, inspect, { now: () => time, wait: async ms => { time += ms; } });
+  expect(result).toMatchObject({ outcome: 'confirmed', error: null, exited: false });
+  expect(inspect).toHaveBeenCalledTimes(3);
+});
+
+it.each([true, false])('keeps startup pending before the first PID is observed (loaded=%s)', async loaded => {
+  let time = 100;
+  const answers = [inspection(false, 'merge', { loaded, pid: null }), inspection(false), inspection(true)];
+  const inspect = vi.fn(async () => answers.shift()!);
+  const expectedProcesses = {};
+  await expect(awaitHandoffReadiness('merge', 5000, inspect, { expectedProcesses, now: () => time, wait: async milliseconds => { time += milliseconds; } }))
+    .resolves.toMatchObject({ outcome: 'confirmed', exited: false, error: null });
+  expect(inspect).toHaveBeenCalledTimes(3);
+  expect(expectedProcesses).toEqual({});
+  const gone = [inspection(false, 'merge', { loaded, pid: null }), inspection(false), inspection(false, 'merge', { pid: null })];
+  await expect(awaitHandoffReadiness('merge', 10000, async () => gone.shift()!, { now: () => time, wait: async milliseconds => { time += milliseconds; } }))
+    .resolves.toMatchObject({ outcome: 'failed', exited: true, error: expect.stringContaining('process exited') });
+  await expect(awaitHandoffReadiness('merge', 10000, async () => inspection(false, 'merge', { loaded, pid: null, lastExit: '1' })))
+    .resolves.toMatchObject({ outcome: 'failed', exited: true, error: expect.stringContaining('last exit code 1') });
+});
 
 it("waits for a busy daemon's answer and for readiness, bounded by the handoff deadline", async () => {
   // Busy for longer than the 900 ms status probe, as a blocked event loop is.
@@ -147,7 +175,7 @@ it("validates only unsettled handoff journals and revisits a settled one only af
     db.prepare(`INSERT INTO auth_requests (id, type, command, title, status, exit_code, repo, created_at, updated_at, expires_at)
       VALUES (?, 'merge', 'mandible auth merge feature/x --into main', 'Self update', 'completed', 0, 'mandible', ?, ?, ?)`).run(id, now, now, now + 60_000);
     db.prepare(`INSERT INTO auth_hook_executions (id, auth_request_id, hook_id, command, command_digest, state, attempts, exit_code, output, created_at, updated_at)
-      VALUES (?, ?, 'builtin-mandible-rebuild', 'rebuild', ?, 'complete', 1, 0, ?, ?, ?)`).run(`${id}-run`, id, "c".repeat(64), `MANDIBLE_RUNTIME_HANDOFF_ACCEPTED:${"a".repeat(64)}`, now, now);
+      VALUES (?, ?, 'builtin-mandible-rebuild', 'rebuild', ?, 'complete', 1, 0, ?, ?, ?)`).run(`${id}-run`, id, "c".repeat(64), `MANDIBLE_RUNTIME_HANDOFF_ACCEPTED:${"b".repeat(64)}`, now, now);
   }
   const phaseReads: string[] = [];
   const validatedReads: string[] = [];
@@ -165,12 +193,12 @@ it("validates only unsettled handoff journals and revisits a settled one only af
   const sweep = () => hooks.reconcileRuntimeHandoffs(async () => { throw new Error("nothing to adopt"); }, () => {});
 
   await sweep();
-  expect(validatedReads).toEqual(["unacknowledged"]);
+  expect(validatedReads).toEqual(["old-1", "old-2", "old-3", "unacknowledged", "unacknowledged"]);
   expect(phases.get("unacknowledged")).toBe("acknowledged");
 
   phaseReads.length = 0; validatedReads.length = 0;
   await sweep();
-  expect(phaseReads).toEqual(["unacknowledged"]);
+  expect(phaseReads).toEqual([]);
   expect(validatedReads).toEqual([]);
 
   phaseReads.length = 0;
@@ -241,14 +269,15 @@ function terminalHandoff(id: string, output: string, journal: Partial<RuntimeHan
     binding: { requestId: id, executionId: `${id}-run`, hookId: "builtin-mandible-rebuild", commandDigest: "c".repeat(64) } } as RuntimeHandoffJournal };
 }
 
-it("retries a completed handoff whose receipt probe failed transiently, and acknowledges it on the next sweep", async () => {
-  const { db, journal } = terminalHandoff("transient", `MANDIBLE_RUNTIME_HANDOFF_ACCEPTED:${"a".repeat(64)}`, { phase: "complete" });
-  let probes = 0;
+it("retries exact updater fencing after acceptance without repeating the runtime probe", async () => {
+  const { db, journal } = terminalHandoff("transient", `MANDIBLE_RUNTIME_HANDOFF_ACCEPTED:${"b".repeat(64)}`, { phase: "complete" });
+  let acknowledgements = 0;
+  const verify = vi.fn(async () => {});
   const hooks = new AuthHookManager(db, { handoffClient: {
     readRuntimeHandoffPhase: () => journal.phase,
     readRuntimeHandoff: () => journal,
-    verifyRuntimeHandoffReceipt: async () => { probes += 1; if (probes === 1) throw new Error("Runtime handoff handoff-verify failed: health exceeded 900 ms"); },
-    acknowledgeRuntimeHandoff: async () => { journal.phase = "acknowledged"; },
+    verifyRuntimeHandoffReceipt: verify,
+    acknowledgeRuntimeHandoff: async () => { acknowledgements += 1; if (acknowledgements === 1) throw new Error("Exact updater fencing is temporarily unavailable"); journal.phase = "acknowledged"; },
     retireFailedRuntimeHandoff: () => undefined,
   } });
   const stuck = vi.fn();
@@ -258,6 +287,7 @@ it("retries a completed handoff whose receipt probe failed transiently, and ackn
   await sweep();
   expect(journal.phase).toBe("complete");
   expect(stuck).toHaveBeenCalledTimes(1);
+  expect(verify).not.toHaveBeenCalled();
   await sweep();
   expect(journal.phase).toBe("acknowledged");
   await sweep();
@@ -306,7 +336,7 @@ it("keeps retrying a recovery that cannot be finished, reporting it once per dis
 });
 
 it("keeps a completed handoff whose journal is briefly missing unsettled until it can be acknowledged", async () => {
-  const { db, journal } = terminalHandoff("missing", `MANDIBLE_RUNTIME_HANDOFF_ACCEPTED:${"a".repeat(64)}`, { phase: "complete" });
+  const { db, journal } = terminalHandoff("missing", `MANDIBLE_RUNTIME_HANDOFF_ACCEPTED:${"b".repeat(64)}`, { phase: "complete" });
   let present = false;
   const hooks = new AuthHookManager(db, { handoffClient: {
     readRuntimeHandoffPhase: () => present ? journal.phase : undefined,
@@ -337,13 +367,13 @@ const incident = (db: ReturnType<typeof createMigratedDb>, task: string) =>
   db.prepare("SELECT resolved_at FROM operational_incidents WHERE task = ?").get(task) as { resolved_at: number | null } | undefined;
 
 it("raises a daemon incident for a stuck handoff and resolves it once the handoff settles", async () => {
-  const { db, journal } = terminalHandoff("resolving", `MANDIBLE_RUNTIME_HANDOFF_ACCEPTED:${"a".repeat(64)}`, { phase: "complete" });
-  let probes = 0;
+  const { db, journal } = terminalHandoff("resolving", `MANDIBLE_RUNTIME_HANDOFF_ACCEPTED:${"b".repeat(64)}`, { phase: "complete" });
+  let acknowledgements = 0;
   const queue = queueFor(db, new AuthHookManager(db, { handoffClient: {
     readRuntimeHandoffPhase: () => journal.phase,
     readRuntimeHandoff: () => journal,
-    verifyRuntimeHandoffReceipt: async () => { probes += 1; if (probes === 1) throw new Error("Runtime handoff handoff-verify failed"); },
-    acknowledgeRuntimeHandoff: async () => { journal.phase = "acknowledged"; },
+    verifyRuntimeHandoffReceipt: async () => { throw new Error("Accepted runtime is not probed again"); },
+    acknowledgeRuntimeHandoff: async () => { acknowledgements += 1; if (acknowledgements === 1) throw new Error("Exact updater fencing is temporarily unavailable"); journal.phase = "acknowledged"; },
     retireFailedRuntimeHandoff: () => undefined,
   } }));
 

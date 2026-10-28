@@ -11,7 +11,7 @@ import { DOMAIN_EVENTS } from "./contracts.js";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { childOutput } from "./child-observation.js";
-import { accessSync, constants as fsConstants, existsSync, realpathSync, readFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, realpathSync, readFileSync, watch, type FSWatcher } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import SqliteDatabase from "./sqlite.js";
@@ -66,8 +66,9 @@ import {
 } from "./auth-change-message.js";
 import type { AuthHook, RebuildFailure } from "./types.js";
 import type { RuntimePublicationBinding } from "./runtime-handoff-proof.js";
-import { validateRuntimeSource, verifyRuntimeHandoffPublication } from "./runtime-handoff-proof.js";
+import { validateRuntimeSource, verifyRuntimeHandoffAuthority } from "./runtime-handoff-proof.js";
 import { runtimeHandoffLockRefusal, type RuntimeHandoffLock } from "../scripts/runtime-handoff-lock.mjs";
+import { runtimeHandoffDisposition } from "../scripts/runtime-observation.mjs";
 import { authRequestChangesBuildInputs } from "./runtime-build-scope.js";
 import {
   CandidateAcceptanceRuns,
@@ -81,7 +82,7 @@ import {
   type CandidateAcceptanceInput,
 } from "./candidate-acceptance.js";
 import type { AuthPublicationBlocker, CandidateAcceptanceProjection, ProtectedBaseAudit } from "./contracts.js";
-import { AUTH_HOOK_ENV_ALLOWLIST, AuthHookManager, authHookPath, formatHookExecutionResult, MANDIBLE_REBUILD_HOOK_ID } from "./auth-hooks.js";
+import { AUTH_HOOK_ENV_ALLOWLIST, AuthHookManager, authHookPath, formatHookExecutionResult, MANDIBLE_REBUILD_HOOK_ID, type RuntimeVerificationResult } from "./auth-hooks.js";
 import { getMandibleHome, getUserHome } from "./platform-paths.js";
 import {
   describeRecomputeRefusal,
@@ -140,6 +141,7 @@ import { applyApprovedCustodyTransfer } from "./work-unit-custody.js";
 import { raiseDaemonIncident, resolveDaemonIncident } from "./operational-incidents.js";
 import { promoteBriefingGroupProposal } from "./feedback/briefing-groups.js";
 import { appendAuthLifecycleEvent, listAuthLifecycleEvents, authRequestInitiatingOrigin } from "./auth-lifecycle.js";
+import { acceptedReleaseSelection, bindAcceptedRelease } from "./accepted-release-selection.js";
 import { authPublicationSnapshot, authRequestSnapshot, authSnapshotDigest } from "./auth-request-snapshot.js";
 import type {
   AuthConvergence,
@@ -614,6 +616,9 @@ export class AuthQueue {
   // post-merge finalizers (Stage 3) off the event loop after auth:resolved.
   private readonly finalizerQueue: FinalizerQueue;
   private expiryTimer: ReturnType<typeof setInterval> | null = null;
+  private handoffCompletionWatcher: FSWatcher | null = null;
+  private handoffCompletionPending = false;
+  private handoffCompletionWakeupUntil = 0;
   private disposed = false;
   // Bug: 4db692a — tracks whether the daemon is about to restart after a
   // self-merge. Exposed via isRebuilding so the health endpoint can include
@@ -667,7 +672,8 @@ export class AuthQueue {
     this.restartFn = options.restartFn ?? (() => process.exit(0));
     this.restartAvailability = options.restartAvailability;
     this.acceptanceRuns = options.candidateAcceptanceExecutor
-      ? new CandidateAcceptanceRuns(this.db, options.candidateAcceptanceExecutor, this.now, (requestId) => this.candidateAcceptanceChanged(requestId), () => this.runtimeHandoffLock() !== null)
+      ? new CandidateAcceptanceRuns(this.db, options.candidateAcceptanceExecutor, this.now, (requestId) => this.candidateAcceptanceChanged(requestId),
+        (requestId, candidate) => this.prepareAcceptanceFinalization(requestId, candidate))
       : null;
     // Before anything can start a run: rows a previous daemon left running were interrupted.
     this.acceptanceRuns?.start();
@@ -691,6 +697,7 @@ export class AuthQueue {
   }
 
   private async startRecovery(): Promise<void> {
+    this.watchRuntimeHandoffCompletion();
     await this.reconcileRuntimeHandoffs();
     if (this.disposed || !this.isDbOpen()) return;
     (await this.recoverSelfMergeShutdown());
@@ -703,65 +710,89 @@ export class AuthQueue {
 
   private async reconcileRuntimeHandoffs(): Promise<void> {
     if (typeof this.hookManager.reconcileRuntimeHandoffs !== "function") return;
-    const ids = await this.hookManager.reconcileRuntimeHandoffs(
-      async (binding, proof) => (await this.adoptRuntimePublication(binding, proof)),
-      async (id, handoffError) => {
-        // The independent handoff that owned this rebuild has now failed.
+    try {
+      const ids = await this.hookManager.reconcileRuntimeHandoffs(
+        async (binding, proof) => (await this.adoptRuntimePublication(binding, proof)),
+        async (id, handoffError) => {
+          // The independent handoff that owned this rebuild has now failed.
+          const request = this.getRequestById(id);
+          if (request?.repo !== "mandible") return;
+          (await this.settleConvergence(request));
+          this.failRebuild(request, handoffError);
+        },
+        (id, error) => {
+          // Retained update state is not a fault of the observing daemon.
+          // Keep its incident visible while reconciliation retries.
+          authLog("warn", "auth_runtime_handoff_reconcile_stuck", { subsystem: "auth", auth_request_id: id, error });
+          try { this.handoffIncidents.set(id, raiseDaemonIncident(this.db, { task: `runtime-handoff-reconcile/${id}`, exitClass: "runner" }).incident_id); }
+          catch (incidentError) { authLog("error", "auth_runtime_handoff_incident_failed", { subsystem: "auth", auth_request_id: id, error: errorMessage(incidentError) ?? String(incidentError) }); }
+        },
+        (id) => {
+          authLog("info", "auth_runtime_handoff_reconcile_settled", { subsystem: "auth", auth_request_id: id });
+          const incidentId = this.handoffIncidents.get(id);
+          this.handoffIncidents.delete(id);
+          try { if (incidentId) resolveDaemonIncident(this.db, { incidentId, task: `runtime-handoff-reconcile/${id}` }); }
+          catch (incidentError) { authLog("error", "auth_runtime_handoff_incident_resolve_failed", { subsystem: "auth", auth_request_id: id, error: errorMessage(incidentError) ?? String(incidentError) }); }
+        },
+      );
+      for (const id of ids) {
         const request = this.getRequestById(id);
-        if (request?.repo !== "mandible") return;
-        (await this.settleConvergence(request));
-        this.failRebuild(request, handoffError);
-      },
-      (id, error) => {
-        // Retained update state is not a fault of the observing daemon.
-        // Keep its incident visible while reconciliation retries.
-        authLog("warn", "auth_runtime_handoff_reconcile_stuck", { subsystem: "auth", auth_request_id: id, error });
-        try { this.handoffIncidents.set(id, raiseDaemonIncident(this.db, { task: `runtime-handoff-reconcile/${id}`, exitClass: "runner" }).incident_id); }
-        catch (incidentError) { authLog("error", "auth_runtime_handoff_incident_failed", { subsystem: "auth", auth_request_id: id, error: errorMessage(incidentError) ?? String(incidentError) }); }
-      },
-      (id) => {
-        authLog("info", "auth_runtime_handoff_reconcile_settled", { subsystem: "auth", auth_request_id: id });
-        const incidentId = this.handoffIncidents.get(id);
-        this.handoffIncidents.delete(id);
-        try { if (incidentId) resolveDaemonIncident(this.db, { incidentId, task: `runtime-handoff-reconcile/${id}` }); }
-        catch (incidentError) { authLog("error", "auth_runtime_handoff_incident_resolve_failed", { subsystem: "auth", auth_request_id: id, error: errorMessage(incidentError) ?? String(incidentError) }); }
-      },
-    );
-    for (const id of ids) {
-      const request = this.getRequestById(id);
-      if (request && !(await this.successfulMergeEvidenceFailure(request))) {
-        (await this.finalizeSuccessfulMerge(request));
-        await this.afterConvergenceHook(request);
+        if (request && !(await this.successfulMergeEvidenceFailure(request))) {
+          (await this.finalizeSuccessfulMerge(request));
+          await this.afterConvergenceHook(request);
+        }
       }
+      if (ids.length > 0) await this.refreshPendingCandidates();
+    } finally { this.publishRuntimeVerificationChanges(); }
+  }
+
+  private lastRuntimeVerificationStatus: ReturnType<AuthHookManager['runtimeVerificationStatus']> = null;
+
+  private publishRuntimeVerificationChanges(): void {
+    if (typeof this.hookManager.runtimeVerificationStatus !== 'function') return;
+    const current = this.hookManager.runtimeVerificationStatus();
+    const previous = this.lastRuntimeVerificationStatus;
+    if (JSON.stringify(current) === JSON.stringify(previous)) return;
+    this.lastRuntimeVerificationStatus = current;
+    for (const id of new Set([previous?.requestId, current?.requestId])) {
+      if (!id) continue;
+      const request = this.getRequestById(id);
+      if (request) this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: { ...request, convergence: this.convergenceForRequest(id) } } });
     }
-    if (ids.length > 0 && !this.runtimeHandoffLock()) await this.refreshPendingCandidates();
   }
 
   /** Only an exact verified first-upgrade receipt may restore legacy cleared candidate fields. */
-  private async adoptRuntimePublication(binding: RuntimePublicationBinding, proof: Awaited<ReturnType<typeof verifyRuntimeHandoffPublication>>): Promise<() => void> {
+  private async adoptRuntimePublication(binding: RuntimePublicationBinding, proof: Awaited<ReturnType<typeof verifyRuntimeHandoffAuthority>>): Promise<() => void> {
     const request = this.requireRequest(binding.requestId);
     const observed = this.observationToken(request.id, request);
-    (await verifyRuntimeHandoffPublication(this.db, binding));
-    if (request.status === 'completed' && request.exit_code === 0) {
-      if (request.merge_preflight_base_sha !== proof.mergeBase || request.merge_head_sha !== proof.mergeHead || request.merge_candidate_tree_sha !== proof.frozenCandidate.tree || (await this.successfulMergeEvidenceFailure(request))) throw new Error('Completed publication does not exactly match retained runtime proof.');
-      return () => this.assertObservation(request.id, observed);
-    }
+    const reference = proof.publicationEvidence;
+    const evidence = getAttributionEvidence(this.db, reference.evidenceId);
+    if (!evidence || evidence.evidence_method !== 'credential_signature' || evidence.details.runtime_publication_digest !== reference.digest
+        || evidence.details.commit_sha !== proof.mergeCommit || evidence.details.auth_request_id !== request.id
+        || evidence.details.verified !== true || evidence.details.publication_verified !== true
+        || evidence.credential_id !== proof.frozenCandidate.signerCredentialId) throw new Error('Frozen publication evidence differs before adoption.');
+    const guard = () => {
+      this.assertObservation(request.id, observed);
+      this.assertPublicationAuthority(this.requireRequest(request.id), evidence.credential_id);
+    };
+    if (request.status === 'completed' && request.exit_code === 0 && request.execution_evidence_id === reference.evidenceId
+        && request.merge_preflight_base_sha === proof.mergeBase && request.merge_head_sha === proof.mergeHead
+        && request.merge_candidate_tree_sha === proof.frozenCandidate.tree) return guard;
     const priorSnapshot = authRequestSnapshot(this.db, request.id);
     const prepared = extractAtomicMergeState(request.output).prepared;
     const output = prepared ? request.output : `${request.output}\nMANDIBLE_MERGE_PREPARED ${JSON.stringify({ merge_sha: proof.mergeCommit, base_sha: proof.mergeBase, head_sha: proof.mergeHead, tree_sha: proof.frozenCandidate.tree })}\nMANDIBLE_MERGE_APPLIED ${JSON.stringify({ merge_sha: proof.mergeCommit, base_sha: proof.mergeBase })}`;
-    const commitEvidence = await this.prepareSuccessfulSignatureEvidence({ ...request, status: "completed", exit_code: 0, output, merge_preflight_base_sha: proof.mergeBase, merge_head_sha: proof.mergeHead, merge_candidate_tree_sha: proof.frozenCandidate.tree });
     return () => {
-      this.assertObservation(request.id, observed);
-    this.db.prepare("UPDATE auth_requests SET status = 'completed', exit_code = 0, merge_preflight_base_sha = ?, merge_head_sha = ?, merge_candidate_tree_sha = ?, merge_atomic_enabled = 1, output = ?, resolved_at = COALESCE(resolved_at, ?), updated_at = ? WHERE id = ?").run(
-      proof.mergeBase, proof.mergeHead, proof.frozenCandidate.tree, output, this.now(), this.now(), request.id,
-    );
-    const evidenced = commitEvidence(this.requireRequest(request.id));
-    appendAuthLifecycleEvent(this.db, {
-      requestId: request.id, eventType: request.status === "completed" ? "revised" : "completed", priorStatus: request.status, nextStatus: "completed", priorSnapshot,
-      actor: { user_id: systemAction().user_id, evidence_method: "execution_evidence", evidence_id: evidenced.execution_evidence_id, authority_path: "system" },
-      reason: "Adopted exact signed publication and externally verified first-upgrade runtime receipt; no merge replay.", occurredAt: this.now(),
-    });
-      };
+      guard();
+      const changed = this.db.prepare("UPDATE auth_requests SET status = 'completed', exit_code = 0, merge_preflight_base_sha = ?, merge_head_sha = ?, merge_candidate_tree_sha = ?, merge_atomic_enabled = 1, output = ?, execution_evidence_id = ?, resolved_at = COALESCE(resolved_at, ?), updated_at = ? WHERE id = ? AND execution_evidence_id IS ?").run(
+        proof.mergeBase, proof.mergeHead, proof.frozenCandidate.tree, output, reference.evidenceId, this.now(), this.now(), request.id, request.execution_evidence_id,
+      );
+      if (changed.changes !== 1) throw new Error('Publication evidence pointer changed before adoption.');
+      appendAuthLifecycleEvent(this.db, {
+        requestId: request.id, eventType: request.status === "completed" ? "revised" : "completed", priorStatus: request.status, nextStatus: "completed", priorSnapshot,
+        actor: { user_id: systemAction().user_id, evidence_method: "execution_evidence", evidence_id: reference.evidenceId, authority_path: "system" },
+        reason: "Adopted exact signed publication and externally verified first-upgrade runtime receipt; no merge replay.", occurredAt: this.now(),
+      });
+    };
   }
 
   /** Bug: 4db692a — whether the daemon is shutting down for a self-merge rebuild. */
@@ -855,11 +886,8 @@ export class AuthQueue {
     const acceptance = this.candidateAcceptanceForRequest(request)!;
     if (acceptance.state === "running") return acceptance;
     if (acceptance.state === "passed") return acceptance;
-    const lock = this.runtimeHandoffLock();
-    const blocker = lock ? { message: runtimeHandoffLockRefusal(lock) } : null;
-    if (blocker) throw new AuthQueueError("merge_check_failed", blocker.message);
     authLog("info", "auth_candidate_acceptance_started", { subsystem: "auth", auth_request_id: request.id, pin_sha: candidate.pin_sha });
-    runs.enqueue(request.id, candidate, () => this.acceptanceInput(request, candidate.pin_sha));
+    runs.enqueue(request.id, candidate, () => this.acceptanceInput(this.requireRequest(request.id), candidate.pin_sha));
     return this.candidateAcceptanceForRequest(request)!;
   }
 
@@ -873,6 +901,33 @@ export class AuthQueue {
     for (const key of AUTH_HOOK_ENV_ALLOWLIST) if (process.env[key] !== undefined) env[key] = process.env[key];
     env.HOME = home;
     return { repoRoot: request.cwd!, pinSha, projectId: project.project.id, workUnitId: request.custody_work_unit_id, env };
+  }
+
+  private prepareAcceptanceFinalization(requestId: string, candidate: CandidateAcceptanceCandidate): (recordId: string) => void {
+    const request = this.requireRequest(requestId);
+    const assertCandidate = () => {
+      const current = this.requireRequest(requestId);
+      const exact = this.acceptanceCandidate(current);
+      if (current.status !== 'pending' || !this.candidateAcceptanceApplies(current) || !exact
+          || Object.keys(candidate).some(key => candidate[key as keyof CandidateAcceptanceCandidate] !== exact[key as keyof CandidateAcceptanceCandidate])) {
+        throw new Error('Acceptance no longer belongs to the pending exact candidate.');
+      }
+      const custody = current.custody_work_unit_id ? this.db.prepare(
+        'SELECT auth_request_id, state, ledger_issue_id FROM work_units WHERE id = ?',
+      ).get(current.custody_work_unit_id) as { auth_request_id: string; state: string; ledger_issue_id: string | null } | undefined : undefined;
+      if (!custody || custody.auth_request_id !== current.id || custody.state !== 'committed' || !custody.ledger_issue_id) {
+        throw new Error('Acceptance requires the request-bound committed delivery work unit and canonical ledger issue.');
+      }
+      return { current, targetIssue: custody.ledger_issue_id };
+    };
+    assertCandidate();
+    this.currentLifecycleSnapshot(requestId);
+    const observed = this.observationToken(requestId, request);
+    return recordId => {
+      this.assertObservation(requestId, observed);
+      const { current, targetIssue } = assertCandidate();
+      bindAcceptedRelease(this.db, current, recordId, targetIssue, this.now());
+    };
   }
 
   private candidateAcceptanceChanged(requestId: string): void {
@@ -891,13 +946,13 @@ export class AuthQueue {
    * Issue 7d83fe5 — on the idle tick, re-pin each pending self-update request
    * whose candidate the base moved past, which starts its acceptance. At
    * startup, also start acceptance of exact candidates with no result or an
-   * interrupted run. Failed verdicts require an explicit retry. Nothing launches while the runtime handoff lock is held.
+   * interrupted run. Failed verdicts require an explicit retry.
    * Each request is handled once merges on its repository have settled.
    */
   async refreshPendingCandidates(startup = false): Promise<void> {
     const finishObservation = this.beginObservation();
     try {
-      if (!this.acceptanceRuns || this.runtimeHandoffLock()) return;
+      if (!this.acceptanceRuns) return;
       this.acceptanceRuns.resume();
       const rows = this.db.prepare("SELECT id FROM auth_requests WHERE status = 'pending' ORDER BY created_at").all() as Array<{ id: string }>;
       for (const { id } of rows) {
@@ -965,7 +1020,7 @@ export class AuthQueue {
         });
       }
       return retirement;
-    } finally { finishObservation(); }
+    } finally { this.publishRuntimeVerificationChanges(); finishObservation(); }
   }
 
   /** Open the rebuild window that the UI splash and restart-availability track. */
@@ -1031,6 +1086,38 @@ export class AuthQueue {
     this.expiryTimer.unref();
   }
 
+  private watchRuntimeHandoffCompletion(): void {
+    const owner = this.runtimeHandoffLock();
+    if (!owner || this.handoffCompletionWatcher) return;
+    const directory = join(getMandibleHome(), 'config', 'local-sessions', 'handoff', `${owner.requestId}-${owner.executionId}`);
+    try {
+      this.handoffCompletionWatcher = watch(directory, { persistent: false }, (_event, name) => {
+        if (this.disposed || !['journal.json', '.verification.lock'].includes(name?.toString() ?? '')) return;
+        // This is only a wakeup hint. Reconciliation validates the binding,
+        // publication, package, and live receipt under its observation lease.
+        try {
+          const journal = JSON.parse(readFileSync(join(directory, 'journal.json'), 'utf8'));
+          const current = runtimeHandoffDisposition(journal);
+          if (current ? current.mutation === 'fenced' && current.cleanup.state === 'complete' : ['acknowledged', 'retired'].includes(journal.phase)) {
+            this.handoffCompletionWatcher?.close(); this.handoffCompletionWatcher = null;
+            return;
+          }
+          if (current ? current.runtime !== 'complete' : journal.phase !== 'complete') return;
+        } catch { return; } // Atomic replacement may precede the next rename event.
+        this.handoffCompletionWakeupUntil ||= Date.now() + 60_000;
+        if (Date.now() >= this.handoffCompletionWakeupUntil) return;
+        this.handoffCompletionPending = true;
+        void this.convergeWhileIdle();
+      });
+      this.handoffCompletionWatcher.on('error', error => {
+        authLog('warn', 'auth_handoff_completion_watch_failed', { subsystem: 'auth', error: errorMessage(error) });
+        this.handoffCompletionWatcher?.close(); this.handoffCompletionWatcher = null;
+      });
+    } catch (error) {
+      authLog('warn', 'auth_handoff_completion_watch_failed', { subsystem: 'auth', error: errorMessage(error) });
+    }
+  }
+
   /** Daemon incidents this queue raised and resolves once their condition clears. */
   private readonly handoffIncidents = new Map<string, string>();
   private idleConvergenceIncident: string | null = null;
@@ -1059,6 +1146,7 @@ export class AuthQueue {
     for (const controller of this.operatorProofInFlight.values()) controller.abort();
     this.operatorProofs.clear();
     this.stopExpiryTimer();
+    this.handoffCompletionWatcher?.close(); this.handoffCompletionWatcher = null;
     await Promise.allSettled([
       this.startupRecovery, this.expiryReconciliation, ...this.phaseRuns, ...this.observations, ...this.queuedAdmissions,
       this.finalizerQueue.drain(), this.acceptanceRuns?.stop(),
@@ -3383,6 +3471,11 @@ export class AuthQueue {
     const shownBaseAudit = loadProtectedBaseAudit(this.db, request.id);
     this.assertPublication(request);
     this.enforceDependencyReadiness(request);
+    if (isAuthMergeCommand(request) && this.hookManager.selfUpdatesRuntime(request.repo)) {
+      const predecessor = await this.hookManager.prepareRuntimePublication({ kind: 'successor_admission', requestId: request.id, pid: process.pid });
+      this.assertObservation(request.id, observed);
+      if (predecessor) throw new AuthQueueError("merge_check_failed", `${predecessor.message} No protected state changed.`);
+    }
     const lock = isAuthMergeCommand(request) && this.hookManager.selfUpdatesRuntime(request.repo) ? this.runtimeHandoffLock() : null;
     if (lock) throw new AuthQueueError("merge_check_failed", `${runtimeHandoffLockRefusal(lock)} No protected state changed.`);
     // Bug: 58d93ee — guard against null/empty command before spawning execution
@@ -3421,6 +3514,10 @@ export class AuthQueue {
     const acceptance = this.candidateAcceptanceForRequest(request);
     const refusal = acceptance && candidateAcceptanceRefusal(acceptance, request.id);
     if (refusal) throw new AuthQueueError("merge_check_failed", `${refusal} No protected state changed.`);
+    if (acceptance) {
+      try { acceptedReleaseSelection(this.db, request, listAuthRequestActions(this.db, request.id), false); }
+      catch (error) { throw new AuthQueueError('merge_check_failed', `Accepted package selection is not ready: ${error instanceof Error ? error.message : String(error)}`); }
+    }
     return request;
   }
 
@@ -5286,7 +5383,9 @@ export class AuthQueue {
     // Park the request now rather than chaining an execution that the imminent
     // process.exit would kill mid-merge.
     const admitted = this.executionToken(request.id);
-    const publicationBlocker = await this.publicationBlockerForRequest(request);
+    const predecessor = isAuthMergeCommand(request) && this.hookManager.selfUpdatesRuntime(request.repo)
+      ? await this.hookManager.prepareRuntimePublication({ kind: 'successor_execution', requestId: request.id, pid: process.pid }) : null;
+    const publicationBlocker = predecessor ?? await this.publicationBlockerForRequest(request);
     if (!this.executionIsCurrent(request.id, admitted)) {
       if (settleClearance) await settleClearance();
       return;
@@ -5321,7 +5420,9 @@ export class AuthQueue {
               // Bug: 681739e — a self-merge restart may have been scheduled after
               // this execution was chained but before it reached the head of the
               // queue. Re-check admission here so it parks instead of starting.
-              const queuedPublicationBlocker = await this.publicationBlockerForRequest(request);
+              const predecessor = isAuthMergeCommand(request) && this.hookManager.selfUpdatesRuntime(request.repo)
+                ? await this.hookManager.prepareRuntimePublication({ kind: 'successor_execution', requestId: request.id, pid: process.pid }) : null;
+              const queuedPublicationBlocker = predecessor ?? await this.publicationBlockerForRequest(request);
               if (!this.executionIsCurrent(request.id, admitted)) return;
               if (this._rebuilding || queuedPublicationBlocker) {
                 (await this.parkExecutionForRestart(request, queuedPublicationBlocker?.message));
@@ -5781,9 +5882,12 @@ export class AuthQueue {
       if (this.convergenceSweepInFlight) return;
       this.convergenceSweepInFlight = true;
       try {
-        await this.reconcileRuntimeHandoffs();
-        await this.runConvergenceSweep(limit);
-        await this.resumeDeferredLedgerActions();
+        do {
+          this.handoffCompletionPending = false;
+          await this.reconcileRuntimeHandoffs();
+          await this.runConvergenceSweep(limit);
+          await this.resumeDeferredLedgerActions();
+        } while (this.handoffCompletionPending && !this.disposed && this.isDbOpen());
       } finally {
         this.convergenceSweepInFlight = false;
       }
@@ -5856,7 +5960,7 @@ export class AuthQueue {
    * Operator-initiated convergence retry: grant one more attempt to the failed
    * hooks of a merged request and run them. Never re-runs the merge.
    */
-  async retryHookConvergence(requestId: string, hookId?: string, recovery?: { mode: "verify-current"; actor: AuthLifecycleActor }): Promise<AuthConvergence> {
+  async retryHookConvergence(requestId: string, hookId?: string, recovery?: { mode: "verify-current"; actor: AuthLifecycleActor }): Promise<AuthConvergence & { verification?: RuntimeVerificationResult }> {
     const finishObservation = this.beginObservation();
     try {
       this.requireExternalEffects("Hook convergence retry");
@@ -5879,16 +5983,18 @@ export class AuthQueue {
           const owner = this.requestCustodyForActor(current, recovery.actor);
           if (JSON.stringify(authRequestSnapshot(this.db, request.id)) !== snapshot || owner?.custody_generation !== generation) throw new AuthQueueError('invalid_status', 'Request or custody changed during recovery observation.');
         };
+        let verification: RuntimeVerificationResult;
         try {
-          await this.hookManager.verifyCurrentRuntimeHandoff(request, recovery.actor, guard);
+          verification = await this.hookManager.verifyCurrentRuntimeHandoff(request, recovery.actor, guard);
         } catch (error) {
           if (error instanceof AuthQueueError) throw error;
           throw new AuthQueueError("recovery_refused", `Verification-only recovery refused: ${error instanceof Error ? error.message : String(error)}`);
         }
+        if (verification.outcome === 'pending') return { ...this.convergenceForRequest(request.id), verification };
         // Recovery settles this request only. Existing merge finalizers retain
         // their normal daemon lifecycle; a one-shot must not enqueue global work.
         await this.finalizerQueue.drain();
-        return (await this.afterConvergenceHook(this.requireRequest(request.id)));
+        return { ...await this.afterConvergenceHook(this.requireRequest(request.id)), verification };
       }
       if (this.hasPlannedRuntimeRebuild(request)) this.beginRebuildWindow(request.id);
       this.hookManager.grantRetry(request.id, hookId);
@@ -5901,7 +6007,7 @@ export class AuthQueue {
         });
       });
       return (await this.afterConvergenceHook(this.getRequestById(request.id) ?? request));
-    } finally { finishObservation(); }
+    } finally { this.publishRuntimeVerificationChanges(); finishObservation(); }
   }
 
   /** Exact-id lookup with no prefix resolution and no expiry side effect. */

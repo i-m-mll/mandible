@@ -56,7 +56,7 @@
 .feedback-collections-sidebar__empty {
   margin: 0;
   color: var(--text-muted);
-  font-size: var(--text-sm);
+  font-size: calc(var(--text-sm) + var(--chrome-text-increment, 0px));
 }
 
 
@@ -687,14 +687,6 @@
   opacity: 1;
 }
 
-.briefing-document__change-navigation svg {
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.8;
-}
-
 .briefing-markdown__entity::after,
 .briefing-directive--owner::after {
   position: absolute;
@@ -727,16 +719,11 @@
   place-items: center;
 }
 
-.briefing-markdown__action-rail svg,
-.briefing-directive__clear svg,
-.briefing-directive__variant-controls svg {
+.briefing-markdown__action-rail .app-icon,
+.briefing-directive__clear .app-icon,
+.briefing-directive__variant-controls .app-icon {
   width: 1em;
   height: 1em;
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.8;
 }
 
 .briefing-document__section-intent {
@@ -832,14 +819,9 @@
   min-height: 1.3em;
 }
 
-.briefing-directive__compact-controls svg {
+.briefing-directive__compact-controls .app-icon {
   width: 1em;
   height: 1em;
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.8;
 }
 
 .briefing-directive__choices,
@@ -1032,14 +1014,9 @@ textarea.briefing-directive__text {
   padding: var(--space-2);
 }
 
-.briefing-annotation-history__actions svg {
+.briefing-annotation-history__actions .app-icon {
   width: 1rem;
   height: 1rem;
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.5;
 }
 
 .briefing-annotation-history__meta {

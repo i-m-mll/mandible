@@ -6,8 +6,23 @@ mandible_bun_runtime() {
   local selector="$MANDIBLE_COMMAND_SYNTAX_DIR/../scripts/bun-runtime.sh"
   if [[ -f "$MANDIBLE_COMMAND_SYNTAX_DIR/runtime/scripts/bun-runtime.sh" ]]; then
     selector="$MANDIBLE_COMMAND_SYNTAX_DIR/runtime/scripts/bun-runtime.sh"
+    export MANDIBLE_RUNTIME_STORE="$MANDIBLE_COMMAND_SYNTAX_DIR/runtime/cache"
+    unset MANDIBLE_RELEASE_ROOT MANDIBLE_RUNTIME MANDIBLE_RUNTIME_ARCHIVE
   fi
-  "$selector"
+  "$selector" --bun-only
+}
+mandible_cli_module() {
+  local relative="$1" root
+  if [[ -f "$MANDIBLE_COMMAND_SYNTAX_DIR/runtime/scripts/bun-runtime.sh" ]]; then
+    echo 'This command requires host-local resources; use the installed Mandible command on the host.' >&2
+    return 2
+  fi
+  root="$(cd "$MANDIBLE_COMMAND_SYNTAX_DIR/.." && pwd -P)"
+  if [[ -n "${MANDIBLE_RELEASE_ROOT:-}" || -f "$root/release.json" ]]; then
+    printf '%s/dist/%s.js\n' "${MANDIBLE_RELEASE_ROOT:-$root}" "$relative"
+  else
+    printf '%s/src/%s.ts\n' "$root" "$relative"
+  fi
 }
 mandible_prepare_syntax_runtime() {
   # Native arrays cannot arrive through the environment. An inherited scalar
@@ -23,6 +38,8 @@ mandible_prepare_syntax_runtime() {
   local selector="$MANDIBLE_COMMAND_SYNTAX_DIR/../scripts/bun-runtime.sh" runtime
   if [[ -f "$MANDIBLE_COMMAND_SYNTAX_DIR/runtime/scripts/bun-runtime.sh" ]]; then
     selector="$MANDIBLE_COMMAND_SYNTAX_DIR/runtime/scripts/bun-runtime.sh"
+    export MANDIBLE_RUNTIME_STORE="$MANDIBLE_COMMAND_SYNTAX_DIR/runtime/cache"
+    unset MANDIBLE_RELEASE_ROOT MANDIBLE_RUNTIME MANDIBLE_RUNTIME_ARCHIVE
   fi
   runtime="$("$selector" --bun-only)" || return
   [[ -n "$runtime" ]] || return 1

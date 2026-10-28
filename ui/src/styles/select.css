@@ -4,7 +4,7 @@ select {
   border-radius: 8px;
   background-color: var(--bg-card);
   color: var(--text-primary);
-  font: 13px/1.2 var(--font-sans);
+  font: calc(13px + var(--chrome-text-increment, 0px))/1.2 var(--font-sans);
   letter-spacing: normal;
   text-transform: none;
   cursor: pointer;
@@ -14,14 +14,6 @@ select {
 select:not([multiple]) {
   appearance: none;
   padding: 0 38px 0 10px;
-  background-image:
-    linear-gradient(45deg, transparent 50%, var(--text-muted) 50%),
-    linear-gradient(135deg, var(--text-muted) 50%, transparent 50%);
-  background-position:
-    calc(100% - 21px) 50%,
-    calc(100% - 17px) 50%;
-  background-repeat: no-repeat;
-  background-size: 4px 4px;
 }
 
 select[multiple] {

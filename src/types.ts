@@ -104,6 +104,7 @@ export interface StartupCommitInfo {
 }
 
 export interface HealthResponse {
+  current?: import("./runtime-health-contract.js").CurrentRuntimeHealth;
   status: "ok";
   uptime: number;
   version: string;
@@ -1488,6 +1489,13 @@ export interface AuthConvergenceHookSummary {
 export interface AuthConvergence {
   state: AuthConvergenceState;
   hooks: AuthConvergenceHookSummary[];
+  runtime_verification?: AuthRuntimeVerification;
+}
+
+export interface AuthRuntimeVerification {
+  phase: 'verification-pending';
+  code: string;
+  reason: string;
 }
 
 export interface AuthHookAlert {

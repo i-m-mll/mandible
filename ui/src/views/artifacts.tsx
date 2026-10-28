@@ -1,3 +1,5 @@
+import { NativeSelect } from '../components/shared/NativeSelect';
+import { Icon } from '../components/icons/Icon';
 import { navigateAppHash } from '../app-history';
 import { resolvedArtifactRecord } from "../../../src/artifact-identity.js";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
@@ -875,10 +877,10 @@ function FacetSelect({ label, value, options, onChange }: {
   return (
     <label className="sidebar-search-filter__field">
       <span>{label}</span>
-      <select value={value} onChange={(e) => onChange(e.currentTarget.value)}>
+      <NativeSelect value={value} onChange={(e) => onChange(e.currentTarget.value)}>
         <option value="">Any</option>
         {renderedOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-      </select>
+      </NativeSelect>
     </label>
   );
 }
@@ -1319,7 +1321,7 @@ export function ArtifactDetail({
                 aria-label="Close version history"
                 onClick={onCloseVersionHistory}
               >
-                <CloseIcon />
+                <Icon name="close" />
               </button>
             </div>
             <div className="artifact-detail__list">
@@ -1434,7 +1436,7 @@ export function ArtifactDetail({
           selector={{
             label: 'Artifact version',
             control: (
-              <select
+              <NativeSelect
                 aria-label="Artifact version"
                 value={selectedVersionNo === null ? '' : String(selectedVersionNo)}
                 onChange={(event) => onVersionChange(event.currentTarget.value ? Number(event.currentTarget.value) : null)}
@@ -1445,7 +1447,7 @@ export function ArtifactDetail({
                     v{version.version_no}{version.label ? ` · ${version.label}` : ''}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
             ),
             selectedCanonicalRef: selectedArtifactRef,
             copyLabel: 'Copy selected artifact-version reference',
@@ -1514,6 +1516,7 @@ export function ArtifactDetail({
                       onClick={() => closeActionsAfter(() => setJsonView('formatted'))}
                     >
                       Formatted JSON
+                      {jsonView === 'formatted' ? <Icon name="menuSelected" className="artifact-detail__actions-item-check" /> : null}
                     </button>
                     <button
                       type="button"
@@ -1523,6 +1526,7 @@ export function ArtifactDetail({
                       onClick={() => closeActionsAfter(() => setJsonView('raw'))}
                     >
                       Raw JSON
+                      {jsonView === 'raw' ? <Icon name="menuSelected" className="artifact-detail__actions-item-check" /> : null}
                     </button>
                   </>
                 )}
@@ -2576,16 +2580,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function stringValue(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
-
-function CloseIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path d="m18 6-12 12" />
-      <path d="m6 6 12 12" />
-    </svg>
-  );
-}
-
 
 function formatBytes(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return '';

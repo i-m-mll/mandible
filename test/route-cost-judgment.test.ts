@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { CONFIRMATION_TRIALS, judgeRoute, LOAD_WAIT_MS, trialTurns, waitForLoad, writeReplayPlan } from "../scripts/route-cost-judgment.ts";
+import { CONFIRMATION_TRIALS, judgeRoute, trialTurns, writeReplayPlan } from "../scripts/route-cost-judgment.ts";
 
 const trial = (first: number, warm: number) => [
   { pass: 1, worstTurnMs: first },
@@ -48,6 +48,16 @@ describe("route-cost confirmation", () => {
     expect(judgeRoute([trial(140, 11), trial(11, 140), trial(140, 11), trial(11, 140)], 100).overBudget).toBe(false);
   });
 
+  it("can stop confirmations once both observed minima are below budget", () => {
+    const observed = [trial(140, 120), trial(11, 140)];
+    expect(judgeRoute(observed, 100).overBudget).toBe(true);
+    observed.push(trial(150, 15));
+    expect(judgeRoute(observed, 100).overBudget).toBe(false);
+    for (const later of [trial(500, 500), trial(100, 100), trial(1, 1)]) {
+      expect(judgeRoute([...observed, later], 100).overBudget).toBe(false);
+    }
+  });
+
   it("includes the main reading and every confirmation in the verdict", () => {
     expect(judgeRoute([trial(11, 186), trial(140, 11), trial(140, 11), trial(140, 11)], 100).overBudget).toBe(false);
     expect(judgeRoute([trial(186, 11), trial(140, 11), trial(11, 11), trial(140, 11)], 100).overBudget).toBe(false);
@@ -58,41 +68,5 @@ describe("route-cost confirmation", () => {
     expect(trialTurns(readings)).toEqual({ firstCallMs: 120, warmMs: 130 });
     expect(judgeRoute([trial(99, 85)], 100).overBudget).toBe(false);
     expect(judgeRoute([[{ pass: 1, worstTurnMs: 100 }]], 100)).toMatchObject({ warmMs: 0, overBudget: true });
-  });
-});
-
-describe("load wait", () => {
-  function clock() {
-    let time = 0;
-    const waits: number[] = [];
-    return { now: () => time, waits, wait: async (ms: number) => { waits.push(ms); time += ms; } };
-  }
-
-  it("waits at core count, then starts as soon as load falls below it", async () => {
-    const timing = clock();
-    const loads = [14, 17, 13];
-    const result = await waitForLoad({ cpus: 14, readLoad: () => loads.shift()!, ...timing });
-    expect(result).toMatchObject({ start: 14, measurement_start: 13, waited_ms: 10_000 });
-    expect(timing.waits).toEqual([5_000, 5_000]);
-  });
-
-  it("proceeds after three minutes of sustained overload", async () => {
-    const timing = clock();
-    await expect(waitForLoad({ cpus: 14, readLoad: () => 17, ...timing })).resolves.toEqual({
-      start: 17, measurement_start: 17, waited_ms: LOAD_WAIT_MS, wait_limit_ms: LOAD_WAIT_MS, cpus: 14,
-    });
-    expect(timing.now()).toBe(180_000);
-  });
-
-  it("caps the last poll at the deadline and supports bypassing the wait", async () => {
-    const timing = clock();
-    await waitForLoad({ cpus: 14, readLoad: () => 17, maxWaitMs: 12_000, ...timing });
-    expect(timing.waits).toEqual([5_000, 5_000, 2_000]);
-    const bypass = clock();
-    await expect(waitForLoad({ cpus: 14, readLoad: () => 17, maxWaitMs: 0, ...bypass })).resolves.toMatchObject({ waited_ms: 0, measurement_start: 17 });
-    expect(bypass.waits).toEqual([]);
-    const quiet = clock();
-    await waitForLoad({ cpus: 14, readLoad: () => 13, ...quiet });
-    expect(quiet.waits).toEqual([]);
   });
 });

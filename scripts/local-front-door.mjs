@@ -10,6 +10,8 @@ import { fileURLToPath } from "node:url";
 import { CADDY_VERSION, installPinnedCaddy, pinnedCaddyBinary } from "./pinned-caddy.mjs";
 import { assertLocalCaIdentity, localCaPaths, probeCurrentMacOsTrust } from "./local-ca-trust.mjs";
 import { withInstallationGatewayLock } from './lifecycle-lock.mjs';
+import { prepareGatewayAdmin } from './gateway-admin.mjs';
+import { gatewayCaddyfile } from './gateway-config.mjs';
 
 const home = path.resolve(process.env.MANDIBLE_HOME || path.join(os.homedir(), ".mandible"));
 const caPaths = localCaPaths(home);
@@ -52,62 +54,6 @@ function initializeInstallationAuthority() {
   process.stdout.write(`${JSON.stringify({ installation_authority: installationAuthorityFile, authority_id: authorityId })}\n`);
 }
 
-function caddyfile(instances) {
-  const production = instances.find((entry) => entry.role === "main");
-  if (!production) fail("The production instance is not registered.");
-  const effectivePort = (url) => url.port || (url.protocol === "https:" ? "443" : "80");
-  const publicPorts = new Set(instances.map((entry) => effectivePort(new URL(entry.public_origin))));
-  for (const entry of instances) {
-    const backendPort = effectivePort(new URL(entry.backend_origin));
-    if (publicPorts.has(backendPort)) {
-      fail(`Refusing gateway self-route: ${entry.instance_id} backend port ${backendPort} is a public listener port.`);
-    }
-  }
-  const productionBackend = new URL(production.backend_origin);
-  const productionPublic = new URL(production.public_origin);
-  const globalOptions = `{\n  admin 127.0.0.1:2019\n  storage file_system ${JSON.stringify(caPaths.storageRoot)}\n  local_certs\n  skip_install_trust\n  auto_https disable_redirects\n}`;
-  const blocks = instances.map((entry) => {
-    const publicUrl = new URL(entry.public_origin);
-    const backendUrl = new URL(entry.backend_origin);
-    const shared = [
-      `${publicUrl.origin} {`,
-      "  bind 127.0.0.1 ::1",
-      "  tls internal",
-      "  header -Server",
-    ];
-    if (entry.role === "preview") {
-      shared.push(
-        "  handle {",
-        `    forward_auth ${productionBackend.origin} {`,
-        "      uri /api/client-auth/forward-auth",
-        `      header_up Host ${productionPublic.host}`,
-        `      header_up Origin ${productionPublic.origin}`,
-        `      header_up X-Mandible-Target-Instance ${entry.instance_id}`,
-        "      header_up -Authorization",
-        "      header_up -Cookie",
-        "      copy_headers X-Mandible-Session-Context",
-        "    }",
-        `    reverse_proxy ${backendUrl.origin} {`,
-        "      header_up -Authorization",
-        "      header_up -Cookie",
-        "      header_up -X-Mandible-Target-Instance",
-        "      header_up X-Mandible-Session-Context {http.request.header.X-Mandible-Session-Context}",
-        "    }",
-        "  }",
-      );
-    } else {
-      shared.push(
-        `  reverse_proxy ${backendUrl.origin} {`,
-        "    header_up -X-Mandible-Target-Instance",
-        "    header_up -X-Mandible-Session-Context",
-        "  }",
-      );
-    }
-    shared.push("}");
-    return shared.join("\n");
-  });
-  return `${globalOptions}\n\n${blocks.join("\n\n")}\n`;
-}
 
 function install() {
   try { installPinnedCaddy(home); } catch (error) { fail(error.message); }
@@ -116,7 +62,7 @@ function install() {
 function configure() {
   requireTrustedCa({ verifyNative: false });
   fs.mkdirSync(authorityDir, { recursive: true, mode: 0o700 });
-  const config = caddyfile(readInstances());
+  const config = gatewayCaddyfile(readInstances(), { adminAddress: prepareGatewayAdmin(home).address, storageRoot: caPaths.storageRoot });
   if (fs.existsSync(binary)) {
     const adapted = spawnSync(binary, ["adapt", "--config", "-", "--adapter", "caddyfile"], {
       input: config, encoding: "utf8", timeout: 5000, maxBuffer: 8 * 1024 * 1024,

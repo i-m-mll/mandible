@@ -1,3 +1,5 @@
+import { NativeSelect } from '../components/shared/NativeSelect';
+import { Icon } from '../components/icons/Icon';
 import type { RefObject } from 'preact';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import {
@@ -21,7 +23,7 @@ import { CollapsiblePanel } from '../components/shared/CollapsiblePanel';
 import { DisclosureChevronIcon } from '../components/shared/DisclosureChevronIcon';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { IconTabList, type IconTab } from '../components/shared/IconTabList';
-import { DiffIcon, InfoIcon, TerminalIcon } from '../components/icons/TabIcons';
+
 import { linkifyResourceRefs as linkifyArtifactRefs } from '../resource-refs';
 import { formatRelativeTime } from '../lib/format';
 import { renderInlineMarkdown, renderMarkdown } from '../lib/markdown';
@@ -48,6 +50,7 @@ import {
   type ReadUserIdentity,
 } from '../api';
 import { exhausted } from '../../../src/exhaustive';
+import type { AuthConvergence } from '../../../src/types';
 import {
   AUTH_REQUEST_TYPES,
   type AuthRequestType,
@@ -167,6 +170,7 @@ export type AuthRequest = {
   base_audit?: ProtectedBaseAudit | null;
   action_count?: number;
   actions?: AuthRequestAction[];
+  convergence?: AuthConvergence | null;
   [key: string]: unknown;
 };
 
@@ -294,7 +298,6 @@ function looksLikeBranchName(value: string): boolean {
 
 const RESOLVED_LINGER_MS = 1500;
 
-
 function getTimestampMs(value?: string | number | null): number | null {
   if (value == null) return null;
   if (typeof value === 'number') return value;
@@ -401,21 +404,10 @@ function getStatusLabel(request: AuthRequest): string {
 /**
  * Issue 27241e6 — convergence is the second half of "delivered". `Completed`
  * on its own only says the merge landed; these three values say whether the
- * registered post-merge hooks actually made the machine live.
+ * registered post-merge work has been confirmed.
  */
-type ConvergenceHookSummary = {
-  hook_id?: string;
-  label?: string;
-  state?: string;
-  required?: boolean;
-  attempts?: number;
-  max_attempts?: number;
-  exit_code?: number | null;
-};
-
-type ConvergenceSummary = {
+type ConvergenceSummary = AuthConvergence & {
   state: 'complete' | 'pending' | 'failed';
-  hooks: ConvergenceHookSummary[];
 };
 
 function getConvergence(request: AuthRequest): ConvergenceSummary | null {
@@ -423,8 +415,7 @@ function getConvergence(request: AuthRequest): ConvergenceSummary | null {
   if (!raw || typeof raw !== 'object') return null;
   const state = (raw as { state?: unknown }).state;
   if (state !== 'complete' && state !== 'pending' && state !== 'failed') return null;
-  const hooks = (raw as { hooks?: unknown }).hooks;
-  return { state, hooks: Array.isArray(hooks) ? (hooks as ConvergenceHookSummary[]) : [] };
+  return { ...raw, state, hooks: Array.isArray(raw.hooks) ? raw.hooks : [] };
 }
 
 function convergenceTitle(convergence: ConvergenceSummary): string {
@@ -440,19 +431,20 @@ function convergenceTitle(convergence: ConvergenceSummary): string {
   const heading = convergence.state === 'complete'
     ? 'Merged and every registered post-merge hook succeeded.'
     : convergence.state === 'pending'
-      ? 'Merged. A registered post-merge hook has not finished yet, so this machine is not live.'
+      ? 'Merged. Post-merge work or runtime verification is not yet confirmed.'
       : 'Merged. A required post-merge hook failed, so this machine is not live. Issue closures are withheld.';
   return hooks ? `${heading}\n\n${hooks}` : heading;
 }
 
 /** Issue 7d83fe5 — label and pill class of a pending runtime self-update's acceptance, which approval requires. */
 const ACCEPTANCE_PILLS: Record<CandidateAcceptanceProjection['state'], [string, string]> = {
-  none: ['Acceptance not run', 'status-pill--dismissed'],
-  running: ['Acceptance running', 'status-pill--pending'],
-  passed: ['Acceptance passed', 'status-pill--success'],
-  failed: ['Acceptance failed', 'status-pill--failed'],
-  stale: ['Acceptance stale', 'status-pill--expired'],
+  none: ['Package/runtime acceptance not run', 'status-pill--dismissed'],
+  running: ['Package/runtime acceptance running', 'status-pill--pending'],
+  passed: ['Package/runtime acceptance passed', 'status-pill--success'],
+  failed: ['Package/runtime acceptance failed', 'status-pill--failed'],
+  stale: ['Package/runtime acceptance stale', 'status-pill--expired'],
 };
+const ACCEPTANCE_SCOPE = 'Checks the packaged app in an isolated instance. Installed upgrade qualification is separate.';
 
 function getStatusClass(request: AuthRequest): string {
   const status = getAuthStatus(request);
@@ -917,6 +909,7 @@ function AuthRequestDetail({
   const completedConvergence = status === 'completed'
     ? getConvergence(request)
     : null;
+  const runtimeVerification = completedConvergence?.runtime_verification;
   const statusClass = getStatusClass(request);
   const publicationBlocker = request.publication_blocker ?? null;
   const acceptance = status === 'pending' ? request.candidate_acceptance ?? null : null;
@@ -1022,9 +1015,9 @@ function AuthRequestDetail({
   };
 
   const modeTabs: readonly IconTab[] = [
-    { id: 'abstract', label: 'Info', tooltip: 'Info', icon: <InfoIcon size={18} /> },
-    { id: 'console', label: 'Console', tooltip: 'Console', icon: <TerminalIcon size={18} /> },
-    { id: 'diff', label: 'Diff', tooltip: 'Diff', icon: <DiffIcon size={18} /> },
+    { id: 'abstract', label: 'Info', tooltip: 'Info', icon: <Icon name="info" size={18} /> },
+    { id: 'console', label: 'Console', tooltip: 'Console', icon: <Icon name="terminal" size={18} /> },
+    { id: 'diff', label: 'Diff', tooltip: 'Diff', icon: <Icon name="diff" size={18} /> },
   ];
   const subheader = (
     <>
@@ -1119,6 +1112,11 @@ function AuthRequestDetail({
       subheader={subheader}
       notice={<>
         {notice}
+        {runtimeVerification && (
+          <DetailPaneNotice severity="info" density="compact" title="Update verification is pending">
+            {runtimeVerification.reason}
+          </DetailPaneNotice>
+        )}
         {viewMode === 'diff' && request.diff_summary !== undefined && targetToken && unmatchedTarget === targetToken && (
           <DetailPaneNotice severity="warning" density="compact">
             This request has no captured change matching the selected before/after paths.
@@ -1148,7 +1146,7 @@ function AuthRequestDetail({
                 {statusLabel}
               </span>
               {acceptance && (
-                <span className={`status-pill ${acceptancePill}`} title={acceptance.reason ?? undefined}>
+                <span className={`status-pill ${acceptancePill}`} title={`${ACCEPTANCE_SCOPE}${acceptance.reason ? ` ${acceptance.reason}` : ''}`}>
                   {acceptanceLabel}
                 </span>
               )}
@@ -1773,9 +1771,7 @@ export function AuthHooksPanel({
             aria-label="Add approval hook"
             title="Add approval hook"
           >
-            <svg aria-hidden="true" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round">
-              <path d="M8 2.5v11M2.5 8h11" />
-            </svg>
+            <Icon name="addHook" size={16} />
           </button>
           {onClose && (
             <button
@@ -1832,7 +1828,7 @@ export function AuthHooksPanel({
           </div>
           <div className="auth-hooks-panel__form-row" data-settings-searchable>
             <label>Approval type</label>
-            <select
+            <NativeSelect
               value={formType}
               onChange={(e) => setFormType((e.target as HTMLSelectElement).value as AuthRequestType)}
               disabled={!formChangesAllowed}
@@ -1844,7 +1840,7 @@ export function AuthHooksPanel({
               <option value="branch-delete">Branch Delete</option>
               <option value="config-change">Config Change</option>
               <option value="data-delete">Data Delete</option>
-            </select>
+            </NativeSelect>
           </div>
           <div className="auth-hooks-panel__form-row" data-settings-searchable>
             <label>Command</label>
@@ -1883,9 +1879,7 @@ export function AuthHooksPanel({
                   aria-label="Create approval hook"
                   title="Create approval hook"
                 >
-                  <svg aria-hidden="true" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round">
-                    <path d="M8 2.5v11M2.5 8h11" />
-                  </svg>
+                  <Icon name="addHook" size={16} />
                 </button>
                 <button type="button" className="btn btn--sm btn--ghost" onClick={resetForm}>
                   Cancel
@@ -1946,9 +1940,7 @@ export function AuthHooksPanel({
                     aria-label={`Edit ${hook.label || hook.command}`}
                     title="Edit hook"
                   >
-                    <svg aria-hidden="true" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                      <path d="m10.8 2.5 2.7 2.7M3 13l2.5-.5L13 5a1.9 1.9 0 0 0-2.7-2.7L2.8 9.8 2.3 12.3 3 13Z" />
-                    </svg>
+                    <Icon name="editHook" size={16} />
                   </button>
                   <button
                     type="button"
@@ -1958,9 +1950,7 @@ export function AuthHooksPanel({
                     aria-label={`Delete ${hook.label || hook.command}`}
                     title="Delete hook"
                   >
-                    <svg aria-hidden="true" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                      <path d="M2.5 4h11M6 4V2.5h4V4m2.5 0-.6 9H4.1l-.6-9m3 2.5v4m3-4v4" />
-                    </svg>
+                    <Icon name="removeHook" size={16} />
                   </button>
                 </div>
               )}
@@ -3109,8 +3099,8 @@ export function AuthQueueView({
                     />
                     {branchInput && (
                       <button type="button" className="auth-sidebar__branch-clear" onClick={() => { releaseDeepLink(); setBranchInput(''); setBranchFilter(null); }} aria-label="Clear branch filter">
-                        ×
-                      </button>
+                        <Icon name="dismiss" />
+                        </button>
                     )}
                   </div>
                   <datalist id="auth-branch-list">
@@ -3239,8 +3229,7 @@ export function AuthQueueView({
                         title="Dismiss auth error"
                         onClick={() => clearActionError(id)}
                       >
-                        ×
-                      </ContextualAction>
+                        <Icon name="dismiss" /></ContextualAction>
                     </>
                   )}
                 >

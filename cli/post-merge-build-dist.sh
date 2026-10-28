@@ -75,8 +75,8 @@ else
 fi
 
 # Managed self-updates must replace the loaded definition and the build only
-# after the old process drains. Admission returns 75 after the independent
-# convergence owner and old-runner guard are durable.
+# after the old process drains. Admission returns 75 after the prepared helper
+# owns the transition and has published its live drain permission.
 if [[ "$build_needed" == "true" && "${MANDIBLE_AUTH_REPO:-}" == "mandible" && "${MANDIBLE_HOOK_ID:-}" == "builtin-mandible-rebuild" && -z "${MANDIBLE_RUNTIME_HANDOFF_JOURNAL:-}" ]]; then
   "$runtime" "$repo_root/scripts/runtime-handoff.mjs" arm "$repo_root"
 fi

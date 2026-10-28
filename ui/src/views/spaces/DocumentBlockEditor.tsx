@@ -1,3 +1,4 @@
+import { Icon } from '../../components/icons/Icon';
 import { useQuery } from '@tanstack/preact-query';
 import { queryClient } from '../../query/client';
 import { browserResourceKeys, browserResourceKeysForEvent, refreshBrowserResources } from '../../query/browserResources';
@@ -1159,8 +1160,8 @@ function ReferenceInspector({
       <header className="spaces-block-editor__inspector-head">
         <strong>{target.kind === 'unsupported' ? 'Reference' : target.kind}</strong>
         <button type="button" onClick={onClose} aria-label="Close reference inspector">
-          ×
-        </button>
+          <Icon name="dismiss" />
+          </button>
       </header>
       {referenceError && <DetailPaneNotice severity="error" density="compact" title="Reference unavailable">{referenceError}</DetailPaneNotice>}
       <div className="spaces-block-editor__inspector-body">

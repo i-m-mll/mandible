@@ -59,7 +59,7 @@
   gap: 4px;
   min-width: 116px;
   color: var(--text-muted);
-  font: 400 var(--text-md)/1.35 var(--font-sans);
+  font: 400 calc(var(--text-md) + var(--chrome-text-increment, 0px))/1.35 var(--font-sans);
 }
 
 .timeline-control--wide {
@@ -72,7 +72,7 @@
   text-transform: none;
 }
 
-.timeline-control select,
+.timeline-control :is(select, .native-select),
 .timeline-control input {
   height: 32px;
   min-width: 0;
@@ -119,7 +119,7 @@
   background: var(--neutral-alpha-055);
   color: var(--text-primary);
   font: inherit;
-  font-size: 12px;
+  font-size: calc(12px + var(--chrome-text-increment, 0px));
   cursor: pointer;
 }
 
@@ -141,14 +141,9 @@
   font-weight: 700;
 }
 
-.timeline-icon-button svg {
+.timeline-icon-button .app-icon {
   width: 16px;
   height: 16px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 
 .timeline-chip--active {
@@ -168,7 +163,7 @@
   gap: 7px;
   padding: 0 8px;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: calc(12px + var(--chrome-text-increment, 0px));
 }
 
 .timeline-toolbar-spacer {
@@ -232,7 +227,7 @@
   background: var(--accent-yellow);
   color: var(--text-on-accent);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: calc(10px + var(--chrome-text-increment, 0px));
   font-weight: 800;
   line-height: 16px;
 }
@@ -248,7 +243,7 @@
   background: var(--bg-inset);
   border-top: 1px solid var(--neutral-alpha-10);
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: calc(12px + var(--chrome-text-increment, 0px));
 }
 
 .timeline-diagnostics-panel span {
@@ -259,7 +254,7 @@
 
 .timeline-diagnostics-panel strong {
   color: var(--text-primary);
-  font-size: 11px;
+  font-size: calc(11px + var(--chrome-text-increment, 0px));
   text-transform: uppercase;
 }
 

@@ -12,15 +12,54 @@ const REVALIDATE_MS = 1_000;
 /** A display read answers from a scan this old while a newer one runs. */
 const DISPLAY_MAX_AGE_MS = 30_000;
 const LSOF_TIMEOUT_MS = 2_000;
+const DIAGNOSTIC_TEXT_BYTES = 4096;
+
+type LockScanExecutionError = {
+  code?: string | number | null; message?: string; signal?: string | null; killed?: boolean;
+  errno?: number; syscall?: string; path?: string;
+};
+
+export interface CodexLockScanFailure {
+  command: "lsof";
+  code: string | number | null;
+  signal: string | null;
+  killed: boolean | null;
+  errno: number | null;
+  syscall: string | null;
+  path: string | null;
+  message: string;
+  timeout_ms: number;
+  duration_ms: number;
+  /** Elapsed budget is evidence, not an assertion that the timeout caused termination. */
+  deadline_elapsed: boolean;
+  stdout: string;
+  stderr: string;
+  stdout_bytes: number;
+  stderr_bytes: number;
+  stdout_truncated: boolean;
+  stderr_truncated: boolean;
+}
+
+function boundedText(text: string): string {
+  const bytes = Buffer.from(text);
+  if (bytes.length <= DIAGNOSTIC_TEXT_BYTES) return text;
+  const marker = "\n...[truncated]...\n";
+  const half = Math.floor((DIAGNOSTIC_TEXT_BYTES - Buffer.byteLength(marker)) / 2);
+  let prefixEnd = half;
+  let suffixStart = bytes.length - half;
+  while ((bytes[prefixEnd] & 0xc0) === 0x80) prefixEnd -= 1;
+  while ((bytes[suffixStart] & 0xc0) === 0x80) suffixStart += 1;
+  return bytes.subarray(0, prefixEnd).toString("utf8") + marker + bytes.subarray(suffixStart).toString("utf8");
+}
 
 export type CodexTaskLiveness =
   | { status: "live"; pid: number }
   | { status: "not_live" }
-  | { status: "unavailable"; reason: string };
+  | { status: "unavailable"; reason: string; subprocess?: CodexLockScanFailure };
 
 type CodexTaskLockSnapshot =
   | { status: "current"; live: Map<string, number> }
-  | { status: "unavailable"; reason: string };
+  | { status: "unavailable"; reason: string; subprocess?: CodexLockScanFailure };
 
 /** `seq` orders scans by when they started, so a decision can require one that started after it began. */
 type CompletedScan = { seq: number; completedAt: number; snapshot: CodexTaskLockSnapshot };
@@ -38,10 +77,14 @@ const reportedFailures = new Map<string, string>();
  * Log a liveness check that could not complete, loudly and once per distinct
  * failure: every holder behind it reads as `unknown` until it recovers.
  */
-function reportUnavailable(key: string, reason: string): void {
+function reportUnavailable(key: string, reason: string, subprocess?: CodexLockScanFailure): void {
   if (reportedFailures.get(key) === reason) return;
   reportedFailures.set(key, reason);
-  getDaemonLogger()("error", "codex_task_liveness_unavailable", { target: key, reason });
+  getDaemonLogger()("error", "codex_task_liveness_unavailable", {
+    target: key, reason: boundedText(reason),
+    ...(Buffer.byteLength(reason) > DIAGNOSTIC_TEXT_BYTES ? { reason_truncated: true } : {}),
+    ...(subprocess ? { subprocess } : {}),
+  });
 }
 
 function reportRecovered(key: string): void {
@@ -84,12 +127,22 @@ export function parseCodexTaskLockLsof(output: string, lockDir: string): Map<str
 /** Interpret one lsof run. lsof exits 1 with no stderr when no process holds a descriptor in the directory: an authoritative empty snapshot. */
 function lockSnapshot(
   lockDir: string,
-  error: { code?: unknown; message?: string } | null,
+  error: LockScanExecutionError | null,
   stdout: string,
   stderr: string,
+  durationMs: number,
 ): CodexTaskLockSnapshot {
   if (error && !(error.code === 1 && !stderr.trim())) {
-    return { status: "unavailable", reason: stderr.trim() || error.message || String(error.code) };
+    return { status: "unavailable", reason: stderr.trim() || error.message || String(error.code), subprocess: {
+      command: "lsof", code: error.code ?? null, signal: error.signal ?? null, killed: error.killed ?? null,
+      errno: error.errno ?? null, syscall: error.syscall ? boundedText(error.syscall) : null,
+      path: error.path ? boundedText(error.path) : null, message: boundedText(error.message ?? ""),
+      timeout_ms: LSOF_TIMEOUT_MS, duration_ms: durationMs, deadline_elapsed: durationMs >= LSOF_TIMEOUT_MS,
+      stdout: boundedText(stdout), stderr: boundedText(stderr),
+      stdout_bytes: Buffer.byteLength(stdout), stderr_bytes: Buffer.byteLength(stderr),
+      stdout_truncated: Buffer.byteLength(stdout) > DIAGNOSTIC_TEXT_BYTES,
+      stderr_truncated: Buffer.byteLength(stderr) > DIAGNOSTIC_TEXT_BYTES,
+    } };
   }
   return { status: "current", live: parseCodexTaskLockLsof(stdout, lockDir) };
 }
@@ -105,18 +158,19 @@ function scanLockDir(lockDir: string, after = 0): Promise<CompletedScan> {
       resolve({ status: "unavailable", reason: "Codex thread-writer lock directory is missing" });
       return;
     }
+    const executionStarted = performance.now();
     execFile("lsof", ["-Fpcn", "+D", lockDir], {
       encoding: "utf8",
       timeout: LSOF_TIMEOUT_MS,
       maxBuffer: 4 * 1024 * 1024,
-    }, (error, stdout, stderr) => resolve(lockSnapshot(lockDir, error, String(stdout ?? ""), String(stderr ?? ""))));
+    }, (error, stdout, stderr) => resolve(lockSnapshot(lockDir, error, String(stdout ?? ""), String(stderr ?? ""), performance.now() - executionStarted)));
   }).then((snapshot) => {
     const completed = { seq, completedAt: Date.now(), snapshot };
     if (started !== generation) return completed;
     if (running.get(lockDir)?.seq === seq) running.delete(lockDir);
     if ((scans.get(lockDir)?.seq ?? 0) > seq) return completed;
     scans.set(lockDir, completed);
-    if (snapshot.status === "unavailable") reportUnavailable(lockDir, snapshot.reason);
+    if (snapshot.status === "unavailable") reportUnavailable(lockDir, snapshot.reason, snapshot.subprocess);
     else reportRecovered(lockDir);
     return completed;
   });

@@ -1,3 +1,4 @@
+import { NativeSelect } from '../../components/shared/NativeSelect';
 import { useQuery } from '@tanstack/preact-query';
 import { queryClient } from '../../query/client';
 import { browserResourceKeys } from '../../query/browserResources';
@@ -55,10 +56,10 @@ export function SpaceExportDialog({ spaceId,projectId,onClose,onImported }: {
       </>}}
     >
       <p>Editing continues in Spaces. A publication freezes the saved revision, then creates a signed proposal for protected delivery.</p>
-      <label className="space-export-dialog__field">Destination checkout<select value={view.checkoutId} onChange={event=>setView(current=>({...current,checkoutId:event.currentTarget.value}))}>
+      <label className="space-export-dialog__field">Destination checkout<NativeSelect value={view.checkoutId} onChange={event=>setView(current=>({...current,checkoutId:event.currentTarget.value}))}>
         <option value="">{projectId ? 'Default project checkout':'Choose a checkout'}</option>
         {destinations.map(destination=><option key={destination.id} value={destination.id}>{destination.project_name} / {destination.name}</option>)}
-      </select></label>
+      </NativeSelect></label>
       <label className="space-export-dialog__field">Destination path<input value={view.path} placeholder="docs/document.md" onInput={event=>setView(current=>({...current,path:event.currentTarget.value}))}/></label>
       <label className="space-export-dialog__field">Issue<input value={issue} onInput={event=>setIssue(event.currentTarget.value)}/></label>
       <label className="space-export-dialog__field">Change message<input value={view.message} onInput={event=>setView(current=>({...current,message:event.currentTarget.value}))}/></label>

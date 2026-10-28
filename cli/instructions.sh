@@ -42,7 +42,9 @@ const os = require("node:os");
 const path = require("node:path");
 
 const [root, op, ...args] = process.argv.slice(2);
-const SqliteDatabase = require(path.join(root, "src", "sqlite.ts")).default;
+const SqliteDatabase = require(process.env.MANDIBLE_RELEASE_ROOT
+  ? path.join(process.env.MANDIBLE_RELEASE_ROOT, "dist", "sqlite.js")
+  : path.join(root, "src", "sqlite.ts")).default;
 
 // Issue 24f0316 — the ledger database lives under the durable root, but this
 // helper must never create one: an empty file there would be adopted by the
@@ -185,44 +187,15 @@ NODE
 }
 
 write_target_path() {
-  "$BUN_RUNTIME" --no-install - "$1" <<'NODE'
+  MANDIBLE_CLI_DIR="$CLI_DIR" "$BUN_RUNTIME" --no-install - "$1" <<'NODE'
 const fs = require("node:fs");
 const path = require("node:path");
 
-function pathWithRealParent(target) {
-  const parent = path.dirname(target);
-  try {
-    return path.join(fs.realpathSync.native(parent), path.basename(target));
-  } catch {
-    return target;
-  }
-}
-
-function resolveWriteTarget(target) {
-  const absolute = path.resolve(target);
-  try {
-    const stat = fs.lstatSync(absolute);
-    if (stat.isSymbolicLink()) {
-      const link = fs.readlinkSync(absolute);
-      const linkedTarget = path.resolve(path.dirname(absolute), link);
-      try {
-        return fs.realpathSync.native(linkedTarget);
-      } catch {
-        return pathWithRealParent(linkedTarget);
-      }
-    }
-  } catch {
-    // Missing targets are created at the requested path.
-  }
-
-  try {
-    return fs.realpathSync.native(absolute);
-  } catch {
-    return pathWithRealParent(absolute);
-  }
-}
-
-process.stdout.write(resolveWriteTarget(process.argv[2]));
+const target = path.resolve(process.argv[2]);
+const { ownershipConflict } = require(path.join(process.env.MANDIBLE_CLI_DIR || process.cwd(), "integration-files.cjs"));
+const conflict = ownershipConflict(target);
+if (conflict) { console.error(conflict); process.exit(3); }
+process.stdout.write(target);
 NODE
 }
 
@@ -302,6 +275,7 @@ tracked_file_on_protected_branch() {
 guard_install_target() {
   local target="$1"
   local force="$2"
+  write_target_path "$target" >/dev/null
   [[ "$force" == "1" ]] && return 0
   if tracked_file_on_protected_branch "$target"; then
     cat >&2 <<EOF
@@ -372,6 +346,23 @@ install_standalone() {
   tmp="$(temp_for_target "$write_target")"
   render_fragment > "$tmp"
   printf '\n' >> "$tmp"
+  if ! "$BUN_RUNTIME" --no-install - "$write_target" "$tmp" "$CLI_DIR" <<'NODE'
+const fs = require("node:fs");
+const path = require("node:path");
+const [target, temporary, cli] = process.argv.slice(2);
+const { standaloneOwned, stampStandalone } = require(path.join(cli, "integration-files.cjs"));
+const desired = fs.readFileSync(temporary, "utf8");
+const current = fs.existsSync(target) ? fs.readFileSync(target, "utf8") : null;
+if (current !== null && current !== desired && !standaloneOwned(current)) {
+  console.error(`Refusing to replace user-owned standalone file: ${target}`);
+  process.exit(3);
+}
+fs.writeFileSync(temporary, stampStandalone(desired));
+NODE
+  then
+    rm -f "$tmp"
+    return 3
+  fi
   if [[ -f "$write_target" ]] && cmp -s "$write_target" "$tmp"; then
     rm -f "$tmp"
     printf 'Mandible instructions already current: %s\n' "$target"
@@ -433,7 +424,13 @@ cleanup_standalone() {
   tmp=$(mktemp)
   render_fragment > "$tmp"
   printf '\n' >> "$tmp"
-  if cmp -s "$target" "$tmp"; then
+  if cmp -s "$target" "$tmp" || "$BUN_RUNTIME" --no-install - "$target" "$CLI_DIR" <<'NODE'
+const fs = require("node:fs");
+const path = require("node:path");
+const { standaloneOwned } = require(path.join(process.argv[3], "integration-files.cjs"));
+process.exit(standaloneOwned(fs.readFileSync(process.argv[2], "utf8")) ? 0 : 1);
+NODE
+  then
     rm -f "$target" "$tmp"
     printf 'Removed standalone Mandible instructions: %s\n' "$target"
     return 0
@@ -472,13 +469,6 @@ install_target() {
   esac
 }
 
-default_install_targets() {
-  local default_target="${HOME:?HOME is required}/.claude/CLAUDE.md"
-  local codex_target="${HOME}/.codex/AGENTS.md"
-  printf 'managed-block\t%s\n' "$default_target"
-  printf 'managed-block\t%s\n' "$codex_target"
-}
-
 hook_cwd_for_target() {
   local target="$1"
   local root
@@ -499,6 +489,7 @@ run_post_export_hook() {
   printf 'Running instructions post-export hook: %s\n' "$hook" >&2
   if ! (cd "$hook_cwd" && bash -lc "$hook"); then
     printf 'Instructions post-export hook failed but target refresh completed: %s\n' "$hook" >&2
+    return 1
   fi
 }
 
@@ -511,8 +502,9 @@ install_configured_targets() {
   if [[ -s "$configured_file" ]]; then
     cp "$configured_file" "$targets_file"
   else
-    printf 'No Mandible instruction targets configured; using default HOME targets. Configure persistent targets with `mandible instructions targets add <path> --mode <mode>`.\n' >&2
-    default_install_targets > "$targets_file"
+    rm -f "$configured_file" "$targets_file"
+    printf 'No Mandible instruction targets configured; no files changed.\n'
+    return 0
   fi
 
   first_target=""

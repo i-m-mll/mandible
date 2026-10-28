@@ -1,3 +1,6 @@
+import { AgentIntegrations } from '../components/AgentIntegrations';
+import { NativeSelect } from '../components/shared/NativeSelect';
+import { Icon } from '../components/icons/Icon';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { ComponentChildren, VNode } from 'preact';
 import { AppOperationalNoticeOutlet } from '../app-shell';
@@ -142,6 +145,7 @@ const SETTINGS_SECTIONS = {
   notifications: { id: 'settings-notifications', title: 'Notifications' },
   daemon: { id: 'settings-daemon', title: 'Local connections' },
   agentHooks: { id: 'settings-agent-hooks', title: 'Agent Hooks' },
+  integrations: { id: 'settings-integrations', title: 'Agent integrations' },
   instructionDelivery: { id: 'settings-instruction-delivery', title: 'Instruction Delivery' },
   projectPermissions: { id: 'settings-project-permissions', title: 'Project permissions' },
   briefings: { id: 'settings-briefings', title: 'Briefings' },
@@ -206,27 +210,6 @@ function isInstructionTargetMode(value: string): value is InstructionTargetMode 
   return (INSTRUCTION_TARGET_MODES as readonly string[]).includes(value);
 }
 
-function parseInstructionTargets(value: string | undefined): InstructionTarget[] {
-  if (!value) return [];
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .map((target) => {
-        if (!target || typeof target !== 'object') return null;
-        const record = target as Record<string, unknown>;
-        const targetPath = typeof record.path === 'string' ? record.path.trim() : '';
-        const mode = typeof record.mode === 'string' && isInstructionTargetMode(record.mode)
-          ? record.mode
-          : 'managed-block';
-        return targetPath ? { path: targetPath, mode } : null;
-      })
-      .filter((target): target is InstructionTarget => target !== null);
-  } catch {
-    return [];
-  }
-}
-
 function serializeInstructionTargets(targets: InstructionTarget[]): string {
   return JSON.stringify(targets);
 }
@@ -248,7 +231,7 @@ function formatInstructionExportFeedback(result: InstructionDeliverySettings, fa
   }
   if (result.export?.ok === false) {
     const detail = result.export.stderr.trim() || result.export.stdout.trim() || 'The export did not complete.';
-    return `${fallback}; export failed: ${detail}`;
+    return `Settings saved. Optional instruction refresh failed: ${detail}`;
   }
   const cleanupCount = result.cleanup?.filter((item) => item.ok).length ?? 0;
   if (cleanupCount > 0) {
@@ -374,14 +357,6 @@ function useDebouncedSettingSave(
   return { saving, error };
 }
 
-function PlusIcon(): JSX.Element {
-  return <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></svg>;
-}
-
-function MinusIcon(): JSX.Element {
-  return <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 8h10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></svg>;
-}
-
 function NumberInput(props: {
   label: string;
   desc: string;
@@ -485,7 +460,7 @@ function SelectInput(props: {
           <span className="settings-view__badge--restart">shell restart</span>
         )}
       </div>
-      <select
+      <NativeSelect
         className="settings-view__select"
         value={current}
         onChange={handleChange}
@@ -494,7 +469,7 @@ function SelectInput(props: {
         {props.options.map((opt) => (
           <option key={opt} value={opt}>{opt}</option>
         ))}
-      </select>
+      </NativeSelect>
     </div>
   );
 }
@@ -514,6 +489,8 @@ function InstructionsDeliverySection(props: {
   const [postExport, setPostExport] = useState('');
   const [saving, setSaving] = useState<string | null>(null);
   const [targetsLoaded, setTargetsLoaded] = useState(false);
+  const [targetsLoadFailed, setTargetsLoadFailed] = useState(false);
+  const [conflicts, setConflicts] = useState<Array<{ path: string; detail: string }>>([]);
   const [feedback, setFeedback] = useState<FeedbackState>(null);
   const [confirmAction, setConfirmAction] = useState<{
     title: string;
@@ -541,21 +518,20 @@ function InstructionsDeliverySection(props: {
       .then((delivery) => {
         if (cancelled) return;
         setTargets(delivery.targets);
+        setConflicts(delivery.conflicts ?? []);
         setPostExport(delivery.postExport);
         setTargetsLoaded(true);
       })
       .catch((err) => {
         if (cancelled) return;
-        const fallbackTargets = parseInstructionTargets(props.settings['instructions.targets']);
-        setTargets(fallbackTargets);
-        setPostExport(props.settings['instructions.post_export'] ?? '');
+        setTargetsLoadFailed(true);
         setTargetsLoaded(true);
         showFeedback({ type: 'error', message: err instanceof Error ? err.message : 'Failed to load instruction delivery settings' });
       });
     return () => {
       cancelled = true;
     };
-  }, [props.readAllowed, props.settings, showFeedback]);
+  }, [props.readAllowed, showFeedback]);
 
   const applyInstructionDelivery = useCallback(async (
     request: { targets?: InstructionTarget[]; postExport?: string; cleanupRemovedTargets?: boolean; resetToDefaults?: boolean },
@@ -566,6 +542,7 @@ function InstructionsDeliverySection(props: {
     try {
       const result = await updateInstructionDeliverySettings(request);
       setTargets(result.targets);
+      setConflicts(result.conflicts ?? []);
       setTargetPathDrafts({});
       setPostExport(result.postExport);
       if (request.targets || request.resetToDefaults) {
@@ -574,7 +551,7 @@ function InstructionsDeliverySection(props: {
       if (request.postExport !== undefined) {
         await props.onSave('instructions.post_export', result.postExport);
       }
-      showFeedback({ type: 'success', message: formatInstructionExportFeedback(result, successMessage) });
+      showFeedback({ type: result.export?.ok === false && !result.preview_only ? 'error' : 'success', message: formatInstructionExportFeedback(result, successMessage) });
     } catch (err) {
       showFeedback({ type: 'error', message: err instanceof Error ? err.message : 'Failed to update instruction delivery' });
       throw err;
@@ -595,10 +572,6 @@ function InstructionsDeliverySection(props: {
   }, [applyInstructionDelivery]);
 
   const requestTargetSave = useCallback((nextTargets: InstructionTarget[]) => {
-    if (nextTargets.length === 0) {
-      showFeedback({ type: 'error', message: 'At least one target is required' });
-      return;
-    }
     if (!hasRemovedInstructionTargets(targets, nextTargets)) {
       void saveTargets(nextTargets, false);
       return;
@@ -680,15 +653,18 @@ function InstructionsDeliverySection(props: {
     <SettingsSectionShell section={props.section}>
       <SettingsSectionHeader
         section={props.section}
-        description="Where Mandible writes its generated instruction fragment after rebuilds."
+        description="Optional destinations for the Mandible command reference. No configured destinations means no instruction-file edits. Your other instructions stay yours."
       />
 
       <div className="settings-view__section-body">
+        {conflicts.map(conflict => <p key={conflict.path} role="status" className="settings-view__text-desc">{conflict.detail}</p>)}
         <div className="settings-view__instruction-targets">
           {!props.readAllowed ? (
             <div className="settings-view__empty">Instruction targets are unavailable in this instance.</div>
           ) : !targetsLoaded ? (
             <div className="settings-view__empty">Loading instruction targets...</div>
+          ) : targetsLoadFailed ? (
+            <div className="settings-view__empty">Instruction destinations could not be loaded.</div>
           ) : targets.length === 0 ? (
             <div className="settings-view__empty">No instruction targets are configured.</div>
           ) : (
@@ -712,7 +688,7 @@ function InstructionsDeliverySection(props: {
                   title={target.path}
                   aria-label={`Instruction target ${target.path}`}
                 />
-                <select
+                <NativeSelect
                   className="settings-view__select settings-view__select--compact"
                   value={target.mode}
                   disabled={!props.settingsAllowed || saving === 'instructions.delivery'}
@@ -724,7 +700,7 @@ function InstructionsDeliverySection(props: {
                 >
                   <option value="managed-block">Managed block</option>
                   <option value="standalone">Standalone</option>
-                </select>
+                </NativeSelect>
                 <button
                   type="button"
                   className="btn btn--sm settings-view__collection-action"
@@ -732,7 +708,7 @@ function InstructionsDeliverySection(props: {
                   disabled={!props.settingsAllowed || saving === 'instructions.delivery'}
                   aria-label={`Remove instruction target ${target.path}`}
                 >
-                  <MinusIcon />
+                  <Icon name="removeSetting" />
                 </button>
               </div>
             ))
@@ -748,7 +724,7 @@ function InstructionsDeliverySection(props: {
             disabled={!props.settingsAllowed || saving === 'instructions.delivery'}
             aria-label="New instruction target path"
           />
-          <select
+          <NativeSelect
             className="settings-view__select settings-view__select--compact"
             value={targetMode}
             disabled={!props.settingsAllowed || saving === 'instructions.delivery'}
@@ -760,7 +736,7 @@ function InstructionsDeliverySection(props: {
           >
             <option value="managed-block">Managed block</option>
             <option value="standalone">Standalone</option>
-          </select>
+          </NativeSelect>
           <button
             type="button"
             className="btn btn--active btn--sm settings-view__collection-action"
@@ -768,7 +744,7 @@ function InstructionsDeliverySection(props: {
             disabled={!props.settingsAllowed || saving === 'instructions.delivery'}
             aria-label="Add instruction target"
           >
-            <PlusIcon />
+            <Icon name="addSetting" />
           </button>
         </div>
 
@@ -1162,7 +1138,7 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition; insta
               Choose whether opening the desktop app should start Mandible automatically.
             </span>
           </div>
-          <select
+          <NativeSelect
             className="settings-view__select"
             value={status?.launch_mode ?? 'on_demand'}
             onChange={handleLaunchModeChange}
@@ -1173,7 +1149,7 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition; insta
                 {mode === 'on_demand' ? 'on demand' : 'manual'}
               </option>
             ))}
-          </select>
+          </NativeSelect>
         </div>
 
         <div className="settings-view__daemon-card" data-settings-searchable data-settings-search-text="local backend dashboard gateway daemon">
@@ -1422,7 +1398,7 @@ function BackupSection(props: { section: SettingsSectionDefinition; instance?: I
             <div className="settings-view__select-info">
               <span className="settings-view__select-label">Interval</span>
             </div>
-            <select
+            <NativeSelect
               className="settings-view__select"
               value={status.interval_hours}
               onChange={handleIntervalChange}
@@ -1431,7 +1407,7 @@ function BackupSection(props: { section: SettingsSectionDefinition; instance?: I
               <option value={6}>6h</option>
               <option value={12}>12h</option>
               <option value={24}>24h</option>
-            </select>
+            </NativeSelect>
           </div>
         )}
 
@@ -1572,14 +1548,14 @@ function ProjectPermissionsSection(props: { section: SettingsSectionDefinition; 
           <div className="settings-view__select-info">
             <span className="settings-view__select-label">Project</span>
           </div>
-          <select className="settings-view__select" value={selected}
+          <NativeSelect className="settings-view__select" value={selected}
             onChange={(event) => setSelected((event.target as HTMLSelectElement).value)}>
             {projects.map((project) => (
               <option key={project.id} value={project.project_key}>
                 {project.display_name || project.project_key}
               </option>
             ))}
-          </select>
+          </NativeSelect>
         </div>
         {access && (
           <>
@@ -1803,6 +1779,13 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
         </div>
       </SettingsSectionShell>,
 
+      <SettingsSectionShell key={SETTINGS_SECTIONS.integrations.id} section={SETTINGS_SECTIONS.integrations}>
+        <SettingsSectionHeader section={SETTINGS_SECTIONS.integrations} description="Optional connections for external agents. Mandible works without these integrations." />
+        <div className="settings-view__section-body"><AgentIntegrations instance={instance} />
+          <button className="btn btn--sm" aria-label="Complete optional integrations" disabled={!instructionSettingsAllowed || settings['integrations.setup'] === 'complete'} onClick={() => { void saveSetting('integrations.setup', 'complete').then(() => setFeedback({ type: 'success', message: 'Integration choices saved.' }), error => setFeedback({ type: 'error', message: String(error) })); }}>Done choosing integrations</button>
+        </div>
+      </SettingsSectionShell>,
+
       <InstructionsDeliverySection
         key={SETTINGS_SECTIONS.instructionDelivery.id} section={SETTINGS_SECTIONS.instructionDelivery}
         settings={settings}
@@ -1886,7 +1869,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
                 What to do when resuming a conversation that is already active in Console.
               </span>
             </div>
-            <select
+            <NativeSelect
               className="settings-view__select"
               value={settings.resume_conflict_policy ?? 'prompt'}
               onChange={async (e) => {
@@ -1898,7 +1881,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
               {RESUME_CONFLICT_POLICIES.map((p) => (
                 <option key={p} value={p}>{RESUME_CONFLICT_LABELS[p] ?? p}</option>
               ))}
-            </select>
+            </NativeSelect>
           </div>
         </div>
       </SettingsSectionShell>,
@@ -1917,7 +1900,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
                 When a session ends with a continuation, how should the work be resumed?
               </span>
             </div>
-            <select
+            <NativeSelect
               className="settings-view__select"
               value={settings.auto_resume_policy ?? 'manual'}
               onChange={async (e) => {
@@ -1929,7 +1912,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
               {AUTO_RESUME_POLICIES.map((p) => (
                 <option key={p} value={p}>{AUTO_RESUME_LABELS[p] ?? p}</option>
               ))}
-            </select>
+            </NativeSelect>
           </div>
         </div>
       </SettingsSectionShell>,
@@ -1999,7 +1982,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
                 <span className="settings-view__select-desc" id={`settings-${key}-description`}>{desc}</span>
               </div>
               <div className="settings-view__number-controls">
-                <select
+                <NativeSelect
                   id={`settings-${key}`}
                   className="settings-view__select"
                   aria-describedby={`settings-${key}-description`}
@@ -2008,7 +1991,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
                   onChange={(event) => void handleTypographyField(key, (event.target as HTMLSelectElement).value)}
                 >
                   {options.map(([value, text]) => <option value={value} key={value}>{text}</option>)}
-                </select>
+                </NativeSelect>
               </div>
             </div>
           ))}
@@ -2047,7 +2030,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
               <label className="settings-view__select-label" htmlFor="settings-app-theme">App theme</label>
               <span id="settings-app-theme-description" className="settings-view__select-desc">Follow the system appearance or pin Mandible to dark or light</span>
             </div>
-            <select
+            <NativeSelect
               id="settings-app-theme"
               className="settings-view__select"
               aria-describedby="settings-app-theme-description"
@@ -2063,7 +2046,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
               {APP_THEME_MODES.map((mode) => (
                 <option key={mode} value={mode}>{APP_THEME_LABELS[mode]}</option>
               ))}
-            </select>
+            </NativeSelect>
           </div>
           {([
             ['light', 'Light-mode terminal', 'Terminal palette used while Mandible is light'],
@@ -2078,7 +2061,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
                   <label className="settings-view__select-label" htmlFor={`settings-${key}`}>{label}</label>
                   <span id={descriptionId} className="settings-view__select-desc">{description}</span>
                 </div>
-                <select
+                <NativeSelect
                   id={`settings-${key}`}
                   className="settings-view__select"
                   aria-describedby={descriptionId}
@@ -2094,7 +2077,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
                   {TERMINAL_THEME_IDS.map((theme) => (
                     <option key={theme} value={theme}>{TERMINAL_THEME_LABELS[theme]}</option>
                   ))}
-                </select>
+                </NativeSelect>
               </div>
             );
           })}
@@ -2112,7 +2095,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
               <span className="settings-view__select-label">Header tabs</span>
               <span className="settings-view__select-desc">Show text labels, icons, or both in header tabs</span>
             </div>
-            <select
+            <NativeSelect
               className="settings-view__select"
               value={settings.header_display_mode ?? 'text'}
               onChange={async (e) => {
@@ -2124,7 +2107,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
               <option value="text">Text only</option>
               <option value="icons">Icons only</option>
               <option value="both">Both</option>
-            </select>
+            </NativeSelect>
           </div>
           <SelectInput
             label="Theme"
@@ -2279,6 +2262,16 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       - root.getBoundingClientRect().top - root.clientTop - alignment;
     root.scrollTo({ top, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
   }, []);
+
+  useEffect(() => {
+    const navigate = () => {
+      const section = new URLSearchParams(window.location.hash.split('?')[1] ?? '').get('section');
+      if (section && Object.values(SETTINGS_SECTIONS).some(value => value.id === section)) handleSectionNavigation(section);
+    };
+    navigate();
+    window.addEventListener('hashchange', navigate);
+    return () => window.removeEventListener('hashchange', navigate);
+  }, [handleSectionNavigation]);
 
   useEffect(() => {
     const root = viewRef.current;

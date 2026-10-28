@@ -1,3 +1,4 @@
+import { NativeSelect } from '../shared/NativeSelect';
 import { useEffect, useState } from 'preact/hooks';
 import { CHROME_APPEARANCE_LIMITS, exportChromeAppearances, type ChromeAppearanceParameters } from '../../chrome-appearance';
 import type { ChromeAppearancePreviewController } from '../../hooks/useChromeAppearancePreview';
@@ -52,9 +53,9 @@ export function ChromeAppearanceSettings({ controller }: { controller: ChromeApp
   return <div className="settings-view__section-body chrome-appearance-settings">
     <div className="settings-view__select-row" data-settings-searchable>
       <label htmlFor="chrome-appearance-theme" className="settings-view__select-label">Preview theme</label>
-      <select className="settings-view__select settings-view__select--compact" id="chrome-appearance-theme" value={controller.theme} onChange={(event) => controller.selectTheme(event.currentTarget.value as 'light' | 'dark')}>
+      <NativeSelect className="settings-view__select settings-view__select--compact" id="chrome-appearance-theme" value={controller.theme} onChange={(event) => controller.selectTheme(event.currentTarget.value as 'light' | 'dark')}>
         <option value="light">Light</option><option value="dark">Dark</option>
-      </select>
+      </NativeSelect>
     </div>
     <ParameterInput name="Width" field="widthPx" controller={controller} />
     <ParameterInput name="Profile" field="profile" controller={controller} helper="0: first pixel only · 1: linear." />

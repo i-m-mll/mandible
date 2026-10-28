@@ -37,19 +37,11 @@ if [[ -n "$ZELLIJ" ]]; then
       pane_name="Subagent: ${agent_id_short}"
     fi
 
-    repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
-    agent_viewer="${repo_root}/bin/agent-viewer"
-    if [[ ! -x "$agent_viewer" && -x "${HOME}/.dotfiles/bin/agent-viewer" ]]; then
-      agent_viewer="${HOME}/.dotfiles/bin/agent-viewer"
-    fi
-
-    zj_query=""
-    if [[ -x "${repo_root}/bin/zj-query" ]]; then
-      zj_query="${repo_root}/bin/zj-query"
-    elif [[ -x "${HOME}/.dotfiles/bin/zj-query" ]]; then
-      zj_query="${HOME}/.dotfiles/bin/zj-query"
-    elif command -v zj-query >/dev/null 2>&1; then
-      zj_query="$(command -v zj-query)"
+    agent_viewer="${MANDIBLE_AGENT_VIEWER:-$(command -v agent-viewer || true)}"
+    zj_query="${MANDIBLE_ZELLIJ_QUERY:-$(command -v zj-query || true)}"
+    if [[ -z "$agent_viewer" || ! -x "$agent_viewer" ]]; then
+      printf 'Mandible hook: subagent panes require agent-viewer on PATH or MANDIBLE_AGENT_VIEWER.\n' >&2
+      exit 1
     fi
 
     if [[ -n "$zj_query" ]]; then

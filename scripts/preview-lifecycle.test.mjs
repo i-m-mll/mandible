@@ -138,10 +138,10 @@ test('stale PID files cannot signal a live unrelated process; exact launch stops
 test('lifecycle lock recovery verifies the recorded owner rather than its age', async () => {
   const base = temporary(); const root = path.join(base, 'run');
   try {
-    await withOwnedRunLock(root, async () => assert.throws(() => recoverLifecycleLock(root), /live or uncertain/));
+    await withOwnedRunLock(root, async () => assert.rejects(recoverLifecycleLock(root), /already in progress|live or uncertain/));
     fs.mkdirSync(path.join(base, '.run.lock'));
     fs.writeFileSync(path.join(base, '.run.lock', 'owner.json'), JSON.stringify({ pid: process.pid, identity: 'previous process lifetime' }));
-    recoverLifecycleLock(root);
+    await recoverLifecycleLock(root);
     await withOwnedRunLock(root, async () => {});
   } finally { fs.rmSync(base, { recursive: true, force: true }); }
 });

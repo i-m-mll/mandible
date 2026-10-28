@@ -1,3 +1,6 @@
+import { RUNTIME_HEALTH_PROBE_INTERVAL_MS } from "../scripts/runtime-probe-cadence.mjs";
+import { RuntimeObservationError } from "../scripts/runtime-observation.mjs";
+
 export const EVENT_LOOP_STALL_BUDGET_MS = 250;
 /**
  * The most one request may block the event loop, judged per route by
@@ -13,7 +16,15 @@ export interface DiagnosticInterval {
   intervalEndedAt: number;
 }
 
+export interface CurrentRuntimeHealth {
+  observedAt: number;
+  collectorTurnMs: number;
+  eventLoop: NonNullable<RuntimeHealthSnapshot["eventLoop"]>;
+  memory: NonNullable<RuntimeHealthSnapshot["memory"]> & { rssFraction: number; warningThresholdFraction: number };
+}
+
 export interface RuntimeHealthSnapshot {
+  current?: CurrentRuntimeHealth;
   eventLoop?: DiagnosticInterval & { warning: boolean; maxMs: number };
   memory?: DiagnosticInterval & { warning: boolean };
 }
@@ -37,13 +48,13 @@ export interface RuntimePerformanceRecord {
 
 const MAX_RETAINED_PERFORMANCE_FINDINGS = 20;
 
-export class RuntimeHealthObservationError extends Error {
+export class RuntimeHealthObservationError extends RuntimeObservationError {
   constructor(
-    public readonly code: string,
+    code: string,
     message: string,
-    public readonly evidence: unknown,
+    evidence: unknown,
   ) {
-    super(message);
+    super(code, message, evidence, ['observation_deadline', 'stale_diagnostics'].includes(code) ? 'pending' : 'failed');
     this.name = "RuntimeHealthObservationError";
   }
 }
@@ -57,6 +68,7 @@ export async function observeRuntimeHealthCoverage<T>(options: {
   observationMs?: number;
   deadlineMs?: number;
   pollMs?: number;
+  live?: { startedAt: number; through: () => number | null };
 }): Promise<{
   value: T;
   observation: { startedAt: number; mustCover: number; completedAt: number; deadline: number };
@@ -65,56 +77,92 @@ export async function observeRuntimeHealthCoverage<T>(options: {
 }> {
   const now = options.now ?? Date.now;
   const wait = options.wait ?? (milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)));
-  const startedAt = now();
+  const enteredAt = now();
+  const startedAt = options.live?.startedAt ?? enteredAt;
   const mustCover = startedAt + (options.observationMs ?? 31_000);
-  const deadline = startedAt + (options.deadlineMs ?? 62_000);
+  const deadline = enteredAt + (options.deadlineMs ?? 62_000);
+  let probeStartedAt = enteredAt;
   let value: T;
   try {
     value = await probeByDeadline(options.probe, deadline, now);
   } catch (error) {
-    if (error instanceof RuntimeHealthObservationError) throw error;
+    if (error instanceof RuntimeObservationError) throw error;
     throw new RuntimeHealthObservationError("probe_failed", `Runtime health probe failed: ${error instanceof Error ? error.message : String(error)}`, { startedAt, mustCover, deadline, lastSample: null });
   }
-  if (now() > deadline) throw new RuntimeHealthObservationError("observation_deadline", "Runtime health probe exceeded the observation deadline.", { startedAt, mustCover, deadline, lastSample: options.healthOf(value) });
   const initial = value;
   const firstHealth = options.healthOf(value);
   const trackers = { eventLoop: intervalTracker(), memory: intervalTracker() };
   const performance: RuntimePerformanceRecord = { findings: [], omitted: 0 };
   const performanceKeys = new Set<string>();
+  let previousCurrent: CurrentRuntimeHealth | undefined;
 
   for (;;) {
-    try { options.validate?.(value, initial); }
-    catch (error) {
-      if (error instanceof RuntimeHealthObservationError) throw error;
-      throw new RuntimeHealthObservationError("observation_changed", error instanceof Error ? error.message : String(error), { startedAt, mustCover, deadline, initial, current: value });
-    }
     const health = options.healthOf(value);
     for (const name of ["eventLoop", "memory"] as const) updateIntervalCoverage(trackers[name], health[name], name, startedAt, now());
-    const assessment = assessRuntimeHealth(health);
+    if (options.live) validateCurrentCoverage(health, previousCurrent, startedAt, now());
+    const assessments = [assessRuntimeHealth(health), ...(options.live ? [assessRuntimeHealth(health.current!)] : [])];
+    const assessment = { defects: assessments.flatMap(value => value.defects), performance: assessments.flatMap(value => value.performance) };
     if (assessment.defects.length) throw new RuntimeHealthObservationError("invalid_diagnostics", assessment.defects[0]!.message, {
       startedAt, mustCover, deadline, defects: assessment.defects, initialSample: firstHealth, lastSample: health,
     });
+    try { options.validate?.(value, initial); }
+    catch (error) {
+      if (error instanceof RuntimeObservationError) throw error;
+      throw new RuntimeHealthObservationError("observation_changed", error instanceof Error ? error.message : String(error), { startedAt, mustCover, deadline, initial, current: value });
+    }
     for (const finding of assessment.performance) {
-      const key = `${finding.code}:${(finding.sample as DiagnosticInterval).sequence}`;
+      const sample = finding.sample as DiagnosticInterval;
+      const key = `${finding.code}:${sample.sequence}`;
       if (performanceKeys.has(key)) continue;
       performanceKeys.add(key);
       if (performance.findings.length < MAX_RETAINED_PERFORMANCE_FINDINGS) performance.findings.push(finding);
       else performance.omitted++;
     }
     if (now() > deadline) throw new RuntimeHealthObservationError("observation_deadline", "Runtime health observation exceeded its fixed deadline.", { startedAt, mustCover, deadline, initialSample: firstHealth, lastSample: health });
-    if (now() >= mustCover && trackers.eventLoop.coveredUntil >= mustCover && trackers.memory.coveredUntil >= mustCover) {
-      return { value, observation: { startedAt, mustCover, completedAt: now(), deadline }, samples: { initial: firstHealth, last: health }, performance };
+    const through = options.live?.through();
+    const target = options.live ? through : mustCover;
+    const covered = options.live
+      ? target != null && probeStartedAt >= target && health.current!.observedAt >= target
+      : now() >= mustCover && trackers.eventLoop.coveredUntil >= mustCover && trackers.memory.coveredUntil >= mustCover;
+    if (covered) {
+      return { value, observation: { startedAt, mustCover: target!, completedAt: now(), deadline }, samples: { initial: firstHealth, last: health }, performance };
     }
+    if (options.live) previousCurrent = health.current;
     if (now() >= deadline) throw new RuntimeHealthObservationError("stale_diagnostics", "Runtime diagnostics did not produce contiguous fresh samples covering the observation.", { startedAt, mustCover, deadline, initialSample: firstHealth, lastSample: health });
-    await wait(options.pollMs ?? 1_000);
+    await wait(options.pollMs ?? RUNTIME_HEALTH_PROBE_INTERVAL_MS);
     if (now() > deadline) throw new RuntimeHealthObservationError("observation_deadline", "Runtime health observation exceeded its fixed deadline.", { startedAt, mustCover, deadline, initialSample: firstHealth, lastSample: health });
     if (now() === deadline) throw new RuntimeHealthObservationError("stale_diagnostics", "Runtime diagnostics did not produce contiguous fresh samples covering the observation.", { startedAt, mustCover, deadline, initialSample: firstHealth, lastSample: health });
     try {
+      probeStartedAt = now();
       value = await probeByDeadline(options.probe, deadline, now);
     } catch (error) {
-      if (error instanceof RuntimeHealthObservationError) throw error;
+      if (error instanceof RuntimeObservationError) throw error;
       throw new RuntimeHealthObservationError("probe_failed", `Runtime health probe failed: ${error instanceof Error ? error.message : String(error)}`, { startedAt, mustCover, deadline, initialSample: firstHealth, lastSample: health });
     }
+  }
+}
+
+function validateCurrentCoverage(health: RuntimeHealthSnapshot, previous: CurrentRuntimeHealth | undefined, startedAt: number, now: number): void {
+  const current = health.current;
+  const invalid: (reason: string) => never = reason => { throw new RuntimeHealthObservationError("invalid_live_diagnostics", reason, { startedAt, previous, health }); };
+  if (!current || !finiteNonnegative(current.observedAt) || current.observedAt > now
+    || !Number.isFinite(current.collectorTurnMs) || current.collectorTurnMs <= 0) invalid("Current production collector observation is missing, invalid or from the future.");
+  if (!finiteNonnegative(current.memory?.rssFraction) || !Number.isFinite(current.memory?.warningThresholdFraction)
+    || current.memory.warningThresholdFraction <= 0 || current.memory.warningThresholdFraction > 1) invalid("Current memory threshold or measurement is invalid.");
+  for (const name of ["eventLoop", "memory"] as const) {
+    const open = current[name];
+    const completed = health[name];
+    if (!validInterval(open) || !validInterval(completed) || open.sequence !== completed.sequence
+      || open.intervalStartedAt !== completed.intervalEndedAt || open.intervalEndedAt !== current.observedAt) invalid(`${name} current and completed windows do not meet.`);
+    const prior = previous?.[name];
+    if (!prior && ((open.intervalStartedAt > startedAt && !diagnosticsCover(health, startedAt)) || open.intervalEndedAt < startedAt)) invalid(`${name} current window misses readiness.`);
+    if (prior && (open.intervalEndedAt < prior.intervalEndedAt || open.sequence < prior.sequence
+      || open.sequence > prior.sequence + 1)) invalid(`${name} current observations moved backwards or skipped a periodic window.`);
+    if (name === "eventLoop" && previous && open.sequence === previous.eventLoop.sequence
+      && current.eventLoop.maxMs < previous.eventLoop.maxMs) invalid("The active event-loop histogram lost observed delay without a periodic rollover.");
+    if (prior && open.sequence === prior.sequence && open.intervalStartedAt !== prior.intervalStartedAt) invalid(`${name} current window changed without a periodic rollover.`);
+    if (prior && open.sequence !== prior.sequence && (completed.intervalStartedAt !== prior.intervalStartedAt
+      || completed.intervalEndedAt < prior.intervalEndedAt)) invalid(`${name} periodic rollover lost part of the observed workload.`);
   }
 }
 

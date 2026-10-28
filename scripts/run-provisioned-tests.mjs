@@ -19,6 +19,8 @@ import { executeTestPhase, sharedProcessTreeRss } from "./test-phase-executor.mj
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SUITE_DIR = "test/provisioned";
 const LAUNCHER = `${SUITE_DIR}/iab-preview-launcher.test.ts`;
+const NATIVE_REPLACEMENT = `${SUITE_DIR}/accepted-app-install.test.ts`;
+const NATIVE_TERMINATION_MARGIN_MS = 2500;
 const RSS_LIMIT_KIB = 950_000;
 const RSS_SAMPLE_MS = 500;
 const UNMEASURED_GRACE_MS = 60_000;
@@ -31,8 +33,7 @@ const RESOURCES = {
   // Headless Chrome process trees reach about 2 GB, and concurrent launches
   // contend for startup until geometry checks become load tests.
   chromium: { rssLimitKiB: 4_000_000 },
-  // Fixture launchd jobs share the operator's GUI domain, and the full handoff
-  // builds the deployed revision inside its own tree.
+  // Fixture launchd jobs share the operator's GUI domain.
   launchd: { rssLimitKiB: 4_000_000 },
 };
 
@@ -45,7 +46,7 @@ function declaredResource(file) {
 }
 
 /** macOS lockf, launchd and native descriptor inspection. */
-const DARWIN_ONLY = new Set(["local-ca-lockf.test.ts", "runtime-handoff-launchd.test.ts", "service-definition-reconciliation.test.ts", "runtime-handoff-full.test.ts", "sqlite-close-lifetime.test.ts"]);
+const DARWIN_ONLY = new Set(["local-ca-lockf.test.ts", "service-definition-reconciliation.test.ts", "sqlite-close-lifetime.test.ts", "accepted-app-install.test.ts"]);
 
 function suiteFiles() {
   return readdirSync(path.join(root, SUITE_DIR))
@@ -122,6 +123,9 @@ function report(run) {
   const failure = problem(run);
   const line = `${failure ? "FAIL" : "pass"} ${run.label} ${run.seconds.toFixed(1)}s peak_rss_kib=${run.outcome.peakKiB}`;
   process.stdout.write(failure ? `\n===== ${line}\n${run.output}===== ${failure}\n\n` : `${line}\n`);
+  // Preserve source identity and phase-cost evidence for the qualifying native
+  // proof on success too; the ordinary concise suite report remains unchanged.
+  if (!failure && path.normalize(run.label) === NATIVE_REPLACEMENT) process.stdout.write(run.output);
 }
 
 function sharedRssMeasure() {
@@ -160,24 +164,47 @@ export async function runUnits(units, {
         if (unit.resource) held.add(unit.resource);
         const output = [];
         const started = performance.now();
-        const outcome = await executeTestPhase({
-          supervisor,
+        const commandStartedAt = unit.nativeProofStartedAt ?? Date.now();
+        const until = path.normalize(unit.args[0] ?? '') === NATIVE_REPLACEMENT ? commandStartedAt + 20_000 : null;
+        const phaseSupervisor = until ? new ProcessGroupSupervisor({ graceMs: 100 }) : supervisor;
+        let deadlineTimer;
+        let deadlineStop;
+        let deadlineReached = false;
+        if (until) deadlineTimer = setTimeout(() => {
+          deadlineReached = true;
+          deadlineStop = phaseSupervisor.stopActive('SIGTERM').then(() => null, error => error);
+        }, Math.max(0, until - NATIVE_TERMINATION_MARGIN_MS - Date.now()));
+        let outcome;
+        try { outcome = await executeTestPhase({
+          supervisor: phaseSupervisor,
           rssLimitKiB: unit.resource ? RESOURCES[unit.resource].rssLimitKiB : rssLimitKiB,
           measureRssKiB,
           monitorIntervalMs,
           unmeasuredGraceMs: UNMEASURED_GRACE_MS,
           spawnChild: (env) => {
-            const child = spawnUnit(unit, env);
+            if (until && Date.now() >= until - NATIVE_TERMINATION_MARGIN_MS) throw new Error('Native replacement termination margin reached during runner preparation.');
+            const child = spawnUnit(unit, { ...env, ...(until ? {
+              MANDIBLE_NATIVE_PROOF_STARTED_AT: String(commandStartedAt), MANDIBLE_NATIVE_PROOF_UNTIL: String(until),
+              MANDIBLE_NATIVE_PROOF_CLEANUP_UNTIL: String(until - NATIVE_TERMINATION_MARGIN_MS),
+            } : {}) });
             child.stdout?.on("data", (chunk) => output.push(chunk));
             child.stderr?.on("data", (chunk) => output.push(chunk));
             return child;
           },
-        });
+        }); } finally {
+          if (phaseSupervisor !== supervisor) await phaseSupervisor.close();
+          clearTimeout(deadlineTimer);
+        }
+        const stopError = await deadlineStop;
+        if (until && (deadlineReached || Date.now() >= until || stopError)) {
+          outcome = { ...outcome, status: 'error', error: stopError || new Error('Native replacement command exceeded its original 20000ms deadline, including runner startup and cleanup.') };
+        }
         if (unit.resource) {
           held.delete(unit.resource);
           for (const wake of released.splice(0)) wake();
         }
-        const run = { label: unit.label, outcome, output: Buffer.concat(output).toString("utf8"), seconds: (performance.now() - started) / 1000 };
+        const run = { label: unit.label, outcome, output: Buffer.concat(output).toString("utf8"),
+          seconds: until ? (Date.now() - commandStartedAt) / 1000 : (performance.now() - started) / 1000 };
         runs.push(run);
         onRun(run);
       }
@@ -190,7 +217,9 @@ export async function runUnits(units, {
 }
 
 async function main(args) {
+  const commandStartedAt = Date.now();
   const units = provisionedUnits(args.length > 0 ? args : undefined);
+  if (units.length === 1 && path.normalize(units[0].args[0] ?? '') === NATIVE_REPLACEMENT) units[0].nativeProofStartedAt = commandStartedAt;
   const jobs = Math.min(poolSize(), units.length);
   process.stdout.write(`provisioned: ${units.length} units, ${jobs} at a time\n`);
   const started = performance.now();

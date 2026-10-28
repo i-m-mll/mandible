@@ -575,7 +575,7 @@ fi
 
 # --- Build command and metadata ---
 
-command="${HOME}/.dotfiles/bin/mandible auth merge ${branch} --into ${base_branch}"
+printf -v command 'mandible auth merge %q --into %q' "$branch" "$base_branch"
 head_branch="$branch"
 execution_mode="daemon"
 

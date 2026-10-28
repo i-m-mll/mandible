@@ -212,7 +212,7 @@
   opacity: 0.45;
 }
 
-.settings-view__collection-action > svg {
+.settings-view__collection-action > .app-icon {
   width: 16px;
   height: 16px;
 }

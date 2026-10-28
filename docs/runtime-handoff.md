@@ -1,326 +1,186 @@
-# Production runtime upgrade
+# Approved runtime updates
 
-The required Mandible rebuild hook uses one independent launchd worker for
-every managed production self-update, including same-root updates with the
-same pinned runtime. Standalone builds outside managed auth keep their existing
-build guard.
+Mandible updates the installed application from the exact retained package selected
+by an approved publication. Initial delivery and continuation use the same
+reconciler in scripts/runtime-handoff.mjs. A journal records the approved target,
+one current attempt, its observed effects, its completion receipt, and cleanup.
 
-Admission validates the exact hook execution and retained signed publication
-proof before mutation. It stages the helper, storage facade, publication
-verifier, and controller modules outside the changing checkout. The helper
-acknowledges its journal before a dependency-free bridge replaces the old
-managed runner. Hook status 75 means handoff pending; it never means convergence
-is complete.
+## Publication and executable authority
 
-The helper waits for the exact old process and its start identity to disappear.
-It then unloads the owned backend definition, runs frozen install, build,
-desktop installation and instruction export, and loads the candidate service
-definitions. Desktop installation cannot start the backend during this
-transition. A changed owned gateway definition is reloaded explicitly.
+Initial publication verifies the approved Git candidate, signature, approval
+snapshot, hook identity, and selected accepted release against the checkout.
+The installed daemon runs the registered hook command in the request checkout.
+The built-in command, `bash cli/post-merge-build-dist.sh`, resolves that newly
+merged checkout and invokes its `scripts/runtime-handoff.mjs arm` entry point.
+The new admission producer therefore runs before app replacement; the old
+installed daemon supplies only the predecessor drain reader. Hook environment
+allowlisting prevents an inherited installed resource or CLI path from selecting
+an older producer.
+freezeRuntimeHandoffPublication appends a versioned credential-signature record
+to the existing attribution evidence store. The immutable journal binding records
+its evidence ID and digest before the helper can drain the running daemon.
+Freezing evidence does not change the request's execution pointer or hook outcome.
 
-Starting the candidate services only starts them. The helper then awaits the
-started daemon's readiness: it inspects the front door until it answers ready
-and warm at the exact merge generation, bounded by the handoff deadline. Every
-handoff health probe waits for the daemon's actual answer until that deadline
-(or one observation window for a recovery that outlived it); a slow answer is
-the daemon's state, not a failure. A refusal names the daemon's last answer.
+Continuing authority resolves that exact stored publication evidence and checks
+its request, hook, candidate, snapshot, selected package, and currently authorized
+signer. The historical checkout root is data. Moving, modifying, or removing the
+checkout does not revoke an already approved update. Continuing verification does
+not invoke Git or execute code from that checkout. Publication adoption attaches
+the same verified evidence through the request's existing compare-and-set path.
 
-Completion requires the pinned executable in loaded launchd arguments, the
-exact applied merge generation through the production front door, matching
-installed desktop provenance, and a full 31-second daemon health/log
-observation. Each observation sample must answer from the same process and
-definitions, ready at that generation, with valid diagnostics. Diagnostic
-samples carry a sequence and exact interval, and consecutive samples must be
-contiguous. The observer waits until a completed sample covers the end of the
-31-second window, within one fixed 62-second deadline; a stale sampler cannot
-pass by returning the same snapshot. The candidate hook manager verifies this
-receipt and publication proof before settling convergence or releasing
-deferred delivery actions.
-The handoff judges convergence, not performance. Once `handoff-start` has run
-nothing rolls back, and the observation window covers the desktop relaunch and
-a cold-cache startup warmup, the slowest seconds of a generation's life.
-Event-loop lag warnings, maximum event-loop delays of 250 ms or more, and
-memory warnings, in samples and in the log, are recorded in the receipt's
-`performance` (bounded) and never fail the handoff. Candidate acceptance, which
-runs before the merge on an empty fixture database, fails on any of them.
-The log assessment fails on any `error` line from the current process and on
-any one event or route that exceeds 100 lines in a 10-second window. That rate
-rule detects runaway loops. Scheduled work that goes through a backlog, such as
-reconciler passes, startup backfills, ingestion reconcile and full ingest,
-therefore logs one summary event per pass, with counts and a bounded sample of
-identifiers. The per-item record stays in its durable rows, such as
-`worker_thread_archives`, source aliases, or `meta`. A pass that logged one
-line per item would fail the handoff that first runs it. A refusal of a client
-request (an authorization error) answers with its own status and is not logged
-as a handler error.
+Executable authority is checked separately. The trusted accepted-release resolver
+validates retained package custody, its complete app digest, and its manifest
+before the helper executes the package's updater closure. The retained package
+supplies the helper, controller, publication verifier, runtime, and desktop
+relaunch script. The handoff directory holds journal and diagnostic evidence;
+it does not receive executable copies from a mutable checkout. Update execution
+never rebuilds the application or reinstalls dependencies.
 
-Acknowledgment removes only this helper's scoped job and regenerated files;
-the compact journal and receipt remain. Interrupted cleanup is retried without
-another merge, build, or hook attempt.
+## Attempts and effects
 
-The journal has schema `mandible-runtime-handoff@1` and lives at
-`MANDIBLE_HOME/config/local-sessions/handoff/<request>-<execution>/journal.json`.
-It binds installation, process, service definitions, runtime bytes, approved
-candidate and actual merge. A conflicting owner or changed checkout fails
-visibly. Helper crash recovery has six attempts and a 30-minute deadline.
-Failure preserves the journal and reports the failed phase as **merged, not
-live**. It does not restore the old dependency graph or replay publication.
+Fresh update admission requires the currently owned native application. Existing
+source-bootstrap records remain readable, but new updates do not replace a source
+runner or create a legacy bridge. Initial preparation, immutable publication
+material, the armed journal, and its active-owner pointer are produced under the
+same installation gateway and journal observation ownership as the worker.
 
-## Installation-owned services
+Native admission completes its no-op bridge prerequisite before the helper can
+start. Helper registration and kickstart are serialized with closure, then the
+producer releases both leases and waits read-only. Replaying an interruption
+before bootstrap retains the same admitted attempt and deadline. A missing active
+pointer is recreated only for an unfinished initial publication; terminal,
+fenced, retired, or superseded admissions cannot recreate it or launch a helper.
 
-`start`, `restart`, `install`, and `configure-launch-mode` render service definitions
-from the registered checkout and installation configuration. The checkout's
-`scripts/bun-runtime.sh` selects and verifies Bun using the OS account runtime
-store. The invoking executable, `HOME`, `PATH`, and ambient runtime or archive
-overrides do not select the production executable or service environment.
-Read-only inspection never selects or installs a runtime or writes receipts.
+The immutable binding identifies the approved target. journal.attempt identifies
+the current execution, actor, deadline, effect records, outcome, receipt, and
+mutation fence. The phase field projects current compatibility state for older
+predecessors; failure, recovery, and archived attempt records preserve history.
+Those records do not decide the current attempt's behavior. An attributed retry archives
+the preceding failed attempt before creating its successor.
 
-Both jobs use a deduplicated PATH ordered as the pinned Bun directory, checkout
-`bin`, native system tools, explicit installation tool directories, account-home
-`.local/bin`, `.dotfiles/bin`, `.cargo/bin` and `bin`, then Homebrew and
-`/usr/local` directories. Build and hook environments retain their separate PATH
-policy.
+Each effect records intent before execution and completion after observation:
 
-`MANDIBLE_HOME/config/local-sessions/service-config.json` owns deliberate backend
-overrides and tool directories. For example:
+1. Prepare and validate the exact app at a staging path on the installation
+   volume while the existing app still serves.
+2. Wait for the captured daemon's drain, unregister the qualified native service
+   definitions, and confirm their captured process incarnations have exited.
+3. Replace or adopt the exact prepared app under the existing bundle-owner
+   compare-and-set contract.
+4. Reconcile native registration and start permission with qualified running
+   services. A registration response alone does not establish readiness.
+5. Restore the desktop if it was open, retaining the actual issued intent and
+   confirmed installed-image process identity.
+6. Observe actual runtime access, service continuity, logs, and health through
+   activation, then persist the current attempt's completion receipt.
 
-```json
-{
-  "environment": { "MANDIBLE_DB": "/absolute/path/mandible.db" },
-  "toolDirectories": ["/absolute/path/tools"]
-}
-```
+Continuation observes the app and processes that actually exist. An installed
+accepted app is adopted without repeating its replacement. A completed drain is
+reused only while its captured process identities remain gone. A desktop launch
+that completed before interruption is recognized from its installed image and
+process identity. The reconciler does not roll back migrated data automatically.
 
-Allowed overrides are `MANDIBLE_DB`, `MANDIBLE_PID_FILE`,
-`MANDIBLE_STDERR_LOG_PATH`, `MANDIBLE_SQLITE_LIBRARY`,
-`MANDIBLE_SQLITE_LIBRARY_ARCHIVE`, `MANDIBLE_SECURITY_BIN`, and `NODE_OPTIONS`.
-Paths must be absolute and literal; tool directories cannot contain empty PATH
-components or shell expansions. Apply an explicit JSON file with
-`bun scripts/local-runtime.mjs configure-launch-mode --service-config /absolute/config.json`
-or pass `--service-config` to `install`. This replaces the configuration; omit
-it to preserve existing configuration. Initial migration imports allowlisted
-overrides and tool directories from the loaded backend environment. When the
-backend is unloaded, lifecycle configuration may import its installed plist.
-Runtime and checkout PATH entries are derived again rather than imported.
-The login mode is preserved unless `--launch-mode` explicitly changes it.
+## Native ownership and availability
 
-One reconciler validates both services before changing them. Changed jobs are
-booted out and observed until both the definition and old process disappear,
-then replacement plists and runner files are published. Bootstrap is followed by
-comparison of loaded arguments, environment, working directory, logs, and
-KeepAlive against the installed definitions. Unchanged `start` does not restart
-the backend; unchanged `restart` uses `kickstart -k` and confirms a new startup
-epoch. A changed gateway definition is reloaded too. A bootstrap refusal leaves
-the replacement installed and unloaded and fails the command. An unload refusal
-preserves the old files and reports unresolved drift.
+All paths use the same qualified service observations: expected bundle identity,
+owned launchd descriptor, final executable role, PID, process birth, and run count.
+The original installed-release@1 gateway used a Bun parent; its recognized manifest
+contract remains available for migration. New manifests declare backend Bun and
+gateway Caddy. The gateway execs its bundled Caddy executable so launchd supervises
+the actual listener. An unqualified xpcproxy, helper, or intermediate Bun process
+remains pending rather than becoming a ready service identity.
 
-`stop` does not rewrite definitions and preserves the gateway while previews use
-it. `reload-gateway` never republishes the backend. Lifecycle mutation refuses
-while a handoff owns the installation. Candidate installation within that handoff
-leaves the backend unloaded, and unloads any changed gateway before replacement;
-`handoff-start` starts them. Owned drift is reconciled during this handoff and
-does not require a separate repair or retry command.
+Native unregister uses qualified observations until both registration and the
+captured processes have drained. Migration also captures and drains the original
+Bun gateway's exact Caddy child. It never falls through to a raw launchd parser
+that interprets a BundleProgram job as an ordinary Program job.
 
-The shared typed inspector is `inspectServiceDefinitions(context)` in
-`scripts/service-definitions.mjs`. It asynchronously observes three separate
-facts: installed plist paths, bytes and digests; loaded launchd definitions and
-process identity; and optional desired definitions supplied by the controller.
-Owned differences and entirely absent services are successful observations.
-Differences remain observation data; they never block approval or acceptance.
-`serviceOwnershipReady` is the ownership-only admission predicate;
-`runtimeHandoffReadiness` also requires a running backend to drain before
-approval and capture. An absent gateway is captured without prior definition
-evidence and is installed and started during convergence.
-`matchingServiceDefinitions` is the strict lifecycle and handoff postcondition.
-The controller-only synchronous entry point uses the same classifier.
+A historical terminal update does not prevent ordinary use of its authorized
+installed runtime. Service startup uses the current attempt's service intent and
+ready observation rather than an old failed phase or lifetime exit status.
 
-Ownership requires exact installation runner or gateway configuration paths
-and recognisable executable arguments. The label or generated comment alone
-proves nothing. Conflicting installation identity, foreign jobs or files, and
-unavailable ownership evidence refuse mutation and identify the affected
-service. Owned duplicates are consolidated at the desired location; a missing
-plist can be recreated when the loaded job establishes ownership. An unloaded
-owned service or an entirely absent service can be published and loaded when
-the operation requires it. Unreadable launchd state remains a refusal with the
-concrete reason and no repair command.
+## Ownership, receipts, and cleanup
 
-Handoff admission captures the loaded backend and gateway definitions as prior
-state evidence. Installed snapshots and digests are retained separately and do
-not describe the running job. Launch mode and daemon-log provenance come from
-the loaded backend. The journal also binds configuration migration inputs: an
-existing `service-config.json` stays authoritative; otherwise overrides and
-tool directories are derived from the loaded environment. After the handoff
-owns the installation, the staged controller publishes those captured inputs
-before unloading. A changed configuration or loaded definition after capture
-refuses mutation. Gateway reload compares loaded state with the candidate's
-desired definition even when the plist on disk already contains desired bytes.
-Completion still requires exact installed/loaded equality, publication proof,
-process and generation identity, desktop provenance and the health/log window.
-Prior-state capture does not provide rollback of binaries or dependencies.
+The existing installation gateway lease is acquired before the journal observation
+lease. Nested lifecycle assertions retain ancestor ownership: losing the gateway
+kernel guard stops effects even if the observation guard remains alive. Controller
+children receive the same validated gateway delegation. Live or uncertain owners
+block a contender. Only exactly proven stale owners are recovered.
 
-Private fixtures pass an explicit installation context. Controllers also accept
-`MANDIBLE_SERVICE_ACCOUNT_HOME` for a nondefault `MANDIBLE_HOME`, so fixture
-LaunchAgent directories remain private; the default production installation
-ignores that override. Fixture labels always include the installation hash.
+Every journal writer requires both live leases scoped to that exact journal;
+absence of an observation scope is an error. The worker waits for a short producer
+lease outside either lock and rereads the journal after acquisition. Full journal
+state comparisons remain strict within that ownership epoch.
 
-## Handoff lock
+Acknowledgment is published only after the worker verifies current authority,
+validates the accepted package and prepared app, and records drain intent. Drain
+permission binds the running, unfenced, prepared admission to the exact live
+observation owner and its gateway guard, together with the captured predecessor
+PID and birth. A different observer epoch or an exited helper cannot reuse it.
+No gateway delegation token is persisted. Failure and closure clear readiness and
+publish a non-armed phase before releasing ownership, also protecting the current
+predecessor whose reader understands only the older phase/acknowledgment fields.
 
-`MANDIBLE_HOME/config/local-sessions/handoff-active.json` names the one handoff
-that owns the installation. While it is held, no other handoff is admitted, and
-no protected merge may execute. Merge preflight and submission may prepare
-later pending requests and report the lock as their publication blocker, but
-candidate runtime launches stay deferred and every approval/execution path,
-including documentation-only merges, refuses. This keeps the protected branch
-at the exact generation needed to recover the failed publication. Releasing
-the lock schedules one missing current-candidate acceptance without repeating
-an unchanged failed result. A failed handoff keeps
-the lock until `mandible auth handoff recover <request>` (verification-only
-recovery, below) succeeds or the operator retires it with
-`mandible auth handoff retire --binding-digest <digest> --reason <text>`.
-Retirement boots out the exact idle helper job if one is still loaded and moves
-the lock beside the journal as `retired-active.json` with a `retirement.json`
-record. The journal, staged material and logs stay in place, and the failed
-delivery stays failed.
+The reconciler covers actual activation and desktop restoration with live health
+observations. A fresh current collector turn must cover completion. This does not
+wait for an arbitrary 31-second window or an aligned periodic diagnostic interval.
+Process continuity, retained startup-log coverage, health findings, and the existing
+100 ms handler and 250 ms event-loop budgets remain intact.
 
-A rebuild that ends without an admitted handoff, or whose handoff fails, is
-reported once as `rebuild_failure` in health and as `mandible:rebuild-failed`,
-with the message "The merge landed, but Mandible did not update: <reason>." A
-rebuild hook that exited 75 belongs to its handoff and is pending, never a
-failure, until that handoff's journal fails.
+A mandible-runtime-receipt@1 receipt binds the approved target and current attempt
+to installation, services, desktop, access, health, and log evidence. The daemon
+verifies it once in its guarded operation, adopts publication evidence as needed,
+and commits the exact receipt acceptance marker. Acknowledgment consumes an
+opaque one-use verification result bound to that same observation owner and
+receipt digest. It does not repeat package or health verification.
 
-A failed automatic recovery health window retries after five minutes even when
-the generation evidence is unchanged. Changed evidence permits an immediate
-retry. Only one observation runs at a time.
+Acknowledgment unregisters the exact helper, confirms its captured process has
+drained, persists its mutation fence, and releases only its exact active owner.
+A retry after committed receipt acceptance uses the exact durable marker and digest
+without repeating publication adoption or runtime probes. A foreign active owner
+never grants mutation authority over this journal.
+
+Cleanup has its own pending or complete state. It validates only the obsolete
+objects it deletes, including previous app bytes and retained package ownership.
+Cleanup failure preserves runtime success and can be retried after ownership has
+been released. A successor can close an old mutator under the same ordered leases
+by fencing its exact helper and preserving its historical outcome; an old failed
+phase or a missing PID alone is not permission to release ownership.
 
 ## Verification
 
-Three provisioned tests cover lifecycle reconciliation and handoff on macOS. Each derives its inputs from
-the machine and throws, naming the prerequisite, when one is missing.
+Focused source tests cover interruption and continuation, preparation failure,
+receipt consumption and cleanup retry, native executable qualification, current
+health coverage, process continuity, and ancestor lease loss:
+
+The admission regression runs the actual producer and worker in separate Bun
+processes against real journals and lifecycle locks. Explicit barriers cover
+publication before bootstrap, replay of the same attempt, consumer preparation,
+the read-only producer wait, live drain permission, failure and owner loss, and
+fenced replay. Only package, native registration, authority, and health effects
+are substituted; no separate lifecycle algorithm or full bootstrap is recreated.
 
 ```bash
-bun run test:provisioned test/provisioned/service-definition-reconciliation.test.ts
-bun run test:provisioned test/provisioned/runtime-handoff-launchd.test.ts
-bun run test:provisioned test/provisioned/runtime-handoff-full.test.ts
+bun run test test/runtime-handoff-admission.test.ts test/runtime-handoff.test.ts test/service-definition-handoff.test.ts test/bundle-service-start.test.ts test/lifecycle-lock.test.ts test/runtime-handoff-readiness.test.ts
 ```
 
-`service-definition-reconciliation` exercises real launchd capture before
-repairing owned drift, loaded configuration migration, strict convergence,
-gateway-only reload, foreign-job preservation and bootstrap refusal.
+The bounded macOS native fixture reuses executables from the candidate app already
+built for ordinary [candidate acceptance](candidate-acceptance.md):
 
-`runtime-handoff-launchd` arms the independent helper under launchd with a
-private installation directory and unique labels, using a stub old daemon and a
-stub rebuild hook. It verifies supervision, bridge ordering, helper crash
-recovery and repeated admission without dependency mutation.
+```bash
+MANDIBLE_NATIVE_PROOF_APP='/absolute/path/to/candidate/Mandible.app' bun run test:provisioned test/provisioned/accepted-app-install.test.ts
+```
 
-`runtime-handoff-full` is the one pre-merge run of the real post-merge handoff.
-It archives the deployed revision named by the canonical root's
-`dist/build-revision.json`, clones that root's installed dependencies, and
-starts the actual old daemon on the pinned Bun in a private installation. The
-candidate is `HEAD` of the checkout under test, committed on a `wt` branch of
-the private canonical root. A durable private agent submits one issue-linked
-request through the normal HTTP API, candidate acceptance runs, and the
-private operator approves through the ordinary action-bound signing challenge.
-Both private plists are drifted after acceptance and before approval; the
-ordinary update must reconcile them and acknowledge its receipt.
-The old protected-root executor keeps serving until the reviewed request merges
-the candidate; then `cli/post-merge-build-dist.sh` hands off independently
-under launchd. The test verifies the canonical independent handoff, the exact
-new health generation, the loaded service definition, durable acknowledgment,
-native `xattr` precedence over a poisoned PATH entry, and that a poisoned old
-CLI shim is never used. Every managed self-update follows this sequence.
+It assembles two small signed private descriptors with unique service identities,
+uses the production reconciler and its prepare/install/drain/start effects, and
+continues one interruption after B is installed but before services launch. It
+performs no additional Cargo or Tauri build. Its original 20-second command budget
+includes runner startup and owned teardown; the launcher supplies the deadline.
 
-The operator's installation and toolchain are read, never changed: the trusted
-CA snapshot under `~/.mandible` is copied into private storage with its digests
-preserved, the Bun dependency cache is cloned, and the Cargo and Rustup
-directories are referenced. The configured native Git hooks are copied into
-the private repository. Isolation transforms only the fixture copies: the
-generated frontend and backend ports, the generator's expected frontend port,
-and the Caddy admin port. Unique installation-directory hashes give distinct
-launchd labels, the desktop install path is private, and the OS trust store and
-Keychain search list are unchanged. Teardown stops only the fixture's jobs and
-deletes its data. Compact success or failure evidence goes to
-`~/.cache/mandible/acceptance/upgrade-evidence`. The paired production daemon
-and desktop gate still runs on the exact unmodified candidate; this fixture
-does not claim identical source bytes after its port transforms.
-
-Verification-only recovery uses the same retained hook row, publication proof,
-failed handoff journal, receipt verifier, and convergence settlement. It never
-runs a build, installer, merge, or restart. The failed journal remains failed
-through a 31-second observation of the exact current daemon, installation,
-loaded launchd definitions, and actual stderr writer. Hook acceptance commits
-before the journal becomes complete; interrupted acknowledgment can be replayed.
-Concurrent observers cannot replace a receipt after its hook acceptance commits.
-The original failure and hook attempt history remain available. Recovery
-applies the same convergence rule as the handoff: it reads and hashes the
-complete current-process log, following rotated segments as described below,
-and lifetime hard failures such as crashes, error rows, restarts and event
-storms remain fatal even when they are old. The recovery receipt records the
-exact interval, initial and final samples, full log offset/digest/byte count,
-and bounded performance findings.
-Refused recovery observations are kept separately under the handoff's
-`recovery-attempts/` directory. Each immutable record includes the actor,
-failed phase, reason and bounded evidence; the newest ten are retained without
-rewriting the journal or an accepted recovery receipt.
-
-A failed convergence hook can be executed again with
-`mandible auth retry-convergence <request> [--hook <id>]`. This retries the hook
-without publishing the merge again. Pending means admitted and still running;
-a failed or unconfirmed result is not completion. Inspect `mandible auth show
-<request>` before taking another action after a connection loss.
-
-The protected retry route accepts `mode: "verify-current"` and requires an
-active durable credential with project write access and exact delivery custody
-(or configured operator recovery). `mandible auth handoff recover <request>
-[--operator-recovery]` calls it. Public routes accept ambiguity-safe short
-request references. When the deployed daemon predates this capability, the
-candidate-owned `scripts/verify-current-convergence.ts` is a finite one-shot:
-pass the full exact request ID and optionally `--operator-recovery`, with the
-durable credential on stdin. It opens the existing database without migrations,
-background sweeps, global request expiry, or merge-finalizer enqueue. Tokens
-must not appear in command arguments, environment, output, or retained evidence.
-Packaging uses the pinned runtime and canonical CLI, then native macOS tools,
-then Cargo and inherited tools; a Homebrew `xattr` cannot replace `/usr/bin/xattr`.
-
-### Log coverage across rotation
-
-The daemon rotates its own stderr log once it reaches
-`stderr_rotation_max_bytes` (16 MiB by default), keeping
-`stderr_rotation_keep_segments` (5) older segments. Rotation copies the live
-file into `<log>.1` until its size stops changing, truncates the live file in
-place (the inode stays the same), and appends a `stderr_log_rotated` record to
-the live file with that segment's byte count and sha256. Each file therefore
-names the exact bytes of the segment before it. A byte appended between the
-final size check and the truncate would be lost, so rotation's thread is the
-file's only writer. The daemon's stderr writes are synchronous and run on that
-thread, and Bun relays worker-thread output through it. Child processes pipe
-their stderr, and the daemon logs it as `child_process_stderr` warnings with
-the child's attribution, one row per pipe read of whole lines, capped at 16 Ki
-characters with the omitted count recorded. A stack trace or warning dump is
-therefore one or two rows; only a child that keeps writing approaches the storm
-rule. `bun run check` refuses daemon code that lets a child inherit the
-daemon's stderr. A rotated 16 MiB log takes about 15–50 ms of
-that thread.
-
-Observation locates the newest `server_started` line, walking back from the live
-file through `.1`, `.2` and so on, and checks each segment's size and digest
-against the record in the next newer file. That line must identify the current
-process. Coverage runs from that line through every newer segment to the live
-file's end, and the receipt records the startup offset, each segment's path,
-byte count and digest, and the digest of the covered bytes. Reading, hashing
-and assessment proceed in chunks that yield, so a recovery observation does not
-stall the daemon it is observing. One coverage walk reads at most 128 MiB.
-
-A live file that is truncated or shrinks during the window fails as a changed
-log. The final read also re-hashes the live file's prefix as first resolved and
-every covered segment, so a rotation the samples missed fails as well. Coverage
-also fails when the current startup line is missing, when it names another
-process, when a rotation record is missing or malformed, when a segment differs
-from its record, when the startup segment has already aged out of the retained
-segments, and when the walk exceeds its bound. A rotation that predates rotation
-records has no verifiable link. Recovery preserves logs and does not restart a
-healthy daemon to satisfy coverage. A fresh launch requires separate
-authorization.
-
-Co-Authored-By: Codex (GPT-5) <codex@openai.com>
+Fixture authority and access adapters cover its private heartbeat and Caddy admin
+endpoint. They do not certify product approval or the full product daemon. The
+fixture also does not physically kill and relaunch the independent production
+helper. Real signed publication evidence has separate source coverage, including
+an unavailable checkout. Exact product package/runtime acceptance remains the
+normal gate; the actual production transition is reported after human approval.
 
 Co-Authored-By: Codex (GPT) <codex@openai.com>

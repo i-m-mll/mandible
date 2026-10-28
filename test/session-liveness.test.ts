@@ -211,6 +211,52 @@ describe("a Codex lock check that cannot complete", () => {
   const freshHolderState = () => withFreshCodexTaskLiveness((read) =>
     classifyHolderLiveness(db, heldUnit(), undefined, read).state);
 
+  it("retains bounded subprocess failure evidence while deduplicating outages and logging recovery", async () => {
+    fs.mkdirSync(lockDir);
+    const mode = path.join(codexRoot, "scan-mode");
+    const { dir } = useStubCommand("lsof", `case "$(/bin/cat ${JSON.stringify(mode)})" in
+      denied) printf 'partial-output'; printf '%8192s' '' >&2; printf 'access denied' >&2; exit 13 ;;
+      timeout) exec /bin/sleep 10 ;;
+      empty) exit 1 ;;
+    esac`);
+    const source = path.join(codexRoot, "sessions", "2026", "10", "21", `rollout-${THREAD}.jsonl`);
+    const scan = () => withFreshCodexTaskLiveness(read => read(source, THREAD));
+    try {
+      fs.writeFileSync(mode, "denied");
+      const denied = await scan();
+      expect(denied).toMatchObject({ status: "unavailable", subprocess: {
+        command: "lsof", code: 13, signal: null, killed: false, timeout_ms: 2000,
+        stdout: "partial-output", stderr_bytes: 8205, stderr_truncated: true,
+      } });
+      const event = logged("codex_task_liveness_unavailable")[0];
+      expect(event).toMatchObject({ level: "error", target: lockDir, subprocess: denied.status === "unavailable" ? denied.subprocess : undefined });
+      const diagnostics = event.subprocess as { stderr: string; duration_ms: number; deadline_elapsed: boolean };
+      expect(Buffer.byteLength(diagnostics.stderr)).toBeLessThanOrEqual(4096);
+      expect(diagnostics.stderr).toContain("access denied");
+      expect(diagnostics.duration_ms).toBeGreaterThanOrEqual(0);
+      expect(diagnostics.deadline_elapsed).toBe(diagnostics.duration_ms >= 2000);
+      await scan();
+      expect(logged("codex_task_liveness_unavailable")).toHaveLength(1);
+      fs.writeFileSync(mode, "empty");
+      expect(await scan()).toEqual({ status: "not_live" });
+      expect(logged("codex_task_liveness_recovered")).toHaveLength(1);
+
+      fs.writeFileSync(mode, "timeout");
+      const timeout = await scan();
+      expect(timeout).toMatchObject({ status: "unavailable", subprocess: { signal: "SIGTERM", killed: true, timeout_ms: 2000, stderr: "" } });
+      if (timeout.status !== "unavailable" || !timeout.subprocess) throw new Error("Missing timeout diagnostics");
+      expect(timeout.subprocess.duration_ms).toBeGreaterThanOrEqual(1900);
+      expect(timeout.subprocess.deadline_elapsed).toBe(timeout.subprocess.duration_ms >= 2000);
+      expect(logged("codex_task_liveness_unavailable")).toHaveLength(2);
+      vi.stubEnv("PATH", path.join(codexRoot, "no-executables"));
+      expect(await scan()).toMatchObject({ status: "unavailable", subprocess: { code: "ENOENT", signal: null, stderr: "" } });
+      expect(logged("codex_task_liveness_unavailable")).toHaveLength(3);
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("reads as unknown, so no consumer clears, archives, or takes over the holder", async () => {
     fs.writeFileSync(lockDir, "");
 

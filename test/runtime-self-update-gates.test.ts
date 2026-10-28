@@ -7,12 +7,15 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import * as childProcess from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { waitUntilPasses } from "./helpers/wait-until.js";
 import { AuthQueue } from "../src/auth-queue.js";
+import { acceptedReleaseReceiptFixture } from './helpers/accepted-release-fixture.js';
+import { acceptedReleaseSelection, bindAcceptedRelease } from '../src/accepted-release-selection.js';
 import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { collectAuthMergeReview } from "../src/auth-change-report.js";
-import { latestCandidateAcceptance, type CandidateAcceptanceInput, type CandidateAcceptanceOutcome } from "../src/candidate-acceptance.js";
+import { CandidateAcceptanceRuns, latestCandidateAcceptance, type CandidateAcceptanceInput, type CandidateAcceptanceOutcome } from "../src/candidate-acceptance.js";
 import { setDb } from "../src/db.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import type { AuthRequestInput, SseEvent } from "../src/types.js";
@@ -26,6 +29,8 @@ import {
   advanceMainViaAuthorizedMerge, approveFixtureRequest, commitOnBranch, configureSigningCredential, createAuthCheckRepo, createLedgerIssue, createLedgerProject,
   createMigratedDb, git, publishFixtureExecution, registerWorkRepo, waitForStatus,
 } from "./helpers/auth-queue-fixtures.js";
+vi.mock('node:child_process', async original => ({ ...await original<typeof import('node:child_process')>(), spawnSync: vi.fn((await original<typeof import('node:child_process')>()).spawnSync) }));
+const actualSpawnSync = (await vi.importActual<typeof import('node:child_process')>('node:child_process')).spawnSync;
 
 let repo: string;
 let home: string;
@@ -39,13 +44,17 @@ let runs: AcceptanceRun[];
 let inspector: ReturnType<typeof createServiceDefinitionInspector>;
 
 /** A failed handoff journal and the lock that names it, as the incident left them. */
-function holdHandoffLock(phase = "failed") {
+function holdHandoffLock(phase = "failed", qualifiedHelper = false) {
   const requestId = "f3ecce00-0000-4000-8000-000000000000";
   const executionId = "44059845-0000-4000-8000-000000000000";
   const dir = path.join(home, "config", "local-sessions", "handoff", `${requestId}-${executionId}`);
   fs.mkdirSync(dir, { recursive: true });
-  const binding = { home, requestId, executionId, root: repo, hookId: "builtin-mandible-rebuild" };
-  const journal = { schema: "mandible-runtime-handoff@1", binding, bindingDigest: bindingDigest(binding), phase, error: phase === "failed" ? "Candidate runtime readiness failed" : undefined, attempts: 1, updatedAt: 1 };
+  const binding = { home, requestId, executionId, root: repo, hookId: "builtin-mandible-rebuild",
+    ...(qualifiedHelper ? { domain: `gui/${process.getuid!()}`, runtime: { path: process.execPath } } : {}) };
+  const journal = { schema: "mandible-runtime-handoff@1", binding, bindingDigest: bindingDigest(binding), phase, error: phase === "failed" ? "Candidate runtime readiness failed" : undefined, attempts: 1, updatedAt: 1,
+    ...(qualifiedHelper ? { helperLabel: 'bio.mll.mandible.fixture.retirement' } : {}) };
+  if (qualifiedHelper) vi.mocked(childProcess.spawnSync).mockImplementation((binary, args, options) => binary === '/bin/launchctl'
+    ? { status: 113, stdout: '', stderr: 'Could not find service' } as any : actualSpawnSync(binary, args, options));
   const journalPath = path.join(dir, "journal.json");
   fs.writeFileSync(journalPath, `${JSON.stringify(journal)}\n`);
   const lockPath = path.join(home, "config", "local-sessions", "handoff-active.json");
@@ -87,6 +96,13 @@ function acceptanceExecutor(input: CandidateAcceptanceInput) {
   return new Promise<CandidateAcceptanceOutcome>((settle) => {
     runs.push({ input, settle });
     input.signal.addEventListener("abort", () => settle({ status: "failed", result: null, error: "stopped" }));
+  }).then(outcome => {
+    if (outcome.status !== 'passed') return outcome;
+    const row = db.prepare('SELECT pin_sha, tree_sha, base_sha, head_sha FROM auth_candidate_acceptances WHERE id = ?')
+      .get(input.env.MANDIBLE_ACCEPTANCE_ID!) as import('../src/candidate-acceptance.js').CandidateAcceptanceCandidate;
+    if (outcome.result && typeof outcome.result === 'object' && 'receipt' in outcome.result) return outcome;
+    return { ...outcome, result: { ...outcome.result as object, receipt: acceptedReleaseReceiptFixture(home, row,
+      { record_id: input.env.MANDIBLE_ACCEPTANCE_ID!, request_id: input.env.MANDIBLE_ACCEPTANCE_REQUEST! }, input.workUnitId) } };
   });
 }
 
@@ -122,7 +138,7 @@ afterEach(async () => {
 });
 
 describe("runtime handoff lock gate", () => {
-  it("admits checks and supersession while exposing the publication blocker, then launches one acceptance after release", async () => {
+  it("accepts isolated candidates under failed production history while preserving publication exclusion", async () => {
     const lock = holdHandoffLock();
     const check = (await queue.checkMergeIndependence({ repo: path.basename(repo), cwd: repo, base_branch: "main", head_branch: "feature/other" }));
     expect(check).toMatchObject({
@@ -135,7 +151,7 @@ describe("runtime handoff lock gate", () => {
 
     const original = await submit();
     expect(await queue.publicationBlockerForRequest(original)).toEqual(check.publication_blocker);
-    expect(runs).toHaveLength(0);
+    await waitUntilPasses(() => expect(runs).toHaveLength(1));
 
     git(repo, ["checkout", "feature/self-update"]);
     fs.writeFileSync(path.join(repo, "runtime.txt"), "revised while publication is blocked\n");
@@ -148,7 +164,7 @@ describe("runtime handoff lock gate", () => {
     });
     expect((await queue.getRequest(original.id))?.status).toBe("superseded");
     expect((await queue.getRequest(replacement.id))?.status).toBe("pending");
-    expect(runs).toHaveLength(0);
+    await waitUntilPasses(() => expect(runs).toHaveLength(2));
     await expect(queue.approveWithOperatorProof(replacement.id, operatorId)).rejects.toThrow(/Runtime handoff lock/);
 
     // A request admitted to the repo chain before the lock appeared is parked
@@ -165,8 +181,126 @@ describe("runtime handoff lock gate", () => {
     db.prepare("UPDATE auth_hooks SET repo_pattern = ? WHERE id = 'builtin-mandible-rebuild'").run(path.basename(repo));
     fs.unlinkSync(lock.lockPath);
     await queue.refreshPendingCandidates();
+    expect(runs).toHaveLength(2);
+    expect(runs[1]!.input.pinSha).toBe((await queue.getRequest(replacement.id))!.merge_candidate_pin_sha);
+  });
+});
+
+describe('automatic accepted-package binding', () => {
+  it('supports the one-time legacy custodian bridge, then selects the next delivery automatically', async () => {
+    const first = await submit();
     await waitUntilPasses(() => expect(runs).toHaveLength(1));
-    expect(runs[0]!.input.pinSha).toBe((await queue.getRequest(replacement.id))!.merge_candidate_pin_sha);
+    await queue.dispose();
+    const candidate = { pin_sha: first.merge_candidate_pin_sha!, tree_sha: first.merge_candidate_tree_sha!,
+      base_sha: first.merge_preflight_base_sha!, head_sha: first.merge_head_sha! };
+    // The old authority records the compact reference but cannot bind it.
+    const reference = acceptedReleaseReceiptFixture(home, candidate, undefined, first.custody_work_unit_id!);
+    const legacy = new CandidateAcceptanceRuns(db, async () => ({ status: 'passed', result: { receipt: reference }, error: null }), Date.now, () => {});
+    legacy.start();
+    legacy.enqueue(first.id, candidate, () => ({ repoRoot: repo, pinSha: candidate.pin_sha, projectId, workUnitId: first.custody_work_unit_id!, env: {} }));
+    await legacy.idle();
+    expect(db.prepare('SELECT id FROM auth_request_actions WHERE auth_request_id = ?').all(first.id)).toEqual([]);
+    const accepted = db.prepare("SELECT id FROM auth_candidate_acceptances WHERE auth_request_id = ? AND status = 'passed'").get(first.id) as { id: string };
+    queue = new AuthQueue({ db, hookManager: createInstalledServiceHookManager(db, { serviceDefinitionInspector: inspector }), backgroundMaintenance: false,
+      executor: async () => new Promise(() => {}), candidateAcceptanceExecutor: acceptanceExecutor });
+    await expect(queue.approveWithOperatorProof(first.id, operatorId)).rejects.toThrow('Accepted package selection is not ready');
+    const revision = queue.listLifecycleEvents(first.id).at(-1)!.revision;
+    queue.addAction(first.id, { kind: 'checkpoint_add', target_issue_ref: issue.id,
+      payload: { kind: 'accepted-release', payload: { acceptanceId: accepted.id, reference } } },
+      { user_id: operatorId, credential_id: credentialId, evidence_method: 'api_token' }, revision, 1);
+    expect(acceptedReleaseSelection(db, (await queue.getRequest(first.id))!, queue.listActions(first.id), false).selection.reference).toBe(reference);
+    expect(queue.listLifecycleEvents(first.id).at(-1)!.authority_path).toBe('custodian');
+    await queue.approveWithOperatorProof(first.id, operatorId);
+    expect((await queue.getRequest(first.id))!.approved_by_user_id).toBe(operatorId);
+    // An upgraded authority's subsequent request requires no staging call.
+    const second = await submit('feature/other');
+    await waitUntilPasses(() => expect(runs).toHaveLength(2));
+    runs[1].settle({ status: 'passed', result: {}, error: null });
+    await queue.drainCandidateAcceptances();
+    expect(await acceptanceOf(second.id)).toMatchObject({ state: 'passed' });
+    expect(queue.listActions(second.id)).toHaveLength(1);
+    expect(queue.listLifecycleEvents(second.id).at(-1)).toMatchObject({ authority_path: 'system', event_type: 'revised' });
+    expect(queue.listActions(first.id)[0].payload.payload).toEqual({ acceptanceId: accepted.id, reference });
+  });
+
+  it('commits one selection and canonical revision with a compacted pass, then replays without revision', async () => {
+    const request = await submit();
+    await waitUntilPasses(() => expect(runs).toHaveLength(1));
+    runs[0].settle({ status: 'passed', result: { diagnostics: 'x'.repeat(70_000) }, error: null });
+    await queue.drainCandidateAcceptances();
+    const accepted = db.prepare('SELECT id, status, result_json FROM auth_candidate_acceptances WHERE auth_request_id = ? ORDER BY rowid DESC LIMIT 1')
+      .get(request.id) as { id: string; status: string; result_json: string };
+    expect(accepted.status).toBe('passed');
+    expect(accepted.result_json!.length).toBeLessThan(64 * 1024);
+    const actions = queue.listActions(request.id);
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({ target_issue_ref: issue.id, state: 'staged', payload: {
+      kind: 'accepted-release', payload: { acceptanceId: accepted.id, reference: JSON.parse(accepted.result_json!).receipt },
+    } });
+    const revisions = queue.listLifecycleEvents(request.id);
+    expect(revisions.at(-1)).toMatchObject({ event_type: 'revised', authority_path: 'system', evidence_method: 'system_internal' });
+    expect(JSON.parse(revisions.at(-1)!.prior_snapshot_json!).actions).toEqual([]);
+    bindAcceptedRelease(db, (await queue.getRequest(request.id))!, accepted.id, issue.id, Date.now());
+    expect(queue.listLifecycleEvents(request.id)).toHaveLength(revisions.length);
+    expect(queue.listActions(request.id)).toEqual(actions);
+  });
+
+  it.each(['custody', 'lifecycle', 'pin', 'receipt', 'package owner'] as const)('fails finalization on a changed %s without a passed or running orphan', async change => {
+    const request = await submit();
+    await waitUntilPasses(() => expect(runs).toHaveLength(1));
+    if (change === 'custody') db.prepare('UPDATE work_units SET custody_generation = custody_generation + 1 WHERE id = ?').run(request.custody_work_unit_id);
+    if (change === 'lifecycle') await queue.update(request.id, { title: 'Explicit pending revision' });
+    if (change === 'pin') db.prepare('UPDATE auth_requests SET merge_candidate_pin_sha = ? WHERE id = ?').run('f'.repeat(40), request.id);
+    const wrongOwner = change === 'package owner' ? { receipt: acceptedReleaseReceiptFixture(home, {
+      pin_sha: request.merge_candidate_pin_sha!, tree_sha: request.merge_candidate_tree_sha!, base_sha: request.merge_preflight_base_sha!, head_sha: request.merge_head_sha!,
+    }) } : {};
+    runs[0].settle({ status: 'passed', result: change === 'receipt' ? { receipt: 'invalid' } : wrongOwner, error: null });
+    await queue.drainCandidateAcceptances();
+    expect(latestCandidateAcceptance(db, request.id)).toMatchObject({ status: 'failed', error: expect.stringContaining('finalization failed') });
+    expect(queue.listActions(request.id)).toEqual([]);
+    expect(db.prepare("SELECT id FROM auth_candidate_acceptances WHERE status IN ('running', 'passed')").all()).toEqual([]);
+  });
+
+  it('rolls back the selection and verdict when the canonical revision cannot be written', async () => {
+    const request = await submit();
+    await waitUntilPasses(() => expect(runs).toHaveLength(1));
+    const revisions = queue.listLifecycleEvents(request.id);
+    db.exec("CREATE TRIGGER refuse_binding_revision BEFORE INSERT ON auth_request_lifecycle_events BEGIN SELECT RAISE(ABORT, 'revision fixture failure'); END");
+    runs[0].settle({ status: 'passed', result: {}, error: null });
+    await queue.drainCandidateAcceptances();
+    expect(latestCandidateAcceptance(db, request.id)).toMatchObject({ status: 'failed', error: expect.stringContaining('revision fixture failure') });
+    expect(queue.listActions(request.id)).toEqual([]);
+    expect(queue.listLifecycleEvents(request.id)).toEqual(revisions);
+  });
+
+  it.each(['unchanged', 'veto', 'edit', 'delete'] as const)('reconciles a new candidate while preserving an %s selection', async change => {
+    const request = await submit();
+    await waitUntilPasses(() => expect(runs).toHaveLength(1));
+    runs[0].settle({ status: 'passed', result: {}, error: null });
+    await queue.drainCandidateAcceptances();
+    const initial = queue.listActions(request.id)[0];
+    const actor = { user_id: operatorId, credential_id: credentialId, evidence_method: 'api_token' as const };
+    const revision = queue.listLifecycleEvents(request.id).at(-1)!.revision;
+    if (change === 'veto') queue.setActionVeto(request.id, initial.id, true, actor, revision, 1);
+    if (change === 'edit') queue.updateAction(request.id, initial.id, { ...initial, payload: { kind: 'accepted-release', payload: { ...initial.payload.payload, reference: 'explicit selection' } } }, actor, revision, 1);
+    if (change === 'delete') queue.deleteAction(request.id, initial.id, actor, revision, 1);
+    const before = queue.listActions(request.id);
+    advanceMainViaAuthorizedMerge(db, repo, 'feature/other', 'merge-other');
+    await queue.refreshPendingCandidates();
+    await waitUntilPasses(() => expect(runs).toHaveLength(2));
+    runs[1].settle({ status: 'passed', result: {}, error: null });
+    await queue.drainCandidateAcceptances();
+    const latest = db.prepare('SELECT id, status FROM auth_candidate_acceptances WHERE auth_request_id = ? ORDER BY rowid DESC LIMIT 1')
+      .get(request.id) as { id: string; status: string };
+    if (change === 'unchanged') {
+      expect(latest.status).toBe('passed');
+      expect(queue.listActions(request.id)).toHaveLength(1);
+      expect(queue.listActions(request.id)[0]).toMatchObject({ id: initial.id, payload: { payload: { acceptanceId: latest.id } } });
+    } else {
+      expect(latest.status).toBe('failed');
+      expect(queue.listActions(request.id)).toEqual(before);
+      await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow('acceptance');
+    }
   });
 });
 
@@ -397,7 +531,7 @@ describe("candidate acceptance gate", () => {
     expect(runs[1]!.input.pinSha).toBe((await queue.getRequest(replacement.id))!.merge_candidate_pin_sha);
   });
 
-  it("re-pins a candidate the handoff lock left stale and runs its acceptance once the lock is released, with no approval", async () => {
+  it("re-pins and accepts a new candidate independently of a retained production handoff", async () => {
     commitOnBranch(repo, "feature/sibling", { "sibling.txt": "sibling\n" });
     const request = (await submit());
     await waitUntilPasses(() => expect(runs).toHaveLength(1));
@@ -405,7 +539,7 @@ describe("candidate acceptance gate", () => {
     await queue.drainCandidateAcceptances();
 
     // A self-update merge moves main while its handoff holds the lock. Safe
-    // review work re-pins the sibling, but no candidate runtime may launch.
+    // review work re-pins and qualifies the sibling in its isolated runtime.
     const lock = holdHandoffLock("complete");
     advanceMainViaAuthorizedMerge(db, repo, "feature/sibling", "merge-sibling");
     const finalizer = queue as unknown as { revalidatePendingMergeRequestsSerialized(request: unknown): Promise<void> };
@@ -414,9 +548,9 @@ describe("candidate acceptance gate", () => {
     const blockedPin = (await queue.getRequest(request.id))!.merge_candidate_pin_sha;
     expect(blockedPin).not.toBe(runs[0]!.input.pinSha);
     expect((await queue.getRequest(request.id))!.merge_preflight_base_sha).toBe(git(repo, ["rev-parse", "main"]));
-    expect(runs).toHaveLength(1);
+    await waitUntilPasses(() => expect(runs).toHaveLength(2));
 
-    // The first idle tick after release launches the one missing acceptance.
+    // Releasing the production owner does not duplicate its acceptance.
     fs.unlinkSync(lock.lockPath);
     await queue.refreshPendingCandidates();
     const repinned = (await queue.getRequest(request.id))!;
@@ -487,16 +621,16 @@ describe("rebuild failure", () => {
 });
 
 describe("failed handoff retirement", () => {
-  it("retires only the exact failed lock and preserves its journal as evidence", () => {
+  it("retires only the exact failed lock and preserves its journal as evidence", async () => {
     const armed = holdHandoffLock("armed");
-    expect(() => retireFailedRuntimeHandoff(home, { bindingDigest: armed.digest, actor: { user_id: "operator" }, reason: "stale" })).toThrow(/Only a failed handoff/);
+    await expect(retireFailedRuntimeHandoff(home, { bindingDigest: armed.digest, actor: { user_id: "operator" }, reason: "stale" })).rejects.toThrow(/Only a failed/);
     fs.rmSync(path.join(home, "config"), { recursive: true });
 
-    const held = holdHandoffLock();
+    const held = holdHandoffLock('failed', true);
     const lockBytes = fs.readFileSync(held.lockPath);
     const journalBytes = fs.readFileSync(held.journalPath);
-    expect(() => retireFailedRuntimeHandoff(home, { bindingDigest: "e".repeat(64), actor: {}, reason: "stale" })).toThrow(/different binding digest/);
-    const retirement = retireFailedRuntimeHandoff(home, { bindingDigest: held.digest, actor: { user_id: "operator" }, reason: "Superseded by later merges" });
+    await expect(retireFailedRuntimeHandoff(home, { bindingDigest: "e".repeat(64), actor: {}, reason: "stale" })).rejects.toThrow(/different binding digest/);
+    const retirement = await retireFailedRuntimeHandoff(home, { bindingDigest: held.digest, actor: { user_id: "operator" }, reason: "Superseded by later merges" });
     expect(retirement).toMatchObject({ requestId: expect.stringMatching(/^f3ecce00/), failure: { phase: "failed", error: "Candidate runtime readiness failed" }, reason: "Superseded by later merges" });
     expect(readRuntimeHandoffLock(home)).toBeNull();
     expect(fs.readFileSync(path.join(held.dir, "retired-active.json"))).toEqual(lockBytes);
@@ -506,9 +640,9 @@ describe("failed handoff retirement", () => {
 
   it("requires the operator at the retirement route", async () => {
     setDb(db);
-    const held = holdHandoffLock();
+    const held = holdHandoffLock('failed', true);
     const request = await submit();
-    expect(runs).toHaveLength(0);
+    await waitUntilPasses(() => expect(runs).toHaveLength(1));
     const agent = createUser(db, { slug: "retire-agent", display_name: "Retire agent", kind: "agent" });
     const agentRouter = authenticatedTestRouter(agent);
     registerAuthRoutes(agentRouter, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));

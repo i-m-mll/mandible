@@ -257,6 +257,7 @@ export type InstructionDeliverySettings = {
   targets: InstructionTarget[];
   postExport: string;
   configuredTargets: boolean;
+  conflicts?: Array<{ path: string; detail: string }>;
   preview_only?: boolean;
   configuration_saved?: boolean;
   export?: {
@@ -1932,6 +1933,15 @@ export async function updateSetting(key: string, value: string): Promise<void> {
     throw new Error(`PUT /api/settings/${key} failed: ${response.status}`);
   }
   invalidateApiGetCache('/api/settings');
+}
+
+export async function getOptionalIntegrations(): Promise<import('../../src/optional-integrations').OptionalIntegrations> {
+  const value = await (await apiGet('/api/settings/integrations')).json();
+  if (!Array.isArray(value?.items)) throw new Error('Invalid integration state');
+  return value;
+}
+export async function updateOptionalIntegration(id: import('../../src/optional-integrations').OptionalIntegration['id'], action: 'install' | 'remove'): Promise<import('../../src/optional-integrations').OptionalIntegrations> {
+  return (await apiPut('/api/settings/integrations', { id, action })).json();
 }
 
 export async function getInstructionDeliverySettings(): Promise<InstructionDeliverySettings> {

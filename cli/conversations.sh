@@ -401,7 +401,7 @@ fi
 case "${1:-}" in
   storage)
     shift
-    exec "$("$SCRIPT_DIR/../scripts/bun-runtime.sh")" "$(cd "$SCRIPT_DIR/.." && pwd -P)/src/cli/conversation-storage.ts" "$@" --db "$MANDIBLE_DB"
+    exec "$(mandible_bun_runtime)" --no-install "$(mandible_cli_module cli/conversation-storage)" "$@" --db "$MANDIBLE_DB"
     ;;
   star|unstar|tag|comment) command="$1"; shift; conversation_metadata_command "$command" "$@"; exit $? ;;
   custody) shift; conversation_custody_command "$@"; exit $? ;;

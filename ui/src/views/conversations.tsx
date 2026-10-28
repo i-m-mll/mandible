@@ -1,3 +1,5 @@
+import { NativeSelect } from '../components/shared/NativeSelect';
+import { Icon } from '../components/icons/Icon';
 import { navigateAppHash } from '../app-history';
 import type { ComponentChildren, Ref } from 'preact';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
@@ -5,7 +7,7 @@ import { CancelledError, isCancelledError, useQuery, useQueryClient } from '@tan
 import { ViewSidebar } from '../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
-import { SidebarAddProjectIcon, SidebarGroupNode, SidebarNewChatIcon } from '../components/shared/SidebarGroupNode';
+import { SidebarGroupNode } from '../components/shared/SidebarGroupNode';
 import { SidebarLeadingActionRow } from '../components/shared/SidebarItemRow';
 import { normalizeSidebarGroupLimit } from '../components/shared/sidebar-group-settings';
 import {
@@ -118,8 +120,7 @@ import {
 import { formatAbsoluteTime, truncate } from '../lib/format';
 import { useChatProjectDisclosure } from './chat-project-disclosure';
 import { acquireSharedSse } from '../sse-shared';
-import { PreviewIcon } from '../components/icons/TabIcons';
-import { ArrowIcon } from '../components/icons/ArrowIcon';
+
 import {
   preferredProjectCheckout,
   reconcileShownProjects,
@@ -257,18 +258,6 @@ export type ConversationRightSidebarViewState = {
   previewTarget: ChatPreviewTarget | null;
   tab: 'overview' | 'preview' | 'activity';
 };
-
-function OverviewTabIcon(): JSX.Element {
-  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 5h16v14H4z" /><path d="M8 9h8M8 13h5" /></svg>;
-}
-
-function PreviewTabIcon(): JSX.Element {
-  return <PreviewIcon size={18} />;
-}
-
-function ActivityTabIcon(): JSX.Element {
-  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12h3l2-5 4 10 2-5h5" /></svg>;
-}
 
 export function scopeConversationRightSidebar(
   conversationId: string,
@@ -914,20 +903,6 @@ export type ConversationsViewProps = {
   }>;
 };
 
-function HorizontalDotsIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <circle cx="5" cy="12" r="1.5" />
-      <circle cx="12" cy="12" r="1.5" />
-      <circle cx="19" cy="12" r="1.5" />
-    </svg>
-  );
-}
-
-export function ChatComposerSubmitIcon(): JSX.Element {
-  return <ArrowIcon direction="up" strokeWidth={1} />;
-}
-
 // ── Detail View ──
 
 async function resolveProviderSessionConversation(providerSessionId: string): Promise<{ id: string } | null> {
@@ -972,7 +947,7 @@ function buildSubagentActivityItems(
     const fallbackLabel = child.agent_id ? `agent-${child.agent_id}` : stripMarkdownText(child.title) || 'Subagent';
     return {
       id: child.id,
-      icon: '↳',
+      icon: 'subagentActivity',
       label: truncate(taskLabels[index] ?? fallbackLabel, 80),
       status: child.status,
       meta,
@@ -1004,7 +979,7 @@ function buildWorkflowActivityItems(
     const tokens = formatCompactNumber(workflow.total_tokens);
     return {
       id: workflow.id,
-      icon: '◇',
+      icon: 'workflow',
       label: truncate(workflow.workflow_name || workflow.provider_run_id, 80),
       status: workflowActivityStatus(workflow),
       meta: [
@@ -1125,8 +1100,8 @@ function WorkflowRunDialog({
             </div>
           </div>
           <button type="button" className="icon-btn" onClick={onClose} aria-label="Close workflow">
-            &times;
-          </button>
+            <Icon name="dismiss" />
+            </button>
         </div>
 
         {workflow.warnings.length > 0 && (
@@ -2006,7 +1981,7 @@ export function ConversationDetail({
         id: 'overview',
         label: 'Session Overview',
         tooltip: 'Session Overview',
-        icon: <OverviewTabIcon />,
+        icon: <Icon name="conversationOverview" size={18} />,
         scrollOwner: 'detail' as const,
         content: <ChatSessionOverview
           providerSessionId={control?.conversation_id === conversationId
@@ -2020,7 +1995,7 @@ export function ConversationDetail({
         id: 'preview',
         label: 'Preview',
         tooltip: 'Preview',
-        icon: <PreviewTabIcon />,
+        icon: <Icon name="preview" size={18} />,
         scrollOwner: 'detail' as const,
         content: <ChatPreview target={currentRightSidebarViewState.previewTarget} />,
       },
@@ -2028,7 +2003,7 @@ export function ConversationDetail({
         id: 'activity',
         label: 'Activity',
         tooltip: 'Activity',
-        icon: <ActivityTabIcon />,
+        icon: <Icon name="conversationActivity" size={18} />,
         scrollOwner: 'detail' as const,
         content: <ChatActivity items={activityItems} />,
       },
@@ -2518,7 +2493,7 @@ export function ConversationDetail({
       title={(
         <>
           {conversation.parent_conversation_id && (
-            <span className="conv-subagent-indicator" title="Sub-agent conversation">&#x2937; </span>
+            <span className="conv-subagent-indicator" title="Sub-agent conversation"><Icon name="subagent" /> </span>
           )}
           <span>{getConversationTitle(conversation)}</span>
         </>
@@ -2605,11 +2580,11 @@ export function ConversationDetail({
                 const label = attachment.kind === 'annotation' ? `Annotation ${attachment.ordinal}` : attachment.file.name;
                 return <div className={`conv-compose__attachment${attachment.kind === 'annotation' && highlightedAttachmentIds.has(attachment.id) ? ' conv-compose__attachment--new' : ''}`} key={`${attachment.kind}:${attachment.kind === 'annotation' ? attachment.id : attachment.file.id}:${index}`}>
                   <button type="button" className="conv-compose__attachment-body" title={label} onClick={() => setAttachmentPreview(attachment)}>
-                    <span aria-hidden="true">{attachment.kind === 'annotation' ? '✎' : attachment.kind === 'image' ? '▧' : '▤'}</span>
+                    <span aria-hidden="true"><Icon name={attachment.kind === 'annotation' ? 'attachmentAnnotation' : attachment.kind === 'image' ? 'attachmentImage' : 'attachmentFile'} /></span>
                     <span className="conv-compose__attachment-name">{label}</span>
                   </button>
                   <button type="button" className="conv-compose__attachment-remove" aria-label={`Remove ${label}`} title={`Remove ${label}`}
-                    disabled={Boolean(submitIntent && submitIntent.state !== 'failed')} onClick={() => { const result = removeDraftAttachment(conversationId, index); if (!result.ok) setContinueError(result.error); }}>×</button>
+                    disabled={Boolean(submitIntent && submitIntent.state !== 'failed')} onClick={() => { const result = removeDraftAttachment(conversationId, index); if (!result.ok) setContinueError(result.error); }}><Icon name="dismiss" /></button>
                 </div>;
               })}
             </div>
@@ -2632,9 +2607,7 @@ export function ConversationDetail({
             onChange={(event) => { importFiles(event.currentTarget.files ?? []); event.currentTarget.value = ''; }} />
           <button type="button" className="conv-compose__add-attachment" aria-label="Add attachments" title="Add attachments"
             disabled={!canImportAttachments || attachmentBusy} onClick={() => attachmentPickerRef.current?.click()}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true" focusable="false">
-              <path d="M12 4v16M4 12h16" />
-            </svg>
+            <Icon name="addAttachment" />
           </button>
           <div
             ref={runOptionsGeometry.containerRef}
@@ -2664,7 +2637,7 @@ export function ConversationDetail({
                   title="Run options"
                   onClick={() => setComposerControlsOpen((prev) => !prev)}
                 >
-                  <HorizontalDotsIcon />
+                  <Icon name="more" />
                 </button>
               ) : null}
               <ContextUsageRing usage={usageSummary} size="sm" onClick={openUsage} />
@@ -2679,7 +2652,7 @@ export function ConversationDetail({
                 title={controlPresentation?.submitLabel ?? 'Send'}
                 aria-label={controlPresentation?.submitLabel ?? 'Send'}
               >
-                {continueBusy ? <span aria-hidden="true">…</span> : <ChatComposerSubmitIcon />}
+                {continueBusy ? <Icon name="pending" /> : <Icon name="chatSubmit" />}
               </button>
               )}
             </span>
@@ -2747,7 +2720,7 @@ export function ConversationDetail({
             {conversation.external_navigation.label}
           </button>
         ) : null}
-        <button type="button" className="chat-failure-notice__dismiss" aria-label="Dismiss notice" title="Dismiss notice" onClick={() => setDismissedBlockerKey(sendBlocker.key)}>×</button>
+        <button type="button" className="chat-failure-notice__dismiss" aria-label="Dismiss notice" title="Dismiss notice" onClick={() => setDismissedBlockerKey(sendBlocker.key)}><Icon name="dismiss" /></button>
       </>}
     >
       {sendBlocker.detail ? <span>{sendBlocker.detail}</span> : null}
@@ -2759,7 +2732,7 @@ export function ConversationDetail({
       severity="error"
       density="compact"
       title={'Chat action failed'}
-      actions={<button type="button" className="chat-failure-notice__dismiss" aria-label="Dismiss error" title="Dismiss error" onClick={() => { setToast(null); setContinueError(null); }}>×</button>}
+      actions={<button type="button" className="chat-failure-notice__dismiss" aria-label="Dismiss error" title="Dismiss error" onClick={() => { setToast(null); setContinueError(null); }}><Icon name="dismiss" /></button>}
     >
       {toast?.type === 'error' ? toast.message : continueError}
     </DetailPaneNotice>
@@ -2861,25 +2834,7 @@ export function ConversationDetail({
 // ── Sidebar Item ──
 
 function FolderIcon({ size = 13, open = false }: { size?: number; open?: boolean }): JSX.Element {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      {open ? (
-        <path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h4l2 2.5H19A2.5 2.5 0 0 1 21.4 11l-1.55 5.8A2.5 2.5 0 0 1 17.44 18.7H5.35A2.35 2.35 0 0 1 3 16.35z" />
-      ) : (
-        <path d="M3 6.5A2.5 2.5 0 0 1 5.5 4h4l2 2.5h7A2.5 2.5 0 0 1 21 9v8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17z" />
-      )}
-    </svg>
-  );
+  return <Icon name={open ? 'folderOpen' : 'folderClosed'} size={size} />;
 }
 
 function ChatEntryItem({
@@ -2964,7 +2919,7 @@ function ChatEntryItem({
       className={`chat-history-item${isSubAgent ? ' chat-history-item--subagent' : ''}`}
       reorder={reorder}
       onSelect={onClick}
-      leading={isSubAgent ? <span className="conv-subagent-indicator" title="Sub-agent">&#x2937;</span> : undefined}
+      leading={isSubAgent ? <span className="conv-subagent-indicator" title="Sub-agent"><Icon name="subagent" /></span> : undefined}
       badges={hasBadges ? (
         <>
           {conversation && conversation.tags.length > 0 ? (
@@ -3038,7 +2993,7 @@ function LiveSessionDetail({
           className="chat-live-detail__identity-warning"
           title={session.identity_mismatch.message}
         >
-          ⚠ identity mismatch
+          <Icon name="warning" /> identity mismatch
         </span>
       ) : undefined}
     />
@@ -3320,7 +3275,6 @@ export function ConversationsView({
         : { ...current, lastSelection: selection }
     ));
   }, [routeIntentActive, selection, setChatViewState]);
-
 
   const registeredProjects = useMemo(() => registeredChatProjects(canonicalProjects), [canonicalProjects]);
 
@@ -4254,14 +4208,14 @@ export function ConversationsView({
                 </div>
                 <label className="chat-filter-popover__select">
                   <span>Sort</span>
-                  <select
+                  <NativeSelect
                     className="conv-sort"
                     value={sort}
                     onChange={(e) => { overrideRouteWithFilter(); setSort((e.target as HTMLSelectElement).value as 'date' | 'blocks'); }}
                   >
                     <option value="date">Recent activity</option>
                     <option value="blocks">Message count</option>
-                  </select>
+                  </NativeSelect>
               </label>
                 </>
               ),
@@ -4296,7 +4250,7 @@ export function ConversationsView({
             <div className="chat-sidebar-global-actions" role="region" aria-label="Chat actions">
               <SidebarLeadingActionRow
                 label="New chat"
-                icon={<SidebarNewChatIcon size={16} />}
+                icon={<Icon name="newChat" data-sidebar-action-icon="new-chat" size={16} />}
                 onPress={() => openNewSession()}
               />
             </div>
@@ -4330,7 +4284,7 @@ export function ConversationsView({
                 onToggle={() => toggleSection('projects')}
                 action={{
                   label: 'Add project',
-                  icon: <SidebarAddProjectIcon />,
+                  icon: <Icon name="addProject" data-sidebar-action-icon="add-project" size={14} />,
                   onPress: openProjectChooser,
                   persistentWhenExpanded: chatSections.projects.length === 0,
                 }}
@@ -4339,13 +4293,13 @@ export function ConversationsView({
               {projectReorder.assistive}
               {projectChooserOpen ? (
                 <div className="chat-project-chooser" role="group" aria-label="Choose a shown project">
-                  <select aria-label="Registered project" value={projectChooserSelection} onInput={(event) => setProjectChooserSelection(event.currentTarget.value)}>
+                  <NativeSelect aria-label="Registered project" value={projectChooserSelection} onInput={(event) => setProjectChooserSelection(event.currentTarget.value)}>
                     {registeredProjects.map((project) => (
                       <option key={project.id} value={registeredProjectSelectionValue(project)}>
                         {project.label}
                       </option>
                     ))}
-                  </select>
+                  </NativeSelect>
                   <button
                     type="button"
                     onClick={addShownProject}
@@ -4377,7 +4331,7 @@ export function ConversationsView({
                     onToggle={() => toggleProject(disclosureId)}
                     showDisclosure={false}
                     action={group.exactRoot
-                      ? { label: `New chat in ${group.label}`, icon: <SidebarNewChatIcon />, onPress: () => openNewSession(group.exactRoot) }
+                      ? { label: `New chat in ${group.label}`, icon: <Icon name="newChat" data-sidebar-action-icon="new-chat" size={14} />, onPress: () => openNewSession(group.exactRoot) }
                       : undefined}
                     leadingIcon={<FolderIcon open={!collapsed} />}
                     canShowMore={group.entries.length > target || group.nextCursor !== null}
@@ -4422,7 +4376,7 @@ export function ConversationsView({
                   headingDescription={`${group.total} chat${group.total === 1 ? '' : 's'}`}
                   expanded={!collapsedSections.has('chats')}
                   onToggle={() => toggleSection('chats')}
-                  action={{ label: 'New chat', icon: <SidebarNewChatIcon />, onPress: () => openNewSession() }}
+                  action={{ label: 'New chat', icon: <Icon name="newChat" data-sidebar-action-icon="new-chat" size={14} />, onPress: () => openNewSession() }}
                   canShowMore={group.entries.length > target || group.nextCursor !== null}
                   loadingMore={loadingMoreKeys.has(group.key)}
                   onShowMore={() => { void showMore(group); }}

@@ -21,7 +21,7 @@
 
 .text-muted {
   color: var(--text-muted);
-  font-size: 14px;
+  font-size: calc(14px + var(--chrome-text-increment, 0px));
 }
 
 .repo-card,
@@ -72,7 +72,7 @@ tr:last-child td {
   background: var(--bg-secondary);
   color: var(--text-primary);
   cursor: pointer;
-  font-size: 13px;
+  font-size: calc(13px + var(--chrome-text-increment, 0px));
   transition: transform 0.2s ease, background 0.2s ease;
 }
 
@@ -106,7 +106,7 @@ tr:last-child td {
 
 .btn--sm {
   padding: 4px 10px;
-  font-size: 12px;
+  font-size: calc(12px + var(--chrome-text-increment, 0px));
 }
 
 .btn--confirm {
@@ -139,13 +139,9 @@ tr:last-child td {
   color: var(--chrome-icon-hover-direct);
 }
 
-.overlay-close-button svg {
+.overlay-close-button .app-icon {
   width: 18px;
   height: 18px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
 }
 
 /* LIGHT-THEME OVERRIDE — candidate for token remap */

@@ -16,8 +16,15 @@ import { installPinnedCaddy, pinnedCaddyBinary } from "./pinned-caddy.mjs";
 import { readBuildRevision, compiledBuildDigest, runtimeDependenciesDigest } from "./build-revision.mjs";
 import { serviceInstallationContext, parseLoadedService, loadedServiceMatches, ownsServiceDefinition, inspectServiceDefinitionsSync, matchingServiceDefinitions, loadedServiceDefinition, runtimeHandoffReadiness } from "./service-definitions.mjs";
 import { installationRuntime, servicePath, readServiceConfiguration, publishServiceConfiguration, validateServiceConfiguration } from "./service-configuration.mjs";
-import { withInstallationGatewayLock } from './lifecycle-lock.mjs';
+import { withInstallationGatewayLock, assertLifecycleLockHeld } from './lifecycle-lock.mjs';
+import { RUNTIME_HEALTH_PROBE_INTERVAL_MS } from './runtime-probe-cadence.mjs';
+import { RuntimeObservationError, runtimeProcessChanged, runtimeObservationTimeout } from './runtime-observation.mjs';
+import { reloadGatewayConfiguration, gatewayAdminNeedsRestart } from './gateway-admin.mjs';
 export { parseLoadedService, loadedServiceMatches } from "./service-definitions.mjs";
+
+import { readBundleOwner, nativeServiceControl, readBundleLaunch, bundleLoginSession } from './bundle-services.mjs';
+import { reconcileBundleServiceStart, BUNDLE_SERVICE_START_TIMEOUT_MS } from './bundle-service-start.mjs';
+import { verifyAcceptedApplication, inspectAcceptedApplication, installAcceptedApplication } from './accepted-app-install.mjs';
 
 const ACCOUNT_HOME = os.userInfo().homedir;
 const DEFAULT_HOME = path.join(ACCOUNT_HOME, ".mandible");
@@ -34,7 +41,9 @@ const INSTALLATION_AUTHORITY = path.join(HOME, "config", "client-auth", "authori
 const GATEWAY_CONFIG = path.join(RUNTIME_DIR, "Caddyfile");
 const LOG_DIR = path.join(HOME_DIR, ".cache", "mandible");
 const DOMAIN = `gui/${process.getuid?.() ?? 0}`;
+const handoffControl = !!(process.env.MANDIBLE_RUNTIME_HANDOFF_CAPTURE || process.env.MANDIBLE_RUNTIME_HANDOFF_JOURNAL);
 const INSTALLATION = serviceInstallationContext({ home: HOME,
+  ...(handoffControl ? { bundleRoot: null } : {}),
   ...(HOME !== DEFAULT_HOME && process.env.MANDIBLE_SERVICE_ACCOUNT_HOME ? { accountHome: process.env.MANDIBLE_SERVICE_ACCOUNT_HOME } : {}) });
 const SERVICE_DIR = INSTALLATION.serviceDir;
 const PRIVATE_SERVICE_DIR = INSTALLATION.privateServiceDir;
@@ -44,8 +53,15 @@ const HEALTH_TIMEOUT_MS = 900;
 const OPERATION_TIMEOUT_MS = 4500;
 const BODY_LIMIT = 256 * 1024;
 const MIGRATABLE_MAIN_EFFECT = "preferences:instance";
+const installedResources = handoffControl ? null : process.env.MANDIBLE_RELEASE_ROOT;
+const installedModule = installedResources ? await import('./installed-release.mjs') : null;
+const installedRelease = installedModule?.readInstalledRelease(installedResources);
+if (installedModule) Object.assign(process.env, installedModule.installedRuntimeEnvironment(installedResources));
 
 function readProductionRecord() {
+  if (installedResources) return { root: installedResources, environment: readServiceConfiguration(INSTALLATION).configuration.environment };
+  const owner = readBundleOwner(INSTALLATION);
+  if (owner) return { root: path.join(owner.bundleRoot, 'Contents/Resources'), environment: readServiceConfiguration(INSTALLATION).configuration.environment };
   const installed = locateLaunchAgent(BACKEND_LABEL);
   if (!installed) throw new Error("Mandible's production LaunchAgent is not installed.");
   const { file, record } = installed;
@@ -61,7 +77,7 @@ function readProductionRecord() {
   return { root: path.resolve(root), environment: record.EnvironmentVariables ?? {} };
 }
 
-function readMainInstance(root) {
+export function readMainInstance(root) {
   if (!fs.existsSync(AUTHORITY_DB)) throw new Error(`Local-session authority is missing: ${AUTHORITY_DB}`);
   const requireFromProject = createRequire(path.join(root, "package.json"));
   const Database = requireFromProject(process.env.MANDIBLE_RUNTIME_HANDOFF_STORAGE || "./dist/sqlite.js").default;
@@ -99,18 +115,24 @@ function readMainInstance(root) {
 }
 
 export function healthDocumentError(document, expected) {
-  if (!document || typeof document !== "object" || Array.isArray(document)) return "The service returned malformed health data.";
-  if (document.status !== "ok" || document.ready !== true || document.warm !== true) {
-    return "The service responded, but Mandible is not ready yet.";
+  return healthDocumentObservation(document, expected).error ?? null;
+}
+
+export function healthDocumentObservation(document, expected) {
+  if (!document || typeof document !== 'object' || Array.isArray(document)) {
+    return { ok: false, code: 'malformed_health', error: 'The service returned malformed health data.' };
   }
   const instance = document.instance;
   if (!instance || instance.role !== "main" || instance.instance_id !== "production"
     || instance.installation_id !== expected.installationId
     || instance.public_origin !== expected.publicOrigin
     || instance.backend_generation !== expected.generation) {
-    return "The service response belongs to a different Mandible instance or build.";
+    return { ok: false, code: 'wrong_instance', error: 'The service response belongs to a different Mandible instance or build.' };
   }
-  return null;
+  if (document.status !== 'ok' || document.ready !== true || document.warm !== true) {
+    return { ok: false, code: 'not_ready', error: 'The service responded, but Mandible is not ready yet.' };
+  }
+  return { ok: true, document };
 }
 
 export function probeJson(url, { ca, timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
@@ -127,13 +149,13 @@ export function probeJson(url, { ca, timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
     };
     const target = new URL(url);
     if (target.protocol !== "http:" && target.protocol !== "https:") {
-      finish({ ok: false, error: "The health URL must use HTTP or HTTPS." });
+      finish({ ok: false, code: 'invalid_protocol', error: "The health URL must use HTTP or HTTPS." });
       return;
     }
     const transport = target.protocol === "https:" ? https : http;
     deadline = setTimeout(() => {
       request?.destroy(new Error("health probe exceeded its deadline"));
-      finish({ ok: false, error: `Health check exceeded its ${timeoutMs} ms deadline.` });
+      finish({ ok: false, code: 'probe_deadline', error: `Health check exceeded its ${timeoutMs} ms deadline.` });
     }, timeoutMs);
     const options = {
       timeout: timeoutMs,
@@ -155,30 +177,33 @@ export function probeJson(url, { ca, timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
       });
       response.on("end", () => {
         if (response.statusCode !== 200) {
-          finish({ ok: false, error: `Health endpoint returned HTTP ${response.statusCode ?? "unknown"}.` });
+          finish({ ok: false, code: 'http_status', status: response.statusCode, error: `Health endpoint returned HTTP ${response.statusCode ?? "unknown"}.` });
           return;
         }
         try {
           finish({ ok: true, document: JSON.parse(Buffer.concat(chunks).toString("utf8")) });
         } catch {
-          finish({ ok: false, error: "The service returned malformed health data." });
+          finish({ ok: false, code: 'malformed_health', error: "The service returned malformed health data." });
         }
       });
       });
     } catch (error) {
-      finish({ ok: false, error: `The service could not be reached: ${error.message}` });
+      finish({ ok: false, code: 'connection_error', error: `The service could not be reached: ${error.message}` });
       return;
     }
-    request.on("timeout", () => request.destroy(new Error("health probe exceeded its deadline")));
+    request.on("timeout", () => request.destroy(Object.assign(new Error("health probe exceeded its deadline"), { code: 'ETIMEDOUT' })));
     request.on("error", (error) => {
-      const message = error.code === "ETIMEDOUT" || /deadline|timed out/i.test(error.message)
+      const code = error.code === 'ETIMEDOUT' ? 'probe_deadline'
+        : /^(CERT_|ERR_TLS_|DEPTH_ZERO_|UNABLE_TO_)/.test(error.code ?? '') ? 'tls_error'
+          : error.code === 'ECONNREFUSED' ? 'connection_refused' : 'connection_error';
+      const message = code === 'probe_deadline'
         ? `Health check exceeded its ${timeoutMs} ms deadline.`
-        : error.code?.startsWith("CERT_") || /certificate|self-signed|issuer/i.test(error.message)
+        : code === 'tls_error'
           ? "The HTTPS certificate failed verification against this installation's trusted Mandible certificate."
-          : error.code === "ECONNREFUSED"
+          : code === 'connection_refused'
             ? "The service is not accepting connections."
             : `The service could not be reached: ${error.message}`;
-      finish({ ok: false, error: message });
+      finish({ ok: false, code, error: message });
     });
   });
 }
@@ -202,14 +227,15 @@ function readTrustedRoot() {
 }
 
 function runLaunchctl(args, timeout = 2500) {
+  assertLifecycleLockHeld();
   if (process.platform !== "darwin") throw new Error("Mandible's supervised local runtime requires macOS launchd.");
   const result = spawnSync("/bin/launchctl", args, { encoding: "utf8", timeout, maxBuffer: 1024 * 1024 });
   if (result.error) throw new Error(`launchctl ${args[0]} failed: ${result.error.message}`);
   return { status: result.status ?? 1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }
 
-function inspectJob(label) {
-  const result = runLaunchctl(["print", `${DOMAIN}/${label}`]);
+function inspectJob(label, until) {
+  const result = runLaunchctl(["print", `${DOMAIN}/${label}`], runtimeObservationTimeout(until, 2500));
   const loaded = result.status === 0;
   if (!loaded && !/Could not find service|service not found/i.test(result.stderr)) throw new Error(`Cannot inspect launchd service ${label}: ${result.stderr}`);
   const pid = loaded ? Number(result.stdout.match(/\bpid = (\d+)/)?.[1] ?? 0) || null : null;
@@ -218,33 +244,69 @@ function inspectJob(label) {
   return { loaded, pid, runs, lastExit, ...parseLoadedService(result.stdout), detail: result.stderr.trim() };
 }
 
-function processStart(pid) {
+function processStart(pid, until) {
   if (!pid) return null;
-  const result = spawnSync('/bin/ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8', timeout: 1500 });
+  const result = spawnSync('/bin/ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8', timeout: runtimeObservationTimeout(until, 1500) });
   if (result.error || result.status !== 0 && result.stderr?.trim()) throw new Error(`Cannot inspect process ${pid}: ${result.error?.message || result.stderr.trim()}`);
   return result.status === 0 ? result.stdout.trim() || null : null;
 }
 
 function handoffService(label, inspection) {
+  if (!inspection.ok && inspection.refusal.category === 'starting') throw new RuntimeObservationError('starting', inspection.refusal.message,
+    inspection, 'pending');
   if (!inspection.ok) throw new Error(inspection.refusal.message);
   const observation = inspection.observations.find(item => item.label === label);
   const installed = observation.installed[0];
   const definition = observation.loadedDefinition ?? installed?.record ?? null;
   return { file: installed?.file ?? null, sha256: installed?.sha256 ?? null,
-    installed: observation.installed, argv: definition?.ProgramArguments ?? [], loaded: observation.job.loaded, definition };
+    installed: observation.installed, argv: definition?.ProgramArguments ?? [], loaded: observation.job.loaded, definition,
+    process: observation.job.pid && observation.job.startedAt ? { pid: observation.job.pid, startedAt: observation.job.startedAt, runs: observation.job.runs } : null };
+}
+
+function capturedGatewayChildren(observation, context) {
+  if (!observation?.job.pid || observation.job.executable !== path.join(context.bundleRoot, 'Contents/MacOS/mandible-bun')) return [];
+  const result = spawnSync('/usr/bin/pgrep', ['-P', String(observation.job.pid), '-x', 'mandible-caddy'], { encoding: 'utf8', timeout: 2500 });
+  if (result.error || ![0, 1].includes(result.status)) throw new Error('Cannot inspect the prior Bun gateway children.');
+  const executable = path.join(context.bundleRoot, 'Contents/MacOS/mandible-caddy');
+  const command = `${executable} run --config ${path.join(context.runtimeDir, 'Caddyfile')} --adapter caddyfile`;
+  return result.stdout.trim().split('\n').filter(Boolean).map(value => {
+    const pid = Number(value), startedAt = processStart(pid);
+    const actual = spawnSync('/bin/ps', ['-ww', '-p', value, '-o', 'command='], { encoding: 'utf8', timeout: 2500 });
+    if (!startedAt || actual.error || actual.status !== 0 || actual.stdout.trim() !== command) throw new Error('Prior gateway child has a different executable or configuration.');
+    return { pid, startedAt, command };
+  });
+}
+
+async function drainCapturedGatewayChildren(children, until) {
+  for (const child of children ?? []) {
+    if (processStart(child.pid, until) !== child.startedAt) continue;
+    const actual = spawnSync('/bin/ps', ['-ww', '-p', String(child.pid), '-o', 'command='], { encoding: 'utf8', timeout: runtimeObservationTimeout(until, 2500) });
+    if (actual.error || actual.status !== 0 || actual.stdout.trim() !== child.command) throw new Error('Captured old gateway writer changed; preserving it.');
+    process.kill(child.pid, 'SIGTERM');
+    const grace = Math.min(until, Date.now() + 1000);
+    while (Date.now() < grace && processStart(child.pid, until) === child.startedAt) await new Promise(resolve => setTimeout(resolve, 25));
+    if (processStart(child.pid, until) === child.startedAt) process.kill(child.pid, 'SIGKILL');
+    while (processStart(child.pid, until) === child.startedAt) {
+      if (Date.now() >= until) throw new Error('Captured old gateway writer did not drain.');
+      await new Promise(resolve => setTimeout(resolve, Math.min(25, until - Date.now())));
+    }
+  }
 }
 
 export function captureRuntimeHandoff(root) {
   const serviceInspection = runtimeHandoffReadiness(inspectServiceDefinitionsSync(INSTALLATION));
   const backend = handoffService(BACKEND_LABEL, serviceInspection);
   const gateway = handoffService(GATEWAY_LABEL, serviceInspection);
-  const production = { root: backend.definition.EnvironmentVariables.MANDIBLE_PRODUCTION_ROOT };
+  const bundleOwner = readBundleOwner(INSTALLATION);
+  const bundled = !!backend.definition.BundleProgram;
+  if (bundled) gateway.children = capturedGatewayChildren(serviceInspection.observations.find(item => item.service === 'gateway'), INSTALLATION);
+  const production = { root: bundled ? path.join(bundleOwner.bundleRoot, 'Contents/Resources') : backend.definition.EnvironmentVariables.MANDIBLE_PRODUCTION_ROOT };
   if (!path.isAbsolute(production.root ?? '')) throw new Error('Loaded backend does not identify its production checkout.');
   const destination = fs.realpathSync(root);
   const sourceRoot = fs.realpathSync(production.root);
   const main = readMainInstance(root);
   let source;
-  if (sourceRoot !== destination) {
+  if (!bundled && sourceRoot !== destination) {
     const git = (checkout, args) => {
       const result = spawnSync('git', args, { cwd: checkout, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' }, encoding: 'utf8', timeout: 5000 });
       if (result.error || result.status !== 0) throw new Error(`Cannot bind the installed source checkout: ${result.stderr || result.error?.message}`);
@@ -261,11 +323,11 @@ export function captureRuntimeHandoff(root) {
   const job = serviceInspection.observations.find(item => item.service === 'backend').job;
   const startedAt = processStart(job.pid);
   if (!job.loaded || !job.pid || !startedAt) throw new Error('Handoff requires the exact running production LaunchAgent.');
-  return { installationId: main.installation_id, home: HOME, root: destination, ...(source ? { source } : {}), domain: DOMAIN,
+  return { installationId: main.installation_id, home: HOME, root: destination, bundleOwner, ...(source ? { source } : {}), domain: DOMAIN,
     backendLabel: BACKEND_LABEL, gatewayLabel: GATEWAY_LABEL, publicOrigin: main.public_origin,
-    daemonLog: backend.definition.StandardErrorPath,
+    daemonLog: bundled ? path.join(INSTALLATION.accountHome, '.cache/mandible/production-stderr.log') : backend.definition.StandardErrorPath,
     serviceConfiguration: readServiceConfiguration(INSTALLATION, job.environment, sourceRoot),
-    oldProcess: { pid: job.pid, startedAt }, priorBackend: { ...backend, runnerSha256: createHash('sha256').update(fs.readFileSync(backend.argv[1])).digest('hex'), launchMode: launchModeFromAgent(backend.definition) }, priorGateway: gateway };
+    oldProcess: { pid: job.pid, startedAt }, priorBackend: { ...backend, runnerSha256: bundled ? null : createHash('sha256').update(fs.readFileSync(backend.argv[1])).digest('hex'), launchMode: bundled ? readBundleLaunch(INSTALLATION).launchMode : launchModeFromAgent(backend.definition) }, priorGateway: gateway };
 }
 
 function assertHandoffInstallation(binding) {
@@ -294,10 +356,13 @@ async function unloadExactHandoffService(label, expectedArguments, expectedDefin
   }
 }
 
-export async function removeHandoffDefinitions(binding) {
-  assertHandoffInstallation(binding);
+function bundleContext(binding) { return serviceInstallationContext({ ...INSTALLATION, bundleRoot: binding.nativeApp }); }
+
+export async function removeHandoffDefinitions(binding, { until = Date.now() + BUNDLE_SERVICE_START_TIMEOUT_MS } = {}) {
+  if (binding.home !== HOME || binding.installationId !== fs.readFileSync(INSTALLATION_AUTHORITY, 'utf8').trim()) throw new Error('Runtime handoff belongs to another installation.');
   assertLifecycleMutation(true);
-  const inspection = inspectServiceDefinitionsSync(INSTALLATION);
+  const context = binding.bundleOwner ? serviceInstallationContext({ ...INSTALLATION, bundleRoot: binding.bundleOwner.bundleRoot }) : INSTALLATION;
+  const inspection = inspectServiceDefinitionsSync(context, { until });
   if (!inspection.ok) throw new Error(inspection.refusal.message);
   for (const observation of inspection.observations) {
     const prior = observation.service === 'backend' ? binding.priorBackend : binding.priorGateway;
@@ -311,27 +376,94 @@ export async function removeHandoffDefinitions(binding) {
     if (!captured.migrated && current.migrated || !current.migrated && JSON.stringify(current.configuration) !== JSON.stringify(captured.configuration)) throw new Error('Service configuration changed after capture; preserving it.');
     publishServiceConfiguration(captured.file, captured.configuration);
   }
+  if (binding.acceptedRelease && binding.bundleOwner) {
+    if (JSON.stringify(readBundleOwner(context)) !== JSON.stringify(binding.bundleOwner)) throw new Error('Bundle owner changed before drain.');
+    const processes = Object.fromEntries(inspection.observations.map(item => [item.service, item.job.pid && {
+      pid: item.job.pid, startedAt: item.job.startedAt, runs: item.job.runs,
+    }]));
+    for (const role of ['backend', 'gateway']) nativeServiceControl(context, 'unregister', role, { until });
+    for (;;) {
+      const current = inspectServiceDefinitionsSync(context, { until });
+      if (!current.ok && current.refusal.category !== 'starting') throw new Error(current.refusal.message);
+      if (current.ok && current.observations.every(item => !item.job.loaded || !item.job.pid)
+        && Object.values(processes).every(item => !item || processStart(item.pid, until) !== item.startedAt)) {
+        await drainCapturedGatewayChildren(binding.priorGateway.children, until);
+        return { removed: true, processes };
+      }
+      if (Date.now() >= until) throw new RuntimeObservationError('drain_pending', 'Native service unregister has not drained its qualified processes.', { processes }, 'pending');
+      await new Promise(resolve => setTimeout(resolve, Math.min(25, until - Date.now())));
+    }
+  }
+  assertHandoffInstallation(binding);
   for (const [label, prior] of [[BACKEND_LABEL, binding.priorBackend], [GATEWAY_LABEL, binding.priorGateway]]) {
     // A stable Caddy gateway can remain live. A legacy JS gateway must be
     // unloaded before its source/dependencies change under the old interpreter.
-    if (label === GATEWAY_LABEL && !prior.argv.some(arg => /\.m?js$/.test(arg))) continue;
+    if (!binding.acceptedRelease && label === GATEWAY_LABEL && !prior.argv.some(arg => /\.m?js$/.test(arg))) continue;
     const current = inspectJob(label);
     if (!current.loaded) continue;
     // Retained journals predating definition capture retain their argv guard.
     // New journals must still own the complete loaded definition after drain.
     if (JSON.stringify(current.argv) !== JSON.stringify(prior.argv) || prior.definition && !loadedServiceMatches(prior.definition, current)) throw new Error(`Service ${label} changed during handoff; preserving it.`);
-    if (label === BACKEND_LABEL && current.pid) {
+    if (label === BACKEND_LABEL && current.pid && !prior.definition?.BundleProgram) {
       const file = path.join(RUNTIME_DIR, 'handoff', `${binding.requestId}-${binding.executionId}`, 'bridge-process.json');
       const bridge = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
       if (bridge?.pid !== current.pid || bridge.startedAt !== processStart(current.pid)) throw new Error('An old application process respawned before the bridge; preserve its work and drain it before continuing.');
     }
     await unloadExactHandoffService(label, prior.argv, prior.definition);
   }
+  if (binding.acceptedRelease) {
+    for (const observation of inspection.observations) for (const item of observation.installed) {
+      if (item.record.BundleProgram) continue;
+      if (createHash('sha256').update(fs.readFileSync(item.file)).digest('hex') !== item.sha256) throw new Error('Legacy definition changed before removal.');
+      fs.unlinkSync(item.file);
+    }
+  }
 }
 
-export async function startHandoffDefinitions(binding) {
+export function readBundleProcess(context, role, { until } = {}) {
+  const inspection = inspectServiceDefinitionsSync(context, { until, services: [role] });
+  if (!inspection.ok) {
+    if (inspection.refusal.category === 'starting') return null;
+    throw new RuntimeObservationError(inspection.refusal.category, inspection.refusal.message, inspection);
+  }
+  const job = inspection.observations[0].job;
+  return job.loaded && job.pid ? { pid: job.pid, startedAt: job.startedAt ?? processStart(job.pid, until), runs: job.runs } : null;
+}
+
+export async function startHandoffDefinitions(binding, { until = Date.now() + BUNDLE_SERVICE_START_TIMEOUT_MS, processes = {},
+  initialize = initializeMainRegistration, configure = configureGateway } = {}) {
   assertHandoffInstallation(binding);
+  if (binding.acceptedRelease) {
+    const accepted = verifyAcceptedApplication(binding);
+    const context = bundleContext(binding);
+    const root = path.join(binding.nativeApp, 'Contents/Resources');
+    Object.assign(process.env, (await import('./installed-release.mjs')).installedRuntimeEnvironment(root));
+    await initialize(root);
+    fs.writeFileSync(path.join(RUNTIME_DIR, 'bundle-launch.json'), JSON.stringify({ enabled: true, gatewayEnabled: true, launchMode: binding.priorBackend.launchMode, session: bundleLoginSession() }), { mode: 0o600 });
+    await configure(root);
+    for (const role of ['backend', 'gateway']) {
+      const result = await reconcileBundleServiceStart(context, role, { until, control: nativeServiceControl, readProcess: readBundleProcess, processes });
+      if (!result.ok) throw result.error;
+    }
+    for (const role of ['backend', 'gateway']) {
+      for (;;) {
+        const current = readBundleProcess(context, role, { until });
+        if (runtimeProcessChanged(processes[role], current)) throw new RuntimeObservationError('process_changed', `Started ${role} process changed.`, { expected: processes[role], current });
+        if (current?.pid && current.startedAt) { processes[role] = current; break; }
+        if (Date.now() >= until) throw new RuntimeObservationError('starting', `Started ${role} process is not qualified yet.`, { processes }, 'pending');
+        await new Promise(resolve => setTimeout(resolve, Math.min(25, until - Date.now())));
+      }
+    }
+    return { started: [BACKEND_LABEL, GATEWAY_LABEL], packageSha256: accepted.receipt.package.sha256, processes };
+  }
   if (readBuildRevision(binding.root) !== binding.mergeCommit) throw new Error('Runtime handoff build differs from its applied merge.');
+  if (await gatewayAdminNeedsRestart(HOME)) {
+    const production = readProductionRecord();
+    await prepareGateway(production);
+    await reconcileServiceDefinitions(production, readMainInstance(production.root), binding.priorBackend.launchMode, {
+      services: ['gateway'], running: ['gateway'], restart: ['gateway'], handoff: true,
+    });
+  }
   for (const label of [BACKEND_LABEL, GATEWAY_LABEL]) {
     const observation = observeOwnedService(label === BACKEND_LABEL ? 'backend' : 'gateway');
     const installed = observation.installed.length === 1 ? observation.installed[0] : null;
@@ -362,9 +494,23 @@ export function handoffProbeTimeout(until, now = Date.now()) {
 
 /** One answered inspection of the candidate front door, with the reason it is not ready. */
 export function handoffFrontDoorError(inspection, mergeCommit) {
-  if (!inspection.status.dashboard_ready) return inspection.status.detail || `Runtime state is ${inspection.status.state}.`;
-  if (inspection.main.backend_generation !== mergeCommit) return `The registered generation ${inspection.main.backend_generation} is not the merge ${mergeCommit}.`;
-  return null;
+  return handoffFrontDoorObservation(inspection, mergeCommit).error ?? null;
+}
+
+export function handoffFrontDoorObservation(inspection, mergeCommit, { expectedServing = false } = {}) {
+  if (inspection.nativeOwnershipPending) return { outcome: 'pending', code: 'starting', error: inspection.nativeOwnershipPending.message };
+  if (inspection.main.backend_generation !== mergeCommit) return { outcome: 'failed', code: 'wrong_generation',
+    error: `The registered generation ${inspection.main.backend_generation} is not the merge ${mergeCommit}.` };
+  if (inspection.status.state === 'port_conflict') return { outcome: 'failed', code: 'access_path_failed', error: inspection.status.detail };
+  for (const response of [inspection.backend, inspection.gateway]) {
+    if (!response || response.ok) continue;
+    if (response.code === 'probe_deadline' || response.code === 'not_ready') continue;
+    if (!expectedServing && (response.code === 'connection_refused' || response.code === 'http_status' && [502, 503].includes(response.status))) continue;
+    return { outcome: 'failed', code: response.code ?? 'access_path_failed', error: response.error };
+  }
+  if (!inspection.status.dashboard_ready) return { outcome: 'pending', code: 'starting',
+    error: inspection.status.detail || `Runtime state is ${inspection.status.state}.` };
+  return { outcome: 'confirmed' };
 }
 
 const NEVER_EXITED = '(never exited)';
@@ -377,13 +523,17 @@ const NEVER_EXITED = '(never exited)';
 export function handoffServiceExit(started, inspection) {
   for (const [name, job] of [['backend', inspection.backendJob], ['gateway', inspection.gatewayJob]]) {
     const exit = job.lastExit && job.lastExit !== NEVER_EXITED ? ` (last exit code ${job.lastExit})` : '';
-    if (!job.loaded) return `The candidate ${name} service was unloaded.`;
-    if (!job.pid) return `The candidate ${name} process exited${exit}.`;
     const first = started?.[name];
-    if (first && (job.pid !== first.pid || job.runs > first.runs)) return `The candidate ${name} process ${first.pid} exited and launchd started ${job.pid}${exit}.`;
+    if (!job.loaded && first?.pid) return `The candidate ${name} service was unloaded.`;
+    if (!job.pid) {
+      if (first?.pid || exit) return `The candidate ${name} process exited${exit}.`;
+      continue;
+    }
+    if (first?.pid && (job.pid !== first.pid || job.runs > first.runs
+        || first.startedAt && inspection.qualifiedProcesses?.[name]?.startedAt && first.startedAt !== inspection.qualifiedProcesses[name].startedAt)) return `The candidate ${name} process ${first.pid} exited and launchd started ${job.pid}${exit}.`;
   }
   const backend = inspection.backendJob;
-  if (!started && backend.lastExit && backend.lastExit !== NEVER_EXITED) return `The candidate backend process exited before readiness (last exit code ${backend.lastExit}).`;
+  if (!started?.backend?.pid && backend.lastExit && backend.lastExit !== NEVER_EXITED) return `The candidate backend process exited before readiness (last exit code ${backend.lastExit}).`;
   return null;
 }
 
@@ -394,16 +544,21 @@ export function handoffServiceExit(started, inspection) {
  * inspection waits for the daemon's answer; the short pause only paces
  * refused or not-ready answers.
  */
-export async function awaitHandoffReadiness(mergeCommit, until, inspect, { pauseMs = 200, now = Date.now } = {}) {
-  let started = null;
+export async function awaitHandoffReadiness(mergeCommit, until, inspect, {
+  pauseMs = RUNTIME_HEALTH_PROBE_INTERVAL_MS, now = Date.now,
+  wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),
+  expectedProcesses = null, expectedServing = false,
+} = {}) {
+  let started = expectedProcesses ? structuredClone(expectedProcesses) : null;
   for (;;) {
     const inspection = await inspect(handoffProbeTimeout(until, now()));
     const exited = handoffServiceExit(started, inspection);
-    if (exited) return { inspection, error: exited, exited: true };
-    started ??= Object.fromEntries([['backend', inspection.backendJob], ['gateway', inspection.gatewayJob]].map(([name, job]) => [name, { pid: job.pid, runs: job.runs }]));
-    const error = handoffFrontDoorError(inspection, mergeCommit);
-    if (!error || inspection.status.state === 'port_conflict' || now() >= until) return { inspection, error, exited: false };
-    await new Promise(resolve => setTimeout(resolve, Math.min(pauseMs, Math.max(0, until - now()))));
+    if (exited) return { inspection, error: exited, exited: true, outcome: 'failed', code: 'process_changed' };
+    started ??= {};
+    for (const [name, identity] of Object.entries(inspection.qualifiedProcesses ?? {})) if (!started[name]) started[name] = identity;
+    const outcome = handoffFrontDoorObservation(inspection, mergeCommit, { expectedServing });
+    if (outcome.outcome !== 'pending' || now() >= until) return { inspection, ...outcome, error: outcome.error ?? null, exited: false };
+    await wait(Math.min(pauseMs, Math.max(0, until - now())));
   }
 }
 
@@ -414,7 +569,7 @@ export async function awaitHandoffReadiness(mergeCommit, until, inspect, { pause
  */
 export function candidateStartupFailure(logText, mergeCommit) {
   const lines = logText.split('\n');
-  const start = lines.findIndex(line => line.startsWith('[production-runner] starting ') && line.trimEnd().endsWith(` build ${mergeCommit}`));
+  const start = lines.findLastIndex(line => line.startsWith('[production-runner] starting ') && line.trimEnd().endsWith(` build ${mergeCommit}`));
   if (start < 0) return null;
   let failure = null;
   for (const line of lines.slice(start + 1)) {
@@ -436,34 +591,121 @@ function readLogTail(file, limit = 1024 * 1024) {
   } finally { fs.closeSync(fd); }
 }
 
-export async function verifyHandoffDefinitions(binding, { until = Date.now(), awaitReady = false } = {}) {
+export function inspectHandoffEvidence(binding, expectedProcesses = null) {
   if (binding.home !== HOME || binding.installationId !== fs.readFileSync(INSTALLATION_AUTHORITY, 'utf8').trim()) throw new Error('Candidate installation identity differs.');
-  const serviceInspection = matchingServiceDefinitions(inspectServiceDefinitionsSync(INSTALLATION));
+  const context = binding.acceptedRelease ? bundleContext(binding) : INSTALLATION;
+  for (const [role, expected] of Object.entries(expectedProcesses ?? {})) {
+    if (!expected?.pid) continue;
+    const bound = matchingServiceDefinitions(inspectServiceDefinitionsSync(context, { services: [role] }));
+    if (!bound.ok) continue;
+    const job = bound.observations[0].job;
+    const identity = job.pid ? { pid: job.pid, startedAt: job.startedAt ?? processStart(job.pid), runs: job.runs } : null;
+    if (runtimeProcessChanged(expected, identity)) throw new RuntimeObservationError('process_changed', `Candidate ${role} process exited or was unloaded.`, { job, expected });
+  }
+  const serviceInspection = matchingServiceDefinitions(inspectServiceDefinitionsSync(context));
+  if (!serviceInspection.ok) {
+    if (serviceInspection.refusal.category === 'starting') throw new RuntimeObservationError('starting', serviceInspection.refusal.message, serviceInspection, 'pending');
+    throw new Error(serviceInspection.refusal.message);
+  }
+  const backendJob = serviceInspection.observations.find(item => item.service === 'backend').job;
+  const gatewayJob = serviceInspection.observations.find(item => item.service === 'gateway').job;
+  const processes = {};
+  let waiting = null;
+  for (const [name, job] of [['backend', backendJob], ['gateway', gatewayJob]]) {
+    const expected = expectedProcesses?.[name];
+    const identity = job.pid ? { pid: job.pid, startedAt: job.startedAt ?? processStart(job.pid), runs: job.runs } : null;
+    if (runtimeProcessChanged(expected, identity)) {
+      throw new RuntimeObservationError('process_changed', `Candidate ${name} process exited or was unloaded.`, { job, expected });
+    }
+    if (!job.pid) { waiting = `Candidate ${name} launch is not yet confirmed.`; continue; }
+    if (!identity.startedAt) {
+      if (expected?.pid) throw new RuntimeObservationError('process_changed', `Candidate ${name} process exited.`, { job, expected });
+      waiting = `Candidate ${name} launch is not yet confirmed.`;
+      continue;
+    }
+    processes[name] = identity;
+  }
+  // Check every bound role before an unqualified launcher can return pending.
+  // These raw observations become authoritative only after strict ownership.
   const backend = handoffService(BACKEND_LABEL, serviceInspection);
   const gateway = handoffService(GATEWAY_LABEL, serviceInspection);
-  if (!backend.loaded || !gateway.loaded || backend.argv[0] !== binding.runtime.path) throw new Error('Candidate services are not loaded with the pinned runtime.');
-  const inspect = probeTimeoutMs => inspectRuntime({ launchMode: binding.priorBackend.launchMode, probeTimeoutMs });
-  const { inspection: status, error, exited } = awaitReady
-    ? await awaitHandoffReadiness(binding.mergeCommit, until, inspect)
-    : await inspect(handoffProbeTimeout(until)).then(inspection => ({ inspection, error: handoffFrontDoorError(inspection, binding.mergeCommit), exited: false }));
+  if (binding.acceptedRelease) inspectAcceptedApplication(binding);
+  if (!binding.acceptedRelease && backend.argv[0] !== binding.runtime.path) throw new Error('Candidate services differ from the pinned runtime.');
+  const installed = locateLaunchAgent(BACKEND_LABEL);
+  const logPath = binding.acceptedRelease ? binding.daemonLog : installed?.record.StandardErrorPath;
+  if (!path.isAbsolute(logPath || '')) throw new Error('Loaded service log provenance is unavailable.');
+  const startup = fs.existsSync(logPath) ? candidateStartupFailure(readLogTail(logPath), binding.acceptedRelease ? inspectAcceptedApplication(binding).shipped.provenance.commit : binding.mergeCommit) : null;
+  if (startup) throw new RuntimeObservationError('startup_failed', `Candidate runtime failed to start: ${startup}`);
+  const job = backendJob;
+  const startedAt = processes.backend?.startedAt;
+  if (!startedAt) throw new RuntimeObservationError('starting', waiting, { processes }, 'pending');
+  if (!fs.existsSync(logPath)) throw new RuntimeObservationError('starting', 'Candidate log is not available yet.', { processes }, 'pending');
+  const writer = spawnSync('/usr/sbin/lsof', ['-a', '-p', String(job.pid), '-d', '2', '-Fn'], { encoding: 'utf8', timeout: 2500 });
+  if (writer.error || writer.status !== 0 || !writer.stdout.split('\n').includes(`n${logPath}`)) throw new Error('Current daemon stderr writer differs from the loaded service log.');
+  const log = fs.statSync(logPath);
+  const evidence = { outcome: 'confirmed', backend, gateway, processes, process: { pid: job.pid, startedAt },
+    daemonLog: { path: logPath, dev: log.dev, ino: log.ino, size: log.size } };
+  if (waiting) throw new RuntimeObservationError('starting', waiting, evidence, 'pending');
+  return evidence;
+}
+
+/** Bind a real current incarnation to the recorded recovery launch, never to exit history. */
+export function qualifyRecoveryHandoffProcesses(journal, { until = Date.now() + 5000 } = {}) {
+  const { binding, launch, recoveryStart } = journal;
+  if (!recoveryStart || recoveryStart.id !== launch?.id || recoveryStart.enteredAt !== launch.enteredAt) throw new Error('Recovery launch identity changed.');
+  const context = bundleContext(binding);
+  const inspection = matchingServiceDefinitions(inspectServiceDefinitionsSync(context));
+  if (!inspection.ok) throw new Error(inspection.refusal.message);
+  const processes = {};
+  for (const observation of inspection.observations) {
+    const role = observation.service;
+    const current = readBundleProcess(context, role, { until });
+    if (runtimeProcessChanged(launch.processes?.[role], current)) throw new RuntimeObservationError('process_changed', `Recovery ${role} process changed.`, { expected: launch.processes?.[role], current });
+    if (!current?.pid || !current.startedAt) throw new RuntimeObservationError('starting', `Recovery ${role} process is not yet confirmed.`, null, 'pending');
+    if (!Number.isFinite(Date.parse(current.startedAt)) || Date.parse(current.startedAt) < Math.floor(launch.enteredAt / 1000) * 1000) {
+      throw new RuntimeObservationError('process_changed', `Recovery ${role} predates its authorized launch.`, { current, enteredAt: launch.enteredAt });
+    }
+    processes[role] = current;
+  }
+  return inspectHandoffEvidence(binding, processes).processes;
+}
+
+export async function verifyHandoffDefinitions(binding, { until = Date.now(), awaitReady = false, expectedProcesses = null, expectedServing = false,
+  inspect: inspectStatus = probeTimeoutMs => inspectRuntime({ launchMode: binding.priorBackend.launchMode, probeTimeoutMs }),
+} = {}) {
+  let qualified = { ...expectedProcesses };
+  const observeOwnership = () => {
+    try {
+      const evidence = inspectHandoffEvidence(binding, qualified);
+      Object.assign(qualified, evidence.processes);
+      return null;
+    } catch (error) {
+      if (!(error instanceof RuntimeObservationError) || error.outcome !== 'pending') throw error;
+      Object.assign(qualified, error.evidence?.processes);
+      return error;
+    }
+  };
+  const firstPending = observeOwnership();
+  if (firstPending && !awaitReady) throw firstPending;
+  const inspect = async probeTimeoutMs => {
+    const pending = observeOwnership();
+    const inspection = await inspectStatus(probeTimeoutMs);
+    return { ...inspection, qualifiedProcesses: { ...qualified }, nativeOwnershipPending: pending };
+  };
+  const { inspection: status, error, exited, outcome, code } = awaitReady
+    ? await awaitHandoffReadiness(binding.acceptedRelease ? inspectAcceptedApplication(binding).shipped.provenance.commit : binding.mergeCommit, until, inspect, { expectedProcesses: qualified, expectedServing })
+    : await inspect(handoffProbeTimeout(until)).then(inspection => ({ inspection,
+      ...handoffFrontDoorObservation(inspection, binding.acceptedRelease ? inspectAcceptedApplication(binding).shipped.provenance.commit : binding.mergeCommit, { expectedServing }), exited: false }));
   if (exited) {
     const logPath = locateLaunchAgent(BACKEND_LABEL)?.record.StandardErrorPath;
     let startup = null;
     try { startup = logPath ? candidateStartupFailure(readLogTail(logPath), binding.mergeCommit) : null; } catch { /* the exit itself is the reported failure */ }
-    throw new Error(`Candidate runtime failed to start: ${error}${startup ? ` Daemon reported: ${startup}` : ''}`);
+    throw new RuntimeObservationError('startup_failed', `Candidate runtime failed to start: ${error}${startup ? ` Daemon reported: ${startup}` : ''}`);
   }
-  if (error) throw new Error(`Candidate production front door is not ready at the exact merge generation: ${error}`);
-  const job = inspectJob(BACKEND_LABEL);
-  const startedAt = processStart(job.pid);
-  const installed = locateLaunchAgent(BACKEND_LABEL);
-  const logPath = installed?.record.StandardErrorPath;
-  if (!job.pid || !startedAt || !path.isAbsolute(logPath || '')) throw new Error('Current daemon process or launchd log provenance is unavailable.');
-  const writer = spawnSync('/usr/sbin/lsof', ['-a', '-p', String(job.pid), '-d', '2', '-Fn'], { encoding: 'utf8', timeout: 2500 });
-  if (writer.error || writer.status !== 0 || !writer.stdout.split('\n').includes(`n${logPath}`)) throw new Error('Current daemon stderr writer differs from the loaded service log.');
-  const log = fs.statSync(logPath);
-  return { backend, gateway, health: status.backend.document, frontDoorHealth: status.gateway.document,
-    process: { pid: job.pid, startedAt, startupEpoch: status.backend.document.startup_epoch },
-    daemonLog: { path: logPath, dev: log.dev, ino: log.ino, size: log.size } };
+  if (error) throw new RuntimeObservationError(code, `Candidate production front door is not ready at the exact merge generation: ${error}`, { inspection: status, processes: qualified }, outcome);
+  const evidence = inspectHandoffEvidence(binding, qualified);
+  return { ...evidence, health: status.backend.document, frontDoorHealth: status.gateway.document,
+    process: { ...evidence.process, startupEpoch: status.backend.document.startup_epoch } };
 }
 
 function portOpen(url) {
@@ -512,7 +754,7 @@ export function classifyRuntimeStatus({ backend, gateway, backendPortOpen, gatew
   };
 }
 
-async function inspectRuntime({ launchMode = "on_demand", probeTimeoutMs = HEALTH_TIMEOUT_MS } = {}) {
+export async function inspectRuntime({ launchMode = "on_demand", probeTimeoutMs = HEALTH_TIMEOUT_MS } = {}) {
   const production = readProductionRecord();
   const main = readMainInstance(production.root);
   const expected = { installationId: main.installation_id, publicOrigin: PRODUCTION_ORIGIN, generation: main.backend_generation };
@@ -524,13 +766,11 @@ async function inspectRuntime({ launchMode = "on_demand", probeTimeoutMs = HEALT
     portOpen(main.publicUrl),
     portOpen(main.backendUrl),
   ]);
-  const backendError = backendResponse.ok ? healthDocumentError(backendResponse.document, expected) : backendResponse.error;
-  const backend = backendError ? { ok: false, error: backendError } : { ok: true, document: backendResponse.document };
-  let gateway = { ok: false, error: trusted.error };
+  const backend = backendResponse.ok ? healthDocumentObservation(backendResponse.document, expected) : backendResponse;
+  let gateway = { ok: false, code: 'tls_error', error: trusted.error };
   if (!trusted.error) {
     const gatewayResponse = await probeJson(healthEndpointUrl(PRODUCTION_ORIGIN), { ca: trusted.ca, timeoutMs: probeTimeoutMs });
-    const gatewayError = gatewayResponse.ok ? healthDocumentError(gatewayResponse.document, expected) : gatewayResponse.error;
-    gateway = gatewayError ? { ok: false, error: gatewayError } : { ok: true, document: gatewayResponse.document };
+    gateway = gatewayResponse.ok ? healthDocumentObservation(gatewayResponse.document, expected) : gatewayResponse;
   }
   const runner = readRunnerMetadata(production);
   const status = classifyRuntimeStatus({
@@ -573,6 +813,11 @@ export function renderLaunchAgent({ label, programArguments, workingDirectory, e
 }
 
 function runtimeBinary(root) {
+  if (fs.existsSync(path.join(root, 'release.json'))) {
+    const release = JSON.parse(fs.readFileSync(path.join(root, 'release.json'), 'utf8'));
+    return path.resolve(root, release.native.bun);
+  }
+  if (installedResources) return process.env.MANDIBLE_RUNTIME;
   return installationRuntime(root, INSTALLATION);
 }
 
@@ -601,6 +846,7 @@ function locateLaunchAgent(label) {
 }
 
 function archiveLaunchAgent(file, label, bytes) {
+  assertLifecycleLockHeld();
   const digest = createHash("sha256").update(bytes).digest("hex");
   const archiveDir = path.join(RUNTIME_DIR, "launch-agent-history");
   const archive = path.join(archiveDir, `${label}-${digest.slice(0, 12)}.plist`);
@@ -615,6 +861,7 @@ function archiveLaunchAgent(file, label, bytes) {
 }
 
 function writeOwnedPlist(file, contents, { label, recognizesLegacy = () => false } = {}) {
+  assertLifecycleLockHeld();
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   if (fs.existsSync(file)) {
     const existing = fs.readFileSync(file, "utf8");
@@ -641,6 +888,7 @@ function assertOwnedLaunchAgent(file, record, label, recognizesLegacy) {
 }
 
 function writeServicePlist(label, file, contents, { recognizesLegacy = () => false } = {}) {
+  assertLifecycleLockHeld();
   const service = label === BACKEND_LABEL ? 'backend' : 'gateway';
   const { installed } = observeOwnedService(service);
   for (const existing of installed.filter(item => item.file !== file)) {
@@ -659,6 +907,7 @@ function parsePlist(file) {
 }
 
 function prepareRunner(root) {
+  assertLifecycleLockHeld();
   fs.mkdirSync(RUNTIME_DIR, { recursive: true, mode: 0o700 });
   for (const [sourceName, targetName] of [
     ["local-session-production-runner.mjs", "production-runner.mjs"],
@@ -830,7 +1079,8 @@ function ensureGatewayBinary() {
   if (!fs.existsSync(binary) || !fs.statSync(binary).isFile()) throw new Error(`The pinned HTTPS gateway is missing: ${binary}`);
 }
 
-function configureGateway(root) {
+async function configureGateway(root) {
+  const adminRestartRequired = await gatewayAdminNeedsRestart(HOME);
   const script = path.join(root, "scripts", "local-front-door.mjs");
   const result = spawnSync(runtimeBinary(root), [script, "configure"], {
     cwd: root,
@@ -840,15 +1090,11 @@ function configureGateway(root) {
   if (result.error || result.status !== 0) {
     throw new Error(`Could not prepare the trusted dashboard gateway: ${(result.stderr || result.error?.message || "configuration failed").trim()}`);
   }
+  return { adminRestartRequired };
 }
 
 function reloadCaddy(binary) {
-  const result = spawnSync(binary, ["reload", "--config", path.join(RUNTIME_DIR, "Caddyfile"), "--adapter", "caddyfile"], {
-    encoding: "utf8", timeout: 5000, maxBuffer: 1024 * 1024,
-  });
-  if (result.error || result.status !== 0) {
-    throw new Error(`The trusted dashboard gateway reload failed: ${(result.stderr || result.error?.message || "unknown failure").trim()}`);
-  }
+  reloadGatewayConfiguration(binary, HOME, path.join(RUNTIME_DIR, 'Caddyfile'));
 }
 
 async function waitForRuntime(deadlineMs = OPERATION_TIMEOUT_MS, launchMode = "on_demand", additionalReadiness = () => true) {
@@ -872,7 +1118,7 @@ function restartOwnedJob(label) {
 
 function prepareGateway(production) {
   ensureGatewayBinary();
-  configureGateway(production.root);
+  return configureGateway(production.root);
 }
 
 async function startRuntime({ launchMode = installedLaunchMode() } = {}) {
@@ -881,9 +1127,11 @@ async function startRuntime({ launchMode = installedLaunchMode() } = {}) {
   const registration = await initializeMainRegistration(current.production.root);
   current = await inspectRuntime({ launchMode });
   if (current.backendPortOpen && !current.backendJob.loaded) throw new Error('The production backend is not owned by Mandible; preserving it.');
-  if (!current.trusted.error) prepareGateway(current.production);
+  const gateway = !current.trusted.error ? await prepareGateway(current.production) : null;
   await reconcileServiceDefinitions(current.production, current.main, launchMode, {
-    running: current.trusted.error ? ['backend'] : ['backend', 'gateway'], restart: registration.legacyEffectsMigrated ? ['backend'] : [],
+    running: current.trusted.error ? ['backend'] : ['backend', 'gateway'], restart: [
+      ...(registration.legacyEffectsMigrated ? ['backend'] : []), ...(gateway?.adminRestartRequired ? ['gateway'] : []),
+    ],
   });
   const ready = await waitForRuntime(OPERATION_TIMEOUT_MS, launchMode, candidate => !registration.legacyEffectsMigrated
     || sameEffectList(candidate.backend.document?.instance?.allowed_effects, candidate.main.effectCeiling));
@@ -932,9 +1180,9 @@ async function restartRuntime({ launchMode = installedLaunchMode() } = {}) {
   current = await inspectRuntime({ launchMode });
   const beforeEpoch = current.backend.document?.startup_epoch;
   if (current.backendPortOpen && !current.backendJob.loaded) throw new Error('The production backend is not owned by Mandible; preserving it.');
-  if (!current.trusted.error) prepareGateway(current.production);
+  const gateway = !current.trusted.error ? await prepareGateway(current.production) : null;
   await reconcileServiceDefinitions(current.production, current.main, launchMode, {
-    running: current.trusted.error ? ['backend'] : ['backend', 'gateway'], restart: ['backend'],
+    running: current.trusted.error ? ['backend'] : ['backend', 'gateway'], restart: ['backend', ...(gateway?.adminRestartRequired ? ['gateway'] : [])],
   });
   current = await waitForRuntime(OPERATION_TIMEOUT_MS, launchMode, candidate => candidate.backend.document?.startup_epoch !== beforeEpoch);
   if (!current.backend.ok || !current.backend.document?.startup_epoch || beforeEpoch && current.backend.document.startup_epoch === beforeEpoch) throw new Error('Restart did not confirm a ready backend with a new startup epoch.');
@@ -948,9 +1196,10 @@ async function reloadGatewayRuntime({ launchMode = installedLaunchMode(), ifConf
   if (initial.status.state === 'port_conflict') throw new Error(initial.status.detail);
   if (initial.trusted.error) throw new Error(initial.trusted.error);
   assertLifecycleMutation();
-  prepareGateway(initial.production);
-  const reconciled = await reconcileServiceDefinitions(initial.production, initial.main, launchMode, { services: ['gateway'], running: ['gateway'] });
-  if (!reconciled.gatewayChanged && reconciled.wasGatewayLoaded) reloadCaddy(pinnedCaddyBinary(HOME));
+  const gateway = await prepareGateway(initial.production);
+  const reconciled = await reconcileServiceDefinitions(initial.production, initial.main, launchMode, { services: ['gateway'], running: ['gateway'],
+    restart: gateway.adminRestartRequired ? ['gateway'] : [] });
+  if (!gateway.adminRestartRequired && !reconciled.gatewayChanged && reconciled.wasGatewayLoaded) reloadCaddy(pinnedCaddyBinary(HOME));
   assertInstalledDefinitions();
   const inspected = await inspectRuntime({ launchMode });
   if (!inspected.gatewayPortOpen) throw new Error('Shared gateway listener is unavailable after reconciliation');
@@ -992,7 +1241,7 @@ export function reconcileMainRegistration(authority, instance, backendOrigin) {
   return false;
 }
 
-async function initializeMainRegistration(root) {
+export async function initializeMainRegistration(root) {
   if (!fs.existsSync(INSTALLATION_AUTHORITY)) {
     const result = spawnSync(runtimeBinary(root), [path.join(root, "scripts", "local-front-door.mjs"), "initialize"], {
       cwd: root,
@@ -1007,7 +1256,8 @@ async function initializeMainRegistration(root) {
   }
   const installationId = fs.readFileSync(INSTALLATION_AUTHORITY, "utf8").trim();
   if (!installationId) throw new Error("The installation authority id is empty.");
-  const generation = readBuildRevision(root);
+  const release = fs.existsSync(path.join(root, 'release.json')) ? (await import('./installed-release.mjs')).readInstalledRelease(root) : null;
+  const generation = release?.provenance.commit ?? readBuildRevision(root);
 
   const [authorityModule, policyModule] = await Promise.all([
     import(pathToFileURL(path.join(root, "dist", "client-auth", "session-authority.js")).href),
@@ -1026,6 +1276,10 @@ async function initializeMainRegistration(root) {
       },
     });
     legacyEffectsMigrated = reconcileMainRegistration(authority, instance, `http://127.0.0.1:${DEFAULT_BACKEND_PORT}`);
+    if (release) {
+      const registered = authority.instance('production');
+      if (registered.backend_generation !== generation) authority.registerInstance({ ...registered, backend_generation: generation });
+    }
   } finally {
     authority.close();
   }
@@ -1047,20 +1301,41 @@ async function mainLocked() {
   const journal = journalPath ? JSON.parse(fs.readFileSync(journalPath, 'utf8')) : null;
   const directHandoff = !!journal && active?.journal === journalPath && active?.bindingDigest === journal.bindingDigest && journal.binding.home === HOME;
   if (active && !directHandoff && command !== 'status') throw new Error('A production runtime handoff is pending; preserve its owned service definitions.');
+  if (installedResources && !command?.startsWith('handoff-')) {
+    const launchMode = args.find(arg => arg.startsWith('--launch-mode='))?.split('=')[1] ?? 'on_demand';
+    if (!['manual', 'on_demand'].includes(launchMode)) throw new Error('Invalid launch mode.');
+    const { bundleRuntimeCommand } = await import('./bundle-services.mjs');
+    const status = await bundleRuntimeCommand(command, { context: INSTALLATION, release: installedRelease, launchMode,
+      initialize: initializeMainRegistration, inspect: inspectRuntime, configureGateway,
+      previewCount: registeredPreviewCount, reloadGateway: () => reloadCaddy(process.env.MANDIBLE_CADDY),
+      readProcess: readBundleProcess,
+      restartGateway: () => { observeOwnedService('gateway'); restartOwnedJob(GATEWAY_LABEL); },
+      waitReady: mode => waitForRuntime(OPERATION_TIMEOUT_MS, mode) });
+    process.stdout.write(`${JSON.stringify(status)}\n`);
+    return;
+  }
   if (command === 'handoff-snapshot') {
     const rootIndex = args.indexOf('--root');
     process.stdout.write(`${JSON.stringify(captureRuntimeHandoff(args[rootIndex + 1] ?? process.cwd()))}\n`);
     return;
   }
-  if (command === 'handoff-remove' || command === 'handoff-start' || command === 'handoff-verify') {
-    const acceptedProbe = command === 'handoff-verify' && (journal?.phase === 'acknowledged' || journal?.phase === 'complete' && journal.cleanupStartedAt) && journal.binding.home === HOME;
+  if (['handoff-remove', 'handoff-install', 'handoff-start', 'handoff-verify', 'handoff-evidence'].includes(command)) {
+    const acceptedProbe = ['handoff-verify', 'handoff-evidence'].includes(command) && (journal?.phase === 'acknowledged' || journal?.phase === 'complete' && journal.cleanupStartedAt) && journal.binding.home === HOME;
     if (!directHandoff && !acceptedProbe) throw new Error('Runtime handoff command requires its exact active journal.');
+    if (journal.attempt?.fence && ['handoff-remove', 'handoff-install', 'handoff-start'].includes(command)) throw new Error('This runtime attempt is fenced.');
     const untilIndex = args.indexOf('--until');
     const until = untilIndex >= 0 ? Number(args[untilIndex + 1]) : Date.now();
     if (!Number.isFinite(until)) throw new Error('Runtime handoff verification requires a numeric --until deadline.');
-    const result = command === 'handoff-remove' ? await removeHandoffDefinitions(journal.binding)
-      : command === 'handoff-start' ? await startHandoffDefinitions(journal.binding)
-        : await verifyHandoffDefinitions(journal.binding, { until, awaitReady: args.includes('--await-ready') });
+    const recoveryQualified = journal.recoveryStart?.qualifiedAt && journal.recoveryStart.id === journal.launch?.id;
+    const expectedProcesses = journal.attempt?.effects?.services?.processes ?? (journal.phase === 'failed' && !recoveryQualified ? null : journal.launch?.processes);
+    const result = command === 'handoff-install' ? installAcceptedApplication(journal.binding, bundleContext(journal.binding))
+      : command === 'handoff-remove' ? await removeHandoffDefinitions(journal.binding, { until })
+      : command === 'handoff-start' ? await startHandoffDefinitions(journal.binding, { until, processes: { ...expectedProcesses } })
+        : command === 'handoff-evidence' ? inspectHandoffEvidence(journal.binding, expectedProcesses)
+          : await verifyHandoffDefinitions(journal.binding, { until, awaitReady: args.includes('--await-ready'),
+            expectedProcesses,
+            expectedServing: journal.attempt ? !!journal.attempt.effects.services?.readyAt || journal.attempt.state === 'complete'
+              : !!journal.launch?.readyAt || ['failed', 'complete', 'acknowledged'].includes(journal.phase) });
     process.stdout.write(`${JSON.stringify(result ?? { removed: true })}\n`);
     return;
   }
@@ -1127,7 +1402,7 @@ async function mainLocked() {
 
 async function main() {
   const command = process.argv[2];
-  if (['status', 'handoff-snapshot', 'handoff-verify'].includes(command)) return mainLocked();
+  if (['status', 'handoff-snapshot', 'handoff-verify', 'handoff-evidence'].includes(command)) return mainLocked();
   return withInstallationGatewayLock(HOME, async token => {
     const previous = process.env.MANDIBLE_GATEWAY_LOCK_TOKEN;
     process.env.MANDIBLE_GATEWAY_LOCK_TOKEN = token;
@@ -1138,7 +1413,8 @@ async function main() {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((error) => {
-    process.stderr.write(`${error.message}\n`);
+    const failure = error instanceof RuntimeObservationError ? error : new RuntimeObservationError('controller_failed', error.message);
+    process.stderr.write(`${process.argv[2]?.startsWith('handoff-') ? JSON.stringify(failure) : error.message}\n`);
     process.exitCode = 1;
   });
 }

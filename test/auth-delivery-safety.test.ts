@@ -1,11 +1,12 @@
 import { createInstalledServiceHookManager, AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import SqliteDatabase from "../src/sqlite.js";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthQueue } from "../src/auth-queue.js";
 import type { RuntimeHandoffJournal } from "../src/auth-hooks.js";
-import { validateRuntimeSource, verifyRuntimeHandoffPublication } from "../src/runtime-handoff-proof.js";
+import { validateRuntimeSource, verifyRuntimeHandoffPublication, freezeRuntimeHandoffPublication, verifyRuntimeHandoffAuthority } from "../src/runtime-handoff-proof.js";
 import { mintApiToken } from "../src/client-auth/tokens.js";
 import { addOrUpdateCheckout } from "../src/ledger/project-registry.js";
 import { getAttributionEvidence } from "../src/users/store.js";
@@ -14,6 +15,8 @@ import {
   createLedgerProject, createMigratedDb, createNoopHookManager, git, recordPassingCandidateAcceptance, registerWorkRepo,
 } from "./helpers/auth-queue-fixtures.js";
 import { publishTestCandidate } from "./helpers/auth-delivery-fixtures.js";
+import { RuntimeObservationError, runtimeObservationAcceptance } from "../scripts/runtime-observation.mjs";
+import { withRuntimeObservation } from "../scripts/runtime-handoff.mjs";
 import { assessRuntimeLogs } from "../scripts/runtime-log-assessment.mjs";
 import { waitUntil } from "./helpers/wait-until.js";
 
@@ -49,7 +52,7 @@ function prepareMergeFixture() {
 async function submitMerge(issueClosures: string[] = []) {
   const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,  type: "merge", title: "Publish exact delivery", command: "mandible auth merge feature/delivery --into main",
     repo: path.basename(repo), cwd: repo, head_branch: "feature/delivery", merge_head_sha: git(repo, ["rev-parse", "feature/delivery"]), base_branch: "main", execution_mode: "local", issue_closures: issueClosures }));
-  recordPassingCandidateAcceptance(db, request.id);
+  recordPassingCandidateAcceptance(db, request.id, queue.candidateAcceptanceForRequest(request) !== null);
   return request;
 }
 
@@ -66,18 +69,27 @@ async function approveToExecutor(id: string) {
 
 describe("protected delivery evidence", () => {
   beforeEach(prepareMergeFixture);
-  it("preserves reserved handoff attempts and accepts only an independently verified receipt", async () => {
+  it("settles the exact attempt receipt once and retries fenced cleanup without reclassifying runtime success", async () => {
     (await queue.dispose());
     const installationHome = path.join(repo, ".git", "private-installation");
     vi.stubEnv("MANDIBLE_HOME", installationHome);
     let journal: RuntimeHandoffJournal | null = null;
     let receiptValid = false;
+    let verifications = 0;
     let acknowledgements = 0;
+    const verifiedReceipt = {};
     const hooks = createInstalledServiceHookManager(db, { handoffClient: {
       readRuntimeHandoff: async (home) => home === installationHome ? journal : null,
       readRuntimeHandoffPhase: async (home) => home === installationHome ? journal?.phase : undefined,
-      verifyRuntimeHandoffReceipt: async () => { if (!receiptValid) throw new Error("candidate readiness differs"); },
-      acknowledgeRuntimeHandoff: async () => { acknowledgements += 1; if (acknowledgements === 1) throw new Error("acknowledgment interrupted"); if (journal) journal.phase = "acknowledged"; },
+      verifyRuntimeHandoffReceipt: async () => { verifications += 1; if (!receiptValid) throw new Error("candidate readiness differs"); return verifiedReceipt; },
+      acknowledgeRuntimeHandoff: async (_binding, options) => {
+        acknowledgements += 1;
+        expect(options?.acceptedReceiptDigest).toBe(journal!.attempt!.receiptDigest);
+        expect(options?.verifiedReceipt).toBe(acknowledgements === 1 ? verifiedReceipt : undefined);
+        journal!.attempt!.fence = { closedAt: 1 };
+        journal!.cleanup = { state: acknowledgements === 1 ? "failed" : "complete" };
+        return { cleanup: journal!.cleanup.state };
+      },
     } });
     db.prepare("UPDATE auth_hooks SET repo_pattern = ?, command = ? WHERE id = ?").run("*", `printf 'MANDIBLE_RUNTIME_HANDOFF_PENDING:${"a".repeat(64)}\\n'; exit 75`, "builtin-mandible-rebuild");
     queue = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: false, executor: async () => new Promise(() => {}) });
@@ -97,7 +109,13 @@ describe("protected delivery evidence", () => {
     hooks.reclaimInterruptedRuns(request.id);
     expect(hooks.getRun(request.id, run.hook_id)?.state).toBe("running");
     const binding = { requestId: request.id, executionId: run.id, hookId: run.hook_id, commandDigest: run.command_digest, root: repo };
-    journal = { schema: "mandible-runtime-handoff@1", binding: { ...binding, ...(await verifyRuntimeHandoffPublication(db, binding)) }, bindingDigest: "a".repeat(64), phase: "complete", receipt: { health: "candidate" } };
+    const receipt = { schema: "mandible-runtime-receipt@1", bindingDigest: "a".repeat(64), attemptId: "current-attempt", health: "candidate" };
+    journal = { schema: "mandible-runtime-handoff@1", binding: { ...binding, ...(await freezeRuntimeHandoffPublication(db, binding)) },
+      bindingDigest: "a".repeat(64), phase: "failed", error: "historical prelaunch failure",
+      attempt: { id: receipt.attemptId, actor: {}, enteredAt: 1, deadline: 2, state: "complete", effects: {}, receipt,
+        receiptDigest: createHash("sha256").update(JSON.stringify(receipt)).digest("hex") }, cleanup: { state: "pending" } };
+    expect(runtimeObservationAcceptance({ ...run, state: "complete",
+      output: `MANDIBLE_RUNTIME_HANDOFF_ACCEPTED:${journal.bindingDigest}` }, journal)).toBe("inconsistent");
     await queue.resumeHookConvergence();
     expect((await queue.getRequest(request.id))?.status).toBe("executing");
     expect(hooks.getRun(request.id, run.hook_id)?.state).toBe("failed");
@@ -112,9 +130,12 @@ describe("protected delivery evidence", () => {
     expect(getAttributionEvidence(db, (await queue.getRequest(request.id))!.execution_evidence_id!)?.details.publication_verified).toBe(true);
     expect(acknowledgements).toBe(1);
     expect(db.prepare("SELECT status FROM ledger_issues WHERE id = ?").get(issue.id)).toMatchObject({ status: "closed" });
-    // The DB acceptance survived; startup retries only helper acknowledgment.
+    expect(journal.cleanup?.state).toBe("failed");
+    // The exact receipt remains accepted while obsolete-object cleanup retries.
     await queue.resumeHookConvergence();
     expect(acknowledgements).toBe(2);
+    expect(verifications).toBe(2);
+    expect(db.prepare("SELECT status FROM ledger_issues WHERE id = ?").get(issue.id)).toMatchObject({ status: "closed" });
     expect(hooks.getRun(request.id, run.hook_id)?.attempt_history).toEqual(attemptHistory);
     await queue.resumeHookConvergence();
     expect(acknowledgements).toBe(2);
@@ -144,7 +165,7 @@ describe("protected delivery evidence", () => {
     expect(hooks.convergence(next.id).state).toBe("pending");
   });
 
-  it("reconstructs only the frozen signed first-upgrade candidate and refuses binding or checkout drift", async () => {
+  it("settles frozen publication evidence after the real checkout disappears while initial admission and corrupt proof refuse", async () => {
     (await queue.dispose());
     const hooks = createInstalledServiceHookManager(db);
     db.prepare("UPDATE auth_hooks SET repo_pattern = ?, command = ? WHERE id = ?").run("*", "exit 75", "builtin-mandible-rebuild");
@@ -156,7 +177,10 @@ describe("protected delivery evidence", () => {
     const legacyOutput = publication.output.split("\n").find(line => line.startsWith("MANDIBLE_MERGE_RESULT "))!;
     db.prepare("UPDATE auth_requests SET output = ?, merge_preflight_base_sha = NULL, merge_candidate_tree_sha = NULL, merge_candidate_pin_sha = NULL, merge_atomic_enabled = 0 WHERE id = ?").run(legacyOutput, request.id);
     const binding = { requestId: request.id, executionId: run.id, hookId: run.hook_id, commandDigest: run.command_digest, root: repo };
-    const proof = (await verifyRuntimeHandoffPublication(db, binding));
+    const originalRequest = db.prepare("SELECT status, execution_evidence_id FROM auth_requests WHERE id = ?").get(request.id);
+    const proof = (await freezeRuntimeHandoffPublication(db, binding));
+    expect(db.prepare("SELECT status, execution_evidence_id FROM auth_requests WHERE id = ?").get(request.id)).toEqual(originalRequest);
+    expect((await freezeRuntimeHandoffPublication(db, { ...binding, ...proof })).publicationEvidence).toEqual(proof.publicationEvidence);
     expect(proof).toMatchObject({ mergeCommit: publication.mergeSha, mergeBase: request.merge_preflight_base_sha, mergeHead: request.merge_head_sha, frozenCandidate: { tree: request.merge_candidate_tree_sha } });
     const restore = tamperLooseGitObject(repo, publication.mergeSha, object => { object[object.indexOf(Buffer.from("\n\n")) + 2]! ^= 1; });
     try { await expect((async () => (await verifyRuntimeHandoffPublication(db, { ...binding, ...proof }))())).rejects.toThrow("does not match its object id"); }
@@ -166,6 +190,31 @@ describe("protected delivery evidence", () => {
     await expect((async () => (await verifyRuntimeHandoffPublication(db, { ...binding, source: { root: repo, commonGitDir: git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]), head: request.merge_head_sha!, buildRevision: request.merge_head_sha!, compiledDigest: "f".repeat(64), dependencies: { root: repo, digest: "f".repeat(64) }, files: {}, runtime: { path: process.execPath, sha256: "f".repeat(64) } } }))())).rejects.toThrow("unregistered");
     git(repo, ["update-ref", "refs/heads/main", request.merge_preflight_base_sha!, publication.mergeSha]);
     await expect((async () => (await verifyRuntimeHandoffPublication(db, { ...binding, ...proof }))())).rejects.toThrow("checkout differs");
+    const moved = `${repo}-unavailable`;
+    fs.renameSync(repo, moved);
+    try {
+      expect(fs.existsSync(repo)).toBe(false);
+      await expect(verifyRuntimeHandoffPublication(db, { ...binding, ...proof })).rejects.toThrow();
+      await expect(verifyRuntimeHandoffAuthority(db, { ...binding, ...proof })).resolves.toMatchObject(proof);
+      await expect(verifyRuntimeHandoffAuthority(db, binding)).rejects.toThrow("frozen publication");
+      await expect(verifyRuntimeHandoffAuthority(db, { ...binding, ...proof,
+        publicationEvidence: { ...proof.publicationEvidence, digest: "f".repeat(64) } })).rejects.toThrow("frozen publication evidence differs");
+      await expect(verifyRuntimeHandoffAuthority(db, { ...binding, ...proof,
+        publicationEvidence: { ...proof.publicationEvidence, evidenceId: "missing-publication-record" } })).rejects.toThrow("frozen publication evidence differs");
+      await expect(verifyRuntimeHandoffAuthority(db, { ...binding, ...proof,
+        frozenCandidate: { ...proof.frozenCandidate, snapshotDigest: "f".repeat(64) } })).rejects.toThrow("frozen proof binding differs");
+      db.prepare("UPDATE user_credentials SET status = 'revoked' WHERE id = ?").run(proof.frozenCandidate.signerCredentialId);
+      await expect(verifyRuntimeHandoffAuthority(db, { ...binding, ...proof })).rejects.toThrow("signer is no longer authorized");
+      db.prepare("UPDATE user_credentials SET status = 'active' WHERE id = ?").run(proof.frozenCandidate.signerCredentialId);
+      const adoption = queue as unknown as { adoptRuntimePublication: (retained: typeof binding, frozen: typeof proof) => Promise<() => void> };
+      const commitAdoption = await adoption.adoptRuntimePublication({ ...binding, ...proof }, proof);
+      db.transaction(commitAdoption).immediate();
+      expect(await queue.getRequest(request.id)).toMatchObject({ status: "completed", exit_code: 0,
+        execution_evidence_id: proof.publicationEvidence.evidenceId, merge_candidate_tree_sha: proof.frozenCandidate.tree });
+      const adopted = db.prepare("SELECT * FROM auth_requests WHERE id = ?").get(request.id);
+      db.transaction(await adoption.adoptRuntimePublication({ ...binding, ...proof }, proof)).immediate();
+      expect(db.prepare("SELECT * FROM auth_requests WHERE id = ?").get(request.id)).toEqual(adopted);
+    } finally { fs.renameSync(moved, repo); }
   });
 
 
@@ -323,7 +372,7 @@ describe('runtime convergence recovery', () => {
       journal!.phase = 'acknowledged';
     });
     const observation = vi.fn(async (current: RuntimeHandoffJournal, actor: unknown) => {
-      expect(current.phase).toBe('failed');
+      expect(['failed', 'verification-pending']).toContain(current.phase);
       return { ...current, recovery: { digest: 'b'.repeat(64), failureDigest: 'original-failure', receipt: { healthy: true }, actor, observedAt: Date.now() } };
     });
     const recheck = vi.fn(() => {});
@@ -338,7 +387,7 @@ describe('runtime convergence recovery', () => {
       recheckRuntimeObservation: recheck,
       completeRuntimeHandoffRecovery: async current => {
         expect(hooks.getRun(current.binding.requestId, current.binding.hookId)?.state).toBe('complete');
-        expect(current.phase).toBe('failed');
+        expect(['failed', 'verification-pending']).toContain(current.phase);
         journal!.phase = 'complete'; return journal!;
       },
     } });
@@ -356,7 +405,7 @@ describe('runtime convergence recovery', () => {
     const run = hooks.getRun(request.id, 'builtin-mandible-rebuild')!;
     db.prepare("UPDATE auth_hook_executions SET state = 'failed' WHERE id = ?").run(run.id);
     const binding = { requestId: request.id, executionId: run.id, hookId: run.hook_id, commandDigest: run.command_digest, root: repo };
-    journal = { schema: 'mandible-runtime-handoff@1', binding: { ...binding, ...(await verifyRuntimeHandoffPublication(db, binding)) }, bindingDigest: 'a'.repeat(64), phase: 'failed' };
+    journal = { schema: 'mandible-runtime-handoff@1', binding: { ...binding, ...(await freezeRuntimeHandoffPublication(db, binding)) }, bindingDigest: 'a'.repeat(64), phase: 'failed' };
     const credential = mintApiToken(db, 'private-pepper', operatorId).credential;
     const actor = { user_id: operatorId, credential_id: credential.id, evidence_method: 'api_token' as const, authority_path: 'operator_recovery' as const };
     return { hooks, request, run, issue, actor, observation, recheck, ack, restart, journal, persist };
@@ -367,10 +416,211 @@ describe('runtime convergence recovery', () => {
       bindingDigest: f.journal.bindingDigest, requestId: f.request.id, executionId: f.run.id,
       phase: 'failed', error: 'retained failure' };
     vi.spyOn(f.hooks, 'runtimeHandoffLock').mockImplementation(() => f.journal.phase === 'acknowledged' ? null : { ...owner, phase: f.journal.phase });
-    const evidence = vi.fn(async () => 'healthy-generation-1');
+    const evidence = vi.fn(async () => ({ outcome: 'confirmed' as const, key: 'healthy-generation-1' }));
     Object.assign((f.hooks as any).handoffClient, { runtimeRecoveryEvidenceKey: evidence });
     return { owner, evidence };
   }
+
+  it.each(['failed', 'verification-pending'] as const)('retains an incomplete %s verification without failing or replaying convergence, then accepts fresh evidence', async phase => {
+    const f = await recoveryFixture();
+    f.journal.phase = phase;
+    if (phase === 'verification-pending') {
+      f.journal.launch = { enteredAt: Date.now() - 60_000 };
+      db.prepare("UPDATE auth_hook_executions SET state = 'pending', exit_code = 75 WHERE id = ?").run(f.run.id);
+    }
+    const run = f.hooks.getRun(f.request.id, f.run.hook_id)!;
+    const before = { ...run };
+    const { evidence } = automaticRecovery(f);
+    f.observation.mockRejectedValueOnce(new RuntimeObservationError('observation_deadline', 'probe has not answered', { lastSample: null }, 'pending'));
+    const result = await queue.retryHookConvergence(f.request.id, undefined, { mode: 'verify-current', actor: f.actor });
+    expect(result).toMatchObject({ state: phase === 'failed' ? 'failed' : 'pending', verification: {
+      outcome: 'pending', reason: 'probe has not answered', retainedFailure: phase === 'failed',
+    } });
+    expect(f.hooks.getRun(f.request.id, f.run.hook_id)).toMatchObject(before);
+    expect(f.journal.phase).toBe(phase);
+    expect(f.persist).not.toHaveBeenCalled();
+    expect(f.ack).not.toHaveBeenCalled();
+    expect(f.restart).not.toHaveBeenCalled();
+    expect(db.prepare('SELECT status FROM ledger_issues WHERE id = ?').get(f.issue.id)).toMatchObject({ status: 'open' });
+    evidence.mockResolvedValueOnce({ outcome: 'pending', key: 'still-starting' });
+    f.observation.mockRejectedValueOnce(new RuntimeObservationError('observation_deadline', 'still waiting', null, 'pending'));
+    const failed = vi.fn(); const stuck = vi.fn();
+    await f.hooks.reconcileRuntimeHandoffs(vi.fn(), failed, stuck);
+    expect(f.observation).toHaveBeenCalledTimes(2);
+    expect(failed).not.toHaveBeenCalled();
+    expect(stuck).not.toHaveBeenCalled();
+    evidence.mockResolvedValue({ outcome: 'confirmed', key: 'now-serving' });
+    await queue.resumeHookConvergence();
+    expect(f.journal.phase).toBe('acknowledged');
+    expect(f.hooks.getRun(f.request.id, f.run.hook_id)).toMatchObject({ state: 'complete', attempts: before.attempts, attempt_history: before.attempt_history });
+    expect(f.persist).toHaveBeenCalledOnce();
+    expect(f.ack).toHaveBeenCalledOnce();
+    expect(db.prepare('SELECT status FROM ledger_issues WHERE id = ?').get(f.issue.id)).toMatchObject({ status: 'closed' });
+    await queue.resumeHookConvergence();
+    expect(f.observation).toHaveBeenCalledTimes(3);
+    expect(f.ack).toHaveBeenCalledOnce();
+  });
+
+  it.each(['automatic', 'explicit'] as const)('dispatches refreshed helper completion without full re-observation: %s', async mode => {
+    const f = await recoveryFixture();
+    f.journal.phase = 'observing'; f.journal.launch = { enteredAt: Date.now() };
+    Object.assign(f.journal.binding, { home: process.env.MANDIBLE_HOME });
+    db.prepare("UPDATE auth_hook_executions SET state = 'pending', exit_code = 75 WHERE id = ?").run(f.run.id);
+    const { evidence } = automaticRecovery(f);
+    const complete = () => { f.journal.phase = 'complete'; f.journal.receipt = { bindingDigest: f.journal.bindingDigest }; };
+    evidence.mockImplementationOnce(async () => { complete(); return { outcome: 'confirmed', key: 'helper-completed-before-verifier-lease' }; });
+    Object.assign((f.hooks as any).handoffClient, { withRuntimeObservation });
+    const failed = vi.fn(); const stuck = vi.fn();
+    if (mode === 'automatic') {
+      expect(await f.hooks.reconcileRuntimeHandoffs(vi.fn(), failed, stuck)).toEqual([]);
+      expect(evidence).toHaveBeenCalledOnce();
+    } else {
+      complete();
+      await expect(queue.retryHookConvergence(f.request.id, undefined, { mode: 'verify-current', actor: f.actor }))
+        .resolves.toMatchObject({ state: 'pending', verification: { outcome: 'pending', reason: expect.stringContaining('completion acceptance is pending') } });
+    }
+    expect(failed).not.toHaveBeenCalled(); expect(stuck).not.toHaveBeenCalled();
+    expect(f.hooks.getRun(f.request.id, f.run.hook_id)?.state).toBe('pending');
+    expect(f.journal.phase).toBe('complete');
+    expect(f.observation).not.toHaveBeenCalled(); expect(f.ack).not.toHaveBeenCalled();
+    expect(db.prepare('SELECT status FROM ledger_issues WHERE id = ?').get(f.issue.id)).toMatchObject({ status: 'open' });
+    await queue.resumeHookConvergence();
+    expect(f.journal.phase).toBe('acknowledged');
+    expect(f.hooks.getRun(f.request.id, f.run.hook_id)?.output.match(/MANDIBLE_RUNTIME_HANDOFF_ACCEPTED:/g)).toHaveLength(1);
+    expect(f.ack).toHaveBeenCalledOnce();
+    await expect(queue.retryHookConvergence(f.request.id, undefined, { mode: 'verify-current', actor: f.actor }))
+      .resolves.toMatchObject({ state: 'complete', verification: { outcome: 'confirmed' } });
+    expect(f.ack).toHaveBeenCalledOnce(); expect(f.observation).not.toHaveBeenCalled();
+    expect(db.prepare("SELECT count(*) AS count FROM ledger_events WHERE entity_id = ? AND event_type = 'issue.closed'").get(f.issue.id)).toEqual({ count: 1 });
+  });
+
+  it.each(['armed', 'unloading', 'dependencies', 'build', 'desktop', 'instructions', 'retired'] as const)('dispatches the current pre-launch or terminal phase without observation: %s', async phase => {
+    const f = await recoveryFixture();
+    f.journal.phase = phase;
+    Object.assign(f.journal.binding, { home: process.env.MANDIBLE_HOME });
+    db.prepare("UPDATE auth_hook_executions SET state = 'pending', exit_code = 75 WHERE id = ?").run(f.run.id);
+    Object.assign((f.hooks as any).handoffClient, { withRuntimeObservation });
+    const run = f.hooks.getRun(f.request.id, f.run.hook_id)!;
+    const result = queue.retryHookConvergence(f.request.id, undefined, { mode: 'verify-current', actor: f.actor });
+    if (phase === 'retired') await expect(result).rejects.toMatchObject({ code: 'recovery_refused', message: expect.stringContaining('retired') });
+    else await expect(result).resolves.toMatchObject({ state: 'pending', verification: { outcome: 'pending', reason: expect.stringContaining('helper is still executing') } });
+    expect(f.observation).not.toHaveBeenCalled(); expect(f.persist).not.toHaveBeenCalled(); expect(f.ack).not.toHaveBeenCalled();
+    expect(f.hooks.getRun(f.request.id, f.run.hook_id)).toMatchObject(run);
+    expect(db.prepare('SELECT status FROM ledger_issues WHERE id = ?').get(f.issue.id)).toMatchObject({ status: 'open' });
+  });
+
+  it.each(['complete', 'acknowledged'] as const)('replays freshly accepted %s state after a stale observing snapshot without an active owner requirement', async phase => {
+    const f = await recoveryFixture();
+    f.journal.phase = 'observing'; f.journal.launch = { enteredAt: Date.now() };
+    Object.assign(f.journal.binding, { home: process.env.MANDIBLE_HOME });
+    db.prepare("UPDATE auth_hook_executions SET state = 'pending', exit_code = 75 WHERE id = ?").run(f.run.id);
+    const { evidence } = automaticRecovery(f);
+    evidence.mockImplementationOnce(async () => {
+      f.journal.phase = phase; f.journal.receipt = { bindingDigest: f.journal.bindingDigest };
+      db.prepare("UPDATE auth_hook_executions SET state = 'complete', output = ? WHERE id = ?").run(`MANDIBLE_RUNTIME_HANDOFF_ACCEPTED:${f.journal.bindingDigest}`, f.run.id);
+      return { outcome: 'confirmed', key: 'helper-already-accepted' };
+    });
+    Object.assign((f.hooks as any).handoffClient, { withRuntimeObservation });
+    await queue.resumeHookConvergence();
+    expect(f.journal.phase).toBe('acknowledged');
+    expect(f.observation).not.toHaveBeenCalled(); expect(f.persist).not.toHaveBeenCalled();
+    expect(f.ack).toHaveBeenCalledTimes(phase === 'acknowledged' ? 0 : 1);
+    expect(db.prepare("SELECT count(*) AS count FROM ledger_events WHERE entity_id = ? AND event_type = 'issue.closed'").get(f.issue.id)).toEqual({ count: 1 });
+  });
+
+  it('confirms exact acknowledged acceptance without inspecting a later live generation or requiring its old owner', async () => {
+    const f = await recoveryFixture();
+    f.journal.phase = 'acknowledged';
+    db.prepare("UPDATE auth_hook_executions SET state = 'complete', output = ? WHERE id = ?").run(`MANDIBLE_RUNTIME_HANDOFF_ACCEPTED:${f.journal.bindingDigest}`, f.run.id);
+    Object.assign(f.journal.binding, { home: process.env.MANDIBLE_HOME });
+    Object.assign((f.hooks as any).handoffClient, { withRuntimeObservation });
+    vi.spyOn(f.hooks, 'runtimeHandoffLock').mockImplementation(() => { throw new Error('acknowledged owner must not be required'); });
+    git(repo, ['commit', '--allow-empty', '-m', 'later generation']);
+    const guard = vi.fn();
+    await expect(f.hooks.verifyCurrentRuntimeHandoff({ id: f.request.id }, f.actor, guard)).resolves.toEqual({ outcome: 'confirmed' });
+    expect(guard).toHaveBeenCalled();
+    expect(f.observation).not.toHaveBeenCalled(); expect(f.persist).not.toHaveBeenCalled(); expect(f.ack).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('serializes normal completion and concurrent acknowledgment replay (interrupted=%s)', async interruptAck => {
+    const f = await recoveryFixture(interruptAck);
+    f.journal.phase = 'complete'; f.journal.receipt = { bindingDigest: f.journal.bindingDigest };
+    Object.assign(f.journal.binding, { home: process.env.MANDIBLE_HOME });
+    db.prepare("UPDATE auth_hook_executions SET state = 'pending', exit_code = 75 WHERE id = ?").run(f.run.id);
+    let entered = Promise.withResolvers<void>();
+    let release = Promise.withResolvers<void>();
+    const verify = vi.fn(async () => { entered.resolve(); await release.promise; });
+    const client = (f.hooks as any).handoffClient;
+    Object.assign(client, { withRuntimeObservation, verifyRuntimeHandoffReceipt: verify });
+    const competing = createInstalledServiceHookManager(db, { handoffClient: client });
+    const adopt = vi.fn(async () => () => {});
+    const failed = vi.fn(); const stuck = vi.fn();
+    const race = async () => {
+      const first = queue.resumeHookConvergence();
+      try {
+        await entered.promise;
+        expect(await competing.reconcileRuntimeHandoffs(adopt, failed, stuck)).toEqual([]);
+        expect(failed).not.toHaveBeenCalled(); expect(stuck).not.toHaveBeenCalled();
+        expect(db.prepare('SELECT status FROM ledger_issues WHERE id = ?').get(f.issue.id)).toMatchObject({ status: 'open' });
+      } finally { release.resolve(); }
+      await first;
+    };
+    await race();
+    if (interruptAck) {
+      expect(f.journal.phase).toBe('complete');
+      expect(f.hooks.getRun(f.request.id, f.run.hook_id)?.state).toBe('complete');
+      expect(db.prepare('SELECT status FROM ledger_issues WHERE id = ?').get(f.issue.id)).toMatchObject({ status: 'open' });
+      entered = Promise.withResolvers<void>(); release = Promise.withResolvers<void>();
+      await race();
+    }
+    expect(f.journal.phase).toBe('acknowledged');
+    expect(f.observation).not.toHaveBeenCalled();
+    expect(adopt).not.toHaveBeenCalled();
+    expect(f.ack).toHaveBeenCalledTimes(interruptAck ? 2 : 1);
+    const run = f.hooks.getRun(f.request.id, f.run.hook_id)!;
+    expect(run).toMatchObject({ state: 'complete', attempts: f.run.attempts });
+    expect(run.output.match(/MANDIBLE_RUNTIME_HANDOFF_ACCEPTED:/g)).toHaveLength(1);
+    expect(db.prepare('SELECT status FROM ledger_issues WHERE id = ?').get(f.issue.id)).toMatchObject({ status: 'closed' });
+    const closureEvents = () => db.prepare("SELECT id, payload_json FROM ledger_events WHERE entity_id = ? AND event_type = 'issue.closed'").all(f.issue.id);
+    const closed = closureEvents();
+    expect(closed).toHaveLength(1);
+    await queue.resumeHookConvergence();
+    await competing.reconcileRuntimeHandoffs(adopt, failed, stuck);
+    expect(closureEvents()).toEqual(closed);
+    expect(f.ack).toHaveBeenCalledTimes(interruptAck ? 2 : 1);
+    expect(verify).toHaveBeenCalledTimes(interruptAck ? 2 : 1);
+  });
+
+  it('reports observer contention as pending without a failure incident or duplicate observation', async () => {
+    const f = await recoveryFixture();
+    f.journal.phase = 'verification-pending'; f.journal.launch = { enteredAt: Date.now() };
+    db.prepare("UPDATE auth_hook_executions SET state = 'pending', exit_code = 75 WHERE id = ?").run(f.run.id);
+    automaticRecovery(f);
+    const lease = vi.fn(async () => { throw new RuntimeObservationError('observer_busy', 'owner is publishing or releasing', null, 'pending'); });
+    Object.assign((f.hooks as any).handoffClient, { withRuntimeObservation: lease });
+    const failed = vi.fn(); const stuck = vi.fn();
+    await f.hooks.reconcileRuntimeHandoffs(vi.fn(), failed, stuck);
+    expect(lease).toHaveBeenCalledOnce();
+    expect(f.observation).not.toHaveBeenCalled();
+    expect(f.persist).not.toHaveBeenCalled(); expect(f.ack).not.toHaveBeenCalled();
+    expect(failed).not.toHaveBeenCalled(); expect(stuck).not.toHaveBeenCalled();
+    expect(f.hooks.getRun(f.request.id, f.run.hook_id)).toMatchObject({ state: 'pending', attempts: f.run.attempts });
+  });
+
+  it('keeps a retired pending handoff terminal after an interrupted DB disposition', async () => {
+    const f = await recoveryFixture();
+    f.journal.phase = 'retired';
+    db.prepare("UPDATE auth_hook_executions SET state = 'pending', exit_code = 75 WHERE id = ?").run(f.run.id);
+    const failed = vi.fn();
+    const stuck = vi.fn();
+    expect(await f.hooks.reconcileRuntimeHandoffs(vi.fn(), failed, stuck)).toEqual([]);
+    expect(f.hooks.getRun(f.request.id, f.run.hook_id)?.state).toBe('failed');
+    expect(f.observation).not.toHaveBeenCalled();
+    expect(f.ack).not.toHaveBeenCalled();
+    expect(failed).not.toHaveBeenCalled();
+    expect(stuck).not.toHaveBeenCalled();
+    expect(db.prepare('SELECT status FROM ledger_issues WHERE id = ?').get(f.issue.id)).toMatchObject({ status: 'open' });
+  });
 
   it('automatically verifies the exact healthy failed owner and wakes deferred acceptance without another hook attempt', async () => {
     const f = await recoveryFixture();
@@ -404,7 +654,7 @@ describe('runtime convergence recovery', () => {
     await f.hooks.reconcileRuntimeHandoffs(vi.fn(), vi.fn());
     expect(f.observation).toHaveBeenCalledOnce();
     expect(f.journal.phase).toBe('failed');
-    evidence.mockResolvedValue('healthy-generation-2');
+    evidence.mockResolvedValue({ outcome: 'confirmed', key: 'healthy-generation-2' });
     await f.hooks.reconcileRuntimeHandoffs(vi.fn(), vi.fn());
     expect(f.observation).toHaveBeenCalledTimes(2);
     expect(f.journal.phase).toBe('acknowledged');
@@ -445,7 +695,7 @@ describe('runtime convergence recovery', () => {
         expect(assessRuntimeLogs(lines.join('')).failures).toEqual([]);
         return observe(journal, actor);
       });
-      evidence.mockResolvedValue('healthy-generation-2');
+      evidence.mockResolvedValue({ outcome: 'confirmed', key: 'healthy-generation-2' });
       await queue.resumeHookConvergence();
       expect(f.journal.phase).toBe('acknowledged');
       expect(f.observation).toHaveBeenCalledTimes(2);
@@ -571,19 +821,24 @@ describe('runtime convergence recovery', () => {
     } finally { competing.close(); }
   });
 
-  it('does not replace an accepted receipt when concurrent observations finish out of order', async () => {
+  it('serializes current-runtime requests without accepting an incomplete competing observation', async () => {
     const f = await recoveryFixture();
-    let finishLate!: (journal: RuntimeHandoffJournal) => void;
-    f.observation.mockImplementationOnce(async current => new Promise(resolve => { finishLate = resolve; }));
-    const late = queue.retryHookConvergence(f.request.id, undefined, { mode: 'verify-current', actor: f.actor });
+    let finish!: (journal: RuntimeHandoffJournal) => void;
+    const observe = f.observation.getMockImplementation()!;
+    f.observation.mockImplementationOnce(async current => new Promise(resolve => { finish = resolve; }));
+    const first = queue.retryHookConvergence(f.request.id, undefined, { mode: 'verify-current', actor: f.actor });
     await waitUntil(() => f.observation.mock.calls.length === 1, 'the first recovery observation');
-    await queue.retryHookConvergence(f.request.id, undefined, { mode: 'verify-current', actor: f.actor });
+    const competing = await queue.retryHookConvergence(f.request.id, undefined, { mode: 'verify-current', actor: f.actor });
+    expect(competing.verification).toMatchObject({ outcome: 'pending' });
+    expect(f.persist).not.toHaveBeenCalled();
+    expect(f.ack).not.toHaveBeenCalled();
+    finish(await observe(f.journal, f.actor));
+    await expect(first).resolves.toMatchObject({ verification: { outcome: 'confirmed' }, state: 'complete' });
+    expect(f.persist).toHaveBeenCalledOnce();
+    expect(f.observation).toHaveBeenCalledOnce();
     const accepted = f.journal.recovery!.digest;
-    finishLate({ ...f.journal, phase: 'failed', recovery: { ...f.journal.recovery!, digest: 'c'.repeat(64) } });
-    await expect(late).rejects.toThrow('hook changed');
-    expect(f.journal.recovery!.digest).toBe(accepted);
-    expect(f.hooks.getRun(f.request.id, f.run.hook_id)?.output).toContain(`MANDIBLE_RUNTIME_RECOVERY_ACCEPTED:${accepted}`);
     await queue.retryHookConvergence(f.request.id, undefined, { mode: 'verify-current', actor: f.actor });
+    expect(f.journal.recovery!.digest).toBe(accepted);
   });
 
   it('drains once while foreign work runs and keeps admission closed through a second no-drain settlement', async () => {

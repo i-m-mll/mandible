@@ -1,3 +1,4 @@
+import { Icon } from '../icons/Icon';
 import type { ComponentChildren, JSX } from 'preact';
 import { useCallback, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
@@ -179,26 +180,6 @@ export type SidebarItemProvider = {
   mark: OfficialProviderMarkKind | null;
 };
 
-function PinIcon(): JSX.Element {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M12 17v5" />
-      <path d="M5 17h14" />
-      <path d="M7 17l2-8-2-3V3h10v3l-2 3 2 8" />
-    </svg>
-  );
-}
-
 export function SidebarItemPinAction({
   label,
   pressed,
@@ -226,7 +207,7 @@ export function SidebarItemPinAction({
         onPress();
       }}
     >
-      <PinIcon />
+      <Icon name={pressed ? 'unpin' : 'pin'} size={14} />
     </ContextualAction>
   );
 }
@@ -283,17 +264,7 @@ export function SidebarItemOverflowMenu({
           setOpen((current) => !current);
         }}
       >
-        <svg
-          width="15"
-          height="15"
-          viewBox="0 0 24 24"
-          fill="currentColor"
-          aria-hidden="true"
-        >
-          <circle cx="5" cy="12" r="1.75" />
-          <circle cx="12" cy="12" r="1.75" />
-          <circle cx="19" cy="12" r="1.75" />
-        </svg>
+        <Icon name="sidebarMore" size={15} />
       </ContextualAction>
       {open ? (
         <span

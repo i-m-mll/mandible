@@ -1,3 +1,4 @@
+import { Icon } from '../icons/Icon';
 import { appTip } from './AppHoverTips';
 import type { JSX, Ref } from 'preact';
 
@@ -27,11 +28,7 @@ export function DetailPaneMenuTrigger({
       {...appTip(title)}
       onClick={onClick}
     >
-      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-        <circle cx="5" cy="12" r="1.5" />
-        <circle cx="12" cy="12" r="1.5" />
-        <circle cx="19" cy="12" r="1.5" />
-      </svg>
+      <Icon name="more" />
     </button>
   );
 }

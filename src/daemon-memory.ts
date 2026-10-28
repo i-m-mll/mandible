@@ -64,41 +64,42 @@ export class DaemonMemoryDiagnostics {
     this.last = { ...emptyMemorySnapshot(this.intervalStartedAt), warningThresholdFraction: this.warningFraction };
   }
 
-  sample(intervalEndedAt = Date.now()): DaemonMemorySnapshot {
+  current(intervalEndedAt = Date.now()): DaemonMemorySnapshot {
     const usage = this.sources.memoryUsage();
     const totalMemory = Math.max(0, this.sources.totalMemory());
     const rssFraction = totalMemory > 0 ? usage.rss / totalMemory : 0;
-
-    this.highWater = maxMemoryValues(this.highWater, usage);
-    this.updateWarningState(usage.rss, totalMemory, rssFraction);
-
-    this.last = {
-      sequence: ++this.sequence,
+    return {
+      sequence: this.sequence,
       intervalStartedAt: this.intervalStartedAt,
       intervalEndedAt,
       ...usage,
-      uptime: this.sources.uptime(),
-      totalMemory,
-      rssFraction,
+      uptime: this.sources.uptime(), totalMemory, rssFraction,
       warningThresholdFraction: this.warningFraction,
-      warning: this.warning,
-      highWater: { ...this.highWater },
+      warning: this.warning ? rssFraction >= this.warningClearFraction : rssFraction >= this.warningFraction,
+      highWater: maxMemoryValues(this.highWater, usage),
     };
+  }
+
+  sample(intervalEndedAt = Date.now()): DaemonMemorySnapshot {
+    const current = this.current(intervalEndedAt);
+    this.updateWarningState(current);
+    this.highWater = current.highWater;
+    this.last = { ...current, sequence: ++this.sequence };
     this.intervalStartedAt = intervalEndedAt;
     return { ...this.last };
   }
 
   /**
    * Return the most recent sampled snapshot without collecting a new one.
-   * Read paths such as the health endpoint use this so sampling and warning
-   * evaluation stay on the periodic diagnostics timer.
+   * Periodic warning state and logging stay on the diagnostics timer; current()
+   * evaluates a read without mutating either.
    */
   snapshot(): DaemonMemorySnapshot {
     return { ...this.last };
   }
 
-  private updateWarningState(rss: number, totalMemory: number, rssFraction: number): void {
-    if (!this.warning && rssFraction >= this.warningFraction) {
+  private updateWarningState({ rss, totalMemory, rssFraction, warning }: DaemonMemorySnapshot): void {
+    if (!this.warning && warning) {
       this.warning = true;
       this.logger("warn", "daemon_memory_warning", {
         subsystem: "daemon",
@@ -110,7 +111,7 @@ export class DaemonMemoryDiagnostics {
       return;
     }
 
-    if (this.warning && rssFraction < this.warningClearFraction) {
+    if (this.warning && !warning) {
       this.warning = false;
       this.logger("info", "daemon_memory_recovered", {
         subsystem: "daemon",

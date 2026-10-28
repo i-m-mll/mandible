@@ -1,8 +1,9 @@
+import { Icon } from './components/icons/Icon';
 import { appTip } from './components/shared/AppHoverTips';
 import type { AppHistoryNavigation } from './app-history';
 import type { ComponentChildren, Ref } from 'preact';
 import { chromeAppearanceFrameStyles, type ChromeAppearanceThemes } from './chrome-appearance';
-import { ArrowIcon } from './components/icons/ArrowIcon';
+
 import { APP_FRAME_CONTROLS_OFFSET, AppRightSidebarHeaderControls, AppRightSidebarToggleButton, ViewSidebarIcon, type AppRightSidebarDescriptor } from './app-shell';
 import './styles/app-frame.css';
 
@@ -31,8 +32,8 @@ export function AppFrame({ navigation, chromeAppearance, nativeControlsReservati
       <div className="app-frame__navigation">
         {nativeControlsReservation > 0 ? <span className="app-frame__native-controls" aria-hidden="true" /> : null}
         <span className="app-frame__logo" aria-hidden="true"><span className="app-header__logo" style={{ '--app-header-logo-image': 'url("/header-logo.svg")' } as JSX.CSSProperties} /></span>
-        <button type="button" className="app-frame__button app-frame__history-button" aria-label="Back" {...appTip("Back")} disabled={!navigation.canBack} onClick={navigation.back}><ArrowIcon direction="left" proportions="history" size={HISTORY_ARROW_SIZE} strokeWidth={1} /></button>
-        <button type="button" className="app-frame__button app-frame__history-button" aria-label="Forward" {...appTip("Forward")} disabled={!navigation.canForward} onClick={navigation.forward}><ArrowIcon direction="right" proportions="history" size={HISTORY_ARROW_SIZE} strokeWidth={1} /></button>
+        <button type="button" className="app-frame__button app-frame__history-button" aria-label="Back" {...appTip("Back")} disabled={!navigation.canBack} onClick={navigation.back}><Icon name="historyBack" size={HISTORY_ARROW_SIZE} /></button>
+        <button type="button" className="app-frame__button app-frame__history-button" aria-label="Forward" {...appTip("Forward")} disabled={!navigation.canForward} onClick={navigation.forward}><Icon name="historyForward" size={HISTORY_ARROW_SIZE} /></button>
         {viewSidebarAvailable ? <button type="button" className="app-frame__button" aria-label={leftLabel} {...appTip(leftLabel)} aria-pressed={viewSidebarOpen} onClick={onViewSidebarToggle}><ViewSidebarIcon open={viewSidebarOpen} /></button> : null}
       </div>
       <div className="app-frame__main-header" ref={headerHostRef} />

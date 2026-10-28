@@ -1726,7 +1726,6 @@ cmd_revision_diff() {
     die "Usage: $(mandible_command_syntax issue.revision.diff)" 2
   fi
 
-  command -v python3 >/dev/null 2>&1 || die "python3 not found." 1
   require_tools
 
   local old_revision new_revision old_entity new_entity old_id new_id
@@ -1750,33 +1749,10 @@ cmd_revision_diff() {
   printf '%s\n' "$new_revision" | jq -j '.snapshot_body' > "$new_file"
 
   local status
-  python3 - "$old_file" "$new_file" "$old_revision" "$new_revision" <<'PY'
-import difflib
-import json
-import sys
-
-old_path, new_path, old_json, new_json = sys.argv[1:5]
-old = json.loads(old_json)
-new = json.loads(new_json)
-
-def label(revision):
-    return f"{revision['id']} #{revision['revision_no']} {revision['entity_type']}:{revision['entity_id']}"
-
-with open(old_path, "r", encoding="utf-8") as handle:
-    old_lines = handle.read().splitlines()
-with open(new_path, "r", encoding="utf-8") as handle:
-    new_lines = handle.read().splitlines()
-
-for line in difflib.unified_diff(
-    old_lines,
-    new_lines,
-    fromfile=label(old),
-    tofile=label(new),
-    lineterm="",
-):
-    print(line)
-PY
-  status=$?
+  local old_label new_label
+  old_label=$(printf '%s' "$old_revision" | jq -r '"\(.id) #\(.revision_no) \(.entity_type):\(.entity_id)"')
+  new_label=$(printf '%s' "$new_revision" | jq -r '"\(.id) #\(.revision_no) \(.entity_type):\(.entity_id)"')
+  "$(mandible_bun_runtime)" --no-install "$(mandible_cli_module cli/revision-diff)" "$old_file" "$new_file" "$old_label" "$new_label" && status=0 || status=$?
   rm -f "$old_file" "$new_file"
   return "$status"
 }
@@ -1805,7 +1781,7 @@ cmd_refs() {
     backfill)
       local root
       root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-      exec "$("$root/scripts/bun-runtime.sh")" "$root/src/cli/issue-refs-backfill.ts" "$@"
+      exec "$(mandible_bun_runtime)" --no-install "$(mandible_cli_module cli/issue-refs-backfill)" "$@"
       ;;
     ""|-h|--help)
       cat <<'REFS_USAGE'
@@ -1822,7 +1798,7 @@ REFS_USAGE
 cmd_markdown() {
   local root
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-  exec "$("$root/scripts/bun-runtime.sh")" "$root/src/cli/issue-markdown-tools.ts" "$@"
+  exec "$(mandible_bun_runtime)" --no-install "$(mandible_cli_module cli/issue-markdown-tools)" "$@"
 }
 
 # --- Main ---

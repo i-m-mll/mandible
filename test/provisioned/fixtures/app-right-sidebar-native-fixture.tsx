@@ -1,3 +1,4 @@
+import { Icon } from '../../../ui/src/components/icons/Icon';
 import { useAnchoredMenu } from '../../../ui/src/hooks/useAnchoredMenu';
 import { DetailPaneMenuTrigger } from '../../../ui/src/components/shared/DetailPaneMenuTrigger';
 import { render } from 'preact';
@@ -19,27 +20,24 @@ import {
   type AppRightSidebarDescriptor,
 } from '../../../ui/src/app-shell';
 import { ChatActivity, ChatPreview, ChatSessionOverview } from '../../../ui/src/chat/ChatRightSidebar';
-import { ArrowIcon } from '../../../ui/src/components/icons/ArrowIcon';
+
 import { DetailPaneHeader } from '../../../ui/src/components/shared/DetailPaneHeader';
 import { useIntrinsicOverflowGroup } from '../../../ui/src/hooks/useIntrinsicOverflowGroup';
 import { useAppRightSidebarState } from '../../../ui/src/right-sidebar-state';
-import { ChatComposerSubmitIcon, ChatDetailFrame, conversationLoadFailure } from '../../../ui/src/views/conversations';
+import { ChatDetailFrame, conversationLoadFailure } from '../../../ui/src/views/conversations';
 import { GraphDetailPane } from '../../../ui/src/views/graph';
 import { TimelineInspectorFrame } from '../../../ui/src/views/timeline';
 
 type Surface = 'chat' | 'graph' | 'timeline' | 'console';
 
 function TestIcon({ kind }: { kind: string }): JSX.Element {
-  return <svg data-icon={kind} width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="6" /></svg>;
+  return <svg className="app-icon" data-icon={kind} width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="6" /></svg>;
 }
 
 function ScrollFill(): JSX.Element {
   return <div aria-hidden="true" style={{ height: 900 }} />;
 }
 
-function DotsIcon(): JSX.Element {
-  return <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.5" /><circle cx="12" cy="12" r="1.5" /><circle cx="19" cy="12" r="1.5" /></svg>;
-}
 
 function RunOption({ label, value }: { label: string; value: string }): JSX.Element {
   return (
@@ -64,9 +62,9 @@ function NativeComposer({ layoutKey }: { layoutKey: string }): JSX.Element {
             <RunOption label="Reasoning effort" value="Medium" />
           </div>
           <span ref={geometry.fixedRef} className="conv-compose__runtime-actions">
-            <button type="button" className="btn btn--ghost btn--sm conv-compose__run-options-trigger" data-overflow-trigger aria-label="Run options" title="Run options"><DotsIcon /></button>
+            <button type="button" className="btn btn--ghost btn--sm conv-compose__run-options-trigger" data-overflow-trigger aria-label="Run options" title="Run options"><Icon name="more" /></button>
             <span className="context-usage">42%</span>
-            <button type="button" className="chat-circle-action conv-compose__send" aria-label="Send"><ChatComposerSubmitIcon /></button>
+            <button type="button" className="chat-circle-action conv-compose__send" aria-label="Send"><Icon name="chatSubmit" /></button>
           </span>
         </div>
       </div>
@@ -84,7 +82,7 @@ function NativeTranscript(): JSX.Element {
             <div data-transcript-final-content style={{ height: 24 }}>Final transcript line</div>
           </div>
           <button type="button" className="chat-circle-action stream-renderer__scroll-btn" aria-label="Jump to latest" title="Jump to latest">
-            <ArrowIcon direction="down" />
+            <Icon name="jumpToLatest" />
           </button>
         </div>
       </div>

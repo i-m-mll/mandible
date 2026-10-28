@@ -1,15 +1,177 @@
 // @vitest-environment node
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import https from 'node:https';
 import net from 'node:net';
 import { spawnSync } from 'node:child_process';
-import { createAcceptanceHome, acceptanceGatewayConfig, acceptanceHealth, assessAcceptanceLogs, awaitReadiness, loopbackListening, observeAcceptanceHealth } from '../scripts/candidate-acceptance.mjs';
+import { acceptanceApplicationPolicy, acceptanceSummary, compactAcceptanceResult, acceptanceScope, acceptanceOwnedOutputs, createAcceptanceHome, acceptanceGatewayConfig, acceptanceHealth, acceptanceFailureLogs, assessAcceptanceLogs, awaitAcceptanceGatewayReadiness, awaitReadiness, loopbackListening, observeAcceptanceHealth } from '../scripts/candidate-acceptance.mjs';
+import { createHash } from 'node:crypto';
+import { createOwnedRun, saveOwnedMetadata } from '../scripts/owned-run.mjs';
+import { runSupervisedCommand } from '../scripts/process-group-supervisor.mjs';
+import { createAuthCheckRepo, createMigratedDb, insertSiblingMergeRequest } from './helpers/auth-queue-fixtures.js';
+import { readCandidateAcceptanceEvidence } from './helpers/candidate-acceptance-evidence.js';
+import { CandidateAcceptanceRuns } from '../src/candidate-acceptance.js';
 import { STATE_DEADLINE_MS } from './helpers/wait-until.js';
+import { acceptanceDeadline } from '../scripts/acceptance-deadline.mjs';
+
+it.skipIf(process.platform !== 'darwin')('self-execs once per PID while preserving argv, process group and the original candidate clock', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'candidate-policy-entry-'));
+  const program = path.join(root, 'entry fixture.mjs');
+  const trace = path.join(root, 'trace.jsonl');
+  const policyModule = new URL('../scripts/candidate-acceptance.mjs', import.meta.url).href;
+  fs.writeFileSync(program, `
+    import fs from 'node:fs';
+    import { spawnSync } from 'node:child_process';
+    import { acceptanceApplicationPolicy } from ${JSON.stringify(policyModule)};
+    const record = (event, budget) => {
+      const group = spawnSync('/bin/ps', ['-o', 'pgid=', '-p', String(process.pid)], {encoding:'utf8',timeout:1000});
+      if (group.status !== 0) throw Error(group.stderr);
+      fs.appendFileSync(process.argv[2], JSON.stringify({event,pid:process.pid,pgid:group.stdout.trim(),
+        execArgv:process.execArgv,argv:process.argv.slice(2),sentinel:process.env.ENTRY_FIXTURE_VALUE,
+        marker:process.env.MANDIBLE_ACCEPTANCE_APPLICATION_POLICY_PID,
+        started:process.env.MANDIBLE_ACCEPTANCE_STARTED_AT,deadline:process.env.MANDIBLE_ACCEPTANCE_DEADLINE,
+        budget:budget?.reading()})+'\\n');
+    };
+    record('entry');
+    const budget = acceptanceApplicationPolicy();
+    record('ready', budget);
+    if (process.argv[3] === 'parent') {
+      const child = spawnSync(process.execPath, [...process.execArgv, import.meta.path, process.argv[2], 'child', ...process.argv.slice(4)],
+        {env:process.env,encoding:'utf8',timeout:5000});
+      if (child.status !== 0) throw Error(child.stderr);
+    }
+  `);
+  const env = { ...process.env, ENTRY_FIXTURE_VALUE: 'spaces and $literal', MANDIBLE_ACCEPTANCE_APPLICATION_POLICY_PID: 'stale-parent' };
+  delete env.MANDIBLE_ACCEPTANCE_STARTED_AT;
+  delete env.MANDIBLE_ACCEPTANCE_DEADLINE;
+  delete env.MANDIBLE_ACCEPTANCE_CLOCK_SCOPE;
+  try {
+    const runtime = process.env.MANDIBLE_RUNTIME;
+    if (!runtime) throw new Error('Candidate entry fixture requires the qualified Bun runtime');
+    const result = spawnSync(runtime, ['--smol', '--no-install', program, trace, 'parent', 'argument with spaces', '--literal=$value'],
+      { env, encoding: 'utf8', timeout: 10_000 });
+    expect(result.status, result.stderr).toBe(0);
+    const rows = fs.readFileSync(trace, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    const pids = [...new Set(rows.map(row => row.pid))];
+    expect(pids).toHaveLength(2);
+    const ready = rows.filter(row => row.event === 'ready');
+    for (const pid of pids) {
+      const entries = rows.filter(row => row.pid === pid);
+      expect(entries.map(row => row.event)).toEqual(['entry', 'entry', 'ready']);
+      expect(new Set(entries.map(row => row.pgid)).size).toBe(1);
+      expect(entries[0].marker).not.toBe(String(pid));
+      expect(entries[1].marker).toBe(String(pid));
+      expect(entries[1].argv).toEqual(entries[0].argv);
+      expect(entries[1].execArgv).toEqual(entries[0].execArgv);
+      expect(entries[1].execArgv).toEqual(['--smol', '--no-install']);
+      expect(entries[1].sentinel).toBe('spaces and $literal');
+    }
+    expect(ready[0].budget.deadline - ready[0].budget.started_at).toBe(60_000);
+    expect(ready[1].budget).toMatchObject({ started_at: ready[0].budget.started_at, deadline: ready[0].budget.deadline,
+      scope: 'candidate-script; installed executor preparation excluded' });
+    expect(ready[0].budget.scope).toBe(ready[1].budget.scope);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+it('rejects malformed or expired entry clocks before attempting resource normalization', () => {
+  const exec = vi.spyOn(process, 'execve');
+  try {
+    vi.stubEnv('MANDIBLE_ACCEPTANCE_STARTED_AT', 'invalid');
+    vi.stubEnv('MANDIBLE_ACCEPTANCE_DEADLINE', 'invalid');
+    expect(() => acceptanceApplicationPolicy()).toThrow('Invalid acceptance deadline');
+    vi.stubEnv('MANDIBLE_ACCEPTANCE_STARTED_AT', String(Date.now() - 60_000));
+    vi.stubEnv('MANDIBLE_ACCEPTANCE_DEADLINE', String(Date.now() - 1));
+    expect(() => acceptanceApplicationPolicy()).toThrow('Acceptance total deadline');
+    expect(exec).not.toHaveBeenCalled();
+  } finally { exec.mockRestore(); vi.unstubAllEnvs(); }
+});
+
+it('inherits the preparation deadline without renewing its cleanup reserve', () => {
+  let now = 1000;
+  const executor = acceptanceDeadline({}, () => now);
+  now += 12_000;
+  const script = acceptanceDeadline(executor.env, () => now);
+  expect(script.deadline).toBe(executor.deadline);
+  expect(script.remaining()).toBe(43_000);
+  now = executor.deadline - 5000;
+  expect(() => script.remaining()).toThrow('cleanup reserve');
+  expect(script.remaining(true)).toBe(5000);
+  expect(script.reading().scope).toContain('executor');
+  now = executor.deadline;
+  expect(() => script.remaining(true)).toThrow('cleanup');
+  expect(() => acceptanceDeadline({ MANDIBLE_ACCEPTANCE_DEADLINE: '90000', MANDIBLE_ACCEPTANCE_STARTED_AT: '1' }, () => 1)).toThrow('Invalid acceptance deadline');
+});
+
+it('zero-soak acceptance still requires a fresh interval covering the completed interaction', async () => {
+  let time = 100;
+  const health = (sequence: number, start: number, end: number) => ({ startup_epoch: 'epoch',
+    eventLoop: { sequence, intervalStartedAt: start, intervalEndedAt: end, warning: false, maxMs: 0 },
+    memory: { sequence, intervalStartedAt: start, intervalEndedAt: end, warning: false },
+  });
+  let probes = 0;
+  await expect(observeAcceptanceHealth({ observationMs: 0, deadlineMs: 20, now: () => time,
+    wait: async () => { time += 5; }, probe: async () => ++probes === 1 ? health(1, 80, 90) : health(2, 90, 105),
+  })).resolves.toEqual(health(2, 90, 105));
+  expect(probes).toBe(2);
+  time = 100;
+  await expect(observeAcceptanceHealth({ observationMs: 0, deadlineMs: 20, now: () => time,
+    wait: async () => { time += 5; }, probe: async () => health(1, 80, 90),
+  })).rejects.toMatchObject({ code: 'stale_diagnostics' });
+});
+
+it.each(['before', 'during', 'within'] as const)('includes retained-package binding in the acceptance-row deadline (%s)', async stage => {
+  const db = createMigratedDb();
+  const repo = createAuthCheckRepo();
+  let now = 1000;
+  let bound = false;
+  try {
+    insertSiblingMergeRequest(db, repo, 'deadline-request', 'main');
+    const original = db.prepare("SELECT title FROM auth_requests WHERE id = 'deadline-request'").get();
+    const runs = new CandidateAcceptanceRuns(db, async input => {
+      expect(input.env.MANDIBLE_ACCEPTANCE_STARTED_AT).toBe('1000');
+      expect(input.env.MANDIBLE_ACCEPTANCE_DEADLINE).toBe('61000');
+      now = stage === 'before' ? 61000 : 59000;
+      return { status: 'passed', result: { status: 'passed' }, error: null };
+    }, () => now, () => {}, () => () => {
+      bound = true;
+      db.prepare("UPDATE auth_requests SET title = 'bound' WHERE id = 'deadline-request'").run();
+      now = stage === 'during' ? 61000 : 60000;
+    });
+    runs.enqueue('deadline-request', { pin_sha: 'pin', tree_sha: 'tree', base_sha: 'base', head_sha: 'head' },
+      () => ({ repoRoot: repo, pinSha: 'pin', projectId: 'project', workUnitId: 'unit', env: {} }));
+    await runs.idle();
+    const row = db.prepare("SELECT status, finished_at, error FROM auth_candidate_acceptances WHERE auth_request_id = 'deadline-request'").get() as any;
+    expect(row.status).toBe(stage === 'within' ? 'passed' : 'failed');
+    expect(row.finished_at).toBe(now);
+    expect(bound).toBe(stage !== 'before');
+    expect(db.prepare("SELECT title FROM auth_requests WHERE id = 'deadline-request'").get()).toEqual(stage === 'within' ? { title: 'bound' } : original);
+  } finally { db.close(); fs.rmSync(repo, { recursive: true, force: true }); }
+});
 
 describe('production acceptance evidence', () => {
+  it('preserves historical failed evidence without adding route claims to bundle acceptance', () => {
+    const initial = { trial: 0, pass: 1, status: 200, worst_turn_ms: 6.6 };
+    const route = { complete: false, counts: { measured: 173 },
+      measured: [{ route: 'GET /api/auth/queue', initial_readings: [initial] }] };
+    const result = { candidate: 'candidate', status: 'failed', error: 'Route-cost sweep timed out',
+      checks: { route_cost: route, log_digest: 'retained-log-digest' }, provenance: {} };
+    expect(route.measured[0].initial_readings).toEqual([initial]);
+    const summary = acceptanceSummary(result);
+    expect(summary).toContain('failed — Route-cost sweep timed out');
+    expect(summary).not.toContain('routes measured');
+    expect(summary).toContain('retained-log-digest');
+    expect(summary).toContain('package verification not completed');
+    expect(summary).toContain('daemon readiness not completed');
+    expect(summary).toContain('packaged Settings edit not completed');
+    expect(summary).not.toContain('daemon readiness checked');
+    expect(summary).not.toContain('packaged Settings edit checked');
+    const output = compactAcceptanceResult({ ...result, receipt: 'retained-receipt', provenance: { details: 'large manifest'.repeat(10_000) } });
+    expect(JSON.stringify(output).length).toBeLessThan(64 * 1024);
+    expect(output).toMatchObject({ receipt: 'retained-receipt', checks: { route_cost: { complete: false, counts: { measured: 173 } } } });
+  });
+
   it('rejects closed-database shutdown errors and event storms', () => {
     const stopped = JSON.stringify({ level: 'info', message: 'server_stopped' });
     const closedDb = JSON.stringify({ level: 'error', message: 'work_scanner_repo_scan_failed', error: 'The database connection is not open' });
@@ -103,7 +265,7 @@ it('routes only the exact private HTTPS dashboard and retains certificate valida
     await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve));
     const port = (server.address() as import('node:net').AddressInfo).port;
     const origin = `https://app.mandible.localhost:${port}`;
-    const config = acceptanceGatewayConfig({ origin, backendPort: 12345, adminPort: 12346, storageRoot: home });
+    const config = acceptanceGatewayConfig({ origin, backendPort: 12345, storageRoot: home });
     expect(config).toContain(`${origin} {`);
     expect(config).toContain('skip_install_trust');
     expect(config).toContain('tls internal');
@@ -112,9 +274,9 @@ it('routes only the exact private HTTPS dashboard and retains certificate valida
     await expect(acceptanceHealth(origin, path.join(home, 'root.crt'))).resolves.toEqual({ ready: true });
     await expect(acceptanceHealth(origin, path.join(home, 'unrelated.crt'))).rejects.toThrow();
     for (const denied of ['http://127.0.0.1:12347', 'https://other.mandible.localhost:12347', `${origin}/path`, 'https://app.mandible.localhost']) {
-      expect(() => acceptanceGatewayConfig({ origin: denied, backendPort: 12345, adminPort: 12346, storageRoot: home })).toThrow('exact Mandible HTTPS');
+      expect(() => acceptanceGatewayConfig({ origin: denied, backendPort: 12345, storageRoot: home })).toThrow('exact Mandible HTTPS');
     }
-    expect(() => acceptanceGatewayConfig({ origin, backendPort: port, adminPort: 12346, storageRoot: home })).toThrow('distinct valid ports');
+    expect(() => acceptanceGatewayConfig({ origin, backendPort: port, storageRoot: home })).toThrow('distinct valid ports');
   } finally {
     if (server) await new Promise<void>(resolve => server!.close(() => resolve()));
     fs.rmSync(home, { recursive: true, force: true });
@@ -172,7 +334,7 @@ it('waits for a late bind, and fails at once on a gateway status or at the deadl
   }
 });
 
-it('separates startup traffic and health cadence from a repeated same-route request loop', async () => {
+it('retains bounded aggregate route diagnostics without treating caller volume as failure', async () => {
   const { assessRuntimeLogs } = await import('../scripts/runtime-log-assessment.mjs');
   const start = Date.parse('2026-10-05T05:00:00Z');
   const request = (pathname: string, offset: number) => JSON.stringify({ level: 'info', message: 'http_request', method: 'GET', pathname, status: 200, time: new Date(start + offset).toISOString() });
@@ -185,12 +347,102 @@ it('separates startup traffic and health cadence from a repeated same-route requ
   expect(assessment.diagnostics.http_requests).toMatchObject({ total: 203, route_count: 129, omitted_routes: 109 });
   expect(assessment.diagnostics.http_requests.routes[0]).toMatchObject({ pathname: '/api/health', count: 75, peak_window_count: 21, statuses: { '200': 75 } });
   expect(assessment.diagnostics.http_requests.routes).toHaveLength(20);
-  const loop = Array.from({ length: 101 }, (_, i) => request('/api/projects', i * 50)).join('\n');
-  expect(assessRuntimeLogs(loop).failures).toEqual(['Repeated request storm: GET /api/projects (101 in 10000ms)']);
+  const aggregate = Array.from({ length: 101 }, (_, i) => request('/api/projects', i * 50)).join('\n');
+  expect(assessRuntimeLogs(aggregate)).toMatchObject({ failures: [], diagnostics: { hard_failure_count: 0,
+    http_requests: { total: 101, routes: [{ pathname: '/api/projects', count: 101, peak_window_count: 101, statuses: { '200': 101 } }] } } });
+  expect(assessAcceptanceLogs(aggregate).failures).toEqual([]);
   const cadence = Array.from({ length: 101 }, (_, i) => request('/api/projects', i * 1000)).join('\n');
   expect(assessRuntimeLogs(cadence).failures).toEqual([]);
   const untimed = Array.from({ length: 101 }, () => JSON.stringify({ level: 'info', message: 'http_request', method: 'GET', pathname: '/api/projects' })).join('\n');
-  expect(assessRuntimeLogs(untimed).failures).toEqual(['Repeated request storm: GET /api/projects (101 in 10000ms)']);
+  expect(assessRuntimeLogs(untimed)).toMatchObject({ failures: [], diagnostics: { hard_failure_count: 0,
+    http_requests: { routes: [{ count: 101, untimed: 101, peak_window_count: 101 }] } } });
+  const error = JSON.stringify({ level: 'error', message: 'http_request', method: 'GET', pathname: '/api/projects', status: 500 });
+  expect(assessRuntimeLogs(`${aggregate}\n${error}`).failures).toEqual([error]);
+});
+
+it('waits through the initial certificate alert but rejects the same alert after validated HTTPS', async () => {
+  const alert = Object.assign(new Error('leaf certificate is not available yet'), { code: 'ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR' });
+  const initialErrors: unknown[] = [];
+  let probes = 0;
+  await expect(awaitAcceptanceGatewayReadiness(async () => {
+    if (++probes === 1) throw alert;
+    return { ready: true };
+  }, value => value.ready, { timeout: STATE_DEADLINE_MS, interval: 1, description: 'Gateway',
+    onInitialTlsError: error => initialErrors.push(error) })).resolves.toEqual({ ready: true });
+  expect(initialErrors).toEqual([{ code: alert.code, message: alert.message }]);
+  probes = 0;
+  await expect(awaitAcceptanceGatewayReadiness(async () => {
+    if (++probes === 1) return { ready: false };
+    throw alert;
+  }, value => value.ready, { timeout: STATE_DEADLINE_MS, interval: 1, description: 'Gateway' })).rejects.toBe(alert);
+  expect(probes).toBe(2);
+});
+
+it('bounds persistent certificate startup and keeps unrelated gateway failures fatal', async () => {
+  let probes = 0;
+  await expect(awaitAcceptanceGatewayReadiness(async () => {
+    probes++;
+    throw Object.assign(new Error('still missing the leaf'), { code: 'ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR' });
+  }, () => true, { timeout: 15, interval: 1, description: 'Gateway' }))
+    .rejects.toThrow('last observation: still missing the leaf');
+  expect(probes).toBeGreaterThan(1);
+  for (const error of [
+    Object.assign(new Error('untrusted certificate'), { code: 'CERT_HAS_EXPIRED' }),
+    Object.assign(new Error('wrong hostname'), { code: 'ERR_TLS_CERT_ALTNAME_INVALID' }),
+    Object.assign(new Error('wrong TLS version'), { code: 'ERR_SSL_WRONG_VERSION_NUMBER' }),
+    new Error('Health HTTPS 502'), new Error('Owned HTTPS gateway exited'), new Error('Wrong generation'),
+  ]) {
+    probes = 0;
+    await expect(awaitAcceptanceGatewayReadiness(async () => { probes++; throw error; }, () => true,
+      { timeout: STATE_DEADLINE_MS, interval: 1, description: 'Gateway' })).rejects.toBe(error);
+    expect(probes).toBe(1);
+  }
+});
+
+it.each([false, true])('records nested acceptance diagnostics through private cleanup (oversized=%s)', async oversized => {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-acceptance-evidence-'));
+  const home = path.join(scratch, 'private'); fs.mkdirSync(home);
+  const db = createMigratedDb();
+  const repo = createAuthCheckRepo();
+  try {
+    const daemonLog = `${(oversized ? '\u001b' : 'startup detail\n').repeat(1000)}daemon failed startup`;
+    const gatewayLog = `${oversized ? '\u001b'.repeat(9000) : ''}no certificate available for app.mandible.localhost`;
+    const routeLog = 'measured 173 routes; confirmation incomplete';
+    const previewLog = 'source preview startup incomplete';
+    fs.writeFileSync(path.join(home, 'daemon.log'), daemonLog);
+    fs.writeFileSync(path.join(home, 'gateway.log'), gatewayLog);
+    fs.writeFileSync(path.join(home, 'route-cost.log'), routeLog);
+    fs.mkdirSync(path.join(home, 'route-cost-work'));
+    fs.writeFileSync(path.join(home, 'route-cost-work/source-preview.log'), previewLog);
+    const result = { status: 'failed', candidate: 'exact-candidate', error: 'TLS alert', ...(oversized ? { routeReport: 'route diagnostics'.repeat(5000) } : {}), checks: {
+      initial_transport_error: { code: 'ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR', message: 'TLS alert' },
+      failure_logs: acceptanceFailureLogs(home),
+    } };
+    insertSiblingMergeRequest(db, repo, 'outer-request', 'main');
+    const runs = new CandidateAcceptanceRuns(db, async () => ({ status: 'failed', result, error: result.error }), Date.now, () => {});
+    runs.enqueue('outer-request', { pin_sha: 'pin', tree_sha: 'tree', base_sha: 'base', head_sha: 'head' },
+      () => ({ repoRoot: repo, pinSha: 'pin', projectId: 'private-project', workUnitId: 'private-unit', env: {} }));
+    await runs.idle();
+    const packet = path.join(scratch, 'outer-failure.json');
+    fs.writeFileSync(packet, JSON.stringify({ candidateAcceptance: readCandidateAcceptanceEvidence(db, 'outer-request') }));
+    fs.rmSync(home, { recursive: true });
+    const retained = JSON.parse(fs.readFileSync(packet, 'utf8')).candidateAcceptance;
+    expect(JSON.stringify(retained.result).length).toBeLessThanOrEqual(64 * 1024);
+    expect(retained).toMatchObject({ status: 'failed', result: { status: 'failed', candidate: result.candidate, error: result.error,
+      checks: { initial_transport_error: result.checks.initial_transport_error } } });
+    if (oversized) expect(retained.result.truncated).toBe(true);
+    for (const [name, content, diagnostic] of [
+      ['daemon', daemonLog, 'daemon failed startup'],
+      ['gateway', gatewayLog, 'no certificate available for app.mandible.localhost'],
+      ['route-cost', routeLog, 'confirmation incomplete'],
+      ['source-preview', previewLog, 'startup incomplete'],
+    ]) {
+      const log = retained.result.checks.failure_logs.find(entry => entry.name === name);
+      expect(log).toMatchObject({ name, sha256: createHash('sha256').update(content).digest('hex'), bytes: Buffer.byteLength(content) });
+      expect(content.endsWith(log.excerpt)).toBe(true);
+      expect(log.excerpt.endsWith(diagnostic)).toBe(true);
+    }
+  } finally { db.close(); fs.rmSync(scratch, { recursive: true, force: true }); fs.rmSync(repo, { recursive: true, force: true }); }
 });
 
 
@@ -205,4 +457,42 @@ it('assesses periodic events by rate while retaining complete lifetime error evi
   const error = JSON.stringify({ level: 'error', message: 'database_closed', time: new Date(start).toISOString() });
   expect(assessAcceptanceLogs([error, ...cadence].join('\n')).failures).toEqual([error]);
   expect(assessAcceptanceLogs([JSON.stringify({ message: 'server_started' }), ...cadence, JSON.stringify({ message: 'server_started' })].join('\n')).failures).toEqual(['Daemon restarted during acceptance']);
+});
+
+it("keeps large shipped inventories in the full receipt and returns bounded finalization JSON after cleanup", async () => {
+  const cache = fs.mkdtempSync(path.join(os.tmpdir(), "acceptance-finalization-"));
+  const run = path.join(cache, "run");
+  fs.mkdirSync(run);
+  fs.mkdirSync(path.join(run, "home"));
+  fs.writeFileSync(path.join(run, "home", "fixture"), "generated fixture");
+  const ownership = createOwnedRun({ root: run, instanceId: "finalization-test", project: "project", workUnit: "unit", disposable: true, outputs: acceptanceOwnedOutputs });
+  const metadataFile = path.join(run, "metadata.json");
+  saveOwnedMetadata(metadataFile, { ownership });
+  const budget = acceptanceDeadline({});
+  const provenance = { shipped: { files: Object.fromEntries(Array.from({ length: 10_000 }, (_, index) => [
+    `dist/module-${index}.js`, { sha256: "a".repeat(64), size: 42 },
+  ])) } };
+  expect(Buffer.byteLength(JSON.stringify(provenance))).toBeGreaterThan(1024 * 1024);
+  try {
+    const input = path.join(run, "finalization.json");
+    saveOwnedMetadata(input, { metadataFile, run, cache, ownership, deadlineEnv: budget.env,
+      result: { status: "failed", candidate: "candidate", scope: acceptanceScope, error: "request failed", provenance, checks: { health_coverage: { mode: "live production collectors" } }, phases: { finalization: { status: "running", started_at: Date.now() } }, budget: { ...budget.reading(), scope: "candidate-script" } },
+    });
+    const completed = await runSupervisedCommand(process.execPath, [path.resolve("scripts/candidate-acceptance.mjs"), "--finalize-owned-run", input], {
+      capture: true, maxBuffer: 1024 * 1024, timeout: 2000, graceMs: 250, deadline: Date.now() + 3000,
+    });
+    const result = JSON.parse(completed.stdout);
+    expect(completed.stdoutTruncated).toBe(false);
+    expect(Buffer.byteLength(completed.stdout)).toBeLessThan(60 * 1024);
+    expect(result.truncated).toBe(true);
+    expect(result.scope).toBe(acceptanceScope);
+    expect(result.checks.health_coverage.mode).toBe("live production collectors");
+    expect(acceptanceSummary(result)).not.toContain("route sweep");
+    expect(result.status).toBe("failed");
+    expect(result.checks.cleanup).toMatchObject({ action: "delete-owned", remaining: [] });
+    expect(fs.existsSync(path.join(run, "home", "fixture"))).toBe(false);
+    const receipt = JSON.parse(fs.readFileSync(result.receipt, "utf8"));
+    expect(receipt.acceptance).toMatchObject({ status: "failed", budget: { scope: "candidate-script" }, phases: { finalization: { status: "passed" } } });
+    expect(Object.keys(receipt.acceptance.provenance.shipped.files)).toHaveLength(10_000);
+  } finally { fs.rmSync(cache, { recursive: true, force: true }); }
 });

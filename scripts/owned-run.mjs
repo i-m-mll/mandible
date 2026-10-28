@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { withLifecycleLock, processIdentity } from './lifecycle-lock.mjs';
+import { withLifecycleLock, processIdentity, assertLifecycleLockHeld } from './lifecycle-lock.mjs';
 export { processIdentity, recoverLifecycleLock } from './lifecycle-lock.mjs';
 
 export const OWNED_RUN_SCHEMA = 'mandible-owned-run@1';
@@ -42,6 +42,7 @@ export function createOwnedRun({ root, instanceId, project, workUnit, outputs, d
 }
 
 export function saveOwnedMetadata(file, metadata) {
+  assertLifecycleLockHeld();
   const temp = `${file}.partial-${process.pid}`;
   const fd = fs.openSync(temp, 'wx', 0o600);
   try { fs.writeFileSync(fd, `${JSON.stringify(metadata, null, 2)}\n`); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
@@ -167,10 +168,13 @@ export function finalizeOwnedRun(metadataFile, { expectedRevision, outcome, conv
   if (!['accepted', 'assessed', 'failed', 'abandoned'].includes(outcome) || !summary?.trim()) throw new Error('Finalization requires a terminal outcome and compact summary');
   if (outcome === 'accepted' && !converged) throw new Error('Accepted cleanup requires completed convergence');
   if (run.state === 'terminal' && run.outputs.every(output => output.disposition === 'disposable')) throw new Error('Run already finalized; retry cleanup instead');
-  const consumers = inspect(root);
-  if (!consumers.idle) throw new Error(consumers.reason);
+  const disposableGenerated = run.disposable && run.outputs.every(output => output.kind === 'generated');
+  if (!disposableGenerated) {
+    const consumers = inspect(root);
+    if (!consumers.idle) throw new Error(consumers.reason);
+  }
   const outputs = run.outputs.map(output => {
-    const manifest = inventory(root, output.path, output.kind === 'interactive');
+    const manifest = disposableGenerated ? [] : inventory(root, output.path, output.kind === 'interactive');
     if (output.kind === 'interactive' && manifest.length) {
       if (disposition === 'transferred') {
         if (!transferReference?.trim()) throw new Error('Transfer requires the established accepted output reference');
@@ -220,6 +224,13 @@ export function cleanupOwnedRun(metadataFile, { apply = false, inspect = inspect
   const { receipt } = finalization;
   const consumers = inspect(root);
   if (!consumers.idle) return blocked(consumers.reason);
+  if (run.disposable && run.outputs.every(output => output.kind === 'generated' && output.disposition === 'disposable')) {
+    if (!apply) return { action: 'delete-owned', reason: 'terminal disposable generated run may be removed', bytes: null, reclaimedBytes: null };
+    if (!identityMatches(root, run) || readOwnedMetadata(metadataFile).ownership.revision !== run.revision) return blocked('owned root or metadata revision changed');
+    fs.rmSync(root, { recursive: true });
+    saveOwnedMetadata(run.receipt, { ...receipt, cleanup: 'completed', remaining: [], physicalRecovery: 'not measured' });
+    return { action: 'delete-owned', reason: 'terminal disposable generated run removed', bytes: null, reclaimedBytes: null, remaining: [], receipt: run.receipt };
+  }
   if (receipt.disposition === 'transferred') {
     for (const output of run.outputs.filter(output => output.kind === 'interactive')) verifyTransfer(root, output.manifest, receipt.destination);
   }

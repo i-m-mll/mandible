@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import SqliteDatabase from "../src/sqlite.js";
 import path from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { copyRuntimeFixture } from "./helpers/runtime-fixture.js";
@@ -48,7 +49,7 @@ beforeAll(() => {
   for (const name of [
     "post-merge-build-dist.sh", "instructions.sh", "instructions-contract.md",
     "command-syntax.sh", "command-syntax.cjs", "command-syntax.json",
-    "production-db-guard.cjs", "mandible-paths.cjs",
+    "production-db-guard.cjs", "mandible-paths.cjs", "integration-files.cjs",
   ]) {
     fs.copyFileSync(path.join(process.cwd(), "cli", name), path.join(template, "cli", name));
   }
@@ -83,6 +84,13 @@ function runHook({ changed, replay = false, cutover = false, failGitDiff = false
     fs.mkdirSync(path.join(home, ".mandible", "config", "local-sessions"), { recursive: true });
     fs.writeFileSync(path.join(home, ".mandible", "config", "local-sessions", "cutover.json"), "{}\n");
   }
+  const db = new SqliteDatabase(path.join(dir, "fixture.db"));
+  db.exec("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL)");
+  db.prepare("INSERT INTO settings VALUES (?, ?, ?)").run("instructions.targets", JSON.stringify([
+    { path: path.join(home, ".claude/CLAUDE.md"), mode: "managed-block" },
+    { path: path.join(home, ".codex/AGENTS.md"), mode: "managed-block" },
+  ]), Date.now());
+  db.close();
   const base = git(repo, "rev-parse", "HEAD");
   commitFile(repo, "topic", changed);
   const head = git(repo, "rev-parse", "HEAD^2");

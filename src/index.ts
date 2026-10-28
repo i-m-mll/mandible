@@ -106,6 +106,7 @@ import { WorkUnitReconciler } from "./work-unit-reconciler.js";
 import { ChildRetentionScheduler } from "./conversations/retention.js";
 import { defaultCodexNativeArchiveAdapter } from "./conversation-control/codex-native-archive.js";
 import { getChannelRegistry } from "./channel-registry.js";
+import { installedResourceRoot, readInstalledRelease, verifyInstalledRelease } from "../scripts/installed-release.mjs";
 import { materializeCoworkCliCache } from "./cowork-cli-cache.js";
 import { startProtectedBranchGuardProjection } from "./protected-branch-guard.js";
 import type { Logger, StartupCommitInfo } from "./types.js";
@@ -164,6 +165,8 @@ export function startIngestionAfterStartupWorkScan(
 }
 
 export async function startDaemon(options: StartOptions = {}): Promise<DaemonHandle> {
+  const installed = installedResourceRoot();
+  if (installed) verifyInstalledRelease(installed);
   // Bug: 645f8a8 — arm the readiness gate before any startup work. Health
   // reports ready:false from the moment the listener accepts connections until
   // critical init completes below, so a page loaded mid-startup keeps the
@@ -423,10 +426,15 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     // Bug: 645f8a8 — report lifecycle-owned readiness in health.
     isReady: () => isDaemonReady(),
     isWarm: () => isDaemonWarm(),
-    // Health reads the last periodic sample instead of collecting a fresh one.
+    // Health retains periodic samples and reads the same active collectors without resetting them.
     // A per-request eventLoopDiagnostics.sample() reset the underlying interval
     // histogram on every /api/health poll, discarding the window the 30 s timer
     // relies on for lag detection. Issue: 0d81726.
+    getCurrentDiagnostics: async () => {
+      const current = await eventLoopDiagnostics.currentAfterTurn();
+      const observedAt = current.eventLoop.intervalEndedAt;
+      return { ...current, observedAt, memory: memoryDiagnostics.current(observedAt) };
+    },
     getMemoryDiagnostics: () => memoryDiagnostics.snapshot(),
     getEventLoopDiagnostics: () => eventLoopDiagnostics.snapshot(),
     readEventLoopTurnMs: () => eventLoopDiagnostics.readTurnMs(),
@@ -822,6 +830,8 @@ function getPort(): number {
 }
 
 function resolveVersion(): string {
+  const installed = installedResourceRoot();
+  if (installed) return readInstalledRelease(installed).version;
   if (process.env.npm_package_version) {
     return process.env.npm_package_version;
   }
@@ -846,6 +856,11 @@ function resolveMandibleRoot(): string {
 const MANDIBLE_ROOT = resolveMandibleRoot();
 
 function readStartupCommit(logger: Logger): Promise<StartupCommitInfo> {
+  const installed = installedResourceRoot();
+  if (installed) {
+    const { commit, summary, date } = readInstalledRelease(installed).provenance;
+    return Promise.resolve({ hash: commit, summary, date });
+  }
   return new Promise((resolve) => {
     // Run against the mandible repo root with no path filter — every commit
     // here is a mandible commit. The old path (.config/mcp-servers/mandible/)

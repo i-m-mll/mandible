@@ -1,20 +1,26 @@
 export interface ServiceInstallationContext {
   home: string; accountHome: string; runtimeDir: string; domain: string;
+  bundleRoot?: string;
+  bundleIdentifier?: string;
   serviceDir: string; privateServiceDir: string; backendLabel: string; gatewayLabel: string;
 }
 export interface LoadedService {
   loaded?: boolean; pid: number | null; program?: string; argv?: string[]; environment?: Record<string, string>;
   workingDirectory?: string; stdoutPath?: string; stderrPath?: string; keepAlive?: boolean;
+  bundleProgram?: string; parentBundleIdentifier?: string;
+  startedAt?: string; executable?: string; runs?: number; lastExit?: string | null;
 }
 export interface ServiceDefinition {
   Label: string; Program?: string; ProgramArguments: string[]; EnvironmentVariables: Record<string, string>;
   WorkingDirectory: string; StandardOutPath: string; StandardErrorPath: string; KeepAlive: boolean; Comment?: string;
+  BundleProgram?: string; bundleRoot?: string; parentBundleIdentifier?: string;
 }
 export type ServiceKind = 'backend' | 'gateway';
 export interface ServiceDefinitionRefusal {
   service: ServiceKind; label: string;
-  category: 'ownership_conflict' | 'malformed_definition' | 'duplicate_label' | 'missing_definition' | 'unreadable_state' | 'definition_mismatch';
+  category: 'ownership_conflict' | 'malformed_definition' | 'duplicate_label' | 'missing_definition' | 'unreadable_state' | 'definition_mismatch' | 'starting';
   fields: string[]; message: string;
+  evidence?: { service: ServiceKind; label: string; executable: string; pid: number; startedAt: string | null; runs: number; bundleProgram: string; parentBundleIdentifier: string };
 }
 export interface InstalledServiceDefinition { file: string; bytesBase64: string; sha256: string; record: ServiceDefinition }
 export interface ServiceObservation {
@@ -22,11 +28,12 @@ export interface ServiceObservation {
   loadedDefinition: ServiceDefinition | null; desired: ServiceDefinition | null;
   differences: { file: string; fields: string[] }[]; desiredDifferences: string[];
 }
-export type ServiceOwnershipRefusal = ServiceDefinitionRefusal & { category: 'ownership_conflict' | 'unreadable_state' };
+export type ServiceOwnershipRefusal = ServiceDefinitionRefusal & { category: 'ownership_conflict' | 'unreadable_state' | 'starting' };
 export type ServiceDefinitionInspection = { ok: true; observations: ServiceObservation[] } | { ok: false; refusal: ServiceDefinitionRefusal };
 export type ServiceOwnershipInspection = { ok: true; observations: ServiceObservation[] } | { ok: false; refusal: ServiceOwnershipRefusal };
-export interface ServiceObservationOptions { desired?: Partial<Record<ServiceKind, ServiceDefinition>> }
-export function serviceInstallationContext(options?: { home?: string; accountHome?: string; domain?: string }): ServiceInstallationContext;
+export interface ServiceObservationOptions { desired?: Partial<Record<ServiceKind, ServiceDefinition>>; until?: number; services?: ServiceKind[] }
+export function serviceInstallationContext(options?: { home?: string; accountHome?: string; domain?: string; bundleRoot?: string; bundleIdentifier?: string }): ServiceInstallationContext;
+export function assertBundleServiceIdentity(context: ServiceInstallationContext, until?: number): void;
 export function parseLoadedService(detail: string): LoadedService;
 export function differingServiceFields(record: ServiceDefinition, job: LoadedService): string[];
 export function loadedServiceMatches(record: ServiceDefinition, job: LoadedService): boolean;

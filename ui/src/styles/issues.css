@@ -50,7 +50,7 @@
   padding: 0;
 }
 
-.artifacts-advanced__field select {
+.artifacts-advanced__field :is(select, .native-select) {
   width: 100%;
   min-height: 34px;
 }
@@ -110,7 +110,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
+  font-size: calc(13px + var(--chrome-text-increment, 0px));
   font-weight: 600;
 }
 
@@ -122,7 +122,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: calc(12px + var(--chrome-text-increment, 0px));
 }
 
 .artifacts-sidebar__meta span {
@@ -146,7 +146,7 @@
 .artifacts-empty,
 .artifacts-error {
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: calc(13px + var(--chrome-text-increment, 0px));
   padding: 14px;
 }
 
@@ -267,8 +267,7 @@
   background: var(--neutral-alpha-06);
 }
 
-.artifact-detail__actions-item--active::after {
-  content: '\2713';
+.artifact-detail__actions-item-check {
   color: var(--accent-blue);
 }
 
@@ -347,13 +346,9 @@
   color: var(--text-primary);
 }
 
-.artifact-detail__modal-close svg {
+.artifact-detail__modal-close .app-icon {
   width: 18px;
   height: 18px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
 }
 
 .artifact-detail__pane {
@@ -924,7 +919,7 @@ code.inbox-detail__meta-value {
 /* Small button variant for inline use */
 .btn--sm {
   padding: 2px 8px;
-  font-size: 11px;
+  font-size: calc(11px + var(--chrome-text-increment, 0px));
 }
 
 .issues-item {
@@ -1008,7 +1003,7 @@ code.inbox-detail__meta-value {
 .issues-tree__empty {
   padding: 16px 4px;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: calc(13px + var(--chrome-text-increment, 0px));
   text-align: center;
 }
 

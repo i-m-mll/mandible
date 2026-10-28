@@ -4,7 +4,7 @@
   "identifier": "bio.mll.mandible",
   "build": {
     "frontendDist": "dist",
-    "beforeDevCommand": "scripts/make-dist.sh",
+    "beforeDevCommand": "scripts/make-dist.sh && sh scripts/stage-desktop-package.sh",
     "beforeBuildCommand": "scripts/make-dist.sh"
   },
   "app": {
@@ -32,33 +32,20 @@
   "plugins": {
     "deep-link": {
       "desktop": {
-        "schemes": ["mandible"]
+        "schemes": [
+          "mandible"
+        ]
       }
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["dmg", "app"],
+    "targets": [
+      "dmg",
+      "app"
+    ],
     "resources": {
-      "../scripts/bun-runtime.sh": "scripts/bun-runtime.sh",
-      "../scripts/bun-runtime-lock.tsv": "scripts/bun-runtime-lock.tsv",
-      "../scripts/sqlite-runtime-install.mjs": "scripts/sqlite-runtime-install.mjs",
-      "../dist/sqlite-runtime.js": "dist/sqlite-runtime.js",
-      "resources/bun-runtime/bun.zip": "runtime/bun.zip",
-      "resources/bun-runtime/sqlite.tar.gz": "runtime/sqlite.tar.gz",
-      "../.bun-version": ".bun-version",
-      "../dist/build-revision.json": "build-revision.json",
-      "../scripts/local-ca-trust.mjs": "local-ca-trust.mjs",
-      "../scripts/local-runtime.mjs": "local-runtime.mjs",
-      "../scripts/lifecycle-lock.mjs": "lifecycle-lock.mjs",
-      "../scripts/runtime-environment.mjs": "runtime-environment.mjs",
-      "../scripts/service-definitions.mjs": "service-definitions.mjs",
-      "../scripts/service-configuration.mjs": "service-configuration.mjs",
-      "../scripts/runtime-environment-path.mjs": "runtime-environment-path.mjs",
-      "../scripts/canonical-origin.mjs": "canonical-origin.mjs",
-      "../scripts/build-revision.mjs": "build-revision.mjs",
-      "../scripts/pinned-caddy.mjs": "pinned-caddy.mjs",
-      "resources/local-ca-trust-helper": "local-ca-trust-helper"
+      "resources/app-payload/Contents/Resources/": "./"
     },
     "icon": [
       "icons/32x32.png",
@@ -68,7 +55,21 @@
     ],
     "macOS": {
       "signingIdentity": "-",
-      "entitlements": null
-    }
+      "minimumSystemVersion": "15.0",
+      "files": {
+        "Library/LaunchAgents": "resources/app-payload/Contents/Library/LaunchAgents"
+      },
+      "entitlements": null,
+      "frameworks": [
+        "resources/libsqlite3.dylib"
+      ]
+    },
+    "externalBin": [
+      "binaries/mandible-bun",
+      "binaries/mandible-caddy",
+      "binaries/mandible-claude",
+      "binaries/mandible-trust-helper",
+      "binaries/mandible-service"
+    ]
   }
 }

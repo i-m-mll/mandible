@@ -1,7 +1,10 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
+import { publicCommand } from "./product-resources.js";
+
+const { ownershipConflict } = createRequire(import.meta.url)("../cli/integration-files.cjs");
 
 type ClaudeSettings = Record<string, unknown>;
 type ClaudeStatusLine = Record<string, unknown>;
@@ -61,6 +64,10 @@ const MANAGED_STATUSLINE_MARKER = "MANDIBLE_MANAGED_CLAUDE_STATUSLINE=1";
 const MANAGED_METADATA_KEY = "__mandible";
 const CLAUDE_INTEGRATION_KEY = "claudeIntegration";
 const HOOK_EVENTS = {
+  SessionStart: "mandible-claude-session-start.sh",
+  SessionEnd: "mandible-claude-session-end.sh",
+  SubagentStart: "mandible-claude-subagent-start.sh",
+  SubagentStop: "mandible-claude-subagent-stop.sh",
   PostToolUse: "mandible-claude-ingest-nudge.sh",
   Stop: "mandible-claude-ingest-nudge.sh",
   Notification: "mandible-claude-notification.sh",
@@ -97,7 +104,7 @@ export function mergeMandibleClaudeHookSettingsWithMetadata(
   const base = isRecord(baseSettings) ? baseSettings : {};
   const next: ClaudeSettings = { ...base };
   const baseHooks = isRecord(base.hooks) ? base.hooks : {};
-  const hooks: Record<string, unknown> = { ...baseHooks };
+  const hooks: Record<string, unknown> = removeManagedHooks(baseHooks);
 
   for (const [eventName, scriptName] of Object.entries(HOOK_EVENTS)) {
     const command = mandibleHookCommand(scriptName, sessionRef, MANAGED_HOOK_MARKER);
@@ -157,8 +164,11 @@ export function installUserClaudeIntegration(
   options: ClaudeIntegrationInstallOptions = {},
 ): ClaudeIntegrationInstallResult {
   const settingsPath = options.settingsPath ?? defaultClaudeUserSettingsPath();
+  const conflict = ownershipConflict(settingsPath);
+  if (conflict) throw new Error(conflict);
   const existingText = fs.existsSync(settingsPath) ? fs.readFileSync(settingsPath, "utf8") : "";
-  const baseSettings = parseJsonObject(existingText);
+  const baseSettings = existingText.trim() ? JSON.parse(existingText) : {};
+  if (!isRecord(baseSettings)) throw new Error(`Expected settings object: ${settingsPath}`);
   const merge = mergeMandibleClaudeHookSettingsWithMetadata(baseSettings, "external");
   const metadata = integrationMetadata(baseSettings);
   const backupPath = metadata ? metadata.backupPath ?? null : createSettingsBackup(settingsPath, existingText, options.now);
@@ -180,6 +190,8 @@ export function uninstallUserClaudeIntegration(
   options: ClaudeIntegrationInstallOptions = {},
 ): ClaudeIntegrationUninstallResult {
   const settingsPath = options.settingsPath ?? defaultClaudeUserSettingsPath();
+  const conflict = ownershipConflict(settingsPath);
+  if (conflict) throw new Error(conflict);
   if (!fs.existsSync(settingsPath)) {
     return { status: "absent", settingsPath };
   }
@@ -196,7 +208,8 @@ export function uninstallUserClaudeIntegration(
   const next = removeIntegrationMetadata({
     ...settings,
     hooks: removeManagedHooks(settings.hooks),
-    statusLine: restorePriorStatusLine(metadata?.priorStatusLine),
+    statusLine: isMandibleStatusLineCommand(normalizeStatusLineCommand(settings.statusLine))
+      ? restorePriorStatusLine(metadata?.priorStatusLine) : settings.statusLine,
   });
   if (next.statusLine === undefined) {
     delete next.statusLine;
@@ -225,7 +238,7 @@ export function getUserClaudeIntegrationStatus(
     }
   }
   const statusLine = normalizeStatusLineCommand(settings.statusLine);
-  if (!statusLine || !statusLine.includes(MANAGED_STATUSLINE_MARKER) || !statusLine.includes("mandible-claude-statusline.sh")) {
+  if (!statusLine || !statusLine.includes(MANAGED_STATUSLINE_MARKER) || !hasHookInvocation(statusLine, "mandible-claude-statusline.sh")) {
     details.push("statusline_missing");
   }
   const status = details.length > 0 ? "drifted" : "installed";
@@ -250,7 +263,7 @@ function appendHookMatcher(existing: unknown[], matcher: ClaudeHookMatcher): unk
 
 function mandibleHookCommand(scriptName: string, sessionRef: string, marker?: string): string {
   const prefix = marker ? `${marker} ` : "";
-  return `${prefix}MANDIBLE_SESSION_REF=${shellQuote(sessionRef)} ${shellQuote(hookScriptPath(scriptName))}`;
+  return `${prefix}MANDIBLE_SESSION_REF=${shellQuote(sessionRef)} ${hookInvocation(scriptName)}`;
 }
 
 function mergeMandibleStatusLine(
@@ -279,7 +292,7 @@ function mandibleStatusLineCommand(sessionRef: string, chainedStatusLine: string
   if (chainedStatusLine) {
     parts.push(`MANDIBLE_CHAINED_STATUSLINE=${shellQuote(chainedStatusLine)}`);
   }
-  parts.push(shellQuote(hookScriptPath("mandible-claude-statusline.sh")));
+  parts.push(hookInvocation("mandible-claude-statusline.sh"));
   return parts.join(" ");
 }
 
@@ -307,11 +320,17 @@ function normalizeStatusLineCommand(value: unknown): string | null {
 }
 
 function isMandibleStatusLineCommand(command: string | null): boolean {
-  return Boolean(command?.includes(MANAGED_STATUSLINE_MARKER) || command?.includes("mandible-claude-statusline.sh"));
+  return Boolean(command?.includes(MANAGED_STATUSLINE_MARKER) || (command && hasHookInvocation(command, "mandible-claude-statusline.sh")));
 }
 
-function hookScriptPath(scriptName: string): string {
-  return fileURLToPath(new URL(`../cli/hooks/${scriptName}`, import.meta.url));
+function hookInvocation(scriptName: string): string {
+  const hook = scriptName.replace(/^mandible-claude-/, "").replace(/\.sh$/, "");
+  const invocation = publicCommand("hook", hook);
+  return [invocation.command, ...invocation.args].map(shellQuote).join(" ");
+}
+
+function hasHookInvocation(command: string, scriptName: string): boolean {
+  return command.includes(scriptName) || command.includes(hookInvocation(scriptName));
 }
 
 function defaultHookSettingsDir(): string {
@@ -319,7 +338,7 @@ function defaultHookSettingsDir(): string {
 }
 
 function defaultClaudeUserSettingsPath(): string {
-  return path.join(os.homedir(), ".claude", "settings.json");
+  return path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude"), "settings.json");
 }
 
 function readJsonObject(filePath: string): ClaudeSettings {
@@ -441,7 +460,7 @@ function hasManagedHook(hooksValue: unknown, eventName: string, scriptName: stri
       isRecord(hook) &&
       typeof hook.command === "string" &&
       hook.command.includes(MANAGED_HOOK_MARKER) &&
-      hook.command.includes(scriptName)
+      hasHookInvocation(hook.command, scriptName)
     ))
   ));
 }
