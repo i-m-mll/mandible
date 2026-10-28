@@ -1,18 +1,90 @@
 // @vitest-environment node
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import https from 'node:https';
 import net from 'node:net';
 import { spawnSync } from 'node:child_process';
-import { acceptanceSummary, compactAcceptanceResult, routeCostCheck, createAcceptanceHome, acceptanceGatewayConfig, acceptanceHealth, acceptanceFailureLogs, assessAcceptanceLogs, awaitAcceptanceGatewayReadiness, awaitReadiness, loopbackListening, observeAcceptanceHealth } from '../scripts/candidate-acceptance.mjs';
+import { acceptanceApplicationPolicy, acceptanceSummary, compactAcceptanceResult, routeCostCheck, createAcceptanceHome, acceptanceGatewayConfig, acceptanceHealth, acceptanceFailureLogs, assessAcceptanceLogs, awaitAcceptanceGatewayReadiness, awaitReadiness, loopbackListening, observeAcceptanceHealth } from '../scripts/candidate-acceptance.mjs';
 import { createHash } from 'node:crypto';
 import { createAuthCheckRepo, createMigratedDb, insertSiblingMergeRequest } from './helpers/auth-queue-fixtures.js';
 import { readBootstrapAcceptanceEvidence } from './helpers/bootstrap-delivery-api.js';
 import { CandidateAcceptanceRuns } from '../src/candidate-acceptance.js';
 import { STATE_DEADLINE_MS } from './helpers/wait-until.js';
 import { acceptanceDeadline } from '../scripts/acceptance-deadline.mjs';
+
+it.skipIf(process.platform !== 'darwin')('self-execs once per PID while preserving argv, process group and the original candidate clock', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'candidate-policy-entry-'));
+  const program = path.join(root, 'entry fixture.mjs');
+  const trace = path.join(root, 'trace.jsonl');
+  const policyModule = new URL('../scripts/candidate-acceptance.mjs', import.meta.url).href;
+  fs.writeFileSync(program, `
+    import fs from 'node:fs';
+    import { spawnSync } from 'node:child_process';
+    import { acceptanceApplicationPolicy } from ${JSON.stringify(policyModule)};
+    const record = (event, budget) => {
+      const group = spawnSync('/bin/ps', ['-o', 'pgid=', '-p', String(process.pid)], {encoding:'utf8',timeout:1000});
+      if (group.status !== 0) throw Error(group.stderr);
+      fs.appendFileSync(process.argv[2], JSON.stringify({event,pid:process.pid,pgid:group.stdout.trim(),
+        execArgv:process.execArgv,argv:process.argv.slice(2),sentinel:process.env.ENTRY_FIXTURE_VALUE,
+        marker:process.env.MANDIBLE_ACCEPTANCE_APPLICATION_POLICY_PID,
+        started:process.env.MANDIBLE_ACCEPTANCE_STARTED_AT,deadline:process.env.MANDIBLE_ACCEPTANCE_DEADLINE,
+        budget:budget?.reading()})+'\\n');
+    };
+    record('entry');
+    const budget = acceptanceApplicationPolicy();
+    record('ready', budget);
+    if (process.argv[3] === 'parent') {
+      const child = spawnSync(process.execPath, [...process.execArgv, import.meta.path, process.argv[2], 'child', ...process.argv.slice(4)],
+        {env:process.env,encoding:'utf8',timeout:5000});
+      if (child.status !== 0) throw Error(child.stderr);
+    }
+  `);
+  const env = { ...process.env, ENTRY_FIXTURE_VALUE: 'spaces and $literal', MANDIBLE_ACCEPTANCE_APPLICATION_POLICY_PID: 'stale-parent' };
+  delete env.MANDIBLE_ACCEPTANCE_STARTED_AT;
+  delete env.MANDIBLE_ACCEPTANCE_DEADLINE;
+  delete env.MANDIBLE_ACCEPTANCE_CLOCK_SCOPE;
+  try {
+    const runtime = process.env.MANDIBLE_RUNTIME;
+    if (!runtime) throw new Error('Candidate entry fixture requires the qualified Bun runtime');
+    const result = spawnSync(runtime, ['--smol', '--no-install', program, trace, 'parent', 'argument with spaces', '--literal=$value'],
+      { env, encoding: 'utf8', timeout: 10_000 });
+    expect(result.status, result.stderr).toBe(0);
+    const rows = fs.readFileSync(trace, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    const pids = [...new Set(rows.map(row => row.pid))];
+    expect(pids).toHaveLength(2);
+    const ready = rows.filter(row => row.event === 'ready');
+    for (const pid of pids) {
+      const entries = rows.filter(row => row.pid === pid);
+      expect(entries.map(row => row.event)).toEqual(['entry', 'entry', 'ready']);
+      expect(new Set(entries.map(row => row.pgid)).size).toBe(1);
+      expect(entries[0].marker).not.toBe(String(pid));
+      expect(entries[1].marker).toBe(String(pid));
+      expect(entries[1].argv).toEqual(entries[0].argv);
+      expect(entries[1].execArgv).toEqual(entries[0].execArgv);
+      expect(entries[1].execArgv).toEqual(['--smol', '--no-install']);
+      expect(entries[1].sentinel).toBe('spaces and $literal');
+    }
+    expect(ready[0].budget.deadline - ready[0].budget.started_at).toBe(60_000);
+    expect(ready[1].budget).toMatchObject({ started_at: ready[0].budget.started_at, deadline: ready[0].budget.deadline,
+      scope: 'candidate-script; installed executor preparation excluded' });
+    expect(ready[0].budget.scope).toBe(ready[1].budget.scope);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+it('rejects malformed or expired entry clocks before attempting resource normalization', () => {
+  const exec = vi.spyOn(process, 'execve');
+  try {
+    vi.stubEnv('MANDIBLE_ACCEPTANCE_STARTED_AT', 'invalid');
+    vi.stubEnv('MANDIBLE_ACCEPTANCE_DEADLINE', 'invalid');
+    expect(() => acceptanceApplicationPolicy()).toThrow('Invalid acceptance deadline');
+    vi.stubEnv('MANDIBLE_ACCEPTANCE_STARTED_AT', String(Date.now() - 60_000));
+    vi.stubEnv('MANDIBLE_ACCEPTANCE_DEADLINE', String(Date.now() - 1));
+    expect(() => acceptanceApplicationPolicy()).toThrow('Acceptance total deadline');
+    expect(exec).not.toHaveBeenCalled();
+  } finally { exec.mockRestore(); vi.unstubAllEnvs(); }
+});
 
 it('inherits the preparation deadline without renewing its cleanup reserve', () => {
   let now = 1000;
