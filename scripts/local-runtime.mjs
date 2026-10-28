@@ -18,7 +18,7 @@ import { serviceInstallationContext, parseLoadedService, loadedServiceMatches, o
 import { installationRuntime, servicePath, readServiceConfiguration, publishServiceConfiguration, validateServiceConfiguration } from "./service-configuration.mjs";
 import { withInstallationGatewayLock, assertLifecycleLockHeld } from './lifecycle-lock.mjs';
 import { RUNTIME_HEALTH_PROBE_INTERVAL_MS } from './runtime-probe-cadence.mjs';
-import { RuntimeObservationError, runtimeProcessChanged } from './runtime-observation.mjs';
+import { RuntimeObservationError, runtimeProcessChanged, runtimeObservationTimeout } from './runtime-observation.mjs';
 import { reloadGatewayConfiguration, gatewayAdminNeedsRestart } from './gateway-admin.mjs';
 export { parseLoadedService, loadedServiceMatches } from "./service-definitions.mjs";
 
@@ -234,8 +234,8 @@ function runLaunchctl(args, timeout = 2500) {
   return { status: result.status ?? 1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }
 
-function inspectJob(label) {
-  const result = runLaunchctl(["print", `${DOMAIN}/${label}`]);
+function inspectJob(label, until) {
+  const result = runLaunchctl(["print", `${DOMAIN}/${label}`], runtimeObservationTimeout(until, 2500));
   const loaded = result.status === 0;
   if (!loaded && !/Could not find service|service not found/i.test(result.stderr)) throw new Error(`Cannot inspect launchd service ${label}: ${result.stderr}`);
   const pid = loaded ? Number(result.stdout.match(/\bpid = (\d+)/)?.[1] ?? 0) || null : null;
@@ -244,9 +244,9 @@ function inspectJob(label) {
   return { loaded, pid, runs, lastExit, ...parseLoadedService(result.stdout), detail: result.stderr.trim() };
 }
 
-function processStart(pid) {
+function processStart(pid, until) {
   if (!pid) return null;
-  const result = spawnSync('/bin/ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8', timeout: 1500 });
+  const result = spawnSync('/bin/ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8', timeout: runtimeObservationTimeout(until, 1500) });
   if (result.error || result.status !== 0 && result.stderr?.trim()) throw new Error(`Cannot inspect process ${pid}: ${result.error?.message || result.stderr.trim()}`);
   return result.status === 0 ? result.stdout.trim() || null : null;
 }
@@ -324,7 +324,7 @@ async function unloadExactHandoffService(label, expectedArguments, expectedDefin
   }
 }
 
-function bundleContext(binding) { return { ...INSTALLATION, bundleRoot: binding.nativeApp }; }
+function bundleContext(binding) { return serviceInstallationContext({ ...INSTALLATION, bundleRoot: binding.nativeApp }); }
 
 export async function removeHandoffDefinitions(binding) {
   assertHandoffInstallation(binding);
@@ -344,7 +344,8 @@ export async function removeHandoffDefinitions(binding) {
     publishServiceConfiguration(captured.file, captured.configuration);
   }
   if (binding.acceptedRelease && binding.bundleOwner) {
-    for (const role of ['backend', 'gateway']) nativeServiceControl({ ...INSTALLATION, bundleRoot: binding.bundleOwner.bundleRoot }, 'unregister', role);
+    const priorContext = serviceInstallationContext({ ...INSTALLATION, bundleRoot: binding.bundleOwner.bundleRoot });
+    for (const role of ['backend', 'gateway']) nativeServiceControl(priorContext, 'unregister', role);
   }
   for (const [label, prior] of [[BACKEND_LABEL, binding.priorBackend], [GATEWAY_LABEL, binding.priorGateway]]) {
     // A stable Caddy gateway can remain live. A legacy JS gateway must be
@@ -371,9 +372,9 @@ export async function removeHandoffDefinitions(binding) {
   }
 }
 
-function readBundleProcess(context, role) {
-  const job = inspectJob(context[`${role}Label`]);
-  return job.loaded && job.pid ? { pid: job.pid, startedAt: processStart(job.pid), runs: job.runs } : null;
+export function readBundleProcess(context, role, { until } = {}) {
+  const job = inspectJob(context[`${role}Label`], until);
+  return job.loaded && job.pid ? { pid: job.pid, startedAt: processStart(job.pid, until), runs: job.runs } : null;
 }
 
 export async function startHandoffDefinitions(binding, { until = Date.now() + BUNDLE_SERVICE_START_TIMEOUT_MS, processes = {} } = {}) {

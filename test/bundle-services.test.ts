@@ -12,7 +12,7 @@ const release = { provenance: { commit: 'a'.repeat(40), source_digest: 'b'.repea
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bundle-contract-'));
   roots.push(root);
-  const context = serviceInstallationContext({ home: path.join(root, 'state'), accountHome: root, bundleRoot: path.join(root, 'Mandible.app') });
+  const context = serviceInstallationContext({ home: path.join(root, 'state'), accountHome: root, bundleRoot: path.join(root, 'Mandible.app'), bundleIdentifier: 'bio.mll.mandible' });
   fs.mkdirSync(context.bundleRoot!, { recursive: true });
   fs.mkdirSync(path.join(context.home, 'config/client-auth'), { recursive: true });
   fs.writeFileSync(path.join(context.home, 'config/client-auth/authority-id'), 'original-authority');

@@ -12,7 +12,7 @@ export function bundleLoginSession(): string;
 export function bundleLaunchAllowed(preference: BundleLaunch | null, session: string, role?: ServiceKind): boolean;
 export function admitBundleOwner(context: BundleContext, release: BundleRelease, options?: { relocation?: boolean }): BundleAdmission;
 export function adoptBundleRelease(context: BundleContext, release: BundleRelease, expectedOwner: BundleOwner | null, acceptedRelease?: string): BundleOwner;
-export function nativeServiceControl(context: BundleContext, operation: 'status' | 'register' | 'unregister' | 'settings', role: ServiceKind): NativeServiceObservation;
+export function nativeServiceControl(context: BundleContext, operation: 'status' | 'register' | 'unregister' | 'settings', role: ServiceKind, options?: { until?: number }): NativeServiceObservation;
 export interface BundleRuntimeObservation {
   status: { state: string; healthy: boolean; [key: string]: unknown };
   trusted: { error?: string | null };
