@@ -5,8 +5,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import type { ComponentChildren, VNode } from 'preact';
 import { AppOperationalNoticeOutlet } from '../app-shell';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
-import { ChromeAppearanceSettings } from '../components/settings/ChromeAppearanceSettings';
-import type { ChromeAppearancePreviewController } from '../hooks/useChromeAppearancePreview';
 import { ManagedChatDefaults } from '../components/settings/ManagedChatDefaults';
 import { ChildRetentionSettings } from '../components/settings/ChildRetentionSettings';
 import { SettingsToggle as Toggle } from '../components/settings/SettingsToggle';
@@ -81,7 +79,6 @@ import {
 } from './settings-behavior';
 
 export type SettingsViewProps = {
-  chromeAppearancePreview?: ChromeAppearancePreviewController | null;
   settings: Record<string, string>;
   onSave: (key: string, value: string) => Promise<void>;
   loadError?: string | null;
@@ -156,7 +153,6 @@ const SETTINGS_SECTIONS = {
   workQueue: { id: 'settings-work-queue', title: 'Work Queue' },
   issues: { id: 'settings-issues', title: 'Issues' },
   appearance: { id: 'settings-appearance', title: 'Appearance' },
-  chromeAppearance: { id: 'settings-chrome-appearance', title: 'Chrome · Preview' },
   auth: { id: 'auth-settings', title: 'Approvals' },
   authHooks: { id: 'settings-auth-hooks', title: 'Approval Hooks' },
   signing: { id: 'settings-signing', title: 'Signing keys' },
@@ -1627,8 +1623,6 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchMatches, setSearchMatches] = useState(0);
   const desktopShell = isDesktopShell();
-  const chromeAppearancePreview = instance?.role === 'preview' ? props.chromeAppearancePreview : null;
-  const chromePreviewVisible = Boolean(chromeAppearancePreview);
 
   useEffect(() => {
     if (typeof settings.protected_branches === 'string' && !initialized.current) {
@@ -2140,11 +2134,6 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
         </div>
       </SettingsSectionShell>,
 
-      ...(chromeAppearancePreview ? [<SettingsSectionShell key={SETTINGS_SECTIONS.chromeAppearance.id} section={SETTINGS_SECTIONS.chromeAppearance}>
-        <SettingsSectionHeader section={SETTINGS_SECTIONS.chromeAppearance} description="Changes apply immediately in this browser. Copy the values when you are ready." />
-        <ChromeAppearanceSettings controller={chromeAppearancePreview} />
-      </SettingsSectionShell>] : []),
-
       <SettingsSectionShell key={SETTINGS_SECTIONS.auth.id} section={SETTINGS_SECTIONS.auth}>
         <SettingsSectionHeader
           section={SETTINGS_SECTIONS.auth}
@@ -2344,7 +2333,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       root.removeEventListener('scroll', scheduleUpdate);
       window.removeEventListener('resize', scheduleUpdate);
     };
-  }, [searchQuery, desktopShell, chromePreviewVisible]);
+  }, [searchQuery, desktopShell]);
 
   return (
     <div className="settings-view" ref={viewRef}>

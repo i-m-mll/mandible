@@ -15,6 +15,22 @@ export function previewRegistration(env) {
     writable_roots_json: env.MANDIBLE_WRITABLE_ROOTS };
 }
 
+export async function retirePreviewRegistration({ home, runId, registrations, reload }) {
+  return withInstallationGatewayLock(home, async token => {
+    const known = registrations.filter(Boolean).map(tuple);
+    const target = known[0];
+    if (!target || target.role !== 'preview' || !/^preview-[a-f0-9]+$/.test(target.instance_id)) throw new Error('Exact owned preview registration required');
+    const file = path.join(home, 'config/local-sessions/preview-bindings', `${target.instance_id}.json`);
+    const binding = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (binding.runId !== runId || !['pending', 'registered', 'retired'].includes(binding.state)
+      || !known.some(row => isDeepStrictEqual(row, binding.registration))
+      || binding.state === 'pending' && binding.desired !== null && !isDeepStrictEqual(binding.desired, binding.registration)) {
+      throw new Error('Failed refresh registration custody differs from its recorded intent');
+    }
+    return reconcilePreviewRegistrationLocked({ home, runId, expected: binding.registration, desired: null, reload }, token);
+  });
+}
+
 /** Adopt an existing serving tuple without changing or reloading its route. */
 export async function withLegacyPreviewRegistration({ home, runId, registration }, operation) {
   const authority = path.join(home, 'config', 'local-sessions');
@@ -42,37 +58,39 @@ export async function withLegacyPreviewRegistration({ home, runId, registration 
   });
 }
 
-export async function reconcilePreviewRegistration({ home, runId, expected, desired, reload }) {
+export async function reconcilePreviewRegistration(options) {
+  return withInstallationGatewayLock(options.home, token => reconcilePreviewRegistrationLocked(options, token));
+}
+
+async function reconcilePreviewRegistrationLocked({ home, runId, expected, desired, reload }, token) {
   const target = desired ?? expected;
   if (!target || target.role !== 'preview' || !runId) throw new Error('Exact owned preview registration required');
   const authority = path.join(home, 'config', 'local-sessions');
   if (fs.readFileSync(path.join(home, 'config', 'client-auth', 'authority-id'), 'utf8').trim() !== target.installation_id) throw new Error('Preview installation authority changed');
-  return withInstallationGatewayLock(home, async token => {
-    const bindings = path.join(authority, 'preview-bindings');
-    fs.mkdirSync(bindings, { recursive: true });
-    if (fs.lstatSync(bindings).isSymbolicLink() || !/^preview-[a-f0-9]+$/.test(target.instance_id)) throw new Error('Invalid preview registration custody path');
-    const file = path.join(bindings, `${target.instance_id}.json`);
-    const binding = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
-    const db = new SqliteDatabase(path.join(authority, 'sessions.db'), { fileMustExist: true });
-    try {
-      db.transaction(() => {
-        const current = tuple(db.prepare('SELECT * FROM instance_registrations WHERE instance_id = ?').get(target.instance_id));
-        if (binding && binding.runId !== runId && (binding.state !== 'retired' || current)) throw new Error('Preview registration is held by another run');
-        if (current && (!binding || binding.runId !== runId)) throw new Error('Preview registration lacks this run acquisition binding');
-        if (!isDeepStrictEqual(current, tuple(expected)) && !isDeepStrictEqual(current, tuple(desired))) throw new Error('Preview registration identity changed; refusing mutation');
-        if (binding?.runId === runId && !(binding.state === 'retired' && current === null)
-          && ![expected, desired].some(row => isDeepStrictEqual(tuple(row), binding.registration))) throw new Error('Preview registration custody changed');
-        saveOwnedMetadata(file, { runId, registration: tuple(desired ?? expected), state: 'pending', desired: tuple(desired) });
-        if (!desired) db.prepare('DELETE FROM instance_registrations WHERE instance_id = ?').run(target.instance_id);
-        else db.prepare(`INSERT INTO instance_registrations (${fields.join(', ')}, updated_at)
-          VALUES (${fields.map(() => '?').join(', ')}, ?) ON CONFLICT(instance_id) DO UPDATE SET
-          ${fields.filter(key => key !== 'instance_id').map(key => `${key}=excluded.${key}`).join(', ')}, updated_at=excluded.updated_at`)
-          .run(...fields.map(key => desired[key]), Date.now());
-      })();
-    } finally { db.close(); }
-    await reload(token);
-    const result = { runId, registration: tuple(desired ?? expected), state: desired ? 'registered' : 'retired', reconciledAt: new Date().toISOString() };
-    saveOwnedMetadata(file, result);
-    return result;
-  });
+  const bindings = path.join(authority, 'preview-bindings');
+  fs.mkdirSync(bindings, { recursive: true });
+  if (fs.lstatSync(bindings).isSymbolicLink() || !/^preview-[a-f0-9]+$/.test(target.instance_id)) throw new Error('Invalid preview registration custody path');
+  const file = path.join(bindings, `${target.instance_id}.json`);
+  const binding = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
+  const db = new SqliteDatabase(path.join(authority, 'sessions.db'), { fileMustExist: true });
+  try {
+    db.transaction(() => {
+      const current = tuple(db.prepare('SELECT * FROM instance_registrations WHERE instance_id = ?').get(target.instance_id));
+      if (binding && binding.runId !== runId && (binding.state !== 'retired' || current)) throw new Error('Preview registration is held by another run');
+      if (current && (!binding || binding.runId !== runId)) throw new Error('Preview registration lacks this run acquisition binding');
+      if (!isDeepStrictEqual(current, tuple(expected)) && !isDeepStrictEqual(current, tuple(desired))) throw new Error('Preview registration identity changed; refusing mutation');
+      if (binding?.runId === runId && !(binding.state === 'retired' && current === null)
+        && ![expected, desired].some(row => isDeepStrictEqual(tuple(row), binding.registration))) throw new Error('Preview registration custody changed');
+      saveOwnedMetadata(file, { runId, registration: tuple(desired ?? expected), state: 'pending', desired: tuple(desired) });
+      if (!desired) db.prepare('DELETE FROM instance_registrations WHERE instance_id = ?').run(target.instance_id);
+      else db.prepare(`INSERT INTO instance_registrations (${fields.join(', ')}, updated_at)
+        VALUES (${fields.map(() => '?').join(', ')}, ?) ON CONFLICT(instance_id) DO UPDATE SET
+        ${fields.filter(key => key !== 'instance_id').map(key => `${key}=excluded.${key}`).join(', ')}, updated_at=excluded.updated_at`)
+        .run(...fields.map(key => desired[key]), Date.now());
+    })();
+  } finally { db.close(); }
+  await reload(token);
+  const result = { runId, registration: tuple(desired ?? expected), state: desired ? 'registered' : 'retired', reconciledAt: new Date().toISOString() };
+  saveOwnedMetadata(file, result);
+  return result;
 }

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { installedFileIdentity, readInstalledRelease } from './installed-release.mjs';
+import { applicationIdentity, installedFileIdentity, readInstalledRelease } from './installed-release.mjs';
 import { createOwnedRun, saveOwnedMetadata, withOwnedRunLock, ownedRunIdentityMatches, finalizeOwnedRun, cleanupOwnedRun, inspectRunConsumers } from './owned-run.mjs';
 import { withInstallationGatewayLock } from './lifecycle-lock.mjs';
 import { readBundleOwner } from './bundle-services.mjs';
@@ -11,23 +11,7 @@ export const ACCEPTED_RELEASE_SCHEMA = 'mandible-accepted-release@1';
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const candidateKeys = ['pin_sha', 'tree_sha', 'base_sha', 'head_sha'];
 
-/** Bind the entire signed app, including links, modes, and files outside the payload inventory. */
-export function applicationIdentity(app) {
-  const entries = [];
-  const visit = relative => {
-    const file = path.join(app, relative);
-    const stat = fs.lstatSync(file);
-    const entry = { path: relative, mode: stat.mode & 0o777 };
-    if (stat.isSymbolicLink()) entries.push({ ...entry, link: fs.readlinkSync(file) });
-    else if (stat.isDirectory()) {
-      entries.push({ ...entry, directory: true });
-      for (const child of fs.readdirSync(file).sort()) visit(path.join(relative, child));
-    } else if (stat.isFile()) entries.push({ ...entry, ...installedFileIdentity(file) });
-    else throw new Error(`Unsupported application entry: ${relative}`);
-  };
-  visit('');
-  return hash(JSON.stringify(entries));
-}
+export { applicationIdentity } from './installed-release.mjs';
 
 function validateCandidate(candidate) {
   if (!candidateKeys.every(key => /^[a-f0-9]{40}$/.test(candidate?.[key] ?? ''))) throw new Error('Accepted release requires exact pin, tree, base and head.');

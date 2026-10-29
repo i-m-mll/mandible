@@ -73,7 +73,7 @@ import {
 } from './client-auth-token';
 import { keepSubmittedBriefingAnnotations } from './views/feedback/briefing-preferences';
 import { DetailPaneNotice } from './components/shared/DetailPaneNotice';
-import { PreviewCopyNotice } from './components/shared/PreviewCopyNotice';
+import { PreviewAppearanceTools } from './components/preview/PreviewAppearanceTools';
 import {
   daemonEpochChanged,
   daemonCommitChanged,
@@ -2658,7 +2658,7 @@ function App(): JSX.Element {
     >
       <div className="app-shell__workspace">{children}</div>
       <AppHoverTips />
-      <PreviewCopyNotice instance={instanceInfo} />
+      <PreviewAppearanceTools instance={instanceInfo} controller={chromeAppearancePreview.controller} />
     </div>
   );
 
@@ -2729,7 +2729,7 @@ function App(): JSX.Element {
       <AppShellProvider value={appShellContext}>
         <AppFrame
           navigation={navigation}
-          chromeAppearance={chromeAppearancePreview.themes}
+          chromeAppearance={chromeAppearancePreview.controller?.themes}
           nativeControlsReservation={nativeControlsReservation}
           layoutClassName={`app-layout--route-${route.tab}`}
           headerHostRef={setFrameHeaderHost}
@@ -2948,7 +2948,6 @@ function App(): JSX.Element {
         })())}
         {renderTabPanel('settings', (
           <LazySettingsView
-            chromeAppearancePreview={chromeAppearancePreview.controller}
             settings={effectiveSettings}
             onSave={handleSettingsSave}
             loadError={state.settingsLoadError}

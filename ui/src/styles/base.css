@@ -32,8 +32,8 @@ textarea::placeholder {
 }
 
 :is(.app-frame__bar, .app-rail, .view-sidebar) {
-  --chrome-text-increment: 2pt;
-  font-size: calc(var(--font-ui-size) + var(--chrome-text-increment));
+  --chrome-text-increment: calc(var(--app-chrome-ui-font-size) - var(--app-chrome-reference-font-size));
+  font-size: var(--app-chrome-inherited-font-size);
 }
 
 :is(.app-frame__bar, .app-rail, .view-sidebar) :is(.app-anchored-menu, .sidebar-search-filter__panel--popover, .spaces-tree__seed-overlay, .detail-pane-modal) {

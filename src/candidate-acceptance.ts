@@ -15,6 +15,7 @@ import type { CandidateAcceptanceProjection } from "./contracts.js";
 import { getDaemonLogger } from "./daemon-log.js";
 import type { Db } from "./db.js";
 import { getUserHome } from "./platform-paths.js";
+import { readAcceptanceFailure } from "../scripts/acceptance-result.mjs";
 import { acceptanceDeadline, ACCEPTANCE_TOTAL_MS } from "../scripts/acceptance-deadline.mjs";
 
 import { runSupervisedCommand, type SupervisedCommandFailure } from "../scripts/process-group-supervisor.mjs";
@@ -217,7 +218,7 @@ export class CandidateAcceptanceRuns {
       const input = job.input();
       return this.executor({ ...input, env: { ...input.env, MANDIBLE_ACCEPTANCE_ID: recordId, MANDIBLE_ACCEPTANCE_REQUEST: requestId,
         MANDIBLE_ACCEPTANCE_STARTED_AT: String(startedAt), MANDIBLE_ACCEPTANCE_DEADLINE: String(deadline),
-        MANDIBLE_ACCEPTANCE_BASE: candidate.base_sha, MANDIBLE_ACCEPTANCE_HEAD: candidate.head_sha }, signal: controller.signal });
+        MANDIBLE_ACCEPTANCE_TREE: candidate.tree_sha, MANDIBLE_ACCEPTANCE_BASE: candidate.base_sha, MANDIBLE_ACCEPTANCE_HEAD: candidate.head_sha }, signal: controller.signal });
     })
       .catch((error: unknown): CandidateAcceptanceOutcome => ({ status: "failed", result: subprocessFailureEvidence(error) ? { subprocess: subprocessFailureEvidence(error) } : null, error: error instanceof Error ? error.message : String(error) }));
     this.active = null;
@@ -240,8 +241,9 @@ export class CandidateAcceptanceRuns {
         .filter(log => log && ['daemon', 'gateway', 'route-cost', 'source-preview'].includes(log.name)).slice(0, 4)
         .map(log => ({ name: log.name, sha256: text(log.sha256, 64), bytes: typeof log.bytes === 'number' ? log.bytes : null,
           excerpt: typeof log.excerpt === 'string' ? log.excerpt.slice(-4000) : null })) : undefined;
-      result = JSON.stringify({ truncated: true, status: text(value?.status, 16), candidate: text(value?.candidate, 128),
-        error: text(value?.error, 512), receipt: text(value?.receipt, 512), checks: {
+      result = JSON.stringify({ truncated: true, status: text(value?.status, 16), candidate: text(value?.candidate, 128), binding: value?.binding, budget: value?.budget, phases: value?.phases,
+        secondary_errors: Array.isArray(value?.secondary_errors) ? value.secondary_errors.map(item => text(item, 512)).slice(0, 8) : undefined,
+        subprocess: value?.subprocess, error: text(value?.error, 512), receipt: text(value?.receipt, 512), checks: {
           ...(checks?.initial_transport_error ? { initial_transport_error: {
             code: text(checks.initial_transport_error.code, 64), message: text(checks.initial_transport_error.message, 512),
           } } : {}),
@@ -287,6 +289,30 @@ async function git(cwd: string, args: string[], env: NodeJS.ProcessEnv, signal: 
   return stdout.trim();
 }
 
+export interface AcceptanceCommandCompletion {
+  code: number | null; stdout: string; stderr: string; failure: string | null;
+  diagnostics: Record<string, unknown> | null;
+}
+
+export function candidateAcceptanceOutcome(pin: string, run: AcceptanceCommandCompletion,
+  checkpoint: { result: Record<string, unknown> | null; error: string | null }, deadlineExpired: boolean): CandidateAcceptanceOutcome {
+  const parse = (text: string): Record<string, unknown> | null => {
+    try { const value = JSON.parse(text); return value && typeof value === 'object' && !Array.isArray(value) ? value : null; }
+    catch { return null; }
+  };
+  const parsed = parse(run.stdout.trim()) ?? parse(run.stderr.trim().split('\n').at(-1) ?? '');
+  const primary = (run.failure || run.code !== 0 || parsed?.status !== 'passed' || parsed.candidate !== pin) && checkpoint.result ? checkpoint.result : parsed;
+  const secondary = [checkpoint.error, run.failure, primary !== parsed && typeof parsed?.error === 'string' ? parsed.error : null,
+    deadlineExpired ? 'Acceptance total deadline exceeded, including preparation and cleanup.' : null].filter((text): text is string => !!text);
+  const result = primary || run.diagnostics || secondary.length ? { ...primary,
+    ...(run.failure ? { subprocess: run.diagnostics } : {}), ...(secondary.length ? { secondary_errors: secondary } : {}) } : null;
+  if (!deadlineExpired && !run.failure && run.code === 0 && parsed?.status === 'passed' && parsed.candidate === pin) return { status: 'passed', result, error: null };
+  const reason = (typeof primary?.error === 'string' && primary.error) || (typeof primary?.cleanup_error === 'string' && primary.cleanup_error)
+    || run.failure || secondary[0] || (parsed?.status === 'passed' ? 'Acceptance passed for a different candidate revision.' : null)
+    || run.stderr.trim().split('\n').slice(-5).join('\n') || ('Acceptance exited with ' + run.code + '.');
+  return { status: 'failed', result, error: primary?.status === 'unavailable' ? 'Acceptance was unavailable: ' + reason : reason };
+}
+
 /**
  * Production executor. The persistent detached acceptance checkout keeps Rust
  * and dependency builds incremental; it is owned by this daemon and is reset to
@@ -297,39 +323,39 @@ export const runCandidateAcceptance: CandidateAcceptanceExecutor = async (input)
   const budget = acceptanceDeadline(input.env);
   input = { ...input, env: { ...input.env, ...budget.env } };
   const checkout = acceptanceCheckoutPath();
-  const common = fs.realpathSync(await git(input.repoRoot, ["rev-parse", "--path-format=absolute", "--git-common-dir"], input.env, signal, budget.remaining(), budget.deadline));
+  const common = fs.realpathSync(await git(input.repoRoot, ["rev-parse", "--path-format=absolute", "--git-common-dir"], input.env, signal, budget.remaining('preparation'), budget.deadline));
   if (!fs.existsSync(checkout)) {
     fs.mkdirSync(path.dirname(checkout), { recursive: true, mode: 0o700 });
-    await git(input.repoRoot, ["worktree", "add", "--detach", checkout, input.pinSha], input.env, signal, budget.remaining(), budget.deadline);
+    await git(input.repoRoot, ["worktree", "add", "--detach", checkout, input.pinSha], input.env, signal, budget.remaining('preparation'), budget.deadline);
   } else {
-    const owner = fs.realpathSync(await git(checkout, ["rev-parse", "--path-format=absolute", "--git-common-dir"], input.env, signal, budget.remaining(), budget.deadline));
+    const owner = fs.realpathSync(await git(checkout, ["rev-parse", "--path-format=absolute", "--git-common-dir"], input.env, signal, budget.remaining('preparation'), budget.deadline));
     if (owner !== common) throw new Error(`Acceptance checkout ${checkout} belongs to another repository; preserving it.`);
-    await git(checkout, ["checkout", "--detach", "--force", input.pinSha], input.env, signal, budget.remaining(), budget.deadline);
-    await git(checkout, ["clean", "-ffd"], input.env, signal, budget.remaining(), budget.deadline);
+    await git(checkout, ["checkout", "--detach", "--force", input.pinSha], input.env, signal, budget.remaining('preparation'), budget.deadline);
+    await git(checkout, ["clean", "-ffd"], input.env, signal, budget.remaining('preparation'), budget.deadline);
   }
-  if (await git(checkout, ["rev-parse", "HEAD"], input.env, signal, budget.remaining(), budget.deadline) !== input.pinSha) throw new Error("Acceptance checkout is not at the exact candidate.");
-  const { stdout: runtimeOut } = await runSupervisedCommand("/bin/sh", [path.join(checkout, "scripts", "bun-runtime.sh")], { cwd: checkout, env: input.env, capture: true, timeout: budget.remaining(), deadline: budget.deadline, graceMs: 750, signal });
+  if (await git(checkout, ["rev-parse", "HEAD"], input.env, signal, budget.remaining('preparation'), budget.deadline) !== input.pinSha) throw new Error("Acceptance checkout is not at the exact candidate.");
+  const { stdout: runtimeOut } = await runSupervisedCommand("/bin/sh", [path.join(checkout, "scripts", "bun-runtime.sh")], { cwd: checkout, env: input.env, capture: true, timeout: budget.remaining('preparation'), deadline: budget.deadline, graceMs: 750, signal });
   const runtime = runtimeOut.trim();
   // The candidate's own canonical runtime PATH: pinned runtime and checkout
   // CLI, then native macOS tools (a Homebrew `xattr` breaks app bundling),
   // then Cargo and the inherited hook PATH.
-  const { stdout: runtimePath } = await runSupervisedCommand(runtime, [path.join(checkout, "scripts", "runtime-environment-path.mjs"), runtime, checkout], { cwd: checkout, env: input.env, capture: true, timeout: budget.remaining(), deadline: budget.deadline, graceMs: 750, signal });
+  const { stdout: runtimePath } = await runSupervisedCommand(runtime, [path.join(checkout, "scripts", "runtime-environment-path.mjs"), runtime, checkout], { cwd: checkout, env: input.env, capture: true, timeout: budget.remaining('preparation'), deadline: budget.deadline, graceMs: 750, signal });
   const env = { ...input.env, MANDIBLE_RUNTIME: runtime, PATH: runtimePath.trim() };
-  await runSupervisedCommand(runtime, ["install", "--frozen-lockfile"], { cwd: checkout, env, capture: true, timeout: budget.remaining(), deadline: budget.deadline, graceMs: 750, maxBuffer: 16 * 1024 * 1024, signal });
-  // The candidate gets its cleanup reserve; the supervisor reserves TERM/KILL/join
-  // inside the same hard deadline if graceful candidate cleanup cannot finish.
+  await runSupervisedCommand(runtime, ["install", "--frozen-lockfile"], { cwd: checkout, env, capture: true, timeout: budget.remaining('preparation'), deadline: budget.deadline, graceMs: 750, maxBuffer: 16 * 1024 * 1024, signal });
+  // Candidate reporting ends before the executor's single TERM/KILL/join and DB reserve.
   const run = await runSupervisedCommand(runtime, [path.join(checkout, "scripts", "candidate-acceptance.mjs"), "--project", input.projectId, "--work-unit", input.workUnitId],
-    { cwd: checkout, env, capture: true, timeout: budget.remaining(true), deadline: budget.deadline, graceMs: 750, maxBuffer: 16 * 1024 * 1024, signal })
+    { cwd: checkout, env, capture: true, timeout: budget.remaining('report'), deadline: budget.deadline, graceMs: 750, maxBuffer: 16 * 1024 * 1024, signal })
     .then(result => ({ ...result, failure: null as string | null, diagnostics: null as Record<string, unknown> | null }))
     .catch((error: SupervisedCommandFailure) => ({ code: error.exitCode ?? null, stdout: error.stdout ?? "", stderr: error.stderr ?? "", failure: error.message, diagnostics: subprocessFailureEvidence(error) }));
-  const parse = (text: string): Record<string, unknown> | null => {
-    try { return JSON.parse(text) as Record<string, unknown>; } catch { return null; }
-  };
-  const parsed = parse(run.stdout.trim()) ?? parse(run.stderr.trim().split("\n").at(-1) ?? "");
-  const result = run.failure ? { ...parsed, subprocess: run.diagnostics } : parsed;
-  if (Date.now() >= budget.deadline) return { status: "failed", result, error: "Acceptance total deadline exceeded, including preparation and cleanup." };
-  if (!run.failure && run.code === 0 && result?.status === "passed" && result.candidate === input.pinSha) return { status: "passed", result, error: null };
-  const reason = (typeof result?.error === "string" && result.error) || (typeof result?.cleanup_error === "string" && result.cleanup_error)
-    || run.failure || (result?.status === "passed" ? "Acceptance passed for a different candidate revision." : null) || run.stderr.trim().split("\n").slice(-5).join("\n") || `Acceptance exited with ${run.code}.`;
-  return { status: "failed", result, error: result?.status === "unavailable" ? `Acceptance was unavailable: ${reason}` : reason };
+  const response = candidateAcceptanceOutcome(input.pinSha, run, { result: null, error: null }, Date.now() >= budget.deadline);
+  if (response.status === 'passed') return response;
+  const checkpoint = input.env.MANDIBLE_ACCEPTANCE_ID && input.env.MANDIBLE_ACCEPTANCE_REQUEST && input.env.MANDIBLE_ACCEPTANCE_TREE
+    ? readAcceptanceFailure(path.dirname(checkout), {
+      recordId: input.env.MANDIBLE_ACCEPTANCE_ID, requestId: input.env.MANDIBLE_ACCEPTANCE_REQUEST,
+      projectId: input.projectId, workUnitId: input.workUnitId,
+      pin_sha: input.pinSha, tree_sha: input.env.MANDIBLE_ACCEPTANCE_TREE!,
+      base_sha: input.env.MANDIBLE_ACCEPTANCE_BASE!, head_sha: input.env.MANDIBLE_ACCEPTANCE_HEAD!,
+      started_at: budget.started, deadline: budget.deadline,
+    }) : { result: null, error: null };
+  return candidateAcceptanceOutcome(input.pinSha, run, checkpoint, Date.now() >= budget.deadline);
 };

@@ -6,7 +6,7 @@ import net from 'node:net';
 import http from 'node:http';
 import https from 'node:https';
 import { localCaPaths, assertLocalCaIdentity, probeCurrentMacOsTrust } from './local-ca-trust.mjs';
-import { installedRuntimeEnvironment, releaseFile, verifyInstalledRelease } from './installed-release.mjs';
+import { installedRuntimeEnvironment, releaseFile, verifyInstalledRelease, verifyApplicationRelease } from './installed-release.mjs';
 import { installedExecutionProfile } from './installed-execution.mjs';
 import { applicationIdentity, createPendingRelease, retainAcceptedRelease, disposePendingRelease } from './accepted-release.mjs';
 import { createHash, randomBytes } from 'node:crypto';
@@ -19,6 +19,7 @@ import { reconcileGeneratedScratch, recordScratchProcess } from './generated-scr
 import { generatedStorage } from './generated-storage.mjs';
 import Database from '../src/sqlite.ts';
 import { readBuildRevision } from './build-revision.mjs';
+import { acceptanceResultPath } from './acceptance-result.mjs';
 import { acceptanceDeadline } from './acceptance-deadline.mjs';
 import { observeRuntimeHealthCoverage, RuntimeHealthObservationError } from '../src/runtime-health-contract.ts';
 import { gatewayCaddyfile, GATEWAY_GRACE_SECONDS } from './gateway-config.mjs';
@@ -31,7 +32,7 @@ export const acceptanceScope = 'exact signed shipped package, isolated bundled-r
 const applicationPolicyProgram = '/usr/sbin/taskpolicy';
 export function acceptanceApplicationPolicy() {
   const budget = acceptanceDeadline();
-  budget.remaining(true);
+  budget.remaining('total');
   if (process.platform !== 'darwin') throw new Error('Packaged desktop acceptance requires macOS; evidence is unavailable on this platform.');
   const scope = process.env.MANDIBLE_ACCEPTANCE_CLOCK_SCOPE ?? budget.reading().scope;
   if (process.env.MANDIBLE_ACCEPTANCE_APPLICATION_POLICY_PID !== String(process.pid)) {
@@ -45,7 +46,7 @@ export function acceptanceApplicationPolicy() {
   }
   return { ...budget, reading: () => ({ ...budget.reading(), scope }) };
 }
-export const acceptanceOwnedOutputs = ['home', 'build.log', 'daemon.log', 'desktop.log', 'gateway.log', 'Caddyfile', 'finalization.json'].map(path => ({ path, kind: 'generated' }));
+export const acceptanceOwnedOutputs = ['home', 'build.log', 'daemon.log', 'desktop.log', 'gateway.log', 'Caddyfile'].map(path => ({ path, kind: 'generated' }));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const sha256 = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
@@ -72,7 +73,7 @@ export function compactAcceptanceResult(result) {
   if (JSON.stringify(result).length <= 60 * 1024) return result;
   const checks = result.checks ?? {};
   const route = checks.route_cost;
-  return { schema: result.schema, truncated: true, status: result.status, candidate: result.candidate, scope: result.scope,
+  return { schema: result.schema, truncated: true, status: result.status, candidate: result.candidate, binding: result.binding, scope: result.scope,
     budget: result.budget, phases: result.phases, error: result.error?.slice(0, 512), cleanup_error: result.cleanup_error?.slice(0, 512), receipt: result.receipt,
     checks: { readiness: checks.readiness, desktop_interaction: checks.desktop_interaction, health_coverage: checks.health_coverage,
       log_digest: checks.log_digest, log_bytes: checks.log_bytes, cleanup: checks.cleanup,
@@ -97,7 +98,7 @@ async function verifyPackagedUpdaterEntrypoint({ resources, runtime, environment
   try {
     await runSupervisedCommand('/usr/bin/sandbox-exec', ['-p', profile, runtime, '--no-install', path.join(resources, 'handoff/helper.mjs'), 'worker', journal], {
       env: { ...environment, MANDIBLE_HOME: privateHome }, cwd: privateHome, capture: true, maxBuffer: 16 * 1024,
-      timeout: budget.remaining(), graceMs: 250, deadline: budget.deadline - 3000,
+      timeout: budget.remaining('preparation'), graceMs: 250, deadline: budget.cutoffs.report,
     });
   } catch (error) {
     if (error.exitCode === 1 && error.processGroupSettled && error.stderr?.trim() === 'Runtime handoff binding is malformed or changed.') {
@@ -328,7 +329,7 @@ export async function stopOwned(child, remaining) {
 
 export async function finalizeAcceptance({ metadataFile, result, candidateBinding, testedPackageDigest, pendingPackage, diagnostic, diagnostics, cache, run, ownership, deadlineEnv }) {
   const deadline = acceptanceDeadline(deadlineEnv);
-  deadline.remaining(true);
+  deadline.remaining('report');
   const reading = () => ({ ...deadline.reading(), scope: result.budget.scope });
   let ownedReceipt;
   let accepted;
@@ -351,13 +352,14 @@ export async function finalizeAcceptance({ metadataFile, result, candidateBindin
           acceptance: { record_id: process.env.MANDIBLE_ACCEPTANCE_ID || null, request_id: process.env.MANDIBLE_ACCEPTANCE_REQUEST || null },
           evidence: { receipt: evidence, sha256: sha256(evidence) }, expectedDigest: testedPackageDigest, shipped: result.provenance.shipped });
         acceptedReference = accepted.reference;
-      } catch (error) { result.status = 'failed'; result.cleanup_error = error.message; }
+      } catch (error) { if (error.code === 'PROCESS_LOCK_LOST') throw error; result.status = 'failed'; result.cleanup_error = error.message; }
     }
     if (pendingPackage && !accepted) {
       try {
         result.checks.package_cleanup = await disposePendingRelease(pendingPackage, testedPackageDigest, 'Candidate acceptance did not pass.');
         if (result.checks.package_cleanup.action !== 'delete-owned' || result.checks.package_cleanup.remaining?.length) throw new Error('Pending package cleanup preserved owned material.');
       } catch (error) {
+        if (error.code === 'PROCESS_LOCK_LOST') throw error;
         result.status = 'failed';
         result.cleanup_error = [result.cleanup_error, `Pending package preserved: ${error.message}`].filter(Boolean).join('; ');
         result.checks.package_cleanup ??= { action: 'skip', reason: error.message, handle: { root: pendingPackage.root, runId: pendingPackage.runId } };
@@ -374,10 +376,10 @@ export async function finalizeAcceptance({ metadataFile, result, candidateBindin
     result.checks.cleanup = cleanupOwnedRun(metadataFile, { apply: true });
     if (result.checks.cleanup.action !== 'delete-owned' || result.checks.cleanup.remaining?.length) result.status = 'failed';
     result.budget = reading();
-    if (Date.now() >= deadline.deadline) { result.status = 'failed'; result.cleanup_error = 'Acceptance total deadline exceeded during cleanup/receipt.'; }
+    if (Date.now() >= deadline.cutoffs.report) { result.status = 'failed'; result.cleanup_error = 'Acceptance report budget exhausted during cleanup/receipt.'; }
     result.receipt = acceptedReference || receipt;
 
-  } catch (error) { result.status = 'failed'; result.cleanup_error = error.message; }
+  } catch (error) { if (error.code === 'PROCESS_LOCK_LOST') throw error; result.status = 'failed'; result.cleanup_error = error.message; }
   finally {
     result.budget = reading();
     if (result.phases.finalization) {
@@ -390,7 +392,7 @@ export async function finalizeAcceptance({ metadataFile, result, candidateBindin
 }
 
 async function main(budget) {
-  const boundedCommand = (binary, args, options = {}) => command(binary, args, { ...options, timeout: budget.remaining() });
+  const boundedCommand = (binary, args, options = {}) => command(binary, args, { ...options, timeout: budget.remaining('preparation') });
   const option = name => { const index = process.argv.indexOf(name); return index >= 0 ? process.argv[index + 1] : undefined; };
   const diagnostic = option('--diagnostic-receipt') || option('--diagnostic-app')
     ? diagnosticReplayPackage(option('--diagnostic-receipt'), option('--diagnostic-app')) : null;
@@ -406,9 +408,9 @@ async function main(budget) {
   fs.mkdirSync(cache, { recursive: true });
   if (process.env.MANDIBLE_ACCEPTANCE_ID && process.env.MANDIBLE_DB && process.env.MANDIBLE_HOME) {
     const db = new Database(process.env.MANDIBLE_DB, { fileMustExist: true });
-    try { await generatedStorage({ db, home: process.env.MANDIBLE_HOME, cache: path.dirname(cache), apply: true, until: Math.min(Date.now() + 2000, budget.deadline - 3000) }); }
+    try { await generatedStorage({ db, home: process.env.MANDIBLE_HOME, cache: path.dirname(cache), apply: true, until: Math.min(Date.now() + 2000, budget.cutoffs.preparation) }); }
     finally { db.close(); }
-  } else await reconcileGeneratedScratch(cache, { apply: true, until: Math.min(Date.now() + 2000, budget.deadline - 3000) });
+  } else await reconcileGeneratedScratch(cache, { apply: true, until: Math.min(Date.now() + 2000, budget.cutoffs.preparation) });
   const run = fs.mkdtempSync(path.join(cache, 'candidate-'));
   const project = option('--project'); const workUnit = option('--work-unit');
   if (!project || !workUnit) { fs.rmdirSync(run); throw new Error('Candidate acceptance requires --project <canonical-id> and --work-unit <canonical-id>'); }
@@ -416,20 +418,33 @@ async function main(budget) {
   const nonce = randomBytes(32).toString('hex');
   const instanceId = `acceptance-${nonce.slice(0, 16)}`;
   const outputs = diagnostic ? [...acceptanceOwnedOutputs, { path: 'Mandible.app', kind: 'generated' }, { path: 'diagnostics', kind: 'interactive' }] : acceptanceOwnedOutputs;
-  const ownership = createOwnedRun({ root: run, instanceId, project, workUnit, disposable: true, outputs });
+  const ownership = createOwnedRun({ root: run, instanceId, project, workUnit, disposable: true, outputs,
+    ...(!diagnostic && process.env.MANDIBLE_ACCEPTANCE_ID ? { runId: process.env.MANDIBLE_ACCEPTANCE_ID } : {}) });
   const metadataFile = path.join(run, 'metadata.json');
   saveOwnedMetadata(metadataFile, { ownership, candidate });
   const home = path.join(run, 'home');
   createAcceptanceHome(home);
+  const evidence = acceptanceResultPath(cache, ownership.runId);
+  fs.mkdirSync(path.dirname(evidence), { recursive: true });
   const result = { schema: 'mandible-candidate-acceptance@1', scope: acceptanceScope, status: 'failed', candidate, runtime, run, checks: {}, provenance: {} };
+  result.binding = { recordId: ownership.runId, runId: ownership.runId, requestId: process.env.MANDIBLE_ACCEPTANCE_REQUEST ?? null,
+    projectId: project, workUnitId: workUnit, ...candidateBinding, started_at: budget.started, deadline: budget.deadline };
+  result.receipt = evidence;
   result.budget = budget.reading();
   result.phases = {};
   const phase = async (name, operation) => {
-    budget.remaining();
+    const deadlinePhase = name === 'package_build' ? 'preparation' : 'work';
+    budget.remaining(deadlinePhase);
     const start = Date.now();
-    result.phases[name] = { status: 'running', started_at: start };
-    try { const value = await operation(); budget.remaining(); result.phases[name].status = 'passed'; return value; }
-    catch (error) { result.phases[name].status = 'failed'; result.phases[name].error = error.message; throw error; }
+    result.phases[name] = { status: 'running', started_at: start, cutoff: budget.cutoffs[deadlinePhase], remaining_ms: budget.remaining(deadlinePhase) };
+    try { const value = await operation(); budget.remaining(deadlinePhase); result.phases[name].status = 'passed'; return value; }
+    catch (error) {
+      if (Date.now() >= budget.cutoffs[deadlinePhase]) {
+        result.phases[name].termination_error = error.message;
+        try { budget.remaining(deadlinePhase); } catch (exhausted) { error = exhausted; }
+      }
+      result.phases[name].status = 'failed'; result.phases[name].error = error.message; throw error;
+    }
     finally { result.phases[name].elapsed_ms = Date.now() - start; }
   };
   if (diagnostic) result.diagnostic = { qualifying: false, source: diagnostic, deadline_ms: 60_000 };
@@ -453,16 +468,17 @@ async function main(budget) {
   let interrupted = false;
   const interrupt = () => { interrupted = true; interactionController.abort(new Error('Acceptance interrupted or deadline reached.')); daemon?.kill('SIGTERM'); desktop?.kill('SIGTERM'); gateway?.kill('SIGTERM'); stallProbe?.kill('SIGTERM'); };
   process.once('SIGINT', interrupt); process.once('SIGTERM', interrupt);
-  const deadlineTimer = setTimeout(() => { result.error = 'Acceptance total deadline reached; cleanup reserve started.'; interrupt(); }, budget.remaining());
+  const deadlineTimer = setTimeout(() => { result.error ??= 'Acceptance work budget exhausted; finalization reserve started.'; interrupt(); }, budget.remaining());
   try {
     let builtApp = diagnostic?.app;
     if (!diagnostic) {
     const buildLog = fs.openSync(path.join(run, 'build.log'), 'w'); files.push(buildLog);
-    await phase('package_build', () => runSupervisedCommand(runtime, ['run', 'tauri:build', '--', '--bundles', 'app'], { cwd: root, env: buildEnv, stdio: ['ignore', buildLog, buildLog], timeout: budget.remaining(), graceMs: 250, deadline: budget.deadline - 3000, onSpawn: child => recordScratchProcess(metadataFile, child, true) }));
+    await phase('package_build', () => runSupervisedCommand(runtime, ['run', 'tauri:build', '--', '--bundles', 'app'], { cwd: root, env: buildEnv, stdio: ['ignore', buildLog, buildLog], timeout: budget.remaining('preparation'), graceMs: 250, deadline: budget.cutoffs.report, onSpawn: child => recordScratchProcess(metadataFile, child, true) }));
     if (readBuildRevision(root) !== candidate) throw new Error('Built daemon revision does not match the exact candidate.');
     builtApp = path.join(root, 'src-tauri', 'target', 'release', 'bundle', 'macos', 'Mandible.app');
     }
-    result.phases.package_verification = { status: 'running', started_at: Date.now() };
+    budget.remaining('preparation');
+    result.phases.package_verification = { status: 'running', started_at: Date.now(), cutoff: budget.cutoffs.preparation, remaining_ms: budget.remaining('preparation') };
     if (!diagnostic) pendingPackage = await createPendingRelease({
       storage: path.join(process.env.MANDIBLE_HOME || path.join(os.userInfo().homedir, '.mandible'), 'accepted-releases'), ownership });
     const app = pendingPackage?.app ?? path.join(run, 'Mandible.app');
@@ -470,31 +486,33 @@ async function main(budget) {
     boundedCommand('/usr/bin/codesign', ['--verify', '--deep', '--strict', app]);
     const resources = path.join(app, 'Contents', 'Resources');
     const marker = diagnostic?.marker || JSON.parse(fs.readFileSync(path.join(root, 'dist', 'build-revision.json'), 'utf8'));
-    const shipped = verifyInstalledRelease(resources);
+    const { release: shipped, digest } = verifyApplicationRelease(app);
     if (shipped.provenance.commit !== candidate || shipped.provenance.source_digest !== marker.source_digest) throw new Error("Finalized package provenance differs from the candidate.");
     const resourceEnv = installedRuntimeEnvironment(resources, { HOME: home, PATH: "/usr/bin:/bin:/usr/sbin:/sbin", TMPDIR: run });
     const packagedRuntime = resourceEnv.MANDIBLE_RUNTIME;
-    testedPackageDigest = applicationIdentity(app);
+    testedPackageDigest = digest;
     if (diagnostic && testedPackageDigest !== diagnostic.sha256) throw new Error('Diagnostic package changed while copying.');
     executionProfile = installedExecutionProfile({ checkout: root, commonDirectory: boundedCommand("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"]), app });
     if (!diagnostic) result.checks.updater_entrypoint = await verifyPackagedUpdaterEntrypoint({ resources, runtime: packagedRuntime,
       environment: resourceEnv, home, profile: executionProfile, budget });
     result.provenance = { marker, daemon_sha256: sha256(releaseFile(resources, shipped.entrypoints.daemon)), native_sha256: sha256(path.join(app, "Contents/MacOS/mandible-app")), harness_sha256: sha256(fileURLToPath(import.meta.url)), package_sha256: testedPackageDigest, shipped };
+    budget.remaining('preparation');
     result.phases.package_verification.status = 'passed';
     result.phases.package_verification.elapsed_ms = Date.now() - result.phases.package_verification.started_at;
-    result.phases.readiness = { status: 'running', started_at: Date.now() };
+    budget.remaining('readiness');
+    result.phases.readiness = { status: 'running', started_at: Date.now(), cutoff: budget.cutoffs.readiness, remaining_ms: budget.remaining('readiness') };
     const ports = new Set();
     while (ports.size < 2) ports.add(await freePort());
     const [port, publicPort] = [...ports];
     const origin = `https://app.mandible.localhost:${publicPort}`;
     const caHome = option('--ca-home') || process.env.MANDIBLE_TEST_CA_HOME || process.env.MANDIBLE_HOME || path.join(os.homedir(), '.mandible');
-    const ca = copyAcceptanceCa(caHome, home, { timeoutMs: Math.min(5000, budget.remaining()) });
+    const ca = copyAcceptanceCa(caHome, home, { timeoutMs: Math.min(5000, budget.remaining('readiness')) });
     const gatewayBinary = releaseFile(resources, shipped.native.caddy);
     const gatewayConfig = path.join(run, 'Caddyfile');
     fs.writeFileSync(gatewayConfig, acceptanceGatewayConfig({ origin, backendPort: port, storageRoot: ca.storageRoot }), { mode: 0o600 });
     result.provenance.ca_root_sha256 = sha256(ca.rootCert);
     result.provenance.gateway_sha256 = sha256(gatewayBinary);
-    fs.writeFileSync(path.join(home, 'acceptance.json'), JSON.stringify({ home, origin, nonce }), { mode: 0o600 });
+    fs.writeFileSync(path.join(home, 'acceptance.json'), JSON.stringify({ home, origin, nonce, workUntil: budget.cutoffs.work }), { mode: 0o600 });
     const env = { ...resourceEnv, HOME: home, MANDIBLE_HOME: home, MANDIBLE_DB: path.join(home, 'mandible.db'), MANDIBLE_PORT: String(port), MANDIBLE_PUBLIC_ORIGIN: origin, MANDIBLE_INSTANCE_ROLE: 'main', MANDIBLE_INSTANCE_ID: instanceId, MANDIBLE_INSTALLATION_ID: instanceId, MANDIBLE_BACKEND_GENERATION: candidate, MANDIBLE_WORK_SCANNER_ROOTS: JSON.stringify([{ path: home, depth: 1 }]), MANDIBLE_PID_FILE: path.join(home, 'daemon.pid'), MANDIBLE_SOCKET: path.join(home, 'api.sock'), MANDIBLE_STDERR_LOG_PATH: path.join(run, 'daemon.log'), MANDIBLE_USER_PREFERENCES_DIR: path.join(home, 'settings', 'users'), MANDIBLE_CANDIDATE_ACCEPTANCE: path.join(home, 'acceptance.json') };
     daemon = launch(packagedRuntime, [...(diagnostic ? ['--cpu-prof', `--cpu-prof-dir=${diagnostics}`, '--cpu-prof-name=daemon.cpuprofile'] : []), '--no-install', releaseFile(resources, shipped.entrypoints.daemon)], env, 'daemon');
     if (diagnostic) {
@@ -506,7 +524,7 @@ async function main(budget) {
     await awaitReadiness(() => {
       if (interrupted || daemon.exitCode !== null || daemon.signalCode !== null) throw new Error('Owned daemon exited before acceptance completed.');
       return loopbackListening(port);
-    }, () => true, { timeout: Math.min(30_000, budget.remaining()), description: 'Candidate daemon port binding' });
+    }, () => true, { timeout: Math.min(30_000, budget.remaining('readiness')), description: 'Candidate daemon port binding' });
     gateway = launch(gatewayBinary, ['run', '--config', gatewayConfig, '--adapter', 'caddyfile'], env, 'gateway');
     const probe = async (signal) => {
       if (interrupted || daemon.exitCode !== null || daemon.signalCode !== null) throw new Error('Owned daemon exited before acceptance completed.');
@@ -516,11 +534,9 @@ async function main(budget) {
       return value;
     };
     const health = await awaitAcceptanceGatewayReadiness(probe, value => value.ready === true && value.startup_commit?.hash === candidate,
-      { timeout: Math.min(30_000, budget.remaining()), description: 'Exact production daemon readiness',
+      { timeout: Math.min(30_000, budget.remaining('readiness')), description: 'Exact production daemon readiness',
         onInitialTlsError: error => { result.checks.initial_transport_error ??= error; } });
     result.checks.readiness = { startup_epoch: health.startup_epoch, instance_id: health.instance.instance_id, origin };
-    result.phases.readiness.status = 'passed';
-    result.phases.readiness.elapsed_ms = Date.now() - result.phases.readiness.started_at;
     if (!health.current) throw new Error('Production live collector diagnostics are unavailable at readiness.');
     passiveHealth = observeAcceptanceHealth({
       live: { startedAt: health.current.observedAt, through: () => interactionCompletedAt },
@@ -556,11 +572,14 @@ async function main(budget) {
         let bytes = ''; response.on('data', chunk => { bytes += chunk; });
         response.on('end', () => response.statusCode === 200 ? resolve() : reject(new Error(`Fixture bootstrap HTTP ${response.statusCode}: ${bytes}`)));
       });
-      request.setTimeout(Math.min(5000, budget.remaining()), () => request.destroy(new Error('Fixture bootstrap timed out')));
+      request.setTimeout(Math.min(5000, budget.remaining('readiness')), () => request.destroy(new Error('Fixture bootstrap timed out')));
       request.on('error', reject); request.end(body);
     });
     interactionController.signal.throwIfAborted();
-    result.phases.desktop_interaction = { status: 'running', started_at: Date.now() };
+    budget.remaining('readiness');
+    result.phases.readiness.status = 'passed';
+    result.phases.readiness.elapsed_ms = Date.now() - result.phases.readiness.started_at;
+    result.phases.desktop_interaction = { status: 'running', started_at: Date.now(), cutoff: budget.cutoffs.work, remaining_ms: budget.remaining() };
     desktop = launch(path.join(app, 'Contents', 'MacOS', 'mandible-app'), [], env, 'desktop');
     const evidencePath = path.join(home, 'desktop-evidence.json');
     await until(async () => {
@@ -586,8 +605,11 @@ async function main(budget) {
     if (interrupted) throw new Error('Acceptance interrupted or total deadline reached.');
     result.status = 'passed';
   } catch (error) {
-    result.error = error.message;
+    result.error ??= error.message;
+    result.budget = budget.reading();
+    for (const phase of Object.values(result.phases)) if (phase.status === 'running') { phase.status = 'failed'; phase.error = result.error; phase.elapsed_ms = Date.now() - phase.started_at; }
     if (error.evidence) result.failure = { code: error.code, evidence: error.evidence };
+    saveOwnedMetadata(evidence, compactAcceptanceResult(result));
   }
   finally {
     if (diagnosticDeadline) clearTimeout(diagnosticDeadline);
@@ -595,10 +617,9 @@ async function main(budget) {
     interactionController.abort();
     passiveController.abort();
     await passiveHealth;
-    for (const phase of Object.values(result.phases)) if (phase.status === 'running') { phase.status = 'failed'; phase.error = result.error || 'Interrupted'; phase.elapsed_ms = Date.now() - phase.started_at; }
     const shutdowns = {};
     await Promise.all([['probe', stallProbe], ['desktop', desktop], ['gateway', gateway], ['daemon', daemon]].map(async ([name, child]) => {
-      try { shutdowns[name] = await stopOwned(child, () => budget.remaining(true)); } catch (error) { result.status = 'failed'; result.cleanup_error = error.message; }
+      try { shutdowns[name] = await stopOwned(child, () => budget.remaining('report')); } catch (error) { result.status = 'failed'; result.cleanup_error = [result.cleanup_error, error.message].filter(Boolean).join('; '); }
     }));
     for (const fd of files) fs.closeSync(fd);
     const logSources = [['daemon', daemon], ['desktop', desktop], ['gateway', gateway]].map(([name, child]) => {
@@ -621,25 +642,16 @@ async function main(budget) {
     if (![stallProbe, daemon, desktop, gateway].every(child => !child || child.exitCode !== null || child.signalCode !== null)) {
       result.status = 'failed'; result.cleanup_error = 'Owned process remains alive; scratch data preserved';
     } else {
-      result.phases.finalization = { status: 'running', started_at: Date.now() };
-      const evidence = path.join(cache, '.receipts', `${ownership.runId}-acceptance.json`);
-      fs.mkdirSync(path.dirname(evidence), { recursive: true });
+      result.phases.finalization = { status: 'running', started_at: Date.now(), cutoff: budget.cutoffs.report, remaining_ms: budget.reading().remaining_ms.report };
       result.budget = budget.reading();
       result.receipt = evidence;
       saveOwnedMetadata(evidence, result);
-      const input = path.join(run, 'finalization.json');
-      saveOwnedMetadata(input, { metadataFile, result, candidateBinding, testedPackageDigest, pendingPackage, diagnostic, diagnostics, cache, run, ownership, deadlineEnv: budget.env });
       try {
-        const remaining = budget.remaining(true);
-        const completed = await runSupervisedCommand(runtime, [fileURLToPath(import.meta.url), '--finalize-owned-run', input], {
-          cwd: root, env: buildEnv, capture: true, maxBuffer: 1024 * 1024,
-          timeout: Math.max(1, remaining - 600), graceMs: 250, deadline: budget.deadline,
-          onSpawn: child => recordScratchProcess(metadataFile, child, true),
-        });
-        if (completed.stdoutTruncated) throw new Error('Finalizer exceeded its bounded result transport.');
-        const finalized = JSON.parse(completed.stdout);
+        const finalized = await finalizeAcceptance({ metadataFile, result, candidateBinding, testedPackageDigest, pendingPackage,
+          diagnostic, diagnostics, cache, run, ownership, deadlineEnv: budget.env });
         Object.assign(result, finalized, { checks: { ...result.checks, ...finalized.checks } });
       } catch (error) {
+        if (error.code === 'PROCESS_LOCK_LOST') throw error;
         result.status = 'failed'; result.cleanup_error = error.message;
         result.phases.finalization.status = 'failed';
         result.phases.finalization.elapsed_ms = Date.now() - result.phases.finalization.started_at;
@@ -652,7 +664,12 @@ async function main(budget) {
       }
     }
     result.budget = budget.reading();
-    if (Date.now() >= budget.deadline) { result.status = 'failed'; result.cleanup_error = 'Acceptance total deadline exceeded during cleanup/receipt.'; }
+    if (Date.now() >= budget.cutoffs.report) { result.status = 'failed'; result.cleanup_error = 'Acceptance report budget exhausted during cleanup/receipt.'; }
+    if (result.status === 'failed') {
+      result.error ??= result.cleanup_error || 'Acceptance behavior, shutdown or log checks failed.';
+      const sealed = path.join(process.env.MANDIBLE_HOME || path.join(os.userInfo().homedir, '.mandible'), 'accepted-releases', '.receipts', ownership.runId + '-accepted-release.json');
+      if (!fs.existsSync(sealed)) saveOwnedMetadata(evidence, compactAcceptanceResult(result));
+    }
     process.removeListener('SIGINT', interrupt); process.removeListener('SIGTERM', interrupt);
   }
   if (diagnostic) {
@@ -666,10 +683,7 @@ async function main(budget) {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const execution = (async () => {
     const budget = acceptanceApplicationPolicy();
-    if (process.argv[2] === '--finalize-owned-run') {
-      const result = await finalizeAcceptance(JSON.parse(fs.readFileSync(process.argv[3], 'utf8')));
-      process.stdout.write(JSON.stringify(compactAcceptanceResult(result))); process.exitCode = 0;
-    } else await main(budget);
+    await main(budget);
   })();
   execution.catch(error => { console.error(JSON.stringify({ status: 'unavailable', error: error.message })); process.exitCode = 1; });
 }
