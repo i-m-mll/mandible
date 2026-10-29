@@ -1173,35 +1173,10 @@ api_route_template_matches() {
   done
 }
 
-api_operational_mutation_category() {
-  local method="$1" pathname="${2%%\?*}" metadata_file="$3"
-  local route_method route_path route_category
-  if ! jq -e '
-    .operations.schema == "mandible-operation-catalog@2"
-    and .operations.source == "Router.listRoutePolicies"
-    and (.operations.runtime.version | type == "string" and length > 0)
-    and .operations.runtime.instance_id == .instance.instance_id
-    and .operations.runtime.backend_generation == .instance.backend_generation
-    and (.operations.routes | type == "array" and all(.[];
-      (.operationId | type == "string" and length > 0)
-      and (.method | type == "string") and (.path | type == "string")
-      and has("operationalMutationCategory")
-      and (.operationalMutationCategory == null or (.operationalMutationCategory | type == "string"))
-      and (.fileRpc | IN("allow", "deny", "conditional"))
-      and (.requestSchema | IN("handler", "zod"))))
-  ' "$metadata_file" >/dev/null 2>&1; then
-    printf 'Mandible operation metadata is missing or incompatible; rebuild/restart the selected daemon.\n' >&2
-    return 2
-  fi
-  while IFS=$'\t' read -r route_method route_path route_category; do
-    [[ "$route_method" == "$method" ]] || continue
-    if api_route_template_matches "$route_path" "$pathname"; then
-      [[ "$route_category" == "null" ]] || printf '%s' "$route_category"
-      return 0
-    fi
-  done < <(jq -r '.operations.routes[] | [.method, .path, (.operationalMutationCategory // "null")] | @tsv' "$metadata_file")
-  printf 'Unknown Mandible operation: %s %s; refresh the CLI and daemon together.\n' "$method" "$pathname" >&2
-  return 3
+api_instance_preflight_bindings() {
+  local input_file="$1" method="$2" pathname="${3%%\?*}"
+  api_json_bindings 'include "instance-preflight"; instance_preflight($method; $pathname)' \
+    -L "$MANDIBLE_COMMAND_SYNTAX_DIR" --arg method "$method" --arg pathname "$pathname" "$input_file"
 }
 
 api_non_main_operational_mutation_override_enabled() {
@@ -1327,20 +1302,6 @@ api_restart_availability_preflight() {
   return 0
 }
 
-api_instance_metadata_valid() {
-  local input_file="$1"
-  jq -e '
-    .instance
-    and (.instance.role | type == "string")
-    and (.instance.role | IN("main", "preview", "dev", "test"))
-    and (if (.instance | has("allowed_effects")) then
-      (.instance.allowed_effects | type == "array" and all(.[]; type == "string"))
-    else
-      (.instance.operational_mutations | type == "string" and IN("allow", "reject"))
-    end)
-  ' "$input_file" >/dev/null 2>&1
-}
-
 api_write_instance_metadata_unknown() {
   local category="$1"
   local output_file="${2:-}"
@@ -1376,7 +1337,7 @@ api_write_instance_metadata_unavailable() {
 }
 
 api_fetch_instance_payload() {
-  local output_file="$1"
+  local output_file="$1" method="$2" request_path="$3"
   local http_status
   local instance_transient=false
 
@@ -1386,7 +1347,7 @@ api_fetch_instance_payload() {
 
   http_status=$(api_http_exchange GET "/api/instance" "" "$output_file")
   if [[ "$http_status" =~ ^2 ]]; then
-    if jq -e '.instance and (.instance | type == "object")' "$output_file" >/dev/null 2>&1; then
+    if api_instance_preflight_bindings "$output_file" "$method" "$request_path"; then
       return 0
     fi
     # An empty successful response is a transient exchange failure. A non-empty
@@ -1400,7 +1361,7 @@ api_fetch_instance_payload() {
 
   http_status=$(api_http_exchange GET "/api/health" "" "$output_file")
   if [[ "$http_status" =~ ^2 ]]; then
-    if jq -e '.instance and (.instance | type == "object")' "$output_file" >/dev/null 2>&1; then
+    if api_instance_preflight_bindings "$output_file" "$method" "$request_path"; then
       return 0
     fi
     if [[ ! -s "$output_file" || "$instance_transient" == "true" ]]; then
@@ -1418,7 +1379,7 @@ api_preflight_operational_mutation() {
   local method="$1"
   local request_path="$2"
   local output_file="${3:-}"
-  local category tmp_response fetch_status role policy db_path source_db_path message bindings
+  local category tmp_response fetch_status role policy db_path source_db_path message bindings preflight_error
 
   case "$method" in
     POST|PUT|PATCH|DELETE) ;;
@@ -1430,7 +1391,7 @@ api_preflight_operational_mutation() {
     return 75
   fi
   tmp_response="$(api_temp_file)"
-  if api_fetch_instance_payload "$tmp_response"; then
+  if bindings=$(api_fetch_instance_payload "$tmp_response" "$method" "$request_path"); then
     fetch_status=0
   else
     fetch_status=$?
@@ -1446,20 +1407,21 @@ api_preflight_operational_mutation() {
     return 22
   fi
 
-  if ! api_instance_metadata_valid "$tmp_response"; then
+  eval "$bindings"
+  if [[ "$preflight_error" == instance ]]; then
     rm -f "$tmp_response"
     api_write_instance_metadata_unknown "$category" "$output_file"
     return 22
   fi
 
-  if category=$(api_operational_mutation_category "$method" "$request_path" "$tmp_response"); then
-    :
-  else
-    local catalog_status=$? catalog_error catalog_message
-    if [[ "$catalog_status" == 3 ]]; then
+  if [[ "$preflight_error" == catalog || "$preflight_error" == operation ]]; then
+    local catalog_error catalog_message
+    if [[ "$preflight_error" == operation ]]; then
+      printf 'Unknown Mandible operation: %s %s; refresh the CLI and daemon together.\n' "$method" "${request_path%%\?*}" >&2
       catalog_error="cli_operation_unknown"
       catalog_message="Refusing unregistered operation: $method $request_path. Refresh the CLI and selected daemon together."
     else
+      printf 'Mandible operation metadata is missing or incompatible; rebuild/restart the selected daemon.\n' >&2
       catalog_error="cli_operation_metadata_incompatible"
       catalog_message="Refusing mutation because the selected daemon operation catalog is absent, malformed, or does not match its runtime identity. Rebuild and restart that daemon."
     fi
@@ -1472,17 +1434,6 @@ api_preflight_operational_mutation() {
   fi
   [[ -n "$category" ]] || { rm -f "$tmp_response"; return 0; }
 
-  if ! bindings=$(api_json_bindings '{
-    role: .instance.role,
-    policy: (if (.instance | has("allowed_effects")) then
-      if (.instance.allowed_effects | index("maintenance:shared")) != null then "allow" else "reject" end
-      else .instance.operational_mutations end),
-    db_path: (.instance.db_path // ""), source_db_path: (.instance.source_db_path // "")}' "$tmp_response"); then
-    rm -f "$tmp_response"
-    api_write_instance_metadata_unknown "$category" "$output_file"
-    return 22
-  fi
-  eval "$bindings"
   if [[ "$role" == "main" && "$policy" == "allow" ]]; then
     rm -f "$tmp_response"
     return 0

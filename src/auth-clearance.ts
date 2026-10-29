@@ -1,3 +1,4 @@
+import { mapRow } from "./auth-request-row.js";
 import { createHash, randomUUID } from "node:crypto";
 
 import type SqliteDatabase from "./sqlite.js";
@@ -12,6 +13,7 @@ import type { AuthApprovalContext, DelegatedSignerBorrow } from "./delegated-sig
 import { DelegatedSigningResource } from "./delegated-signing-resource.js";
 import { canonicalJson } from "./canonical-json.js";
 import { resolveId } from "./entity-refs.js";
+import { AuthorityLifecycle } from "./authority-lifecycle.js";
 
 const DEFAULT_DURATION_MINUTES = 60;
 const DEFAULT_MAX_USES = 1;
@@ -81,6 +83,8 @@ export class AuthClearanceError extends Error {
 }
 
 export class AuthClearanceManager {
+  private readonly lifecycle = new AuthorityLifecycle();
+  private closing: Promise<void> | null = null;
   private readonly db: Db;
   private readonly now: () => number;
 
@@ -95,18 +99,31 @@ export class AuthClearanceManager {
   }
 
   signingStatus() {
+    this.lifecycle.assertOpen();
     return this.signer.status();
   }
 
   setupSigning(options: Parameters<DelegatedSigningResource["setup"]>[0]) {
-    return this.signer.setup(options);
+    return this.lifecycle.run(() => this.signer.setup(options));
   }
 
   removeSigning() {
-    return this.signer.remove();
+    return this.lifecycle.run(() => this.signer.remove());
+  }
+
+  close(): Promise<void> {
+    this.lifecycle.stopAdmission();
+    if (this.closing) return this.closing;
+    this.closing = this.lifecycle.join().then(() => this.signer.close());
+    void this.closing.catch(() => { this.closing = null; });
+    return this.closing;
   }
 
   async issue(input: IssueClearanceInput, issuerUserId: string): Promise<AuthClearance> {
+    return this.lifecycle.run(() => this.issueAdmitted(input, issuerUserId));
+  }
+
+  private async issueAdmitted(input: IssueClearanceInput, issuerUserId: string): Promise<AuthClearance> {
     const now = this.now();
     const operator = getOperator(this.db);
     if (!operator || operator.status !== "active" || operator.id !== issuerUserId) {
@@ -169,13 +186,15 @@ export class AuthClearanceManager {
         this.runtimeEpoch, approval.leaseId, request?.id ?? null,
       );
     } catch (error) {
-      await this.signer.release(approval).catch(() => undefined);
+      try { await this.signer.release(approval); }
+      catch (cleanup) { throw new AggregateError([error, cleanup], "Clearance issuance and signer cleanup failed."); }
       throw error;
     }
-    return this.show(id);
+    return this.readClearance(id);
   }
 
   list(requestId?: string | null): AuthClearance[] {
+    this.lifecycle.assertOpen();
     const rows = requestId
       ? this.db.prepare(
           `SELECT DISTINCT c.*,
@@ -194,6 +213,11 @@ export class AuthClearanceManager {
   }
 
   show(id: string): AuthClearance {
+    this.lifecycle.assertOpen();
+    return this.readClearance(id);
+  }
+
+  private readClearance(id: string): AuthClearance {
     const resolved = resolveId(this.db, "auth_clearance", id);
     if (!resolved.ok && resolved.error === "ambiguous") throw new AuthClearanceError("ambiguous", `Clearance ref '${id}' is ambiguous.`);
     if (!resolved.ok) throw new AuthClearanceError("not_found", `No clearance matches '${id}'.`);
@@ -212,11 +236,15 @@ export class AuthClearanceManager {
   }
 
   async revoke(id: string, operatorUserId: string): Promise<AuthClearance> {
+    return this.lifecycle.run(() => this.revokeAdmitted(id, operatorUserId));
+  }
+
+  private async revokeAdmitted(id: string, operatorUserId: string): Promise<AuthClearance> {
     const operator = getOperator(this.db);
     if (!operator || operator.status !== "active" || operator.id !== operatorUserId) {
       throw new AuthClearanceError("operator_required", "Only the configured active operator can revoke a clearance.");
     }
-    const clearance = this.show(id);
+    const clearance = this.readClearance(id);
     if (clearance.revoked_at !== null) {
       await this.signer.drain(clearance.signing_lease_id, "clearance_revoked");
       return clearance;
@@ -226,10 +254,18 @@ export class AuthClearanceManager {
        revoked_by_user_id = COALESCE(revoked_by_user_id, ?) WHERE id = ?`,
     ).run(this.now(), operator.id, clearance.id);
     await this.signer.drain(clearance.signing_lease_id, "clearance_revoked");
-    return this.show(clearance.id);
+    return this.readClearance(clearance.id);
   }
 
   async consume(
+    requestId: string,
+    transition: (input: ClearanceConsumption) => undefined,
+    observeBeforeCommit?: () => Promise<void>,
+  ): Promise<ClearanceConsumption> {
+    return this.lifecycle.run(() => this.consumeAdmitted(requestId, transition, observeBeforeCommit));
+  }
+
+  private async consumeAdmitted(
     requestId: string,
     transition: (input: ClearanceConsumption) => undefined,
     observeBeforeCommit?: () => Promise<void>,
@@ -350,11 +386,12 @@ export class AuthClearanceManager {
     try {
       result = run.immediate();
     } catch (error) {
-      void borrow.settle().catch(() => undefined);
+      try { await borrow.settle(); }
+      catch (cleanup) { throw new AggregateError([error, cleanup], "Clearance consumption and settlement failed."); }
       throw error;
     }
     if (result.use.use_ordinal >= result.clearance.max_uses) {
-      void this.signer.drain(result.clearance.signing_lease_id, "clearance_exhausted").catch(() => undefined);
+      this.signer.drainInBackground(result.clearance.signing_lease_id, "clearance_exhausted");
     }
     return result;
   }
@@ -494,30 +531,8 @@ export class AuthClearanceManager {
     const resolved = resolveId(this.db, "auth_request", id);
     if (!resolved.ok && resolved.error === "ambiguous") throw new AuthClearanceError("ambiguous", `Auth request ref '${id}' is ambiguous.`);
     if (!resolved.ok) throw new AuthClearanceError("request_not_found", `No auth request '${id}'.`);
-    return mapRequest(this.db.prepare("SELECT * FROM auth_requests WHERE id = ?").get(resolved.id) as Record<string, unknown>);
+    return mapRow(this.db.prepare("SELECT * FROM auth_requests WHERE id = ?").get(resolved.id) as Record<string, unknown>);
   }
-}
-
-function mapRequest(row: Record<string, unknown>): AuthRequest {
-  const array = (value: unknown): string[] | null => {
-    if (value == null) return null;
-    const parsed = typeof value === "string" ? JSON.parse(value) : value;
-    return Array.isArray(parsed) ? parsed.map(String) : null;
-  };
-  return {
-    ...(row as unknown as AuthRequest),
-    id: String(row.id),
-    status: String(row.status) as AuthRequest["status"],
-    type: String(row.type) as AuthRequest["type"],
-    command: String(row.command),
-    execution_mode: String(row.execution_mode) as AuthRequest["execution_mode"],
-    requested_by_user_id: row.requested_by_user_id == null ? null : String(row.requested_by_user_id),
-    requester_evidence_method: row.requester_evidence_method == null ? null : String(row.requester_evidence_method),
-    requester_credential_id: row.requester_credential_id == null ? null : String(row.requester_credential_id),
-    issue_references: array(row.issue_references),
-    issue_closures: array(row.issue_closures),
-    issues: array(row.issues),
-  };
 }
 
 function requestSnapshot(request: AuthRequest): Record<string, unknown> {
@@ -535,6 +550,7 @@ function requestSnapshot(request: AuthRequest): Record<string, unknown> {
     merge_head_sha: request.merge_head_sha ?? null,
     issue_references: request.issue_references ?? null,
     issue_closures: request.issue_closures ?? request.issues ?? null,
+    depends_on_ids: request.depends_on_ids ?? [],
     execution_mode: request.execution_mode,
   };
 }

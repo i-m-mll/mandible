@@ -762,7 +762,7 @@ describe("auth queue", () => {
       for (const submission of submissions) {
         const result = await router.invoke({
           method: "POST",
-          url: "/api/auth/request",
+          url: "/api/auth/v2/request",
           body: {
             ...MERGE_CHANGE_MESSAGE,
             ...submission,

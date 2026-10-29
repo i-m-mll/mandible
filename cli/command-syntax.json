@@ -278,7 +278,7 @@
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--promote-briefing"],"values": [{"kind": "argument","name": "group","value": {"type": "string"}},{"kind": "argument","name": "expected-base","value": {"type": "string"}},{"kind": "argument","name": "proposal","value": {"type": "string"}}]}]}},
           {"kind": "choice","hint": "the canonical change message: an outcome line, then a short Why paragraph; it becomes the reviewed merge commit message","items": [{"kind": "option","names": ["--message"],"values": [{"kind": "argument","name": "text","value": {"type": "string"}}]},{"kind": "option","names": ["--message-file"],"values": [{"kind": "argument","name": "file","value": {"type": "string"}}]}]},
           {"kind": "option","hint": "the checks you ran and their results; it becomes the merge commit's Verification section","names": ["--verification"],"values": [{"kind": "argument","name": "text","value": {"type": "string"}}]},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--depends-on"],"values": [{"kind": "argument","name": "request","value": {"type": "string"}}]}]}},
+          {"kind": "repeat","min": 0,"item": {"kind": "sequence","items": [{"kind": "option","names": ["--depends-on"],"values": [{"kind": "argument","name": "request","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--no-watch"],"values": []}]}},
           {"kind": "optional","item": {"kind": "option","names": ["--type"],"values": [{"kind": "argument","name": "value","value": {"type": "string"}}]}},
           {"kind": "optional","item": {"kind": "option","names": ["--command"],"values": [{"kind": "argument","name": "value","value": {"type": "string"}}]}},
@@ -336,6 +336,17 @@
           {"kind": "optional","item": {"kind": "option","names": ["--json"],"values": []}}
         ]
       }
+    },
+    "auth.retire-delivery": {
+      "route": ["auth", "retire-delivery"],
+      "grammar": { "kind": "sequence", "items": [
+        {"kind":"argument","name":"request","value":{"type":"string"}},
+        {"kind":"option","names":["--reason"],"values":[{"kind":"argument","name":"text","value":{"type":"string"}}]},
+        {"kind":"option","names":["--expected-revision"],"values":[{"kind":"argument","name":"n","value":{"type":"integer"}}]},
+        {"kind":"option","names":["--expected-custody-generation"],"values":[{"kind":"argument","name":"n","value":{"type":"integer"}}]},
+        {"kind":"optional","item":{"kind":"option","names":["--operator-recovery"],"values":[]}},
+        {"kind":"optional","item":{"kind":"option","names":["--json"],"values":[]}}
+      ]}
     },
     "auth.retry-convergence": {
       "route": ["auth", "retry-convergence"],
@@ -1251,7 +1262,7 @@
           {"kind":"choice","hint":"required Description explaining the action being approved","items":[{"kind":"option","names":["--message"],"values":[{"kind":"argument","name":"text","value":{"type":"string"}}]},{"kind":"option","names":["--message-file"],"values":[{"kind":"argument","name":"file","value":{"type":"string"}}]}]},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--no-watch"],"values": []}]}},
           {"kind": "optional","item": {"kind": "option","names": ["--diff-summary"],"values": [{"kind": "argument","name": "value","value": {"type": "string"}}]}},
-          {"kind": "optional","item": {"kind": "option","names": ["--depends-on"],"values": [{"kind": "argument","name": "value","value": {"type": "string"}}]}},
+          {"kind": "repeat","min": 0,"item": {"kind": "option","names": ["--depends-on"],"values": [{"kind": "argument","name": "value","value": {"type": "string"}}]}},
           {"kind": "optional","item": {"kind": "option","names": ["--supersedes"],"values": [{"kind": "argument","name": "value","value": {"type": "string"}}]}},
           {"kind": "optional","item": {"kind": "option","names": ["--expected-revision"],"values": [{"kind": "argument","name": "value","value": {"type": "integer","min": 0}}]}},
           {"kind": "optional","item": {"kind": "option","names": ["--expected-custody-generation"],"values": [{"kind": "argument","name": "value","value": {"type": "integer","min": 0}}]}},

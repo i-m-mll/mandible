@@ -382,6 +382,30 @@
   padding: 0;
 }
 
+.auth-prerequisites {
+  flex-shrink: 0;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.auth-prerequisites h3 {
+  margin: 0 0 8px;
+  font-size: inherit;
+}
+
+.auth-prerequisites ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  margin: 0;
+  padding-left: 20px;
+}
+
+.auth-detail__body--console > .auth-prerequisites {
+  margin: 14px 20px;
+}
+
 .auth-detail__body--console > :is(.auth-failure, .auth-yubikey-warning) {
   margin: 14px 20px 0;
 }

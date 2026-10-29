@@ -11,7 +11,7 @@ describe("command approval Description authoring", () => {
   it("preserves explanatory Markdown from message and file arguments", async () => {
     const bodies: Record<string, unknown>[] = [];
     const stub = await startStubDaemon(({ method, url, body }) => {
-      if (method === "POST" && url === "/api/auth/request") {
+      if (method === "POST" && url === "/api/auth/v2/request") {
         bodies.push(body as Record<string, unknown>);
         return { status: 201, body: { request_id: "description-request", status: "pending" } };
       }
@@ -37,7 +37,7 @@ describe("command approval Description authoring", () => {
 
   it("refuses missing/blank Description and merge-only flags before transport", async () => {
     let submitted = 0;
-    const stub = await startStubDaemon(({url}) => { if(url === "/api/auth/request")submitted++; return {body:{}}; });
+    const stub = await startStubDaemon(({url}) => { if(url === "/api/auth/v2/request")submitted++; return {body:{}}; });
     cleanups.push(() => stub.close());
     const cwd = scratchDir("description-refusal");
     const base=["auth","request","--type","config-change","--command","echo private","--cwd",cwd,"--repo","mandible",

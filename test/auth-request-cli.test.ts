@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { MERGE_CHANGE_MESSAGE_FLAGS } from "./helpers/auth-delivery-fixtures.js";
 import { MAIN_CLI_INSTANCE_RESPONSE } from "./helpers/cli-instance-response.js";
+import { authCliRepo } from "./helpers/prepared-git-fixture.js";
 
 const CLI = path.join(process.cwd(), "bin", "mandible");
 
@@ -130,7 +131,7 @@ function listenForAuthRequest(
       });
       return;
     }
-    if (req.method === "POST" && req.url === "/api/auth/request") {
+    if (req.method === "POST" && req.url === "/api/auth/v2/request") {
       let raw = "";
       req.setEncoding("utf8");
       req.on("data", (chunk) => {
@@ -176,25 +177,9 @@ function localRepoName(): string {
   return path.basename(tempDir);
 }
 
-function createRepo(): void {
-  git(["init", "-b", "main"]);
-  git(["config", "user.name", "Mandible Test"]);
-  git(["config", "user.email", "mandible-test@example.invalid"]);
-  git(["config", "commit.gpgsign", "false"]);
-  fs.writeFileSync(path.join(tempDir, "tracked.txt"), "base\n", "utf8");
-  git(["add", "tracked.txt"]);
-  git(["commit", "-m", "base"]);
-  git(["checkout", "-b", "feature/demo"]);
-  fs.writeFileSync(path.join(tempDir, "feature.txt"), "feature\n", "utf8");
-  git(["add", "feature.txt"]);
-  git(["commit", "-m", "feature"]);
-  git(["checkout", "main"]);
-}
-
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-request-cli-"));
   homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-request-home-"));
-  createRepo();
 });
 
 afterEach(() => {
@@ -202,7 +187,56 @@ afterEach(() => {
   fs.rmSync(homeDir, { recursive: true, force: true });
 });
 
+function useGitRepo(): void {
+  beforeEach(() => authCliRepo.copyInto(tempDir));
+}
+
 describe("action-specific request preparation", () => {
+  it("refuses an old daemon without submitting through the retired route", async () => {
+    let retiredWrites = 0;
+    const server = http.createServer((req, res) => {
+      if (req.url === "/api/instance") { res.end(JSON.stringify(MAIN_CLI_INSTANCE_RESPONSE)); return; }
+      if (req.method === "POST" && req.url === "/api/auth/request") retiredWrites++;
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Unknown route" }));
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const port = (server.address() as { port: number }).port;
+      const result = await runAsync(["auth", "request", "--type", "config-change", "--command", "echo reviewed",
+        "--repo", "example", "--cwd", tempDir, "--title", "Settings", "--issue", "settings123",
+        "--message", "Apply reviewed settings.", "--depends-on", "source123", "--no-watch"],
+        tempDir, { MANDIBLE_BASE: `http://127.0.0.1:${port}` });
+      expect(result.status).not.toBe(0);
+      expect(retiredWrites).toBe(0);
+    } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
+  });
+
+  it("omits an unspecified prerequisite set on supersession so the daemon inherits it", async () => {
+    const server = await listenForAuthRequest();
+    try {
+      const result = await runAsync(["auth", "request", "--type", "config-change", "--command", "echo reviewed",
+        "--repo", "example", "--cwd", tempDir, "--title", "Settings", "--issue", "settings123",
+        "--message", "Apply reviewed settings.", "--supersedes", "prior123", "--expected-revision", "1",
+        "--expected-custody-generation", "1", "--no-watch"], tempDir, { MANDIBLE_BASE: `http://127.0.0.1:${server.port}` });
+      expect(result.status, result.stderr).toBe(0);
+      expect(server.bodies[0]).not.toHaveProperty("depends_on_ids");
+    } finally { await server.close(); }
+  });
+
+  it("submits one prerequisite set from repeated depends-on options", async () => {
+    const server = await listenForAuthRequest();
+    try {
+      const result = await runAsync(["auth", "request", "--type", "config-change", "--command", "echo reviewed",
+        "--repo", "example", "--cwd", tempDir, "--title", "Apply reviewed settings", "--issue", "settings123",
+        "--message", "Apply reviewed settings.", "--depends-on", "source123", "--depends-on", "validation123", "--no-watch"],
+        tempDir, { MANDIBLE_BASE: `http://127.0.0.1:${server.port}` });
+      expect(result.status, result.stderr).toBe(0);
+      expect(server.bodies[0]?.depends_on_ids).toEqual(["source123", "validation123"]);
+      expect(server.bodies[0]).not.toHaveProperty("depends_on_id");
+    } finally { await server.close(); }
+  });
+
   it("queues exact non-merge bytes outside Git without preparing or executing a merge", async () => {
     const server = await listenForAuthRequest();
     const executionDir = path.join(homeDir, "operation");
@@ -258,6 +292,7 @@ describe("action-specific request preparation", () => {
 });
 
 describe("auth request repo context validation", () => {
+  useGitRepo();
   it("rejects explicit repo mismatches before request submission", () => {
     const result = run([
       "auth",
@@ -307,6 +342,7 @@ describe("auth request without a spec", () => {
 // exit 0, so a submitter read its own arguments back beside a foreign
 // request's id and concluded the work was queued when nothing was.
 describe("auth request duplicate refusal", () => {
+  useGitRepo();
   const CALLER_TITLE = "Caller supplied title";
   const duplicate409 = {
     status: 409,
@@ -366,6 +402,7 @@ describe("auth request duplicate refusal", () => {
 
 
 describe("auth request protected-root dirty policy", () => {
+  useGitRepo();
   it("blocks tracked dirty protected roots without restoring files", () => {
     fs.writeFileSync(path.join(tempDir, "tracked.txt"), "dirty\n", "utf8");
 

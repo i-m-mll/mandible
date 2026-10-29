@@ -1,15 +1,12 @@
 import { WORK_UNIT_ASSIGNMENT_SCHEMA_SQL, seedLegacyAssignmentTargets } from "./work-unit-assignment-schema.js";
 import { CHILD_RETENTION_SCHEMA_SQL } from "./conversations/retention-schema.js";
+import { AUTH_HOOK_EXECUTIONS_TABLE_SQL, AUTH_HOOK_EXECUTIONS_INDEX_SQL } from './auth-hook-schema.js';
 import { LEDGER_ORIGIN_SCHEMA_SQL, MANAGED_SESSION_ORIGIN_INDEX_SQL } from "./ledger-origin-schema.js";
 import { SPACE_PUBLICATION_AUTH_SCHEMA_SQL } from "./spaces/publication-auth-schema.js";
 import { SPACE_PUBLICATION_SCHEMA_SQL } from "./spaces/publication-schema.js";
-import { preserveLegacyDocuments } from "./spaces/history.js";
 import { artifactDescriptiveMetadataJson } from "./artifact-metadata.js";
 import { CONVERSATION_RUNTIME_SCHEMA_SQL } from "./conversation-control/runtime-schema.js";
 import { CONVERSATION_IDENTITY_SCHEMA_SQL, reconcileConversationIdentities, validateConversationIdentitySchema } from './conversations/identity.js';
-import { reconcileRecoveredArtifactSources } from './artifact-source-recovery.js';
-import { recoverArtifactCustody } from './artifact-recovery.js';
-import { retainArtifactCommit } from './artifact-commit-source.js';
 import { ARTIFACT_CUSTODY_MIGRATION_SQL, ARTIFACT_CUSTODY_TRIGGERS_SQL } from './artifact-custody-schema.js';
 import { ARTIFACT_SOURCE_SCHEMA_SQL, ARTIFACT_SOURCE_BACKFILL_SQL } from './artifact-source-schema.js';
 import {
@@ -17,6 +14,7 @@ import {
   AUTH_REQUEST_LIFECYCLE_EVENTS_SCHEMA_SQL,
   WORKER_THREAD_ARCHIVES_SCHEMA_SQL,
   BASELINE_SCHEMA_VERSION,
+  AUTH_PREREQUISITE_SCHEMA_SQL,
   SESSION_EXECUTION_SCHEMA_SQL,
   LEDGER_SESSION_ISSUE_LINKS_SCHEMA_SQL,
   WORK_UNIT_CUSTODY_EVENTS_SCHEMA_SQL,
@@ -35,6 +33,7 @@ import {
 import type { Db } from "./db.js";
 import { AUTH_SNAPSHOT_SHAPE_V212, authRequestSnapshot } from "./auth-request-snapshot.js";
 import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 import { CONVERSATION_CONTROL_SCHEMA_V163_SQL, CONVERSATION_CONTROL_PENDING_IDENTITY_MIGRATION_SQL, CONVERSATION_CONTROL_KNOWN_OWNERSHIP_MIGRATION_SQL } from "./conversation-control/schema.js";
 import {
   CONVERSATION_SPAWN_SCHEMA_SQL,
@@ -55,6 +54,15 @@ import { ISSUE_SEARCH_SCHEMA_SQL } from "./ledger/issue-search.js";
 import { DOTFILES_INSTRUCTION_HOOK_MIGRATION_SQL } from "./dotfiles-instruction-hook.js";
 
 const SCHEMA_VERSION_KEY = "schema_version";
+
+type HistoricalMigrations = typeof import("./db-migrations-historical.js");
+
+let historicalMigrations: HistoricalMigrations | undefined;
+
+function loadHistoricalMigrations(): HistoricalMigrations {
+  historicalMigrations ??= createRequire(import.meta.url)("./db-migrations-historical.js") as HistoricalMigrations;
+  return historicalMigrations;
+}
 
 // Historical migration 170 admitted one user-scoped Chat view preference. Keep
 // its exact intermediate schema here: migrations are a byte-for-byte history,
@@ -2195,7 +2203,16 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 218, name: "auth_request_history_index", statements: [AUTH_REQUEST_HISTORY_INDEX_SQL] },
   { version: 219, name: "specialized_ledger_request_origin", statements: [...LEDGER_ORIGIN_SCHEMA_SQL, MANAGED_SESSION_ORIGIN_INDEX_SQL] },
   { version: 220, name: "indexed_child_retention", statements: [...CHILD_RETENTION_SCHEMA_SQL] },
-  { version: 221, name: "durable_work_unit_assignment", statements: [...WORK_UNIT_ASSIGNMENT_SCHEMA_SQL] },
+  { version: 221, name: "auth_prerequisite_sets", statements: [...AUTH_PREREQUISITE_SCHEMA_SQL] },
+  { version: 222, name: "failed_delivery_retirement", statements: [
+    'DROP INDEX idx_auth_hook_executions_runnable',
+    'ALTER TABLE auth_hook_executions RENAME TO auth_hook_executions_v221',
+    AUTH_HOOK_EXECUTIONS_TABLE_SQL,
+    'INSERT INTO auth_hook_executions SELECT * FROM auth_hook_executions_v221',
+    'DROP TABLE auth_hook_executions_v221',
+    AUTH_HOOK_EXECUTIONS_INDEX_SQL,
+  ] },
+  { version: 223, name: "durable_work_unit_assignment", statements: [...WORK_UNIT_ASSIGNMENT_SCHEMA_SQL] },
 ];
 
 /**
@@ -2378,8 +2395,8 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
         if (migration.version !== 209 || !validateConversationIdentitySchema(db)) {
           for (const statement of migration.statements) db.exec(statement);
         }
-        if (migration.version === 190) preserveLegacyDocuments(db);
-        if (migration.version === 221) seedLegacyAssignmentTargets(db);
+        if (migration.version === 190) loadHistoricalMigrations().preserveLegacyDocuments(db);
+        if (migration.version === 223) seedLegacyAssignmentTargets(db);
         setVersion.run(SCHEMA_VERSION_KEY, String(migration.version));
       }
     })();
@@ -2461,9 +2478,7 @@ export function migrate(db: Db, through: number = CURRENT_SCHEMA_VERSION): void 
 
   if (found < 185 && through >= 185) {
     applySchemaMigrations(db, MIGRATIONS.filter(migration => migration.version > found && migration.version <= 184));
-    const recovery = recoverArtifactCustody(db, { retain_git_commit: retainArtifactCommit });
-    if (!recovery.recovery_receipt_path) throw new Error('Artifact recovery did not preserve its audit receipt');
-    reconcileRecoveredArtifactSources(db, { collisions: 'managed', receipt_path: `${recovery.recovery_receipt_path}.sources.json`, history_shape: 'v184' });
+    loadHistoricalMigrations().recoverPre185ArtifactCustody(db);
     found = 184;
   }
   {

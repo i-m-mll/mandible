@@ -35,7 +35,7 @@ describe("channel-server local socket", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-channel-socket-"));
     const socket = path.join(root, "daemon.sock");
     const routes = path.join(root, "routes.json");
-    fs.writeFileSync(routes, JSON.stringify([{ method: "POST", path: "/api/auth/request" }]));
+    fs.writeFileSync(routes, JSON.stringify([{ method: "POST", path: "/api/auth/v2/request" }]));
     const original = { base: process.env.MANDIBLE_BASE, socket: process.env.MANDIBLE_SOCKET,
       token: process.env.MANDIBLE_TOKEN, routes: process.env.MANDIBLE_LOCAL_CREDENTIAL_ROUTES_FILE };
     const received: Array<{ url?: string; auth?: string; managed?: string }> = [];
@@ -189,7 +189,7 @@ describe("mandible_submit_auth command shape (issue 08a5f04)", () => {
     if (!handler) throw new Error("mandible_submit_auth not registered");
     await handler(args);
     const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(String(call[0])).toContain("/api/auth/request");
+    expect(String(call[0])).toContain("/api/auth/v2/request");
     return JSON.parse((call[1] as RequestInit).body as string);
   }
 

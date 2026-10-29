@@ -294,6 +294,8 @@ const SWEEP_TAG = "route-cost-sweep";
  * besides the snapshot database and the preview's own files is a named skip.
  */
 const WRITES: Record<string, RouteEntry> = {
+  "POST /api/auth/request": () => "retired write route; always returns 410 without effects",
+  "PUT /api/auth/request/:id": () => "retired write route; always returns 410 without effects",
   "POST /api/ledger/issues/:issueId/umbrella-adopt": (fx) => [
     post("re-adopt existing children", `/api/ledger/issues/${fx.umbrella}/umbrella-adopt`, { child_refs: fx.umbrellaChildren }),
   ],
@@ -468,12 +470,12 @@ const WRITES: Record<string, RouteEntry> = {
   "POST /api/knowledge-backrefs": () => `${NOT_DRIVEN}needs a backref payload`,
   "POST /api/artifacts/:id/knowledge-backrefs": () => `${NOT_DRIVEN}needs a backref payload`,
 
-  "POST /api/auth/request": () => "submits a merge request for a live branch",
+  "POST /api/auth/v2/request": () => "submits a merge request for a live branch",
   "POST /api/auth/request/:id/actions": () => AUTH_TRANSITION,
   "PUT /api/auth/request/:id/actions/:actionId": () => AUTH_TRANSITION,
   "DELETE /api/auth/request/:id/actions/:actionId": () => AUTH_TRANSITION,
   "POST /api/auth/request/:id/actions/:actionId/veto": () => AUTH_TRANSITION,
-  "PUT /api/auth/request/:id": () => AUTH_TRANSITION,
+  "PUT /api/auth/v2/request/:id": () => AUTH_TRANSITION,
   "POST /api/auth/request/:id/withdraw": () => AUTH_TRANSITION,
   "POST /api/auth/request/:id/reject": () => AUTH_TRANSITION,
   "POST /api/auth/request/:id/skip": () => AUTH_TRANSITION,

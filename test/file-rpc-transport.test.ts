@@ -34,7 +34,7 @@ it("denies the production approval route over file RPC before request lookup", a
   const queue = new AuthQueue({ db, backgroundMaintenance: false });
   try {
     const router = new Router();
-    registerAuthRoutes(router, queue, {} as never, {} as never, inlineLedgerReader(() => queue.db));
+    registerAuthRoutes(router, queue, {} as never, undefined, inlineLedgerReader(() => queue.db));
     const transport = new FileRpcTransport({ router, dir: tempDir });
     fs.writeFileSync(path.join(tempDir, "denied.request.json"), JSON.stringify({
       id: "denied",
@@ -109,7 +109,7 @@ const legacyAllowedRoutes: Array<[method: "GET" | "POST" | "PATCH" | "PUT" | "DE
   ["GET", "/api/auth/queue"],
   ["GET", "/api/auth/request/:id"],
   ["POST", "/api/auth/check"],
-  ["POST", "/api/auth/request"],
+  ["POST", "/api/auth/v2/request"],
   ["POST", "/api/auth/request/:id/withdraw"],
   ["POST", "/api/auth/request/:id/candidate-snapshot-repair/inspect"],
   ["POST", "/api/auth/request/:id/candidate-snapshot-repair/apply"],
@@ -511,7 +511,7 @@ describe("file RPC transport", () => {
     expect(allowsFileRpcRoute("PATCH", "/api/work-units/wu-1")).toBe(true);
     expect(allowsFileRpcRoute("POST", "/api/sessions/session-1/issues")).toBe(true);
     expect(allowsFileRpcRoute("GET", "/api/system/logs")).toBe(true);
-    expect(allowsFileRpcRoute("POST", "/api/auth/request")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/auth/v2/request")).toBe(true);
     expect(allowsFileRpcRoute("POST", "/api/auth/request/abc/withdraw")).toBe(true);
     expect(allowsFileRpcRoute("POST", "/api/auth/request/abc/candidate-snapshot-repair/inspect")).toBe(true);
     expect(allowsFileRpcRoute("POST", "/api/auth/request/abc/candidate-snapshot-repair/apply")).toBe(true);
@@ -583,7 +583,7 @@ describe("file RPC transport", () => {
       ["POST", "/api/projects/mandible/checkouts", "project add-checkout"],
       ["POST", "/api/projects/checkouts", "project update-checkout"],
       ["POST", "/api/auth/check", "auth check"],
-      ["POST", "/api/auth/request", "auth request --no-watch"],
+      ["POST", "/api/auth/v2/request", "auth request --no-watch"],
       ["POST", "/api/auth/request/auth-1/replay-codex-archives", "auth replay-archives"],
       ["GET", "/api/artifacts/art-1", "artifact show"],
       ["GET", "/api/artifacts/art-1/content", "artifact content"],

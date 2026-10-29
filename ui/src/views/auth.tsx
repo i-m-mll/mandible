@@ -139,8 +139,8 @@ export type AuthRequest = {
   updated_at?: string | number;
   last_executed_at?: string | number | null;
   resolved_at?: number | string | null;
-  depends_on_id?: string | null;
-  dependency?: AuthDependencyProjection | null;
+  depends_on_ids?: string[];
+  dependencies?: AuthDependencyProjection[];
   approval_source?: string;
   approval_lease_id?: string | null;
   requested_by_user_id?: string | null;
@@ -173,6 +173,39 @@ export type AuthRequest = {
   convergence?: AuthConvergence | null;
   [key: string]: unknown;
 };
+
+function requestPrerequisites(request: AuthRequest) {
+  return (request.depends_on_ids ?? []).map(id => {
+    const matches = (request.dependencies ?? []).filter(dependency => dependency.requested_id === id);
+    const dependency = matches.length === 1 ? matches[0] : undefined;
+    return { id, dependency, state: dependency?.state ?? 'unavailable', ready: isAuthDependencyReady(dependency) };
+  });
+}
+
+function AuthPrerequisites({ request, onSelect }: { request: AuthRequest; onSelect: (id: string) => void }): JSX.Element | null {
+  const prerequisites = requestPrerequisites(request);
+  if (prerequisites.length === 0) return null;
+  return (
+    <section className="auth-prerequisites" aria-label="Request prerequisites">
+      <h3>Prerequisites</h3>
+      <ul>
+        {prerequisites.map(({ id, dependency, state }) => {
+          const reference = dependency?.request_id ?? id;
+          return <li key={id}>
+            <a href={`#/auth?request=${encodeURIComponent(reference)}`} onClick={event => {
+              if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+              event.preventDefault();
+              onSelect(reference);
+            }}>auth:{reference.slice(0, 8)}</a>
+            {' · '}<span>{state}</span>
+            {dependency?.status && <span>{' · '}{dependency.status}</span>}
+            {dependency?.outcome && <span>{' · '}{dependency.outcome}</span>}
+          </li>;
+        })}
+      </ul>
+    </section>
+  );
+}
 
 export type AuthQueueViewProps = {
   queue: AuthRequest[];
@@ -793,8 +826,10 @@ function AuthRequestDetail({
   navigation,
   restoredInfo,
   actionViewStateRef,
+  onSelectRequest,
 }: {
   request: AuthRequest;
+  onSelectRequest: (id: string) => void;
   history?: boolean;
   branchMerged?: boolean;
   actionBundle?: JSX.Element | null;
@@ -1086,10 +1121,6 @@ function AuthRequestDetail({
         <MetadataRow label="Lifecycle reason" value={latestLifecycle?.reason ?? null} />
         <MetadataRow label="Supersedes request" value={request.supersedes_request_id ?? null} />
         <MetadataRow label="Superseded by request" value={request.superseded_by_request_id ?? null} />
-        <MetadataRow label="Dependency id" value={request.depends_on_id ?? null} />
-        <MetadataRow label="Dependency readiness" value={request.dependency?.state ?? null} />
-        <MetadataRow label="Dependency status" value={request.dependency?.status ?? null} />
-        <MetadataRow label="Dependency outcome" value={request.dependency?.outcome ?? null} />
         <MetadataRow label="Merge SHA" value={mergeSha} />
         <MetadataRow label="Finalized" value={finalizedAt} />
         <MetadataRow label="Session" value={sessionId ?? null} />
@@ -1234,6 +1265,7 @@ function AuthRequestDetail({
         />
       )}
     >
+        <AuthPrerequisites request={request} onSelect={onSelectRequest} />
         {showFailure && (
           <div className={`auth-failure${status === 'expired' ? ' auth-failure--expired' : ''}`}>
             <div className="auth-failure__header">
@@ -2941,10 +2973,9 @@ export function AuthQueueView({
       );
     }
 
-    const dependencyBlocked = Boolean(
-      request.depends_on_id && !isAuthDependencyReady(request.dependency),
-    );
-    const dependencyState = request.dependency?.state ?? 'unavailable';
+    const blockers = requestPrerequisites(request).filter(prerequisite => !prerequisite.ready);
+    const dependencyBlocked = blockers.length > 0;
+    const dependencyState = [...new Set(blockers.map(prerequisite => prerequisite.state))].join(', ');
     return (
       <div className="auth-actions">
         <button
@@ -3206,6 +3237,7 @@ export function AuthQueueView({
               restoredInfo={restoredInfo}
               actionViewStateRef={actionViewStateRef}
               request={request}
+              onSelectRequest={handleSelect}
               history={isHistory}
               branchMerged={isHistory && !isFailed && isBranchMerged(request, branchesByRepo)}
               executionOutput={outputs[id]}

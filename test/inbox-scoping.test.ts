@@ -561,7 +561,7 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
     const app = new TestRouteRegistrar();
     registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
 
-    const response = await app.invoke("POST", "/api/auth/request", {
+    const response = await app.invoke("POST", "/api/auth/v2/request", {
       body: {
         command: "mandible auth merge feature/no-context --into main",
         title: "Null cwd request",
@@ -586,7 +586,7 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
       const app = new TestRouteRegistrar();
       registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
 
-      const response = await app.invoke("POST", "/api/auth/request", {
+      const response = await app.invoke("POST", "/api/auth/v2/request", {
         body: {
           command: "mandible auth merge feature/sandbox --into main",
           title: "Sandbox cwd request",
@@ -616,7 +616,7 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
       const app = new TestRouteRegistrar();
       registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
 
-      const response = await app.invoke("POST", "/api/auth/request", {
+      const response = await app.invoke("POST", "/api/auth/v2/request", {
         body: {
           command: "mandible auth merge feature/mandible-issue --into main",
           title: "Explicit metadata request",
@@ -675,7 +675,7 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
       const app = new TestRouteRegistrar();
       registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
 
-      const response = await app.invoke("POST", "/api/auth/request", {
+      const response = await app.invoke("POST", "/api/auth/v2/request", {
         body: {
           command: "mandible auth merge feature/mandible-issue --into main",
           title: "Injection branch request",
@@ -721,7 +721,7 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
       const app = new TestRouteRegistrar();
       registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
 
-      const response = await app.invoke("POST", "/api/auth/request", {
+      const response = await app.invoke("POST", "/api/auth/v2/request", {
         body: {
           command: "mandible auth merge feature/mandible-issue --into missing-base",
           title: "Verification error request",
@@ -968,7 +968,7 @@ class TestRouteRegistrar implements RouteRegistrar {
       params: request.params ?? {},
       query: {},
       // Issue 4720024 — every merge submission carries a change message.
-      body: method === "POST" && routePath === "/api/auth/request"
+      body: method === "POST" && routePath === "/api/auth/v2/request"
         ? { ...MERGE_CHANGE_MESSAGE, ...(request.body as Record<string, unknown>) }
         : request.body,
       client_identity: Object.hasOwn(request, "client_identity") ? request.client_identity : {

@@ -524,8 +524,8 @@ export type AuthRequest = {
   issue_closures?: string[] | null;
   issue_ids?: string[] | null;
   issues?: string[] | null;
-  depends_on_id?: string | null;
-  dependency?: AuthDependencyProjection | null;
+  depends_on_ids?: string[];
+  dependencies?: AuthDependencyProjection[];
   execution_mode: AuthExecutionMode;
   status: AuthRequestStatus;
   created_at: number;

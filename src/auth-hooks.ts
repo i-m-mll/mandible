@@ -263,7 +263,7 @@ export function authHookCommandDigest(command: string): string {
  */
 export function convergenceStateFromRuns(runs: readonly AuthHookRun[]): AuthConvergenceState {
   if (runs.length === 0) return "none";
-  if (runs.some((run) => run.required && run.state === "failed")) return "failed";
+  if (runs.some((run) => run.required && (run.state === "failed" || run.state === "retired"))) return "failed";
   if (runs.some((run) => run.state === "pending" || run.state === "running")) return "pending";
   return "complete";
 }
@@ -288,7 +288,7 @@ export function summarizeConvergenceRun(run: AuthHookRun): AuthConvergenceHookSu
     attempts: run.attempts,
     max_attempts: run.max_attempts,
     exit_code: run.exit_code,
-    failure: run.state === "failed" ? run.output.trim().split("\n").at(-1)?.trim() || null : null,
+    failure: run.state === "failed" || run.state === 'retired' ? run.output.trim().split("\n").at(-1)?.trim() || null : null,
     command_digest: run.command_digest,
     started_at: run.started_at,
     finished_at: run.finished_at,
@@ -798,6 +798,7 @@ export class AuthHookManager {
   grantRetry(authRequestId: string, hookId?: string): number {
     if (!this.hasDurableTables()) return 0;
     const now = Date.now();
+    if (this.listRuns(authRequestId).some(run => run.state === 'retired' && (!hookId || run.hook_id === hookId))) throw new Error('Retired delivery cannot be retried.');
     const runs = this.listRuns(authRequestId).filter(
       (run) => run.state === "failed" && !this.hasRuntimeHandoff(run) && (!hookId || run.hook_id === hookId),
     );
@@ -806,7 +807,7 @@ export class AuthHookManager {
         .prepare(
           `UPDATE auth_hook_executions
            SET state = 'pending', max_attempts = ?, finished_at = NULL, updated_at = ?
-           WHERE id = ?`,
+           WHERE id = ? AND state = 'failed'`,
         )
         .run(run.attempts + 1, now, run.id);
     }
@@ -895,13 +896,14 @@ export class AuthHookManager {
   ): Promise<AuthHookExecutionResult> {
     const attempt = run.attempts + 1;
     const startedAt = Date.now();
-    this.db
+    const claimed = this.db
       .prepare(
         `UPDATE auth_hook_executions
          SET state = 'running', attempts = ?, started_at = ?, updated_at = ?
-         WHERE id = ?`,
+         WHERE id = ? AND state = 'pending' AND attempts = ?`,
       )
-      .run(attempt, startedAt, startedAt, run.id);
+      .run(attempt, startedAt, startedAt, run.id, run.attempts);
+    if (claimed.changes !== 1) throw new Error('Hook execution changed before spawn.');
 
     const result = await this.spawnHook(run.hook_id, run.hook_label, run.command, request, {
       attempt,

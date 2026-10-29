@@ -731,13 +731,9 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     ? startDaemonLogRetention(operationalLogStore.db, logger, { settingsDb: db })
     : { stop: () => undefined };
 
-  const close = async () => {
-    if (closing) {
-      // Second signal while already shutting down — force exit immediately.
-      logger("warn", "force_exit", { message: "second signal during shutdown, forcing exit" });
-      process.exit(1);
-    }
-    closing = true;
+  const closeOwned = async () => {
+    const authorityDrain = authQueue.dispose();
+    void authorityDrain.catch(() => undefined);
     const ledgerWarmDrain = ledgerWarmTimer?.stop();
     protectedBranchGuard?.stop();
     cancelStartupIngestion();
@@ -746,18 +742,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     // Bug: 645f8a8 — a draining daemon is no longer ready for mutations.
     setDaemonReady(false);
     setDaemonWarm(false);
-
-    // Hard deadline: if graceful shutdown hasn't completed in 5 seconds,
-    // force exit so we don't become a zombie.
-    const shutdownTimeout = setTimeout(() => {
-      logger("error", "shutdown_timeout", { message: "graceful shutdown timed out after 5s, forcing exit" });
-      process.exit(1);
-    }, 5_000);
-    // Prevent the timeout itself from keeping the process alive if close()
-    // finishes before it fires.
-    if (typeof shutdownTimeout === "object" && "unref" in shutdownTimeout) {
-      shutdownTimeout.unref();
-    }
 
     await backupService.close();
     try { sessionManager.close(); } catch { /* best effort */ }
@@ -781,7 +765,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     fileRpcTransport.stop();
     executionOutbox.stop();
     await closeLocalSocket();
-    await authQueue.dispose();
+    await authorityDrain;
     clearInterval(channelPruneTimer);
     // Bug: 737df04 — destroy all open connections (including SSE streams) before
     // calling server.close(). Without this, server.close() waits indefinitely for
@@ -796,7 +780,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     clearInterval(healthCheckTimer);
     eventLoopDiagnostics.close();
     await ledgerWarmDrain;
-    clearTimeout(shutdownTimeout);
     // Persist the final batch of queued daemon_log rows before the connection
     // closes so recent activity is not lost on a clean shutdown.
     flushDaemonLogger();
@@ -808,10 +791,19 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     logger("info", "server_stopped");
   };
 
+  let closePromise: Promise<void> | null = null;
+  const close = (): Promise<void> => {
+    if (closePromise) return closePromise;
+    closing = true;
+    closePromise = closeOwned();
+    void closePromise.catch(() => { closePromise = null; });
+    return closePromise;
+  };
+
   if (options.handleSignals !== false) {
     const handle = (signal: string) => {
       logger("info", "signal", { signal });
-      void close();
+      void close().catch(error => logger("error", "server_close_failed", { error: String(error) }));
     };
     process.on("SIGINT", handle);
     process.on("SIGTERM", handle);

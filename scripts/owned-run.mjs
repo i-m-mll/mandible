@@ -3,6 +3,7 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { withLifecycleLock, processIdentity, assertLifecycleLockHeld } from './lifecycle-lock.mjs';
+import { runSupervisedCommand } from './process-group-supervisor.mjs';
 export { processIdentity, recoverLifecycleLock } from './lifecycle-lock.mjs';
 
 export const OWNED_RUN_SCHEMA = 'mandible-owned-run@1';
@@ -67,12 +68,26 @@ function receiptDirectory(root) {
 
 export function inspectRunConsumers(root) {
   const result = spawnSync('lsof', ['-F', 'n', '+D', root], { encoding: 'utf8', timeout: 5_000 });
+  return consumerInspection(result);
+}
+
+function consumerInspection(result) {
   if (result.error || ![0, 1].includes(result.status) || result.stderr.trim()) {
     return { idle: false, reason: `open-file inspection failed: ${result.error?.message ?? result.stderr ?? result.status}` };
   }
   return result.stdout.trim()
     ? { idle: false, reason: `owned files have active consumers: ${result.stdout.trim().slice(0, 2000)}` }
     : { idle: true };
+}
+
+export async function inspectRunConsumersAsync(root) {
+  try {
+    const result = await runSupervisedCommand('lsof', ['-F', 'n', '+D', root], { capture: true, timeout: 5000, graceMs: 100 });
+    return consumerInspection({ ...result, status: result.code, error: result.stdoutTruncated || result.stderrTruncated ? new Error('Consumer observation truncated') : null });
+  } catch (error) {
+    return consumerInspection({ stdout: error.stdout ?? '', stderr: error.stderr ?? '', status: error.exitCode,
+      error: error.exitCode === 1 && error.processGroupSettled && !error.stdoutTruncated && !error.stderrTruncated ? null : error });
+  }
 }
 
 function contained(root, relative, allowLeafLink = false) {

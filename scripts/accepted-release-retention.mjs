@@ -5,6 +5,8 @@ import { readAcceptedReleaseReceipt, acceptedReleaseFilesystemReferences, dispos
 import { ownedRunReceipt, recoverGeneratedReceipt, withOwnedRunLock, ownedRunIdentityMatches, inspectRunConsumers, saveOwnedMetadata, finalizeOwnedRun, cleanupOwnedRun } from './owned-run.mjs';
 import { withInstallationGatewayLock } from './lifecycle-lock.mjs';
 import { generatedOwnerIdle } from './generated-scratch.mjs';
+import { runSupervisedCommand } from './process-group-supervisor.mjs';
+import { fileURLToPath } from 'node:url';
 
 function producerAuthority(producer) {
   const file = path.join(producer.scratchRoot, 'metadata.json');
@@ -12,12 +14,24 @@ function producerAuthority(producer) {
     : ownedRunReceipt({ root: producer.scratchRoot, runId: producer.runId })?.generatedRecovery;
 }
 
+function producerOwners(metadata) {
+  return metadata.pendingAcceptance ? [
+    { run: metadata.ownership, reason: 'acceptance producer lifetime live or uncertain' },
+    { run: producerAuthority(metadata.pendingAcceptance), reason: 'acceptance consumers live or uncertain' },
+  ] : [];
+}
+
 export function acceptedReleaseProducerReferences(metadata) {
-  const reasons = [];
-  if (!metadata.pendingAcceptance) return reasons;
-  if (!generatedOwnerIdle(metadata.ownership)) reasons.push('acceptance producer lifetime live or uncertain');
-  const producer = producerAuthority(metadata.pendingAcceptance);
-  if (!producer || !generatedOwnerIdle(producer)) reasons.push('acceptance consumers live or uncertain');
+  return producerOwners(metadata).filter(({ run }) => !run || !generatedOwnerIdle(run)).map(({ reason }) => reason);
+}
+
+export async function acceptedReleaseProducerReferencesAsync(metadata) {
+  const input = { pendingAcceptance: metadata.pendingAcceptance, ownership: { processOwner: metadata.ownership.processOwner, processes: metadata.ownership.processes } };
+  const { stdout, stdoutTruncated } = await runSupervisedCommand(process.execPath, ['--no-install',
+    fileURLToPath(new URL('./generated-owner-observation.mjs', import.meta.url)), JSON.stringify(input)], { capture: true, timeout: 5000, graceMs: 100 });
+  if (stdoutTruncated) throw new Error('Producer lifetime observation truncated');
+  const reasons = JSON.parse(stdout).references;
+  if (!Array.isArray(reasons) || reasons.some(reason => typeof reason !== 'string')) throw new Error('Invalid producer reference observation');
   return reasons;
 }
 
@@ -79,7 +93,7 @@ export function acceptedReleaseDatabaseReferences(db, reference, receipt) {
     const latest = db.prepare('SELECT id FROM auth_candidate_acceptances WHERE auth_request_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 1').get(row.auth_request_id);
     if (row.status === 'running' || current && (selected || latest?.id === row.id && row.status === 'passed') && ['pending', 'approved', 'executing', 'failed'].includes(row.request_status)) reasons.push(`current request ${row.auth_request_id}`);
     if (row.last_executed_at && !row.merge_finalized_at) reasons.push('unresolved publication');
-    const hook = db.prepare("SELECT id FROM auth_hook_executions WHERE auth_request_id = ? AND required = 1 AND state != 'complete' LIMIT 1").get(row.auth_request_id);
+    const hook = db.prepare("SELECT id FROM auth_hook_executions WHERE auth_request_id = ? AND required = 1 AND state NOT IN ('complete', 'retired') LIMIT 1").get(row.auth_request_id);
     if (hook) reasons.push('unresolved delivery hook');
   }
   return reasons;
@@ -142,9 +156,11 @@ export async function reconcileAcceptedReleases(db, home, { apply = false, limit
       const metadata = JSON.parse(fs.readFileSync(path.join(root, 'metadata.json'), 'utf8'));
       const run = metadata.ownership;
       const reasons = [...acceptedReleaseFilesystemReferences(home, reference), ...acceptedReleaseDatabaseReferences(db, reference, receipt)];
-      if (!run.processOwner?.identity) reasons.push('legacy ownership requires explicit disposition');
-      else if (!generatedOwnerIdle(run)) reasons.push('acceptance producer lifetime active');
-      reasons.push(...acceptedReleaseProducerReferences(metadata));
+      if (run.state !== 'terminal') {
+        if (!run.processOwner?.identity) reasons.push('legacy ownership requires explicit disposition');
+        else if (!generatedOwnerIdle(run)) reasons.push('acceptance producer lifetime active');
+        reasons.push(...acceptedReleaseProducerReferences(metadata));
+      }
       if (run.state === 'investigating') reasons.push('explicit investigation');
       if (reasons.length) { results.push({ reference, action: 'retain', reasons }); continue; }
       if (!apply) { results.push({ reference, action: 'dispose', reason: 'no operational references' }); continue; }

@@ -34,7 +34,7 @@ export function seedLegacyAssignmentTargets(db: Db): void {
     if (!target) continue;
     db.prepare("UPDATE work_units SET assignment_target_json = ? WHERE id = ?").run(JSON.stringify(target), row.id);
     db.prepare(`INSERT INTO ledger_events (id,entity_type,entity_id,event_type,actor_id,actor_type,source,payload_json,occurred_at,observed_at)
-      VALUES (lower(hex(randomblob(32))),'work_unit',?,'work_unit.assignment.observed','schema-migration-v221','system','system',?,?,?)`)
+      VALUES (lower(hex(randomblob(32))),'work_unit',?,'work_unit.assignment.observed','schema-migration-v223','system','system',?,?,?)`)
       .run(row.id, JSON.stringify({ provenance: "legacy_retained_assignment_observation", assignment_target: target,
         changed_fields: ["assignment_target_json"], retained_assigned_session_id: row.assigned_session_id,
         retained_worker_provider: row.worker_provider, retained_worker_provider_session_id: row.worker_provider_session_id }), now, now);

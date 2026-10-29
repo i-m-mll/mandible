@@ -1,7 +1,7 @@
 import { withLedgerMutationActor } from "./ledger/mutation-history.js";
 import { withRequestOrigin } from "./request-origin.js";
 import { mutateWorkUnit } from "./work-unit-history.js";
-import { authDependencies } from "./auth-dependency.js";
+import { authDependencies, canonicalAuthDependencies, authRevalidationOrder } from "./auth-dependency.js";
 import { mapRow, parseChangeReport } from "./auth-request-row.js";
 import { listAuthHistorySummaries } from "./ledger-reads/auth-history.js";
 import { forEachInEventLoopSlices } from "./event-loop-slices.js";
@@ -143,6 +143,7 @@ import { promoteBriefingGroupProposal } from "./feedback/briefing-groups.js";
 import { appendAuthLifecycleEvent, listAuthLifecycleEvents, authRequestInitiatingOrigin } from "./auth-lifecycle.js";
 import { acceptedReleaseSelection, bindAcceptedRelease } from "./accepted-release-selection.js";
 import { GeneratedStorageMaintenance } from './generated-storage.js';
+import { retireFailedDelivery } from './failed-delivery-retirement.js';
 import { authPublicationSnapshot, authRequestSnapshot, authSnapshotDigest } from "./auth-request-snapshot.js";
 import type {
   AuthConvergence,
@@ -588,7 +589,13 @@ export class AuthQueue {
   private readonly executor: typeof executeAuthCommand;
   private readonly hookManager: AuthHookManager;
   private readonly autoApprover?: AuthAutoApprover;
-  private readonly clearanceManager?: AuthClearanceManager;
+  private clearanceManager?: AuthClearanceManager;
+  private readonly clearanceSettlementFailures = new Set<unknown>();
+  private readonly pendingClearanceSettlements = new Map<() => Promise<void>, unknown>();
+  private readonly clearanceExecutions = new Set<Promise<void>>();
+  private readonly uncertainRepoExecutions = new Map<string, string>();
+  private clearanceFailure = completionSignal();
+  private disposing: Promise<void> | null = null;
   // Issue 93d978e — abandoned work units older than this window are retired
   // from merge-side ancestry scans (reversible tombstone, not deletion).
   private readonly workUnitAbandonedScanRetentionMs: number;
@@ -1029,6 +1036,39 @@ export class AuthQueue {
     } finally { this.publishRuntimeVerificationChanges(); finishObservation(); }
   }
 
+  async retireFailedDelivery(requestId: string, reason: string, actor: AuthLifecycleActor, expectedRevision: number, expectedGeneration: number) {
+    const finishObservation = this.beginObservation();
+    try {
+      this.requireExternalEffects('Failed delivery retirement');
+      const request = this.requireRequest(requestId);
+      const observed = this.observationToken(request.id, request);
+      const authorize = () => {
+        const current = this.requireRequest(request.id);
+        const custody = this.requestCustodyForActor(current, actor);
+        if (!Number.isInteger(expectedRevision) || !Number.isInteger(expectedGeneration)) {
+          throw new AuthQueueError('lifecycle_precondition_required', 'Expected lifecycle revision and custody generation are required.');
+        }
+        const latest = this.db.prepare('SELECT revision, snapshot_json, snapshot_sha256 FROM auth_request_lifecycle_events WHERE auth_request_id = ? ORDER BY revision DESC LIMIT 1')
+          .get(request.id) as { revision: number; snapshot_json: string; snapshot_sha256: string } | undefined;
+        if (!latest || latest.revision !== expectedRevision || authSnapshotDigest(latest.snapshot_json) !== latest.snapshot_sha256
+            || (custody?.custody_generation ?? 0) !== expectedGeneration || custody && custody.auth_request_id !== current.id) {
+          throw new AuthQueueError('lifecycle_conflict', 'Request lifecycle or work-unit custody changed; refresh and retry.');
+        }
+        this.assertObservation(request.id, observed);
+        return current;
+      };
+      authorize();
+      const evidenceFailure = await this.successfulMergeEvidenceFailure(request);
+      if (evidenceFailure) throw new AuthQueueError('invalid_status', evidenceFailure);
+      const result = await retireFailedDelivery(this.db, request, reason, actor, { home: getMandibleHome(), authorize, now: this.now });
+      this.broadcast({ event: DOMAIN_EVENTS.AUTH_LIFECYCLE, data: { request_id: request.id, lifecycle: 'revised', retirement: result } });
+      return result;
+    } catch (error) {
+      if (error instanceof AuthQueueError) throw error;
+      throw new AuthQueueError('invalid_status', errorMessage(error) ?? String(error));
+    } finally { finishObservation(); }
+  }
+
   /** Open the rebuild window that the UI splash and restart-availability track. */
   private beginRebuildWindow(requestId: string): void {
     this._rebuilding = true;
@@ -1050,6 +1090,49 @@ export class AuthQueue {
   /** Whether this instance may touch host resources or run execution work. */
   get externalEffectsAllowed(): boolean {
     return this.allowExternalEffects;
+  }
+
+  registerClearanceAuthority(manager: AuthClearanceManager): void {
+    if (this.clearanceManager && this.clearanceManager !== manager) {
+      throw new Error("Auth queue already owns a different clearance authority.");
+    }
+    if (this.disposed) throw new Error("Auth queue is disposing.");
+    this.clearanceManager = manager;
+  }
+
+  get clearanceAuthority(): AuthClearanceManager | undefined {
+    return this.clearanceManager;
+  }
+
+  async closeClearanceAuthority(): Promise<void> {
+    for (const [settle] of this.pendingClearanceSettlements) {
+      try { await settle(); this.pendingClearanceSettlements.delete(settle); }
+      catch (error) { this.pendingClearanceSettlements.set(settle, error); }
+    }
+    if (this.clearanceSettlementFailures.size || this.pendingClearanceSettlements.size) {
+      throw new AggregateError([...this.clearanceSettlementFailures, ...this.pendingClearanceSettlements.values()], "Clearance settlement failed; authority remains owned.");
+    }
+    this.clearanceFailure = completionSignal();
+    await Promise.race([this.clearanceManager?.close(), this.clearanceFailure.promise]);
+    if (this.clearanceSettlementFailures.size || this.pendingClearanceSettlements.size) {
+      throw new AggregateError([...this.clearanceSettlementFailures, ...this.pendingClearanceSettlements.values()], "Clearance settlement failed; authority remains owned.");
+    }
+  }
+
+  private retainClearanceFailure(error: unknown, settle?: () => Promise<void>): void {
+    if (settle) this.pendingClearanceSettlements.set(settle, error);
+    else this.clearanceSettlementFailures.add(error);
+    this.clearanceFailure.resolve();
+    authLog("error", "auth_clearance_settlement_failed", { subsystem: "auth", error: String(error) });
+  }
+
+  private async settleClearanceOwnership(settle: () => Promise<void>, primary?: { error: unknown }): Promise<void> {
+    try { await settle(); }
+    catch (cleanup) {
+      this.retainClearanceFailure(cleanup, settle);
+      if (primary) throw new AggregateError([primary.error, cleanup], "Auth operation and clearance settlement failed.");
+      throw cleanup;
+    }
   }
 
   private requireExternalEffects(operation: string): void {
@@ -1147,17 +1230,30 @@ export class AuthQueue {
     catch (incidentError) { authLog("error", "auth_idle_convergence_incident_failed", { subsystem: "auth", error: errorMessage(incidentError) ?? String(incidentError) }); }
   }
 
-  async dispose(): Promise<void> {
+  dispose(): Promise<void> {
     this.disposed = true;
+    if (this.disposing) return this.disposing;
+    this.disposing = this.disposeAdmitted();
+    void this.disposing.catch(() => { this.disposing = null; });
+    return this.disposing;
+  }
+
+  private async disposeAdmitted(): Promise<void> {
     this.phaseAbort.abort();
     for (const controller of this.operatorProofInFlight.values()) controller.abort();
     this.operatorProofs.clear();
     this.stopExpiryTimer();
     this.handoffCompletionWatcher?.close(); this.handoffCompletionWatcher = null;
-    await Promise.allSettled([
+    const authority = this.closeClearanceAuthority();
+    const operations = Promise.allSettled([
       this.startupRecovery, this.expiryReconciliation, ...this.phaseRuns, ...this.observations, ...this.queuedAdmissions,
       this.finalizerQueue.drain(), this.acceptanceRuns?.stop(), this.generatedStorage?.stop(),
     ]);
+    const scopedExecutions = async () => {
+      await operations;
+      while (this.clearanceExecutions.size) await Promise.allSettled([...this.clearanceExecutions]);
+    };
+    await Promise.all([scopedExecutions(), authority]);
   }
 
   private stopExpiryTimer(): void {
@@ -1737,6 +1833,7 @@ export class AuthQueue {
   async submit(payload: AuthRequestInput, requestedByUserId?: string): Promise<AuthRequest> {
     const finishObservation = this.beginObservation();
     try {
+      if ("depends_on_id" in payload) throw { status: 400, message: "depends_on_id is retired; use depends_on_ids." };
       const descriptionError = authDescriptionRequirement(payload);
       if (descriptionError) throw { status: 400, message: descriptionError };
       const canonical = this.resolveCanonicalChangeMessage(
@@ -1868,8 +1965,9 @@ export class AuthQueue {
       }
 
       const now = this.now();
+      const requestId = randomUUID();
       let request: AuthRequest = {
-        id: randomUUID(),
+        id: requestId,
         session_id: payload.session_id ?? null,
         requested_by_user_id: requesterUserId,
         requester_evidence_method: payload.requester_evidence_method ?? null,
@@ -1906,7 +2004,7 @@ export class AuthQueue {
         issue_closures: payload.issue_closures ?? payload.issues ?? null,
         issue_ids: null,
         issues: payload.issues ?? null,
-        depends_on_id: payload.depends_on_id ?? null,
+        depends_on_ids: canonicalAuthDependencies(this.db, payload.depends_on_ids === undefined ? predecessor?.depends_on_ids ?? [] : payload.depends_on_ids, requestId),
         execution_mode: payload.execution_mode ?? "daemon",
         status: "pending",
         created_at: now,
@@ -1974,6 +2072,7 @@ export class AuthQueue {
         issue_ids,
         issues,
         depends_on_id,
+        depends_on_ids,
         execution_mode,
         status,
         created_at,
@@ -2034,7 +2133,8 @@ export class AuthQueue {
         @issue_closures,
         @issue_ids,
         @issues,
-        @depends_on_id,
+        NULL,
+        @depends_on_ids,
         @execution_mode,
         @status,
         @created_at,
@@ -2070,6 +2170,7 @@ export class AuthQueue {
       let insertionQueue: { requests: AuthRequest[]; assertCurrent(): void } | undefined;
       const insertRequest = this.db.transaction(() => {
         assertSubmission();
+        canonicalAuthDependencies(this.db, request.depends_on_ids ?? [], request.id);
         supersessionIdentity?.assertCurrent();
         if (predecessor) this.assertObservation(predecessor.id, predecessorObservation!);
         if (mergeCheck.status === "clean" && payload.base_branch) {
@@ -2091,6 +2192,7 @@ export class AuthQueue {
         }
         stmt.run({
           ...request,
+          depends_on_ids: JSON.stringify(request.depends_on_ids),
           commit_message_digest: request.commit_message_digest ?? null,
           repo: request.repo ?? null,
           base_branch: request.base_branch ?? null,
@@ -2876,23 +2978,16 @@ export class AuthQueue {
     return this.readRequestByExactId(resolved.id);
   }
 
-  dependencyForRequest(
-    request: Pick<AuthRequest, "depends_on_id">,
-  ): AuthDependencyProjection | null {
-    return request.depends_on_id ? authDependencies(this.db, [request.depends_on_id]).get(request.depends_on_id)! : null;
+  dependenciesForRequest(request: Pick<AuthRequest, "depends_on_ids">): AuthDependencyProjection[] {
+    return [...authDependencies(this.db, request.depends_on_ids ?? []).values()];
   }
 
   private enforceDependencyReadiness(request: AuthRequest): void {
-    const dependency = this.dependencyForRequest(request);
-    if (!dependency || isAuthDependencyReady(dependency)) {
-      return;
-    }
-    throw new AuthQueueError(
-      "invalid_status",
+    const dependency = this.dependenciesForRequest(request).find(dependency => !isAuthDependencyReady(dependency));
+    if (!dependency) return;
+    throw new AuthQueueError("invalid_status",
       `Dependency ${dependency.requested_id} is ${dependency.state}; approval requires a successful, durably finalized dependency.`,
-      request.status,
-      dependency,
-    );
+      request.status, dependency);
   }
 
   getSignatureVerification(id: string): Record<string, unknown> | null {
@@ -2974,6 +3069,7 @@ export class AuthQueue {
   ): Promise<AuthRequest> {
     const finishObservation = this.beginObservation();
     try {
+      if ("depends_on_id" in fields) throw { status: 400, message: "depends_on_id is retired; use depends_on_ids." };
       await this.expireStale();
       const resolved = resolveId(this.db, "auth_request", id);
       if (!resolved.ok && resolved.error === "ambiguous") {
@@ -3029,7 +3125,7 @@ export class AuthQueue {
         "deletions",
         "command",
         "cwd",
-        "depends_on_id"
+        "depends_on_ids"
       ];
       const updates: string[] = [];
       const values: unknown[] = [];
@@ -3059,7 +3155,10 @@ export class AuthQueue {
       for (const field of allowedFields) {
         if (field in payload && payload[field] !== undefined) {
           updates.push(`${field} = ?`);
-          values.push(payload[field]);
+          if (field === "depends_on_ids") {
+            updates.push("depends_on_id = NULL");
+            values.push(JSON.stringify(canonicalAuthDependencies(this.db, payload[field] as string[], request.id)));
+          } else values.push(payload[field]);
         }
       }
 
@@ -3151,6 +3250,7 @@ export class AuthQueue {
       let updated!: AuthRequest;
       this.db.transaction(() => {
         if (actor && custody) this.assertLifecycleCas(request, custody, expectedRevision, expectedGeneration);
+        if (fields.depends_on_ids !== undefined) canonicalAuthDependencies(this.db, fields.depends_on_ids, request.id);
         const result = this.db
           .prepare(`UPDATE auth_requests SET ${updates.join(", ")} WHERE id = ? AND status = 'pending'`)
           .run(...values);
@@ -3547,6 +3647,10 @@ export class AuthQueue {
       const controller = new AbortController();
       this.operatorProofInFlight.set(request.id, controller);
       try {
+        const admission = this.observationToken(request.id, request);
+        await this.assertRequestRepoExecutionCertain(request);
+        if (this.disposed || !this.isDbOpen() || controller.signal.aborted) throw new AuthQueueError("invalid_status", "Operator proof was cancelled.");
+        this.assertObservation(request.id, admission);
         request = this.requireRequest(id);
         if (request.status !== "pending") throw new AuthQueueError("invalid_status", "Only pending requests can be approved.");
         request = (await this.prepareMergeApproval(request, true, false));
@@ -3593,6 +3697,10 @@ export class AuthQueue {
         );
       }
       if (this.inFlight.has(request.id)) throw new AuthQueueError("invalid_status", "An earlier execution of this request is still settling.");
+      const admission = this.observationToken(request.id, request);
+      await this.assertRequestRepoExecutionCertain(request);
+      if (!approval && this.operatorProofInFlight.get(request.id)?.signal.aborted) throw new AuthQueueError("invalid_status", "Operator proof was cancelled.");
+      this.assertObservation(request.id, admission);
       const operatorProof = this.operatorProofs.get(request.id);
       this.operatorProofs.delete(request.id);
       if (!approval && (!operatorProof || operatorProof.userId !== approvedByUserId || this.now() >= operatorProof.expiresAt ||
@@ -3670,6 +3778,7 @@ export class AuthQueue {
         if (!live || live.owner_user_id !== approverUserId || live.credential_id !== exactCredentialId || this.now() < live.minted_at || this.now() >= live.expires_at) throw new AuthQueueError("invalid_status", "Approval lease changed or expired during observation.");
       }
       this.db.transaction(() => {
+        this.enforceDependencyReadiness(request);
         this.writeResolvedRequest(
           request,
           "UPDATE auth_requests SET status = 'approved', approved_at = ?, updated_at = ?, approval_source = ?, approval_lease_id = ?, approved_by_user_id = ?, execution_evidence_id = NULL, merge_atomic_enabled = ? WHERE id = ?",
@@ -3756,6 +3865,9 @@ export class AuthQueue {
       if (request.status !== "pending") {
         throw new AuthQueueError("invalid_status", `Request is ${request.status}, cannot use clearance.`, request.status);
       }
+      const admission = this.observationToken(request.id, request);
+      await this.assertRequestRepoExecutionCertain(request);
+      this.assertObservation(request.id, admission);
       request = (await this.prepareMergeApproval(request, true, true));
       const observed = this.observationToken(request.id, request);
       let nativeHookPaths = await this.observedNativeMergeHookPaths(request.cwd);
@@ -3785,6 +3897,7 @@ export class AuthQueue {
             !this.nativeMergeHooksPresent(nativeHookPaths) && signerLines.length > 0
           );
           if (!atomicEnabled) throw new AuthQueueError("merge_check_failed", "Clearance execution requires an exact local signed candidate without unsupported native hooks.");
+          this.enforceDependencyReadiness(request);
           const update = this.db.prepare(
             `UPDATE auth_requests SET status = 'approved', approved_at = ?, updated_at = ?,
            approval_source = 'clearance', approval_lease_id = ?, approved_by_user_id = ?,
@@ -3834,13 +3947,31 @@ export class AuthQueue {
           error instanceof Error ? error.message : "Clearance execution was refused.",
         );
       }
-      const executing = this.requireRequest(requestId);
-      this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: executing, clearance_use_id: consumed.use.id } });
-      this.broadcast({ event: DOMAIN_EVENTS.AUTH_LIFECYCLE, data: {
-        request_id: executing.id, lifecycle: "executing", clearance_use_id: consumed.use.id,
-      } });
-      (await this.executeInBackground(executing, consumed.settle));
-      return executing;
+      let transferred = false;
+      let primary: { error: unknown } | undefined;
+      try {
+        const executing = this.requireRequest(requestId);
+        this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: executing, clearance_use_id: consumed.use.id } });
+        this.broadcast({ event: DOMAIN_EVENTS.AUTH_LIFECYCLE, data: {
+          request_id: executing.id, lifecycle: "executing", clearance_use_id: consumed.use.id,
+        } });
+        const settle = consumed.settle;
+        let settled = false;
+        const settleOnce = async () => {
+          if (settled) return;
+          await settle();
+          settled = true;
+        };
+        const admission = this.executeInBackground(executing, settleOnce);
+        transferred = true;
+        await admission;
+        return executing;
+      } catch (error) {
+        primary = { error };
+        throw error;
+      } finally {
+        if (!transferred) await this.settleClearanceOwnership(consumed.settle, primary);
+      }
     } finally { finishObservation(); }
   }
 
@@ -4869,7 +5000,19 @@ export class AuthQueue {
    * later executions chain behind it.
    */
   private runOnRepoChain<T>(chainKey: string, task: () => Promise<T>): Promise<T> {
+    this.assertRepoExecutionCertain(chainKey);
     return this.runOnChain(this.executionChains, chainKey, task);
+  }
+
+  private assertRepoExecutionCertain(chainKey: string): void {
+    const uncertain = this.uncertainRepoExecutions.get(chainKey);
+    if (uncertain) throw new AuthQueueError("invalid_status", `Execution termination for request ${uncertain} is unproven; repository execution remains fenced.`);
+  }
+
+  private async assertRequestRepoExecutionCertain(request: AuthRequest): Promise<void> {
+    if (!this.uncertainRepoExecutions.size) return;
+    const key = await canonicalRepoKeyForPath(request.target_repo_root ?? request.cwd, this.phaseAbort.signal) ?? AuthQueue.UNRESOLVED_CHAIN_KEY;
+    this.assertRepoExecutionCertain(key);
   }
 
   private runOnCandidateChain<T>(requestId: string, task: () => Promise<T>): Promise<T> {
@@ -5374,15 +5517,30 @@ export class AuthQueue {
   }
 
   private async executeOriginBoundRequest(request: AuthRequest, settleClearance?: () => Promise<void>): Promise<void> {
+    let transferred = false;
+    let primary: { error: unknown } | undefined;
+    try {
+      await this.admitOriginBoundRequest(request, settleClearance, () => { transferred = true; });
+    } catch (error) {
+      primary = { error };
+      throw error;
+    } finally {
+      if (!transferred && settleClearance) await this.settleClearanceOwnership(settleClearance, primary);
+    }
+  }
+
+  private async admitOriginBoundRequest(
+    request: AuthRequest,
+    settleClearance: (() => Promise<void>) | undefined,
+    transfer: () => void,
+  ): Promise<void> {
     // Remote-mode requests are executed by an external process — the daemon
     // only manages state transitions. Do not spawn a local executor.
     if (request.execution_mode === "remote") {
-      if (settleClearance) void settleClearance().catch(() => undefined);
       return;
     }
 
     if (this.inFlight.has(request.id)) {
-      if (settleClearance) void settleClearance().catch(() => undefined);
       return;
     }
 
@@ -5394,12 +5552,10 @@ export class AuthQueue {
       ? await this.hookManager.prepareRuntimePublication({ kind: 'successor_execution', requestId: request.id, pid: process.pid }) : null;
     const publicationBlocker = predecessor ?? await this.publicationBlockerForRequest(request);
     if (!this.executionIsCurrent(request.id, admitted)) {
-      if (settleClearance) await settleClearance();
       return;
     }
     if (this._rebuilding || publicationBlocker) {
       (await this.parkExecutionForRestart(request, publicationBlocker?.message));
-      if (settleClearance) void settleClearance().catch(() => undefined);
       return;
     }
 
@@ -5421,6 +5577,7 @@ export class AuthQueue {
         let runPromise!: Promise<void>;
         runPromise = turn.then(async () => {
             let executionResult: AuthExecutionResult | null = null;
+            let settlementSafe = true;
             execution = admitted;
             try {
               if (!this.executionIsCurrent(request.id, admitted)) return;
@@ -5493,8 +5650,21 @@ export class AuthQueue {
               if (this.disposed || !this.isDbOpen()) return;
               const completed = this.requireRequest(request.id);
               if (completed.status !== "completed") return;
+              if (settleClearance) await settleClearance();
               await this.afterConvergenceHook(completed);
             } catch (error) {
+              if (error != null && typeof error === "object"
+                  && "processGroupSettled" in error && error.processGroupSettled === false) {
+                settlementSafe = false;
+                this.uncertainRepoExecutions.set(chainKey, request.id);
+                this.retainClearanceFailure(error);
+                if (this.isDbOpen()) {
+                  this.db.prepare("UPDATE auth_requests SET error = ?, updated_at = ? WHERE id = ?")
+                    .run(`Execution termination is unproven; repository execution remains fenced: ${errorMessage(error) ?? String(error)}`, this.now(), request.id);
+                  this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: this.requireRequest(request.id) } });
+                }
+                return;
+              }
               const message = error instanceof Error ? error.message : "Execution failed.";
               if (executionResult?.exit_code === 0) {
                 authLog("error", "auth_success_finalization_deferred", {
@@ -5506,8 +5676,14 @@ export class AuthQueue {
                 (await this.storeExecutionResult(request.id, null, message, execution));
               }
             } finally {
-              if (settleClearance) await settleClearance().catch(() => undefined);
+              // No terminal-proof handle exists; the unresolved run keeps the repository fenced.
+              if (!settlementSafe) await new Promise<never>(() => undefined);
+              if (settleClearance && settlementSafe) {
+                try { await settleClearance(); }
+                catch (error) { this.retainClearanceFailure(error, settleClearance); }
+              }
               this.queuedAdmissions.delete(runPromise);
+              this.clearanceExecutions.delete(runPromise);
               if (this.inFlight.get(request.id) === runPromise) this.inFlight.delete(request.id);
               if (this.executionEnvs.get(request.id) === executionEnv) this.executionEnvs.delete(request.id);
             }
@@ -5516,6 +5692,8 @@ export class AuthQueue {
         this.executionChains.set(chainKey, tail);
         this.inFlight.set(request.id, runPromise);
         this.queuedAdmissions.add(runPromise);
+        if (settleClearance) this.clearanceExecutions.add(runPromise);
+        transfer();
         // Bound map growth: drop the chain entry once this settles, but only if no
         // later request has already chained onto it (chain installation is synchronous, so
         // the stored tail is authoritative at this microtask).
@@ -5527,7 +5705,6 @@ export class AuthQueue {
       });
     } catch (error) {
       if (this.inFlight.get(request.id) === pendingIdentity.promise) this.inFlight.delete(request.id);
-      if (settleClearance) await settleClearance();
       throw error;
     } finally {
       this.queuedAdmissions.delete(pendingIdentity.promise);
@@ -5550,6 +5727,7 @@ export class AuthQueue {
     try {
       const key = await canonicalRepoKeyForPath(request.target_repo_root ?? request.cwd, this.phaseAbort.signal) ?? AuthQueue.UNRESOLVED_CHAIN_KEY;
       await prior;
+      this.assertRepoExecutionCertain(key);
       this.assertObservation(request.id, observed);
       return install(key);
     } finally { reserved.resolve(); finishObservation(); }
@@ -5979,6 +6157,9 @@ export class AuthQueue {
           "Convergence retry applies only to a successfully executed request.",
         );
       }
+      if (this.hookManager.listRuns(request.id).some(run => run.state === 'retired' && (!hookId || run.hook_id === hookId))) {
+        throw new AuthQueueError('invalid_status', 'Retired delivery cannot be retried.');
+      }
       const evidenceFailure = (await this.successfulMergeEvidenceFailure(request));
       if (evidenceFailure) throw new AuthQueueError("invalid_status", evidenceFailure);
       if (recovery) {
@@ -6031,6 +6212,7 @@ export class AuthQueue {
   }
 
   private activeConvergenceDrain: string | null = null;
+  private failedConvergenceDrain: string | null = null;
   private readonly scheduledConvergenceDrains = new Set<string>();
 
   private hasPlannedRuntimeRebuild(request: Pick<AuthRequest, "id" | "repo">): boolean {
@@ -6043,7 +6225,7 @@ export class AuthQueue {
     const admitted = await this.hookManager.admittedDrainIdentity?.(request.id);
     const key = admitted;
     if (!key) {
-      if (!this.activeConvergenceDrain) this._rebuilding = false;
+      if (!this.activeConvergenceDrain && !this.failedConvergenceDrain) this._rebuilding = false;
       if (this.rebuildWindowRequestId === request.id) {
         // Issue 54a0b88 — a pending rebuild owned by an independent runtime
         // handoff will converge or fail in that handoff; it has not failed.
@@ -6055,7 +6237,7 @@ export class AuthQueue {
             : run.exit_code === null ? `its rebuild hook is ${run.state}` : `its rebuild hook exited ${run.exit_code}`);
         }
       }
-      if (convergence.state === "complete" && this._rebuildFailure?.request_id === request.id) this._rebuildFailure = null;
+      if (!this.failedConvergenceDrain && convergence.state === "complete" && this._rebuildFailure?.request_id === request.id) this._rebuildFailure = null;
       return convergence;
     }
     if (this.scheduledConvergenceDrains.has(key)) return convergence;
@@ -6066,7 +6248,16 @@ export class AuthQueue {
     this._rebuilding = true;
     this.recordSelfMergeShutdown(this.now());
     authLog('info', 'auth_self_merge_restart_scheduled', { subsystem: 'auth', auth_request_id: request.id, drain_identity: key, drain_cap_ms: AuthQueue.SELF_MERGE_DRAIN_CAP_MS });
-    void this.drainAndRestart(request.id, admitted || undefined).catch(error => { if (this.activeConvergenceDrain === key) { this.activeConvergenceDrain = null; this._rebuilding = false; } authLog('error', 'auth_convergence_drain_failed', { subsystem: 'auth', auth_request_id: request.id, error: errorMessage(error) }); });
+    void this.drainAndRestart(request.id, admitted || undefined).catch(error => {
+      if (this.activeConvergenceDrain === key) {
+        this.activeConvergenceDrain = null;
+        this.failedConvergenceDrain = key;
+        this.scheduledConvergenceDrains.delete(key);
+        this._rebuilding = true;
+        this.failRebuild(request, `restart remains draining because authority shutdown failed: ${errorMessage(error) ?? String(error)}`);
+      }
+      authLog('error', 'auth_convergence_drain_failed', { subsystem: 'auth', auth_request_id: request.id, error: errorMessage(error) });
+    });
     return convergence;
   }
 
@@ -6089,23 +6280,31 @@ export class AuthQueue {
     // it cleans up its owned processes. Startup records it as interrupted and runs it again.
     const drainTargets: Array<Promise<unknown>> = [...foreign, this.finalizerQueue.drain(), ...(this.acceptanceRuns ? [this.acceptanceRuns.stop()] : [])];
     if (drainTargets.length > 0) {
-      await Promise.race([
-        Promise.allSettled(drainTargets),
-        new Promise<void>((resolve) =>
-          setTimeout(resolve, AuthQueue.SELF_MERGE_DRAIN_CAP_MS)
-        ),
-      ]);
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          Promise.allSettled(drainTargets),
+          new Promise<void>((resolve) => {
+            deadline = setTimeout(resolve, AuthQueue.SELF_MERGE_DRAIN_CAP_MS);
+          }),
+        ]);
+      } finally {
+        clearTimeout(deadline);
+      }
     }
     // Issue ff784d8 — the exact restart tail starts immediately before exit,
     // after durable result publication and drain. Disconnected channels replay
     // undelivered results on reconnect.
     if (admitted && await this.hookManager.admittedDrainIdentity(selfRequestId) !== admitted) {
       this.activeConvergenceDrain = null;
-      this._rebuilding = false;
+      if (!this.failedConvergenceDrain) this._rebuilding = false;
       authLog("warn", "auth_handoff_drain_ownership_changed", { subsystem: "auth", auth_request_id: selfRequestId });
       return;
     }
     this.restartAvailability?.markShutdownStarted(selfRequestId);
+    await this.closeClearanceAuthority();
+    this.failedConvergenceDrain = null;
+    this._rebuildFailure = null;
     this.restartFn();
   }
 
@@ -6865,10 +7064,7 @@ export class AuthQueue {
 
     // Issue 08a5f04 — requests whose dependency just resolved are next in
     // line for approval, so they are revalidated (and re-pinned) first.
-    const ordered = [
-      ...pending.filter((request) => request.depends_on_id === completed.id),
-      ...pending.filter((request) => request.depends_on_id !== completed.id),
-    ];
+    const ordered = authRevalidationOrder(this.db, pending, completed.id);
 
     const now = this.now();
     const markNeedsRebase = this.db.prepare(

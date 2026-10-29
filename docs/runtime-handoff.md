@@ -219,3 +219,34 @@ an unavailable checkout. Exact product package/runtime acceptance remains the
 normal gate; the actual production transition is reported after human approval.
 
 Co-Authored-By: Codex (GPT) <codex@openai.com>
+## Failed delivery retirement
+
+A failed builtin update that never acquired a publication intent or handoff
+journal can be explicitly retired by its current delivery custodian or the
+operator using recovery authority:
+
+```bash
+mandible auth retire-delivery <request> --reason <text> \
+  --expected-revision <n> --expected-custody-generation <n> [--operator-recovery]
+```
+
+The request must record a successful finalized merge and an unchanged approved
+acceptance selection. Every recorded attempt must be a settled nonzero failure;
+timeout, interruption, missing settlement evidence, an admitted publication,
+handoff/preparation material, live consumers or producers, installed ownership,
+another live selection, and explicit investigations refuse the operation. An
+exactly empty canonical pre-admission directory carries no payload reference.
+
+Retirement preserves exit status, output and attempt history, keeps convergence
+failed and issue closures withheld, and prevents retry or subsequent publication.
+One audited lifecycle revision records the execution, command digest, accepted
+reference, reason, actor and custody. The same guarded transaction releases only
+that hook's operational reference and claims disposable custody. Recursive
+cleanup runs through ordinary supervised storage maintenance after the commit.
+
+The CLI reports retirement separately from pending or completed cleanup. A
+replay with fresh lifecycle and custody preconditions resumes cleanup without
+another retirement event; external cleanup receipts recover interruptions even
+after root metadata disappeared. Immutable acceptance evidence remains readable.
+Code delivery alone does not establish disposal: verify the supported operation
+and actual cleanup before closing a retirement issue.
