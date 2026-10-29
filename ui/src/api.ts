@@ -579,6 +579,7 @@ async function fetchJsonForCache(
 ): Promise<unknown> {
   const response = await apiGet(path, { signal });
   const value = await parseMaybeJson(response);
+  signal.throwIfAborted();
   if (!shouldCache()) return cachedApiGetJson(path, { ...options, signal, onCached: () => undefined });
   const now = Date.now();
   getJsonCache.set(cacheKeyForGet(path), {
@@ -619,7 +620,7 @@ function abortReason(signal: AbortSignal): unknown {
   return signal.reason ?? new DOMException('The request was cancelled.', 'AbortError');
 }
 
-function waitForGetWithSignal<T>(request: InflightGetRequest, signal?: AbortSignal): Promise<T> {
+function waitForGetWithSignal<T>(key: string, request: InflightGetRequest, signal?: AbortSignal): Promise<T> {
   if (signal?.aborted) return Promise.reject(abortReason(signal));
   request.consumers += 1;
   let released = false;
@@ -627,7 +628,10 @@ function waitForGetWithSignal<T>(request: InflightGetRequest, signal?: AbortSign
     if (released) return;
     released = true;
     request.consumers -= 1;
-    if (request.consumers === 0 && !request.settled) request.controller.abort();
+    if (request.consumers === 0 && !request.settled) {
+      if (inflightGetJson.get(key) === request) inflightGetJson.delete(key);
+      request.controller.abort();
+    }
   };
   if (!signal) {
     return request.promise.then(
@@ -676,7 +680,7 @@ async function cachedApiGetJson<T>(
   const inflight = inflightGetJson.get(key);
   if (options.onCached) {
     if (cached) options.onCached(cached.value as T);
-    return waitForGetWithSignal<T>(inflight ?? startCachedGet(key, path, resolvedOptions), options.signal);
+    return waitForGetWithSignal<T>(key, inflight ?? startCachedGet(key, path, resolvedOptions), options.signal);
   }
   if (cached && now < cached.staleUntil) {
     if (!inflight) {
@@ -686,7 +690,7 @@ async function cachedApiGetJson<T>(
     return cached.value as T;
   }
   const request = inflight ?? startCachedGet(key, path, resolvedOptions);
-  return waitForGetWithSignal<T>(request, options.signal);
+  return waitForGetWithSignal<T>(key, request, options.signal);
 }
 
 /**
