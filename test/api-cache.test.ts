@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
 import { setImmediate } from 'node:timers/promises';
 import { beginDetailRequest, clearPersistedDetailCache, isPersistedDetailFresh, writePersistedDetail } from '../ui/src/detail-cache';
+import { QueryObserver } from '@tanstack/preact-query';
+import { waitFor } from './helpers/dom';
+import { artifactBackrefsOptions } from '../ui/src/query/details';
 import * as api from '../ui/src/api';
 import { queryClient } from '../ui/src/query/client';
 import { browserResourceKeys } from '../ui/src/query/browserResources';
@@ -77,14 +80,26 @@ describe('dashboard API GET cache', () => {
   });
 
   it('expires knowledge backrefs locally after a write and on an artifact event', async () => {
-    clearPersistedDetailCache();
-    writePersistedDetail('artifact-backrefs', 'one', []);
-    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ backref: { id: 'new' } })));
-    await api.createArtifactKnowledgeBackref('artifact', { ref_type: 'claim', external_ref: 'one' });
-    expect(isPersistedDetailFresh('artifact-backrefs', 'one')).toBe(false);
-    writePersistedDetail('artifact-backrefs', 'one', [], undefined, beginDetailRequest());
-    api.invalidateDashboardApiCacheForEvent('artifact:changed');
-    expect(isPersistedDetailFresh('artifact-backrefs', 'one')).toBe(false);
+    let backrefs: { id: string }[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        backrefs = [{ id: 'local-write' }];
+        return jsonResponse({ backref: backrefs[0] });
+      }
+      return jsonResponse({ backrefs });
+    }));
+    const observer = new QueryObserver(queryClient, artifactBackrefsOptions('artifact'));
+    const unsubscribe = observer.subscribe(() => undefined);
+    try {
+      await waitFor(() => expect(observer.getCurrentResult().data).toEqual([]));
+      await api.createArtifactKnowledgeBackref('artifact', { ref_type: 'claim', external_ref: 'one' });
+      await waitFor(() => expect(observer.getCurrentResult().data).toEqual([{ id: 'local-write' }]));
+      backrefs = [{ id: 'external-write' }];
+      api.invalidateDashboardApiCacheForEvent('artifact:changed');
+      await waitFor(() => expect(observer.getCurrentResult().data).toEqual([{ id: 'external-write' }]));
+    } finally {
+      unsubscribe();
+    }
   });
 
   it('deduplicates concurrent same-URL GETs across API helpers', async () => {
