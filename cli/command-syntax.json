@@ -1086,7 +1086,6 @@
         "kind": "sequence",
         "items": [
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--apply"],"values": []}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--force"],"values": []}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--merge"],"values": [{"kind": "argument","name": "src","value": {"type": "string"}},{"kind": "argument","name": "dst","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
         ]

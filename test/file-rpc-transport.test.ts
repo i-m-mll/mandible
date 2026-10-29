@@ -149,7 +149,6 @@ const legacyAllowedRoutes: Array<[method: "GET" | "POST" | "PATCH" | "PUT" | "DE
   ["GET", "/api/projects"],
   ["POST", "/api/projects"],
   ["GET", "/api/projects/audit"],
-  ["POST", "/api/projects/repair"],
   ["POST", "/api/projects/checkouts"],
   ["GET", "/api/projects/:ref"],
   ["PATCH", "/api/projects/:ref"],
@@ -439,6 +438,7 @@ describe("file RPC transport", () => {
 
   it("denies routes outside the file transport allowlist", async () => {
     const router = new Router();
+    registerProjectRoutes(router);
     router.post("/api/auth/request/:id/approve", (_req, res) => {
       res.json({ ok: true });
     }, { operation: { id: "fixture:post:/api/auth/request/:id/approve", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: "deny" });
@@ -459,6 +459,12 @@ describe("file RPC transport", () => {
     const response = JSON.parse(fs.readFileSync(path.join(tempDir, "req-2.response.json"), "utf8"));
     expect(response.status).toBe(403);
     expect(response.body).toMatchObject({ error: "file_rpc_route_denied" });
+    fs.writeFileSync(path.join(tempDir, "repair.request.json"), JSON.stringify({
+      id: "repair", method: "POST", path: "/api/projects/repair", body: { apply: true },
+    }));
+    await transport.processOnce();
+    const repair = JSON.parse(fs.readFileSync(path.join(tempDir, "repair.response.json"), "utf8"));
+    expect(repair).toMatchObject({ status: 403, body: { error: "file_rpc_route_denied" } });
   });
 
   it("serves the real mandible CLI through file RPC and registered project routes", async () => {

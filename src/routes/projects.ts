@@ -6,6 +6,7 @@ import {
   listProjects,
   ProjectRegistryError,
   repairRegistry,
+  RepairOptionsSchema,
   resolveProjectRef,
   suggestProjectRefs,
   updateProject,
@@ -14,7 +15,7 @@ import {
 import type { LedgerNamespacePolicy } from "../ledger/types.js";
 import type { ResponseLike, RouteRegistrar } from "../server.js";
 import { bodyRecord, sendJson } from "./http.js";
-import { requireOperator } from "../client-auth/authz.js";
+import { ClientAuthzError, requireOperator } from "../client-auth/authz.js";
 import { projectAccessSettings, setProjectRestricted } from "../permissions/store.js";
 
 
@@ -31,6 +32,10 @@ function parseNamespacePolicy(value: unknown): LedgerNamespacePolicy | undefined
 }
 
 function handleError(res: ResponseLike, error: unknown): void {
+  if (error instanceof ClientAuthzError) {
+    sendJson(res, error.status, { error: error.message, code: error.code });
+    return;
+  }
   if (error instanceof ProjectRegistryError) {
     const status = error.code === "not_found" ? 404 : 400;
     sendJson(res, status, { error: error.message, code: error.code, ...(error.detail ?? {}) });
@@ -75,23 +80,25 @@ export function registerProjectRoutes(router: RouteRegistrar): void {
 
   router.post("/api/projects/repair", (req, res) => {
     try {
-      const body = bodyRecord(req);
-      const apply = body.apply === true;
-      const force = body.force === true;
-      let merge: { source: string; target: string } | undefined;
-      const mergeRaw = body.merge;
-      if (mergeRaw && typeof mergeRaw === "object" && !Array.isArray(mergeRaw)) {
-        const m = mergeRaw as Record<string, unknown>;
-        const source = typeof m.source === "string" ? m.source : "";
-        const target = typeof m.target === "string" ? m.target : "";
-        if (source && target) merge = { source, target };
+      const db = getDb();
+      requireOperator(db, req);
+      const parsed = RepairOptionsSchema.safeParse(bodyRecord(req));
+      if (!parsed.success) {
+        sendJson(res, 400, { code: "invalid_request", error: parsed.error.message });
+        return;
       }
-      const report = repairRegistry(getDb(), { apply, force, merge });
-      sendJson(res, 200, { report });
+      const result = repairRegistry(db, parsed.data);
+      if (!result.ok) {
+        const status = result.error.code === "not_found" ? 404
+          : ["merge_conflict", "ambiguous", "same_project", "constraint"].includes(result.error.code) ? 409 : 400;
+        sendJson(res, status, { ...result.error, error: result.error.message });
+        return;
+      }
+      sendJson(res, 200, { report: result.value });
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/projects/repair", effects: ["ledger:write"], requestSchema: null, reportingCategory: "projects" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/projects/repair", effects: ({ body }) => (body as { apply?: boolean }).apply === true ? ["ledger:write"] : ["ledger:read"], requestSchema: RepairOptionsSchema, reportingCategory: "projects" }, fileRpc: "deny" });
 
   // PATCH a checkout by root (registered under /checkouts to avoid the :ref
   // param route shadowing it).

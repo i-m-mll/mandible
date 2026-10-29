@@ -117,9 +117,9 @@ root with suggestions instead of minting.
 `GET /api/projects`, `GET /api/projects/:ref`, `POST /api/projects`,
 `PATCH /api/projects/:ref`, `POST /api/projects/:ref/checkouts`,
 `PATCH /api/projects/checkouts` (by root), `GET /api/projects/audit`,
-`POST /api/projects/repair`. Each is self-allowlisted for the file transport in
-`isAllowedFileRpcRoute` (no blanket prefix allow), staying within the file
-transport's non-privileged write boundary (no approval/merge/admin/config).
+`POST /api/projects/repair`. Each route declares its own file-transport policy.
+Repair is operator-only registry administration and is denied over file-RPC.
+Ordinary registry routes retain their declared non-administrative policies.
 
 ## Migration vs. repair (data safety)
 
@@ -149,26 +149,55 @@ display **without any destructive data move**.
 
 ### `mandible project repair` — explicit, guarded, dry-run by default
 
-Handles the destructive normalization:
+Registry repair requires the configured local operator, including dry runs. Local
+human socket access retains its existing owner authority. Agent identities and
+project-admin grants do not grant registry administration. File-RPC denies this
+administrative route. The route preserves 401/403 authorization responses, uses
+one strict request schema, and declares ledger-read for reports and ledger-write
+for apply. Preview effect ceilings continue to apply.
 
-- backfills any missing keys (safe);
-- optionally **merges** a source project into a target (`--merge src dst`),
-  moving every project-scoped row (`ledger_issues`, `ledger_issue_aliases`,
-  `ledger_comments` via issue cascade, `ledger_body_revisions`,
-  `ledger_relationship_edges.{source,target}_project_id`, `ledger_external_refs`,
-  `ledger_outbox`, `ledger_conflicts`, `spaces.project_id`) from src to dst.
+`mandible project repair [--apply] [--merge src dst] [--json]` plans missing key
+backfills and an optional namespace merge. Dry runs change no state or
+notifications. Reports identify each reference policy, occurrence counts,
+distinct affected rows, duplicate-grant survivors, and blocking conflicts. Apply
+rebuilds the plan inside one immediate transaction containing all key backfills,
+namespace moves, grant coalescences, checkout history, feed changes, source
+removal, target update, and attributed events. Failed constraints roll back every
+change and discard after-commit notifications. Unknown, ambiguous, incomplete,
+and same-project merge references fail explicitly. There is no force override.
 
-The merge runs in a single transaction with `foreign_keys = ON`, **pre-checks
-short-id and alias collisions between src and dst BEFORE moving any rows**
-(aborting with a report if an issue short-id or alias would collide), and runs
-`PRAGMA foreign_key_check` after the move; any violation rolls the whole thing
-back. The command always returns an explicit report (counts moved / would move,
-conflicts, audit categories). `--apply` is required to execute; default is a
-dry run.
+The typed project-reference catalog is the shared authority for inspection,
+execution, and residual checks. Live foreign keys to `ledger_projects` are
+discovered by `PRAGMA foreign_key_list`, independent of column names and delete
+actions; every FK requires exactly one policy, even on an empty table. Declared
+locators must exist. The catalog also registers reconciliation references,
+typed embedded project references, and operational repository identities.
 
-There is **no requirement to preserve** path-derived names; the
-only invariant is DB integrity — no broken FKs, no orphans, no lost issue
-history, no unresolved canonical refs.
+Mutable namespace fields move without changing row identity or recorded content.
+Checkout moves retain checkout and work-repo identity and signal protection-input
+reconciliation after commit. Feed merging preserves target order and event IDs,
+appends source events, and removes source state; broken continuity blocks repair.
+Project grants union by subject type, subject ID, and permission: source-only rows
+retain ID and creation time, exact duplicates retain the destination survivor
+with an attributed coalescence event, and different roles remain independently
+revocable. Global grants, memberships, operator settings, and approval authority
+remain unchanged. Source and target restricted settings must match.
+
+Immutable clearance scopes (all lifecycle states), Git artifact custody,
+registered repo sources and source-move lineage, frozen spawn/reminder records,
+and work-unit/approval repository identities pin the source. Pins report their
+kind, count, and reason; repair does not rewrite frozen payloads, digests, signed
+material, or custody identity. Project redirects and historical rebasing require
+a separate product decision.
+
+Issue short IDs, every alias unique key, artifact-association unique keys, and
+open singleton issue kinds are checked before changes. No alias or association
+row is silently discarded. Before deleting the source, the executor verifies
+that no catalogued source reference remains. Foreign-key enforcement must
+already be enabled and stays enabled, rejecting newly invalid writes. Repair
+does not run a whole-database `foreign_key_check`: unrelated pre-existing orphans
+remain untouched and do not block an otherwise valid merge. The response states
+that enforcement is enabled; it makes no whole-database cleanliness claim.
 
 ## Audit (`auditRegistry`) — read-only
 
@@ -221,18 +250,8 @@ This is a backend-architecture change to project/repo identity, so per the
 An external review before integration found real gaps; the corrections (design
 intact):
 
-1. **Merge move list completed (data safety).** `repairRegistry --merge` now
-   repoints EVERY project-id column in the schema, including the three the first
-   pass missed: `ledger_commit_issue_links.project_id` (a real
-   `REFERENCES ledger_projects(id) ON DELETE RESTRICT` FK that would otherwise
-   THROW at the source-project delete), `ledger_sync_jobs.project_id`, and
-   `ledger_reconciliation_mismatches.project_id` (non-FK, would otherwise
-   dangle). Decision: move ALL project-scoped columns so a merge leaves no row
-   pointing at a deleted project — `HISTORICAL_PROJECT_ID_COLUMNS` is therefore
-   empty. A `discoverProjectIdColumns()` helper + schema-audit test enumerate the
-   live schema and FAIL if a future table adds a project-id column absent from
-   both the move list and the historical allowlist, so this can't silently
-   regress.
+1. **Project-reference policy.** Namespace moves, domain merges, and immutable
+   pins use the shared typed catalog and atomic repair contract above.
 2. **Operational/relationship resolution understands `project_key`.**
    `candidateProjectIds()`/`resolveOperationalIssueRef()` (operational-links) and
    `LedgerStore.resolveProjectId()` now accept `project_key` case-insensitively,
