@@ -1,3 +1,4 @@
+import { PRODUCTION_EFFECTS } from "../src/security/operation-policy.js";
 import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setDb, type Db } from "../src/db.js";
@@ -9,7 +10,8 @@ import { registerIssueRoutes } from "../src/routes/issues.js";
 import { registerProjectRoutes } from "../src/routes/projects.js";
 import { resolveLedgerIssueLinkFromDb } from "../src/routes/redirects.js";
 import { Router } from "../src/server.js";
-import { setupOperator } from "../src/users/store.js";
+import { createUser, setupOperator } from "../src/users/store.js";
+import { addGrant } from "../src/permissions/store.js";
 import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
@@ -32,6 +34,42 @@ beforeEach(() => {
 
 afterEach(() => {
   db.close();
+});
+
+it("reserves repair reports and mutations to the operator across transports", async () => {
+  const project = addProject(db, { project_key: "authority" });
+  const agent = createUser(db, { slug: "repair-agent", kind: "agent", display_name: "Agent" });
+  addGrant(db, { subject_type: "user", subject: agent.id, resource_type: "project", resource: project.id, permission: "admin" });
+  const agentRouter = authenticatedTestRouter(agent); registerProjectRoutes(agentRouter);
+  const anonymous = new Router(); registerProjectRoutes(anonymous);
+  for (const body of [{}, { apply: true }]) {
+    expect((await anonymous.invoke({ method: "POST", url: "/api/projects/repair", body })).status).toBe(401);
+    expect((await agentRouter.invoke({ method: "POST", url: "/api/projects/repair", body, transport: "http" })).status).toBe(403);
+    expect(router.resolveFileRpcPolicy("POST", "/api/projects/repair")).toBe(false);
+    expect((await agentRouter.invoke({ method: "POST", url: "/api/projects/repair", body, transport: "file-rpc" })).status).toBe(403);
+  }
+  const operator = setupOperator(db, { display_name: "Route test operator" });
+  const local = new Router({ clientAuth: {
+    authenticate: () => null, mode: () => "strict", recordUnattributedWrite: () => {},
+    localSocketIdentity: () => ({ user_id: operator.id, slug: operator.slug, method: "local_socket", credential_id: null, source: "local_socket", effect_ceiling: PRODUCTION_EFFECTS }),
+  } }); registerProjectRoutes(local);
+  for (const body of [{}, { apply: true }]) {
+    expect((await local.invoke({ method: "POST", url: "/api/projects/repair", body, transport: "local-socket" })).status).toBe(200);
+    expect((await local.invoke({ method: "POST", url: "/api/projects/repair", body, transport: "local-socket",
+      ambient_identity: { provider: "codex", provider_session_id: "managed" } })).status).toBe(403);
+  }
+  const readOnly = new Router({ clientAuth: {
+    authenticate: () => ({ user_id: operator.id, slug: operator.slug, method: "api_token", credential_id: "operator",
+      source: "http_bearer", effect_ceiling: ["ledger:read"] }),
+    mode: () => "strict", recordUnattributedWrite: () => {},
+  } }); registerProjectRoutes(readOnly);
+  expect((await readOnly.invoke({ method: "POST", url: "/api/projects/repair", body: {}, transport: "http" })).status).toBe(200);
+  expect((await readOnly.invoke({ method: "POST", url: "/api/projects/repair", body: { apply: true }, transport: "http" })).status).toBe(403);
+  const eventsBefore = db.prepare("SELECT COUNT(*) n FROM ledger_events").get();
+  for (const body of [{ apply: "true" }, { merge: {} }, { merge: { source: project.id } }, { merge: null }, { force: true }]) {
+    expect((await router.invoke({ method: "POST", url: "/api/projects/repair", body })).status).toBe(400);
+  }
+  expect(db.prepare("SELECT COUNT(*) n FROM ledger_events").get()).toEqual(eventsBefore);
 });
 
 // ---------------------------------------------------------------------------

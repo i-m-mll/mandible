@@ -20,7 +20,7 @@ const events = () => db.prepare("SELECT * FROM ledger_events ORDER BY rowid").al
 beforeEach(() => { db = migratedMemoryDb(); });
 afterEach(() => { vi.restoreAllMocks(); db.close(); });
 
-it("keeps project creation, edits, checkout reassignment and deletion history with no-op suppression", () => {
+it("keeps project creation, edits, checkout reassignment and deletion history with no-op suppression", async () => {
   const project = withRequestOrigin(origin, () => addProject(db, { project_key: "first" }));
   const target = addProject(db, { project_key: "target" });
   withRequestOrigin(later, () => {
@@ -33,7 +33,7 @@ it("keeps project creation, edits, checkout reassignment and deletion history wi
   addOrUpdateCheckout(db, target.id, { root: "/tmp/origin-first", name: "Moved" });
   expect(events()).toHaveLength(count);
   expect(() => addProject(db, { project_key: "first" })).toThrow();
-  withRequestOrigin(origin, () => repairRegistry(db, { apply: true, merge: { source: project.id, target: target.id } }));
+  await withRequestOrigin(origin, () => repairRegistry(db, { apply: true, merge: { source: project.id, target: target.id } }));
   expect(db.prepare("SELECT id FROM ledger_projects WHERE id = ?").get(project.id)).toBeUndefined();
   expect(events().filter(e => e.entity_id === project.id).map(e => [e.event_type, JSON.parse(e.payload_json).request_origin]))
     .toEqual([["project.created", origin], ["project.updated", later], ["project.deleted", origin]]);
