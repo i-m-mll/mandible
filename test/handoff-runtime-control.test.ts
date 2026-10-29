@@ -5,7 +5,7 @@ import path from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 
 let scratch: string;
-afterEach(() => { vi.resetModules(); vi.doUnmock('../scripts/accepted-app-install.mjs'); vi.doUnmock('../scripts/bundle-services.mjs'); vi.doUnmock('../scripts/service-definitions.mjs'); vi.doUnmock('node:child_process'); if (scratch) fs.rmSync(scratch, { recursive: true, force: true }); });
+afterEach(() => { vi.restoreAllMocks(); vi.resetModules(); vi.doUnmock('../scripts/accepted-app-install.mjs'); vi.doUnmock('../scripts/bundle-services.mjs'); vi.doUnmock('../scripts/service-definitions.mjs'); vi.doUnmock('node:child_process'); if (scratch) fs.rmSync(scratch, { recursive: true, force: true }); });
 
 it('imports direct runtime operations in a shipped helper bundle without executing CLI adapters', async () => {
   scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'handoff-import-'));
@@ -50,10 +50,13 @@ async function fixture() {
   const jobs = { backend: { runs: 1, lastExit: '0' as string | null, lastSignal: null as string | null, loaded: true, pid: 41 as number | null, foreign: false, executable: path.join(app, 'Contents/MacOS/mandible-bun') }, gateway: { runs: 1, lastExit: '0' as string | null, lastSignal: null as string | null, loaded: true, pid: 51 as number | null, foreign: false, executable: path.join(app, 'Contents/MacOS/mandible-caddy') } };
   const birth = 'Wed Oct 28 18:08:18 2026';
   let processRead = () => {};
+  let commandRead = (_binary, _args) => {};
   let kickstart = role => { jobs[role].pid = role === 'backend' ? 41 : 51; return { status: 0, stdout: '', stderr: '' }; };
   const commands: string[] = [];
   vi.doMock('node:child_process', async original => ({ ...await original(), spawnSync: (binary, args, options) => {
     commands.push(`${binary} ${args.join(' ')}`);
+    const injected = commandRead(binary, args);
+    if (injected) return injected;
     if (binary === '/bin/launchctl') {
       const role = args[1].endsWith('.backend') ? 'backend' : 'gateway';
       if (args[0] === 'kickstart') return kickstart(role, options);
@@ -77,7 +80,7 @@ async function fixture() {
   fs.writeFileSync(journalFile, JSON.stringify(journal));
   fs.writeFileSync(path.join(runtimeDir, 'handoff-active.json'), JSON.stringify({ bindingDigest: journal.bindingDigest, journal: journalFile }));
   const health = { status: 'ok', ready: true, warm: true, startup_epoch: 'epoch', instance: { ...main, db_path: path.join(home, 'mandible.db') } };
-  return { api, binding, journal, context, prepared, assertHeld, health, commands, jobs, birth, batch, ownership, setProcessRead: callback => { processRead = callback; }, setKickstart: callback => { kickstart = callback; } };
+  return { api, binding, journal, context, prepared, assertHeld, health, commands, jobs, birth, batch, ownership, setProcessRead: callback => { processRead = callback; }, setKickstart: callback => { kickstart = callback; }, setCommandRead: callback => { commandRead = callback; } };
 }
 
 it('qualifies real role execution chains without restarting live stages and keeps terminal continuity strict', async () => {
@@ -198,6 +201,38 @@ it.each(['acknowledged', 'indeterminate', 'failed exit', 'rejected command'] as 
   else await expect(result).resolves.toMatchObject({ processes: { backend: { pid: 41, runs: 2 } } });
   expect(fx.commands.filter(command => command.includes('kickstart'))).toHaveLength(1);
   expect(fx.batch.mock.calls.map(call => call[1])).toEqual(['register', 'status']);
+});
+
+it.each(['command', 'following observation', 'following read timeout'] as const)('preserves qualified peer and command evidence when the %s exhausts the original budget', async boundary => {
+  const fx = await fixture(); fx.jobs.backend.pid = null; fx.jobs.gateway.executable = 'xpcproxy';
+  let now = Date.now(), demanded = false, atDemand = 0;
+  const until = now + 10_000;
+  vi.spyOn(Date, 'now').mockImplementation(() => now);
+  fx.setProcessRead(() => {
+    if (fx.batch.mock.calls.some(call => call[1] === 'register')) fx.jobs.gateway.executable = path.join(fx.context.bundleRoot, 'Contents/MacOS/mandible-caddy');
+  });
+  fx.setKickstart((_role, options) => {
+    expect(options.timeout).toBe(until - now); demanded = true; atDemand = fx.commands.length;
+    if (boundary === 'command') now = until;
+    return { status: null, signal: 'SIGTERM', error: Object.assign(new Error('uncertain'), { code: 'ETIMEDOUT' }) };
+  });
+  fx.setCommandRead((binary, args) => {
+    if (boundary !== 'command' && demanded && binary === '/bin/launchctl' && args[0] === 'print') {
+      now = until;
+      if (boundary === 'following read timeout') return { status: null, signal: 'SIGTERM', error: Object.assign(new Error('read timed out'), { code: 'ETIMEDOUT' }) };
+    }
+  });
+  await expect(fx.api.startHandoffDefinitions(fx.binding, { context: fx.context, journal: fx.journal, prepared: fx.prepared,
+    assertHeld: fx.assertHeld, until, initialize: async () => {}, configure: async () => {} })).rejects.toMatchObject({
+      code: 'starting', outcome: 'pending', evidence: {
+        processes: { gateway: { pid: 51, startedAt: fx.birth, runs: 1 } },
+        commands: { backend: { operation: 'kickstart', outcome: 'indeterminate', code: 'ETIMEDOUT', status: null, signal: 'SIGTERM' } },
+      },
+    });
+  expect(fx.commands.length - atDemand).toBe(boundary === 'command' ? 0 : 1);
+  expect(fx.commands.filter(command => command.includes('kickstart'))).toHaveLength(1);
+  expect(fx.batch.mock.calls.map(call => call[1])).toEqual(['register', 'status']);
+  expect(now).toBe(until);
 });
 
 it('does not repeat a native demand when the same attempt resumes past its original deadline', async () => {
