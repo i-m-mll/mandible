@@ -11,6 +11,7 @@ import { registerTrashRoutes } from "../src/routes/trash.js";
 import { Router } from "../src/server.js";
 import { qualifiedRuntimeFixtureEnv } from "./helpers/runtime-fixture.js";
 import { MAIN_CLI_INSTANCE_RESPONSE } from "./helpers/cli-instance-response.js";
+import { authCliRepo } from "./helpers/prepared-git-fixture.js";
 
 const fixtureRuntimeEnv = {
   MANDIBLE_RUNTIME: process.execPath,
@@ -147,25 +148,10 @@ function git(
   return result.stdout.trim();
 }
 
-function createRepo(): void {
-  git(["init", "-b", "main"]);
-  git(["config", "user.name", "Mandible Test"]);
-  git(["config", "user.email", "mandible-test@example.invalid"]);
-  git(["config", "commit.gpgsign", "false"]);
-  fs.writeFileSync(path.join(tempDir, "tracked.txt"), "base\n", "utf8");
-  git(["add", "tracked.txt"]);
-  git(["commit", "-m", "base"]);
-  git(["checkout", "-b", "feature/demo"]);
-  fs.writeFileSync(path.join(tempDir, "feature.txt"), "feature\n", "utf8");
-  git(["add", "feature.txt"]);
-  git(["commit", "-m", "feature"]);
-  git(["checkout", "main"]);
-}
-
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-merge-cli-"));
   homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-merge-home-"));
-  createRepo();
+  authCliRepo.copyInto(tempDir);
 });
 
 afterEach(async () => {
