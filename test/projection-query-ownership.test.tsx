@@ -6,6 +6,7 @@ import { useProjectionQuery } from '../ui/src/query/useProjectionQuery';
 import { projectionKeys } from '../ui/src/query/projectionKeys';
 import { snapshotOptions, detailQueryData } from '../ui/src/query/snapshots';
 import { invalidateDashboardApiCacheForEvent } from '../ui/src/api';
+import { AppShellProvider, useAppShell } from '../ui/src/app-shell';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -15,6 +16,31 @@ function deferred<T>() {
 }
 
 describe('shared projection Query lifecycle', () => {
+  it.each(['error', 'deactivation'] as const)('settles the initial route barrier on %s', async (completion) => {
+    const pending = deferred<{ title: string }>();
+    const options = snapshotOptions(projectionKeys.graph({ limit: 1 }), () => pending.promise);
+    const barriers: Promise<unknown>[] = [];
+    let settled = false;
+    const register = (barrier: Promise<unknown>) => {
+      barriers.push(barrier);
+      void barrier.then(() => { settled = true; });
+    };
+    function Pane({ active }: { active: boolean }) {
+      const query = useProjectionQuery(options, active);
+      return <span>{query.fetchStatus}</span>;
+    }
+    function Frame({ active }: { active: boolean }) {
+      const shell = useAppShell();
+      return <AppShellProvider value={{ ...shell, active, registerInitialRouteLoad: register }}><Pane active={active} /></AppShellProvider>;
+    }
+    const view = render(<Frame active />);
+    await waitFor(() => expect(barriers).toHaveLength(1));
+    expect(settled).toBe(false);
+    if (completion === 'error') pending.reject(new Error('Unavailable projection'));
+    else view.rerender(<Frame active={false} />);
+    await waitFor(() => expect(settled).toBe(true));
+  });
+
   it('normalizes set-valued inputs while preserving ordered Timeline roots and mode-dependent Graph status', () => {
     expect(projectionKeys.graph({ mode: 'work', repo: 'b,a,a', nodeTypes: ['session', 'issue'] }))
       .toEqual(projectionKeys.graph({ mode: 'work', repo: 'a,b', nodeTypes: ['issue', 'session'] }));
@@ -42,6 +68,8 @@ describe('shared projection Query lifecycle', () => {
     expect(signals[0].aborted).toBe(false);
     view.rerender(<><Pane active={false} /><Pane active={false} /></>);
     await waitFor(() => expect(signals[0].aborted).toBe(true));
+    view.rerender(<><Pane active /><Pane active={false} /></>);
+    await waitFor(() => expect(signals).toHaveLength(2));
   });
 
   it('coalesces events during a long failed read into one trailing reconciliation without cancellation', async () => {
