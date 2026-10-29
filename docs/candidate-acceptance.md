@@ -70,6 +70,47 @@ for the command and evidence boundary.
 
 Each run records its exact project, work-unit owner, instance and generated outputs before producing them. The shared owned-run lifecycle saves a compact receipt outside the scratch root and reclaims disposed raw material after assessment or failure. Unknown files, active consumers, identity drift and cleanup errors preserve the remaining bytes and fail the gate. The receipt contains source and executable hashes, the runtime, interaction evidence, log digest, shutdown results and cleanup outcome. Apparent unlinked bytes are reported separately from physical space recovery.
 
+Generated storage is reconciled asynchronously at daemon startup, on committed
+auth request/selection changes, on the existing idle tick, and before acceptance
+or route-sweep allocation. Process lifetime and recorded process groups establish
+whether interrupted scratch is abandoned; open-file inspection additionally
+checks consumers. Cleanup saves its outcome outside the generated root, removes
+only declared outputs, preserves unknown entries, and retries partial deletion
+without repeating acceptance, publication, merge, or handoff.
+
+Accepted applications remain while a live request selects them, the current
+acceptance needs them, the installed bundle owns them, an unresolved delivery
+references either predecessor or replacement, or an explicit investigation holds
+them. Acquisition and disposal claims share a short SQLite write boundary;
+inspection, application hashing and unlink run outside it. The existing handoff
+owner can release its predecessor only after terminal convergence. Immutable
+acceptance evidence and release receipts survive payload disposal. Legacy roots
+without recorded producer lifetimes require explicit disposition; this preserves
+existing recovery and investigation material during rollout. The reusable
+acceptance checkout and unique writable previews are outside collection.
+
+Inspect or apply the same retention decision with:
+
+```bash
+bun scripts/generated-storage.mjs --limit 1000
+bun scripts/generated-storage.mjs --apply --limit 1000
+```
+
+The default bounded pass examines eight entries per category. Its returned
+`cursors` can be supplied as `--cursor '<json>'` to continue; the daemon carries
+them between idle passes. Optional `--home`, `--db` and `--cache` select an
+isolated installation. Inventory opens the ledger read-only and changes no files.
+`disposed` reports intentional payload removal with its durable cleanup outcome.
+`cleanup-pending` retains the reason and is retried by maintenance.
+
+Retain a run for investigation with `--apply --retain <metadata.json> --reason
+<need> --review-by <ISO-date>`; release it with `--apply --release <metadata.json>
+--reason <resolution>`. A review deadline never grants deletion authority.
+Release removes the hold; operational references still determine payload lifetime.
+Route sweeps using `--keep` additionally require `--project` and `--work-unit`
+owner IDs, `--reason`, and `--review-by` within seven days. Ordinary disposable
+sweeps use process ownership without inventing ledger work units.
+
 Passing runs transfer the complete application that ran into durable owned-run
 custody at `<authority-home>/accepted-releases/<run-id>/Mandible.app` before
 scratch cleanup. The transfer checks every file, mode and symbolic link against

@@ -87,6 +87,6 @@ export function writeSweepProgress(file: string, report: unknown) {
   fs.renameSync(temporary, file);
 }
 
-export async function runSweepWorker(budget: SweepBudget, binary: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv; stdio?: unknown; graceMs?: number } = {}) {
+export async function runSweepWorker(budget: SweepBudget, binary: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv; stdio?: unknown; graceMs?: number; onSpawn?: (child: import('node:child_process').ChildProcess) => void } = {}) {
   await runSupervisedCommand(binary, args, { ...options, timeout: budget.remaining(), deadline: budget.deadline, graceMs: options.graceMs ?? Math.min(1_000, Math.floor(budget.reserveMs / 3)) });
 }

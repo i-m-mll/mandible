@@ -15,6 +15,9 @@ import { runSupervisedCommand } from './process-group-supervisor.mjs';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as abortableDelay } from 'node:timers/promises';
 import { withOwnedRunLock, createOwnedRun, saveOwnedMetadata, finalizeOwnedRun, cleanupOwnedRun } from './owned-run.mjs';
+import { reconcileGeneratedScratch, recordScratchProcess } from './generated-scratch.mjs';
+import { generatedStorage } from './generated-storage.mjs';
+import Database from '../src/sqlite.ts';
 import { readBuildRevision } from './build-revision.mjs';
 import { acceptanceResultPath } from './acceptance-result.mjs';
 import { acceptanceDeadline } from './acceptance-deadline.mjs';
@@ -403,6 +406,11 @@ async function main(budget) {
   const buildEnv = { ...process.env, GIT_OPTIONAL_LOCKS: '0', PATH: `${path.dirname(runtime)}${path.delimiter}${process.env.PATH}` };
   const cache = path.join(os.homedir(), '.cache', 'mandible', 'acceptance');
   fs.mkdirSync(cache, { recursive: true });
+  if (process.env.MANDIBLE_ACCEPTANCE_ID && process.env.MANDIBLE_DB && process.env.MANDIBLE_HOME) {
+    const db = new Database(process.env.MANDIBLE_DB, { fileMustExist: true });
+    try { await generatedStorage({ db, home: process.env.MANDIBLE_HOME, cache: path.dirname(cache), apply: true, until: Math.min(Date.now() + 2000, budget.cutoffs.preparation) }); }
+    finally { db.close(); }
+  } else await reconcileGeneratedScratch(cache, { apply: true, until: Math.min(Date.now() + 2000, budget.cutoffs.preparation) });
   const run = fs.mkdtempSync(path.join(cache, 'candidate-'));
   const project = option('--project'); const workUnit = option('--work-unit');
   if (!project || !workUnit) { fs.rmdirSync(run); throw new Error('Candidate acceptance requires --project <canonical-id> and --work-unit <canonical-id>'); }
@@ -453,6 +461,7 @@ async function main(budget) {
   const launch = (binary, args, env, name) => {
     const fd = fs.openSync(path.join(run, `${name}.log`), 'w'); files.push(fd);
     const child = spawn('/usr/bin/sandbox-exec', ['-p', executionProfile, binary, ...args], { cwd: run, env, stdio: ['ignore', fd, fd] });
+    recordScratchProcess(metadataFile, child);
     child.on('error', error => { result.checks[`${name}_launch_error`] = error.message; });
     return child;
   };
@@ -464,7 +473,7 @@ async function main(budget) {
     let builtApp = diagnostic?.app;
     if (!diagnostic) {
     const buildLog = fs.openSync(path.join(run, 'build.log'), 'w'); files.push(buildLog);
-    await phase('package_build', () => runSupervisedCommand(runtime, ['run', 'tauri:build', '--', '--bundles', 'app'], { cwd: root, env: buildEnv, stdio: ['ignore', buildLog, buildLog], timeout: budget.remaining('preparation'), graceMs: 250, deadline: budget.cutoffs.report }));
+    await phase('package_build', () => runSupervisedCommand(runtime, ['run', 'tauri:build', '--', '--bundles', 'app'], { cwd: root, env: buildEnv, stdio: ['ignore', buildLog, buildLog], timeout: budget.remaining('preparation'), graceMs: 250, deadline: budget.cutoffs.report, onSpawn: child => recordScratchProcess(metadataFile, child, true) }));
     if (readBuildRevision(root) !== candidate) throw new Error('Built daemon revision does not match the exact candidate.');
     builtApp = path.join(root, 'src-tauri', 'target', 'release', 'bundle', 'macos', 'Mandible.app');
     }
@@ -555,6 +564,7 @@ async function main(budget) {
         '--pid', String(daemon.pid), '--duration', String(Math.max(1, Math.floor(budget.remaining() / 1000))), '--sample', '--sample-max', '4', '--out', diagnostics, '--json'],
         { cwd: run, env: buildEnv, stdio: ['ignore', out, err] });
       stallProbe.on('error', error => { result.checks.probe_launch_error = error.message; });
+      recordScratchProcess(metadataFile, stallProbe);
     }
     await new Promise((resolve, reject) => {
       const body = JSON.stringify({ slug: 'candidate-operator', display_name: 'Candidate operator', email: 'candidate@example.invalid' });

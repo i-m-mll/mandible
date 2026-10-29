@@ -139,7 +139,7 @@ it('seals the exercised app in place after scratch disposal and refuses changed 
     expect(fs.existsSync(app)).toBe(true);
     fs.writeFileSync(receiptFile, receiptBytes);
     fs.writeFileSync(path.join(selected.resources, 'program'), 'discarded software need not match its original bytes');
-    const disposed = await disposeAcceptedRelease(reference, candidate, 'Delivery fixture complete');
+    const disposed = await disposeAcceptedRelease(reference, candidate, 'Delivery fixture complete', { database });
     expect(disposed.action).toBe('delete-owned');
     expect(disposed.remaining).toEqual([]);
     expect(fs.existsSync(selected.receipt.package.handle.root)).toBe(false);
@@ -183,7 +183,7 @@ it('cleans disposable scratch independently when a failed pending package is dis
       const program = path.join(pending.app, 'program'); fs.writeFileSync(program, 'exercised');
       const digest = applicationIdentity(pending.app);
       if (changed) fs.writeFileSync(program, 'changed');
-      fs.writeFileSync(path.join(scratch, 'extra-generated'), 'scratch');
+      fs.writeFileSync(path.join(scratch, 'build.log'), 'scratch');
       const metadataFile = path.join(scratch, 'metadata.json');
       saveOwnedMetadata(metadataFile, { ownership });
       const budget = acceptanceDeadline({});
