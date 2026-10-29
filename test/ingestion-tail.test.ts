@@ -187,6 +187,37 @@ describe("incremental tail ingestion", () => {
     ).toMatchObject({ byte_offset: fs.statSync(sessionPath).size, line_count: 4 });
   });
 
+  it("retains the appended payload when the sealed source disappears before promotion", async () => {
+    const sessionPath = await makeCodexSession();
+    await writeWithMtime(sessionPath, initialCodexRows(), 1);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 1_000 });
+
+    await appendWithMtime(sessionPath, assistantRow("unverified tail", 3), 2);
+    const promote = ConversationSourceStore.prototype.promoteNativeConversationPayload;
+    let intercepted = false;
+    vi.spyOn(ConversationSourceStore.prototype, "promoteNativeConversationPayload")
+      .mockImplementation(async function (conversationId) {
+        if (!intercepted) {
+          intercepted = true;
+          fs.unlinkSync(sessionPath);
+        }
+        return promote.call(this, conversationId);
+      });
+
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 2_000 });
+    expect(intercepted).toBe(true);
+    const conversation = db.prepare("SELECT id FROM conversations WHERE source_path = ?")
+      .get(sessionPath) as { id: string };
+    const tail = db.prepare(`SELECT payload_state, content FROM conversation_blocks
+      WHERE conversation_id = ? AND position = 2`).get(conversation.id) as {
+      payload_state: string; content: Buffer;
+    };
+    expect(tail.payload_state).toBe("legacy");
+    expect(tail.content.length).toBeGreaterThan(0);
+    const source = await new ConversationSourceReader(db, { legacyFallback: false }).readAll(conversation.id);
+    expect(source.status).not.toBe("source");
+  });
+
   it("indexes the exact incremental append prefix when the writer grows during source capture", async () => {
     const sessionPath = await makeCodexSession();
     await writeWithMtime(sessionPath, initialCodexRows(), 1);

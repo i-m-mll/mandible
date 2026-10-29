@@ -2621,7 +2621,7 @@ async function ingestFilePass(
       || currentSource.filesystem_inode !== stat.physicalGeneration.inode
       || currentSource.filesystem_ctime_ns !== stat.physicalGeneration.ctimeNs;
     const readiness = readConversationSourceReadiness(db, existing.id);
-    sourceEpochNeedsRebuild = readiness.status !== "ready";
+    sourceEpochNeedsRebuild = readiness.status !== "ready" && readiness.reason !== "projection_incomplete";
     const pendingRangesContiguous = pendingAppendProof.ranges.every((range, index) =>
       index === 0 || range.byteStart === pendingAppendProof.ranges[index - 1].byteEnd,
     );
@@ -2644,7 +2644,11 @@ async function ingestFilePass(
         pending_append_ranges: pendingAppendProof.ranges.length,
       });
     }
-    structureCacheNeedsRebuild = readiness.reason === "projection_incomplete";
+    // A durable append checkpoint may temporarily be ahead of its sparse
+    // projection while its next bounded batch is being indexed. Resume that
+    // append rather than reparsing the entire source in the middle of it.
+    structureCacheNeedsRebuild = readiness.reason === "projection_incomplete"
+      && pendingAppendProof.ranges.length === 0;
     if (structureCacheNeedsRebuild) {
       logger("warn", "ingestion_count_mismatch", {
         file: filePath,
@@ -3776,6 +3780,30 @@ async function recordDurableConversationSource(
       ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
     });
     reconcileIngestedChildRetention(db, conversationId, filePath, blocks);
+    // Publish the complete navigation before the source reader verifies the
+    // payload. An append temporarily has its old prefix in the sparse cache
+    // and its new tail in dense rows; verification must see both together.
+    const cache = getConversationStructureCache(db);
+    const currentToolPositions = new Map<string, number>();
+    for (const block of cacheBlocks) {
+      const toolId = block.metadata.tool_id;
+      if (block.type === "tool_use" && typeof toolId === "string" && toolId) {
+        currentToolPositions.set(toolId, block.position);
+      }
+    }
+    const parentPositions = new Map(cacheBlocks.map((block) => {
+      const explicit = block.parent_id !== null && /^\d+$/.test(block.parent_id)
+        ? Number(block.parent_id)
+        : null;
+      const toolId = block.metadata.tool_id;
+      const linked = block.type === "tool_result" && typeof toolId === "string" && toolId
+        ? currentToolPositions.get(toolId) ?? cache.findToolPosition(conversationId, toolId)
+        : null;
+      return [block.position, explicit ?? linked ?? null] as const;
+    }));
+    const captured = cache.captureDenseRows(
+      db, conversationId, structuralMode, parentPositions, currentToolPositions,
+    );
     const promotion = await store.promoteNativeConversationPayload(conversationId);
     if (!promotion.promoted
         && promotion.reason !== "no legacy payload is available for promotion") {
@@ -3786,31 +3814,6 @@ async function recordDurableConversationSource(
       });
     }
     if (promotion.promoted || promotion.reason === "no legacy payload is available for promotion") {
-      const cache = getConversationStructureCache(db);
-      const currentToolPositions = new Map<string, number>();
-      for (const block of cacheBlocks) {
-        const toolId = block.metadata.tool_id;
-        if (block.type === "tool_use" && typeof toolId === "string" && toolId) {
-          currentToolPositions.set(toolId, block.position);
-        }
-      }
-      const parentPositions = new Map(cacheBlocks.map((block) => {
-        const explicit = block.parent_id !== null && /^\d+$/.test(block.parent_id)
-          ? Number(block.parent_id)
-          : null;
-        const toolId = block.metadata.tool_id;
-        const linked = block.type === "tool_result" && typeof toolId === "string" && toolId
-          ? currentToolPositions.get(toolId) ?? cache.findToolPosition(conversationId, toolId)
-          : null;
-        return [block.position, explicit ?? linked ?? null] as const;
-      }));
-      const captured = cache.captureDenseRows(
-        db,
-        conversationId,
-        structuralMode,
-        parentPositions,
-        currentToolPositions,
-      );
       if (captured.sourceVersionId
           && captured.cached === result.conversation.block_count) {
         db.transaction(() => {
