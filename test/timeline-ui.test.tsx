@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 import { render, screen, waitFor, cleanup, fireEvent, act } from './helpers/dom.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { clearPersistedDetailCache, invalidatePersistedDetail } from '../ui/src/detail-cache';
+import { clearPersistedDetailCache } from '../ui/src/detail-cache';
+import { clearApiGetCache, invalidateDashboardCaches, invalidateDashboardApiCacheForEvent } from '../ui/src/api';
+import { queryClient } from '../ui/src/query/client';
 import { h } from 'preact';
 import { useCallback, useMemo, useRef, useState } from 'preact/hooks';
 import {
@@ -9,7 +11,7 @@ import {
   type AppRightSidebarDescriptor,
   type AppShellContextValue,
 } from '../ui/src/app-shell';
-import { TimelineView as RawTimelineView, type TimelineViewProps } from '../ui/src/views/timeline';
+import { TimelineView as RawTimelineView, warmInitialData, type TimelineViewProps } from '../ui/src/views/timeline';
 import type { ProjectTimelineProjection } from '../ui/src/types/timeline';
 import { __resetBrowserSessionForTests, ensureClientAccess } from '../ui/src/client-auth-token';
 
@@ -33,6 +35,8 @@ function stubLocalStorage(): void {
 
 beforeEach(async () => {
   stubLocalStorage();
+  queryClient.clear();
+  clearApiGetCache();
   clearPersistedDetailCache();
   __resetBrowserSessionForTests();
   await ensureClientAccess(async () => new Response(JSON.stringify({ authenticated: true, session: { csrf_token: 'timeline-csrf',
@@ -41,6 +45,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   cleanup();
+  queryClient.clear();
   __resetBrowserSessionForTests();
   vi.unstubAllGlobals();
 });
@@ -278,8 +283,20 @@ function stubTimelineFetch(...responses: Array<ProjectTimelineProjection | Promi
   return fetchMock;
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
 function TimelineView({ active = true, ...props }: TimelineViewProps & { active?: boolean }): JSX.Element {
   const [rightSidebar, setRightSidebar] = useState<AppRightSidebarDescriptor | null>(null);
+  const [noticeHost, setNoticeHost] = useState<HTMLElement | null>(null);
+  const registerMainNoticeHost = useCallback((host: HTMLElement) => {
+    setNoticeHost(host);
+    return () => setNoticeHost(null);
+  }, []);
   const ownerRef = useRef<string | null>(null);
   const registerRightSidebar = useCallback((ownerId: string) => {
     ownerRef.current = ownerId;
@@ -290,12 +307,14 @@ function TimelineView({ active = true, ...props }: TimelineViewProps & { active?
   }, []);
   const shell = useMemo<AppShellContextValue>(() => ({
     active,
+    noticeHost,
+    registerMainNoticeHost,
     rightSidebar,
     registerRightSidebar,
     registerInitialRouteLoad: () => undefined,
     updateRightSidebar,
     setViewSidebarWidth: () => undefined,
-  }), [active, rightSidebar, registerRightSidebar, updateRightSidebar]);
+  }), [active, noticeHost, registerMainNoticeHost, rightSidebar, registerRightSidebar, updateRightSidebar]);
   const toggleLabel = rightSidebar?.open ? `Collapse ${rightSidebar.title}` : `Show ${rightSidebar?.title ?? 'inspector'}`;
 
   return (
@@ -396,6 +415,119 @@ function nearTimeProjection(): ProjectTimelineProjection {
 
 describe('TimelineView', () => {
 
+  it('mounts a warmed expanded projection without changing its request after the response', async () => {
+    window.localStorage.setItem('mandible_timeline_view_state:v1:mandible', JSON.stringify({ expandedEventIds: ['event-body'] }));
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input) === '/api/work/repos'
+      ? new Response(JSON.stringify({ items: [{ id: 'mandible', name: 'mandible' }] }), { headers: { 'content-type': 'application/json' } })
+      : timelineResponse(projection()));
+    vi.stubGlobal('fetch', fetchMock);
+    await warmInitialData({ project: 'mandible' });
+
+    render(h(TimelineView, { repos: [{ id: 'mandible', name: 'mandible' }] }));
+    await screen.findByText('Build shared axis');
+    expect(fetchMock.mock.calls.filter(([input]) => String(input) === '/api/timeline/project')).toHaveLength(1);
+    expect(screen.getByLabelText('Fold 1 issue ref for Build shared axis')).toBeTruthy();
+  });
+
+  it.each(['event', 'poll'])('reconciles mounted shared %s invalidation while preserving viewport and selection', async (source) => {
+    const next = projection({ events: [{ ...projection().events[0], display_headline: 'Live headline' }] });
+    const fetchMock = stubTimelineFetch(projection(), next);
+    render(h(TimelineView, { repos: [{ id: 'mandible', name: 'mandible' }], params: { project: 'mandible' } }));
+    fireEvent.click(await screen.findByText('Build shared axis'));
+    fireEvent.click(screen.getByLabelText('Zoom in'));
+    const canvas = screen.getByLabelText('Timeline time canvas');
+    canvas.scrollTop = 137;
+    const horizontal = canvas.scrollLeft;
+    const viewport = JSON.parse(window.localStorage.getItem('mandible_timeline_view_state:v1:mandible')!).timeWindow;
+
+    act(() => source === 'event' ? invalidateDashboardApiCacheForEvent('ledger:issue-updated') : invalidateDashboardCaches());
+    await screen.findAllByText('Live headline');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(screen.getByText('Full body text')).toBeTruthy();
+    expect(canvas.scrollTop).toBe(137);
+    expect(canvas.scrollLeft).toBe(horizontal);
+    expect(JSON.parse(window.localStorage.getItem('mandible_timeline_view_state:v1:mandible')!).timeWindow).toEqual(viewport);
+  });
+
+  it('reconciles an event received during a projection fetch after the coherent response completes', async () => {
+    const pending = deferred<ProjectTimelineProjection>();
+    const latest = projection({ events: [{ ...projection().events[0], display_headline: 'After trailing reconciliation' }] });
+    const fetchMock = stubTimelineFetch(pending.promise, latest);
+    render(h(TimelineView, { repos: [{ id: 'mandible', name: 'mandible' }], params: { project: 'mandible' } }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    act(() => invalidateDashboardApiCacheForEvent('ledger:issue-updated'));
+    pending.resolve(projection());
+    await screen.findByText('After trailing reconciliation');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('retains the displayed same-project query through a new request error', async () => {
+    const failed = deferred<ProjectTimelineProjection>();
+    const fetchMock = stubTimelineFetch(projection(), failed.promise);
+    render(h(TimelineView, { repos: [{ id: 'mandible', name: 'mandible' }], params: { project: 'mandible' } }));
+    fireEvent.click(await screen.findByText('Build shared axis'));
+    fireEvent.click(screen.getByLabelText('Closed'));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(screen.getByText('Full body text')).toBeTruthy();
+    failed.reject(new Error('Timeline unavailable'));
+    await screen.findByText(/Timeline refresh failed/);
+    expect(screen.getAllByText('Build shared axis').length).toBeGreaterThan(0);
+    expect(screen.getByText('Full body text')).toBeTruthy();
+  });
+
+  it('keeps a restart snapshot visible when its first revalidation fails', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input) === '/api/work/repos'
+      ? new Response(JSON.stringify({ items: [{ id: 'mandible', name: 'mandible' }] }), { headers: { 'content-type': 'application/json' } })
+      : timelineResponse(projection()));
+    vi.stubGlobal('fetch', fetchMock);
+    await warmInitialData({ project: 'mandible' });
+    queryClient.clear();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('Unavailable', { status: 503 })));
+
+    render(h(TimelineView, { repos: [{ id: 'mandible', name: 'mandible' }], params: { project: 'mandible' } }));
+    expect(screen.getByText('Build shared axis')).toBeTruthy();
+    await screen.findByText(/Timeline refresh failed/);
+    expect(screen.getByText('Build shared axis')).toBeTruthy();
+  });
+
+  it('abandons an active read when hidden and reconciles buffered invalidation on activation', async () => {
+    const pending = deferred<ProjectTimelineProjection>();
+    const latest = projection({ events: [{ ...projection().events[0], display_headline: 'Visible again' }] });
+    const fetchMock = stubTimelineFetch(projection(), pending.promise, latest);
+    const props = { repos: [{ id: 'mandible', name: 'mandible' }], params: { project: 'mandible' } };
+    const view = render(h(TimelineView, props));
+    await screen.findByText('Build shared axis');
+    act(() => invalidateDashboardCaches());
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const signal = fetchMock.mock.calls[1][1]?.signal;
+    view.rerender(h(TimelineView, { ...props, active: false }));
+    await waitFor(() => expect(signal?.aborted).toBe(true));
+    act(() => invalidateDashboardApiCacheForEvent('ledger:issue-updated'));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(screen.getByText('Build shared axis')).toBeTruthy();
+    view.rerender(h(TimelineView, props));
+    await screen.findByText('Visible again');
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    pending.resolve(projection());
+  });
+
+  it('restores target-project selection without displaying the prior project during a route change', async () => {
+    window.localStorage.setItem('mandible_timeline_view_state:v1:feedbax', JSON.stringify({
+      selectedEventId: 'event-feedbax', selectedRowOccurrenceId: 'row-feedbax',
+    }));
+    const next = deferred<ProjectTimelineProjection>();
+    stubTimelineFetch(projection(), next.promise);
+    const repos = [{ id: 'mandible', name: 'mandible' }, { id: 'feedbax', name: 'feedbax' }];
+    const view = render(h(TimelineView, { repos, params: { project: 'mandible' } }));
+    await screen.findByText('Build shared axis');
+    view.rerender(h(TimelineView, { repos, params: { project: 'feedbax' } }));
+    expect(screen.queryByText('Build shared axis')).toBeNull();
+    next.resolve(projectProjection('feedbax', 'Feedbax row', 'Feedbax selected event'));
+    await screen.findAllByText('Feedbax selected event');
+    expect(screen.getByText('Feedbax row body')).toBeTruthy();
+    expect(JSON.parse(window.localStorage.getItem('mandible_timeline_view_state:v1:feedbax')!).selectedEventId).toBe('event-feedbax');
+  });
+
   it('stops global arrow-key navigation when its keep-alive view becomes inactive', async () => {
     stubTimelineFetch(nearTimeProjection());
 
@@ -493,7 +625,7 @@ describe('TimelineView', () => {
     await waitFor(() => expect(screen.getByText('Build shared axis')).toBeTruthy());
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
     expect(body.explicit_root_issue_ids).toEqual(['root-a']);
-    expect(body.expanded_paths).toEqual([]);
+    expect(body.expanded_paths ?? []).toEqual([]);
     expect(body.event_kinds).toEqual(['body']);
     expect(body.include_closed).toBe(false);
 
@@ -512,11 +644,12 @@ describe('TimelineView', () => {
     const firstPage = projection({ events: [], links: [] });
     const lastPage = projection({ links: [] });
     const changedRows = projection({ rows: [...whole.rows, { ...whole.rows[0], id: 'row-new' }], events: [] });
+    const finalPage = deferred<Response>();
     const pages = [
       timelineResponse(firstPage, { row_offset: 0, next_row_offset: 1 }),
       timelineResponse(changedRows, { row_offset: 1, next_row_offset: null }),
       timelineResponse(firstPage, { row_offset: 0, next_row_offset: 1 }),
-      timelineResponse(lastPage, { row_offset: 1, next_row_offset: null }),
+      finalPage.promise,
     ];
     const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => (
       Promise.resolve(pages.shift() ?? timelineResponse(projection()))
@@ -528,6 +661,9 @@ describe('TimelineView', () => {
       params: { project: 'mandible' },
     }));
 
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+    expect(screen.queryByText('Timeline UI shell')).toBeNull();
+    finalPage.resolve(timelineResponse(lastPage, { row_offset: 1, next_row_offset: null }));
     await waitFor(() => expect(screen.getByText('Build shared axis')).toBeTruthy());
     expect(fetchMock.mock.calls.map((call) => JSON.parse(String(call[1]?.body)).row_offset)).toEqual([0, 1, 0, 1]);
   });
@@ -556,7 +692,7 @@ describe('TimelineView', () => {
     });
 
     cleanup();
-    invalidatePersistedDetail();
+    invalidateDashboardCaches();
     const reloadFetchMock = stubTimelineFetch(projection());
     render(h(TimelineView, {
       repos: [{ id: 'mandible', name: 'mandible' }],
@@ -636,8 +772,8 @@ describe('TimelineView', () => {
     expect(body.project_ref).toBe('humble');
     expect(body.root_policy).toBe('coordination_and_explicit');
     expect(body.explicit_root_issue_ids).toEqual([]);
-    expect(body.expanded_event_ids).toEqual([]);
-    expect(body.expanded_paths).toEqual([]);
+    expect(body.expanded_event_ids ?? []).toEqual([]);
+    expect(body.expanded_paths ?? []).toEqual([]);
     expect(body.root_specs).toEqual([]);
     expect(body.event_kinds).toEqual(['body', 'comment', 'state']);
 
@@ -762,11 +898,15 @@ describe('TimelineView', () => {
     fireEvent.click(screen.getByText('Build shared axis'));
     expect(screen.getByText('Full body text')).toBeTruthy();
     const rowsBefore = screen.getAllByRole('row').length;
+    const canvas = screen.getByLabelText('Timeline time canvas');
+    const eventX = () => Number.parseFloat(canvas.querySelector<HTMLButtonElement>('.timeline-event')!.style.left) - canvas.scrollLeft;
+    const eventLeft = eventX();
     fireEvent.click(screen.getByText('Expand refs'));
 
     await waitFor(() => expect(screen.getAllByRole('row').length).toBe(rowsBefore + 1));
     expect(screen.getByText('Full body text')).toBeTruthy();
     expect(screen.queryByText('No selection')).toBeNull();
+    expect(eventX()).toBe(eventLeft);
   });
 
   it('does not auto-select a replacement when the selected event disappears', async () => {

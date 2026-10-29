@@ -4,15 +4,19 @@ import { navigateAppHash } from '../app-history';
 import { Fragment, type ComponentChildren } from 'preact';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 
-import { getProjectTimeline, getWorkRepos } from '../api';
+import { getWorkRepos } from '../api';
+import { queryClient } from '../query/client';
+import { timelineOptions } from '../query/timeline';
+import { detailQueryData } from '../query/snapshots';
+import { useProjectionQuery } from '../query/useProjectionQuery';
+import { invalidateProjectionQueries } from '../query/projectionRefresh';
 import {
   AppOperationalNoticeOutlet,
   useAppShell,
   useRegisterAppRightSidebar,
-  useLiveLoad,
+  useViewActive,
 } from '../app-shell';
 import { useAppRightSidebarState } from '../right-sidebar-state';
-import { refreshAbandoned } from '../lib/coalesced-refresh';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 
@@ -69,7 +73,6 @@ import {
   rowSpecFromChips,
 } from './filters/issue-predicate-filter';
 import { IssuePredicateFilter } from './filters/IssuePredicateFilter';
-import { beginDetailRequest, detailRequestKey, isPersistedDetailFresh, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
 
 const STORAGE_PREFIX = 'mandible_timeline_view_state:v1';
@@ -119,7 +122,6 @@ export function TimelineInspectorFrame({ children }: { children: ComponentChildr
   );
 }
 
-type ProjectionStatus = 'loading' | 'syncing' | 'ready' | 'error';
 type TimelineSelectionStatus = 'empty' | 'present' | 'stale';
 
 type TimelineUrlState = Partial<TimelineViewState> & {
@@ -319,37 +321,10 @@ function mergeTimelineState(
   return merged;
 }
 
-function clearTimelineSelection(state: TimelineViewState): TimelineViewState {
-  return {
-    ...state,
-    selectedRowOccurrenceId: null,
-    selectedEventId: null,
-    selectedClusterId: null,
-  };
-}
-
 function timelineSelectionStatus(state: TimelineViewState): TimelineSelectionStatus {
   return state.selectedEventId || state.selectedRowOccurrenceId || state.selectedClusterId
     ? 'stale'
     : 'empty';
-}
-
-function projectionDepthForExpandedEvents(
-  projection: ProjectTimelineProjection | null,
-  expandedEventIds: readonly string[],
-): number {
-  if (expandedEventIds.length === 0) return 1;
-  if (!projection) return MAX_TIMELINE_PROJECTION_DEPTH;
-  const rowById = new Map(projection.rows.map((row) => [row.id, row]));
-  const eventById = new Map(projection.events.map((event) => [event.id, event]));
-  let depth = 1;
-  for (const eventId of expandedEventIds) {
-    const event = eventById.get(eventId);
-    const row = event ? rowById.get(event.row_id) : null;
-    if (!row) return MAX_TIMELINE_PROJECTION_DEPTH;
-    depth = Math.max(depth, row.depth + 1);
-  }
-  return Math.min(MAX_TIMELINE_PROJECTION_DEPTH, Math.max(1, depth));
 }
 
 function normalizeStringArray(value: unknown, fallback: readonly string[]): string[] {
@@ -475,7 +450,6 @@ function projectionRowSpecFromFilterRow(row: TimelineFilterRowSpec): TimelineRow
 function buildProjectTimelineRequest(
   projectRef: string,
   state: TimelineViewState,
-  projection: ProjectTimelineProjection | null,
 ): ProjectTimelineInput {
   return {
     project_ref: projectRef,
@@ -486,13 +460,12 @@ function buildProjectTimelineRequest(
     expanded_paths: state.expandedPaths.filter((path) => !isLocalFilterPath(path)),
     include_closed: state.includeClosed,
     event_kinds: state.visibleEventTypes,
-    depth: projectionDepthForExpandedEvents(projection, state.expandedEventIds),
+    depth: MAX_TIMELINE_PROJECTION_DEPTH,
     root_specs: state.filterRows.map(projectionRowSpecFromFilterRow),
   };
 }
 
 export async function warmInitialData(params: Record<string, string>): Promise<void> {
-  const detailStarted = beginDetailRequest();
   const repos = await getWorkRepos<WorkRepo>();
   const urlState = parseUrlState(params);
   const projectRef = defaultProjectRef(repos, urlState.projectRef);
@@ -502,11 +475,7 @@ export async function warmInitialData(params: Record<string, string>): Promise<v
     DEFAULT_TIMELINE_VIEW_STATE,
   );
   const viewState = mergeTimelineState(persistedState, {}, urlState);
-  const request = buildProjectTimelineRequest(projectRef, viewState, null);
-  const requestKey = detailRequestKey('timeline', request);
-  if (readPersistedDetail<ProjectTimelineProjection>('timeline', requestKey)) return;
-  const projection = await getProjectTimeline(request);
-  writePersistedDetail('timeline', requestKey, projection, undefined, detailStarted);
+  await queryClient.fetchQuery(timelineOptions(buildProjectTimelineRequest(projectRef, viewState)));
 }
 
 function projectedFilterRowId(row: TimelineFilterRowSpec, rows: readonly TimelineFilterRowSpec[]): string {
@@ -810,11 +779,19 @@ function aggregateAccessibleLabel(interval: TimelineAggregateInterval): string {
   return `Aggregate marker for ${interval.issue.display_id} ${interval.issue.title}, ${interval.eventCount} ${interval.eventCount === 1 ? 'event' : 'events'} ${range}`;
 }
 
-export function TimelineView({ repos, params = {}, sidebarHidden = false, refreshToken = 0 }: TimelineViewProps): JSX.Element {
+export function TimelineView({ repos, params, sidebarHidden = false, refreshToken = 0 }: TimelineViewProps): JSX.Element {
   const { active } = useAppShell();
-  const urlState = useMemo(() => parseUrlState(params), [params]);
+  const urlState = useMemo(() => parseUrlState(params ?? {}), [params]);
   const initialProjectRef = defaultProjectRef(repos, urlState.projectRef);
-  const [projectRef, setProjectRef] = useState(initialProjectRef);
+  const [projectSelection, setProjectSelection] = useState({ route: initialProjectRef, selected: initialProjectRef });
+  const projectRef = projectSelection.route === initialProjectRef ? projectSelection.selected : initialProjectRef;
+  const handleProjectChange = useCallback((selected: string) => {
+    setProjectSelection({ route: initialProjectRef, selected });
+  }, [initialProjectRef]);
+  useEffect(() => {
+    setProjectSelection((current) => current.route === initialProjectRef
+      ? current : { route: initialProjectRef, selected: initialProjectRef });
+  }, [initialProjectRef]);
   const normalizePersistedTimelineState = useCallback((
     value: unknown,
     defaults: Readonly<TimelineViewState>,
@@ -838,10 +815,6 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false, refres
     maxWidth: MAX_INSPECTOR_WIDTH,
     migrate: () => ({ open: viewState.panes.inspector, width: viewState.panes.inspectorWidth }),
   });
-  const [projection, setProjection] = useState<ProjectTimelineProjection | null>(null);
-  const lastProjectionRef = useRef<ProjectTimelineProjection | null>(null);
-  const [status, setStatus] = useState<ProjectionStatus>('loading');
-  const [error, setError] = useState<string | null>(null);
   const timeScrollRef = useRef<HTMLDivElement | null>(null);
   const timelineMainRef = useRef<HTMLDivElement | null>(null);
   const suppressProgrammaticScrollRef = useRef(false);
@@ -853,59 +826,39 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false, refres
   const [composerEditingRowId, setComposerEditingRowId] = useState<string | null>(null);
   const [composerDraftChips, setComposerDraftChips] = useState<TimelineFilterChip[]>([]);
   const laneCacheRef = useRef<TimelineLaneCache>({});
-  const requestGeneration = useRef(0);
-  const activeProjectionRequestKeyRef = useRef<string | null>(null);
-  const appliedRouteProjectRef = useRef(initialProjectRef);
-  const viewStateProjectRef = useRef(initialProjectRef);
-
-  const resetLoadedProjection = useCallback(() => {
-    requestGeneration.current += 1;
-    activeProjectionRequestKeyRef.current = null;
-    lastProjectionRef.current = null;
+  const laneProjectRef = useRef(projectRef);
+  if (laneProjectRef.current !== projectRef) {
+    laneProjectRef.current = projectRef;
     laneCacheRef.current = {};
-    setProjection(null);
-    setError(null);
-    setStatus('loading');
-  }, []);
-
-  const handleProjectChange = useCallback((nextProjectRef: string) => {
-    resetLoadedProjection();
-    setProjectRef(nextProjectRef);
-  }, [resetLoadedProjection]);
+  }
   const timelineRequest = useMemo<ProjectTimelineInput>(
-    () => buildProjectTimelineRequest(projectRef, viewState, projection),
-    [projectRef, viewState, projection],
+    () => buildProjectTimelineRequest(projectRef, viewState),
+    [projectRef, viewState],
   );
-  const timelineRequestKey = useMemo(
-    () => detailRequestKey('timeline', timelineRequest),
+  const options = useMemo(
+    () => timelineOptions(timelineRequest),
     [timelineRequest],
   );
-  // Responses may rebuild the request object without changing its meaning.
-  // The fetch lifecycle follows the canonical key, using the latest payload.
-  const timelineRequestRef = useRef(timelineRequest);
-  timelineRequestRef.current = timelineRequest;
+  const timelineRequestKey = JSON.stringify(options.queryKey);
+  const queryActive = useViewActive();
+  const query = useProjectionQuery(options, queryActive);
+  const displayedSource = useRef<{ projectRef: string; options: ReturnType<typeof timelineOptions> } | null>(null);
+  if (displayedSource.current?.projectRef !== projectRef) displayedSource.current = null;
+  const currentProjection = useMemo(() => detailQueryData(query, options), [query.data, query.isError, options]);
+  if (currentProjection) displayedSource.current = { projectRef, options };
+  const source = displayedSource.current;
+  const projection = useMemo(() => currentProjection ?? (source
+    ? queryClient.getQueryData<ProjectTimelineProjection>(source.options.queryKey) ?? source.options.restartSnapshot() ?? null
+    : null), [currentProjection, source?.options, projectRef]);
+  const error = query.error?.message ?? null;
+  const status = query.isError ? 'error' : !projection ? 'loading' : query.isFetching ? 'syncing' : 'ready';
 
   useEffect(() => {
     const nextProjectRef = defaultProjectRef(repos, urlState.projectRef);
-    if (nextProjectRef !== appliedRouteProjectRef.current) {
-      appliedRouteProjectRef.current = nextProjectRef;
-      if (nextProjectRef !== projectRef) {
-        resetLoadedProjection();
-        setProjectRef(nextProjectRef);
-        return;
-      }
-    }
-    const projectChanged = viewStateProjectRef.current !== projectRef;
-    if (projectChanged) viewStateProjectRef.current = projectRef;
     if (nextProjectRef === projectRef) {
-      setViewState((current) => {
-        const merged = mergeTimelineState(current, {}, urlState);
-        return projectChanged ? clearTimelineSelection(merged) : merged;
-      });
-    } else if (projectChanged) {
-      setViewState(clearTimelineSelection);
+      setViewState((current) => mergeTimelineState(current, {}, urlState));
     }
-  }, [projectRef, repos, resetLoadedProjection, urlState]);
+  }, [projectRef, repos, urlState]);
 
   useEffect(() => {
     const canonicalProjectId = projection?.project.id;
@@ -921,59 +874,12 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false, refres
     syncFilterRowsToHash(projectRef, viewState.filterRows);
   }, [active, projectRef, viewState.filterRows]);
 
-  useLayoutEffect(() => {
-    requestGeneration.current += 1;
-    activeProjectionRequestKeyRef.current = timelineRequestKey;
-    const cached = readPersistedDetail<ProjectTimelineProjection>(
-      'timeline',
-      timelineRequestKey,
-    );
-    if (cached) {
-      lastProjectionRef.current = cached;
-      setProjection(cached);
-    }
-    setStatus(lastProjectionRef.current ? 'syncing' : 'loading');
-    setError(null);
-  }, [timelineRequestKey]);
-
-  const refreshTimeline = useLiveLoad((signal) => {
-    if (isPersistedDetailFresh('timeline', timelineRequestKey) && lastProjectionRef.current) {
-      setError(null);
-      setStatus('ready');
-      return undefined;
-    }
-    const generation = requestGeneration.current;
-    const detailStarted = beginDetailRequest();
-    return getProjectTimeline(timelineRequestRef.current, signal)
-      .then((next) => {
-        if (
-          signal.aborted
-          || requestGeneration.current !== generation
-          || activeProjectionRequestKeyRef.current !== timelineRequestKey
-        ) return;
-        writePersistedDetail('timeline', timelineRequestKey, next, undefined, detailStarted);
-        lastProjectionRef.current = next;
-        setProjection(next);
-        setError(null);
-        setStatus('ready');
-      })
-      .catch((err) => {
-        if (
-          refreshAbandoned(signal)
-          || requestGeneration.current !== generation
-          || activeProjectionRequestKeyRef.current !== timelineRequestKey
-        ) return;
-        setError(err instanceof Error ? err.message : String(err));
-        setProjection(lastProjectionRef.current);
-        setStatus('error');
-      });
-  }, [timelineRequestKey]);
   const lastRefreshTokenRef = useRef(refreshToken);
   useEffect(() => {
     if (lastRefreshTokenRef.current === refreshToken) return;
     lastRefreshTokenRef.current = refreshToken;
-    refreshTimeline();
-  }, [refreshToken, refreshTimeline]);
+    invalidateProjectionQueries(queryClient, options.queryKey);
+  }, [refreshToken, timelineRequestKey]);
 
   const baseRows = projection?.rows ?? EMPTY_TIMELINE_ROWS;
   const baseEvents = projection?.events ?? EMPTY_TIMELINE_EVENTS;
