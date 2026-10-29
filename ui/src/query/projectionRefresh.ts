@@ -1,5 +1,5 @@
 import type { Query, QueryClient, QueryKey } from '@tanstack/preact-query';
-import { createCoalescedRefresh, RefreshDeadlineError } from '../lib/coalesced-refresh';
+import { createCoalescedRefresh } from '../lib/coalesced-refresh';
 import { isProjectionKey } from './projectionKeys';
 
 const owners = new WeakMap<QueryClient, { invalidate: (key?: QueryKey) => void }>();
@@ -10,23 +10,11 @@ export function invalidateProjectionQueries(client: QueryClient, key?: QueryKey)
   if (!owner) {
     const cache = client.getQueryCache();
     const trailing = new WeakSet<Query>();
-    const refresh = createCoalescedRefresh((signal) => {
+    const refresh = createCoalescedRefresh(() => {
       const targets = cache.getAll().filter((query) => isProjectionKey(query.queryKey)
         && query.isActive() && query.state.isInvalidated && query.state.fetchStatus !== 'fetching');
-      signal.addEventListener('abort', () => {
-        const error = signal.reason;
-        if (!(error instanceof RefreshDeadlineError)) return;
-        for (const query of targets) {
-          trailing.delete(query);
-          if (query.state.fetchStatus !== 'fetching') continue;
-          void query.cancel({ revert: true }).then(() => query.setState({
-            status: 'error', error, errorUpdatedAt: Date.now(),
-            errorUpdateCount: query.state.errorUpdateCount + 1, fetchStatus: 'idle', isInvalidated: false,
-          }));
-        }
-      }, { once: true });
       return client.refetchQueries({ predicate: (query) => targets.includes(query) }, { cancelRefetch: false });
-    });
+    }, { deadlineMs: null });
     const unsubscribe = cache.subscribe((event) => {
       const query = event.query;
       if (!isProjectionKey(query.queryKey)) return;

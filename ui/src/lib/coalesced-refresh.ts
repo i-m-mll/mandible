@@ -35,10 +35,14 @@ export interface CoalescedRefresh {
  * or when its signal is aborted, whichever is first, so a refresh that ignores its signal
  * cannot hold the scheduler. A refresh still running after `deadlineMs` is aborted with a
  * `RefreshDeadlineError`, which is logged; `run` shows it as a failed load.
+ * Set `deadlineMs` to null when `run` already owns its bounded read lifecycle.
  */
 export function createCoalescedRefresh(
   run: RefreshRun,
-  { minIntervalMs = LIVE_REFRESH_MIN_INTERVAL_MS, deadlineMs = LIVE_REFRESH_DEADLINE_MS } = {},
+  { minIntervalMs = LIVE_REFRESH_MIN_INTERVAL_MS, deadlineMs = LIVE_REFRESH_DEADLINE_MS }: {
+    minIntervalMs?: number;
+    deadlineMs?: number | null;
+  } = {},
 ): CoalescedRefresh {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let inFlight: AbortController | null = null;
@@ -53,7 +57,7 @@ export function createCoalescedRefresh(
     lastStartedAt = Date.now();
     const controller = new AbortController();
     inFlight = controller;
-    const deadline = setTimeout(() => {
+    const deadline = deadlineMs === null ? null : setTimeout(() => {
       const error = new RefreshDeadlineError(deadlineMs);
       console.error(error);
       controller.abort(error);
@@ -69,7 +73,7 @@ export function createCoalescedRefresh(
     }
     const settled = Promise.resolve(result).then(() => undefined, () => undefined);
     return Promise.race([settled, aborted]).then(() => {
-      clearTimeout(deadline);
+      if (deadline !== null) clearTimeout(deadline);
       if (inFlight !== controller) return;
       inFlight = null;
       if (pending) schedule();
