@@ -1,3 +1,4 @@
+import { assignmentTargetForSession, resolveAssignmentTarget } from "../src/work-unit-assignment.js";
 import { mutateWorkUnit } from "../src/work-unit-history.js";
 import { setConversationArchiveState } from "../src/conversations/metadata.js";
 import { WorkUnitReconciler } from "../src/work-unit-reconciler.js";
@@ -52,6 +53,39 @@ afterEach(() => {
 });
 
 describe("work unit routes", () => {
+  it("keeps provider-ambiguous aliases unbound and blocks completion of every possible worker", async () => {
+    const native = "019a0000-0000-7000-8000-00000000000b";
+    const parent = "019a0000-0000-7000-8000-00000000000c";
+    db.prepare("INSERT INTO sessions(id,app,status,conversation_id) VALUES ('ambiguous-codex','codex','ended',?),('ambiguous-claude','claude','ended',?)").run(native, native);
+    const insert = db.prepare(`INSERT INTO conversations(id,source,session_id,source_path,source_hash,source_mtime,started_at,
+      parent_source,parent_session_id,parent_conversation_id,opening_lineage,opening_line)
+      VALUES (?, ?, ?, ?, '', 1, '2026-10-01', ?, ?, ?, ?, ?)`);
+    insert.run("ambiguous-parent", "claude_code", parent, "/ambiguous-parent", null, null, null, "none", null);
+    insert.run("ambiguous-worker", "claude_code", native, "/ambiguous-worker", "claude_code", parent, "ambiguous-parent", "child",
+      `[mandible child parent=claude:${parent} parent-role=coordinator role=worker]`);
+    const target = assignmentTargetForSession(db, native);
+    expect(target).toEqual({ kind: "alias", session_id: native });
+    expect(resolveAssignmentTarget(db, target)).toBeNull();
+    expect(assignmentTargetForSession(db, "ambiguous-codex")).toEqual({ kind: "native", provider: "codex", session_id: native });
+    const pending = await router.invoke({ method: "POST", url: "/api/work-units/claim",
+      body: { issue_id: "abc123", repo_id: "mandible", branch: "feature/ambiguous", assigned_session_id: native } });
+    expect(pending.status).toBe(201);
+    const pendingId = (pending.body as { id: string }).id;
+    expect(db.prepare("SELECT assignment_target_json,worker_provider FROM work_units WHERE id = ?").get(pendingId))
+      .toEqual({ assignment_target_json: JSON.stringify(target), worker_provider: null });
+    const exact = await router.invoke({ method: "POST", url: "/api/work-units/claim",
+      ambient_identity: { provider: "claude", provider_session_id: native },
+      body: { issue_id: "abc123", repo_id: "mandible", branch: "feature/exact-worker" } });
+    const exactId = (exact.body as { id: string }).id;
+    mutateWorkUnit(db, exactId, () => db.prepare("UPDATE work_units SET state = 'resolved' WHERE id = ?").run(exactId));
+    expect(getWorkerAssignments(db, { provider: "claude_code", provider_session_id: native }))
+      .toEqual({ resolvedUnitIds: [exactId], unresolvedUnitIds: [pendingId], complete: false });
+    expect(getWorkerAssignments(db, { provider: "codex", provider_session_id: native }).unresolvedUnitIds).toEqual([pendingId]);
+    mutateWorkUnit(db, pendingId, () => db.prepare("UPDATE work_units SET state = 'resolved' WHERE id = ?").run(pendingId));
+    expect(db.prepare("SELECT worker_provider,worker_provider_session_id FROM work_units WHERE id = ?").get(pendingId))
+      .toEqual({ worker_provider: null, worker_provider_session_id: null });
+    expect(getWorkerAssignments(db, { provider: "claude_code", provider_session_id: native }).resolvedUnitIds).toEqual([exactId]);
+  });
   it("fills existing branch ancestry independently, preserves it on replay, and refuses conflict without mutation", async () => {
     const claim = (body: Record<string, unknown>) => router.invoke({ method: "POST", url: "/api/work-units/claim",
       body: { issue_id: "abc123", repo_id: "mandible", branch: "feature/parent", ...body } });

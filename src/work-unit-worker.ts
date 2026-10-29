@@ -43,8 +43,9 @@ export function getWorkerAssignments(db: Db, worker: { provider: ConversationSou
     .all(worker.provider, worker.provider_session_id, worker.provider, worker.provider_session_id, worker.provider_session_id,
       provider, worker.provider_session_id, provider, worker.provider_session_id, provider, worker.provider_session_id) as UnitRow[];
   const unresolvedUnitIds = candidates.filter(row => {
-    const identity = resolveAssignmentTarget(db, parseAssignmentTarget(row.assignment_target_json));
-    return (identity?.provider === worker.provider && identity.session_id === worker.provider_session_id)
+    const target = parseAssignmentTarget(row.assignment_target_json);
+    const identity = resolveAssignmentTarget(db, target);
+    return (target?.kind === "alias" && !identity) || (identity?.provider === worker.provider && identity.session_id === worker.provider_session_id)
       || (row.worker_provider === worker.provider && row.worker_provider_session_id === worker.provider_session_id);
   }).map(row => String(row.id));
   return { resolvedUnitIds, unresolvedUnitIds, complete: resolvedUnitIds.length > 0 && unresolvedUnitIds.length === 0 };
