@@ -2,7 +2,7 @@ import { parseManagedChatDefaults, type ManagedChatDefaults } from "../../src/ma
 import { DASHBOARD_BADGE_COUNTS, DOMAIN_EVENTS, isBriefingEvent, type DashboardBadgeCounts } from '../../src/contracts';
 import { queryClient } from './query/client';
 import { detailKeys, detailKeysForEvent } from './query/detailKeys';
-import { isSpaceDocumentQuery, projectionAffectedByEvent } from './query/resourceInvalidation';
+import { isSpaceDocumentQuery, projectionAffectedByEvent, spacePacketMatches } from './query/resourceInvalidation';
 import { invalidateProjectionQueries } from './query/projectionRefresh';
 import { projectionKeys } from './query/projectionKeys';
 import { browserResourceKeys, browserResourceKeysForEvent, refreshBrowserResources } from './query/browserResources';
@@ -3434,7 +3434,7 @@ export type SpaceFactPacket = {
 };
 
 function invalidateSpaceCaches(spaceId?: string): void {
-  invalidateProjectionQueries(queryClient, projectionKeys.spacePackets);
+  invalidateProjectionQueries(queryClient, projectionKeys.spacePackets, spaceId ? (query) => spacePacketMatches(query, spaceId) : undefined);
   invalidateApiGetCache('/api/spaces');
   if (spaceId) {
     invalidateApiGetCache(`/api/spaces/${encodeURIComponent(spaceId)}`);
