@@ -28,6 +28,7 @@ import {
   loadCodexSessionIndexTitle,
 } from "./parsers/codex.js";
 import { lineageGapSeverity, linkIngestedConversation } from "./conversation-lineage.js";
+import { reconcileWorkerLineageEvidence } from "./work-unit-evidence.js";
 import { inferGeminiProjectIdentity } from "./parsers/gemini.js";
 import { clearHookNotificationAttention } from "./claude-hook-attention.js";
 import {
@@ -2152,7 +2153,8 @@ function applyIngestedLineage(
   conversation: ParseResult["conversation"] & { id: string },
   result: ParseResult,
 ): void {
-  const gap = linkIngestedConversation(db, conversation, result);
+  const { gap, affected } = linkIngestedConversation(db, conversation, result);
+  reconcileWorkerLineageEvidence(db, affected);
   projectChildRetentionActivity(db, conversation.id, result.blocks);
   if (gap) {
     const severity = lineageGapSeverity(gap);

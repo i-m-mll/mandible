@@ -20,6 +20,10 @@ export interface ConversationParent {
   sessionId: string;
 }
 
+export interface LineageEvidence extends ConversationParent {
+  conversationId: string;
+}
+
 /**
  * The row that stands for `child`'s declared parent session. A row that is
  * itself a declared child of the same session (a Claude subagent transcript
@@ -61,12 +65,12 @@ export function recordConversationParent(db: Db, conversationId: string, parent:
 
 /**
  * Link every indexed child that declared `conversation`'s session as its
- * parent and is still unlinked. Returns the number of children linked.
+ * parent and is still unlinked. Returns their indexed identities.
  */
 export function linkWaitingChildren(
   db: Db,
   conversation: { source: ConversationSource; session_id: string },
-): number {
+): LineageEvidence[] {
   return db.prepare(`
     UPDATE conversations
        SET parent_conversation_id = ${DECLARED_PARENT_ROW_SQL}
@@ -74,7 +78,8 @@ export function linkWaitingChildren(
        AND parent_source = ?
        AND parent_conversation_id IS NULL
        AND ${DECLARED_PARENT_ROW_SQL} IS NOT NULL
-  `).run(conversation.session_id, conversation.source).changes;
+     RETURNING id AS conversationId, source, session_id AS sessionId
+  `).all(conversation.session_id, conversation.source) as LineageEvidence[];
 }
 
 /**
@@ -179,14 +184,14 @@ function recordOpening(db: Db, conversationId: string, opening: TranscriptOpenin
 /**
  * Apply one ingested batch's lineage: the provider's subagent parent, or else
  * the parent the opening declares, then link children that were waiting for
- * this session. Returns the conversation's lineage gap when this batch created
- * it, so the caller reports each gap once.
+ * this session. Returns a newly created gap and the identities whose indexed
+ * lineage can now be reconciled by the caller.
  */
 export function linkIngestedConversation(
   db: Db,
   conversation: { id: string; source: ConversationSource; session_id: string },
   batch: Pick<ParseResult, "parent" | "opening" | "createdByAgent">,
-): LineageGapKind | null {
+): { gap: LineageGapKind | null; affected: LineageEvidence[] } {
   const gapBefore = lineageGapOf(db, conversation.id);
   if (batch.createdByAgent) {
     db.prepare("UPDATE conversations SET agent_created = 1 WHERE id = ?").run(conversation.id);
@@ -194,9 +199,10 @@ export function linkIngestedConversation(
   const declared = batch.opening ? recordOpening(db, conversation.id, batch.opening) : null;
   const parent = batch.parent ?? (declared?.parent && !isSubagent(db, conversation.id) ? declared.parent : null);
   if (parent) recordConversationParent(db, conversation.id, parent);
-  linkWaitingChildren(db, conversation);
+  const linked = linkWaitingChildren(db, conversation);
   const gapAfter = lineageGapOf(db, conversation.id);
-  return gapAfter !== gapBefore ? gapAfter : null;
+  return { gap: gapAfter !== gapBefore ? gapAfter : null,
+    affected: [{ conversationId: conversation.id, source: conversation.source, sessionId: conversation.session_id }, ...linked] };
 }
 
 export interface LineageGap {
