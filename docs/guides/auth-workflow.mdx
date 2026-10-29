@@ -147,10 +147,10 @@ The user examines the request in the dashboard. They can see:
 - **Diff summary** — The git stat output showing which files were touched.
 - **Commit message** — The canonical change message: the outcome, why it matters, any post-merge caveats, and the verification run. This is the primary review surface.
 - **Linked issues** — Click through to the issue details for full context.
-- **Dependency status** — If this request depends on another (e.g., a prerequisite merge), the status of that dependency is shown.
+- **Prerequisites** — Every direct prerequisite has a navigable request reference, readiness, status, and outcome. Approval remains blocked until all prerequisites succeed and durably finalize; missing or ambiguous references and unavailable readiness data also block approval. Repeat `--depends-on <request>` when submitting to declare multiple prerequisites.
 
 If something looks wrong, the user can:
-- **Update the request** (`PUT /api/auth/request/:id`) to correct metadata before approving.
+- **Update the request** (`PUT /api/auth/v2/request/:id`) to correct metadata before approving.
 - **Reject it** with a reason that gets delivered to the agent.
 - **Skip it** to review other requests first.
 - **Dismiss it** to remove it from the queue entirely.
