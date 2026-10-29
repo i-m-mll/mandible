@@ -7,6 +7,8 @@ import { projectionKeys } from '../ui/src/query/projectionKeys';
 import { snapshotOptions, detailQueryData } from '../ui/src/query/snapshots';
 import { invalidateDashboardApiCacheForEvent } from '../ui/src/api';
 import { AppShellProvider, useAppShell } from '../ui/src/app-shell';
+import { queryClient } from '../ui/src/query/client';
+import { LIVE_REFRESH_MIN_INTERVAL_MS, LIVE_REFRESH_DEADLINE_MS, RefreshDeadlineError } from '../ui/src/lib/coalesced-refresh';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -16,6 +18,73 @@ function deferred<T>() {
 }
 
 describe('shared projection Query lifecycle', () => {
+  it('bounds a stalled cold read and releases its route barrier with a timeout error', async () => {
+    let signal: AbortSignal | undefined;
+    let barrierSettled = false;
+    const options = snapshotOptions<{ title: string }>(projectionKeys.timeline({ project_ref: 'stalled' }), (nextSignal) => {
+      signal = nextSignal;
+      return new Promise(() => {});
+    });
+    function Pane() {
+      const query = useProjectionQuery(options, true);
+      return <span>{query.error?.name ?? query.fetchStatus}</span>;
+    }
+    function Frame() {
+      const shell = useAppShell();
+      return <AppShellProvider value={{ ...shell, registerInitialRouteLoad: (barrier) => {
+        void barrier.then(() => { barrierSettled = true; });
+      } }}><Pane /></AppShellProvider>;
+    }
+    vi.useFakeTimers();
+    try {
+      render(<Frame />);
+      expect(barrierSettled).toBe(false);
+      await act(async () => { await vi.advanceTimersByTimeAsync(LIVE_REFRESH_DEADLINE_MS + 1); });
+      expect(screen.getByText('RefreshDeadlineError')).toBeTruthy();
+      expect(signal?.aborted).toBe(true);
+      expect(barrierSettled).toBe(true);
+      expect(queryClient.getQueryState(options.queryKey)?.error).toBeInstanceOf(RefreshDeadlineError);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not retry a failed idle projection after only one event', async () => {
+    const load = vi.fn(async () => { throw new Error('Single event failed'); });
+    const options = snapshotOptions<{ title: string }>(projectionKeys.graph(), load);
+    queryClient.setQueryData(options.queryKey, { title: 'Retained' });
+    function Pane() {
+      const query = useProjectionQuery(options, true);
+      return <span>{query.error?.message ?? query.data?.title}</span>;
+    }
+    render(<Pane />);
+    expect(screen.getByText('Retained')).toBeTruthy();
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        invalidateDashboardApiCacheForEvent('ledger:issue:updated');
+        await vi.advanceTimersByTimeAsync(2 * LIVE_REFRESH_MIN_INTERVAL_MS);
+      });
+      expect(screen.getByText('Single event failed')).toBeTruthy();
+      expect(load).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('restores a snapshot using an equivalent key whose input fields were authored in another order', async () => {
+    const original = snapshotOptions(projectionKeys.timeline({ project_ref: 'mandible', include_closed: true }), async () => ({ title: 'Saved projection' }));
+    await queryClient.fetchQuery(original);
+    queryClient.clear();
+    const restarted = snapshotOptions(projectionKeys.timeline({ include_closed: true, project_ref: 'mandible' }), () => new Promise<{ title: string }>(() => {}));
+    function Pane() {
+      const query = useProjectionQuery(restarted, true);
+      return <span>{detailQueryData(query, restarted)?.title ?? 'Pending'}</span>;
+    }
+    render(<Pane />);
+    expect(screen.getByText('Saved projection')).toBeTruthy();
+  });
+
   it.each(['error', 'deactivation'] as const)('settles the initial route barrier on %s', async (completion) => {
     const pending = deferred<{ title: string }>();
     const options = snapshotOptions(projectionKeys.graph({ limit: 1 }), () => pending.promise);
@@ -70,6 +139,27 @@ describe('shared projection Query lifecycle', () => {
     await waitFor(() => expect(signals[0].aborted).toBe(true));
     view.rerender(<><Pane active /><Pane active={false} /></>);
     await waitFor(() => expect(signals).toHaveLength(2));
+  });
+
+  it('reconciles cached data invalidated while hidden once on activation', async () => {
+    let title = 'Before hidden events';
+    const load = vi.fn(async () => ({ title }));
+    const options = snapshotOptions(projectionKeys.graph(), load);
+    function Pane({ active }: { active: boolean }) {
+      const query = useProjectionQuery(options, active);
+      return <span>{detailQueryData(query, options)?.title ?? 'Pending'}</span>;
+    }
+    const view = render(<Pane active />);
+    expect(await screen.findByText('Before hidden events')).toBeTruthy();
+    view.rerender(<Pane active={false} />);
+    title = 'After hidden events';
+    await act(async () => {
+      for (let i = 0; i < 6; i++) invalidateDashboardApiCacheForEvent('ledger:comment:created');
+    });
+    expect(load).toHaveBeenCalledTimes(1);
+    view.rerender(<Pane active />);
+    expect(await screen.findByText('After hidden events')).toBeTruthy();
+    expect(load).toHaveBeenCalledTimes(2);
   });
 
   it('coalesces events during a long failed read into one trailing reconciliation without cancellation', async () => {
