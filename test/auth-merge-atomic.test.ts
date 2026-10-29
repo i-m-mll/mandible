@@ -16,6 +16,7 @@ import { SseManager } from "../src/sse.js";
 import { setupOperator } from "../src/users/store.js";
 import { createAuthCheckRepo, commitOnBranch } from "./helpers/auth-queue-fixtures.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
+import { preparedGitFixture } from "./helpers/prepared-git-fixture.js";
 
 const AUTH_MERGE = path.join(process.cwd(), "cli", "auth-merge.sh");
 
@@ -161,21 +162,31 @@ function runAtomicAsync(
   });
 }
 
-beforeEach(() => {
-  repo = createAuthCheckRepo();
-  key = path.join(repo, ".git", "signing-key");
+const atomicRepo = preparedGitFixture("auth-atomic", (root) => {
+  const repo = createAuthCheckRepo();
+  const key = path.join(repo, ".git", "signing-key");
   const keygen = spawnSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", key], {
     encoding: "utf8", timeout: 5_000,
   });
   if (keygen.status !== 0) throw new Error(keygen.stderr);
   commitOnBranch(repo, "feature/atomic", { "feature.txt": "feature\n" });
-  fs.appendFileSync(path.join(repo, ".git", "config"), `\n[gpg]\n format = ssh\n[user]\n signingkey = ${JSON.stringify(key)}\n[commit]\n gpgsign = true\n`);
+  fs.appendFileSync(path.join(repo, ".git", "config"), "\n[gpg]\n format = ssh\n[commit]\n gpgsign = true\n");
+  fs.cpSync(repo, root, { recursive: true });
+});
 
+beforeEach(() => {
+  repo = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-atomic-"));
 });
 
 afterEach(() => fs.rmSync(repo, { recursive: true, force: true }));
 
 describe("atomic auth merge", () => {
+  beforeEach(() => {
+    atomicRepo.copyInto(repo);
+    key = path.join(repo, ".git", "signing-key");
+    fs.appendFileSync(path.join(repo, ".git", "config"), `\n[user]\n signingkey = ${JSON.stringify(key)}\n`);
+  });
+
   it("creates the exact trusted merge commit, CAS-updates, safely syncs, and preserves untracked files", () => {
     const base = git(["rev-parse", "main"]);
     const head = git(["rev-parse", "feature/atomic"]);
@@ -476,7 +487,9 @@ describe("atomic auth merge", () => {
     expect(git(["rev-parse", "main"])).toBe(base);
     expect(result.stderr).not.toContain("MANDIBLE_MERGE_RESULT");
   });
+});
 
+describe("SHA-256 atomic auth merge", () => {
   it("accepts SHA-256 repository object ids", () => {
     fs.rmSync(repo, { recursive: true, force: true });
     repo = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-atomic-sha256-"));
