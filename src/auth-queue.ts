@@ -3605,11 +3605,14 @@ export class AuthQueue {
       this.requireExternalEffects("Operator approval proof");
       let request = this.requireRequest(id);
       if (request.status !== "pending") throw new AuthQueueError("invalid_status", "Only pending requests can be approved.");
-      await this.assertRequestRepoExecutionCertain(request);
       if (this.operatorProofInFlight.has(request.id)) throw new AuthQueueError("invalid_status", "Operator signing is already in progress.");
       const controller = new AbortController();
       this.operatorProofInFlight.set(request.id, controller);
       try {
+        const admission = this.observationToken(request.id, request);
+        await this.assertRequestRepoExecutionCertain(request);
+        if (this.disposed || !this.isDbOpen() || controller.signal.aborted) throw new AuthQueueError("invalid_status", "Operator proof was cancelled.");
+        this.assertObservation(request.id, admission);
         request = this.requireRequest(id);
         if (request.status !== "pending") throw new AuthQueueError("invalid_status", "Only pending requests can be approved.");
         request = (await this.prepareMergeApproval(request, true, false));
@@ -3656,7 +3659,10 @@ export class AuthQueue {
         );
       }
       if (this.inFlight.has(request.id)) throw new AuthQueueError("invalid_status", "An earlier execution of this request is still settling.");
+      const admission = this.observationToken(request.id, request);
       await this.assertRequestRepoExecutionCertain(request);
+      if (!approval && this.operatorProofInFlight.get(request.id)?.signal.aborted) throw new AuthQueueError("invalid_status", "Operator proof was cancelled.");
+      this.assertObservation(request.id, admission);
       const operatorProof = this.operatorProofs.get(request.id);
       this.operatorProofs.delete(request.id);
       if (!approval && (!operatorProof || operatorProof.userId !== approvedByUserId || this.now() >= operatorProof.expiresAt ||
@@ -3820,7 +3826,9 @@ export class AuthQueue {
       if (request.status !== "pending") {
         throw new AuthQueueError("invalid_status", `Request is ${request.status}, cannot use clearance.`, request.status);
       }
+      const admission = this.observationToken(request.id, request);
       await this.assertRequestRepoExecutionCertain(request);
+      this.assertObservation(request.id, admission);
       request = (await this.prepareMergeApproval(request, true, true));
       const observed = this.observationToken(request.id, request);
       let nativeHookPaths = await this.observedNativeMergeHookPaths(request.cwd);
