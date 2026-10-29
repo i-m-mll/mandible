@@ -34,7 +34,7 @@ it("denies the production approval route over file RPC before request lookup", a
   const queue = new AuthQueue({ db, backgroundMaintenance: false });
   try {
     const router = new Router();
-    registerAuthRoutes(router, queue, {} as never, {} as never, inlineLedgerReader(() => queue.db));
+    registerAuthRoutes(router, queue, {} as never, undefined, inlineLedgerReader(() => queue.db));
     const transport = new FileRpcTransport({ router, dir: tempDir });
     fs.writeFileSync(path.join(tempDir, "denied.request.json"), JSON.stringify({
       id: "denied",
