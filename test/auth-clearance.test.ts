@@ -1,5 +1,6 @@
 import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
+import { createNoopHookManager } from "./helpers/auth-queue-fixtures.js";
 import { waitUntil } from "./helpers/wait-until.js";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -44,7 +45,7 @@ function gate() {
   return { promise, resolve };
 }
 
-function fixture() {
+function fixture(options: ConstructorParameters<typeof AuthQueue>[0] = {}) {
   const db = createMigratedDb({
     operator: { slug: "clearance-operator", display_name: "Clearance Operator" },
     now: 1,
@@ -126,6 +127,7 @@ function fixture() {
   });
   let broadcast: (event: { event: string }) => void = () => undefined;
   const queue = new AuthQueue({
+    ...options,
     db,
     clearanceManager: manager,
     backgroundMaintenance: false,
@@ -162,6 +164,42 @@ function fixture() {
 }
 
 describe("scoped protected-merge clearance", () => {
+  it("keeps a failed restart draining and retries the same authority barrier after cleanup recovers", async () => {
+    const restart = vi.fn();
+    const hooks = createNoopHookManager();
+    hooks.getRun = (() => ({ state: "pending", exit_code: 75 })) as typeof hooks.getRun;
+    hooks.admittedDrainIdentity = async () => "authority-restart-admission";
+    hooks.grantRetry = () => undefined;
+    hooks.runPending = async () => [];
+    const f = fixture({ hookManager: hooks, restartFn: restart });
+    vi.spyOn(f.queue as never, "successfulMergeEvidenceFailure").mockResolvedValue(null);
+    try {
+      const request = await f.submit();
+      f.db.prepare("UPDATE auth_requests SET repo = 'mandible' WHERE id = ?").run(request.id);
+      await f.manager.issue({ requestId: request.id, grantee: f.agent.id }, f.operator.id);
+      const consumed = await f.manager.consume(request.id, () => undefined);
+      f.setStop(async () => { throw new Error("restart signer stop refused"); });
+      await expect(consumed.settle()).rejects.toThrow("restart signer stop refused");
+      f.db.prepare("UPDATE auth_requests SET status = 'completed', exit_code = 0, resolved_at = ? WHERE id = ?").run(10_001, request.id);
+      await f.queue.retryHookConvergence(request.id);
+      await waitUntil(() => f.queue.rebuildFailure?.message.includes("restart remains draining"), "failed authority restart barrier");
+      expect(f.queue.isRebuilding).toBe(true);
+      expect(restart).not.toHaveBeenCalled();
+      await expect(f.manager.issue({ requestId: request.id, grantee: f.agent.id }, f.operator.id)).rejects.toThrow(/closing/);
+      expect(f.released).toEqual([]);
+      f.setStop(async context => { f.released.push(context.leaseId); });
+      await f.queue.retryHookConvergence(request.id);
+      await waitUntil(() => restart.mock.calls.length === 1, "retried authority restart");
+      expect(f.queue.rebuildFailure).toBeNull();
+      expect(f.released).toHaveLength(1);
+    } finally {
+      f.setStop(async context => { f.released.push(context.leaseId); });
+      await f.queue.dispose();
+      f.db.close();
+      fs.rmSync(f.repo, { recursive: true, force: true });
+    }
+  });
+
   it("keeps signer and database owned through a late executor and held retirement during close", async () => {
     const f = fixture();
     const execution = gate();
@@ -261,28 +299,35 @@ describe("scoped protected-merge clearance", () => {
     }
   });
 
-  it("fails close while retaining authority when executor cleanup is explicitly unproven", async () => {
+  it("keeps unproven execution nonterminal and fences the next same-repository command", async () => {
     const f = fixture();
     const consume = f.manager.consume.bind(f.manager);
-    let consumed: Awaited<ReturnType<typeof consume>> | undefined;
+    const consumed: Awaited<ReturnType<typeof consume>>[] = [];
     vi.spyOn(f.manager, "consume").mockImplementation(async (...args) => {
-      consumed = await consume(...args);
-      return consumed;
+      const result = await consume(...args);
+      consumed.push(result);
+      return result;
     });
     f.setExecutor(async () => { throw Object.assign(new Error("process group still alive"), { processGroupSettled: false }); });
     try {
       const request = await f.submit();
-      const clearance = await f.manager.issue({ requestId: request.id, grantee: f.agent.id }, f.operator.id);
+      const follower = await f.submit("follower");
+      const clearance = await f.manager.issue({ requestId: request.id, grantee: f.agent.id, maxUses: 2 }, f.operator.id);
       await f.queue.approveWithClearance(request.id);
-      await waitUntil(() => f.executions.length === 1, "executor cleanup refusal");
+      await waitUntil(async () => (await f.queue.getRequest(request.id))?.error?.includes("termination is unproven") === true, "executor cleanup uncertainty");
+      expect(await f.queue.getRequest(request.id)).toMatchObject({ status: "executing", exit_code: null, resolved_at: null });
+      await expect(f.queue.approveWithClearance(follower.id)).rejects.toThrow(/termination .*unproven|remains fenced/);
+      expect(f.executions.map(value => value.request_id)).toEqual([request.id]);
+      expect(await f.queue.getRequest(follower.id)).toMatchObject({ status: "pending", clearance_use_id: null, last_executed_at: null });
+      expect(f.manager.uses(clearance.id)).toHaveLength(1);
       await expect(f.queue.dispose()).rejects.toThrow(/authority remains owned/);
       expect(f.released).toEqual([]);
       expect(f.db.prepare("SELECT state, retired_at FROM delegated_signing_runtime_bindings WHERE lease_id = ?").get(clearance.signing_lease_id))
-        .toEqual({ state: "draining", retired_at: null });
+        .toEqual({ state: "available", retired_at: null });
       await expect(f.queue.dispose()).rejects.toThrow(/authority remains owned/);
     } finally {
       // The fixture now proves its fake executor terminal before releasing the retained borrow.
-      await consumed?.settle();
+      await Promise.all(consumed.map(value => value.settle()));
       await f.manager.close();
       f.db.close();
       fs.rmSync(f.repo, { recursive: true, force: true });
