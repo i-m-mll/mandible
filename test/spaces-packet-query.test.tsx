@@ -11,6 +11,8 @@ import { establishTestClientAccess } from './helpers/local-client-access';
 import { SpacesViewShell } from '../ui/src/views/spaces/SpacesViewShell';
 import { warmInitialData } from '../ui/src/views/spaces/SpacesTab';
 import { SPACE_RENDERERS_REGISTRY } from '../ui/src/views/spaces/renderers';
+import { BOARD_METADATA_KEY } from '../ui/src/views/spaces/boardModel';
+import { spacePacketOptions } from '../ui/src/query/spaces';
 
 vi.mock('../ui/src/views/spaces/SpacesSidebar', () => ({
   SpacesSidebar: () => null, persistGroups: () => undefined, defaultInitialSpaceId: () => null,
@@ -125,4 +127,58 @@ it('does not mount a cached short-ref alias before authoritative ambiguity resol
   pending.resolve(json({ error: 'ambiguous space ref' }, 409));
   await screen.findByText('ambiguous space ref');
   expect(screen.queryByTestId('space-collection')).toBeNull();
+});
+
+it.each(['live', 'restart'])('preserves two consecutive Board edits while the %s packet read is delayed', async (source) => {
+  const initial = packet();
+  initial.space.default_renderer = 'board';
+  initial.space.metadata = { sibling: 'preserved' };
+  initial.items = []; initial.occurrences = [];
+  const oldRead = deferred<Response>();
+  const patches: Array<Record<string, unknown>> = [];
+  let reads = 0;
+  let oldSignal: AbortSignal | undefined;
+  vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method === 'PATCH') {
+      const body = JSON.parse(String(init.body)); patches.push(body.metadata);
+      return json({ space: { ...initial.space, metadata: body.metadata } });
+    }
+    reads += 1;
+    if (reads === 1) return json(initial);
+    if (reads === 2) { oldSignal = init?.signal as AbortSignal; return oldRead.promise; }
+    return new Promise<Response>(() => undefined);
+  }));
+  if (source === 'restart') {
+    await queryClient.fetchQuery(spacePacketOptions('sp1'));
+    queryClient.clear();
+  }
+  render(<Workspace />);
+  await screen.findByTestId('space-board');
+  if (source === 'live') act(() => invalidateDashboardCaches());
+  await waitFor(() => expect(reads).toBe(2));
+  fireEvent.click(screen.getByLabelText('Board column actions'));
+  const add = screen.getByRole('button', { name: 'Add manual column' }) as HTMLButtonElement;
+  fireEvent.click(add);
+  await waitFor(() => { expect(patches).toHaveLength(1); expect(add.disabled).toBe(false); });
+  fireEvent.click(add);
+  await waitFor(() => expect(patches).toHaveLength(2));
+  const columns = (patches[1][BOARD_METADATA_KEY] as { columns: Array<{ key: string }> }).columns;
+  expect(columns).toHaveLength(2);
+  expect(new Set(columns.map((column) => column.key)).size).toBe(2);
+  expect(patches[1].sibling).toBe('preserved');
+  expect(oldSignal?.aborted).toBe(true);
+  await act(async () => oldRead.resolve(json(initial)));
+  await waitFor(() => expect(screen.getAllByText('Untitled')).toHaveLength(2));
+});
+
+it('opens a document using the shell packet without a separate items read', async () => {
+  const document = packet(); document.space.default_renderer = 'document';
+  const fetch = vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/blocks')
+    ? json({ blocks: [{ id: 'b1', space_id: 'sp1', parent_id: null, block_type: 'paragraph', item_id: null,
+      item_snapshot: null, sort_key: 'a', markdown: 'A coherent document', metadata: {}, created_at: 1, updated_at: 1 }] })
+    : json(document));
+  vi.stubGlobal('fetch', fetch);
+  render(<Workspace />);
+  await screen.findByText('A coherent document');
+  expect(fetch.mock.calls.filter(([input]) => String(input) === '/api/spaces/sp1')).toHaveLength(1);
 });

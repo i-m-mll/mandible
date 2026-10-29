@@ -226,6 +226,7 @@ function BoardCardView({
 
 type ColumnProps = {
   column: BoardColumn;
+  busy: boolean;
   index: number;
   columnCount: number;
   collapsed: boolean;
@@ -245,6 +246,7 @@ type ColumnProps = {
 
 function BoardColumnView({
   column,
+  busy,
   index,
   columnCount,
   collapsed,
@@ -276,12 +278,12 @@ function BoardColumnView({
 
   const custom = column.kind !== 'default';
   const saveRename = useCallback(() => {
-    if (!custom) return;
+    if (!custom || busy) return;
     const next = draftTitle.trim() || 'Untitled';
     setDraftTitle(next);
     setRenaming(false);
     if (next !== column.title) onRenameColumn(column.key, next);
-  }, [column.key, column.title, custom, draftTitle, onRenameColumn]);
+  }, [busy, column.key, column.title, custom, draftTitle, onRenameColumn]);
 
   return (
     <section
@@ -317,6 +319,7 @@ function BoardColumnView({
             className="space-board__column-title-input"
             aria-label={`Rename column ${column.title}`}
             value={draftTitle}
+            disabled={busy}
             autoFocus
             onInput={(event) => setDraftTitle((event.target as HTMLInputElement).value)}
             onBlur={saveRename}
@@ -332,10 +335,10 @@ function BoardColumnView({
           <button
             type="button"
             className="space-board__column-title"
-            disabled={!custom}
-            onDblClick={() => custom && setRenaming(true)}
+            disabled={!custom || busy}
+            onDblClick={() => custom && !busy && setRenaming(true)}
             onKeyDown={(event) => {
-              if (custom && event.key === 'Enter') setRenaming(true);
+              if (custom && !busy && event.key === 'Enter') setRenaming(true);
             }}
             title={custom ? 'Rename column' : column.title}
           >
@@ -359,6 +362,7 @@ function BoardColumnView({
             type="button"
             className="space-board__column-remove"
             aria-label={`Delete column ${column.title}`}
+            disabled={busy}
             title="Delete custom column"
             onClick={() => onRemoveColumn(column.key)}
           >
@@ -481,7 +485,9 @@ export function SpaceBoardRenderer({ projectId, spaceId, factPacket }: SpaceRend
   );
   const boardMeta = useMemo(() => model ? readBoardMetadata(model.space) : EMPTY_BOARD_METADATA, [model]);
   const [factsByItemId, setFactsByItemId] = useState<IssueFactsByItemId>({});
-  const [busy, setBusy] = useState(false);
+  const [mutationBusy, setBusy] = useState(false);
+  const [metadataAck, setMetadataAck] = useState<{ source: object; hash: string } | null>(null);
+  const busy = mutationBusy || metadataAck !== null;
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerColumnKey, setPickerColumnKey] = useState<string | null>(null);
   const [dragOverColumn, setDragOverColumn] = useState<string | null>(null);
@@ -491,6 +497,10 @@ export function SpaceBoardRenderer({ projectId, spaceId, factPacket }: SpaceRend
   // Items whose worker_status we've already resolved (or attempted), so we don't
   // re-resolve the same issue on every reconciliation pass.
   const resolvedItemsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (metadataAck && model && (model.space !== metadataAck.source || JSON.stringify(boardMeta) === metadataAck.hash)) setMetadataAck(null);
+  }, [boardMeta, model, metadataAck]);
 
   // Reset canonical board inputs on Space change (explicit navigation only).
   // Browser-local view state follows the keyed persistence hook above.
@@ -665,18 +675,20 @@ export function SpaceBoardRenderer({ projectId, spaceId, factPacket }: SpaceRend
   // preserving any sibling metadata keys.
   const persistBoardMeta = useCallback(
     async (next: BoardMetadata) => {
-      if (!spaceId || !model) return;
+      if (!spaceId || !model || busy) return;
+      setMutationError(null);
       setBusy(true);
       try {
         const metadata = writeBoardMetadata(model.space.metadata, next);
-        await updateSpace(spaceId, { metadata });
+        const updated = await updateSpace(spaceId, { metadata });
+        setMetadataAck({ source: model.space, hash: JSON.stringify(readBoardMetadata(updated)) });
       } catch (error) {
         setMutationError(String(error));
       } finally {
         setBusy(false);
       }
     },
-    [spaceId, model],
+    [spaceId, model, busy],
   );
 
   const nextColumnKey = useCallback(
@@ -818,6 +830,7 @@ export function SpaceBoardRenderer({ projectId, spaceId, factPacket }: SpaceRend
               <BoardColumnView
                 key={column.key}
                 column={column}
+                busy={busy}
                 index={index}
                 columnCount={projection.columns.length}
                 collapsed={!!viewState.collapsedColumns[column.key]}

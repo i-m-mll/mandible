@@ -5,12 +5,14 @@ import { detailKeys, detailKeysForEvent } from './query/detailKeys';
 import { isSpaceDocumentQuery, projectionAffectedByEvent, spacePacketMatches } from './query/resourceInvalidation';
 import { invalidateProjectionQueries } from './query/projectionRefresh';
 import { projectionKeys } from './query/projectionKeys';
+import { readRestartSnapshot, writeRestartSnapshot } from './query/snapshots';
 import { browserResourceKeys, browserResourceKeysForEvent, refreshBrowserResources } from './query/browserResources';
 import { LIST_ENVELOPE_KEYS } from '../../src/contracts';
 import type { SessionDescendant, SessionSummary } from '../../src/contracts';
 export type { SessionDescendant, SessionSummary } from '../../src/contracts';
 import { browserSessionFetch } from './client-auth-token';
 import { ROUTE_DATA_FRESH_MS } from './query/policy';
+import type { Query } from '@tanstack/preact-query';
 import type { ChatAttachment } from '../../src/conversation-control/attachments';
 import type { InboxData } from './views/inbox';
 import type { GraphEdge, GraphNode, GraphMode, GraphPayload } from './types/graph';
@@ -3439,6 +3441,19 @@ function invalidateSpaceCaches(spaceId?: string): void {
   }
 }
 
+async function publishSpacePacketUpdate(spaceId: string, update: (packet: SpaceFactPacket) => SpaceFactPacket): Promise<void> {
+  const packets = { queryKey: projectionKeys.spacePackets, predicate: (query: Query) => spacePacketMatches(query, spaceId) };
+  await queryClient.cancelQueries(packets);
+  for (const query of queryClient.getQueryCache().findAll(packets)) {
+    const packet = (query.state.data as SpaceFactPacket | undefined) ?? readRestartSnapshot<SpaceFactPacket>(query.queryKey);
+    if (!packet || packet.space.id !== spaceId) continue;
+    const next = update(packet);
+    queryClient.setQueryData(query.queryKey, next);
+    writeRestartSnapshot(query.queryKey, next);
+  }
+  invalidateSpaceCaches(spaceId);
+}
+
 /**
  * Fetch the project list from the registry for use in the space-creation picker
  * (issue 6fdd924). Returns a lightweight summary array; callers display
@@ -3535,7 +3550,7 @@ export async function createSpace(body: CreateSpaceRequest): Promise<ContractSpa
 export async function updateSpace(spaceId: string, body: UpdateSpaceRequest): Promise<ContractSpace> {
   const response = await apiPatch(`/api/spaces/${encodeURIComponent(spaceId)}`, body);
   const payload = (await parseMaybeJson(response)) as { space: ContractSpace };
-  invalidateSpaceCaches(spaceId);
+  await publishSpacePacketUpdate(payload.space.id, (packet) => ({ ...packet, space: payload.space }));
   return payload.space;
 }
 
@@ -3549,7 +3564,12 @@ export async function deleteSpace(spaceId: string): Promise<void> {
 export async function addSpaceItem(spaceId: string, body: AddSpaceItemRequest): Promise<AddSpaceItemResponse> {
   const response = await apiPost(`/api/spaces/${encodeURIComponent(spaceId)}/items`, body);
   const payload = (await parseMaybeJson(response)) as AddSpaceItemResponse;
-  invalidateSpaceCaches(spaceId);
+  await publishSpacePacketUpdate(payload.item.space_id, (packet) => ({
+    ...packet,
+    items: packet.items.some((item) => item.id === payload.item.id)
+      ? packet.items.map((item) => item.id === payload.item.id ? payload.item : item)
+      : [...packet.items, payload.item],
+  }));
   return payload;
 }
 

@@ -385,7 +385,9 @@ describe('SpaceBoardRenderer', () => {
       expect(board.columns[0].title).toBe('Review');
     });
 
-    fireEvent.click(await screen.findByLabelText('Delete column Review'));
+    const remove = await screen.findByLabelText('Delete column Review') as HTMLButtonElement;
+    await waitFor(() => expect(remove.disabled).toBe(false));
+    fireEvent.click(remove);
     await waitFor(() => {
       const lastPatch = state.mutations
         .filter((m) => m.method === 'PATCH' && /\/api\/spaces\/sp1$/.test(m.url.split('?')[0]))
