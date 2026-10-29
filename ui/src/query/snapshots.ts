@@ -23,10 +23,8 @@ async function readProjection<T>(load: (signal: AbortSignal) => Promise<T>, sign
 }
 
 export function snapshotOptions<T>(queryKey: readonly unknown[], load: (signal: AbortSignal) => Promise<T>, accept: (data: T) => boolean = () => true) {
-  const namespace = `${queryKey[0]}-query-snapshot`;
-  const key = hashKey(queryKey);
   const restartSnapshot = () => {
-    const data = readPersistedDetail<T>(namespace, key);
+    const data = readRestartSnapshot<T>(queryKey);
     return data && accept(data) ? data : undefined;
   };
   return { ...queryOptions<T>({
@@ -48,6 +46,10 @@ export function snapshotOptions<T>(queryKey: readonly unknown[], load: (signal: 
 
 export function removeRestartSnapshot(queryKey: readonly unknown[]): void {
   removePersistedDetail(`${queryKey[0]}-query-snapshot`, hashKey(queryKey));
+}
+
+export function readRestartSnapshot<T>(queryKey: readonly unknown[]): T | null {
+  return readPersistedDetail<T>(`${queryKey[0]}-query-snapshot`, hashKey(queryKey));
 }
 
 export function writeRestartSnapshot(queryKey: readonly unknown[], data: unknown): void {

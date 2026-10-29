@@ -239,7 +239,7 @@ describe('dashboard API GET cache', () => {
       const path = String(input);
       const method = init?.method ?? 'GET';
       if (method === 'POST' && path === '/api/spaces/sp1/items') {
-        return jsonResponse({ item: { id: 'item1' } });
+        return jsonResponse({ item: { id: 'item1', space_id: 'sp1' } });
       }
       if (method === 'GET' && ['/api/spaces/sp1', '/api/spaces/sp2'].includes(path)) {
         return jsonResponse({
