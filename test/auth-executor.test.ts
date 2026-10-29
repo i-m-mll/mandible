@@ -60,59 +60,62 @@ describe("executeAuthCommand", () => {
   });
 
 
-  it.each(["timeout", "output", "leader-exit"] as const)("joins a TERM-resistant descendant before reporting %s", async (trigger) => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-lifetime-"));
-    const leaderFile = path.join(root, "leader");
-    const descendantFile = path.join(root, "descendant");
-    const termFile = path.join(root, "term");
-    const descendant = path.join(root, "descendant.cjs");
-    const leader = path.join(root, "leader.cjs");
-    fs.writeFileSync(descendant, `
-      const fs = require('node:fs');
-      process.on('SIGTERM', () => fs.writeFileSync(${JSON.stringify(termFile)}, 'received'));
-      fs.writeFileSync(${JSON.stringify(descendantFile)}, String(process.pid));
-      setInterval(() => {}, 1000);
-    `);
-    fs.writeFileSync(leader, `
-      const fs = require('node:fs');
-      process.on('SIGTERM', () => {});
-      fs.writeFileSync(${JSON.stringify(leaderFile)}, String(process.pid));
-      require('node:child_process').spawn(process.execPath, [${JSON.stringify(descendant)}], { stdio: 'ignore' });
-      const ready = setInterval(() => {
-        if (!fs.existsSync(${JSON.stringify(descendantFile)})) return;
-        clearInterval(ready);
-        ${trigger === "leader-exit" ? "process.exit(7);" : "process.stdout.write('tree-ready'); setInterval(() => {}, 1000);"}
-      }, 5);
-    `);
-    let sawReady = false;
-    try {
-      const completed = executeAuthCommand({
-        request_id: "process-lifetime", command: `exec ${shellQuote(process.execPath)} ${shellQuote(leader)}`,
-        timeoutMs: trigger === "timeout" ? 500 : 5000,
-        onOutput: chunk => {
-          if (chunk.text.includes("tree-ready")) {
-            sawReady = true;
-            if (trigger === "output") throw new Error("output consumer failed");
-          }
-        },
-      });
-      if (trigger === "leader-exit") expect(await completed).toMatchObject({ exit_code: 7 });
-      else await expect(completed).rejects.toThrow(trigger === "timeout" ? "timed out" : "output consumer failed");
-      if (trigger !== "leader-exit") expect(sawReady).toBe(true);
-      expect(fs.existsSync(termFile)).toBe(true);
-      for (const file of [leaderFile, descendantFile]) {
-        const pid = Number(fs.readFileSync(file, "utf8"));
-        expect(processIsAlive(pid), `owned process ${pid} still alive at settlement`).toBe(false);
-      }
-    } finally {
-      for (const file of [leaderFile, descendantFile]) {
-        if (fs.existsSync(file)) {
+  it("joins TERM-resistant descendants for timeout, output failure, and leader exit", async () => {
+    const results = await Promise.allSettled((["timeout", "output", "leader-exit"] as const).map(async (trigger) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-lifetime-"));
+      const leaderFile = path.join(root, "leader");
+      const descendantFile = path.join(root, "descendant");
+      const termFile = path.join(root, "term");
+      const descendant = path.join(root, "descendant.cjs");
+      const leader = path.join(root, "leader.cjs");
+      fs.writeFileSync(descendant, `
+        const fs = require('node:fs');
+        process.on('SIGTERM', () => fs.writeFileSync(${JSON.stringify(termFile)}, 'received'));
+        fs.writeFileSync(${JSON.stringify(descendantFile)}, String(process.pid));
+        setInterval(() => {}, 1000);
+      `);
+      fs.writeFileSync(leader, `
+        const fs = require('node:fs');
+        process.on('SIGTERM', () => {});
+        fs.writeFileSync(${JSON.stringify(leaderFile)}, String(process.pid));
+        require('node:child_process').spawn(process.execPath, [${JSON.stringify(descendant)}], { stdio: 'ignore' });
+        const ready = setInterval(() => {
+          if (!fs.existsSync(${JSON.stringify(descendantFile)})) return;
+          clearInterval(ready);
+          ${trigger === "leader-exit" ? "process.exit(7);" : "process.stdout.write('tree-ready'); setInterval(() => {}, 1000);"}
+        }, 5);
+      `);
+      let sawReady = false;
+      try {
+        const completed = executeAuthCommand({
+          request_id: "process-lifetime", command: `exec ${shellQuote(process.execPath)} ${shellQuote(leader)}`,
+          timeoutMs: trigger === "timeout" ? 500 : 5000,
+          onOutput: chunk => {
+            if (chunk.text.includes("tree-ready")) {
+              sawReady = true;
+              if (trigger === "output") throw new Error("output consumer failed");
+            }
+          },
+        });
+        if (trigger === "leader-exit") expect(await completed).toMatchObject({ exit_code: 7 });
+        else await expect(completed).rejects.toThrow(trigger === "timeout" ? "timed out" : "output consumer failed");
+        if (trigger !== "leader-exit") expect(sawReady).toBe(true);
+        expect(fs.existsSync(termFile)).toBe(true);
+        for (const file of [leaderFile, descendantFile]) {
           const pid = Number(fs.readFileSync(file, "utf8"));
-          if (processIsAlive(pid)) process.kill(pid, "SIGKILL");
+          expect(processIsAlive(pid), `owned process ${pid} still alive at settlement`).toBe(false);
         }
+      } finally {
+        for (const file of [leaderFile, descendantFile]) {
+          if (fs.existsSync(file)) {
+            const pid = Number(fs.readFileSync(file, "utf8"));
+            if (processIsAlive(pid)) process.kill(pid, "SIGKILL");
+          }
+        }
+        fs.rmSync(root, { recursive: true, force: true });
       }
-      fs.rmSync(root, { recursive: true, force: true });
-    }
+    }));
+    for (const result of results) if (result.status === "rejected") throw result.reason;
   });
 
 

@@ -125,10 +125,15 @@ describe("CLI private local transport", () => {
         expect(seen.at(-1)).toEqual({ url: route, auth: undefined });
       }
       expect(fs.existsSync(lookups)).toBe(false);
-      for (const shell of ["bash", "zsh"]) for (const route of ["/api/unknown", "/api/users/%oops", "/api/users/%FF", "/api/users/%C0%AF", "/api/users/%E2%82",
-        "/api/users/..", "/api/users/.", "/api/users/%2e%2E", "/api/users/.%2e", "/api/users/.\\operator", "/api/users/agent name", "/api/users/%00"]) {
+      const malformed = ["/api/unknown", "/api/users/%oops", "/api/users/%FF", "/api/users/%C0%AF", "/api/users/%E2%82",
+        "/api/users/..", "/api/users/.", "/api/users/%2e%2E", "/api/users/.%2e", "/api/users/.\\operator", "/api/users/agent name", "/api/users/%00"];
+      for (const shell of ["bash", "zsh"]) {
         const count = seen.length;
-        expect((await request("GET", route, "", {}, shell)).stdout).toBe("000");
+        const result = await runShell(
+          'source "$API_HELPER"; secret_account_for_service() { printf lookup >> "$LOOKUPS"; printf codex; }; secret_get() { printf durable-token; }; while IFS= read -r route; do out=$(api_temp_file); api_http_exchange GET "$route" "" "$out"; printf "\\n"; done <<< "$ROUTES"',
+          { ...env, ROUTES: malformed.join("\n") }, shell);
+        expect(result.code, result.stderr).toBe(0);
+        expect(result.stdout.trim().split("\n")).toEqual(malformed.map(() => "000"));
         expect(seen).toHaveLength(count);
         expect(fs.existsSync(lookups)).toBe(false);
       }
