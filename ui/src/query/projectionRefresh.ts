@@ -30,10 +30,6 @@ export function invalidateProjectionQueries(client: QueryClient, key?: QueryKey)
     const unsubscribe = cache.subscribe((event) => {
       const query = event.query;
       if (!isProjectionKey(query.queryKey)) return;
-      if (event.type === 'updated' && event.action.type === 'invalidate') {
-        if (query.state.fetchStatus === 'fetching') trailing.add(query);
-        refresh.request();
-      }
       if (event.type === 'updated' && (event.action.type === 'success' || event.action.type === 'error') && trailing.delete(query)) {
         query.invalidate();
         refresh.request();
