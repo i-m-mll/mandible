@@ -92,9 +92,9 @@ import {
   partitionOccurrences,
   reconcileOccurrences,
   type SpaceCanvasModel,
+  type SpaceCanvasProps,
 } from '../ui/src/views/spaces/SpaceCanvas';
 import type { SpaceEdge } from '../ui/src/api';
-import type { SSEClient, SSEHandler } from '../ui/src/sse-client';
 
 afterEach(() => {
   cleanup();
@@ -155,23 +155,9 @@ function edge(id: string, source: string, target: string, label: string | null =
   };
 }
 
-function makeFakeSse(): { client: SSEClient; emit: (type: string, data: unknown) => void } {
-  const handlers = new Map<string, Set<SSEHandler>>();
-  const client = {
-    connect: () => {},
-    close: () => {},
-    on: (type: string, handler: SSEHandler) => {
-      const bucket = handlers.get(type) ?? new Set<SSEHandler>();
-      bucket.add(handler);
-      handlers.set(type, bucket);
-      return () => bucket.delete(handler);
-    },
-    off: () => {},
-  } as unknown as SSEClient;
-  const emit = (type: string, data: unknown) => {
-    handlers.get(type)?.forEach((handler) => handler({ type, data } as never));
-  };
-  return { client, emit };
+function mountCanvas(props: SpaceCanvasProps) {
+  const view = render(h(SpaceCanvas, props));
+  return { ...view, update: (model: SpaceCanvasModel) => view.rerender(h(SpaceCanvas, { ...props, model })) };
 }
 
 // ============================================================================
@@ -227,7 +213,7 @@ describe('SpaceCanvas drag persistence + autosave', () => {
       h(SpaceCanvas, {
         ...baseProps,
         spaceId: 'sp1',
-        initialModel: model,
+        model: model,
         batchWrite,
         debounceMs: 100,
       }),
@@ -266,7 +252,7 @@ describe('SpaceCanvas drag persistence + autosave', () => {
       h(SpaceCanvas, {
         ...baseProps,
         spaceId: 'sp1',
-        initialModel: model,
+        model: model,
         batchWrite,
         debounceMs: 50,
       }),
@@ -286,28 +272,22 @@ describe('SpaceCanvas drag persistence + autosave', () => {
   });
 });
 
-describe('SpaceCanvas SSE reconciliation', () => {
+describe('SpaceCanvas packet reconciliation', () => {
   it('reconciles occurrence positions WITHOUT resetting selection', async () => {
     const model: SpaceCanvasModel = {
       items: [item('a', 'Alpha'), item('b', 'Beta')],
       occurrences: [occ('a', { x: 10, y: 20 }), occ('b', { x: 30, y: 40 })],
     };
-    const { client, emit } = makeFakeSse();
     const updated: SpaceCanvasModel = {
       items: model.items,
       occurrences: [occ('a', { x: 111, y: 222 }), occ('b', { x: 30, y: 40 })],
     };
-    const loadModel = vi.fn().mockResolvedValue(updated);
 
-    render(
-      h(SpaceCanvas, {
+    const view = mountCanvas({
         ...baseProps,
         spaceId: 'sp1',
-        initialModel: model,
-        loadModel,
-        createSse: () => client,
-      }),
-    );
+        model: model,
+    });
 
     const findNode = (id: string) =>
       screen.getAllByTestId('rf-node').find((n) => n.getAttribute('data-node-id') === id)!;
@@ -319,13 +299,8 @@ describe('SpaceCanvas SSE reconciliation', () => {
     await waitFor(() => expect(findNode('a').getAttribute('data-selected')).toBe('true'));
 
     // An SSE moved event for our space triggers a refetch + reconcile.
-    await act(async () => {
-      emit('space:occurrence:moved', { space_id: 'sp1' });
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    act(() => view.update(updated));
 
-    await waitFor(() => expect(loadModel).toHaveBeenCalledWith('sp1'));
 
     // Position reconciled to the server value...
     await waitFor(() => expect(findNode('a').getAttribute('data-x')).toBe('111'));
@@ -333,27 +308,21 @@ describe('SpaceCanvas SSE reconciliation', () => {
     expect(findNode('a').getAttribute('data-selected')).toBe('true');
   });
 
-  it('does not rematerialize an actively dragged node when an SSE refetch returns', async () => {
+  it('does not rematerialize an actively dragged node when an incoming packet returns', async () => {
     const model: SpaceCanvasModel = {
       items: [item('a', 'Alpha')],
       occurrences: [occ('a', { x: 10, y: 20 })],
     };
-    const { client, emit } = makeFakeSse();
     const stale: SpaceCanvasModel = {
       items: model.items,
       occurrences: [occ('a', { x: 111, y: 222 })],
     };
-    const loadModel = vi.fn().mockResolvedValue(stale);
 
-    render(
-      h(SpaceCanvas, {
+    const view = mountCanvas({
         ...baseProps,
         spaceId: 'sp1',
-        initialModel: model,
-        loadModel,
-        createSse: () => client,
-      }),
-    );
+        model: model,
+    });
 
     act(() => {
       lastOnNodesChange?.([
@@ -365,52 +334,36 @@ describe('SpaceCanvas SSE reconciliation', () => {
     expect(screen.getByTestId('rf-node').getAttribute('data-dragging')).toBe('true');
     expect(screen.getByTestId('rf-node').getAttribute('data-measured-width')).toBe('240');
 
-    await act(async () => {
-      emit('space:occurrence:moved', { space_id: 'sp1' });
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    act(() => view.update(stale));
 
-    await waitFor(() => expect(loadModel).toHaveBeenCalledWith('sp1'));
     expect(screen.getByTestId('rf-node').getAttribute('data-x')).toBe('25');
     expect(screen.getByTestId('rf-node').getAttribute('data-y')).toBe('30');
     expect(screen.getByTestId('rf-node').getAttribute('data-dragging')).toBe('true');
     expect(screen.getByTestId('rf-node').getAttribute('data-measured-width')).toBe('240');
   });
 
-  it('keeps an actively dragged node mounted when an SSE refetch temporarily omits it', async () => {
+  it('keeps an actively dragged node mounted when an incoming packet temporarily omits it', async () => {
     const model: SpaceCanvasModel = {
       items: [item('a', 'Alpha'), item('b', 'Beta')],
       occurrences: [occ('a', { x: 10, y: 20 }), occ('b', { x: 40, y: 50 })],
     };
-    const { client, emit } = makeFakeSse();
     const stale: SpaceCanvasModel = {
       items: model.items,
       occurrences: [occ('b', { x: 44, y: 55 })],
     };
-    const loadModel = vi.fn().mockResolvedValue(stale);
 
-    render(
-      h(SpaceCanvas, {
+    const view = mountCanvas({
         ...baseProps,
         spaceId: 'sp1',
-        initialModel: model,
-        loadModel,
-        createSse: () => client,
-      }),
-    );
+        model: model,
+    });
 
     act(() => {
       lastOnNodesChange?.([{ type: 'position', id: 'a', position: { x: 25, y: 30 }, dragging: true }]);
     });
 
-    await act(async () => {
-      emit('space:occurrence:moved', { space_id: 'sp1' });
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    act(() => view.update(stale));
 
-    await waitFor(() => expect(loadModel).toHaveBeenCalledWith('sp1'));
     const nodes = screen.getAllByTestId('rf-node');
     const dragged = nodes.find((node) => node.getAttribute('data-node-id') === 'a');
     expect(dragged?.getAttribute('data-x')).toBe('25');
@@ -418,73 +371,25 @@ describe('SpaceCanvas SSE reconciliation', () => {
     expect(dragged?.getAttribute('data-dragging')).toBe('true');
   });
 
-  it('ignores an out-of-order refetch that started before a drag stop', async () => {
-    let resolveLoad: (model: SpaceCanvasModel) => void = () => {};
-    const pendingLoad = new Promise<SpaceCanvasModel>((resolve) => {
-      resolveLoad = resolve;
-    });
-    const model: SpaceCanvasModel = {
-      items: [item('a', 'Alpha')],
-      occurrences: [occ('a', { x: 10, y: 20 })],
-    };
-    const { client, emit } = makeFakeSse();
-    const loadModel = vi.fn().mockReturnValue(pendingLoad);
-
-    render(
-      h(SpaceCanvas, {
-        ...baseProps,
-        spaceId: 'sp1',
-        initialModel: model,
-        loadModel,
-        createSse: () => client,
-      }),
-    );
-
-    act(() => {
-      emit('space:occurrence:moved', { space_id: 'sp1' });
-    });
-    expect(loadModel).toHaveBeenCalledWith('sp1');
-
-    act(() => {
-      lastOnNodesChange?.([{ type: 'position', id: 'a', position: { x: 55, y: 66 }, dragging: false }]);
-    });
-    expect(screen.getByTestId('rf-node').getAttribute('data-x')).toBe('55');
-
-    await act(async () => {
-      resolveLoad({ items: model.items, occurrences: [occ('a', { x: 10, y: 20 })] });
-      await pendingLoad;
-      await Promise.resolve();
-    });
-
-    expect(screen.getByTestId('rf-node').getAttribute('data-x')).toBe('55');
-    expect(screen.getByTestId('rf-node').getAttribute('data-y')).toBe('66');
-  });
-
-  it('keeps a dropped position when a post-save SSE refetch is stale', async () => {
+  it('keeps a dropped position when a post-save packet is stale', async () => {
     vi.useFakeTimers();
     const model: SpaceCanvasModel = {
       items: [item('a', 'Alpha')],
       occurrences: [occ('a', { x: 10, y: 20 })],
     };
-    const { client, emit } = makeFakeSse();
     const stale: SpaceCanvasModel = {
       items: model.items,
       occurrences: [occ('a', { x: 10, y: 20 })],
     };
     const batchWrite = vi.fn().mockResolvedValue({ occurrences: [], created: 0, updated: 1 });
-    const loadModel = vi.fn().mockResolvedValue(stale);
 
-    render(
-      h(SpaceCanvas, {
+    const view = mountCanvas({
         ...baseProps,
         spaceId: 'sp1',
-        initialModel: model,
+        model: model,
         batchWrite,
-        loadModel,
-        createSse: () => client,
         debounceMs: 50,
-      }),
-    );
+    });
 
     act(() => {
       lastOnNodesChange?.([{ type: 'position', id: 'a', position: { x: 55, y: 66 }, dragging: false }]);
@@ -495,13 +400,8 @@ describe('SpaceCanvas SSE reconciliation', () => {
     });
     expect(batchWrite).toHaveBeenCalledWith('sp1', [{ id: 'a', x: 55, y: 66 }]);
 
-    await act(async () => {
-      emit('space:occurrence:moved', { space_id: 'sp1' });
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    act(() => view.update(stale));
 
-    await waitFor(() => expect(loadModel).toHaveBeenCalledWith('sp1'));
     expect(screen.getByTestId('rf-node').getAttribute('data-x')).toBe('55');
     expect(screen.getByTestId('rf-node').getAttribute('data-y')).toBe('66');
   });
@@ -512,7 +412,6 @@ describe('SpaceCanvas SSE reconciliation', () => {
       items: [item('a', 'Alpha')],
       occurrences: [occ('a', { x: 10, y: 20 })],
     };
-    const { client, emit } = makeFakeSse();
     const newer: SpaceCanvasModel = {
       items: model.items,
       occurrences: [occ('a', { x: 70, y: 80, updated_at: 101 })],
@@ -522,19 +421,14 @@ describe('SpaceCanvas SSE reconciliation', () => {
       created: 0,
       updated: 1,
     });
-    const loadModel = vi.fn().mockResolvedValue(newer);
 
-    render(
-      h(SpaceCanvas, {
+    const view = mountCanvas({
         ...baseProps,
         spaceId: 'sp1',
-        initialModel: model,
+        model: model,
         batchWrite,
-        loadModel,
-        createSse: () => client,
         debounceMs: 50,
-      }),
-    );
+    });
 
     act(() => {
       lastOnNodesChange?.([{ type: 'position', id: 'a', position: { x: 55, y: 66 }, dragging: false }]);
@@ -544,39 +438,13 @@ describe('SpaceCanvas SSE reconciliation', () => {
       await Promise.resolve();
     });
 
-    await act(async () => {
-      emit('space:occurrence:moved', { space_id: 'sp1' });
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    act(() => view.update(newer));
 
-    await waitFor(() => expect(loadModel).toHaveBeenCalledWith('sp1'));
     expect(screen.getByTestId('rf-node').getAttribute('data-x')).toBe('70');
     expect(screen.getByTestId('rf-node').getAttribute('data-y')).toBe('80');
   });
 
-  it('ignores moved events for a different space', async () => {
-    const model: SpaceCanvasModel = {
-      items: [item('a', 'Alpha')],
-      occurrences: [occ('a', { x: 10, y: 20 })],
-    };
-    const { client, emit } = makeFakeSse();
-    const loadModel = vi.fn().mockResolvedValue(model);
-    render(
-      h(SpaceCanvas, {
-        ...baseProps,
-        spaceId: 'sp1',
-        initialModel: model,
-        loadModel,
-        createSse: () => client,
-      }),
-    );
-    await act(async () => {
-      emit('space:occurrence:moved', { space_id: 'other-space' });
-      await Promise.resolve();
-    });
-    expect(loadModel).not.toHaveBeenCalled();
-  });
+
 });
 
 // ============================================================================
@@ -584,7 +452,7 @@ describe('SpaceCanvas SSE reconciliation', () => {
 // ============================================================================
 
 describe('SpaceCanvas onConnect (drag-to-create)', () => {
-  it('does not duplicate an edge already present when an SSE echo arrives', async () => {
+  it('does not duplicate an edge already present when its canonical packet arrives', async () => {
     const model: SpaceCanvasModel = {
       items: [item('a', 'Alpha'), item('b', 'Beta')],
       occurrences: [occ('a', { x: 10, y: 20 }), occ('b', { x: 30, y: 40 })],
@@ -592,20 +460,14 @@ describe('SpaceCanvas onConnect (drag-to-create)', () => {
     };
     const created = edge('new1', 'a', 'b', '');
     const createEdge = vi.fn().mockResolvedValue(created);
-    const { client, emit } = makeFakeSse();
     // The reconciliation loader returns the canonical edge list (with the new edge).
-    const loadModel = vi.fn().mockResolvedValue({ ...model, edges: [created] });
 
-    render(
-      h(SpaceCanvas, {
+    const view = mountCanvas({
         ...baseProps,
         spaceId: 'sp1',
-        initialModel: model,
+        model: model,
         createEdge,
-        loadModel,
-        createSse: () => client,
-      }),
-    );
+    });
 
     await act(async () => {
       lastOnConnect?.({ source: 'a', target: 'b' });
@@ -613,12 +475,7 @@ describe('SpaceCanvas onConnect (drag-to-create)', () => {
     await waitFor(() => expect(screen.getAllByTestId('rf-edge')).toHaveLength(1));
 
     // An SSE created event refetches + reconciles; the edge must not duplicate.
-    await act(async () => {
-      emit('space:edge:created', { space_id: 'sp1' });
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    await waitFor(() => expect(loadModel).toHaveBeenCalledWith('sp1'));
+    act(() => view.update({ ...model, edges: [created] }));
     expect(screen.getAllByTestId('rf-edge')).toHaveLength(1);
   });
 });

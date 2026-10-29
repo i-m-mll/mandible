@@ -12,9 +12,15 @@ import { establishTestClientAccess } from './helpers/local-client-access';
 // reconciliation that does not reset selection.
 import { render, screen, cleanup, fireEvent, waitFor, within } from './helpers/dom.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { __resetSharedSseForTests } from '../ui/src/sse-shared';
 
-import { SpaceBoardRenderer } from '../ui/src/views/spaces/SpaceBoard';
+import { SpaceBoardRenderer as Surface } from '../ui/src/views/spaces/SpaceBoard';
+import { useSpacePacket } from '../ui/src/query/spaces';
+import type { SpaceRendererMountProps } from '../ui/src/views/spaces/SpacesViewShell';
+
+function SpaceBoardRenderer(props: SpaceRendererMountProps) {
+  const query = useSpacePacket(props.spaceId);
+  return <Surface {...props} factPacket={query.packet} />;
+}
 import {
   defaultColumnKey,
   BOARD_METADATA_KEY,
@@ -30,31 +36,6 @@ type Packet = {
   edges: Record<string, unknown>[];
 };
 
-class MockEventSource {
-  static instances: MockEventSource[] = [];
-  readyState = 1;
-  onerror: (() => void) | null = null;
-  onopen: (() => void) | null = null;
-  private handlers = new Map<string, Set<(e: MessageEvent) => void>>();
-  constructor(public url: string) {
-    MockEventSource.instances.push(this);
-  }
-  addEventListener(type: string, handler: (e: MessageEvent) => void): void {
-    const set = this.handlers.get(type) ?? new Set();
-    set.add(handler);
-    this.handlers.set(type, set);
-  }
-  removeEventListener(type: string, handler: (e: MessageEvent) => void): void {
-    this.handlers.get(type)?.delete(handler);
-  }
-  close(): void {
-    this.readyState = 2;
-  }
-  emit(data: unknown): void {
-    const event = { data: JSON.stringify(data) } as MessageEvent;
-    this.handlers.get('message')?.forEach((handler) => handler(event));
-  }
-}
 
 function makeSpace(metadata: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -275,9 +256,6 @@ beforeEach(async () => {
   queryClient.clear();
   await establishTestClientAccess();
   stubLocalStorage();
-  MockEventSource.instances = [];
-  vi.stubGlobal('EventSource', MockEventSource);
-  __resetSharedSseForTests();
 });
 
 afterEach(() => {
@@ -440,7 +418,6 @@ describe('SpaceBoardRenderer', () => {
     state.packet.occurrences.push(makeOcc('o2', { item_id:'iss2' }));
     // Supply the root app's cache invalidation alongside this isolated renderer.
     invalidateDashboardApiCacheForEvent('space:occurrence:updated');
-    MockEventSource.instances.forEach((es) => es.emit({ type:'space:occurrence:updated', data:{space_id:'sp1'} }));
     await screen.findByText('New arrival');
 
     await waitFor(() => {
