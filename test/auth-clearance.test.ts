@@ -351,11 +351,34 @@ describe("scoped protected-merge clearance", () => {
     }
   });
 
+  it("refuses a prerequisite edit during signer observation without consuming approval", async () => {
+    const f = fixture();
+    try {
+      const first = await f.submit("first");
+      const second = await f.submit("second");
+      for (const dependency of [first, second]) {
+        f.db.prepare("UPDATE auth_requests SET status = 'completed', exit_code = 0, merge_finalized_at = 10001 WHERE id = ?").run(dependency.id);
+      }
+      const request = await f.submit("dependent", { depends_on_ids: [first.id] });
+      const clearance = await f.manager.issue({ requestId: request.id, grantee: f.agent.id,
+        issueRef: f.issue.id, headBranch: "feature/scoped" }, f.operator.id);
+      const borrow = f.signer.borrow;
+      vi.spyOn(f.signer, "borrow").mockImplementation(leaseId => {
+        f.db.prepare("UPDATE auth_requests SET depends_on_ids = ? WHERE id = ?").run(JSON.stringify([second.id]), request.id);
+        return borrow(leaseId);
+      });
+      await expect(f.queue.approveWithClearance(request.id)).rejects.toThrow(/changed during clearance observation/);
+      expect(f.manager.uses(clearance.id)).toEqual([]);
+      expect(f.executions).toEqual([]);
+      expect((await f.queue.getRequest(request.id))?.status).toBe("pending");
+    } finally { await f.queue.dispose(); f.db.close(); fs.rmSync(f.repo, { recursive: true, force: true }); }
+  });
+
   it("does not consume clearance until the dependency is durably finalized", async () => {
     const f = fixture();
     try {
       const dependency = (await f.submit("dependency"));
-      const request = (await f.submit("dependent", { depends_on_id: dependency.id }));
+      const request = (await f.submit("dependent", { depends_on_ids: [dependency.id] }));
       const clearance = await f.manager.issue({
         requestId: request.id, grantee: f.agent.id, issueRef: f.issue.id, headBranch: "feature/scoped",
       }, f.operator.id);

@@ -82,7 +82,7 @@ describe("auth request short ids", () => {
     insertLegacyRequest(database, secondId, "Second");
 
     for (const [method, body] of [["GET", undefined], ["PUT", { title: "Wrong" }]] as const) {
-      const response = await router.invoke({ method, url: "/api/auth/request/aaaabbbb", body });
+      const response = await router.invoke({ method, url: method === "PUT" ? "/api/auth/v2/request/aaaabbbb" : "/api/auth/request/aaaabbbb", body });
       expect(response.status).toBe(409);
       expect(String((response.body as { error: string }).error)).toContain("Ambiguous");
     }
@@ -112,7 +112,7 @@ describe("auth request short ids", () => {
   it("keeps an honest 404 for an unknown id", async () => {
     const { router } = setup();
     expect((await router.invoke({ method: "GET", url: "/api/auth/request/deadbeef" })).status).toBe(404);
-    expect((await router.invoke({ method: "PUT", url: "/api/auth/request/deadbeef", body: { title: "Missing" } })).status)
+    expect((await router.invoke({ method: "PUT", url: "/api/auth/v2/request/deadbeef", body: { title: "Missing" } })).status)
       .toBe(404);
   });
 
@@ -140,7 +140,7 @@ describe("auth request short ids", () => {
 
     const response = await router.invoke({
       method: "PUT",
-      url: `/api/auth/request/${request.id.slice(0, 8)}`,
+      url: `/api/auth/v2/request/${request.id.slice(0, 8)}`,
       body: {
         title: "Short-id update",
         merge_head_sha: "2222222222222222222222222222222222222222",

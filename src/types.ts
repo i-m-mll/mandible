@@ -294,8 +294,8 @@ export interface AuthRequest {
   issue_ids?: string[] | null;
   /** @deprecated Legacy close-on-merge issue list. Use issue_closures. */
   issues?: string[] | null;
-  depends_on_id?: string | null;
-  dependency?: AuthDependencyProjection | null;
+  depends_on_ids?: string[];
+  dependencies?: AuthDependencyProjection[];
   execution_mode: AuthExecutionMode;
   status: AuthRequestStatus;
   /** Issue cc8fe29 — why a `failed` execution failed, derived from its recorded error. */
@@ -419,7 +419,7 @@ export interface AuthRequestInput {
   issue_closures?: string[] | null;
   /** @deprecated Legacy close-on-merge issue list. Use issue_closures. */
   issues?: string[] | null;
-  depends_on_id?: string | null;
+  depends_on_ids?: string[];
   execution_mode?: AuthExecutionMode;
   // Bug: 4e32923 — scoping fields supplied by the submitting CLI; if null,
   // delivery falls back to legacy broadcast behaviour (pre-migration rows).

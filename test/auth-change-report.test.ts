@@ -358,7 +358,7 @@ describe("auth change reports", () => {
     registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
     const submit = (body: Record<string, unknown>) => router.invoke({
       method: "POST",
-      url: "/api/auth/request",
+      url: "/api/auth/v2/request",
       body: {
         type: "merge",
         command: "mandible auth merge feature/report --into main",
@@ -407,7 +407,7 @@ describe("auth change reports", () => {
 
       const demoted = await router.invoke({
         method: "PUT",
-        url: `/api/auth/request/${(accepted.body as { request_id: string }).request_id}`,
+        url: `/api/auth/v2/request/${(accepted.body as { request_id: string }).request_id}`,
         body: { canonical_message: false, expected_revision: 1, expected_custody_generation: 1 },
         credential: token,
         transport: "http",
@@ -417,7 +417,7 @@ describe("auth change reports", () => {
 
       const revisedSpec = await router.invoke({
         method: "PUT",
-        url: `/api/auth/request/${(accepted.body as { request_id: string }).request_id}`,
+        url: `/api/auth/v2/request/${(accepted.body as { request_id: string }).request_id}`,
         body: { spec_content: "Intent", expected_revision: 1, expected_custody_generation: 1 },
         credential: token,
         transport: "http",
@@ -468,7 +468,7 @@ describe("auth change reports", () => {
     try {
       const response = await withEnvironment(ambientGitOverrides(), () => router.invoke({
         method: "POST",
-        url: "/api/auth/request",
+        url: "/api/auth/v2/request",
         body: {
           ...MERGE_CHANGE_MESSAGE,
           type: "merge",
@@ -512,7 +512,7 @@ describe("auth change reports", () => {
 
       const replacementResponse = await router.invoke({
         method: "POST",
-        url: "/api/auth/request",
+        url: "/api/auth/v2/request",
         body: {
           ...MERGE_CHANGE_MESSAGE,
           type: "merge",

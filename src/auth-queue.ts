@@ -1,7 +1,7 @@
 import { withLedgerMutationActor } from "./ledger/mutation-history.js";
 import { withRequestOrigin } from "./request-origin.js";
 import { mutateWorkUnit } from "./work-unit-history.js";
-import { authDependencies } from "./auth-dependency.js";
+import { authDependencies, canonicalAuthDependencies, authRevalidationOrder } from "./auth-dependency.js";
 import { mapRow, parseChangeReport } from "./auth-request-row.js";
 import { listAuthHistorySummaries } from "./ledger-reads/auth-history.js";
 import { forEachInEventLoopSlices } from "./event-loop-slices.js";
@@ -1799,6 +1799,7 @@ export class AuthQueue {
   async submit(payload: AuthRequestInput, requestedByUserId?: string): Promise<AuthRequest> {
     const finishObservation = this.beginObservation();
     try {
+      if ("depends_on_id" in payload) throw { status: 400, message: "depends_on_id is retired; use depends_on_ids." };
       const descriptionError = authDescriptionRequirement(payload);
       if (descriptionError) throw { status: 400, message: descriptionError };
       const canonical = this.resolveCanonicalChangeMessage(
@@ -1930,8 +1931,9 @@ export class AuthQueue {
       }
 
       const now = this.now();
+      const requestId = randomUUID();
       let request: AuthRequest = {
-        id: randomUUID(),
+        id: requestId,
         session_id: payload.session_id ?? null,
         requested_by_user_id: requesterUserId,
         requester_evidence_method: payload.requester_evidence_method ?? null,
@@ -1968,7 +1970,7 @@ export class AuthQueue {
         issue_closures: payload.issue_closures ?? payload.issues ?? null,
         issue_ids: null,
         issues: payload.issues ?? null,
-        depends_on_id: payload.depends_on_id ?? null,
+        depends_on_ids: canonicalAuthDependencies(this.db, payload.depends_on_ids === undefined ? predecessor?.depends_on_ids ?? [] : payload.depends_on_ids, requestId),
         execution_mode: payload.execution_mode ?? "daemon",
         status: "pending",
         created_at: now,
@@ -2036,6 +2038,7 @@ export class AuthQueue {
         issue_ids,
         issues,
         depends_on_id,
+        depends_on_ids,
         execution_mode,
         status,
         created_at,
@@ -2096,7 +2099,8 @@ export class AuthQueue {
         @issue_closures,
         @issue_ids,
         @issues,
-        @depends_on_id,
+        NULL,
+        @depends_on_ids,
         @execution_mode,
         @status,
         @created_at,
@@ -2132,6 +2136,7 @@ export class AuthQueue {
       let insertionQueue: { requests: AuthRequest[]; assertCurrent(): void } | undefined;
       const insertRequest = this.db.transaction(() => {
         assertSubmission();
+        canonicalAuthDependencies(this.db, request.depends_on_ids ?? [], request.id);
         supersessionIdentity?.assertCurrent();
         if (predecessor) this.assertObservation(predecessor.id, predecessorObservation!);
         if (mergeCheck.status === "clean" && payload.base_branch) {
@@ -2153,6 +2158,7 @@ export class AuthQueue {
         }
         stmt.run({
           ...request,
+          depends_on_ids: JSON.stringify(request.depends_on_ids),
           commit_message_digest: request.commit_message_digest ?? null,
           repo: request.repo ?? null,
           base_branch: request.base_branch ?? null,
@@ -2938,23 +2944,16 @@ export class AuthQueue {
     return this.readRequestByExactId(resolved.id);
   }
 
-  dependencyForRequest(
-    request: Pick<AuthRequest, "depends_on_id">,
-  ): AuthDependencyProjection | null {
-    return request.depends_on_id ? authDependencies(this.db, [request.depends_on_id]).get(request.depends_on_id)! : null;
+  dependenciesForRequest(request: Pick<AuthRequest, "depends_on_ids">): AuthDependencyProjection[] {
+    return [...authDependencies(this.db, request.depends_on_ids ?? []).values()];
   }
 
   private enforceDependencyReadiness(request: AuthRequest): void {
-    const dependency = this.dependencyForRequest(request);
-    if (!dependency || isAuthDependencyReady(dependency)) {
-      return;
-    }
-    throw new AuthQueueError(
-      "invalid_status",
+    const dependency = this.dependenciesForRequest(request).find(dependency => !isAuthDependencyReady(dependency));
+    if (!dependency) return;
+    throw new AuthQueueError("invalid_status",
       `Dependency ${dependency.requested_id} is ${dependency.state}; approval requires a successful, durably finalized dependency.`,
-      request.status,
-      dependency,
-    );
+      request.status, dependency);
   }
 
   getSignatureVerification(id: string): Record<string, unknown> | null {
@@ -3036,6 +3035,7 @@ export class AuthQueue {
   ): Promise<AuthRequest> {
     const finishObservation = this.beginObservation();
     try {
+      if ("depends_on_id" in fields) throw { status: 400, message: "depends_on_id is retired; use depends_on_ids." };
       await this.expireStale();
       const resolved = resolveId(this.db, "auth_request", id);
       if (!resolved.ok && resolved.error === "ambiguous") {
@@ -3091,7 +3091,7 @@ export class AuthQueue {
         "deletions",
         "command",
         "cwd",
-        "depends_on_id"
+        "depends_on_ids"
       ];
       const updates: string[] = [];
       const values: unknown[] = [];
@@ -3121,7 +3121,10 @@ export class AuthQueue {
       for (const field of allowedFields) {
         if (field in payload && payload[field] !== undefined) {
           updates.push(`${field} = ?`);
-          values.push(payload[field]);
+          if (field === "depends_on_ids") {
+            updates.push("depends_on_id = NULL");
+            values.push(JSON.stringify(canonicalAuthDependencies(this.db, payload[field] as string[], request.id)));
+          } else values.push(payload[field]);
         }
       }
 
@@ -3213,6 +3216,7 @@ export class AuthQueue {
       let updated!: AuthRequest;
       this.db.transaction(() => {
         if (actor && custody) this.assertLifecycleCas(request, custody, expectedRevision, expectedGeneration);
+        if (fields.depends_on_ids !== undefined) canonicalAuthDependencies(this.db, fields.depends_on_ids, request.id);
         const result = this.db
           .prepare(`UPDATE auth_requests SET ${updates.join(", ")} WHERE id = ? AND status = 'pending'`)
           .run(...values);
@@ -3740,6 +3744,7 @@ export class AuthQueue {
         if (!live || live.owner_user_id !== approverUserId || live.credential_id !== exactCredentialId || this.now() < live.minted_at || this.now() >= live.expires_at) throw new AuthQueueError("invalid_status", "Approval lease changed or expired during observation.");
       }
       this.db.transaction(() => {
+        this.enforceDependencyReadiness(request);
         this.writeResolvedRequest(
           request,
           "UPDATE auth_requests SET status = 'approved', approved_at = ?, updated_at = ?, approval_source = ?, approval_lease_id = ?, approved_by_user_id = ?, execution_evidence_id = NULL, merge_atomic_enabled = ? WHERE id = ?",
@@ -3858,6 +3863,7 @@ export class AuthQueue {
             !this.nativeMergeHooksPresent(nativeHookPaths) && signerLines.length > 0
           );
           if (!atomicEnabled) throw new AuthQueueError("merge_check_failed", "Clearance execution requires an exact local signed candidate without unsupported native hooks.");
+          this.enforceDependencyReadiness(request);
           const update = this.db.prepare(
             `UPDATE auth_requests SET status = 'approved', approved_at = ?, updated_at = ?,
            approval_source = 'clearance', approval_lease_id = ?, approved_by_user_id = ?,
@@ -7021,10 +7027,7 @@ export class AuthQueue {
 
     // Issue 08a5f04 — requests whose dependency just resolved are next in
     // line for approval, so they are revalidated (and re-pinned) first.
-    const ordered = [
-      ...pending.filter((request) => request.depends_on_id === completed.id),
-      ...pending.filter((request) => request.depends_on_id !== completed.id),
-    ];
+    const ordered = authRevalidationOrder(this.db, pending, completed.id);
 
     const now = this.now();
     const markNeedsRebase = this.db.prepare(

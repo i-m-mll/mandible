@@ -98,8 +98,7 @@ export interface AuthQueueRequest {
   base_branch?: string | null;
   repo?: string | null;
   created_at: number;
-  depends_on_id?: string | null;
-  depends_on_status?: string | null;
+  depends_on_ids?: string[];
 }
 
 /** Issues list response from GET /api/issues */
@@ -129,7 +128,7 @@ export interface WorkUnitsResponse {
   work_units: InboxWorkUnit[];
 }
 
-/** Auth request submission response from POST /api/auth/request */
+/** Auth request submission response from POST /api/auth/v2/request */
 export interface AuthSubmitResponse {
   request_id: string;
 }

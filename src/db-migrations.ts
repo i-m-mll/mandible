@@ -16,6 +16,7 @@ import {
   AUTH_REQUEST_LIFECYCLE_EVENTS_SCHEMA_SQL,
   WORKER_THREAD_ARCHIVES_SCHEMA_SQL,
   BASELINE_SCHEMA_VERSION,
+  AUTH_PREREQUISITE_SCHEMA_SQL,
   SESSION_EXECUTION_SCHEMA_SQL,
   LEDGER_SESSION_ISSUE_LINKS_SCHEMA_SQL,
   WORK_UNIT_CUSTODY_EVENTS_SCHEMA_SQL,
@@ -2194,6 +2195,7 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 218, name: "auth_request_history_index", statements: [AUTH_REQUEST_HISTORY_INDEX_SQL] },
   { version: 219, name: "specialized_ledger_request_origin", statements: [...LEDGER_ORIGIN_SCHEMA_SQL, MANAGED_SESSION_ORIGIN_INDEX_SQL] },
   { version: 220, name: "indexed_child_retention", statements: [...CHILD_RETENTION_SCHEMA_SQL] },
+  { version: 221, name: "auth_prerequisite_sets", statements: [...AUTH_PREREQUISITE_SCHEMA_SQL] },
 ];
 
 /**

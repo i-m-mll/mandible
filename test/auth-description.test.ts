@@ -51,13 +51,13 @@ describe("approval Description", () => {
     registerAuthRoutes(router,queue,new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
     try {
       for (const [type, code] of [["merge", "change_message_required"], ["config-change", "description_required"]] as const) {
-        const result = await router.invoke({ method: "POST", url: "/api/auth/request",
+        const result = await router.invoke({ method: "POST", url: "/api/auth/v2/request",
           body: { type, command: "echo fixture", title: "Review" } });
         expect(result.status).toBe(400);
         expect(result.body).toMatchObject({ code });
       }
       const description = "# Apply reviewed settings\n\nPreserve the private fixture database.";
-      const accepted = await router.invoke({ method: "POST", url: "/api/auth/request", body: {
+      const accepted = await router.invoke({ method: "POST", url: "/api/auth/v2/request", body: {
         type: "config-change", command: "echo fixture", title: "Review", commit_message: description,
       } });
       expect(accepted.status,JSON.stringify(accepted.body)).toBe(201);

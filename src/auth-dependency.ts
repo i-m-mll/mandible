@@ -1,10 +1,13 @@
 import type { Db } from "./db.js";
 import type { AuthDependencyProjection, AuthRequest } from "./types.js";
 import { computeAuthRequestOutcome } from "./contracts.js";
+import { decodeAuthDependencies } from "./auth-request-row.js";
 import { resolveIds } from "./entity-refs.js";
 
+const authReference = (reference: string): string => reference.trim().replace(/^auth:/, "");
+
 export function authDependencies(db: Db, requestedIds: string[]): Map<string, AuthDependencyProjection> {
-  const resolutions = resolveIds(db, "auth_request", requestedIds);
+  const resolutions = resolveIds(db, "auth_request", requestedIds.map(authReference));
   const ids = [...new Set([...resolutions.values()].flatMap(result => result.ok ? [result.id] : []))];
   type Dependency = Pick<AuthRequest, "id" | "status" | "exit_code" | "merge_finalized_at">;
   const rows = ids.length === 0 ? [] : db.prepare(
@@ -12,7 +15,7 @@ export function authDependencies(db: Db, requestedIds: string[]): Map<string, Au
   ).all(...ids) as Dependency[];
   const dependencies = new Map(rows.map(row => [row.id, row]));
   return new Map(requestedIds.map((requestedId): [string, AuthDependencyProjection] => {
-    const resolved = resolutions.get(requestedId.trim())!;
+    const resolved = resolutions.get(authReference(requestedId))!;
     const dependency = resolved.ok ? dependencies.get(resolved.id) : undefined;
     if (!dependency) return [requestedId, {
       state: !resolved.ok && resolved.error !== "not_found" ? "ambiguous" : "missing",
@@ -26,4 +29,45 @@ export function authDependencies(db: Db, requestedIds: string[]): Map<string, Au
       exit_code: dependency.exit_code, merge_finalized_at: dependency.merge_finalized_at ?? null,
     }];
   }));
+}
+
+export function canonicalAuthDependencies(db: Db, references: string[], requestId?: string): string[] {
+  if (!Array.isArray(references) || references.some(ref => typeof ref !== "string" || !ref.trim())) {
+    throw { status: 400, message: "depends_on_ids must be an array of nonempty request references." };
+  }
+  const resolutions = resolveIds(db, "auth_request", references.map(authReference));
+  const ids = new Set<string>();
+  for (const reference of references) {
+    const resolved = resolutions.get(authReference(reference))!;
+    if (!resolved.ok) throw { status: 400, message: `Dependency ${reference} is ${resolved.error === "not_found" ? "missing" : "ambiguous"}.` };
+    ids.add(resolved.id);
+  }
+  const visiting = new Set<string>(requestId ? [requestId] : []);
+  const visited = new Set<string>();
+  function visit(id: string): void {
+    if (visiting.has(id)) throw { status: 400, message: "Auth prerequisites must not contain a cycle or self-reference." };
+    if (visited.has(id)) return;
+    visiting.add(id);
+    const row = db.prepare("SELECT depends_on_id, depends_on_ids FROM auth_requests WHERE id = ?").get(id) as Record<string, unknown>;
+    for (const dependency of authDependencies(db, decodeAuthDependencies(row)).values()) {
+      if (!dependency.request_id) throw { status: 400, message: `Dependency ${dependency.requested_id} is ${dependency.state}.` };
+      visit(dependency.request_id);
+    }
+    visiting.delete(id);
+    visited.add(id);
+  }
+  for (const id of ids) visit(id);
+  return [...ids].sort();
+}
+
+export function authRevalidationOrder(db: Db, pending: AuthRequest[], completedId: string): AuthRequest[] {
+  const dependencies = authDependencies(db, [...new Set(pending.flatMap(request => request.depends_on_ids ?? []))]);
+  const priority = new Set(pending.filter(request => {
+    const direct = (request.depends_on_ids ?? []).map(id => dependencies.get(id)!);
+    return direct.some(dependency => dependency.request_id === completedId) && direct.every(dependency =>
+      dependency.request_id === completedId
+        ? dependency.status === "completed" && dependency.exit_code === 0 && (dependency.state === "ready" || dependency.state === "unfinalized")
+        : dependency.state === "ready");
+  }).map(request => request.id));
+  return [...pending.filter(request => priority.has(request.id)), ...pending.filter(request => !priority.has(request.id))];
 }

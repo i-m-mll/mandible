@@ -245,7 +245,7 @@ describe("client-auth durable attribution", () => {
   it("rejects an auth requester that supplies only ambient provider identity", async () => {
     const submit = (sessionId: string) => router.invoke({
       method: "POST",
-      url: "/api/auth/request",
+      url: "/api/auth/v2/request",
       body: { ...AUTH_MERGE_REVIEW,
         command: "echo codex",
         title: "Codex desktop auth request",
@@ -285,7 +285,7 @@ describe("client-auth durable attribution", () => {
 
     const submitted = await router.invoke({
       method: "POST",
-      url: "/api/auth/request",
+      url: "/api/auth/v2/request",
       body: {
         ...AUTH_MERGE_REVIEW,
         command: "echo attributed",
@@ -403,7 +403,7 @@ describe("client-auth durable attribution", () => {
 
     const mismatched = await router.invoke({
       method: "POST",
-      url: "/api/auth/request",
+      url: "/api/auth/v2/request",
       body: { ...AUTH_MERGE_REVIEW,
         command: "echo mismatch",
         title: "Mismatched auth request",
@@ -429,7 +429,7 @@ describe("client-auth durable attribution", () => {
       .run("auth-request-agent-session", "conflicting-auth-app");
     const conflicting = await router.invoke({
       method: "POST",
-      url: "/api/auth/request",
+      url: "/api/auth/v2/request",
       body: { ...AUTH_MERGE_REVIEW,
         command: "echo conflict",
         title: "Conflicting session claims",

@@ -68,15 +68,20 @@ export const AUTH_SNAPSHOT_SHAPE_V212: AuthSnapshotShape = Object.freeze({
   ]),
 });
 
-export const AUTH_SNAPSHOT_SHAPE: AuthSnapshotShape = Object.freeze({
+export const AUTH_SNAPSHOT_SHAPE_V220: AuthSnapshotShape = Object.freeze({
   request: AUTH_SNAPSHOT_SHAPE_V212.request,
   actions: Object.freeze([...AUTH_SNAPSHOT_SHAPE_V212.actions, "request_origin_json"]),
 });
 
+export const AUTH_SNAPSHOT_SHAPE: AuthSnapshotShape = Object.freeze({
+  request: Object.freeze([...AUTH_SNAPSHOT_SHAPE_V220.request, "depends_on_ids"]),
+  actions: AUTH_SNAPSHOT_SHAPE_V220.actions,
+});
+
 // Columns added after receipts existed appear only when set, so receipts
 // recorded before them keep verifying.
-const OMITTED_WHEN_NULL = ["space_publication_id", "protected_root_dirty_action_json"];
-const JSON_REQUEST_COLUMNS = ["issue_ids", "issues", "issue_references", "issue_closures", "merge_finalizer_state", "change_report_json", "protected_root_dirty_action_json"];
+const OMITTED_WHEN_NULL = ["depends_on_ids", "space_publication_id", "protected_root_dirty_action_json"];
+const JSON_REQUEST_COLUMNS = ["depends_on_ids", "issue_ids", "issues", "issue_references", "issue_closures", "merge_finalizer_state", "change_report_json", "protected_root_dirty_action_json"];
 
 export function authRequestSnapshot(db: Db, requestId: string, shape: AuthSnapshotShape = AUTH_SNAPSHOT_SHAPE): string {
   const row = db.prepare(`SELECT ${shape.request.join(", ")} FROM auth_requests WHERE id = ?`).get(requestId) as

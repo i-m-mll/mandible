@@ -23,7 +23,7 @@ const AUTH_HISTORY_SUMMARY_COLUMNS = [
   // agent-authored canonical change message without refetching the detail row.
   "commit_message_digest",
   "last_executed_at", "acknowledged_by", "post_merge_handoff", "issue_ids",
-  "depends_on_id", "issues", "type", "target_session_id", "target_repo_root",
+  "depends_on_id", "depends_on_ids", "issues", "type", "target_session_id", "target_repo_root",
   "delivered_at", "conversation_id", "approval_source", "approval_lease_id",
   "issue_references", "issue_closures", "merge_preflight_base_sha",
   "merge_preflight_queue_fingerprint", "merge_head_sha", "merge_candidate_tree_sha",
@@ -103,7 +103,7 @@ export function authHistory(db: Db, params: { limit: number; type?: string }) {
     ...row, change_report: changeReports.get(row.id) ?? null,
   })).map(row => row.id));
   const acceptances = latestCandidateAcceptances(db, [...acceptanceIds]);
-  const dependencies = authDependencies(db, [...new Set(requests.flatMap(row => row.depends_on_id ? [row.depends_on_id] : []))]);
+  const dependencies = authDependencies(db, [...new Set(requests.flatMap(row => row.depends_on_ids ?? []))]);
   let convergence: Map<string, AuthConvergence>;
   try {
     convergence = hooks.convergenceForRequests(requests.map(row => row.id));
@@ -114,7 +114,7 @@ export function authHistory(db: Db, params: { limit: number; type?: string }) {
   return requests.map(row => ({
     request: {
       ...row,
-      dependency: row.depends_on_id ? dependencies.get(row.depends_on_id)! : null,
+      dependencies: (row.depends_on_ids ?? []).map(id => dependencies.get(id)!),
       convergence: convergence.get(row.id)!,
       execution_attempts: listAuthExecutionAttempts(db, row.id),
       ...authAttributionReadFields(resolver, row),

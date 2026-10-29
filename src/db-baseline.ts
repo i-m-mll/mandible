@@ -27,7 +27,7 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-migration-convergence.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 220;
+export const BASELINE_SCHEMA_VERSION = 221;
 
 export const AUTH_REQUEST_HISTORY_INDEX_SQL =
   `CREATE INDEX idx_auth_requests_history ON auth_requests(resolved_at DESC)
@@ -166,6 +166,14 @@ export const CONVERSATION_OPENING_LINEAGE_SQL: readonly string[] = [
     CHECK(opening_lineage IN ('unread', 'none', 'child', 'successor', 'malformed', 'mismatched', 'legacy-prose'))`,
   "ALTER TABLE conversations ADD COLUMN opening_line TEXT",
   "ALTER TABLE conversations ADD COLUMN agent_created INTEGER NOT NULL DEFAULT 0 CHECK(agent_created IN (0, 1))",
+];
+
+export const AUTH_PREREQUISITE_SCHEMA_SQL = [
+  "ALTER TABLE auth_requests ADD COLUMN depends_on_ids TEXT CHECK (depends_on_ids IS NULL OR (json_valid(depends_on_ids) AND json_type(depends_on_ids) = 'array' AND depends_on_id IS NULL))",
+  `CREATE TRIGGER auth_prerequisites_clearance_review_frozen
+    BEFORE UPDATE OF depends_on_id, depends_on_ids ON auth_requests
+    WHEN OLD.clearance_use_id IS NOT NULL
+    BEGIN SELECT RAISE(ABORT, 'clearance-reviewed auth prerequisites are frozen'); END`,
 ];
 
 // Issue 8ae6b5f — what an explicit protected-root dirty policy did before a
@@ -1180,6 +1188,7 @@ export function createFreshSchemaBaseline(db: Db, schemaVersion: number): void {
     // Match forward migration order: publication binding follows all prior auth columns.
     for (const statement of SPACE_PUBLICATION_AUTH_SCHEMA_SQL) db.exec(statement);
     db.exec(AUTH_PROTECTED_ROOT_DIRTY_ACTION_COLUMN_SQL);
+    for (const statement of AUTH_PREREQUISITE_SCHEMA_SQL) db.exec(statement);
     db.exec("ALTER TABLE work_units ADD COLUMN custody_generation INTEGER NOT NULL DEFAULT 0 CHECK(custody_generation >= 0)");
     db.exec("ALTER TABLE auth_request_actions ADD COLUMN replacement_action_id TEXT REFERENCES auth_request_actions(id) ON DELETE RESTRICT");
     for (const statement of WORKER_THREAD_ARCHIVES_SCHEMA_SQL) db.exec(statement);

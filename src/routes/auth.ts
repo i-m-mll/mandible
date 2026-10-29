@@ -89,7 +89,14 @@ export function registerAuthRoutes(
     res.status(200).json({ check: report });
   }, { operation: { id: "post:/api/auth/check", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
-  app.post("/api/auth/request", async (req, res) => {
+  app.post("/api/auth/request", (_req, res) => {
+    res.status(410).json({ error: "Auth request writes require /api/auth/v2/request and depends_on_ids; update your client." });
+  }, { operation: { id: "post:/api/auth/request", effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  app.put("/api/auth/request/:id", (_req, res) => {
+    res.status(410).json({ error: "Auth request writes require /api/auth/v2/request/:id and depends_on_ids; update your client." });
+  }, { operation: { id: "put:/api/auth/request/:id", effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+
+  app.post("/api/auth/v2/request", async (req, res) => {
     if (rejectTokenlessSocketExecution(req, res)) return;
     const body = readBody<Record<string, unknown>>(req);
     if (Object.hasOwn(body, "spec_content")) {
@@ -101,6 +108,7 @@ export function registerAuthRoutes(
       res.status(400).json({ error: dirtyAction.error });
       return;
     }
+    if ("depends_on_id" in body) { res.status(400).json({ error: "'depends_on_id' is retired; use depends_on_ids as an array of request references." }); return; }
     const payload = parseAuthRequestPayload(body);
     if (!payload) {
       res.status(400).json({ error: "Invalid auth request payload." });
@@ -293,7 +301,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  }, { operation: { id: "post:/api/auth/request", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/auth/v2/request", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
 
   app.get("/api/auth/request/:id", async (req, res) => {
     // Issue f59b5bd — getRequest already resolves unambiguous short prefixes
@@ -327,7 +335,7 @@ export function registerAuthRoutes(
       files_changed: request.files_changed ?? 0,
       additions: request.additions ?? 0,
       deletions: request.deletions ?? 0,
-      dependency: authQueue.dependencyForRequest(request),
+      dependencies: authQueue.dependenciesForRequest(request),
       error_output: errorOutput,
       signature_verification: authQueue.getSignatureVerification(request.id),
       // Issue 27241e6 — merged/convergence-complete vs pending vs failed.
@@ -423,7 +431,7 @@ export function registerAuthRoutes(
     }
   }, { operation: { id: "post:/api/auth/request/:id/actions/:actionId/veto", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
 
-  app.put("/api/auth/request/:id", async (req, res) => {
+  app.put("/api/auth/v2/request/:id", async (req, res) => {
     const body = readBody<Record<string, unknown>>(req);
     const result = parseAuthRequestUpdatePayload(body);
     if (!result.ok) {
@@ -474,7 +482,7 @@ export function registerAuthRoutes(
       }
       handleQueueError(error, res);
     }
-  }, { operation: { id: "put:/api/auth/request/:id", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
+  }, { operation: { id: "put:/api/auth/v2/request/:id", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
 
   app.delete("/api/auth/request/:id", (_req, res) => {
     res.status(410).json({
@@ -647,7 +655,7 @@ export function registerAuthRoutes(
     const enriched = requests.map((r) => {
       return {
         ...r,
-        dependency: authQueue.dependencyForRequest(r),
+        dependencies: authQueue.dependenciesForRequest(r),
         action_count: authQueue.countActions(r.id),
         // Issue 27241e6 — the queue row shows merged vs live, not just merged.
         convergence: authQueue.convergenceForRequest(r.id),
@@ -974,6 +982,7 @@ const SPEC_CONTENT_REFUSAL =
   "'spec_content' is no longer accepted. Put intent in the change message (post-merge steps under Caveats) and link a substantial design to the issue as an artifact.";
 
 function parseAuthRequestPayload(body: Record<string, unknown>): AuthRequestInput | null {
+  if (body.depends_on_ids !== undefined && (!Array.isArray(body.depends_on_ids) || body.depends_on_ids.some(id => typeof id !== "string" || !id.trim()))) return null;
   if (body.space_publication_id !== undefined && (typeof body.space_publication_id !== "string" || !body.space_publication_id.trim())) return null;
   if (typeof body.command !== "string" || typeof body.title !== "string") {
     return null;
@@ -1029,7 +1038,7 @@ function parseAuthRequestPayload(body: Record<string, unknown>): AuthRequestInpu
     issue_references: parseStringArray(body.issue_references),
     issue_closures: parseStringArray(body.issue_closures),
     issues: parseStringArray(body.issues),
-    depends_on_id: typeof body.depends_on_id === "string" ? body.depends_on_id : (body.depends_on_id === null ? null : undefined),
+    depends_on_ids: body.depends_on_ids as string[] | undefined,
     execution_mode: executionMode,
     // Bug: 4e32923 — accept scoping fields from the CLI; null/missing means
     // legacy behaviour (broadcast on resolution, no tier-1 ownership).
@@ -1368,12 +1377,12 @@ function parseAuthRequestUpdatePayload(
     payload.issues = parsed;
   }
 
-  if (hasKey("depends_on_id")) {
-    if (body.depends_on_id === null || typeof body.depends_on_id === "string") {
-      payload.depends_on_id = body.depends_on_id as string | null;
-    } else {
-      return { ok: false, error: "Invalid 'depends_on_id' — must be a string or null" };
+  if (hasKey("depends_on_id")) return { ok: false, error: "'depends_on_id' is retired; use depends_on_ids as an array of request references." };
+  if (hasKey("depends_on_ids")) {
+    if (!Array.isArray(body.depends_on_ids) || body.depends_on_ids.some(id => typeof id !== "string" || !id.trim())) {
+      return { ok: false, error: "Invalid 'depends_on_ids' — must be an array of nonempty request references" };
     }
+    payload.depends_on_ids = body.depends_on_ids as string[];
   }
 
   return { ok: true, payload };

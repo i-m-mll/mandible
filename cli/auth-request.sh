@@ -48,7 +48,7 @@
 #   --repo <name>           Repo name (auto-detected from git toplevel basename)
 #   --cwd <path>            Merge: protected worktree override. Other types: required execution directory
 #   --target <branch>       Override auto-detected target/base branch (default: protected branch)
-#   --depends-on <id>       Auth request ID that must complete before this one runs
+#   --depends-on <id>       Repeat for each prerequisite that must finish before approval
 #   --supersedes <id>       Atomically replace this exact pending request
 #   --expected-revision <n> Required with --supersedes
 #   --expected-custody-generation <n> Required with --supersedes
@@ -123,7 +123,7 @@ verification_text=""
 canonical_message="false"
 diff_summary=""
 post_merge_handoff=""
-depends_on_id=""
+DEPENDS_ON_IDS=()
 supersedes_request_id=""
 expected_revision=""
 expected_custody_generation=""
@@ -143,7 +143,7 @@ promote_briefing_group=""
 promote_briefing_expected_base=""
 promote_briefing_proposal=""
 
-binding=$(mandible_bind_main_arguments "@auth request" '{"space_publication_id":{"option":"space-publication"},"title":{"option":"title"},"auth_type":{"option":"type"},"command":{"option":"command"},"command_set":{"option":"command","constant":"1"},"change_message_text":{"option":"message"},"change_message_set":[{"option":"message","constant":"1"},{"option":"message-file","constant":"1"}],"change_message_file":{"option":"message-file"},"verification_text":{"option":"verification"},"diff_summary":{"option":"diff-summary"},"post_merge_handoff":{"option":"handoff"},"dirty_policy":{"option":"dirty-policy"},"dirty_branch_prefix":{"option":"dirty-branch-prefix"},"depends_on_id":{"option":"depends-on"},"supersedes_request_id":{"option":"supersedes"},"expected_revision":{"option":"expected-revision"},"expected_custody_generation":{"option":"expected-custody-generation"},"SUPERSEDED_ACTION_DISPOSITIONS":{"option":"drop-superseded-action","array":true},"ISSUE_REFERENCES":{"option":["issue","ref-issue","references-issue"],"array":true},"ISSUE_CLOSURES":{"option":["closes-issue","close-issue"],"array":true},"promote_briefing_group":{"option":"promote-briefing","valueIndex":0},"promote_briefing_expected_base":{"option":"promote-briefing","valueIndex":1},"promote_briefing_proposal":{"option":"promote-briefing","valueIndex":2},"repo":{"option":"repo"},"cwd_override":{"option":"cwd"},"target_override":{"option":"target"},"timeout":{"option":"timeout"},"no_watch":{"option":"no-watch","constant":"1"},"force":{"option":["force","f"],"constant":"true"},"branch":{"position":0}}' "$@") || exit $?
+binding=$(mandible_bind_main_arguments "@auth request" '{"space_publication_id":{"option":"space-publication"},"title":{"option":"title"},"auth_type":{"option":"type"},"command":{"option":"command"},"command_set":{"option":"command","constant":"1"},"change_message_text":{"option":"message"},"change_message_set":[{"option":"message","constant":"1"},{"option":"message-file","constant":"1"}],"change_message_file":{"option":"message-file"},"verification_text":{"option":"verification"},"diff_summary":{"option":"diff-summary"},"post_merge_handoff":{"option":"handoff"},"dirty_policy":{"option":"dirty-policy"},"dirty_branch_prefix":{"option":"dirty-branch-prefix"},"DEPENDS_ON_IDS":{"option":"depends-on","array":true},"supersedes_request_id":{"option":"supersedes"},"expected_revision":{"option":"expected-revision"},"expected_custody_generation":{"option":"expected-custody-generation"},"SUPERSEDED_ACTION_DISPOSITIONS":{"option":"drop-superseded-action","array":true},"ISSUE_REFERENCES":{"option":["issue","ref-issue","references-issue"],"array":true},"ISSUE_CLOSURES":{"option":["closes-issue","close-issue"],"array":true},"promote_briefing_group":{"option":"promote-briefing","valueIndex":0},"promote_briefing_expected_base":{"option":"promote-briefing","valueIndex":1},"promote_briefing_proposal":{"option":"promote-briefing","valueIndex":2},"repo":{"option":"repo"},"cwd_override":{"option":"cwd"},"target_override":{"option":"target"},"timeout":{"option":"timeout"},"no_watch":{"option":"no-watch","constant":"1"},"force":{"option":["force","f"],"constant":"true"},"branch":{"position":0}}' "$@") || exit $?
 eval "$binding"
 
 if [[ -z "$title" ]]; then
@@ -277,6 +277,10 @@ conversation_id="${CLAUDE_CODE_SESSION_ID:-}"
 # --- Build issue relationship JSON arrays ---
 # Bug: 7b83c1f — reference-only issues are distinct from close-on-merge issues.
 
+depends_on_ids_json='[]'
+if [[ ${#DEPENDS_ON_IDS[@]} -gt 0 ]]; then
+  depends_on_ids_json=$(printf '%s\n' "${DEPENDS_ON_IDS[@]}" | jq -R . | jq -sc .)
+fi
 issue_references_json="null"
 if [[ ${#ISSUE_REFERENCES[@]} -gt 0 ]]; then
   issue_references_json=$(printf '%s\n' "${ISSUE_REFERENCES[@]}" | jq -R . | jq -sc .)
@@ -333,7 +337,7 @@ payload=$(jq -nc \
   --argjson canonical_message "$canonical_message" \
   --arg verification "$verification_text" \
   --arg post_merge_handoff "$post_merge_handoff" \
-  --arg depends_on_id "$depends_on_id" \
+  --argjson depends_on_ids "$depends_on_ids_json" \
   --arg supersedes_request_id "$supersedes_request_id" \
   --arg expected_revision "$expected_revision" \
   --arg expected_custody_generation "$expected_custody_generation" \
@@ -365,7 +369,6 @@ payload=$(jq -nc \
     issue_closures: $issue_closures,
     issues: $issue_closures,
     actions: $actions,
-    depends_on_id: (if $depends_on_id == "" then null else $depends_on_id end),
     supersedes_request_id: (if $supersedes_request_id == "" then null else $supersedes_request_id end),
     expected_revision: (if $expected_revision == "" then null else ($expected_revision | tonumber) end),
     expected_custody_generation: (if $expected_custody_generation == "" then null else ($expected_custody_generation | tonumber) end),
@@ -375,7 +378,8 @@ payload=$(jq -nc \
     target_repo_root: (if $target_repo_root == "" then null else $target_repo_root end),
     conversation_id: (if $conversation_id == "" then null else $conversation_id end),
     protected_root_dirty_action: $protected_root_dirty_action
-  } + (if $space_publication_id == "" then {} else {space_publication_id:$space_publication_id} end)')
+  } + (if $supersedes_request_id != "" and ($depends_on_ids | length) == 0 then {} else {depends_on_ids:$depends_on_ids} end)
+    + (if $space_publication_id == "" then {} else {space_publication_id:$space_publication_id} end)')
 
 # Bug: de8d29c — use -w to capture HTTP status separately so we can distinguish
 # a 409 Conflict (duplicate) from a connection failure. curl -sf treats HTTP 4xx
@@ -386,7 +390,7 @@ tmp_response=$(mktemp)
 tmp_sse_result=$(mktemp)
 trap 'rm -f "$tmp_response" "$tmp_sse_result"' EXIT
 
-http_status=$(api_send_capture POST "/api/auth/request" "$payload" "$tmp_response") || http_status=""
+http_status=$(api_send_capture POST "/api/auth/v2/request" "$payload" "$tmp_response") || http_status=""
 
 response=$(cat "$tmp_response" 2>/dev/null || echo "")
 
@@ -438,7 +442,7 @@ if [[ "$http_status" == "409" ]]; then
     fi
     echo ""
     echo "If that request is the same work, update it:"
-    echo "  PUT /api/auth/request/$(api_short_id "$existing_id")"
+    echo "  PUT /api/auth/v2/request/$(api_short_id "$existing_id")"
     echo "  Candidate bytes cannot be revised in place; use guarded supersession"
     echo "  so the daemon captures a new immutable change report."
     echo "If it is different work that merely shares a branch name, rename this"
@@ -447,7 +451,7 @@ if [[ "$http_status" == "409" ]]; then
   exit 3
 elif [[ "$http_status" != "201" ]]; then
   error_msg=$(printf '%s' "$response" | jq -r '.error // empty' 2>/dev/null || echo "")
-  echo "Error: POST /api/auth/request returned HTTP ${http_status}" >&2
+  echo "Error: POST /api/auth/v2/request returned HTTP ${http_status}" >&2
   [[ -n "$error_msg" ]] && echo "Server error: ${error_msg}" >&2
   exit 1
 else
