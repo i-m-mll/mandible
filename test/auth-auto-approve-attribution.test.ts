@@ -234,5 +234,5 @@ describe("delegated signing attribution persistence", () => {
 
 function writeTool(binDir: string, name: string, body: string): void {
   const file = path.join(binDir, name);
-  fs.writeFileSync(file, `#!/usr/bin/env node\n${body.trim()}\n`, { mode: 0o755 });
+  fs.writeFileSync(file, `#!${process.execPath}\n${body.trim()}\n`, { mode: 0o755 });
 }
