@@ -2,24 +2,39 @@
   if (window.__mandibleCandidateInteractionRunning) return;
   window.__mandibleCandidateInteractionRunning = true;
   const nonce = __MANDIBLE_ACCEPTANCE_NONCE__;
+  const workUntil = __MANDIBLE_ACCEPTANCE_WORK_UNTIL__;
   const report = evidence => window.__TAURI__.core.invoke('candidate_acceptance_report', { nonce, evidence });
   const checkpoint = `mandible-candidate-interaction:${nonce}`;
   const prompt = () => document.querySelector('[role="region"][aria-label="Welcome to Mandible"]');
   const complete = () => document.querySelector('button[aria-label="Complete optional integrations"]');
   const theme = () => document.getElementById('settings-app-theme');
+  const remaining = () => {
+    const milliseconds = workUntil - Date.now();
+    if (milliseconds <= 0) throw new Error('dashboard interaction deadline exceeded');
+    return milliseconds;
+  };
   const until = async predicate => {
-    const end = Date.now() + 15000;
-    while (Date.now() < end) {
-      if (await predicate()) return;
-      await new Promise(resolve => setTimeout(resolve, 50));
+    for (;;) {
+      remaining();
+      const ready = await predicate();
+      remaining();
+      if (ready) return;
+      await new Promise(resolve => setTimeout(resolve, Math.min(50, remaining())));
     }
-    throw new Error('dashboard interaction timed out');
   };
   const read = async path => {
-    const response = await fetch(path, { cache: 'no-store' });
-    if (!response.ok) throw new Error(`${path}: ${response.status}`);
-    return response.json();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error('dashboard interaction deadline exceeded')), remaining());
+    try {
+      const response = await fetch(path, { cache: 'no-store', signal: controller.signal });
+      remaining();
+      if (!response.ok) throw new Error(`${path}: ${response.status}`);
+      const value = await response.json();
+      remaining();
+      return value;
+    } finally { clearTimeout(timer); }
   };
+  const reload = () => { remaining(); location.reload(); };
   const integrations = async () => {
     const state = await read('/api/settings/integrations');
     const delivery = await read('/api/settings/instructions-delivery');
@@ -48,7 +63,7 @@
         return skipped === 'skipped' && !prompt();
       });
       sessionStorage.setItem(checkpoint, JSON.stringify({ stage: 'skipped', skipped, before }));
-      location.reload();
+      reload();
       return;
     }
 
@@ -73,7 +88,7 @@
       progress = { ...progress, stage: 'complete', completed,
         edit: { key: 'app_theme', before: before.value, after: persisted.value, revision: persisted.revision } };
       sessionStorage.setItem(checkpoint, JSON.stringify(progress));
-      location.reload();
+      reload();
       return;
     }
 
