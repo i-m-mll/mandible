@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { setImmediate } from 'node:timers/promises';
 import { beginDetailRequest, clearPersistedDetailCache, isPersistedDetailFresh, writePersistedDetail } from '../ui/src/detail-cache';
 import * as api from '../ui/src/api';
 import { queryClient } from '../ui/src/query/client';
@@ -14,6 +15,13 @@ function jsonResponse(body: unknown): Response {
     status: 200,
     headers: { 'content-type': 'application/json' },
   });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
 }
 
 describe('dashboard API GET cache', () => {
@@ -104,6 +112,83 @@ describe('dashboard API GET cache', () => {
     expect(space.id).toBe('sp1');
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledWith('/api/spaces/sp1', expect.any(Object));
+  });
+
+  it('replaces a cancelled GET immediately and keeps the replacement joinable after old settlement', async () => {
+    const oldTransport = deferred<Response>();
+    const started = deferred<void>();
+    const replacementTransport = deferred<Response>();
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => { started.resolve(); return oldTransport.promise; })
+      .mockReturnValueOnce(replacementTransport.promise);
+    vi.stubGlobal('fetch', fetchMock);
+    const controller = new AbortController();
+    const old = api.getSessions(undefined, { signal: controller.signal });
+    const cancelled = expect(old).rejects.toMatchObject({ name: 'AbortError' });
+    await started.promise;
+
+    controller.abort();
+    const replacement = api.getSessions();
+    await setImmediate();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][1].signal.aborted).toBe(true);
+    oldTransport.reject(controller.signal.reason);
+    await cancelled;
+    await setImmediate();
+    const joined = api.getSessions();
+    await setImmediate();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    replacementTransport.resolve(jsonResponse({ items: [{ id: 'current' }] }));
+    await expect(replacement).resolves.toEqual([{ id: 'current' }]);
+    await expect(joined).resolves.toEqual([{ id: 'current' }]);
+  });
+
+  it('keeps a shared GET alive when one of its consumers cancels', async () => {
+    const transport = deferred<Response>();
+    const fetchMock = vi.fn().mockReturnValue(transport.promise);
+    vi.stubGlobal('fetch', fetchMock);
+    const controller = new AbortController();
+    const cancelled = api.getSessions(undefined, { signal: controller.signal });
+    const remaining = api.getSessions();
+    const cancellation = expect(cancelled).rejects.toMatchObject({ name: 'AbortError' });
+
+    controller.abort();
+    await cancellation;
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][1].signal.aborted).toBe(false);
+    transport.resolve(jsonResponse({ items: [{ id: 'shared' }] }));
+    await expect(remaining).resolves.toEqual([{ id: 'shared' }]);
+  });
+
+  it('does not cache an aborted body that completes after its replacement', async () => {
+    const body = deferred<unknown>();
+    const readingBody = deferred<void>();
+    const oldResponse = jsonResponse(null);
+    vi.spyOn(oldResponse, 'json').mockImplementation(() => {
+      readingBody.resolve();
+      return body.promise;
+    });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(oldResponse)
+      .mockResolvedValueOnce(jsonResponse({ items: [{ id: 'current' }] }));
+    vi.stubGlobal('fetch', fetchMock);
+    const controller = new AbortController();
+    const old = api.getSessions(undefined, { signal: controller.signal });
+    const cancelled = expect(old).rejects.toMatchObject({ name: 'AbortError' });
+    await readingBody.promise;
+
+    controller.abort();
+    const replacement = api.getSessions();
+    await cancelled;
+    await setImmediate();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await expect(replacement).resolves.toEqual([{ id: 'current' }]);
+    body.resolve({ items: [{ id: 'obsolete' }] });
+    await setImmediate();
+
+    await expect(api.getSessions()).resolves.toEqual([{ id: 'current' }]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('publishes cached Briefing containment only after all three reads succeed', async () => {
