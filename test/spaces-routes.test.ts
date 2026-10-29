@@ -14,7 +14,10 @@ import type { ResolveRefResponse } from "../src/contracts.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import { registerSpacesRoutes } from "../src/routes/spaces.js";
 import { Router } from "../src/server.js";
-import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
+import { cardRefString, projectBoard, issueFactsFromEntity, EMPTY_BOARD_METADATA, defaultColumnKey } from "../ui/src/views/spaces/boardModel";
+import { itemRefString, buildSpaceViewModel } from "../ui/src/views/spaces/collectionModel";
+import type { SpaceItem } from "../ui/src/api";
+import { createLedgerIssue, migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
 
 // Issue f108bba (umbrella de56ffa): Spaces REST API — CRUD, batch occurrences,
@@ -379,6 +382,37 @@ describe("seed-from-filter", () => {
 });
 
 describe("unified ref resolver", () => {
+  it("resolves Board and Collection refs with active facts in the containing Space context", async () => {
+    const first = createLedgerIssue(db, { project_id: PROJECT_ID, alias: 'abc1234', title: 'First' });
+    const second = createLedgerIssue(db, { project_id: OTHER_PROJECT_ID, alias: 'abc1234', title: 'Second' });
+    const store = new LedgerStore(db);
+    store.setWorkerStatus(first.id, 'blocked', SYSTEM_ACTOR);
+    store.setLabel(first.id, 'active', true, 'mandible', SYSTEM_ACTOR);
+    store.setLabel(first.id, 'removed', true, 'mandible', SYSTEM_ACTOR);
+    store.setLabel(first.id, 'removed', false, 'mandible', SYSTEM_ACTOR);
+    const spaceId = await makeSpace();
+    const added = await call('POST', `/api/spaces/${spaceId}/items`, { ref_type: 'issue', ref_id: first.id, title: 'Authored title' });
+    expect(added.status).toBe(201);
+    const item = (added.body as { item: SpaceItem }).item;
+    expect(cardRefString(item)).toBe(itemRefString(item));
+    const resolve = async (project?: string, ref = cardRefString(item)) => {
+      const params = new URLSearchParams({ ref });
+      if (project) params.set('project', project);
+      return ((await call('GET', `/api/spaces/resolve?${params}`)).body as ResolveRefResponse).resolution;
+    };
+    const result = await resolve(PROJECT_ID);
+    const aliasRef = cardRefString({ ...item, ref_uri: 'issue:abc1234' });
+    expect(result).toMatchObject({ resolved: true, entity: { id: first.id, worker_status: 'blocked', labels: ['active'] } });
+    expect(await resolve(PROJECT_ID, itemRefString({ ...item, ref_uri: aliasRef }))).toMatchObject({ resolved: true, entity: { id: first.id } });
+    expect(await resolve(OTHER_PROJECT_ID, aliasRef)).toMatchObject({ resolved: true, entity: { id: second.id } });
+    expect(await resolve(undefined, aliasRef)).toMatchObject({ resolved: false, error: 'ambiguous', entity: null });
+    expect(await resolve(undefined, 'issue:missing')).toMatchObject({ resolved: false, error: 'not_found', entity: null });
+    await call('POST', `/api/spaces/${spaceId}/occurrences`, { item_id: item.id, renderer: 'board' });
+    const packet = (await call('GET', `/api/spaces/${spaceId}`)).body as Parameters<typeof buildSpaceViewModel>[0];
+    const projected = projectBoard(buildSpaceViewModel(packet), EMPTY_BOARD_METADATA, { [item.id]: issueFactsFromEntity(item.id, result.entity) });
+    expect(projected.columns.find((column) => column.key === defaultColumnKey('blocked'))?.cards.map((card) => card.occurrence.item?.title)).toEqual(['Authored title']);
+  });
+
   it("resolves a project-qualified issue ref and says whether it is in the context project", async () => {
     const issueId = createIssue(PROJECT_ID, "Qualified");
     const shortId = new LedgerStore(db).getIssue(issueId).short_id;

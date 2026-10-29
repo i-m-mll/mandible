@@ -114,7 +114,7 @@ function buildProjectIssueSummaries(
  * Batch active labels per issue, sorted, matching the per-issue projection's
  * `deleted_at IS NULL` filter and alphabetical order.
  */
-function batchLabelsByIssue(db: Db, issueIds: string[]): Map<string, string[]> {
+export function batchLabelsByIssue(db: Db, issueIds: string[]): Map<string, string[]> {
   const labels = new Map<string, string[]>();
   for (const ids of chunk(issueIds, IN_CLAUSE_CHUNK)) {
     const placeholders = ids.map(() => "?").join(", ");
@@ -346,10 +346,7 @@ function ledgerIssueToRouteIssue(
     evidence_method: detail.evidence_method,
     evidence_id: detail.evidence_id,
   });
-  const labels = detail.labels
-    .filter((label) => label.deleted_at === null)
-    .map((label) => label.label)
-    .sort();
+  const labels = batchLabelsByIssue(db, [detail.id]).get(detail.id) ?? [];
   const parents = batchParentRelationshipsByIssue(db, [detail.id]).get(detail.id) ?? [];
   return {
     id: displayIssueId(detail),

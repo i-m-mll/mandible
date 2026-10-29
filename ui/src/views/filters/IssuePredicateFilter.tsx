@@ -26,6 +26,8 @@ import './issue-predicate-filter.css';
 export type IssuePredicateFilterProps = {
   /** Current chips (controlled by the parent). */
   chips: TimelineFilterChip[];
+  draftToken?: string;
+  onDraftTokenChange?: (token: string) => void;
   /** Are we editing an existing row (changes the Save button label / aria). */
   editing?: boolean;
   /** Does the current chip set yield a predicate (drives preview copy)? */
@@ -71,6 +73,8 @@ const DEFAULT_PREFIX = 'issue-predicate-filter';
 
 export function IssuePredicateFilter({
   chips,
+  draftToken: controlledToken,
+  onDraftTokenChange,
   editing = false,
   projecting,
   previewTitle,
@@ -91,7 +95,9 @@ export function IssuePredicateFilter({
   projectingLabel = 'Matches issues',
   emptyLabel = 'Add at least one chip',
 }: IssuePredicateFilterProps): JSX.Element {
-  const [draftToken, setDraftToken] = useState('');
+  const [localToken, setLocalToken] = useState('');
+  const draftToken = controlledToken ?? localToken;
+  const setDraftToken = onDraftTokenChange ?? setLocalToken;
   const datalistId = `${classPrefix}-token-options`;
 
   const optionValues = useMemo(() => {

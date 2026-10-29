@@ -52,6 +52,7 @@
     "chokidar": "4.0.3",
     "jose": "6.2.2",
     "lucide-preact": "1.63.0",
+    "p-queue": "9.0.1",
     "remark-directive": "3.0.1",
     "remark-parse": "11.0.0",
     "smol-toml": "1.6.1",

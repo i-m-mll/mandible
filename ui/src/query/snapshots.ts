@@ -3,24 +3,8 @@ import { isApiErrorStatus } from "../api";
 import { readPersistedDetail, writePersistedDetail, removePersistedDetail } from "../detail-cache";
 import { ROUTE_DATA_FRESH_MS } from './policy';
 import { isProjectionKey } from './projectionKeys';
-import { LIVE_REFRESH_DEADLINE_MS, RefreshDeadlineError } from '../lib/coalesced-refresh';
+import { readWithDeadline } from './readWithDeadline';
 
-async function readProjection<T>(load: (signal: AbortSignal) => Promise<T>, signal: AbortSignal): Promise<T> {
-  signal.throwIfAborted();
-  const controller = new AbortController();
-  const abandon = () => controller.abort(signal.reason);
-  signal.addEventListener('abort', abandon, { once: true });
-  const failed = new Promise<never>((_resolve, reject) => {
-    controller.signal.addEventListener('abort', () => reject(controller.signal.reason), { once: true });
-  });
-  const deadline = setTimeout(() => controller.abort(new RefreshDeadlineError(LIVE_REFRESH_DEADLINE_MS)), LIVE_REFRESH_DEADLINE_MS);
-  try {
-    return await Promise.race([load(controller.signal), failed]);
-  } finally {
-    clearTimeout(deadline);
-    signal.removeEventListener('abort', abandon);
-  }
-}
 
 export function snapshotOptions<T>(queryKey: readonly unknown[], load: (signal: AbortSignal) => Promise<T>, accept: (data: T) => boolean = () => true) {
   const restartSnapshot = () => {
@@ -32,7 +16,7 @@ export function snapshotOptions<T>(queryKey: readonly unknown[], load: (signal: 
     staleTime: ROUTE_DATA_FRESH_MS,
     placeholderData: restartSnapshot as UseQueryOptions<T>['placeholderData'],
     queryFn: async ({ signal }) => {
-      const data = await (isProjectionKey(queryKey) ? readProjection(load, signal) : load(signal)).catch((error: unknown) => {
+      const data = await (isProjectionKey(queryKey) ? readWithDeadline(load, signal) : load(signal)).catch((error: unknown) => {
         if (isApiErrorStatus(error, 404) || isApiErrorStatus(error, 409)) removeRestartSnapshot(queryKey);
         throw error;
       });

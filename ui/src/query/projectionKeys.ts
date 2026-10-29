@@ -34,4 +34,4 @@ export const projectionKeys = {
   timeline: (input: ProjectTimelineInput) => ['timeline', normalizeTimelineInput(input)] as const,
 };
 
-export const isProjectionKey = (key: readonly unknown[]) => key[0] === 'graph' || key[0] === 'timeline' || key[0] === 'issue-detail' || (key[0] === 'space' && key[1] === 'packet');
+export const isProjectionKey = (key: readonly unknown[]) => key[0] === 'board-issue' || key[0] === 'graph' || key[0] === 'timeline' || key[0] === 'issue-detail' || (key[0] === 'space' && key[1] === 'packet');

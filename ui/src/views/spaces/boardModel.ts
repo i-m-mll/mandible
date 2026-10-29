@@ -91,10 +91,8 @@ export function normalizeWorkerStatus(raw: unknown): WorkerStatus {
 /**
  * The subset of issue facts the board derives from the C2 unified resolver
  * (`/api/spaces/resolve`). The resolver returns the bare `ledger_issues` row,
- * so `worker_status`/`kind` are authoritative; `labels` is only populated when
- * a caller supplies a richer entity. Filter predicates over fields absent from
- * the bare entity (labels, relationships) simply do not match — they are not
- * silently treated as a match.
+ * plus effective worker status and active labels. Relationship predicates are
+ * outside this lightweight projection.
  */
 export type IssueFacts = {
   id: string;
@@ -478,9 +476,4 @@ export function cardLabel(item: SpaceItem | null, fallback: string): string {
 }
 
 /** The canonical resource-ref string for an item card, for the C6 unresolved-ref UI. */
-export function cardRefString(item: SpaceItem): string {
-  if (item.ref_uri && item.ref_uri.trim()) return item.ref_uri.trim();
-  if (item.ref_type === 'artifact') return item.ref_id;
-  // Briefing review candidates carry their own canonical ref form.
-  return `mandible://${item.ref_type}/${item.ref_id}`;
-}
+export { spaceItemRef as cardRefString } from './itemRef';

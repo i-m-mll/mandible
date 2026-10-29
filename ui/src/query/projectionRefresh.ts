@@ -13,7 +13,8 @@ export function invalidateProjectionQueries(client: QueryClient, key?: QueryKey,
     const refresh = createCoalescedRefresh(() => {
       const targets = cache.getAll().filter((query) => isProjectionKey(query.queryKey)
         && query.isActive() && query.state.isInvalidated && query.state.fetchStatus !== 'fetching');
-      return client.refetchQueries({ predicate: (query) => targets.includes(query) }, { cancelRefetch: false });
+      // Query owns each in-flight read; a slow identity must not block dispatch for other keys.
+      void client.refetchQueries({ predicate: (query) => targets.includes(query) }, { cancelRefetch: false });
     }, { deadlineMs: null });
     const unsubscribe = cache.subscribe((event) => {
       const query = event.query;
