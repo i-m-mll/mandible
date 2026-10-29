@@ -25,7 +25,10 @@ A work unit has:
 | `parent_branch` | The branch this feature branch was created from |
 | `kind` | `solo` (standalone) or `partition` (part of a larger effort) |
 | `state` | Current lifecycle state (see below) |
-| `assigned_session_id` | The session currently working on this unit |
+| `assigned_session_id` | Active session assignment; ordinary stopped-holder cleanup can clear it |
+| `assignment_target` | Durable native provider/session identity or explicit unresolved alias responsible for completion |
+| `provider`, `provider_session_id` | Latest available ambient mutation actor, independently of assignment |
+| `worker_provider`, `worker_provider_session_id` | Positive child-worker binding derived from the current target and indexed lineage |
 | `continuation` | Handoff notes for the next session |
 | `continuation_by` | Who wrote the continuation |
 | `continuation_at` | When the continuation was written |
@@ -34,6 +37,16 @@ A work unit has:
 | `activated_at` | When work first started |
 | `last_commit_at` | Timestamp of the last commit on the branch |
 | `resolved_at` | When the work unit was resolved |
+
+## Assignment and custody
+
+A claim or auto-claim captures an explicit session target, or the caller's unambiguous ambient provider identity, before conversation ingestion is required. Explicit assignment or custody transfer replaces the target and invalidates the prior worker binding. An omitted assignment preserves it. Ordinary activation, continuation, resolution, and coordinator mutations preserve the target; activation can fill a missing target only for the established holder. Metadata-only request-origin overrides do not grant assignment authority.
+
+Stopped-holder cleanup clears active assignment without clearing the durable target or recreating active assignment when lineage arrives. Explicit clear or release ends responsibility. Resolution preserves the target for completion. Conversation archive and restore preserve unresolved responsibility.
+
+Worker binding requires one canonical non-sidechain indexed conversation, a valid first-line child-worker marker, and its matching resolved parent. The latest mutation actor and the inert worker flag do not establish worker ownership. Every unresolved target assignment blocks completion, including assignments awaiting evidence or whose active holder was cleared. Historical migration observes retained explicit assignment and positive binding today; actor-only rows and conflicting retained evidence remain unknown.
+
+Reusing a branch preserves omitted parent ancestry, fills a missing parent, and accepts an equal parent idempotently. A conflicting existing parent or an auth-bound ancestry change is refused. Holder and custody checks apply to parent changes.
 
 ## Lifecycle states
 

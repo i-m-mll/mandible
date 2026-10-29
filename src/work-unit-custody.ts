@@ -1,3 +1,4 @@
+import { serializeAssignmentTarget, assignmentTargetForSession } from "./work-unit-assignment.js";
 import { hasArchivedResponsibility } from "./work-unit-worker.js";
 import { mutateWorkUnit } from "./work-unit-history.js";
 import { requestOriginJson } from "./request-origin.js";
@@ -86,8 +87,10 @@ export function classifyHolderLiveness(
   for (const id of sessionIdentities(unit)) {
     const resolution = resolver(db, id);
     if (!resolution || resolution.liveness !== "stopped") continue;
-    const provider = unit.worker_provider === "claude_code" ? "claude" : unit.worker_provider
-      ?? (unit.assigned_session_id ? null : unit.provider);
+    const targetProvider = unit.assignment_target?.kind === "native" ? unit.assignment_target.provider : null;
+    const bindingProvider = targetProvider ?? unit.worker_provider;
+    const provider = bindingProvider === "claude_code" ? "claude" : bindingProvider
+      ?? (unit.assigned_session_id || unit.assignment_target ? null : unit.provider);
     if (provider && resolution.provider && resolution.provider !== provider) continue;
     const status = resolution.mandible_status ?? resolution.console_status;
     // The shared rule also calls a bare transcript stopped; only a recorded
@@ -292,10 +295,12 @@ export function transferWorkUnitCustody(db: Db, input: CustodyTransferInput): Wo
   db.transaction(() => {
     const changed = mutateWorkUnit(db, unit.id, () => db.prepare(`UPDATE work_units
       SET owner_user_id = ?, owner_credential_id = ?, custody_generation = ?,
-        provider = ?, provider_session_id = ?, assigned_session_id = NULL, worker_provider = NULL, worker_provider_session_id = NULL
+        provider = ?, provider_session_id = ?, assigned_session_id = NULL, worker_provider = NULL, worker_provider_session_id = NULL, assignment_target_json = ?
       WHERE id = ? AND custody_generation = ? AND owner_user_id IS ? AND owner_credential_id IS ?`)
       .run(input.new_user_id, input.new_credential_id, nextGeneration,
         input.new_session.provider, input.new_session.provider_session_id,
+        serializeAssignmentTarget(assignmentTargetForSession(db, null, input.new_session.provider && input.new_session.provider_session_id
+          ? { provider: input.new_session.provider, provider_session_id: input.new_session.provider_session_id } : null)),
         unit.id, input.expected_generation, unit.owner_user_id, unit.owner_credential_id));
     if (changed.changes !== 1) throw new CustodyGenerationConflict();
     db.prepare(`INSERT INTO work_unit_custody_events

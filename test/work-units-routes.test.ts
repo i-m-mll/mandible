@@ -1,3 +1,4 @@
+import { mutateWorkUnit } from "../src/work-unit-history.js";
 import { setConversationArchiveState } from "../src/conversations/metadata.js";
 import { WorkUnitReconciler } from "../src/work-unit-reconciler.js";
 import { resolveSessionAlias } from "../src/session-liveness.js";
@@ -51,6 +52,57 @@ afterEach(() => {
 });
 
 describe("work unit routes", () => {
+  it("fills existing branch ancestry independently, preserves it on replay, and refuses conflict without mutation", async () => {
+    const claim = (body: Record<string, unknown>) => router.invoke({ method: "POST", url: "/api/work-units/claim",
+      body: { issue_id: "abc123", repo_id: "mandible", branch: "feature/parent", ...body } });
+    const first = await claim({});
+    const id = (first.body as { id: string }).id;
+    expect(first.status).toBe(201);
+    expect((await claim({ parent_branch: "integration/bundle" })).body).toMatchObject({ id, existing: true });
+    const before = db.prepare("SELECT * FROM work_units WHERE id = ?").get(id);
+    expect(before).toMatchObject({ parent_branch: "integration/bundle" });
+    expect((await claim({ parent_branch: "integration/bundle" })).status).toBe(200);
+    expect((await claim({})).status).toBe(200);
+    expect((await claim({ parent_branch: "integration/other", assigned_session_id: "intruder" })).status).toBe(409);
+    expect(db.prepare("SELECT * FROM work_units WHERE id = ?").get(id)).toEqual(before);
+    expect((db.prepare("SELECT count(*) AS n FROM work_units").get() as { n: number }).n).toBe(1);
+  });
+
+  it("captures assignment before ingestion, keeps it through cleanup and actor mutation, and binds only current lineage", async () => {
+    const worker = "019a0000-0000-7000-8000-000000000009";
+    const claim = await router.invoke({ method: "POST", url: "/api/work-units/claim",
+      ambient_identity: { provider: "codex", provider_session_id: worker },
+      body: { issue_id: "abc123", repo_id: "mandible", branch: "feature/late" } });
+    expect(claim.status).toBe(201);
+    const id = (claim.body as { id: string }).id;
+    const pending = await router.invoke({ method: "POST", url: "/api/work-units/claim",
+      ambient_identity: { provider: "codex", provider_session_id: worker },
+      body: { issue_id: "abc123", repo_id: "mandible", branch: "feature/other-late" } });
+    const pendingId = (pending.body as { id: string }).id;
+    const target = JSON.stringify({ kind: "native", provider: "codex", session_id: worker });
+    const row = () => db.prepare("SELECT * FROM work_units WHERE id = ?").get(id) as Record<string, unknown>;
+    expect(row()).toMatchObject({ assignment_target_json: target, worker_provider: null });
+    mutateWorkUnit(db, id, () => db.prepare("UPDATE work_units SET assigned_session_id = NULL, provider_session_id = 'coordinator' WHERE id = ?").run(id));
+    expect(row()).toMatchObject({ assignment_target_json: target, assigned_session_id: null, worker_provider: null });
+    const insert = db.prepare(`INSERT INTO conversations(id,source,session_id,source_path,source_hash,source_mtime,started_at,
+      parent_source,parent_session_id,parent_conversation_id,opening_lineage,opening_line)
+      VALUES (?, 'codex', ?, ?, '', 1, '2026-10-01', ?, ?, ?, ?, ?)`);
+    insert.run("late-parent", "019a0000-0000-7000-8000-000000000008", "/parent", null, null, null, "none", null);
+    insert.run("late-child", worker, "/child", "codex", "019a0000-0000-7000-8000-000000000008", "late-parent", "child",
+      "[mandible child parent=codex:019a0000-0000-7000-8000-000000000008 parent-role=coordinator role=worker]");
+    mutateWorkUnit(db, id, () => db.prepare("UPDATE work_units SET state = 'resolved' WHERE id = ?").run(id));
+    expect(row()).toMatchObject({ assignment_target_json: target, assigned_session_id: null,
+      provider_session_id: "coordinator", worker_provider: "codex", worker_provider_session_id: worker });
+    expect(db.prepare("SELECT worker_provider FROM work_units WHERE id = ?").get(pendingId)).toEqual({ worker_provider: null });
+    expect(getWorkerAssignments(db, { provider: "codex", provider_session_id: worker })).toMatchObject({ complete: false, unresolvedUnitIds: [pendingId] });
+    mutateWorkUnit(db, pendingId, () => db.prepare("UPDATE work_units SET state = 'resolved' WHERE id = ?").run(pendingId));
+    expect(getWorkerAssignments(db, { provider: "codex", provider_session_id: worker }).complete).toBe(true);
+    mutateWorkUnit(db, id, () => db.prepare("UPDATE work_units SET state = 'open', assignment_target_json = ? WHERE id = ?")
+      .run(JSON.stringify({ kind: "alias", session_id: "unindexed-replacement" }), id));
+    expect(row()).toMatchObject({ worker_provider: null, worker_provider_session_id: null });
+    mutateWorkUnit(db, id, () => db.prepare("UPDATE work_units SET provider_session_id = ? WHERE id = ?").run(worker, id));
+    expect(row()).toMatchObject({ worker_provider: null, worker_provider_session_id: null });
+  });
   it("lists in-progress units' liveness with a fixed number of queries, matching each unit's own read", async () => {
     db.prepare("INSERT INTO sessions (id, app, status, last_active, branch, conversation_id) VALUES (?, ?, ?, ?, ?, ?)")
       .run("sess-live", "claude", "active", "2026-10-01T00:00:00Z", "feature/live-branch", "conv-live");
@@ -863,6 +915,17 @@ describe("work-unit custody takeover", () => {
     fs.rmSync(repo, { recursive: true, force: true });
   });
 
+  it("refuses ancestry changes by another live holder without changing assignment", async () => {
+    const id = await heldUnit("active");
+    const before = db.prepare("SELECT * FROM work_units WHERE id = ?").get(id);
+    const change = await guarded.invoke({ method: "POST", url: "/api/work-units/claim", credential: "taker",
+      ambient_identity: { provider: "codex", provider_session_id: "taker-thread" },
+      body: { issue_id: issueId, repo_id: projectKey, branch: "feature/takeover", parent_branch: "integration/bundle" } });
+    expect(change.status).toBe(409);
+    expect(change.body).toMatchObject({ code: "custody_holder_live" });
+    expect(db.prepare("SELECT * FROM work_units WHERE id = ?").get(id)).toEqual(before);
+  });
+
   it("reads a Codex holder's writer lock off the event loop for the custody check", async () => {
     const thread = "019a0000-0000-7000-8000-0000000000e5";
     const codexRoot = fs.mkdtempSync(path.join(os.tmpdir(), "custody-codex-"));
@@ -913,7 +976,7 @@ describe("work-unit custody takeover", () => {
   it.each(["claude", "codex"])("keeps live %s custody through native turn stops, then permits physical-stop takeover", async (provider) => {
     const id = await heldUnit("active");
     db.prepare("UPDATE sessions SET app = ? WHERE id = 'holder-session'").run(provider);
-    db.prepare("UPDATE work_units SET provider = ? WHERE id = ?").run(provider, id);
+    db.prepare("UPDATE work_units SET provider = ?, assignment_target_json = ? WHERE id = ?").run(provider, JSON.stringify({ kind: "native", provider: provider === "claude" ? "claude_code" : provider, session_id: "holder-thread" }), id);
     const report = (hook_event_name: string, extra: Record<string, unknown> = {}) => applyExecutionEnvelope(new SessionExecutionStore(db),
       { provider, session_id: "holder-thread", hook_event_name, turn_id: "native-turn", ...extra }, Date.now());
     for (const [event, extra, kind] of [

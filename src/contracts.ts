@@ -557,6 +557,10 @@ export type AuthOutputChunk = {
 export type WorkUnitKind = "solo" | "partition" | "integration";
 export type WorkUnitState = "open" | "committed" | "resolved" | "abandoned";
 
+export type WorkUnitAssignmentTarget =
+  | { kind: "native"; provider: ConversationSource; session_id: string }
+  | { kind: "alias"; session_id: string };
+
 export type WorkUnit = {
   id: string;
   issue_id: string;
@@ -567,6 +571,7 @@ export type WorkUnit = {
   kind: WorkUnitKind;
   state: WorkUnitState;
   assigned_session_id: string | null;
+  assignment_target: WorkUnitAssignmentTarget | null;
   provider: string | null;
   provider_session_id: string | null;
   worker_provider: string | null;

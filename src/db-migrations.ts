@@ -1,3 +1,4 @@
+import { WORK_UNIT_ASSIGNMENT_SCHEMA_SQL, seedLegacyAssignmentTargets } from "./work-unit-assignment-schema.js";
 import { CHILD_RETENTION_SCHEMA_SQL } from "./conversations/retention-schema.js";
 import { LEDGER_ORIGIN_SCHEMA_SQL, MANAGED_SESSION_ORIGIN_INDEX_SQL } from "./ledger-origin-schema.js";
 import { SPACE_PUBLICATION_AUTH_SCHEMA_SQL } from "./spaces/publication-auth-schema.js";
@@ -2194,6 +2195,7 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 218, name: "auth_request_history_index", statements: [AUTH_REQUEST_HISTORY_INDEX_SQL] },
   { version: 219, name: "specialized_ledger_request_origin", statements: [...LEDGER_ORIGIN_SCHEMA_SQL, MANAGED_SESSION_ORIGIN_INDEX_SQL] },
   { version: 220, name: "indexed_child_retention", statements: [...CHILD_RETENTION_SCHEMA_SQL] },
+  { version: 221, name: "durable_work_unit_assignment", statements: [...WORK_UNIT_ASSIGNMENT_SCHEMA_SQL] },
 ];
 
 /**
@@ -2377,6 +2379,7 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
           for (const statement of migration.statements) db.exec(statement);
         }
         if (migration.version === 190) preserveLegacyDocuments(db);
+        if (migration.version === 221) seedLegacyAssignmentTargets(db);
         setVersion.run(SCHEMA_VERSION_KEY, String(migration.version));
       }
     })();
