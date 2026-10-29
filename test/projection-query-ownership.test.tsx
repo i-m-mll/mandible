@@ -20,8 +20,9 @@ describe('shared projection Query lifecycle', () => {
       .toEqual(projectionKeys.graph({ mode: 'work', repo: 'a,b', nodeTypes: ['issue', 'session'] }));
     expect(projectionKeys.graph({ mode: 'work' })).not.toEqual(projectionKeys.graph({ mode: 'work', status: 'open' }));
     const roots = [{ id: 'a' }, { id: 'b' }];
-    expect(projectionKeys.timeline({ root_row_specs: roots, event_kinds: [], expanded_paths: ['b', 'a'] }))
+    expect(projectionKeys.timeline({ root_row_specs: roots, event_kinds: ['state', 'body', 'comment'], expanded_paths: ['b', 'a'] }))
       .toEqual(projectionKeys.timeline({ root_specs: roots, event_kinds: ['state', 'body', 'comment'], expanded_paths: ['a', 'b'] }));
+    expect(projectionKeys.timeline({ event_kinds: [] })).not.toEqual(projectionKeys.timeline({}));
     expect(projectionKeys.timeline({ root_specs: roots })).not.toEqual(projectionKeys.timeline({ root_specs: [...roots].reverse() }));
   });
 
