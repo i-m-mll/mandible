@@ -1415,20 +1415,9 @@ function App(): JSX.Element {
     const heartbeatHandler = () => {
       lastDashboardSseAtRef.current = Date.now();
     };
-    // Ledger issue liveness: thin `{issue_id, project_id}` payloads. Bump
-    // freshness, invalidate the affected cache, forward the raw payload for the
-    // open issue-detail view, and (only while the issues tab is active) schedule
-    // a debounced list refetch. When the tab is inactive, cache invalidation
-    // suffices — the route.tab activation effect refetches on activation.
-    const ledgerHandler = (payload: SSEPayload) => {
+    const ledgerHandler = () => {
       lastDashboardSseAtRef.current = Date.now();
-      const data = typeof payload.data === 'object' && payload.data !== null ? payload.data : payload;
-      window.dispatchEvent(
-        new CustomEvent('ledger:sse', { detail: { type: payload.type, data } }),
-      );
-      if (routeTabRef.current === 'issues') {
-        scheduleIssuesRefresh();
-      }
+      if (routeTabRef.current === "issues") scheduleIssuesRefresh();
     };
     // Coalesce streamed auth output: buffer chunks and flush one batched
     // dispatch per frame instead of re-rendering the whole app per chunk. Badge

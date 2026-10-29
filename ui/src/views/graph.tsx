@@ -30,9 +30,8 @@ import { ViewSidebar } from '../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { AppOperationalNoticeOutlet, useRegisterAppRightSidebar } from '../app-shell';
 import { useAppRightSidebarState } from '../right-sidebar-state';
-import { useQuery } from '@tanstack/preact-query';
 import { queryClient } from '../query/client';
-import { issueDetailOptions, queryErrorMessage, detailQueryData } from '../query/details';
+import { issueDetailOptions, queryErrorMessage, detailQueryData, publishIssueDetail } from '../query/details';
 import { useViewActive } from '../app-shell';
 import { graphOptions } from "../query/graph";
 import { useProjectionQuery } from "../query/useProjectionQuery";
@@ -715,8 +714,8 @@ export function GraphDetailPane({
     ? node.detail.ledger_issue_id
     : null;
   const active = useViewActive();
-  const detailOptions = issueDetailOptions(ledgerIssueId);
-  const ledgerQuery = useQuery({ ...detailOptions, enabled: active && Boolean(ledgerIssueId) }, queryClient);
+  const detailOptions = useMemo(() => issueDetailOptions(ledgerIssueId), [ledgerIssueId]);
+  const ledgerQuery = useProjectionQuery(detailOptions, active && Boolean(ledgerIssueId));
   const ledgerDetail = ledgerIssueId ? detailQueryData(ledgerQuery, detailOptions) : undefined;
   const ledgerLoading = ledgerQuery.isPending;
   const ledgerError = queryErrorMessage(ledgerQuery.error);
@@ -775,8 +774,7 @@ export function GraphDetailPane({
               onOpenEntity={openLedgerEntity}
               onAddComment={async (body) => {
                 const next = await addLedgerIssueComment(ledgerIssueId, body);
-                await queryClient.cancelQueries({ queryKey: detailOptions.queryKey, exact: true });
-                queryClient.setQueryData(detailOptions.queryKey, next);
+                await publishIssueDetail(detailOptions.queryKey, next);
               }}
               onAddToSpace={() => setSpacePickerOpen(true)}
             />

@@ -45,6 +45,14 @@ export function snapshotOptions<T>(queryKey: readonly unknown[], load: (signal: 
   }), restartSnapshot };
 }
 
+export function removeRestartSnapshot(queryKey: readonly unknown[]): void {
+  removePersistedDetail(`${queryKey[0]}-query-snapshot`, hashKey(queryKey));
+}
+
+export function writeRestartSnapshot(queryKey: readonly unknown[], data: unknown): void {
+  writePersistedDetail(`${queryKey[0]}-query-snapshot`, hashKey(queryKey), data);
+}
+
 export function detailQueryData<T>(query: { data: T | undefined; isError: boolean }, options: { restartSnapshot: () => T | undefined }): T | undefined {
   return query.data ?? (query.isError ? options.restartSnapshot() : undefined);
 }

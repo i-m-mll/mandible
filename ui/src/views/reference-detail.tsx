@@ -1,8 +1,7 @@
 import { navigateAppHash } from '../app-history';
-import { useEffect, useState } from "preact/hooks";
-import { useQuery } from "@tanstack/preact-query";
+import { useEffect, useMemo, useState } from "preact/hooks";
 import { useViewActive } from "../app-shell";
-import { queryClient } from "../query/client";
+import { useProjectionQuery } from '../query/useProjectionQuery';
 import { issueDetailOptions, queryErrorMessage, detailQueryData } from "../query/details";
 import { useArtifactDetail } from "../hooks/useArtifactDetail";
 import { LedgerIssueDetail } from "../components/ledger/IssueDetail";
@@ -64,9 +63,9 @@ export function IssueReferenceDetail({
   onErrorChange?: (error: string | null) => void;
 }): JSX.Element {
   const active = useViewActive();
-  const options = issueDetailOptions(issueRef, repoId);
-  const query = useQuery({ ...options, enabled: active }, queryClient);
-  const detail = detailQueryData(query, options);
+  const options = useMemo(() => issueDetailOptions(issueRef, repoId), [issueRef, repoId]);
+  const query = useProjectionQuery(options, active);
+  const detail = useMemo(() => detailQueryData(query, options), [query.data, query.isError, options]);
   const loading = query.isPending;
   const error = queryErrorMessage(query.error);
   useEffect(() => {

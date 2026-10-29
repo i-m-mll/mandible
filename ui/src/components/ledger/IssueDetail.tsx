@@ -153,6 +153,7 @@ export function LedgerIssueDetail({
   onAddToSpace,
 }: LedgerIssueDetailProps): JSX.Element {
   const [commentText, setCommentText] = useState('');
+  const [commentSaveError, setCommentSaveError] = useState<string | null>(null);
   const [workNotesDraft, setWorkNotesDraft] = useState(detail.work_notes ?? '');
   const [editingWorkNotes, setEditingWorkNotes] = useState(false);
   const [workNotesEditorIssueId, setWorkNotesEditorIssueId] = useState(detail.id);
@@ -219,6 +220,7 @@ export function LedgerIssueDetail({
   const projectRef = issueProjectRef(detail);
 
   useEffect(() => {
+    setCommentSaveError(null);
     setChildrenExpanded(false);
     setRelationshipsExpanded(false);
     setArtifactsExpanded(false);
@@ -251,11 +253,16 @@ export function LedgerIssueDetail({
 
   const submitComment = async () => {
     if (!onAddComment || !commentText.trim() || busy) return;
+    const saveIssueId = detail.id;
+    setCommentSaveError(null);
     setLocalBusy(true);
     try {
       await onAddComment(commentText.trim());
+      if (workNotesDetailIdRef.current !== saveIssueId) return;
       setCommentText('');
       setShowComposer(false);
+    } catch (error) {
+      if (workNotesDetailIdRef.current === saveIssueId) setCommentSaveError(error instanceof Error ? error.message : String(error));
     } finally {
       setLocalBusy(false);
     }
@@ -517,6 +524,7 @@ export function LedgerIssueDetail({
           )}
           {onAddComment && (
             <div className="ledger-comment-composer">
+              {commentSaveError && <p role="alert">{commentSaveError}</p>}
               {!showComposer ? (
                 <button type="button" className="btn btn--ghost" onClick={() => setShowComposer(true)}>
                   Add Comment
