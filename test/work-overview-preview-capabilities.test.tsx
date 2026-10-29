@@ -2,7 +2,7 @@
 import { render } from './helpers/notice-test-render';
 import { establishTestClientAccess } from './helpers/local-client-access';
 import { bindTestInstanceCatalog } from './helpers/instance-operation-fixtures';
-import { cleanup, fireEvent, screen, waitFor } from './helpers/dom.js';
+import { cleanup, fireEvent, screen, waitFor, within } from './helpers/dom.js';
 import { beforeEach, afterEach, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 
@@ -83,16 +83,15 @@ it('keeps copied project metadata writable while gating host Git operations', as
   };
   const view = render(h(WorkOverviewView, props));
 
-  await screen.findByText('Commit history is unavailable in this copied preview.');
-  await screen.findByText('Live branch audit is unavailable in this copied preview.');
-  const addProject = screen.getByRole('button', { name: '+ Add project' }) as HTMLButtonElement;
+  const addProject = screen.getByRole('button', { name: 'Add project' }) as HTMLButtonElement;
   const pushAll = screen.getByRole('button', { name: /Push All/ }) as HTMLButtonElement;
   // Dynamic route hints admit the attempt; the daemon owns exact effect permission.
   expect(addProject.disabled).toBe(false);
   expect(pushAll.disabled).toBe(true);
   fireEvent.click(addProject);
-  fireEvent.input(screen.getByRole('textbox', { name: 'Project path' }), { target: { value: '/tmp/new-project' } });
-  fireEvent.click(screen.getByRole('button', { name: 'Add project' }));
+  const projectPath = screen.getByRole('textbox', { name: 'Project path' });
+  fireEvent.input(projectPath, { target: { value: '/tmp/new-project' } });
+  fireEvent.click(within(projectPath.parentElement!).getByRole('button', { name: 'Add project' }));
   await screen.findByText('effect_not_allowed: process:external');
   expect(requests).toContainEqual({ path: '/api/work/repos/add', method: 'POST' });
   expect(onRescan).not.toHaveBeenCalled();

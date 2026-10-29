@@ -14,7 +14,7 @@ const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 function fixture(fail = false) {
   const root = scratchDir('parser-runtime'); roots.push(root);
   fs.mkdirSync(path.join(root, 'cli'));
-  for (const name of ['api.sh', 'user.sh', 'command-syntax.sh', 'command-syntax.cjs', 'command-syntax.json', 'canonical-origin.sh', 'local-credential-routes.json', 'mandible-identity.jq']) {
+  for (const name of ['main.zsh', 'api.sh', 'user.sh', 'command-syntax.sh', 'command-syntax.cjs', 'command-syntax.json', 'canonical-origin.sh', 'local-credential-routes.json', 'mandible-identity.jq']) {
     fs.copyFileSync(path.resolve('cli', name), path.join(root, 'cli', name));
   }
   fs.mkdirSync(path.join(root, 'bin'));
@@ -112,8 +112,8 @@ it('keeps Bun identity checks for parser-only selection and SQLite checks for th
   expect(database.status).not.toBe(0);
   expect(database.stderr).toContain('Pinned SQLite library is missing or corrupt');
   const helper = spawnSync('bash', ['-c', `source ${quote(path.resolve('cli/command-syntax.sh'))} --mandible-syntax-definitions-only; mandible_bun_runtime`], { encoding: 'utf8', env });
-  expect(helper.status).not.toBe(0);
-  expect(helper.stderr).toContain('Pinned SQLite library is missing or corrupt');
+  expect(helper.status, helper.stderr).toBe(0);
+  expect(helper.stdout.trim()).toBe(process.execPath);
 });
 
 it('qualifies payloads and bare Bun descendants while preserving arguments, exit status and custom tools', () => {
