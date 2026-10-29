@@ -3,7 +3,10 @@ import fs from "node:fs";
 import { withOwnedRunLock, createOwnedRun, saveOwnedMetadata, finalizeOwnedRun, cleanupOwnedRun, ownedRunIdentityMatches, ownedRunHandle, ownedRunReceipt, processIdentity } from "./owned-run.mjs";
 import { previewPaths, previewBaseDir, nativePreviewBaseDir, verifyPreviewConsumerStopped } from "./preview-custody.mjs";
 import { adoptLegacyPreview } from './preview-legacy.mjs';
-import { previewRegistration, reconcilePreviewRegistration } from './preview-registration.mjs';
+import { previewRegistration, reconcilePreviewRegistration, retirePreviewRegistration } from './preview-registration.mjs';
+import { serviceInstallationContext } from './service-definitions.mjs';
+import { readBundleOwner, readBundleLaunch, admitBundleOwner } from './bundle-services.mjs';
+import { installedRuntimeEnvironment, readInstalledRelease, releaseFile } from './installed-release.mjs';
 import { probeJson } from './local-runtime.mjs';
 import https from 'node:https';
 import { localCaPaths } from './local-ca-trust.mjs';
@@ -1365,6 +1368,14 @@ async function refreshExistingPreview(existing, details) {
   const validated = validateRefreshContract(existing, preview, details);
   const run = existing.ownership;
   if (run.lifecycle.teardown) throw new Error("Teardown intent prevents refresh");
+  if (run.lifecycle.phase === 'refresh-failed') {
+    await stopPreviewProcess(existing);
+    await retirePreviewRegistration({ home: mandibleHome(), runId: run.runId,
+      registrations: [run.lifecycle.registration, run.lifecycle.refresh?.previous, run.lifecycle.refresh?.desired],
+      reload: details.options.effects?.reloadGateway ?? reloadLocalFrontDoor });
+    run.lifecycle.phase = 'failed-stopped';
+    persistPreview(existing);
+  }
   const previous = ['failed-stopped', 'retired'].includes(run.lifecycle.phase) ? null : run.lifecycle.registration;
   delete existing.message;
   delete existing.previousStartupCommit;
@@ -2014,10 +2025,25 @@ async function reconcileRegistration(metadata, expected, desired, reload = reloa
 }
 
 export function reloadLocalFrontDoor(token) {
-  const script = path.join(path.dirname(fileURLToPath(import.meta.url)), "local-runtime.mjs");
-  const result = spawnSync(process.execPath, [script, "reload-gateway"], {
+  const context = serviceInstallationContext({ home: mandibleHome() });
+  const owner = readBundleOwner(context);
+  let script = path.join(path.dirname(fileURLToPath(import.meta.url)), "local-runtime.mjs");
+  let runtime = process.execPath;
+  const args = ['reload-gateway'];
+  let environment = { ...process.env, ...(token ? { MANDIBLE_GATEWAY_LOCK_TOKEN: token } : {}) };
+  if (owner) {
+    const resources = path.join(context.bundleRoot, 'Contents/Resources');
+    const release = readInstalledRelease(resources);
+    const admission = admitBundleOwner(context, release);
+    if (!admission.ok) throw new Error(admission.message);
+    environment = installedRuntimeEnvironment(resources, environment);
+    runtime = environment.MANDIBLE_RUNTIME;
+    script = releaseFile(resources, release.entrypoints.controller);
+    args.push(`--launch-mode=${readBundleLaunch(context).launchMode}`);
+  }
+  const result = spawnSync(runtime, [script, ...args], {
     encoding: "utf8", timeout: 20_000,
-    env: { ...process.env, ...(token ? { MANDIBLE_GATEWAY_LOCK_TOKEN: token } : {}) },
+    env: environment,
   });
   if (result.error || result.status !== 0) throw new Error(`Gateway reconciliation failed: ${result.error?.message ?? result.stderr.trim()}`);
   return result.stdout.trim();

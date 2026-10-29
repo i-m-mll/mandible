@@ -47,8 +47,8 @@
   min-height: 24px;
 }
 
-.chat-history-sidebar .sidebar-item-row__select {
-  padding-block: 3px;
+.chat-history-sidebar .sidebar-item-row {
+  --sidebar-item-row-padding-block: 3px;
 }
 
 /* ── Conversations view (legacy list classes, still used by detail) ── */

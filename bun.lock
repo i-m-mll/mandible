@@ -11,6 +11,7 @@
         "@tanstack/react-virtual": "3.14.12",
         "chokidar": "4.0.3",
         "jose": "6.2.2",
+        "lucide-preact": "1.63.0",
         "remark-directive": "3.0.1",
         "remark-parse": "11.0.0",
         "smol-toml": "1.6.1",
@@ -644,6 +645,8 @@
     "longest-streak": ["longest-streak@3.1.0", "", {}, "sha512-9Ri+o0JYgehTaVBBDoMqIl8GXtbWg711O3srftcHhZ0dqnETqLaoIK0x17fUw9rFSlK/0NlsKe0Ahhyl5pXE2g=="],
 
     "lru-cache": ["lru-cache@10.4.3", "", {}, "sha512-JNAzZcXrCt42VGLuYz0zfAzDfAvJWW6AfYlDBQyDV5DClI2m5sAmK+OIO7s59XfsRsWHp02jAJrRadPRGTt6SQ=="],
+
+    "lucide-preact": ["lucide-preact@1.63.0", "", { "peerDependencies": { "preact": "^10.27.2 || ^11.0.0-0" } }, "sha512-KBKPbEsmLRgbWGCpnOf5vmQuqT929pJHeV7BAX8K27iXUfyNjt0QxBexo4enWc55YDXqbx5NuEhb4U9VrUmUiQ=="],
 
     "lz-string": ["lz-string@1.5.0", "", { "bin": { "lz-string": "bin/bin.js" } }, "sha512-h5bgJWpxJNswbU7qCrV0tIKQCaS3blPDrqKWx+QxzuzL1zGUzij9XCWLrSLsJPu5t+eWA/ycetzYAO5IOMcWAQ=="],
 

@@ -20,7 +20,8 @@ function ownerDead(file) {
 
 async function startLockHolder(lockFile, label) {
   const source = "printf 'LOCKED\\n'; while IFS= read -r line; do :; done";
-  const holder = spawn('/usr/bin/lockf', ['-t', '0', '-k', lockFile, '/bin/sh', '-c', source], { stdio: ['pipe', 'pipe', 'pipe'] });
+  // Workload group cancellation must leave the lease alive until its owner closes stdin.
+  const holder = spawn('/usr/bin/lockf', ['-t', '0', '-k', lockFile, '/bin/sh', '-c', source], { detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
   let diagnostic = '';
   holder.stderr.on('data', chunk => { diagnostic = `${diagnostic}${chunk}`.slice(-4000); });
   const busy = await new Promise((resolve, reject) => {

@@ -9,7 +9,7 @@ vi.mock('../scripts/bundle-services.mjs', async original => ({
   ...await original<typeof import('../scripts/bundle-services.mjs')>(), adoptBundleRelease: vi.fn(),
 }));
 import { applicationIdentity } from '../scripts/accepted-release.mjs';
-import { installedFileIdentity } from '../scripts/installed-release.mjs';
+import { installedFileIdentity, verifyApplicationRelease } from '../scripts/installed-release.mjs';
 import { applicationRootIdentity, prepareAcceptedApplication, preparedApplicationContext, installAcceptedApplication } from '../scripts/accepted-app-install.mjs';
 import { withInstallationGatewayLock } from '../scripts/lifecycle-lock.mjs';
 import { verifyUpdaterClosure } from '../scripts/runtime-handoff.mjs';
@@ -45,6 +45,23 @@ function fixture() {
   const context = { home, runtimeDir: path.join(home, 'config/local-sessions'), bundleRoot: nativeApp, bundleIdentifier: 'bio.mll.mandible.fixture' };
   return { root, app, resources, receipt, reference, binding, context, inputs };
 }
+
+it('verifies the complete shipped inventory with the unchanged full-app identity and rejects native or payload tampering', () => {
+  const f = fixture();
+  expect(verifyApplicationRelease(f.app)).toEqual({ release: f.receipt.shipped, digest: f.receipt.package.sha256 });
+  for (const relative of ['program', '../MacOS/mandible-bun']) {
+    const file = path.resolve(f.resources, relative); const bytes = fs.readFileSync(file);
+    fs.writeFileSync(file, 'tampered');
+    expect(() => verifyApplicationRelease(f.app)).toThrow(`Installed resource changed: ${relative}`);
+    fs.writeFileSync(file, bytes);
+  }
+  fs.writeFileSync(path.join(f.app, 'Contents/Info.plist'), 'changed outside the inventory');
+  expect(verifyApplicationRelease(f.app).digest).toBe(applicationIdentity(f.app));
+  expect(verifyApplicationRelease(f.app).digest).not.toBe(f.receipt.package.sha256);
+  const native = path.resolve(f.resources, '../MacOS/mandible-bun');
+  fs.renameSync(native, `${native}.saved`); fs.symlinkSync(`${native}.saved`, native);
+  expect(() => verifyApplicationRelease(f.app)).toThrow('must not reference another installation');
+});
 
 it('carries prepared authority through exchange without rereading app bytes, expires on lease loss, and revalidates the installed target on resume', async () => {
   const f = fixture();

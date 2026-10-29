@@ -1,4 +1,6 @@
 .app-frame {
+  --app-chrome-ui-font-size: var(--app-chrome-dark-ui-font-size);
+  --app-chrome-inherited-font-size: calc(var(--font-ui-size) + var(--app-chrome-ui-font-size) - var(--app-chrome-reference-font-size));
   --app-chrome-tint-percentage: var(--app-chrome-dark-tint-percentage);
   --surface-glass-tint: color-mix(in srgb, var(--surface-chrome) var(--app-chrome-tint-percentage), transparent);
   --app-boundary-shadow-paint-width: var(--app-shadow-dark-width);
@@ -15,6 +17,7 @@
   --app-frame-left-width: calc(var(--app-rail-width) + var(--app-view-sidebar-width));
   background: var(--surface-chrome);
 }
+.app-frame[data-preview-typography='absolute'] { --app-chrome-inherited-font-size: var(--app-chrome-ui-font-size); }
 .app-frame > .app-frame__bar {
   --app-header-height: var(--app-frame-header-height);
   grid-column: 1 / -1;
@@ -116,6 +119,7 @@
   pointer-events: none;
 }
 [data-theme='light'] .app-frame {
+  --app-chrome-ui-font-size: var(--app-chrome-light-ui-font-size);
   --app-chrome-tint-percentage: var(--app-chrome-light-tint-percentage);
   --app-boundary-shadow-paint-width: var(--app-shadow-light-width);
   --app-boundary-shadow-gradient-stops: var(--app-shadow-light-linear);
