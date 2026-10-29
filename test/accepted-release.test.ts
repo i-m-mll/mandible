@@ -4,8 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { applicationIdentity, createPendingRelease, retainAcceptedRelease, resolveAcceptedRelease, disposeAcceptedRelease, disposePendingRelease } from '../scripts/accepted-release.mjs';
-import { installedFileIdentity, verifyInstalledRelease } from '../scripts/installed-release.mjs';
+import { applicationIdentity, createPendingRelease, retainAcceptedRelease, resolveAcceptedRelease, disposeAcceptedRelease, disposePendingRelease, assertAcceptedReleaseAvailable, readAcceptedReleaseReceipt } from '../scripts/accepted-release.mjs';
+import { installedFileIdentity, verifyInstalledRelease, verifyApplicationRelease } from '../scripts/installed-release.mjs';
 import { createOwnedRun, withOwnedRunLock, saveOwnedMetadata } from '../scripts/owned-run.mjs';
 import { CandidateAcceptanceRuns } from '../src/candidate-acceptance.js';
 import { diagnosticReplayPackage, finalizeAcceptance, acceptanceOwnedOutputs } from '../scripts/candidate-acceptance.mjs';
@@ -13,6 +13,81 @@ import { acceptanceDeadline } from '../scripts/acceptance-deadline.mjs';
 import { acceptedReleaseSelection } from '../src/accepted-release-selection.js';
 import { createAuthCheckRepo, insertSiblingMergeRequest } from './helpers/auth-queue-fixtures.js';
 import { createMigratedDb } from './helpers/ledger-fixtures.js';
+
+it('uses the same validity contract for a sealed full-size inventory, acquisition and historical evidence', async () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'accepted-inventory-'));
+  try {
+    const pending = await createPendingRelease({ storage: path.join(base, 'packages'), ownership: { runId: 'large', instanceId: 'large', project: 'project', workUnit: 'unit' } });
+    fs.mkdirSync(pending.resources, { recursive: true });
+    const files: Record<string, { sha256: string; size: number }> = {};
+    const content = 'qualified executable resource';
+    const first = `resource-00000-${'signed-resource-'.repeat(5)}.js`;
+    fs.writeFileSync(path.join(pending.resources, first), content);
+    const identity = installedFileIdentity(path.join(pending.resources, first));
+    for (let index = 0; index < 13636; index++) {
+      const name = `resource-${String(index).padStart(5, '0')}-${'signed-resource-'.repeat(5)}.js`;
+      if (index > 0) fs.writeFileSync(path.join(pending.resources, name), content);
+      files[name] = identity;
+    }
+    const candidate = { pin_sha: 'a'.repeat(40), tree_sha: 'b'.repeat(40), base_sha: 'c'.repeat(40), head_sha: 'd'.repeat(40) };
+    fs.writeFileSync(path.join(pending.resources, 'release.json'), JSON.stringify({ schema: 'mandible-installed-release@1', version: '1',
+      target: `${process.platform}-${process.arch}`, layout: { kind: 'macos-app', roots: { resources: '.' } },
+      provenance: { commit: candidate.pin_sha, source_digest: 'e'.repeat(64) }, entrypoints: { daemon: first }, native: {}, files }));
+    const exercised = verifyApplicationRelease(pending.app);
+    const evidence = path.join(base, 'acceptance.json'); fs.writeFileSync(evidence, JSON.stringify({ status: 'passed' }));
+    const accepted = await retainAcceptedRelease({ pending, candidate, shipped: exercised.release, expectedDigest: exercised.digest,
+      acceptance: { record_id: 'record', request_id: 'request' }, evidence: { receipt: evidence, sha256: installedFileIdentity(evidence).sha256 } });
+    const file = Buffer.from(accepted.reference.split(':')[2], 'base64url').toString('utf8');
+    const bytes = fs.readFileSync(file);
+    expect(bytes.length).toBeGreaterThan(2513824);
+    expect(Object.keys(accepted.receipt.shipped.files)).toHaveLength(13636);
+    const db = createMigratedDb({ path: path.join(base, 'ledger.db') });
+    const repo = createAuthCheckRepo();
+    try {
+      insertSiblingMergeRequest(db, repo, 'request', 'main');
+      db.prepare("INSERT INTO auth_candidate_acceptances (id, auth_request_id, pin_sha, tree_sha, base_sha, head_sha, status, started_at, finished_at, result_json) VALUES ('record', 'request', ?, ?, ?, ?, 'passed', 1, 2, ?)")
+        .run(candidate.pin_sha, candidate.tree_sha, candidate.base_sha, candidate.head_sha, JSON.stringify({ receipt: accepted.reference }));
+      const request = { id: 'request', merge_candidate_pin_sha: candidate.pin_sha, merge_candidate_tree_sha: candidate.tree_sha,
+        merge_preflight_base_sha: candidate.base_sha, merge_head_sha: candidate.head_sha };
+      const action = { kind: 'checkpoint_add', state: 'staged', payload: { kind: 'accepted-release', payload: { acceptanceId: 'record', reference: accepted.reference } } };
+      const selected = () => acceptedReleaseSelection(db, request, [action], false);
+      assertAcceptedReleaseAvailable(accepted.reference);
+      expect(selected().selection.acceptanceId).toBe('record');
+      expect(readAcceptedReleaseReceipt(accepted.reference, candidate).candidate).toEqual(candidate);
+      expect(resolveAcceptedRelease(accepted.reference, candidate).app).toBe(pending.app);
+
+      fs.appendFileSync(file, '\n');
+      expect(() => assertAcceptedReleaseAvailable(accepted.reference)).toThrow('receipt bytes changed');
+      expect(selected).toThrow('receipt bytes changed');
+      expect(() => readAcceptedReleaseReceipt(accepted.reference)).toThrow('receipt bytes changed');
+      fs.writeFileSync(file, JSON.stringify({ ...accepted.receipt, schema: 'invalid' }));
+      const invalid = `accepted-release:${installedFileIdentity(file).sha256}:${Buffer.from(file).toString('base64url')}`;
+      expect(() => assertAcceptedReleaseAvailable(invalid)).toThrow('Invalid accepted release receipt');
+      expect(() => readAcceptedReleaseReceipt(invalid)).toThrow('Invalid accepted release receipt');
+      fs.writeFileSync(file, bytes);
+
+      const evidenceBytes = fs.readFileSync(evidence);
+      fs.appendFileSync(evidence, '\n');
+      expect(() => readAcceptedReleaseReceipt(accepted.reference)).toThrow('evidence bytes changed');
+      fs.writeFileSync(evidence, evidenceBytes);
+
+      const metadataFile = path.join(pending.root, 'metadata.json');
+      const metadata = JSON.parse(fs.readFileSync(metadataFile, 'utf8'));
+      saveOwnedMetadata(metadataFile, { ...metadata, ownership: { ...metadata.ownership, workUnit: 'another-owner' } });
+      expect(() => assertAcceptedReleaseAvailable(accepted.reference)).toThrow('owner changed');
+      expect(() => resolveAcceptedRelease(accepted.reference)).toThrow('owner changed');
+      saveOwnedMetadata(metadataFile, { ...metadata, ownership: { ...metadata.ownership, state: 'terminal' } });
+      expect(() => assertAcceptedReleaseAvailable(accepted.reference)).toThrow('claimed for disposal');
+      expect(selected).toThrow('claimed for disposal');
+      expect(() => resolveAcceptedRelease(accepted.reference)).toThrow('claimed for disposal');
+      expect(readAcceptedReleaseReceipt(accepted.reference).acceptance.record_id).toBe('record');
+      fs.renameSync(pending.root, `${pending.root}-removed`);
+      expect(() => assertAcceptedReleaseAvailable(accepted.reference)).toThrow();
+      expect(readAcceptedReleaseReceipt(accepted.reference).acceptance.record_id).toBe('record');
+      expect(fs.readFileSync(file)).toEqual(bytes);
+    } finally { db.close(); fs.rmSync(repo, { recursive: true, force: true }); }
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
 
 it('seals the exercised app in place after scratch disposal and refuses changed selection or bytes', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'accepted-release-'));
