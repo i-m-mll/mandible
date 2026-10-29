@@ -103,7 +103,13 @@
 }
 
 .chat-history-item {
+  --sidebar-item-row-padding-scale: 1.25;
+  border-radius: var(--radius-lg);
   margin-bottom: 2px;
+}
+
+.chat-history-item[data-provider='openai'] {
+  --sidebar-item-row-provider-size: 27px;
 }
 
 .chat-history-item--subagent {

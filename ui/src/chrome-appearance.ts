@@ -1,24 +1,27 @@
+import { DEFAULT_TYPOGRAPHY_SETTINGS } from './typography-settings';
+
+export const CHROME_UI_REFERENCE_FONT_SIZE_PX = DEFAULT_TYPOGRAPHY_SETTINGS.uiFontSize;
 export type ChromeAppearanceTheme = 'light' | 'dark';
-export type ChromeAppearanceParameters = { widthPx: number; profile: number; maxDarkness: number; glassTransparency: number; textIncrementPt: number };
+export type ChromeAppearanceParameters = { widthPx: number; profile: number; maxDarkness: number; glassTransparency: number; uiFontSizePt: number };
 export type ChromeShadowParameters = Pick<ChromeAppearanceParameters, 'widthPx' | 'profile' | 'maxDarkness'>;
 export type ChromeAppearanceThemes = Record<ChromeAppearanceTheme, ChromeAppearanceParameters>;
 export type ChromeAppearancePreviewState = {
-  version: 1;
+  version: 2;
   overrides: Partial<ChromeAppearanceThemes>;
   theme?: ChromeAppearanceTheme;
 };
 
 export const CHROME_APPEARANCE_DEFAULTS: Readonly<ChromeAppearanceThemes> = {
-  light: { widthPx: 16, profile: 0.25, maxDarkness: 0.04, glassTransparency: 0.12, textIncrementPt: 2 },
-  dark: { widthPx: 5, profile: 0.5, maxDarkness: 0, glassTransparency: 0.12, textIncrementPt: 2 },
+  light: { widthPx: 16, profile: 0.25, maxDarkness: 0.04, glassTransparency: 0.12, uiFontSizePt: 11 },
+  dark: { widthPx: 5, profile: 0.5, maxDarkness: 0, glassTransparency: 0.12, uiFontSizePt: 11 },
 };
-export const CHROME_APPEARANCE_PREVIEW_DEFAULTS: ChromeAppearancePreviewState = { version: 1, overrides: {} };
+export const CHROME_APPEARANCE_PREVIEW_DEFAULTS: ChromeAppearancePreviewState = { version: 2, overrides: {} };
 export const CHROME_APPEARANCE_LIMITS = {
   widthPx: { min: 1, max: 32, step: 0.25 },
   profile: { min: 0, max: 1, step: 0.01 },
   maxDarkness: { min: 0, max: 1, step: 0.001 },
   glassTransparency: { min: 0, max: 1, step: 0.01 },
-  textIncrementPt: { min: 0, max: 6, step: 0.25 },
+  uiFontSizePt: { min: 7.5, max: 21, step: 0.25 },
 } as const;
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -39,11 +42,19 @@ export function normalizeChromeAppearance(value: unknown, defaults: ChromeAppear
 
 export function normalizeChromeAppearancePreview(value: unknown): ChromeAppearancePreviewState {
   const source = record(value);
-  if (source?.version !== 1) return CHROME_APPEARANCE_PREVIEW_DEFAULTS;
+  if (source?.version !== 1 && source?.version !== 2) return CHROME_APPEARANCE_PREVIEW_DEFAULTS;
   const overrides = record(source.overrides);
-  const result: ChromeAppearancePreviewState = { version: 1, overrides: {} };
+  const result: ChromeAppearancePreviewState = { version: 2, overrides: {} };
   for (const theme of ['light', 'dark'] as const) {
-    if (record(overrides?.[theme])) result.overrides[theme] = normalizeChromeAppearance(overrides![theme], CHROME_APPEARANCE_DEFAULTS[theme]);
+    const parameters = record(overrides?.[theme]);
+    if (!parameters) continue;
+    if (source.version === 1) {
+      const delta = parameters.textIncrementPt;
+      const uiFontSizePt = typeof delta === 'number' && Number.isFinite(delta)
+        ? CHROME_UI_REFERENCE_FONT_SIZE_PX * 0.75 + Math.round(Math.min(6, Math.max(0, delta)) * 4) / 4
+        : CHROME_APPEARANCE_DEFAULTS[theme].uiFontSizePt;
+      result.overrides[theme] = normalizeChromeAppearance({ ...parameters, uiFontSizePt }, CHROME_APPEARANCE_DEFAULTS[theme]);
+    } else result.overrides[theme] = normalizeChromeAppearance(parameters, CHROME_APPEARANCE_DEFAULTS[theme]);
   }
   if (source.theme === 'light' || source.theme === 'dark') result.theme = source.theme;
   return result;
@@ -94,11 +105,11 @@ const number = (value: number) => String(Number(value.toFixed(8)));
 const color = (alpha: number) => `rgba(0, 0, 0, ${number(alpha)})`;
 
 export function chromeAppearanceFrameStyles(themes: Readonly<ChromeAppearanceThemes> = CHROME_APPEARANCE_DEFAULTS): Record<string, string> {
-  const styles: Record<string, string> = {};
+  const styles: Record<string, string> = { '--app-chrome-reference-font-size': `${CHROME_UI_REFERENCE_FONT_SIZE_PX}px` };
   for (const theme of ['light', 'dark'] as const) {
     const parameters = themes[theme];
     const samples = chromeShadowSamples(parameters);
-    styles[`--app-chrome-${theme}-text-increment`] = `${number(parameters.textIncrementPt)}pt`;
+    styles[`--app-chrome-${theme}-ui-font-size`] = `${number(parameters.uiFontSizePt)}pt`;
     styles[`--app-chrome-${theme}-tint-percentage`] = `${number((1 - parameters.glassTransparency) * 100)}%`;
     styles[`--app-shadow-${theme}-width`] = `${number(parameters.widthPx)}px`;
     styles[`--app-shadow-${theme}-linear`] = [...samples].reverse().map(({ distancePx, alpha }) => `${color(alpha)} ${number(parameters.widthPx - distancePx)}px`).join(', ');
@@ -108,5 +119,5 @@ export function chromeAppearanceFrameStyles(themes: Readonly<ChromeAppearanceThe
 }
 
 export function exportChromeAppearances(themes: ChromeAppearanceThemes): string {
-  return JSON.stringify({ version: 1, ...themes });
+  return JSON.stringify({ version: 2, ...themes });
 }
