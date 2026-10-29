@@ -12,7 +12,7 @@ import type { WorkScanner } from '../src/work-scanner.js';
 import { artifactRepo } from './helpers/artifact-repo-fixtures.js';
 import { authenticatedTestRouter } from './helpers/authenticated-router.js';
 import { recordArtifactVersion } from './helpers/artifact-http-write-fixtures.js';
-import { longestEventLoopBlockMs, useSlowCommand, SYNCHRONOUS_WAIT_MS } from './helpers/event-loop-blocking.js';
+import { useCommandProbe } from "./helpers/event-loop-blocking.js";
 import { migratedMemoryDb, insertRawLedgerProject, insertRawLedgerCheckout, insertRawLedgerIssue } from './helpers/ledger-fixtures.js';
 
 let db: Db;
@@ -81,15 +81,12 @@ it('yields to the event loop during every Git read in artifact check', async () 
   const artifact = recordArtifactVersion(db, { source_kind: 'tracked_repo', path: path.join(repo, 'report.md') });
   const router = authenticatedTestRouter(setupOperator(db, { slug: 'cost-test' }));
   registerProviderRoutes(router, inlineLedgerReader());
-  const stub = useSlowCommand('git');
-  try {
-    for (let pass = 0; pass < 2; pass++) {
-      const gap = await longestEventLoopBlockMs(async () => {
-        const result = await router.invoke({ method: 'POST', url: '/api/artifacts/check', body: { ref: artifact.version.id } });
-        expect(result.status).toBe(200);
-        expect(result.body).toMatchObject({ checks: [{ check: { materializable: true, hash_matches: true, recoverability: 'repo_commit' } }] });
-      });
-      expect(gap).toBeLessThan(SYNCHRONOUS_WAIT_MS);
-    }
-  } finally { fs.rmSync(stub.dir, { recursive: true, force: true }); }
+  const probe = await useCommandProbe(["git"]);
+  for (let pass = 0; pass < 2; pass++) {
+    await probe.run(async () => {
+      const result = await router.invoke({ method: 'POST', url: '/api/artifacts/check', body: { ref: artifact.version.id } });
+      expect(result.status).toBe(200);
+      expect(result.body).toMatchObject({ checks: [{ check: { materializable: true, hash_matches: true, recoverability: 'repo_commit' } }] });
+    });
+  }
 });
