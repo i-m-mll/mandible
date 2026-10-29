@@ -27,7 +27,7 @@ describe("CLI private local transport", () => {
     const socket = path.join(root, "daemon.sock");
     const manifest = path.join(root, "routes.json");
     fs.writeFileSync(manifest, JSON.stringify([
-      { method: "POST", path: "/api/auth/request" },
+      { method: "POST", path: "/api/auth/v2/request" },
       { method: "POST", path: "/api/users/setup", credential_optional: true },
       { method: "POST", path: "/api/briefing-groups", body_nonempty: "sharing_reason" },
     ]));
@@ -52,11 +52,11 @@ describe("CLI private local transport", () => {
       expect(read.stdout).toBe("200");
       expect(seen[0]).toEqual({ method: "GET", auth: undefined, managed: "1", provider: "codex", session: "task-123",
         managedApp: undefined, managedSession: undefined });
-      const gated = await runShell('source "$API_HELPER"; secret_account_for_service() { printf codex; }; secret_get() { printf durable-token; }; out=$(api_temp_file); api_http_exchange POST /api/auth/request "{}" "$out"', env);
+      const gated = await runShell('source "$API_HELPER"; secret_account_for_service() { printf codex; }; secret_get() { printf durable-token; }; out=$(api_temp_file); api_http_exchange POST /api/auth/v2/request "{}" "$out"', env);
       expect(gated.code, gated.stderr).toBe(0);
       expect(gated.stdout).toBe("200");
       expect(seen[1]?.auth).toBe("Bearer durable-token");
-      const missing = await runShell('source "$API_HELPER"; secret_account_for_service() { return 1; }; out=$(api_temp_file); api_http_exchange POST /api/auth/request "{}" "$out"', env);
+      const missing = await runShell('source "$API_HELPER"; secret_account_for_service() { return 1; }; out=$(api_temp_file); api_http_exchange POST /api/auth/v2/request "{}" "$out"', env);
       expect(missing.stdout, missing.stderr).toBe("401");
       expect(seen).toHaveLength(2);
       const bootstrap = await runShell('source "$API_HELPER"; api_keychain_operator_token() { :; }; out=$(api_temp_file); api_http_exchange POST /api/users/setup "{}" "$out"', {

@@ -1,7 +1,7 @@
 import { withLedgerMutationActor } from "./ledger/mutation-history.js";
 import { withRequestOrigin } from "./request-origin.js";
 import { mutateWorkUnit } from "./work-unit-history.js";
-import { authDependencies, canonicalAuthDependencies } from "./auth-dependency.js";
+import { authDependencies, canonicalAuthDependencies, authRevalidationOrder } from "./auth-dependency.js";
 import { mapRow, parseChangeReport } from "./auth-request-row.js";
 import { listAuthHistorySummaries } from "./ledger-reads/auth-history.js";
 import { forEachInEventLoopSlices } from "./event-loop-slices.js";
@@ -1869,8 +1869,9 @@ export class AuthQueue {
       }
 
       const now = this.now();
+      const requestId = randomUUID();
       let request: AuthRequest = {
-        id: randomUUID(),
+        id: requestId,
         session_id: payload.session_id ?? null,
         requested_by_user_id: requesterUserId,
         requester_evidence_method: payload.requester_evidence_method ?? null,
@@ -1907,7 +1908,7 @@ export class AuthQueue {
         issue_closures: payload.issue_closures ?? payload.issues ?? null,
         issue_ids: null,
         issues: payload.issues ?? null,
-        depends_on_ids: canonicalAuthDependencies(this.db, payload.depends_on_ids ?? predecessor?.depends_on_ids ?? [], predecessor?.id),
+        depends_on_ids: canonicalAuthDependencies(this.db, payload.depends_on_ids === undefined ? predecessor?.depends_on_ids ?? [] : payload.depends_on_ids, requestId),
         execution_mode: payload.execution_mode ?? "daemon",
         status: "pending",
         created_at: now,
@@ -2073,7 +2074,7 @@ export class AuthQueue {
       let insertionQueue: { requests: AuthRequest[]; assertCurrent(): void } | undefined;
       const insertRequest = this.db.transaction(() => {
         assertSubmission();
-        canonicalAuthDependencies(this.db, request.depends_on_ids ?? [], predecessor?.id);
+        canonicalAuthDependencies(this.db, request.depends_on_ids ?? [], request.id);
         supersessionIdentity?.assertCurrent();
         if (predecessor) this.assertObservation(predecessor.id, predecessorObservation!);
         if (mergeCheck.status === "clean" && payload.base_branch) {
@@ -6870,11 +6871,7 @@ export class AuthQueue {
 
     // Issue 08a5f04 — requests whose dependency just resolved are next in
     // line for approval, so they are revalidated (and re-pinned) first.
-    const newlyReady = (request: AuthRequest) => {
-      const dependencies = this.dependenciesForRequest(request);
-      return dependencies.some(dependency => dependency.request_id === completed.id) && dependencies.every(isAuthDependencyReady);
-    };
-    const ordered = [...pending.filter(newlyReady), ...pending.filter(request => !newlyReady(request))];
+    const ordered = authRevalidationOrder(this.db, pending, completed.id);
 
     const now = this.now();
     const markNeedsRebase = this.db.prepare(

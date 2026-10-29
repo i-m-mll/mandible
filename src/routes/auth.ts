@@ -88,7 +88,14 @@ export function registerAuthRoutes(
     res.status(200).json({ check: report });
   }, { operation: { id: "post:/api/auth/check", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
-  app.post("/api/auth/request", async (req, res) => {
+  app.post("/api/auth/request", (_req, res) => {
+    res.status(410).json({ error: "Auth request writes require /api/auth/v2/request and depends_on_ids; update your client." });
+  }, { operation: { id: "post:/api/auth/request", effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  app.put("/api/auth/request/:id", (_req, res) => {
+    res.status(410).json({ error: "Auth request writes require /api/auth/v2/request/:id and depends_on_ids; update your client." });
+  }, { operation: { id: "put:/api/auth/request/:id", effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+
+  app.post("/api/auth/v2/request", async (req, res) => {
     if (rejectTokenlessSocketExecution(req, res)) return;
     const body = readBody<Record<string, unknown>>(req);
     if (Object.hasOwn(body, "spec_content")) {
@@ -293,7 +300,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  }, { operation: { id: "post:/api/auth/request", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/auth/v2/request", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
 
   app.get("/api/auth/request/:id", async (req, res) => {
     // Issue f59b5bd — getRequest already resolves unambiguous short prefixes
@@ -423,7 +430,7 @@ export function registerAuthRoutes(
     }
   }, { operation: { id: "post:/api/auth/request/:id/actions/:actionId/veto", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
 
-  app.put("/api/auth/request/:id", async (req, res) => {
+  app.put("/api/auth/v2/request/:id", async (req, res) => {
     const body = readBody<Record<string, unknown>>(req);
     const result = parseAuthRequestUpdatePayload(body);
     if (!result.ok) {
@@ -474,7 +481,7 @@ export function registerAuthRoutes(
       }
       handleQueueError(error, res);
     }
-  }, { operation: { id: "put:/api/auth/request/:id", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
+  }, { operation: { id: "put:/api/auth/v2/request/:id", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
 
   app.delete("/api/auth/request/:id", (_req, res) => {
     res.status(410).json({

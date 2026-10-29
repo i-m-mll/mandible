@@ -48,7 +48,7 @@
 #   --repo <name>           Repo name (auto-detected from git toplevel basename)
 #   --cwd <path>            Merge: protected worktree override. Other types: required execution directory
 #   --target <branch>       Override auto-detected target/base branch (default: protected branch)
-#   --depends-on <id>       Auth request ID that must complete before this one runs
+#   --depends-on <id>       Repeat for each prerequisite that must finish before approval
 #   --supersedes <id>       Atomically replace this exact pending request
 #   --expected-revision <n> Required with --supersedes
 #   --expected-custody-generation <n> Required with --supersedes
@@ -369,7 +369,6 @@ payload=$(jq -nc \
     issue_closures: $issue_closures,
     issues: $issue_closures,
     actions: $actions,
-    depends_on_ids: $depends_on_ids,
     supersedes_request_id: (if $supersedes_request_id == "" then null else $supersedes_request_id end),
     expected_revision: (if $expected_revision == "" then null else ($expected_revision | tonumber) end),
     expected_custody_generation: (if $expected_custody_generation == "" then null else ($expected_custody_generation | tonumber) end),
@@ -379,7 +378,8 @@ payload=$(jq -nc \
     target_repo_root: (if $target_repo_root == "" then null else $target_repo_root end),
     conversation_id: (if $conversation_id == "" then null else $conversation_id end),
     protected_root_dirty_action: $protected_root_dirty_action
-  } + (if $space_publication_id == "" then {} else {space_publication_id:$space_publication_id} end)')
+  } + (if $supersedes_request_id != "" and ($depends_on_ids | length) == 0 then {} else {depends_on_ids:$depends_on_ids} end)
+    + (if $space_publication_id == "" then {} else {space_publication_id:$space_publication_id} end)')
 
 # Bug: de8d29c — use -w to capture HTTP status separately so we can distinguish
 # a 409 Conflict (duplicate) from a connection failure. curl -sf treats HTTP 4xx
@@ -390,7 +390,7 @@ tmp_response=$(mktemp)
 tmp_sse_result=$(mktemp)
 trap 'rm -f "$tmp_response" "$tmp_sse_result"' EXIT
 
-http_status=$(api_send_capture POST "/api/auth/request" "$payload" "$tmp_response") || http_status=""
+http_status=$(api_send_capture POST "/api/auth/v2/request" "$payload" "$tmp_response") || http_status=""
 
 response=$(cat "$tmp_response" 2>/dev/null || echo "")
 
@@ -442,7 +442,7 @@ if [[ "$http_status" == "409" ]]; then
     fi
     echo ""
     echo "If that request is the same work, update it:"
-    echo "  PUT /api/auth/request/$(api_short_id "$existing_id")"
+    echo "  PUT /api/auth/v2/request/$(api_short_id "$existing_id")"
     echo "  Candidate bytes cannot be revised in place; use guarded supersession"
     echo "  so the daemon captures a new immutable change report."
     echo "If it is different work that merely shares a branch name, rename this"
@@ -451,7 +451,7 @@ if [[ "$http_status" == "409" ]]; then
   exit 3
 elif [[ "$http_status" != "201" ]]; then
   error_msg=$(printf '%s' "$response" | jq -r '.error // empty' 2>/dev/null || echo "")
-  echo "Error: POST /api/auth/request returned HTTP ${http_status}" >&2
+  echo "Error: POST /api/auth/v2/request returned HTTP ${http_status}" >&2
   [[ -n "$error_msg" ]] && echo "Server error: ${error_msg}" >&2
   exit 1
 else

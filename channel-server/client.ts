@@ -323,13 +323,14 @@ export async function submitAuth(payload: {
   repo?: string;
   base_branch?: string;
   head_branch?: string;
+  depends_on_ids?: string[];
   issue_references?: string[] | null;
   issue_closures?: string[] | null;
   /** @deprecated Legacy close-on-merge issue list. */
   issues?: string[] | null;
   session_id?: string | null;
 }): Promise<AuthSubmitResponse> {
-  return request<AuthSubmitResponse>("POST", "/api/auth/request", payload);
+  return request<AuthSubmitResponse>("POST", "/api/auth/v2/request", payload);
 }
 
 // --- Sessions ---

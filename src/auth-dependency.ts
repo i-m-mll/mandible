@@ -59,3 +59,15 @@ export function canonicalAuthDependencies(db: Db, references: string[], requestI
   for (const id of ids) visit(id);
   return [...ids].sort();
 }
+
+export function authRevalidationOrder(db: Db, pending: AuthRequest[], completedId: string): AuthRequest[] {
+  const dependencies = authDependencies(db, [...new Set(pending.flatMap(request => request.depends_on_ids ?? []))]);
+  const priority = new Set(pending.filter(request => {
+    const direct = (request.depends_on_ids ?? []).map(id => dependencies.get(id)!);
+    return direct.some(dependency => dependency.request_id === completedId) && direct.every(dependency =>
+      dependency.request_id === completedId
+        ? dependency.status === "completed" && dependency.exit_code === 0 && (dependency.state === "ready" || dependency.state === "unfinalized")
+        : dependency.state === "ready");
+  }).map(request => request.id));
+  return [...pending.filter(request => priority.has(request.id)), ...pending.filter(request => !priority.has(request.id))];
+}

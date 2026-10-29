@@ -389,7 +389,7 @@ describe("auth request CLI change message composition", () => {
         );
         return;
       }
-      if (req.method === "POST" && req.url === "/api/auth/request") {
+      if (req.method === "POST" && req.url === "/api/auth/v2/request") {
         let raw = "";
         req.setEncoding("utf8");
         req.on("data", (chunk) => {

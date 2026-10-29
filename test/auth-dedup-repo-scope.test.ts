@@ -260,7 +260,7 @@ describe("POST /api/auth/request duplicate refusal", () => {
     app: TestRouteRegistrar,
     body: Record<string, unknown>,
   ): Promise<{ status: number; body: Record<string, unknown> }> {
-    const response = await app.invoke("POST", "/api/auth/request", { ...MERGE_CHANGE_MESSAGE, ...body });
+    const response = await app.invoke("POST", "/api/auth/v2/request", { ...MERGE_CHANGE_MESSAGE, ...body });
     return { status: response.statusCode, body: response.body as Record<string, unknown> };
   }
 

@@ -130,7 +130,7 @@ function listenForAuthRequest(
       });
       return;
     }
-    if (req.method === "POST" && req.url === "/api/auth/request") {
+    if (req.method === "POST" && req.url === "/api/auth/v2/request") {
       let raw = "";
       req.setEncoding("utf8");
       req.on("data", (chunk) => {
@@ -203,6 +203,51 @@ afterEach(() => {
 });
 
 describe("action-specific request preparation", () => {
+  it("refuses an old daemon without submitting through the retired route", async () => {
+    let retiredWrites = 0;
+    const server = http.createServer((req, res) => {
+      if (req.url === "/api/instance") { res.end(JSON.stringify(MAIN_CLI_INSTANCE_RESPONSE)); return; }
+      if (req.method === "POST" && req.url === "/api/auth/request") retiredWrites++;
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Unknown route" }));
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const port = (server.address() as { port: number }).port;
+      const result = await runAsync(["auth", "request", "--type", "config-change", "--command", "echo reviewed",
+        "--repo", "example", "--cwd", tempDir, "--title", "Settings", "--issue", "settings123",
+        "--message", "Apply reviewed settings.", "--depends-on", "source123", "--no-watch"],
+        tempDir, { MANDIBLE_BASE: `http://127.0.0.1:${port}` });
+      expect(result.status).not.toBe(0);
+      expect(retiredWrites).toBe(0);
+    } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
+  });
+
+  it("omits an unspecified prerequisite set on supersession so the daemon inherits it", async () => {
+    const server = await listenForAuthRequest();
+    try {
+      const result = await runAsync(["auth", "request", "--type", "config-change", "--command", "echo reviewed",
+        "--repo", "example", "--cwd", tempDir, "--title", "Settings", "--issue", "settings123",
+        "--message", "Apply reviewed settings.", "--supersedes", "prior123", "--expected-revision", "1",
+        "--expected-custody-generation", "1", "--no-watch"], tempDir, { MANDIBLE_BASE: `http://127.0.0.1:${server.port}` });
+      expect(result.status, result.stderr).toBe(0);
+      expect(server.bodies[0]).not.toHaveProperty("depends_on_ids");
+    } finally { await server.close(); }
+  });
+
+  it("submits one prerequisite set from repeated depends-on options", async () => {
+    const server = await listenForAuthRequest();
+    try {
+      const result = await runAsync(["auth", "request", "--type", "config-change", "--command", "echo reviewed",
+        "--repo", "example", "--cwd", tempDir, "--title", "Apply reviewed settings", "--issue", "settings123",
+        "--message", "Apply reviewed settings.", "--depends-on", "source123", "--depends-on", "validation123", "--no-watch"],
+        tempDir, { MANDIBLE_BASE: `http://127.0.0.1:${server.port}` });
+      expect(result.status, result.stderr).toBe(0);
+      expect(server.bodies[0]?.depends_on_ids).toEqual(["source123", "validation123"]);
+      expect(server.bodies[0]).not.toHaveProperty("depends_on_id");
+    } finally { await server.close(); }
+  });
+
   it("queues exact non-merge bytes outside Git without preparing or executing a merge", async () => {
     const server = await listenForAuthRequest();
     const executionDir = path.join(homeDir, "operation");

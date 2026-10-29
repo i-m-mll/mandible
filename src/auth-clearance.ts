@@ -495,12 +495,8 @@ export class AuthClearanceManager {
     const resolved = resolveId(this.db, "auth_request", id);
     if (!resolved.ok && resolved.error === "ambiguous") throw new AuthClearanceError("ambiguous", `Auth request ref '${id}' is ambiguous.`);
     if (!resolved.ok) throw new AuthClearanceError("request_not_found", `No auth request '${id}'.`);
-    return mapRequest(this.db.prepare("SELECT * FROM auth_requests WHERE id = ?").get(resolved.id) as Record<string, unknown>);
+    return mapRow(this.db.prepare("SELECT * FROM auth_requests WHERE id = ?").get(resolved.id) as Record<string, unknown>);
   }
-}
-
-function mapRequest(row: Record<string, unknown>): AuthRequest {
-  return mapRow(row);
 }
 
 function requestSnapshot(request: AuthRequest): Record<string, unknown> {

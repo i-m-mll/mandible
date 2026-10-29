@@ -68,9 +68,14 @@ export const AUTH_SNAPSHOT_SHAPE_V212: AuthSnapshotShape = Object.freeze({
   ]),
 });
 
-export const AUTH_SNAPSHOT_SHAPE: AuthSnapshotShape = Object.freeze({
-  request: Object.freeze([...AUTH_SNAPSHOT_SHAPE_V212.request, "depends_on_ids"]),
+export const AUTH_SNAPSHOT_SHAPE_V220: AuthSnapshotShape = Object.freeze({
+  request: AUTH_SNAPSHOT_SHAPE_V212.request,
   actions: Object.freeze([...AUTH_SNAPSHOT_SHAPE_V212.actions, "request_origin_json"]),
+});
+
+export const AUTH_SNAPSHOT_SHAPE: AuthSnapshotShape = Object.freeze({
+  request: Object.freeze([...AUTH_SNAPSHOT_SHAPE_V220.request, "depends_on_ids"]),
+  actions: AUTH_SNAPSHOT_SHAPE_V220.actions,
 });
 
 // Columns added after receipts existed appear only when set, so receipts

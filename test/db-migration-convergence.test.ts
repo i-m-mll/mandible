@@ -42,7 +42,7 @@ import { startDaemon } from "../src/index.js";
 import { checkHealth } from "../src/lifecycle.js";
 import { readArtifactBytesFull } from "../src/artifact-content.js";
 import { appendAuthLifecycleEvent, listAuthExecutionAttempts, listAuthLifecycleEvents } from "../src/auth-lifecycle.js";
-import { authRequestSnapshot, authSnapshotDigest } from "../src/auth-request-snapshot.js";
+import { AUTH_SNAPSHOT_SHAPE_V220, authRequestSnapshot, authSnapshotDigest } from "../src/auth-request-snapshot.js";
 import { buildMetadataBackupSql } from "../src/ledger/backup.js";
 import { readLedgerChangeFeed } from "../src/ledger/change-feed.js";
 import { addProject } from "../src/ledger/project-registry.js";
@@ -1114,5 +1114,30 @@ it("preserves current preference bytes and revisions while admitting managed Cha
     db.prepare("INSERT INTO user_settings (user_id, key, value, revision, updated_at) VALUES (?, 'managed_chat_defaults', '{}', 1, 456)")
       .run(operator.id);
     expect(db.pragma("foreign_key_check")).toEqual([]);
+  } finally { db.close(); }
+});
+
+it("preserves pending review bytes and lifecycle history when prerequisite sets are introduced", () => {
+  const db = migrateFixtureThrough(220);
+  try {
+    db.prepare(`INSERT INTO auth_requests
+      (id, command, title, status, created_at, updated_at, expires_at, depends_on_id,
+       merge_head_sha, merge_candidate_tree_sha, merge_candidate_pin_sha, commit_message)
+      VALUES ('pending-preserved', 'echo reviewed', 'Reviewed request', 'pending', 1, 2, 9999999999999,
+        'auth:legacy-short-ref', 'head', 'tree', 'pin', 'Reviewed message')`).run();
+    const snapshot = authRequestSnapshot(db, "pending-preserved", AUTH_SNAPSHOT_SHAPE_V220);
+    const digest = authSnapshotDigest(snapshot);
+    db.prepare(`INSERT INTO auth_request_lifecycle_events
+      (id, auth_request_id, revision, event_type, prior_status, next_status, snapshot_json, snapshot_sha256, authority_path, occurred_at)
+      VALUES ('preserved-event', 'pending-preserved', 1, 'submitted', NULL, 'pending', ?, ?, 'system', 2)`).run(snapshot, digest);
+    const row = db.prepare("SELECT * FROM auth_requests WHERE id = 'pending-preserved'").get() as Record<string, unknown>;
+    const history = db.prepare("SELECT * FROM auth_request_lifecycle_events WHERE auth_request_id = 'pending-preserved'").all();
+    migrate(db);
+    const { depends_on_ids, ...after } = db.prepare("SELECT * FROM auth_requests WHERE id = 'pending-preserved'").get() as Record<string, unknown>;
+    expect(depends_on_ids).toBeNull();
+    expect(after).toEqual(row);
+    expect(authRequestSnapshot(db, "pending-preserved")).toBe(snapshot);
+    expect(authSnapshotDigest(authRequestSnapshot(db, "pending-preserved"))).toBe(digest);
+    expect(db.prepare("SELECT * FROM auth_request_lifecycle_events WHERE auth_request_id = 'pending-preserved'").all()).toEqual(history);
   } finally { db.close(); }
 });

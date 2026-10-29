@@ -168,9 +168,6 @@ export const CONVERSATION_OPENING_LINEAGE_SQL: readonly string[] = [
   "ALTER TABLE conversations ADD COLUMN agent_created INTEGER NOT NULL DEFAULT 0 CHECK(agent_created IN (0, 1))",
 ];
 
-// Issue 8ae6b5f — what an explicit protected-root dirty policy did before a
-// merge submission: where someone's uncommitted work went. Shared by the fresh
-// baseline and migration v201 so both produce identical column SQL.
 export const AUTH_PREREQUISITE_SCHEMA_SQL = [
   "ALTER TABLE auth_requests ADD COLUMN depends_on_ids TEXT CHECK (depends_on_ids IS NULL OR (json_valid(depends_on_ids) AND json_type(depends_on_ids) = 'array' AND depends_on_id IS NULL))",
   `CREATE TRIGGER auth_prerequisites_clearance_review_frozen
@@ -179,6 +176,9 @@ export const AUTH_PREREQUISITE_SCHEMA_SQL = [
     BEGIN SELECT RAISE(ABORT, 'clearance-reviewed auth prerequisites are frozen'); END`,
 ];
 
+// Issue 8ae6b5f — what an explicit protected-root dirty policy did before a
+// merge submission: where someone's uncommitted work went. Shared by the fresh
+// baseline and migration v201 so both produce identical column SQL.
 export const AUTH_PROTECTED_ROOT_DIRTY_ACTION_COLUMN_SQL = `ALTER TABLE auth_requests ADD COLUMN protected_root_dirty_action_json TEXT
       CHECK(protected_root_dirty_action_json IS NULL OR (
         json_valid(protected_root_dirty_action_json)
