@@ -24,7 +24,7 @@ import { bindingDigest, retireFailedRuntimeHandoff } from "../scripts/runtime-ha
 import * as serviceDefinitions from "../scripts/service-definitions.mjs";
 import { readRuntimeHandoffLock } from "../scripts/runtime-handoff-lock.mjs";
 import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
-import { longestEventLoopBlockMs, useSlowCommand, SYNCHRONOUS_WAIT_MS } from "./helpers/event-loop-blocking.js";
+import { useCommandProbe } from "./helpers/event-loop-blocking.js";
 import {
   advanceMainViaAuthorizedMerge, approveFixtureRequest, commitOnBranch, configureSigningCredential, createAuthCheckRepo, createLedgerIssue, createLedgerProject,
   createMigratedDb, git, publishFixtureExecution, registerWorkRepo, waitForStatus,
@@ -569,13 +569,8 @@ describe("candidate acceptance gate", () => {
     await queue.refreshPendingCandidates();
     const pin = (await queue.getRequest(request.id))!.merge_candidate_pin_sha;
 
-    const slow = useSlowCommand("git");
-    try {
-      const blocked = await longestEventLoopBlockMs(() => queue.refreshPendingCandidates());
-      expect(blocked).toBeLessThan(SYNCHRONOUS_WAIT_MS);
-    } finally {
-      fs.rmSync(slow.dir, { recursive: true, force: true });
-    }
+    const probe = await useCommandProbe(["git"]);
+    await probe.run(() => queue.refreshPendingCandidates());
     expect((await queue.getRequest(request.id))!.merge_candidate_pin_sha).toBe(pin);
     expect(runs).toHaveLength(1);
   });

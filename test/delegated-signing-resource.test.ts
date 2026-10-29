@@ -16,7 +16,7 @@ import {
 import { buildMetadataBackupSql } from "../src/ledger/backup.js";
 import { addCredential, addDelegatedSigningLease, shortenDelegatedSigningLease, SYSTEM_USER_ID, createUser, getOperator } from "../src/users/store.js";
 import { createLedgerIssue, createLedgerProject, createMigratedDb } from "./helpers/ledger-fixtures.js";
-import { longestEventLoopBlockMs, useSlowCommand, SYNCHRONOUS_WAIT_MS } from "./helpers/event-loop-blocking.js";
+import { useCommandProbe } from "./helpers/event-loop-blocking.js";
 
 function fixture() {
   const db = createMigratedDb({
@@ -196,9 +196,9 @@ describe("delegated signer reconnect lifecycle", () => {
     await withRealAgent(async ({ db, signer, resource, context, agentRunning }) => {
       const exited = spawn("true");
       await new Promise((resolve) => exited.once("exit", resolve));
-      for (const command of ["ps", "lsof", "ssh-add", "ssh-keygen"]) useSlowCommand(command);
+      const probe = await useCommandProbe(["ps", "lsof", "ssh-add", "ssh-keygen"]);
       try {
-        const blockedMs = await longestEventLoopBlockMs(async () => {
+        await probe.run(async () => {
           const borrow = await resource.borrow(context.leaseId);
           await borrow.settle();
           // The owning runtime is gone; its successor claims the binding and drains it.
@@ -207,8 +207,6 @@ describe("delegated signer reconnect lifecycle", () => {
           const successor = new DelegatedSigningResource(signer, { db, runtimeEpoch: "successor", allowRuntimeAuthority: true });
           await successor.drain(context.leaseId, "clearance_revoked");
         });
-
-        expect(blockedMs).toBeLessThan(SYNCHRONOUS_WAIT_MS);
         expect(agentRunning()).toBe(false);
         expect(db.prepare("SELECT owner_runtime_epoch, state FROM delegated_signing_runtime_bindings WHERE lease_id = ?")
           .get(context.leaseId)).toEqual({ owner_runtime_epoch: "successor", state: "retired" });
