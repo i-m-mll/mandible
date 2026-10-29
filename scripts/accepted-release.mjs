@@ -28,6 +28,13 @@ export function assertAcceptedReleaseAvailable(reference) {
   acceptedReleaseOwner(readImmutableAcceptedRelease(reference));
 }
 
+export function emptyPreAdmissionHandoff(directory) {
+  const uuid = '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}';
+  const stat = fs.lstatSync(directory);
+  return new RegExp(`^${uuid}-${uuid}$`).test(path.basename(directory)) && stat.isDirectory() && !stat.isSymbolicLink()
+    && fs.readdirSync(directory).length === 0;
+}
+
 export function acceptedReleaseFilesystemReferences(home, reference, releasingHandoff) {
   const reasons = [];
   if (readBundleOwner({ runtimeDir: path.join(home, 'config/local-sessions') })?.acceptedRelease === reference) reasons.push('The installed release still owns these bytes.');
@@ -43,7 +50,10 @@ export function acceptedReleaseFilesystemReferences(home, reference, releasingHa
   if (fs.existsSync(directory)) for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     const file = path.join(directory, entry.name, 'journal.json');
-    if (!fs.existsSync(file)) { reasons.push('unclassified handoff directory'); continue; }
+    if (!fs.existsSync(file)) {
+      if (!emptyPreAdmissionHandoff(path.dirname(file))) reasons.push('unclassified handoff directory');
+      continue;
+    }
     const bytes = fs.readFileSync(file);
     const journal = JSON.parse(bytes);
     if (journal.schema !== 'mandible-runtime-handoff@1' || !journal.binding || typeof journal.phase !== 'string') { reasons.push(`unclassified handoff journal ${entry.name}`); continue; }
@@ -114,13 +124,13 @@ export function resolveAcceptedRelease(reference, expectedCandidate) {
 }
 
 /** Explicit delivery-owner disposal; pending acceptances never expire as cache material. */
-export async function disposeAcceptedRelease(reference, expectedCandidate, reason, { home, assertHeld, claim, releasingHandoff, database } = {}) {
+export async function disposeAcceptedRelease(reference, expectedCandidate, reason, { home, assertHeld, claim, releasingHandoff, database, deferCleanup = false, inspect = inspectRunConsumers } = {}) {
   if (!reason?.trim()) throw new Error('Accepted release disposal requires an owner reason.');
   const receipt = readAcceptedReleaseReceipt(reference, expectedCandidate);
   const root = receipt.package.handle.root;
   home ??= path.dirname(path.dirname(root));
   if (!assertHeld && releasingHandoff) throw new Error('Handoff release requires its existing observation authority.');
-  if (!assertHeld) return withInstallationGatewayLock(home, (_token, held) => disposeAcceptedRelease(reference, expectedCandidate, reason, { home, assertHeld: held, claim, database }));
+  if (!assertHeld) return withInstallationGatewayLock(home, (_token, held) => disposeAcceptedRelease(reference, expectedCandidate, reason, { home, assertHeld: held, claim, database, deferCleanup, inspect }));
   assertHeld();
   if (!fs.existsSync(root)) return { action: 'delete-owned', reason: 'payload already removed', remaining: [] };
   return withOwnedRunLock(root, async () => {
@@ -134,10 +144,12 @@ export async function disposeAcceptedRelease(reference, expectedCandidate, reaso
         || ownership.project !== exact.retention.project || ownership.workUnit !== exact.retention.work_unit) throw new Error('Accepted release owner changed.');
     if (ownership.state === 'investigating') throw new Error('Explicit investigation retains these bytes until released.');
     if (metadata.pendingAcceptance && ownership.state !== 'terminal') {
-      const { acceptedReleaseProducerReferences } = await import('./accepted-release-retention.mjs');
-      const producers = acceptedReleaseProducerReferences(metadata);
+      const { acceptedReleaseProducerReferences, acceptedReleaseProducerReferencesAsync } = await import('./accepted-release-retention.mjs');
+      const producers = deferCleanup ? await acceptedReleaseProducerReferencesAsync(metadata) : acceptedReleaseProducerReferences(metadata);
       if (producers.length) throw new Error(`Accepted release is retained: ${producers.join(', ')}`);
     }
+    const consumers = await inspect(root);
+    if (!consumers.idle) throw new Error(consumers.reason);
     assertHeld();
     const mark = () => { if (ownership.state !== 'terminal') {
       metadata.ownership = { ...ownership, disposable: true,
@@ -153,6 +165,7 @@ export async function disposeAcceptedRelease(reference, expectedCandidate, reaso
       finally { db.close(); }
     }
     assertHeld();
+    if (deferCleanup) return { action: 'cleanup-pending', reason: 'Disposal claimed; ordinary generated-storage maintenance owns cleanup.' };
     return cleanupOwnedRun(metadataFile, { apply: true });
   }, { recoverStale: true });
 }

@@ -1,4 +1,5 @@
 import { CHILD_RETENTION_SCHEMA_SQL } from "./conversations/retention-schema.js";
+import { AUTH_HOOK_EXECUTIONS_TABLE_SQL, AUTH_HOOK_EXECUTIONS_INDEX_SQL } from './auth-hook-schema.js';
 import { LEDGER_ORIGIN_SCHEMA_SQL, MANAGED_SESSION_ORIGIN_INDEX_SQL } from "./ledger-origin-schema.js";
 import { SPACE_PUBLICATION_AUTH_SCHEMA_SQL } from "./spaces/publication-auth-schema.js";
 import { SPACE_PUBLICATION_SCHEMA_SQL } from "./spaces/publication-schema.js";
@@ -2196,6 +2197,14 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 219, name: "specialized_ledger_request_origin", statements: [...LEDGER_ORIGIN_SCHEMA_SQL, MANAGED_SESSION_ORIGIN_INDEX_SQL] },
   { version: 220, name: "indexed_child_retention", statements: [...CHILD_RETENTION_SCHEMA_SQL] },
   { version: 221, name: "auth_prerequisite_sets", statements: [...AUTH_PREREQUISITE_SCHEMA_SQL] },
+  { version: 222, name: "failed_delivery_retirement", statements: [
+    'DROP INDEX idx_auth_hook_executions_runnable',
+    'ALTER TABLE auth_hook_executions RENAME TO auth_hook_executions_v221',
+    AUTH_HOOK_EXECUTIONS_TABLE_SQL,
+    'INSERT INTO auth_hook_executions SELECT * FROM auth_hook_executions_v221',
+    'DROP TABLE auth_hook_executions_v221',
+    AUTH_HOOK_EXECUTIONS_INDEX_SQL,
+  ] },
 ];
 
 /**

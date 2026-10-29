@@ -96,6 +96,7 @@ const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(va
 function readPublicationState(db: Db, binding: RuntimePublicationBinding) {
   const row = db.prepare("SELECT * FROM auth_requests WHERE id = ?").get(binding.requestId) as Record<string, any> | undefined;
   const hook = db.prepare("SELECT * FROM auth_hook_executions WHERE id = ?").get(binding.executionId) as Record<string, any> | undefined;
+  if (hook?.state === 'retired') fail('delivery was explicitly retired');
   if (!row || !hook || binding.hookId !== "builtin-mandible-rebuild" || row.type !== "merge" || !["executing", "completed"].includes(row.status) ||
       row.status === "completed" && row.exit_code !== 0 || !row.approved_by_user_id ||
       hook.auth_request_id !== row.id || hook.hook_id !== binding.hookId || hook.command_digest !== binding.commandDigest ||

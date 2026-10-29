@@ -1436,7 +1436,7 @@ export interface AuthHookExecutionResult {
  * attempt budget is exhausted; before that a failed attempt returns the row to
  * `pending` so a later sweep reruns the hook command — never the merge.
  */
-export type AuthHookRunState = "pending" | "running" | "complete" | "failed";
+export type AuthHookRunState = "pending" | "running" | "complete" | "failed" | "retired";
 
 export interface AuthHookRunAttempt {
   attempt: number;
@@ -1482,7 +1482,7 @@ export interface AuthConvergenceHookSummary {
   attempts: number;
   max_attempts: number;
   exit_code: number | null;
-  /** The last line a failed run wrote, which names why it failed; null unless the run failed. */
+  /** The original failure of a failed or retired run; retirement never rewrites it. */
   failure: string | null;
   command_digest: string;
   started_at: number | null;

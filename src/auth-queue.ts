@@ -143,6 +143,7 @@ import { promoteBriefingGroupProposal } from "./feedback/briefing-groups.js";
 import { appendAuthLifecycleEvent, listAuthLifecycleEvents, authRequestInitiatingOrigin } from "./auth-lifecycle.js";
 import { acceptedReleaseSelection, bindAcceptedRelease } from "./accepted-release-selection.js";
 import { GeneratedStorageMaintenance } from './generated-storage.js';
+import { retireFailedDelivery } from './failed-delivery-retirement.js';
 import { authPublicationSnapshot, authRequestSnapshot, authSnapshotDigest } from "./auth-request-snapshot.js";
 import type {
   AuthConvergence,
@@ -1033,6 +1034,39 @@ export class AuthQueue {
       }
       return retirement;
     } finally { this.publishRuntimeVerificationChanges(); finishObservation(); }
+  }
+
+  async retireFailedDelivery(requestId: string, reason: string, actor: AuthLifecycleActor, expectedRevision: number, expectedGeneration: number) {
+    const finishObservation = this.beginObservation();
+    try {
+      this.requireExternalEffects('Failed delivery retirement');
+      const request = this.requireRequest(requestId);
+      const observed = this.observationToken(request.id, request);
+      const authorize = () => {
+        const current = this.requireRequest(request.id);
+        const custody = this.requestCustodyForActor(current, actor);
+        if (!Number.isInteger(expectedRevision) || !Number.isInteger(expectedGeneration)) {
+          throw new AuthQueueError('lifecycle_precondition_required', 'Expected lifecycle revision and custody generation are required.');
+        }
+        const latest = this.db.prepare('SELECT revision, snapshot_json, snapshot_sha256 FROM auth_request_lifecycle_events WHERE auth_request_id = ? ORDER BY revision DESC LIMIT 1')
+          .get(request.id) as { revision: number; snapshot_json: string; snapshot_sha256: string } | undefined;
+        if (!latest || latest.revision !== expectedRevision || authSnapshotDigest(latest.snapshot_json) !== latest.snapshot_sha256
+            || (custody?.custody_generation ?? 0) !== expectedGeneration || custody && custody.auth_request_id !== current.id) {
+          throw new AuthQueueError('lifecycle_conflict', 'Request lifecycle or work-unit custody changed; refresh and retry.');
+        }
+        this.assertObservation(request.id, observed);
+        return current;
+      };
+      authorize();
+      const evidenceFailure = await this.successfulMergeEvidenceFailure(request);
+      if (evidenceFailure) throw new AuthQueueError('invalid_status', evidenceFailure);
+      const result = await retireFailedDelivery(this.db, request, reason, actor, { home: getMandibleHome(), authorize, now: this.now });
+      this.broadcast({ event: DOMAIN_EVENTS.AUTH_LIFECYCLE, data: { request_id: request.id, lifecycle: 'revised', retirement: result } });
+      return result;
+    } catch (error) {
+      if (error instanceof AuthQueueError) throw error;
+      throw new AuthQueueError('invalid_status', errorMessage(error) ?? String(error));
+    } finally { finishObservation(); }
   }
 
   /** Open the rebuild window that the UI splash and restart-availability track. */
@@ -6122,6 +6156,9 @@ export class AuthQueue {
           "invalid_status",
           "Convergence retry applies only to a successfully executed request.",
         );
+      }
+      if (this.hookManager.listRuns(request.id).some(run => run.state === 'retired' && (!hookId || run.hook_id === hookId))) {
+        throw new AuthQueueError('invalid_status', 'Retired delivery cannot be retried.');
       }
       const evidenceFailure = (await this.successfulMergeEvidenceFailure(request));
       if (evidenceFailure) throw new AuthQueueError("invalid_status", evidenceFailure);

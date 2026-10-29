@@ -44,5 +44,5 @@ printf '%s\n' "$response" | jq -r '
    else "", "Convergence: \(.convergence.state)" + (
      if .convergence.state == "complete" then " (post-merge hooks finished; the merge is live)"
      elif .convergence.state == "pending" then " (post-merge hooks or the runtime handoff are still running)"
-     else " (" + ([.convergence.hooks[] | select(.required and .state == "failed") | (if (.label // "") != "" then .label else .hook_id end) + ": " + (.failure // (if .exit_code == null then "timed out" else "exit \(.exit_code)" end))] | join("; ")) + ")" end)
+     else " (" + ([.convergence.hooks[] | select(.required and (.state == "failed" or .state == "retired")) | (if (.label // "") != "" then .label else .hook_id end) + (if .state == "retired" then " [retired]" else "" end) + ": " + (.failure // (if .exit_code == null then "timed out" else "exit \(.exit_code)" end))] | join("; ")) + ")" end)
    end)'

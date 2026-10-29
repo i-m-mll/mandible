@@ -558,6 +558,19 @@ export function registerAuthRoutes(
     }
   }, { operation: { id: "post:/api/auth/request/:id/candidate-snapshot-repair/apply", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
 
+  app.post('/api/auth/request/:id/retire-delivery', async (req, res) => {
+    try {
+      const body = readBody<Record<string, unknown>>(req);
+      const request = authQueue.getRequestReference(req.params.id);
+      if (!request) { res.status(404).json({ error: 'Auth request not found.' }); return; }
+      const control = authMutationControl(db, req, res, request, body, true);
+      if (!control?.actor) return;
+      const retirement = await authQueue.retireFailedDelivery(request.id, typeof body.reason === 'string' ? body.reason : '', control.actor,
+        Number(body.expected_revision), Number(body.expected_custody_generation));
+      res.json({ request_id: request.id, retirement });
+    } catch (error) { handleQueueError(error, res); }
+  }, { operation: { id: 'post:/api/auth/request/:id/retire-delivery', effects: ['auth:protected'], requestSchema: null, reportingCategory: 'auth' }, fileRpc: 'allow' });
+
   // Issue 27241e6 — convergence retry. This reruns the snapshotted hook
   // command for a merged request; it never reruns the merge, which is why it
   // does not need (and must not imply) a fresh merge authorization.

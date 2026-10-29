@@ -337,6 +337,17 @@
         ]
       }
     },
+    "auth.retire-delivery": {
+      "route": ["auth", "retire-delivery"],
+      "grammar": { "kind": "sequence", "items": [
+        {"kind":"argument","name":"request","value":{"type":"string"}},
+        {"kind":"option","names":["--reason"],"values":[{"kind":"argument","name":"text","value":{"type":"string"}}]},
+        {"kind":"option","names":["--expected-revision"],"values":[{"kind":"argument","name":"n","value":{"type":"integer"}}]},
+        {"kind":"option","names":["--expected-custody-generation"],"values":[{"kind":"argument","name":"n","value":{"type":"integer"}}]},
+        {"kind":"optional","item":{"kind":"option","names":["--operator-recovery"],"values":[]}},
+        {"kind":"optional","item":{"kind":"option","names":["--json"],"values":[]}}
+      ]}
+    },
     "auth.retry-convergence": {
       "route": ["auth", "retry-convergence"],
       "grammar": {
