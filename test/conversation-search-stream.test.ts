@@ -9,6 +9,7 @@ import { ConversationSourceReader } from "../src/conversations/source-reader.js"
 import { ConversationSourceStore } from "../src/conversations/source-store.js";
 import { getConversationStructureCache } from "../src/conversations/structure-cache.js";
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../src/conversations/source-types.js";
+import { MANAGED_NORMALIZED_SOURCE_EPOCHS } from "../src/conversations/managed-normalized-source.js";
 import { ConversationSearchCache, SourceBackedConversationSearchSourceAdapter } from "../src/conversations/search-cache.js";
 import { CodexParser } from "../src/parsers/codex.js";
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
@@ -116,6 +117,43 @@ describe("verified conversation scans", () => {
     expect(stale.failures).toMatchObject([{ conversation_id: source.id, status: "stale" }]);
   });
 
+  it("keeps verified FTS-negative hits free of body reads while detecting lost sources", async () => {
+    const source = await fixture(["retained content"]);
+    const cache = new ConversationSearchCache(new SourceBackedConversationSearchSourceAdapter(db), { cachePath: ":memory:" });
+    caches.push(cache);
+    await cache.search({ conversationIds: [source.id], needle: "absent", limit: 1 });
+    await cache.whenIdle();
+    const bodies = vi.spyOn(cache as unknown as { hotBodies: (...args: unknown[]) => unknown }, "hotBodies");
+    const warm = await cache.search({ conversationIds: [source.id], needle: "absent", limit: 1 });
+    expect(warm).toMatchObject({ matches: [], failures: [], metrics: { hot_conversations: 1, cold_conversations: 0 } });
+    fs.unlinkSync(source.filePath);
+    const missing = await cache.search({ conversationIds: [source.id], needle: "absent", limit: 1 });
+    expect(missing.failures).toMatchObject([{ conversation_id: source.id }]);
+    expect(bodies).not.toHaveBeenCalled();
+  });
+
+  it("checks facts after final async verification and closes the lease before publishing", async () => {
+    const source = await fixture(["needle"]);
+    const open = logicalSource.openLogicalSource;
+    const handles: Awaited<ReturnType<typeof open>>[] = [];
+    vi.spyOn(logicalSource, "openLogicalSource").mockImplementation(async (...args) => {
+      const handle = await open(...args);
+      handles.push(handle);
+      return handle;
+    });
+    let finalProof = false;
+    const reader = new ConversationSourceReader(db, { onVerification: () => {
+      if (finalProof) {
+        finalProof = false;
+        db.prepare("UPDATE conversation_sources SET redaction_epoch = redaction_epoch + 1 WHERE conversation_id = ?").run(source.id);
+      }
+    } });
+    const result = await reader.scanBlocks(source.id, () => { finalProof = true; return "stop"; });
+    expect(result.status).toBe("stale");
+    expect(handles).toHaveLength(1);
+    expect(handles[0].fd).toBe(-1);
+  });
+
   it("bounds source concurrency across searches and cancels queued scans without waiting for occupied leases", async () => {
     for (const id of ["one", "two", "queued"]) await fixture(["needle"], false, id);
     const cache = new ConversationSearchCache(new SourceBackedConversationSearchSourceAdapter(db), { cachePath: ":memory:", maxConcurrentColdParses: 2 });
@@ -179,6 +217,17 @@ describe("verified conversation scans", () => {
     expect(await reader.scanBlocks(empty.id, () => {})).toMatchObject({ status: "source", value: { count: 0, complete: true } });
     fs.unlinkSync(`${empty.filePath}.zst`);
     expect((await reader.scanBlocks(empty.id, () => {})).status).not.toBe("source");
+    const managed = await fixture([], false, "managed-empty");
+    const managedPath = path.join(root, "managed.jsonl");
+    fs.writeFileSync(managedPath, "", { mode: 0o600 });
+    await new ConversationSourceStore(db).recordManagedNormalizedSource({
+      conversationId: managed.id, provider: "codex", nativeSessionId: managed.id,
+      rootPath: root, filePath: managedPath, expectedContentHash: createHash("sha256").digest("hex"),
+      blocks: [], ...MANAGED_NORMALIZED_SOURCE_EPOCHS,
+    });
+    expect(await reader.scanBlocks(managed.id, () => {})).toMatchObject({ status: "source", value: { count: 0, complete: true } });
+    fs.unlinkSync(managedPath);
+    expect((await reader.scanBlocks(managed.id, () => {})).status).not.toBe("source");
     const large = await fixture(["large " + "x".repeat(8 * 1024 * 1024), "later"], false, "large");
     const started = performance.now();
     const result = await reader.scanBlocks(large.id, () => "stop", { maxBatchBytes: 128 * 1024 });

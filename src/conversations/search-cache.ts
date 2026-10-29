@@ -757,7 +757,27 @@ export class ConversationSearchCache {
               return snippet === null ? null : { conversation_id: block.conversationId, block_id: block.id, snippet,
                 block_type: block.type, role: block.role, position: block.position };
             };
+            const validateHotSource = async (): Promise<boolean> => {
+              if (this.source.verifySource) {
+                const verified = await this.coldRead(input.signal, () => this.source.verifySource!(item.conversationId, item.sourceVersionId, input.signal,
+                  milliseconds => { metrics.source_verification_ms += milliseconds; }));
+                if (verified.status !== "source" && verified.status !== "legacy") {
+                  failures.push({ conversation_id: item.conversationId, status: verified.status, reason: verified.reason });
+                  return false;
+                }
+              }
+              if (this.source.redactionEpoch() !== redactionEpoch) {
+                failures.push({ conversation_id: item.conversationId, status: "stale", reason: "search redaction facts changed" });
+                return false;
+              }
+              this.recordAccess(item.conversationId);
+              return true;
+            };
             if (hot) {
+              if (hot.blockCount === 0 || (shortlist && !shortlist.conversations.has(item.conversationId))) {
+                await validateHotSource();
+                return null;
+              }
               const rows = this.hotBodies(item.conversationId, hot);
               if (rows.length === hot.blockCount) {
                 let match: ConversationSearchMatch | null = null;
@@ -767,19 +787,7 @@ export class ConversationSearchCache {
                     type: row.block_type, role: row.role, position: row.position, content: row.body });
                   if (match) break;
                 }
-                if (this.source.verifySource) {
-                  const verified = await this.coldRead(input.signal, () => this.source.verifySource!(item.conversationId, item.sourceVersionId, input.signal, milliseconds => { metrics.source_verification_ms += milliseconds; }));
-                  if (verified.status !== "source" && verified.status !== "legacy") {
-                    failures.push({ conversation_id: item.conversationId, status: verified.status, reason: verified.reason });
-                    return null;
-                  }
-                }
-                if (this.source.redactionEpoch() !== redactionEpoch) {
-                  failures.push({ conversation_id: item.conversationId, status: "stale", reason: "search redaction facts changed" });
-                  return null;
-                }
-                this.recordAccess(item.conversationId);
-                return match;
+                return await validateHotSource() ? match : null;
               }
             }
             return this.coldRead(input.signal, async () => {

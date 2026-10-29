@@ -427,20 +427,25 @@ export class ConversationSourceReader {
       signal,
       onVerification,
     };
+    let result: SourceReadResult<T>;
     try {
       this.checkSession(session);
-      const result = await run(session);
-      if (result.status === "source" || result.status === "legacy") {
-        this.checkSession(session);
-        if (result.status === "source") await session.snapshot?.lease.verify();
-      }
-      return result;
+      result = await run(session);
+      if (result.status === "source") await session.snapshot?.lease.verify();
     } catch (error) {
       if (!(error instanceof SourceObservationError)) throw error;
-      return { status: error.kind === "changed" ? "stale" : error.kind, reason: error.message };
+      result = { status: error.kind === "changed" ? "stale" : error.kind, reason: error.message };
     } finally {
       await session.snapshot?.lease.close();
     }
+    if (result.status === "source" || result.status === "legacy") {
+      try { this.checkSession(session); }
+      catch (error) {
+        if (!(error instanceof SourceObservationError)) throw error;
+        return { status: error.kind === "changed" ? "stale" : error.kind, reason: error.message };
+      }
+    }
+    return result;
   }
 
   private async readStructuralRows(
