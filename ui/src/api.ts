@@ -2357,7 +2357,8 @@ export async function getConversations(params?: {
   tag?: string;
   signal?: AbortSignal;
   onPending?: (pending: FullTextSearchPending) => void;
-}): Promise<{ conversations: Conversation[]; total: number }> {
+  snapshot?: SearchSnapshot;
+}): Promise<{ conversations: Conversation[]; total: number } & Partial<SearchSnapshot>> {
   const query = new URLSearchParams();
   if (params?.source) query.set('source', params.source);
   if (params?.starred) query.set('starred', '1');

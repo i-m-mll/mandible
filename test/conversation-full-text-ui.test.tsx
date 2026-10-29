@@ -11,6 +11,7 @@ import { StrictUiFixture, finishUiFixtures, jsonFixture, PENDING_RESPONSE, type 
 import type { FullTextSearchPending, FullTextSearchTerminal } from '../src/conversations/full-text-search-contract';
 import { AppShellProvider, useAppShell } from '../ui/src/app-shell';
 import type { ComponentChildren } from 'preact';
+import { waitUntilPasses } from './helpers/wait-until';
 
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
@@ -115,6 +116,25 @@ function fullText() {
 }
 
 describe('completed search snapshots in Chat', () => {
+  it('keeps the list API on the completed snapshot when requesting another offset', async () => {
+    vi.useFakeTimers();
+    new StrictUiFixture('list search', [{ name: 'list union', method: 'GET', path: '/api/conversations', respond: ({ url }) => {
+      if (url.searchParams.has('cancel')) return jsonFixture({ released: true });
+      if (!url.searchParams.has('search_id')) return jsonFixture(pending(), 202);
+      if (url.searchParams.has('offset')) expect(url.searchParams.get('snapshot_id')).toBe('search-1');
+      return jsonFixture({ state: 'complete', search_id: 'search-1', snapshot_id: 'search-1', coverage,
+        conversations: [row(url.searchParams.has('offset') ? 'Second' : 'First')], total: 2 });
+    } }]).install();
+    const first = api.getConversations({ search: 'needle', full_text: true, limit: 1 });
+    await tick(500);
+    const snapshot = await first;
+    const next = await api.getConversations({ search: 'needle', full_text: true, limit: 1, offset: 1,
+      snapshot: { search_id: snapshot.search_id!, snapshot_id: snapshot.snapshot_id! } });
+    expect(snapshot.conversations.map(row => row.id)).toEqual(['First']);
+    expect(next.conversations.map(row => row.id)).toEqual(['Second']);
+    expect(next.total).toBe(2);
+  });
+
   it('keeps completed rows while pending, swaps atomically and concatenates only exact snapshot pages', async () => {
     vi.useFakeTimers();
     let ready = false;
@@ -214,7 +234,7 @@ describe('completed search snapshots in Chat', () => {
     await tick();
     await tick(525);
     expect(sidebar().getByText('Prior chat')).toBeTruthy();
-    await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Retry search' })).toBeTruthy());
+    await waitUntilPasses(() => expect(screen.getByRole('button', { name: 'Retry search' })).toBeTruthy());
     const requests = fixture.requested.length;
     await tick(10_000);
     expect(fixture.requested).toHaveLength(requests);
