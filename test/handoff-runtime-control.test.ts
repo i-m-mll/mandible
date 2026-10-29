@@ -44,9 +44,12 @@ async function fixture() {
   } }));
   const batch = vi.fn((_context, _operation, roles) => Object.fromEntries(roles.map(role => [role, { status: 'enabled' }])));
   vi.doMock('../scripts/bundle-services.mjs', async original => ({ ...await original(), nativeServiceControls: batch, bundleLoginSession: () => 'session' }));
-  vi.doMock('../scripts/service-definitions.mjs', async original => ({ ...await original(), inspectServiceDefinitionsSync: () => ({ ok: true, observations: [] }) }));
+  const ownership = { pending: false };
+  vi.doMock('../scripts/service-definitions.mjs', async original => ({ ...await original(), inspectServiceDefinitionsSync: () => ownership.pending
+    ? { ok: false, refusal: { category: 'starting', message: 'Native execution is starting.' } } : { ok: true, observations: [] } }));
   const jobs = { backend: { loaded: true, pid: 41 as number | null, foreign: false, executable: path.join(app, 'Contents/MacOS/mandible-bun') }, gateway: { loaded: true, pid: 51 as number | null, foreign: false, executable: path.join(app, 'Contents/MacOS/mandible-caddy') } };
   const birth = 'Wed Oct 28 18:08:18 2026';
+  let processRead = () => {};
   const commands: string[] = [];
   vi.doMock('node:child_process', async original => ({ ...await original(), spawnSync: (binary, args) => {
     commands.push(`${binary} ${args.join(' ')}`);
@@ -54,12 +57,13 @@ async function fixture() {
       const role = args[1].endsWith('.backend') ? 'backend' : 'gateway';
       if (args[0] === 'kickstart') { jobs[role].pid = role === 'backend' ? 41 : 51; return { status: 0, stdout: '', stderr: '' }; }
       if (!jobs[role].loaded) return { status: 113, stdout: '', stderr: 'Could not find service' };
-      return { status: 0, stdout: `service = {\n program identifier = Contents/MacOS/mandible-service (mode: 2)\n parent bundle identifier = ${jobs[role].foreign ? 'foreign.app' : 'bio.mll.fixture'}\n arguments = {\nmandible-service\nforeground\n${role}\n }\n${jobs[role].pid ? ` pid = ${jobs[role].pid}\n` : ''} runs = 1\n last exit code = 17\n}`, stderr: '' };
+      return { status: 0, stdout: `service = {\n program identifier = Contents/MacOS/mandible-service (mode: 2)\n parent bundle identifier = ${jobs[role].foreign ? 'foreign.app' : 'bio.mll.fixture'}\n arguments = {\nmandible-service\nforeground\n${role}\n }\n${jobs[role].pid ? ` pid = ${jobs[role].pid}\n` : ''} runs = ${jobs[role].runs ?? 1}\n last exit code = 17\n}`, stderr: '' };
     }
     if (binary === '/bin/ps') {
       const live = Object.values(jobs).filter(job => job.loaded && job.pid);
       if (args.at(-1) === 'lstart=') return { status: live.some(job => String(job.pid) === args[1]) ? 0 : 1, stdout: live.some(job => String(job.pid) === args[1]) ? birth : '', stderr: '' };
-      return { status: 0, stdout: live.map(job => `${job.pid} ${birth} ${job.executable}`).join('\n'), stderr: '' };
+      processRead();
+      return { status: 0, stdout: live.map(job => `${job.pid} ${job.startedAt ?? birth} ${job.executable}`).join('\n'), stderr: '' };
     }
     throw new Error(`Unexpected process: ${binary}`);
   } }));
@@ -72,8 +76,58 @@ async function fixture() {
   fs.writeFileSync(journalFile, JSON.stringify(journal));
   fs.writeFileSync(path.join(runtimeDir, 'handoff-active.json'), JSON.stringify({ bindingDigest: journal.bindingDigest, journal: journalFile }));
   const health = { status: 'ok', ready: true, warm: true, startup_epoch: 'epoch', instance: { ...main, db_path: path.join(home, 'mandible.db') } };
-  return { api, binding, journal, context, prepared, assertHeld, health, commands, jobs, birth, batch };
+  return { api, binding, journal, context, prepared, assertHeld, health, commands, jobs, birth, batch, ownership, setProcessRead: callback => { processRead = callback; } };
 }
+
+it('qualifies real role execution chains without restarting live stages and keeps terminal continuity strict', async () => {
+  const fx = await fixture();
+  fx.ownership.pending = true;
+  const { nativeExecutionModel, classifyNativeExecution } = await import('../scripts/native-service-execution.mjs');
+  const native = { bun: '../MacOS/mandible-bun', caddy: '../MacOS/mandible-caddy' };
+  const model = nativeExecutionModel(fx.context.bundleRoot, { native, serviceExecutables: { backend: 'bun', gateway: 'caddy' } });
+  const exe = role => path.join(fx.context.bundleRoot, `Contents/MacOS/mandible-${role}`);
+  const stages = [
+    ['xpcproxy', 'xpcproxy'], [exe('service'), 'mandible-service'], ['mandible-bun', exe('bun')],
+    [exe('bun'), exe('bun')], [exe('bun'), exe('bun')], [exe('bun'), exe('caddy')],
+  ];
+  const processes = {};
+  let stage = 0, finished = false, registered = false;
+  fx.batch.mockImplementation((_context, operation, roles) => {
+    if (operation === 'register') { if (registered) throw new Error('A live pending stage must not be re-registered'); registered = true; }
+    return Object.fromEntries(roles.map(role => [role, { status: 'enabled' }]));
+  });
+  fx.setProcessRead(() => {
+    const current = stages[Math.min(stage++, stages.length - 1)];
+    [fx.jobs.backend.executable, fx.jobs.gateway.executable] = current;
+    expect(classifyNativeExecution(model, 'backend', current[0])).toBe(current[0] === exe('bun') ? 'executable-qualified' : 'pending');
+    expect(classifyNativeExecution(model, 'gateway', current[1])).toBe(current[1] === exe('caddy') ? 'executable-qualified' : 'pending');
+    if (stage <= 5) expect(finished).toBe(false);
+    if (stage === 5) { expect(processes).toHaveProperty('backend'); expect(processes).not.toHaveProperty('gateway'); }
+  });
+  const options = { context: fx.context, journal: fx.journal, prepared: fx.prepared, assertHeld: fx.assertHeld,
+    until: Date.now() + 1000, processes, initialize: async () => {}, configure: async () => {} };
+  await fx.api.startHandoffDefinitions(fx.binding, options); finished = true;
+  expect(processes).toMatchObject({ backend: { pid: 41 }, gateway: { pid: 51 } });
+  expect(fx.commands.some(command => command.includes('kickstart'))).toBe(false);
+  fx.setProcessRead(() => {});
+  for (const executable of ['mandible-service', exe('bun')]) {
+    fx.jobs.gateway.executable = executable;
+    expect(() => fx.api.inspectHandoffProcesses(fx.binding, options)).toThrowError(expect.objectContaining({ code: 'process_changed' }));
+  }
+  fx.jobs.gateway.executable = path.join(fx.context.bundleRoot, 'Contents/MacOS/other-tool');
+  expect(() => fx.api.inspectHandoffProcesses(fx.binding, options)).toThrowError(expect.objectContaining({ code: 'ownership_conflict' }));
+  fx.jobs.gateway.executable = exe('caddy'); fx.jobs.gateway.startedAt = 'Wed Oct 28 18:08:19 2026';
+  expect(() => fx.api.inspectHandoffProcesses(fx.binding, options)).toThrowError(expect.objectContaining({ code: 'process_changed' }));
+  fx.jobs.gateway.startedAt = fx.birth; fx.jobs.gateway.runs = 2;
+  expect(() => fx.api.inspectHandoffProcesses(fx.binding, options)).toThrowError(expect.objectContaining({ code: 'process_changed' }));
+  fx.jobs.gateway.runs = 1; fx.jobs.gateway.pid = 52; fx.jobs.backend.executable = '/foreign/mandible-bun';
+  expect(() => fx.api.inspectHandoffProcesses(fx.binding, options)).toThrowError(expect.objectContaining({ code: 'process_changed' }));
+  const legacy = nativeExecutionModel(fx.context.bundleRoot, { native });
+  expect(classifyNativeExecution(legacy, 'gateway', exe('bun'))).toBe('executable-qualified');
+  expect(classifyNativeExecution(legacy, 'backend', 'mandible-bun')).toBe('pending');
+  expect(nativeExecutionModel(fx.context.bundleRoot, { native: { ...native, bun: '../MacOS/other-tool' } }).ok).toBe(false);
+  expect(nativeExecutionModel(fx.context.bundleRoot, { native, serviceExecutables: { backend: 'caddy', gateway: 'caddy' } }).ok).toBe(false);
+});
 
 it.each(['settling registration', 'owned dormant job', 'permission refusal', 'foreign job', 'other role replacement'])('direct start preserves progress and ownership for %s', async scenario => {
   const fx = await fixture();

@@ -43,7 +43,7 @@ it.each(['bio.mll.mandible', 'bio.mll.mandible.fixture.private'])('qualifies exp
   } }));
   vi.resetModules();
   const { inspectServiceDefinitionsSync } = await import('../scripts/service-definitions.mjs');
-  for (executable of ['xpcproxy', 'mandible-service']) {
+  for (executable of ['xpcproxy', '/usr/libexec/xpcproxy', 'mandible-service', path.join(bundleRoot, 'Contents/MacOS/mandible-service'), 'mandible-bun']) {
     const pending = inspectServiceDefinitionsSync(context);
     expect(pending).toMatchObject({ ok: false, refusal: { category: 'starting', evidence: { pid: 42, executable,
       service: 'backend', label: context.backendLabel, bundleProgram: 'Contents/MacOS/mandible-service', parentBundleIdentifier: identifier } } });

@@ -33,6 +33,8 @@ import SqliteDatabase from '../src/sqlite.ts';
 import { LocalSessionAuthority } from '../src/client-auth/session-authority.ts';
 import { resolveInstanceInfo } from '../src/instance-policy.ts';
 
+import { nativeExecutionModel, classifyNativeExecution } from './native-service-execution.mjs';
+
 const ACCOUNT_HOME = os.userInfo().homedir;
 const DEFAULT_HOME = path.join(ACCOUNT_HOME, ".mandible");
 const configuredHome = process.env.MANDIBLE_HOME?.trim() || DEFAULT_HOME;
@@ -504,13 +506,15 @@ export async function startHandoffDefinitions(binding, { context, journal, asser
     if (!application.installed) throw new Error('Service start requires the installed prepared application.');
     if (processStart(binding.oldProcess.pid, until) === binding.oldProcess.startedAt) throw new Error('The old production process has not finished draining.');
     const ownership = inspectServiceDefinitionsSync(context, { until });
-    if (!ownership.ok) throw new RuntimeObservationError(ownership.refusal.category, ownership.refusal.message, ownership);
+    if (!ownership.ok && ownership.refusal.category !== 'starting') throw new RuntimeObservationError(ownership.refusal.category, ownership.refusal.message, ownership);
+    Object.assign(processes, inspectHandoffProcesses(binding, { context, prepared, assertHeld, until, processes }).processes);
     await initialize(application.resources, { context, assertHeld });
     assertHeld();
     fs.writeFileSync(path.join(context.runtimeDir, 'bundle-launch.json'), JSON.stringify({ enabled: true, gatewayEnabled: true,
       launchMode: binding.priorBackend.launchMode, session: bundleLoginSession() }), { mode: 0o600 });
     await configure(context, { binary: path.resolve(application.resources, application.release.native.caddy), assertHeld });
     assertHandoffMutation(binding, { context, journal, assertHeld });
+    Object.assign(processes, inspectHandoffProcesses(binding, { context, prepared, assertHeld, until, processes }).processes);
     const statuses = nativeServiceControls(context, 'register', ['backend', 'gateway'], { until, release: application.release });
     if (Object.values(statuses).some(status => status.status === 'requires_approval')) throw new RuntimeObservationError('background_permission_required',
       'Allow Mandible background services in System Settings.', statuses, 'pending');
@@ -692,6 +696,8 @@ export function inspectHandoffProcesses(binding, { context, prepared, assertHeld
   const resources = path.join(context.bundleRoot, 'Contents/Resources');
   const application = prepared ? acceptedInstall.preparedApplicationContext(prepared, binding)
     : { resources, release: installedModuleReader.readInstalledRelease(resources) };
+  const execution = nativeExecutionModel(context.bundleRoot, application.release);
+  if (!execution.ok) throw new RuntimeObservationError('unreadable_state', execution.message);
   const jobs = Object.fromEntries(['backend', 'gateway'].map(role => {
     const result = spawnSync('/bin/launchctl', ['print', `${context.domain}/${context[`${role}Label`]}`],
       { encoding: 'utf8', timeout: runtimeObservationTimeout(until, 2500) });
@@ -719,18 +725,24 @@ export function inspectHandoffProcesses(binding, { context, prepared, assertHeld
   }
   const qualified = {};
   let pending = null;
+  const identities = Object.fromEntries(Object.entries(jobs).map(([role, job]) => {
+    const process = actual.get(job.pid);
+    return [role, job.pid && process ? { pid: job.pid, startedAt: process.startedAt, runs: job.runs } : null];
+  }));
+  for (const [role, expected] of Object.entries(processes)) {
+    if (runtimeProcessChanged(expected, identities[role])) throw new RuntimeObservationError('process_changed', `Candidate ${role} process changed.`, { expected, current: identities[role] });
+  }
   for (const [role, job] of Object.entries(jobs)) {
     const process = actual.get(job.pid);
-    const identity = job.pid && process ? { pid: job.pid, startedAt: process.startedAt, runs: job.runs } : null;
-    if (runtimeProcessChanged(processes[role], identity)) throw new RuntimeObservationError('process_changed', `Candidate ${role} process changed.`, { expected: processes[role], current: identity });
-    if (!identity || ['xpcproxy', '/usr/libexec/xpcproxy', 'mandible-service', path.join(context.bundleRoot, 'Contents/MacOS/mandible-service')].includes(process.executable)) {
+    const identity = identities[role];
+    const stage = identity ? classifyNativeExecution(execution, role, process.executable) : 'pending';
+    if (stage === 'pending') {
       if (processes[role]) throw new RuntimeObservationError('process_changed', `Qualified ${role} process is no longer serving.`, { expected: processes[role], current: identity });
       pending = `Candidate ${role} process is not qualified yet.`;
       continue;
     }
-    const executableRole = application.release.serviceExecutables?.[role] ?? 'bun';
-    const executable = path.resolve(application.resources, application.release.native[executableRole]);
-    if (process.executable !== executable) throw new RuntimeObservationError('ownership_conflict', `Candidate ${role} process belongs to another executable.`, { expected: executable, actual: process.executable });
+    const executable = execution.roles[role].terminal;
+    if (stage === 'foreign') throw new RuntimeObservationError('ownership_conflict', `Candidate ${role} process belongs to another executable.`, { expected: executable, actual: process.executable });
     qualified[role] = identity;
   }
   assertHeld();
@@ -742,8 +754,8 @@ function acceptedHandoffEvidence(binding, expectedProcesses, options) {
   const observed = inspectHandoffProcesses(binding, { ...options, processes: expectedProcesses ?? {} });
   if (observed.pending) throw new RuntimeObservationError('starting', observed.pending, { processes: observed.processes }, 'pending');
   const inspection = matchingServiceDefinitions(inspectServiceDefinitionsSync(context, { until }));
-  if (!inspection.ok) throw new RuntimeObservationError(inspection.refusal.category, inspection.refusal.message, inspection,
-    inspection.refusal.category === 'starting' ? 'pending' : 'failed');
+  if (!inspection.ok) throw new RuntimeObservationError(inspection.refusal.category === 'starting' ? 'process_changed' : inspection.refusal.category,
+    inspection.refusal.message, inspection);
   for (const observation of inspection.observations) {
     const current = { pid: observation.job.pid, startedAt: observation.job.startedAt, runs: observation.job.runs };
     if (runtimeProcessChanged(observed.processes[observation.service], current)) throw new RuntimeObservationError('process_changed', 'Candidate process changed during qualification.', { current });
