@@ -10,9 +10,9 @@ const api = path.resolve("cli/api.sh");
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
 
-async function runShell(command: string, env: NodeJS.ProcessEnv): Promise<{ code: number | null; stdout: string; stderr: string }> {
+async function runShell(command: string, env: NodeJS.ProcessEnv, shell = "bash"): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn("bash", ["-u", "-c", command], { env });
+    const child = spawn(shell, ["-u", "-c", command], { env });
     let stdout = ""; let stderr = "";
     child.stdout.on("data", (part) => { stdout += part; });
     child.stderr.on("data", (part) => { stderr += part; });
@@ -116,18 +116,19 @@ describe("CLI private local transport", () => {
       MANDIBLE_LOCAL_CREDENTIAL_ROUTES_FILE: path.join(path.dirname(api), "local-credential-routes.json"),
       MANDIBLE_BASE: "https://app.mandible.localhost:19420", MANDIBLE_SOCKET: socket, MANDIBLE_TOKEN: "stale-token",
       CODEX_THREAD_ID: "task-123", CODEX_SESSION_ID: "task-123", LOOKUPS: lookups };
-    const request = (method: string, route: string, body = "", overrides = {}) => runShell(
+    const request = (method: string, route: string, body = "", overrides = {}, shell = "bash") => runShell(
       'source "$API_HELPER"; secret_account_for_service() { printf lookup >> "$LOOKUPS"; printf codex; }; secret_get() { printf durable-token; }; api_keychain_operator_token() { printf lookup >> "$LOOKUPS"; printf operator-token; }; out=$(api_temp_file); api_http_exchange "$METHOD" "$ROUTE" "$BODY" "$out"',
-      { ...env, METHOD: method, ROUTE: route, BODY: body, ...overrides });
+      { ...env, METHOD: method, ROUTE: route, BODY: body, ...overrides }, shell);
     try {
       for (const route of ["/api/issues", "/api/users/operator", "/api/users/groups", "/api/users/grants", "/api/users"]) {
         const result = await request("GET", route); expect(result.stdout, result.stderr).toBe("403");
         expect(seen.at(-1)).toEqual({ url: route, auth: undefined });
       }
       expect(fs.existsSync(lookups)).toBe(false);
-      for (const route of ["/api/unknown", "/api/users/%oops"]) {
+      for (const shell of ["bash", "zsh"]) for (const route of ["/api/unknown", "/api/users/%oops", "/api/users/%FF", "/api/users/%C0%AF", "/api/users/%E2%82",
+        "/api/users/..", "/api/users/.", "/api/users/%2e%2E", "/api/users/.%2e", "/api/users/.\\operator", "/api/users/agent name", "/api/users/%00"]) {
         const count = seen.length;
-        expect((await request("GET", route)).stdout).toBe("000");
+        expect((await request("GET", route, "", {}, shell)).stdout).toBe("000");
         expect(seen).toHaveLength(count);
         expect(fs.existsSync(lookups)).toBe(false);
       }
@@ -153,6 +154,16 @@ describe("CLI private local transport", () => {
             CLAUDE_CODE_SESSION_ID: "", CLAUDE_SESSION_ID: "", GEMINI_SESSION_ID: "", MANDIBLE_SESSION_ID: "", MANDIBLE_MANAGED_APP: "", CODEX_SANDBOX: "" });
           expect(seen.at(-1)?.auth).toBeUndefined();
         }
+      }
+      const humanMarkers = { CODEX_THREAD_ID: "", CODEX_SESSION_ID: "", MANDIBLE_MANAGED_CLIENT: "", CLAUDE_CODE_SESSION_ID: "",
+        CLAUDE_SESSION_ID: "", MANDIBLE_SESSION_ID: "", MANDIBLE_MANAGED_APP: "", GEMINI_SESSION_ID: "fixture" };
+      const gemini = await request("GET", "/api/briefing-destination-routes", "", humanMarkers);
+      expect(gemini.stdout, gemini.stderr).toBe("403");
+      expect(seen.at(-1)?.auth).toBe("Bearer durable-token");
+      for (const shell of ["bash", "zsh"]) {
+        const unicode = await request("GET", "/api/users/%E2%82%AC", "", {}, shell);
+        expect(unicode.stdout, unicode.stderr).toBe("403");
+        expect(seen.at(-1)).toEqual({ url: "/api/users/%E2%82%AC", auth: "Bearer durable-token" });
       }
       fs.rmSync(lookups);
       const invalid = path.join(root, "invalid.json");

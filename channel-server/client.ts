@@ -82,9 +82,13 @@ function localRouteCredentialRule(method: string, route: string, body?: unknown)
     throw new Error("Invalid Mandible local credential route manifest");
   }
   const pathname = route.split("?", 1)[0];
-  if (!pathname.startsWith("/") || pathname.includes("#") || pathname.replace(/%[a-fA-F0-9]{2}/g, "").includes("%")) {
+  if (!/^\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*$/.test(pathname)
+      || new URL(pathname, "http://localhost").pathname !== pathname
+      || /%(?:0[0-9a-f]|1[0-9a-f]|7f)/i.test(pathname)) {
     throw new Error("Malformed local API route");
   }
+  try { decodeURIComponent(pathname); }
+  catch { throw new Error("Malformed local API route encoding"); }
   const parts = pathname.split("/");
   const match = projection.routes.find(entry => entry.method === method
     && entry.path.split("/").length === parts.length

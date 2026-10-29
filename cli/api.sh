@@ -245,7 +245,7 @@ api_local_route_requires_credential() {
         and (.localCliCredential | policy))
     then .routes[] | [.method, .path, .localCliCredential.mode, (.localCliCredential.field // "")] | join("|")
     else error("invalid credential route projection") end' "$file")" || return 2
-  if [[ "$pathname" != /* || "$pathname" == *'#'* ]] || ! jq -en --arg path "$pathname" '$path | gsub("%[a-fA-F0-9]{2}"; "") | contains("%") | not' >/dev/null; then
+  if ! api_local_path_is_canonical "$pathname"; then
     printf 'Malformed local API route: %s\n' "$pathname" >&2
     return 2
   fi
@@ -276,7 +276,20 @@ api_local_route_requires_credential() {
 # generic managed/session markers still fence off operator credentials even
 # when they do not identify a provider-specific agent account.
 api_managed_client_markers_present() {
-  [[ -n "${MANDIBLE_MANAGED_CLIENT:-}${CODEX_THREAD_ID:-}${CODEX_SESSION_ID:-}${CLAUDE_CODE_SESSION_ID:-}${CLAUDE_SESSION_ID:-}${MANDIBLE_SESSION_ID:-}" ]]
+  [[ -n "${MANDIBLE_MANAGED_CLIENT:-}${CODEX_THREAD_ID:-}${CODEX_SESSION_ID:-}${CLAUDE_CODE_SESSION_ID:-}${CLAUDE_SESSION_ID:-}${GEMINI_SESSION_ID:-}${MANDIBLE_SESSION_ID:-}" ]]
+}
+
+api_local_path_is_canonical() {
+  local pathname="$1"
+  jq -en --arg path "$pathname" '
+    ($path | startswith("/"))
+    and ($path | explode | all((. >= 48 and . <= 57) or (. >= 65 and . <= 90)
+      or (. >= 97 and . <= 122) or IN(33,36,37,38,39,40,41,42,43,44,45,46,47,58,59,61,64,95,126)))
+    and ($path | gsub("%[a-fA-F0-9]{2}"; "") | contains("%") | not)
+    and ($path | test("%(0[0-9a-f]|1[0-9a-f]|7f)"; "i") | not)
+    and ($path | split("/") | all(ascii_downcase | gsub("%2e"; ".") | . != "." and . != ".."))
+  ' >/dev/null || return 1
+  printf '%b' "${pathname//\%/\\x}" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1
 }
 
 # Resolve one provider from ambient provider markers plus an optional explicit
@@ -1140,7 +1153,7 @@ api_curl_ambient_headers() {
   local request_origin
   request_origin=$(api_request_origin_json)
   [[ -z "$request_origin" ]] || printf '%s\0%s\0' '-H' "X-Mandible-Request-Origin: ${request_origin}"
-  if api_managed_client_markers_present || [[ -n "$provider" ]]; then
+  if api_managed_client_markers_present; then
     printf '%s\0%s\0' '-H' 'X-Mandible-Managed-Client: 1'
   fi
   [[ -z "$provider" ]] || printf '%s\0%s\0' '-H' "X-Mandible-Ambient-Provider: ${provider}"

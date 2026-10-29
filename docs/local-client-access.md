@@ -58,6 +58,9 @@ Build and static checks reject stale or incomplete projections and unresolved
 overlaps between route modules. Clients resolve the first registered matching
 route before applying its credential policy; unknown or malformed routes fail
 before credential lookup or network delivery.
+Local clients also reject URL dot segments, backslashes, raw non-URL characters
+and invalid UTF-8 parameter escapes before credential lookup, so the server
+cannot normalize a credentialed request into a different route.
 
 Policies select omission, durable credentials, optional bootstrap credentials,
 durable credentials for managed clients, or durable credentials when a named

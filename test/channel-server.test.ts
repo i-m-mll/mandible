@@ -63,6 +63,28 @@ describe("channel-server local socket", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+  it("refuses noncanonical and malformed paths before credentials or socket delivery", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-channel-path-"));
+    const socket = path.join(root, "daemon.sock");
+    let requests = 0;
+    const server = http.createServer((_req, res) => { requests++; res.end('{}'); });
+    await new Promise<void>(resolve => server.listen(socket, resolve));
+    const values = { MANDIBLE_BASE: "https://app.mandible.localhost:19420", MANDIBLE_SOCKET: socket,
+      MANDIBLE_NO_KEYCHAIN_TOKEN: "1", MANDIBLE_LOCAL_CREDENTIAL_ROUTES_FILE: path.resolve("cli/local-credential-routes.json") };
+    const original = Object.fromEntries(Object.keys(values).map(key => [key, process.env[key]]));
+    Object.assign(process.env, values);
+    try {
+      const { patchWorkUnit } = await import("../channel-server/client.js");
+      for (const id of ["..", ".", "%2e%2E", ".%2e", "%FF", "%C0%AF", "%E2%82", ".\\operator", "agent name", "%00"]) {
+        await expect(patchWorkUnit(id, {})).rejects.toThrow("Malformed local API route");
+      }
+      expect(requests).toBe(0);
+    } finally {
+      for (const [key, value] of Object.entries(original)) value === undefined ? delete process.env[key] : process.env[key] = value;
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 // --- Client tests (mocked fetch) ---
