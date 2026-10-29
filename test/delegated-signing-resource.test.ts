@@ -183,6 +183,97 @@ async function withRealAgent(body: (agent: {
 }
 
 describe("delegated signer reconnect lifecycle", () => {
+  it("joins acquisition and startup attachment before closing, preserving an available signer", async () => {
+    const f = fixture();
+    let release!: () => void;
+    let entered!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const challenge = f.inspector.challenge;
+    f.inspector.challenge = async (...args) => { entered(); await held; await challenge(...args); };
+    try {
+      const first = f.resource("runtime-a", 100);
+      const issuing = first.issueFresh(60);
+      await started;
+      let closed = false;
+      const closing = first.close().then(() => { closed = true; });
+      expect(closed).toBe(false);
+      await expect(first.issueFresh(60)).rejects.toThrow(/closing/);
+      release();
+      const context = await issuing;
+      f.addClearance(context.leaseId);
+      await closing;
+      expect(f.stopped).toEqual([]);
+      f.processes.delete(100);
+
+      let releaseAttach!: () => void;
+      let enteredAttach!: () => void;
+      const heldAttach = new Promise<void>(resolve => { releaseAttach = resolve; });
+      const startedAttach = new Promise<void>(resolve => { enteredAttach = resolve; });
+      f.inspector.challenge = async (...args) => { enteredAttach(); await heldAttach; await challenge(...args); };
+      const second = f.resource("runtime-b", 200);
+      const attaching = second.attachAvailable();
+      await startedAttach;
+      const closingSecond = second.close();
+      await expect(second.borrow(context.leaseId)).rejects.toThrow(/closing/);
+      releaseAttach();
+      expect(await attaching).toEqual({ attached: 1, refused: 0 });
+      await closingSecond;
+      expect(f.stopped).toEqual([]);
+      f.processes.delete(200);
+      f.inspector.challenge = challenge;
+      const third = f.resource("runtime-c", 201);
+      expect(await third.attachAvailable()).toEqual({ attached: 1, refused: 0 });
+      const borrow = await third.borrow(context.leaseId);
+      await borrow.settle();
+      await third.close();
+    } finally {
+      release();
+      f.db.close();
+    }
+  });
+
+  it("retains retirement ownership when process inspection fails and retries after proof returns", async () => {
+    const f = fixture();
+    try {
+      const resource = f.resource("runtime-a", 100);
+      const context = await resource.issueFresh(60);
+      const inspect = f.inspector.process;
+      f.inspector.process = async pid => {
+        if (pid === 300) throw new Error("inspection refused");
+        return inspect(pid);
+      };
+      await expect(resource.drain(context.leaseId, "clearance_revoked")).rejects.toThrow("inspection refused");
+      await expect(resource.close()).rejects.toThrow(/failed to close/);
+      expect(f.stopped).toEqual([]);
+      expect(f.db.prepare("SELECT state, retired_at FROM delegated_signing_runtime_bindings WHERE lease_id = ?").get(context.leaseId))
+        .toEqual({ state: "draining", retired_at: null });
+      f.inspector.process = inspect;
+      await resource.close();
+      expect(f.stopped).toEqual([context.leaseId]);
+    } finally { f.db.close(); }
+  });
+
+  it("retains a pending drain when its database transition fails before process cleanup", async () => {
+    const f = fixture();
+    try {
+      const resource = f.resource("runtime-a", 100);
+      const context = await resource.issueFresh(60);
+      f.db.exec(`CREATE TRIGGER refuse_drain BEFORE UPDATE ON delegated_signing_runtime_bindings
+        WHEN NEW.state = 'draining' BEGIN SELECT RAISE(ABORT, 'drain write refused'); END`);
+      await expect(resource.drain(context.leaseId, "clearance_revoked")).rejects.toThrow("drain write refused");
+      await expect(resource.close()).rejects.toThrow(/failed to close/);
+      expect(f.stopped).toEqual([]);
+      expect(f.db.prepare("SELECT state FROM delegated_signing_runtime_bindings WHERE lease_id = ?").get(context.leaseId))
+        .toEqual({ state: "available" });
+      f.db.exec("DROP TRIGGER refuse_drain");
+      await resource.close();
+      expect(f.stopped).toEqual([context.leaseId]);
+      expect(f.db.prepare("SELECT state FROM delegated_signing_runtime_bindings WHERE lease_id = ?").get(context.leaseId))
+        .toEqual({ state: "retired" });
+    } finally { f.db.close(); }
+  });
+
   it.runIf(process.platform === "darwin")("proves a real throwaway ssh-agent key with the production inspector", async () => {
     await withRealAgent(async ({ resource, context, agentRunning }) => {
       const borrow = await resource.borrow(context.leaseId);
@@ -226,6 +317,9 @@ describe("delegated signer reconnect lifecycle", () => {
       f.addClearance(context.leaseId);
       expect(f.challenges()).toBe(1);
 
+      await first.close();
+      expect(f.stopped).toEqual([]);
+      await expect(first.borrow(context.leaseId)).rejects.toThrow(/closing/);
       f.processes.delete(100); // routine daemon exit; ssh-agent survives
       const second = f.resource("runtime-b", 200);
       expect(await second.attachAvailable()).toEqual({ attached: 1, refused: 0 });

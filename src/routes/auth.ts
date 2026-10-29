@@ -66,11 +66,12 @@ export function registerAuthRoutes(
 ): AuthQueue {
   const db = authQueue.db;
   const fallbackRuntimeEpoch = randomUUID();
-  const clearanceManager = clearance ?? new AuthClearanceManager(
+  const clearanceManager = clearance ?? authQueue.clearanceAuthority ?? new AuthClearanceManager(
     db, new DelegatedSigningResource(autoApproveManager, {
-      db, runtimeEpoch: fallbackRuntimeEpoch,
+      db, runtimeEpoch: fallbackRuntimeEpoch, allowRuntimeAuthority: authQueue.externalEffectsAllowed,
     }), fallbackRuntimeEpoch,
   );
+  authQueue.registerClearanceAuthority(clearanceManager);
   app.post("/api/auth/check", async (req, res) => {
     if (!authQueue.externalEffectsAllowed) {
       res.status(403).json({

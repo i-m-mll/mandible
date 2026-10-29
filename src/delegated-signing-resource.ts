@@ -14,6 +14,7 @@ import {
   type SetupDelegatedSigningOptions,
 } from "./auth-auto-approve.js";
 import { getDb } from "./db.js";
+import { AuthorityLifecycle } from "./authority-lifecycle.js";
 
 type Db = InstanceType<typeof SqliteDatabase>;
 
@@ -93,6 +94,11 @@ export interface DelegatedSigningResourceOptions {
  * operation. The ssh-agent remains the only live capability.
  */
 export class DelegatedSigningResource {
+  private readonly lifecycle = new AuthorityLifecycle();
+  private closing: Promise<void> | null = null;
+  private readonly cleanupFailures = new Map<string, unknown>();
+  private readonly unboundContexts = new Map<string, AuthApprovalContext>();
+  private readonly pendingDrains = new Map<string, string>();
   private readonly db: Db;
   private readonly runtimeEpoch: string;
   private readonly allowRuntimeAuthority: boolean;
@@ -119,35 +125,53 @@ export class DelegatedSigningResource {
   }
 
   status(): DelegatedSigningStatus {
+    this.lifecycle.assertOpen();
     return this.signer.getDelegatedSigningStatus();
   }
 
   async setup(options: SetupDelegatedSigningOptions = {}): Promise<DelegatedSigningStatus> {
+    return this.lifecycle.run(() => this.setupAdmitted(options));
+  }
+
+  private async setupAdmitted(options: SetupDelegatedSigningOptions): Promise<DelegatedSigningStatus> {
     if (options.overwrite) await this.drainAll("signing_replaced");
     return this.signer.setupDelegatedSigning(options);
   }
 
   async issueFresh(ttlSeconds: number): Promise<AuthApprovalContext> {
+    return this.lifecycle.run(() => this.issueAdmitted(ttlSeconds));
+  }
+
+  private async issueAdmitted(ttlSeconds: number): Promise<AuthApprovalContext> {
     this.assertAuthorityAllowed();
     const context = await this.signer.freshPresenceChallenge(ttlSeconds);
+    this.unboundContexts.set(context.leaseId, context);
     let binding: RuntimeBindingRow | null = null;
     try {
       binding = await this.captureBinding(context);
       this.insertBinding(binding);
-      await this.validate(binding, true);
+      this.unboundContexts.delete(context.leaseId);
       this.installLiveLease(context, binding);
+      await this.validate(binding, true);
       return context;
     } catch (error) {
-      if (binding) this.retireBinding(binding, "lost", "initial_validation_failed");
-      await this.signer.stopApprovalRuntime(context).catch(() => undefined);
+      try {
+        if (binding && this.readBinding(binding.lease_id)) {
+          await this.drainAdmitted(binding.lease_id, "initial_validation_failed");
+        } else {
+          await this.signer.stopApprovalRuntime(context);
+          this.unboundContexts.delete(context.leaseId);
+        }
+      } catch (cleanup) { throw new AggregateError([error, cleanup], "Signer acquisition and cleanup failed."); }
       throw error;
     }
   }
 
   /** Reattach all eligible bindings during production daemon startup. */
   attachAvailable(): Promise<{ attached: number; refused: number }> {
-    const attaching = this.attachEligible();
-    this.attaching = attaching.catch(() => undefined);
+    const attaching = this.lifecycle.run(() => this.attachEligible());
+    this.attaching = attaching;
+    void attaching.catch(() => undefined);
     return attaching;
   }
 
@@ -175,7 +199,7 @@ export class DelegatedSigningResource {
           await this.attach(row);
           attached += 1;
         } else {
-          void this.drain(row.lease_id, "clearance_inactive").catch(() => undefined);
+          await this.drainAdmitted(row.lease_id, "clearance_inactive");
         }
       } catch {
         refused += 1;
@@ -185,6 +209,10 @@ export class DelegatedSigningResource {
   }
 
   async borrow(leaseId: string): Promise<DelegatedSignerBorrow> {
+    return this.lifecycle.run(() => this.borrowAdmitted(leaseId));
+  }
+
+  private async borrowAdmitted(leaseId: string): Promise<DelegatedSignerBorrow> {
     this.assertAuthorityAllowed();
     await this.attaching;
     let live = this.leases.get(leaseId);
@@ -202,13 +230,14 @@ export class DelegatedSigningResource {
     await this.validate(live.binding, true);
     assertBorrowable();
     live.borrows += 1;
-    let settled = false;
+    let released = false;
     return {
       approval: { ...live.context, source: "clearance" },
       settle: async () => {
-        if (settled) return;
-        settled = true;
-        live!.borrows -= 1;
+        if (!released) {
+          released = true;
+          live!.borrows -= 1;
+        }
         if (live!.borrows === 0) {
           for (const resolve of live!.settled.splice(0)) resolve();
           if (live!.draining) await this.finishDrain(live!);
@@ -222,6 +251,14 @@ export class DelegatedSigningResource {
   }
 
   async drain(leaseId: string, reason: string): Promise<void> {
+    return this.lifecycle.run(() => this.drainAdmitted(leaseId, reason));
+  }
+
+  drainInBackground(leaseId: string, reason: string): void {
+    void this.drain(leaseId, reason).catch(error => this.cleanupFailures.set(leaseId, error));
+  }
+
+  private async drainAdmitted(leaseId: string, reason: string): Promise<void> {
     const finishing = this.finishing.get(leaseId);
     if (finishing) return finishing;
     let live = this.leases.get(leaseId);
@@ -237,15 +274,18 @@ export class DelegatedSigningResource {
       if (joined) return joined;
       live = this.installLiveLease(this.contextFromBinding(binding), binding);
     }
+    this.pendingDrains.set(leaseId, reason);
     if (!live.draining) {
+      this.db.transaction(() => {
+        shortenDelegatedSigningLease(this.db, leaseId, this.now(),
+          reason === "expired" || reason === "clearance_inactive" || reason === "clearance_exhausted" || reason === "released");
+        this.db.prepare(
+          "UPDATE delegated_signing_runtime_bindings SET state = 'draining', retired_reason = ? WHERE lease_id = ? AND state = 'available'",
+        ).run(reason, leaseId);
+      }).immediate();
       live.draining = true;
       live.binding.state = "draining";
       live.binding.retired_reason = reason;
-      shortenDelegatedSigningLease(this.db, leaseId, this.now(),
-        reason === "expired" || reason === "clearance_inactive" || reason === "clearance_exhausted" || reason === "released");
-      this.db.prepare(
-        "UPDATE delegated_signing_runtime_bindings SET state = 'draining', retired_reason = ? WHERE lease_id = ? AND state = 'available'",
-      ).run(reason, leaseId);
     }
     if (live.borrows > 0) {
       await new Promise<void>((resolve) => live!.settled.push(resolve));
@@ -254,16 +294,52 @@ export class DelegatedSigningResource {
   }
 
   async remove(): Promise<DelegatedSigningStatus> {
+    return this.lifecycle.run(() => this.removeAdmitted());
+  }
+
+  private async removeAdmitted(): Promise<DelegatedSigningStatus> {
     await this.drainAll("signing_removed");
     await this.signer.removeDelegatedSigning();
-    return this.status();
+    return this.signer.getDelegatedSigningStatus();
   }
 
   private async drainAll(reason: string): Promise<void> {
     const leaseIds = (this.db.prepare(
       "SELECT lease_id FROM delegated_signing_runtime_bindings WHERE state IN ('available','draining')",
     ).all() as Array<{ lease_id: string }>).map((row) => row.lease_id);
-    await Promise.all(leaseIds.map((leaseId) => this.drain(leaseId, reason)));
+    const results = await Promise.allSettled(leaseIds.map((leaseId) => this.drainAdmitted(leaseId, reason)));
+    const errors = results.flatMap(result => result.status === "rejected" ? [result.reason] : []);
+    if (errors.length) throw new AggregateError(errors, "Signer retirement failed.");
+  }
+
+  close(): Promise<void> {
+    this.lifecycle.stopAdmission();
+    for (const live of this.leases.values()) {
+      if (live.timer) clearTimeout(live.timer);
+      live.timer = null;
+    }
+    if (this.closing) return this.closing;
+    this.closing = this.closeAdmitted();
+    void this.closing.catch(() => { this.closing = null; });
+    return this.closing;
+  }
+
+  private async closeAdmitted(): Promise<void> {
+    await this.lifecycle.join();
+    const unbound = await Promise.allSettled([...this.unboundContexts.values()].map(async context => {
+      await this.signer.stopApprovalRuntime(context);
+      this.unboundContexts.delete(context.leaseId);
+    }));
+    const drains = await Promise.allSettled([...this.pendingDrains].map(([leaseId, reason]) => this.drainAdmitted(leaseId, reason)));
+    const leases = await Promise.allSettled([...this.leases.values()].map(async live => {
+      if (live.timer) clearTimeout(live.timer);
+      live.timer = null;
+      if (live.borrows > 0) await new Promise<void>(resolve => live.settled.push(resolve));
+    }));
+    const errors = [...unbound, ...drains, ...leases].flatMap(result => result.status === "rejected" ? [result.reason] : []);
+    errors.push(...this.cleanupFailures.values());
+    if (errors.length) throw new AggregateError(errors, `Signer authority failed to close: ${errors.map(String).join("; ")}`);
+    this.leases.clear();
   }
 
   private async attach(binding: RuntimeBindingRow): Promise<LiveLease> {
@@ -273,7 +349,7 @@ export class DelegatedSigningResource {
     try {
       await this.validate(binding, true);
     } catch (error) {
-      this.retireBinding(binding, "lost", "revalidation_failed");
+      await this.drainAdmitted(binding.lease_id, "revalidation_failed");
       throw error;
     }
     return this.installLiveLease(context, binding);
@@ -384,7 +460,7 @@ export class DelegatedSigningResource {
       "SELECT expires_at FROM delegated_signing_leases WHERE id = ?",
     ).get(binding.lease_id) as { expires_at: number } | undefined)?.expires_at ?? this.now());
     const live: LiveLease = { context, binding, borrows: 0, draining: false, timer: null, settled: [] };
-    live.timer = setTimeout(() => { void this.drain(binding.lease_id, "expired"); }, Math.max(1, expiresAt - this.now()));
+    live.timer = setTimeout(() => { this.drainInBackground(binding.lease_id, "expired"); }, Math.max(1, expiresAt - this.now()));
     live.timer.unref();
     this.leases.set(binding.lease_id, live);
     return live;
@@ -450,47 +526,49 @@ export class DelegatedSigningResource {
     const finishing = this.finishing.get(leaseId);
     if (finishing) return finishing;
     if (this.leases.get(leaseId) !== live) return Promise.resolve();
-    this.leases.delete(leaseId);
     if (live.timer) clearTimeout(live.timer);
-    const finished = this.retireAndStop(live).finally(() => this.finishing.delete(leaseId));
+    const finished = this.retireAndStop(live).then(() => {
+      this.leases.delete(leaseId);
+      this.cleanupFailures.delete(leaseId);
+      this.pendingDrains.delete(leaseId);
+    }, error => {
+      this.cleanupFailures.set(leaseId, error);
+      throw error;
+    }).finally(() => this.finishing.delete(leaseId));
     this.finishing.set(leaseId, finished);
     return finished;
   }
 
   private async retireAndStop(live: LiveLease): Promise<void> {
-    const canStop = await this.provesExactAgent(live.binding);
-    this.retireBinding(live.binding, "retired", live.binding.retired_reason ?? "drained");
-    // Re-prove after the durable retirement write, immediately before the
-    // signal. This closes the ordinary PID-reuse window around cleanup; if the
-    // process or socket changed during retirement, leave it untouched.
-    if (canStop && await this.provesExactAgent(live.binding)) {
+    if (await this.provesExactAgent(live.binding)) {
       await this.signer.stopApprovalRuntime(live.context);
     }
+    this.retireBinding(live.binding, "retired", live.binding.retired_reason ?? "drained");
   }
 
   private async provesExactAgent(binding: RuntimeBindingRow): Promise<boolean> {
-    try {
-      const agent = await this.requireProcess(binding.agent_pid, "ssh-agent");
-      if (agent.uid !== binding.agent_uid || agent.start !== binding.agent_process_start
-          || agent.executable !== binding.agent_executable) return false;
-      const socket = this.inspector.socket(binding.socket_path);
-      return socket.dev === binding.socket_dev && socket.ino === binding.socket_ino
-        && socket.uid === binding.socket_uid && socket.mode === binding.socket_mode
-        && await this.inspector.ownsSocket(agent, socket);
-    } catch {
-      return false;
-    }
+    const agent = await this.inspector.process(binding.agent_pid);
+    if (!agent) return false;
+    if (agent.uid !== binding.agent_uid || agent.start !== binding.agent_process_start
+        || agent.executable !== binding.agent_executable) return false;
+    const socket = this.inspector.socket(binding.socket_path);
+    const exact = socket.dev === binding.socket_dev && socket.ino === binding.socket_ino
+      && socket.uid === binding.socket_uid && socket.mode === binding.socket_mode
+      && await this.inspector.ownsSocket(agent, socket);
+    if (!exact) throw new Error("Cannot prove the recorded ssh-agent socket for retirement.");
+    return true;
   }
 
   private retireBinding(binding: RuntimeBindingRow, state: "retired" | "lost", reason: string): void {
-    binding.state = state;
-    binding.retired_at = this.now();
-    binding.retired_reason = reason;
+    const retiredAt = this.now();
     this.db.prepare(
       `UPDATE delegated_signing_runtime_bindings
           SET state = ?, retired_at = COALESCE(retired_at, ?), retired_reason = COALESCE(retired_reason, ?)
         WHERE lease_id = ? AND state IN ('available','draining')`,
-    ).run(state, binding.retired_at, reason, binding.lease_id);
+    ).run(state, retiredAt, reason, binding.lease_id);
+    binding.state = state;
+    binding.retired_at = retiredAt;
+    binding.retired_reason = reason;
   }
 
   private contextFromBinding(binding: RuntimeBindingRow): AuthApprovalContext {

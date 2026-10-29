@@ -588,7 +588,12 @@ export class AuthQueue {
   private readonly executor: typeof executeAuthCommand;
   private readonly hookManager: AuthHookManager;
   private readonly autoApprover?: AuthAutoApprover;
-  private readonly clearanceManager?: AuthClearanceManager;
+  private clearanceManager?: AuthClearanceManager;
+  private readonly clearanceSettlementFailures = new Set<unknown>();
+  private readonly pendingClearanceSettlements = new Map<() => Promise<void>, unknown>();
+  private readonly clearanceExecutions = new Set<Promise<void>>();
+  private clearanceFailure = completionSignal();
+  private disposing: Promise<void> | null = null;
   // Issue 93d978e — abandoned work units older than this window are retired
   // from merge-side ancestry scans (reversible tombstone, not deletion).
   private readonly workUnitAbandonedScanRetentionMs: number;
@@ -1052,6 +1057,49 @@ export class AuthQueue {
     return this.allowExternalEffects;
   }
 
+  registerClearanceAuthority(manager: AuthClearanceManager): void {
+    if (this.clearanceManager && this.clearanceManager !== manager) {
+      throw new Error("Auth queue already owns a different clearance authority.");
+    }
+    if (this.disposed) throw new Error("Auth queue is disposing.");
+    this.clearanceManager = manager;
+  }
+
+  get clearanceAuthority(): AuthClearanceManager | undefined {
+    return this.clearanceManager;
+  }
+
+  async closeClearanceAuthority(): Promise<void> {
+    for (const [settle] of this.pendingClearanceSettlements) {
+      try { await settle(); this.pendingClearanceSettlements.delete(settle); }
+      catch (error) { this.pendingClearanceSettlements.set(settle, error); }
+    }
+    if (this.clearanceSettlementFailures.size || this.pendingClearanceSettlements.size) {
+      throw new AggregateError([...this.clearanceSettlementFailures, ...this.pendingClearanceSettlements.values()], "Clearance settlement failed; authority remains owned.");
+    }
+    this.clearanceFailure = completionSignal();
+    await Promise.race([this.clearanceManager?.close(), this.clearanceFailure.promise]);
+    if (this.clearanceSettlementFailures.size || this.pendingClearanceSettlements.size) {
+      throw new AggregateError([...this.clearanceSettlementFailures, ...this.pendingClearanceSettlements.values()], "Clearance settlement failed; authority remains owned.");
+    }
+  }
+
+  private retainClearanceFailure(error: unknown, settle?: () => Promise<void>): void {
+    if (settle) this.pendingClearanceSettlements.set(settle, error);
+    else this.clearanceSettlementFailures.add(error);
+    this.clearanceFailure.resolve();
+    authLog("error", "auth_clearance_settlement_failed", { subsystem: "auth", error: String(error) });
+  }
+
+  private async settleClearanceOwnership(settle: () => Promise<void>, primary?: { error: unknown }): Promise<void> {
+    try { await settle(); }
+    catch (cleanup) {
+      this.retainClearanceFailure(cleanup, settle);
+      if (primary) throw new AggregateError([primary.error, cleanup], "Auth operation and clearance settlement failed.");
+      throw cleanup;
+    }
+  }
+
   private requireExternalEffects(operation: string): void {
     if (!this.allowExternalEffects) {
       throw new AuthQueueError(
@@ -1147,17 +1195,30 @@ export class AuthQueue {
     catch (incidentError) { authLog("error", "auth_idle_convergence_incident_failed", { subsystem: "auth", error: errorMessage(incidentError) ?? String(incidentError) }); }
   }
 
-  async dispose(): Promise<void> {
+  dispose(): Promise<void> {
     this.disposed = true;
+    if (this.disposing) return this.disposing;
+    this.disposing = this.disposeAdmitted();
+    void this.disposing.catch(() => { this.disposing = null; });
+    return this.disposing;
+  }
+
+  private async disposeAdmitted(): Promise<void> {
     this.phaseAbort.abort();
     for (const controller of this.operatorProofInFlight.values()) controller.abort();
     this.operatorProofs.clear();
     this.stopExpiryTimer();
     this.handoffCompletionWatcher?.close(); this.handoffCompletionWatcher = null;
-    await Promise.allSettled([
+    const authority = this.closeClearanceAuthority();
+    const operations = Promise.allSettled([
       this.startupRecovery, this.expiryReconciliation, ...this.phaseRuns, ...this.observations, ...this.queuedAdmissions,
       this.finalizerQueue.drain(), this.acceptanceRuns?.stop(), this.generatedStorage?.stop(),
     ]);
+    const scopedExecutions = async () => {
+      await operations;
+      while (this.clearanceExecutions.size) await Promise.allSettled([...this.clearanceExecutions]);
+    };
+    await Promise.all([scopedExecutions(), authority]);
   }
 
   private stopExpiryTimer(): void {
@@ -3834,13 +3895,31 @@ export class AuthQueue {
           error instanceof Error ? error.message : "Clearance execution was refused.",
         );
       }
-      const executing = this.requireRequest(requestId);
-      this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: executing, clearance_use_id: consumed.use.id } });
-      this.broadcast({ event: DOMAIN_EVENTS.AUTH_LIFECYCLE, data: {
-        request_id: executing.id, lifecycle: "executing", clearance_use_id: consumed.use.id,
-      } });
-      (await this.executeInBackground(executing, consumed.settle));
-      return executing;
+      let transferred = false;
+      let primary: { error: unknown } | undefined;
+      try {
+        const executing = this.requireRequest(requestId);
+        this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: executing, clearance_use_id: consumed.use.id } });
+        this.broadcast({ event: DOMAIN_EVENTS.AUTH_LIFECYCLE, data: {
+          request_id: executing.id, lifecycle: "executing", clearance_use_id: consumed.use.id,
+        } });
+        const settle = consumed.settle;
+        let settled = false;
+        const settleOnce = async () => {
+          if (settled) return;
+          await settle();
+          settled = true;
+        };
+        const admission = this.executeInBackground(executing, settleOnce);
+        transferred = true;
+        await admission;
+        return executing;
+      } catch (error) {
+        primary = { error };
+        throw error;
+      } finally {
+        if (!transferred) await this.settleClearanceOwnership(consumed.settle, primary);
+      }
     } finally { finishObservation(); }
   }
 
@@ -5374,15 +5453,30 @@ export class AuthQueue {
   }
 
   private async executeOriginBoundRequest(request: AuthRequest, settleClearance?: () => Promise<void>): Promise<void> {
+    let transferred = false;
+    let primary: { error: unknown } | undefined;
+    try {
+      await this.admitOriginBoundRequest(request, settleClearance, () => { transferred = true; });
+    } catch (error) {
+      primary = { error };
+      throw error;
+    } finally {
+      if (!transferred && settleClearance) await this.settleClearanceOwnership(settleClearance, primary);
+    }
+  }
+
+  private async admitOriginBoundRequest(
+    request: AuthRequest,
+    settleClearance: (() => Promise<void>) | undefined,
+    transfer: () => void,
+  ): Promise<void> {
     // Remote-mode requests are executed by an external process — the daemon
     // only manages state transitions. Do not spawn a local executor.
     if (request.execution_mode === "remote") {
-      if (settleClearance) void settleClearance().catch(() => undefined);
       return;
     }
 
     if (this.inFlight.has(request.id)) {
-      if (settleClearance) void settleClearance().catch(() => undefined);
       return;
     }
 
@@ -5394,12 +5488,10 @@ export class AuthQueue {
       ? await this.hookManager.prepareRuntimePublication({ kind: 'successor_execution', requestId: request.id, pid: process.pid }) : null;
     const publicationBlocker = predecessor ?? await this.publicationBlockerForRequest(request);
     if (!this.executionIsCurrent(request.id, admitted)) {
-      if (settleClearance) await settleClearance();
       return;
     }
     if (this._rebuilding || publicationBlocker) {
       (await this.parkExecutionForRestart(request, publicationBlocker?.message));
-      if (settleClearance) void settleClearance().catch(() => undefined);
       return;
     }
 
@@ -5421,6 +5513,7 @@ export class AuthQueue {
         let runPromise!: Promise<void>;
         runPromise = turn.then(async () => {
             let executionResult: AuthExecutionResult | null = null;
+            let settlementSafe = true;
             execution = admitted;
             try {
               if (!this.executionIsCurrent(request.id, admitted)) return;
@@ -5493,8 +5586,14 @@ export class AuthQueue {
               if (this.disposed || !this.isDbOpen()) return;
               const completed = this.requireRequest(request.id);
               if (completed.status !== "completed") return;
+              if (settleClearance) await settleClearance();
               await this.afterConvergenceHook(completed);
             } catch (error) {
+              if (settleClearance && error != null && typeof error === "object"
+                  && "processGroupSettled" in error && error.processGroupSettled === false) {
+                settlementSafe = false;
+                this.retainClearanceFailure(error);
+              }
               const message = error instanceof Error ? error.message : "Execution failed.";
               if (executionResult?.exit_code === 0) {
                 authLog("error", "auth_success_finalization_deferred", {
@@ -5506,8 +5605,12 @@ export class AuthQueue {
                 (await this.storeExecutionResult(request.id, null, message, execution));
               }
             } finally {
-              if (settleClearance) await settleClearance().catch(() => undefined);
+              if (settleClearance && settlementSafe) {
+                try { await settleClearance(); }
+                catch (error) { this.retainClearanceFailure(error, settleClearance); }
+              }
               this.queuedAdmissions.delete(runPromise);
+              this.clearanceExecutions.delete(runPromise);
               if (this.inFlight.get(request.id) === runPromise) this.inFlight.delete(request.id);
               if (this.executionEnvs.get(request.id) === executionEnv) this.executionEnvs.delete(request.id);
             }
@@ -5516,6 +5619,8 @@ export class AuthQueue {
         this.executionChains.set(chainKey, tail);
         this.inFlight.set(request.id, runPromise);
         this.queuedAdmissions.add(runPromise);
+        if (settleClearance) this.clearanceExecutions.add(runPromise);
+        transfer();
         // Bound map growth: drop the chain entry once this settles, but only if no
         // later request has already chained onto it (chain installation is synchronous, so
         // the stored tail is authoritative at this microtask).
@@ -5527,7 +5632,6 @@ export class AuthQueue {
       });
     } catch (error) {
       if (this.inFlight.get(request.id) === pendingIdentity.promise) this.inFlight.delete(request.id);
-      if (settleClearance) await settleClearance();
       throw error;
     } finally {
       this.queuedAdmissions.delete(pendingIdentity.promise);
@@ -6111,6 +6215,7 @@ export class AuthQueue {
       return;
     }
     this.restartAvailability?.markShutdownStarted(selfRequestId);
+    await this.closeClearanceAuthority();
     this.restartFn();
   }
 
