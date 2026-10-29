@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { MERGE_CHANGE_MESSAGE_FLAGS } from "./helpers/auth-delivery-fixtures.js";
 import { MAIN_CLI_INSTANCE_RESPONSE } from "./helpers/cli-instance-response.js";
+import { authCliRepo } from "./helpers/prepared-git-fixture.js";
 
 const CLI = path.join(process.cwd(), "bin", "mandible");
 
@@ -176,31 +177,19 @@ function localRepoName(): string {
   return path.basename(tempDir);
 }
 
-function createRepo(): void {
-  git(["init", "-b", "main"]);
-  git(["config", "user.name", "Mandible Test"]);
-  git(["config", "user.email", "mandible-test@example.invalid"]);
-  git(["config", "commit.gpgsign", "false"]);
-  fs.writeFileSync(path.join(tempDir, "tracked.txt"), "base\n", "utf8");
-  git(["add", "tracked.txt"]);
-  git(["commit", "-m", "base"]);
-  git(["checkout", "-b", "feature/demo"]);
-  fs.writeFileSync(path.join(tempDir, "feature.txt"), "feature\n", "utf8");
-  git(["add", "feature.txt"]);
-  git(["commit", "-m", "feature"]);
-  git(["checkout", "main"]);
-}
-
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-request-cli-"));
   homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-request-home-"));
-  createRepo();
 });
 
 afterEach(() => {
   fs.rmSync(tempDir, { recursive: true, force: true });
   fs.rmSync(homeDir, { recursive: true, force: true });
 });
+
+function useGitRepo(): void {
+  beforeEach(() => authCliRepo.copyInto(tempDir));
+}
 
 describe("action-specific request preparation", () => {
   it("queues exact non-merge bytes outside Git without preparing or executing a merge", async () => {
@@ -258,6 +247,7 @@ describe("action-specific request preparation", () => {
 });
 
 describe("auth request repo context validation", () => {
+  useGitRepo();
   it("rejects explicit repo mismatches before request submission", () => {
     const result = run([
       "auth",
@@ -307,6 +297,7 @@ describe("auth request without a spec", () => {
 // exit 0, so a submitter read its own arguments back beside a foreign
 // request's id and concluded the work was queued when nothing was.
 describe("auth request duplicate refusal", () => {
+  useGitRepo();
   const CALLER_TITLE = "Caller supplied title";
   const duplicate409 = {
     status: 409,
@@ -366,6 +357,7 @@ describe("auth request duplicate refusal", () => {
 
 
 describe("auth request protected-root dirty policy", () => {
+  useGitRepo();
   it("blocks tracked dirty protected roots without restoring files", () => {
     fs.writeFileSync(path.join(tempDir, "tracked.txt"), "dirty\n", "utf8");
 
