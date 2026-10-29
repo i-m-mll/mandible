@@ -5,7 +5,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 import { App } from '../ui/src/app';
 import { bindOperationCatalog, clearApiGetCache, type InstanceInfo } from '../ui/src/api';
-import { clearPersistedDetailCache, isPersistedDetailFresh, writePersistedDetail, ROUTE_DATA_FRESH_MS } from '../ui/src/detail-cache';
+import { clearPersistedDetailCache, readPersistedDetail, writePersistedDetail } from '../ui/src/detail-cache';
+import { ROUTE_DATA_FRESH_MS } from '../ui/src/query/policy';
 import { queryClient } from '../ui/src/query/client';
 import { CHILD_RETENTION_SETTINGS_SCHEMA, DEFAULT_CHILD_RETENTION_SETTINGS } from '../src/conversations/retention-contract';
 import { StrictUiFixture, jsonFixture, PENDING_RESPONSE, type FixtureHandler } from './helpers/strict-ui-fixture';
@@ -319,12 +320,12 @@ describe('startup route warmup', () => {
     await harness.settle();
     writePersistedDetail('timeline', 'poll-test', { rows: [] });
     queryClient.setQueryData(['poll-test'], { rows: [] });
-    expect(isPersistedDetailFresh('timeline', 'poll-test')).toBe(true);
+    expect(queryClient.getQueryState(['poll-test'])?.isInvalidated).toBe(false);
     const poll = intervals.mock.calls.find(([, delay]) => delay === 10_000)?.[0];
     expect(typeof poll).toBe('function');
     vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 46_000);
     await act(async () => { (poll as () => void)(); });
-    expect(isPersistedDetailFresh('timeline', 'poll-test')).toBe(false);
+    expect(readPersistedDetail('timeline', 'poll-test')).toEqual({ rows: [] });
     expect(queryClient.getQueryState(['poll-test'])?.isInvalidated).toBe(true);
   });
 

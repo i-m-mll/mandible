@@ -10,7 +10,7 @@ import { LIST_ENVELOPE_KEYS } from '../../src/contracts';
 import type { SessionDescendant, SessionSummary } from '../../src/contracts';
 export type { SessionDescendant, SessionSummary } from '../../src/contracts';
 import { browserSessionFetch } from './client-auth-token';
-import { invalidatePersistedDetail, ROUTE_DATA_FRESH_MS } from './detail-cache';
+import { ROUTE_DATA_FRESH_MS } from './query/policy';
 import type { ChatAttachment } from '../../src/conversation-control/attachments';
 import type { InboxData } from './views/inbox';
 import type { GraphEdge, GraphNode, GraphMode, GraphPayload } from './types/graph';
@@ -748,7 +748,6 @@ export function clearApiGetCache(): void {
 /** A gap in the event stream makes every server-derived cache stale. */
 export function invalidateDashboardCaches(): void {
   invalidateApiGetCache();
-  invalidatePersistedDetail();
   void queryClient.invalidateQueries({ refetchType: 'none' });
   void refreshBrowserResources(queryClient, [detailKeys.artifacts]);
   void refreshBrowserResources(queryClient, [['space']], { predicate: isSpaceDocumentQuery });
@@ -820,7 +819,6 @@ export function invalidateDashboardApiCacheForEvent(type: string, data?: unknown
   } else if (type.startsWith('space:')) {
     invalidateApiGetCache('/api/spaces');
     void refreshBrowserResources(queryClient, browserResourceKeysForEvent(type, data), { predicate: isSpaceDocumentQuery });
-    invalidatePersistedDetail('spaces');
     invalidateCrossEntityProjections(type, data);
   } else if (type.startsWith('artifact:')) {
     invalidateArtifactReads();

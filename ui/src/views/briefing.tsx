@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/preact-query';
 import { queryClient } from '../query/client';
-import { ROUTE_DATA_FRESH_MS } from '../detail-cache';
+import { ROUTE_DATA_FRESH_MS } from '../query/policy';
 import { browserResourceKeys } from '../query/browserResources';
 import { useEffect, useMemo } from 'preact/hooks';
 

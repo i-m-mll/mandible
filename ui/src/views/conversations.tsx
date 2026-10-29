@@ -169,7 +169,7 @@ import { queryClient as appQueryClient } from '../query/client';
 import { useSidebarOrderPreference } from '../hooks/useSidebarOrderPreference';
 import { useSidebarReorder } from '../hooks/useSidebarReorder';
 import type { SidebarReorderBinding } from '../components/shared/sidebar-order';
-import { ROUTE_DATA_FRESH_MS } from '../detail-cache';
+import { ROUTE_DATA_FRESH_MS } from '../query/policy';
 
 // ── Toast notification ──
 
