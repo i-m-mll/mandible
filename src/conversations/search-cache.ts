@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -10,9 +9,10 @@ import { maskUnverifiedCandidates } from "../credential-leak-scan.js";
 import { getDaemonLogger } from "../daemon-log.js";
 import type { Db } from "../db.js";
 import { getUserHome } from "../platform-paths.js";
-import { ConversationSourceReader } from "./source-reader.js";
+import { ConversationSourceReader, type SourceScanProgress } from "./source-reader.js";
+import type { SourceReadResult, SourceReadFailureKind } from "./source-types.js";
 import { ConversationSourceStore } from "./source-store.js";
-import { inspectSourceRepresentation } from "./logical-source.js";
+import { readConversationSourceReadiness } from "./source-readiness.js";
 
 export const CONVERSATION_SEARCH_EPOCHS = Object.freeze({
   parser: "source-reader-v2",
@@ -67,11 +67,17 @@ export interface ConversationSearchSourceAdapter {
   describe(conversationIds: readonly string[]): SearchConversationSource[];
   /** `null` means unavailable; unlike a successful empty read it cannot be cached. */
   readMaskedBlocks(conversationId: string): Promise<SearchBlockSource[] | null>;
+  scanMaskedBlocks?(
+    conversationId: string,
+    visitor: (block: SearchBlockSource) => "stop" | void | Promise<"stop" | void>,
+    options?: { signal?: AbortSignal; expectedSourceVersionId?: string; onVerification?: (milliseconds: number) => void },
+  ): Promise<SourceReadResult<SourceScanProgress>>;
   /** `null` means no sound shortlist is available, so every input is parsed. */
   shortlistMaskedBlocks?(
     conversationIds: readonly string[],
     needle: string,
   ): Promise<ReadonlySet<string> | null>;
+  verifySource?(conversationId: string, sourceVersionId: string, signal?: AbortSignal, onVerification?: (milliseconds: number) => void): Promise<SourceReadResult<void>>;
   redactionEpoch(): string;
 }
 
@@ -85,6 +91,8 @@ export interface ConversationSearchMetrics {
   cold_shortlist: number;
   exact_verified_blocks: number;
   max_cold_parse_concurrency: number;
+  /** Includes logical open/decode and sealed-version proof; excludes parsing. */
+  source_verification_ms: number;
   elapsed_ms: number;
 }
 
@@ -95,48 +103,19 @@ function rawLiteralCanShortlist(needle: string): boolean {
   return needle.length >= 3 && /^[A-Za-z0-9 _./:@-]+$/.test(needle);
 }
 
-async function ripgrepFiles(needle: string, files: readonly string[]): Promise<Set<string> | null> {
-  if (files.length === 0) return new Set();
-  const configured = process.env.MANDIBLE_RIPGREP_PATH?.trim();
-  const executables = [...new Set([
-    configured,
-    fs.existsSync("/opt/homebrew/bin/rg") ? "/opt/homebrew/bin/rg" : null,
-    fs.existsSync("/usr/local/bin/rg") ? "/usr/local/bin/rg" : null,
-    "rg",
-  ].filter((value): value is string => Boolean(value)))];
-  const args = [
-    "--files-with-matches", "--null", "--ignore-case", "--fixed-strings",
-    "--no-config", "--no-messages", "--color=never", "-e", needle, "--", ...files,
-  ];
-  for (const executable of executables) {
-    const result = await new Promise<{ missing: boolean; code: number | null; stdout: Buffer }>((resolve) => {
-      const child = spawn(executable, args, { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
-      const chunks: Buffer[] = [];
-      let settled = false;
-      const finish = (value: { missing: boolean; code: number | null; stdout: Buffer }) => {
-        if (settled) return;
-        settled = true;
-        resolve(value);
-      };
-      child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
-      child.once("error", (error: NodeJS.ErrnoException) => {
-        finish({ missing: error.code === "ENOENT", code: null, stdout: Buffer.concat(chunks) });
-      });
-      child.once("close", (code) => {
-        finish({ missing: false, code, stdout: Buffer.concat(chunks) });
-      });
-    });
-    if (result.missing) continue;
-    if (result.code !== 0 && result.code !== 1) return null;
-    return new Set(result.stdout.toString("utf8").split("\0").filter(Boolean).map((file) => path.resolve(file)));
-  }
-  return null;
-}
-
 export interface ConversationSearchMatch {
   conversation_id: string;
   block_id: string;
   snippet: string;
+  block_type: string;
+  role: string;
+  position: number;
+}
+
+export interface ConversationSearchFailure {
+  conversation_id: string;
+  status: SourceReadFailureKind;
+  reason: string;
 }
 
 interface CachedBodyRow {
@@ -262,7 +241,7 @@ export class SourceBackedConversationSearchSourceAdapter implements Conversation
   private readonly reader: ConversationSourceReader;
   private readonly legacy: LegacyConversationSearchSourceAdapter;
 
-  constructor(db: Db) {
+  constructor(private readonly db: Db) {
     this.store = new ConversationSourceStore(db);
     this.reader = new ConversationSourceReader(db);
     this.legacy = new LegacyConversationSearchSourceAdapter(db);
@@ -311,58 +290,48 @@ export class SourceBackedConversationSearchSourceAdapter implements Conversation
     return this.legacy.readMaskedBlocks(conversationId);
   }
 
-  async shortlistMaskedBlocks(
-    conversationIds: readonly string[],
-    needle: string,
-  ): Promise<ReadonlySet<string> | null> {
-    if (!rawLiteralCanShortlist(needle)) return null;
-    let sources: ReturnType<ConversationSourceStore["latestSources"]>;
+  async scanMaskedBlocks(
+    conversationId: string,
+    visitor: (block: SearchBlockSource) => "stop" | void | Promise<"stop" | void>,
+    options: { signal?: AbortSignal; expectedSourceVersionId?: string; onVerification?: (milliseconds: number) => void } = {},
+  ): Promise<SourceReadResult<SourceScanProgress>> {
     try {
-      sources = this.store.latestSources(conversationIds);
+      if (this.store.resolveConversation(conversationId)?.currentVersionId) {
+        const readiness = readConversationSourceReadiness(this.db, conversationId);
+        if (readiness.status !== "ready") return {
+          status: readiness.status === "repair_needed" ? "unsupported" : "unavailable",
+          reason: readiness.reason,
+        };
+      }
+      const result = await this.reader.scanBlocks(conversationId, block => visitor({
+        id: block.id,
+        conversationId: block.conversation_id,
+        type: block.type,
+        role: block.role,
+        position: block.position,
+        content: maskUnverifiedCandidates(block.content).text,
+      }), options);
+      if (result.status === "legacy" && this.store.resolveConversation(conversationId)?.currentVersionId) {
+        return { status: result.reason, reason: "conversation source could not be verified" };
+      }
+      return result;
     } catch (error) {
       if (!isMissingSourceSchema(error)) throw error;
-      return new Set(conversationIds);
     }
-    const aliasPaths = this.store.availableAliasPaths([...sources.values()].map((source) => source.sourceId));
-    const candidatePaths = [...new Set([...aliasPaths.values()].flat())];
-    const representations = new Map(await Promise.all(candidatePaths.map(async (candidate) => {
-      try {
-        const representation = await inspectSourceRepresentation(candidate);
-        return [candidate, representation.physicalPath === representation.path
-          ? representation.physicalPath : null] as const;
-      } catch (error) {
-        // Only absence rules out a body. All other observations leave the
-        // verified reader responsible for deciding whether it is readable.
-        return [candidate, (error as NodeJS.ErrnoException).code === "ENOENT" ? undefined : null] as const;
-      }
-    })));
-    const pathsToConversations = new Map<string, string[]>();
-    const mustParse = new Set<string>();
-    for (const conversationId of conversationIds) {
-      const source = sources.get(conversationId);
-      if (!source) mustParse.add(conversationId);
-      for (const alias of source ? aliasPaths.get(source.sourceId) ?? [] : []) {
-        const rawPath = representations.get(alias);
-        if (rawPath === undefined) continue;
-        if (rawPath === null) {
-          mustParse.add(conversationId);
-          continue;
-        }
-        const resolved = path.resolve(rawPath);
-        const ids = pathsToConversations.get(resolved) ?? [];
-        ids.push(conversationId);
-        pathsToConversations.set(resolved, ids);
-      }
+    const blocks = await this.legacy.readMaskedBlocks(conversationId);
+    let count = 0;
+    for (const block of blocks) {
+      if (options.signal?.aborted) return { status: "cancelled", reason: "conversation search cancelled" };
+      count += 1;
+      if (await visitor(block) === "stop") return { status: "legacy", value: { count, readBlocks: blocks.length, complete: false }, reason: "not_found" };
     }
-    const matchedPaths = await ripgrepFiles(needle, [...pathsToConversations.keys()]);
-    if (matchedPaths === null) return null;
-    const shortlisted = new Set(mustParse);
-    for (const matchedPath of matchedPaths) {
-      for (const conversationId of pathsToConversations.get(matchedPath) ?? []) {
-        shortlisted.add(conversationId);
-      }
-    }
-    return shortlisted;
+    return { status: "legacy", value: { count, readBlocks: blocks.length, complete: true }, reason: "not_found" };
+  }
+
+
+  verifySource(conversationId: string, sourceVersionId: string, signal?: AbortSignal, onVerification?: (milliseconds: number) => void): Promise<SourceReadResult<void>> {
+    if (sourceVersionId.startsWith("legacy:")) return Promise.resolve({ status: "legacy", value: undefined, reason: "not_found" });
+    return this.reader.verifyVersion(conversationId, sourceVersionId, signal, onVerification);
   }
 
   redactionEpoch(): string {
@@ -449,6 +418,32 @@ export class ConversationSearchCache {
   private residentBytes = 0;
   private capsVerified = false;
   private maintenance: Promise<void> | null = null;
+  private activeColdParses = 0;
+  private readonly coldWaiters: Array<() => void> = [];
+
+  private async coldRead<T>(signal: AbortSignal | undefined, run: () => Promise<T>): Promise<T> {
+    let acquired = true;
+    if (this.activeColdParses >= this.maxConcurrentColdParses) {
+      acquired = await new Promise<boolean>(resolve => {
+        const grant = () => { signal?.removeEventListener("abort", cancel); resolve(true); };
+        const cancel = () => {
+          const index = this.coldWaiters.indexOf(grant);
+          if (index >= 0) this.coldWaiters.splice(index, 1);
+          resolve(false);
+        };
+        this.coldWaiters.push(grant);
+        signal?.addEventListener("abort", cancel, { once: true });
+        if (signal?.aborted) cancel();
+      });
+    } else this.activeColdParses += 1;
+    if (!acquired) return run();
+    try { return await run(); }
+    finally {
+      const next = this.coldWaiters.shift();
+      if (next) next();
+      else this.activeColdParses -= 1;
+    }
+  }
 
   constructor(
     private readonly source: ConversationSearchSourceAdapter,
@@ -683,7 +678,9 @@ export class ConversationSearchCache {
     needle: string;
     blockType?: string | null;
     limit: number;
-  }): Promise<{ matches: ConversationSearchMatch[]; metrics: ConversationSearchMetrics }> {
+    signal?: AbortSignal;
+    expectedSourceVersions?: Readonly<Record<string, string>>;
+  }): Promise<{ matches: ConversationSearchMatch[]; failures: ConversationSearchFailure[]; metrics: ConversationSearchMetrics }> {
     const started = performance.now();
     const budget = new TurnBudget(SEARCH_TURN_MS);
     const needleLower = input.needle.toLowerCase();
@@ -697,13 +694,14 @@ export class ConversationSearchCache {
       cold_shortlist: 0,
       exact_verified_blocks: 0,
       max_cold_parse_concurrency: 0,
+      source_verification_ms: 0,
       elapsed_ms: 0,
     };
     const shortlist = this.ftsShortlist(input.needle);
     metrics.fts_shortlist = shortlist?.blocks ?? 0;
     const redactionEpoch = this.source.redactionEpoch();
     const checkpoints = this.completeCheckpoints(redactionEpoch);
-    let activeCold = 0;
+    const failures: ConversationSearchFailure[] = [];
     const matches: ConversationSearchMatch[] = [];
     try {
       // Probe native files in modest batches (the same approach used by editor
@@ -713,17 +711,27 @@ export class ConversationSearchCache {
       for (let windowStart = 0;
         windowStart < input.conversationIds.length && matches.length < input.limit;
         windowStart += COLD_PROBE_BATCH_SIZE) {
+        if (input.signal?.aborted) break;
         await budget.yieldIfDue();
         const work: Array<{ item: SearchConversationSource; hot: Checkpoint | null }> = [];
         const coldIds: string[] = [];
         const window = this.source.describe(input.conversationIds.slice(windowStart, windowStart + COLD_PROBE_BATCH_SIZE));
+        const described = new Set(window.map(item => item.conversationId));
+        for (const conversationId of input.conversationIds.slice(windowStart, windowStart + COLD_PROBE_BATCH_SIZE)) {
+          if (!described.has(conversationId)) failures.push({ conversation_id: conversationId, status: "not_found", reason: "conversation source was not found" });
+        }
         for (const item of window) {
+          const expected = input.expectedSourceVersions?.[item.conversationId];
+          if (expected !== undefined && item.sourceVersionId !== expected) {
+            failures.push({ conversation_id: item.conversationId, status: "stale", reason: "conversation source differs from pinned search version" });
+            continue;
+          }
           const checkpoint = checkpoints.get(item.conversationId);
           if (checkpoint?.sourceVersionId === item.sourceVersionId) {
             metrics.hot_conversations += 1;
             metrics.hot_blocks += checkpoint.blockCount;
-            if (checkpoint.blockCount === 0) continue;
-            if (shortlist && !shortlist.conversations.has(item.conversationId)) continue;
+            if (!this.source.verifySource && (checkpoint.blockCount === 0
+                || (shortlist && !shortlist.conversations.has(item.conversationId)))) continue;
             work.push({ item, hot: checkpoint });
           } else {
             coldIds.push(item.conversationId);
@@ -741,53 +749,98 @@ export class ConversationSearchCache {
           batchStart < pending.length && matches.length < input.limit;
           batchStart += this.maxConcurrentColdParses) {
           const batch = pending.slice(batchStart, batchStart + this.maxConcurrentColdParses);
-          const bodies = await mapConcurrent(batch, this.maxConcurrentColdParses, async ({ item, hot }) => {
+          const batchMatches = await mapConcurrent(batch, this.maxConcurrentColdParses, async ({ item, hot }) => {
+            const matchBlock = (block: SearchBlockSource): ConversationSearchMatch | null => {
+              if (input.blockType && block.type !== input.blockType) return null;
+              metrics.exact_verified_blocks += 1;
+              const snippet = snippetFor(block.content, needleLower);
+              return snippet === null ? null : { conversation_id: block.conversationId, block_id: block.id, snippet,
+                block_type: block.type, role: block.role, position: block.position };
+            };
             if (hot) {
               const rows = this.hotBodies(item.conversationId, hot);
-              // A maintenance turn may have started replacing this entry since
-              // the checkpoints were read; only the validated full key is trusted.
               if (rows.length === hot.blockCount) {
+                let match: ConversationSearchMatch | null = null;
+                for (const row of rows) {
+                  if (budget.due()) await budget.yield();
+                  match = matchBlock({ id: row.block_id, conversationId: row.conversation_id,
+                    type: row.block_type, role: row.role, position: row.position, content: row.body });
+                  if (match) break;
+                }
+                if (this.source.verifySource) {
+                  const verified = await this.coldRead(input.signal, () => this.source.verifySource!(item.conversationId, item.sourceVersionId, input.signal, milliseconds => { metrics.source_verification_ms += milliseconds; }));
+                  if (verified.status !== "source" && verified.status !== "legacy") {
+                    failures.push({ conversation_id: item.conversationId, status: verified.status, reason: verified.reason });
+                    return null;
+                  }
+                }
+                if (this.source.redactionEpoch() !== redactionEpoch) {
+                  failures.push({ conversation_id: item.conversationId, status: "stale", reason: "search redaction facts changed" });
+                  return null;
+                }
                 this.recordAccess(item.conversationId);
-                return rows;
+                return match;
               }
             }
-            activeCold += 1;
-            metrics.max_cold_parse_concurrency = Math.max(metrics.max_cold_parse_concurrency, activeCold);
-            try {
-              const blocks = await this.source.readMaskedBlocks(item.conversationId);
+            return this.coldRead(input.signal, async () => {
+              metrics.max_cold_parse_concurrency = Math.max(metrics.max_cold_parse_concurrency, this.activeColdParses);
               metrics.cold_conversations += 1;
-              if (blocks === null) return [];
+              if (input.signal?.aborted) {
+                failures.push({ conversation_id: item.conversationId, status: "cancelled", reason: "conversation search cancelled" });
+                return null;
+              }
+              if (this.source.scanMaskedBlocks) {
+                let match: ConversationSearchMatch | null = null;
+                let retained: SearchBlockSource[] | null = [];
+                let bytes = 0;
+                const result = await this.source.scanMaskedBlocks(item.conversationId, async block => {
+                  if (budget.due()) await budget.yield();
+                  const blockBytes = Buffer.byteLength(block.content, "utf8");
+                  bytes += blockBytes;
+                  if (blockBytes > this.maxBodyBytes) metrics.uncached_oversize_blocks += 1;
+                  if (blockBytes > this.maxBodyBytes || bytes > this.maxCacheBytes) retained = null;
+                  retained?.push(block);
+                  match = matchBlock(block);
+                  if (match) return "stop";
+                }, { signal: input.signal, expectedSourceVersionId: item.sourceVersionId,
+                  onVerification: milliseconds => { metrics.source_verification_ms += milliseconds; } });
+                if (result.status !== "source" && result.status !== "legacy") {
+                  failures.push({ conversation_id: item.conversationId, status: result.status, reason: result.reason });
+                  return null;
+                }
+                if (result.status === "source" && result.sourceVersionId !== item.sourceVersionId) {
+                  failures.push({ conversation_id: item.conversationId, status: "stale", reason: "conversation source version changed during search" });
+                  return null;
+                }
+                if (this.source.redactionEpoch() !== redactionEpoch) {
+                  failures.push({ conversation_id: item.conversationId, status: "stale", reason: "search redaction facts changed" });
+                  return null;
+                }
+                metrics.cold_blocks += result.value.readBlocks;
+                this.recordAccess(item.conversationId);
+                if (result.value.complete && retained && (result.status === "source" || item.sourceVersionId.startsWith("legacy:"))) {
+                  this.offer(item.conversationId, this.key(item.sourceVersionId, redactionEpoch), retained);
+                }
+                return match;
+              }
+              const blocks = await this.source.readMaskedBlocks(item.conversationId);
+              if (blocks === null) {
+                failures.push({ conversation_id: item.conversationId, status: "unavailable", reason: "conversation source is unavailable" });
+                return null;
+              }
               metrics.cold_blocks += blocks.length;
               this.recordAccess(item.conversationId);
-              metrics.uncached_oversize_blocks += this.offer(
-                item.conversationId,
-                this.key(item.sourceVersionId, redactionEpoch),
-                blocks,
-              );
-              return blocks.map((block) => ({
-                block_id: block.id,
-                conversation_id: block.conversationId,
-                block_type: block.type,
-                role: block.role,
-                position: block.position,
-                body: block.content,
-              }));
-            } finally {
-              activeCold -= 1;
-            }
-          });
-
-          for (const blocks of bodies) {
-            for (const block of blocks) {
-              if (budget.due()) await budget.yield();
-              if (input.blockType && block.block_type !== input.blockType) continue;
-              metrics.exact_verified_blocks += 1;
-              const snippet = snippetFor(block.body, needleLower);
-              if (snippet !== null) {
-                matches.push({ conversation_id: block.conversation_id, block_id: block.block_id, snippet });
-                break;
+              metrics.uncached_oversize_blocks += this.offer(item.conversationId, this.key(item.sourceVersionId, redactionEpoch), blocks);
+              for (const block of blocks) {
+                if (budget.due()) await budget.yield();
+                const match = matchBlock(block);
+                if (match) return match;
               }
-            }
+              return null;
+            });
+          });
+          for (const match of batchMatches) {
+            if (match) matches.push(match);
             if (matches.length >= input.limit) break;
           }
         }
@@ -796,7 +849,13 @@ export class ConversationSearchCache {
       this.scheduleMaintenance();
     }
     metrics.elapsed_ms = Math.round((performance.now() - started) * 100) / 100;
-    return { matches, metrics };
+    if (input.signal?.aborted) {
+      const failed = new Set(failures.map(failure => failure.conversation_id));
+      for (const conversationId of input.conversationIds) {
+        if (!failed.has(conversationId)) failures.push({ conversation_id: conversationId, status: "cancelled", reason: "conversation search cancelled" });
+      }
+    }
+    return { matches, failures, metrics };
   }
 
   private recordAccess(conversationId: string): void {

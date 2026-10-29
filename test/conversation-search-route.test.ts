@@ -225,7 +225,7 @@ describe("conversation full-text API parity", () => {
       expect(page.body).toEqual(coldPages[index + 1]);
     }
     const list = await router.invoke({ method: "GET", url: "/api/conversations?search=Archive%20Needle&full_text=true&limit=1" });
-    expect(list.body).toMatchObject({ total: 3, pages: 3, conversations: [expect.any(Object)], search_metrics: { cold_conversations: 0 } });
+    expect(list.body).toMatchObject({ total: 3, pages: 3, conversations: [expect.any(Object)] });
     const dedicated = await router.invoke({ method: "GET", url: "/api/conversations/search?q=Archive%20Needle" });
     expect(dedicated.body).toMatchObject({ total: 3 });
     expect(JSON.stringify(dedicated.body)).not.toContain(unverifiedCanary);

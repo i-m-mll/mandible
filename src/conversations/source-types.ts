@@ -103,7 +103,7 @@ export interface SourceBackedConversationBlock {
   locator: ConversationBlockLocator | null;
 }
 
-export type SourceReadFailureKind = "stale" | "unavailable" | "unsupported" | "not_found";
+export type SourceReadFailureKind = "stale" | "unavailable" | "unsupported" | "not_found" | "cancelled";
 
 export type SourceReadResult<T> =
   | { status: "source"; value: T; sourceVersionId: string }
