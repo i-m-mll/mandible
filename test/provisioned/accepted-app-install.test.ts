@@ -21,6 +21,7 @@ import { runSupervisedCommand } from '../../scripts/process-group-supervisor.mjs
 import { RuntimeObservationError, runtimeProcessChanged } from '../../scripts/runtime-observation.mjs';
 import type { ServiceKind } from '../../scripts/service-definitions.mjs';
 import type { RuntimeProcessIdentity } from '../../scripts/runtime-observation.mjs';
+import { resolveAppSigning, requireNativeAppSigning, openAppSigner, nativeSigningIdentifier, verifyNativeAppSignatures } from '../../scripts/app-signing.mjs';
 
 it('replaces retained signed bundles through real native service startup, qualified drain and exact package custody', async () => {
   if (process.platform !== 'darwin') throw new Error('The native replacement proof requires macOS.');
@@ -33,6 +34,8 @@ it('replaces retained signed bundles through real native service startup, qualif
     throw new Error('Run the native proof through test:provisioned with its original command deadline.');
   }
   const workUntil = deadline - 5_000;
+  const signer = openAppSigner(requireNativeAppSigning(resolveAppSigning(process.cwd())), { until: workUntil });
+  try {
   const costs: Array<{ phase: string; ms: number }> = [];
   const checkDeadline = (phase: string, until = workUntil) => {
     if (Date.now() >= until) throw new Error(`Native replacement deadline exceeded during ${phase}.`);
@@ -154,7 +157,11 @@ it('replaces retained signed bundles through real native service startup, qualif
       fs.copyFileSync(path.join(candidateMacOS, 'mandible-caddy'), path.join(contents, 'MacOS/mandible-caddy'), fs.constants.COPYFILE_FICLONE);
       fs.writeFileSync(path.join(contents, 'Info.plist'), `<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${identifier}</string><key>CFBundleExecutable</key><string>mandible-app</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleVersion</key><string>${index + 1}</string></dict></plist>`);
       stageBundleServices(contents, index ? helper : predecessorHelper, identifier);
-      run('/usr/bin/codesign', ['--force', '--sign', '-', path.join(contents, 'MacOS/mandible-service')], `sign ${pin} helper`);
+      signer.sign(path.join(contents, 'MacOS/mandible-service'), null, true, nativeSigningIdentifier(identifier, 'serviceHelper'));
+      for (const role of ['bun', 'caddy'] as const) {
+        const entitlements = candidateRelease.signing?.[role];
+        signer.sign(path.join(contents, 'MacOS', `mandible-${role}`), entitlements ? path.join(candidateApp, 'Contents/Resources', entitlements) : null);
+      }
       const candidate = { pin_sha: pin.repeat(40), tree_sha: 'c'.repeat(40), base_sha: 'd'.repeat(40), head_sha: 'e'.repeat(40) };
       fs.writeFileSync(path.join(resources, 'service-fixture.json'), JSON.stringify({ accountHome }));
       fs.writeFileSync(path.join(resources, 'foreground.mjs'), `import fs from 'node:fs'; import path from 'node:path';
@@ -173,7 +180,8 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
       fs.writeFileSync(path.join(resources, 'release.json'), JSON.stringify({ schema: 'mandible-installed-release@1', version: String(index + 1), target: `${process.platform}-${process.arch}`,
         layout: { kind: 'macos-app', roots: { resources: '.', executables: '../MacOS', agents: '../Library/LaunchAgents' } },
         provenance: { commit: candidate.pin_sha, source_digest: pin.repeat(64) }, entrypoints: { daemon: 'foreground.mjs', service: 'foreground.mjs' }, serviceExecutables: { backend: 'bun', gateway: 'caddy' }, ...(index ? { serviceControlProtocol: 2 } : {}), native, files }));
-      run('/usr/bin/codesign', ['--force', '--sign', '-', built], `sign ${pin} bundle`);
+      signer.sign(built, null, true, identifier);
+      verifyNativeAppSignatures(built, signer, { native });
       const evidence = path.join(root, `evidence-${pin}`);
       fs.writeFileSync(evidence, JSON.stringify({ scope: 'private native service replacement fixture', generation: candidate.pin_sha }));
       checkDeadline(`generation ${pin} retention admission`);
@@ -331,7 +339,8 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
         predecessor_app: process.env.MANDIBLE_NATIVE_PROOF_PREDECESSOR_APP,
         predecessor_executable: predecessorExecutable,
         runtime_source: 'Current source reconciler and native effect modules; fixture authority/access adapters; copied candidate helper is re-signed for private descriptors.',
-        identifier, generations, command_costs: costs, failure: failureDiagnostic,
+        identifier, signing_identity: signer.identity, helper_identifier: nativeSigningIdentifier(identifier, 'serviceHelper'),
+        generations, command_costs: costs, failure: failureDiagnostic,
         clock_origin: 'provisioned runner entry; external wall includes earlier runtime selector/import startup',
         runner_entry_elapsed_ms: Date.now() - started, teardown_ms: Date.now() - teardownStarted,
         target_ms: 60_000, deadline_ms: 20_000, teardown_reserve_ms: 5_000,
@@ -340,4 +349,5 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
     }
     checkDeadline('final cleanup', cleanupUntil);
   }
+  } finally { signer.close(); }
 });

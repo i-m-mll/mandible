@@ -54,7 +54,7 @@
       "icons/icon.icns"
     ],
     "macOS": {
-      "signingIdentity": "-",
+      "signingIdentity": "Apple Development",
       "minimumSystemVersion": "15.0",
       "files": {
         "Library/LaunchAgents": "resources/app-payload/Contents/Library/LaunchAgents"

@@ -19,6 +19,7 @@ import { readBuildRevision } from './build-revision.mjs';
 import { acceptanceDeadline } from './acceptance-deadline.mjs';
 import { observeRuntimeHealthCoverage, RuntimeHealthObservationError } from '../src/runtime-health-contract.ts';
 import { gatewayCaddyfile, GATEWAY_GRACE_SECONDS } from './gateway-config.mjs';
+import { resolveAppSigning, requireNativeAppSigning } from './app-signing.mjs';
 
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -390,6 +391,7 @@ async function main(budget) {
   const option = name => { const index = process.argv.indexOf(name); return index >= 0 ? process.argv[index + 1] : undefined; };
   const diagnostic = option('--diagnostic-receipt') || option('--diagnostic-app')
     ? diagnosticReplayPackage(option('--diagnostic-receipt'), option('--diagnostic-app')) : null;
+  if (!diagnostic) requireNativeAppSigning(resolveAppSigning(root));
   const candidate = diagnostic?.candidate || boundedCommand('git', ['rev-parse', 'HEAD']);
   const parents = boundedCommand('git', ['show', '-s', '--format=%P', candidate]).split(' ');
   const candidateBinding = { pin_sha: candidate, tree_sha: boundedCommand('git', ['rev-parse', `${candidate}^{tree}`]),
