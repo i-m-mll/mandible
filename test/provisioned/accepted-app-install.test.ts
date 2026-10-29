@@ -8,10 +8,10 @@ import { once } from 'node:events';
 import { expect, it } from 'vitest';
 import { createPendingRelease, retainAcceptedRelease, applicationIdentity, readAcceptedReleaseReceipt } from '../../scripts/accepted-release.mjs';
 import { acceptedInstallPaths, applicationRootIdentity, preparedApplicationContext } from '../../scripts/accepted-app-install.mjs';
-import { installedFileIdentity, verifyInstalledRelease } from '../../scripts/installed-release.mjs';
+import { installedFileIdentity, readInstalledRelease, verifyInstalledRelease } from '../../scripts/installed-release.mjs';
 import { serviceInstallationContext, inspectServiceDefinitionsSync, matchingServiceDefinitions } from '../../scripts/service-definitions.mjs';
 import { readBundleOwner, nativeServiceControls } from '../../scripts/bundle-services.mjs';
-import { bindingDigest, handoffDirectory, runRuntimeHandoffWorker } from '../../scripts/runtime-handoff.mjs';
+import { bindingDigest, handoffDirectory, readRuntimeHandoffReceipt, runRuntimeHandoffWorker } from '../../scripts/runtime-handoff.mjs';
 import { pathToFileURL } from 'node:url';
 import http from 'node:http';
 import { readBundleProcess } from '../../scripts/local-runtime.mjs';
@@ -107,6 +107,8 @@ it('replaces retained signed bundles through real native service startup, qualif
     const candidateApp = process.env.MANDIBLE_NATIVE_PROOF_APP;
     if (!candidateApp || !path.isAbsolute(candidateApp)) throw new Error('Native proof requires MANDIBLE_NATIVE_PROOF_APP from the candidate package already built for this qualification.');
     const candidateMacOS = path.join(candidateApp, 'Contents/MacOS');
+    const candidateRelease = readInstalledRelease(path.join(candidateApp, 'Contents/Resources'));
+    expect(candidateRelease.serviceControlProtocol).toBe(2);
     const helper = path.join(candidateMacOS, 'mandible-service');
     const predecessorApp = process.env.MANDIBLE_NATIVE_PROOF_PREDECESSOR_APP;
     if (!predecessorApp || !path.isAbsolute(predecessorApp)) throw new Error('Native proof requires an explicit retained v1 MANDIBLE_NATIVE_PROOF_PREDECESSOR_APP.');
@@ -117,6 +119,9 @@ it('replaces retained signed bundles through real native service startup, qualif
     expect(predecessorExecutable).toEqual(predecessorRelease.files[predecessorRelease.native.serviceHelper]);
     for (const executable of ['mandible-service', 'mandible-bun', 'mandible-caddy']) if (!fs.statSync(path.join(candidateMacOS, executable)).isFile()) throw new Error('Candidate native proof executable is missing: ' + executable);
     candidateExecutables = Object.fromEntries(['mandible-service', 'mandible-bun', 'mandible-caddy'].map(executable => [executable, installedFileIdentity(path.join(candidateMacOS, executable))]));
+    for (const [file, role] of [['mandible-service', 'serviceHelper'], ['mandible-bun', 'bun'], ['mandible-caddy', 'caddy']] as const) {
+      expect(candidateExecutables[file]).toEqual(candidateRelease.files[candidateRelease.native[role]]);
+    }
     fs.mkdirSync(path.join(home, 'config/client-auth'), { recursive: true });
     const authority = path.join(home, 'config/client-auth/authority-id');
     const credentials = path.join(home, 'config/client-auth/credentials');
@@ -251,11 +256,19 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
         expect(applicationIdentity(app)).toBe(readAcceptedReleaseReceipt(reference).package.sha256);
         expect(completed.attempt.effects.replace.completedAt).toBeDefined();
         const attemptId = completed.attempt.id;
+        const installedIdentity = applicationRootIdentity(app);
+        const stageIdentity = completed.attempt.effects.prepare.stageIdentity;
         completed = await runRuntimeHandoffWorker(file, options);
         expect(completed.attempt.id).toBe(attemptId);
+        expect(applicationRootIdentity(app)).toEqual(installedIdentity);
+        expect(completed.attempt.effects.prepare.stageIdentity).toEqual(stageIdentity);
       }
       expect(completed.attempt.state, JSON.stringify(completed.attempt.lastObservation)).toBe('complete');
       qualified = completed.attempt.effects.services.processes;
+      const terminal = readRuntimeHandoffReceipt(completed);
+      expect(terminal).toMatchObject({ schema: 'mandible-runtime-receipt@2', attemptId: completed.attempt.id,
+        approved: { reference }, installed: { root: app, identity: applicationRootIdentity(app) },
+        services: qualified, startup: { generation: candidate.pin_sha } });
       await withLifecycleLock(home, async () => {
         expect(matchingServiceDefinitions(inspectServiceDefinitionsSync(context, { until: workUntil })).ok).toBe(true);
         const receipt = readAcceptedReleaseReceipt(reference);
@@ -277,6 +290,9 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
         }
         expect(prior).toMatchObject({ generation: candidate.pin_sha, acceptedRelease: reference, installationId: 'preserved-authority' });
         generations.push({ generation: candidate.pin_sha, processes: qualified, packageSha256: receipt.package.sha256,
+          service_control_protocol: index ? 2 : 1, attempt_id: completed.attempt.id,
+          receipt_digest: completed.attempt.receiptDigest, receipt_scope: 'Private native access adapter; no production health or adoption',
+          installed_before_launch_continuation: index === 1 && interrupted,
           provisioning_install_proof_ms: Date.now() - phaseStarted });
       });
       previousReference = reference;
