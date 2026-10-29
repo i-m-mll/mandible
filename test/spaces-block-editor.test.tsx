@@ -3,12 +3,11 @@
 // and rejected writes; reads from a previously selected document are ignored;
 // deleting an embedded item waits for an explicit decision.
 
-import { clearApiGetCache } from '../ui/src/api';
+import { clearApiGetCache, invalidateDashboardApiCacheForEvent } from '../ui/src/api';
 import { bindSpacesOperationCatalog } from './helpers/spaces-operation-catalog';
 import { establishTestClientAccess } from './helpers/local-client-access';
 import { render, screen, cleanup, fireEvent, waitFor } from './helpers/dom.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { __resetSharedSseForTests } from '../ui/src/sse-shared';
 import { act } from 'preact/test-utils';
 import { EditorSelection } from '@codemirror/state';
 import type { EditorView } from '@codemirror/view';
@@ -44,34 +43,6 @@ const mainInstance: InstanceInfo = {
   db_path: '/tmp/mandible-main.db',
   db_path_source: 'test',
 };
-
-// --- SSE mock (matches the createSSEClient EventSource transport) ------------
-
-class MockEventSource {
-  static instances: MockEventSource[] = [];
-  readyState = 1;
-  onerror: (() => void) | null = null;
-  onopen: (() => void) | null = null;
-  private handlers = new Map<string, Set<(e: MessageEvent) => void>>();
-  constructor(public url: string) {
-    MockEventSource.instances.push(this);
-  }
-  addEventListener(type: string, handler: (e: MessageEvent) => void): void {
-    const set = this.handlers.get(type) ?? new Set();
-    set.add(handler);
-    this.handlers.set(type, set);
-  }
-  removeEventListener(type: string, handler: (e: MessageEvent) => void): void {
-    this.handlers.get(type)?.delete(handler);
-  }
-  close(): void {
-    this.readyState = 2;
-  }
-  emit(data: unknown): void {
-    const event = { data: JSON.stringify(data) } as MessageEvent;
-    this.handlers.get('message')?.forEach((h) => h(event));
-  }
-}
 
 function stubLocalStorage(): void {
   const store = new Map<string, string>();
@@ -267,9 +238,6 @@ beforeEach(async () => {
   document.body.append(notices);
   queryClient.clear();
   await establishTestClientAccess();
-  MockEventSource.instances = [];
-  vi.stubGlobal('EventSource', MockEventSource);
-  __resetSharedSseForTests();
   if (!Range.prototype.getClientRects) {
     Object.defineProperty(Range.prototype, 'getClientRects', {
       configurable: true,
@@ -658,8 +626,7 @@ describe('DocumentBlockEditor draft persistence (UI-state-persistence)', () => {
     expect(stored.editingId).toBe('b1');
 
     // A `space:*` SSE event triggers a reconciliation refetch.
-    expect(MockEventSource.instances.length).toBeGreaterThan(0);
-    MockEventSource.instances[0].emit({ type: 'space:block:changed', data: { space_id: 'sp1' } });
+    invalidateDashboardApiCacheForEvent('space:block:changed', { space_id: 'sp1' });
 
     // The draft survives the refetch (Dataful-UX: reconcile never resets intent).
     await waitFor(() => {
@@ -683,13 +650,12 @@ describe('document refresh reliability', () => {
       }
       return Promise.resolve(json(String(input).endsWith('/exports') ? { exports: [] } : { items: [] }));
     });
-    const stream = MockEventSource.instances[0];
-    stream.emit({ type: 'space:block:changed', data: { space_id: 'other' } });
+    invalidateDashboardApiCacheForEvent('space:block:changed', { space_id: 'other' });
     await flushEffects();
     expect(blockReads).toBe(0);
-    stream.emit({ type: 'space:block:changed', data: { space_id: 'sp1' } });
+    invalidateDashboardApiCacheForEvent('space:block:changed', { space_id: 'sp1' });
     await waitFor(() => expect(blockReads).toBe(1));
-    stream.emit({ type: 'space:block:changed', data: { space_id: 'sp1' } });
+    invalidateDashboardApiCacheForEvent('space:block:changed', { space_id: 'sp1' });
     await waitFor(() => expect(sourceText()).toBe('newer'));
     resolveOlder(json({ blocks: [makeBlock({ id: 'b1', markdown: 'older' })] }));
     await flushEffects();
@@ -713,12 +679,12 @@ describe('document refresh reliability', () => {
     );
     expect(sourceText()).toBe('my retained draft');
     failReads = true;
-    MockEventSource.instances[0].emit({ type: 'space:block:changed', data: { space_id: 'sp1' } });
+    invalidateDashboardApiCacheForEvent('space:block:changed', { space_id: 'sp1' });
     await screen.findByTestId('spaces-block-editor-error');
     expect(screen.getByText('my retained draft')).toBeTruthy();
     failReads = false;
     backend.blocks.delete('b1');
-    MockEventSource.instances[0].emit({ type: 'space:block:changed', data: { space_id: 'sp1' } });
+    invalidateDashboardApiCacheForEvent('space:block:changed', { space_id: 'sp1' });
     await screen.findByRole('textbox', { name: 'Retained block draft' });
     expect((screen.getByRole('textbox', { name: 'Retained block draft' }) as HTMLTextAreaElement).value).toBe('my retained draft');
     fireEvent.click(screen.getByRole('button', { name: 'Restore as a new block' }));

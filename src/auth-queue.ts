@@ -6089,12 +6089,17 @@ export class AuthQueue {
     // it cleans up its owned processes. Startup records it as interrupted and runs it again.
     const drainTargets: Array<Promise<unknown>> = [...foreign, this.finalizerQueue.drain(), ...(this.acceptanceRuns ? [this.acceptanceRuns.stop()] : [])];
     if (drainTargets.length > 0) {
-      await Promise.race([
-        Promise.allSettled(drainTargets),
-        new Promise<void>((resolve) =>
-          setTimeout(resolve, AuthQueue.SELF_MERGE_DRAIN_CAP_MS)
-        ),
-      ]);
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          Promise.allSettled(drainTargets),
+          new Promise<void>((resolve) => {
+            deadline = setTimeout(resolve, AuthQueue.SELF_MERGE_DRAIN_CAP_MS);
+          }),
+        ]);
+      } finally {
+        clearTimeout(deadline);
+      }
     }
     // Issue ff784d8 — the exact restart tail starts immediately before exit,
     // after durable result publication and drain. Disconnected channels replay
