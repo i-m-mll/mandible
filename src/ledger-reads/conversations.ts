@@ -290,7 +290,7 @@ export function conversationSearchCandidates(db: Db, { source, since, titleOnly,
   needle: string;
   limit: number;
 }) {
-  const conditions: string[] = [];
+  const conditions: string[] = ["NOT EXISTS (SELECT 1 FROM conversation_identity_aliases identity WHERE identity.alias_id = conversations.id)"];
   const params: string[] = [];
   if (source) {
     conditions.push("source = ?");

@@ -339,7 +339,7 @@ export class SourceBackedConversationSearchSourceAdapter implements Conversation
   }
 }
 
-function snippetFor(text: string, needleLower: string): string | null {
+export function snippetFor(text: string, needleLower: string): string | null {
   const index = text.toLowerCase().indexOf(needleLower);
   if (index < 0) return null;
   const start = Math.max(0, index - 80);

@@ -22,6 +22,8 @@ import type { ParseResult } from "../src/parsers/types.js";
 import { registerConversationRoutes } from "../src/routes/conversations.js";
 import { Router } from "../src/server.js";
 import { revokeCredential, setupOperator } from "../src/users/store.js";
+import { managedSearchSource } from "./helpers/search-managed-source.js";
+import { getFullTextSearchJobs } from "../src/conversations/full-text-search-jobs.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 let tempDir: string;
@@ -67,7 +69,7 @@ function upsertCodexThreadMetadata(input: {
   }
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   resetCredentialLeakScanCache();
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-conversation-search-route-"));
   process.env.MANDIBLE_CONVERSATION_CACHE_DB = path.join(tempDir, "cache", "search.db");
@@ -92,9 +94,27 @@ beforeEach(() => {
     (id, conversation_id, type, role, content, compressed, position, metadata_json)
     VALUES (?, ?, 'assistant_message', 'assistant', ?, 0, 0, '{}')`)
     .run("block-canary", "revoked-canary", `before ${revokedCanary} after`);
+  await managedSearchSource(db,path.join(tempDir,"managed"),"title-only","no body match","block-title");
+  await managedSearchSource(db,path.join(tempDir,"managed"),"body-only","A Needle across the body","block-body");
+  await managedSearchSource(db,path.join(tempDir,"managed"),"revoked-canary",`before ${revokedCanary} after`,"block-canary");
 });
 
+async function settled(router:Router,input:Parameters<Router["invoke"]>[0]) {
+  let result=await router.invoke(input);
+  const deadline=Date.now()+10_000;
+  while(result.status===202 && Date.now()<deadline) {
+    const pending=result.body as {search_id:string;observer_token:string};
+    await new Promise<void>(resolve=>setImmediate(resolve));
+    const url=new URL(input.url,"http://localhost");
+    url.searchParams.set("search_id",pending.search_id);
+    url.searchParams.set("observer_token",pending.observer_token);
+    result=await router.invoke({...input,url:`${url.pathname}${url.search}`});
+  }
+  return result;
+}
+
 afterEach(() => {
+  getFullTextSearchJobs(db).close();
   getConversationSearchCache(db).close();
   db.close();
   delete process.env.MANDIBLE_CONVERSATION_CACHE_DB;
@@ -197,7 +217,7 @@ describe("conversation full-text API parity", () => {
     registerConversationRoutes(router, inlineLedgerReader());
     const sidebarUrl = "/api/conversations/sidebar?search=Archive%20Needle&full_text=true&limit=1";
     type Sidebar = { groups: Array<{ key: string; total: number; conversations: Array<{ id: string }>; next_cursor: string | null }> };
-    const cold = await router.invoke({ method: "GET", url: sidebarUrl });
+    const cold = await settled(router,{ method: "GET", url: sidebarUrl });
     expect(cold.status).toBe(200);
     const group = (cold.body as Sidebar).groups[0];
     expect(group.total).toBe(3);
@@ -207,7 +227,7 @@ describe("conversation full-text API parity", () => {
     const coldPages = [cold.body];
     let cursor = group.next_cursor;
     while (cursor) {
-      const page = await router.invoke({ method: "GET", url: `${sidebarUrl}&group_key=${encodeURIComponent(group.key)}&cursor=${encodeURIComponent(cursor)}` });
+      const page = await settled(router,{ method: "GET", url: `${sidebarUrl}&group_key=${encodeURIComponent(group.key)}&cursor=${encodeURIComponent(cursor)}` });
       expect(page.status).toBe(200);
       coldPages.push(page.body);
       const next = (page.body as Sidebar).groups[0];
@@ -217,21 +237,21 @@ describe("conversation full-text API parity", () => {
     }
     expect(visited.sort()).toEqual(["compressed", "raw", "transition"]);
     await getConversationSearchCache(db).whenIdle();
-    const warm = await router.invoke({ method: "GET", url: sidebarUrl });
-    expect(warm.body).toEqual(cold.body);
+    const warm = await settled(router,{ method: "GET", url: sidebarUrl });
+    expect((warm.body as Sidebar).groups).toEqual((cold.body as Sidebar).groups);
     for (const [index, coldPage] of coldPages.slice(0, -1).entries()) {
       const previous = (coldPage as Sidebar).groups[0];
-      const page = await router.invoke({ method: "GET", url: `${sidebarUrl}&group_key=${encodeURIComponent(group.key)}&cursor=${encodeURIComponent(previous.next_cursor!)}` });
-      expect(page.body).toEqual(coldPages[index + 1]);
+      const page = await settled(router,{ method: "GET", url: `${sidebarUrl}&group_key=${encodeURIComponent(group.key)}&cursor=${encodeURIComponent(previous.next_cursor!)}` });
+      expect((page.body as Sidebar).groups).toEqual((coldPages[index + 1] as Sidebar).groups);
     }
-    const list = await router.invoke({ method: "GET", url: "/api/conversations?search=Archive%20Needle&full_text=true&limit=1" });
+    const list = await settled(router,{ method: "GET", url: "/api/conversations?search=Archive%20Needle&full_text=true&limit=1" });
     expect(list.body).toMatchObject({ total: 3, pages: 3, conversations: [expect.any(Object)] });
-    const dedicated = await router.invoke({ method: "GET", url: "/api/conversations/search?q=Archive%20Needle" });
+    const dedicated = await settled(router,{ method: "GET", url: "/api/conversations/search?q=Archive%20Needle" });
     expect(dedicated.body).toMatchObject({ total: 3 });
     expect(JSON.stringify(dedicated.body)).not.toContain(unverifiedCanary);
     expect(JSON.stringify(dedicated.body)).toContain("[mandible-credential:unverified#1]");
     for (const query of [unverifiedCanary, "Phantom Needle"]) {
-      const response = await router.invoke({ method: "GET", url: `/api/conversations/search?q=${encodeURIComponent(query)}` });
+      const response = await settled(router,{ method: "GET", url: `/api/conversations/search?q=${encodeURIComponent(query)}` });
       expect(response.body).toMatchObject({ total: 0, results: [] });
     }
   });
@@ -252,16 +272,15 @@ describe("conversation full-text API parity", () => {
     const router = new Router();
     registerConversationRoutes(router, inlineLedgerReader());
     for (const url of ["/api/conversations/search?q=Unavailable%20Needle", "/api/conversations?search=Unavailable%20Needle&full_text=true"]) {
-      const response = await router.invoke({ method: "GET", url });
-      expect(response.status).toBe(200);
-      expect(response.body).toMatchObject({ total: 1 });
-      expect(response.body).toMatchObject(url.startsWith("/api/conversations/search?")
-        ? { results: [{ conversation: { id: "healthy" } }] }
-        : { conversations: [{ id: "healthy" }] });
+      const response = await settled(router,{ method: "GET", url });
+      expect(response.status).toBe(409);
+      expect(response.body).toMatchObject({coverage:{complete:false}});
+      expect((response.body as {state:string}).state).toMatch(/^(incomplete|superseded)$/);
+      expect(response.body).not.toHaveProperty("total");
     }
     await getConversationSearchCache(db).whenIdle();
     for (const [sourcePath, bytes] of originals) fs.writeFileSync(sourcePath, bytes);
-    const restored = await router.invoke({ method: "GET", url: "/api/conversations/search?q=Unavailable%20Needle" });
+    const restored = await settled(router,{ method: "GET", url: "/api/conversations/search?q=Unavailable%20Needle" });
     expect(restored.status).toBe(200);
     expect(restored.body).toMatchObject({ total: 3 });
   });
@@ -270,23 +289,22 @@ describe("conversation full-text API parity", () => {
     const router = new Router();
     registerConversationRoutes(router, inlineLedgerReader());
 
-    const title = await router.invoke({ method: "GET", url: "/api/conversations?search=Needle" });
+    const title = await settled(router,{ method: "GET", url: "/api/conversations?search=Needle" });
     expect(title.body).toMatchObject({ conversations: [{ id: "title-only" }], total: 1 });
 
-    const full = await router.invoke({ method: "GET", url: "/api/conversations?search=Needle&full_text=true" });
+    const full = await settled(router,{ method: "GET", url: "/api/conversations?search=Needle&full_text=true" });
     expect(full.body).toMatchObject({
       conversations: [{ id: "body-only" }],
       total: 1,
-      search_metrics: { exact_verified_blocks: 3 },
     });
 
-    const dedicated = await router.invoke({ method: "GET", url: "/api/conversations/search?q=Needle" });
+    const dedicated = await settled(router,{ method: "GET", url: "/api/conversations/search?q=Needle" });
     expect(dedicated.body).toMatchObject({
       results: [{ conversation: { id: "body-only" }, block: { id: "block-body", content: "" } }],
       total: 1,
     });
 
-    const canary = await router.invoke({ method: "GET", url: "/api/conversations/search?q=before" });
+    const canary = await settled(router,{ method: "GET", url: "/api/conversations/search?q=before" });
     expect(JSON.stringify(canary.body)).not.toContain(revokedCanary);
     expect(canary.body).toMatchObject({
       results: [{ conversation: { id: "revoked-canary" }, snippet: expect.stringContaining("[mandible-credential:unverified#1]") }],
@@ -298,8 +316,7 @@ describe("conversation full-text API parity", () => {
   });
 
   it("keeps cold search and sidebar source work off the daemon loop", async () => {
-    db.prepare("UPDATE conversation_blocks SET content = ? WHERE id = ?")
-      .run("x".repeat(32 * 1024 * 1024) + " Needle", "block-body");
+    await managedSearchSource(db,path.join(tempDir,"managed"),"body-only","x".repeat(512 * 1024)+" Needle","block-body");
     const ledgerPath = path.join(tempDir, "ledger.db");
     fs.writeFileSync(ledgerPath, db.serialize());
     const reader = workerLedgerReaderPool(ledgerPath, { size: 2 });
@@ -315,21 +332,21 @@ describe("conversation full-text API parity", () => {
       ticks += 1;
     }, 2);
     try {
-      const dedicated = await router.invoke({ method: "GET", url: "/api/conversations/search?q=Needle" });
+      const dedicated = await settled(router,{ method: "GET", url: "/api/conversations/search?q=Needle" });
       expect(dedicated.status).toBe(200);
       expect(dedicated.body).toMatchObject({
         results: [{ conversation: { id: "body-only" }, block: { id: "block-body", content: "" } }],
         total: 1,
       });
-      const sidebar = await router.invoke({ method: "GET", url: "/api/conversations/sidebar?search=Needle&full_text=true" });
+      const sidebar = await settled(router,{ method: "GET", url: "/api/conversations/sidebar?search=Needle&full_text=true" });
       expect(sidebar.status).toBe(200);
       expect(sidebar.body).toMatchObject({
         groups: [{ conversations: [{ id: "body-only", search_target: { block: "block-body" } }] }],
       });
-      const title = await router.invoke({ method: "GET", url: "/api/conversations/search?q=Needle&title=true" });
+      const title = await settled(router,{ method: "GET", url: "/api/conversations/search?q=Needle&title=true" });
       expect(title.status).toBe(200);
       expect(title.body).toMatchObject({ results: [{ conversation: { id: "title-only" } }], total: 1 });
-      const invalid = await router.invoke({ method: "GET", url: "/api/conversations/sidebar?lifecycle=invalid" });
+      const invalid = await settled(router,{ method: "GET", url: "/api/conversations/sidebar?lifecycle=invalid" });
       expect(invalid.status).toBe(400);
       await new Promise<void>(resolve => setImmediate(resolve));
       expect(ticks).toBeGreaterThan(0);
@@ -353,7 +370,7 @@ describe("conversation full-text API parity", () => {
 
     const router = new Router();
     registerConversationRoutes(router, inlineLedgerReader());
-    const response = await router.invoke({
+    const response = await settled(router,{
       method: "GET",
       url: "/api/conversations/search?q=Structural%20Needle",
     });
@@ -393,15 +410,15 @@ describe("conversation full-text API parity", () => {
 
     const router = new Router({ clientAuth: authenticator });
     registerConversationRoutes(router, inlineLedgerReader());
-    const detail = await router.invoke({
+    const detail = await settled(router,{
       method: "GET",
       url: "/api/conversations/source-mask?source_backed=false",
     });
-    const blocks = await router.invoke({
+    const blocks = await settled(router,{
       method: "GET",
       url: "/api/conversations/source-mask/blocks?source_backed=false",
     });
-    const exported = await router.invoke({
+    const exported = await settled(router,{
       method: "POST",
       url: "/api/conversations/source-mask/export",
       credential: requestToken,

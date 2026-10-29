@@ -364,6 +364,28 @@ export class ConversationSourceStore {
     return latest;
   }
 
+  /** Canonical generation facts for immutable search snapshots; contains no transcript bytes. */
+  searchSnapshotGenerations(conversationIds: readonly string[]): Map<string, string> {
+    const latest = this.latestSources(conversationIds);
+    if (latest.size === 0) return new Map();
+    const rows = this.db.prepare(`
+      SELECT s.id, s.current_version_id, s.availability,
+             s.parser_format, s.parser_version, s.normalization_version, s.redaction_epoch,
+             v.availability AS version_availability, v.generation,
+             v.parser_format AS version_parser_format, v.parser_version AS version_parser_version,
+             v.normalization_version AS version_normalization_version, v.redaction_epoch AS version_redaction_epoch,
+             v.content_sha256, v.byte_length, v.filesystem_device, v.filesystem_inode, v.filesystem_ctime_ns
+        FROM conversation_sources s
+        LEFT JOIN conversation_source_versions v ON v.id = s.current_version_id
+       WHERE s.id IN (SELECT value FROM json_each(?))
+    `).all(JSON.stringify([...latest.values()].map(source => source.sourceId))) as Array<Record<string, unknown> & {id:string}>;
+    const facts = new Map(rows.map(row => [row.id, JSON.stringify(row)]));
+    return new Map([...latest].flatMap(([id, source]) => {
+      const fact = facts.get(source.sourceId);
+      return fact ? [[id, fact] as const] : [];
+    }));
+  }
+
   resolveVersion(versionId: string): ConversationSourceVersion | null {
     const row = this.db.prepare(`
       SELECT id, source_id, content_sha256, byte_length, file_mtime_ms,

@@ -650,7 +650,7 @@ export function registerConversationRoutes(
 
   // GET /api/conversations/sidebar — all matching pins and independently paged Projects and Chats.
   server.get("/api/conversations/sidebar", async (req, res) => {
-    const result = await reader.run("conversation_sidebar", { query: req.query ?? {} });
+    const result = await reader.run("conversation_sidebar", { query: req.query ?? {} }, { signal: req.signal });
     if (res.jsonText) res.status(result.status).jsonText!(result.json);
     else sendJson(res, result.status, JSON.parse(result.json));
   }, { operation: { id: "get:/api/conversations/sidebar", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
@@ -663,14 +663,14 @@ export function registerConversationRoutes(
   //   ?group=true — same as exclude_subagents but also includes children_count on parents
   //   ?parent_id=<id> — list only children of a specific parent conversation
   server.get("/api/conversations", async (req, res) => {
-    const result = await reader.run("conversation_list", { query: req.query ?? {} });
+    const result = await reader.run("conversation_list", { query: req.query ?? {} }, { signal: req.signal });
     if (res.jsonText) res.status(result.status).jsonText!(result.json);
     else sendJson(res, result.status, JSON.parse(result.json));
   }, { operation: { id: "get:/api/conversations", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   // GET /api/conversations/search — Search the normalized conversation index.
   server.get("/api/conversations/search", async (req, res) => {
-    const result = await reader.run("conversation_search", { query: req.query ?? {} });
+    const result = await reader.run("conversation_search", { query: req.query ?? {} }, { signal: req.signal });
     if (res.jsonText) res.status(result.status).jsonText!(result.json);
     else sendJson(res, result.status, JSON.parse(result.json));
   }, { operation: { id: "get:/api/conversations/search", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
