@@ -445,7 +445,7 @@ describe("consequential non-Git approval", () => {
     expect((await queue.getRequest(request.id))?.status).toBe("pending");
     const drifted = queue.approveWithOperatorProof(request.id, operatorId);
     (await queue.update(request.id, { title: "Changed reviewed action" }));
-    await expect(drifted).rejects.toThrow("Observed request version is no longer current");
+    await expect(drifted).rejects.toMatchObject({ code: "lifecycle_conflict" });
     expect((await queue.getRequest(request.id))?.status).toBe("pending");
     expect(executorCalls).toBe(0);
     expect(hookCalls).toBe(0);
