@@ -27,7 +27,7 @@ export function AppFrame({ navigation, chromeAppearance, nativeControlsReservati
   rightToggleRef?: Ref<HTMLButtonElement>;
 }): JSX.Element {
   const leftLabel = viewSidebarOpen ? 'Hide view sidebar' : 'Show view sidebar';
-  return <div style={{ ...chromeAppearanceFrameStyles(chromeAppearance), '--app-frame-controls-offset': `${APP_FRAME_CONTROLS_OFFSET}px`, '--app-frame-history-icon-size': `${HISTORY_ARROW_SIZE}px` } as JSX.CSSProperties} className={`app-frame${hasMainHeader ? ' app-frame--main-header' : ''}${viewSidebarOpen ? ' app-frame--left-open' : ''}${rightSidebarOpen ? ' app-frame--right-open' : ''}`}>
+  return <div data-preview-typography={chromeAppearance ? 'absolute' : undefined} style={{ ...chromeAppearanceFrameStyles(chromeAppearance), '--app-frame-controls-offset': `${APP_FRAME_CONTROLS_OFFSET}px`, '--app-frame-history-icon-size': `${HISTORY_ARROW_SIZE}px` } as JSX.CSSProperties} className={`app-frame${hasMainHeader ? ' app-frame--main-header' : ''}${viewSidebarOpen ? ' app-frame--left-open' : ''}${rightSidebarOpen ? ' app-frame--right-open' : ''}`}>
     <header className="app-frame__bar" aria-label="Application controls" data-app-surface="chrome" data-native-drag-boundary>
       <div className="app-frame__navigation">
         {nativeControlsReservation > 0 ? <span className="app-frame__native-controls" aria-hidden="true" /> : null}
