@@ -592,6 +592,7 @@ export class AuthQueue {
   private readonly clearanceSettlementFailures = new Set<unknown>();
   private readonly pendingClearanceSettlements = new Map<() => Promise<void>, unknown>();
   private readonly clearanceExecutions = new Set<Promise<void>>();
+  private readonly uncertainRepoExecutions = new Map<string, string>();
   private clearanceFailure = completionSignal();
   private disposing: Promise<void> | null = null;
   // Issue 93d978e — abandoned work units older than this window are retired
@@ -3604,6 +3605,7 @@ export class AuthQueue {
       this.requireExternalEffects("Operator approval proof");
       let request = this.requireRequest(id);
       if (request.status !== "pending") throw new AuthQueueError("invalid_status", "Only pending requests can be approved.");
+      await this.assertRequestRepoExecutionCertain(request);
       if (this.operatorProofInFlight.has(request.id)) throw new AuthQueueError("invalid_status", "Operator signing is already in progress.");
       const controller = new AbortController();
       this.operatorProofInFlight.set(request.id, controller);
@@ -3654,6 +3656,7 @@ export class AuthQueue {
         );
       }
       if (this.inFlight.has(request.id)) throw new AuthQueueError("invalid_status", "An earlier execution of this request is still settling.");
+      await this.assertRequestRepoExecutionCertain(request);
       const operatorProof = this.operatorProofs.get(request.id);
       this.operatorProofs.delete(request.id);
       if (!approval && (!operatorProof || operatorProof.userId !== approvedByUserId || this.now() >= operatorProof.expiresAt ||
@@ -3817,6 +3820,7 @@ export class AuthQueue {
       if (request.status !== "pending") {
         throw new AuthQueueError("invalid_status", `Request is ${request.status}, cannot use clearance.`, request.status);
       }
+      await this.assertRequestRepoExecutionCertain(request);
       request = (await this.prepareMergeApproval(request, true, true));
       const observed = this.observationToken(request.id, request);
       let nativeHookPaths = await this.observedNativeMergeHookPaths(request.cwd);
@@ -4948,7 +4952,19 @@ export class AuthQueue {
    * later executions chain behind it.
    */
   private runOnRepoChain<T>(chainKey: string, task: () => Promise<T>): Promise<T> {
+    this.assertRepoExecutionCertain(chainKey);
     return this.runOnChain(this.executionChains, chainKey, task);
+  }
+
+  private assertRepoExecutionCertain(chainKey: string): void {
+    const uncertain = this.uncertainRepoExecutions.get(chainKey);
+    if (uncertain) throw new AuthQueueError("invalid_status", `Execution termination for request ${uncertain} is unproven; repository execution remains fenced.`);
+  }
+
+  private async assertRequestRepoExecutionCertain(request: AuthRequest): Promise<void> {
+    if (!this.uncertainRepoExecutions.size) return;
+    const key = await canonicalRepoKeyForPath(request.target_repo_root ?? request.cwd, this.phaseAbort.signal) ?? AuthQueue.UNRESOLVED_CHAIN_KEY;
+    this.assertRepoExecutionCertain(key);
   }
 
   private runOnCandidateChain<T>(requestId: string, task: () => Promise<T>): Promise<T> {
@@ -5589,10 +5605,17 @@ export class AuthQueue {
               if (settleClearance) await settleClearance();
               await this.afterConvergenceHook(completed);
             } catch (error) {
-              if (settleClearance && error != null && typeof error === "object"
+              if (error != null && typeof error === "object"
                   && "processGroupSettled" in error && error.processGroupSettled === false) {
                 settlementSafe = false;
+                this.uncertainRepoExecutions.set(chainKey, request.id);
                 this.retainClearanceFailure(error);
+                if (this.isDbOpen()) {
+                  this.db.prepare("UPDATE auth_requests SET error = ?, updated_at = ? WHERE id = ?")
+                    .run(`Execution termination is unproven; repository execution remains fenced: ${errorMessage(error) ?? String(error)}`, this.now(), request.id);
+                  this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: this.requireRequest(request.id) } });
+                }
+                return;
               }
               const message = error instanceof Error ? error.message : "Execution failed.";
               if (executionResult?.exit_code === 0) {
@@ -5605,6 +5628,8 @@ export class AuthQueue {
                 (await this.storeExecutionResult(request.id, null, message, execution));
               }
             } finally {
+              // No terminal-proof handle exists; the unresolved run keeps the repository fenced.
+              if (!settlementSafe) await new Promise<never>(() => undefined);
               if (settleClearance && settlementSafe) {
                 try { await settleClearance(); }
                 catch (error) { this.retainClearanceFailure(error, settleClearance); }
@@ -5654,6 +5679,7 @@ export class AuthQueue {
     try {
       const key = await canonicalRepoKeyForPath(request.target_repo_root ?? request.cwd, this.phaseAbort.signal) ?? AuthQueue.UNRESOLVED_CHAIN_KEY;
       await prior;
+      this.assertRepoExecutionCertain(key);
       this.assertObservation(request.id, observed);
       return install(key);
     } finally { reserved.resolve(); finishObservation(); }
@@ -6135,6 +6161,7 @@ export class AuthQueue {
   }
 
   private activeConvergenceDrain: string | null = null;
+  private failedConvergenceDrain: string | null = null;
   private readonly scheduledConvergenceDrains = new Set<string>();
 
   private hasPlannedRuntimeRebuild(request: Pick<AuthRequest, "id" | "repo">): boolean {
@@ -6147,7 +6174,7 @@ export class AuthQueue {
     const admitted = await this.hookManager.admittedDrainIdentity?.(request.id);
     const key = admitted;
     if (!key) {
-      if (!this.activeConvergenceDrain) this._rebuilding = false;
+      if (!this.activeConvergenceDrain && !this.failedConvergenceDrain) this._rebuilding = false;
       if (this.rebuildWindowRequestId === request.id) {
         // Issue 54a0b88 — a pending rebuild owned by an independent runtime
         // handoff will converge or fail in that handoff; it has not failed.
@@ -6159,7 +6186,7 @@ export class AuthQueue {
             : run.exit_code === null ? `its rebuild hook is ${run.state}` : `its rebuild hook exited ${run.exit_code}`);
         }
       }
-      if (convergence.state === "complete" && this._rebuildFailure?.request_id === request.id) this._rebuildFailure = null;
+      if (!this.failedConvergenceDrain && convergence.state === "complete" && this._rebuildFailure?.request_id === request.id) this._rebuildFailure = null;
       return convergence;
     }
     if (this.scheduledConvergenceDrains.has(key)) return convergence;
@@ -6170,7 +6197,16 @@ export class AuthQueue {
     this._rebuilding = true;
     this.recordSelfMergeShutdown(this.now());
     authLog('info', 'auth_self_merge_restart_scheduled', { subsystem: 'auth', auth_request_id: request.id, drain_identity: key, drain_cap_ms: AuthQueue.SELF_MERGE_DRAIN_CAP_MS });
-    void this.drainAndRestart(request.id, admitted || undefined).catch(error => { if (this.activeConvergenceDrain === key) { this.activeConvergenceDrain = null; this._rebuilding = false; } authLog('error', 'auth_convergence_drain_failed', { subsystem: 'auth', auth_request_id: request.id, error: errorMessage(error) }); });
+    void this.drainAndRestart(request.id, admitted || undefined).catch(error => {
+      if (this.activeConvergenceDrain === key) {
+        this.activeConvergenceDrain = null;
+        this.failedConvergenceDrain = key;
+        this.scheduledConvergenceDrains.delete(key);
+        this._rebuilding = true;
+        this.failRebuild(request, `restart remains draining because authority shutdown failed: ${errorMessage(error) ?? String(error)}`);
+      }
+      authLog('error', 'auth_convergence_drain_failed', { subsystem: 'auth', auth_request_id: request.id, error: errorMessage(error) });
+    });
     return convergence;
   }
 
@@ -6205,12 +6241,14 @@ export class AuthQueue {
     // undelivered results on reconnect.
     if (admitted && await this.hookManager.admittedDrainIdentity(selfRequestId) !== admitted) {
       this.activeConvergenceDrain = null;
-      this._rebuilding = false;
+      if (!this.failedConvergenceDrain) this._rebuilding = false;
       authLog("warn", "auth_handoff_drain_ownership_changed", { subsystem: "auth", auth_request_id: selfRequestId });
       return;
     }
     this.restartAvailability?.markShutdownStarted(selfRequestId);
     await this.closeClearanceAuthority();
+    this.failedConvergenceDrain = null;
+    this._rebuildFailure = null;
     this.restartFn();
   }
 

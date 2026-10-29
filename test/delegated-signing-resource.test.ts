@@ -111,7 +111,7 @@ function fixture() {
       now, now + 60_000, runtimeEpoch, leaseId);
   };
   return {
-    db, resource, addClearance, processes, sockets, stopped, inspector,
+    db, resource, signer, addClearance, processes, sockets, stopped, inspector,
     setFingerprint: (value: string) => { fingerprint = value; },
     challenges: () => challenges,
     removed: () => removed,
@@ -183,6 +183,44 @@ async function withRealAgent(body: (agent: {
 }
 
 describe("delegated signer reconnect lifecycle", () => {
+  it("does not signal a reused PID when failed acquisition cleanup is retried", async () => {
+    const f = fixture();
+    try {
+      const resource = f.resource("runtime-a", 100);
+      f.db.exec(`CREATE TRIGGER refuse_binding BEFORE INSERT ON delegated_signing_runtime_bindings
+        BEGIN SELECT RAISE(ABORT, 'binding write refused'); END`);
+      const stop = vi.spyOn(f.signer, "stopApprovalRuntime").mockRejectedValueOnce(new Error("first stop refused"));
+      await expect(resource.issueFresh(60)).rejects.toThrow(/acquisition and cleanup failed/);
+      expect(stop).toHaveBeenCalledTimes(1);
+      f.processes.set(300, { pid: 300, uid: 501, start: "replacement", executable: "/usr/bin/ssh-agent" });
+      await resource.close();
+      expect(stop).toHaveBeenCalledTimes(1);
+      expect(f.stopped).toEqual([]);
+      expect(f.processes.get(300)?.start).toBe("replacement");
+    } finally { f.db.close(); }
+  });
+
+  it("keeps failed acquisition cleanup owned when its original process identity is unavailable", async () => {
+    const f = fixture();
+    try {
+      const resource = f.resource("runtime-a", 100);
+      const inspect = f.inspector.process;
+      f.inspector.process = async pid => {
+        if (pid === 300) throw new Error("identity inspection refused");
+        return inspect(pid);
+      };
+      const stop = vi.spyOn(f.signer, "stopApprovalRuntime");
+      await expect(resource.issueFresh(60)).rejects.toThrow(/acquisition and cleanup failed/);
+      await expect(resource.close()).rejects.toThrow(/identity inspection refused/);
+      f.inspector.process = inspect;
+      await expect(resource.close()).rejects.toThrow(/identity is unavailable/);
+      expect(stop).not.toHaveBeenCalled();
+      f.processes.delete(300);
+      await resource.close();
+      expect(stop).not.toHaveBeenCalled();
+    } finally { f.db.close(); }
+  });
+
   it("joins acquisition and startup attachment before closing, preserving an available signer", async () => {
     const f = fixture();
     let release!: () => void;

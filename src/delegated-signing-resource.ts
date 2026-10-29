@@ -74,6 +74,12 @@ interface LiveLease {
   settled: Array<() => void>;
 }
 
+interface UnboundSigner {
+  context: AuthApprovalContext;
+  agent: SignerProcessIdentity | null;
+  socket: SignerSocketIdentity | null;
+}
+
 export interface DelegatedSignerBorrow {
   approval: AuthApprovalContext;
   settle(): Promise<void>;
@@ -97,7 +103,7 @@ export class DelegatedSigningResource {
   private readonly lifecycle = new AuthorityLifecycle();
   private closing: Promise<void> | null = null;
   private readonly cleanupFailures = new Map<string, unknown>();
-  private readonly unboundContexts = new Map<string, AuthApprovalContext>();
+  private readonly unboundContexts = new Map<string, UnboundSigner>();
   private readonly pendingDrains = new Map<string, string>();
   private readonly db: Db;
   private readonly runtimeEpoch: string;
@@ -145,10 +151,11 @@ export class DelegatedSigningResource {
   private async issueAdmitted(ttlSeconds: number): Promise<AuthApprovalContext> {
     this.assertAuthorityAllowed();
     const context = await this.signer.freshPresenceChallenge(ttlSeconds);
-    this.unboundContexts.set(context.leaseId, context);
+    const pending: UnboundSigner = { context, agent: null, socket: null };
+    this.unboundContexts.set(context.leaseId, pending);
     let binding: RuntimeBindingRow | null = null;
     try {
-      binding = await this.captureBinding(context);
+      binding = await this.captureBinding(context, pending);
       this.insertBinding(binding);
       this.unboundContexts.delete(context.leaseId);
       this.installLiveLease(context, binding);
@@ -159,8 +166,7 @@ export class DelegatedSigningResource {
         if (binding && this.readBinding(binding.lease_id)) {
           await this.drainAdmitted(binding.lease_id, "initial_validation_failed");
         } else {
-          await this.signer.stopApprovalRuntime(context);
-          this.unboundContexts.delete(context.leaseId);
+          await this.stopUnboundSigner(pending);
         }
       } catch (cleanup) { throw new AggregateError([error, cleanup], "Signer acquisition and cleanup failed."); }
       throw error;
@@ -326,10 +332,7 @@ export class DelegatedSigningResource {
 
   private async closeAdmitted(): Promise<void> {
     await this.lifecycle.join();
-    const unbound = await Promise.allSettled([...this.unboundContexts.values()].map(async context => {
-      await this.signer.stopApprovalRuntime(context);
-      this.unboundContexts.delete(context.leaseId);
-    }));
+    const unbound = await Promise.allSettled([...this.unboundContexts.values()].map(pending => this.stopUnboundSigner(pending)));
     const drains = await Promise.allSettled([...this.pendingDrains].map(([leaseId, reason]) => this.drainAdmitted(leaseId, reason)));
     const leases = await Promise.allSettled([...this.leases.values()].map(async live => {
       if (live.timer) clearTimeout(live.timer);
@@ -397,11 +400,28 @@ export class DelegatedSigningResource {
     Object.assign(binding, this.readBinding(binding.lease_id));
   }
 
-  private async captureBinding(context: AuthApprovalContext): Promise<RuntimeBindingRow> {
+  private async stopUnboundSigner(pending: UnboundSigner): Promise<void> {
+    const { context, agent, socket } = pending;
+    if (!context.runtime) throw new Error("Cannot prove acquired signer process for cleanup.");
+    const current = await this.inspector.process(Number(context.runtime.sshAgentPid));
+    if (current && !agent) throw new Error("Acquired signer identity is unavailable; cleanup remains owned.");
+    if (current && agent && current.uid === agent.uid && current.start === agent.start && current.executable === agent.executable) {
+      if (!socket || path.basename(agent.executable) !== "ssh-agent") throw new Error("Acquired signer socket proof is unavailable; cleanup remains owned.");
+      const observed = this.inspector.socket(socket.path);
+      if (observed.dev !== socket.dev || observed.ino !== socket.ino || observed.uid !== socket.uid || observed.mode !== socket.mode
+          || !await this.inspector.ownsSocket(current, observed)) throw new Error("Acquired signer socket changed; cleanup remains owned.");
+      await this.signer.stopApprovalRuntime(context);
+    }
+    this.unboundContexts.delete(context.leaseId);
+  }
+
+  private async captureBinding(context: AuthApprovalContext, pending: UnboundSigner): Promise<RuntimeBindingRow> {
     if (!context.runtime) throw new Error("Fresh signer did not return process identity.");
     const agent = await this.requireProcess(Number(context.runtime.sshAgentPid), "ssh-agent");
+    pending.agent = { ...agent };
     const daemon = await this.daemon();
     const socket = this.inspector.socket(context.runtime.sshAuthSock);
+    pending.socket = { ...socket };
     if (!await this.inspector.ownsSocket(agent, socket)) throw new Error("ssh-agent does not own the recorded socket.");
     const lease = this.db.prepare(
       `SELECT credential.fingerprint
