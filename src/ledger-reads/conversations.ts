@@ -280,7 +280,7 @@ export function conversationSidebarCandidates(db: Db, { query }: { query: Record
 function selectSearchConversations(db: Db, where: string, params: readonly string[]): ConversationRow[] {
   return db.prepare(`SELECT conversations.*,
     (SELECT archived_at FROM conversation_archive_states archive WHERE archive.conversation_id = conversations.id) AS archived_at
-    FROM conversations ${where} ORDER BY started_at DESC`).all(...params) as ConversationRow[];
+    FROM conversations ${where} ORDER BY started_at DESC, id ASC`).all(...params) as ConversationRow[];
 }
 
 export function conversationSearchCandidates(db: Db, { source, since, titleOnly, needle, limit }: {
@@ -318,7 +318,7 @@ export function conversationSearchCandidates(db: Db, { source, since, titleOnly,
     }
     return { titleMatches, ids: [] as string[] };
   }
-  const rows = db.prepare(`SELECT id FROM conversations ${where} ORDER BY started_at DESC`).all(...params) as Array<{ id: string }>;
+  const rows = db.prepare(`SELECT id FROM conversations ${where} ORDER BY started_at DESC, id ASC`).all(...params) as Array<{ id: string }>;
   return { titleMatches, ids: rows.map(row => row.id) };
 }
 

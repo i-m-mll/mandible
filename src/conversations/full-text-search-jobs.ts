@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readSnapshot } from "../ledger-reads/snapshot.js";
+import { readConversationSourceGenerations } from "./source-generation.js";
 import { ConversationSourceStore } from "./source-store.js";
 import { ConversationSourceReader } from "./source-reader.js";
 import type { Db } from "../db.js";
@@ -13,6 +14,8 @@ export class SearchSnapshotProjectionError extends Error {
 }
 export type SearchMatchFact = Omit<ConversationSearchMatch, "snippet"> & {
   source_version_id: string;
+  source_block_count: number;
+  source_model: string | null;
 };
 export interface SearchPlan {
   ids: string[];
@@ -71,7 +74,10 @@ function terminal(searchId: string, reason: FullTextSearchReason, coverage: Full
 interface Pin {
   id: string;
   version: string;
-  generation?: string;
+  authority?: string;
+  observed?: string;
+  blockCount?: number;
+  model?: string | null;
 }
 interface Job {
   id: string;
@@ -251,43 +257,55 @@ export class FullTextSearchJobs {
   private async validate(job: Job, physicalIds?: ReadonlySet<string>): Promise<boolean> {
     if (job.terminal)
       return false;
-    if (new SourceBackedConversationSearchSourceAdapter(this.db).redactionEpoch() !== job.redaction) {
+    const versions = new Map(job.pins.map(pin => [pin.id, pin.version]));
+    const metadata = () => readSnapshot(this.db, () => ({
+      redaction: new SourceBackedConversationSearchSourceAdapter(this.db).redactionEpoch(),
+      authorities:new ConversationSourceStore(this.db).searchSnapshotAuthorities(job.plan!.ids,versions),
+      observed:readConversationSourceGenerations(this.db,job.plan!.ids),
+      aliased: Boolean(this.db.prepare("SELECT 1 FROM conversation_identity_aliases WHERE alias_id IN (SELECT value FROM json_each(?)) LIMIT 1").get(JSON.stringify(job.plan!.ids))),
+    }));
+    const before = metadata();
+    if (before.redaction !== job.redaction) {
       this.fail(job, "redaction_changed", "superseded");
       return false;
     }
-    const started = performance.now();
-    const aliased = this.db.prepare("SELECT 1 FROM conversation_identity_aliases WHERE alias_id IN (SELECT value FROM json_each(?)) LIMIT 1").get(JSON.stringify(job.plan!.ids));
-    if (aliased) {
+    if (before.aliased || job.pins.some(pin => before.authorities.get(pin.id) !== pin.authority)) {
       this.fail(job, "source_changed", "superseded");
       return false;
     }
-    const generations = readSnapshot(this.db, () => new ConversationSourceStore(this.db).searchSnapshotGenerations(job.plan!.ids));
+    const started = performance.now();
     for (let index = 0; index < job.pins.length; index++) {
-      const pin = job.pins[index];
-      if (generations.get(pin.id) !== pin.generation) {
-        this.fail(job, "source_changed", "superseded");
+      if (job.terminal)
         return false;
-      }
-      if (!physicalIds || physicalIds.has(pin.id)) {
-        const verified = await this.reader.verifyVersion(pin.id, pin.version, job.controller.signal);
-        if (verified.status !== "source") {
-          this.fail(job, verified.status === "unavailable" ? "source_unavailable" : "source_changed", "superseded");
+      const pin = job.pins[index];
+      const current=before.observed.get(pin.id);
+      if (!physicalIds || physicalIds.has(pin.id) || current !== pin.observed) {
+        const proof = await this.reader.verifyVersion(pin.id, pin.version, job.controller.signal);
+        if (job.terminal)
+          return false;
+        if (proof.status !== "source") {
+          this.fail(job, proof.status === "unavailable" ? "source_unavailable" : "source_changed", "superseded");
           return false;
         }
       }
       if (index % 32 === 31)
         await yieldTurn();
     }
-    const unchanged = readSnapshot(this.db, () => {
-      if (new SourceBackedConversationSearchSourceAdapter(this.db).redactionEpoch() !== job.redaction)
-        return "redaction_changed" as const;
-      const current = new ConversationSourceStore(this.db).searchSnapshotGenerations(job.plan!.ids);
-      return job.pins.some(pin => current.get(pin.id) !== pin.generation) ? "source_changed" as const : null;
-    });
-    if (unchanged) {
-      this.fail(job, unchanged, "superseded");
+    if (job.terminal)
+      return false;
+    const after = metadata();
+    if (after.redaction !== job.redaction) {
+      this.fail(job, "redaction_changed", "superseded");
       return false;
     }
+    if (after.aliased || job.pins.some(pin => {
+      return after.authorities.get(pin.id)!==pin.authority||after.observed.get(pin.id)!==before.observed.get(pin.id);
+    })) {
+      this.fail(job, "source_changed", "superseded");
+      return false;
+    }
+    for (const pin of job.pins)
+      pin.observed = after.observed.get(pin.id);
     job.metrics.source_verification_ms += performance.now() - started;
     return !job.terminal;
   }
@@ -365,27 +383,41 @@ export class FullTextSearchJobs {
         await yieldTurn();
       }
     }
-    const snapshot=readSnapshot(this.db,()=>{
-      const refreshed=job.prepare();
+    const snapshot = readSnapshot(this.db, () => {
+      const refreshed = job.prepare();
       return {
-        plan:refreshed,
-        sources:refreshed.ids.map(id=>readConversationSourceReadiness(this.db,id)),
-        generations:new ConversationSourceStore(this.db).searchSnapshotGenerations(refreshed.ids),
-        redaction:new SourceBackedConversationSearchSourceAdapter(this.db).redactionEpoch(),
+        plan: refreshed,
+        sources: refreshed.ids.map(id => readConversationSourceReadiness(this.db, id)),
+        authorities:new ConversationSourceStore(this.db).searchSnapshotAuthorities(refreshed.ids),
+        observed:readConversationSourceGenerations(this.db,refreshed.ids),
+        normalization: this.db.prepare("SELECT id,block_count,model FROM conversations WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify(refreshed.ids)) as Array<{
+          id: string;
+          block_count: number;
+          model: string | null;
+        }>,
+        redaction: new SourceBackedConversationSearchSourceAdapter(this.db).redactionEpoch(),
       };
     });
-    const prepared=new Map(job.pins.map(pin=>[pin.id,pin]));
-    if(snapshot.plan.ids.some(id=>!prepared.has(id))||snapshot.sources.some(source=>source.status!=="ready"||!source.sourceVersionId)){
-      this.fail(job,"source_changed","superseded");return;
+    const prepared = new Map(job.pins.map(pin => [pin.id, pin]));
+    if (snapshot.plan.ids.some(id => !prepared.has(id)) || snapshot.sources.some(source => source.status !== "ready" || !source.sourceVersionId)) {
+      this.fail(job, "source_changed", "superseded");
+      return;
     }
-    plan=snapshot.plan;job.plan=plan;
-    job.pins=snapshot.sources.map(source=>({id:source.conversationId,version:source.sourceVersionId!,generation:snapshot.generations.get(source.conversationId)}));
-    for(const pin of job.pins)prepared.set(pin.id,pin);
-    job.coverage.eligible=plan.ids.length;job.coverage.prepared=plan.ids.length;
-    job.bytes=plan.metadataBytes+Buffer.byteLength(JSON.stringify(job.pins));
-    job.prepare=()=>{throw new Error("search plan already pinned");};
-    if(!this.evict()){this.fail(job,"metadata_limit");return;}
-    job.redaction=snapshot.redaction;
+    plan = snapshot.plan;
+    job.plan = plan;
+    const normalization = new Map(snapshot.normalization.map(row => [row.id, row]));
+    job.pins = snapshot.sources.map(source => ({ id: source.conversationId, version: source.sourceVersionId!, authority:snapshot.authorities.get(source.conversationId),observed:snapshot.observed.get(source.conversationId), blockCount: normalization.get(source.conversationId)!.block_count, model: normalization.get(source.conversationId)!.model }));
+    for (const pin of job.pins)
+      prepared.set(pin.id, pin);
+    job.coverage.eligible = plan.ids.length;
+    job.coverage.prepared = plan.ids.length;
+    job.bytes = plan.metadataBytes + Buffer.byteLength(JSON.stringify(job.pins));
+    job.prepare = () => { throw new Error("search plan already pinned"); };
+    if (!this.evict()) {
+      this.fail(job, "metadata_limit");
+      return;
+    }
+    job.redaction = snapshot.redaction;
     job.metrics.preparation_ms = performance.now() - preparationStarted;
     const scanningStarted = performance.now();
     job.pending.phase = "scanning";
@@ -395,7 +427,7 @@ export class FullTextSearchJobs {
       if (job.terminal)
         return;
       const ids = plan.ids.slice(index, index + 4);
-      const results = await Promise.all(ids.map(id => cache.search({ conversationIds: [id], needle: plan.needle, blockType: plan.blockType, limit: 1, signal: job.controller.signal, expectedSourceVersions: { [id]: job.pins[index + ids.indexOf(id)].version } })));
+      const results = await Promise.all(ids.map(id => cache.search({ conversationIds: [id], needle: plan.needle, blockType: plan.blockType, limit: 1, signal: job.controller.signal, expectedSourceVersions: { [id]: prepared.get(id)!.version }, expectedBlockCounts: { [id]: prepared.get(id)!.blockCount! }, expectedModels: { [id]: prepared.get(id)!.model ?? null } })));
       if (job.terminal)
         return;
       for (const result of results) {
@@ -406,7 +438,7 @@ export class FullTextSearchJobs {
           this.fail(job, changed ? "source_changed" : "source_unavailable", changed ? "superseded" : "incomplete");
           return;
         }
-        const facts = result.matches.map(({ snippet: _snippet, ...match }) => ({ ...match, source_version_id: prepared.get(match.conversation_id)!.version }));
+        const facts = result.matches.map(({ snippet: _snippet, ...match }) => ({ ...match, source_version_id: prepared.get(match.conversation_id)!.version, source_block_count: prepared.get(match.conversation_id)!.blockCount!, source_model: prepared.get(match.conversation_id)!.model ?? null }));
         job.matches.push(...facts);
         job.bytes += Buffer.byteLength(JSON.stringify(facts));
       }
@@ -419,7 +451,7 @@ export class FullTextSearchJobs {
       this.publish(job);
       await yieldTurn();
     }
-    if (!(await this.validate(job)))
+    if (!(await this.validate(job, new Set())))
       return;
     job.metrics.scan_ms = performance.now() - scanningStarted;
     job.complete = true;

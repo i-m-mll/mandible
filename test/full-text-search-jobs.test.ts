@@ -311,11 +311,66 @@ it("pins route ordering after readiness repair rather than before it", async () 
   expect(result.status).toBe(200);
   expect(result.body).toMatchObject({ total: 2, conversations: [{ id: "a" }, { id: "b" }] });
 });
+it("captures a new snapshot when no ID is supplied after an undisplayed source changes", async () => {
+  await conversation("a");
+  const hidden = await conversation("b");
+  const router = new Router();
+  registerConversationRoutes(router, inlineLedgerReader());
+  const url = "/api/conversations?search=needle&full_text=true&limit=1";
+  const first = await finish(router, url);
+  expect(first.status).toBe(200);
+  const id = (first.body as {
+    search_id: string;
+  }).search_id;
+  fs.writeFileSync(hidden, "unobserved replacement");
+  const pinned = await finish(router, `${url}&search_id=${id}`);
+  expect(pinned.status).toBe(200);
+  expect(pinned.body).toMatchObject({ total: 2, conversations: [{ id: "a" }] });
+  const refreshed = await finish(router, url);
+  expect(refreshed.status).toBe(409);
+  expect((refreshed.body as {
+    search_id: string;
+  }).search_id).not.toBe(id);
+  expect(refreshed.body).not.toHaveProperty("total");
+});
+it("keeps frozen filter and sort fields when live display metadata changes", async () => {
+  await conversation("a");
+  await conversation("b");
+  const router = new Router();
+  registerConversationRoutes(router, inlineLedgerReader());
+  const url = "/api/conversations?search=needle&full_text=true&sort=title&order=asc&starred=false";
+  const first = await finish(router, url);
+  expect(first.status).toBe(200);
+  const id = (first.body as {
+    search_id: string;
+  }).search_id;
+  db.prepare("UPDATE conversations SET title='z',starred=1 WHERE id='a'").run();
+  const pinned = await finish(router, `${url}&search_id=${id}`);
+  expect(pinned.status).toBe(200);
+  expect(pinned.body).toMatchObject({ total: 2, conversations: [{ id: "a", title: "a", starred: false }, { id: "b", title: "b" }] });
+  const fresh = await finish(router, url);
+  expect(fresh.status).toBe(200);
+  expect(fresh.body).toMatchObject({ total: 1, conversations: [{ id: "b" }] });
+});
+it("invalidates an undisplayed source when canonical alias availability changes", async () => {
+  await conversation("a");
+  await conversation("b");
+  const router = new Router();
+  registerConversationRoutes(router, inlineLedgerReader());
+  const url = "/api/conversations?search=needle&full_text=true&limit=1";
+  const first = await finish(router, url);
+  expect(first.status).toBe(200);
+  const id = (first.body as {
+    search_id: string;
+  }).search_id;
+  db.prepare("UPDATE conversation_source_aliases SET availability='missing' WHERE source_id IN (SELECT id FROM conversation_sources WHERE conversation_id='b')").run();
+  const invalid = await finish(router, `${url}&search_id=${id}`);
+  expect(invalid.status).toBe(409);
+  expect(invalid.body).toMatchObject({ state: "superseded" });
+  expect(invalid.body).not.toHaveProperty("total");
+});
 
-it("captures a new snapshot when no ID is supplied after an undisplayed source changes",async()=>{
-  await conversation("a");const hidden=await conversation("b");const router=new Router();registerConversationRoutes(router,inlineLedgerReader());
-  const url="/api/conversations?search=needle&full_text=true&limit=1";const first=await finish(router,url);expect(first.status).toBe(200);const id=(first.body as {search_id:string}).search_id;
-  fs.writeFileSync(hidden,"unobserved replacement");
-  const pinned=await finish(router,`${url}&search_id=${id}`);expect(pinned.status).toBe(200);expect(pinned.body).toMatchObject({total:2,conversations:[{id:"a"}]});
-  const refreshed=await finish(router,url);expect(refreshed.status).toBe(409);expect((refreshed.body as {search_id:string}).search_id).not.toBe(id);expect(refreshed.body).not.toHaveProperty("total");
+it("preserves group-mode child navigation counts in the full-text projection",async()=>{
+  await conversation("a");await conversation("b");db.prepare("UPDATE conversations SET parent_conversation_id='a' WHERE id='b'").run();
+  const router=new Router();registerConversationRoutes(router,inlineLedgerReader());const result=await finish(router,"/api/conversations?search=needle&full_text=true&group=true");expect(result.status).toBe(200);expect(result.body).toMatchObject({total:1,conversations:[{id:"a",children_count:1}]});
 });

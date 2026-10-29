@@ -7,10 +7,11 @@ import { createHash } from "node:crypto";
 import { zstdCompressSync } from "node:zlib";
 import SqliteDatabase from "../src/sqlite.ts";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { getConversationSearchCache } from "../src/conversations/search-cache.js";
+import { ConversationSourceReader } from "../src/conversations/source-reader.js";
 import { ConversationSourceStore } from "../src/conversations/source-store.js";
 import { sparseConversationBlockId } from "../src/conversations/structure-cache.js";
 import { configureIngestionWorker, ingestBatchForWorker, stopIngestionGracefully } from "../src/ingestion.js";
@@ -196,7 +197,112 @@ async function insertSourceBackedConversation(
   return parsed;
 }
 
+async function appendFixturePair(needleA: string, needleB: string) {
+  const paths = new Map<string, string>();
+  for (const [id, text] of [["append-a", needleA], ["append-b", needleB]]) {
+    const file = path.join(tempDir, `.codex/sessions/2026/08/18/${id}.jsonl`);
+    paths.set(id, file);
+    await insertSourceBackedConversation(id, file, [
+      { type: "session_meta", timestamp: "2026-08-18T00:00:00Z", payload: { id, cwd: "/tmp/project" } },
+      { type: "turn_context", timestamp: "2026-08-18T00:00:00Z", payload: { model: "old-model" } },
+      { type: "response_item", timestamp: "2026-08-18T00:00:01Z", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text }] } },
+    ]);
+  }
+  return paths;
+}
+async function publishAppend(file: string, rewrite = false) {
+  if (rewrite)
+    fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace("oldbody", "newbody"));
+  fs.appendFileSync(file, [
+    { type: "turn_context", timestamp: "2026-08-18T00:00:02Z", payload: { model: "new-model" } },
+    { type: "response_item", timestamp: "2026-08-18T00:00:03Z", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "tailneedle" }] } },
+  ].map(row => JSON.stringify(row)).join("\n") + "\n");
+  configureIngestionWorker(() => { }, () => { });
+  await ingestBatchForWorker([file], true, true, true);
+  await stopIngestionGracefully();
+}
 describe("conversation full-text API parity", () => {
+  it.each(["before-scan", "after-negative", "rewrite-after-negative"])("keeps admitted coverage across canonical publication: %s", async (boundary) => {
+    const paths = await appendFixturePair("oldbody A", "tailneedle old B");
+    const store = new ConversationSourceStore(db);
+    const old = store.resolveConversation("append-a")!.currentVersionId;
+    const cache = getConversationSearchCache(db);
+    const search = cache.search.bind(cache);
+    let aDone!: () => void;
+    const aFinished = new Promise<void>(resolve => { aDone = resolve; });
+    let published = false;
+    const publish = async () => { if (published)
+      return; published = true; await publishAppend(paths.get("append-a")!, boundary === "rewrite-after-negative"); expect(store.resolveConversation("append-a")!.currentVersionId).not.toBe(old); };
+    const scan = vi.spyOn(cache, "search").mockImplementation(async (input) => {
+      const id = input.conversationIds[0];
+      if (id === "append-a") {
+        if (boundary === "before-scan")
+          await publish();
+        try { return await search(input); }
+        finally { aDone(); }
+      }
+      if (id === "append-b" && boundary !== "before-scan") {
+        await aFinished;
+        await publish();
+      }
+      return search(input);
+    });
+    const router = new Router();
+    registerConversationRoutes(router, inlineLedgerReader());
+    try {
+      const result = await settled(router, { method: "GET", url: "/api/conversations?search=tailneedle&full_text=true&since=2026-08-18" });
+      if (boundary === "rewrite-after-negative") {
+        expect(result.status).toBe(409);
+        expect(result.body).not.toHaveProperty("total");
+      }
+      else {
+        expect(result.status).toBe(200);
+        expect(result.body).toMatchObject({ total: 1, conversations: [{ id: "append-b" }] });
+        scan.mockRestore();
+        const fresh = await settled(router, { method: "GET", url: "/api/conversations?search=tailneedle&full_text=true&since=2026-08-18" });
+        expect(fresh.status).toBe(200);
+        expect(fresh.body).toMatchObject({ total: 2 });
+      }
+    }
+    finally {
+      scan.mockRestore();
+    }
+  });
+  it("hydrates an existing dedicated snapshot with admitted version and normalization context after published append", async () => {
+    const paths = await appendFixturePair("oldneedle A", "oldneedle B");
+    const old = new ConversationSourceStore(db).resolveConversation("append-a")!.currentVersionId;
+    const admittedBlock=await new ConversationSourceReader(db).readBlock(sparseConversationBlockId("append-a",0));
+    expect(admittedBlock.status).toBe("source");
+    if(admittedBlock.status!=="source")throw new Error("native append fixture has no source block");
+    expect(admittedBlock.sourceVersionId).toBe(old);
+    const cache = getConversationSearchCache(db);
+    const search = cache.search.bind(cache);
+    let appended = false;
+    const scan = vi.spyOn(cache, "search").mockImplementation(async (input) => { if (input.conversationIds[0] === "append-a" && !appended) {
+      appended = true;
+      await publishAppend(paths.get("append-a")!);
+    } return search(input); });
+    const router = new Router();
+    registerConversationRoutes(router, inlineLedgerReader());
+    try {
+      const url = "/api/conversations/search?q=oldneedle&since=2026-08-18&limit=1";
+      const first = await settled(router, { method: "GET", url });
+      expect(first.status).toBe(200);
+      scan.mockRestore();
+      const id = (first.body as {
+        search_id: string;
+      }).search_id;
+      const page = await settled(router, { method: "GET", url: `${url}&search_id=${id}` });
+      expect(page.status).toBe(200);
+      expect(page.body).toMatchObject({ total: 2, results: [{ conversation: { id: "append-a", model: "old-model" }, block: { position: 0, timestamp: "2026-08-18T00:00:01Z", locator:null } }] });
+      expect((page.body as {results:Array<{block:unknown}>}).results[0].block).toEqual({...admittedBlock.value,content:""});
+      expect(new ConversationSourceStore(db).resolveConversation("append-a")!.currentVersionId).not.toBe(old);
+    }
+    finally {
+      scan.mockRestore();
+    }
+  });
+
   it("keeps compressed source matches, exact totals and cursor pages identical cold and warm", async () => {
     const paths = new Map<string, string>();
     for (const id of ["compressed", "transition", "raw"]) {

@@ -11,6 +11,16 @@ import { projectConversationExternalNavigation } from "../conversation-external-
 import { mapConversation, mapSearchConversation, mapSidebarConversation } from "../conversations/response-mapping.js";
 import { parseSinceQuery, sourceFromQuery, blockTypeFromRole } from "../conversations/search-query.js";
 import { conversationSidebarCandidates, hydrateSidebarConversations, conversationSearchCandidates, conversationSearchRows, type ProjectedConversationRow, type ConversationRow } from "./conversations.js";
+const FROZEN_SEARCH_FIELDS = ["id", "source", "starred", "tags", "block_count", "session_id", "started_at", "ended_at", "branch", "model", "parent_conversation_id", "project_path", "cwd", "title", "created_at", "updated_at"] as const;
+type FrozenSearchMetadata = Pick<ConversationRow, typeof FROZEN_SEARCH_FIELDS[number]>&Pick<ConversationRow,"children_count">;
+const frozenSearchSelect = FROZEN_SEARCH_FIELDS.map(field => `c.${field}`).join(",");
+function listSelect(groupMode:boolean,fields="c.*"):string {
+  return groupMode?`${fields},(SELECT COUNT(*) FROM conversations ch WHERE ${childrenOfConversationSql("ch","c.id")}) AS children_count`:fields;
+}
+function frozenSearchMetadata(db: Db, ids: readonly string[]): Map<string, FrozenSearchMetadata> {
+  const rows = db.prepare(`SELECT ${frozenSearchSelect} FROM conversations c WHERE c.id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(ids)) as FrozenSearchMetadata[];
+  return new Map(rows.map(row => [row.id, row]));
+}
 function response(status: number, body: unknown) {
   return { status, json: JSON.stringify(body) };
 }
@@ -134,8 +144,9 @@ export async function conversationSearch(db: Db, input: {
   }
   return getFullTextSearchJobs(db).request("conversation_search", query, () => {
     const candidates = readSnapshot(db, () => conversationSearchCandidates(db, { source, since, titleOnly: false, needle, limit }));
+    const frozen = frozenSearchMetadata(db, candidates.ids);
     return {
-      ids: candidates.ids, needle, blockType, metadataBytes: Buffer.byteLength(JSON.stringify(candidates.ids)),
+      ids: candidates.ids, needle, blockType, metadataBytes: Buffer.byteLength(JSON.stringify([...frozen.values()])),
       async render(matches, pageQuery) {
         const pageLimit = Math.min(100, Math.max(1, parseInt(pageQuery.limit || "20", 10) || 20));
         const offset = Math.max(0, parseInt(pageQuery.offset || "0", 10) || 0);
@@ -145,13 +156,13 @@ export async function conversationSearch(db: Db, input: {
         const reader = new ConversationSourceReader(db);
         for (const match of selected) {
           const conversation = rows.get(match.conversation_id);
-          const read = await reader.readBlock(match.block_id);
+          const read = await reader.readBlock(match.block_id, { expectedSourceVersionId: match.source_version_id, expectedBlockCount: match.source_block_count, expectedModel: match.source_model });
           if (!conversation || read.status !== "source" || read.sourceVersionId !== match.source_version_id)
             throw new SearchSnapshotProjectionError("source_changed");
           const snippet = snippetFor(maskUnverifiedCandidates(read.value.content).text, needle);
           if (snippet === null)
             throw new SearchSnapshotProjectionError("source_changed");
-          results.push({ conversation: mapSearchConversation(conversation), block: { ...read.value, content: "" }, snippet });
+          results.push({ conversation: mapSearchConversation({ ...conversation, ...frozen.get(match.conversation_id) }), block: { ...read.value, content: "" }, snippet });
         }
         return { results, total: matches.length, limit: pageLimit };
       },
@@ -239,10 +250,9 @@ function listQuery(db: Db, input: {
 function prepareListSearch(db: Db, input: {
   query: SearchQuery;
 }): SearchPlan {
-  const { where, params, safeSortField, sortOrder, searchNeedle } = listQuery(db, input);
-  const rows = db.prepare(`SELECT c.id FROM conversations c ${where} ORDER BY c.${safeSortField} ${sortOrder}, c.id`).all(...params) as Array<{
-    id: string;
-  }>;
+  const { where, params, safeSortField, sortOrder, searchNeedle,groupMode } = listQuery(db, input);
+  const rows = db.prepare(`SELECT ${listSelect(groupMode,frozenSearchSelect)} FROM conversations c ${where} ORDER BY c.${safeSortField} ${sortOrder}, c.id`).all(...params) as FrozenSearchMetadata[];
+  const frozen = new Map(rows.map(row => [row.id, row]));
   return {
     ids: rows.map(row => row.id), needle: searchNeedle, metadataBytes: Buffer.byteLength(JSON.stringify(rows)),
     render(matches, pageQuery) {
@@ -256,7 +266,7 @@ function prepareListSearch(db: Db, input: {
       const conversations = pageIds.map(id => hydrated.get(id)).filter((row): row is ProjectedConversationRow => Boolean(row));
       if (conversations.length !== pageIds.length)
         throw new Error("Snapshot conversation unavailable");
-      return { conversations: conversations.map(mapSearchConversation), total: ids.length, page, limit, pages: Math.ceil(ids.length / limit) };
+      return { conversations: conversations.map(row => mapSearchConversation({ ...row, ...frozen.get(row.id) })), total: ids.length, page, limit, pages: Math.ceil(ids.length / limit) };
     },
   };
 }
@@ -280,9 +290,7 @@ export async function conversationList(db: Db, input: {
       total: number;
     };
     // Fetch page — include children_count via subquery when grouping
-    const selectCols = groupMode
-      ? `c.*, (SELECT COUNT(*) FROM conversations ch WHERE ${childrenOfConversationSql("ch", "c.id")}) AS children_count`
-      : `c.*`;
+    const selectCols=listSelect(groupMode);
     const rows = db
       .prepare(`SELECT ${selectCols} FROM conversations c ${where} ORDER BY c.${safeSortField} ${sortOrder} LIMIT ? OFFSET ?`)
       .all(...params, limit, offset) as ConversationRow[];

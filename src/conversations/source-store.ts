@@ -315,20 +315,7 @@ function sameJson(left: string, right: string): boolean {
   }
 }
 
-export class ConversationSourceStore {
-  constructor(private readonly db: Db) {}
-
-  resolveConversation(conversationId: string): ConversationSourceDescriptor | null {
-    const row = this.db.prepare(`
-      SELECT id, conversation_id, provider, native_session_id, availability,
-             custody_state, current_version_id, unavailable_reason,
-             parser_format, parser_version, normalization_version, redaction_epoch
-        FROM conversation_sources
-       WHERE conversation_id = ?
-       ORDER BY updated_at DESC, id
-       LIMIT 1
-    `).get(conversationId) as Record<string, unknown> | undefined;
-    if (!row) return null;
+function sourceDescriptor(row:Record<string,unknown>):ConversationSourceDescriptor {
     return {
       sourceId: String(row.id),
       conversationId: String(row.conversation_id),
@@ -343,59 +330,9 @@ export class ConversationSourceStore {
       normalizationVersion: String(row.normalization_version),
       redactionEpoch: Number(row.redaction_epoch),
     };
-  }
+}
 
-  /** The source `resolveConversation` would pick, for many conversations in one statement. */
-  latestSources(conversationIds: readonly string[]): Map<string, { sourceId: string; currentVersionId: string | null }> {
-    const latest = new Map<string, { sourceId: string; currentVersionId: string | null }>();
-    if (conversationIds.length === 0) return latest;
-    const rows = this.db.prepare(`
-      SELECT s.conversation_id, s.id, s.current_version_id
-        FROM json_each(?) ids
-        JOIN conversation_sources s ON s.conversation_id = ids.value
-       ORDER BY s.conversation_id, s.updated_at DESC, s.id
-    `).all(JSON.stringify([...new Set(conversationIds)])) as Array<{
-      conversation_id: string; id: string; current_version_id: string | null;
-    }>;
-    for (const row of rows) {
-      if (latest.has(row.conversation_id)) continue;
-      latest.set(row.conversation_id, { sourceId: row.id, currentVersionId: row.current_version_id });
-    }
-    return latest;
-  }
-
-  /** Canonical generation facts for immutable search snapshots; contains no transcript bytes. */
-  searchSnapshotGenerations(conversationIds: readonly string[]): Map<string, string> {
-    const latest = this.latestSources(conversationIds);
-    if (latest.size === 0) return new Map();
-    const rows = this.db.prepare(`
-      SELECT s.id, s.current_version_id, s.availability,
-             s.parser_format, s.parser_version, s.normalization_version, s.redaction_epoch,
-             v.availability AS version_availability, v.generation,
-             v.parser_format AS version_parser_format, v.parser_version AS version_parser_version,
-             v.normalization_version AS version_normalization_version, v.redaction_epoch AS version_redaction_epoch,
-             v.content_sha256, v.byte_length, v.filesystem_device, v.filesystem_inode, v.filesystem_ctime_ns
-        FROM conversation_sources s
-        LEFT JOIN conversation_source_versions v ON v.id = s.current_version_id
-       WHERE s.id IN (SELECT value FROM json_each(?))
-    `).all(JSON.stringify([...latest.values()].map(source => source.sourceId))) as Array<Record<string, unknown> & {id:string}>;
-    const facts = new Map(rows.map(row => [row.id, JSON.stringify(row)]));
-    return new Map([...latest].flatMap(([id, source]) => {
-      const fact = facts.get(source.sourceId);
-      return fact ? [[id, fact] as const] : [];
-    }));
-  }
-
-  resolveVersion(versionId: string): ConversationSourceVersion | null {
-    const row = this.db.prepare(`
-      SELECT id, source_id, content_sha256, byte_length, file_mtime_ms,
-             filesystem_device, filesystem_inode, filesystem_ctime_ns,
-             availability, custody_state, generation, parser_format,
-             parser_version, normalization_version, redaction_epoch
-        FROM conversation_source_versions
-       WHERE id = ?
-    `).get(versionId) as Record<string, unknown> | undefined;
-    if (!row) return null;
+function sourceVersion(row:Record<string,unknown>):ConversationSourceVersion {
     return {
       id: String(row.id),
       sourceId: String(row.source_id),
@@ -413,15 +350,10 @@ export class ConversationSourceStore {
       normalizationVersion: String(row.normalization_version),
       redactionEpoch: Number(row.redaction_epoch),
     };
-  }
+}
 
-  listAliases(sourceId: string): ConversationSourceAlias[] {
-    return (this.db.prepare(`
-      SELECT id, source_id, root_kind, root_path, relative_path, path, alias_kind, availability
-        FROM conversation_source_aliases
-       WHERE source_id = ?
-       ORDER BY CASE availability WHEN 'available' THEN 0 ELSE 1 END, last_seen_at DESC
-    `).all(sourceId) as Array<Record<string, unknown>>).map((row) => ({
+function sourceAlias(row:Record<string,unknown>):ConversationSourceAlias {
+  return {
       id: String(row.id),
       sourceId: String(row.source_id),
       rootKind: row.root_kind as ConversationSourceAlias["rootKind"],
@@ -430,7 +362,77 @@ export class ConversationSourceStore {
       path: String(row.path),
       aliasKind: row.alias_kind as ConversationSourceAlias["aliasKind"],
       availability: row.availability as ConversationSourceAlias["availability"],
-    }));
+    };
+}
+
+export class ConversationSourceStore {
+  constructor(private readonly db: Db) {}
+
+  resolveConversation(conversationId:string):ConversationSourceDescriptor|null {
+    return this.resolveConversations([conversationId]).get(conversationId)??null;
+  }
+
+  resolveConversations(conversationIds:readonly string[]):Map<string,ConversationSourceDescriptor> {
+    const result=new Map<string,ConversationSourceDescriptor>();
+    if(conversationIds.length===0)return result;
+    const rows=this.db.prepare(`SELECT id, conversation_id, provider, native_session_id, availability,
+             custody_state, current_version_id, unavailable_reason,
+             parser_format, parser_version, normalization_version, redaction_epoch FROM conversation_sources
+      WHERE conversation_id IN (SELECT value FROM json_each(?)) ORDER BY conversation_id,updated_at DESC,id
+    `).all(JSON.stringify(conversationIds)) as Array<Record<string,unknown>>;
+    for(const row of rows){const id=String(row.conversation_id);if(!result.has(id))result.set(id,sourceDescriptor(row));}
+    return result;
+  }
+
+  /** The source `resolveConversation` would pick, for many conversations in one statement. */
+  latestSources(conversationIds:readonly string[]):Map<string,{sourceId:string;currentVersionId:string|null}> {
+    return new Map([...this.resolveConversations(conversationIds)].map(([id,source])=>[id,{sourceId:source.sourceId,currentVersionId:source.currentVersionId}]));
+  }
+
+  /** Canonical identity, availability and epochs plus the immutable admitted version facts. */
+  searchSnapshotAuthorities(conversationIds:readonly string[],pinnedVersions?:ReadonlyMap<string,string>):Map<string,string> {
+    const latest=this.latestSources(conversationIds);
+    if(latest.size===0)return new Map();
+    const sourceFields=["id","provider","native_session_id","availability","parser_format","parser_version","normalization_version","redaction_epoch"];
+    const versionFields=["id","source_id","availability","generation","parser_format","parser_version","normalization_version","redaction_epoch","content_sha256","byte_length","filesystem_device","filesystem_inode","filesystem_ctime_ns"];
+    const currentFields=["source_id","availability","generation","parser_format","parser_version","normalization_version","redaction_epoch"];
+    const selected=[...latest].map(([id,source])=>({source_id:source.sourceId,version_id:pinnedVersions?.get(id)||source.currentVersionId}));
+    const columns=[...sourceFields.map(field=>`s.${field} AS source_${field}`),...versionFields.map(field=>`p.${field} AS pinned_${field}`),...currentFields.map(field=>`c.${field} AS current_${field}`)].join(",");
+    const rows=this.db.prepare(`SELECT ${columns} FROM json_each(?) pin
+      JOIN conversation_sources s ON s.id=json_extract(pin.value,'$.source_id')
+      LEFT JOIN conversation_source_versions p ON p.id=json_extract(pin.value,'$.version_id') AND p.source_id=s.id
+      LEFT JOIN conversation_source_versions c ON c.id=s.current_version_id AND c.source_id=s.id
+    `).all(JSON.stringify(selected)) as Array<Record<string,unknown>&{source_id:string}>;
+    const bySource=new Map(rows.map(row=>[row.source_id,JSON.stringify(row)]));
+    return new Map([...latest].flatMap(([id,source])=>{const authority=bySource.get(source.sourceId);return authority?[[id,authority] as const]:[];}));
+  }
+
+  resolveVersion(versionId:string):ConversationSourceVersion|null {
+    return this.resolveVersions([versionId]).get(versionId)??null;
+  }
+
+  resolveVersions(versionIds:readonly string[]):Map<string,ConversationSourceVersion> {
+    if(versionIds.length===0)return new Map();
+    const rows=this.db.prepare(`SELECT id, source_id, content_sha256, byte_length, file_mtime_ms,
+             filesystem_device, filesystem_inode, filesystem_ctime_ns,
+             availability, custody_state, generation, parser_format,
+             parser_version, normalization_version, redaction_epoch FROM conversation_source_versions WHERE id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(versionIds)) as Array<Record<string,unknown>>;
+    return new Map(rows.map(row=>[String(row.id),sourceVersion(row)]));
+  }
+
+  listAliases(sourceId:string):ConversationSourceAlias[] {
+    return this.listAliasesForSources([sourceId]).get(sourceId)??[];
+  }
+
+  listAliasesForSources(sourceIds:readonly string[]):Map<string,ConversationSourceAlias[]> {
+    const result=new Map<string,ConversationSourceAlias[]>();
+    if(sourceIds.length===0)return result;
+    const rows=this.db.prepare(`SELECT id,source_id,root_kind,root_path,relative_path,path,alias_kind,availability
+      FROM conversation_source_aliases WHERE source_id IN (SELECT value FROM json_each(?))
+      ORDER BY source_id,CASE availability WHEN 'available' THEN 0 ELSE 1 END,last_seen_at DESC
+    `).all(JSON.stringify(sourceIds)) as Array<Record<string,unknown>>;
+    for(const row of rows){const alias=sourceAlias(row);const existing=result.get(alias.sourceId);if(existing)existing.push(alias);else result.set(alias.sourceId,[alias]);}
+    return result;
   }
 
   /** Paths of each source's aliases marked available, keyed by source id. */
