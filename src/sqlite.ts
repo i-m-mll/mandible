@@ -107,7 +107,7 @@ type Transaction<Args extends any[], Value> = ((...args: Args) => Value) & {
   exclusive(...args: Args): Value;
 };
 export interface SqliteOpenOptions { readonly?: boolean; fileMustExist?: boolean; timeout?: number }
-configureSqliteRuntime(DatabaseSync);
+let runtimeConfigured = false;
 
 export default class SqliteDatabase {
   private readonly native: NativeDatabase;
@@ -121,6 +121,10 @@ export default class SqliteDatabase {
     if (options.fileMustExist && !fs.existsSync(filename)) throw new Error(`Database does not exist: ${filename}`);
     this.name = filename;
     this.readonly = options.readonly ?? false;
+    if (!runtimeConfigured) {
+      configureSqliteRuntime(DatabaseSync);
+      runtimeConfigured = true;
+    }
     this.native = sqliteCall(() => new DatabaseSync(filename, { readOnly: this.readonly, enableForeignKeyConstraints: true, allowExtension: false })) as unknown as NativeDatabase;
     try { this.exec(`PRAGMA busy_timeout = ${options.timeout ?? 5000}`); }
     catch (error) { this.native.close(); throw error; }
@@ -213,7 +217,8 @@ export default class SqliteDatabase {
     return new Promise((resolve, reject) => {
       const directory = fs.mkdtempSync(path.join(path.dirname(path.resolve(destination)), ".mandible-snapshot-"));
       const staging = path.join(directory, "snapshot.db");
-      const source = `import ${JSON.stringify(import.meta.url)}; import {DatabaseSync,backup} from "node:sqlite"; const db=new DatabaseSync(process.argv[1],{readOnly:true}); try {await backup(db,process.argv[2]);} finally {db.close();} const snapshot=new DatabaseSync(process.argv[2]); try {snapshot.exec("PRAGMA journal_mode=DELETE");} finally {snapshot.close();}`;
+      const runtimeUrl = new URL(import.meta.url.endsWith(".ts") ? "./sqlite-runtime.ts" : "./sqlite-runtime.js", import.meta.url).href;
+      const source = `import {configureSqliteRuntime} from ${JSON.stringify(runtimeUrl)}; import {DatabaseSync,backup} from "node:sqlite"; configureSqliteRuntime(DatabaseSync); const db=new DatabaseSync(process.argv[1],{readOnly:true}); try {await backup(db,process.argv[2]);} finally {db.close();} const snapshot=new DatabaseSync(process.argv[2]); try {snapshot.exec("PRAGMA journal_mode=DELETE");} finally {snapshot.close();}`;
       let child: ReturnType<typeof spawn>;
       try {
         child = spawn(process.execPath, ["--no-install", "--eval", source, this.name, staging], { stdio: ["ignore", "ignore", "pipe"], signal: options.signal });

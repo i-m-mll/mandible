@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import SqliteDatabase, { SqliteError } from "../src/sqlite.ts";
 import { openReadOnlyLedger, runReadOnlyQuery } from "../src/db-read.ts";
 
@@ -11,6 +12,26 @@ function temporaryDatabase(run: (filename: string) => void | Promise<void>) {
 }
 
 describe("Bun SQLite boundary", () => {
+  it("selects SQLite on first use, retries failed initialization, and keeps the selected library", async () => temporaryDatabase(filename => {
+    const facade = new URL("../src/sqlite.ts", import.meta.url).href;
+    const result = spawnSync(process.execPath, ["--no-install", "--eval", `
+      import fs from "node:fs";
+      const { default: Database } = await import(${JSON.stringify(facade)});
+      const filename = process.argv[1];
+      try { new Database(filename); throw new Error("invalid runtime accepted"); }
+      catch (error) { if (!String(error).includes("Pinned SQLite library is missing or corrupt")) throw error; }
+      if (fs.existsSync(filename)) throw new Error("failed initialization created the database");
+      const original = ${JSON.stringify(process.env.MANDIBLE_SQLITE_LIBRARY ?? null)};
+      if (original) process.env.MANDIBLE_SQLITE_LIBRARY = original; else delete process.env.MANDIBLE_SQLITE_LIBRARY;
+      const first = new Database(filename); first.exec("CREATE TABLE item(value INTEGER); INSERT INTO item VALUES(42)"); first.close();
+      process.env.MANDIBLE_SQLITE_LIBRARY = "/wrong/sqlite";
+      const next = new Database(filename);
+      if (next.prepare("SELECT value FROM item").get().value !== 42) throw new Error("selected runtime changed");
+      next.close();
+    `, filename], { encoding: "utf8", timeout: 5000, env: { ...process.env, MANDIBLE_SQLITE_LIBRARY: "/wrong/sqlite" } });
+    expect(result.status, result.stderr).toBe(0);
+  }));
+
   it("publishes only committed nested effects and keeps notification errors outside rollback", () => {
     const db = new SqliteDatabase();
     const published: string[] = [];
