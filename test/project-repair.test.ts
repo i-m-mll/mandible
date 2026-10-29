@@ -18,6 +18,8 @@ import { createManagedReminder } from "../src/managed-reminders.js";
 import { parseManagedReminderCreateRequest } from "../src/managed-reminder-parser.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 import * as sse from "../src/sse.js";
+import * as childObservation from "../src/child-observation.js";
+import { HANDLER_TURN_BUDGET_MS } from "../src/runtime-health-contract.js";
 
 let db: Db;
 let root: string;
@@ -43,19 +45,19 @@ function snapshot() {
     .map(({ name }) => [name, db.prepare(`SELECT * FROM "${name}"`).all().sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))]);
 }
 
-it.each(["CASCADE", "SET NULL"])("blocks even an empty unclassified differently named %s FK", action => {
+it.each(["CASCADE", "SET NULL"])("blocks even an empty unclassified differently named %s FK", async action => {
   const { merge } = pair();
   expect(projectReferenceCoverage(db)).toEqual([]);
   expect(discoverProjectReferences(db)).toContainEqual({ table: "permission_grants", column: "resource_id" });
   db.exec(`CREATE TABLE future_scope(id TEXT PRIMARY KEY, owner_namespace TEXT REFERENCES ledger_projects(id) ON DELETE ${action})`);
   const before = snapshot();
-  const plan = ok(repairRegistry(db, { merge }));
+  const plan = ok(await repairRegistry(db, { merge }));
   expect(plan.merge!.conflicts).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "schema_coverage", value: expect.stringContaining("future_scope.owner_namespace") })]));
-  expect(repairRegistry(db, { merge, apply: true })).toMatchObject({ ok: false, error: { code: "merge_conflict" } });
+  expect(await repairRegistry(db, { merge, apply: true })).toMatchObject({ ok: false, error: { code: "merge_conflict" } });
   expect(snapshot()).toEqual(before);
 });
 
-it("unions explicit grants without changing revocation or approval authority", () => {
+it("unions explicit grants without changing revocation or approval authority", async () => {
   const { source, target, merge } = pair();
   const user = createUser(db, { slug: "grantee", kind: "agent", display_name: "Agent" });
   const group = addGroup(db, { slug: "team" });
@@ -71,11 +73,11 @@ it("unions explicit grants without changing revocation or approval authority", (
   const groupGrant = grant(source.id, "write", "group");
   const global = addGrant(db, { subject_type: "user", subject: user.id, resource_type: "global", permission: "spawn_console" });
   const before = snapshot();
-  const plan = ok(repairRegistry(db, { merge }));
+  const plan = ok(await repairRegistry(db, { merge }));
   expect(plan.merge!.grant_coalescences).toEqual([{ source_id: duplicate.id, survivor_id: survivor.id }]);
   expect(plan.merge!.moves).toContainEqual(expect.objectContaining({ key: "permission_grants.resource_id", rows: 3 }));
   expect(snapshot()).toEqual(before);
-  ok(withLedgerMutationActor({ attribution: { user_id: user.id, evidence_method: "api_token" } }, () => repairRegistry(db, { merge, apply: true })));
+  ok(await withLedgerMutationActor({ attribution: { user_id: user.id, evidence_method: "api_token" } }, () => repairRegistry(db, { merge, apply: true })));
   expect(db.prepare("SELECT * FROM permission_grants ORDER BY id").all()).toEqual([
     survivor, { ...stronger, resource_id: target.id }, { ...groupGrant, resource_id: target.id }, global,
   ].sort((a, b) => a.id.localeCompare(b.id)));
@@ -91,7 +93,7 @@ it("unions explicit grants without changing revocation or approval authority", (
   expect(JSON.parse(event.payload_json as string)).toMatchObject({ survivor_id: survivor.id });
 });
 
-it("ignores an unrelated existing orphan while keeping enforcement enabled", () => {
+it("ignores an unrelated existing orphan while keeping enforcement enabled", async () => {
   const { merge } = pair();
   db.pragma("foreign_keys=OFF");
   db.prepare("INSERT INTO spaces(id, title, project_id, created_at, updated_at) VALUES ('orphan','orphan','missing',1,1)").run();
@@ -99,13 +101,13 @@ it("ignores an unrelated existing orphan while keeping enforcement enabled", () 
   const orphan = db.prepare("SELECT * FROM spaces WHERE id='orphan'").get();
   const violations = db.prepare("PRAGMA foreign_key_check").all();
   expect(violations).toHaveLength(1);
-  ok(repairRegistry(db, { merge, apply: true }));
+  ok(await repairRegistry(db, { merge, apply: true }));
   expect(db.prepare("SELECT * FROM spaces WHERE id='orphan'").get()).toEqual(orphan);
   expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual(violations);
   expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
 });
 
-it("rolls back keys, grants, checkout history, both feeds, and notifications after a late invalid FK write", () => {
+it("rolls back keys, grants, checkout history, both feeds, and notifications after a late invalid FK write", async () => {
   const { source, target, merge } = pair();
   const checkout = addOrUpdateCheckout(db, source.id, { root: path.join(root, "source"), work_repo_id: "repair-source", default_branch: "main" });
   issue(source.id, "Source"); issue(target.id, "Destination");
@@ -117,36 +119,36 @@ it("rolls back keys, grants, checkout history, both feeds, and notifications aft
   const publish = vi.spyOn(sse, "broadcast");
   const protection = vi.fn(); const dispose = onProtectionInputsChanged(protection);
   try {
-    const result = repairRegistry(db, { merge, apply: true });
+    const result = (await repairRegistry(db, { merge, apply: true }));
     expect(result).toMatchObject({ ok: false, error: { code: "constraint" } });
     expect(snapshot()).toEqual(before);
     expect(publish).not.toHaveBeenCalled(); expect(protection).not.toHaveBeenCalled();
     db.exec("DROP TRIGGER fail_project_delete");
-    const report = ok(repairRegistry(db, { merge, apply: true }));
+    const report = ok(await repairRegistry(db, { merge, apply: true }));
     expect(report.key_backfills).toHaveLength(1);
     expect(protection).toHaveBeenCalledTimes(1);
     expect(resolveProjectRef(db, checkout.checkout.root)).toMatchObject({ ok: true, project: { id: target.id }, checkout: { id: checkout.checkout.id } });
   } finally { dispose(); }
 });
 
-it("refuses disabled FK enforcement and malformed/same/unknown project references without backfilling", () => {
+it("refuses disabled FK enforcement and malformed/same/unknown project references without backfilling", async () => {
   const { source, merge } = pair();
   db.prepare("UPDATE ledger_projects SET project_key='' WHERE id=?").run(source.id);
   const before = snapshot();
   db.pragma("foreign_keys=OFF");
-  expect(repairRegistry(db, { merge, apply: true })).toMatchObject({ ok: false, error: { code: "foreign_keys_disabled" } });
+  expect(await repairRegistry(db, { merge, apply: true })).toMatchObject({ ok: false, error: { code: "foreign_keys_disabled" } });
   db.pragma("foreign_keys=ON");
   for (const input of [{ merge: { source: source.id } }, { apply: "true" }, { force: true }]) {
-    expect(repairRegistry(db, input as never)).toMatchObject({ ok: false, error: { code: "invalid_request" } });
+    expect(await repairRegistry(db, input as never)).toMatchObject({ ok: false, error: { code: "invalid_request" } });
   }
-  expect(repairRegistry(db, { apply: true, merge: { source: source.id, target: source.id } })).toMatchObject({ ok: false, error: { code: "same_project" } });
-  expect(repairRegistry(db, { apply: true, merge: { source: source.id, target: "missing" } })).toMatchObject({ ok: false, error: { code: "not_found" } });
+  expect(await repairRegistry(db, { apply: true, merge: { source: source.id, target: source.id } })).toMatchObject({ ok: false, error: { code: "same_project" } });
+  expect(await repairRegistry(db, { apply: true, merge: { source: source.id, target: "missing" } })).toMatchObject({ ok: false, error: { code: "not_found" } });
   expect(snapshot()).toEqual(before);
-  expect(ok(repairRegistry(db)).key_backfills).toHaveLength(1);
+  expect(ok(await repairRegistry(db)).key_backfills).toHaveLength(1);
   expect(snapshot()).toEqual(before);
 });
 
-it.each(["alias", "association", "singleton", "restricted_policy"] as const)("reports %s collisions with no row loss", kind => {
+it.each(["alias", "association", "singleton", "restricted_policy"] as const)("reports %s collisions with no row loss", async kind => {
   const { source, target, merge } = pair();
   if (kind === "alias") {
     const sameIssue = issue(source.id, "Shared issue");
@@ -156,12 +158,12 @@ it.each(["alias", "association", "singleton", "restricted_policy"] as const)("re
   } else if (kind === "singleton") { issue(source.id, "Source maintenance", "maintenance"); issue(target.id, "Target maintenance", "maintenance"); }
   else setProjectRestricted(db, source.id, true);
   const before = snapshot();
-  expect(ok(repairRegistry(db, { merge })).merge!.conflicts).toContainEqual(expect.objectContaining({ kind }));
-  expect(repairRegistry(db, { merge, apply: true })).toMatchObject({ ok: false, error: { code: "merge_conflict" } });
+  expect(ok(await repairRegistry(db, { merge })).merge!.conflicts).toContainEqual(expect.objectContaining({ kind }));
+  expect(await repairRegistry(db, { merge, apply: true })).toMatchObject({ ok: false, error: { code: "merge_conflict" } });
   expect(snapshot()).toEqual(before);
 });
 
-it("preserves feed event identity and target order, appends the source stream, and blocks gaps", () => {
+it("preserves feed event identity and target order, appends the source stream, and blocks gaps", async () => {
   const { source, target, merge } = pair();
   issue(source.id, "Source 1"); issue(target.id, "Target 1"); issue(source.id, "Source 2");
   const rows = (id: string) => db.prepare("SELECT sequence,event_id FROM ledger_change_log WHERE project_id=? ORDER BY sequence").all(id) as {sequence:number;event_id:string}[];
@@ -169,16 +171,16 @@ it("preserves feed event identity and target order, appends the source stream, a
   const removed = src[1];
   db.prepare("DELETE FROM ledger_change_log WHERE project_id=? AND sequence=?").run(source.id, removed.sequence);
   const before = snapshot();
-  expect(ok(repairRegistry(db, { merge })).merge!.conflicts).toContainEqual(expect.objectContaining({ kind: "feed_continuity" }));
-  expect(repairRegistry(db, { merge, apply: true }).ok).toBe(false); expect(snapshot()).toEqual(before);
+  expect(ok(await repairRegistry(db, { merge })).merge!.conflicts).toContainEqual(expect.objectContaining({ kind: "feed_continuity" }));
+  expect((await repairRegistry(db, { merge, apply: true })).ok).toBe(false); expect(snapshot()).toEqual(before);
   db.prepare("INSERT INTO ledger_change_log(project_id,sequence,event_id,recorded_at) VALUES (?,?,?,1)").run(source.id, removed.sequence, removed.event_id);
-  ok(repairRegistry(db, { merge, apply: true }));
+  ok(await repairRegistry(db, { merge, apply: true }));
   expect(rows(target.id).slice(0, dst.length + src.length).map(row => row.event_id)).toEqual([...dst,...src].map(row => row.event_id));
   expect(rows(target.id).map(row => row.sequence)).toEqual(Array.from({length:rows(target.id).length}, (_,i) => i+1));
   expect(db.prepare("SELECT * FROM ledger_change_feed_state WHERE project_id=?").get(source.id)).toBeUndefined();
 });
 
-it.each(["spawn", "reminder", "artifact-source", "artifact-lineage", "work-unit", "approval"])("pins %s identity, preserving exact bytes and digests", kind => {
+it.each(["spawn", "reminder", "artifact-source", "artifact-lineage", "work-unit", "approval"])("pins %s identity, preserving exact bytes and digests", async kind => {
   const { source, target, merge } = pair();
   const checkout = addOrUpdateCheckout(db, source.id, { root: path.join(root, "pin"), work_repo_id: "pin-repo" }).checkout;
   const user = createUser(db, { slug: "pin-agent", kind: "agent", display_name: "Pin" });
@@ -186,7 +188,7 @@ it.each(["spawn", "reminder", "artifact-source", "artifact-lineage", "work-unit"
   if (kind === "spawn") {
     expect(new ConversationSpawnService(db).reserve({ schema: "mandible-conversation-spawn-request@3", idempotency_key: "1fa1f7d2-c898-4a7e-a3c7-c9bbc6982311", provider: "codex",
       placement: { kind: "project", project_id: source.id, checkout_id: checkout.id } }).ok).toBe(true);
-    const counted = ok(repairRegistry(db, { merge })).merge!;
+    const counted = ok(await repairRegistry(db, { merge })).merge!;
     expect(counted.reference_occurrences).toBe(counted.distinct_rows + 1);
     // A conflicting projection cannot hide the immutable payload reference.
     const other = addOrUpdateCheckout(db, target.id, { root: path.join(root, "other") }).checkout;
@@ -214,12 +216,12 @@ it.each(["spawn", "reminder", "artifact-source", "artifact-lineage", "work-unit"
     expected = "auth_requests.target_repo_root:repository";
   }
   const before = snapshot();
-  expect(ok(repairRegistry(db, { merge })).merge!.conflicts).toContainEqual(expect.objectContaining({ kind: "historical_reference", value: expected, count: 1 }));
-  expect(repairRegistry(db, { merge, apply: true })).toMatchObject({ ok: false, error: { code: "merge_conflict" } });
+  expect(ok(await repairRegistry(db, { merge })).merge!.conflicts).toContainEqual(expect.objectContaining({ kind: "historical_reference", value: expected, count: 1 }));
+  expect(await repairRegistry(db, { merge, apply: true })).toMatchObject({ ok: false, error: { code: "merge_conflict" } });
   expect(snapshot()).toEqual(before);
 });
 
-it.each(["active", "expired", "revoked"])("pins %s clearance scope without changing authority", state => {
+it.each(["active", "expired", "revoked"])("pins %s clearance scope without changing authority", async state => {
   const { source, merge } = pair();
   const owner = setupOperator(db, { slug: "owner" });
   const agent = createUser(db, { slug: "clearance-agent", kind: "agent", display_name: "Agent" });
@@ -234,12 +236,12 @@ it.each(["active", "expired", "revoked"])("pins %s clearance scope without chang
     .run(owner.id, agent.id, credential.id, source.id, state === "active" ? Date.now()+60_000 : 100,
       state === "revoked" ? 50 : null, state === "revoked" ? owner.id : null);
   const before = snapshot();
-  expect(ok(repairRegistry(db, { merge })).merge!.conflicts).toContainEqual(expect.objectContaining({ value: "auth_clearances.project_id", count: 1 }));
-  expect(repairRegistry(db, { merge, apply: true }).ok).toBe(false);
+  expect(ok(await repairRegistry(db, { merge })).merge!.conflicts).toContainEqual(expect.objectContaining({ value: "auth_clearances.project_id", count: 1 }));
+  expect((await repairRegistry(db, { merge, apply: true })).ok).toBe(false);
   expect(snapshot()).toEqual(before);
 });
 
-it("pins Git custody without rewriting version identity or the logical owner", () => {
+it("pins Git custody without rewriting version identity or the logical owner", async () => {
   const { source, merge } = pair();
   const hash = "a".repeat(64);
   db.prepare("INSERT INTO artifact(id,identity_key,source_project_id,created_at,updated_at) VALUES ('artifact','git',?,1,1)").run(source.id);
@@ -248,7 +250,70 @@ it("pins Git custody without rewriting version identity or the logical owner", (
     repo_path,commit_sha,custody_mode,created_at) VALUES ('version','artifact',1,'blob','tracked_repo',?,?,'report.md',?,'git',1)`)
     .run(hash, source.id, "b".repeat(40));
   const before = snapshot();
-  expect(ok(repairRegistry(db, { merge })).merge!.conflicts).toContainEqual(expect.objectContaining({ value: "artifact_version.source_project_id", count: 1 }));
-  expect(repairRegistry(db, { merge, apply: true }).ok).toBe(false);
+  expect(ok(await repairRegistry(db, { merge })).merge!.conflicts).toContainEqual(expect.objectContaining({ value: "artifact_version.source_project_id", count: 1 }));
+  expect((await repairRegistry(db, { merge, apply: true })).ok).toBe(false);
+  expect(snapshot()).toEqual(before);
+});
+
+it("keeps repair responsive while resolving unrelated historical repository paths", async () => {
+  const { merge } = pair();
+  const insert = db.prepare(`INSERT INTO auth_requests(id,command,title,status,created_at,updated_at,expires_at,cwd)
+    VALUES (?,'merge','Historical','completed',1,1,2,?)`);
+  for (let index = 0; index < 25; index++) insert.run(`request-${index}`, path.join(root, `missing-${index}`));
+  let last = performance.now(), longestTurnMs = 0, ticks = 0;
+  const timer = setInterval(() => {
+    const now = performance.now();
+    longestTurnMs = Math.max(longestTurnMs, now - last);
+    last = now; ticks++;
+  }, 2);
+  try {
+    const before = snapshot();
+    expect(ok(await repairRegistry(db, { merge })).merge!.conflicts).toEqual([]);
+    expect(snapshot()).toEqual(before);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    longestTurnMs = Math.max(longestTurnMs, performance.now() - last);
+    expect(ticks).toBeGreaterThan(0);
+    expect(longestTurnMs).toBeLessThan(HANDLER_TURN_BUDGET_MS);
+  } finally { clearInterval(timer); }
+});
+
+it.each(["registry", "references", "schema"])("revalidates %s drift after external observation without holding a write lock", async changed => {
+  const { source, merge } = pair();
+  const missing = path.join(root, "pending-observation");
+  db.prepare(`INSERT INTO auth_requests(id,command,title,status,created_at,updated_at,expires_at,cwd)
+    VALUES ('pending','merge','Historical','completed',1,1,2,?)`).run(missing);
+  db.prepare("UPDATE ledger_projects SET project_key='' WHERE id=?").run(source.id);
+  let signalStarted!: () => void, release!: () => void;
+  const started = new Promise<void>(resolve => { signalStarted = resolve; });
+  const released = new Promise<void>(resolve => { release = resolve; });
+  vi.spyOn(childObservation, "childOutput").mockImplementation(async () => {
+    expect(db.inTransaction).toBe(false);
+    signalStarted();
+    await released;
+    throw new Error("The historical checkout no longer exists");
+  });
+  const pending = repairRegistry(db, { merge, apply: true });
+  try {
+    await Promise.race([started, pending.then(() => { throw new Error("Repair completed before observing its repository references"); })]);
+    expect(db.inTransaction).toBe(false);
+    if (changed === "registry") db.prepare("UPDATE ledger_projects SET display_name='Changed' WHERE id=?").run(source.id);
+    else if (changed === "references") db.prepare("UPDATE auth_requests SET cwd=? WHERE id='pending'").run(path.join(root, "different-checkout"));
+    else db.exec("CREATE TABLE late_reference(scope TEXT REFERENCES ledger_projects(id) ON DELETE CASCADE)");
+    const before = snapshot();
+    release();
+    expect(await pending).toMatchObject({ ok: false, error: { code: "observation_changed" } });
+    expect(snapshot()).toEqual(before);
+  } finally { release(); await pending; }
+});
+
+it("preserves a source identity named by an ambiguous historical repository reference", async () => {
+  const { source, target, merge } = pair();
+  db.prepare("UPDATE ledger_projects SET display_name='Shared' WHERE id IN (?,?)").run(source.id, target.id);
+  db.prepare("INSERT INTO work_units(id,issue_id,repo_id,state,created_at) VALUES ('unit','historical','Shared','resolved',1)").run();
+  const before = snapshot();
+  expect(ok(await repairRegistry(db, { merge })).merge!.conflicts).toContainEqual(expect.objectContaining({
+    kind: "historical_reference", value: "work_units.repo_id:repository", count: 1,
+  }));
+  expect(await repairRegistry(db, { merge, apply: true })).toMatchObject({ ok: false, error: { code: "merge_conflict" } });
   expect(snapshot()).toEqual(before);
 });

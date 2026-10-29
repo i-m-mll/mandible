@@ -160,7 +160,12 @@ for apply. Preview effect ceilings continue to apply.
 backfills and an optional namespace merge. Dry runs change no state or
 notifications. Reports identify each reference policy, occurrence counts,
 distinct affected rows, duplicate-grant survivors, and blocking conflicts. Apply
-rebuilds the plan inside one immediate transaction containing all key backfills,
+resolves admitted repository identities asynchronously with bounded concurrency
+before taking a database write lock. It records registry, schema, and repository
+reference inputs and revalidates those persisted facts under the final lock;
+drift returns `observation_changed` without applying repair. The transaction
+freshly inspects relational and typed JSON references, collisions, keys, and feed
+state. It contains all key backfills,
 namespace moves, grant coalescences, checkout history, feed changes, source
 removal, target update, and attributed events. Failed constraints roll back every
 change and discard after-commit notifications. Unknown, ambiguous, incomplete,

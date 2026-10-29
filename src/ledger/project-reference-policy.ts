@@ -1,5 +1,6 @@
 import type { Db } from "../db.js";
-import { resolveProjectRef } from "./project-registry.js";
+import { setImmediate } from "node:timers/promises";
+import { resolveProjectRefAsync, type ProjectRefResolution } from "./project-registry.js";
 
 type Locator =
   | { kind: "column"; table: string; column: string }
@@ -83,8 +84,66 @@ export function projectReferenceCoverage(db: Db): string[] {
   return errors;
 }
 
+export interface ProjectRepositoryObservation {
+  isCurrent(): boolean;
+  resolve(ref: string): ProjectRefResolution;
+  projectsForRef(ref: string): readonly string[];
+}
+
+/** Observe external identity without a database lock; revalidate only persisted facts under the lock. */
+export async function observeProjectRepositories(db: Db, mergeRefs: readonly string[]): Promise<ProjectRepositoryObservation> {
+  const repositoryPolicies = PROJECT_REFERENCE_POLICIES.filter(policy => policy.locator.kind === "repository");
+  const readInputs = () => ({
+    schema: db.pragma("schema_version", { simple: true }),
+    projects: db.prepare("SELECT * FROM ledger_projects ORDER BY id").all(),
+    checkouts: db.prepare("SELECT * FROM ledger_project_checkouts ORDER BY id").all(),
+    repositories: repositoryPolicies.map(({ locator }) => {
+      const columns = db.prepare(`PRAGMA table_info(${quoteIdentifier(locator.table)})`).all() as { name: string }[];
+      return { key: `${locator.table}.${locator.column}`,
+        rows: columns.some(column => column.name === locator.column)
+          ? db.prepare(`SELECT rowid AS row_id, ${quoteIdentifier(locator.column)} AS ref FROM ${quoteIdentifier(locator.table)} ORDER BY rowid`)
+            .all() as { row_id: number; ref: string | null }[] : [],
+      };
+    }),
+  });
+  const inputs = readInputs();
+  const snapshot = JSON.stringify(inputs);
+  const refs = [...new Set([...mergeRefs, ...inputs.repositories.flatMap(input => input.rows
+    .map(row => row.ref).filter((ref): ref is string => Boolean(ref)))])];
+  const resolutions = new Map<string, ProjectRefResolution>();
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(4, refs.length) }, async () => {
+    while (next < refs.length) {
+      const ref = refs[next++];
+      await setImmediate();
+      resolutions.set(ref, await resolveProjectRefAsync(db, ref));
+    }
+  }));
+  const resolve = (ref: string): ProjectRefResolution => {
+    const resolution = resolutions.get(ref);
+    if (!resolution) throw new Error(`Repository reference was not observed: ${ref}`);
+    return resolution;
+  };
+  const projectIds = new Map(refs.map(ref => {
+    const resolved = resolve(ref);
+    const ids = resolved.ok ? [resolved.project.id] : resolved.reason === "ambiguous"
+      ? (inputs.projects as { id: string; project_key: string }[])
+        .filter(project => resolved.candidates.includes(project.project_key || project.id)).map(project => project.id) : [];
+    return [ref, ids] as const;
+  }));
+  return {
+    isCurrent: () => snapshot === JSON.stringify(readInputs()),
+    resolve,
+    projectsForRef(ref) {
+      const ids = projectIds.get(ref);
+      if (!ids) throw new Error(`Repository reference was not observed: ${ref}`);
+      return ids;
+    },
+  };
+}
+
 /** Returns row identities so occurrences and distinct affected rows remain separate. */
-export function projectReferenceRows(db: Db, policy: ProjectReferencePolicy, projectId: string): number[] {
+export function projectReferenceRows(db: Db, policy: ProjectReferencePolicy, projectId: string, repositories: ProjectRepositoryObservation): number[] {
   const locator = policy.locator;
   const table = quoteIdentifier(locator.table), column = quoteIdentifier(locator.column);
   if (locator.kind === "column") {
@@ -95,13 +154,6 @@ export function projectReferenceRows(db: Db, policy: ProjectReferencePolicy, pro
       .all(locator.path, projectId) as { row_id: number }[]).map(row => row.row_id);
   }
   const refs = db.prepare(`SELECT DISTINCT ${column} AS ref FROM ${table} WHERE ${column} IS NOT NULL AND ${column} != ''`).all() as { ref: string }[];
-  const matching = refs.filter(({ ref }) => {
-    const resolved = resolveProjectRef(db, ref);
-    return resolved.ok ? resolved.project.id === projectId : resolved.reason === "ambiguous"
-      && resolved.candidates.some(candidate => {
-        const candidateProject = resolveProjectRef(db, candidate);
-        return candidateProject.ok && candidateProject.project.id === projectId;
-      });
-  });
+  const matching = refs.filter(({ ref }) => repositories.projectsForRef(ref).includes(projectId));
   return matching.flatMap(({ ref }) => (db.prepare(`SELECT rowid AS row_id FROM ${table} WHERE ${column} = ?`).all(ref) as { row_id: number }[]).map(row => row.row_id));
 }

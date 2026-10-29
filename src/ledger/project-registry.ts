@@ -1,7 +1,7 @@
 import * as z from "zod";
 import { isSqliteConstraint } from "../sqlite.js";
 import { SINGLETON_OPEN_ISSUE_KINDS } from "./store.js";
-import { PROJECT_REFERENCE_POLICIES, projectReferenceCoverage, projectReferenceRows, quoteIdentifier } from "./project-reference-policy.js";
+import { PROJECT_REFERENCE_POLICIES, projectReferenceCoverage, projectReferenceRows, quoteIdentifier, observeProjectRepositories, type ProjectRepositoryObservation } from "./project-reference-policy.js";
 import { mutateLedgerRecord } from "./mutation-history.js";
 import { childOutput } from "../child-observation.js";
 import { execFileSync } from "node:child_process";
@@ -964,13 +964,13 @@ export interface RepairReport {
   applied: boolean;
 }
 export type RepairFailure = {
-  code: "invalid_request" | "not_found" | "ambiguous" | "same_project" | "foreign_keys_disabled" | "merge_conflict" | "constraint";
+  code: "invalid_request" | "not_found" | "ambiguous" | "same_project" | "foreign_keys_disabled" | "merge_conflict" | "constraint" | "observation_changed";
   message: string;
   conflicts?: MergeConflict[];
 };
 export type RepairResult = { ok: true; value: RepairReport } | { ok: false; error: RepairFailure };
 
-function inspectMerge(db: Db, sourceId: string, targetId: string): MergePlan {
+function inspectMerge(db: Db, sourceId: string, targetId: string, repositories: ProjectRepositoryObservation): MergePlan {
   const conflicts: MergeConflict[] = projectReferenceCoverage(db).map(value => ({
     kind: "schema_coverage", value, detail: "Every declared locator must exist and every project FK must have exactly one policy",
   }));
@@ -981,7 +981,7 @@ function inspectMerge(db: Db, sourceId: string, targetId: string): MergePlan {
   const references: ReferenceCount[] = [];
   const distinct = new Set<string>();
   for (const policy of PROJECT_REFERENCE_POLICIES) {
-    const rows = projectReferenceRows(db, policy, sourceId);
+    const rows = projectReferenceRows(db, policy, sourceId, repositories);
     rows.forEach(row => distinct.add(`${policy.locator.table}:${row}`));
     if (!rows.length) continue;
     references.push({ key: policy.key, table: policy.locator.table, column: policy.locator.column,
@@ -1109,7 +1109,7 @@ function mergeProjectGrants(db: Db, sourceId: string, targetId: string, plan: Me
   }
 }
 
-function executeMerge(db: Db, plan: MergePlan): void {
+function executeMerge(db: Db, plan: MergePlan, repositories: ProjectRepositoryObservation): void {
   const sourceId = plan.source_project_id, targetId = plan.target_project_id;
   const handlers = new Set<string>();
   for (const policy of PROJECT_REFERENCE_POLICIES) {
@@ -1136,7 +1136,7 @@ function executeMerge(db: Db, plan: MergePlan): void {
       db.prepare(`UPDATE ${quoteIdentifier(table)} SET ${quoteIdentifier(column)}=? WHERE ${quoteIdentifier(column)}=?`).run(targetId, sourceId);
     }
   }
-  const residuals = PROJECT_REFERENCE_POLICIES.filter(policy => projectReferenceRows(db, policy, sourceId).length);
+  const residuals = PROJECT_REFERENCE_POLICIES.filter(policy => projectReferenceRows(db, policy, sourceId, repositories).length);
   if (residuals.length) throw new Error(`Project merge left source references: ${residuals.map(policy => policy.key).join(", ")}`);
   mutateLedgerRecord(db, {
     entity_type: "project", entity_id: sourceId, project_id: targetId,
@@ -1148,22 +1148,28 @@ function executeMerge(db: Db, plan: MergePlan): void {
 }
 
 /** Inspect or atomically execute registry repair. Expected failures never escape as exceptions. */
-export function repairRegistry(db: Db, input: RepairOptions = {}): RepairResult {
+export async function repairRegistry(db: Db, input: RepairOptions = {}): Promise<RepairResult> {
   const parsed = RepairOptionsSchema.safeParse(input);
   if (!parsed.success) return { ok: false, error: { code: "invalid_request", message: parsed.error.message } };
   if (db.pragma("foreign_keys", { simple: true }) !== 1) return { ok: false, error: {
     code: "foreign_keys_disabled", message: "Project repair requires foreign_keys=1 before its transaction" } };
   const options = parsed.data;
+  const repositories = options.merge ? await observeProjectRepositories(db, [options.merge.source, options.merge.target]) : null;
   const inspectAndExecute = (): RepairResult => {
+    if (db.pragma("foreign_keys", { simple: true }) !== 1) return { ok: false, error: {
+      code: "foreign_keys_disabled", message: "Project repair requires foreign_keys=1 before its transaction" } };
+    if (repositories && !repositories.isCurrent()) return { ok: false, error: {
+      code: "observation_changed", message: "Project registry or repository references changed during observation; retry repair" } };
     let merge: MergePlan | undefined;
     if (options.merge) {
-      const refs = [options.merge.source, options.merge.target].map(ref => resolveProjectRef(db, ref));
+      if (!repositories) throw new Error("Missing merge repository observation");
+      const refs = [options.merge.source, options.merge.target].map(ref => repositories.resolve(ref));
       for (const ref of refs) if (!ref.ok) return { ok: false, error: {
         code: ref.reason === "ambiguous" ? "ambiguous" : "not_found", message: `Cannot resolve merge project: ${ref.reason}` } };
       const [source, target] = refs;
       if (!source.ok || !target.ok) throw new Error("Unresolved merge project");
       if (source.project.id === target.project.id) return { ok: false, error: { code: "same_project", message: "Merge source and target are the same project" } };
-      merge = inspectMerge(db, source.project.id, target.project.id);
+      merge = inspectMerge(db, source.project.id, target.project.id, repositories);
       if (options.apply && merge.conflicts.length) return { ok: false, error: {
         code: "merge_conflict", message: "Project merge is blocked", conflicts: merge.conflicts } };
     } else {
@@ -1174,7 +1180,7 @@ export function repairRegistry(db: Db, input: RepairOptions = {}): RepairResult 
     const key_backfills = plannedKeyBackfills(db);
     if (options.apply) {
       backfillProjectKeys(db);
-      if (merge) executeMerge(db, merge);
+      if (merge && repositories) executeMerge(db, merge, repositories);
     }
     return { ok: true, value: { keys_backfilled: options.apply ? key_backfills.length : 0, key_backfills,
       foreign_keys: "enforced", audit: auditRegistry(db), merge, applied: options.apply ?? false } };

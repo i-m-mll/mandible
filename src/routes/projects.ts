@@ -78,7 +78,7 @@ export function registerProjectRoutes(router: RouteRegistrar): void {
     }
   }, { operation: { id: "get:/api/projects/audit", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
-  router.post("/api/projects/repair", (req, res) => {
+  router.post("/api/projects/repair", async (req, res) => {
     try {
       const db = getDb();
       requireOperator(db, req);
@@ -87,10 +87,10 @@ export function registerProjectRoutes(router: RouteRegistrar): void {
         sendJson(res, 400, { code: "invalid_request", error: parsed.error.message });
         return;
       }
-      const result = repairRegistry(db, parsed.data);
+      const result = await repairRegistry(db, parsed.data);
       if (!result.ok) {
         const status = result.error.code === "not_found" ? 404
-          : ["merge_conflict", "ambiguous", "same_project", "constraint"].includes(result.error.code) ? 409 : 400;
+          : ["merge_conflict", "ambiguous", "same_project", "constraint", "observation_changed"].includes(result.error.code) ? 409 : 400;
         sendJson(res, status, { ...result.error, error: result.error.message });
         return;
       }
