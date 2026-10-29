@@ -18,6 +18,37 @@ function deferred<T>() {
 }
 
 describe('shared projection Query lifecycle', () => {
+  it('reconciles a newer event after the in-flight refresh reaches its query deadline', async () => {
+    const signals: AbortSignal[] = [];
+    const load = vi.fn((signal: AbortSignal) => {
+      signals.push(signal);
+      return load.mock.calls.length === 1 ? new Promise<{ title: string }>(() => {}) : Promise.resolve({ title: 'After timeout event' });
+    });
+    const options = snapshotOptions(projectionKeys.graph(), load);
+    queryClient.setQueryData(options.queryKey, { title: 'Previous' });
+    function Pane() {
+      const query = useProjectionQuery(options, true);
+      return <span>{detailQueryData(query, options)?.title ?? query.error?.name}</span>;
+    }
+    render(<Pane />);
+    expect(screen.getByText('Previous')).toBeTruthy();
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        invalidateDashboardApiCacheForEvent('ledger:issue:updated');
+        await vi.advanceTimersByTimeAsync(1);
+        invalidateDashboardApiCacheForEvent('ledger:comment:created');
+        await vi.advanceTimersByTimeAsync(LIVE_REFRESH_DEADLINE_MS + LIVE_REFRESH_MIN_INTERVAL_MS);
+      });
+      expect(signals[0].aborted).toBe(true);
+      expect(load).toHaveBeenCalledTimes(2);
+      expect(screen.getByText('After timeout event')).toBeTruthy();
+      expect(queryClient.getQueryState(options.queryKey)?.isInvalidated).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('bounds a stalled cold read and releases its route barrier with a timeout error', async () => {
     let signal: AbortSignal | undefined;
     let barrierSettled = false;
