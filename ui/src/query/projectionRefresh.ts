@@ -2,10 +2,10 @@ import type { Query, QueryClient, QueryKey } from '@tanstack/preact-query';
 import { createCoalescedRefresh } from '../lib/coalesced-refresh';
 import { isProjectionKey } from './projectionKeys';
 
-const owners = new WeakMap<QueryClient, { invalidate: (key?: QueryKey) => void }>();
+const owners = new WeakMap<QueryClient, { invalidate: (key?: QueryKey, predicate?: (query: Query) => boolean) => void }>();
 
 /** Query owns payloads and reads; one scheduler bounds live projection reconciliation. */
-export function invalidateProjectionQueries(client: QueryClient, key?: QueryKey): void {
+export function invalidateProjectionQueries(client: QueryClient, key?: QueryKey, predicate?: (query: Query) => boolean): void {
   let owner = owners.get(client);
   if (!owner) {
     const cache = client.getQueryCache();
@@ -29,8 +29,8 @@ export function invalidateProjectionQueries(client: QueryClient, key?: QueryKey)
       }
     });
     owner = {
-      invalidate(queryKey) {
-        const targets = cache.findAll(queryKey ? { queryKey } : {}).filter((query) => isProjectionKey(query.queryKey));
+      invalidate(queryKey, predicate) {
+        const targets = cache.findAll({ queryKey, predicate }).filter((query) => isProjectionKey(query.queryKey));
         for (const query of targets) {
           if (query.state.fetchStatus === 'fetching') trailing.add(query);
           query.invalidate();
@@ -40,5 +40,5 @@ export function invalidateProjectionQueries(client: QueryClient, key?: QueryKey)
     };
     owners.set(client, owner);
   }
-  owner.invalidate(key);
+  owner.invalidate(key, predicate);
 }
