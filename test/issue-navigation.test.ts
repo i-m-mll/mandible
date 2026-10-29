@@ -91,6 +91,30 @@ describe('issue deep links', () => {
     expect(screen.getByText('Posted draft')).toBeTruthy();
   });
 
+  it('retains the notes draft after a revision conflict and reconciles the authoritative detail', async () => {
+    let conflicted = false;
+    const before = { ...issueDetailProjection({ displayId: '4c26383', title: 'Notes conflict' }), work_notes: 'Original notes', work_notes_revision: 'revision-one' };
+    const latest = { ...before, work_notes: 'Changed elsewhere', work_notes_revision: 'revision-two' };
+    vi.stubGlobal('fetch', vi.fn((_input: RequestInfo, init?: RequestInit) => {
+      if (init?.method === 'PATCH') {
+        conflicted = true;
+        expect(JSON.parse(String(init.body))).toMatchObject({ work_notes: 'My draft', expected_work_notes_revision: 'revision-one' });
+        return Promise.resolve(Response.json({ error: 'Revision conflict' }, { status: 409 }));
+      }
+      return Promise.resolve(Response.json(conflicted ? latest : before));
+    }));
+    render(h(IssuesView, { repos, onRescan: async () => undefined, initialRepoId: 'mandible', initialIssueId: '4c26383' }));
+    expect(await screen.findByRole('heading', { name: 'Notes conflict' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Issue actions' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Working notes' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.input(screen.getByRole('textbox', { name: 'Working notes' }), { target: { value: 'My draft' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save notes' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('Working notes changed while you were editing');
+    expect((screen.getByRole('textbox', { name: 'Working notes' }) as HTMLTextAreaElement).value).toBe('My draft');
+    expect(queryClient.getQueryData(detailKeys.issue('4c26383', 'mandible'))).toMatchObject({ work_notes: 'Changed elsewhere', work_notes_revision: 'revision-two' });
+  });
+
   it('canonicalizes a checkout-shaped deep link to the project key', () => {
     const repoId = resolveIssueRepoDeepLink(
       [{

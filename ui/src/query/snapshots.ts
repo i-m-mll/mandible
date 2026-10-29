@@ -1,6 +1,7 @@
 import { hashKey, queryOptions, type UseQueryOptions } from "@tanstack/preact-query";
 import { isApiErrorStatus } from "../api";
-import { readPersistedDetail, writePersistedDetail, removePersistedDetail, ROUTE_DATA_FRESH_MS } from "../detail-cache";
+import { readPersistedDetail, writePersistedDetail, removePersistedDetail } from "../detail-cache";
+import { ROUTE_DATA_FRESH_MS } from './policy';
 import { isProjectionKey } from './projectionKeys';
 import { LIVE_REFRESH_DEADLINE_MS, RefreshDeadlineError } from '../lib/coalesced-refresh';
 
@@ -34,12 +35,12 @@ export function snapshotOptions<T>(queryKey: readonly unknown[], load: (signal: 
     placeholderData: restartSnapshot as UseQueryOptions<T>['placeholderData'],
     queryFn: async ({ signal }) => {
       const data = await (isProjectionKey(queryKey) ? readProjection(load, signal) : load(signal)).catch((error: unknown) => {
-        if (isApiErrorStatus(error, 404) || isApiErrorStatus(error, 409)) removePersistedDetail(namespace, key);
+        if (isApiErrorStatus(error, 404) || isApiErrorStatus(error, 409)) removeRestartSnapshot(queryKey);
         throw error;
       });
       signal.throwIfAborted();
       if (!accept(data)) throw new Error('Detail response does not match the selected identity');
-      writePersistedDetail(namespace, key, data);
+      writeRestartSnapshot(queryKey, data);
       return data;
     },
   }), restartSnapshot };

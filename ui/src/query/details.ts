@@ -6,7 +6,7 @@ import {
   getArtifactSeriesList, resolveArtifact, type ArtifactQueryParams,
   isApiErrorStatus,
 } from '../api';
-import { ROUTE_DATA_FRESH_MS } from '../detail-cache';
+import { ROUTE_DATA_FRESH_MS } from './policy';
 import { removeRestartSnapshot, snapshotOptions, writeRestartSnapshot } from './snapshots';
 export { detailQueryData } from './snapshots';
 import { detailKeys } from './detailKeys';

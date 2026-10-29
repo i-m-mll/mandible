@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { setImmediate } from 'node:timers/promises';
-import { beginDetailRequest, clearPersistedDetailCache, isPersistedDetailFresh, writePersistedDetail } from '../ui/src/detail-cache';
+import { clearPersistedDetailCache, readPersistedDetail, writePersistedDetail } from '../ui/src/detail-cache';
 import { QueryObserver } from '@tanstack/preact-query';
 import { waitFor } from './helpers/dom';
 import { artifactBackrefsOptions } from '../ui/src/query/details';
@@ -74,7 +74,8 @@ describe('dashboard API GET cache', () => {
     vi.stubGlobal('fetch', fetch);
     await api.getInboxGlobal();
     api.invalidateDashboardCaches();
-    expect(isPersistedDetailFresh('timeline', 'one')).toBe(false);
+    expect(readPersistedDetail('timeline', 'one')).toEqual({ rows: [] });
+    expect(queryClient.getQueryData(['gap'])).toEqual({ value: 1 });
     expect(queryClient.getQueryState(['gap'])?.isInvalidated).toBe(true);
     await api.getInboxGlobal();
     expect(fetch).toHaveBeenCalledTimes(2);

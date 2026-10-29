@@ -13,16 +13,6 @@ const CACHE_VERSION = 2;
 
 const DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
 
-/** How long route data read in this page answers an activation without a request. */
-export const ROUTE_DATA_FRESH_MS = 60_000;
-
-/** Namespaces whose server events invalidate them, so a fresh entry is a current one. */
-export type LiveDetailNamespace =
-  | 'graph'
-  | 'timeline'
-  | 'issue-detail'
-  | 'spaces';
-
 const MAX_ENTRIES = 48;
 const MAX_ENTRIES_PER_NAMESPACE = 6;
 const MAX_ENTRY_BYTES = 1_500_000;
@@ -47,19 +37,6 @@ type CacheIndex = {
 // Read accesses only bump recency in memory; the write path flushes them so the
 // click path never does a multi-MB stringify just to record accessedAt.
 const pendingAccess = new Map<string, number>();
-// Every value written in this page also lives here, so one that the storage budget refuses or
-// evicts still paints on this page. Map order is write order, oldest first.
-const memoryEntries = new Map<string, {
-  namespace: string;
-  serialized: string;
-  writtenAt: number;
-  writeSeq: number;
-  expiresAt: number;
-}>();
-const namespaceInvalidatedSeq = new Map<string, number>();
-let allInvalidatedSeq = 0;
-let detailSeq = 0;
-const keyWrittenSeq = new Map<string, number>();
 let accessClock = 0;
 let legacyPurged = false;
 
@@ -195,71 +172,8 @@ function serialize(value: unknown): string | null {
   return typeof serialized === 'string' ? serialized : null;
 }
 
-function stableValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stableValue);
-  if (!value || typeof value !== 'object') return value;
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, child]) => [key, stableValue(child)]),
-  );
-}
-
-export function detailRequestKey(namespace: string, request: unknown): string {
-  return `${namespace}:${JSON.stringify(stableValue(request))}`;
-}
-
-/** Capture before starting asynchronous work; later writes and invalidations fence it. */
-export function beginDetailRequest(): number {
-  return ++detailSeq;
-}
-
-export function isDetailRequestCurrent(namespace: string, key: string, started: number): boolean {
-  return started >= Math.max(allInvalidatedSeq, namespaceInvalidatedSeq.get(namespace) ?? 0, keyWrittenSeq.get(accessKey(namespace, key)) ?? 0);
-}
-
-function rememberDetail(namespace: string, key: string, serialized: string, now: number, expiresAt: number, requestStarted: number): void {
-  const id = accessKey(namespace, key);
-  memoryEntries.delete(id);
-  keyWrittenSeq.set(id, requestStarted);
-  memoryEntries.set(id, { namespace, serialized, writtenAt: now, writeSeq: requestStarted, expiresAt });
-  let namespaceCount = 0;
-  for (const [candidateId, entry] of [...memoryEntries].reverse()) {
-    if (entry.namespace !== namespace) continue;
-    namespaceCount += 1;
-    if (namespaceCount > MAX_ENTRIES_PER_NAMESPACE) memoryEntries.delete(candidateId);
-  }
-  for (const candidateId of memoryEntries.keys()) {
-    if (memoryEntries.size <= MAX_ENTRIES) break;
-    memoryEntries.delete(candidateId);
-  }
-}
-
-/**
- * Whether this page wrote the entry within `ROUTE_DATA_FRESH_MS` and no server event has
- * invalidated its namespace since, so an activation may render it without a request.
- */
-export function isPersistedDetailFresh(namespace: LiveDetailNamespace, key: string): boolean {
-  const remembered = memoryEntries.get(accessKey(namespace, key));
-  return Boolean(remembered)
-    && remembered!.writeSeq > Math.max(allInvalidatedSeq, namespaceInvalidatedSeq.get(namespace) ?? 0)
-    && Date.now() - remembered!.writtenAt < ROUTE_DATA_FRESH_MS;
-}
-
-/**
- * A server event changed this namespace (every namespace, without one): its entries stay
- * readable but are no longer fresh.
- */
-export function invalidatePersistedDetail(namespace?: LiveDetailNamespace): void {
-  detailSeq += 1;
-  if (namespace) namespaceInvalidatedSeq.set(namespace, detailSeq);
-  else allInvalidatedSeq = detailSeq;
-}
-
 export function readPersistedDetail<T>(namespace: string, key: string): T | null {
   const now = Date.now();
-  const remembered = memoryEntries.get(accessKey(namespace, key));
-  if (remembered && remembered.expiresAt > now) return JSON.parse(remembered.serialized) as T;
   const storage = browserStorage();
   if (!storage) return null;
   const index = readIndex(storage);
@@ -290,13 +204,10 @@ export function writePersistedDetail(
   key: string,
   value: unknown,
   maxAgeMs = DEFAULT_MAX_AGE_MS,
-  requestStarted = beginDetailRequest(),
 ): boolean {
-  if (!isDetailRequestCurrent(namespace, key, requestStarted)) return false;
   const serialized = serialize(value);
   if (serialized === null) return false;
   const now = Date.now();
-  rememberDetail(namespace, key, serialized, now, now + Math.max(1, maxAgeMs), requestStarted);
   const storage = browserStorage();
   if (!storage) return false;
   const bytes = new TextEncoder().encode(serialized).byteLength;
@@ -384,9 +295,7 @@ function flush(storage: Storage, index: CacheIndex, staleKeys: string[]): void {
 }
 
 export function removePersistedDetail(namespace: string, key: string): void {
-  keyWrittenSeq.set(accessKey(namespace, key), ++detailSeq);
   pendingAccess.delete(accessKey(namespace, key));
-  memoryEntries.delete(accessKey(namespace, key));
   const storage = browserStorage();
   if (!storage) return;
   const index = readIndex(storage);
@@ -397,10 +306,6 @@ export function removePersistedDetail(namespace: string, key: string): void {
 
 export function clearPersistedDetailCache(): void {
   pendingAccess.clear();
-  memoryEntries.clear();
-  namespaceInvalidatedSeq.clear();
-  allInvalidatedSeq = ++detailSeq;
-  keyWrittenSeq.clear();
   const storage = browserStorage();
   if (!storage) return;
   purgeAll(storage);
