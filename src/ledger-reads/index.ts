@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { fullTextQueryKey, isFullTextSearch, pendingSearch, type SearchUpdate, type SearchQuery } from "../conversations/full-text-search-jobs.js";
-import { FULL_TEXT_SEARCH_OBSERVER_LEASE_MS, type FullTextSearchPending } from "../conversations/full-text-search-contract.js";
+import { FULL_TEXT_SEARCH_OBSERVER_LEASE_MS, type FullTextSearchPending, type FullTextSearchProgress } from "../conversations/full-text-search-contract.js";
 import { repairConversationSourceReadiness } from "../ingestion.js";
 import { Worker } from "node:worker_threads";
 import { getDb, type Db } from "../db.js";
@@ -46,6 +46,7 @@ export function workerLedgerReaderPool(dbPath: string, { size }: {
     query: SearchQuery;
     kind: LedgerReadKind;
     accessed: number;
+    progress:FullTextSearchProgress;
   }
   const searches = new Map<string, Mirror>();
   const searchKeys = new Map<string, string>();
@@ -117,8 +118,10 @@ export function workerLedgerReaderPool(dbPath: string, { size }: {
       if ("kind" in message) {
         if (message.kind === "search_update") {
           const mirror = searches.get(message.update.search_id);
-          if (mirror)
+          if (mirror) {
             mirror.update = message.update;
+            if(message.update.state === "pending")mirror.progress={...message.update.progress};
+          }
         }
         else {
           void repairConversationSourceReadiness(getDb(), message.conversationId, { priority: false }).then(() => {
@@ -147,7 +150,7 @@ export function workerLedgerReaderPool(dbPath: string, { size }: {
       slot.worker = null;
       if (slot === conversationSlot)
         for (const [searchId, mirror] of searches) {
-          mirror.update = { state: "expired", search_id: searchId, reason: "worker_restarted", coverage: { eligible: 0, prepared: 0, scanned: 0, matched: 0, failed: 0, complete: false } };
+          mirror.update = { state: "expired", search_id: searchId, reason: "worker_restarted", coverage: { ...mirror.progress, failed: 0, complete: false } };
         }
       rejectPending(slot, new Error(`ledger reader worker exited with code ${code}`));
     });
@@ -165,7 +168,7 @@ export function workerLedgerReaderPool(dbPath: string, { size }: {
         const key = fullTextQueryKey(kind, query);
         const requested = query.search_id;
         const previousId = searchKeys.get(key);
-        if (previousId && searches.get(previousId)?.update.state !== "pending" && searches.get(previousId)?.update.state !== "complete")
+        if (previousId && searches.get(previousId)?.update.state !== "pending")
           searchKeys.delete(key);
         const searchId = requested || searchKeys.get(key) || randomUUID();
         let mirror = searches.get(searchId);
@@ -183,7 +186,7 @@ export function workerLedgerReaderPool(dbPath: string, { size }: {
                 if (searches.size < 128)
                   break;
               }
-          mirror = { key, update: pendingSearch(searchId, observer), observers: new Map(), query: { ...query }, kind, accessed: Date.now() };
+          mirror = { key, update: pendingSearch(searchId, observer), observers: new Map(), query: { ...query }, kind, accessed: Date.now(),progress:{eligible:0,prepared:0,scanned:0,matched:0} };
           searches.set(searchId, mirror);
           searchKeys.set(key, searchId);
           void workerRun(conversationSlot, kind, { query: { ...query, search_id: searchId, observer_token: observer }, searchStart: true } as LedgerReadParams<K>).then(value => {
@@ -196,7 +199,7 @@ export function workerLedgerReaderPool(dbPath: string, { size }: {
               mirror.update = body;
           }, () => {
             if (mirror)
-              mirror.update = { state: "expired", search_id: searchId, reason: "worker_restarted", coverage: { eligible: 0, prepared: 0, scanned: 0, matched: 0, failed: 0, complete: false } };
+              mirror.update = { state: "expired", search_id: searchId, reason: "worker_restarted", coverage: { ...mirror.progress, failed: 0, complete: false } };
           });
         }
         if (!mirror && requested)
@@ -207,7 +210,7 @@ export function workerLedgerReaderPool(dbPath: string, { size }: {
             return Promise.resolve(mirrorResult({ state: "superseded", search_id: searchId, reason: "query_mismatch", coverage: { eligible: 0, prepared: 0, scanned: 0, matched: 0, failed: 0, complete: false } }) as LedgerReadResult<K>);
           if (query.cancel === "true") {
             releaseObserver(searchId, observer);
-            return Promise.resolve(mirrorResult({ state: "incomplete", search_id: searchId, reason: "cancelled", coverage: { eligible: 0, prepared: 0, scanned: 0, matched: 0, failed: 0, complete: false } }) as LedgerReadResult<K>);
+            return Promise.resolve(mirrorResult({ state: "incomplete", search_id: searchId, reason: "cancelled", coverage: { ...mirror.progress, failed: 0, complete: false } }) as LedgerReadResult<K>);
           }
           else {
             if (mirror.update.state === "pending") {

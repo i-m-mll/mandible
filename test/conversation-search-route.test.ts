@@ -215,10 +215,11 @@ describe("conversation full-text API parity", () => {
 
     const router = new Router();
     registerConversationRoutes(router, inlineLedgerReader());
-    const sidebarUrl = "/api/conversations/sidebar?search=Archive%20Needle&full_text=true&limit=1";
+    let sidebarUrl = "/api/conversations/sidebar?search=Archive%20Needle&full_text=true&limit=1";
     type Sidebar = { groups: Array<{ key: string; total: number; conversations: Array<{ id: string }>; next_cursor: string | null }> };
     const cold = await settled(router,{ method: "GET", url: sidebarUrl });
     expect(cold.status).toBe(200);
+    sidebarUrl+=`&search_id=${(cold.body as {search_id:string}).search_id}`;
     const group = (cold.body as Sidebar).groups[0];
     expect(group.total).toBe(3);
     expect(group.conversations).toHaveLength(1);

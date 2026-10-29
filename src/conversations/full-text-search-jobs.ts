@@ -182,7 +182,7 @@ export class FullTextSearchJobs {
   }> {
     this.sweep();
     const key = fullTextQueryKey(route, query);
-    let job = query.search_id ? this.jobs.get(query.search_id) : [...this.jobs.values()].find(candidate => candidate.key === key && !candidate.terminal);
+    let job = query.search_id ? this.jobs.get(query.search_id) : [...this.jobs.values()].find(candidate => candidate.key === key && !candidate.complete && !candidate.terminal);
     if (!job && query.search_id && !start)
       return this.response(terminal(query.search_id, "snapshot_expired", { eligible: 0, prepared: 0, scanned: 0, matched: 0, failed: 0, complete: false }, "expired"));
     if (!job) {

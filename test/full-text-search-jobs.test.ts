@@ -311,3 +311,11 @@ it("pins route ordering after readiness repair rather than before it", async () 
   expect(result.status).toBe(200);
   expect(result.body).toMatchObject({ total: 2, conversations: [{ id: "a" }, { id: "b" }] });
 });
+
+it("captures a new snapshot when no ID is supplied after an undisplayed source changes",async()=>{
+  await conversation("a");const hidden=await conversation("b");const router=new Router();registerConversationRoutes(router,inlineLedgerReader());
+  const url="/api/conversations?search=needle&full_text=true&limit=1";const first=await finish(router,url);expect(first.status).toBe(200);const id=(first.body as {search_id:string}).search_id;
+  fs.writeFileSync(hidden,"unobserved replacement");
+  const pinned=await finish(router,`${url}&search_id=${id}`);expect(pinned.status).toBe(200);expect(pinned.body).toMatchObject({total:2,conversations:[{id:"a"}]});
+  const refreshed=await finish(router,url);expect(refreshed.status).toBe(409);expect((refreshed.body as {search_id:string}).search_id).not.toBe(id);expect(refreshed.body).not.toHaveProperty("total");
+});
