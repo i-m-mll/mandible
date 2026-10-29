@@ -8,7 +8,6 @@ export const browserResourceKeys = {
   briefingProjections: (briefingId: string) => ['briefing', 'projection', briefingId] as const,
   briefingProjection: (briefingId: string, roundId: string | null, submissionId: string | null, displayContext?: { groupId: string; proposalBundleId: string | null }) =>
     ['briefing', 'projection', briefingId, roundId, submissionId, displayContext ?? null] as const,
-  spaceItems: (spaceId: string | null | undefined) => ['space', spaceId ?? null, 'items'] as const,
   spaceDocument: (spaceId: string | null | undefined) => ['space', spaceId ?? null, 'document'] as const,
 };
 
@@ -17,7 +16,7 @@ export function browserResourceKeysForEvent(type: string, data?: unknown): reado
   if (!isSpaceEvent(type) || !data || typeof data !== 'object') return [];
   if (type === SPACE_EVENTS.SPACE_DOCUMENT_SETTINGS_UPDATED) return [['space']];
   const id = (data as { space_id?: unknown }).space_id;
-  return typeof id === 'string' ? [browserResourceKeys.spaceDocument(id), browserResourceKeys.spaceItems(id)] : [];
+  return typeof id === 'string' ? [browserResourceKeys.spaceDocument(id)] : [];
 }
 
 export async function refreshBrowserResources(client: QueryClient, keys: readonly QueryKey[], options: { predicate?: (query: Query) => boolean } = {}): Promise<void> {

@@ -17,4 +17,4 @@ export function projectionAffectedByEvent(query: Query, type: string, data?: unk
 }
 
 export const isSpaceDocumentQuery = (query: Query) => query.queryKey[0] === 'space'
-  && (query.queryKey[2] === 'document' || query.queryKey[2] === 'items');
+  && query.queryKey[2] === 'document';

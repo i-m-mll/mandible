@@ -13,8 +13,8 @@ describe('production resource event routing', () => {
     const b = 'b'.repeat(64);
     const packetA = projectionKeys.spacePacket(a.slice(0, 8));
     const packetB = projectionKeys.spacePacket(b);
-    const keysA = [packetA, browserResourceKeys.spaceDocument(a), browserResourceKeys.spaceItems(a)];
-    const keysB = [packetB, browserResourceKeys.spaceDocument(b), browserResourceKeys.spaceItems(b)];
+    const keysA = [packetA, browserResourceKeys.spaceDocument(a)];
+    const keysB = [packetB, browserResourceKeys.spaceDocument(b)];
     queryClient.setQueryData(packetA, { space: { id: a } });
     for (const key of [...keysA.slice(1), ...keysB]) queryClient.setQueryData(key, { space: { id: b } });
     invalidateDashboardApiCacheForEvent(SPACE_EVENTS.SPACE_BLOCK_CHANGED, { space_id: a });
