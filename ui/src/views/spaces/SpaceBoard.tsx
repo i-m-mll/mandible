@@ -25,7 +25,6 @@ import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
 
 import {
   createSpaceOccurrence,
-  getSpaceFactPacket,
   updateSpace,
   updateSpaceOccurrence,
   type Space,
@@ -37,7 +36,6 @@ import {
   resourceRefHref,
   displayResourceRef,
 } from '../../resource-refs';
-import { acquireSharedSse } from '../../sse-shared';
 import { usePersistedViewState } from '../../hooks/usePersistedViewState';
 import {
   IssuePredicateFilter,
@@ -77,14 +75,7 @@ import {
 import { SpaceItemPicker } from './SpaceItemPicker';
 import './space-board.css';
 
-const SPACE_EVENT_PREFIX = 'space:';
 const EMPTY_BOARD_METADATA: BoardMetadata = { version: 1, columns: [] };
-
-type LoadState =
-  | { status: 'idle' }
-  | { status: 'loading' }
-  | { status: 'ready'; model: SpaceViewModel }
-  | { status: 'error'; message: string };
 
 /** Case-insensitive card filter. */
 function matchesFilter(label: string, ref: string, filter: string): boolean {
@@ -479,14 +470,16 @@ function AddColumnMenu({
   );
 }
 
-export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountProps): JSX.Element {
-  const [load, setLoad] = useState<LoadState>({ status: 'idle' });
+export function SpaceBoardRenderer({ projectId, spaceId, factPacket }: SpaceRendererMountProps): JSX.Element {
+  const model = useMemo(() => factPacket ? buildSpaceViewModel(factPacket) : null, [factPacket]);
+  const [mutationError, setMutationError] = useState<string | null>(null);
+  const error = mutationError;
   const [viewState, setViewState] = usePersistedViewState(
     spaceId ? boardStorageKey(projectId, spaceId) : '',
     normalizeBoardViewState,
     EMPTY_BOARD_VIEW_STATE,
   );
-  const [boardMeta, setBoardMeta] = useState<BoardMetadata>(EMPTY_BOARD_METADATA);
+  const boardMeta = useMemo(() => model ? readBoardMetadata(model.space) : EMPTY_BOARD_METADATA, [model]);
   const [factsByItemId, setFactsByItemId] = useState<IssueFactsByItemId>({});
   const [busy, setBusy] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -494,7 +487,6 @@ export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountPro
   const [dragOverColumn, setDragOverColumn] = useState<string | null>(null);
 
   const dragRef = useRef<{ occurrenceId: string; fromColumn: string } | null>(null);
-  const liveIdsRef = useRef<Set<string>>(new Set());
   const addSortKeysRef = useRef<Record<string, string | null>>({});
   // Items whose worker_status we've already resolved (or attempted), so we don't
   // re-resolve the same issue on every reconciliation pass.
@@ -503,65 +495,9 @@ export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountPro
   // Reset canonical board inputs on Space change (explicit navigation only).
   // Browser-local view state follows the keyed persistence hook above.
   useEffect(() => {
-    if (!spaceId) {
-      setBoardMeta(EMPTY_BOARD_METADATA);
-      return;
-    }
-    setBoardMeta(EMPTY_BOARD_METADATA);
     resolvedItemsRef.current = new Set();
     setFactsByItemId({});
   }, [projectId, spaceId]);
-
-  const loadPacket = useCallback(
-    async (reconcile: boolean) => {
-      if (!spaceId) {
-        setLoad({ status: 'idle' });
-        return;
-      }
-      if (!reconcile) setLoad({ status: 'loading' });
-      try {
-        const packet = await getSpaceFactPacket(spaceId);
-        const model = buildSpaceViewModel(packet);
-        const meta = readBoardMetadata(model.space);
-        setBoardMeta(meta);
-        const liveIds = new Set<string>();
-        for (const o of model.occurrences) liveIds.add(o.occurrence.id);
-        for (const id of Object.keys(model.itemsById)) liveIds.add(id);
-        liveIdsRef.current = liveIds;
-        setLoad({ status: 'ready', model });
-      } catch (error) {
-        if (!reconcile) setLoad({ status: 'error', message: String(error) });
-      }
-    },
-    [spaceId],
-  );
-
-  useEffect(() => {
-    void loadPacket(false);
-  }, [loadPacket]);
-
-  // SSE reconciliation: any `space:*` event refetches the packet. Collapse /
-  // selection / filter are preserved across the refetch.
-  useEffect(() => {
-    if (!spaceId) return;
-    const client = acquireSharedSse();
-    const unsubscribe = client.on('*', (payload) => {
-      if (typeof payload.type === 'string' && payload.type.startsWith(SPACE_EVENT_PREFIX)) {
-        void loadPacket(true);
-      }
-    });
-    // Reconnect resync: refetch the packet after a dropped stream so events
-    // missed during the gap are reconciled. Collapse/selection/filter preserved.
-    const offState = client.onState((_state, { reconnected }) => {
-      if (reconnected) void loadPacket(true);
-    });
-    client.connect();
-    return () => {
-      unsubscribe();
-      offState();
-      client.close();
-    };
-  }, [spaceId, loadPacket]);
 
   // Resolve issue worker_status for board items (drives default columns). Each
   // issue item is resolved once; results feed the by-item facts map. Non-issue
@@ -570,7 +506,6 @@ export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountPro
     () => (spaceId ? createBoardShellModel(projectId, spaceId) : null),
     [projectId, spaceId],
   );
-  const model = load.status === 'ready' ? load.model : null;
   const projectionModel = model ?? shellModel;
   useEffect(() => {
     if (!model) return;
@@ -615,7 +550,7 @@ export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountPro
   useEffect(() => {
     if (!projection || !model) return;
     const liveColumnKeys = new Set(projection.columns.map((c) => c.key));
-    setViewState((prior) => reconcileBoardViewState(prior, liveIdsRef.current, liveColumnKeys));
+    setViewState((prior) => reconcileBoardViewState(prior, new Set([...model.occurrences.map((entry) => entry.occurrence.id), ...Object.keys(model.itemsById)]), liveColumnKeys));
   }, [model, projection]);
 
   const selectedIds = useMemo(() => new Set(viewState.selection.ids), [viewState.selection.ids]);
@@ -681,20 +616,20 @@ export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountPro
       const lastCard = target && target.cards.length > 0 ? target.cards[target.cards.length - 1] : null;
       const lastKey = lastCard ? lastCard.occurrence.occurrence.sort_key : null;
       const sortKey = sortKeyBetween(lastKey, null);
+      setMutationError(null);
       setBusy(true);
       try {
         await updateSpaceOccurrence(spaceId, occurrenceId, {
           section_id: toColumnKey,
           sort_key: sortKey,
         });
-        await loadPacket(true);
       } catch (error) {
-        setLoad({ status: 'error', message: String(error) });
+        setMutationError(String(error));
       } finally {
         setBusy(false);
       }
     },
-    [spaceId, projection, loadPacket],
+    [spaceId, projection],
   );
 
   const onDragStart = useCallback((occurrenceId: string, fromColumn: string) => {
@@ -734,16 +669,14 @@ export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountPro
       setBusy(true);
       try {
         const metadata = writeBoardMetadata(model.space.metadata, next);
-        const updated = await updateSpace(spaceId, { metadata });
-        setBoardMeta(readBoardMetadata(updated));
-        await loadPacket(true);
+        await updateSpace(spaceId, { metadata });
       } catch (error) {
-        setLoad({ status: 'error', message: String(error) });
+        setMutationError(String(error));
       } finally {
         setBusy(false);
       }
     },
-    [spaceId, model, loadPacket],
+    [spaceId, model],
   );
 
   const nextColumnKey = useCallback(
@@ -862,9 +795,6 @@ export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountPro
                 isItemInView={isItemOnBoard}
                 alreadyInViewLabel="Already on board"
                 afterAdd={addBoardItem}
-                onAdded={() => {
-                  void loadPacket(true);
-                }}
                 onClose={() => setPickerOpen(false)}
               />
             </div>
@@ -872,16 +802,16 @@ export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountPro
         </div>
       </div>
 
-      {load.status === 'error' && (
-        <DetailPaneNotice severity="error" density="compact" title="Could not load board">{load.message}</DetailPaneNotice>
+      {error && (
+        <DetailPaneNotice severity="error" density="compact" title="Could not load board">{error}</DetailPaneNotice>
       )}
       <div className="space-board__body" data-testid="space-board-body">
-        {load.status === 'loading' || load.status === 'idle' ? (
+        {!model && !error ? (
           <div className="space-board__loading" role="status">
             Loading cards…
           </div>
         ) : null}
-        {load.status === 'error' ? <div className="space-board__empty">Board unavailable.</div> : null}
+        {!model && error ? <div className="space-board__empty">Board unavailable.</div> : null}
         {projection ? (
           <div className="space-board__columns" role="list" aria-label="Board columns">
             {projection.columns.map((column, index) => (

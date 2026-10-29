@@ -1,3 +1,5 @@
+import { hashKey } from '@tanstack/preact-query';
+import { projectionKeys } from '../ui/src/query/projectionKeys';
 // @vitest-environment jsdom
 import { AppShellProvider } from '../ui/src/app-shell';
 import { clearApiGetCache } from '../ui/src/api';
@@ -15,7 +17,7 @@ vi.mock('../ui/src/api', async (importOriginal) => {
   return { ...actual, getSpaceFactPacket: getSpaceFactPacketMock };
 });
 
-import { detailRequestKey, writePersistedDetail } from '../ui/src/detail-cache';
+import { writePersistedDetail } from '../ui/src/detail-cache';
 import {
   SpacesViewShell,
   type SpaceRendererMountProps,
@@ -147,8 +149,8 @@ describe('SpacesViewShell', () => {
   it('does not preload a persisted detail packet keyed by an unverified generated short ref', async () => {
     const shortRef = '7038d21f';
     writePersistedDetail(
-      'spaces',
-      detailRequestKey('spaces', { spaceId: shortRef }),
+      'space-query-snapshot',
+      hashKey(projectionKeys.spacePacket(shortRef)),
       makePacket(makeSpace({ id: '7038d21f-b494-47fb-b9b8-d5fb93b3309a' })),
     );
     function CanvasMount(): JSX.Element {
@@ -188,7 +190,7 @@ describe('SpacesViewShell', () => {
       />,
     );
 
-    expect(getSpaceFactPacketMock).toHaveBeenCalledWith('7038d21f');
+    expect(getSpaceFactPacketMock).toHaveBeenCalledWith('7038d21f', expect.objectContaining({ signal: expect.any(AbortSignal) }));
     const mountedBeforeRejection = screen.queryByTestId('unresolved-explicit-canvas');
     rejectLoad?.(new Error("ambiguous space ref '7038d21f'"));
 

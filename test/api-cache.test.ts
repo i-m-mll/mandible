@@ -10,7 +10,8 @@ import { browserResourceKeys } from '../ui/src/query/browserResources';
 import { ensureClientAccess, __resetBrowserSessionForTests } from '../ui/src/client-auth-token';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { addSpaceItem, getBriefingSidebarSnapshot, getSpace, getSpaceFactPacket, clearApiGetCache } from '../ui/src/api';
+import { addSpaceItem, getBriefingSidebarSnapshot, clearApiGetCache } from '../ui/src/api';
+import { spacePacketOptions } from '../ui/src/query/spaces';
 
 
 function jsonResponse(body: unknown): Response {
@@ -102,7 +103,7 @@ describe('dashboard API GET cache', () => {
     }
   });
 
-  it('deduplicates concurrent same-URL GETs across API helpers', async () => {
+  it('deduplicates concurrent Space packet consumers through Query', async () => {
     const fetchMock = vi.fn(async () =>
       jsonResponse({
         space: {
@@ -118,13 +119,13 @@ describe('dashboard API GET cache', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    const [packet, space] = await Promise.all([
-      getSpaceFactPacket('sp1'),
-      getSpace('sp1'),
+    const [packet, other] = await Promise.all([
+      queryClient.fetchQuery(spacePacketOptions('sp1')),
+      queryClient.fetchQuery(spacePacketOptions('sp1')),
     ]);
 
     expect(packet.space.id).toBe('sp1');
-    expect(space.id).toBe('sp1');
+    expect(other.space.id).toBe('sp1');
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledWith('/api/spaces/sp1', expect.any(Object));
   });
@@ -256,9 +257,9 @@ describe('dashboard API GET cache', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    await getSpaceFactPacket('sp1');
+    await queryClient.fetchQuery(spacePacketOptions('sp1'));
     await addSpaceItem('sp1', { ref_type: 'issue', ref_id: 'abc1234' });
-    await getSpaceFactPacket('sp1');
+    await queryClient.fetchQuery(spacePacketOptions('sp1'));
 
     const getCalls = fetchMock.mock.calls.filter(([path, init]) =>
       String(path) === '/api/spaces/sp1' && ((init as RequestInit | undefined)?.method ?? 'GET') === 'GET',

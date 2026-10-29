@@ -1,7 +1,8 @@
 import { Icon } from '../../components/icons/Icon';
-import { useQuery } from '@tanstack/preact-query';
+import { useProjectionQuery } from '../../query/useProjectionQuery';
+import { useViewActive } from '../../app-shell';
 import { queryClient } from '../../query/client';
-import { browserResourceKeys, browserResourceKeysForEvent, refreshBrowserResources } from '../../query/browserResources';
+import { browserResourceKeys } from '../../query/browserResources';
 import { browserSessionFetch } from '../../client-auth-token';
 import { SpaceExportDialog } from './SpaceExportDialog';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
@@ -12,7 +13,6 @@ import type { EditorView } from '@codemirror/view';
 import type { SpaceBlock, SpaceItem } from '../../api';
 import type { SpaceBlockType } from '../../../../src/contracts';
 import { canPerformOperation } from '../../api';
-import { acquireSharedSse } from '../../sse-shared';
 import { usePersistedViewState } from '../../hooks/usePersistedViewState';
 import type { SpaceRendererMountProps } from './SpacesViewShell';
 import { DocumentBody, renderSpaceBlocks } from './DocumentRenderer';
@@ -294,22 +294,21 @@ export function DocumentBlockEditor({
 
   const fetcher = useCallback(() => (input: RequestInfo | URL, init?: RequestInit) =>
     browserSessionFetch(input, init, fetchRef.current), []);
+  const active = useViewActive();
   const documentKey = browserResourceKeys.spaceDocument(spaceId);
-  const documentQuery = useQuery({
+  const documentQuery = useProjectionQuery({
     queryKey: documentKey,
-    enabled: Boolean(spaceId),
     queryFn: async ({ signal }) => {
       const blocks = await listSpaceBlocks(spaceId!, fetchRef.current, signal);
       return { spaceId: spaceId!, blocks };
     },
     refetchOnWindowFocus: true,
-  }, queryClient);
-  const itemsQuery = useQuery({
+  }, active && Boolean(spaceId));
+  const itemsQuery = useProjectionQuery({
     queryKey: browserResourceKeys.spaceItems(spaceId),
-    enabled: Boolean(spaceId),
     queryFn: ({ signal }) => getSpaceItemsWithFetch(spaceId!, (input, init) => fetcher()(input, { ...init, signal })),
     refetchOnWindowFocus: true,
-  }, queryClient);
+  }, active && Boolean(spaceId));
   const load = documentQuery.data
     ? { status: 'ready' as const, ...documentQuery.data }
     : { status: documentQuery.isPending ? 'loading' as const : 'error' as const };
@@ -318,20 +317,6 @@ export function DocumentBlockEditor({
     void itemsQuery.refetch();
     await documentQuery.refetch();
   }, [spaceId, documentQuery.refetch, itemsQuery.refetch]);
-
-  useEffect(() => {
-    if (!spaceId) return;
-    const client = acquireSharedSse();
-    const unsubscribe = client.on('*', (payload) => {
-      const keys = browserResourceKeysForEvent(payload.type, payload.data);
-      if (keys.some((key) => key[1] === spaceId)) void refreshBrowserResources(queryClient, keys);
-    });
-    const offState = client.onState((_state, { reconnected }) => {
-      if (reconnected) void refreshBrowserResources(queryClient, [browserResourceKeys.spaceDocument(spaceId), browserResourceKeys.spaceItems(spaceId)]);
-    });
-    client.connect();
-    return () => { unsubscribe(); offState(); client.close(); };
-  }, [spaceId, refreshDocument]);
 
   const blocks = useMemo(() => {
     const live = load.status === 'ready' ? load.blocks : [];

@@ -3,6 +3,7 @@ import { DASHBOARD_BADGE_COUNTS, DOMAIN_EVENTS, isBriefingEvent, type DashboardB
 import { queryClient } from './query/client';
 import { detailKeys, detailKeysForEvent } from './query/detailKeys';
 import { invalidateProjectionQueries } from './query/projectionRefresh';
+import { projectionKeys } from './query/projectionKeys';
 import { browserResourceKeys, browserResourceKeysForEvent, refreshBrowserResources } from './query/browserResources';
 import { LIST_ENVELOPE_KEYS } from '../../src/contracts';
 import type { SessionDescendant, SessionSummary } from '../../src/contracts';
@@ -3431,6 +3432,7 @@ export type SpaceFactPacket = {
 };
 
 function invalidateSpaceCaches(spaceId?: string): void {
+  invalidateProjectionQueries(queryClient, projectionKeys.spacePackets);
   invalidateApiGetCache('/api/spaces');
   if (spaceId) {
     invalidateApiGetCache(`/api/spaces/${encodeURIComponent(spaceId)}`);
@@ -3498,10 +3500,7 @@ export async function updateProjectAccessSettings(
 }
 
 export async function getSpace(spaceId: string): Promise<ContractSpace> {
-  const payload = await cachedApiGetJson<{ space: ContractSpace }>(
-    `/api/spaces/${encodeURIComponent(spaceId)}`,
-  );
-  return payload.space;
+  return (await getSpaceFactPacket(spaceId)).space;
 }
 
 /**
@@ -3510,13 +3509,14 @@ export async function getSpace(spaceId: string): Promise<ContractSpace> {
  * C9a canvas, …) assemble their `SpaceViewModel` from this single read. Older
  * responses that omit the collections degrade to empty arrays.
  */
-export async function getSpaceFactPacket(spaceId: string): Promise<SpaceFactPacket> {
-  const payload = await cachedApiGetJson<{
+export async function getSpaceFactPacket(spaceId: string, read: { signal?: AbortSignal } = {}): Promise<SpaceFactPacket> {
+  const response = await apiGet(`/api/spaces/${encodeURIComponent(spaceId)}`, { signal: read.signal });
+  const payload = await parseMaybeJson(response) as {
     space: ContractSpace;
     items?: ContractSpaceItem[];
     occurrences?: ContractSpaceOccurrence[];
     edges?: ContractSpaceEdge[];
-  }>(`/api/spaces/${encodeURIComponent(spaceId)}`, WARMED_ROUTE_GET_OPTIONS);
+  };
   return {
     space: payload.space,
     items: payload.items ?? [],

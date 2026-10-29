@@ -1,3 +1,4 @@
+import { queryClient } from '../ui/src/query/client';
 import { useAppHistory } from '../ui/src/hooks/useAppHistory';
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -74,6 +75,7 @@ function expectContext() {
 }
 
 beforeEach(() => {
+  queryClient.clear();
   const values = new Map<string, string>();
   const storage: Storage = {
     get length() { return values.size; },
@@ -93,7 +95,7 @@ beforeEach(() => {
   vi.mocked(listSpacesGrouped).mockResolvedValue([{ project_id: null, project_key: null, project_name: null, spaces: [space('B'), space('C')] }]);
 });
 
-afterEach(() => { cleanup(); window.localStorage.clear(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); queryClient.clear(); window.localStorage.clear(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 it('validates an unlisted saved space before URL promotion without mounting the first row', async () => {
   const a = deferred<SpaceFactPacket>();
@@ -144,10 +146,10 @@ it('preserves an authoritative full UUID when another accessible space shares it
   render(<Harness load={load} navigated={navigated} />);
   await waitFor(() => expect(expectContext().get('space')).toBe(fullA));
   await waitFor(() => expect(readSpacesLastView()?.spaceId).toBe(fullA));
-  expect(screen.getByLabelText('Opened space').textContent).toBe(fullA);
-  expect(load).toHaveBeenCalledWith(fullA);
-  expect(load).not.toHaveBeenCalledWith(prefix);
-  expect(load).not.toHaveBeenCalledWith(fullB);
+  expect((await screen.findByLabelText('Opened space')).textContent).toBe(fullA);
+  expect(load).toHaveBeenCalledWith(fullA, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+  expect(load).not.toHaveBeenCalledWith(prefix, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+  expect(load).not.toHaveBeenCalledWith(fullB, expect.objectContaining({ signal: expect.any(AbortSignal) }));
   expect(mountedTargets).not.toContain(fullB);
   expect(screen.queryByText('ambiguous space ref')).toBeNull();
 });
@@ -169,10 +171,10 @@ it.each(['row', 'default'])('preserves a known full UUID selected by %s when ano
   if (choice === 'row') fireEvent.click(await screen.findByRole('button', { name: `Space ${fullA} (Document)` }));
   await waitFor(() => expect(expectContext().get('space')).toBe(fullA));
   await waitFor(() => expect(readSpacesLastView()?.spaceId).toBe(fullA));
-  expect(screen.getByLabelText('Opened space').textContent).toBe(fullA);
-  expect(load).toHaveBeenCalledWith(fullA);
-  expect(load).not.toHaveBeenCalledWith(prefix);
-  expect(load).not.toHaveBeenCalledWith(fullB);
+  expect((await screen.findByLabelText('Opened space')).textContent).toBe(fullA);
+  expect(load).toHaveBeenCalledWith(fullA, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+  expect(load).not.toHaveBeenCalledWith(prefix, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+  expect(load).not.toHaveBeenCalledWith(fullB, expect.objectContaining({ signal: expect.any(AbortSignal) }));
   expect(mountedTargets).not.toContain(fullB);
 });
 
@@ -232,7 +234,7 @@ it('does not navigate from an inactive view after a pending saved result', async
   const load = vi.fn(() => a.promise);
   const navigated = vi.fn();
   const view = render(<Harness load={load} navigated={navigated} />);
-  await waitFor(() => expect(load).toHaveBeenCalledWith('A'));
+  await waitFor(() => expect(load).toHaveBeenCalledWith('A', expect.objectContaining({ signal: expect.any(AbortSignal) })));
   window.history.replaceState(null, '', `#/tasks?${context}`);
   view.rerender(<Harness load={load} navigated={navigated} active={false} />);
   await act(async () => {
