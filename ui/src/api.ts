@@ -2,6 +2,7 @@ import { parseManagedChatDefaults, type ManagedChatDefaults } from "../../src/ma
 import { DASHBOARD_BADGE_COUNTS, DOMAIN_EVENTS, isBriefingEvent, type DashboardBadgeCounts } from '../../src/contracts';
 import { queryClient } from './query/client';
 import { detailKeys, detailKeysForEvent } from './query/detailKeys';
+import { invalidateProjectionQueries } from './query/projectionRefresh';
 import { browserResourceKeys, browserResourceKeysForEvent, refreshBrowserResources } from './query/browserResources';
 import { LIST_ENVELOPE_KEYS } from '../../src/contracts';
 import type { SessionDescendant, SessionSummary } from '../../src/contracts';
@@ -748,6 +749,7 @@ export function invalidateDashboardCaches(): void {
   invalidatePersistedDetail();
   void queryClient.invalidateQueries({ refetchType: 'none' });
   void refreshBrowserResources(queryClient, [detailKeys.issues, detailKeys.artifacts]);
+  invalidateProjectionQueries(queryClient);
 }
 
 /** Exact cache families affected by a Briefing lifecycle event. */
@@ -771,6 +773,7 @@ function invalidateCrossEntityProjections(): void {
   invalidateApiGetCache('/api/graph');
   invalidatePersistedDetail('graph');
   invalidatePersistedDetail('timeline');
+  invalidateProjectionQueries(queryClient);
 }
 
 function invalidateArtifactReads(): void {
@@ -3000,6 +3003,7 @@ export type { GraphNode, GraphEdge };
 
 export async function getGraph(
   params: GraphQueryParams = {},
+  options: { signal?: AbortSignal } = {},
 ): Promise<GraphPayload> {
   const query = new URLSearchParams();
   if (params.mode) query.set('mode', params.mode);
@@ -3011,7 +3015,8 @@ export async function getGraph(
   if (params.nodeTypes?.length) query.set('node_type', params.nodeTypes.join(','));
   if (params.edgeTypes?.length) query.set('edge_type', params.edgeTypes.join(','));
   const qs = query.toString();
-  return cachedApiGetJson<GraphPayload>(`/api/graph${qs ? '?' + qs : ''}`, WARMED_ROUTE_GET_OPTIONS);
+  const response = await apiGet(`/api/graph${qs ? '?' + qs : ''}`, options);
+  return await parseMaybeJson(response) as GraphPayload;
 }
 
 // ── Artifact API ──
