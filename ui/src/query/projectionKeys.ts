@@ -28,8 +28,10 @@ export function normalizeTimelineInput(input: ProjectTimelineInput): ProjectTime
 export const projectionKeys = {
   graphs: ['graph'] as const,
   timelines: ['timeline'] as const,
+  spacePackets: ['space', 'packet'] as const,
+  spacePacket: (ref: string | null) => ['space', 'packet', ref?.trim() || null] as const,
   graph: (input: GraphQueryParams = {}) => ['graph', normalizeGraphInput(input)] as const,
   timeline: (input: ProjectTimelineInput) => ['timeline', normalizeTimelineInput(input)] as const,
 };
 
-export const isProjectionKey = (key: readonly unknown[]) => key[0] === 'graph' || key[0] === 'timeline';
+export const isProjectionKey = (key: readonly unknown[]) => key[0] === 'graph' || key[0] === 'timeline' || key[0] === 'issue-detail' || (key[0] === 'space' && key[1] === 'packet');

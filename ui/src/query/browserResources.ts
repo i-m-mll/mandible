@@ -1,4 +1,4 @@
-import type { QueryClient, QueryKey } from '@tanstack/preact-query';
+import type { Query, QueryClient, QueryKey } from '@tanstack/preact-query';
 import { isBriefingEvent } from '../../../src/contracts';
 import { isSpaceEvent, SPACE_EVENTS } from '../../../src/spaces/events';
 
@@ -20,8 +20,8 @@ export function browserResourceKeysForEvent(type: string, data?: unknown): reado
   return typeof id === 'string' ? [browserResourceKeys.spaceDocument(id), browserResourceKeys.spaceItems(id)] : [];
 }
 
-export async function refreshBrowserResources(client: QueryClient, keys: readonly QueryKey[]): Promise<void> {
-  const cancellations = keys.map((queryKey) => client.cancelQueries({ queryKey }));
-  const invalidations = keys.map((queryKey) => client.invalidateQueries({ queryKey }));
+export async function refreshBrowserResources(client: QueryClient, keys: readonly QueryKey[], options: { predicate?: (query: Query) => boolean } = {}): Promise<void> {
+  const cancellations = keys.map((queryKey) => client.cancelQueries({ queryKey, ...options }));
+  const invalidations = keys.map((queryKey) => client.invalidateQueries({ queryKey, ...options }));
   await Promise.all([...cancellations, ...invalidations]);
 }

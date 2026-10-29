@@ -2,6 +2,7 @@ import { parseManagedChatDefaults, type ManagedChatDefaults } from "../../src/ma
 import { DASHBOARD_BADGE_COUNTS, DOMAIN_EVENTS, isBriefingEvent, type DashboardBadgeCounts } from '../../src/contracts';
 import { queryClient } from './query/client';
 import { detailKeys, detailKeysForEvent } from './query/detailKeys';
+import { isSpaceDocumentQuery, projectionAffectedByEvent } from './query/resourceInvalidation';
 import { invalidateProjectionQueries } from './query/projectionRefresh';
 import { browserResourceKeys, browserResourceKeysForEvent, refreshBrowserResources } from './query/browserResources';
 import { LIST_ENVELOPE_KEYS } from '../../src/contracts';
@@ -748,7 +749,8 @@ export function invalidateDashboardCaches(): void {
   invalidateApiGetCache();
   invalidatePersistedDetail();
   void queryClient.invalidateQueries({ refetchType: 'none' });
-  void refreshBrowserResources(queryClient, [detailKeys.issues, detailKeys.artifacts]);
+  void refreshBrowserResources(queryClient, [detailKeys.artifacts]);
+  void refreshBrowserResources(queryClient, [['space']], { predicate: isSpaceDocumentQuery });
   invalidateProjectionQueries(queryClient);
 }
 
@@ -769,25 +771,23 @@ export function invalidateBriefingApiCacheForEvent(type: string): boolean {
 }
 
 /** Graph and Timeline project every entity family, so any change to one invalidates both. */
-function invalidateCrossEntityProjections(): void {
+function invalidateCrossEntityProjections(type: string, data?: unknown): void {
   invalidateApiGetCache('/api/graph');
-  invalidatePersistedDetail('graph');
-  invalidatePersistedDetail('timeline');
-  invalidateProjectionQueries(queryClient);
+  invalidateProjectionQueries(queryClient, undefined, (query) => projectionAffectedByEvent(query, type, data));
 }
 
 function invalidateArtifactReads(): void {
   invalidateApiGetCache('/api/artifacts');
 }
 
-export function invalidateDashboardApiCacheForEvent(type: string): void {
+export function invalidateDashboardApiCacheForEvent(type: string, data?: unknown): void {
   if (type === DOMAIN_EVENTS.HEARTBEAT) return;
-  void refreshBrowserResources(queryClient, detailKeysForEvent(type));
+  void refreshBrowserResources(queryClient, detailKeysForEvent(type).filter((key) => key[0] !== 'issue-detail'));
   // Logs are an all-event projection. Its view refetches on each event, so
   // discard a warmed snapshot before the visible consumer asks again.
   invalidateApiGetCache('/api/system/logs');
   if (invalidateBriefingApiCacheForEvent(type)) {
-    invalidateCrossEntityProjections();
+    invalidateCrossEntityProjections(type, data);
     if (type === 'briefing:round-published') invalidateArtifactReads();
     return;
   }
@@ -795,43 +795,43 @@ export function invalidateDashboardApiCacheForEvent(type: string): void {
     invalidateApiGetCache('/api/inbox');
   } else if (type.startsWith('conversation:')) {
     invalidateApiGetCache('/api/conversations');
-    invalidateCrossEntityProjections();
+    invalidateCrossEntityProjections(type, data);
   } else if (type.startsWith('session:') || type.startsWith('console:session:')) {
     invalidateApiGetCache('/api/sessions');
     invalidateApiGetCache('/api/console/sessions');
     invalidateApiGetCache('/api/conversations');
-    invalidateCrossEntityProjections();
+    invalidateCrossEntityProjections(type, data);
   } else if (type.startsWith('auth:')) {
     invalidateApiGetCache('/api/auth/');
     invalidateApiGetCache('/api/inbox');
-    if (type !== 'auth:output') invalidateCrossEntityProjections();
+    if (type !== 'auth:output') invalidateCrossEntityProjections(type, data);
   } else if (type.startsWith('work:') || type.startsWith('push:')) {
     invalidateApiGetCache('/api/work/');
     invalidateApiGetCache('/api/inbox');
-    invalidateCrossEntityProjections();
+    invalidateCrossEntityProjections(type, data);
   } else if (type.startsWith('ledger:')) {
     // Covers ledger:issue:*, ledger:comment:*, ledger:label:*, and other
     // ledger:* events; all can change an issue list row or detail projection.
     invalidateApiGetCache('/api/issues');
     invalidateApiGetCache('/api/ledger');
     invalidateApiGetCache('/api/inbox');
-    invalidatePersistedDetail('issue-detail');
-    invalidateCrossEntityProjections();
+    invalidateCrossEntityProjections(type, data);
   } else if (type.startsWith('space:')) {
     invalidateApiGetCache('/api/spaces');
+    void refreshBrowserResources(queryClient, browserResourceKeysForEvent(type, data), { predicate: isSpaceDocumentQuery });
     invalidatePersistedDetail('spaces');
-    invalidateCrossEntityProjections();
+    invalidateCrossEntityProjections(type, data);
   } else if (type.startsWith('artifact:')) {
     invalidateArtifactReads();
-    invalidateCrossEntityProjections();
+    invalidateCrossEntityProjections(type, data);
   } else if (type.startsWith('managed-reminders.')) {
     invalidateApiGetCache('/api/tasks');
     invalidateApiGetCache('/api/inbox');
-    invalidateCrossEntityProjections();
+    invalidateCrossEntityProjections(type, data);
   } else if (type.startsWith('tasks.')) {
     invalidateApiGetCache('/api/tasks');
     invalidateApiGetCache('/api/tasks/commands');
-    invalidateCrossEntityProjections();
+    invalidateCrossEntityProjections(type, data);
   }
 }
 
@@ -1569,18 +1569,20 @@ export async function getLedgerIssueDetailByIssueId(
 export async function getLedgerIssueInitialDetailByRef(
   repoId: string,
   issueId: string,
+  options: { signal?: AbortSignal } = {},
 ): Promise<LedgerIssueDetailProjection> {
   const response = await apiGet(
-    `/api/issues/${encodeURIComponent(repoId)}/${encodeURIComponent(issueId)}/ledger-detail?stage=initial`
+    `/api/issues/${encodeURIComponent(repoId)}/${encodeURIComponent(issueId)}/ledger-detail?stage=initial`, options
   );
   return (await parseMaybeJson(response)) as LedgerIssueDetailProjection;
 }
 
 export async function getLedgerIssueInitialDetailByIssueId(
   issueId: string,
+  options: { signal?: AbortSignal } = {},
 ): Promise<LedgerIssueDetailProjection> {
   const response = await apiGet(
-    `/api/ledger/issues/${encodeURIComponent(issueId)}?stage=initial`
+    `/api/ledger/issues/${encodeURIComponent(issueId)}?stage=initial`, options
   );
   return (await parseMaybeJson(response)) as LedgerIssueDetailProjection;
 }

@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
 import { getGraph, clearApiGetCache } from '../ui/src/api';
+import { queryClient } from '../ui/src/query/client';
+import { snapshotOptions } from '../ui/src/query/snapshots';
+import { projectionKeys } from '../ui/src/query/projectionKeys';
 import { establishTestClientAccess } from './helpers/local-client-access';
 import { __resetBrowserSessionForTests } from '../ui/src/client-auth-token';
 import {
@@ -291,11 +294,13 @@ it('invalidates warmed data before exact and wildcard consumer reads while heart
   const transport = new FakeTransport();
   const coordinator = new CrossTabSseCoordinator({ createTransport: () => transport, channelFactory: null, lockManager: null });
   const reads: Array<ReturnType<typeof getGraph>> = [];
-  coordinator.on('ledger:issue:updated', () => reads.push(getGraph({ mode: 'issue' })));
-  coordinator.on('*', () => reads.push(getGraph({ mode: 'issue' })));
+  const options = snapshotOptions(projectionKeys.graph({ mode: 'issue' }), () => getGraph({ mode: 'issue' }));
+  const read = () => queryClient.fetchQuery(options);
+  coordinator.on('ledger:issue:updated', () => reads.push(read()));
+  coordinator.on('*', () => reads.push(read()));
   coordinator.connect();
   try {
-    expect(await getGraph({ mode: 'issue' })).toMatchObject({ revision: 1 });
+    expect(await read()).toMatchObject({ revision: 1 });
     revision = 2;
     transport.emit({ type: 'heartbeat', data: { timestamp: Date.now() } });
     expect(await reads.pop()).toMatchObject({ revision: 1 });
@@ -307,6 +312,7 @@ it('invalidates warmed data before exact and wildcard consumer reads while heart
     expect(fetchMock).toHaveBeenCalledTimes(2);
   } finally {
     coordinator.disconnect();
+    queryClient.clear();
     clearApiGetCache();
     __resetBrowserSessionForTests();
     vi.unstubAllGlobals();
