@@ -5,11 +5,117 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { executeAuthCommand } from "../src/auth-executor.js";
+import { AuthCommandCleanupError, executeAuthCommand } from "../src/auth-executor.js";
 
 describe("executeAuthCommand", () => {
+  it("joins the spawned command when the synthetic start callback throws", async () => {
+    const realKill = process.kill.bind(process);
+    let ownedGroup: number | undefined;
+    const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+      if (pid < 0 && signal === "SIGTERM") ownedGroup = -pid;
+      return realKill(pid, signal);
+    });
+    try {
+      await expect(executeAuthCommand({
+        request_id: "failed-start-output", command: "exec sleep 30",
+        onOutput: () => { throw new Error("start consumer failed"); },
+      })).rejects.toThrow("start consumer failed");
+      expect(ownedGroup).toBeDefined();
+      expect(processIsAlive(ownedGroup!)).toBe(false);
+    } finally {
+      kill.mockRestore();
+      if (ownedGroup && processIsAlive(ownedGroup)) realKill(-ownedGroup, "SIGKILL");
+    }
+  });
+
+
+  it("reports unresolved custody when process-group signaling is refused", async () => {
+    const realKill = process.kill.bind(process);
+    let ownedGroup: number | undefined;
+    const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+      if (pid < 0 && signal === "SIGTERM") {
+        ownedGroup = -pid;
+        throw Object.assign(new Error("signal permission refused"), { code: "EPERM" });
+      }
+      return realKill(pid, signal);
+    });
+    try {
+      const completed = executeAuthCommand({
+        request_id: "refused-cleanup", command: "exec sleep 30", timeoutMs: 50,
+      });
+      await expect(completed).rejects.toBeInstanceOf(AuthCommandCleanupError);
+      await expect(completed).rejects.toMatchObject({ processGroupSettled: false,
+        cause: expect.objectContaining({ errors: expect.arrayContaining([
+          expect.objectContaining({ message: "Auth command timed out after 0.05s" }),
+        ]) }),
+      });
+      expect(ownedGroup).toBeDefined();
+      expect(processIsAlive(ownedGroup!)).toBe(true);
+    } finally {
+      kill.mockRestore();
+      if (ownedGroup) realKill(-ownedGroup, "SIGKILL");
+    }
+  });
+
+
+  it.each(["timeout", "output", "leader-exit"] as const)("joins a TERM-resistant descendant before reporting %s", async (trigger) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-lifetime-"));
+    const leaderFile = path.join(root, "leader");
+    const descendantFile = path.join(root, "descendant");
+    const termFile = path.join(root, "term");
+    const descendant = path.join(root, "descendant.cjs");
+    const leader = path.join(root, "leader.cjs");
+    fs.writeFileSync(descendant, `
+      const fs = require('node:fs');
+      process.on('SIGTERM', () => fs.writeFileSync(${JSON.stringify(termFile)}, 'received'));
+      fs.writeFileSync(${JSON.stringify(descendantFile)}, String(process.pid));
+      setInterval(() => {}, 1000);
+    `);
+    fs.writeFileSync(leader, `
+      const fs = require('node:fs');
+      process.on('SIGTERM', () => {});
+      fs.writeFileSync(${JSON.stringify(leaderFile)}, String(process.pid));
+      require('node:child_process').spawn(process.execPath, [${JSON.stringify(descendant)}], { stdio: 'ignore' });
+      const ready = setInterval(() => {
+        if (!fs.existsSync(${JSON.stringify(descendantFile)})) return;
+        clearInterval(ready);
+        ${trigger === "leader-exit" ? "process.exit(7);" : "process.stdout.write('tree-ready'); setInterval(() => {}, 1000);"}
+      }, 5);
+    `);
+    let sawReady = false;
+    try {
+      const completed = executeAuthCommand({
+        request_id: "process-lifetime", command: `exec ${shellQuote(process.execPath)} ${shellQuote(leader)}`,
+        timeoutMs: trigger === "timeout" ? 500 : 5000,
+        onOutput: chunk => {
+          if (chunk.text.includes("tree-ready")) {
+            sawReady = true;
+            if (trigger === "output") throw new Error("output consumer failed");
+          }
+        },
+      });
+      if (trigger === "leader-exit") expect(await completed).toMatchObject({ exit_code: 7 });
+      else await expect(completed).rejects.toThrow(trigger === "timeout" ? "timed out" : "output consumer failed");
+      if (trigger !== "leader-exit") expect(sawReady).toBe(true);
+      expect(fs.existsSync(termFile)).toBe(true);
+      for (const file of [leaderFile, descendantFile]) {
+        const pid = Number(fs.readFileSync(file, "utf8"));
+        expect(processIsAlive(pid), `owned process ${pid} still alive at settlement`).toBe(false);
+      }
+    } finally {
+      for (const file of [leaderFile, descendantFile]) {
+        if (fs.existsSync(file)) {
+          const pid = Number(fs.readFileSync(file, "utf8"));
+          if (processIsAlive(pid)) process.kill(pid, "SIGKILL");
+        }
+      }
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+
   it("strips ambient agent signing overrides and exposes the request id", async () => {
     const originalEnv = {
       CLAUDECODE: process.env.CLAUDECODE,
@@ -92,8 +198,9 @@ describe("executeAuthCommand", () => {
       res.end(JSON.stringify({ commit_message: message, commit_message_digest: digest }));
     });
     try {
-      for (const name of ["src", "bin", "stale", "old-checkout"]) fs.mkdirSync(path.join(root, name));
+      for (const name of ["src", "scripts", "bin", "stale", "old-checkout"]) fs.mkdirSync(path.join(root, name));
       fs.copyFileSync(path.resolve("src/auth-executor.ts"), path.join(root, "src/auth-executor.ts"));
+      fs.copyFileSync(path.resolve("scripts/process-group-supervisor.mjs"), path.join(root, "scripts/process-group-supervisor.mjs"));
       fs.writeFileSync(path.join(root, "stale/mandible"), '#!/bin/bash\necho stale-shim-selected >&2\nexit 91\n', { mode: 0o700 });
       fs.writeFileSync(path.join(root, "bin/mandible"), [
         "#!/usr/bin/env bash", "set -euo pipefail",
@@ -135,5 +242,17 @@ function restoreEnv(key: string, value: string | undefined): void {
     delete process.env[key];
   } else {
     process.env[key] = value;
+  }
+}
+
+function shellQuote(value: string): string {
+  return "'" + value.replaceAll("'", "'\\''") + "'";
+}
+
+function processIsAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    throw error;
   }
 }
