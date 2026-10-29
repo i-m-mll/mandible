@@ -362,7 +362,7 @@ describe("scoped protected-merge clearance", () => {
       const request = await f.submit("dependent", { depends_on_ids: [first.id] });
       const clearance = await f.manager.issue({ requestId: request.id, grantee: f.agent.id,
         issueRef: f.issue.id, headBranch: "feature/scoped" }, f.operator.id);
-      const borrow = f.signer.borrow;
+      const borrow = f.signer.borrow.bind(f.signer);
       vi.spyOn(f.signer, "borrow").mockImplementation(leaseId => {
         f.db.prepare("UPDATE auth_requests SET depends_on_ids = ? WHERE id = ?").run(JSON.stringify([second.id]), request.id);
         return borrow(leaseId);

@@ -22,6 +22,35 @@ async function runShell(command: string, env: NodeJS.ProcessEnv): Promise<{ code
 }
 
 describe("CLI private local transport", () => {
+  it("uses the shipped manifest to require durable credentials on v2 create and revise", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-shipped-routes-")); roots.push(root);
+    const socket = path.join(root, "daemon.sock");
+    const seen: Array<{ method: string | undefined; url: string | undefined; auth: string | undefined }> = [];
+    const server = http.createServer((req, res) => {
+      seen.push({ method: req.method, url: req.url, auth: req.headers.authorization });
+      res.writeHead(200, { "Content-Type": "application/json" }); res.end('{"ok":true}');
+    });
+    await new Promise<void>(resolve => server.listen(socket, resolve));
+    try {
+      const env = { ...process.env, HOME: root, API_HELPER: api, MANDIBLE_CLI_DIR: path.dirname(api),
+        MANDIBLE_BASE: "https://app.mandible.localhost:19420", MANDIBLE_SOCKET: socket, MANDIBLE_TOKEN: "stale-token",
+        CODEX_THREAD_ID: "task-123", CODEX_SESSION_ID: "task-123" };
+      delete env.MANDIBLE_LOCAL_CREDENTIAL_ROUTES_FILE;
+      for (const [method, route] of [["POST", "/api/auth/v2/request"], ["PUT", "/api/auth/v2/request/request-123"]]) {
+        const requestEnv = { ...env, REQUEST_METHOD: method, REQUEST_PATH: route };
+        const gated = await runShell('source "$API_HELPER"; secret_account_for_service() { printf codex; }; secret_get() { printf durable-token; }; out=$(api_temp_file); api_http_exchange "$REQUEST_METHOD" "$REQUEST_PATH" "{}" "$out"', requestEnv);
+        expect(gated.code, gated.stderr).toBe(0);
+        expect(gated.stdout).toBe("200");
+        expect(seen.at(-1)).toEqual({ method, url: route, auth: "Bearer durable-token" });
+        const count = seen.length;
+        const missing = await runShell('source "$API_HELPER"; secret_account_for_service() { return 1; }; out=$(api_temp_file); api_http_exchange "$REQUEST_METHOD" "$REQUEST_PATH" "{}" "$out"', requestEnv);
+        expect(missing.stdout, missing.stderr).toBe("401");
+        expect(seen).toHaveLength(count);
+      }
+      expect(seen).toHaveLength(2);
+    } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
+  });
+
   it("ignores stale inherited bearer for ordinary reads and uses durable Keychain material only on listed gates", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-socket-client-")); roots.push(root);
     const socket = path.join(root, "daemon.sock");
