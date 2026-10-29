@@ -207,8 +207,13 @@ it('seals the exercised app in place after scratch disposal and refuses changed 
     const metadata = JSON.parse(metadataBytes.toString());
     metadata.ownership.workUnit = 'different-owner';
     fs.writeFileSync(metadataFile, JSON.stringify(metadata));
+    expect(() => resolveAcceptedRelease(reference, candidate)).toThrow('owner changed');
     await expect(disposeAcceptedRelease(reference, candidate, 'Changed custody')).rejects.toThrow('owner changed');
     expect(fs.existsSync(app)).toBe(true);
+    const originalMetadata = JSON.parse(metadataBytes.toString());
+    saveOwnedMetadata(metadataFile, { ...originalMetadata, ownership: { ...originalMetadata.ownership, state: 'terminal' } });
+    expect(() => resolveAcceptedRelease(reference, candidate)).toThrow('claimed for disposal');
+    expect(readAcceptedReleaseReceipt(reference, candidate).candidate).toEqual(candidate);
     fs.writeFileSync(metadataFile, metadataBytes);
     const receiptFile = Buffer.from(reference.split(':')[2], 'base64url').toString('utf8');
     const receiptBytes = fs.readFileSync(receiptFile);
