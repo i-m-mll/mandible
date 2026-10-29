@@ -3,6 +3,9 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { installedFileIdentity, readInstalledRelease } from './installed-release.mjs';
 import { createOwnedRun, saveOwnedMetadata, withOwnedRunLock, ownedRunIdentityMatches, finalizeOwnedRun, cleanupOwnedRun, inspectRunConsumers } from './owned-run.mjs';
+import { withInstallationGatewayLock } from './lifecycle-lock.mjs';
+import { readBundleOwner } from './bundle-services.mjs';
+import { readRuntimeHandoffLock } from './runtime-handoff-lock.mjs';
 
 export const ACCEPTED_RELEASE_SCHEMA = 'mandible-accepted-release@1';
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -74,15 +77,31 @@ export function resolveAcceptedRelease(reference, expectedCandidate) {
 }
 
 /** Explicit delivery-owner disposal; pending acceptances never expire as cache material. */
-export async function disposeAcceptedRelease(reference, expectedCandidate, reason) {
+export async function disposeAcceptedRelease(reference, expectedCandidate, reason, { home, assertHeld } = {}) {
   if (!reason?.trim()) throw new Error('Accepted release disposal requires an owner reason.');
   const receipt = readAcceptedReleaseReceipt(reference, expectedCandidate);
   const root = receipt.package.handle.root;
+  home ??= path.dirname(path.dirname(root));
+  if (!assertHeld) return withInstallationGatewayLock(home, (_token, held) => disposeAcceptedRelease(reference, expectedCandidate, reason, { home, assertHeld: held }));
+  assertHeld();
   return withOwnedRunLock(root, async () => {
-    resolveAcceptedRelease(reference, expectedCandidate);
+    const exact = readAcceptedReleaseReceipt(reference, expectedCandidate);
+    if (readBundleOwner({ runtimeDir: path.join(home, 'config/local-sessions') })?.acceptedRelease === reference) throw new Error('The installed release still owns these bytes.');
+    const active = readRuntimeHandoffLock(home);
+    if (active?.journalPath && JSON.parse(fs.readFileSync(active.journalPath, 'utf8')).binding.acceptedRelease?.reference === reference) throw new Error('An unresolved handoff still owns these bytes.');
     const metadataFile = path.join(root, 'metadata.json');
-    const { ownership } = JSON.parse(fs.readFileSync(metadataFile, 'utf8'));
-    finalizeOwnedRun(metadataFile, { expectedRevision: ownership.revision, outcome: 'abandoned', disposition: 'discard', summary: reason });
+    const metadata = JSON.parse(fs.readFileSync(metadataFile, 'utf8'));
+    const { ownership } = metadata;
+    if (!ownedRunIdentityMatches(root, ownership) || ownership.runId !== exact.package.handle.runId
+        || ownership.project !== exact.retention.project || ownership.workUnit !== exact.retention.work_unit) throw new Error('Accepted release owner changed.');
+    assertHeld();
+    if (ownership.state !== 'terminal') {
+      metadata.ownership = { ...ownership, disposable: true,
+        outputs: ownership.outputs.map(output => ({ ...output, kind: 'generated' })) };
+      saveOwnedMetadata(metadataFile, metadata);
+      finalizeOwnedRun(metadataFile, { expectedRevision: ownership.revision, outcome: 'abandoned', disposition: 'discard', summary: reason });
+    }
+    assertHeld();
     return cleanupOwnedRun(metadataFile, { apply: true });
   });
 }

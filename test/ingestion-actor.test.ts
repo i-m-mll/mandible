@@ -163,7 +163,7 @@ it.skipIf(process.platform !== "darwin")("rejects an unowned loaded library and 
       pid: process.pid, sha256: SQLITE_RUNTIME_LOCK.librarySha256,
       sourceId: SQLITE_RUNTIME_LOCK.sourceId, filename: process.env.MANDIBLE_SQLITE_LIBRARY || sqliteRuntimePaths().library,
     });
-    const source = 'import { parentPort } from "node:worker_threads"; try { await import(' + ${JSON.stringify(JSON.stringify(facadeUrl))} + '); parentPort.postMessage("forged receipt accepted"); } catch (error) { parentPort.postMessage(String(error)); }';
+    const source = 'import { parentPort } from "node:worker_threads"; try { const { default: Database } = await import(' + ${JSON.stringify(JSON.stringify(facadeUrl))} + '); const db = new Database(); db.close(); parentPort.postMessage("forged receipt accepted"); } catch (error) { parentPort.postMessage(String(error)); }';
     const worker = new Worker(new URL('data:text/javascript,' + encodeURIComponent(source)), { execArgv: [] });
     const message = await new Promise((resolve, reject) => { worker.once("message", resolve); worker.once("error", reject); });
     await worker.terminate(); unowned.close();

@@ -8,6 +8,18 @@ export class RuntimeObservationError extends Error {
 export function observationPending(error: unknown): error is RuntimeObservationError;
 export function runtimeObservationTimeout(until: number | undefined, maximumMs: number): number;
 export interface RuntimeProcessIdentity { pid: number; startedAt: string | null; runs: number }
+export interface RuntimeTerminalReceipt {
+  schema: 'mandible-runtime-receipt@2';
+  bindingDigest: string;
+  attemptId: string;
+  approved: { reference: string; packageSha256: string; publicationEvidence: { evidenceId: string; digest: string } };
+  installed: { root: string; identity: { dev: number; ino: number } };
+  services: { backend: RuntimeProcessIdentity; gateway: RuntimeProcessIdentity };
+  startup: { epoch: string; generation: string; database: string };
+  desktop: { required?: boolean; identity?: { pid: number; startedAt: string; [key: string]: unknown }; [key: string]: unknown };
+  completedAt: number;
+  diagnostics?: { daemonLog?: unknown };
+}
 export function runtimeProcessChanged(expected: RuntimeProcessIdentity | null | undefined, current: RuntimeProcessIdentity | null): boolean;
 export function decodeObservationError(text: string): RuntimeObservationError | null;
 export function runtimeObservationAcceptance(run: {
@@ -19,9 +31,6 @@ export function runtimeObservationAcceptance(run: {
   attempt?: { id: string; state: 'running' | 'complete' | 'failed'; receipt?: unknown; receiptDigest?: string; fence?: unknown };
   cleanup?: { state: 'pending' | 'complete' | 'failed' };
 }): 'accepted' | 'unaccepted' | 'inconsistent';
-export function runtimeVerificationDisposition(
-  run: Parameters<typeof runtimeObservationAcceptance>[0], journal: Parameters<typeof runtimeObservationAcceptance>[1] & { phase: string; launch?: unknown },
-): 'inconsistent' | 'retired' | 'confirmed' | 'helper_pending' | 'acknowledge' | 'await_acceptance' | 'complete_accepted' | 'observe';
 export function runtimeHandoffDisposition(journal: {
   attempt?: { id: string; state: 'running' | 'complete' | 'failed'; receipt?: unknown; receiptDigest?: string; fence?: unknown };
   cleanup?: { state: 'pending' | 'complete' | 'failed' };

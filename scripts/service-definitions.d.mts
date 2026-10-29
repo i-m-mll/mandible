@@ -8,7 +8,7 @@ export interface LoadedService {
   loaded?: boolean; pid: number | null; program?: string; argv?: string[]; environment?: Record<string, string>;
   workingDirectory?: string; stdoutPath?: string; stderrPath?: string; keepAlive?: boolean;
   bundleProgram?: string; parentBundleIdentifier?: string;
-  startedAt?: string; executable?: string; runs?: number; lastExit?: string | null;
+  startedAt?: string; executable?: string; runs?: number; state?: string; lastExit?: string | null; lastSignal?: string | null;
 }
 export interface ServiceDefinition {
   Label: string; Program?: string; ProgramArguments: string[]; EnvironmentVariables: Record<string, string>;

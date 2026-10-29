@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { admitRuntimeHandoff, runRuntimeHandoffWorker, runtimeHandoffDrainIdentity, closeQuiescentRuntimeHandoff } from '../../scripts/runtime-handoff.mjs';
 
 const [mode, file] = process.argv.slice(2);
@@ -16,16 +17,18 @@ const emitted = new Set();
 const once = event => { if (!emitted.has(event)) { emitted.add(event); emit(event); } };
 
 try {
-  if (mode === 'predecessor') {
+  if (mode === 'predecessor' || mode === 'predecessor-v1') {
+    const reader = mode === 'predecessor-v1'
+      ? (await import(pathToFileURL(process.env.MANDIBLE_TEST_V1_READER).href)).runtimeHandoffDrainIdentity
+      : runtimeHandoffDrainIdentity;
     emit('ready', { pid: process.pid, startedAt: spawnSync('/bin/ps', ['-p', String(process.pid), '-o', 'lstart='], { encoding: 'utf8', timeout: 1500 }).stdout.trim() });
     for (;;) {
       if (await command() === 'exit') break;
-      emit('drain', { identity: runtimeHandoffDrainIdentity(read()) });
+      emit('drain', { identity: reader(read()) });
     }
   } else if (mode === 'producer') {
     const journal = await admitRuntimeHandoff(read(), {
       verifyPublication: async () => {},
-      prepare: async () => ({ packageSha256: 'fixture-package', installed: false }),
       bootstrap: async () => {
         emit('bootstrap');
         if (await command() === 'crash') process.exit(17);
@@ -43,7 +46,7 @@ try {
       },
       control: async (_journal, operation) => { emit('effect', { operation }); return '{}'; },
       install: async () => ({}), desktop: async () => {},
-      observe: async () => ({ files: {} }),
+      observe: async () => ({ schema: 'mandible-runtime-receipt@2', files: {} }),
       wait: async ms => {
         const journal = read();
         if (journal.drainReady) once('draining');

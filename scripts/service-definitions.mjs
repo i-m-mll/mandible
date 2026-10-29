@@ -7,6 +7,8 @@ import { promisify } from 'node:util';
 import { bundleServiceLabel } from './bundle-service-roles.mjs';
 import { runtimeObservationTimeout } from './runtime-observation.mjs';
 
+import { nativeExecutionModel, classifyNativeExecution } from './native-service-execution.mjs';
+
 const execute = promisify(execFile);
 
 function bundleIdentifierAt(bundleRoot, until) {
@@ -59,7 +61,7 @@ export function parseLoadedService(detail) {
     bundleProgram: field('program identifier')?.replace(/ \(mode: \d+\)$/, ''), parentBundleIdentifier: field('parent bundle identifier'),
     workingDirectory: field('working directory'), stdoutPath: field('stdout path'), stderrPath: field('stderr path'),
     keepAlive: /\bkeepalive\b/.test(field('properties') ?? ''), pid: Number(field('pid')) || null,
-    runs: Number(field('runs')) || 0, lastExit: field('last exit code') ?? null };
+    runs: Number(field('runs')) || 0, state: field('state'), lastExit: field('last exit code') ?? null, lastSignal: field('last terminating signal') ?? null };
 }
 
 export function differingServiceFields(record, job) {
@@ -180,7 +182,12 @@ export function matchingServiceDefinitions(inspection) {
   return inspection;
 }
 
-function loadedJob(service, label, result, context, until) {
+function nativeExecutionReader(context) {
+  let model;
+  return () => model ??= nativeExecutionModel(context.bundleRoot, JSON.parse(fs.readFileSync(path.join(context.bundleRoot, "Contents/Resources/release.json"), "utf8")));
+}
+
+function loadedJob(service, label, result, context, until, execution) {
   if (result.status === 0) {
     const job = { loaded: true, ...parseLoadedService(result.stdout) };
     if (context.bundleRoot && job.bundleProgram) {
@@ -193,17 +200,10 @@ function loadedJob(service, label, result, context, until) {
         const executable = spawnSync('/bin/ps', ['-ww', '-p', String(job.pid), '-o', 'comm='], { encoding: 'utf8', timeout: runtimeObservationTimeout(until, 2500) });
         if (executable.error || executable.status !== 0) return refusal(service, label, 'unreadable_state', [], 'Cannot establish the loaded bundle process executable.');
         const actual = executable.stdout.trim();
-        // launchd publishes its PID before xpcproxy execs the native helper,
-        // whose initial comm can itself precede the full bundled Bun path.
-        const manifest = JSON.parse(fs.readFileSync(path.join(context.bundleRoot, 'Contents/Resources/release.json'), 'utf8'));
-        // Installed-release@1 originally used the Bun gateway parent (d7a60c03).
-        // New packages declare the final exec role in their accepted manifest.
-        const executableRole = manifest.serviceExecutables?.[service] ?? 'bun';
-        if (!['bun', 'caddy'].includes(executableRole) || service === 'backend' && executableRole !== 'bun') return refusal(service, label, 'unreadable_state', [], 'Invalid expected service executable role.');
-        const expectedExecutable = path.resolve(context.bundleRoot, 'Contents/Resources', manifest.native[executableRole]);
-        if (expectedExecutable !== path.join(context.bundleRoot, 'Contents/MacOS', `mandible-${executableRole}`)) return refusal(service, label, 'unreadable_state', [], 'Expected service executable leaves its native role.');
-        if (['xpcproxy', 'mandible-service', path.join(context.bundleRoot, 'Contents/MacOS/mandible-service'),
-          ...(executableRole === 'caddy' ? ['mandible-bun', path.join(context.bundleRoot, 'Contents/MacOS/mandible-bun')] : [])].includes(actual)) {
+        const model = execution();
+        if (!model.ok) return refusal(service, label, 'unreadable_state', [], model.message);
+        const stage = classifyNativeExecution(model, service, actual);
+        if (stage === 'pending') {
           const birth = spawnSync('/bin/ps', ['-p', String(job.pid), '-o', 'lstart='], { encoding: 'utf8', timeout: runtimeObservationTimeout(until, 2500) });
           const pending = refusal(service, label, 'starting', ['processExecutable'], `Native service ${label} PID ${job.pid} is still starting (${actual}); bundle process ownership is not confirmed yet.`);
           pending.refusal.evidence = { service, label, executable: actual, pid: job.pid,
@@ -212,7 +212,7 @@ function loadedJob(service, label, result, context, until) {
             bundleProgram: job.bundleProgram, parentBundleIdentifier: job.parentBundleIdentifier };
           return pending;
         }
-        if (actual !== expectedExecutable) {
+        if (stage === 'foreign') {
           return refusal(service, label, 'ownership_conflict', ['processExecutable'], `The loaded process PID ${job.pid} belongs to another bundle location (${actual}); preserving it.`);
         }
         const birth = spawnSync('/bin/ps', ['-p', String(job.pid), '-o', 'lstart='], { encoding: 'utf8', timeout: runtimeObservationTimeout(until, 2500) });
@@ -240,6 +240,7 @@ const combine = results => results.find(result => !result.ok && result.refusal.c
 
 /** Read-only: no runtime resolution, installation, receipts, or daemon imports. */
 export async function inspectServiceDefinitions(context, options = {}) {
+  const execution = nativeExecutionReader(context);
   return combine(await Promise.all((options.services ?? ['backend', 'gateway']).map(async service => {
     const label = context[`${service}Label`];
     try {
@@ -256,7 +257,7 @@ export async function inspectServiceDefinitions(context, options = {}) {
       let result;
       try { result = { status: 0, ...await execute('/bin/launchctl', ['print', `${context.domain}/${label}`], { timeout: runtimeObservationTimeout(options.until, 2500), maxBuffer: 1024 * 1024 }) }; }
       catch (error) { result = { status: error.code, stdout: error.stdout ?? '', stderr: error.stderr || error.message }; }
-      const loaded = loadedJob(service, label, result, context, options.until);
+      const loaded = loadedJob(service, label, result, context, options.until, execution);
       return loaded.ok ? assessServiceObservation(context, service, installed, loaded.job, { ...options, desired: options.desired?.[service] }) : loaded;
     } catch (error) { return refusal(service, label, 'unreadable_state', [], `Cannot inspect ${label}: ${error.message}`); }
   })));
@@ -264,6 +265,7 @@ export async function inspectServiceDefinitions(context, options = {}) {
 
 /** Controller-only synchronous entry point, with the same classifier and contract. */
 export function inspectServiceDefinitionsSync(context, options = {}) {
+  const execution = nativeExecutionReader(context);
   return combine((options.services ?? ['backend', 'gateway']).map(service => {
     const label = context[`${service}Label`];
     try {
@@ -279,7 +281,7 @@ export function inspectServiceDefinitionsSync(context, options = {}) {
         installed.push(installedDefinition(file, bytes, record));
       }
       const result = spawnSync('/bin/launchctl', ['print', `${context.domain}/${label}`], { encoding: 'utf8', timeout: runtimeObservationTimeout(options.until, 2500) });
-      const loaded = loadedJob(service, label, { ...result, stderr: result.error?.message || result.stderr || '' }, context, options.until);
+      const loaded = loadedJob(service, label, { ...result, stderr: result.error?.message || result.stderr || '' }, context, options.until, execution);
       return loaded.ok ? assessServiceObservation(context, service, installed, loaded.job, { ...options, desired: options.desired?.[service] }) : loaded;
     } catch (error) { return refusal(service, label, 'unreadable_state', [], `Cannot inspect ${label}: ${error.message}`); }
   }));

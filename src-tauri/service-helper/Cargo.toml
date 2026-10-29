@@ -5,7 +5,8 @@ edition = "2021"
 rust-version = "1.77.2"
 
 [dependencies]
+block2 = "0.6.2"
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSBundle", "NSString", "NSError"] }
-objc2-service-management = { version = "0.3.2", default-features = false, features = ["SMAppService", "objc2", "objc2-foundation"] }
+objc2-service-management = { version = "0.3.2", default-features = false, features = ["SMAppService", "objc2", "objc2-foundation", "block2"] }
 serde_json = "1"
 libc = "0.2"

@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { inventoryRelease } from './stage-app-payload.mjs';
+import { nativeSigningIdentifier } from './app-signing.mjs';
 
 export function assertUnsignedApp(app) {
   if (fs.existsSync(path.join(app, 'Contents/_CodeSignature/CodeResources'))) throw new Error('App is already signed. Assemble a fresh unsigned app; finalized or notarized apps must never be re-signed.');
@@ -14,9 +15,11 @@ export function finalizeAppPayload(app, signer) {
   const resources = path.join(app, 'Contents/Resources');
   const manifest = path.join(resources, 'release.json');
   const release = JSON.parse(fs.readFileSync(manifest, 'utf8'));
+  const appIdentifier = signer.run('/usr/bin/plutil', ['-extract', 'CFBundleIdentifier', 'raw', '-o', '-', path.join(app, 'Contents/Info.plist')]).trim();
   signer.run('/usr/bin/xattr', ['-cr', app]);
   for (const [role, relative] of Object.entries(release.native)) {
-    signer.sign(path.resolve(resources, relative), release.signing[role] ? path.join(resources, release.signing[role]) : null, role !== 'sqlite' && signer.plan.hardenedRuntime);
+    signer.sign(path.resolve(resources, relative), release.signing[role] ? path.join(resources, release.signing[role]) : null,
+      role !== 'sqlite' && signer.plan.hardenedRuntime, nativeSigningIdentifier(appIdentifier, role));
   }
   const finalized = inventoryRelease(resources, release);
   fs.writeFileSync(manifest, `${JSON.stringify(finalized, null, 2)}\n`);
@@ -26,6 +29,6 @@ export function finalizeAppPayload(app, signer) {
     fs.writeFileSync(entitlements, JSON.stringify(signer.plan.entitlements));
     signer.run('/usr/bin/plutil', ['-convert', 'xml1', entitlements]);
   }
-  signer.sign(app, entitlements);
+  signer.sign(app, entitlements, signer.plan.hardenedRuntime, appIdentifier);
   return finalized;
 }

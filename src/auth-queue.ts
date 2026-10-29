@@ -5985,7 +5985,8 @@ export class AuthQueue {
         };
         let verification: RuntimeVerificationResult;
         try {
-          verification = await this.hookManager.verifyCurrentRuntimeHandoff(request, recovery.actor, guard);
+          verification = await this.hookManager.verifyCurrentRuntimeHandoff(request, recovery.actor, guard,
+            (binding, proof) => this.adoptRuntimePublication(binding, proof));
         } catch (error) {
           if (error instanceof AuthQueueError) throw error;
           throw new AuthQueueError("recovery_refused", `Verification-only recovery refused: ${error instanceof Error ? error.message : String(error)}`);
@@ -6057,7 +6058,7 @@ export class AuthQueue {
     if (this.rebuildWindowRequestId === request.id) this.rebuildWindowRequestId = null;
     this._rebuilding = true;
     this.recordSelfMergeShutdown(this.now());
-    authLog('info', 'auth_self_merge_restart_scheduled', { subsystem: 'auth', auth_request_id: request.id, drain_identity: key, delay_ms: 2000, drain_cap_ms: AuthQueue.SELF_MERGE_DRAIN_CAP_MS });
+    authLog('info', 'auth_self_merge_restart_scheduled', { subsystem: 'auth', auth_request_id: request.id, drain_identity: key, drain_cap_ms: AuthQueue.SELF_MERGE_DRAIN_CAP_MS });
     void this.drainAndRestart(request.id, admitted || undefined).catch(error => { if (this.activeConvergenceDrain === key) { this.activeConvergenceDrain = null; this._rebuilding = false; } authLog('error', 'auth_convergence_drain_failed', { subsystem: 'auth', auth_request_id: request.id, error: errorMessage(error) }); });
     return convergence;
   }
@@ -6088,11 +6089,9 @@ export class AuthQueue {
         ),
       ]);
     }
-    // Bug: 03d6cb0 — preserve the SSE-flush delay before exit so auth:resolved
-    // reaches the channel server before the daemon goes down.
-    await new Promise<void>((resolve) => setTimeout(resolve, 2000));
     // Issue ff784d8 — the exact restart tail starts immediately before exit,
-    // after drain and flush. Do not reinterpret the earlier DB recovery marker.
+    // after durable result publication and drain. Disconnected channels replay
+    // undelivered results on reconnect.
     if (admitted && await this.hookManager.admittedDrainIdentity(selfRequestId) !== admitted) {
       this.activeConvergenceDrain = null;
       this._rebuilding = false;

@@ -7,11 +7,11 @@ import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { expect, it } from 'vitest';
 import { createPendingRelease, retainAcceptedRelease, applicationIdentity, readAcceptedReleaseReceipt } from '../../scripts/accepted-release.mjs';
-import { acceptedInstallPaths } from '../../scripts/accepted-app-install.mjs';
-import { installedFileIdentity, verifyInstalledRelease } from '../../scripts/installed-release.mjs';
+import { acceptedInstallPaths, applicationRootIdentity, preparedApplicationContext } from '../../scripts/accepted-app-install.mjs';
+import { installedFileIdentity, readInstalledRelease, verifyInstalledRelease } from '../../scripts/installed-release.mjs';
 import { serviceInstallationContext, inspectServiceDefinitionsSync, matchingServiceDefinitions } from '../../scripts/service-definitions.mjs';
-import { readBundleOwner, nativeServiceControl } from '../../scripts/bundle-services.mjs';
-import { bindingDigest, handoffDirectory, runRuntimeHandoffWorker } from '../../scripts/runtime-handoff.mjs';
+import { readBundleOwner, nativeServiceControls } from '../../scripts/bundle-services.mjs';
+import { bindingDigest, handoffDirectory, readRuntimeHandoffReceipt, runRuntimeHandoffWorker } from '../../scripts/runtime-handoff.mjs';
 import { pathToFileURL } from 'node:url';
 import http from 'node:http';
 import { readBundleProcess } from '../../scripts/local-runtime.mjs';
@@ -21,6 +21,7 @@ import { runSupervisedCommand } from '../../scripts/process-group-supervisor.mjs
 import { RuntimeObservationError, runtimeProcessChanged } from '../../scripts/runtime-observation.mjs';
 import type { ServiceKind } from '../../scripts/service-definitions.mjs';
 import type { RuntimeProcessIdentity } from '../../scripts/runtime-observation.mjs';
+import { resolveAppSigning, requireNativeAppSigning, openAppSigner, nativeSigningIdentifier, verifyNativeAppSignatures } from '../../scripts/app-signing.mjs';
 
 it('replaces retained signed bundles through real native service startup, qualified drain and exact package custody', async () => {
   if (process.platform !== 'darwin') throw new Error('The native replacement proof requires macOS.');
@@ -33,6 +34,14 @@ it('replaces retained signed bundles through real native service startup, qualif
     throw new Error('Run the native proof through test:provisioned with its original command deadline.');
   }
   const workUntil = deadline - 5_000;
+  const signingAccountHome = execFileSync('/bin/sh', ['-c', 'eval "printf %s ~$(id -un)"'], {
+    encoding: 'utf8', timeout: Math.max(1, workUntil - Date.now()),
+  }).trim();
+  if (!path.isAbsolute(signingAccountHome)) throw new Error('Cannot resolve the OS account home for signing tools.');
+  const signer = openAppSigner(requireNativeAppSigning(resolveAppSigning(process.cwd())), {
+    until: workUntil, accountHome: signingAccountHome,
+  });
+  try {
   const costs: Array<{ phase: string; ms: number }> = [];
   const checkDeadline = (phase: string, until = workUntil) => {
     if (Date.now() >= until) throw new Error(`Native replacement deadline exceeded during ${phase}.`);
@@ -60,6 +69,7 @@ it('replaces retained signed bundles through real native service startup, qualif
   const generations: unknown[] = [];
   let sourceRevision: string | null = null;
   let candidateExecutables: Record<string, ReturnType<typeof installedFileIdentity>> | null = null;
+  let predecessorExecutable: ReturnType<typeof installedFileIdentity> | null = null;
   let failureDiagnostic: { json_excerpt: string; truncated: boolean; service_stderr: Record<string, string> } | null = null;
   console.info('native_bundle_replacement_started', JSON.stringify({ identifier, root, started, deadline }));
   const runtime = process.env.MANDIBLE_RUNTIME;
@@ -96,7 +106,7 @@ it('replaces retained signed bundles through real native service startup, qualif
       && Object.values(qualified).every(item => !processIdentity(item.pid, { until }));
   };
   const stop = async (until: number) => {
-    for (const role of roles) nativeServiceControl(context, 'unregister', role, { until });
+    nativeServiceControls(context, 'unregister', roles, { until });
     await waitFor('qualified native service drain', () => stopped(until), until);
   };
   try {
@@ -106,9 +116,21 @@ it('replaces retained signed bundles through real native service startup, qualif
     const candidateApp = process.env.MANDIBLE_NATIVE_PROOF_APP;
     if (!candidateApp || !path.isAbsolute(candidateApp)) throw new Error('Native proof requires MANDIBLE_NATIVE_PROOF_APP from the candidate package already built for this qualification.');
     const candidateMacOS = path.join(candidateApp, 'Contents/MacOS');
+    const candidateRelease = readInstalledRelease(path.join(candidateApp, 'Contents/Resources'));
+    expect(candidateRelease.serviceControlProtocol).toBe(2);
     const helper = path.join(candidateMacOS, 'mandible-service');
+    const predecessorApp = process.env.MANDIBLE_NATIVE_PROOF_PREDECESSOR_APP;
+    if (!predecessorApp || !path.isAbsolute(predecessorApp)) throw new Error('Native proof requires an explicit retained v1 MANDIBLE_NATIVE_PROOF_PREDECESSOR_APP.');
+    const predecessorHelper = path.join(predecessorApp, 'Contents/MacOS/mandible-service');
+    const predecessorRelease = JSON.parse(fs.readFileSync(path.join(predecessorApp, 'Contents/Resources/release.json'), 'utf8'));
+    if (predecessorRelease.serviceControlProtocol !== undefined) throw new Error('Native predecessor must declare the actual v1 service protocol.');
+    predecessorExecutable = installedFileIdentity(predecessorHelper);
+    expect(predecessorExecutable).toEqual(predecessorRelease.files[predecessorRelease.native.serviceHelper]);
     for (const executable of ['mandible-service', 'mandible-bun', 'mandible-caddy']) if (!fs.statSync(path.join(candidateMacOS, executable)).isFile()) throw new Error('Candidate native proof executable is missing: ' + executable);
     candidateExecutables = Object.fromEntries(['mandible-service', 'mandible-bun', 'mandible-caddy'].map(executable => [executable, installedFileIdentity(path.join(candidateMacOS, executable))]));
+    for (const [file, role] of [['mandible-service', 'serviceHelper'], ['mandible-bun', 'bun'], ['mandible-caddy', 'caddy']] as const) {
+      expect(candidateExecutables[file]).toEqual(candidateRelease.files[candidateRelease.native[role]]);
+    }
     fs.mkdirSync(path.join(home, 'config/client-auth'), { recursive: true });
     const authority = path.join(home, 'config/client-auth/authority-id');
     const credentials = path.join(home, 'config/client-auth/credentials');
@@ -140,8 +162,12 @@ it('replaces retained signed bundles through real native service startup, qualif
       fs.copyFileSync(path.join(candidateMacOS, 'mandible-bun'), path.join(contents, 'MacOS/mandible-bun'), fs.constants.COPYFILE_FICLONE);
       fs.copyFileSync(path.join(candidateMacOS, 'mandible-caddy'), path.join(contents, 'MacOS/mandible-caddy'), fs.constants.COPYFILE_FICLONE);
       fs.writeFileSync(path.join(contents, 'Info.plist'), `<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${identifier}</string><key>CFBundleExecutable</key><string>mandible-app</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleVersion</key><string>${index + 1}</string></dict></plist>`);
-      stageBundleServices(contents, helper, identifier);
-      run('/usr/bin/codesign', ['--force', '--sign', '-', path.join(contents, 'MacOS/mandible-service')], `sign ${pin} helper`);
+      stageBundleServices(contents, index ? helper : predecessorHelper, identifier);
+      signer.sign(path.join(contents, 'MacOS/mandible-service'), null, true, nativeSigningIdentifier(identifier, 'serviceHelper'));
+      for (const role of ['bun', 'caddy'] as const) {
+        const entitlements = candidateRelease.signing?.[role];
+        signer.sign(path.join(contents, 'MacOS', `mandible-${role}`), entitlements ? path.join(candidateApp, 'Contents/Resources', entitlements) : null);
+      }
       const candidate = { pin_sha: pin.repeat(40), tree_sha: 'c'.repeat(40), base_sha: 'd'.repeat(40), head_sha: 'e'.repeat(40) };
       fs.writeFileSync(path.join(resources, 'service-fixture.json'), JSON.stringify({ accountHome }));
       fs.writeFileSync(path.join(resources, 'foreground.mjs'), `import fs from 'node:fs'; import path from 'node:path';
@@ -159,8 +185,9 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
       checkDeadline(`generation ${pin} inventory`);
       fs.writeFileSync(path.join(resources, 'release.json'), JSON.stringify({ schema: 'mandible-installed-release@1', version: String(index + 1), target: `${process.platform}-${process.arch}`,
         layout: { kind: 'macos-app', roots: { resources: '.', executables: '../MacOS', agents: '../Library/LaunchAgents' } },
-        provenance: { commit: candidate.pin_sha, source_digest: pin.repeat(64) }, entrypoints: { daemon: 'foreground.mjs', service: 'foreground.mjs' }, serviceExecutables: { backend: 'bun', gateway: 'caddy' }, native, files }));
-      run('/usr/bin/codesign', ['--force', '--sign', '-', built], `sign ${pin} bundle`);
+        provenance: { commit: candidate.pin_sha, source_digest: pin.repeat(64) }, entrypoints: { daemon: 'foreground.mjs', service: 'foreground.mjs' }, serviceExecutables: { backend: 'bun', gateway: 'caddy' }, ...(index ? { serviceControlProtocol: 2 } : {}), native, files }));
+      signer.sign(built, null, true, identifier);
+      verifyNativeAppSignatures(built, signer, { native });
       const evidence = path.join(root, `evidence-${pin}`);
       fs.writeFileSync(evidence, JSON.stringify({ scope: 'private native service replacement fixture', generation: candidate.pin_sha }));
       checkDeadline(`generation ${pin} retention admission`);
@@ -176,7 +203,7 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
       if (before && !before.ok) throw new Error(before.refusal.message);
       const previousServices = Object.fromEntries((before?.observations ?? []).map(item => [item.service, { argv: item.job.argv, definition: item.loadedDefinition, process: { pid: item.job.pid, startedAt: item.job.startedAt } }]));
       const binding = { home, root: path.join(root, 'absent-checkout'), nativeApp: app, requestId: 'request-' + index, executionId: 'execution-' + index,
-        acceptedRelease: { reference }, bundleOwner: prior, priorAppSha256: index ? applicationIdentity(app) : null,
+        acceptedRelease: { reference }, bundleOwner: prior, priorAppIdentity: index ? applicationRootIdentity(app) : null,
         runtime: { path: runtime, sha256: installedFileIdentity(runtime).sha256 }, installationId: 'preserved-authority',
         domain: context.domain, backendLabel: context.backendLabel, gatewayLabel: context.gatewayLabel,
         priorBackend: { ...previousServices.backend, launchMode: 'manual' }, priorGateway: previousServices.gateway,
@@ -218,48 +245,54 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
         return { processes, heartbeat, gatewayAdmin: status };
       };
       const control = async (journal, command, _currentVerifier, options) => {
-        const priorJournal = process.env.MANDIBLE_RUNTIME_HANDOFF_JOURNAL;
-        process.env.MANDIBLE_RUNTIME_HANDOFF_JOURNAL = file;
-        try {
         if (command === 'handoff-remove' && !index) return '{}';
         if (command === 'handoff-start' && index && !interrupted) { interrupted = true; throw new RuntimeObservationError('fixture_interruption', 'Installed before launch.', null, 'pending'); }
-        if (!nativeRuntime) {
-          const priorEnv = { MANDIBLE_HOME: process.env.MANDIBLE_HOME, MANDIBLE_SERVICE_ACCOUNT_HOME: process.env.MANDIBLE_SERVICE_ACCOUNT_HOME, MANDIBLE_RUNTIME_HANDOFF_CAPTURE: process.env.MANDIBLE_RUNTIME_HANDOFF_CAPTURE };
-          Object.assign(process.env, { MANDIBLE_HOME: home, MANDIBLE_SERVICE_ACCOUNT_HOME: accountHome, MANDIBLE_RUNTIME_HANDOFF_CAPTURE: '1' });
-          try { nativeRuntime = await import(pathToFileURL(path.resolve('scripts/local-runtime.mjs')).href + '?nativeFixture=' + identifier); }
-          finally { for (const [key, value] of Object.entries(priorEnv)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } }
-        }
-        if (command === 'handoff-remove') return JSON.stringify(await nativeRuntime.removeHandoffDefinitions(binding, { until: options.until }));
-        if (command === 'handoff-start') return JSON.stringify(await nativeRuntime.startHandoffDefinitions(binding, { until: options.until,
+        nativeRuntime ??= await import(pathToFileURL(path.resolve('scripts/local-runtime.mjs')).href);
+        if (command === 'handoff-remove') return JSON.stringify(await nativeRuntime.removeHandoffDefinitions(binding, { ...options, context, journal }));
+        if (command === 'handoff-start') return JSON.stringify(await nativeRuntime.startHandoffDefinitions(binding, { ...options, context, journal,
           processes: journal.attempt.effects.services?.processes ?? {}, initialize: async () => {}, configure: async () => {
             fs.writeFileSync(path.join(context.runtimeDir, 'fixture-caddy.json'), JSON.stringify({ admin: { listen: 'unix/' + gatewaySocket }, apps: {} }));
           } }));
         return JSON.stringify(await readAccess(options.awaitReady));
-        } finally { if (priorJournal === undefined) delete process.env.MANDIBLE_RUNTIME_HANDOFF_JOURNAL; else process.env.MANDIBLE_RUNTIME_HANDOFF_JOURNAL = priorJournal; }
       };
-      const options = { control, verifyPublication: async () => {}, waitMs: Math.max(1, workUntil - Date.now()),
-        observe: async journal => ({ bindingDigest: journal.bindingDigest, evidence: await readAccess(), files: {}, completedAt: Date.now() }) };
+      const options = { context, control, verifyPublication: async () => {}, waitMs: Math.max(1, workUntil - Date.now()),
+        observe: async (journal, { prepared }) => {
+          const application = preparedApplicationContext(prepared, binding);
+          const access = await readAccess();
+          return { schema: 'mandible-runtime-receipt@2', bindingDigest: journal.bindingDigest,
+            approved: { reference, packageSha256: application.digest }, installed: { root: app, identity: application.identity },
+            services: access.processes, desktop: { required: false },
+            startup: { epoch: 'private-native-fixture', generation: candidate.pin_sha, database: path.join(home, 'mandible.db') }, completedAt: Date.now() };
+        } };
       let completed = await runRuntimeHandoffWorker(file, options);
       if (index) {
         expect(completed.attempt.state, JSON.stringify(completed.attempt.lastObservation)).toBe('running');
         expect(applicationIdentity(app)).toBe(readAcceptedReleaseReceipt(reference).package.sha256);
         expect(completed.attempt.effects.replace.completedAt).toBeDefined();
         const attemptId = completed.attempt.id;
+        const installedIdentity = applicationRootIdentity(app);
+        const stageIdentity = completed.attempt.effects.prepare.stageIdentity;
         completed = await runRuntimeHandoffWorker(file, options);
         expect(completed.attempt.id).toBe(attemptId);
+        expect(applicationRootIdentity(app)).toEqual(installedIdentity);
+        expect(completed.attempt.effects.prepare.stageIdentity).toEqual(stageIdentity);
       }
       expect(completed.attempt.state, JSON.stringify(completed.attempt.lastObservation)).toBe('complete');
       qualified = completed.attempt.effects.services.processes;
+      const terminal = readRuntimeHandoffReceipt(completed);
+      expect(terminal).toMatchObject({ schema: 'mandible-runtime-receipt@2', attemptId: completed.attempt.id,
+        approved: { reference }, installed: { root: app, identity: applicationRootIdentity(app) },
+        services: qualified, startup: { generation: candidate.pin_sha } });
       await withLifecycleLock(home, async () => {
         expect(matchingServiceDefinitions(inspectServiceDefinitionsSync(context, { until: workUntil })).ok).toBe(true);
         const receipt = readAcceptedReleaseReceipt(reference);
         expect(applicationIdentity(app)).toBe(receipt.package.sha256);
         checkDeadline(`generation ${pin} exact installed bytes`);
         const previous = acceptedInstallPaths(binding).previous;
-        if (index) expect(applicationIdentity(previous)).toBe(binding.priorAppSha256);
+        if (index) expect(applicationRootIdentity(previous)).toEqual(binding.priorAppIdentity);
         checkDeadline(`generation ${pin} disposal admission`);
         await supervised(['scripts/verify-accepted-release.mjs', reference, JSON.stringify(candidate), app, previous,
-          binding.priorAppSha256 ?? '', previousReference], `verify/dispose ${pin}`);
+          JSON.stringify(binding.priorAppIdentity), previousReference], `verify/dispose ${pin}`);
         expect(fs.existsSync(previous)).toBe(false);
         if (previousReference) expect(fs.existsSync(readAcceptedReleaseReceipt(previousReference).package.handle.root)).toBe(false);
         expect(fs.readFileSync(authority, 'utf8')).toBe('preserved-authority');
@@ -271,6 +304,9 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
         }
         expect(prior).toMatchObject({ generation: candidate.pin_sha, acceptedRelease: reference, installationId: 'preserved-authority' });
         generations.push({ generation: candidate.pin_sha, processes: qualified, packageSha256: receipt.package.sha256,
+          service_control_protocol: index ? 2 : 1, attempt_id: completed.attempt.id,
+          receipt_digest: completed.attempt.receiptDigest, receipt_scope: 'Private native access adapter; no production health or adoption',
+          installed_before_launch_continuation: index === 1 && interrupted,
           provisioning_install_proof_ms: Date.now() - phaseStarted });
       });
       previousReference = reference;
@@ -306,8 +342,11 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
       if (cleaned) fs.rmSync(root, { recursive: true, force: true });
       console.info('native_bundle_replacement_proof', JSON.stringify({ scope: 'private SMAppService replacement; no product daemon, GUI, ledger or approval API',
         source_revision: sourceRevision, candidate_app: process.env.MANDIBLE_NATIVE_PROOF_APP, candidate_executables: candidateExecutables,
+        predecessor_app: process.env.MANDIBLE_NATIVE_PROOF_PREDECESSOR_APP,
+        predecessor_executable: predecessorExecutable,
         runtime_source: 'Current source reconciler and native effect modules; fixture authority/access adapters; copied candidate helper is re-signed for private descriptors.',
-        identifier, generations, command_costs: costs, failure: failureDiagnostic,
+        identifier, signing_identity: signer.identity, helper_identifier: nativeSigningIdentifier(identifier, 'serviceHelper'),
+        generations, command_costs: costs, failure: failureDiagnostic,
         clock_origin: 'provisioned runner entry; external wall includes earlier runtime selector/import startup',
         runner_entry_elapsed_ms: Date.now() - started, teardown_ms: Date.now() - teardownStarted,
         target_ms: 60_000, deadline_ms: 20_000, teardown_reserve_ms: 5_000,
@@ -316,4 +355,5 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
     }
     checkDeadline('final cleanup', cleanupUntil);
   }
+  } finally { signer.close(); }
 });

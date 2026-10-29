@@ -18,6 +18,8 @@ import { withOwnedRunLock, createOwnedRun, saveOwnedMetadata, finalizeOwnedRun, 
 import { readBuildRevision } from './build-revision.mjs';
 import { acceptanceDeadline } from './acceptance-deadline.mjs';
 import { observeRuntimeHealthCoverage, RuntimeHealthObservationError } from '../src/runtime-health-contract.ts';
+import { gatewayCaddyfile, GATEWAY_GRACE_SECONDS } from './gateway-config.mjs';
+import { resolveAppSigning, requireNativeAppSigning } from './app-signing.mjs';
 
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -83,6 +85,26 @@ export function createAcceptanceHome(home) {
   fs.mkdirSync(home, { mode: 0o700 });
 }
 
+async function verifyPackagedUpdaterEntrypoint({ resources, runtime, environment, home, profile, budget }) {
+  const privateHome = path.join(home, 'updater-entrypoint');
+  const journal = path.join(privateHome, 'config/local-sessions/handoff/invalid-request-invalid-execution/journal.json');
+  fs.mkdirSync(path.dirname(journal), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(journal, JSON.stringify({ schema: 'invalid', bindingDigest: '0'.repeat(64),
+    binding: { home: privateHome, requestId: 'invalid-request', executionId: 'invalid-execution' } }), { mode: 0o600 });
+  try {
+    await runSupervisedCommand('/usr/bin/sandbox-exec', ['-p', profile, runtime, '--no-install', path.join(resources, 'handoff/helper.mjs'), 'worker', journal], {
+      env: { ...environment, MANDIBLE_HOME: privateHome }, cwd: privateHome, capture: true, maxBuffer: 16 * 1024,
+      timeout: budget.remaining(), graceMs: 250, deadline: budget.deadline - 3000,
+    });
+  } catch (error) {
+    if (error.exitCode === 1 && error.processGroupSettled && error.stderr?.trim() === 'Runtime handoff binding is malformed or changed.') {
+      return { status: 'passed', exit_code: 1, refusal: error.stderr.trim() };
+    }
+    throw new Error(`Packaged updater did not reach its journal-validation boundary: ${error.stderr || error.message}`);
+  }
+  throw new Error('Packaged updater accepted an invalid journal.');
+}
+
 export function diagnosticReplayPackage(receiptFile, app) {
   if (!receiptFile || !app) throw new Error('Diagnostic replay requires both --diagnostic-receipt and --diagnostic-app.');
   const source = JSON.parse(fs.readFileSync(receiptFile, 'utf8'));
@@ -119,12 +141,13 @@ export function acceptanceGatewayConfig({ origin, backendPort, storageRoot }) {
   if (url.protocol !== 'https:' || url.hostname !== 'app.mandible.localhost' || !url.port || url.origin !== origin) throw new Error('Acceptance requires an exact Mandible HTTPS origin.');
   const ports = [Number(url.port), backendPort];
   if (!ports.every(port => Number.isInteger(port) && port > 0 && port < 65536) || new Set(ports).size !== 2 || !path.isAbsolute(storageRoot)) throw new Error('Acceptance gateway requires distinct valid ports and owned absolute storage.');
-  return `{\n  admin off\n  storage file_system ${JSON.stringify(storageRoot)}\n  local_certs\n  skip_install_trust\n  auto_https disable_redirects\n}\n\n${origin} {\n  bind 127.0.0.1 ::1\n  tls internal\n  header -Server\n  reverse_proxy http://127.0.0.1:${backendPort} {\n    header_up -X-Mandible-Target-Instance\n    header_up -X-Mandible-Session-Context\n  }\n}\n`;
+  return gatewayCaddyfile([{ role: 'main', instance_id: 'acceptance', public_origin: origin,
+    backend_origin: `http://127.0.0.1:${backendPort}` }], { storageRoot });
 }
 
 /** Acceptance's log verdict: runtime log failures plus every health event, since a stall on the fixture is the code's. */
-export function assessAcceptanceLogs(text) {
-  const { failures, diagnostics } = assessRuntimeLogs(text);
+export function assessAcceptanceLogs(text, context) {
+  const { failures, diagnostics } = assessRuntimeLogs(text, context);
   return { failures: [...failures, ...diagnostics.health_events.retained.map(entry => `Runtime health event: ${JSON.stringify(entry)}`)], diagnostics };
 }
 
@@ -286,15 +309,18 @@ async function until(predicate, timeout, description) {
   throw new Error(`${description} did not complete within ${timeout}ms`);
 }
 
-async function stopOwned(child, remaining) {
+export async function stopOwned(child, remaining) {
   if (!child || child.exitCode !== null || child.signalCode !== null) return;
-  child.kill('SIGTERM');
-  try { await until(() => child.exitCode !== null || child.signalCode !== null, Math.min(1000, remaining()), 'Owned process shutdown'); }
+  const requestedAt = Date.now();
+  const signalled = child.kill('SIGTERM');
+  try { await until(() => child.exitCode !== null || child.signalCode !== null, Math.max(1, remaining() - 1000), 'Owned process shutdown'); }
   catch (error) {
     child.kill('SIGKILL');
     await until(() => child.exitCode !== null || child.signalCode !== null, Math.min(1000, remaining()), 'Owned process termination');
     throw error;
   }
+  if (signalled) return { pid: child.pid, signal: 'SIGTERM', requestedAt, exitedAt: Date.now(),
+    exitCode: child.exitCode, exitSignal: child.signalCode };
 }
 
 export async function finalizeAcceptance({ metadataFile, result, candidateBinding, testedPackageDigest, pendingPackage, diagnostic, diagnostics, cache, run, ownership, deadlineEnv }) {
@@ -365,6 +391,7 @@ async function main(budget) {
   const option = name => { const index = process.argv.indexOf(name); return index >= 0 ? process.argv[index + 1] : undefined; };
   const diagnostic = option('--diagnostic-receipt') || option('--diagnostic-app')
     ? diagnosticReplayPackage(option('--diagnostic-receipt'), option('--diagnostic-app')) : null;
+  if (!diagnostic) requireNativeAppSigning(resolveAppSigning(root));
   const candidate = diagnostic?.candidate || boundedCommand('git', ['rev-parse', 'HEAD']);
   const parents = boundedCommand('git', ['show', '-s', '--format=%P', candidate]).split(' ');
   const candidateBinding = { pin_sha: candidate, tree_sha: boundedCommand('git', ['rev-parse', `${candidate}^{tree}`]),
@@ -441,6 +468,8 @@ async function main(budget) {
     testedPackageDigest = applicationIdentity(app);
     if (diagnostic && testedPackageDigest !== diagnostic.sha256) throw new Error('Diagnostic package changed while copying.');
     executionProfile = installedExecutionProfile({ checkout: root, commonDirectory: boundedCommand("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"]), app });
+    if (!diagnostic) result.checks.updater_entrypoint = await verifyPackagedUpdaterEntrypoint({ resources, runtime: packagedRuntime,
+      environment: resourceEnv, home, profile: executionProfile, budget });
     result.provenance = { marker, daemon_sha256: sha256(releaseFile(resources, shipped.entrypoints.daemon)), native_sha256: sha256(path.join(app, "Contents/MacOS/mandible-app")), harness_sha256: sha256(fileURLToPath(import.meta.url)), package_sha256: testedPackageDigest, shipped };
     result.phases.package_verification.status = 'passed';
     result.phases.package_verification.elapsed_ms = Date.now() - result.phases.package_verification.started_at;
@@ -557,16 +586,20 @@ async function main(budget) {
     passiveController.abort();
     await passiveHealth;
     for (const phase of Object.values(result.phases)) if (phase.status === 'running') { phase.status = 'failed'; phase.error = result.error || 'Interrupted'; phase.elapsed_ms = Date.now() - phase.started_at; }
-    await Promise.all([stallProbe, desktop, gateway, daemon].map(async child => {
-      try { await stopOwned(child, () => budget.remaining(true)); } catch (error) { result.status = 'failed'; result.cleanup_error = error.message; }
+    const shutdowns = {};
+    await Promise.all([['probe', stallProbe], ['desktop', desktop], ['gateway', gateway], ['daemon', daemon]].map(async ([name, child]) => {
+      try { shutdowns[name] = await stopOwned(child, () => budget.remaining(true)); } catch (error) { result.status = 'failed'; result.cleanup_error = error.message; }
     }));
     for (const fd of files) fs.closeSync(fd);
-    const logs = ['daemon', 'desktop', 'gateway'].map(name => {
-      const file = path.join(run, `${name}.log`); return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
-    }).join('\n');
-    const assessment = assessAcceptanceLogs(logs);
-    result.checks.log_failures = assessment.failures;
-    result.checks.log_diagnostics = assessment.diagnostics;
+    const logSources = [['daemon', daemon], ['desktop', desktop], ['gateway', gateway]].map(([name, child]) => {
+      const file = path.join(run, `${name}.log`);
+      const text = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+      return { name, text, assessment: assessAcceptanceLogs(text, { process: { role: name, pid: child?.pid, owned: !!child },
+        shutdown: name === 'gateway' && shutdowns[name] ? { ...shutdowns[name], graceSeconds: GATEWAY_GRACE_SECONDS } : undefined }) };
+    });
+    const logs = logSources.map(source => source.text).join('\n');
+    result.checks.log_failures = logSources.flatMap(source => source.assessment.failures.map(line => `${source.name}: ${line}`));
+    result.checks.log_diagnostics = Object.fromEntries(logSources.map(source => [source.name, source.assessment.diagnostics]));
     if (result.status !== 'passed' && fs.existsSync(path.join(run, 'build.log'))) result.checks.build_failure_excerpt = fs.readFileSync(path.join(run, 'build.log'), 'utf8').split('\n').slice(-30).join('\n').slice(-8000);
     result.checks.log_digest = createHash('sha256').update(logs).digest('hex');
     result.checks.log_bytes = Buffer.byteLength(logs);

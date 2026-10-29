@@ -29,14 +29,14 @@ function peakWindow(summary) {
   return peak + summary.untimed;
 }
 
-export function assessRuntimeLogs(text) {
-  const assessor = createRuntimeLogAssessor();
+export function assessRuntimeLogs(text, context) {
+  const assessor = createRuntimeLogAssessor(context);
   for (const line of text.split('\n')) assessor.add(line);
   return assessor.finish();
 }
 
 /** Incremental form of assessRuntimeLogs, for logs read in chunks. */
-export function createRuntimeLogAssessor() {
+export function createRuntimeLogAssessor({ process: source, shutdown } = {}) {
   const failures = [];
   const healthEvents = [];
   let healthEventCount = 0;
@@ -45,6 +45,13 @@ export function createRuntimeLogAssessor() {
   const routes = new Map();
   let started = 0;
   let requests = 0;
+  const ownedShutdown = source?.owned === true && source.role === 'gateway' && Number.isInteger(source.pid) && source.pid > 0
+    && shutdown?.pid === source.pid && shutdown.signal === 'SIGTERM' && shutdown.exitCode === 0 && shutdown.exitSignal === null
+    && Number.isFinite(shutdown.requestedAt) && Number.isFinite(shutdown.exitedAt) && shutdown.exitedAt >= shutdown.requestedAt
+    && Number.isFinite(shutdown.graceSeconds) && shutdown.graceSeconds > 0;
+  let signalAt = null, graceAt = null, completedAt = null;
+  let lastCutoffAt = 0, cutoffCount = 0;
+  const cutoffs = [];
   const recordHealth = entry => {
     healthEventCount++;
     if (healthEvents.length < MAX_RETAINED_HEALTH_EVENTS) healthEvents.push(entry);
@@ -56,6 +63,14 @@ export function createRuntimeLogAssessor() {
       if (/panic|fatal|crash|foreign.key|database.*(?:closed|not open)/i.test(line)) { if (failures.length < 20) failures.push(line); }
       else if (/event.loop.*(?:stall|starv)/i.test(line)) recordHealth({ line: line.slice(0, 500) });
       return;
+    }
+    const time = Number.isFinite(row.ts) ? row.ts * 1000 : NaN;
+    if (ownedShutdown && time >= shutdown.requestedAt && time <= shutdown.exitedAt + 1) {
+      if (row.level === 'info' && row.msg === 'shutting down apps, then terminating' && row.signal === 'SIGTERM') signalAt = time;
+      if (signalAt !== null && row.level === 'info' && row.logger === 'http'
+          && row.msg === 'servers shutting down; grace period initiated' && row.duration === shutdown.graceSeconds && time >= signalAt) graceAt = time;
+      if (graceAt !== null && row.level === 'info' && row.msg === 'shutdown complete' && row.signal === 'SIGTERM'
+          && row.exit_code === 0 && time >= graceAt) completedAt = time;
     }
     const event = row.message || row.event || '';
     if (event === 'server_started') started++;
@@ -83,9 +98,22 @@ export function createRuntimeLogAssessor() {
         ...(Number.isFinite(row.rss_fraction) ? { rss_fraction: row.rss_fraction } : {}),
       });
     }
-    if (row.level === 'error' || ['ingestion_worker_error', 'ingestion_worker_exit', 'ingestion_reconcile_error'].includes(event) || /foreign.key|database.*(?:closed|not open)|panic|crash/i.test(line)) { hardFailureCount++; if (failures.length < 20) failures.push(line); }
+    const hardFault = /foreign.key|database.*(?:closed|not open)|panic|crash/i.test(line);
+    if (ownedShutdown && !hardFault && completedAt === null && graceAt !== null && time >= graceAt + shutdown.graceSeconds * 1000
+        && time <= shutdown.exitedAt + 1 && row.level === 'error' && row.logger === 'http' && row.msg === 'server shutdown'
+        && row.error === `server graceful shutdown ${shutdown.graceSeconds}s timeout`
+        && Array.isArray(row.addresses) && row.addresses.length > 0 && row.addresses.every(address => typeof address === 'string' && address.length > 0)) {
+      cutoffCount++;
+      lastCutoffAt = Math.max(lastCutoffAt, time);
+      if (cutoffs.length < 20) cutoffs.push({ line, row });
+    } else if (row.level === 'error' || ['ingestion_worker_error', 'ingestion_worker_exit', 'ingestion_reconcile_error'].includes(event) || hardFault) { hardFailureCount++; if (failures.length < 20) failures.push(line); }
   };
   const finish = () => {
+    const boundedShutdown = cutoffCount > 0 && completedAt !== null && completedAt >= lastCutoffAt;
+    if (!boundedShutdown && cutoffCount > 0) {
+      hardFailureCount += cutoffCount;
+      failures.push(...cutoffs.slice(0, Math.max(0, 20 - failures.length)).map(entry => entry.line));
+    }
     if (started > 1) { hardFailureCount++; failures.push('Daemon restarted during acceptance'); }
     const eventSummaries = [];
     for (const [event, summary] of events) {
@@ -104,7 +132,12 @@ export function createRuntimeLogAssessor() {
     eventSummaries.sort((a, b) => b.peak_window_count - a.peak_window_count || b.count - a.count || a.event.localeCompare(b.event));
     return {
       failures,
-      diagnostics: { hard_failure_count: hardFailureCount, health_events: { retained: healthEvents, omitted: healthEventCount - healthEvents.length }, events: { event_count: eventSummaries.length, window_ms: STORM_WINDOW_MS, limit: STORM_LIMIT, events: eventSummaries.slice(0, 20), omitted_events: Math.max(0, eventSummaries.length - 20) }, http_requests: { total: requests, route_count: httpRoutes.length, window_ms: STORM_WINDOW_MS, routes: httpRoutes.slice(0, 20), omitted_routes: Math.max(0, httpRoutes.length - 20) } },
+      diagnostics: { hard_failure_count: hardFailureCount,
+        ...(boundedShutdown ? { gateway_shutdown: { pid: source.pid, signal: shutdown.signal, grace_seconds: shutdown.graceSeconds,
+          requested_at: shutdown.requestedAt, exited_at: shutdown.exitedAt, exit_code: shutdown.exitCode,
+          signal_at: signalAt, grace_started_at: graceAt, completed_at: completedAt,
+          cutoff_errors: cutoffs.map(entry => entry.row), omitted: cutoffCount - cutoffs.length } } : {}),
+        health_events: { retained: healthEvents, omitted: healthEventCount - healthEvents.length }, events: { event_count: eventSummaries.length, window_ms: STORM_WINDOW_MS, limit: STORM_LIMIT, events: eventSummaries.slice(0, 20), omitted_events: Math.max(0, eventSummaries.length - 20) }, http_requests: { total: requests, route_count: httpRoutes.length, window_ms: STORM_WINDOW_MS, routes: httpRoutes.slice(0, 20), omitted_routes: Math.max(0, httpRoutes.length - 20) } },
     };
   };
   return { add, finish };

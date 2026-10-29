@@ -27,7 +27,7 @@ function fakeTrustedCa(home: string) {
 
 describe("local HTTPS front door", () => {
   it("installs the gateway before certificate trust is configured", () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-front-door-install-")); roots.add(home);
+    const home = fs.mkdtempSync(path.join("/tmp", "mandible-front-door-install-")); roots.add(home);
     const binary = pinnedCaddyBinary(home);
     fs.mkdirSync(path.dirname(binary), { recursive: true });
     fs.writeFileSync(binary, "already installed");
@@ -39,7 +39,7 @@ describe("local HTTPS front door", () => {
   });
 
   it("forwards every preview request through scoped local authorization without cookies", () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-front-door-")); roots.add(home);
+    const home = fs.mkdtempSync(path.join("/tmp", "mandible-front-door-")); roots.add(home);
     const authority = new LocalSessionAuthority(path.join(home, "config", "local-sessions"), "install_test", { initialize: true });
     authority.registerInstance({
       instance_id: "production", installation_id: "install_test", role: "main",
@@ -77,7 +77,7 @@ describe("local HTTPS front door", () => {
   });
 
   it("routes multiple previews with their distinct target contexts", () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-front-door-multiple-")); roots.add(home);
+    const home = fs.mkdtempSync(path.join("/tmp", "mandible-front-door-multiple-")); roots.add(home);
     const authority = new LocalSessionAuthority(path.join(home, "config", "local-sessions"), "install_test", { initialize: true });
     authority.registerInstance({
       instance_id: "production", installation_id: "install_test", role: "main",
@@ -109,7 +109,7 @@ describe("local HTTPS front door", () => {
   });
 
   it("keeps the last valid gateway config when registration points back at a public listener", () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-front-door-self-route-")); roots.add(home);
+    const home = fs.mkdtempSync(path.join("/tmp", "mandible-front-door-self-route-")); roots.add(home);
     const authority = new LocalSessionAuthority(path.join(home, "config", "local-sessions"), "install_test", { initialize: true });
     const production = {
       instance_id: "production", installation_id: "install_test", role: "main" as const,
@@ -155,7 +155,7 @@ describe("local HTTPS front door", () => {
   });
 
   it("refuses an old-storage gateway reload before writing empty pinned storage or a new Caddyfile", () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-front-door-old-storage-")); roots.add(home);
+    const home = fs.mkdtempSync(path.join("/tmp", "mandible-front-door-old-storage-")); roots.add(home);
     const authority = new LocalSessionAuthority(path.join(home, "config", "local-sessions"), "install_test", { initialize: true });
     authority.close();
     const oldStorage = path.join(home, "old-caddy-storage");

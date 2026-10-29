@@ -7,10 +7,35 @@ import { RUNTIME_HEALTH_PROBE_INTERVAL_MS } from './runtime-probe-cadence.mjs';
 
 export const BUNDLE_SERVICE_START_TIMEOUT_MS = 20_000;
 
-function startOwnedJob(context, role, until) {
+export function startOwnedJob(context, role, until = Date.now() + BUNDLE_SERVICE_START_TIMEOUT_MS) {
   assertLifecycleLockHeld();
-  const result = spawnSync('/bin/launchctl', ['kickstart', `${context.domain}/${context[`${role}Label`]}`], { encoding: 'utf8', timeout: runtimeObservationTimeout(until, 2500) });
-  return { ok: !result.error && result.status === 0, status: result.status, error: result.error?.message || result.stderr?.trim() || null };
+  const result = spawnSync('/bin/launchctl', ['kickstart', `${context.domain}/${context[`${role}Label`]}`], { encoding: 'utf8', timeout: runtimeObservationTimeout(until, Infinity) });
+  const code = result.error?.code ?? null;
+  const outcome = !result.error && result.status === 0 ? 'acknowledged'
+    : code === 'ETIMEDOUT' || result.signal ? 'indeterminate' : 'failed';
+  return { operation: 'kickstart', outcome, code, status: result.status ?? null, signal: result.signal ?? null,
+    message: result.error?.message || result.stderr?.trim() || null };
+}
+
+export function bundleServiceCompletedRun(job, demand = {}) {
+  if (!job?.loaded || job.pid || !(job.runs > 0)) return null;
+  if (job.lastSignal || job.lastExit && !['0', '(never exited)'].includes(job.lastExit)) return 'failed';
+  if (job.lastExit !== '0' || job.state && job.state !== 'not running') return null;
+  return demand.registrationChanged || job.runs > demand.startRuns ? 'consumed' : 'clean';
+}
+
+/** RunAtLoad owns initial launch; only a completed clean run admits an explicit Start. */
+export function bundleServiceStartAction(state, nativeStatus, job) {
+  if (nativeStatus !== state.previousStatus) state.registered = false;
+  state.previousStatus = nativeStatus;
+  if (!job) return null;
+  if (nativeStatus === 'enabled' && job.loaded) {
+    if (bundleServiceCompletedRun(job, state) === 'clean' && !state.startAttempted) { state.startAttempted = true; state.startRuns = job.runs; return 'start'; }
+  } else if (['not_found', 'not_registered'].includes(nativeStatus) && !state.registered) {
+    state.registered = true;
+    return 'register';
+  }
+  return null;
 }
 
 /** Registration status is permission evidence; only the exact observed job admits start. */
@@ -31,20 +56,24 @@ export async function reconcileBundleServiceStart(context, role, { until, contro
     }
     return null;
   };
-  let previousStatus;
-  let registered = false;
-  let startAttempted = false;
+  const progress = {};
+  let native;
   while (now() < until) {
-    let native, inspection;
+    let inspection;
     try {
       const changed = continuity(); if (changed) return changed;
-      native = control(context, 'status', role, { until }); inspection = observe(context, { until });
+      inspection = observe(context, { until });
+      const job = inspection.ok ? inspection.observations.find(item => item.service === role)?.job : null;
+      if (!native || inspection.ok && (!job?.loaded || bundleServiceCompletedRun(job, progress) === 'clean' && !progress.startAttempted)) {
+        native = control(context, 'status', role, { until });
+        inspection = observe(context, { until });
+      }
       const replaced = continuity(); if (replaced) return replaced;
     }
     catch (error) { return fail('service_observation_failed', error.message); }
     const observed = inspection.ok ? inspection.observations.find(item => item.service === role) : null;
     const sample = { at: now(), native, job: observed ? {
-      loaded: observed.job.loaded, pid: observed.job.pid, program: observed.job.program,
+      loaded: observed.job.loaded, pid: observed.job.pid, runs: observed.job.runs, lastExit: observed.job.lastExit, lastSignal: observed.job.lastSignal, program: observed.job.program,
       bundleProgram: observed.job.bundleProgram, parentBundleIdentifier: observed.job.parentBundleIdentifier,
     } : null, refusal: inspection.ok ? null : inspection.refusal };
     observations.push(sample);
@@ -58,12 +87,11 @@ export async function reconcileBundleServiceStart(context, role, { until, contro
         return fail('ownership_conflict', `The loaded ${role} is not the expected bundle-owned native service.`);
       }
     }
+    if (['failed', 'consumed'].includes(bundleServiceCompletedRun(observed?.job, progress))) return fail('service_exited', 'The owned service exited before qualification.');
     if (native.status === 'requires_approval') return fail('background_permission_required', 'Allow Mandible background services in System Settings.', 'pending');
     if (now() >= until) break;
-    if (native.status !== previousStatus) registered = false;
-    previousStatus = native.status;
+    const action = bundleServiceStartAction(progress, native.status, observed?.job);
     if (inspection.ok) {
-      if (!observed.job.loaded) startAttempted = false;
       if (native.status === 'enabled' && observed.job.loaded) {
         if (observed.job.pid) {
           const current = readProcess(context, role, { until });
@@ -72,16 +100,15 @@ export async function reconcileBundleServiceStart(context, role, { until, contro
             return { ok: true, observation: sample, processes: { ...processes } };
           }
         }
-        if (!observed.job.pid && !startAttempted && now() < until) {
-          startAttempted = true;
+        if (action === 'start' && now() < until) {
           try { sample.start = start(context, role, until); } catch (error) { return fail('service_start_failed', error.message); }
-          if (sample.start.ok) return { ok: true, observation: sample, processes: { ...processes } };
+          if (sample.start.outcome === 'failed') return fail('service_start_failed', sample.start.message ?? 'Owned service start was rejected.');
         }
-      } else if (['not_found', 'not_registered'].includes(native.status) && !registered && now() < until) {
-        registered = true;
+      } else if (action === 'register' && now() < until) {
         assertLifecycleLockHeld();
-        try { sample.registration = control(context, 'register', role, { until }); }
+        try { native = sample.registration = control(context, 'register', role, { until }); }
         catch (error) { return fail('service_registration_failed', error.message); }
+        progress.registrationChanged ||= sample.registration.registration_changed === true;
         if (sample.registration.status === 'requires_approval') return fail('background_permission_required', 'Allow Mandible background services in System Settings.', 'pending');
       }
     }

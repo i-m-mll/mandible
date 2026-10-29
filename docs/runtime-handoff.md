@@ -94,6 +94,41 @@ captured processes have drained. Migration also captures and drains the original
 Bun gateway's exact Caddy child. It never falls through to a raw launchd parser
 that interprets a BundleProgram job as an ordinary Program job.
 
+The accepted updater calls the local-runtime operations directly with one explicit
+installation context and its live mutation assertion. Shared registration and
+gateway configuration finish before both native roles are registered. Actual
+process qualification captures PID, birth, executable, and launch count; readiness
+polls then read the registered generation and the HTTPS front door's exact
+installation, generation, database, and startup epoch. Detailed service and stderr
+ownership are inspected at the observation boundaries, rather than on every health
+poll. CLI environment setup belongs to the CLI entrypoint.
+
+`release.json.serviceControlProtocol` identifies the native helper interface.
+Missing means the installed v1 one-role protocol. V2 accepts both roles in one
+invocation and completes unregister only after every native completion handler has
+answered, when re-registration is safe. V1 predecessors receive their supported
+one-role calls, followed by confirmation that captured jobs and processes have
+drained before exchange. A v2 error never selects the v1 path. The prior helper
+stops its registered app; the verified new installed helper starts the replacement.
+
+The isolated native replacement fixture takes explicit
+`MANDIBLE_NATIVE_PROOF_PREDECESSOR_APP` and `MANDIBLE_NATIVE_PROOF_APP` inputs. It
+copies the v1 and candidate v2 helpers into uniquely identified private bundles and
+re-signs those copies for the fixture descriptors. It proves native replacement,
+process continuity, registration completion and retained-package cleanup. Its
+small backend and desktop substitutes do not prove product GUI or publication
+behavior; those require the candidate and normal update qualification.
+
+All generated Caddy configurations share a one-second HTTP shutdown grace,
+including production, preview hosts, candidate acceptance, and temporary CA setup.
+On SIGTERM, Caddy stops accepting connections, closes idle connections, allows
+finite responses to finish during that second, then closes remaining streams and
+cleans up its storage and modules. Event streams reconnect after the update;
+connection lifetime does not represent durable application work. Backend
+transactions and jobs retain their own drain contract; native service
+unregistration still waits for captured processes to exit. The HTTP grace also
+applies when a configuration reload removes an HTTP server.
+
 A historical terminal update does not prevent ordinary use of its authorized
 installed runtime. Service startup uses the current attempt's service intent and
 ready observation rather than an old failed phase or lifetime exit status.

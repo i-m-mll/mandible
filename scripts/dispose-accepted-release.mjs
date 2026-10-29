@@ -26,4 +26,4 @@ try {
   const lock = readRuntimeHandoffLock(home);
   if (lock?.journalPath && JSON.parse(fs.readFileSync(lock.journalPath, 'utf8')).binding.acceptedRelease?.reference === reference) throw new Error('An unresolved handoff still owns these bytes.');
 } finally { db.close(); }
-process.stdout.write(`${JSON.stringify(await disposeAcceptedRelease(reference, candidate, reason))}\n`);
+process.stdout.write(`${JSON.stringify(await disposeAcceptedRelease(reference, candidate, reason, { home }))}\n`);

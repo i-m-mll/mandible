@@ -227,52 +227,32 @@ describe("mandible_submit_auth command shape (issue 08a5f04)", () => {
 // --- SSE reconnect catch-up tests (Bug: 03d6cb0) ---
 
 describe("SSE reconnect catch-up (Bug: 03d6cb0)", () => {
-  it("runStartupCatchUp is called as onReconnect callback on SSE reconnect", async () => {
-    // Test that the reconnect catch-up integration works by verifying
-    // runStartupCatchUp runs correctly when invoked as a callback
+  it("replays a result missed during shutdown once on reconnect", async () => {
     const mod = await import("../channel-server/index.js");
     const sent: Array<{ method?: string; params?: unknown }> = [];
     const delivered: string[] = [];
-    const mockServer = {
-      notification: async (notif: { method?: string; params?: unknown }) => {
-        sent.push(notif);
+    let available = false;
+    const deps: Parameters<typeof mod.runStartupCatchUp>[0] = {
+      sessionId: "reconnect-session", conversationId: "conv-reconnect",
+      mcpServer: { notification: async notif => { sent.push(notif); } } as Parameters<typeof mod.runStartupCatchUp>[0]["mcpServer"],
+      fetchUndelivered: async (session, conversation) => {
+        expect([session, conversation]).toEqual(["reconnect-session", "conv-reconnect"]);
+        return available && !delivered.length ? [{ id: "r-missed", head_branch: "feature/self-rebuild", status: "completed",
+          exit_code: 0, resolved_at: 1, title: "Merge feature/self-rebuild", target_session_id: "reconnect-session" }] : [];
       },
-    } as unknown as Parameters<typeof mod.runStartupCatchUp>[0]["mcpServer"];
-
-    // Simulate what the onReconnect callback does: call runStartupCatchUp
-    // with the same deps that the main() function wires up
-    await mod.runStartupCatchUp({
-      sessionId: "reconnect-session",
-      conversationId: "conv-reconnect",
-      mcpServer: mockServer,
-      fetchUndelivered: async (sessionId, convId) => {
-        // Verify both IDs are passed through
-        expect(sessionId).toBe("reconnect-session");
-        expect(convId).toBe("conv-reconnect");
-        return [
-          {
-            id: "r-missed",
-            head_branch: "feature/self-rebuild",
-            status: "completed",
-            exit_code: 0,
-            resolved_at: Date.now(),
-            title: "Merge feature/self-rebuild",
-            target_session_id: "reconnect-session",
-          },
-        ];
-      },
-      markDelivered: async (id) => {
-        delivered.push(id);
-      },
+      markDelivered: async id => { expect(sent).toHaveLength(1); delivered.push(id); },
       log: () => {},
-    });
-
-    // Verify the missed event was replayed
+    };
+    const onReconnect = () => mod.runStartupCatchUp(deps);
+    await onReconnect();
+    expect(sent).toEqual([]);
+    // The daemon persisted completion while the live stream was disconnected.
+    available = true;
+    await onReconnect();
+    await onReconnect();
     expect(sent).toHaveLength(1);
     expect(delivered).toEqual(["r-missed"]);
-    const params = sent[0].params as { content: string; meta: Record<string, string> };
-    expect(params.content).toContain("feature/self-rebuild");
-    expect(params.meta.status).toBe("completed");
+    expect(sent[0].params).toMatchObject({ meta: { status: "completed" }, content: expect.stringContaining("feature/self-rebuild") });
   });
 
 });

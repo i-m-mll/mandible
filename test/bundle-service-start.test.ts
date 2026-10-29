@@ -6,11 +6,11 @@ const context = serviceInstallationContext({ home: '/fixture/state', accountHome
 const argv = ['mandible-service', 'foreground', 'backend'];
 const program = `${context.bundleRoot}/Contents/MacOS/mandible-service`;
 const process = () => ({ pid: 42, startedAt: 'owned-start', runs: 1 });
-function inspection(loaded = false, pid: number | null = null, executable = program, arguments_ = argv) {
+function inspection(loaded = false, pid: number | null = null, executable = program, arguments_ = argv, run = { runs: 0, lastExit: null as string | null }) {
   const record = { Label: context.backendLabel, BundleProgram: 'Contents/MacOS/mandible-service', bundleRoot: context.bundleRoot,
     ProgramArguments: argv, EnvironmentVariables: {}, WorkingDirectory: context.runtimeDir, StandardOutPath: '/fixture/out', StandardErrorPath: '/fixture/err', KeepAlive: false };
   const result = assessServiceObservation(context, 'backend', [{ file: '/fixture/backend.plist', bytesBase64: '', sha256: '', record }], {
-    loaded, pid, argv: arguments_, program: loaded ? executable : undefined, parentBundleIdentifier: 'bio.mll.mandible', bundleProgram: record.BundleProgram,
+    ...run, loaded, pid, argv: arguments_, program: loaded ? executable : undefined, parentBundleIdentifier: 'bio.mll.mandible', bundleProgram: record.BundleProgram,
   });
   return result.ok ? { ok: true as const, observations: [result.observation] } : result;
 }
@@ -27,7 +27,7 @@ it('reconciles the measured enabled/missing → not-found/missing → enabled/ow
       return { service: role, label: context.backendLabel, status: operation === 'register' || time.tick() === 2 ? 'enabled' : time.tick() === 1 ? 'not_found' : 'enabled', registration_changed: operation === 'register' };
     },
     observe: () => inspection(time.tick() === 2, time.tick() === 2 ? 42 : null),
-    start: () => { actions.push('kickstart'); return { ok: true }; },
+    start: () => { actions.push('kickstart'); return { operation: 'kickstart', outcome: 'acknowledged', code: null, status: 0, signal: null, message: null }; },
   });
   expect(result.ok).toBe(true); expect(actions).toEqual(['register:1000']); expect(time.now()).toBe(2000);
 });
@@ -74,13 +74,37 @@ it('does not admit a job whose observation finishes after the original deadline'
   expect(result).toMatchObject({ ok: false, error: { code: 'registration_inconsistent', outcome: 'pending' } });
 });
 
-it.each([42, null])('keeps an existing owned job and only starts it when dormant (PID %s)', async pid => {
-  const time = clock(); let starts = 0;
+it.each(['acknowledged', 'indeterminate'] as const)('qualifies a dormant clean run after one %s demand, never from its ACK', async outcome => {
+  const time = clock(); let starts = 0, statuses = 0;
   const result = await reconcileBundleServiceStart(context, 'backend', { ...time, until: 3000, readProcess: process,
-    control: (_context, operation, role) => { expect(operation).toBe('status'); return { service: role, label: context.backendLabel, status: 'enabled', registration_changed: false }; },
-    observe: () => inspection(true, pid), start: () => { starts++; return { ok: true }; },
+    control: (_context, operation, role) => { statuses++; expect(operation).toBe('status'); return { service: role, label: context.backendLabel, status: 'enabled', registration_changed: false }; },
+    observe: () => inspection(true, time.tick() >= 2 ? 42 : null, program, argv, { runs: 1, lastExit: '0' }),
+    start: () => { starts++; return { operation: 'kickstart', outcome, code: outcome === 'indeterminate' ? 'ETIMEDOUT' : null, status: outcome === 'indeterminate' ? null : 0, signal: null, message: null }; },
   });
-  expect(result.ok).toBe(true); expect(starts).toBe(pid ? 0 : 1); expect(time.now()).toBe(0);
+  expect(result).toMatchObject({ ok: true, processes: { backend: process() } });
+  expect(starts).toBe(1); expect(statuses).toBe(1); expect(time.now()).toBe(2000);
+});
+
+it.each(['78', '0'])('waits for RunAtLoad and reports its completed exit %s without kickstart', async exit => {
+  const time = clock(); const actions: string[] = [];
+  const result = await reconcileBundleServiceStart(context, 'backend', { ...time, until: 3000, readProcess: process,
+    control: (_context, operation, role) => { actions.push(operation); return { service: role, label: context.backendLabel, status: operation === 'register' ? 'enabled' : 'not_registered', registration_changed: operation === 'register' }; },
+    observe: () => inspection(time.tick() > 0, null, program, argv, { runs: time.tick() >= 2 ? 1 : 0, lastExit: time.tick() >= 2 ? exit : null }),
+    start: () => { throw new Error('RunAtLoad must not be kickstarted'); },
+  });
+  expect(result).toMatchObject({ ok: false, error: { code: 'service_exited', outcome: 'failed' } });
+  expect(actions).toEqual(['status', 'register']); expect(time.now()).toBe(2000);
+});
+
+it('leaves an acknowledged dormant start pending at the original deadline without a repeated demand', async () => {
+  const time = clock(); let starts = 0;
+  const result = await reconcileBundleServiceStart(context, 'backend', { ...time, until: 1500, readProcess: process,
+    control: (_context, _operation, role) => ({ service: role, label: context.backendLabel, status: 'enabled', registration_changed: false }),
+    observe: () => inspection(true, null, program, argv, { runs: 1, lastExit: '0' }),
+    start: () => { starts++; return { operation: 'kickstart', outcome: 'acknowledged', code: null, status: 0, signal: null, message: null }; },
+  });
+  expect(result).toMatchObject({ ok: false, error: { code: 'registration_inconsistent', outcome: 'pending' } });
+  expect(starts).toBe(1); expect(time.now()).toBe(1500);
 });
 
 it('keeps unqualified launcher changes diagnostic, then carries only strict qualified identity', async () => {

@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolveAppSigning } from './app-signing.mjs';
+import { resolveAppSigning, openAppSigner } from './app-signing.mjs';
 import { finishAppPackage } from './finish-app-package.mjs';
 import { assembleDesktopApplication } from './tauri-build-commands.mjs';
 
@@ -35,11 +35,14 @@ for (let index = 0; index < options.length; index++) {
 const plan = resolveAppSigning(root, configs);
 const bundles = selectedBundles ?? plan.config.bundle?.targets ?? ['app'];
 if (!Array.isArray(bundles) || bundles.some(bundle => !['app', 'dmg'].includes(bundle))) throw new Error('Mac package targets must be app and/or dmg.');
+const signer = openAppSigner(plan);
+try {
 await assembleDesktopApplication(root, args, cargoArguments);
 const target = options.findIndex(option => ['--target', '-t'].includes(option) || option.startsWith('--target='));
 const targetTriple = target < 0 ? null : options[target].startsWith('--target=') ? options[target].slice('--target='.length) : options[target + 1];
 const targetDirectory = process.env.CARGO_TARGET_DIR ?? path.join(root, 'src-tauri/target');
 const profile = args.some(option => ['--debug', '-d'].includes(option)) ? 'debug' : 'release';
 const app = path.join(targetDirectory, ...(targetTriple ? [targetTriple] : []), profile, 'bundle/macos', `${plan.config.productName ?? 'Mandible'}.app`);
-const receipt = finishAppPackage(app, plan, { dmg: bundles.includes('dmg'), archive });
+const receipt = finishAppPackage(app, plan, { dmg: bundles.includes('dmg'), archive, signer });
 process.stdout.write(`Finished app package (${receipt.notarization}): ${app}\n`);
+} finally { signer.close(); }
