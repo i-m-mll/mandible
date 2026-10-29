@@ -1,3 +1,7 @@
+import * as z from "zod";
+import { isSqliteConstraint } from "../sqlite.js";
+import { SINGLETON_OPEN_ISSUE_KINDS } from "./store.js";
+import { PROJECT_REFERENCE_POLICIES, projectReferenceCoverage, projectReferenceRows, quoteIdentifier, observeProjectRepositories, type ProjectRepositoryObservation } from "./project-reference-policy.js";
 import { mutateLedgerRecord } from "./mutation-history.js";
 import { childOutput } from "../child-observation.js";
 import { execFileSync } from "node:child_process";
@@ -81,37 +85,17 @@ function representativeCheckoutRoot(db: Db, projectId: string): string | null {
  */
 export function backfillProjectKeys(db: Db): number {
   if (!projectKeyColumnExists(db)) return 0;
-  const taken = new Set<string>(
-    (db.prepare("SELECT project_key FROM ledger_projects WHERE project_key != ''").all() as Array<{
-      project_key: string;
-    }>).map((row) => row.project_key),
-  );
-  const missing = db
-    .prepare(
-      `SELECT id, display_name, remote_identity
-       FROM ledger_projects
-       WHERE project_key = ''
-       ORDER BY created_at, id`,
-    )
-    .all() as Array<{ id: string; display_name: string; remote_identity: string }>;
+  const missing = plannedKeyBackfills(db);
   if (missing.length === 0) return 0;
 
   const update = db.prepare("UPDATE ledger_projects SET project_key = ?, updated_at = ? WHERE id = ?");
   const now = Date.now();
   const run = db.transaction(() => {
     for (const project of missing) {
-      const base =
-        deriveProjectKeyBase({
-          remote_identity: project.remote_identity,
-          display_name: project.display_name,
-          root: representativeCheckoutRoot(db, project.id),
-        }) || "project";
-      const key = dedupeProjectKey(base, taken);
-      taken.add(key);
       mutateLedgerRecord(db, {
-        entity_type: "project", entity_id: project.id, project_id: project.id,
-        snapshot: () => db.prepare("SELECT project_key FROM ledger_projects WHERE id = ?").get(project.id) ?? null,
-      }, () => update.run(key, now, project.id));
+        entity_type: "project", entity_id: project.project_id, project_id: project.project_id,
+        snapshot: () => db.prepare("SELECT project_key FROM ledger_projects WHERE id = ?").get(project.project_id) ?? null,
+      }, () => update.run(project.project_key, now, project.project_id));
     }
   });
   run();
@@ -942,169 +926,98 @@ export function auditRegistry(db: Db): RegistryAudit {
 // Repair (guarded)
 // ---------------------------------------------------------------------------
 
-// (table, column) pairs that carry a project id and MUST be repointed on merge.
-// This is the authoritative list — every project-id-bearing column in the schema
-// is either here or in HISTORICAL_PROJECT_ID_COLUMNS below; the schema-audit test
-// (test/project-registry.test.ts) enumerates the live schema and fails if a
-// future table adds a project-id column that is in neither list. Columns with a
-// real `REFERENCES ledger_projects(id) ON DELETE RESTRICT` FK (ledger_issues,
-// ledger_issue_aliases, ledger_body_revisions, ledger_relationship_edges,
-// ledger_project_checkouts, ledger_commit_issue_links, spaces) would otherwise
-// THROW at the source-project delete; the non-FK ones
-// (ledger_reconciliation_mismatches) would silently dangle. Moving them all keeps
-// the merge orphan-free and FK-clean.
-export const PROJECT_ID_COLUMNS: ReadonlyArray<{ table: string; columns: string[] }> = [
-  { table: "ledger_issues", columns: ["project_id"] },
-  { table: "ledger_issue_aliases", columns: ["project_id"] },
-  { table: "ledger_body_revisions", columns: ["project_id"] },
-  { table: "ledger_relationship_edges", columns: ["source_project_id", "target_project_id"] },
-  { table: "ledger_commit_issue_links", columns: ["project_id"] },
-  { table: "ledger_reconciliation_mismatches", columns: ["project_id"] },
-  { table: "ledger_project_checkouts", columns: ["project_id"] },
-  { table: "artifact", columns: ["source_project_id"] },
-  { table: "artifact_version", columns: ["source_project_id"] },
-  { table: "project_artifact_associations", columns: ["project_id"] },
-  { table: "spaces", columns: ["project_id"] },
-  { table: "trash_entries", columns: ["project_id"] },
-  { table: "auth_request_merge_succeeded_facts", columns: ["project_id"] },
-  { table: "managed_tasks", columns: ["project_id"] },
-  { table: "managed_task_events", columns: ["project_id"] },
-  { table: "ledger_change_feed_state", columns: ["project_id"] },
-  { table: "ledger_change_log", columns: ["project_id"] },
-  { table: "conversation_spawn_requests", columns: ["project_id"] },
-  { table: "briefing_destination_mutations", columns: ["project_id"] },
-];
-
-const PROJECT_MERGE_SPECIAL_TABLES = new Set([
-  "ledger_change_feed_state",
-  "ledger_change_log",
-]);
-
-// Project-id-bearing columns that are DELIBERATELY not repointed on merge: the
-// row is immutable provenance whose project id is part of the record. Such a row
-// pins its project, so a source project that any of them references cannot be
-// merged away; detectMergeConflicts reports it and force does not override it.
-// Merge clearances are immutable scoped authority (auth_clearances_scope_immutable)
-// and cannot be deleted, so re-scoping one to another project is refused.
-export const HISTORICAL_PROJECT_ID_COLUMNS: ReadonlyArray<{ table: string; column: string }> = [
-  { table: "auth_clearances", column: "project_id" },
-];
-
-const PROJECT_ID_COLUMN_NAMES = new Set(["project_id", "source_project_id", "target_project_id"]);
-
-/**
- * Enumerate every (table, column) in the LIVE schema whose column name is a
- * project-id column (`project_id`, `source_project_id`, `target_project_id`).
- * Used by the schema-audit test to prove the merge move list stays exhaustive as
- * the schema grows. Excludes SQLite internal and temp rebuild tables.
- */
-export function discoverProjectIdColumns(db: Db): Array<{ table: string; column: string }> {
-  const tables = db
-    .prepare(
-      `SELECT name FROM sqlite_master
-       WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '%_v'`,
-    )
-    .all() as Array<{ name: string }>;
-  const found: Array<{ table: string; column: string }> = [];
-  for (const { name } of tables) {
-    const columns = db.prepare(`PRAGMA table_info(${name})`).all() as Array<{ name: string }>;
-    for (const col of columns) {
-      if (PROJECT_ID_COLUMN_NAMES.has(col.name)) found.push({ table: name, column: col.name });
-    }
-  }
-  return found;
-}
-
-function tableHasColumn(db: Db, table: string, column: string): boolean {
-  if (!tableExists(db, table)) return false;
-  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
-  return columns.some((c) => c.name === column);
-}
-
+export const RepairOptionsSchema = z.object({
+  apply: z.boolean().optional(),
+  merge: z.object({ source: z.string().trim().min(1), target: z.string().trim().min(1) }).strict().optional(),
+}).strict();
+export type RepairOptions = z.infer<typeof RepairOptionsSchema>;
 export interface MergeConflict {
-  kind: "short_id" | "alias" | "historical_reference";
+  kind: "short_id" | "alias" | "association" | "singleton" | "restricted_policy" | "historical_reference" | "schema_coverage" | "feed_continuity";
   value: string;
-  detail?: string;
+  count?: number;
+  detail: string;
 }
-
+export interface ReferenceCount {
+  key: string;
+  table: string;
+  column: string;
+  disposition: "move" | "merge" | "pin";
+  rows: number;
+}
 export interface MergePlan {
   source_project_id: string;
   target_project_id: string;
-  moves: Array<{ table: string; column: string; rows: number }>;
+  references: ReferenceCount[];
+  moves: ReferenceCount[];
+  reference_occurrences: number;
+  distinct_rows: number;
+  grant_coalescences: Array<{ source_id: string; survivor_id: string }>;
   conflicts: MergeConflict[];
   applied: boolean;
-  foreign_key_violations: number;
 }
-
 export interface RepairReport {
   keys_backfilled: number;
+  key_backfills: Array<{ project_id: string; project_key: string }>;
+  foreign_keys: "enforced";
   audit: RegistryAudit;
   merge?: MergePlan;
   applied: boolean;
 }
+export type RepairFailure = {
+  code: "invalid_request" | "not_found" | "ambiguous" | "same_project" | "foreign_keys_disabled" | "merge_conflict" | "constraint" | "observation_changed";
+  message: string;
+  conflicts?: MergeConflict[];
+};
+export type RepairResult = { ok: true; value: RepairReport } | { ok: false; error: RepairFailure };
 
-function detectMergeConflicts(db: Db, sourceId: string, targetId: string): MergeConflict[] {
-  const conflicts: MergeConflict[] = [];
-  for (const { table, column } of HISTORICAL_PROJECT_ID_COLUMNS) {
-    if (!tableHasColumn(db, table, column)) continue;
-    const row = db
-      .prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE ${column} = ?`)
-      .get(sourceId) as { n: number };
-    if (row.n > 0) {
-      conflicts.push({
-        kind: "historical_reference",
-        value: `${table}.${column}`,
-        detail: `${row.n} immutable row(s) pin the source project`,
-      });
-    }
+function inspectMerge(db: Db, sourceId: string, targetId: string, repositories: ProjectRepositoryObservation): MergePlan {
+  const conflicts: MergeConflict[] = projectReferenceCoverage(db).map(value => ({
+    kind: "schema_coverage", value, detail: "Every declared locator must exist and every project FK must have exactly one policy",
+  }));
+  if (conflicts.length) return {
+    source_project_id: sourceId, target_project_id: targetId, references: [], moves: [],
+    reference_occurrences: 0, distinct_rows: 0, grant_coalescences: [], conflicts, applied: false,
+  };
+  const references: ReferenceCount[] = [];
+  const distinct = new Set<string>();
+  for (const policy of PROJECT_REFERENCE_POLICIES) {
+    const rows = projectReferenceRows(db, policy, sourceId, repositories);
+    rows.forEach(row => distinct.add(`${policy.locator.table}:${row}`));
+    if (!rows.length) continue;
+    references.push({ key: policy.key, table: policy.locator.table, column: policy.locator.column,
+      disposition: policy.disposition, rows: rows.length });
+    if (policy.disposition === "pin") conflicts.push({ kind: "historical_reference", value: policy.key,
+      count: rows.length, detail: policy.reason });
   }
-  if (tableExists(db, "ledger_issues")) {
-    const shortIdClashes = db
-      .prepare(
-        `SELECT s.short_id AS value
-         FROM ledger_issues s
-         JOIN ledger_issues d
-           ON d.project_id = ? AND d.short_id = s.short_id AND d.id != s.id
-         WHERE s.project_id = ? AND s.short_id != ''`,
-      )
-      .all(targetId, sourceId) as Array<{ value: string }>;
-    for (const row of shortIdClashes) {
-      conflicts.push({ kind: "short_id", value: row.value });
-    }
+  const clashes = (kind: MergeConflict["kind"], sql: string, detail: string) => {
+    for (const row of db.prepare(sql).all(targetId, sourceId) as { value: string }[]) conflicts.push({ kind, value: row.value, detail });
+  };
+  clashes("short_id", `SELECT s.short_id value FROM ledger_issues s JOIN ledger_issues d
+    ON d.project_id=? AND d.short_id=s.short_id AND d.id!=s.id WHERE s.project_id=? AND s.short_id!=''`, "Issue short IDs collide");
+  clashes("alias", `SELECT a.alias_kind || ':' || a.alias value FROM ledger_issue_aliases a JOIN ledger_issue_aliases b
+    ON b.project_id=? AND b.alias_kind=a.alias_kind AND b.alias=a.alias WHERE a.project_id=?`, "Alias unique key collides; neither row may be discarded");
+  clashes("association", `SELECT a.id value FROM project_artifact_associations a JOIN project_artifact_associations b
+    ON b.project_id=? AND b.target_type=a.target_type AND b.target_id=a.target_id AND b.role=a.role WHERE a.project_id=?`, "Artifact association unique key collides");
+  for (const kind of SINGLETON_OPEN_ISSUE_KINDS) {
+    const rows = db.prepare(`SELECT id FROM ledger_issues WHERE project_id IN (?,?) AND kind=? AND status='open' AND deleted_at IS NULL`).all(sourceId, targetId, kind);
+    if (rows.length > 1) conflicts.push({ kind: "singleton", value: kind, count: rows.length, detail: "Only one open issue of this kind is permitted per project" });
   }
-  if (tableExists(db, "ledger_issue_aliases")) {
-    const aliasClashes = db
-      .prepare(
-        `SELECT a.alias_kind || ':' || a.alias AS value
-         FROM ledger_issue_aliases a
-         JOIN ledger_issue_aliases b
-           ON b.project_id = ? AND b.alias_kind = a.alias_kind AND b.alias = a.alias
-              AND b.issue_id != a.issue_id
-         WHERE a.project_id = ?`,
-      )
-      .all(targetId, sourceId) as Array<{ value: string }>;
-    for (const row of aliasClashes) {
-      conflicts.push({ kind: "alias", value: row.value });
-    }
+  const restricted = db.prepare("SELECT DISTINCT restricted FROM ledger_projects WHERE id IN (?,?)").all(sourceId, targetId);
+  if (restricted.length !== 1) conflicts.push({ kind: "restricted_policy", value: "restricted", detail: "Source and target must have equal restricted settings" });
+  try { mergeLedgerChangeFeed(db, sourceId, targetId, 0, true); }
+  catch (error) {
+    if (!(error instanceof ProjectRegistryError)) throw error;
+    conflicts.push({ kind: "feed_continuity", value: "ledger_change_log", detail: error.message });
   }
-  return conflicts;
+  const grant_coalescences = db.prepare(`SELECT s.id source_id, d.id survivor_id FROM permission_grants s JOIN permission_grants d
+    ON d.resource_type='project' AND d.resource_id=? AND d.subject_type=s.subject_type AND d.subject_id=s.subject_id AND d.permission=s.permission
+    WHERE s.resource_type='project' AND s.resource_id=? ORDER BY s.id`).all(targetId, sourceId) as MergePlan["grant_coalescences"];
+  return { source_project_id: sourceId, target_project_id: targetId, references,
+    moves: references.filter(ref => ref.disposition !== "pin"), reference_occurrences: references.reduce((sum, ref) => sum + ref.rows, 0),
+    distinct_rows: distinct.size, grant_coalescences, conflicts, applied: false };
 }
 
-function countMoves(db: Db, sourceId: string): Array<{ table: string; column: string; rows: number }> {
-  const moves: Array<{ table: string; column: string; rows: number }> = [];
-  for (const { table, columns } of PROJECT_ID_COLUMNS) {
-    for (const column of columns) {
-      if (!tableHasColumn(db, table, column)) continue;
-      const row = db
-        .prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE ${column} = ?`)
-        .get(sourceId) as { n: number };
-      if (row.n > 0) moves.push({ table, column, rows: row.n });
-    }
-  }
-  return moves;
-}
-
-function mergeLedgerChangeFeed(db: Db, sourceId: string, targetId: string, now: number): void {
+function mergeLedgerChangeFeed(db: Db, sourceId: string, targetId: string, now: number, inspectOnly = false): void {
   if (!tableExists(db, "ledger_change_feed_state") || !tableExists(db, "ledger_change_log")) return;
   const readState = db.prepare(
     `SELECT next_sequence, retained_from_sequence
@@ -1143,6 +1056,7 @@ function mergeLedgerChangeFeed(db: Db, sourceId: string, targetId: string, now: 
   assertContiguous("source", sourceState, sourceRows);
   assertContiguous("target", targetState, targetRows);
 
+  if (inspectOnly) return;
   const targetNext = targetState?.next_sequence ?? 1;
   const moveRow = db.prepare(
     `UPDATE ledger_change_log SET project_id = ?, sequence = ?
@@ -1170,123 +1084,111 @@ function mergeLedgerChangeFeed(db: Db, sourceId: string, targetId: string, now: 
   }
 }
 
-/**
- * Guarded normalization. Always backfills missing keys (safe). When `merge` is
- * provided, plans (and, with `apply`, executes) moving every project-scoped row
- * from source to target. The merge:
- *   - pre-checks short-id/alias collisions BEFORE moving any rows (aborts with a
- *     report if any are found and `force` is not set),
- *   - runs inside a single transaction with foreign_keys ON,
- *   - runs PRAGMA foreign_key_check after the move and rolls back on any
- *     violation.
- * `apply` defaults to false (dry run).
- */
-export function repairRegistry(
-  db: Db,
-  options: {
-    apply?: boolean;
-    merge?: { source: string; target: string };
-    force?: boolean;
-  } = {},
-): RepairReport {
-  const apply = options.apply ?? false;
-  const keysBackfilled = apply ? backfillProjectKeys(db) : 0;
+function plannedKeyBackfills(db: Db): RepairReport["key_backfills"] {
+  const projects = db.prepare("SELECT id, project_key, display_name, remote_identity FROM ledger_projects ORDER BY created_at,id").all() as ProjectRow[];
+  const taken = new Set(projects.filter(project => project.project_key).map(project => project.project_key));
+  return projects.filter(project => !project.project_key).map(project => {
+    const key = dedupeProjectKey(deriveProjectKeyBase({ remote_identity: project.remote_identity,
+      display_name: project.display_name, root: representativeCheckoutRoot(db, project.id) }) || "project", taken);
+    taken.add(key);
+    return { project_id: project.id, project_key: key };
+  });
+}
 
-  let merge: MergePlan | undefined;
-  if (options.merge) {
-    const source = resolveProjectRef(db, options.merge.source);
-    const target = resolveProjectRef(db, options.merge.target);
-    if (!source.ok) {
-      throw new ProjectRegistryError(`merge source not found: ${options.merge.source}`, "not_found");
-    }
-    if (!target.ok) {
-      throw new ProjectRegistryError(`merge target not found: ${options.merge.target}`, "not_found");
-    }
-    const sourceId = source.project.id;
-    const targetId = target.project.id;
-    if (sourceId === targetId) {
-      throw new ProjectRegistryError("merge source and target are the same project", "same_project");
-    }
+function mergeProjectGrants(db: Db, sourceId: string, targetId: string, plan: MergePlan): void {
+  const duplicates = new Map(plan.grant_coalescences.map(row => [row.source_id, row.survivor_id]));
+  const grants = db.prepare("SELECT id FROM permission_grants WHERE resource_type='project' AND resource_id=? ORDER BY id").all(sourceId) as { id: string }[];
+  for (const { id } of grants) {
+    const survivor = duplicates.get(id);
+    mutateLedgerRecord(db, {
+      entity_type: "grant", entity_id: id, project_id: targetId,
+      payload: { source_project_id: sourceId, target_project_id: targetId, ...(survivor ? { survivor_id: survivor } : {}) },
+      snapshot: () => db.prepare("SELECT * FROM permission_grants WHERE id=?").get(id) ?? null,
+    }, () => survivor ? db.prepare("DELETE FROM permission_grants WHERE id=?").run(id)
+      : db.prepare("UPDATE permission_grants SET resource_id=? WHERE id=?").run(targetId, id));
+  }
+}
 
-    const conflicts = detectMergeConflicts(db, sourceId, targetId);
-    const moves = countMoves(db, sourceId);
-    merge = {
-      source_project_id: sourceId,
-      target_project_id: targetId,
-      moves,
-      conflicts,
-      applied: false,
-      foreign_key_violations: 0,
-    };
-
-    if (apply) {
-      const pinned = conflicts.filter((conflict) => conflict.kind === "historical_reference");
-      if (pinned.length > 0) {
-        throw new ProjectRegistryError(
-          `merge blocked: immutable rows pin the source project (${pinned.map((c) => c.value).join(", ")})`,
-          "merge_conflict",
-          { conflicts: pinned },
-        );
-      }
-      if (conflicts.length > 0 && !options.force) {
-        throw new ProjectRegistryError(
-          `merge blocked by ${conflicts.length} conflict(s); resolve or pass force`,
-          "merge_conflict",
-          { conflicts },
-        );
-      }
-      const now = Date.now();
-      const run = db.transaction(() => {
-        db.pragma("foreign_keys = ON");
-        mergeLedgerChangeFeed(db, sourceId, targetId, now);
-        const movedCheckouts = db.prepare("SELECT id FROM ledger_project_checkouts WHERE project_id = ?").all(sourceId) as Array<{ id: string }>;
-        for (const checkout of movedCheckouts) {
-          mutateLedgerRecord(db, {
-            entity_type: "checkout", entity_id: checkout.id, project_id: targetId,
+function executeMerge(db: Db, plan: MergePlan, repositories: ProjectRepositoryObservation): void {
+  const sourceId = plan.source_project_id, targetId = plan.target_project_id;
+  const handlers = new Set<string>();
+  for (const policy of PROJECT_REFERENCE_POLICIES) {
+    if (policy.disposition === "pin") continue;
+    if (policy.disposition === "merge") {
+      if (handlers.has(policy.handler)) continue;
+      handlers.add(policy.handler);
+      switch (policy.handler) {
+        case "feed": mergeLedgerChangeFeed(db, sourceId, targetId, Date.now()); break;
+        case "grants": mergeProjectGrants(db, sourceId, targetId, plan); break;
+        case "checkout": {
+          const checkouts = db.prepare("SELECT id FROM ledger_project_checkouts WHERE project_id=?").all(sourceId) as { id: string }[];
+          for (const { id } of checkouts) mutateLedgerRecord(db, {
+            entity_type: "checkout", entity_id: id, project_id: targetId,
             payload: { source_project_id: sourceId, target_project_id: targetId },
-            snapshot: () => db.prepare("SELECT project_id FROM ledger_project_checkouts WHERE id = ?").get(checkout.id) ?? null,
-          }, () => db.prepare("UPDATE ledger_project_checkouts SET project_id = ? WHERE id = ?").run(targetId, checkout.id));
+            snapshot: () => db.prepare("SELECT * FROM ledger_project_checkouts WHERE id=?").get(id) ?? null,
+          }, () => db.prepare("UPDATE ledger_project_checkouts SET project_id=? WHERE id=?").run(targetId, id));
+          if (checkouts.length) db.afterCommit(() => notifyProtectionInputsChanged("checkout:project-merge"));
+          break;
         }
-        const movedGrants = db.prepare("SELECT id FROM permission_grants WHERE resource_type = 'project' AND resource_id = ?").all(sourceId) as Array<{ id: string }>;
-        for (const grant of movedGrants) {
-          mutateLedgerRecord(db, {
-            entity_type: "grant", entity_id: grant.id, project_id: targetId,
-            payload: { source_project_id: sourceId, target_project_id: targetId },
-            snapshot: () => db.prepare("SELECT resource_id FROM permission_grants WHERE id = ?").get(grant.id) ?? null,
-          }, () => db.prepare("UPDATE permission_grants SET resource_id = ? WHERE id = ?").run(targetId, grant.id));
-        }
-        for (const { table, columns } of PROJECT_ID_COLUMNS) {
-          if (PROJECT_MERGE_SPECIAL_TABLES.has(table)) continue;
-          for (const column of columns) {
-            if (!tableHasColumn(db, table, column)) continue;
-            db.prepare(`UPDATE ${table} SET ${column} = ? WHERE ${column} = ?`).run(targetId, sourceId);
-          }
-        }
-        mutateLedgerRecord(db, {
-          entity_type: "project", entity_id: sourceId, project_id: targetId,
-          payload: { source_project_id: sourceId, target_project_id: targetId },
-          snapshot: () => db.prepare("SELECT id FROM ledger_projects WHERE id = ?").get(sourceId) ?? null,
-        }, () => db.prepare("DELETE FROM ledger_projects WHERE id = ?").run(sourceId));
-        db.prepare("UPDATE ledger_projects SET updated_at = ? WHERE id = ?").run(now, targetId);
-        const violations = db.prepare("PRAGMA foreign_key_check").all() as unknown[];
-        if (violations.length > 0) {
-          merge!.foreign_key_violations = violations.length;
-          throw new ProjectRegistryError(
-            `merge rolled back: ${violations.length} foreign-key violation(s)`,
-            "foreign_key_violation",
-            { violations: violations.length },
-          );
-        }
-      });
-      run();
-      merge.applied = true;
+      }
+    } else {
+      const { table, column } = policy.locator;
+      db.prepare(`UPDATE ${quoteIdentifier(table)} SET ${quoteIdentifier(column)}=? WHERE ${quoteIdentifier(column)}=?`).run(targetId, sourceId);
     }
   }
+  const residuals = PROJECT_REFERENCE_POLICIES.filter(policy => projectReferenceRows(db, policy, sourceId, repositories).length);
+  if (residuals.length) throw new Error(`Project merge left source references: ${residuals.map(policy => policy.key).join(", ")}`);
+  mutateLedgerRecord(db, {
+    entity_type: "project", entity_id: sourceId, project_id: targetId,
+    payload: { source_project_id: sourceId, target_project_id: targetId },
+    snapshot: () => db.prepare("SELECT * FROM ledger_projects WHERE id=?").get(sourceId) ?? null,
+  }, () => db.prepare("DELETE FROM ledger_projects WHERE id=?").run(sourceId));
+  db.prepare("UPDATE ledger_projects SET updated_at=? WHERE id=?").run(Date.now(), targetId);
+  plan.applied = true;
+}
 
-  return {
-    keys_backfilled: keysBackfilled,
-    audit: auditRegistry(db),
-    merge,
-    applied: apply,
+/** Inspect or atomically execute registry repair. Expected failures never escape as exceptions. */
+export async function repairRegistry(db: Db, input: RepairOptions = {}): Promise<RepairResult> {
+  const parsed = RepairOptionsSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: { code: "invalid_request", message: parsed.error.message } };
+  if (db.pragma("foreign_keys", { simple: true }) !== 1) return { ok: false, error: {
+    code: "foreign_keys_disabled", message: "Project repair requires foreign_keys=1 before its transaction" } };
+  const options = parsed.data;
+  const repositories = options.merge ? await observeProjectRepositories(db, [options.merge.source, options.merge.target]) : null;
+  const inspectAndExecute = (): RepairResult => {
+    if (db.pragma("foreign_keys", { simple: true }) !== 1) return { ok: false, error: {
+      code: "foreign_keys_disabled", message: "Project repair requires foreign_keys=1 before its transaction" } };
+    if (repositories && !repositories.isCurrent()) return { ok: false, error: {
+      code: "observation_changed", message: "Project registry or repository references changed during observation; retry repair" } };
+    let merge: MergePlan | undefined;
+    if (options.merge) {
+      if (!repositories) throw new Error("Missing merge repository observation");
+      const refs = [options.merge.source, options.merge.target].map(ref => repositories.resolve(ref));
+      for (const ref of refs) if (!ref.ok) return { ok: false, error: {
+        code: ref.reason === "ambiguous" ? "ambiguous" : "not_found", message: `Cannot resolve merge project: ${ref.reason}` } };
+      const [source, target] = refs;
+      if (!source.ok || !target.ok) throw new Error("Unresolved merge project");
+      if (source.project.id === target.project.id) return { ok: false, error: { code: "same_project", message: "Merge source and target are the same project" } };
+      merge = inspectMerge(db, source.project.id, target.project.id, repositories);
+      if (options.apply && merge.conflicts.length) return { ok: false, error: {
+        code: "merge_conflict", message: "Project merge is blocked", conflicts: merge.conflicts } };
+    } else {
+      const coverage = projectReferenceCoverage(db);
+      if (coverage.length) return { ok: false, error: { code: "merge_conflict", message: "Project reference coverage is incomplete",
+        conflicts: coverage.map(value => ({ kind: "schema_coverage", value, detail: value })) } };
+    }
+    const key_backfills = plannedKeyBackfills(db);
+    if (options.apply) {
+      backfillProjectKeys(db);
+      if (merge && repositories) executeMerge(db, merge, repositories);
+    }
+    return { ok: true, value: { keys_backfilled: options.apply ? key_backfills.length : 0, key_backfills,
+      foreign_keys: "enforced", audit: auditRegistry(db), merge, applied: options.apply ?? false } };
   };
+  try {
+    return options.apply ? db.transaction(inspectAndExecute).immediate() : db.transaction(inspectAndExecute).deferred();
+  } catch (error) {
+    if (!isSqliteConstraint(error) || !(error instanceof Error)) throw error;
+    return { ok: false, error: { code: "constraint", message: `Project repair rolled back: ${error.message}` } };
+  }
 }

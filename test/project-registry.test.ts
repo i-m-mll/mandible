@@ -10,17 +10,20 @@ import {
   auditRegistry,
   backfillProjectKeys,
   deriveProjectKeyBase,
-  discoverProjectIdColumns,
-  HISTORICAL_PROJECT_ID_COLUMNS,
   ProjectRegistryError,
-  PROJECT_ID_COLUMNS,
-  repairRegistry,
+  repairRegistry as repairRegistryResult,
   slugifyProjectKey,
   suggestProjectRefs,
 } from "../src/ledger/project-registry.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
+
+async function repairRegistry(...args: Parameters<typeof repairRegistryResult>) {
+  const result = await repairRegistryResult(...args);
+  if (!result.ok) throw new ProjectRegistryError(result.error.message, result.error.code, { conflicts: result.error.conflicts });
+  return result.value;
+}
 
 let tempDir = "";
 let db: Db;
@@ -295,7 +298,7 @@ describe("auditRegistry", () => {
 // ---------------------------------------------------------------------------
 
 describe("repairRegistry merge", () => {
-  it("dry run returns plan without modifying the db", () => {
+  it("dry run returns plan without modifying the db", async () => {
     const dirA = path.join(tempDir, "proj-a");
     const dirB = path.join(tempDir, "proj-b");
     fs.mkdirSync(dirA, { recursive: true });
@@ -335,7 +338,7 @@ describe("repairRegistry merge", () => {
     ).n;
 
     // Dry run — no apply
-    const report = repairRegistry(db, { merge: { source: projA.id, target: projB.id } });
+    const report = await repairRegistry(db, { merge: { source: projA.id, target: projB.id } });
 
     expect(report.merge).toBeDefined();
     expect(report.merge!.applied).toBe(false);
@@ -355,7 +358,7 @@ describe("repairRegistry merge", () => {
     expect(projARow).not.toBeUndefined();
   });
 
-  it("apply merges source issues into target and deletes source project", () => {
+  it("apply merges source issues into target and deletes source project", async () => {
     const dirC = path.join(tempDir, "proj-c");
     const dirD = path.join(tempDir, "proj-d");
     fs.mkdirSync(dirC, { recursive: true });
@@ -388,13 +391,13 @@ describe("repairRegistry merge", () => {
       author_display: "Test",
     });
 
-    const report = repairRegistry(db, {
+    const report = await repairRegistry(db, {
       apply: true,
       merge: { source: projC.id, target: projD.id },
     });
 
     expect(report.merge!.applied).toBe(true);
-    expect(report.merge!.foreign_key_violations).toBe(0);
+    expect(report.foreign_keys).toBe("enforced");
 
     // Source project deleted
     const projCRow = db.prepare("SELECT id FROM ledger_projects WHERE id = ?").get(projC.id);
@@ -421,7 +424,7 @@ describe("repairRegistry merge", () => {
     expect(violations).toHaveLength(0);
   });
 
-  it("throws merge_conflict (code) when short_ids clash, db unchanged", () => {
+  it("throws merge_conflict (code) when short_ids clash, db unchanged", async () => {
     const dirE = path.join(tempDir, "proj-e");
     const dirF = path.join(tempDir, "proj-f");
     fs.mkdirSync(dirE, { recursive: true });
@@ -466,7 +469,7 @@ describe("repairRegistry merge", () => {
 
     let caught: unknown;
     try {
-      repairRegistry(db, {
+      await repairRegistry(db, {
         apply: true,
         merge: { source: projE.id, target: projF.id },
       });
@@ -494,7 +497,7 @@ describe("repairRegistry merge", () => {
 
 describe("merge move-list schema coverage (codex review #1)", () => {
 
-  it("merges a source project WITH commit links cleanly (FK ON DELETE RESTRICT)", () => {
+  it("merges a source project WITH commit links cleanly (FK ON DELETE RESTRICT)", async () => {
     const dirA = path.join(tempDir, "cl-a");
     const dirB = path.join(tempDir, "cl-b");
     fs.mkdirSync(dirA, { recursive: true });
@@ -521,10 +524,10 @@ describe("merge move-list schema coverage (codex review #1)", () => {
        VALUES (?, ?, ?, 'fixed_by', 'auth_queue', ?)`,
     ).run("deadbeef", projA.id, issueA.id, Date.now());
 
-    const report = repairRegistry(db, { apply: true, merge: { source: projA.id, target: projB.id } });
+    const report = await repairRegistry(db, { apply: true, merge: { source: projA.id, target: projB.id } });
 
     expect(report.merge!.applied).toBe(true);
-    expect(report.merge!.foreign_key_violations).toBe(0);
+    expect(report.foreign_keys).toBe("enforced");
     expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     // source project gone, commit link repointed to target
     expect(db.prepare("SELECT id FROM ledger_projects WHERE id = ?").get(projA.id)).toBeUndefined();
@@ -534,7 +537,7 @@ describe("merge move-list schema coverage (codex review #1)", () => {
     expect(link.project_id).toBe(projB.id);
   });
 
-  it("repoints trash custody records while preserving their source checkout", () => {
+  it("repoints trash custody records while preserving their source checkout", async () => {
     const dirA = path.join(tempDir, "trash-a");
     const dirB = path.join(tempDir, "trash-b");
     fs.mkdirSync(dirA, { recursive: true });
@@ -567,32 +570,14 @@ describe("merge move-list schema coverage (codex review #1)", () => {
       now + 30 * 24 * 60 * 60 * 1000,
     );
 
-    const report = repairRegistry(db, { apply: true, merge: { source: projA.id, target: projB.id } });
+    const report = await repairRegistry(db, { apply: true, merge: { source: projA.id, target: projB.id } });
 
     expect(report.merge!.applied).toBe(true);
-    expect(report.merge!.foreign_key_violations).toBe(0);
+    expect(report.foreign_keys).toBe("enforced");
     expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     const trash = db
       .prepare("SELECT project_id, checkout_id FROM trash_entries WHERE id = ?")
       .get("trash-project-merge") as { project_id: string; checkout_id: string };
     expect(trash).toEqual({ project_id: projB.id, checkout_id: checkoutA.id });
-  });
-});
-
-describe("merge move-list schema coverage", () => {
-  it("every project-id column in the live schema is covered by the move list or historical allowlist", () => {
-    const moveSet = new Set<string>();
-    for (const { table, columns } of PROJECT_ID_COLUMNS) {
-      for (const column of columns) moveSet.add(`${table}.${column}`);
-    }
-    const historicalSet = new Set(
-      HISTORICAL_PROJECT_ID_COLUMNS.map((entry) => `${entry.table}.${entry.column}`),
-    );
-    const discovered = discoverProjectIdColumns(db);
-    expect(discovered.length).toBeGreaterThan(0);
-    const uncovered = discovered
-      .map((entry) => `${entry.table}.${entry.column}`)
-      .filter((key) => !moveSet.has(key) && !historicalSet.has(key));
-    expect(uncovered).toEqual([]);
   });
 });
