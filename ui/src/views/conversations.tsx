@@ -3350,12 +3350,18 @@ export function ConversationsView({
     [registerInitialSidebarLoad, sidebarFilters, sidebarFiltersJson],
   );
   const sidebarLive = sidebarEnabled && viewActive;
+  const cachedSnapshot = queryClient.getQueryData<import('../api').ConversationSidebarResponse>(sidebarQueryKey)?.snapshot_id;
+  const terminalRead = queryClient.getQueryState(sidebarQueryKey)?.error instanceof FullTextSearchError
+    || continuationRequests.some((request) => JSON.stringify(request.filters) === sidebarFiltersJson
+      && request.snapshot?.snapshot_id === cachedSnapshot
+      && queryClient.getQueryState(conversationKeys.sidebarPage(request.filters, request.group, request.cursor))?.error instanceof FullTextSearchError);
   const sidebarQuery = useQuery({
     queryKey: sidebarQueryKey,
     queryFn: fetchSidebarInitial,
-    enabled: sidebarLive,
+    enabled: sidebarLive && !terminalRead,
     staleTime: ROUTE_DATA_FRESH_MS,
     retry: false,
+    retryOnMount: false,
   }, queryClient);
   useEffect(() => () => {
     void queryClient.cancelQueries({ queryKey: sidebarQueryKey, exact: true });
@@ -3371,8 +3377,9 @@ export function ConversationsView({
     }
   }), [queryClient]);
   useEffect(() => {
-    if (!sidebarLive) return undefined;
-    const keys = continuationRequests.filter((request) => JSON.stringify(request.filters) === sidebarFiltersJson).map((request) => {
+    if (!sidebarLive || terminalRead) return undefined;
+    const keys = continuationRequests.filter((request) => JSON.stringify(request.filters) === sidebarFiltersJson
+      && request.snapshot?.snapshot_id === cachedSnapshot).map((request) => {
       const queryKey = conversationKeys.sidebarPage(request.filters, request.group, request.cursor);
       void queryClient.fetchQuery({
         queryKey,
@@ -3390,7 +3397,7 @@ export function ConversationsView({
     return () => {
       for (const queryKey of keys) void queryClient.cancelQueries({ queryKey, exact: true });
     };
-  }, [continuationRequests, queryClient, sidebarLive, sidebarFiltersJson]);
+  }, [continuationRequests, queryClient, sidebarLive, sidebarFiltersJson, terminalRead, cachedSnapshot]);
   const completedSidebar = useRef<{
     data: import('../api').ConversationSidebarResponse;
     filters: ConversationSidebarFilters;

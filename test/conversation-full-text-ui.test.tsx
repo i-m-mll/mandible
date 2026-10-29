@@ -227,7 +227,7 @@ describe('completed search snapshots in Chat', () => {
         return retry ? jsonFixture(complete(['Fresh match'], expired ? null : 'expires', expired ? 'search-2' : 'search-1'))
           : url.searchParams.has('search_id') ? jsonFixture(terminal('incomplete'), 409) : jsonFixture(pending(), 202);
       } }]).install();
-    render(view());
+    const rendered = render(view());
     await tick();
     fullText();
     search('needle');
@@ -236,6 +236,9 @@ describe('completed search snapshots in Chat', () => {
     expect(sidebar().getByText('Prior chat')).toBeTruthy();
     await waitUntilPasses(() => expect(screen.getByRole('button', { name: 'Retry search' })).toBeTruthy());
     const requests = fixture.requested.length;
+    rendered.rerender(view(false));
+    await tick();
+    rendered.rerender(view());
     await tick(10_000);
     expect(fixture.requested).toHaveLength(requests);
     expect(sidebar().queryByText('No chats')).toBeNull();
@@ -246,6 +249,12 @@ describe('completed search snapshots in Chat', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
     await tick();
     expect(sidebar().getByText('Fresh match')).toBeTruthy();
+    const expiredRequests = fixture.requested.length;
+    rendered.rerender(view(false));
+    await tick();
+    rendered.rerender(view());
+    await tick(10_000);
+    expect(fixture.requested).toHaveLength(expiredRequests);
     fireEvent.click(screen.getByRole('button', { name: 'Refresh search' }));
     await tick();
     expect(screen.queryByRole('button', { name: 'Refresh search' })).toBeNull();
