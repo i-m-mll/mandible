@@ -2,7 +2,7 @@ import { mutateWorkUnit } from "../src/work-unit-history.js";
 import { setConversationArchiveState } from "../src/conversations/metadata.js";
 import { WorkUnitReconciler } from "../src/work-unit-reconciler.js";
 import { resolveSessionAlias } from "../src/session-liveness.js";
-import { getWorkerAssignments } from "../src/work-unit-worker.js";
+import { getWorkerAssignments, hasArchivedResponsibility } from "../src/work-unit-worker.js";
 import { registerHookRoutes } from "../src/routes/hooks.js";
 import { SessionExecutionStore, applyExecutionEnvelope } from "../src/session-execution.js";
 import http from "node:http";
@@ -661,6 +661,16 @@ describe("work unit routes", () => {
     expect(db.prepare("SELECT assigned_session_id, owner_credential_id, custody_generation FROM work_units WHERE id = ?").get(units[0]))
       .toEqual({ assigned_session_id: "retained-native", owner_credential_id: credential.id, custody_generation: 1 });
     expect(db.prepare("SELECT assigned_session_id FROM work_units WHERE id = ?").get(units[1])).toEqual({ assigned_session_id: null });
+    const parentNative = "019a0000-0000-7000-8000-00000000000a";
+    db.prepare(`INSERT INTO conversations(id,source,session_id,source_path,source_hash,source_mtime,started_at)
+      VALUES ('retained-parent','claude_code',?,'/retained-parent','',1,'2026-10-01')`).run(parentNative);
+    db.prepare(`UPDATE conversations SET parent_source='claude_code',parent_session_id=?,parent_conversation_id='retained-parent',
+      opening_lineage='child',opening_line=? WHERE id='retained-chat'`)
+      .run(parentNative, `[mandible child parent=claude:${parentNative} parent-role=coordinator role=worker]`);
+    mutateWorkUnit(db, units[0]!, () => db.prepare("UPDATE work_units SET continuation = ? WHERE id = ?").run("Keep responsibility", units[0]));
+    const bound = db.prepare("SELECT * FROM work_units WHERE id = ?").get(units[0]) as Record<string, unknown>;
+    expect(bound.worker_provider).toBe("claude_code");
+    expect(hasArchivedResponsibility(db, bound)).toBe(true);
     const check = await owned.invoke({ method: "GET", credential: "own",
       url: "/api/work-units/custody-check?repo_id=mandible&branch=feature/retained-native",
       ambient_identity: { provider: "claude", provider_session_id: "different-native" } });

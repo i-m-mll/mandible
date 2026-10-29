@@ -66,6 +66,6 @@ export function hasArchivedResponsibility(db: Db, unit: UnitRow): boolean {
       AND archive.rowid > COALESCE((SELECT MAX(assignment.rowid) FROM ledger_events assignment,
         json_each(assignment.payload_json, '$.changed_fields') field
         WHERE assignment.entity_type = 'work_unit' AND assignment.entity_id = ?
-          AND field.value IN ('assignment_target_json', 'worker_provider', 'worker_provider_session_id', 'custody_generation')),
+          AND field.value IN ('assignment_target_json', 'custody_generation')),
         0) LIMIT 1`).get(provider, nativeId, unit.created_at ?? 0, unit.id));
 }
