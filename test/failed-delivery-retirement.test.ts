@@ -4,6 +4,7 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { expect, it, vi } from 'vitest';
 import { createMigratedDb } from './helpers/ledger-fixtures.js';
+import { migrateFixtureThrough } from './helpers/schema-snapshot.js';
 import { createPendingRelease, retainAcceptedRelease, applicationIdentity, assertAcceptedReleaseAvailable } from '../scripts/accepted-release.mjs';
 import { installedFileIdentity } from '../scripts/installed-release.mjs';
 import { saveOwnedMetadata } from '../scripts/owned-run.mjs';
@@ -17,14 +18,12 @@ import { addAttributionEvidence, createUser, addCredential } from '../src/users/
 import { migrate } from '../src/db-migrations.js';
 import { AuthQueue } from '../src/auth-queue.js';
 import { acceptedReleaseProducerReferencesAsync } from '../scripts/accepted-release-retention.mjs';
-import { AUTH_HOOK_EXECUTIONS_TABLE_SQL, AUTH_HOOK_EXECUTIONS_INDEX_SQL } from '../src/auth-hook-schema.js';
 import type { AuthRequest, AuthLifecycleActor } from '../src/types.js';
 
 const candidate = { pin_sha: 'a'.repeat(40), tree_sha: 'b'.repeat(40), base_sha: 'c'.repeat(40), head_sha: 'd'.repeat(40) };
 const actor: AuthLifecycleActor = { ...systemAction(), authority_path: 'system' };
-async function fixture() {
+async function fixture(db = createMigratedDb()) {
   const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'failed-retirement-')));
-  const db = createMigratedDb();
   const id = randomUUID(); const execution = randomUUID(); const record = randomUUID();
   const owner = createUser(db, { slug: 'retirement-owner', display_name: 'Retirement owner', kind: 'agent' });
   const credential = addCredential(db, owner.id, { type: 'api_token', fingerprint: 'retirement-held' });
@@ -184,22 +183,15 @@ it('does not block the event loop during consumer observation and rejects concur
   } finally { f.close(); }
 });
 
-it('migrates failed hook evidence unchanged and admits retirement in the shared fresh and upgraded schema', async () => {
-  const f = await fixture();
+it.each([221, 222])('migrates failed hook evidence unchanged from v%i and admits retirement', async version => {
+  const f = await fixture(migrateFixtureThrough(version));
   try {
     const original = f.hook();
     const snapshot = authRequestSnapshot(f.db, f.id);
     const history = listAuthLifecycleEvents(f.db, f.id);
-    f.db.exec(`DROP INDEX idx_auth_hook_executions_runnable;
-      ALTER TABLE auth_hook_executions RENAME TO hooks_new;
-      ${AUTH_HOOK_EXECUTIONS_TABLE_SQL.replace(",'retired'", '')};
-      INSERT INTO auth_hook_executions SELECT * FROM hooks_new;
-      DROP TABLE hooks_new;
-      ${AUTH_HOOK_EXECUTIONS_INDEX_SQL};
-      UPDATE meta SET value = '221' WHERE key = 'schema_version';`);
-    expect(f.db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: '221' });
+    expect(f.db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: String(version) });
     migrate(f.db);
-    expect(f.db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: '222' });
+    expect(f.db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: '223' });
     expect(f.hook()).toEqual(original);
     expect(authRequestSnapshot(f.db, f.id)).toBe(snapshot);
     expect(listAuthLifecycleEvents(f.db, f.id)).toEqual(history);
