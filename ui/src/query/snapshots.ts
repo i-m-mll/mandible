@@ -29,4 +29,3 @@ export function snapshotOptions<T>(queryKey: readonly unknown[], load: (signal: 
 export function detailQueryData<T>(query: { data: T | undefined; isError: boolean }, options: { restartSnapshot: () => T | undefined }): T | undefined {
   return query.data ?? (query.isError ? options.restartSnapshot() : undefined);
 }
-

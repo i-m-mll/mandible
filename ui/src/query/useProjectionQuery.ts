@@ -12,18 +12,13 @@ export function useProjectionQuery<T>(options: UseQueryOptions<T>, active: boole
   const register = useRegisterInitialRouteLoad();
   useLayoutEffect(() => {
     live.active = active;
+    const release = active ? register(queryClient.fetchQuery(options).then(() => undefined, () => undefined)) : () => undefined;
     return () => {
+      release();
       live.active = false;
       const current = queryClient.getQueryCache().find({ queryKey: options.queryKey, exact: true });
       if (current && !current.isActive()) void queryClient.cancelQueries({ queryKey: options.queryKey, exact: true });
     };
   }, [live, active]);
-  useLayoutEffect(() => {
-    if (!active) return undefined;
-    const current = queryClient.getQueryCache().find({ queryKey: options.queryKey, exact: true });
-    if (current?.promise && query.fetchStatus === 'fetching') return register(current.promise);
-    if (!query.isPending) return register(Promise.resolve());
-    return undefined;
-  }, [active, hash, query.fetchStatus, query.isPending, register]);
   return query;
 }
