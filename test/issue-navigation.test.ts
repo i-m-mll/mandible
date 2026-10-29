@@ -424,13 +424,14 @@ it.each([undefined, 'mandible'])('keeps a full explicit ref intact across partia
 it.each([
   ['restart', 'collision'], ['stale Query', 'collision'],
   ['restart', 'repo-b'], ['stale Query', 'repo-b'],
+  ['fresh Query', 'collision'], ['fresh Query', 'repo-b'],
 ])('resolves a repo-less cached prefix authoritatively before promoting scope (%s, %s)', async (source, resolution) => {
     stubIssuesLocalStorage();
     const prefix = '4c26383';
     const key = detailKeys.issue(prefix);
     const cached = issueDetailProjection({ displayId: prefix, title: 'Cached repo A', projectKey: 'repo-a' });
     if (source === 'restart') writePersistedDetail('issue-detail-query-snapshot', hashKey(key), cached);
-    else queryClient.setQueryData(key, cached, { updatedAt: Date.now() - 60_001 });
+    else queryClient.setQueryData(key, cached, { updatedAt: Date.now() - (source === 'stale Query' ? 60_001 : 0) });
     let finish!: (response: Response) => void;
     const signals: AbortSignal[] = [];
     const requests: string[] = [];
@@ -456,6 +457,18 @@ it.each([
     expect(screen.queryByRole('heading', { name: 'Cached repo A' })).toBeNull();
     expect(queryClient.getQueryData(detailKeys.issue(prefix, 'repo-a'))).toBeUndefined();
     expect(requests).toEqual(['/api/ledger/issues/4c26383']);
+  });
+
+it('uses a fresh canonical identity without an extra resolution read', async () => {
+    stubIssuesLocalStorage();
+    const id = 'a'.repeat(64);
+    queryClient.setQueryData(detailKeys.issue(id), { ...issueDetailProjection({ displayId: id, title: 'Canonical cached detail' }), id });
+    const fetcher = vi.fn(() => new Promise<Response>(() => {}));
+    vi.stubGlobal('fetch', fetcher);
+    render(h(IssuesView, { repos, onRescan: async () => undefined, initialIssueId: id }));
+    expect(await screen.findByRole('heading', { name: 'Canonical cached detail' })).toBeTruthy();
+    await act(async () => { await Promise.resolve(); });
+    expect(fetcher).not.toHaveBeenCalled();
   });
 
 it('does not infer global uniqueness from one visible prefix match', async () => {

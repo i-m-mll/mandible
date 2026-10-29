@@ -14,12 +14,13 @@ import { queryClient } from './client';
 
 export function issueDetailOptions(id: string | null, repo?: string) {
   const key = detailKeys.issue(id, repo);
-  return snapshotOptions(key, (signal) => (key[2]
+  const options = snapshotOptions(key, (signal) => (key[2]
     ? getLedgerIssueDetailByRef(key[2], key[1]!, { signal })
     : getLedgerIssueDetailByIssueId(key[1]!, { signal })).catch((error: unknown) => {
       if (isApiErrorStatus(error, 404) || isApiErrorStatus(error, 409)) removeRestartSnapshot([...key, 'initial']);
       throw error;
     }));
+  return { ...options, staleTime: !key[2] && !/^[a-f0-9]{64}$/i.test(key[1] ?? '') ? 0 : options.staleTime };
 }
 
 export function issueInitialDetailOptions(id: string | null, repo?: string) {
