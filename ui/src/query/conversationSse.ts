@@ -51,6 +51,10 @@ export function applyConversationSse(
   for (const [key, cached] of client.getQueriesData<ConversationSidebarResponse>({ queryKey: conversationKeys.sidebars() })) {
     if (!cached) continue;
     const filters = key[3] as ConversationSidebarFilters | undefined;
+    if (filters?.full_text && filters.search) {
+      markSidebarListsStale(client, key, true);
+      continue;
+    }
     let affected = false;
     let uncertain = membershipChanged;
     const groups = cached.groups.map((group) => {

@@ -24,7 +24,13 @@ export interface IngestionActorOptions {
 }
 
 export function canUseDefaultIngestionWorker(): boolean {
-  return new URL(import.meta.url).pathname.endsWith(".js");
+  return defaultWorkerExtension() !== null;
+}
+
+function defaultWorkerExtension(): "js" | "ts" | null {
+  const filename = new URL(import.meta.url).pathname;
+  if (filename.endsWith(".js")) return "js";
+  return process.versions.bun && filename.endsWith(".ts") ? "ts" : null;
 }
 
 /**
@@ -173,7 +179,9 @@ function defaultWorkerUrl(): URL {
   // Construct this dynamically so source transformers do not rewrite a Node
   // worker module into a browser-dev-server URL.
   const url = new URL(import.meta.url);
-  url.pathname = `${url.pathname.slice(0, url.pathname.lastIndexOf("/") + 1)}ingestion-worker.js`;
+  const extension = defaultWorkerExtension();
+  if (!extension) throw new Error("default ingestion worker is unavailable in this runtime");
+  url.pathname = `${url.pathname.slice(0, url.pathname.lastIndexOf("/") + 1)}ingestion-worker.${extension}`;
   url.search = "";
   url.hash = "";
   return url;

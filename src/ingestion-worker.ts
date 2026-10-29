@@ -4,11 +4,12 @@ import { openDb, setDb } from "./db.js";
 import {
   configureIngestionWorker,
   ingestBatchForWorker,
+  ingestedPathNeedsFollowup,
   reconcileForWorker,
   triggerFullIngestForWorker,
 } from "./ingestion.js";
 import type { IngestionWorkerRequest, IngestionWorkerResponse } from "./ingestion-worker-protocol.js";
-import { IngestionPriorityQueue } from "./ingestion-priority-queue.js";
+import { IngestionWorkerService } from "./ingestion-worker-service.js";
 import { isConversationSourceChangedError } from "./conversations/source-store.js";
 import type { Logger } from "./types.js";
 
@@ -50,35 +51,24 @@ const checkpointTimer = setInterval(() => {
   }
 }, checkpointIntervalMs);
 
-const requestQueue = new IngestionPriorityQueue<IngestionWorkerRequest>(handle);
+const service = new IngestionWorkerService({
+  ingest: (filePath, requirements, withinPass) => withBusyRetry(() => ingestBatchForWorker(
+    [filePath], requirements.forceFull, requirements.bypassSameMtimeUnchanged, true, undefined, withinPass,
+  )),
+  needsFollowup: ingestedPathNeedsFollowup,
+  reconcile: (startup, cooperate, ingest) => withBusyRetry(() => reconcileForWorker(startup, cooperate, ingest)),
+  fullIngest: (cooperate, ingest) => withBusyRetry(() => triggerFullIngestForWorker(cooperate, ingest)),
+});
 port.on("message", (request: IngestionWorkerRequest) => {
-  // Exact read barriers may pass a long filesystem reconciliation only at its
-  // explicit cooperative boundaries. All database writes remain serialized.
-  void requestQueue.enqueue(request, request.kind === "ingest" && request.priority === true);
+  void handle(request);
 });
 send({ kind: "ready" });
 
 async function handle(
   request: IngestionWorkerRequest,
-  cooperate: () => Promise<void>,
 ): Promise<void> {
   try {
-    const value = await withBusyRetry(async () => {
-      if (request.kind === "ingest") {
-        await ingestBatchForWorker(
-          request.paths,
-          request.forceFull === true,
-          request.bypassSameMtimeUnchanged === true,
-          true,
-        );
-        return undefined;
-      }
-      if (request.kind === "reconcile") {
-        await reconcileForWorker(request.startupPasses === true, cooperate);
-        return undefined;
-      }
-      return triggerFullIngestForWorker();
-    });
+    const value = await service.execute(request);
     send({ kind: "result", id: request.id, ok: true, value });
   } catch (error) {
     send({

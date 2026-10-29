@@ -1,6 +1,7 @@
 import { hashKey, type Query, type QueryClient, type QueryKey } from '@tanstack/preact-query';
 import { createCoalescedRefresh, RefreshDeadlineError } from '../lib/coalesced-refresh';
 import { conversationKeys, normalizeSidebarFilters, type ConversationSidebarFilters } from './conversationKeys';
+import { FullTextSearchError } from './fullTextSearch';
 
 const replayPending = new WeakSet<Query>();
 
@@ -48,10 +49,12 @@ export function startSidebarRefresh(
   const scope = hashKey([normalizeSidebarFilters(filters)]);
   const inScope = (query: Query): boolean => {
     const key = query.queryKey;
-    return key[0] === 'chat' && key[1] === 'sidebar' && hashKey([key[3]]) === scope;
+    return key[0] === 'chat' && key[1] === 'sidebar' && hashKey([key[3]]) === scope
+      && (!filters.full_text || key[2] === 'initial');
   };
   const due = (query: Query): boolean => (
     inScope(query) && query.state.isInvalidated && query.state.fetchStatus !== 'fetching'
+      && !(query.state.error instanceof FullTextSearchError)
   );
   const refresh = createCoalescedRefresh((signal) => {
     const targets = cache.findAll({ queryKey: conversationKeys.sidebars() }).filter(due);
@@ -71,10 +74,12 @@ export function startSidebarRefresh(
         }));
       }
     }, { once: true });
-    return client.refetchQueries(
+    const result = client.refetchQueries(
       { queryKey: conversationKeys.sidebars(), type: 'all', predicate: (query) => targets.includes(query) },
       { cancelRefetch: false },
     );
+    // A paced search job is healthy work, not a stalled single HTTP refresh.
+    return filters.full_text ? undefined : result;
   });
   const unsubscribe = cache.subscribe((event) => {
     if (event.type === 'updated' && event.action.type === 'invalidate' && inScope(event.query)) refresh.request();

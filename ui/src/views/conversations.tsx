@@ -165,6 +165,8 @@ import {
   type ConversationSidebarFilters,
 } from '../query/conversationKeys';
 import { markSidebarListsStale, startSidebarRefresh } from '../query/conversationSidebarRefresh';
+import { FullTextSearchError, type SearchSnapshot } from '../query/fullTextSearch';
+import type { FullTextSearchPending } from '../../../src/conversations/full-text-search-contract';
 import { queryClient as appQueryClient } from '../query/client';
 import { useSidebarOrderPreference } from '../hooks/useSidebarOrderPreference';
 import { useSidebarReorder } from '../hooks/useSidebarReorder';
@@ -3128,6 +3130,7 @@ export function ConversationsView({
     group: string;
     cursor: string;
     filters: ConversationSidebarFilters;
+    snapshot?: SearchSnapshot;
   }>>([]);
   const [sidebarToast, setSidebarToast] = useState<ToastState>(null);
   const [newChatDraft, setNewChatDraft] = useState<NewChatDraft | null>(null);
@@ -3332,21 +3335,37 @@ export function ConversationsView({
   // with its legacy starred grouping and keep reordering disabled.
   const sidebarEnabled = canonicalProjectsReady && shownProjectsState.ready;
   const sidebarQueryKey = useMemo(() => conversationKeys.sidebarInitial(sidebarFilters), [sidebarFilters]);
+  const [searchProgress, setSearchProgress] = useState<{ filters: string; pending: FullTextSearchPending } | null>(null);
   const fetchSidebarInitial = useCallback(
     ({ signal }: { signal: AbortSignal }) => {
-      const initialLoad = getConversationSidebar({ ...sidebarFilters, signal });
+      setSearchProgress(null);
+      const initialLoad = getConversationSidebar({ ...sidebarFilters, signal,
+        onPending: (pending) => {
+          if (!signal.aborted) setSearchProgress({ filters: sidebarFiltersJson, pending });
+        },
+      });
       registerInitialSidebarLoad(initialLoad);
       return initialLoad;
     },
-    [registerInitialSidebarLoad, sidebarFilters],
+    [registerInitialSidebarLoad, sidebarFilters, sidebarFiltersJson],
   );
   const sidebarLive = sidebarEnabled && viewActive;
+  const cachedSnapshot = queryClient.getQueryData<import('../api').ConversationSidebarResponse>(sidebarQueryKey)?.snapshot_id;
+  const terminalRead = queryClient.getQueryState(sidebarQueryKey)?.error instanceof FullTextSearchError
+    || continuationRequests.some((request) => JSON.stringify(request.filters) === sidebarFiltersJson
+      && request.snapshot?.snapshot_id === cachedSnapshot
+      && queryClient.getQueryState(conversationKeys.sidebarPage(request.filters, request.group, request.cursor))?.error instanceof FullTextSearchError);
   const sidebarQuery = useQuery({
     queryKey: sidebarQueryKey,
     queryFn: fetchSidebarInitial,
-    enabled: sidebarLive,
+    enabled: sidebarLive && !terminalRead,
     staleTime: ROUTE_DATA_FRESH_MS,
+    retry: false,
+    retryOnMount: false,
   }, queryClient);
+  useEffect(() => () => {
+    void queryClient.cancelQueries({ queryKey: sidebarQueryKey, exact: true });
+  }, [queryClient, sidebarQueryKey, sidebarLive]);
   useEffect(
     () => sidebarLive ? startSidebarRefresh(queryClient, sidebarFilters) : undefined,
     [queryClient, sidebarFilters, sidebarLive],
@@ -3358,8 +3377,9 @@ export function ConversationsView({
     }
   }), [queryClient]);
   useEffect(() => {
-    if (!sidebarEnabled) return undefined;
-    const keys = continuationRequests.map((request) => {
+    if (!sidebarLive || terminalRead) return undefined;
+    const keys = continuationRequests.filter((request) => JSON.stringify(request.filters) === sidebarFiltersJson
+      && request.snapshot?.snapshot_id === cachedSnapshot).map((request) => {
       const queryKey = conversationKeys.sidebarPage(request.filters, request.group, request.cursor);
       void queryClient.fetchQuery({
         queryKey,
@@ -3367,27 +3387,54 @@ export function ConversationsView({
           ...request.filters,
           group_key: request.group,
           cursor: request.cursor,
+          snapshot: request.snapshot,
           signal,
         }),
-      });
+        retry: false,
+      }).catch(() => undefined);
       return queryKey;
     });
     return () => {
       for (const queryKey of keys) void queryClient.cancelQueries({ queryKey, exact: true });
     };
-  }, [continuationRequests, queryClient, sidebarEnabled]);
-  const continuationPages = continuationRequests.flatMap((request) => {
+  }, [continuationRequests, queryClient, sidebarLive, sidebarFiltersJson, terminalRead, cachedSnapshot]);
+  const completedSidebar = useRef<{
+    data: import('../api').ConversationSidebarResponse;
+    filters: ConversationSidebarFilters;
+    filtersJson: string;
+  } | null>(null);
+  if (sidebarQuery.data) completedSidebar.current = {
+    data: sidebarQuery.data, filters: sidebarFilters, filtersJson: sidebarFiltersJson,
+  };
+  const completed = completedSidebar.current;
+  const snapshot = completed?.data.search_id && completed.data.snapshot_id
+    ? { search_id: completed.data.search_id, snapshot_id: completed.data.snapshot_id }
+    : undefined;
+  const matchingRequests = continuationRequests.filter((request) => (
+    JSON.stringify(request.filters) === completed?.filtersJson
+    && request.snapshot?.snapshot_id === snapshot?.snapshot_id
+  ));
+  const continuationPages = matchingRequests.flatMap((request) => {
     const data = queryClient.getQueryData<import('../api').ConversationSidebarResponse>(
       conversationKeys.sidebarPage(request.filters, request.group, request.cursor),
     );
     return data ? [data] : [];
   });
   const serverGroups = useMemo(
-    () => mergeSidebarPages(sidebarQuery.data, continuationPages),
-    [continuationCacheRevision, sidebarQuery.data],
+    () => mergeSidebarPages(completed?.data, continuationPages),
+    [continuationCacheRevision, completed?.data],
   );
-  const sidebarLoaded = sidebarQuery.isSuccess;
+  const sidebarLoaded = completed !== null;
   const loading = sidebarQuery.isFetching;
+  const pageError = matchingRequests.map((request) => queryClient.getQueryState(
+    conversationKeys.sidebarPage(request.filters, request.group, request.cursor),
+  )?.error).find(Boolean);
+  const searchError = sidebarQuery.error ?? pageError;
+  const terminalSearch = searchError instanceof FullTextSearchError ? searchError : null;
+  const showingPriorResults = Boolean(completed && (
+    completed.filtersJson !== sidebarFiltersJson || loading || searchError
+  ));
+  const pendingSearch = loading && searchProgress?.filters === sidebarFiltersJson ? searchProgress.pending : null;
   const loadingMoreKeys = new Set(continuationRequests.flatMap((request) => (
     queryClient.getQueryState(conversationKeys.sidebarPage(request.filters, request.group, request.cursor))?.fetchStatus === 'fetching'
       ? [request.group]
@@ -3395,7 +3442,7 @@ export function ConversationsView({
   )));
 
   useEffect(() => {
-    if (!sidebarQuery.data) return;
+    if (!sidebarQuery.data || loading || searchError) return;
     setVisibleTargets((current) => {
       const next = new Map(current);
       for (const group of serverGroups) {
@@ -3405,27 +3452,25 @@ export function ConversationsView({
       return next.size === current.size ? current : next;
     });
     setContinuationRequests((current) => {
-      let next = current;
+      let next = current.filter((request) => JSON.stringify(request.filters) === sidebarFiltersJson
+        && request.snapshot?.snapshot_id === snapshot?.snapshot_id);
+      if (next.length === current.length) next = current;
       for (const group of serverGroups) {
         if (group.kind === 'pinned') continue;
         const target = targetsRef.current.get(group.key) ?? sidebarGroupLimit;
         if (group.conversations.length >= target || !group.next_cursor) continue;
         if (next.some((request) => request.group === group.key && request.cursor === group.next_cursor)) continue;
         if (next === current) next = [...current];
-        next.push({ group: group.key, cursor: group.next_cursor, filters: sidebarFilters });
+        next.push({ group: group.key, cursor: group.next_cursor, filters: sidebarFilters, snapshot });
       }
       return next;
     });
-  }, [serverGroups, sidebarFilters, sidebarGroupLimit, sidebarQuery.data]);
+  }, [serverGroups, sidebarFilters, sidebarFiltersJson, sidebarGroupLimit, sidebarQuery.data, loading, searchError]);
 
   useEffect(() => {
-    if (!sidebarQuery.error) return;
+    if (!searchError || terminalSearch) return;
     setSidebarToast({ message: 'Chats could not be refreshed.', type: 'error' });
-  }, [sidebarQuery.error]);
-
-  useEffect(() => {
-    setContinuationRequests((current) => current.length === 0 ? current : []);
-  }, [sidebarFilters]);
+  }, [searchError, terminalSearch]);
 
   const fetchConversationGroups = useCallback(async (projectIds = selectedProjectIds) => {
     const filters = sidebarRequestParams(sidebarGroupLimit, projectIds) as ConversationSidebarFilters;
@@ -3483,19 +3528,20 @@ export function ConversationsView({
   // searched summary too, so we narrow here to title-only for the title mode).
   // When searchMode === 'full', server search is sufficient — show all results.
   const displayedConversations = useMemo(() => {
+    const displayFilters = completed?.filters ?? sidebarFilters;
     const base = conversationGroups.map((group) => ({
       ...group,
       conversations: group.conversations.filter((conv) =>
-        !isSubagentConversation(conv) && (!hideEmpty || conv.block_count > 0 || Boolean(conv.spawn))
+        !isSubagentConversation(conv) && (!displayFilters.min_blocks || conv.block_count > 0 || Boolean(conv.spawn))
       ),
     }));
-    if (!search.trim() || searchMode === 'full') return base;
-    const needle = search.trim().toLowerCase();
+    if (!displayFilters.search || displayFilters.full_text) return base;
+    const needle = displayFilters.search.toLowerCase();
     return base.map((group) => ({
       ...group,
       conversations: group.conversations.filter((conv) => getConversationTitle(conv).toLowerCase().includes(needle)),
     }));
-  }, [conversationGroups, hideEmpty, search, searchMode]);
+  }, [conversationGroups, completed?.filters, sidebarFilters]);
 
   useEffect(() => {
     const aliases = new Map(conversationGroups.flatMap((group) => group.conversations.flatMap(
@@ -3789,6 +3835,7 @@ export function ConversationsView({
   };
 
   const showMore = useCallback((group: ChatProjectGroup) => {
+    if (showingPriorResults || terminalSearch) return;
     const currentTarget = targetsRef.current.get(group.key) ?? sidebarGroupLimit;
     const nextTarget = currentTarget + sidebarGroupLimit;
     const nextTargets = new Map(targetsRef.current).set(group.key, nextTarget);
@@ -3799,8 +3846,8 @@ export function ConversationsView({
     const filters = sidebarRequestParams(sidebarGroupLimit) as ConversationSidebarFilters;
     setContinuationRequests((current) => current.some((request) => (
       request.group === group.key && request.cursor === group.nextCursor
-    )) ? current : [...current, { group: group.key, cursor: group.nextCursor!, filters }]);
-  }, [sidebarGroupLimit, sidebarRequestParams]);
+    )) ? current : [...current, { group: group.key, cursor: group.nextCursor!, filters, snapshot }]);
+  }, [sidebarGroupLimit, sidebarRequestParams, showingPriorResults, terminalSearch, snapshot?.snapshot_id]);
 
   const handleToggleEntryPin = async (entry: ChatEntry) => {
     if (!entry.conversation) return;
@@ -4222,6 +4269,29 @@ export function ConversationsView({
               ),
             } : undefined}
           />
+          {loading && sidebarFilters.full_text && sidebarFilters.search ? (
+            <div role="status" className="sidebar-group-node__placeholder">
+              {pendingSearch?.phase === 'queued' ? 'Waiting to search chats…'
+                : pendingSearch?.phase === 'scanning'
+                  ? `Searching chats (${pendingSearch.progress.scanned} of ${pendingSearch.progress.eligible} checked)…`
+                  : 'Searching chats…'}
+              {showingPriorResults ? ' Showing previous results.' : ''}
+            </div>
+          ) : showingPriorResults && !terminalSearch ? (
+            <div role="status" className="sidebar-group-node__placeholder">Showing previous results.</div>
+          ) : null}
+          {terminalSearch ? (
+            <DetailPaneNotice
+              severity="warning"
+              density="compact"
+              title={terminalSearch.result.state === 'incomplete' ? 'Search incomplete' : 'Search needs refresh'}
+              actions={<button type="button" className="btn btn--ghost btn--sm" onClick={() => {
+                void sidebarQuery.refetch();
+              }}>{terminalSearch.result.state === 'incomplete' ? 'Retry search' : 'Refresh search'}</button>}
+            >
+              {terminalSearch.message}{completed ? ' Showing previous results.' : ''}
+            </DetailPaneNotice>
+          ) : null}
           {sidebarOrder.notice ? (
             <DetailPaneNotice
               severity="warning"
@@ -4335,7 +4405,7 @@ export function ConversationsView({
                       ? { label: `New chat in ${group.label}`, icon: <Icon name="newChat" data-sidebar-action-icon="new-chat" size={14} />, onPress: () => openNewSession(group.exactRoot) }
                       : undefined}
                     leadingIcon={<FolderIcon open={!collapsed} />}
-                    canShowMore={group.entries.length > target || group.nextCursor !== null}
+                    canShowMore={!showingPriorResults && !terminalSearch && (group.entries.length > target || group.nextCursor !== null)}
                     loadingMore={loadingMoreKeys.has(group.key)}
                     onShowMore={() => { void showMore(group); }}
                     reorder={group.canonicalProjectId ? projectReorder.binding(group.canonicalProjectId) : undefined}
@@ -4378,7 +4448,7 @@ export function ConversationsView({
                   expanded={!collapsedSections.has('chats')}
                   onToggle={() => toggleSection('chats')}
                   action={{ label: 'New chat', icon: <Icon name="newChat" data-sidebar-action-icon="new-chat" size={14} />, onPress: () => openNewSession() }}
-                  canShowMore={group.entries.length > target || group.nextCursor !== null}
+                  canShowMore={!showingPriorResults && !terminalSearch && (group.entries.length > target || group.nextCursor !== null)}
                   loadingMore={loadingMoreKeys.has(group.key)}
                   onShowMore={() => { void showMore(group); }}
                 >
@@ -4403,7 +4473,7 @@ export function ConversationsView({
                       />
                     ) : null}
                   {group.entries.slice(0, target).map((entry) => renderEntry(entry))}
-                  {totalVisibleEntries === 0 && sidebarLoaded && !loading ? (
+                  {totalVisibleEntries === 0 && sidebarLoaded && !loading && !searchError && !showingPriorResults ? (
                     <div className="sidebar-group-node__placeholder">No chats</div>
                   ) : null}
                 </SidebarGroupNode>
@@ -4465,7 +4535,10 @@ export function ConversationsView({
                   : routeResolution.data?.status === 'not_found' ? 'The requested chat was not found.'
                   : selection?.type === 'session' ? 'The requested session is unavailable.'
                   : 'Opening the requested chat…'
-                : 'No chats in this view'}
+                : loading ? 'Searching chats…'
+                  : searchError ? 'Select a chat or retry the search.'
+                  : sidebarLoaded && totalVisibleEntries === 0 && !showingPriorResults ? 'No chats in this view'
+                  : 'Select a chat'}
             </div>
           </ChatDetailFrame>
         )}

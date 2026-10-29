@@ -13,6 +13,7 @@ import { StringDecoder } from "node:string_decoder";
 import { randomUUID } from "node:crypto";
 import SqliteDatabase from "./sqlite.js";
 import { getDb, type Db } from "./db.js";
+import { getUserHome } from "./platform-paths.js";
 import { projectChildRetentionActivity } from "./conversations/retention-state.js";
 import { reconcileIngestedChildRetention } from "./conversations/retention-ingestion.js";
 import { resolveConversationId } from './conversations/identity.js';
@@ -53,6 +54,7 @@ import type {
 import { canUseDefaultIngestionWorker, IngestionActor } from "./ingestion-actor.js";
 import { ConversationSourceChangedError, ConversationSourceStore } from "./conversations/source-store.js";
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "./conversations/source-types.js";
+import { readConversationSourceReadiness, type ConversationSourceReadiness } from "./conversations/source-readiness.js";
 import { parseJsonObjectStrict } from "./row-coerce.js";
 import { backfillConversationLineageOnce } from "./conversations/lineage-backfill.js";
 import { getConversationStructureCache } from "./conversations/structure-cache.js";
@@ -60,15 +62,15 @@ import { getConversationStructureCache } from "./conversations/structure-cache.j
 // --- Watch configuration ---
 
 const WATCH_CONFIGS = [
-  { base: path.join(os.homedir(), ".claude", "projects"), glob: "**/*.jsonl" },
-  { base: path.join(os.homedir(), ".claude", "projects"), glob: "**/workflows/wf_*.json" },
-  { base: path.join(os.homedir(), ".codex", "sessions"), glob: "**/*.jsonl" },
+  { base: path.join(getUserHome(), ".claude", "projects"), glob: "**/*.jsonl" },
+  { base: path.join(getUserHome(), ".claude", "projects"), glob: "**/workflows/wf_*.json" },
+  { base: path.join(getUserHome(), ".codex", "sessions"), glob: "**/*.jsonl" },
   // `codex archive` (which Mandible itself triggers on merge/resume) moves
   // rollout files here. Watching the archive root keeps those conversations
   // ingestable instead of looking like deleted sources.
-  { base: path.join(os.homedir(), ".codex", "archived_sessions"), glob: "**/*.jsonl" },
-  { base: path.join(os.homedir(), ".gemini", "tmp"), glob: "**/chats/*.json" },
-  { base: path.join(os.homedir(), ".gemini", "tmp"), glob: "**/chats/*.jsonl" },
+  { base: path.join(getUserHome(), ".codex", "archived_sessions"), glob: "**/*.jsonl" },
+  { base: path.join(getUserHome(), ".gemini", "tmp"), glob: "**/chats/*.json" },
+  { base: path.join(getUserHome(), ".gemini", "tmp"), glob: "**/chats/*.jsonl" },
 ];
 
 const DEBOUNCE_MS = 200;
@@ -921,7 +923,6 @@ export async function stopIngestionGracefully(): Promise<void> {
   await actor?.close();
   await Promise.allSettled([pendingDrain, pendingReconcile].filter((pending): pending is Promise<void> => Boolean(pending)));
   requestedReparseFlights.clear();
-  activeActorPathFlights.clear();
   requestedReparseFailures.clear();
 }
 
@@ -936,7 +937,10 @@ export async function triggerFullIngest(): Promise<{ processed: number; errors: 
   return triggerFullIngestForWorker();
 }
 
-export async function triggerFullIngestForWorker(): Promise<{ processed: number; errors: number }> {
+export async function triggerFullIngestForWorker(
+  cooperate?: () => Promise<void>,
+  ingestSource = (filePath: string) => ingestFile(filePath, { forceFull: true, withinPass: true }),
+): Promise<{ processed: number; errors: number }> {
   let processed = 0;
   let errors = 0;
 
@@ -944,7 +948,7 @@ export async function triggerFullIngestForWorker(): Promise<{ processed: number;
     if (!fs.existsSync(config.base)) continue;
     for await (const filePath of walkFiles(config.base, config.glob)) {
       try {
-        await ingestFile(filePath, { forceFull: true, withinPass: true });
+        await ingestSource(filePath);
         processed++;
       } catch (error) {
         if (isSqliteBusy(error)) throw error;
@@ -954,6 +958,7 @@ export async function triggerFullIngestForWorker(): Promise<{ processed: number;
           error: String(error),
         });
       }
+      await cooperate?.();
     }
   }
 
@@ -1002,8 +1007,7 @@ export async function triggerTargetedIngest(input: TargetedIngestInput): Promise
   queuedIngestPaths.delete(transcriptPath);
 
   if (ingestionActor) {
-    await (activeActorPathFlights.get(transcriptPath)
-      ?? trackActorPathFlight([transcriptPath], ingestionActor.ingest([transcriptPath])));
+    await ingestionActor.ingest([transcriptPath]);
   } else {
     await ingestFile(transcriptPath);
   }
@@ -1023,61 +1027,80 @@ export async function triggerExactPathIngest(transcriptPath: string): Promise<Ta
     debounceTimers.delete(normalized);
   }
   queuedIngestPaths.delete(normalized);
-  if (ingestionActor) await (activeActorPathFlights.get(normalized)
-    ?? trackActorPathFlight([normalized], ingestExactSelectedPath(ingestionActor, normalized)));
+  if (ingestionActor) await ingestExactSelectedPath(ingestionActor, normalized);
   else await ingestFile(normalized, { bypassSameMtimeUnchanged: true, strictParseErrors: true });
   clearHookNotificationAttention({ sessionRef: null, transcriptPath: normalized });
   return { ok: true, status: "ingested", transcript_path: normalized, session_ref: null };
 }
 
 const requestedReparseFlights = new Map<string, Promise<void>>();
-const activeActorPathFlights = new Map<string, Promise<void>>();
 const watcherRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const watcherRetryAttempted = new Set<string>();
 const requestedReparseFailures = new Map<string, { at: number; error: string }>();
 const REQUESTED_REPARSE_RETRY_MS = 30_000;
 
-function trackActorPathFlight(paths: readonly string[], flight: Promise<void>): Promise<void> {
-  for (const filePath of paths) activeActorPathFlights.set(filePath, flight);
-  void flight.then(
-    () => { for (const filePath of paths) if (activeActorPathFlights.get(filePath) === flight) activeActorPathFlights.delete(filePath); },
-    () => { for (const filePath of paths) if (activeActorPathFlights.get(filePath) === flight) activeActorPathFlights.delete(filePath); },
-  );
-  return flight;
-}
-
-async function pathNeedsFollowupAfterActor(filePath: string): Promise<boolean> {
+export async function ingestedPathNeedsFollowup(filePath: string): Promise<boolean> {
+  if (!isWorkflowIngestArtifactPath(filePath) && !getParserForFile(filePath)) return false;
+  let stat: Awaited<ReturnType<typeof logicalSourceStat>>;
   try {
-    const stat = await logicalSourceStat(filePath);
-    const indexed = getDb().prepare(`
-      SELECT state.byte_offset, state.tail_hash, c.source_mtime
+    stat = await logicalSourceStat(filePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+    throw error;
+  }
+  const db = getDb();
+  if (isWorkflowIngestArtifactPath(filePath)) {
+    const state = getWorkflowIngestState(db, filePath);
+    return !state || Math.abs(state.source_mtime - stat.mtimeMs) >= 1;
+  }
+  const indexed = db.prepare(`
+      SELECT state.byte_offset, state.tail_hash, state.empty_source_mtime, state.empty_source_size, c.source_mtime
         FROM conversation_ingest_state state
-        JOIN conversations c ON c.source_path = state.file_path
+        LEFT JOIN conversations c ON c.source_path = state.file_path
        WHERE state.file_path = ?
        LIMIT 1
     `).get(filePath) as {
-      byte_offset: number; tail_hash: string; source_mtime: number;
+      byte_offset: number; tail_hash: string; source_mtime: number | null;
+      empty_source_mtime: number | null; empty_source_size: number | null;
     } | undefined;
-    return !indexed || indexed.byte_offset !== stat.size
+  if (!indexed) return true;
+  if (indexed.empty_source_mtime !== null) {
+    return indexed.empty_source_mtime !== stat.mtimeMs || indexed.empty_source_size !== stat.size;
+  }
+  return indexed.byte_offset !== stat.size || indexed.source_mtime === null
       || Math.abs(indexed.source_mtime - stat.mtimeMs) >= 1
       || indexed.tail_hash !== await hashFileTailAt(filePath, indexed.byte_offset);
-  } catch {
-    return true;
-  }
 }
 
 export function selectedConversationSourceEpochIsCurrent(db: Db, sourceId: string): boolean {
   const source = db.prepare(`
-    SELECT parser_format, parser_version, normalization_version, redaction_epoch
+    SELECT conversation_id
       FROM conversation_sources WHERE id = ?
-  `).get(sourceId) as {
-    parser_format: string; parser_version: string; normalization_version: string; redaction_epoch: number;
-  } | undefined;
-  return Boolean(source
-    && source.parser_format === CURRENT_CONVERSATION_SOURCE_EPOCHS.parserFormat
-    && source.parser_version === CURRENT_CONVERSATION_SOURCE_EPOCHS.parserVersion
-    && source.normalization_version === CURRENT_CONVERSATION_SOURCE_EPOCHS.normalizationVersion
-    && source.redaction_epoch === CURRENT_CONVERSATION_SOURCE_EPOCHS.redactionEpoch);
+  `).get(sourceId) as { conversation_id: string } | undefined;
+  if (!source) return false;
+  const readiness = readConversationSourceReadiness(db, source.conversation_id);
+  return readiness.status === "ready" && readiness.sourceId === sourceId;
+}
+
+/** Repair native metadata through the serialized writer, never on the request thread. */
+export async function repairConversationSourceReadiness(
+  db: Db,
+  conversationId: string,
+  options: { priority?: boolean } = {},
+): Promise<ConversationSourceReadiness> {
+  const readiness = readConversationSourceReadiness(db, conversationId);
+  if (readiness.status !== "repair_needed") return readiness;
+  const actor = ingestionActor;
+  if (!ingestionActive || !actor || !readiness.sourcePath || !getParserForFile(readiness.sourcePath)) {
+    return { ...readiness, status: "unavailable", reason: "repair_unavailable" };
+  }
+  try {
+    await ingestExactSelectedPath(actor, readiness.sourcePath, undefined, options.priority === true);
+  } catch (error) {
+    logger("warn", "ingestion_readiness_repair_failed", { conversation_id: conversationId, error: String(error) });
+    return { ...readiness, status: "unavailable", reason: "repair_failed" };
+  }
+  return readConversationSourceReadiness(db, conversationId);
 }
 
 /** Use the same exact-path ingest request for selected reads and watcher work. */
@@ -1085,12 +1108,13 @@ export async function ingestExactSelectedPath(
   actor: Pick<IngestionActor, "ingest">,
   transcriptPath: string,
   onSourceChangeRetry?: (attempt: number) => void,
+  priority = true,
 ): Promise<void> {
   const maxRetries = 2;
   let retries = 0;
   for (;;) {
     try {
-      await actor.ingest([transcriptPath], false, true, true);
+      await actor.ingest([transcriptPath], false, true, priority);
       return;
     } catch (error) {
       if (!(error instanceof ConversationSourceChangedError) || retries >= maxRetries) throw error;
@@ -1110,6 +1134,7 @@ function notifySelectedReparseFailure(conversationId: string): void {
 export function scheduleExactPathReparse(transcriptPath: string, sourceId: string, conversationId: string): boolean {
   const normalized = normalizeTargetPath(transcriptPath);
   const actor = ingestionActor;
+  const runToken = ingestionRunToken;
   if (!ingestionActive || !actor || !normalized || !getParserForFile(normalized)) return false;
   if (requestedReparseFlights.has(normalized)) return true;
   const recentFailure = requestedReparseFailures.get(normalized);
@@ -1123,16 +1148,16 @@ export function scheduleExactPathReparse(transcriptPath: string, sourceId: strin
     debounceTimers.delete(normalized);
   }
   queuedIngestPaths.delete(normalized);
-  const actorFlight = activeActorPathFlights.get(normalized)
-    ?? trackActorPathFlight([normalized], ingestExactSelectedPath(actor, normalized));
+  const actorFlight = ingestExactSelectedPath(actor, normalized);
   const flight = actorFlight
     .then(() => {
+      if (!isCurrentIngestionRun(runToken)) return;
       if (!selectedConversationSourceEpochIsCurrent(getDb(), sourceId)) {
         throw new Error("Selected source did not reach the current parser version");
       }
     })
     .catch((error) => {
-      if (!ingestionActive) return;
+      if (!isCurrentIngestionRun(runToken)) return;
       requestedReparseFlights.delete(normalized);
       requestedReparseFailures.set(normalized, { at: Date.now(), error: String(error) });
       logger("warn", "ingestion_requested_reparse_failed", { file: normalized, error: String(error) });
@@ -1196,11 +1221,11 @@ async function findTranscriptPathForSession(sessionRef: string | null): Promise<
     if (indexed) return indexed;
     if (row?.source === "claude_code" && row.cwd) {
       const encodedProject = row.cwd.replace(/[^A-Za-z0-9]/g, "-");
-      const candidate = path.join(os.homedir(), ".claude", "projects", encodedProject, `${sessionRef}.jsonl`);
+      const candidate = path.join(getUserHome(), ".claude", "projects", encodedProject, `${sessionRef}.jsonl`);
       return fs.existsSync(candidate) ? candidate : null;
     }
     if (row?.source === "codex") {
-      const codexRoot = path.resolve(process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex"));
+      const codexRoot = path.resolve(process.env.CODEX_HOME?.trim() || path.join(getUserHome(), ".codex"));
       let stateDb: SqliteDatabase | null = null;
       try {
         stateDb = new SqliteDatabase(path.join(codexRoot, "state_5.sqlite"), { readonly: true, fileMustExist: true });
@@ -1292,27 +1317,10 @@ async function drainIngestQueue(runToken: number): Promise<void> {
       try {
         const actor = ingestionActor;
         if (actor) {
-          const alreadyRunning = paths.filter((filePath) => activeActorPathFlights.has(filePath));
-          const ready = paths.filter((filePath) => !activeActorPathFlights.has(filePath));
-          // A watcher event arriving during exact work must be checked after
-          // that work, so a genuinely newer append is not lost.
-          for (const filePath of alreadyRunning) {
-            const active = activeActorPathFlights.get(filePath);
-            if (active) void active.then(
-              async () => {
-                if (isCurrentIngestionRun(runToken) && await pathNeedsFollowupAfterActor(filePath)) {
-                  enqueueIngest(filePath, runToken);
-                }
-              },
-              () => scheduleWatcherRetry(filePath, runToken),
-            );
-          }
-          // Each path needs its own outcome. A failed sibling must not reject
-          // the selected source's exact freshness barrier.
-          const settled = await Promise.allSettled(ready.map((filePath) =>
-            trackActorPathFlight([filePath], actor.ingest([filePath]))));
+          const settled = await Promise.allSettled(paths.map((filePath) => actor.ingest([filePath])));
+          if (!isCurrentIngestionRun(runToken)) break;
           settled.forEach((result, index) => {
-            const filePath = ready[index];
+            const filePath = paths[index];
             if (result.status === "fulfilled") {
               watcherRetryAttempted.delete(filePath);
               return;
@@ -1368,14 +1376,17 @@ export async function ingestBatchForWorker(
   forceFull = false,
   bypassSameMtimeUnchanged = false,
   strictParseErrors = false,
+  cooperate?: () => Promise<void>,
+  withinPass = false,
 ): Promise<void> {
   const failures: unknown[] = [];
   for (const filePath of paths) {
     try {
-      await ingestFile(filePath, { forceFull, bypassSameMtimeUnchanged, strictParseErrors });
+      await ingestFile(filePath, { forceFull, bypassSameMtimeUnchanged, strictParseErrors, withinPass });
     } catch (error) {
       failures.push(error);
     }
+    await cooperate?.();
   }
   if (failures.length > 0) throw new AggregateError(failures, `Failed to ingest ${failures.length} source(s)`);
 }
@@ -2374,7 +2385,7 @@ export function persistExactCodexTitle(
   return true;
 }
 
-async function syncCodexIndexedTitlesForKnownRows(db: ReturnType<typeof getDb>): Promise<void> {
+async function syncCodexIndexedTitlesForKnownRows(db: ReturnType<typeof getDb>, cooperate?: () => Promise<void>): Promise<void> {
   const rows = db.prepare(`
     SELECT id, source_path, session_id, title, block_count
     FROM conversations
@@ -2414,12 +2425,13 @@ async function syncCodexIndexedTitlesForKnownRows(db: ReturnType<typeof getDb>):
     }
     for (const row of indexRows) {
       await syncCodexIndexedTitle(row.source_path, row);
+      await cooperate?.();
     }
     codexSessionIndexSyncMtimes.set(indexPath, stat.mtimeMs);
   }
 }
 
-async function syncGeminiProjectIdentityForKnownRows(db: ReturnType<typeof getDb>): Promise<void> {
+async function syncGeminiProjectIdentityForKnownRows(db: ReturnType<typeof getDb>, cooperate?: () => Promise<void>): Promise<void> {
   const rows = db.prepare(`
     SELECT id, source_path, project_path, cwd, title, block_count
     FROM conversations
@@ -2435,6 +2447,7 @@ async function syncGeminiProjectIdentityForKnownRows(db: ReturnType<typeof getDb
 
   const identityCache = new Map<string, Awaited<ReturnType<typeof inferGeminiProjectIdentity>>>();
   for (const row of rows) {
+    await cooperate?.();
     const projectHash = row.project_path && /^[a-f0-9]{64}$/i.test(row.project_path)
       ? row.project_path
       : null;
@@ -2589,10 +2602,7 @@ async function ingestFilePass(
     const expectedCount = existing.block_count ?? 0;
     alreadyIngestedCount = Math.max(actualCount, expectedCount);
     const currentSource = db.prepare(`
-      SELECT source.current_version_id, source.parser_format, source.parser_version,
-             source.normalization_version, source.redaction_epoch,
-             source.availability AS source_availability, version.availability AS version_availability,
-             version.byte_length AS source_byte_length, version.filesystem_device,
+      SELECT version.byte_length AS source_byte_length, version.filesystem_device,
              version.filesystem_inode, version.filesystem_ctime_ns
         FROM conversation_sources source
         JOIN conversation_source_versions version
@@ -2601,14 +2611,7 @@ async function ingestFilePass(
        ORDER BY CASE source.availability WHEN 'available' THEN 0 ELSE 1 END, source.updated_at DESC
        LIMIT 1
     `).get(existing.id) as {
-      current_version_id: string;
-      parser_format: string;
-      parser_version: string;
-      normalization_version: string;
-      redaction_epoch: number;
       source_byte_length: number;
-      source_availability: string;
-      version_availability: string;
       filesystem_device: string | null;
       filesystem_inode: string | null;
       filesystem_ctime_ns: string | null;
@@ -2617,13 +2620,8 @@ async function ingestFilePass(
       || currentSource.filesystem_device !== stat.physicalGeneration.device
       || currentSource.filesystem_inode !== stat.physicalGeneration.inode
       || currentSource.filesystem_ctime_ns !== stat.physicalGeneration.ctimeNs;
-    sourceEpochNeedsRebuild = !currentSource || (
-      currentSource.source_availability !== "available" || currentSource.version_availability !== "available"
-      || currentSource.parser_format !== CURRENT_CONVERSATION_SOURCE_EPOCHS.parserFormat
-      || currentSource.parser_version !== CURRENT_CONVERSATION_SOURCE_EPOCHS.parserVersion
-      || currentSource.normalization_version !== CURRENT_CONVERSATION_SOURCE_EPOCHS.normalizationVersion
-      || currentSource.redaction_epoch !== CURRENT_CONVERSATION_SOURCE_EPOCHS.redactionEpoch
-    );
+    const readiness = readConversationSourceReadiness(db, existing.id);
+    sourceEpochNeedsRebuild = readiness.status !== "ready";
     const pendingRangesContiguous = pendingAppendProof.ranges.every((range, index) =>
       index === 0 || range.byteStart === pendingAppendProof.ranges[index - 1].byteEnd,
     );
@@ -2646,13 +2644,7 @@ async function ingestFilePass(
         pending_append_ranges: pendingAppendProof.ranges.length,
       });
     }
-    const sparseComplete = Boolean(currentSource
-      && getConversationStructureCache(db).hasCompleteConversation(
-        existing.id,
-        currentSource.current_version_id,
-        expectedCount,
-      ));
-    structureCacheNeedsRebuild = expectedCount > 0 && actualCount === 0 && !sparseComplete;
+    structureCacheNeedsRebuild = readiness.reason === "projection_incomplete";
     if (structureCacheNeedsRebuild) {
       logger("warn", "ingestion_count_mismatch", {
         file: filePath,
@@ -3998,8 +3990,8 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
     repairLegacyOrphanConversations(db);
   }
 
-  await syncCodexIndexedTitlesForKnownRows(db);
-  await syncGeminiProjectIdentityForKnownRows(db);
+  await syncCodexIndexedTitlesForKnownRows(db, options.cooperate);
+  await syncGeminiProjectIdentityForKnownRows(db, options.cooperate);
 
   const knownPaths = new Set<string>();
   const scannedBases: string[] = [];
@@ -4035,6 +4027,7 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
   let relocatedCount = 0;
   let changedCount = 0;
   for (const [sourcePath, sourceMtime] of Array.from(dbPaths)) {
+    await options.cooperate?.();
     const relocated = await relocateMovedCodexSource(db, sourcePath);
     if (!relocated) continue;
     relocatedCount += 1;
@@ -4055,6 +4048,7 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
       codexSessionIds.set(relocated, relocatedIds);
     }
   }
+  await options.cooperate?.();
 
   const workflowRows = db
     .prepare("SELECT file_path, source_mtime FROM workflow_ingest_state")
@@ -4106,12 +4100,12 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
   }
   for (const repeated of repeatedPaths) indexedPhysicalSources.delete(repeated);
   for (const repeated of repeatedConversationPaths) indexedPhysicalSources.delete(repeated);
+  const conversationsAtPath = db.prepare("SELECT id FROM conversations WHERE source_path = ?");
 
   // Scan filesystem using async generator — yields to the event loop every 50
   // directory entries so the HTTP server stays responsive during startup scans.
   // Bug: 737df04 — findFiles() used readdirSync recursively, blocking the event
   // loop for the entire scan before any yielding could occur.
-  let scannedEntries = 0;
   for (const config of options.watchConfigs ?? WATCH_CONFIGS) {
     if (!isCurrentIngestionRun(runToken)) {
       return;
@@ -4119,9 +4113,7 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
     if (!fs.existsSync(config.base)) continue;
     scannedBases.push(config.base);
     for await (const filePath of walkFiles(config.base, config.glob)) {
-      if (options.cooperate && scannedEntries++ % 32 === 0) {
-        await options.cooperate();
-      }
+      await options.cooperate?.();
       if (!isCurrentIngestionRun(runToken)) {
         return;
       }
@@ -4129,11 +4121,10 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
 
       // Check if file needs ingestion
       try {
+        const needsMetadataRepair = (conversationsAtPath.all(filePath) as Array<{ id: string }>).some((row) =>
+          readConversationSourceReadiness(db, row.id).status !== "ready");
         const indexed = indexedPhysicalSources.get(filePath);
-        if (indexed && indexed.parser_format === CURRENT_CONVERSATION_SOURCE_EPOCHS.parserFormat
-            && indexed.parser_version === CURRENT_CONVERSATION_SOURCE_EPOCHS.parserVersion
-            && indexed.normalization_version === CURRENT_CONVERSATION_SOURCE_EPOCHS.normalizationVersion
-            && indexed.redaction_epoch === CURRENT_CONVERSATION_SOURCE_EPOCHS.redactionEpoch
+        if (indexed && !needsMetadataRepair
             && appendStates.get(filePath)?.byte_offset === indexed.byte_length) {
           const physical = await inspectSourceRepresentation(filePath);
           if (physical.physicalGeneration.device === indexed.filesystem_device
@@ -4155,8 +4146,8 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
         const knownConversation = conversationPaths.has(filePath);
         const mtimeChanged = dbMtime === undefined || Math.abs(dbMtime - stat.mtimeMs) >= 100;
         const codexNeedsVerification = codexSessionIds.has(filePath);
-        let needsIngest = !knownConversation || mtimeChanged || codexNeedsVerification;
-        if (knownConversation && !mtimeChanged && !codexNeedsVerification) {
+        let needsIngest = !knownConversation || mtimeChanged || codexNeedsVerification || needsMetadataRepair;
+        if (knownConversation && !mtimeChanged && !codexNeedsVerification && !needsMetadataRepair) {
           const appendState = appendStates.get(filePath);
           if (appendState && appendState.byte_offset !== stat.size) {
             needsIngest = true;
@@ -4194,8 +4185,11 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
     // deletion; relocate it before recording missing-source tombstones.
     let unavailableCount = 0;
     for (const sourcePath of missingPaths) {
-      if (await removeConversationForMissingSource(db, sourcePath)) relocatedCount += 1;
-      else unavailableCount += 1;
+      if (!await logicalSourceExists(sourcePath)) {
+        if (await removeConversationForMissingSource(db, sourcePath)) relocatedCount += 1;
+        else unavailableCount += 1;
+      }
+      await options.cooperate?.();
     }
     if (unavailableCount > 0) {
       logger("info", "ingestion_sources_unavailable", { count: unavailableCount });
@@ -4214,12 +4208,10 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
   );
   if (missingWorkflowPaths.length > 0) {
     const deleteState = db.prepare("DELETE FROM workflow_ingest_state WHERE file_path = ?");
-    const cleanupMissingWorkflow = db.transaction(() => {
-      for (const sourcePath of missingWorkflowPaths) {
-        deleteState.run(sourcePath);
-      }
-    });
-    cleanupMissingWorkflow();
+    for (const sourcePath of missingWorkflowPaths) {
+      if (!await logicalSourceExists(sourcePath)) deleteState.run(sourcePath);
+      await options.cooperate?.();
+    }
   }
 
   const missingAppendPaths = Array.from(appendPaths).filter((sourcePath) =>
@@ -4228,12 +4220,10 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
   );
   if (missingAppendPaths.length > 0) {
     const deleteState = db.prepare("DELETE FROM conversation_ingest_state WHERE file_path = ?");
-    const cleanupMissingAppend = db.transaction(() => {
-      for (const sourcePath of missingAppendPaths) {
-        deleteState.run(sourcePath);
-      }
-    });
-    cleanupMissingAppend();
+    for (const sourcePath of missingAppendPaths) {
+      if (!await logicalSourceExists(sourcePath)) deleteState.run(sourcePath);
+      await options.cooperate?.();
+    }
   }
 
   // After relocations are followed, so moved rollouts are read where they are.
@@ -4246,11 +4236,12 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
 export async function reconcileForWorker(
   startupPasses = false,
   cooperate?: () => Promise<void>,
+  ingestChanged = (filePath: string) => ingestFile(filePath, { withinPass: true }),
 ): Promise<void> {
   const runToken = ingestionRunToken;
   await reconcile(runToken, {
     startupPasses,
-    ingestChanged: (filePath) => ingestFile(filePath, { withinPass: true }),
+    ingestChanged,
     cooperate,
   });
 }
