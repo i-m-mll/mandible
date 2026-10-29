@@ -1,32 +1,17 @@
 import { navigateAppHash } from '../app-history';
-import { resolvedArtifactRecord } from "../../../src/artifact-identity.js";
-import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
-
-import {
-  getArtifact,
-  getArtifactContent,
-  getArtifactKnowledgeBackrefs,
-  getArtifactVersions,
-  getLedgerIssueDetailByIssueId,
-  getLedgerIssueDetailByRef,
-  resolveArtifact,
-  type ArtifactContentResult,
-  type ArtifactRecord,
-  type ArtifactResolveResult,
-  type ArtifactVersionHistory,
-  type ArtifactVersionRecord,
-  type KnowledgeBackrefRecord,
-  type LedgerIssueDetailProjection,
-} from '../api';
-import { LedgerIssueDetail } from '../components/ledger/IssueDetail';
-import { parseResourceRef, type ParsedResourceRef } from '../resource-refs';
-import { shortRouteId } from '../routing';
-import { ArtifactDetail } from './artifacts';
-import { LoadingSkeleton } from '../components/LoadingSkeleton';
-import { detailRequestKey } from '../detail-cache';
-import { useKeyedAsyncDetail } from '../hooks/useKeyedAsyncDetail';
-import type { DetailPanePresentation } from '../components/shared/DetailPaneShell';
-import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
+import { useEffect, useState } from "preact/hooks";
+import { useQuery } from "@tanstack/preact-query";
+import { useViewActive } from "../app-shell";
+import { queryClient } from "../query/client";
+import { issueDetailOptions, queryErrorMessage, detailQueryData } from "../query/details";
+import { useArtifactDetail } from "../hooks/useArtifactDetail";
+import { LedgerIssueDetail } from "../components/ledger/IssueDetail";
+import { parseResourceRef, type ParsedResourceRef } from "../resource-refs";
+import { shortRouteId } from "../routing";
+import { ArtifactDetail, UnsupportedArtifactBlob, UnresolvedArtifact } from "./artifacts";
+import { LoadingSkeleton } from "../components/LoadingSkeleton";
+import type { DetailPanePresentation } from "../components/shared/DetailPaneShell";
+import { DetailPaneNotice } from "../components/shared/DetailPaneNotice";
 
 export type ReferenceDetailTarget =
   | { kind: 'issue'; ref: string; repoId?: string }
@@ -78,23 +63,18 @@ export function IssueReferenceDetail({
   presentation?: DetailPanePresentation;
   onErrorChange?: (error: string | null) => void;
 }): JSX.Element {
-  const loadDetail = useCallback(
-    (_signal: AbortSignal) => repoId
-      ? getLedgerIssueDetailByRef(repoId, issueRef)
-      : getLedgerIssueDetailByIssueId(issueRef),
-    [issueRef, repoId],
-  );
-  const { data: detail, loading, error } = useKeyedAsyncDetail<LedgerIssueDetailProjection>({
-    requestKey: detailRequestKey('issue', { issueId: issueRef, repoId: repoId ?? null }),
-    namespace: 'issue-detail',
-    load: loadDetail,
-  });
+  const active = useViewActive();
+  const options = issueDetailOptions(issueRef, repoId);
+  const query = useQuery({ ...options, enabled: active }, queryClient);
+  const detail = detailQueryData(query, options);
+  const loading = query.isPending;
+  const error = queryErrorMessage(query.error);
   useEffect(() => {
     onErrorChange?.(error);
   }, [error, onErrorChange]);
   useEffect(() => () => onErrorChange?.(null), [onErrorChange]);
 
-  if (error) return onErrorChange
+  if (error && !detail) return onErrorChange
     ? <div className="space-reference-detail__empty">Issue unavailable.</div>
     : <DetailPaneNotice severity="error" title="Failed to load issue">{error}</DetailPaneNotice>;
   if (!detail) {
@@ -104,6 +84,8 @@ export function IssueReferenceDetail({
   }
 
   return (
+    <>
+    {error && !onErrorChange && <DetailPaneNotice severity="error" title="Issue refresh failed">{error}</DetailPaneNotice>}
     <LedgerIssueDetail
       detail={detail}
       compact
@@ -121,6 +103,7 @@ export function IssueReferenceDetail({
         }
       }}
     />
+    </>
   );
 }
 
@@ -133,166 +116,31 @@ export function ArtifactReferenceDetail({
   presentation?: DetailPanePresentation;
   onErrorChange?: (error: string | null) => void;
 }): JSX.Element {
-  const [resolution, setResolution] = useState<ArtifactResolveResult | null>(null);
-  const [artifact, setArtifact] = useState<ArtifactRecord | null>(null);
-  const [versionHistory, setVersionHistory] = useState<ArtifactVersionHistory | null>(null);
-  const [selectedVersionNo, setSelectedVersionNo] = useState<number | null>(null);
+  const [selection, setSelection] = useState<{ ref: string; versionNo?: number | null }>({ ref: artifactRef });
   const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
-  const [content, setContent] = useState<ArtifactContentResult | null>(null);
-  const [knowledgeBackrefs, setKnowledgeBackrefs] = useState<KnowledgeBackrefRecord[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [contentLoading, setContentLoading] = useState(false);
-  const [contentError, setContentError] = useState<string | null>(null);
-  const [knowledgeLoading, setKnowledgeLoading] = useState(false);
-  const [knowledgeError, setKnowledgeError] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const payloadGenerationRef = useRef(0);
-  useEffect(() => {
-    onErrorChange?.(error);
-  }, [error, onErrorChange]);
+  if (selection.ref !== artifactRef) setSelection({ ref: artifactRef });
+  const detail = useArtifactDetail({ reference: artifactRef, versionNo: selection.ref === artifactRef ? selection.versionNo : undefined });
+  useEffect(() => { onErrorChange?.(detail.error); }, [detail.error, onErrorChange]);
   useEffect(() => () => onErrorChange?.(null), [onErrorChange]);
-
-  const loadArtifactPayload = useCallback(async (nextArtifact: ArtifactRecord, generation: number) => {
-    if (generation !== payloadGenerationRef.current) return;
-    setArtifact(nextArtifact);
-    setContent(null);
-    setKnowledgeBackrefs([]);
-    setContentLoading(true);
-    setKnowledgeLoading(true);
-    setContentError(null);
-    setKnowledgeError(null);
-    try {
-      const nextContent = await getArtifactContent(nextArtifact.id);
-      if (generation === payloadGenerationRef.current) setContent(nextContent);
-    } catch (err) {
-      if (generation === payloadGenerationRef.current) {
-        setContent(null);
-        setContentError(err instanceof Error ? err.message : String(err));
-      }
-    } finally {
-      if (generation === payloadGenerationRef.current) setContentLoading(false);
-    }
-    try {
-      const nextBackrefs = await getArtifactKnowledgeBackrefs(nextArtifact.id);
-      if (generation === payloadGenerationRef.current) setKnowledgeBackrefs(nextBackrefs);
-    } catch (err) {
-      if (generation === payloadGenerationRef.current) {
-        setKnowledgeBackrefs([]);
-        setKnowledgeError(err instanceof Error ? err.message : String(err));
-      }
-    } finally {
-      if (generation === payloadGenerationRef.current) setKnowledgeLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    const generation = ++payloadGenerationRef.current;
-    setLoading(true);
-    setError(null);
-    setResolution(null);
-    setArtifact(null);
-    setVersionHistory(null);
-    setContent(null);
-    setKnowledgeBackrefs([]);
-    resolveArtifact(artifactRef)
-      .then(async (nextResolution) => {
-        if (cancelled) return;
-        const nextArtifact =
-          resolvedArtifactRecord(nextResolution) ??
-          (nextResolution.artifact_version
-            ? await getArtifact(nextResolution.artifact_version.id)
-            : await getArtifact(artifactRef));
-        if (cancelled) return;
-        setResolution(nextResolution);
-        setSelectedVersionNo(nextResolution.artifact_version?.version_no ?? null);
-        const historyRef = nextResolution.logical_artifact?.id ?? nextArtifact.id;
-        try {
-          const history = await getArtifactVersions(historyRef);
-          if (!cancelled) {
-            setVersionHistory({
-              ...history,
-              versions: [...history.versions].sort((a, b) => b.version_no - a.version_no),
-            });
-          }
-        } catch {
-          if (!cancelled) setVersionHistory(null);
-        }
-        if (!cancelled) await loadArtifactPayload(nextArtifact, generation);
-      })
-      .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-      if (payloadGenerationRef.current === generation) payloadGenerationRef.current += 1;
-    };
-  }, [artifactRef, loadArtifactPayload]);
-
-  const versions = versionHistory?.versions ?? [];
-  const selectedVersion = selectedVersionNo === null
-    ? versions[0] ?? null
-    : versions.find((version: ArtifactVersionRecord) => version.version_no === selectedVersionNo) ?? null;
-
-  const handleVersionChange = useCallback(
-    (versionNo: number | null) => {
-      const generation = ++payloadGenerationRef.current;
-      setSelectedVersionNo(versionNo);
-      setError(null);
-      setArtifact(null);
-      setContent(null);
-      setKnowledgeBackrefs([]);
-      setLoading(true);
-      const nextVersion = versionNo === null
-        ? versions[0] ?? null
-        : versions.find((version) => version.version_no === versionNo) ?? null;
-      if (!nextVersion) {
-        setLoading(false);
-        return;
-      }
-      void getArtifact(nextVersion.artifact_id)
-        .then((nextArtifact) => loadArtifactPayload(nextArtifact, generation))
-        .catch((err) => {
-          if (generation === payloadGenerationRef.current) setError(err instanceof Error ? err.message : String(err));
-        })
-        .finally(() => {
-          if (generation === payloadGenerationRef.current) setLoading(false);
-        });
-    },
-    [versions, loadArtifactPayload],
-  );
-
-  if (error) return onErrorChange
-    ? <div className="space-reference-detail__empty">Artifact unavailable.</div>
-    : <DetailPaneNotice severity="error" title="Failed to load artifact">{error}</DetailPaneNotice>;
-  if (!artifact) {
-    return loading
-      ? <LoadingSkeleton variant="detail" label="Loading artifact detail" />
+  if (!detail.artifact) {
+    if (detail.error) return onErrorChange
+      ? <div className="space-reference-detail__empty">Artifact unavailable.</div>
+      : <DetailPaneNotice severity="error" title="Failed to load artifact">{detail.error}</DetailPaneNotice>;
+    if (detail.resolution?.target_type === 'artifact_blob') return <UnsupportedArtifactBlob resolution={detail.resolution} />;
+    if (detail.resolution && !detail.loading) return <UnresolvedArtifact resolution={detail.resolution} />;
+    return detail.loading ? <LoadingSkeleton variant="detail" label="Loading artifact detail" />
       : <div className="space-reference-detail__empty">No artifact detail.</div>;
   }
-
-  return (
-    <ArtifactDetail
-      artifact={artifact}
-      resolution={resolution}
-      series={versionHistory?.series ?? null}
-      versions={versions}
-      selectedVersion={selectedVersion}
-      selectedVersionNo={selectedVersionNo}
-      versionHistoryOpen={versionHistoryOpen}
-      onVersionChange={handleVersionChange}
-      onToggleVersionHistory={() => setVersionHistoryOpen((open) => !open)}
-      onCloseVersionHistory={() => setVersionHistoryOpen(false)}
-      content={content}
-      contentLoading={contentLoading}
-      contentError={contentError}
-      knowledgeBackrefs={knowledgeBackrefs}
-      knowledgeLoading={knowledgeLoading}
-      knowledgeError={knowledgeError}
-      presentation={presentation}
-    />
-  );
+  return <ArtifactDetail
+    artifact={detail.artifact} detailError={detail.error} resolution={detail.resolution}
+    series={detail.history?.series ?? null} versions={detail.history?.versions ?? []}
+    selectedVersion={detail.selectedVersion} selectedVersionNo={detail.selectedVersionNo}
+    versionHistoryOpen={versionHistoryOpen}
+    onVersionChange={(versionNo) => setSelection({ ref: artifactRef, versionNo })}
+    onToggleVersionHistory={() => setVersionHistoryOpen((open) => !open)}
+    onCloseVersionHistory={() => setVersionHistoryOpen(false)}
+    content={detail.content} contentLoading={detail.contentLoading} contentError={detail.contentError}
+    knowledgeBackrefs={detail.backrefs} knowledgeLoading={detail.backrefsLoading} knowledgeError={detail.backrefsError}
+    presentation={presentation}
+  />;
 }

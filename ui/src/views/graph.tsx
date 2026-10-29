@@ -1,5 +1,5 @@
 import { Icon } from '../components/icons/Icon';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import {
   Background,
   Controls,
@@ -22,8 +22,6 @@ import { layoutGraph, type RoutedGraphEdge } from '../graph/layout';
 import {
   addLedgerIssueComment,
   getGraph,
-  getLedgerIssueDetail,
-  type LedgerIssueDetailProjection,
 } from '../api';
 import { LedgerIssueDetail } from '../components/ledger/IssueDetail';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
@@ -33,7 +31,10 @@ import { ViewSidebar } from '../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { AppOperationalNoticeOutlet, useRegisterAppRightSidebar, useRouteLoad } from '../app-shell';
 import { useAppRightSidebarState } from '../right-sidebar-state';
-import { useKeyedAsyncDetail } from '../hooks/useKeyedAsyncDetail';
+import { useQuery } from '@tanstack/preact-query';
+import { queryClient } from '../query/client';
+import { issueDetailOptions, queryErrorMessage, detailQueryData } from '../query/details';
+import { useViewActive } from '../app-shell';
 import { beginDetailRequest, detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
@@ -712,26 +713,12 @@ export function GraphDetailPane({
   const ledgerIssueId = node?.type === 'issue' && typeof node.detail?.ledger_issue_id === 'string'
     ? node.detail.ledger_issue_id
     : null;
-  const ledgerRequestKey = ledgerIssueId
-    ? detailRequestKey('issue', { issueId: ledgerIssueId })
-    : null;
-  const loadLedgerDetail = useCallback(
-    (_signal: AbortSignal) => {
-      if (!ledgerIssueId) return Promise.reject(new Error('No issue selected'));
-      return getLedgerIssueDetail(ledgerIssueId);
-    },
-    [ledgerIssueId],
-  );
-  const {
-    data: ledgerDetail,
-    setData: setLedgerDetail,
-    loading: ledgerLoading,
-    error: ledgerError,
-  } = useKeyedAsyncDetail<LedgerIssueDetailProjection>({
-    requestKey: ledgerRequestKey,
-    namespace: 'issue-detail',
-    load: loadLedgerDetail,
-  });
+  const active = useViewActive();
+  const detailOptions = issueDetailOptions(ledgerIssueId);
+  const ledgerQuery = useQuery({ ...detailOptions, enabled: active && Boolean(ledgerIssueId) }, queryClient);
+  const ledgerDetail = ledgerIssueId ? detailQueryData(ledgerQuery, detailOptions) : undefined;
+  const ledgerLoading = ledgerQuery.isPending;
+  const ledgerError = queryErrorMessage(ledgerQuery.error);
   // Add-to-Space picker visibility for the selected ledger issue (child 08c312a).
   // The graph stays a *picker*: it sends the selected node to a Space the user
   // chooses, never opening the Space editor here.
@@ -779,6 +766,7 @@ export function GraphDetailPane({
           <DetailPaneNotice severity="error" title="Issue detail unavailable">{ledgerError}</DetailPaneNotice>
         ) : ledgerDetail ? (
           <>
+            {ledgerError && <DetailPaneNotice severity="error" title="Issue refresh failed">{ledgerError}</DetailPaneNotice>}
             <LedgerIssueDetail
               compact
               presentation={presentation}
@@ -786,7 +774,7 @@ export function GraphDetailPane({
               onOpenEntity={openLedgerEntity}
               onAddComment={async (body) => {
                 const next = await addLedgerIssueComment(ledgerIssueId, body);
-                setLedgerDetail(next);
+                queryClient.setQueryData(detailOptions.queryKey, next);
               }}
               onAddToSpace={() => setSpacePickerOpen(true)}
             />
@@ -1363,9 +1351,7 @@ export async function warmInitialData(params: Record<string, string>): Promise<v
     : null;
   if (!issueId) return;
 
-  const issueStarted = beginDetailRequest();
-  const detail = await getLedgerIssueDetail(issueId);
-  writePersistedDetail('issue-detail', detailRequestKey('issue', { issueId }), detail, undefined, issueStarted);
+  await queryClient.fetchQuery(issueDetailOptions(issueId));
 }
 
 export default GraphView;

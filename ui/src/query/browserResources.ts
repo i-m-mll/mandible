@@ -21,6 +21,7 @@ export function browserResourceKeysForEvent(type: string, data?: unknown): reado
 }
 
 export async function refreshBrowserResources(client: QueryClient, keys: readonly QueryKey[]): Promise<void> {
-  await Promise.all(keys.map((queryKey) => client.cancelQueries({ queryKey })));
-  await Promise.all(keys.map((queryKey) => client.invalidateQueries({ queryKey })));
+  const cancellations = keys.map((queryKey) => client.cancelQueries({ queryKey }));
+  const invalidations = keys.map((queryKey) => client.invalidateQueries({ queryKey }));
+  await Promise.all([...cancellations, ...invalidations]);
 }
