@@ -15,7 +15,7 @@ import { ConversationSourceStore } from "./source-store.js";
 import { inspectSourceRepresentation } from "./logical-source.js";
 
 export const CONVERSATION_SEARCH_EPOCHS = Object.freeze({
-  parser: "source-reader-v1",
+  parser: "source-reader-v2",
   normalization: "masked-block-v1",
   tokenizer: "sqlite-trigram-v1",
 });
@@ -65,7 +65,8 @@ export interface SearchBlockSource {
  */
 export interface ConversationSearchSourceAdapter {
   describe(conversationIds: readonly string[]): SearchConversationSource[];
-  readMaskedBlocks(conversationId: string): Promise<SearchBlockSource[]>;
+  /** `null` means unavailable; unlike a successful empty read it cannot be cached. */
+  readMaskedBlocks(conversationId: string): Promise<SearchBlockSource[] | null>;
   /** `null` means no sound shortlist is available, so every input is parsed. */
   shortlistMaskedBlocks?(
     conversationIds: readonly string[],
@@ -287,7 +288,7 @@ export class SourceBackedConversationSearchSourceAdapter implements Conversation
     });
   }
 
-  async readMaskedBlocks(conversationId: string): Promise<SearchBlockSource[]> {
+  async readMaskedBlocks(conversationId: string): Promise<SearchBlockSource[] | null> {
     try {
       const result = await this.reader.readAll(conversationId);
       if (result.status === "source" || result.status === "legacy") {
@@ -302,6 +303,7 @@ export class SourceBackedConversationSearchSourceAdapter implements Conversation
           content: maskUnverifiedCandidates(block.content).text,
         }));
       }
+      return null;
     } catch (error) {
       if (!isMissingSourceSchema(error)) throw error;
       // Missing v140 tables in a narrow legacy fixture fall through below.
@@ -754,6 +756,7 @@ export class ConversationSearchCache {
             try {
               const blocks = await this.source.readMaskedBlocks(item.conversationId);
               metrics.cold_conversations += 1;
+              if (blocks === null) return [];
               metrics.cold_blocks += blocks.length;
               this.recordAccess(item.conversationId);
               metrics.uncached_oversize_blocks += this.offer(

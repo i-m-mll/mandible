@@ -236,15 +236,17 @@ describe("conversation full-text API parity", () => {
     }
   });
 
-  it("does not turn missing or corrupt compressed sources into matches from stripped bodies", async () => {
-    for (const id of ["missing", "corrupt"]) {
+  it("keeps valid compressed matches and recovers unavailable sources without caching stripped bodies", async () => {
+    const originals = new Map<string, Buffer>();
+    for (const id of ["missing", "corrupt", "healthy"]) {
       const sourcePath = path.join(tempDir, `.codex/sessions/2026/08/17/${id}.jsonl`);
       await insertSourceBackedConversation(id, sourcePath, [
         { type: "session_meta", timestamp: "2026-08-17T00:00:00Z", payload: { id, cwd: "/tmp/project" } },
         { type: "response_item", timestamp: "2026-08-17T00:00:01Z", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "Unavailable Needle" }] } },
       ], true);
+      originals.set(`${sourcePath}.zst`, fs.readFileSync(`${sourcePath}.zst`));
       if (id === "missing") fs.unlinkSync(`${sourcePath}.zst`);
-      else fs.writeFileSync(`${sourcePath}.zst`, "corrupt zstd");
+      else if (id === "corrupt") fs.writeFileSync(`${sourcePath}.zst`, "corrupt zstd");
     }
     db.prepare("UPDATE conversation_blocks SET content = '', payload_state = 'source' WHERE conversation_id IN ('missing', 'corrupt')").run();
     const router = new Router();
@@ -252,8 +254,16 @@ describe("conversation full-text API parity", () => {
     for (const url of ["/api/conversations/search?q=Unavailable%20Needle", "/api/conversations?search=Unavailable%20Needle&full_text=true"]) {
       const response = await router.invoke({ method: "GET", url });
       expect(response.status).toBe(200);
-      expect(response.body).toMatchObject({ total: 0 });
+      expect(response.body).toMatchObject({ total: 1 });
+      expect(response.body).toMatchObject(url.startsWith("/api/conversations/search?")
+        ? { results: [{ conversation: { id: "healthy" } }] }
+        : { conversations: [{ id: "healthy" }] });
     }
+    await getConversationSearchCache(db).whenIdle();
+    for (const [sourcePath, bytes] of originals) fs.writeFileSync(sourcePath, bytes);
+    const restored = await router.invoke({ method: "GET", url: "/api/conversations/search?q=Unavailable%20Needle" });
+    expect(restored.status).toBe(200);
+    expect(restored.body).toMatchObject({ total: 3 });
   });
 
   it("makes the list full_text path reach exact body search while title mode stays title-only", async () => {
