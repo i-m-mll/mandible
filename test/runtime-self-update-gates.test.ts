@@ -25,6 +25,7 @@ import * as serviceDefinitions from "../scripts/service-definitions.mjs";
 import { readRuntimeHandoffLock } from "../scripts/runtime-handoff-lock.mjs";
 import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
 import { useCommandProbe } from "./helpers/event-loop-blocking.js";
+import { preparedGitFixture } from "./helpers/prepared-git-fixture.js";
 import {
   advanceMainViaAuthorizedMerge, approveFixtureRequest, commitOnBranch, configureSigningCredential, createAuthCheckRepo, createLedgerIssue, createLedgerProject,
   createMigratedDb, git, publishFixtureExecution, registerWorkRepo, waitForStatus,
@@ -42,6 +43,13 @@ let credentialId: string;
 let issue: ReturnType<typeof createLedgerIssue>;
 let runs: AcceptanceRun[];
 let inspector: ReturnType<typeof createServiceDefinitionInspector>;
+
+const selfUpdateRepo = preparedGitFixture("runtime-self-update", (root) => {
+  const source = createAuthCheckRepo();
+  commitOnBranch(source, "feature/self-update", { "runtime.txt": "candidate\n" });
+  commitOnBranch(source, "feature/other", { "other.txt": "other\n" });
+  fs.cpSync(source, root, { recursive: true });
+});
 
 /** A failed handoff journal and the lock that names it, as the incident left them. */
 function holdHandoffLock(phase = "failed", qualifiedHelper = false) {
@@ -108,12 +116,11 @@ function acceptanceExecutor(input: CandidateAcceptanceInput) {
 
 beforeEach(() => {
   inspector = createServiceDefinitionInspector();
-  repo = createAuthCheckRepo();
+  repo = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-self-update-repo-"));
+  selfUpdateRepo.copyInto(repo);
   home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-self-update-home-"));
   vi.stubEnv("MANDIBLE_HOME", home);
   db = createMigratedDb();
-  commitOnBranch(repo, "feature/self-update", { "runtime.txt": "candidate\n" });
-  commitOnBranch(repo, "feature/other", { "other.txt": "other\n" });
   operatorId = configureSigningCredential(db, repo, "ssh_key").operatorId;
   fs.appendFileSync(path.join(repo, ".git", "info", "exclude"), "\n.mandible-test-signing-key*\n");
   registerWorkRepo(db, repo);
