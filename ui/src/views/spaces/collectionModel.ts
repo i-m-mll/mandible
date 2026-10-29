@@ -174,9 +174,4 @@ export function itemDisplayLabel(item: SpaceItem): string {
 }
 
 /** The canonical resource-ref string for an item, for the C6 unresolved-ref UI. */
-export function itemRefString(item: SpaceItem): string {
-  if (item.ref_uri && item.ref_uri.trim()) return item.ref_uri.trim();
-  if (item.ref_type === 'artifact') return item.ref_id;
-  // Briefing review candidates carry their own canonical ref form.
-  return `mandible://${item.ref_type}/${item.ref_id}`;
-}
+export { spaceItemRef as itemRefString } from './itemRef';

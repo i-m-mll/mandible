@@ -67,16 +67,39 @@ function localRouteCredentialRule(method: string, route: string, body?: unknown)
   ].filter((value): value is string => Boolean(value));
   const manifest = candidates.find((candidate) => fs.existsSync(candidate));
   if (!manifest) throw new Error("Mandible local credential route manifest is unavailable");
-  const routes = JSON.parse(fs.readFileSync(manifest, "utf8")) as Array<{ method: string; path: string; body_nonempty?: string; credential_optional?: boolean }>;
-  if (!Array.isArray(routes)) throw new Error("Invalid Mandible local credential route manifest");
+  const projection = JSON.parse(fs.readFileSync(manifest, "utf8")) as {
+    version: number; routes: Array<{ method: string; path: string; localCliCredential: { mode: string; field?: string } }>;
+  };
+  if (projection?.version !== 1 || !Array.isArray(projection.routes) || !projection.routes.length
+      || !projection.routes.every(entry => typeof entry.path === "string"
+        && /^\/([a-zA-Z0-9_.-]+|:[a-zA-Z0-9_]+)(\/([a-zA-Z0-9_.-]+|:[a-zA-Z0-9_]+))*$/.test(entry.path)
+        && ["GET", "POST", "PUT", "PATCH", "DELETE"].includes(entry.method)
+        && entry.localCliCredential && (entry.localCliCredential.mode === "body-nonempty"
+          ? Object.keys(entry.localCliCredential).sort().join() === "field,mode"
+            && typeof entry.localCliCredential.field === "string" && /^[a-zA-Z_][a-zA-Z_0-9]*$/.test(entry.localCliCredential.field)
+          : Object.keys(entry.localCliCredential).join() === "mode"
+            && ["omit", "durable", "optional", "managed-durable"].includes(entry.localCliCredential.mode)))) {
+    throw new Error("Invalid Mandible local credential route manifest");
+  }
   const pathname = route.split("?", 1)[0];
-  const match = routes.find((entry) => entry.method === method &&
-    entry.path.split("/").length === pathname.split("/").length &&
-    entry.path.split("/").every((part, index) => part.startsWith(":") || part === pathname.split("/")[index]) &&
-    (!entry.body_nonempty || (typeof body === "object" && body !== null &&
-      typeof (body as Record<string, unknown>)[entry.body_nonempty] === "string" &&
-      Boolean((body as Record<string, string>)[entry.body_nonempty]))));
-  return match ? { optional: match.credential_optional === true } : null;
+  if (!/^\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*$/.test(pathname)
+      || new URL(pathname, "http://localhost").pathname !== pathname
+      || /%(?:0[0-9a-f]|1[0-9a-f]|7f)/i.test(pathname)) {
+    throw new Error("Malformed local API route");
+  }
+  try { decodeURIComponent(pathname); }
+  catch { throw new Error("Malformed local API route encoding"); }
+  const parts = pathname.split("/");
+  const match = projection.routes.find(entry => entry.method === method
+    && entry.path.split("/").length === parts.length
+    && entry.path.split("/").every((part, index) => part.startsWith(":") ? Boolean(parts[index]) : part === parts[index]));
+  if (!match) throw new Error(`Unregistered local API route: ${method} ${pathname}`);
+  const policy = match.localCliCredential;
+  if (policy.mode === "omit") return null;
+  if (policy.mode === "body-nonempty" && !(typeof body === "object" && body !== null
+      && typeof (body as Record<string, unknown>)[policy.field!] === "string"
+      && (body as Record<string, string>)[policy.field!].length > 0)) return null;
+  return { optional: policy.mode === "optional" };
 }
 
 function localCredential(): string {
@@ -323,13 +346,14 @@ export async function submitAuth(payload: {
   repo?: string;
   base_branch?: string;
   head_branch?: string;
+  depends_on_ids?: string[];
   issue_references?: string[] | null;
   issue_closures?: string[] | null;
   /** @deprecated Legacy close-on-merge issue list. */
   issues?: string[] | null;
   session_id?: string | null;
 }): Promise<AuthSubmitResponse> {
-  return request<AuthSubmitResponse>("POST", "/api/auth/request", payload);
+  return request<AuthSubmitResponse>("POST", "/api/auth/v2/request", payload);
 }
 
 // --- Sessions ---

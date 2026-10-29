@@ -29,9 +29,10 @@ const EXPECTED_DYNAMIC_CLI_API_CALL_SITES = [
   "cli/artifact.sh:123 api_send POST \"$endpoint\" \"$payload\"",
   "cli/auth-list.sh:67 api_get \"$url\" 2>/dev/null)",
   "cli/changes.sh:49 api_send_capture GET \"$request\" \"\" \"$response_file\")",
-  "cli/conversations.sh:207 api_get \"$request\")",
-  "cli/conversations.sh:371 api_get \"$request\")",
-  "cli/conversations.sh:442 api_get \"$request\")",
+  "cli/conversations.sh:98 api_get \"$request\")",
+  "cli/conversations.sh:237 api_get \"$request\")",
+  "cli/conversations.sh:289 api_send_capture GET \"$cancel_request\" \"\" \"$output_file\" >/dev/null",
+  "cli/conversations.sh:298 api_send_capture GET \"$current_request\" \"\" \"$output_file\")",
   "cli/inbox.sh:38 api_get \"$url\")",
   "cli/inbox.sh:84 api_get \"$url\")",
   "cli/issue.sh:920 api_get \"$checkpoint_path\") \\",
@@ -58,6 +59,7 @@ const EXPECTED_FILE_RPC_DENIED_CLI_CALL_SITES = [
   "cli/auth-clearance.sh:86 POST /api/auth/request/:param/clearance/execute",
   // Issue a09b4d2 — operator retirement of a failed runtime handoff lock.
   "cli/auth-handoff.sh:39 POST /api/runtime-handoff/retire",
+  "cli/project.sh:229 POST /api/projects/repair",
   // Issue 23f8142 — operator one-time conversation lineage backfill.
 ] as const;
 
@@ -436,15 +438,16 @@ function isRouteMethodCall(expression: ts.Expression): expression is ts.Property
   return ["get", "post", "put", "patch", "delete"].includes(expression.name.text);
 }
 
-function readFileRpcPolicy(node: ts.Expression, source: ts.SourceFile): RoutePolicy {
-  const text = node.getText(source);
-  if (/fileRpc\s*:\s*"allow"/.test(text)) {
-    return "allow";
-  }
-  if (/fileRpc\s*:\s*\{/.test(text)) {
-    return "conditional";
-  }
-  return "deny";
+function readFileRpcPolicy(node: ts.Expression, _source: ts.SourceFile): RoutePolicy {
+  if (!ts.isObjectLiteralExpression(node)) throw new Error('Nonliteral route options');
+  const property = node.properties.find((entry): entry is ts.PropertyAssignment =>
+    ts.isPropertyAssignment(entry) && (ts.isIdentifier(entry.name) || ts.isStringLiteral(entry.name))
+      && entry.name.text === 'fileRpc');
+  if (!property) throw new Error('Missing file-RPC route policy');
+  const value = property.initializer;
+  if (ts.isStringLiteral(value) && (value.text === 'allow' || value.text === 'deny')) return value.text;
+  if (ts.isObjectLiteralExpression(value)) return 'conditional';
+  throw new Error('Invalid file-RPC route policy');
 }
 
 function normalizeShellRoute(input: string): string {

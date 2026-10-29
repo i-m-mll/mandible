@@ -55,7 +55,7 @@ Every transition appends an immutable revision containing the resulting request/
 Requests are typically submitted via the `mandible auth request` CLI command, which carries authored messages, issue IDs and specs to the API. The daemon captures merge counts and the diff. When an agent needs to check whether a request already exists and does not know the request ID, it should run `mandible auth list --repo <repo> --head <branch> --base <branch>` first. When it needs to check whether a branch is independent from the queued merge work, it should run `mandible auth check --branch <branch> --repo <repo>`. The raw submission API endpoint is:
 
 ```
-POST /api/auth/request
+POST /api/auth/v2/request
 ```
 
 Required fields:
@@ -88,7 +88,7 @@ read-only.
 - `issue_references` — Issue IDs attached for review context/provenance; these do not close on merge.
 - `issue_closures` — Issue IDs to close on successful merge.
 - `issues` — Legacy close-on-merge issue list; prefer `issue_closures`.
-- `depends_on_id` — Another auth request ID that must complete first (dependency chaining).
+- `depends_on_ids` — The set of direct prerequisite requests that must succeed and durably finalize before approval.
 - `execution_mode` — `"daemon"` (default, Mandible executes locally) or `"remote"` (an external process manages execution).
 - `supersedes_request_id` — Exact pending predecessor replaced in the same transaction. The requester, canonical project, and protected target must match.
 - `superseded_action_dispositions` — One `{ordinal, reason}` entry for every predecessor action not carried with byte-equivalent semantics.
@@ -310,9 +310,17 @@ Hooks are managed via the API:
 
 ## Dependency Chains
 
-Auth requests can declare a dependency on another request via `depends_on_id`. The dashboard shows the dependency status alongside the request, so the user knows which requests need to be approved first.
+Auth requests declare direct prerequisites with `depends_on_ids`. Every prerequisite must succeed and durably finalize before the dependent request can be approved or executed. Pending, failed, rejected, withdrawn, superseded, missing, ambiguous, or unfinalized requests block readiness.
 
-Dependencies are informational — Mandible does not enforce ordering automatically. The user is responsible for approving requests in the correct order. However, the dashboard surfaces dependency status so this is straightforward in practice.
+Queue and history details show every direct prerequisite with a navigable request reference, readiness, status, and outcome. Missing projection data also blocks approval. Finalization refreshes readiness while preserving the current selection.
+
+Repeat `--depends-on` to declare multiple prerequisites:
+
+```bash
+mandible auth request feature/client --depends-on auth:a1b2c3d --depends-on auth:b2c3d4e --depends-on auth:c3d4e5f --no-watch
+```
+
+The daemon resolves references and stores a sorted, deduplicated set. New submissions reject missing or ambiguous references and cycles. The v2 create and revise routes accept `depends_on_ids`; omitting it on revision preserves the set, while `[]` clears it.
 
 ## Proven sibling supersession on success
 

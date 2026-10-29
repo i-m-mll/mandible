@@ -3,6 +3,7 @@ import type { ConversationSource } from "../parsers/types.js";
 import { SessionExecutionStore } from "../session-execution.js";
 import { listExecutionOutbox } from "../session-execution-outbox.js";
 import { getWorkerAssignments } from "../work-unit-worker.js";
+import { recoverPendingWorkerAssignments } from "../work-unit-evidence.js";
 import { ensureExactConversationFresh } from "./freshness.js";
 import { scheduleExactPathReparse } from "../ingestion.js";
 import { setConversationArchiveState } from "./metadata.js";
@@ -54,6 +55,7 @@ export class ChildRetentionScheduler {
   private running: Promise<void> | null = null;
   private stopped = true;
   private detach: (() => void) | null = null;
+  private recoveryTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly now: () => number;
   private readonly batchSize: number;
   constructor(private readonly db: Db, private readonly logger: Logger, private readonly options: ChildRetentionSchedulerOptions) {
@@ -65,6 +67,7 @@ export class ChildRetentionScheduler {
     if (!this.stopped || !this.options.effectsAllowed) return;
     this.stopped = false;
     this.detach = observeRetentionChanges(this.db, () => this.arm());
+    this.recoverAssignments("");
     // Seed only positively declared children. No native history is read here.
     const children = this.db.prepare(`SELECT id FROM conversations WHERE opening_lineage='child'
       AND parent_conversation_id IS NOT NULL AND NOT EXISTS
@@ -85,11 +88,24 @@ export class ChildRetentionScheduler {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    if (this.recoveryTimer) clearTimeout(this.recoveryTimer);
+    this.recoveryTimer = null;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     this.detach?.();
     this.detach = null;
     await this.running;
+  }
+
+  private recoverAssignments(cursor: string): void {
+    if (this.stopped) return;
+    const next = recoverPendingWorkerAssignments(this.db, cursor, this.batchSize);
+    if (next === null) return;
+    this.recoveryTimer = setTimeout(() => {
+      this.recoveryTimer = null;
+      this.recoverAssignments(next);
+    }, 0);
+    this.recoveryTimer.unref?.();
   }
 
   observe(event: SSEEvent): void {

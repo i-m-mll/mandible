@@ -21,21 +21,18 @@ import { Icon } from '../../components/icons/Icon';
 // SSE `space:*` events are RECONCILIATION inputs — they refetch the packet but
 // never reset selection/filter/collapse (Dataful-UX contract).
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useMemo, useState } from 'preact/hooks';
 import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
 
 import {
   deleteSpaceItem,
   deleteSpaceOccurrence,
-  getSpaceFactPacket,
   type SpaceItem,
 } from '../../api';
 import { SpaceItemPicker } from './SpaceItemPicker';
 import { parseResourceRef, resourceRefHref, displayResourceRef } from '../../resource-refs';
-import { acquireSharedSse } from '../../sse-shared';
 import { usePersistedViewState } from '../../hooks/usePersistedViewState';
 import type { SpaceRendererMountProps } from './SpacesViewShell';
-import type { SpaceViewModel } from './types';
 import {
   buildSpaceViewModel,
   projectCollection,
@@ -51,13 +48,6 @@ import {
 } from './collectionViewState';
 import './space-collection.css';
 
-const SPACE_EVENT_PREFIX = 'space:';
-
-type LoadState =
-  | { status: 'idle' }
-  | { status: 'loading' }
-  | { status: 'ready'; model: SpaceViewModel }
-  | { status: 'error'; message: string };
 
 /** Collapse the case-insensitive filter once per render pass. */
 function matchesFilter(label: string, ref: string, filter: string): boolean {
@@ -206,8 +196,10 @@ function CollectionRow({
   );
 }
 
-export function SpaceCollectionRenderer({ projectId, spaceId }: SpaceRendererMountProps): JSX.Element {
-  const [load, setLoad] = useState<LoadState>({ status: 'idle' });
+export function SpaceCollectionRenderer({ projectId, spaceId, factPacket }: SpaceRendererMountProps): JSX.Element {
+  const model = useMemo(() => factPacket ? buildSpaceViewModel(factPacket) : null, [factPacket]);
+  const [mutationError, setMutationError] = useState<string | null>(null);
+  const error = mutationError;
   const [viewState, setViewState] = usePersistedViewState(
     spaceId ? collectionStorageKey(projectId, spaceId) : '',
     normalizeCollectionViewState,
@@ -215,69 +207,17 @@ export function SpaceCollectionRenderer({ projectId, spaceId }: SpaceRendererMou
   );
   const [pickerOpen, setPickerOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  // The latest live id set, so view-state reconciliation can drop vanished ids
-  // without resetting surviving selection/collapse on every refetch.
-  const liveIdsRef = useRef<Set<string>>(new Set());
-
-  const loadPacket = useCallback(
-    async (reconcile: boolean) => {
-      if (!spaceId) {
-        setLoad({ status: 'idle' });
-        return;
-      }
-      if (!reconcile) setLoad({ status: 'loading' });
-      try {
-        const packet = await getSpaceFactPacket(spaceId);
-        const model = buildSpaceViewModel(packet);
-        // Build the live id set (occurrences + items) for reconciliation.
-        const liveIds = new Set<string>();
-        for (const o of model.occurrences) liveIds.add(o.occurrence.id);
-        for (const id of Object.keys(model.itemsById)) liveIds.add(id);
-        liveIdsRef.current = liveIds;
-        setLoad({ status: 'ready', model });
-        // Reconcile (not reset) view-state against live ids: drop only entities
-        // that vanished; keep filter and surviving selection/collapse.
-        setViewState((prior) => reconcileCollectionViewState(prior, liveIds));
-      } catch (error) {
-        if (!reconcile) setLoad({ status: 'error', message: String(error) });
-      }
-    },
-    [spaceId],
-  );
-
-  // Initial / on-space-change load.
   useEffect(() => {
-    void loadPacket(false);
-  }, [loadPacket]);
-
-  // SSE reconciliation: any `space:*` event for the open Space refetches the
-  // packet as a reconciliation input. Selection/filter/collapse are preserved.
-  useEffect(() => {
-    if (!spaceId) return;
-    const client = acquireSharedSse();
-    const unsubscribe = client.on('*', (payload) => {
-      if (typeof payload.type === 'string' && payload.type.startsWith(SPACE_EVENT_PREFIX)) {
-        void loadPacket(true);
-      }
-    });
-    // Reconnect resync: refetch the packet after a dropped stream so events
-    // missed during the gap are reconciled. Selection/filter/collapse preserved.
-    const offState = client.onState((_state, { reconnected }) => {
-      if (reconnected) void loadPacket(true);
-    });
-    client.connect();
-    return () => {
-      unsubscribe();
-      offState();
-      client.close();
-    };
-  }, [spaceId, loadPacket]);
+    if (!model) return;
+    const liveIds = new Set([...model.occurrences.map((entry) => entry.occurrence.id), ...Object.keys(model.itemsById)]);
+    setViewState((prior) => reconcileCollectionViewState(prior, liveIds));
+  }, [model, setViewState]);
 
   const projection = useMemo(
-    () => (load.status === 'ready' ? projectCollection(load.model) : null),
-    [load],
+    () => model ? projectCollection(model) : null,
+    [model],
   );
-  const items = load.status === 'ready' ? Object.values(load.model.itemsById) : [];
+  const items = model ? Object.values(model.itemsById) : [];
 
   const selectedIds = useMemo(() => new Set(viewState.selection.ids), [viewState.selection.ids]);
 
@@ -302,17 +242,17 @@ export function SpaceCollectionRenderer({ projectId, spaceId }: SpaceRendererMou
   const onRemoveOccurrence = useCallback(
     async (occurrenceId: string) => {
       if (!spaceId) return;
+      setMutationError(null);
       setBusy(true);
       try {
         await deleteSpaceOccurrence(spaceId, occurrenceId);
-        await loadPacket(true);
       } catch (error) {
-        setLoad({ status: 'error', message: String(error) });
+        setMutationError(String(error));
       } finally {
         setBusy(false);
       }
     },
-    [spaceId, loadPacket],
+    [spaceId],
   );
 
   const onRemoveItem = useCallback(
@@ -321,23 +261,14 @@ export function SpaceCollectionRenderer({ projectId, spaceId }: SpaceRendererMou
       setBusy(true);
       try {
         await deleteSpaceItem(spaceId, itemId);
-        await loadPacket(true);
       } catch (error) {
-        setLoad({ status: 'error', message: String(error) });
+        setMutationError(String(error));
       } finally {
         setBusy(false);
       }
     },
-    [spaceId, loadPacket],
+    [spaceId],
   );
-
-  // The picker adds the membership; a `space_item` with no collection occurrence
-  // is surfaced on this view's own unplaced shelf (never lost), so no extra
-  // occurrence is needed here. After a batch add we refetch the packet — a
-  // reconciliation input that preserves selection/filter/collapse.
-  const onItemsAdded = useCallback(() => {
-    void loadPacket(true);
-  }, [loadPacket]);
 
   if (!spaceId) {
     return (
@@ -382,7 +313,6 @@ export function SpaceCollectionRenderer({ projectId, spaceId }: SpaceRendererMou
                 existingItems={items}
                 isItemInView={() => true}
                 alreadyInViewLabel="In collection"
-                onAdded={onItemsAdded}
                 onClose={() => setPickerOpen(false)}
               />
             </div>
@@ -390,15 +320,15 @@ export function SpaceCollectionRenderer({ projectId, spaceId }: SpaceRendererMou
         </div>
       </div>
 
-      {load.status === 'error' && (
+      {error && (
         <DetailPaneNotice severity="error" density="compact" title="Could not load collection">
-          {load.message}
+          {error}
         </DetailPaneNotice>
       )}
       <div className="space-collection__body" data-testid="space-collection-body">
-        {load.status === 'loading' ? (
+        {!model && !error ? (
           <div className="space-collection__loading">Loading collection…</div>
-        ) : load.status === 'error' ? (
+        ) : !model && error ? (
           <div className="space-collection__empty">Collection unavailable.</div>
         ) : projection ? (
           <CollectionBody

@@ -228,26 +228,42 @@ api_local_credential_routes_file() {
   printf '%s' "${MANDIBLE_LOCAL_CREDENTIAL_ROUTES_FILE:-${MANDIBLE_CLI_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)}/local-credential-routes.json}"
 }
 
-# The policy lane owns this exact method/path manifest. A missing manifest is a
-# packaging error: do not guess which calls may require durable identity.
+# Resolve the actual registered operation first; credentials never affect routing.
 api_local_route_requires_credential() {
-  local method="$1" pathname="${2%%\?*}" body="${3:-}" file route_method route_path body_nonempty optional routes
+  local method="$1" pathname="${2%%\?*}" body="${3:-}" file route_method route_path mode field routes
   file="$(api_local_credential_routes_file)"
   [[ -r "$file" ]] || { printf 'Mandible local credential route manifest is unavailable: %s\n' "$file" >&2; return 2; }
-  routes="$(jq -er 'if type == "array" then .[] | select(.method and .path) | [.method, .path, (.body_nonempty // ""), (.credential_optional // false | tostring)] | join("|") else error("invalid routes") end' "$file")" || return 2
-  while IFS='|' read -r route_method route_path body_nonempty optional; do
+  routes="$(jq -er '
+    def policy:
+      type == "object" and
+      (if .mode == "body-nonempty" then
+        keys == ["field", "mode"] and (.field | type == "string" and test("^[a-zA-Z_][a-zA-Z_0-9]*$"))
+      else keys == ["mode"] and (.mode | IN("omit", "durable", "optional", "managed-durable")) end);
+    if type == "object" and .version == 1 and (.routes | type == "array" and length > 0)
+      and all(.routes[]; (.method | IN("GET", "POST", "PUT", "PATCH", "DELETE"))
+        and (.path | type == "string" and test("^/([a-zA-Z0-9_.-]+|:[a-zA-Z0-9_]+)(/([a-zA-Z0-9_.-]+|:[a-zA-Z0-9_]+))*$"))
+        and (.localCliCredential | policy))
+    then .routes[] | [.method, .path, .localCliCredential.mode, (.localCliCredential.field // "")] | join("|")
+    else error("invalid credential route projection") end' "$file")" || return 2
+  if ! api_local_path_is_canonical "$pathname"; then
+    printf 'Malformed local API route: %s\n' "$pathname" >&2
+    return 2
+  fi
+  while IFS='|' read -r route_method route_path mode field; do
     [[ "$route_method" == "$method" ]] || continue
     api_route_template_matches "$route_path" "$pathname" || continue
-    if [[ -n "$body_nonempty" ]]; then
-      jq -e --arg key "$body_nonempty" '.[$key] | type == "string" and length > 0' <<< "$body" >/dev/null 2>&1 || continue
-    fi
-    if [[ "$optional" == true ]]; then
-      return 3
-    else
-      return 0
-    fi
+    case "$mode" in
+      omit) return 1 ;;
+      durable) return 0 ;;
+      optional) return 3 ;;
+      managed-durable) api_managed_client_markers_present && return 0; return 1 ;;
+      body-nonempty)
+        jq -e --arg key "$field" '.[$key] | type == "string" and length > 0' <<< "$body" >/dev/null 2>&1 && return 0
+        return 1 ;;
+    esac
   done <<< "$routes"
-  return 1
+  printf 'Unregistered local API route: %s %s; nothing was sent.\n' "$method" "$pathname" >&2
+  return 2
 }
 
 # Managed-session marker guard for the durable operator keychain credential: any
@@ -260,7 +276,20 @@ api_local_route_requires_credential() {
 # generic managed/session markers still fence off operator credentials even
 # when they do not identify a provider-specific agent account.
 api_managed_client_markers_present() {
-  [[ -n "${MANDIBLE_MANAGED_CLIENT:-}${CODEX_THREAD_ID:-}${CODEX_SESSION_ID:-}${CLAUDE_CODE_SESSION_ID:-}${CLAUDE_SESSION_ID:-}${MANDIBLE_SESSION_ID:-}" ]]
+  [[ -n "${MANDIBLE_MANAGED_CLIENT:-}${CODEX_THREAD_ID:-}${CODEX_SESSION_ID:-}${CLAUDE_CODE_SESSION_ID:-}${CLAUDE_SESSION_ID:-}${GEMINI_SESSION_ID:-}${MANDIBLE_SESSION_ID:-}" ]]
+}
+
+api_local_path_is_canonical() {
+  local pathname="$1"
+  jq -en --arg path "$pathname" '
+    ($path | startswith("/"))
+    and ($path | explode | all((. >= 48 and . <= 57) or (. >= 65 and . <= 90)
+      or (. >= 97 and . <= 122) or IN(33,36,37,38,39,40,41,42,43,44,45,46,47,58,59,61,64,95,126)))
+    and ($path | gsub("%[a-fA-F0-9]{2}"; "") | contains("%") | not)
+    and ($path | test("%(0[0-9a-f]|1[0-9a-f]|7f)"; "i") | not)
+    and ($path | split("/") | all(ascii_downcase | gsub("%2e"; ".") | . != "." and . != ".."))
+  ' >/dev/null || return 1
+  printf '%b' "${pathname//\%/\\x}" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1
 }
 
 # Resolve one provider from ambient provider markers plus an optional explicit
@@ -1124,7 +1153,7 @@ api_curl_ambient_headers() {
   local request_origin
   request_origin=$(api_request_origin_json)
   [[ -z "$request_origin" ]] || printf '%s\0%s\0' '-H' "X-Mandible-Request-Origin: ${request_origin}"
-  if api_managed_client_markers_present || [[ -n "$provider" ]]; then
+  if api_managed_client_markers_present; then
     printf '%s\0%s\0' '-H' 'X-Mandible-Managed-Client: 1'
   fi
   [[ -z "$provider" ]] || printf '%s\0%s\0' '-H' "X-Mandible-Ambient-Provider: ${provider}"
@@ -1173,35 +1202,10 @@ api_route_template_matches() {
   done
 }
 
-api_operational_mutation_category() {
-  local method="$1" pathname="${2%%\?*}" metadata_file="$3"
-  local route_method route_path route_category
-  if ! jq -e '
-    .operations.schema == "mandible-operation-catalog@2"
-    and .operations.source == "Router.listRoutePolicies"
-    and (.operations.runtime.version | type == "string" and length > 0)
-    and .operations.runtime.instance_id == .instance.instance_id
-    and .operations.runtime.backend_generation == .instance.backend_generation
-    and (.operations.routes | type == "array" and all(.[];
-      (.operationId | type == "string" and length > 0)
-      and (.method | type == "string") and (.path | type == "string")
-      and has("operationalMutationCategory")
-      and (.operationalMutationCategory == null or (.operationalMutationCategory | type == "string"))
-      and (.fileRpc | IN("allow", "deny", "conditional"))
-      and (.requestSchema | IN("handler", "zod"))))
-  ' "$metadata_file" >/dev/null 2>&1; then
-    printf 'Mandible operation metadata is missing or incompatible; rebuild/restart the selected daemon.\n' >&2
-    return 2
-  fi
-  while IFS=$'\t' read -r route_method route_path route_category; do
-    [[ "$route_method" == "$method" ]] || continue
-    if api_route_template_matches "$route_path" "$pathname"; then
-      [[ "$route_category" == "null" ]] || printf '%s' "$route_category"
-      return 0
-    fi
-  done < <(jq -r '.operations.routes[] | [.method, .path, (.operationalMutationCategory // "null")] | @tsv' "$metadata_file")
-  printf 'Unknown Mandible operation: %s %s; refresh the CLI and daemon together.\n' "$method" "$pathname" >&2
-  return 3
+api_instance_preflight_bindings() {
+  local input_file="$1" method="$2" pathname="${3%%\?*}"
+  api_json_bindings 'include "instance-preflight"; instance_preflight($method; $pathname)' \
+    -L "$MANDIBLE_COMMAND_SYNTAX_DIR" --arg method "$method" --arg pathname "$pathname" "$input_file"
 }
 
 api_non_main_operational_mutation_override_enabled() {
@@ -1327,20 +1331,6 @@ api_restart_availability_preflight() {
   return 0
 }
 
-api_instance_metadata_valid() {
-  local input_file="$1"
-  jq -e '
-    .instance
-    and (.instance.role | type == "string")
-    and (.instance.role | IN("main", "preview", "dev", "test"))
-    and (if (.instance | has("allowed_effects")) then
-      (.instance.allowed_effects | type == "array" and all(.[]; type == "string"))
-    else
-      (.instance.operational_mutations | type == "string" and IN("allow", "reject"))
-    end)
-  ' "$input_file" >/dev/null 2>&1
-}
-
 api_write_instance_metadata_unknown() {
   local category="$1"
   local output_file="${2:-}"
@@ -1376,7 +1366,7 @@ api_write_instance_metadata_unavailable() {
 }
 
 api_fetch_instance_payload() {
-  local output_file="$1"
+  local output_file="$1" method="$2" request_path="$3"
   local http_status
   local instance_transient=false
 
@@ -1386,7 +1376,7 @@ api_fetch_instance_payload() {
 
   http_status=$(api_http_exchange GET "/api/instance" "" "$output_file")
   if [[ "$http_status" =~ ^2 ]]; then
-    if jq -e '.instance and (.instance | type == "object")' "$output_file" >/dev/null 2>&1; then
+    if api_instance_preflight_bindings "$output_file" "$method" "$request_path"; then
       return 0
     fi
     # An empty successful response is a transient exchange failure. A non-empty
@@ -1400,7 +1390,7 @@ api_fetch_instance_payload() {
 
   http_status=$(api_http_exchange GET "/api/health" "" "$output_file")
   if [[ "$http_status" =~ ^2 ]]; then
-    if jq -e '.instance and (.instance | type == "object")' "$output_file" >/dev/null 2>&1; then
+    if api_instance_preflight_bindings "$output_file" "$method" "$request_path"; then
       return 0
     fi
     if [[ ! -s "$output_file" || "$instance_transient" == "true" ]]; then
@@ -1418,7 +1408,7 @@ api_preflight_operational_mutation() {
   local method="$1"
   local request_path="$2"
   local output_file="${3:-}"
-  local category tmp_response fetch_status role policy db_path source_db_path message bindings
+  local category tmp_response fetch_status role policy db_path source_db_path message bindings preflight_error
 
   case "$method" in
     POST|PUT|PATCH|DELETE) ;;
@@ -1430,7 +1420,7 @@ api_preflight_operational_mutation() {
     return 75
   fi
   tmp_response="$(api_temp_file)"
-  if api_fetch_instance_payload "$tmp_response"; then
+  if bindings=$(api_fetch_instance_payload "$tmp_response" "$method" "$request_path"); then
     fetch_status=0
   else
     fetch_status=$?
@@ -1446,20 +1436,21 @@ api_preflight_operational_mutation() {
     return 22
   fi
 
-  if ! api_instance_metadata_valid "$tmp_response"; then
+  eval "$bindings"
+  if [[ "$preflight_error" == instance ]]; then
     rm -f "$tmp_response"
     api_write_instance_metadata_unknown "$category" "$output_file"
     return 22
   fi
 
-  if category=$(api_operational_mutation_category "$method" "$request_path" "$tmp_response"); then
-    :
-  else
-    local catalog_status=$? catalog_error catalog_message
-    if [[ "$catalog_status" == 3 ]]; then
+  if [[ "$preflight_error" == catalog || "$preflight_error" == operation ]]; then
+    local catalog_error catalog_message
+    if [[ "$preflight_error" == operation ]]; then
+      printf 'Unknown Mandible operation: %s %s; refresh the CLI and daemon together.\n' "$method" "${request_path%%\?*}" >&2
       catalog_error="cli_operation_unknown"
       catalog_message="Refusing unregistered operation: $method $request_path. Refresh the CLI and selected daemon together."
     else
+      printf 'Mandible operation metadata is missing or incompatible; rebuild/restart the selected daemon.\n' >&2
       catalog_error="cli_operation_metadata_incompatible"
       catalog_message="Refusing mutation because the selected daemon operation catalog is absent, malformed, or does not match its runtime identity. Rebuild and restart that daemon."
     fi
@@ -1472,17 +1463,6 @@ api_preflight_operational_mutation() {
   fi
   [[ -n "$category" ]] || { rm -f "$tmp_response"; return 0; }
 
-  if ! bindings=$(api_json_bindings '{
-    role: .instance.role,
-    policy: (if (.instance | has("allowed_effects")) then
-      if (.instance.allowed_effects | index("maintenance:shared")) != null then "allow" else "reject" end
-      else .instance.operational_mutations end),
-    db_path: (.instance.db_path // ""), source_db_path: (.instance.source_db_path // "")}' "$tmp_response"); then
-    rm -f "$tmp_response"
-    api_write_instance_metadata_unknown "$category" "$output_file"
-    return 22
-  fi
-  eval "$bindings"
   if [[ "$role" == "main" && "$policy" == "allow" ]]; then
     rm -f "$tmp_response"
     return 0

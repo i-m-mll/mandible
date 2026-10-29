@@ -508,6 +508,7 @@ export function createInstalledServiceHookManager(db: Db, options: ConstructorPa
 
 export function createNoopHookManager(): AuthHookManager {
   return {
+    listRuns: () => [],
     executeHooks: async () => [],
     reclaimAllInterruptedRuns: () => 0,
     selfUpdatesRuntime: () => false,

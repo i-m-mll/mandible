@@ -164,7 +164,7 @@ export function registerSessionRoutes(
     // instead of at end-of-day auth submission.
     const identityWarning = checkSessionIdentity(getDb(), session.id, req.client_identity);
     sendJson(res, 200, { ...session, identity_warning: identityWarning });
-  }, { operation: { id: "post:/api/sessions/register", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/sessions/register", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "allow" });
 
   server.patch("/api/sessions/:id", (req, res) => {
     const rawId = req.params.id;
@@ -185,7 +185,7 @@ export function registerSessionRoutes(
       syncPinnedPanesTsv(updated.nav_pane_id, Boolean(payload.pinned));
     }
     sendJson(res, 200, updated);
-  }, { operation: { id: "patch:/api/sessions/:id", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "patch:/api/sessions/:id", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "allow" });
 
   server.patch("/api/sessions/:id/end", (req, res) => {
     const rawId = req.params.id;
@@ -203,7 +203,7 @@ export function registerSessionRoutes(
       return;
     }
     sendJson(res, 200, ended);
-  }, { operation: { id: "patch:/api/sessions/:id/end", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "patch:/api/sessions/:id/end", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "allow" });
 
   server.post("/api/sessions/:id/children", (req, res) => {
     const parentId = req.params.id;
@@ -218,7 +218,7 @@ export function registerSessionRoutes(
       return;
     }
     sendJson(res, 200, child);
-  }, { operation: { id: "post:/api/sessions/:id/children", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/sessions/:id/children", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "deny" });
 
   server.patch("/api/sessions/:id/children/:childId", (req, res) => {
     const parentId = req.params.id;
@@ -235,7 +235,7 @@ export function registerSessionRoutes(
       return;
     }
     sendJson(res, 200, updated);
-  }, { operation: { id: "patch:/api/sessions/:id/children/:childId", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "patch:/api/sessions/:id/children/:childId", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "deny" });
 
   server.get("/api/sessions", (req, res) => {
     const query = req.query ?? {};
@@ -276,13 +276,13 @@ export function registerSessionRoutes(
     };
 
     sendJson(res, 200, { sessions, ...meta });
-  }, { operation: { id: "get:/api/sessions", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/sessions", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // Bug: 568eca7 — lightweight endpoint returning just pinned session IDs
   server.get("/api/sessions/pinned", (_req, res) => {
     const ids = registry.getPinnedSessionIds();
     sendJson(res, 200, { ids });
-  }, { operation: { id: "get:/api/sessions/pinned", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/sessions/pinned", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // Bug: 0b454df — list channel-connected sessions
   server.get("/api/sessions/channel-connected", (_req, res) => {
@@ -322,7 +322,7 @@ export function registerSessionRoutes(
     }
 
     sendJson(res, 200, { sessions: combined });
-  }, { operation: { id: "get:/api/sessions/channel-connected", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/sessions/channel-connected", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // Bug: 0b454df — record a channel tool call for liveness tracking
   server.post("/api/sessions/:id/channel-tool-call", (req, res) => {
@@ -349,7 +349,7 @@ export function registerSessionRoutes(
     // so a token swapped mid-session is caught without waiting for a re-register.
     const identityWarning = checkSessionIdentity(getDb(), id, req.client_identity);
     sendJson(res, 200, { ok: true, identity_warning: identityWarning });
-  }, { operation: { id: "post:/api/sessions/:id/channel-tool-call", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/sessions/:id/channel-tool-call", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "deny" });
 
   server.get("/api/sessions/by-pid/:pid", (req, res) => {
     const pidStr = req.params.pid;
@@ -364,7 +364,7 @@ export function registerSessionRoutes(
       return;
     }
     sendJson(res, 200, session);
-  }, { operation: { id: "get:/api/sessions/by-pid/:pid", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/sessions/by-pid/:pid", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.get("/api/sessions/:id", (req, res) => {
     const rawId = req.params.id;
@@ -380,7 +380,7 @@ export function registerSessionRoutes(
       return;
     }
     sendJson(res, 200, session);
-  }, { operation: { id: "get:/api/sessions/:id", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/sessions/:id", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.get("/api/sessions/:id/tree", (req, res) => {
     const rawId = req.params.id;
@@ -396,7 +396,7 @@ export function registerSessionRoutes(
       return;
     }
     sendJson(res, 200, tree);
-  }, { operation: { id: "get:/api/sessions/:id/tree", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/sessions/:id/tree", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // The Session Overview for any session alias or alias prefix: the session,
   // its descendants, linked issues, work units and recent conversations. A
@@ -421,7 +421,7 @@ export function registerSessionRoutes(
     } else {
       sendJson(res, 200, sessionOverview(db, resolved.resolution));
     }
-  }, { operation: { id: "get:/api/sessions/:id/overview", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/sessions/:id/overview", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.post("/api/sessions/:id/navigate", (req, res) => {
     const rawId = req.params.id;
@@ -438,7 +438,7 @@ export function registerSessionRoutes(
     }
     const result = navigateToSession(session);
     sendJson(res, result.ok ? 200 : 500, result);
-  }, { operation: { id: "post:/api/sessions/:id/navigate", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/sessions/:id/navigate", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "deny" });
 
   // Bug: 14e1e63 — write Reaper Notice before killing so it appears before pane-loop restarts
   server.post("/api/sessions/:id/kill", (req, res) => {
@@ -485,7 +485,7 @@ export function registerSessionRoutes(
       return;
     }
     sendJson(res, 200, { ok: true });
-  }, { operation: { id: "post:/api/sessions/:id/kill", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/sessions/:id/kill", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "deny" });
 
   // POST /api/sessions/:id/issues — link a session to an issue. The session is
   // any alias resolveSessionAlias resolves; the link is keyed on
@@ -553,7 +553,7 @@ export function registerSessionRoutes(
       ledger_issue_id: link.issue_id,
       identity_warning: identityWarning,
     });
-  }, { operation: { id: "post:/api/sessions/:id/issues", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "allow",
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/sessions/:id/issues", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "allow",
     refs: { params: { id: entityRefs.session } } });
 
   // GET /api/sessions/:id/issues — the issues linked to a session under any of
@@ -581,7 +581,7 @@ export function registerSessionRoutes(
        ORDER BY l.created_at ASC`
     ).all(...aliases);
     sendJson(res, 200, links);
-  }, { operation: { id: "get:/api/sessions/:id/issues", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow",
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/sessions/:id/issues", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow",
     refs: { params: { id: entityRefs.session } } });
 
 }

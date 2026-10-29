@@ -82,7 +82,7 @@ export function registerOperationalIncidentRoutes(
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/operational-incidents/ingest", effects: ["ledger:write"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/operational-incidents/ingest", effects: ["ledger:write"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
 
   server.get("/api/operational-incidents", (req, res) => {
     try {
@@ -109,7 +109,7 @@ export function registerOperationalIncidentRoutes(
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "get:/api/operational-incidents", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/operational-incidents", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.post("/api/operational-incidents/:id/acknowledge", (req, res) => {
     try {
@@ -124,7 +124,7 @@ export function registerOperationalIncidentRoutes(
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/operational-incidents/:id/acknowledge", effects: ["ledger:write"], requestSchema: null, reportingCategory: "api" }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/operational-incidents/:id/acknowledge", effects: ["ledger:write"], requestSchema: null, reportingCategory: "api" }, fileRpc: "deny" });
 
   server.post("/api/operational-incidents/:id/close", (req, res) => {
     try {
@@ -148,5 +148,5 @@ export function registerOperationalIncidentRoutes(
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/operational-incidents/:id/close", effects: ["ledger:write"], requestSchema: null, reportingCategory: "api" }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/operational-incidents/:id/close", effects: ["ledger:write"], requestSchema: null, reportingCategory: "api" }, fileRpc: "deny" });
 }

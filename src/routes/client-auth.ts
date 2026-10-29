@@ -36,7 +36,7 @@ export function registerClientAuthRoutes(router: RouteRegistrar, authenticator: 
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "get:/api/client-auth/forward-auth", effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "deny", countUnattributed: false });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/client-auth/forward-auth", effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "deny", countUnattributed: false });
 
   // Report the exact request principal; explicit agent tokens remain distinct
   // from the intrinsic local OS-user browser identity.
@@ -94,7 +94,7 @@ export function registerClientAuthRoutes(router: RouteRegistrar, authenticator: 
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "get:/api/client-auth/whoami", effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/client-auth/whoami", effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   // Mint a bearer token for a user. Self-service, or operator for another user.
   // The raw token is returned exactly once and never persisted.
@@ -114,7 +114,7 @@ export function registerClientAuthRoutes(router: RouteRegistrar, authenticator: 
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/users/:ref/tokens", effects: ["auth:credentials"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow", countUnattributed: false });
+  }, { localCliCredential: {"mode":"durable"}, operation: { id: "post:/api/users/:ref/tokens", effects: ["auth:credentials"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow", countUnattributed: false });
 
   // List a user's api_token credentials (metadata only — never the raw token).
   router.get("/api/users/:ref/tokens", (req, res) => {
@@ -131,5 +131,5 @@ export function registerClientAuthRoutes(router: RouteRegistrar, authenticator: 
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "get:/api/users/:ref/tokens", effects: ["auth:credentials"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"durable"}, operation: { id: "get:/api/users/:ref/tokens", effects: ["auth:credentials"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 }

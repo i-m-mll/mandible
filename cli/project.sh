@@ -215,16 +215,16 @@ cmd_audit() {
 }
 
 cmd_repair() {
-  local apply=0 force=0 merge_src="" merge_dst="" json=0
+  local apply=0 merge_src="" merge_dst="" json=0
   local binding
-  binding=$(mandible_bind_arguments "project.repair" '{"apply":{"option":"apply","constant":"1"},"force":{"option":"force","constant":"1"},"merge_src":{"option":"merge","valueIndex":0},"merge_dst":{"option":"merge","valueIndex":1},"json":{"option":"json","constant":"1"}}' "$@") || return $?
+  binding=$(mandible_bind_arguments "project.repair" '{"apply":{"option":"apply","constant":"1"},"merge_src":{"option":"merge","valueIndex":0},"merge_dst":{"option":"merge","valueIndex":1},"json":{"option":"json","constant":"1"}}' "$@") || return $?
   eval "$binding"
   require_tools
   local payload response
   payload="$(jq -n \
-    --argjson apply "$apply" --argjson force "$force" \
+    --argjson apply "$apply" \
     --arg merge_src "$merge_src" --arg merge_dst "$merge_dst" \
-    '{apply:($apply == 1), force:($force == 1)}
+    '{apply:($apply == 1)}
      + (if $merge_src == "" then {} else {merge:{source:$merge_src, target:$merge_dst}} end)')"
   response="$(api_send POST "/api/projects/repair" "$payload")" || die "${RED}Failed to repair projects.${RESET}" 1
   if (( json )); then
@@ -232,12 +232,15 @@ cmd_repair() {
   else
     printf '%s\n' "$response" | api_jq_human '
       .report |
-      "keys_backfilled: \(.keys_backfilled)",
+      "keys_backfilled: \(.keys_backfilled); planned: \(.key_backfills | length)",
+      "foreign keys: \(.foreign_keys)",
       if .merge then
         "merge \(.merge.source_project_id | mandible_short_id) -> \(.merge.target_project_id | mandible_short_id)",
-        "merge rows to move: \(([.merge.moves[]?.rows] | add) // 0) across \((.merge.moves // []) | length) table-column(s)",
+        "references: \(.merge.reference_occurrences) occurrences in \(.merge.distinct_rows) distinct rows",
+        "duplicate grants to coalesce: \(.merge.grant_coalescences | length)",
+        "mutable reference occurrences: \(([.merge.moves[]?.rows] | add) // 0) across \((.merge.moves // []) | length) table-column(s)",
         if ((.merge.conflicts // []) | length) > 0 then
-          "conflicts: \([.merge.conflicts[] | "\(.kind):\(.value)"] | join(", "))"
+          "conflicts: \([.merge.conflicts[] | "\(.kind):\(.value) \(.detail)"] | join(", "))"
         else empty end,
         "merge applied: \(.merge.applied)"
       else empty end,

@@ -2,7 +2,7 @@ import type { ConversationSidebarResponse, ConversationWindowRequest } from '../
 
 type SidebarRequest = Parameters<typeof import('../api').getConversationSidebar>[0];
 
-export type ConversationSidebarFilters = Omit<SidebarRequest, 'cursor' | 'group_key' | 'signal'>;
+export type ConversationSidebarFilters = Omit<SidebarRequest, 'cursor' | 'group_key' | 'signal' | 'onPending' | 'snapshot'>;
 
 function sorted(values: string[] | undefined): string[] {
   return [...new Set(values ?? [])].sort();

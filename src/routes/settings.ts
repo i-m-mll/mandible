@@ -248,23 +248,23 @@ export function registerSettingsRoutes(server: RouteRegistrar, instanceRole: Ins
 
   server.get("/api/settings/integrations", (_req, res) => {
     sendJson(res, 200, readOptionalIntegrations(instanceRole === "preview"));
-  }, { operation: { id: "get:/api/settings/integrations", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/settings/integrations", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
   server.put("/api/settings/integrations", globalCapabilityRoute("change_settings", (req, res) => {
     const parsed = INTEGRATION_ACTION.safeParse(readBody(req));
     if (!parsed.success) { sendJson(res, 400, { error: "Invalid integration choice" }); return; }
     const result = applyOptionalIntegration(parsed.data, instanceRole === "preview");
     sendJson(res, result.ok ? 200 : 409, result.ok ? result.value : { error: result.error });
-  }), { operation: { id: "put:/api/settings/integrations", effects: ["files:production"], requestSchema: INTEGRATION_ACTION, reportingCategory: "settings" }, fileRpc: "deny" });
+  }), { localCliCredential: {"mode":"omit"}, operation: { id: "put:/api/settings/integrations", effects: ["files:production"], requestSchema: INTEGRATION_ACTION, reportingCategory: "settings" }, fileRpc: "deny" });
 
   server.get("/api/settings/child-retention", (_req, res) => {
     sendJson(res, 200, readChildRetentionSettings(db));
-  }, { operation: { id: "get:/api/settings/child-retention", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/settings/child-retention", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
   server.put("/api/settings/child-retention", globalCapabilityRoute("change_settings", (req, res) => {
     const parsed = CHILD_RETENTION_SETTINGS_SCHEMA.safeParse(readBody(req));
     if (!parsed.success) { sendJson(res, 400, { error: "Invalid child retention settings", details: parsed.error.issues }); return; }
     writeChildRetentionSettings(db, parsed.data);
     sendJson(res, 200, parsed.data);
-  }), { operation: { id: "put:/api/settings/child-retention", effects: ["ledger:write"], requestSchema: CHILD_RETENTION_SETTINGS_SCHEMA, reportingCategory: "settings" }, fileRpc: "deny" });
+  }), { localCliCredential: {"mode":"omit"}, operation: { id: "put:/api/settings/child-retention", effects: ["ledger:write"], requestSchema: CHILD_RETENTION_SETTINGS_SCHEMA, reportingCategory: "settings" }, fileRpc: "deny" });
 
   // GET /api/settings — returns all settings as { key: value } object.
   // Issue 708dc4c / finding 4 — `client_auth.*` keys are hidden from the generic
@@ -281,7 +281,7 @@ export function registerSettingsRoutes(server: RouteRegistrar, instanceRole: Ins
       result[row.key] = row.value;
     }
     sendJson(res, 200, result);
-  }, { operation: { id: "get:/api/settings", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/settings", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.get("/api/settings/instructions-delivery", (_req, res) => {
     sendJson(res, 200, instanceRole === "preview"
@@ -291,7 +291,7 @@ export function registerSettingsRoutes(server: RouteRegistrar, instanceRole: Ins
         stderr: "Instruction export is not run by a preview instance.",
       }, true)
       : instructionDeliverySnapshot());
-  }, { operation: { id: "get:/api/settings/instructions-delivery", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/settings/instructions-delivery", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.put("/api/settings/instructions-delivery", globalCapabilityRoute("change_settings", async (req, res) => {
     const body = readBody<{
@@ -365,7 +365,7 @@ export function registerSettingsRoutes(server: RouteRegistrar, instanceRole: Ins
     snapshot.cleanup = cleanupResults;
     snapshot.configuration_saved = true;
     sendJson(res, 200, snapshot);
-  }), { operation: { id: "put:/api/settings/instructions-delivery", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["ledger:write","files:production","process:external"], requestSchema: null, reportingCategory: "settings" }, fileRpc: "deny" });
+  }), { localCliCredential: {"mode":"omit"}, operation: { id: "put:/api/settings/instructions-delivery", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["ledger:write","files:production","process:external"], requestSchema: null, reportingCategory: "settings" }, fileRpc: "deny" });
 
   // GET /api/settings/:key — returns single setting value
   server.get("/api/settings/:key", (req, res) => {
@@ -386,7 +386,7 @@ export function registerSettingsRoutes(server: RouteRegistrar, instanceRole: Ins
       return;
     }
     sendJson(res, 200, { key, value: row.value });
-  }, { operation: { id: "get:/api/settings/:key", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/settings/:key", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // PUT /api/settings/:key — update a setting
   server.put("/api/settings/:key", globalCapabilityRoute("change_settings", (req, res) => {
@@ -436,5 +436,5 @@ export function registerSettingsRoutes(server: RouteRegistrar, instanceRole: Ins
       value: body.value,
       deprecated: DEPRECATED_REAPER_SETTINGS.has(key) || undefined,
     });
-  }), { operation: { id: "put:/api/settings/:key", effects: ["ledger:write"], requestSchema: null, reportingCategory: "settings" }, fileRpc: "deny" });
+  }), { localCliCredential: {"mode":"omit"}, operation: { id: "put:/api/settings/:key", effects: ["ledger:write"], requestSchema: null, reportingCategory: "settings" }, fileRpc: "deny" });
 }

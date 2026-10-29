@@ -19,7 +19,7 @@ it("dispatch preserves resolved caller attribution separately from native origin
         snapshot: () => db.prepare("SELECT display_name FROM users WHERE id = ?").get(target.id),
       }, () => db.prepare("UPDATE users SET display_name = 'After' WHERE id = ?").run(target.id));
       res.json({ ok: true });
-    }, { operation: { id: "origin.test", effects: ["ledger:write"], reportingCategory: "ledger", requestSchema: null }, fileRpc: "allow" });
+    }, { localCliCredential: {"mode":"omit"}, operation: { id: "origin.test", effects: ["ledger:write"], reportingCategory: "ledger", requestSchema: null }, fileRpc: "allow" });
     const origin = { provider: "codex", provider_session_id: "native-caller" };
     expect((await router.invoke({ method: "POST", url: "/mutate", ambient_identity: origin })).status).toBe(200);
     const event = db.prepare("SELECT actor_user_id, evidence_method, payload_json FROM ledger_events WHERE entity_id = ? AND event_type = 'user.updated'").get(target.id);

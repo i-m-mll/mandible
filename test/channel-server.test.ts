@@ -35,7 +35,7 @@ describe("channel-server local socket", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-channel-socket-"));
     const socket = path.join(root, "daemon.sock");
     const routes = path.join(root, "routes.json");
-    fs.writeFileSync(routes, JSON.stringify([{ method: "POST", path: "/api/auth/request" }]));
+    fs.writeFileSync(routes, fs.readFileSync(path.resolve("cli/local-credential-routes.json")));
     const original = { base: process.env.MANDIBLE_BASE, socket: process.env.MANDIBLE_SOCKET,
       token: process.env.MANDIBLE_TOKEN, routes: process.env.MANDIBLE_LOCAL_CREDENTIAL_ROUTES_FILE };
     const received: Array<{ url?: string; auth?: string; managed?: string }> = [];
@@ -60,6 +60,28 @@ describe("channel-server local socket", () => {
         MANDIBLE_TOKEN: original.token, MANDIBLE_LOCAL_CREDENTIAL_ROUTES_FILE: original.routes })) {
         if (value === undefined) delete process.env[key]; else process.env[key] = value;
       }
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+  it("refuses noncanonical and malformed paths before credentials or socket delivery", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-channel-path-"));
+    const socket = path.join(root, "daemon.sock");
+    let requests = 0;
+    const server = http.createServer((_req, res) => { requests++; res.end('{}'); });
+    await new Promise<void>(resolve => server.listen(socket, resolve));
+    const values = { MANDIBLE_BASE: "https://app.mandible.localhost:19420", MANDIBLE_SOCKET: socket,
+      MANDIBLE_NO_KEYCHAIN_TOKEN: "1", MANDIBLE_LOCAL_CREDENTIAL_ROUTES_FILE: path.resolve("cli/local-credential-routes.json") };
+    const original = Object.fromEntries(Object.keys(values).map(key => [key, process.env[key]]));
+    Object.assign(process.env, values);
+    try {
+      const { patchWorkUnit } = await import("../channel-server/client.js");
+      for (const id of ["..", ".", "%2e%2E", ".%2e", "%FF", "%C0%AF", "%E2%82", ".\\operator", "agent name", "%00"]) {
+        await expect(patchWorkUnit(id, {})).rejects.toThrow("Malformed local API route");
+      }
+      expect(requests).toBe(0);
+    } finally {
+      for (const [key, value] of Object.entries(original)) value === undefined ? delete process.env[key] : process.env[key] = value;
+      await new Promise<void>(resolve => server.close(() => resolve()));
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -189,7 +211,7 @@ describe("mandible_submit_auth command shape (issue 08a5f04)", () => {
     if (!handler) throw new Error("mandible_submit_auth not registered");
     await handler(args);
     const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(String(call[0])).toContain("/api/auth/request");
+    expect(String(call[0])).toContain("/api/auth/v2/request");
     return JSON.parse((call[1] as RequestInit).body as string);
   }
 

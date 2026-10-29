@@ -50,6 +50,25 @@ routes, before sending the request. It does not retry rejected mutations with
 stronger credentials. Existing request and work-unit credential ownership stays
 unchanged. This contract does not introduce a new request-signature protocol.
 
+Every route registration declares `localCliCredential` independently of its
+effects, file-RPC admission and handler authorization. The versioned
+`cli/local-credential-routes.json` is generated offline from all registrations,
+including explicit `omit` entries, with `bun run generate:local-credential-routes`.
+Build and static checks reject stale or incomplete projections and unresolved
+overlaps between route modules. Clients resolve the first registered matching
+route before applying its credential policy; unknown or malformed routes fail
+before credential lookup or network delivery.
+Local clients also reject URL dot segments, backslashes, raw non-URL characters
+and invalid UTF-8 parameter escapes before credential lookup, so the server
+cannot normalize a credentialed request into a different route.
+
+Policies select omission, durable credentials, optional bootstrap credentials,
+durable credentials for managed clients, or durable credentials when a named
+body field is a nonempty string. The body predicate preserves whitespace as
+nonempty; handlers retain their own validation. Managed-only Briefing destination
+policies keep unmanaged human access tokenless. These policies select client
+presentation only and confer no server authority.
+
 ## Browser and preview access
 
 The browser keeps the existing HTTP front door, exact host and origin checks,

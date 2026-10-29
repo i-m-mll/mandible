@@ -279,6 +279,45 @@ file_rpc_warn_truncated_blocks() {
   fi
 }
 
+conversation_search_read() (
+  local request="$1" output_file status response state search_id="" observer_token="" cancel_request
+  local previous_progress="" progress unchanged=0 retry_ms delay
+  output_file=$(api_temp_file)
+  release_search() {
+    if [[ -n "$observer_token" ]]; then
+      cancel_request="${request}&search_id=$(urlencode "$search_id")&observer_token=$(urlencode "$observer_token")&cancel=true"
+      api_send_capture GET "$cancel_request" "" "$output_file" >/dev/null
+    fi
+    rm -f "$output_file"
+  }
+  trap release_search EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  local current_request="$request"
+  while true; do
+    status=$(api_send_capture GET "$current_request" "" "$output_file")
+    response=$(cat "$output_file")
+    state=$(printf '%s\n' "$response" | jq -r '.state // "complete"') || return 1
+    if [[ "$status" != 200 && "$status" != 202 && !( "$status" == 409 && ( "$state" == incomplete || "$state" == superseded || "$state" == expired ) ) ]]; then
+      api_report_terminal_response GET "$request" "$status" "$output_file"
+      return 22
+    fi
+    if [[ "$state" != pending ]]; then
+      printf '%s\n' "$response"
+      return 0
+    fi
+    search_id=$(printf '%s\n' "$response" | jq -er '.search_id') || return 1
+    observer_token=$(printf '%s\n' "$response" | jq -er '.observer_token') || return 1
+    progress=$(printf '%s\n' "$response" | jq -c '[.phase,.progress]')
+    if [[ "$progress" == "$previous_progress" ]]; then unchanged=$((unchanged + 1)); else unchanged=0; fi
+    previous_progress="$progress"
+    retry_ms=$(printf '%s\n' "$response" | jq -r '.retry_after_ms')
+    delay=$(awk -v retry="$retry_ms" -v repeats="$unchanged" 'BEGIN { backoff = repeats > 5 ? 5000 : 250 * (2 ^ repeats); if (backoff > 5000) backoff = 5000; if (retry < 250) retry = 250; print (retry > backoff ? retry : backoff) / 1000 }')
+    sleep "$delay"
+    current_request="${request}&search_id=$(urlencode "$search_id")&observer_token=$(urlencode "$observer_token")"
+  done
+)
+
 conversation_search() {
   local query="" provider="all" role="" since="" limit=20 title=0 json=0 source request response
   local binding
@@ -290,7 +329,14 @@ conversation_search() {
   if [[ -n "$role" ]]; then request="${request}&role=$(urlencode "$role")"; fi
   if [[ -n "$since" ]]; then request="${request}&since=$(urlencode "$since")"; fi
   if (( title )); then request="${request}&title=true"; fi
-  response=$(api_get "$request") || return $?
+  response=$(conversation_search_read "$request") || return $?
+  local state
+  state=$(printf '%s\n' "$response" | jq -r '.state // "complete"')
+  if [[ "$state" != complete ]]; then
+    if (( json )); then printf '%s\n' "$response" | jq .; fi
+    printf 'Search %s (%s). Run the search again to refresh the snapshot.\n' "$state" "$(printf '%s\n' "$response" | jq -r '.reason')" >&2
+    return 1
+  fi
   printf '%s\n' "$response" | jq -r --argjson requested "$limit" \
     'select(.limit < $requested) | "Warning: --limit \($requested) exceeds the server cap; at most \(.limit) hits are returned."' >&2
   if (( json )); then

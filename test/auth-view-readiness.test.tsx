@@ -132,12 +132,12 @@ describe('AuthQueueView daemon readiness gate', () => {
     const onApprove = vi.fn();
     const blockedRequest: AuthRequest = {
       ...pendingRequest,
-      depends_on_id: 'dependency-1',
-      dependency: {
+      depends_on_ids: ['dependency-1'],
+      dependencies: [{
         state: 'unfinalized', requested_id: 'dependency-1',
         request_id: 'dependency-1', status: 'completed', outcome: 'succeeded',
         exit_code: 0, merge_finalized_at: null,
-      },
+      }],
     };
     const props = {
       instance: authMainInstance,
@@ -154,7 +154,7 @@ describe('AuthQueueView daemon readiness gate', () => {
 
     rerender(<AuthQueueView {...props} queue={[{
       ...blockedRequest,
-      dependency: { ...blockedRequest.dependency!, state: 'ready', merge_finalized_at: 10 },
+      dependencies: [{ ...blockedRequest.dependencies![0], state: 'ready', merge_finalized_at: 10 }],
     }]} />);
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
     expect(onApprove).toHaveBeenCalledWith('req-1');
@@ -598,5 +598,60 @@ for (const outcome of ['failed', 'absent'] as const) {
       await waitFor(() => expect(panel().getByText('Unavailable')).toBeTruthy());
       expect(panel().queryByRole('button')).toBeNull();
     }
+  });
+}
+
+for (const coverage of ['absent', 'empty', 'partial', 'wrong-reference', 'duplicate'] as const) {
+  it('blocks approval with ' + coverage + ' prerequisite projection coverage', () => {
+    const ready = { state: 'ready' as const, requested_id: 'spatial', request_id: 'spatial',
+      status: 'completed' as const, outcome: 'succeeded' as const, exit_code: 0, merge_finalized_at: 10 };
+    const projections = coverage === 'absent' ? undefined : coverage === 'empty' ? []
+      : coverage === 'partial' ? [ready] : coverage === 'wrong-reference' ? [ready, { ...ready, requested_id: 'other' }]
+        : [ready, { ...ready, requested_id: 'validation' }, { ...ready, requested_id: 'validation' }];
+    const onApprove = vi.fn();
+    render(<AuthQueueView queue={[{ ...pendingRequest, depends_on_ids: ['spatial', 'validation'], dependencies: projections }]}
+      outputs={{}} selectedAuthId="req-1" daemonReady instance={authMainInstance} onApprove={onApprove} />);
+    const approve = screen.getByRole('button', { name: /Blocked: dependency/ }) as HTMLButtonElement;
+    expect(approve.disabled).toBe(true);
+    fireEvent.click(approve);
+    expect(onApprove).not.toHaveBeenCalled();
+    const prerequisites = within(screen.getByRole('region', { name: 'Request prerequisites' }));
+    expect(prerequisites.getAllByRole('listitem')).toHaveLength(2);
+    expect(prerequisites.getByRole('link', { name: 'auth:validati' }).getAttribute('href')).toContain('validation');
+  });
+}
+
+for (const history of [false, true]) {
+  it('renders and navigates every prerequisite in ' + (history ? 'history' : 'queue') + ' while reconciling readiness', () => {
+    const ids = ['spatial', 'validation', 'source', 'missing', 'ambiguous'];
+    const states = ['ready', 'pending', 'failed', 'missing', 'ambiguous'] as const;
+    const dependencies = ids.map((id, index) => ({ requested_id: id,
+      request_id: index < 3 ? id : null, state: states[index],
+      status: index === 0 ? 'completed' as const : index === 1 ? 'pending' as const : index === 2 ? 'failed' as const : null,
+      outcome: index === 0 ? 'succeeded' as const : index === 2 ? 'failed' as const : null,
+      exit_code: index === 0 ? 0 : null, merge_finalized_at: index === 0 ? 10 : null }));
+    const request = { ...pendingRequest, status: history ? 'completed' : 'pending',
+      depends_on_ids: ids, dependencies };
+    const onNavigateRequest = vi.fn();
+    const onSelectAuth = vi.fn();
+    const props = { outputs: {}, selectedAuthId: 'req-1', initialRequestId: 'req-1', daemonReady: true, instance: authMainInstance,
+      onNavigateRequest, onSelectAuth };
+    const view = render(<AuthQueueView {...props} queue={history ? [] : [request]} historyQueue={history ? [request] : []} />);
+    const prerequisites = () => within(screen.getByRole('region', { name: 'Request prerequisites' }));
+    const rows = prerequisites().getAllByRole('listitem');
+    expect(rows).toHaveLength(5);
+    for (const [index, state] of states.entries()) expect(within(rows[index]).getByText(state)).toBeTruthy();
+    onSelectAuth.mockClear();
+    const updated = { ...request, dependencies: dependencies.map(dependency => ({ ...dependency,
+      state: 'ready' as const, status: 'completed' as const, outcome: 'succeeded' as const,
+      request_id: dependency.requested_id, merge_finalized_at: 20 })) };
+    view.rerender(<AuthQueueView {...props} queue={history ? [] : [updated]} historyQueue={history ? [updated] : []} />);
+    expect(onSelectAuth).not.toHaveBeenCalled();
+    expect(prerequisites().getAllByText('ready')).toHaveLength(5);
+    if (!history) expect((screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement).disabled).toBe(false);
+    for (const link of prerequisites().getAllByRole('link')) expect(link.getAttribute('href')).toMatch(/^#\/auth\?request=/);
+    fireEvent.click(prerequisites().getByRole('link', { name: 'auth:source' }));
+    expect(onSelectAuth).toHaveBeenCalledWith('source');
+    expect(onNavigateRequest).toHaveBeenCalledWith('source');
   });
 }

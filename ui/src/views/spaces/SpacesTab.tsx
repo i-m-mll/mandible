@@ -1,5 +1,6 @@
-import { getSpaceFactPacket, listSpacesGrouped, type InstanceInfo, type SpaceRenderer } from '../../api';
-import { beginDetailRequest, detailRequestKey, readPersistedDetail, writePersistedDetail } from '../../detail-cache';
+import { listSpacesGrouped, type InstanceInfo, type SpaceRenderer } from '../../api';
+import { queryClient } from '../../query/client';
+import { spacePacketOptions } from '../../query/spaces';
 import type { SpacesRouteTarget } from '../../routing';
 import { defaultInitialSpaceId, persistGroups } from './SpacesSidebar';
 import { SpacesViewShell } from './SpacesViewShell';
@@ -21,21 +22,11 @@ export function SpacesTab(props: SpacesTabProps): JSX.Element {
 }
 
 export async function warmInitialData(params: Record<string, string>): Promise<void> {
-  const detailStarted = beginDetailRequest();
   const groups = await listSpacesGrouped();
   persistGroups(groups);
   const spaceId = params.space?.trim() || savedSpacesSelection(params)?.spaceId || defaultInitialSpaceId(groups);
   if (!spaceId) return;
-  const cachedKey = detailRequestKey('spaces', { spaceId });
-  if (readPersistedDetail('spaces', cachedKey)) return;
-  const packet = await getSpaceFactPacket(spaceId);
-  writePersistedDetail(
-    'spaces',
-    detailRequestKey('spaces', { spaceId: packet.space.id }),
-    packet,
-    undefined,
-    detailStarted,
-  );
+  await queryClient.fetchQuery(spacePacketOptions(spaceId));
 }
 
 export default SpacesTab;

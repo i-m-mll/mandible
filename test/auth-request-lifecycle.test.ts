@@ -83,7 +83,7 @@ describe("auth request immutable lifecycle", () => {
     registerAuthRoutes(router,queue,new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
     const before = queue.listLifecycleEvents(request.id);
     for (const operator_recovery of [false,true]) {
-      const refused = await router.invoke({ method: "PUT", url: `/api/auth/request/${request.id}`,
+      const refused = await router.invoke({ method: "PUT", url: `/api/auth/v2/request/${request.id}`,
         body: { commit_message: "Browser cannot claim durable custody.", expected_revision: 1,
           expected_custody_generation: 1, operator_recovery } });
       expect(refused.status).toBe(401);
@@ -101,7 +101,7 @@ describe("auth request immutable lifecycle", () => {
     const router = authenticatedTestRouter(operator, { credentialId: credential.id });
     registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
     const edited = "Merge feature/original: Explain the reviewed change\r\n\r\nWhy:\r\nMake the action understandable.\r\n\r\nVerification:\r\nThe edited document's checks pass.\r\n";
-    const result = await router.invoke({ method: "PUT", url: `/api/auth/request/${request.id}`,
+    const result = await router.invoke({ method: "PUT", url: `/api/auth/v2/request/${request.id}`,
       body: { commit_message: edited, canonical_message: true, verification: "The edited document's checks pass.", expected_revision: 1, expected_custody_generation: 1 } });
     expect(result.status, JSON.stringify(result.body)).toBe(200);
     expect((await queue.getRequest(request.id))?.commit_message).toContain("The edited document's checks pass.");
@@ -267,6 +267,26 @@ describe("auth request immutable lifecycle", () => {
       expected_revision: 2,
       expected_custody_generation: 1,
     }))())).rejects.toThrow(AuthQueueError);
+  });
+
+  it("inherits prerequisites on supersession and leaves dependent identities unchanged", async () => {
+    const { db, queue, actor, submit } = requesterFixture();
+    try {
+      const source = await queue.submit({ ...AUTH_COMMAND_REVIEW, type: "commit", command: "echo source", title: "Source" });
+      const validation = await queue.submit({ ...AUTH_COMMAND_REVIEW, type: "commit", command: "echo validation", title: "Validation" });
+      const original = await submit({ depends_on_ids: [source.id, validation.id] });
+      const dependent = await queue.submit({ ...AUTH_COMMAND_REVIEW, type: "commit", command: "echo consumer", title: "Consumer", depends_on_ids: [original.id] });
+      const replacement = await submit({ supersedes_request_id: original.id, expected_revision: 1, expected_custody_generation: 1 });
+      expect(replacement.depends_on_ids).toEqual(original.depends_on_ids);
+      expect((await queue.getRequest(dependent.id))?.depends_on_ids).toEqual([original.id]);
+      expect(queue.dependenciesForRequest((await queue.getRequest(dependent.id))!)[0]?.state).toBe("failed");
+      const cleared = await submit({ supersedes_request_id: replacement.id, expected_revision: 1,
+        expected_custody_generation: 1, depends_on_ids: [] });
+      expect(cleared.depends_on_ids).toEqual([]);
+      await expect(queue.update(cleared.id, { depends_on_ids: [source.id] }, actor, 99, 1))
+        .rejects.toMatchObject({ code: "lifecycle_conflict" });
+      expect((await queue.getRequest(cleared.id))?.depends_on_ids).toEqual([]);
+    } finally { await queue.dispose(); db.close(); }
   });
 
   it("atomically supersedes a pending request and carries staged actions exactly", async () => {

@@ -30,6 +30,16 @@ export interface ConversationSourceEpochs {
   redactionEpoch: number;
 }
 
+export function conversationSourceEpochsMatch(
+  actual: ConversationSourceEpochs,
+  expected: ConversationSourceEpochs,
+): boolean {
+  return actual.parserFormat === expected.parserFormat
+    && actual.parserVersion === expected.parserVersion
+    && actual.normalizationVersion === expected.normalizationVersion
+    && actual.redactionEpoch === expected.redactionEpoch;
+}
+
 export interface ConversationSourceDescriptor extends ConversationSourceEpochs {
   sourceId: string;
   conversationId: string;
@@ -93,7 +103,7 @@ export interface SourceBackedConversationBlock {
   locator: ConversationBlockLocator | null;
 }
 
-export type SourceReadFailureKind = "stale" | "unavailable" | "unsupported" | "not_found";
+export type SourceReadFailureKind = "stale" | "unavailable" | "unsupported" | "not_found" | "cancelled";
 
 export type SourceReadResult<T> =
   | { status: "source"; value: T; sourceVersionId: string }

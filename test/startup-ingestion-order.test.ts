@@ -8,6 +8,7 @@ import { WorkScanner } from '../src/work-scanner.js';
 import { mintApiToken } from '../src/client-auth/tokens.js';
 import { setupOperator } from '../src/users/store.js';
 import { isDaemonReady, setDaemonReady } from '../src/lifecycle.js';
+import { getUserHome } from '../src/platform-paths.js';
 import { healthDocumentError } from '../scripts/local-runtime.mjs';
 import { waitUntil } from './helpers/wait-until.js';
 import { createAuthCheckRepo } from './helpers/auth-queue-fixtures.js';
@@ -16,7 +17,7 @@ describe("startup ingestion ordering", () => {
   it('serves authenticated ledger reads and mutations while the startup scan is pending, then scans and ingests normally', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'readiness-scan-'));
     fs.cpSync(createAuthCheckRepo(), path.join(root, 'repo'), { recursive: true });
-    const transcriptDir = path.join(os.homedir(), '.claude/projects/readiness');
+    const transcriptDir = path.join(getUserHome(), '.claude/projects/readiness');
     fs.mkdirSync(transcriptDir, { recursive: true });
     const transcript = path.join(transcriptDir, 'readiness-session.jsonl');
     fs.writeFileSync(transcript, `${JSON.stringify({ type: 'user', uuid: 'ready-user', sessionId: 'readiness-session',

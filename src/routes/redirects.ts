@@ -1,7 +1,7 @@
 import { getDb, type Db } from "../db.js";
 import { resolveBriefingId } from "../feedback/briefings.js";
 import { LedgerStore } from "../ledger/store.js";
-import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
+import type { RequestLike, ResponseLike, RouteRegistrar, RouteHandler } from "../server.js";
 import { briefingReadViewer } from "./briefing.js";
 import { ARTIFACT_ROUTE_SELECTORS, patchRouteQuery } from "../route-query.js";
 
@@ -26,11 +26,6 @@ const REDIRECT_CONFIG: Record<RedirectKind, { label: string; targetPath: string 
   artifact: { label: "artifact", targetPath: "artifacts" },
   briefing: { label: "Briefing", targetPath: "briefing" },
 };
-
-const LINK_FORMS = [
-  { routePrefix: "/r", targetPrefix: "mandible:///", operationPrefix: "redirect" },
-  { routePrefix: "", targetPrefix: "/#/", operationPrefix: "link" },
-] as const;
 
 export interface RedirectRouteOptions {
   resolveIssueLink?: (ref: string) => IssueRedirectResolution;
@@ -62,34 +57,37 @@ export function registerRedirectRoutes(
         return { ok: true, params: { ref } };
     }
   };
-  const entries = Object.entries(REDIRECT_CONFIG) as Array<
-    [RedirectKind, typeof REDIRECT_CONFIG[RedirectKind]]
-  >;
-  for (const form of LINK_FORMS) {
-    for (const [kind, config] of entries) {
-      router.get(`${form.routePrefix}/${kind}/:ref`, (req, res) => {
-        const ref = req.params.ref?.trim();
-        if (!ref) {
-          res.status(400).json({ error: "missing_ref", kind });
-          return;
-        }
-        const resolved = resolveTarget(kind, ref, req);
-        if (!resolved.ok) {
-          sendMessagePage(res.status(resolved.status), {
-            title: `Mandible ${config.label} link`,
-            message: resolved.message,
-          });
-          return;
-        }
-        const query = patchRouteQuery(new URLSearchParams(req.query ?? {}), resolved.params,
-          kind === 'artifact' ? ARTIFACT_ROUTE_SELECTORS : kind === 'briefing' ? ['group', 'briefing'] : Object.keys(resolved.params));
-        sendRedirectPage(res, {
-          label: config.label,
-          target: `${form.targetPrefix}${config.targetPath}?${query.toString()}`,
-        });
-      }, { operation: { id: `${form.operationPrefix}.${kind}`, effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  const redirect = (kind: RedirectKind, targetPrefix: string): RouteHandler => (req, res) => {
+    const config = REDIRECT_CONFIG[kind];
+    const ref = req.params.ref?.trim();
+    if (!ref) {
+      res.status(400).json({ error: "missing_ref", kind });
+      return;
     }
-  }
+    const resolved = resolveTarget(kind, ref, req);
+    if (!resolved.ok) {
+      sendMessagePage(res.status(resolved.status), {
+        title: `Mandible ${config.label} link`,
+        message: resolved.message,
+      });
+      return;
+    }
+    const query = patchRouteQuery(new URLSearchParams(req.query ?? {}), resolved.params,
+      kind === 'artifact' ? ARTIFACT_ROUTE_SELECTORS : kind === 'briefing' ? ['group', 'briefing'] : Object.keys(resolved.params));
+    sendRedirectPage(res, {
+      label: config.label,
+      target: `${targetPrefix}${config.targetPath}?${query.toString()}`,
+    });
+
+  };
+  router.get("/r/issue/:ref", redirect("issue", "mandible:///"), { localCliCredential: { mode: "omit" }, operation: { id: "redirect.issue", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  router.get("/r/auth/:ref", redirect("auth", "mandible:///"), { localCliCredential: { mode: "omit" }, operation: { id: "redirect.auth", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  router.get("/r/artifact/:ref", redirect("artifact", "mandible:///"), { localCliCredential: { mode: "omit" }, operation: { id: "redirect.artifact", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  router.get("/r/briefing/:ref", redirect("briefing", "mandible:///"), { localCliCredential: { mode: "omit" }, operation: { id: "redirect.briefing", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  router.get("/issue/:ref", redirect("issue", "/#/"), { localCliCredential: { mode: "omit" }, operation: { id: "link.issue", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  router.get("/auth/:ref", redirect("auth", "/#/"), { localCliCredential: { mode: "omit" }, operation: { id: "link.auth", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  router.get("/artifact/:ref", redirect("artifact", "/#/"), { localCliCredential: { mode: "omit" }, operation: { id: "link.artifact", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  router.get("/briefing/:ref", redirect("briefing", "/#/"), { localCliCredential: { mode: "omit" }, operation: { id: "link.briefing", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 }
 
 // Briefing refs resolve server-side because agents may hold a typed

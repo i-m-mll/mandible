@@ -1,3 +1,4 @@
+import { useBoardIssueFacts } from '../../query/boardIssues';
 import { Icon } from '../../components/icons/Icon';
 // Board / kanban renderer (umbrella de56ffa, child 4d4d364 / C17).
 //
@@ -7,7 +8,7 @@ import { Icon } from '../../components/icons/Icon';
 //   - DEFAULT columns derive from issue `worker_status` (boardModel). An
 //     occurrence with no explicit `section_id` falls into the default column
 //     for its backing issue's resolved worker_status — resolved through the
-//     read-only C2 resolver (`resolveResourceRef`), cached per item.
+//     read-only C2 resolver (`resolveResourceRef`), owned by one Query per ref/context.
 //   - CUSTOM columns are FILTER-defined (via the C7b shared IssuePredicateFilter)
 //     or MANUAL, and PERSIST in `spaces.metadata` (no new table) through the C2
 //     `updateSpace` PATCH route. Membership persists across refresh.
@@ -20,12 +21,11 @@ import { Icon } from '../../components/icons/Icon';
 // Item refs render through the shared C6 unresolved-ref UI; raw ref text is
 // never injected as HTML (renderer-security standing AC).
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type StateUpdater } from 'preact/hooks';
 import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
 
 import {
   createSpaceOccurrence,
-  getSpaceFactPacket,
   updateSpace,
   updateSpaceOccurrence,
   type Space,
@@ -33,11 +33,9 @@ import {
 } from '../../api';
 import {
   parseResourceRef,
-  resolveResourceRef,
   resourceRefHref,
   displayResourceRef,
 } from '../../resource-refs';
-import { acquireSharedSse } from '../../sse-shared';
 import { usePersistedViewState } from '../../hooks/usePersistedViewState';
 import {
   IssuePredicateFilter,
@@ -61,30 +59,22 @@ import {
   isValidCustomColumnKey,
   cardLabel,
   cardRefString,
-  issueFactsFromEntity,
   type BoardColumn,
   type BoardCard,
   type BoardMetadata,
   type CustomColumnDef,
-  type IssueFactsByItemId,
 } from './boardModel';
 import {
   boardStorageKey,
   normalizeBoardViewState,
   reconcileBoardViewState,
   EMPTY_BOARD_VIEW_STATE,
+  type BoardViewState,
 } from './boardViewState';
 import { SpaceItemPicker } from './SpaceItemPicker';
 import './space-board.css';
 
-const SPACE_EVENT_PREFIX = 'space:';
 const EMPTY_BOARD_METADATA: BoardMetadata = { version: 1, columns: [] };
-
-type LoadState =
-  | { status: 'idle' }
-  | { status: 'loading' }
-  | { status: 'ready'; model: SpaceViewModel }
-  | { status: 'error'; message: string };
 
 /** Case-insensitive card filter. */
 function matchesFilter(label: string, ref: string, filter: string): boolean {
@@ -235,6 +225,12 @@ function BoardCardView({
 
 type ColumnProps = {
   column: BoardColumn;
+  renameDraft: string | undefined;
+  onRenameDraft: (key: string, draft: string | undefined) => void;
+  scrollTop: number;
+  scrollIdentity: string;
+  onScrollTop: (key: string, top: number) => void;
+  busy: boolean;
   index: number;
   columnCount: number;
   collapsed: boolean;
@@ -254,6 +250,8 @@ type ColumnProps = {
 
 function BoardColumnView({
   column,
+  renameDraft, onRenameDraft, scrollTop, scrollIdentity, onScrollTop,
+  busy,
   index,
   columnCount,
   collapsed,
@@ -270,8 +268,11 @@ function BoardColumnView({
   onRenameColumn,
   onAddItemsToColumn,
 }: ColumnProps): JSX.Element {
-  const [renaming, setRenaming] = useState(false);
-  const [draftTitle, setDraftTitle] = useState(column.title);
+  const renaming = renameDraft !== undefined;
+  const draftTitle = renameDraft ?? column.title;
+  const setDraftTitle = (draft: string) => onRenameDraft(column.key, draft);
+  const setRenaming = (next: boolean) => onRenameDraft(column.key, next ? draftTitle : undefined);
+  const cardsRef = useRef<HTMLUListElement>(null);
   const visibleCards = column.cards.filter((card) => {
     const item = card.occurrence.item;
     const label = item ? cardLabel(item, '') : card.occurrence.occurrence.note ?? '';
@@ -279,18 +280,22 @@ function BoardColumnView({
     return matchesFilter(label, ref, filter);
   });
 
-  useEffect(() => {
-    setDraftTitle(column.title);
-  }, [column.title]);
+  const restoringScroll = useRef(true);
+  useLayoutEffect(() => { restoringScroll.current = true; }, [collapsed, scrollIdentity]);
+  useLayoutEffect(() => {
+    if (!cardsRef.current || !restoringScroll.current) return;
+    cardsRef.current.scrollTop = scrollTop;
+    if (cardsRef.current.scrollTop === scrollTop) restoringScroll.current = false;
+  }, [collapsed, scrollIdentity, scrollTop, visibleCards.length]);
 
   const custom = column.kind !== 'default';
   const saveRename = useCallback(() => {
-    if (!custom) return;
+    if (!custom || busy) return;
     const next = draftTitle.trim() || 'Untitled';
     setDraftTitle(next);
     setRenaming(false);
     if (next !== column.title) onRenameColumn(column.key, next);
-  }, [column.key, column.title, custom, draftTitle, onRenameColumn]);
+  }, [busy, column.key, column.title, custom, draftTitle, onRenameColumn]);
 
   return (
     <section
@@ -326,6 +331,7 @@ function BoardColumnView({
             className="space-board__column-title-input"
             aria-label={`Rename column ${column.title}`}
             value={draftTitle}
+            disabled={busy}
             autoFocus
             onInput={(event) => setDraftTitle((event.target as HTMLInputElement).value)}
             onBlur={saveRename}
@@ -341,10 +347,10 @@ function BoardColumnView({
           <button
             type="button"
             className="space-board__column-title"
-            disabled={!custom}
-            onDblClick={() => custom && setRenaming(true)}
+            disabled={!custom || busy}
+            onDblClick={() => custom && !busy && setRenaming(true)}
             onKeyDown={(event) => {
-              if (custom && event.key === 'Enter') setRenaming(true);
+              if (custom && !busy && event.key === 'Enter') setRenaming(true);
             }}
             title={custom ? 'Rename column' : column.title}
           >
@@ -368,6 +374,7 @@ function BoardColumnView({
             type="button"
             className="space-board__column-remove"
             aria-label={`Delete column ${column.title}`}
+            disabled={busy}
             title="Delete custom column"
             onClick={() => onRemoveColumn(column.key)}
           >
@@ -376,7 +383,12 @@ function BoardColumnView({
         ) : null}
       </header>
       {!collapsed ? (
-        <ul className="space-board__cards" role="list" data-testid={`board-column-${column.key}`}>
+        <ul ref={cardsRef}
+          onWheel={() => { restoringScroll.current = false; }}
+          onPointerDown={() => { restoringScroll.current = false; }}
+          onTouchStart={() => { restoringScroll.current = false; }}
+          onKeyDown={() => { restoringScroll.current = false; }}
+          onScroll={(event) => { if (!restoringScroll.current) onScrollTop(column.key, event.currentTarget.scrollTop); }} className="space-board__cards" role="list" data-testid={`board-column-${column.key}`}>
           {visibleCards.length === 0 ? (
             <li className="space-board__column-empty">
               {filter.trim() ? (
@@ -415,32 +427,39 @@ function BoardColumnView({
 /** Compact menu to add custom columns: manual (membership by drag) or filter (C7b predicate). */
 function AddColumnMenu({
   busy,
+  draft, onDraft,
   onAddManual,
   onAddFilter,
 }: {
   busy: boolean;
+  draft: BoardViewState['filterDraft'];
+  onDraft: (draft: StateUpdater<BoardViewState['filterDraft']>) => void;
   onAddManual: () => void;
   onAddFilter: (chips: TimelineFilterChip[]) => void;
 }): JSX.Element {
-  const [chips, setChips] = useState<TimelineFilterChip[]>([]);
+  const chips = draft.chips;
+  const setChips = (next: TimelineFilterChip[] | ((prior: TimelineFilterChip[]) => TimelineFilterChip[])) => onDraft((prior) => ({ ...prior, chips: typeof next === 'function' ? next(prior.chips) : next }));
 
   const normalizedChips = useMemo(() => normalizeFilterChips(chips), [chips]);
   const previewTitle = useMemo(() => filterRowTitle(normalizedChips), [normalizedChips]);
   const projecting = useMemo(() => predicateForChips(normalizedChips) !== null, [normalizedChips]);
 
-  const onAddToken = useCallback((token: string): boolean => {
+  const onAddToken = (token: string): boolean => {
     const chip = parseFilterToken(token);
     if (!chip) return false;
     setChips((prior) => [...prior, chip]);
     return true;
-  }, []);
+  };
 
-  const onRemoveChip = useCallback((index: number) => {
+  const onRemoveChip = (index: number) => {
     setChips((prior) => prior.filter((_, i) => i !== index));
-  }, []);
+  };
 
   return (
-    <details className="space-board__add-column" data-testid="board-add-column">
+    <details open={draft.open} onToggle={(event) => {
+      const open = event.currentTarget.open;
+      if (open !== draft.open) onDraft((prior) => ({ ...prior, open }));
+    }} className="space-board__add-column" data-testid="board-add-column">
       <summary className="space-board__toolbar-btn" aria-label="Board column actions">
         Columns
       </summary>
@@ -457,15 +476,17 @@ function AddColumnMenu({
           <div className="space-board__add-filter-title">Add filter column</div>
         <IssuePredicateFilter
           chips={normalizedChips}
+          draftToken={draft.token}
+          onDraftTokenChange={(token) => onDraft((prior) => ({ ...prior, token }))}
           projecting={projecting}
           previewTitle={previewTitle}
           onAddToken={onAddToken}
           onRemoveChip={onRemoveChip}
-          onCancel={() => setChips([])}
+          onCancel={() => onDraft({ chips: [], token: '', open: draft.open })}
           onSave={() => {
             if (projecting) {
               onAddFilter(normalizedChips);
-              setChips([]);
+              onDraft({ chips: [], token: '', open: draft.open });
             }
           }}
           canSave={projecting && !busy}
@@ -479,132 +500,50 @@ function AddColumnMenu({
   );
 }
 
-export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountProps): JSX.Element {
-  const [load, setLoad] = useState<LoadState>({ status: 'idle' });
+export function SpaceBoardRenderer({ projectId, spaceId, factPacket }: SpaceRendererMountProps): JSX.Element {
+  const model = useMemo(() => factPacket ? buildSpaceViewModel(factPacket) : null, [factPacket]);
+  const [mutationError, setMutationError] = useState<string | null>(null);
+  const error = mutationError;
   const [viewState, setViewState] = usePersistedViewState(
     spaceId ? boardStorageKey(projectId, spaceId) : '',
     normalizeBoardViewState,
     EMPTY_BOARD_VIEW_STATE,
   );
-  const [boardMeta, setBoardMeta] = useState<BoardMetadata>(EMPTY_BOARD_METADATA);
-  const [factsByItemId, setFactsByItemId] = useState<IssueFactsByItemId>({});
-  const [busy, setBusy] = useState(false);
+  const boardMeta = useMemo(() => model ? readBoardMetadata(model.space) : EMPTY_BOARD_METADATA, [model]);
+  const issueReads = useBoardIssueFacts(model);
+  const factsByItemId = issueReads.facts;
+  const [mutationBusy, setBusy] = useState(false);
+  const [metadataAck, setMetadataAck] = useState<{ source: object; hash: string } | null>(null);
+  const busy = mutationBusy || metadataAck !== null;
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerColumnKey, setPickerColumnKey] = useState<string | null>(null);
   const [dragOverColumn, setDragOverColumn] = useState<string | null>(null);
 
+  const columnsRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (columnsRef.current) columnsRef.current.scrollLeft = viewState.scroll.left;
+  }, [spaceId, projectId, Boolean(model)]);
+  const onRenameDraft = useCallback((key: string, draft: string | undefined) => {
+    setViewState((prior) => {
+      const renameDrafts = { ...prior.renameDrafts };
+      if (draft === undefined) delete renameDrafts[key]; else renameDrafts[key] = draft;
+      return { ...prior, renameDrafts };
+    });
+  }, [setViewState]);
+  const onColumnScroll = useCallback((key: string, top: number) => {
+    setViewState((prior) => ({ ...prior, scroll: { ...prior.scroll, columns: { ...prior.scroll.columns, [key]: top } } }));
+  }, [setViewState]);
   const dragRef = useRef<{ occurrenceId: string; fromColumn: string } | null>(null);
-  const liveIdsRef = useRef<Set<string>>(new Set());
   const addSortKeysRef = useRef<Record<string, string | null>>({});
-  // Items whose worker_status we've already resolved (or attempted), so we don't
-  // re-resolve the same issue on every reconciliation pass.
-  const resolvedItemsRef = useRef<Set<string>>(new Set());
-
-  // Reset canonical board inputs on Space change (explicit navigation only).
-  // Browser-local view state follows the keyed persistence hook above.
   useEffect(() => {
-    if (!spaceId) {
-      setBoardMeta(EMPTY_BOARD_METADATA);
-      return;
-    }
-    setBoardMeta(EMPTY_BOARD_METADATA);
-    resolvedItemsRef.current = new Set();
-    setFactsByItemId({});
-  }, [projectId, spaceId]);
+    if (metadataAck && model && (model.space !== metadataAck.source || JSON.stringify(boardMeta) === metadataAck.hash)) setMetadataAck(null);
+  }, [boardMeta, model, metadataAck]);
 
-  const loadPacket = useCallback(
-    async (reconcile: boolean) => {
-      if (!spaceId) {
-        setLoad({ status: 'idle' });
-        return;
-      }
-      if (!reconcile) setLoad({ status: 'loading' });
-      try {
-        const packet = await getSpaceFactPacket(spaceId);
-        const model = buildSpaceViewModel(packet);
-        const meta = readBoardMetadata(model.space);
-        setBoardMeta(meta);
-        const liveIds = new Set<string>();
-        for (const o of model.occurrences) liveIds.add(o.occurrence.id);
-        for (const id of Object.keys(model.itemsById)) liveIds.add(id);
-        liveIdsRef.current = liveIds;
-        setLoad({ status: 'ready', model });
-      } catch (error) {
-        if (!reconcile) setLoad({ status: 'error', message: String(error) });
-      }
-    },
-    [spaceId],
-  );
-
-  useEffect(() => {
-    void loadPacket(false);
-  }, [loadPacket]);
-
-  // SSE reconciliation: any `space:*` event refetches the packet. Collapse /
-  // selection / filter are preserved across the refetch.
-  useEffect(() => {
-    if (!spaceId) return;
-    const client = acquireSharedSse();
-    const unsubscribe = client.on('*', (payload) => {
-      if (typeof payload.type === 'string' && payload.type.startsWith(SPACE_EVENT_PREFIX)) {
-        void loadPacket(true);
-      }
-    });
-    // Reconnect resync: refetch the packet after a dropped stream so events
-    // missed during the gap are reconciled. Collapse/selection/filter preserved.
-    const offState = client.onState((_state, { reconnected }) => {
-      if (reconnected) void loadPacket(true);
-    });
-    client.connect();
-    return () => {
-      unsubscribe();
-      offState();
-      client.close();
-    };
-  }, [spaceId, loadPacket]);
-
-  // Resolve issue worker_status for board items (drives default columns). Each
-  // issue item is resolved once; results feed the by-item facts map. Non-issue
-  // items are skipped (they fall into the `none` default column).
   const shellModel = useMemo(
     () => (spaceId ? createBoardShellModel(projectId, spaceId) : null),
     [projectId, spaceId],
   );
-  const model = load.status === 'ready' ? load.model : null;
   const projectionModel = model ?? shellModel;
-  useEffect(() => {
-    if (!model) return;
-    const pending: SpaceItem[] = [];
-    for (const occ of model.occurrences) {
-      if (occ.renderer !== 'board') continue;
-      const item = occ.item;
-      if (!item || item.ref_type !== 'issue') continue;
-      if (resolvedItemsRef.current.has(item.id)) continue;
-      pending.push(item);
-    }
-    if (pending.length === 0) return;
-    let cancelled = false;
-    (async () => {
-      const updates: IssueFactsByItemId = {};
-      for (const item of pending) {
-        resolvedItemsRef.current.add(item.id);
-        try {
-          const result = await resolveResourceRef(cardRefString(item));
-          if (result.resolved) {
-            updates[item.id] = issueFactsFromEntity(item.id, result.entity);
-          }
-        } catch {
-          /* leave unresolved → falls into the `none` default column */
-        }
-      }
-      if (!cancelled && Object.keys(updates).length > 0) {
-        setFactsByItemId((prior) => ({ ...prior, ...updates }));
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [model]);
 
   const projection = useMemo(
     () => (projectionModel ? projectBoard(projectionModel, boardMeta, factsByItemId) : null),
@@ -615,7 +554,7 @@ export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountPro
   useEffect(() => {
     if (!projection || !model) return;
     const liveColumnKeys = new Set(projection.columns.map((c) => c.key));
-    setViewState((prior) => reconcileBoardViewState(prior, liveIdsRef.current, liveColumnKeys));
+    setViewState((prior) => reconcileBoardViewState(prior, new Set([...model.occurrences.map((entry) => entry.occurrence.id), ...Object.keys(model.itemsById)]), liveColumnKeys));
   }, [model, projection]);
 
   const selectedIds = useMemo(() => new Set(viewState.selection.ids), [viewState.selection.ids]);
@@ -663,14 +602,14 @@ export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountPro
 
   const onSelect = useCallback((occurrenceId: string) => {
     setViewState((prior) => ({ ...prior, selection: { kind: 'occurrence', ids: [occurrenceId] } }));
-  }, []);
+  }, [setViewState]);
 
   const onToggleCollapse = useCallback((key: string) => {
     setViewState((prior) => ({
       ...prior,
       collapsedColumns: { ...prior.collapsedColumns, [key]: !prior.collapsedColumns[key] },
     }));
-  }, []);
+  }, [setViewState]);
 
   // Persist a card's move to a target column: write section_id + a sort_key that
   // places it at the end of the destination column, via the C2 occurrence route.
@@ -681,20 +620,20 @@ export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountPro
       const lastCard = target && target.cards.length > 0 ? target.cards[target.cards.length - 1] : null;
       const lastKey = lastCard ? lastCard.occurrence.occurrence.sort_key : null;
       const sortKey = sortKeyBetween(lastKey, null);
+      setMutationError(null);
       setBusy(true);
       try {
         await updateSpaceOccurrence(spaceId, occurrenceId, {
           section_id: toColumnKey,
           sort_key: sortKey,
         });
-        await loadPacket(true);
       } catch (error) {
-        setLoad({ status: 'error', message: String(error) });
+        setMutationError(String(error));
       } finally {
         setBusy(false);
       }
     },
-    [spaceId, projection, loadPacket],
+    [spaceId, projection],
   );
 
   const onDragStart = useCallback((occurrenceId: string, fromColumn: string) => {
@@ -730,20 +669,20 @@ export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountPro
   // preserving any sibling metadata keys.
   const persistBoardMeta = useCallback(
     async (next: BoardMetadata) => {
-      if (!spaceId || !model) return;
+      if (!spaceId || !model || busy) return;
+      setMutationError(null);
       setBusy(true);
       try {
         const metadata = writeBoardMetadata(model.space.metadata, next);
         const updated = await updateSpace(spaceId, { metadata });
-        setBoardMeta(readBoardMetadata(updated));
-        await loadPacket(true);
+        setMetadataAck({ source: model.space, hash: JSON.stringify(readBoardMetadata(updated)) });
       } catch (error) {
-        setLoad({ status: 'error', message: String(error) });
+        setMutationError(String(error));
       } finally {
         setBusy(false);
       }
     },
-    [spaceId, model, loadPacket],
+    [spaceId, model, busy],
   );
 
   const nextColumnKey = useCallback(
@@ -852,7 +791,7 @@ export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountPro
           >
             <Icon name="add" /> Add items
           </button>
-          <AddColumnMenu busy={busy} onAddManual={onAddManual} onAddFilter={onAddFilter} />
+          <AddColumnMenu draft={viewState.filterDraft} onDraft={(next) => setViewState((prior) => ({ ...prior, filterDraft: typeof next === 'function' ? next(prior.filterDraft) : next }))} busy={busy} onAddManual={onAddManual} onAddFilter={onAddFilter} />
           {pickerOpen ? (
             <div className="space-board__picker-anchor">
               <SpaceItemPicker
@@ -862,9 +801,6 @@ export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountPro
                 isItemInView={isItemOnBoard}
                 alreadyInViewLabel="Already on board"
                 afterAdd={addBoardItem}
-                onAdded={() => {
-                  void loadPacket(true);
-                }}
                 onClose={() => setPickerOpen(false)}
               />
             </div>
@@ -872,22 +808,33 @@ export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountPro
         </div>
       </div>
 
-      {load.status === 'error' && (
-        <DetailPaneNotice severity="error" density="compact" title="Could not load board">{load.message}</DetailPaneNotice>
+      {error && (
+        <DetailPaneNotice severity="error" density="compact" title="Could not load board">{error}</DetailPaneNotice>
       )}
+      {issueReads.failed.length > 0 ? (
+        <DetailPaneNotice severity="error" density="compact" title="Could not refresh issue facts">
+          Some cards have unavailable or older issue facts. <button type="button" onClick={() => issueReads.failed.forEach((read) => { void read.refetch(); })}>Retry issue facts</button>
+        </DetailPaneNotice>
+      ) : issueReads.pending ? <div role="status">Resolving issue facts…</div> : null}
       <div className="space-board__body" data-testid="space-board-body">
-        {load.status === 'loading' || load.status === 'idle' ? (
+        {!model && !error ? (
           <div className="space-board__loading" role="status">
             Loading cards…
           </div>
         ) : null}
-        {load.status === 'error' ? <div className="space-board__empty">Board unavailable.</div> : null}
+        {!model && error ? <div className="space-board__empty">Board unavailable.</div> : null}
         {projection ? (
-          <div className="space-board__columns" role="list" aria-label="Board columns">
+          <div ref={columnsRef} onScroll={(event) => { const left = event.currentTarget.scrollLeft; setViewState((prior) => ({ ...prior, scroll: { ...prior.scroll, left } })); }} className="space-board__columns" role="list" aria-label="Board columns">
             {projection.columns.map((column, index) => (
               <BoardColumnView
                 key={column.key}
                 column={column}
+                renameDraft={viewState.renameDrafts[column.key]}
+                onRenameDraft={onRenameDraft}
+                scrollTop={viewState.scroll.columns[column.key] ?? 0}
+                scrollIdentity={boardStorageKey(projectId, spaceId)}
+                onScrollTop={onColumnScroll}
+                busy={busy}
                 index={index}
                 columnCount={projection.columns.length}
                 collapsed={!!viewState.collapsedColumns[column.key]}

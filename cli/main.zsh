@@ -117,6 +117,7 @@ case "${1:-}" in
       replay-archives) shift; exec "$MANDIBLE_CLI_DIR/auth-replay-archives.sh" "$@" ;;
       acceptance) shift; exec "$MANDIBLE_CLI_DIR/auth-acceptance.sh" "$@" ;;
       retry-convergence) shift; exec "$MANDIBLE_CLI_DIR/auth-retry-convergence.sh" "$@" ;;
+      retire-delivery) shift; exec "$MANDIBLE_CLI_DIR/auth-retire-delivery.sh" "$@" ;;
       handoff) shift; exec "$MANDIBLE_CLI_DIR/auth-handoff.sh" "$@" ;;
       merge)   shift; exec "$MANDIBLE_CLI_DIR/auth-merge.sh" "$@" ;;
       *) echo "Unknown auth subcommand: ${1:-}" >&2; usage >&2; exit 1 ;;

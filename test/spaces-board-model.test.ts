@@ -174,6 +174,7 @@ describe('board view-state persistence + reconciliation', () => {
 
   it('reconcile keeps surviving selection/collapse and drops vanished ids/columns (no reset)', () => {
     const prior = {
+      ...EMPTY_BOARD_VIEW_STATE,
       cardFilter: 'q',
       selection: { kind: 'occurrence' as const, ids: ['o1', 'gone'] },
       collapsedColumns: { 'worker_status:done': true, 'col-removed': true },

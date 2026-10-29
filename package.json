@@ -42,7 +42,8 @@
     "native-preview": "scripts/bun-runtime.sh --exec scripts/native-preview.mjs",
     "fleet": "scripts/bun-runtime.sh --exec --no-install scripts/mandible-fleet.mjs",
     "candidate-acceptance": "scripts/bun-runtime.sh --exec --no-install scripts/candidate-acceptance.mjs",
-    "test:app-payload": "scripts/bun-runtime.sh --exec --no-install scripts/prove-app-payload.mjs"
+    "test:app-payload": "scripts/bun-runtime.sh --exec --no-install scripts/prove-app-payload.mjs",
+    "generate:local-credential-routes": "scripts/bun-runtime.sh --exec --no-install scripts/generate-local-credential-routes.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.259",
@@ -52,6 +53,7 @@
     "chokidar": "4.0.3",
     "jose": "6.2.2",
     "lucide-preact": "1.63.0",
+    "p-queue": "9.0.1",
     "remark-directive": "3.0.1",
     "remark-parse": "11.0.0",
     "smol-toml": "1.6.1",

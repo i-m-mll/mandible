@@ -1,5 +1,6 @@
 import { withLedgerMutationActor } from "./ledger/mutation-history.js";
 import fs from "node:fs";
+import { isLocalCliCredential } from "./local-cli-credential.js";
 import http from "node:http";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
@@ -202,6 +203,7 @@ export type FileRpcPolicy = "allow" | "deny" | {
 };
 
 export interface RouteOptions {
+  localCliCredential: import("./local-cli-credential.js").LocalCliCredential;
   operation: OperationDescriptor;
   fileRpc: FileRpcPolicy;
   // Infrastructure mutations may opt out of historical unattributed-write
@@ -223,6 +225,7 @@ export interface RouteRefs {
 }
 
 export interface RoutePolicyEntry {
+  localCliCredential: import("./local-cli-credential.js").LocalCliCredential;
   method: string;
   path: string;
   fileRpc: "allow" | "deny" | "conditional";
@@ -439,7 +442,8 @@ export class Router implements RouteRegistrar {
 
   private addRoute(method: string, path: string, handler: RouteHandler, options: RouteOptions): void {
     const operation = options?.operation;
-    if (!operation || typeof operation.id !== "string" || !operation.id.trim()
+    if (!isLocalCliCredential(options?.localCliCredential)
+        || !operation || typeof operation.id !== "string" || !operation.id.trim()
         || !(operation.reportingCategory === null || typeof operation.reportingCategory === "string" && operation.reportingCategory.length > 0)
         || !(operation.requestSchema === null || typeof operation.requestSchema?.safeParse === "function")
         || !(typeof operation.effects === "function" || Array.isArray(operation.effects) && operation.effects.every(effect => EFFECTS.includes(effect)))
@@ -477,6 +481,7 @@ export class Router implements RouteRegistrar {
       return {
         method: route.method,
         path: route.path,
+        localCliCredential: route.options.localCliCredential,
         fileRpc: serializeFileRpcPolicy(route.options.fileRpc),
         operationId: route.options.operation.id,
         operationalMutationCategory: route.options.operation.reportingCategory,
@@ -992,22 +997,22 @@ export function createServer(options: ServerOptions, transport: "http" | "local-
         : {}),
     };
     res.json(payload);
-  }, { operation: { id: "get:/api/health", effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/health", effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   const readEventLoopTurnMs = options.readEventLoopTurnMs;
   if (instance.role === "preview" && readEventLoopTurnMs) {
     router.post("/api/diagnostics/event-loop-turn", (_req, res) => {
       res.json({ max_turn_ms: readEventLoopTurnMs() });
-    }, { operation: { id: "diagnostics.event_loop_turn", effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+    }, { localCliCredential: {"mode":"omit"}, operation: { id: "diagnostics.event_loop_turn", effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
   }
 
   router.post("/api/events/subscribe", (_req, res) => {
     res.status(400).json({ error: "stream_transport_required" });
-  }, { operation: { id: "events.subscribe", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "events.subscribe", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   router.get("/api/instance", (_req, res) => {
     res.json({ instance, operations: router.operationCatalog(version) });
-  }, { operation: { id: "get:/api/instance", effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/instance", effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
   }
 
   return http.createServer(async (req, res) => {

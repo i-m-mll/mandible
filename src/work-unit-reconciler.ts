@@ -1,3 +1,4 @@
+import { parseAssignmentTarget } from "./work-unit-assignment.js";
 import { hasArchivedResponsibility } from "./work-unit-worker.js";
 import { mutateWorkUnit } from "./work-unit-history.js";
 import fs from "node:fs";
@@ -22,7 +23,7 @@ type AuthPipelineMatch =
 
 function workUnitDecisionState(db: Db, id: string): string {
   const row = db.prepare("SELECT * FROM work_units WHERE id = ?").get(id) as Record<string, unknown> | undefined;
-  return JSON.stringify(row ? ["id", "state", "branch", "repo_id", "created_at", "assigned_session_id", "worker_provider_session_id", "provider_session_id", "auth_request_id", "owner_user_id", "owner_credential_id", "custody_generation", "resolved_at"].map(key => row[key] ?? null) : null);
+  return JSON.stringify(row ? ["id", "state", "branch", "repo_id", "created_at", "assigned_session_id", "assignment_target_json", "worker_provider_session_id", "provider_session_id", "auth_request_id", "owner_user_id", "owner_credential_id", "custody_generation", "resolved_at"].map(key => row[key] ?? null) : null);
 }
 
 // Bug: 8a281b3 — periodic reconciler for work unit state consistency.
@@ -156,7 +157,7 @@ export class WorkUnitReconciler {
     const committed = db
       .prepare(
         `SELECT wu.id, wu.branch, wu.repo_id, wu.created_at,
-                wu.assigned_session_id, wu.worker_provider_session_id, wu.provider_session_id
+                wu.assigned_session_id, wu.assignment_target_json, wu.worker_provider_session_id, wu.provider_session_id
            FROM work_units wu
          WHERE wu.state = 'committed' AND wu.branch IS NOT NULL
            AND wu.auth_request_id IS NULL
@@ -167,6 +168,7 @@ export class WorkUnitReconciler {
         branch: string;
         repo_id: string;
         created_at: number;
+        assignment_target_json: string | null;
         assigned_session_id: string | null;
         worker_provider_session_id: string | null;
         provider_session_id: string | null;
@@ -188,6 +190,7 @@ export class WorkUnitReconciler {
       return result.value;
     }));
     const holderOf = (row: (typeof gone)[number]) => row.assigned_session_id
+      ?? parseAssignmentTarget(row.assignment_target_json)?.session_id
       ?? row.worker_provider_session_id
       ?? row.provider_session_id;
     const resolve = this.resolveSession ?? await freshSessionAliasResolver((probe) => {

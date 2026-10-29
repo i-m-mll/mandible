@@ -556,7 +556,7 @@ describe("auth request action routes", () => {
       });
       const response = await router.invoke({
         method: "POST",
-        url: "/api/auth/request",
+        url: "/api/auth/v2/request",
         body: { ...AUTH_MERGE_REVIEW,
           command: "echo merge",
           title: "Promote reviewed policy",
@@ -608,7 +608,7 @@ describe("auth request action routes", () => {
       });
       const response = await router.invoke({
         method: "POST",
-        url: "/api/auth/request",
+        url: "/api/auth/v2/request",
         body: { ...AUTH_MERGE_REVIEW,
           command: "echo merge",
           title: "Stale policy promotion",
@@ -649,7 +649,7 @@ describe("auth request action routes", () => {
 
       const submit = await router.invoke({
         method: "POST",
-        url: "/api/auth/request",
+        url: "/api/auth/v2/request",
         body: { ...AUTH_MERGE_REVIEW,
           command: "echo route",
           title: "Route staged actions",
@@ -749,7 +749,7 @@ describe("auth request action routes", () => {
 
       const response = await router.invoke({
         method: "POST",
-        url: "/api/auth/request",
+        url: "/api/auth/v2/request",
         body: { ...AUTH_MERGE_REVIEW,
           command: "echo bad",
           title: "Bad staged action",

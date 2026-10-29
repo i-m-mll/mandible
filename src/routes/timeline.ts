@@ -19,5 +19,5 @@ export function registerTimelineRoutes(router: RouteRegistrar, reader: LedgerRea
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }
-  }, { operation: { id: "post:/api/timeline/project", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/timeline/project", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 }

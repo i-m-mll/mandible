@@ -42,7 +42,7 @@ import { startDaemon } from "../src/index.js";
 import { checkHealth } from "../src/lifecycle.js";
 import { readArtifactBytesFull } from "../src/artifact-content.js";
 import { appendAuthLifecycleEvent, listAuthExecutionAttempts, listAuthLifecycleEvents } from "../src/auth-lifecycle.js";
-import { authRequestSnapshot, authSnapshotDigest } from "../src/auth-request-snapshot.js";
+import { AUTH_SNAPSHOT_SHAPE_V220, authRequestSnapshot, authSnapshotDigest } from "../src/auth-request-snapshot.js";
 import { buildMetadataBackupSql } from "../src/ledger/backup.js";
 import { readLedgerChangeFeed } from "../src/ledger/change-feed.js";
 import { addProject } from "../src/ledger/project-registry.js";
@@ -94,6 +94,38 @@ function makeRepo(repo: string, files: Record<string, string>): string {
 }
 
 describe("floor to head", () => {
+  it("observes retained assignment evidence without inventing actor ownership or historical binding time", () => {
+    const db = migrateFixtureThrough(220);
+    const prior = Date.now();
+    db.prepare("INSERT INTO sessions(id,app,status,conversation_id) VALUES ('session','codex','ended','native')").run();
+    const insert = db.prepare(`INSERT INTO work_units(id,issue_id,repo_id,state,created_at,assigned_session_id,
+      provider,provider_session_id,worker_provider,worker_provider_session_id) VALUES (?, '', '', 'resolved', 1, ?, 'codex', 'actor', ?, ?)`);
+    insert.run('actor-only', null, null, null);
+    insert.run('explicit', 'session', null, null);
+    insert.run('pending', 'unindexed-alias', null, null);
+    insert.run('positive', null, 'codex', 'positive-native');
+    insert.run('conflict', 'session', 'codex', 'other');
+    insert.run('uncertain-conflict', 'unknown', 'codex', 'other');
+    db.prepare("INSERT INTO sessions(id,app,status,conversation_id) VALUES ('collision-codex','codex','ended','shared-native'),('collision-claude','claude','ended','shared-native')").run();
+    insert.run('ambiguous', 'shared-native', null, null);
+    migrate(db);
+    const rows = db.prepare("SELECT id,assignment_target_json,provider_session_id FROM work_units ORDER BY id").all() as Array<{id:string;assignment_target_json:string|null;provider_session_id:string}>;
+    expect(rows.map(row => [row.id, row.assignment_target_json ? JSON.parse(row.assignment_target_json) : null])).toEqual([
+      ['actor-only',null], ['ambiguous',{kind:'alias',session_id:'shared-native'}], ['conflict',null], ['explicit',{kind:'native',provider:'codex',session_id:'native'}],
+      ['pending',{kind:'alias',session_id:'unindexed-alias'}], ['positive',{kind:'native',provider:'codex',session_id:'positive-native'}], ['uncertain-conflict',null],
+    ]);
+    expect(rows.every(row => row.provider_session_id === 'actor')).toBe(true);
+    const events = db.prepare("SELECT occurred_at,observed_at,payload_json FROM ledger_events WHERE event_type='work_unit.assignment.observed'").all() as Array<{occurred_at:number;observed_at:number;payload_json:string}>;
+    expect(events).toHaveLength(4);
+    for (const event of events) {
+      expect(event.occurred_at).toBeGreaterThanOrEqual(prior);
+      expect(event.observed_at).toBe(event.occurred_at);
+      expect(JSON.parse(event.payload_json).provenance).toBe('legacy_retained_assignment_observation');
+    }
+    migrate(db);
+    expect((db.prepare("SELECT count(*) AS n FROM ledger_events WHERE event_type='work_unit.assignment.observed'").get() as {n:number}).n).toBe(4);
+    db.close();
+  });
   it("converges original execution v208 without losing native observations or preferences", () => {
     const bytes = gunzipSync(fs.readFileSync(new URL('./fixtures/afe677c-schema-v208.db.gz', import.meta.url)));
     const database = SqliteDatabase.fromSnapshot(bytes);
@@ -1114,5 +1146,30 @@ it("preserves current preference bytes and revisions while admitting managed Cha
     db.prepare("INSERT INTO user_settings (user_id, key, value, revision, updated_at) VALUES (?, 'managed_chat_defaults', '{}', 1, 456)")
       .run(operator.id);
     expect(db.pragma("foreign_key_check")).toEqual([]);
+  } finally { db.close(); }
+});
+
+it("preserves pending review bytes and lifecycle history when prerequisite sets are introduced", () => {
+  const db = migrateFixtureThrough(220);
+  try {
+    db.prepare(`INSERT INTO auth_requests
+      (id, command, title, status, created_at, updated_at, expires_at, depends_on_id,
+       merge_head_sha, merge_candidate_tree_sha, merge_candidate_pin_sha, commit_message)
+      VALUES ('pending-preserved', 'echo reviewed', 'Reviewed request', 'pending', 1, 2, 9999999999999,
+        'auth:legacy-short-ref', 'head', 'tree', 'pin', 'Reviewed message')`).run();
+    const snapshot = authRequestSnapshot(db, "pending-preserved", AUTH_SNAPSHOT_SHAPE_V220);
+    const digest = authSnapshotDigest(snapshot);
+    db.prepare(`INSERT INTO auth_request_lifecycle_events
+      (id, auth_request_id, revision, event_type, prior_status, next_status, snapshot_json, snapshot_sha256, authority_path, occurred_at)
+      VALUES ('preserved-event', 'pending-preserved', 1, 'submitted', NULL, 'pending', ?, ?, 'system', 2)`).run(snapshot, digest);
+    const row = db.prepare("SELECT * FROM auth_requests WHERE id = 'pending-preserved'").get() as Record<string, unknown>;
+    const history = db.prepare("SELECT * FROM auth_request_lifecycle_events WHERE auth_request_id = 'pending-preserved'").all();
+    migrate(db);
+    const { depends_on_ids, ...after } = db.prepare("SELECT * FROM auth_requests WHERE id = 'pending-preserved'").get() as Record<string, unknown>;
+    expect(depends_on_ids).toBeNull();
+    expect(after).toEqual(row);
+    expect(authRequestSnapshot(db, "pending-preserved")).toBe(snapshot);
+    expect(authSnapshotDigest(authRequestSnapshot(db, "pending-preserved"))).toBe(digest);
+    expect(db.prepare("SELECT * FROM auth_request_lifecycle_events WHERE auth_request_id = 'pending-preserved'").all()).toEqual(history);
   } finally { db.close(); }
 });

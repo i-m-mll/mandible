@@ -11,9 +11,15 @@ import { establishTestClientAccess } from './helpers/local-client-access';
 // reset of selection.
 import { render, screen, cleanup, fireEvent, waitFor, within } from './helpers/dom.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { __resetSharedSseForTests } from '../ui/src/sse-shared';
 
-import { SpaceCollectionRenderer } from '../ui/src/views/spaces/space-collection';
+import { SpaceCollectionRenderer as Surface } from '../ui/src/views/spaces/space-collection';
+import { useSpacePacket } from '../ui/src/query/spaces';
+import type { SpaceRendererMountProps } from '../ui/src/views/spaces/SpacesViewShell';
+
+function SpaceCollectionRenderer(props: SpaceRendererMountProps) {
+  const query = useSpacePacket(props.spaceId);
+  return <Surface {...props} factPacket={query.packet} />;
+}
 import { collectionStorageKey } from '../ui/src/views/spaces/collectionViewState';
 
 const NOW = 1_700_000_000_000;
@@ -25,31 +31,6 @@ type Packet = {
   edges: Record<string, unknown>[];
 };
 
-class MockEventSource {
-  static instances: MockEventSource[] = [];
-  readyState = 1;
-  onerror: (() => void) | null = null;
-  onopen: (() => void) | null = null;
-  private handlers = new Map<string, Set<(e: MessageEvent) => void>>();
-  constructor(public url: string) {
-    MockEventSource.instances.push(this);
-  }
-  addEventListener(type: string, handler: (e: MessageEvent) => void): void {
-    const set = this.handlers.get(type) ?? new Set();
-    set.add(handler);
-    this.handlers.set(type, set);
-  }
-  removeEventListener(type: string, handler: (e: MessageEvent) => void): void {
-    this.handlers.get(type)?.delete(handler);
-  }
-  close(): void {
-    this.readyState = 2;
-  }
-  emit(data: unknown): void {
-    const event = { data: JSON.stringify(data) } as MessageEvent;
-    this.handlers.get('message')?.forEach((h) => h(event));
-  }
-}
 
 function fullPacket(overrides: Partial<Packet> = {}): Packet {
   return {
@@ -174,9 +155,6 @@ beforeEach(async () => {
   queryClient.clear();
   await establishTestClientAccess();
   stubLocalStorage();
-  MockEventSource.instances = [];
-  vi.stubGlobal('EventSource', MockEventSource);
-  __resetSharedSseForTests();
 });
 
 afterEach(() => {
@@ -263,7 +241,6 @@ describe('SpaceCollectionRenderer', () => {
     });
     // The isolated renderer fixture also supplies the root app's cache invalidation.
     invalidateDashboardApiCacheForEvent('space:item:added');
-    MockEventSource.instances[0].emit({ type: 'space:item:added', data: { space_id: 'sp1' } });
     // New data shows up AND the selection survives reconciliation.
     await waitFor(() => expect(screen.getByText('Beta')).toBeTruthy());
     expect(container.querySelector('[data-occurrence-id="root"]')?.getAttribute('data-selected')).toBe('true');

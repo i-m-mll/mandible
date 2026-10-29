@@ -89,7 +89,7 @@ export function mapRow(row: Record<string, unknown>): AuthRequest {
     issue_closures: issueClosures ?? parsedIssues,
     issue_ids: null,
     issues: parsedIssues,
-    depends_on_id: row.depends_on_id == null ? null : String(row.depends_on_id),
+    depends_on_ids: decodeAuthDependencies(row),
     execution_mode:
       row.execution_mode === "remote" || row.execution_mode === "daemon"
         ? (row.execution_mode as "remote" | "daemon")
@@ -143,4 +143,14 @@ export function parseChangeReport(value: unknown): AuthRequest["change_report"] 
     throw new Error("Stored auth change report does not match mandible-auth-change-report@1.");
   }
   return parsed as NonNullable<AuthRequest["change_report"]>;
+}
+
+export function decodeAuthDependencies(row: Record<string, unknown>): string[] {
+  if (row.depends_on_ids == null) return row.depends_on_id == null ? [] : [String(row.depends_on_id)];
+  if (row.depends_on_id != null) throw new Error("Stored auth request has both scalar and set prerequisites.");
+  const ids: unknown = JSON.parse(String(row.depends_on_ids));
+  if (!Array.isArray(ids) || ids.some(id => typeof id !== "string" || !id.trim())) {
+    throw new Error("Stored auth prerequisites must be an array of nonempty request identities.");
+  }
+  return ids;
 }

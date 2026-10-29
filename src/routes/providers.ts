@@ -339,7 +339,7 @@ function linkedEntityQuery(req: RequestLike): { type?: string; id?: string } {
 export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader): void {
   app.get("/api/providers", (_req, res) => {
     sendJson(res, 200, projectArtifactPublicValue(getDb(), { providers: listProviders(getDb()) }));
-  }, { operation: { id: "get:/api/providers", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/providers", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   app.get("/api/providers/:id/capabilities", (req, res) => {
     const capabilities = getProviderCapabilities(getDb(), req.params.id);
@@ -348,7 +348,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
       return;
     }
     sendJson(res, 200, projectArtifactPublicValue(getDb(), capabilities));
-  }, { operation: { id: "get:/api/providers/:id/capabilities", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/providers/:id/capabilities", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   app.get("/api/providers/:id/health", (req, res) => {
     const health = getProviderHealth(getDb(), req.params.id);
@@ -357,7 +357,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
       return;
     }
     sendJson(res, 200, projectArtifactPublicValue(getDb(), health));
-  }, { operation: { id: "get:/api/providers/:id/health", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/providers/:id/health", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   app.get("/api/providers/:id", (req, res) => {
     const detail = getProviderDetail(getDb(), req.params.id);
@@ -366,7 +366,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
       return;
     }
     sendJson(res, 200, projectArtifactPublicValue(getDb(), detail));
-  }, { operation: { id: "get:/api/providers/:id", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/providers/:id", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   app.post("/api/providers/register", (req, res) => {
     try {
@@ -375,7 +375,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/providers/register", effects: ["ledger:write"], requestSchema: null, reportingCategory: "providers" }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/providers/register", effects: ["ledger:write"], requestSchema: null, reportingCategory: "providers" }, fileRpc: "deny" });
 
   app.post("/api/providers/register-manifest", (req, res) => {
     try {
@@ -390,7 +390,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/providers/register-manifest", effects: ["ledger:write"], requestSchema: null, reportingCategory: "providers" }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/providers/register-manifest", effects: ["ledger:write"], requestSchema: null, reportingCategory: "providers" }, fileRpc: "deny" });
 
   app.post("/api/artifacts/ingest", async (req, res) => {
     try {
@@ -470,7 +470,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/artifacts/ingest", effects: ({ instanceRole, body }) => instanceRole === "preview" && isInlineManagedArtifactByteRequest("ingest", body) ? ["ledger:write", "files:preview"] : ["files:production"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/artifacts/ingest", effects: ({ instanceRole, body }) => instanceRole === "preview" && isInlineManagedArtifactByteRequest("ingest", body) ? ["ledger:write", "files:preview"] : ["files:production"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
 
   app.post("/api/artifacts/plan", async (req, res) => {
     try {
@@ -489,7 +489,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/artifacts/plan", effects: ["ledger:write","files:preview"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/artifacts/plan", effects: ["ledger:write","files:preview"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
 
   app.post("/api/artifacts/scan-repos", (req, res) => {
     try {
@@ -507,7 +507,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/artifacts/scan-repos", effects: ["files:production"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/artifacts/scan-repos", effects: ["files:production"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
 
   app.get("/api/artifacts", (req, res) => {
     const linked = linkedEntityQuery(req);
@@ -536,7 +536,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
     });
     const readable = readableArtifactEntries(getDb(), req.client_identity ?? null, artifacts, (artifact) => artifact.id);
     sendJson(res, 200, projectArtifactPublicValue(getDb(), { artifacts: readable }));
-  }, { operation: { id: "get:/api/artifacts", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/artifacts", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   app.get("/api/artifacts/resolve", (req, res) => {
     try {
@@ -552,7 +552,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "get:/api/artifacts/resolve", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/artifacts/resolve", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   app.get("/api/artifacts/logical", (req, res) => {
     const artifacts = listLogicalArtifacts(getDb(), {
@@ -565,7 +565,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
     });
     const readable = readableArtifactEntries(getDb(), req.client_identity ?? null, artifacts, (artifact) => artifact.id);
     sendJson(res, 200, projectArtifactPublicValue(getDb(), { artifacts: readable }));
-  }, { operation: { id: "get:/api/artifacts/logical", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/artifacts/logical", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   app.get("/api/artifacts/blobs", (req, res) => {
     const blobs = listArtifactBlobs(getDb(), {
@@ -577,7 +577,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
       offset: queryNumber(req, "offset"),
     });
     sendJson(res, 200, projectArtifactPublicValue(getDb(), { blobs }));
-  }, { operation: { id: "get:/api/artifacts/blobs", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/artifacts/blobs", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   app.get("/api/artifacts/associations", (req, res) => {
     const targetType = queryString(req, "target_type");
@@ -600,7 +600,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
       }
     });
     sendJson(res, 200, projectArtifactPublicValue(getDb(), { associations }));
-  }, { operation: { id: "get:/api/artifacts/associations", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/artifacts/associations", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   app.post("/api/artifacts/associations", (req, res) => {
     try {
@@ -616,7 +616,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/artifacts/associations", effects: ["ledger:write","files:preview"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/artifacts/associations", effects: ["ledger:write","files:preview"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
 
   app.get("/api/artifacts/series", async (req, res) => {
     const linked = linkedEntityQuery(req);
@@ -636,7 +636,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
       offset: queryNumber(req, "offset"),
     } });
     sendJson(res, 200, result);
-  }, { operation: { id: "get:/api/artifacts/series", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/artifacts/series", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   app.post("/api/artifacts/link", (req, res) => {
     try {
@@ -669,7 +669,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/artifacts/link", effects: ["ledger:write","files:preview"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/artifacts/link", effects: ["ledger:write","files:preview"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
 
   app.post("/api/artifacts/check", async (req, res) => {
     try {
@@ -695,7 +695,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/artifacts/check", effects: ["ledger:write","files:preview"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/artifacts/check", effects: ["ledger:write","files:preview"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
 
   app.post("/api/artifacts/snapshot", async (req, res) => {
     try {
@@ -708,7 +708,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/artifacts/snapshot", effects: ({ instanceRole, body }) => instanceRole === "preview" && isInlineManagedArtifactByteRequest("snapshot", body) ? ["ledger:write", "files:preview"] : ["files:production"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/artifacts/snapshot", effects: ({ instanceRole, body }) => instanceRole === "preview" && isInlineManagedArtifactByteRequest("snapshot", body) ? ["ledger:write", "files:preview"] : ["files:production"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
 
   // Read-only version history for a logical artifact series. `ref` may be a
   // series id, series_key, version id, or any artifact ref (resolves to the
@@ -730,7 +730,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "get:/api/artifacts/versions", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/artifacts/versions", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   // Read-only text/JSON/Markdown diff derived from two artifacts' full snapshot
   // bytes. Accepts any resolvable refs (hash, version, or series selectors).
@@ -748,7 +748,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "get:/api/artifacts/diff", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/artifacts/diff", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   app.get("/api/artifacts/drafts", (req, res) => {
     try {
@@ -762,7 +762,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "get:/api/artifacts/drafts", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/artifacts/drafts", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   app.post("/api/artifacts/drafts", (req, res) => {
     try {
@@ -789,7 +789,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/artifacts/drafts", effects: ["ledger:write","files:preview"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/artifacts/drafts", effects: ["ledger:write","files:preview"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
 
   app.post("/api/artifacts/drafts/rebase", (req, res) => {
     try {
@@ -804,7 +804,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/artifacts/drafts/rebase", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write","files:preview"] : ["files:production"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/artifacts/drafts/rebase", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write","files:preview"] : ["files:production"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
 
   app.post("/api/artifacts/drafts/publish", (req, res) => {
     try {
@@ -833,7 +833,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/artifacts/drafts/publish", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write","files:preview"] : ["files:production"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/artifacts/drafts/publish", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write","files:preview"] : ["files:production"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
 
   app.delete("/api/artifacts/drafts", (req, res) => {
     try {
@@ -847,7 +847,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "delete:/api/artifacts/drafts", effects: ["ledger:write","files:preview"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "delete:/api/artifacts/drafts", effects: ["ledger:write","files:preview"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
 
   app.post("/api/artifacts/versions", (req, res) => {
     try {
@@ -867,7 +867,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/artifacts/versions", effects: ["ledger:write","files:preview"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/artifacts/versions", effects: ["ledger:write","files:preview"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
 
   app.get("/api/artifacts/source", (req, res) => {
     try {
@@ -877,7 +877,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
       if (!source) { sendJson(res, 404, { error: "source state not found", code: "unknown_artifact" }); return; }
       sendJson(res, 200, { source, version_custody: artifactVersionCustody(getDb(), id) });
     } catch (error) { handleError(res, error); }
-  }, { operation: { id: "get:/api/artifacts/source", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/artifacts/source", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   app.post("/api/artifacts/source/move", (req, res) => {
     try {
@@ -924,7 +924,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
         if (state) sendJson(res, 200, { source: state, version_custody: artifactVersionCustody(getDb(), id), status: state.revision === current.revision ? 'unchanged' : 'updated' });
       }).immediate();
     } catch (error) { handleError(res, error); }
-  }, { operation: { id: "post:/api/artifacts/source/move", effects: ["ledger:write","files:preview"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/artifacts/source/move", effects: ["ledger:write","files:preview"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
 
   app.post("/api/artifacts/bundles", async (req, res) => {
     try {
@@ -936,7 +936,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/artifacts/bundles", effects: ["ledger:write","files:preview"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/artifacts/bundles", effects: ["ledger:write","files:preview"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
 
   app.post("/api/artifacts/bundles/:id/members", async (req, res) => {
     try {
@@ -949,7 +949,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/artifacts/bundles/:id/members", effects: ["ledger:write","files:preview"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/artifacts/bundles/:id/members", effects: ["ledger:write","files:preview"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
 
   app.get("/api/artifacts/bundles/:id", (req, res) => {
     if (!enforceArtifactRefAccess(req, res, req.params.id, "read")) return;
@@ -959,7 +959,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
       return;
     }
     sendJson(res, 200, projectArtifactPublicValue(getDb(), bundle));
-  }, { operation: { id: "get:/api/artifacts/bundles/:id", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/artifacts/bundles/:id", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   app.get("/api/knowledge-backrefs", (req, res) => {
     const backrefs = listKnowledgeBackrefs(getDb(), {
@@ -972,7 +972,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
       offset: queryNumber(req, "offset"),
     });
     sendJson(res, 200, projectArtifactPublicValue(getDb(), { backrefs }));
-  }, { operation: { id: "get:/api/knowledge-backrefs", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/knowledge-backrefs", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   app.post("/api/knowledge-backrefs", (req, res) => {
     try {
@@ -982,7 +982,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/knowledge-backrefs", effects: ["ledger:write"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/knowledge-backrefs", effects: ["ledger:write"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
 
   app.get("/api/artifacts/:id/content", async (req, res) => {
     if (!enforceArtifactRefAccess(req, res, req.params.id, "read")) return;
@@ -994,7 +994,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
       return;
     }
     sendJson(res, 200, projectArtifactPublicValue(getDb(), { content }));
-  }, { operation: { id: "get:/api/artifacts/:id/content", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/artifacts/:id/content", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   app.post("/api/artifacts/:id/open-externally", globalCapabilityRoute("open_path", async (req, res) => {
     const artifact = resolveArtifactRouteRecord(req.params.id);
@@ -1005,7 +1005,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
       return;
     }
     sendJson(res, 200, result);
-  }), { operation: { id: "post:/api/artifacts/:id/open-externally", effects: ["process:external"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "deny" });
+  }), { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/artifacts/:id/open-externally", effects: ["process:external"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "deny" });
 
   app.get("/api/artifacts/:id/check", async (req, res) => {
     const artifact = resolveArtifactRouteRecord(req.params.id);
@@ -1016,7 +1016,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
       return;
     }
     sendJson(res, 200, projectArtifactPublicValue(getDb(), { check }));
-  }, { operation: { id: "get:/api/artifacts/:id/check", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/artifacts/:id/check", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   app.get("/api/artifacts/:id/knowledge-backrefs", (req, res) => {
     const artifact = resolveArtifactRouteRecord(req.params.id);
@@ -1030,7 +1030,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
       offset: queryNumber(req, "offset"),
     });
     sendJson(res, 200, projectArtifactPublicValue(getDb(), { backrefs }));
-  }, { operation: { id: "get:/api/artifacts/:id/knowledge-backrefs", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/artifacts/:id/knowledge-backrefs", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   app.post("/api/artifacts/:id/knowledge-backrefs", (req, res) => {
     try {
@@ -1046,7 +1046,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/artifacts/:id/knowledge-backrefs", effects: ["ledger:write","files:preview"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/artifacts/:id/knowledge-backrefs", effects: ["ledger:write","files:preview"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "deny" });
 
   app.get("/api/artifacts/:id", (req, res) => {
     const artifact = resolveArtifactRouteRecord(req.params.id);
@@ -1056,7 +1056,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
     }
     if (!enforceArtifactAccess(req, res, artifact.id, "read")) return;
     sendJson(res, 200, projectArtifactPublicValue(getDb(), { artifact }));
-  }, { operation: { id: "get:/api/artifacts/:id", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/artifacts/:id", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   app.post("/api/provider-manifests/ingest", (req, res) => {
     try {
@@ -1065,5 +1065,5 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/provider-manifests/ingest", effects: ["ledger:write"], requestSchema: null, reportingCategory: "providers" }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/provider-manifests/ingest", effects: ["ledger:write"], requestSchema: null, reportingCategory: "providers" }, fileRpc: "deny" });
 }

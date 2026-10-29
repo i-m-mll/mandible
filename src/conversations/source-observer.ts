@@ -1,4 +1,4 @@
-import { openLogicalSource, LogicalSourceChangedError, isCodexLogicalSource } from "./logical-source.js";
+import { openLogicalSource, LogicalSourceChangedError, isCodexLogicalSource, type LogicalSourceHandle } from "./logical-source.js";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import path from "node:path";
@@ -79,10 +79,143 @@ export type SourceReadInstrumentation = (read: SourceReadObservation) => void;
 export class SourceObservationError extends Error {
   constructor(
     message: string,
-    readonly kind: "unavailable" | "unsupported" | "changed",
+    readonly kind: "unavailable" | "unsupported" | "changed" | "cancelled",
   ) {
     super(message);
   }
+}
+
+export interface VerifiedSourceExpectation {
+  byteLength: number;
+  contentSha256: string;
+  filesystemIdentity: SourceFilesystemIdentity;
+}
+
+/** One selected logical descriptor and one sealed version proof for a complete read. */
+export class VerifiedSourceLease {
+  private observed: fs.BigIntStats | null = null;
+
+  private constructor(
+    private readonly handle: LogicalSourceHandle,
+    private readonly expected: VerifiedSourceExpectation,
+    private readonly signal?: AbortSignal,
+    private readonly instrumentation?: SourceReadInstrumentation,
+    private readonly onVerification?: (milliseconds: number) => void,
+  ) {}
+
+  static async open(
+    alias: ConversationSourceAlias,
+    expected: VerifiedSourceExpectation,
+    options: { signal?: AbortSignal; instrumentation?: SourceReadInstrumentation; onVerification?: (milliseconds: number) => void } = {},
+  ): Promise<VerifiedSourceLease> {
+    if (options.signal?.aborted) throw new SourceObservationError("conversation source read cancelled", "cancelled");
+    const root = path.resolve(alias.rootPath);
+    const declared = path.resolve(root, alias.relativePath);
+    if (declared !== path.resolve(alias.path) || !insideSourceRoot(root, declared)) {
+      throw new SourceObservationError("conversation source alias escapes its declared root", "unavailable");
+    }
+    const opening = performance.now();
+    const handle = await openLogicalSource(declared, { rootPath: root });
+    options.onVerification?.(performance.now() - opening);
+    const lease = new VerifiedSourceLease(handle, expected, options.signal, options.instrumentation, options.onVerification);
+    try { await lease.verify(); return lease; }
+    catch (error) { await handle.close(); throw error; }
+  }
+
+  private checkCancellation(): void {
+    if (this.signal?.aborted) throw new SourceObservationError("conversation source read cancelled", "cancelled");
+  }
+
+  private async stat(): Promise<fs.BigIntStats> {
+    this.checkCancellation();
+    try { return await this.handle.stat({ bigint: true }); }
+    catch (error) {
+      if (error instanceof LogicalSourceChangedError) throw new SourceObservationError(error.message, "changed");
+      throw new SourceObservationError(error instanceof Error ? error.message : "source unavailable", "unavailable");
+    }
+  }
+
+  private async read(bytes: Buffer, offset: number, length: number, position: number): Promise<number> {
+    try { return (await this.handle.read(bytes, offset, length, position)).bytesRead; }
+    catch (error) { throw new SourceObservationError(error instanceof Error ? error.message : "source read failed", "unavailable"); }
+  }
+
+  async verify(): Promise<void> {
+    const started = performance.now();
+    try { await this.verifyState(); }
+    finally { this.onVerification?.(performance.now() - started); }
+  }
+
+  private async verifyState(): Promise<void> {
+    const before = await this.stat();
+    const identity = sourceFilesystemIdentity(before);
+    const length = numericSourceExtent(before).byteLength;
+    if (this.observed && sameSourceFilesystemIdentity(identity, sourceFilesystemIdentity(this.observed))
+        && before.size === this.observed.size && before.mtimeNs === this.observed.mtimeNs) return;
+    if (length < this.expected.byteLength) throw new SourceObservationError("source no longer contains indexed extent", "changed");
+    const exact = sameSourceFilesystemIdentity(identity, this.expected.filesystemIdentity)
+      && length === this.expected.byteLength;
+    const decoded = this.handle.logicalHash === this.expected.contentSha256 && length === this.expected.byteLength;
+    if (!exact && !decoded) {
+      const authority = this.observed ? sourceFilesystemIdentity(this.observed) : this.expected.filesystemIdentity;
+      const sameFile = identity.device === authority.device && identity.inode === authority.inode;
+      if (!sameFile && length !== this.expected.byteLength) {
+        throw new SourceObservationError("replacement source does not match indexed extent", "changed");
+      }
+      const hash = createHash("sha256");
+      const chunk = Buffer.alloc(64 * 1024);
+      for (let offset = 0; offset < this.expected.byteLength;) {
+        this.checkCancellation();
+        const size = Math.min(chunk.length, this.expected.byteLength - offset);
+        this.instrumentation?.({ position: offset, length: size, fileSize: length });
+        const bytesRead = await this.read(chunk, 0, size, offset);
+        if (bytesRead !== size) throw new SourceObservationError("source changed during sealed-prefix proof", "changed");
+        hash.update(chunk.subarray(0, size));
+        offset += size;
+      }
+      if (hash.digest("hex") !== this.expected.contentSha256) {
+        throw new SourceObservationError("conversation source prefix no longer matches its indexed version", "changed");
+      }
+    }
+    const after = await this.stat();
+    if (!sameSourceFilesystemIdentity(identity, sourceFilesystemIdentity(after))
+        || before.size !== after.size || before.mtimeNs !== after.mtimeNs) {
+      throw new SourceObservationError("source changed during version verification", "changed");
+    }
+    this.observed = after;
+  }
+
+  async readRanges(
+    ranges: readonly SourceByteRange[],
+    options: { maxRangeBytes: number; maxTotalBytes: number },
+  ): Promise<Map<string, Buffer>> {
+    await this.verify();
+    const total = ranges.reduce((sum, range) => sum + range.length, 0);
+    if (!Number.isSafeInteger(total) || total > options.maxTotalBytes || ranges.some(range =>
+      !Number.isSafeInteger(range.offset) || range.offset < 0 || !Number.isSafeInteger(range.length)
+      || range.length < 0 || range.length > options.maxRangeBytes
+      || range.offset + range.length > this.expected.byteLength)) {
+      throw new SourceObservationError("source page exceeds its bounded indexed ranges", "unsupported");
+    }
+    const records = new Map<string, Buffer>();
+    for (const range of ranges) {
+      this.checkCancellation();
+      const bytes = Buffer.alloc(range.length);
+      for (let offset = 0; offset < range.length;) {
+        this.checkCancellation();
+        const length = Math.min(64 * 1024, range.length - offset);
+        this.instrumentation?.({ position: range.offset + offset, length, fileSize: Number(this.observed!.size) });
+        const bytesRead = await this.read(bytes, offset, length, range.offset + offset);
+        if (bytesRead !== length) throw new SourceObservationError("source changed during record read", "changed");
+        offset += length;
+      }
+      records.set(`${range.offset}:${range.length}`, bytes);
+    }
+    await this.verify();
+    return records;
+  }
+
+  close(): Promise<void> { return this.handle.close(); }
 }
 
 export class ConversationSourceChangedError extends Error {

@@ -7,7 +7,6 @@ import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
 import {
   addSpaceItem,
   getArtifacts,
-  getGraph,
   listSpacesGrouped,
   type ArtifactRecord,
   type AddSpaceItemRequest,
@@ -18,6 +17,10 @@ import {
   type SpaceItemRefType,
 } from '../../api';
 import './SpaceItemPicker.css';
+import { graphOptions } from '../../query/graph';
+import { useProjectionQuery } from '../../query/useProjectionQuery';
+import { detailQueryData } from '../../query/snapshots';
+import { useViewActive } from '../../app-shell';
 
 export type PickerRefType = SpaceItemRefType | 'space';
 
@@ -217,12 +220,6 @@ export function itemsToCandidates(
     }));
 }
 
-/** Default issue loader: cross-project ledger-backed graph read. */
-async function defaultLoadIssues(): Promise<PickerCandidate[]> {
-  const graph = await getGraph({ status: 'all' });
-  return issuesFromGraph(graph.nodes);
-}
-
 /** Default artifact loader: the registered artifact list. */
 async function defaultLoadArtifacts(): Promise<PickerCandidate[]> {
   const records = await getArtifacts({ limit: ARTIFACT_FETCH_LIMIT });
@@ -253,7 +250,7 @@ export function SpaceItemPicker({
   afterAdd,
   onAdded,
   onClose,
-  loadIssues = defaultLoadIssues,
+  loadIssues,
   loadArtifacts = defaultLoadArtifacts,
   loadSpaces,
   addItem = addSpaceItem as SpaceItemPickerAddItem,
@@ -269,18 +266,31 @@ export function SpaceItemPicker({
   isItemInView,
   alreadyInViewLabel = 'Already in this view',
 }: SpaceItemPickerProps): JSX.Element {
-  const [load, setLoad] = useState<LoadState>({ status: 'loading' });
+  const [otherLoad, setLoad] = useState<LoadState>({ status: 'loading' });
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const graphRead = useMemo(() => graphOptions({ status: 'all' }), []);
+  const defaultIssues = includeIssues && !loadIssues;
+  const graphQuery = useProjectionQuery(graphRead, useViewActive() && defaultIssues);
+  const graph = useMemo(() => detailQueryData(graphQuery, graphRead), [graphQuery.data, graphQuery.isError, graphRead]);
+  const candidates = useMemo(() => [
+    ...(otherLoad.status === 'ready' ? otherLoad.candidates : []),
+    ...(defaultIssues && graph ? issuesFromGraph(graph.nodes) : []),
+  ], [otherLoad, defaultIssues, graph]);
+  const loading = otherLoad.status === 'loading' || (defaultIssues && graphQuery.isPending && !graph);
+  const error = otherLoad.status === 'error' ? otherLoad.message : defaultIssues ? graphQuery.error?.message : null;
+  const load: LoadState = candidates.length || (!loading && !error)
+    ? { status: 'ready', candidates }
+    : loading ? { status: 'loading' } : { status: 'error', message: error! };
 
   useEffect(() => {
     let active = true;
     setLoad({ status: 'loading' });
     const loaders: Array<Promise<PickerCandidate[]>> = [];
-    if (includeIssues) loaders.push(loadIssues());
+    if (includeIssues && loadIssues) loaders.push(loadIssues());
     if (includeArtifacts) loaders.push(loadArtifacts());
     if (includeSpaces) loaders.push(loadSpaces ? loadSpaces() : defaultLoadSpaces(_projectId));
     Promise.allSettled(loaders)
@@ -471,8 +481,8 @@ export function SpaceItemPicker({
         ) : null}
       </header>
 
-      {load.status === 'error' && (
-        <DetailPaneNotice severity="error" density="compact" title="Could not load items">{load.message}</DetailPaneNotice>
+      {error && (
+        <DetailPaneNotice severity="error" density="compact" title="Could not load items">{error}</DetailPaneNotice>
       )}
 
       <input

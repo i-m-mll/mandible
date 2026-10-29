@@ -66,7 +66,7 @@ describe("request origin dispatch", () => {
         await barrier;
       }
       res.json(withRequestOriginMetadata({ request_origin: { provider: "claude", provider_session_id: "forged-payload" } }));
-    }, { operation: { id: "origin.write", effects: ["ledger:write"], reportingCategory: "ledger", requestSchema: null }, fileRpc: "allow" });
+    }, { localCliCredential: {"mode":"omit"}, operation: { id: "origin.write", effects: ["ledger:write"], reportingCategory: "ledger", requestSchema: null }, fileRpc: "allow" });
     const codex = { provider: "codex", provider_session_id: "first-native" };
     const claude = { provider: "claude", provider_session_id: "second-native" };
     const first = router.invoke({ method: "POST", url: "/write/first", ambient_identity: codex });

@@ -134,6 +134,24 @@ describe("auth action", () => {
   });
 });
 
+it('retires a failed delivery with guarded explicit intent and displays truthful retired failure', async () => {
+  const id = '12345678-1234-4123-8123-123456789abc';
+  const { env, responder } = fileRpc(({ method }) => ({ status: 200, body: method === 'POST'
+    ? { request_id: id, retirement: { state: 'retired', cleanup: 'pending' } }
+    : { id, status: 'completed', title: 'Failed delivery', command: 'merge', convergence: { state: 'failed', hooks: [
+      { hook_id: 'builtin-mandible-rebuild', label: 'Runtime update', required: true, state: 'retired', failure: 'Original pre-install failure' },
+    ] } } }));
+  cleanups.push(() => responder.stop());
+  const result = await runCli(['auth', 'retire-delivery', id, '--reason', 'Replaced by corrected delivery', '--expected-revision', '4', '--expected-custody-generation', '2'], { env });
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout).toContain('retired; cleanup pending');
+  expect(responder.requests[0]).toMatchObject({ method: 'POST', path: `/api/auth/request/${id}/retire-delivery`,
+    body: { reason: 'Replaced by corrected delivery', expected_revision: 4, expected_custody_generation: 2, operator_recovery: false } });
+  const show = await runCli(['auth', 'show', id], { env });
+  expect(show.status, show.stderr).toBe(0);
+  expect(show.stdout).toContain('Runtime update [retired]: Original pre-install failure');
+});
+
 describe("auth handoff verification", () => {
   const requestId = "12345678-1234-4123-8123-123456789abc";
   const pendingReason = "The backend is ready, but the updated desktop has not been observed. Quit and reopen the installed app.";

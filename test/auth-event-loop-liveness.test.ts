@@ -86,7 +86,7 @@ it('keeps pending lifecycle and registered health work live while preserving sam
   }, operator.id);
   const invoke = (method: string, url: string, body?: unknown) => router.invoke({ method, url, body });
   const pendingId = async (name: string) => {
-    const result = await invoke('POST', '/api/auth/request', { ...AUTH_COMMAND_REVIEW,
+    const result = await invoke('POST', '/api/auth/v2/request', { ...AUTH_COMMAND_REVIEW,
       type: 'config-change', command: `echo ${name}`, title: name, cwd: repo, repo: project.project_key });
     expect(result.status, JSON.stringify(result.body)).toBe(201);
     return (result.body as { request_id: string }).request_id;
@@ -132,7 +132,7 @@ it('keeps pending lifecycle and registered health work live while preserving sam
       expect(output.status).toBe(202);
       expect(queue.getRequestExact(first.id)?.output).toContain('output delivered before release');
 
-      const revised = await invoke('PUT', `/api/auth/request/${targets.revise}`, {
+      const revised = await invoke('PUT', `/api/auth/v2/request/${targets.revise}`, {
         ...revisionControl(targets.revise), commit_message: 'Revised pending action while the executor remains held.' });
       const rejected = await invoke('POST', `/api/auth/request/${targets.reject}/reject`, { reason: 'Not required.' });
       const withdrawn = await invoke('POST', `/api/auth/request/${targets.withdraw}/withdraw`, {

@@ -122,12 +122,12 @@ export function registerConversationSpawnRoutes(
 
   server.get("/api/conversation-spawns", (_req, res) => {
     sendJson(res, 200, { spawns: spawns.listCurrent() });
-  }, { operation: { id: "get:/api/conversation-spawns", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/conversation-spawns", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.get("/api/conversation-spawns/:id", (req, res) => {
     const result = spawns.get(req.params.id);
     sendJson(res, result.ok ? 200 : statusFor(result.error), result);
-  }, { operation: { id: "get:/api/conversation-spawns/:id", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/conversation-spawns/:id", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.post("/api/conversation-spawns", globalCapabilityRoute("spawn_console", async (req, res) => {
     const request = req.body as ConversationSpawnRequest;
@@ -162,7 +162,7 @@ export function registerConversationSpawnRoutes(
       spawn: currentSpawn,
       conversation_id: currentSpawn.reservation_id,
     });
-  }, { authenticated: true }), { operation: { id: "post:/api/conversation-spawns", effects: ["provider:send"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "allow" });
+  }, { authenticated: true }), { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/conversation-spawns", effects: ["provider:send"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "allow" });
 
   server.post("/api/conversation-spawns/:id/retry", globalCapabilityRoute("spawn_console", async (req, res) => {
     const expectedGeneration = Number((req.body as { expected_generation?: unknown })?.expected_generation);
@@ -183,7 +183,7 @@ export function registerConversationSpawnRoutes(
     const current = spawns.get(req.params.id);
     const currentSpawn = current.ok ? current.value : begun.value;
     sendJson(res, 202, { ok: true, spawn: currentSpawn, conversation_id: currentSpawn.reservation_id });
-  }, { authenticated: true }), { operation: { id: "post:/api/conversation-spawns/:id/retry", effects: ["provider:send"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "allow" });
+  }, { authenticated: true }), { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/conversation-spawns/:id/retry", effects: ["provider:send"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "allow" });
 
   server.delete("/api/conversation-spawns/:id", globalCapabilityRoute("spawn_console", async (req, res) => {
     const expectedGeneration = Number((req.body as { expected_generation?: unknown })?.expected_generation);
@@ -208,5 +208,5 @@ export function registerConversationSpawnRoutes(
     const cancelled = spawns.cancelled(req.params.id, expectedGeneration);
     publish(req.params.id);
     sendJson(res, cancelled.ok ? 200 : statusFor(cancelled.error), cancelled);
-  }, { authenticated: true }), { operation: { id: "delete:/api/conversation-spawns/:id", effects: ["provider:send"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "allow" });
+  }, { authenticated: true }), { localCliCredential: {"mode":"omit"}, operation: { id: "delete:/api/conversation-spawns/:id", effects: ["provider:send"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "allow" });
 }

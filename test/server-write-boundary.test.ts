@@ -18,10 +18,10 @@ beforeEach(async () => {
   const router = new Router();
   router.post("/api/issues/test-write", (req, res) => {
     res.json({ ok: true, body: req.body });
-  }, { operation: { id: "fixture:post:/api/issues/test-write", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "fixture:post:/api/issues/test-write", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: "deny" });
   router.get("/api/read", (_req, res) => {
     res.json({ ok: true });
-  }, { operation: { id: "fixture:get:/api/read", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "fixture:get:/api/read", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
 
   const server = createServer({
@@ -262,7 +262,7 @@ describe("route error envelope", () => {
 
     router.get("/api/fails", () => {
       throw new Error("private details");
-    }, { fileRpc: "deny", operation: { id: "fixture.failure", effects: [], reportingCategory: null, requestSchema: null } });
+    }, { localCliCredential: {"mode":"omit"}, fileRpc: "deny", operation: { id: "fixture.failure", effects: [], reportingCategory: null, requestSchema: null } });
 
     const response = await router.invoke({ method: "GET", url: "/api/fails" });
 
@@ -287,7 +287,7 @@ describe("route error envelope", () => {
 
     router.post("/api/operator-only", () => {
       throw new ClientAuthzError(403, "operator_required", "Only the local operator may perform this action.");
-    }, { fileRpc: "deny", operation: { id: "fixture.operator", effects: [], reportingCategory: null, requestSchema: null } });
+    }, { localCliCredential: {"mode":"omit"}, fileRpc: "deny", operation: { id: "fixture.operator", effects: [], reportingCategory: null, requestSchema: null } });
 
     const response = await router.invoke({ method: "POST", url: "/api/operator-only" });
 

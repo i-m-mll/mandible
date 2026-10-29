@@ -1,7 +1,7 @@
 import { NativeSelect } from '../../components/shared/NativeSelect';
 import { useQuery } from '@tanstack/preact-query';
 import { queryClient } from '../../query/client';
-import { ROUTE_DATA_FRESH_MS } from '../../detail-cache';
+import { ROUTE_DATA_FRESH_MS } from '../../query/policy';
 import { browserResourceKeys } from '../../query/browserResources';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 

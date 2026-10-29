@@ -16,7 +16,7 @@ export function assertAcceptedReleaseAvailable(reference: string): void;
 export function acceptedReleaseFilesystemReferences(home: string, reference: string, releasingHandoff?: { file: string; bindingDigest: string }): string[];
 export function readAcceptedReleaseReceipt(reference: string, expectedCandidate?: AcceptedReleaseCandidate): AcceptedReleaseReceipt;
 export function resolveAcceptedRelease(reference: string, expectedCandidate?: AcceptedReleaseCandidate): { receipt: AcceptedReleaseReceipt; app: string; resources: string };
-export function disposeAcceptedRelease(reference: string, expectedCandidate: AcceptedReleaseCandidate, reason: string, options?: { home?: string; database?: string; assertHeld?: () => void; claim?: (mark: () => void) => void; releasingHandoff?: { file: string; bindingDigest: string } }): Promise<{ action: string; reason: string; remaining?: string[] }>;
+export function disposeAcceptedRelease(reference: string, expectedCandidate: AcceptedReleaseCandidate, reason: string, options?: { home?: string; database?: string; assertHeld?: () => void; claim?: (mark: () => void) => void; releasingHandoff?: { file: string; bindingDigest: string }; deferCleanup?: boolean; inspect?: (root: string) => { idle: boolean; reason?: string } | Promise<{ idle: boolean; reason?: string }> }): Promise<{ action: string; reason: string; remaining?: string[] }>;
 export interface PendingRelease {
   root: string; runId: string; app: string; resources: string;
   ownership: { root: string; runId: string; instanceId: string; project: string; workUnit: string; [key: string]: unknown };

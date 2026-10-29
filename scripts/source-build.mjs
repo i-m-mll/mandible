@@ -5,10 +5,12 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { writeBuildRevision } from './build-revision.mjs';
 import { typeScriptCompiler } from './run-tsc.js';
+import { checkLocalCredentialProjection } from './generate-local-credential-routes.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 export async function sourceBuild(directory, mode = 'build', { timeout = 60_000 } = {}) {
+  checkLocalCredentialProjection(directory);
   if (!['build', 'typecheck', 'server', 'channel'].includes(mode)) throw new Error(`Unknown source build mode: ${mode}`);
   const checking = mode === 'typecheck';
   const projects = mode === 'channel' ? ['channel'] : mode === 'server' ? ['backend', 'channel'] : ['backend', 'channel', 'ui'];

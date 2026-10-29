@@ -2,12 +2,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  beginDetailRequest,
-  invalidatePersistedDetail,
-  isPersistedDetailFresh,
   DETAIL_CACHE_LIMITS,
   clearPersistedDetailCache,
-  detailRequestKey,
   readPersistedDetail,
   writePersistedDetail,
 } from '../ui/src/detail-cache';
@@ -38,35 +34,6 @@ describe('persisted detail cache', () => {
     vi.useRealTimers();
   });
 
-  it('rejects a warmer that finishes after invalidation or a newer fetch', () => {
-    const old = beginDetailRequest();
-    invalidatePersistedDetail('timeline');
-    expect(writePersistedDetail('timeline', 'key', { version: 1 }, undefined, old)).toBe(false);
-    expect(isPersistedDetailFresh('timeline', 'key')).toBe(false);
-    const warmer = beginDetailRequest();
-    const fetch = beginDetailRequest();
-    writePersistedDetail('timeline', 'key', { version: 3 }, undefined, fetch);
-    expect(writePersistedDetail('timeline', 'key', { version: 2 }, undefined, warmer)).toBe(false);
-    expect(readPersistedDetail('timeline', 'key')).toEqual({ version: 3 });
-  });
-
-  it('accepts the newer request when it finishes after an earlier request', () => {
-    const first = beginDetailRequest();
-    const second = beginDetailRequest();
-    writePersistedDetail('timeline', 'key', { version: 1 }, undefined, first);
-    expect(writePersistedDetail('timeline', 'key', { version: 2 }, undefined, second)).toBe(true);
-    expect(readPersistedDetail('timeline', 'key')).toEqual({ version: 2 });
-  });
-
-  it('builds stable request keys without conflating different selections', () => {
-    expect(detailRequestKey('issue', { repo: 'mandible', id: 'abc' })).toBe(
-      detailRequestKey('issue', { id: 'abc', repo: 'mandible' }),
-    );
-    expect(detailRequestKey('issue', { id: 'abc' })).not.toBe(
-      detailRequestKey('issue', { id: 'def' }),
-    );
-  });
-
   it('expires entries and invalidates incompatible envelopes safely', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-07-21T12:00:00Z'));
@@ -81,16 +48,41 @@ describe('persisted detail cache', () => {
     expect(window.localStorage.getItem('mandible:detail-cache:v2')).toBeNull();
   });
 
-  it('keeps oversized payloads for this page only and rejects unserializable ones', async () => {
+  it('bounds snapshots by namespace, total count and bytes while preserving recently read entries', () => {
+    const limits = DETAIL_CACHE_LIMITS;
+    for (let i = 0; i < limits.maxEntriesPerNamespace; i++) writePersistedDetail('issue', String(i), { i });
+    expect(readPersistedDetail('issue', '0')).toEqual({ i: 0 });
+    writePersistedDetail('issue', 'new', { i: 'new' });
+    expect(readPersistedDetail('issue', '0')).toEqual({ i: 0 });
+    expect(readPersistedDetail('issue', '1')).toBeNull();
+    for (let i = 0; i < limits.maxEntries + 5; i++) writePersistedDetail(`space-${i}`, 'one', { i });
+    let index = JSON.parse(window.localStorage.getItem('mandible:detail-cache:v2')!);
+    expect(index.entries).toHaveLength(limits.maxEntries);
+    const payload = 'x'.repeat(1_000_000);
+    for (let i = 0; i < 5; i++) writePersistedDetail(`big-${i}`, 'one', payload);
+    index = JSON.parse(window.localStorage.getItem('mandible:detail-cache:v2')!);
+    expect(index.entries.reduce((sum: number, entry: { bytes: number }) => sum + entry.bytes, 0)).toBeLessThanOrEqual(limits.maxTotalBytes);
+    expect(readPersistedDetail('big-0', 'one')).toBeNull();
+    expect(readPersistedDetail('big-4', 'one')).toBe(payload);
+  });
+
+  it('returns no snapshot after quota refusal or a corrupted value', () => {
+    setItemSpy.mockImplementationOnce(() => { throw new DOMException('Quota exceeded', 'QuotaExceededError'); });
+    expect(writePersistedDetail('issue', 'quota', { title: 'Unsaved' })).toBe(false);
+    expect(readPersistedDetail('issue', 'quota')).toBeNull();
+    expect(writePersistedDetail('issue', 'corrupt', { title: 'Saved' })).toBe(true);
+    const index = JSON.parse(window.localStorage.getItem('mandible:detail-cache:v2')!);
+    window.localStorage.setItem(index.entries[0].storageKey, '{broken');
+    expect(readPersistedDetail('issue', 'corrupt')).toBeNull();
+  });
+
+  it('rejects oversized and unserializable snapshots without retaining a second payload cache', async () => {
     const huge = 'x'.repeat(DETAIL_CACHE_LIMITS.maxEntryBytes + 1);
     expect(writePersistedDetail('conversation', 'huge', huge)).toBe(false);
     const circular: Record<string, unknown> = {};
     circular.self = circular;
     expect(writePersistedDetail('conversation', 'circular', circular)).toBe(false);
     expect(readPersistedDetail('conversation', 'circular')).toBeNull();
-    expect(readPersistedDetail('conversation', 'huge')).toBe(huge);
-    vi.resetModules();
-    const reloaded = await import('../ui/src/detail-cache');
-    expect(reloaded.readPersistedDetail('conversation', 'huge')).toBeNull();
+    expect(readPersistedDetail('conversation', 'huge')).toBeNull();
   });
 });

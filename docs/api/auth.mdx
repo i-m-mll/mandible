@@ -42,9 +42,11 @@ without writing to the worktree.
 }
 ```
 
-### POST /api/auth/request
+### POST /api/auth/v2/request
 
-Submit a new auth request.
+Submit a new auth request. The legacy create and revise URLs (`POST /api/auth/request` and `PUT /api/auth/request/:id`) return `410 Gone`. Read and lifecycle URLs remain unchanged.
+
+Prerequisites are canonicalized into a sorted, deduplicated set. Missing or ambiguous references, self-references, and cycles are rejected. `depends_on_id` is not accepted on v2 writes. Detail, queue, and history responses expose `depends_on_ids` and one `dependencies` projection per declared reference. Each projection includes `requested_id`, resolved `request_id` (or null), `state`, `status`, `outcome`, `exit_code`, and `merge_finalized_at`. States are `pending`, `failed`, `unfinalized`, `ready`, `missing`, and `ambiguous`. Only `ready` satisfies a prerequisite; successful execution without durable finalization does not.
 
 **Request body:**
 
@@ -70,7 +72,7 @@ Submit a new auth request.
 | `issue_references` | string[] | no | Issue IDs to attach for context; not closed on merge |
 | `issue_closures` | string[] | no | Issue IDs to close on successful merge |
 | `issues` | string[] | no | Legacy close-on-merge issue IDs; prefer `issue_closures` |
-| `depends_on_id` | string | no | Auth request ID that must complete first |
+| `depends_on_ids` | string[] | no | Direct prerequisite request references; all must succeed and durably finalize before approval |
 | `execution_mode` | string | no | `daemon` or `remote` |
 | `supersedes_request_id` | string | no | Exact pending request to supersede atomically |
 | `superseded_action_dispositions` | object[] | no | `{ordinal, reason}` for each staged predecessor action not carried identically |
@@ -100,7 +102,7 @@ Collection errors or the 10,000-file limit reject submission explicitly.
 - `422` — Merge preflight could not run safely, such as tracked dirty state or merge-check infrastructure failure
 
 ```bash
-curl -X POST http://localhost:19420/api/auth/request \
+curl -X POST http://localhost:19420/api/auth/v2/request \
   -H 'Content-Type: application/json' \
   -d '{
     "command": "mandible auth merge feature/foo --into main",
@@ -141,8 +143,8 @@ Get details of a single auth request. Supports prefix matching on the ID.
   "post_merge_handoff": null,
   "issue_ids": null,
   "issues": ["abc1234"],
-  "depends_on_id": null,
-  "depends_on_status": null,
+  "depends_on_ids": [],
+  "dependencies": [],
   "execution_mode": "daemon",
   "supersedes_request_id": null,
   "superseded_by_request_id": null,
@@ -158,11 +160,11 @@ Get details of a single auth request. Supports prefix matching on the ID.
 curl http://localhost:19420/api/auth/request/a1b2c3d4
 ```
 
-### PUT /api/auth/request/:id
+### PUT /api/auth/v2/request/:id
 
 Revise a pending auth request. Terminal and executing requests are immutable; submit an explicit replacement for changed reviewed bytes.
 
-**Request body:** Any supported mutable metadata subset from POST (except requester identity and supersession fields). `spec_content` is refused.
+**Request body:** Any supported mutable metadata subset from POST (except requester identity and supersession fields). `spec_content` is refused. Omitting `depends_on_ids` preserves the set; an explicit `[]` clears it. A revision remains subject to reviewed-byte and lifecycle guards.
 
 **Response:** `200 OK` with the updated request object.
 
@@ -173,7 +175,7 @@ Revise a pending auth request. Terminal and executing requests are immutable; su
 - `422` — Invalid command
 
 ```bash
-curl -X PUT http://localhost:19420/api/auth/request/a1b2c3d4 \
+curl -X PUT http://localhost:19420/api/auth/v2/request/a1b2c3d4 \
   -H 'Content-Type: application/json' \
   -d '{"title": "Updated title", "diff_summary": "..."}'
 ```
@@ -203,8 +205,8 @@ the CLI is available and use this endpoint as the raw API fallback.
       "id": "...",
       "type": "merge",
       "status": "pending",
-      "depends_on_id": null,
-      "depends_on_status": null,
+      "depends_on_ids": [],
+      "dependencies": [],
       ...
     }
   ]

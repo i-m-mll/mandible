@@ -191,6 +191,7 @@ export function registerTools(
             "a blank line, a short Why paragraph, then a line reading 'Verification:' followed by exactly the " +
             "`verification` text. No line may start with '#'.",
         ),
+      depends_on_ids: z.array(z.string().trim().min(1)).optional().describe("Auth requests that must each finish successfully before approval"),
       verification: z
         .string()
         .describe("Required single-paragraph verification text: the checks you ran and their results"),
@@ -227,6 +228,7 @@ export function registerTools(
           canonical_message: true,
           commit_message: args.message,
           verification: args.verification,
+          depends_on_ids: args.depends_on_ids ?? [],
           session_id: sessionId,
         });
 
