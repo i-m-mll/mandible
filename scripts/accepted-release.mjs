@@ -25,19 +25,7 @@ function referenceFor(file) {
 
 /** Acquisition checks custody without hashing the application in a database write. */
 export function assertAcceptedReleaseAvailable(reference) {
-  const match = /^accepted-release:[a-f0-9]{64}:([A-Za-z0-9_-]+)$/.exec(reference ?? '');
-  if (!match) throw new Error('Invalid accepted release reference.');
-  const file = Buffer.from(match[1], 'base64url').toString('utf8');
-  const stat = fs.lstatSync(file);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 1024 * 1024) throw new Error('Invalid accepted release receipt.');
-  const bytes = fs.readFileSync(file);
-  if (`accepted-release:${hash(bytes)}:${match[1]}` !== reference) throw new Error('Accepted release receipt bytes changed.');
-  const receipt = JSON.parse(bytes);
-  const root = receipt.package.handle.root;
-  if (file !== path.join(path.dirname(root), '.receipts', `${receipt.package.handle.runId}-accepted-release.json`)) throw new Error('Accepted release custody locator changed.');
-  const metadata = JSON.parse(fs.readFileSync(path.join(root, 'metadata.json'), 'utf8'));
-  if (!ownedRunIdentityMatches(root, metadata.ownership) || metadata.ownership.runId !== receipt.package.handle.runId
-      || metadata.ownership.state === 'terminal') throw new Error('Accepted payload is disposed or claimed for disposal.');
+  acceptedReleaseOwner(readImmutableAcceptedRelease(reference));
 }
 
 export function acceptedReleaseFilesystemReferences(home, reference, releasingHandoff) {
@@ -72,32 +60,48 @@ export function acceptedReleaseFilesystemReferences(home, reference, releasingHa
   return reasons;
 }
 
-/** Resolve only the selected immutable receipt; never discover another acceptance or app. */
-export function readAcceptedReleaseReceipt(reference, expectedCandidate) {
+function readImmutableAcceptedRelease(reference, expectedCandidate) {
   const match = /^accepted-release:([a-f0-9]{64}):([A-Za-z0-9_-]+)$/.exec(reference ?? '');
   if (!match || reference.length > 512) throw new Error('Invalid accepted release reference.');
   const file = Buffer.from(match[2], 'base64url').toString('utf8');
-  if (!path.isAbsolute(file) || fs.realpathSync(file) !== file || !fs.lstatSync(file).isFile()
-      || installedFileIdentity(file).sha256 !== match[1]) throw new Error('Accepted release receipt bytes changed.');
-  const receipt = JSON.parse(fs.readFileSync(file, 'utf8'));
+  if (!path.isAbsolute(file) || fs.realpathSync(file) !== file || !fs.lstatSync(file).isFile()) throw new Error('Accepted release receipt bytes changed.');
+  const bytes = fs.readFileSync(file);
+  if (hash(bytes) !== match[1]) throw new Error('Accepted release receipt bytes changed.');
+  return validateAcceptedReleaseReceipt(JSON.parse(bytes), file, expectedCandidate);
+}
+
+function validateAcceptedReleaseReceipt(receipt, file, expectedCandidate) {
   validateCandidate(receipt.candidate);
   if (receipt.schema !== ACCEPTED_RELEASE_SCHEMA || receipt.package?.custody !== 'owned-run'
       || receipt.package.path !== 'Mandible.app' || !receipt.acceptance?.run_id
       || !receipt.retention?.project || !receipt.retention?.work_unit) throw new Error('Invalid accepted release receipt.');
   if (expectedCandidate && candidateKeys.some(key => expectedCandidate[key] !== receipt.candidate[key])) throw new Error('Accepted release belongs to a different candidate.');
-  if (installedFileIdentity(receipt.evidence.receipt).sha256 !== receipt.evidence.sha256) throw new Error('Accepted release evidence bytes changed.');
   const handle = receipt.package.handle;
   if (!handle?.root || file !== path.join(path.dirname(handle.root), '.receipts', `${handle.runId}-accepted-release.json`)
       || receipt.acceptance.run_id !== handle.runId) throw new Error('Accepted release custody locator changed.');
   return receipt;
 }
 
-export function resolveAcceptedRelease(reference, expectedCandidate) {
-  const receipt = readAcceptedReleaseReceipt(reference, expectedCandidate);
+/** Immutable evidence remains readable after intentional payload disposal. */
+export function readAcceptedReleaseReceipt(reference, expectedCandidate) {
+  const receipt = readImmutableAcceptedRelease(reference, expectedCandidate);
+  if (installedFileIdentity(receipt.evidence.receipt).sha256 !== receipt.evidence.sha256) throw new Error('Accepted release evidence bytes changed.');
+  return receipt;
+}
+
+function acceptedReleaseOwner(receipt) {
   const handle = receipt.package.handle;
   const metadata = JSON.parse(fs.readFileSync(path.join(handle.root, 'metadata.json'), 'utf8'));
   if (!ownedRunIdentityMatches(handle.root, metadata.ownership) || metadata.ownership.runId !== handle.runId
       || metadata.ownership.project !== receipt.retention.project || metadata.ownership.workUnit !== receipt.retention.work_unit) throw new Error('Accepted release owner changed.');
+  if (metadata.ownership.state === 'terminal') throw new Error('Accepted payload is disposed or claimed for disposal.');
+  return metadata;
+}
+
+export function resolveAcceptedRelease(reference, expectedCandidate) {
+  const receipt = readAcceptedReleaseReceipt(reference, expectedCandidate);
+  acceptedReleaseOwner(receipt);
+  const handle = receipt.package.handle;
   const app = path.join(handle.root, receipt.package.path);
   if (applicationIdentity(app) !== receipt.package.sha256) throw new Error('Accepted application bytes changed.');
   const resources = path.join(app, 'Contents', 'Resources');
@@ -198,6 +202,7 @@ export async function retainAcceptedRelease({ pending, candidate, acceptance, ev
       target: shipped.target, shipped, package: { custody: 'owned-run', handle: { root: pending.root, runId: ownership.runId }, path: 'Mandible.app', sha256: expectedDigest },
       retention: { project: ownership.project, work_unit: ownership.workUnit, policy: 'Explicit owner disposal after delivery or abandonment; not cache material.' }, evidence };
     fs.mkdirSync(path.dirname(receiptFile), { recursive: true, mode: 0o700 });
+    validateAcceptedReleaseReceipt(receipt, receiptFile, candidate);
     saveOwnedMetadata(receiptFile, receipt);
     return { reference: referenceFor(receiptFile), receipt, root: pending.root, app: pending.app, resources: pending.resources, digest: expectedDigest };
   });
