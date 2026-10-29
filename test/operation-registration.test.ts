@@ -8,10 +8,17 @@ import { STANDARD_PREVIEW_EFFECTS } from "../src/security/operation-policy.js";
 describe("registered operation boundary", () => {
   it("refuses incomplete registrations instead of inferring a policy from the pathname", () => {
     const router = new Router();
+    for (const policy of [undefined, null, { mode: "guess" }, { mode: "durable", fallback: true },
+      { mode: "body-nonempty" }, { mode: "body-nonempty", field: "" }]) {
+      expect(() => router.get("/api/new", () => {}, {
+        operation: { id: "new", effects: [], requestSchema: null, reportingCategory: null },
+        fileRpc: "allow", localCliCredential: policy,
+      } as unknown as RouteOptions)).toThrow("Incomplete operation descriptor");
+    }
     expect(() => router.post("/api/new", () => {}, { fileRpc: "allow" } as RouteOptions))
       .toThrow("Incomplete operation descriptor");
     for (const patch of [{ requestSchema: undefined }, { reportingCategory: undefined }, { effects: ["unknown"] }, { fileRpc: "unknown" }]) {
-      const options = { operation: { id: "test", effects: [], requestSchema: null, reportingCategory: null, ...patch }, fileRpc: patch.fileRpc ?? "allow" };
+      const options = { localCliCredential: {"mode":"omit"}, operation: { id: "test", effects: [], requestSchema: null, reportingCategory: null, ...patch }, fileRpc: patch.fileRpc ?? "allow" };
       expect(() => router.post("/api/new", () => {}, options as RouteOptions)).toThrow("Incomplete operation descriptor");
     }
   });
@@ -23,7 +30,7 @@ describe("registered operation boundary", () => {
         user_id: "agent", slug: "agent", method: "api_token", credential_id: "credential",
         source: "http_bearer", effect_ceiling: STANDARD_PREVIEW_EFFECTS,
       }) } });
-    router.post("/api/new", (_req, res) => { calls++; res.json({ ok: true }); }, {
+    router.post("/api/new", (_req, res) => { calls++; res.json({ ok: true }); }, { localCliCredential: {"mode":"omit"},
       operation: { id: "test.transformed-operation", reportingCategory: null,
         requestSchema: z.object({}).transform(() => ({ external: true })),
         effects: ({ body }) => (body as { external: boolean }).external ? ["files:production"] : ["ledger:write"] },

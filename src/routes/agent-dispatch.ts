@@ -117,7 +117,7 @@ export function registerAgentDispatchRoutes(server: RouteRegistrar, db: Db = get
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/agent-dispatch/preview", effects: ["process:external"], requestSchema: null, reportingCategory: "agent_dispatch" }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/agent-dispatch/preview", effects: ["process:external"], requestSchema: null, reportingCategory: "agent_dispatch" }, fileRpc: "deny" });
 
   server.post("/api/agent-dispatch/dispatch", async (req, res) => {
     try {
@@ -150,7 +150,7 @@ export function registerAgentDispatchRoutes(server: RouteRegistrar, db: Db = get
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/agent-dispatch/dispatch", effects: ["process:external"], requestSchema: null, reportingCategory: "agent_dispatch" }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/agent-dispatch/dispatch", effects: ["process:external"], requestSchema: null, reportingCategory: "agent_dispatch" }, fileRpc: "deny" });
 
   // Read surface so a reloaded page can still show the audit chain.
   server.get("/api/agent-dispatch/events", (req, res) => {
@@ -169,5 +169,5 @@ export function registerAgentDispatchRoutes(server: RouteRegistrar, db: Db = get
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "get:/api/agent-dispatch/events", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/agent-dispatch/events", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 }

@@ -42,7 +42,8 @@
     "native-preview": "scripts/bun-runtime.sh --exec scripts/native-preview.mjs",
     "fleet": "scripts/bun-runtime.sh --exec --no-install scripts/mandible-fleet.mjs",
     "candidate-acceptance": "scripts/bun-runtime.sh --exec --no-install scripts/candidate-acceptance.mjs",
-    "test:app-payload": "scripts/bun-runtime.sh --exec --no-install scripts/prove-app-payload.mjs"
+    "test:app-payload": "scripts/bun-runtime.sh --exec --no-install scripts/prove-app-payload.mjs",
+    "generate:local-credential-routes": "scripts/bun-runtime.sh --exec --no-install scripts/generate-local-credential-routes.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.259",

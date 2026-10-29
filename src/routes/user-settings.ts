@@ -38,7 +38,7 @@ export function registerUserSettingsRoutes(server: RouteRegistrar, db: Db = getD
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "get:/api/user-settings/:key", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/user-settings/:key", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.put("/api/user-settings/:key", (req, res) => {
     try {
@@ -65,5 +65,5 @@ export function registerUserSettingsRoutes(server: RouteRegistrar, db: Db = getD
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "put:/api/user-settings/:key", effects: ["preferences:instance"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "put:/api/user-settings/:key", effects: ["preferences:instance"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 }

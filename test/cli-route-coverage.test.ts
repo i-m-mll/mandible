@@ -436,15 +436,16 @@ function isRouteMethodCall(expression: ts.Expression): expression is ts.Property
   return ["get", "post", "put", "patch", "delete"].includes(expression.name.text);
 }
 
-function readFileRpcPolicy(node: ts.Expression, source: ts.SourceFile): RoutePolicy {
-  const text = node.getText(source);
-  if (/fileRpc\s*:\s*"allow"/.test(text)) {
-    return "allow";
-  }
-  if (/fileRpc\s*:\s*\{/.test(text)) {
-    return "conditional";
-  }
-  return "deny";
+function readFileRpcPolicy(node: ts.Expression, _source: ts.SourceFile): RoutePolicy {
+  if (!ts.isObjectLiteralExpression(node)) throw new Error('Nonliteral route options');
+  const property = node.properties.find((entry): entry is ts.PropertyAssignment =>
+    ts.isPropertyAssignment(entry) && (ts.isIdentifier(entry.name) || ts.isStringLiteral(entry.name))
+      && entry.name.text === 'fileRpc');
+  if (!property) throw new Error('Missing file-RPC route policy');
+  const value = property.initializer;
+  if (ts.isStringLiteral(value) && (value.text === 'allow' || value.text === 'deny')) return value.text;
+  if (ts.isObjectLiteralExpression(value)) return 'conditional';
+  throw new Error('Invalid file-RPC route policy');
 }
 
 function normalizeShellRoute(input: string): string {

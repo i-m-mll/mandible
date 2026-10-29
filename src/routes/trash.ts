@@ -73,7 +73,7 @@ export function registerTrashRoutes(router: RouteRegistrar, db: Db = getDb()): v
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "get:/api/v1/trash", effects: ["files:production"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/v1/trash", effects: ["files:production"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   router.post("/api/v1/trash", async (req, res) => {
     try {
@@ -82,7 +82,7 @@ export function registerTrashRoutes(router: RouteRegistrar, db: Db = getDb()): v
     } catch (error) {
       handleError(res, error, true);
     }
-  }, { operation: { id: "post:/api/v1/trash", effects: ["files:production"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/v1/trash", effects: ["files:production"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
 
   // Register the literal gc route before the parameter route.
   router.post("/api/v1/trash/gc", async (req, res) => {
@@ -96,7 +96,7 @@ export function registerTrashRoutes(router: RouteRegistrar, db: Db = getDb()): v
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/v1/trash/gc", effects: ["files:production"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/v1/trash/gc", effects: ["files:production"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
 
   router.post("/api/v1/trash/:id/restore", async (req, res) => {
     try {
@@ -104,6 +104,6 @@ export function registerTrashRoutes(router: RouteRegistrar, db: Db = getDb()): v
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/v1/trash/:id/restore", effects: ["files:production"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow",
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/v1/trash/:id/restore", effects: ["files:production"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow",
     refs: { params: { id: entityRefs.trashEntry } } });
 }

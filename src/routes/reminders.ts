@@ -103,7 +103,7 @@ export function registerManagedReminderRoutes(server: RouteRegistrar, db: Db = g
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/reminders", effects: ["delivery:background"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/reminders", effects: ["delivery:background"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
 
   server.get("/api/reminders", (req, res) => {
     try {
@@ -119,7 +119,7 @@ export function registerManagedReminderRoutes(server: RouteRegistrar, db: Db = g
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "get:/api/reminders", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/reminders", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.get("/api/reminders/:id", (req, res) => {
     try {
@@ -127,7 +127,7 @@ export function registerManagedReminderRoutes(server: RouteRegistrar, db: Db = g
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "get:/api/reminders/:id", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/reminders/:id", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.post("/api/reminders/:id/cancel", (req, res) => {
     try {
@@ -145,5 +145,5 @@ export function registerManagedReminderRoutes(server: RouteRegistrar, db: Db = g
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/reminders/:id/cancel", effects: ["delivery:background"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/reminders/:id/cancel", effects: ["delivery:background"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
 }

@@ -51,8 +51,8 @@ beforeEach(async () => {
   router = new Router({ clientAuth: auth, instance: instance() });
   registerUserRoutes(router);
   router.get('/api/read', (req, res) => res.json({ identity: req.client_identity, ambient: req.ambient_identity,
-    localManaged: req.local_managed_identity, managed: req.managed_client, request_origin: currentRequestOrigin() }), { fileRpc: 'allow', operation: { id: 'socket.read', effects: ['ledger:read'], reportingCategory: null, requestSchema: null } });
-  router.post('/api/write', (req, res) => res.json({ identity: req.client_identity }), { fileRpc: 'allow', operation: { id: 'socket.write', effects: ['ledger:write'], reportingCategory: 'ledger', requestSchema: null } });
+    localManaged: req.local_managed_identity, managed: req.managed_client, request_origin: currentRequestOrigin() }), { localCliCredential: {"mode":"omit"}, fileRpc: 'allow', operation: { id: 'socket.read', effects: ['ledger:read'], reportingCategory: null, requestSchema: null } });
+  router.post('/api/write', (req, res) => res.json({ identity: req.client_identity }), { localCliCredential: {"mode":"omit"}, fileRpc: 'allow', operation: { id: 'socket.write', effects: ['ledger:write'], reportingCategory: 'ledger', requestSchema: null } });
   const serverOptions: Parameters<typeof createServer>[0] = { db, sse: new SseManager(), logger: () => undefined, version: 'test', router,
     getStartupInfo: () => null, instance: instance(), clientAuth: auth };
   tcpServer = createServer(serverOptions);
@@ -76,7 +76,7 @@ describe('owner-only local API socket', () => {
     const store = new LedgerStore(db);
     router.post('/api/child-origin', (req, res) => {
       res.json(store.addComment(issue.id, { body: 'Child transport', attribution: attributionForRequest(db, req) }));
-    }, { fileRpc: 'allow', operation: { id: 'fixture.child-origin', effects: ['ledger:write'], reportingCategory: 'ledger', requestSchema: null } });
+    }, { localCliCredential: {"mode":"omit"}, fileRpc: 'allow', operation: { id: 'fixture.child-origin', effects: ['ledger:write'], reportingCategory: 'ledger', requestSchema: null } });
     const origin = { provider: 'claude', provider_session_id: 'initiating-native-session' };
     const env: NodeJS.ProcessEnv = { ...process.env, MANDIBLE_BASE: `http://127.0.0.1:${port}`, MANDIBLE_TRANSPORT: 'http',
       MANDIBLE_TOKEN: credential, MANDIBLE_REQUEST_ORIGIN: JSON.stringify(origin), MANDIBLE_MANAGED_CLIENT: '1',
@@ -162,7 +162,7 @@ describe('owner-only local API socket', () => {
     const agent = createUser(db, { slug: 'claude-hooks', kind: 'agent', display_name: 'Claude Hooks' });
     addBinding(db, agent.id, { binding_type: 'provider_session_env', value: 'CLAUDE_CODE_SESSION_ID' });
     const seen: Array<{ identity: unknown; body: Record<string, unknown> }> = [];
-    const operation = (id: string, effects: string[]) => ({ fileRpc: 'allow' as const,
+    const operation = (id: string, effects: string[]) => ({ localCliCredential: {"mode":"omit"}, fileRpc: 'allow' as const,
       operation: { id, effects, reportingCategory: null, requestSchema: null } });
     router.post('/api/sessions/register', (req, res) => { seen.push({ identity: req.client_identity, body: req.body as Record<string, unknown> }); res.json({}); },
       operation('hook.register', ['process:external']));
@@ -187,7 +187,7 @@ describe('owner-only local API socket', () => {
     const registry = new SessionRegistry(db, () => undefined);
     registerSessionRoutes(router, registry);
     router.get('/api/inbox/global', (_req, res) => res.json({}),
-      { fileRpc: 'allow', operation: { id: 'hook.inbox', effects: ['ledger:read'], reportingCategory: null, requestSchema: null } });
+      { localCliCredential: {"mode":"omit"}, fileRpc: 'allow', operation: { id: 'hook.inbox', effects: ['ledger:read'], reportingCategory: null, requestSchema: null } });
     const wrapped = 'wrapped-coordinator';
     // Ownership follows the process tree: the hook's parent stands in for the
     // nested agent, and its grandparent for the wrapped one.
@@ -224,10 +224,15 @@ describe('owner-only local API socket', () => {
       const comment = new LedgerStore(db).addComment(issue.id, { body: 'After native hook', actor_type: 'mandible_user',
         author_display: 'Agent', attribution: attributionForRequest(db, req) });
       res.json({ id: comment.id });
-    }, { fileRpc: 'allow', operation: { id: 'fixture.origin-write', effects: ['ledger:write'], reportingCategory: 'ledger', requestSchema: null } });
+    }, { localCliCredential: {"mode":"omit"}, fileRpc: 'allow', operation: { id: 'fixture.origin-write', effects: ['ledger:write'], reportingCategory: 'ledger', requestSchema: null } });
+    const fixtureRoutes = path.join(root, 'local-routes.json');
+    fs.writeFileSync(fixtureRoutes, JSON.stringify({ version: 1, routes: router.listRoutePolicies().map(
+      ({ method, path, localCliCredential }) => ({ method, path, localCliCredential }),
+    ) }));
     const shell = spawn('bash', ['-c', 'source "$1"; source "$2"; api_send POST /api/origin-write "{}"', 'origin-cli', envFile, path.resolve('cli/api.sh')],
       { env: { ...process.env, MANDIBLE_SOCKET: socketPath, MANDIBLE_BASE: '', MANDIBLE_SESSION_ID: wrapped,
         CLAUDE_SESSION_ID: 'parent-native', CODEX_THREAD_ID: 'parent-codex', MANDIBLE_MANAGED_APP: '',
+        MANDIBLE_LOCAL_CREDENTIAL_ROUTES_FILE: fixtureRoutes,
         MANDIBLE_REQUEST_ORIGIN: '{"provider":"codex","provider_session_id":"inherited-initiator"}' } });
     let writeOutput = ''; let writeError = '';
     shell.stdout.on('data', chunk => { writeOutput += chunk; }); shell.stderr.on('data', chunk => { writeError += chunk; });

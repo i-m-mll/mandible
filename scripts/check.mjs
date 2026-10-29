@@ -10,6 +10,7 @@ import ts from 'typescript';
 
 import { computeReachability } from './ui-reachability.mjs';
 import { stderrInheritanceSites } from './stderr-inheritance.mjs';
+import { checkLocalCredentialProjection } from './generate-local-credential-routes.ts';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -34,6 +35,10 @@ const TEXT_EXTENSIONS = new Set([
 ]);
 
 const checks = {
+  'CLI credential projection matches every registration'() {
+    try { checkLocalCredentialProjection(REPO_ROOT); return []; }
+    catch (error) { return [error.message]; }
+  },
   // grep treats a file with a NUL byte as binary and reports no match, so one
   // pasted separator silently blinds every grep-based audit (issue ee0055a).
   'source files contain no NUL bytes'() {

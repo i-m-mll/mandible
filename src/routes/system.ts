@@ -233,7 +233,7 @@ export function registerSystemRoutes(server: RouteRegistrar, workScanner: WorkSc
       exists: true,
       source: "stderr_file",
     });
-  }, { operation: { id: "get:/api/system/logs", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/system/logs", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   // POST /api/admin/rebuilding — broadcast a mandible:rebuilding SSE event to all
   // connected clients, then return 200. Called by the post-merge hook immediately
@@ -242,7 +242,7 @@ export function registerSystemRoutes(server: RouteRegistrar, workScanner: WorkSc
   server.post("/api/admin/rebuilding", (_req, res) => {
     broadcast(DOMAIN_EVENTS.MANDIBLE_REBUILDING, {});
     sendJson(res, 200, { ok: true });
-  }, { operation: { id: "post:/api/admin/rebuilding", effects: ["auth:protected","maintenance:shared"], requestSchema: null, reportingCategory: "system" }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/admin/rebuilding", effects: ["auth:protected","maintenance:shared"], requestSchema: null, reportingCategory: "system" }, fileRpc: "deny" });
 
   server.post("/api/system/open-path", globalCapabilityRoute("open_path", (req, res) => {
     const body = readBody<{ path?: string }>(req);
@@ -291,7 +291,7 @@ export function registerSystemRoutes(server: RouteRegistrar, workScanner: WorkSc
       }
       sendJson(res, 200, { ok: true });
     });
-  }), { operation: { id: "post:/api/system/open-path", effects: ["process:external"], requestSchema: null, reportingCategory: "system" }, fileRpc: "deny" });
+  }), { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/system/open-path", effects: ["process:external"], requestSchema: null, reportingCategory: "system" }, fileRpc: "deny" });
 }
 
 /**

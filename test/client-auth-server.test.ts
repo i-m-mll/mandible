@@ -63,8 +63,8 @@ beforeEach(async () => {
   setupOperator(db, { display_name: 'Operator', email: 'operator@example.invalid' });
   const router = new Router({ clientAuth: auth, instance: policy });
   registerClientAuthRoutes(router, auth);
-  router.get('/api/read', (req, res) => res.json({ user: req.client_identity?.user_id, source: req.client_identity?.source }), { operation: { id: "fixture:get:/api/read", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: 'allow' });
-  router.post('/api/issues/test-write', (req, res) => res.json({ user: req.client_identity?.user_id }), { operation: { id: "fixture:post:/api/issues/test-write", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: 'allow' });
+  router.get('/api/read', (req, res) => res.json({ user: req.client_identity?.user_id, source: req.client_identity?.source }), { localCliCredential: {"mode":"omit"}, operation: { id: "fixture:get:/api/read", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: 'allow' });
+  router.post('/api/issues/test-write', (req, res) => res.json({ user: req.client_identity?.user_id }), { localCliCredential: {"mode":"omit"}, operation: { id: "fixture:post:/api/issues/test-write", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: 'allow' });
   server = createServer({ db, sse: new SseManager(), logger: () => undefined, version: 'test',
     router, getStartupInfo: () => null, instance: policy, clientAuth: auth });
   port = await new Promise((resolve, reject) => {

@@ -54,13 +54,13 @@ export function registerBackupRoutes(server: RouteRegistrar, service = new Metad
   // GET /api/backup/status
   server.get("/api/backup/status", (_req, res) => {
     res.status(200).json(getBackupStatus(service));
-  }, { operation: { id: "get:/api/backup/status", effects: ["files:production"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/backup/status", effects: ["files:production"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // POST /api/backup/run
   server.post("/api/backup/run", globalCapabilityRoute("backup", async (_req, res) => {
     const result = await service.run();
     res.status(200).json(result);
-  }), { operation: { id: "post:/api/backup/run", effects: ["files:production"], requestSchema: null, reportingCategory: "backup" }, fileRpc: "deny" });
+  }), { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/backup/run", effects: ["files:production"], requestSchema: null, reportingCategory: "backup" }, fileRpc: "deny" });
 
   // PUT /api/backup/settings
   server.put("/api/backup/settings", globalCapabilityRoute("backup", (req, res) => {
@@ -98,6 +98,6 @@ export function registerBackupRoutes(server: RouteRegistrar, service = new Metad
     service.reschedule();
 
     res.status(200).json({ ok: true });
-  }), { operation: { id: "put:/api/backup/settings", effects: ["files:production"], requestSchema: null, reportingCategory: "backup" }, fileRpc: "deny" });
+  }), { localCliCredential: {"mode":"omit"}, operation: { id: "put:/api/backup/settings", effects: ["files:production"], requestSchema: null, reportingCategory: "backup" }, fileRpc: "deny" });
   return service;
 }

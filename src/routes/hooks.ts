@@ -52,7 +52,7 @@ export function registerHookRoutes(server: RouteRegistrar): void {
       sendJson(res, 400, { error: "provider_and_session_id_required" }); return;
     }
     sendJson(res, 200, { observation: new SessionExecutionStore(getDb()).read(provider, id) });
-  }, { operation: { id: "get:/api/hooks/session-execution", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/hooks/session-execution", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.get("/api/hooks/statusline", (req, res) => {
     const sessionRef =
@@ -68,7 +68,7 @@ export function registerHookRoutes(server: RouteRegistrar): void {
     }
     const telemetry = readLatestStatuslineTelemetry(sessionRef, transcriptPath);
     sendJson(res, 200, { telemetry: telemetry ? serializeTelemetry(telemetry) : null });
-  }, { operation: { id: "get:/api/hooks/statusline", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/hooks/statusline", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.post("/api/hooks/ingest-nudge", async (req, res) => {
     const payload = parseHookPayload(req);
@@ -79,7 +79,7 @@ export function registerHookRoutes(server: RouteRegistrar): void {
 
     const result = await triggerTargetedIngest(payload);
     sendJson(res, 202, result);
-  }, { operation: { id: "post:/api/hooks/ingest-nudge", effects: ["delivery:background"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/hooks/ingest-nudge", effects: ["delivery:background"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
 
   server.post("/api/hooks/notification", async (req, res) => {
     const payload = parseHookPayload(req);
@@ -93,7 +93,7 @@ export function registerHookRoutes(server: RouteRegistrar): void {
       ok: true,
       attention,
     });
-  }, { operation: { id: "post:/api/hooks/notification", effects: ["delivery:background"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/hooks/notification", effects: ["delivery:background"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
 
   server.post("/api/hooks/statusline", async (req, res) => {
     const parsed = parseStatuslinePayload(req);
@@ -114,7 +114,7 @@ export function registerHookRoutes(server: RouteRegistrar): void {
       telemetry: serializeTelemetry(telemetry),
       ingest,
     });
-  }, { operation: { id: "post:/api/hooks/statusline", effects: ["delivery:background"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/hooks/statusline", effects: ["delivery:background"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
 }
 
 function parseHookPayload(req: RequestLike): {

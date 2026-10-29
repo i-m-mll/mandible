@@ -290,7 +290,7 @@ describe("request logging", () => {
     const router = new Router({ logger });
     router.get("/api/ledger/issues/:issueId", (req, res) => {
       res.json({ issue_id: req.params.issueId });
-    }, { operation: { id: "get:/api/ledger/issues/:issueId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+    }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/ledger/issues/:issueId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
     const transport = new FileRpcTransport({
       router,
       dir: path.join(tempDir, "rpc"),
@@ -329,7 +329,7 @@ describe("request logging", () => {
     const router = new Router({ logger });
     router.get("/api/ping", (_req, res) => {
       res.json({ ok: true });
-    }, { operation: { id: "get:/api/ping", effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+    }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/ping", effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
     const server = createServer({
       db,
       sse: new SseManager(),

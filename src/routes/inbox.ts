@@ -175,11 +175,11 @@ export function registerInboxRoutes(
     sendJson(res, 200, await readInbox(getQueryParam(req, "session_id") ?? "", {
       kind: "scoped", branch: getQueryParam(req, "branch") ?? null, repo: getQueryParam(req, "repo") ?? null,
     }));
-  }, { operation: { id: "get:/api/inbox", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/inbox", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.get("/api/inbox/global", async (req, res) => {
     sendJson(res, 200, await readInbox(getQueryParam(req, "session_id") ?? "", { kind: "global" }));
-  }, { operation: { id: "get:/api/inbox/global", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/inbox/global", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   // Bug: 4e32923 — GET /api/inbox/undelivered?target_session_id=<id> returns
   // the set of resolved auth_requests owned by <id> that have not yet been
@@ -258,7 +258,7 @@ export function registerInboxRoutes(
         action_outcomes: authActionOutcomes(db, row.id),
       })),
     });
-  }, { operation: { id: "get:/api/inbox/undelivered", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/inbox/undelivered", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   // Bug: 4e32923 — POST /api/inbox/delivered/:id marks an auth_request as
   // delivered to its owner session via the MCP channel server. Idempotent:
@@ -296,7 +296,7 @@ export function registerInboxRoutes(
     }
     broadcast(DOMAIN_EVENTS.INBOX_ACKNOWLEDGED, { kind: "delivered", id });
     sendJson(res, 204, null);
-  }, { operation: { id: "post:/api/inbox/delivered/:id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "inbox" }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/inbox/delivered/:id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "inbox" }, fileRpc: "allow" });
 
   // POST /api/inbox/ack-all — acknowledge all unacknowledged continuations and auth results
   server.post("/api/inbox/ack-all", async (req, res) => {
@@ -319,7 +319,7 @@ export function registerInboxRoutes(
       broadcast(DOMAIN_EVENTS.INBOX_ACKNOWLEDGED, { kind: "all", id: null });
     }
     sendJson(res, 200, { ok: true });
-  }, { operation: { id: "post:/api/inbox/ack-all", effects: ["ledger:write"], requestSchema: null, reportingCategory: "inbox" }, fileRpc: "deny" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/inbox/ack-all", effects: ["ledger:write"], requestSchema: null, reportingCategory: "inbox" }, fileRpc: "deny" });
 
   // POST /api/inbox/:type/:id/ack — acknowledge an inbox item
   server.post("/api/inbox/:type/:id/ack", (req, res) => {
@@ -418,5 +418,5 @@ export function registerInboxRoutes(
         error: "type must be 'continuation', 'auth_result', 'hook_alert', or 'managed_reminder_occurrence'",
       });
     }
-  }, { operation: { id: "post:/api/inbox/:type/:id/ack", effects: ["ledger:write"], requestSchema: null, reportingCategory: "inbox" }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/inbox/:type/:id/ack", effects: ["ledger:write"], requestSchema: null, reportingCategory: "inbox" }, fileRpc: "allow" });
 }

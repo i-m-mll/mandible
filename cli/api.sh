@@ -228,26 +228,42 @@ api_local_credential_routes_file() {
   printf '%s' "${MANDIBLE_LOCAL_CREDENTIAL_ROUTES_FILE:-${MANDIBLE_CLI_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)}/local-credential-routes.json}"
 }
 
-# The policy lane owns this exact method/path manifest. A missing manifest is a
-# packaging error: do not guess which calls may require durable identity.
+# Resolve the actual registered operation first; credentials never affect routing.
 api_local_route_requires_credential() {
-  local method="$1" pathname="${2%%\?*}" body="${3:-}" file route_method route_path body_nonempty optional routes
+  local method="$1" pathname="${2%%\?*}" body="${3:-}" file route_method route_path mode field routes
   file="$(api_local_credential_routes_file)"
   [[ -r "$file" ]] || { printf 'Mandible local credential route manifest is unavailable: %s\n' "$file" >&2; return 2; }
-  routes="$(jq -er 'if type == "array" then .[] | select(.method and .path) | [.method, .path, (.body_nonempty // ""), (.credential_optional // false | tostring)] | join("|") else error("invalid routes") end' "$file")" || return 2
-  while IFS='|' read -r route_method route_path body_nonempty optional; do
+  routes="$(jq -er '
+    def policy:
+      type == "object" and
+      (if .mode == "body-nonempty" then
+        keys == ["field", "mode"] and (.field | type == "string" and test("^[a-zA-Z_][a-zA-Z_0-9]*$"))
+      else keys == ["mode"] and (.mode | IN("omit", "durable", "optional", "managed-durable")) end);
+    if type == "object" and .version == 1 and (.routes | type == "array" and length > 0)
+      and all(.routes[]; (.method | IN("GET", "POST", "PUT", "PATCH", "DELETE"))
+        and (.path | type == "string" and test("^/([a-zA-Z0-9_.-]+|:[a-zA-Z0-9_]+)(/([a-zA-Z0-9_.-]+|:[a-zA-Z0-9_]+))*$"))
+        and (.localCliCredential | policy))
+    then .routes[] | [.method, .path, .localCliCredential.mode, (.localCliCredential.field // "")] | join("|")
+    else error("invalid credential route projection") end' "$file")" || return 2
+  if [[ "$pathname" != /* || "$pathname" == *'#'* ]] || ! jq -en --arg path "$pathname" '$path | gsub("%[a-fA-F0-9]{2}"; "") | contains("%") | not' >/dev/null; then
+    printf 'Malformed local API route: %s\n' "$pathname" >&2
+    return 2
+  fi
+  while IFS='|' read -r route_method route_path mode field; do
     [[ "$route_method" == "$method" ]] || continue
     api_route_template_matches "$route_path" "$pathname" || continue
-    if [[ -n "$body_nonempty" ]]; then
-      jq -e --arg key "$body_nonempty" '.[$key] | type == "string" and length > 0' <<< "$body" >/dev/null 2>&1 || continue
-    fi
-    if [[ "$optional" == true ]]; then
-      return 3
-    else
-      return 0
-    fi
+    case "$mode" in
+      omit) return 1 ;;
+      durable) return 0 ;;
+      optional) return 3 ;;
+      managed-durable) api_managed_client_markers_present && return 0; return 1 ;;
+      body-nonempty)
+        jq -e --arg key "$field" '.[$key] | type == "string" and length > 0' <<< "$body" >/dev/null 2>&1 && return 0
+        return 1 ;;
+    esac
   done <<< "$routes"
-  return 1
+  printf 'Unregistered local API route: %s %s; nothing was sent.\n' "$method" "$pathname" >&2
+  return 2
 }
 
 # Managed-session marker guard for the durable operator keychain credential: any

@@ -35,7 +35,7 @@ export function registeredOperationRouter(instance?: InstanceInfo, files?: strin
   const discoverModels = instance?.role !== 'preview' && (instance?.allowed_effects.includes('provider:send') ?? true);
   const descriptors = descriptorFactory(entries)(discoverModels);
   for (const [index, entry] of entries.entries()) {
-    router[entry.method](entry.path, () => {}, { operation: descriptors[index], fileRpc: "deny" });
+    router[entry.method](entry.path, () => {}, { localCliCredential: entry.localCliCredential, operation: descriptors[index], fileRpc: "deny" });
   }
   return router;
 }
