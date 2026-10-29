@@ -15,7 +15,7 @@ import { registerSessionRoutes } from "../src/routes/sessions.js";
 import { Router } from "../src/server.js";
 import { ReaperTimer } from "../src/session-reaper.js";
 import type { Session } from "../src/types.js";
-import { longestEventLoopBlockMs, useSlowCommand, useStubCommand, SYNCHRONOUS_WAIT_MS } from "./helpers/event-loop-blocking.js";
+import { useCommandProbe, useStubCommand } from "./helpers/event-loop-blocking.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 import { waitUntil } from "./helpers/wait-until.js";
 
@@ -185,16 +185,11 @@ describe("session reaper", () => {
       reusePid(db, "reused");
       await gone.stop();
 
-      useSlowCommand("ps");
-      const started = performance.now();
-      let tickMs = 0;
-      const blockedMs = await longestEventLoopBlockMs(async () => {
+      const probe = await useCommandProbe(["ps"]);
+      await probe.run(async () => {
         await new ReaperTimer(registry, () => undefined).tick();
-        tickMs = performance.now() - started;
       });
 
-      expect(tickMs).toBeGreaterThanOrEqual(300);
-      expect(blockedMs).toBeLessThan(SYNCHRONOUS_WAIT_MS);
       const status = (id: string) => (db.prepare("SELECT status FROM sessions WHERE id = ?").get(id) as { status: string }).status;
       expect({ live: status("live"), reused: status("reused"), gone: status("gone") })
         .toEqual({ live: "active", reused: "dead", gone: "dead" });
@@ -233,17 +228,14 @@ describe("session reads on request paths", () => {
     const live = await unseenProcess();
     const reused = await unseenProcess();
     try {
-      useSlowCommand("ps");
-      let first: { sessions: Session[] } = { sessions: [] };
-      const blockedMs = await longestEventLoopBlockMs(async () => {
-        registry.registerSession({ id: "live", app: "claude", pid: live.pid, pid_start: live.pidStart, status: "active" });
-        registry.registerSession({ id: "reused", app: "claude", pid: reused.pid, pid_start: "1970-01-01T00:00:00.000Z", status: "active" });
-        first = registry.listSessionsPage({ scope: "all" });
-      });
-
-      expect(blockedMs).toBeLessThan(SYNCHRONOUS_WAIT_MS);
+      const probe = await useCommandProbe(["ps"], { hold: true });
+      registry.registerSession({ id: "live", app: "claude", pid: live.pid, pid_start: live.pidStart, status: "active" });
+      registry.registerSession({ id: "reused", app: "claude", pid: reused.pid, pid_start: "1970-01-01T00:00:00.000Z", status: "active" });
+      const first = registry.listSessionsPage({ scope: "all" });
+      await probe.nextInvocation();
       // Until `ps` answers, a start time is unknown and the session stays as it was.
       expect(statuses(first)).toEqual({ live: "active", reused: "active" });
+      probe.release();
       await waitUntil(() => statuses(registry.listSessionsPage({ scope: "all" })).reused === "dead", "the reused pid to be found");
       expect(statuses(registry.listSessionsPage({ scope: "all" }))).toEqual({ live: "active", reused: "dead" });
     } finally {
@@ -260,9 +252,9 @@ describe("session reads on request paths", () => {
     registerSessionRoutes(router, registry);
     const hooked = await unseenProcess();
     try {
-      useSlowCommand("ps");
+      const probe = await useCommandProbe(["ps"]);
       let status = 0;
-      const blockedMs = await longestEventLoopBlockMs(async () => {
+      await probe.run(async () => {
         status = (await router.invoke({
           method: "POST",
           url: "/api/sessions/register",
@@ -271,7 +263,6 @@ describe("session reads on request paths", () => {
       });
 
       expect(status).toBe(200);
-      expect(blockedMs).toBeLessThan(SYNCHRONOUS_WAIT_MS);
       expect(registry.getSession("hooked")).toMatchObject({ pid_start: hooked.pidStart, status: "active" });
     } finally {
       await hooked.stop();
