@@ -1,5 +1,5 @@
 import { Icon } from '../components/icons/Icon';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import {
   Background,
   Controls,
@@ -21,7 +21,6 @@ import { graphEdgeStyle } from '../graph/edgeStyles';
 import { layoutGraph, type RoutedGraphEdge } from '../graph/layout';
 import {
   addLedgerIssueComment,
-  getGraph,
 } from '../api';
 import { LedgerIssueDetail } from '../components/ledger/IssueDetail';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
@@ -29,13 +28,15 @@ import { AddToSpace, type AddToSpaceTarget } from '../components/spaces/AddToSpa
 import { appColors } from '../theme';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
-import { AppOperationalNoticeOutlet, useRegisterAppRightSidebar, useRouteLoad } from '../app-shell';
+import { AppOperationalNoticeOutlet, useRegisterAppRightSidebar } from '../app-shell';
 import { useAppRightSidebarState } from '../right-sidebar-state';
 import { useQuery } from '@tanstack/preact-query';
 import { queryClient } from '../query/client';
 import { issueDetailOptions, queryErrorMessage, detailQueryData } from '../query/details';
 import { useViewActive } from '../app-shell';
-import { beginDetailRequest, detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
+import { graphOptions } from "../query/graph";
+import { useProjectionQuery } from "../query/useProjectionQuery";
+import { invalidateProjectionQueries } from "../query/projectionRefresh";
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { DetailPaneShell, type DetailPanePresentation } from '../components/shared/DetailPaneShell';
@@ -250,7 +251,7 @@ function graphRequestForSpec(spec: GraphSpecState) {
   return {
     mode: spec.preset,
     since: spec.since === 'all' ? undefined : spec.since,
-    status: spec.status === 'all' ? 'all' as const : undefined,
+    status: spec.status,
     repo: spec.repos.join(',') || undefined,
     branch: spec.branches.join(',') || undefined,
     limit: spec.limit,
@@ -929,12 +930,6 @@ export function GraphView({
   sidebarHidden = false,
 }: GraphViewProps): JSX.Element {
   const routeMode = coerceGraphMode(initialMode);
-  const [payloadState, setPayloadState] = useState<{
-    requestKey: string | null;
-    value: GraphPayload;
-  }>({ requestKey: null, value: { nodes: [], edges: [], mode: DEFAULT_GRAPH_PRESET } });
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [spec, setSpec] = useState<GraphSpecState>(() => initialGraphSpec(initialMode));
   const routeFocus = initialFocus?.trim() || null;
   const [selection, setSelection] = useState<{ focus: string | null; id: string | null }>({ focus: routeFocus, id: routeFocus });
@@ -962,68 +957,46 @@ export function GraphView({
   const setDetailPanelOpen = (open: boolean) => updateDetailPanelState({ open });
   const lastFocusedNodeOpenedRef = useRef<string | null>(null);
   const graphRequest = useMemo(() => graphRequestForSpec(spec), [spec]);
-  const graphRequestKey = useMemo(
-    () => detailRequestKey('graph', graphRequest),
-    [graphRequest],
-  );
-  // Issue 80ced49: the pending-payload placeholder must keep a stable identity
-  // across renders. A fresh object literal here gave `payload.nodes` and
-  // `payload.edges` new identities on every render, which invalidated the
-  // memoized sidebar descriptor, re-ran the registration effect, set app
-  // shell state, and re-rendered this view — an unbounded synchronous render
-  // loop that pinned a core whenever the graph request had not resolved yet.
+  const options = useMemo(() => graphOptions(graphRequest), [graphRequest]);
+  const active = useViewActive();
+  const graphQuery = useProjectionQuery(options, active);
+  const source = useRef<typeof options | null>(null);
+  const currentPayload = useMemo(() => detailQueryData(graphQuery, options), [graphQuery.data, graphQuery.isError, options]);
+  if (currentPayload) source.current = options;
+  const retainedSource = source.current;
+  const retainedPayload = useMemo(() => retainedSource
+    ? queryClient.getQueryData(retainedSource.queryKey) ?? retainedSource.restartSnapshot()
+    : undefined, [retainedSource]);
   const pendingPayload = useMemo<GraphPayload>(
     () => ({ nodes: EMPTY_GRAPH_NODES, edges: EMPTY_GRAPH_EDGES, mode: spec.preset }),
     [spec.preset],
   );
-  const payload = payloadState.requestKey === graphRequestKey
-    ? payloadState.value
-    : pendingPayload;
-
+  const payload = currentPayload ?? retainedPayload ?? pendingPayload;
+  const loading = graphQuery.isPending && !currentPayload;
+  const error = queryErrorMessage(graphQuery.error);
+  const previousRefresh = useRef(refreshToken);
   useEffect(() => {
-    setSpec((current) => ({ ...current, preset: routeMode, nodeTypes: undefined, edgeTypes: undefined }));
+    if (previousRefresh.current === refreshToken) return;
+    previousRefresh.current = refreshToken;
+    invalidateProjectionQueries(queryClient, options.queryKey);
+  }, [refreshToken]);
+  useEffect(() => {
+    setSpec((current) => current.preset === routeMode ? current
+      : { ...current, preset: routeMode, nodeTypes: undefined, edgeTypes: undefined });
   }, [routeMode]);
-
-  useLayoutEffect(() => {
-    const cached = readPersistedDetail<GraphPayload>('graph', graphRequestKey);
-    if (cached) setPayloadState({ requestKey: graphRequestKey, value: cached });
-  }, [graphRequestKey]);
-
-  useRouteLoad((register) => {
-    let active = true;
-    setLoading(true);
-    setError(null);
-    const detailStarted = beginDetailRequest();
-    const initialRead = getGraph(graphRequest)
-      .then((result) => {
-        const data = result as GraphPayload;
-        if (!active) return;
-        writePersistedDetail('graph', graphRequestKey, data, undefined, detailStarted);
-        setPayloadState({ requestKey: graphRequestKey, value: data });
-        if (routeFocus) {
-          if (data.nodes.some((node) => node.id === routeFocus) && lastFocusedNodeOpenedRef.current !== routeFocus) {
-            setDetailPanelOpen(true);
-            lastFocusedNodeOpenedRef.current = routeFocus;
-          }
-        } else {
-          lastFocusedNodeOpenedRef.current = null;
-          setSelection((current) => data.nodes.some((node) => node.id === current.id)
-            ? current
-            : { focus: routeFocus, id: data.nodes[0]?.id ?? null });
-        }
-      })
-      .catch((err: unknown) => {
-        if (!active) return;
-        setError(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
-    register(initialRead);
-    return () => {
-      active = false;
-    };
-  }, [graphRequest, graphRequestKey, refreshToken, routeFocus]);
+  useEffect(() => {
+    if (!currentPayload) return;
+    if (routeFocus) {
+      if (currentPayload.nodes.some((node) => node.id === routeFocus) && lastFocusedNodeOpenedRef.current !== routeFocus) {
+        setDetailPanelOpen(true);
+        lastFocusedNodeOpenedRef.current = routeFocus;
+      }
+    } else {
+      lastFocusedNodeOpenedRef.current = null;
+      setSelection((current) => current.id || !currentPayload.nodes[0]
+        ? current : { focus: routeFocus, id: currentPayload.nodes[0].id });
+    }
+  }, [currentPayload, routeFocus]);
 
   const lenses = (payload.modes ?? Object.entries(MODE_LABELS).map(([id, label]) => ({
     id: id as GraphMode,
@@ -1085,22 +1058,13 @@ export function GraphView({
     [layoutResult.nodes, selectedNodeId],
   );
   const flowEdgeList = layoutResult.edges;
-  // Selection stays in React Flow state; the key only tracks structure that should refit.
-  const flowSignature = useMemo(
-    () => [
-      spec.preset,
-      layoutResult.nodes.map((node) => node.id).join(','),
-      flowEdgeList.map((edge) => edge.id).join(','),
-    ].join(':'),
-    [flowEdgeList, layoutResult.nodes, spec.preset],
-  );
   const selectedNode = useMemo(
-    () => payload.nodes.find((node) => node.id === selectedNodeId) ?? (explicitFocus ? null : visibleNodes[0]) ?? null,
+    () => payload.nodes.find((node) => node.id === selectedNodeId) ?? (selectedNodeId ? null : visibleNodes[0]) ?? null,
     [payload.nodes, visibleNodes, selectedNodeId, explicitFocus],
   );
 
   const detailPanelContent = useMemo(() => (
-    explicitFocus && !selectedNode
+    selectedNodeId && !selectedNode
       ? <div role="status">{loading ? 'Loading graph focus' : error ? 'Could not load graph focus' : 'Graph focus not found'}: {selectedNodeId}</div>
       : <GraphDetailPane presentation="sidebar" node={selectedNode} edges={visibleEdges} onNavigate={onNavigate} />
   ), [onNavigate, selectedNode, visibleEdges, explicitFocus, loading, error, selectedNodeId]);
@@ -1117,7 +1081,7 @@ export function GraphView({
     maxWidth: MAX_GRAPH_DETAIL_PANEL_WIDTH,
     onOpenChange: (open: boolean) => updateDetailPanelState({ open }),
     onWidthChange: (width: number) => updateDetailPanelState({ width }),
-    content: selectedNode || explicitFocus ? detailPanelContent : null,
+    content: selectedNode || selectedNodeId ? detailPanelContent : null,
   }), [detailPanelContent, detailPanelOpen, detailPanelState.width, selectedNode, explicitFocus, updateDetailPanelState]);
 
   useRegisterAppRightSidebar(detailPanelDescriptor);
@@ -1288,9 +1252,7 @@ export function GraphView({
               <p>{MODE_LABELS[spec.preset]} has no visible nodes for the current spec.</p>
             </div>
           )}
-          {flowNodes.length > 0 && (
-            <ReactFlow
-              key={flowSignature}
+          <ReactFlow
               nodes={flowNodes}
               defaultEdges={[]}
               proOptions={{ hideAttribution: true }}
@@ -1327,8 +1289,7 @@ export function GraphView({
                 maskColor={appColors.graphMinimapMask}
               />
               <Controls showInteractive={false} />
-            </ReactFlow>
-          )}
+          </ReactFlow>
         </div>
       </div>
     </div>
@@ -1337,11 +1298,8 @@ export function GraphView({
 
 /** Warm the Graph list and only its explicit or default selected issue detail. */
 export async function warmInitialData(params: Record<string, string>): Promise<void> {
-  const detailStarted = beginDetailRequest();
   const request = graphRequestForSpec(initialGraphSpec(params.mode));
-  const requestKey = detailRequestKey('graph', request);
-  const data = await getGraph(request) as GraphPayload;
-  writePersistedDetail('graph', requestKey, data, undefined, detailStarted);
+  const data = await queryClient.fetchQuery(graphOptions(request));
 
   const selectedNode = (params.focus
     ? data.nodes.find((node) => node.id === params.focus)
