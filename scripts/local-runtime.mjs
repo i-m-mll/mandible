@@ -519,13 +519,29 @@ export async function startHandoffDefinitions(binding, { context, journal, asser
     if (Object.values(statuses).some(status => status.status === 'requires_approval')) throw new RuntimeObservationError('background_permission_required',
       'Allow Mandible background services in System Settings.', statuses, 'pending');
     const commands = {};
+    const assertStartupBudget = () => {
+      assertHeld();
+      if (Date.now() >= until) throw new RuntimeObservationError('starting', 'Candidate services did not qualify before the original deadline.', { processes, commands }, 'pending');
+    };
+    const observeStartup = () => {
+      assertStartupBudget();
+      try {
+        const observed = inspectHandoffProcesses(binding, { context, prepared, assertHeld, until, processes });
+        Object.assign(processes, observed.processes);
+        assertStartupBudget();
+        return observed;
+      } catch (error) {
+        if (error instanceof RuntimeObservationError && error.code === 'observation_deadline') {
+          assertHeld();
+          throw new RuntimeObservationError('starting', error.message, { ...error.evidence, processes, commands }, 'pending');
+        }
+        throw error;
+      }
+    };
     const progress = Object.fromEntries(Object.entries(statuses).map(([role, status]) => [role, { previousStatus: status.status, registered: true, registrationChanged: status.registration_changed === true }]));
     for (;;) {
-      assertHeld();
-      const observed = inspectHandoffProcesses(binding, { context, prepared, assertHeld, until, processes });
-      Object.assign(processes, observed.processes);
+      const observed = observeStartup();
       if (!observed.pending) break;
-      if (Date.now() >= until) throw new RuntimeObservationError('starting', observed.pending, { processes, commands }, 'pending');
       const unqualified = ['backend', 'gateway'].filter(role => !processes[role]);
       for (const role of unqualified) {
         if (bundleServiceCompletedRun(observed.jobs[role], progress[role]) === 'consumed') throw new RuntimeObservationError('service_exited',
@@ -538,10 +554,9 @@ export async function startHandoffDefinitions(binding, { context, journal, asser
         if (Object.values(native).some(status => status.status === 'requires_approval')) throw new RuntimeObservationError('background_permission_required',
           'Allow Mandible background services in System Settings.', { native, processes }, 'pending');
         const register = [];
+        let current = observeStartup();
         for (const role of actionable) {
-          const current = inspectHandoffProcesses(binding, { context, prepared, assertHeld, until, processes });
-          Object.assign(processes, current.processes);
-          if (Date.now() >= until) throw new RuntimeObservationError('starting', current.pending, { processes }, 'pending');
+          current ??= observeStartup();
           if (processes[role]) continue;
           const action = bundleServiceStartAction(progress[role], native[role].status, current.jobs[role]);
           if (!action) continue;
@@ -550,19 +565,23 @@ export async function startHandoffDefinitions(binding, { context, journal, asser
           const command = commands[role] = startOwnedJob(context, role, until);
           if (command.outcome === 'failed') throw new RuntimeObservationError('service_start_failed',
             `Could not start owned ${role} service: ${command.message}`, { command, processes });
+          assertStartupBudget();
+          current = null;
         }
         if (register.length) {
-          Object.assign(processes, inspectHandoffProcesses(binding, { context, prepared, assertHeld, until, processes }).processes);
+          current ??= observeStartup();
           const roles = register.filter(role => !processes[role]);
           if (roles.length) {
             assertHandoffMutation(binding, { context, journal, assertHeld });
             const registered = nativeServiceControls(context, 'register', roles, { until, release: application.release });
             for (const role of roles) progress[role].registrationChanged ||= registered[role].registration_changed === true;
+            assertStartupBudget();
             if (Object.values(registered).some(status => status.status === 'requires_approval')) throw new RuntimeObservationError('background_permission_required',
               'Allow Mandible background services in System Settings.', { registered, processes }, 'pending');
           }
         }
       }
+      assertStartupBudget();
       await new Promise(resolve => setTimeout(resolve, Math.min(25, until - Date.now())));
     }
     return { started: [context.backendLabel, context.gatewayLabel], packageSha256: application.digest, processes };
@@ -712,10 +731,15 @@ export function inspectHandoffProcesses(binding, { context, prepared, assertHeld
     : { resources, release: installedModuleReader.readInstalledRelease(resources) };
   const execution = nativeExecutionModel(context.bundleRoot, application.release);
   if (!execution.ok) throw new RuntimeObservationError('unreadable_state', execution.message);
+  const failedRead = result => {
+    const expired = result.error?.code === 'ETIMEDOUT' && Date.now() >= until;
+    return new RuntimeObservationError(expired ? 'observation_deadline' : 'service_observation_failed',
+      result.error?.message || result.stderr, { code: result.error?.code, status: result.status, signal: result.signal }, expired ? 'pending' : 'failed');
+  };
   const jobs = Object.fromEntries(['backend', 'gateway'].map(role => {
     const result = spawnSync('/bin/launchctl', ['print', `${context.domain}/${context[`${role}Label`]}`],
       { encoding: 'utf8', timeout: runtimeObservationTimeout(until, 2500) });
-    if (result.error || result.status !== 0 && !/Could not find service|service not found/i.test(result.stderr)) throw new RuntimeObservationError('service_observation_failed', result.error?.message || result.stderr);
+    if (result.error || result.status !== 0 && !/Could not find service|service not found/i.test(result.stderr)) throw failedRead(result);
     const job = result.status === 0 ? { loaded: true, ...parseLoadedService(result.stdout),
       pid: Number(result.stdout.match(/\bpid = (\d+)/)?.[1]) || null, runs: Number(result.stdout.match(/\bruns = (\d+)/)?.[1]) || 0 } : { loaded: false, pid: null };
     if (job.loaded && (job.bundleProgram !== 'Contents/MacOS/mandible-service' || job.parentBundleIdentifier !== context.bundleIdentifier
@@ -730,7 +754,7 @@ export function inspectHandoffProcesses(binding, { context, prepared, assertHeld
   if (pids.length) {
     const result = spawnSync('/bin/ps', ['-p', pids.join(','), '-o', 'pid=,lstart=,comm='],
       { encoding: 'utf8', timeout: runtimeObservationTimeout(until, 2500) });
-    if (result.error || result.status !== 0 && result.stderr.trim()) throw new RuntimeObservationError('service_observation_failed', result.error?.message || result.stderr);
+    if (result.error || result.status !== 0 && result.stderr.trim()) throw failedRead(result);
     for (const line of result.stdout.split('\n').filter(Boolean)) {
       const row = line.match(/^\s*(\d+)\s+(.{24})\s+(.+)$/);
       if (!row) throw new RuntimeObservationError('service_observation_failed', 'Cannot decode candidate process identity.');
