@@ -16,7 +16,8 @@ interface PathWaiter {
 interface PathPass {
   requirements: IngestionPathRequirements;
   waiters: PathWaiter[];
-  dirty: boolean;
+  generation: number;
+  withinPass: boolean;
 }
 
 interface PathDemand {
@@ -45,7 +46,7 @@ export class IngestionPathScheduler {
   ) => Promise<void>>((job, cooperate) => job(cooperate));
 
   constructor(
-    private readonly execute: (filePath: string, requirements: IngestionPathRequirements) => Promise<void>,
+    private readonly execute: (filePath: string, requirements: IngestionPathRequirements, withinPass: boolean) => Promise<void>,
     private readonly needsFollowup: (filePath: string) => Promise<boolean>,
   ) {}
 
@@ -63,7 +64,7 @@ export class IngestionPathScheduler {
 
   async inline(filePath: string, forceFull = false): Promise<void> {
     const key = canonicalSourcePath(path.resolve(filePath));
-    const completed = this.request(key, { forceFull, bypassSameMtimeUnchanged: false, priority: false });
+    const completed = this.request(key, { forceFull, bypassSameMtimeUnchanged: false, priority: false }, true);
     const demand = this.demands.get(key)!;
     while (demand.pending) {
       this.queue.remove(demand.job);
@@ -73,7 +74,7 @@ export class IngestionPathScheduler {
     await completed;
   }
 
-  private request(filePath: string, requirements: IngestionPathRequirements): Promise<void> {
+  private request(filePath: string, requirements: IngestionPathRequirements, withinPass = false): Promise<void> {
     let demand = this.demands.get(filePath);
     if (!demand) {
       demand = { path: filePath, job: () => this.run(demand!) };
@@ -81,17 +82,18 @@ export class IngestionPathScheduler {
     }
     const current = demand;
     return new Promise<void>((resolve, reject) => {
-      if (current.running) current.running.dirty = true;
+      if (current.running) current.running.generation += 1;
       if (current.running && !current.pending && covers(current.running.requirements, requirements)) {
         current.running.requirements.priority ||= requirements.priority;
         current.running.waiters.push({ resolve, reject });
         return;
       }
       if (!current.pending) {
-        current.pending = { requirements: { ...requirements }, waiters: [], dirty: false };
+        current.pending = { requirements: { ...requirements }, waiters: [], generation: 0, withinPass };
         if (!current.running) void this.queue.enqueue(current.job, requirements.priority);
       } else {
         strengthen(current.pending.requirements, requirements);
+        current.pending.withinPass &&= withinPass;
         if (requirements.priority) this.queue.promote(current.job);
       }
       current.pending.waiters.push({ resolve, reject });
@@ -104,12 +106,16 @@ export class IngestionPathScheduler {
     demand.pending = undefined;
     demand.running = pass;
     try {
-      await this.execute(demand.path, pass.requirements);
-      if (pass.dirty && await this.needsFollowup(demand.path)) {
+      await this.execute(demand.path, pass.requirements, pass.withinPass);
+      const verifiedGeneration = pass.generation;
+      const stale = verifiedGeneration > 0 && await this.needsFollowup(demand.path);
+      if (stale || pass.generation !== verifiedGeneration) {
         const pending = demand.pending ??= {
-          requirements: { ...pass.requirements, bypassSameMtimeUnchanged: true }, waiters: [], dirty: false,
+          requirements: { ...pass.requirements, bypassSameMtimeUnchanged: true }, waiters: [],
+          generation: 0, withinPass: pass.withinPass,
         };
         strengthen(pending.requirements, pass.requirements);
+        pending.withinPass &&= pass.withinPass;
         pending.requirements.bypassSameMtimeUnchanged = true;
         pending.waiters.push(...pass.waiters);
       } else {

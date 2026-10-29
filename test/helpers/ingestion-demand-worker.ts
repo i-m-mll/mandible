@@ -15,7 +15,11 @@ const db = openDb(workerData.dbPath);
 setDb(db);
 const log = (message: string, details: Record<string, unknown>) =>
   port.postMessage({ kind: "log", level: "debug", message, details });
-ingestion.configureIngestionWorker(() => undefined, () => undefined);
+let relocated: string | undefined;
+ingestion.configureIngestionWorker((level, message, details) => {
+  port.postMessage({ kind: "log", level, message, details });
+  if (message === "ingestion_source_relocated") relocated = path.basename(String(details?.from));
+}, () => undefined);
 
 async function barrier(name: string): Promise<void> {
   const gate = path.join(root, name);
@@ -31,17 +35,26 @@ async function barrier(name: string): Promise<void> {
 }
 
 const service = new IngestionWorkerService({
-  ingest: async (file, requirements) => {
+  ingest: async (file, requirements, withinPass) => {
     const name = path.basename(file);
     log("source_start", { name, ...requirements });
     await barrier(`before-${name}`);
     if (fs.existsSync(path.join(root, `fail-${name}`))) throw new Error(`parser failed: ${name}`);
-    await ingestion.ingestBatchForWorker([file], requirements.forceFull, requirements.bypassSameMtimeUnchanged, true);
+    await ingestion.ingestBatchForWorker([file], requirements.forceFull, requirements.bypassSameMtimeUnchanged, true, undefined, withinPass);
     await barrier(`after-${name}`);
     log("source_done", { name });
   },
-  needsFollowup: ingestion.ingestedPathNeedsFollowup,
-  reconcile: ingestion.reconcileForWorker,
+  needsFollowup: async (file) => {
+    const stale = await ingestion.ingestedPathNeedsFollowup(file);
+    await barrier(`verified-${path.basename(file)}`);
+    return stale;
+  },
+  reconcile: (startup, cooperate, ingest) => ingestion.reconcileForWorker(startup, async () => {
+    const completed = relocated;
+    relocated = undefined;
+    if (completed) await barrier(`relocated-${completed}`);
+    await cooperate();
+  }, ingest),
   fullIngest: ingestion.triggerFullIngestForWorker,
 });
 port.on("message", (request: IngestionWorkerRequest) => {

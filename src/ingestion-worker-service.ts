@@ -2,7 +2,7 @@ import { IngestionPathScheduler, type IngestionPathRequirements } from "./ingest
 import type { IngestionWorkerCommand } from "./ingestion-worker-protocol.js";
 
 interface IngestionWorkerOperations {
-  ingest: (filePath: string, requirements: IngestionPathRequirements) => Promise<void>;
+  ingest: (filePath: string, requirements: IngestionPathRequirements, withinPass: boolean) => Promise<void>;
   needsFollowup: (filePath: string) => Promise<boolean>;
   reconcile: (startup: boolean, cooperate: () => Promise<void>, ingest: (filePath: string) => Promise<void>) => Promise<void>;
   fullIngest: (cooperate: () => Promise<void>, ingest: (filePath: string) => Promise<void>) => Promise<unknown>;

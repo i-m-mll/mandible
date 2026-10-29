@@ -1358,11 +1358,12 @@ export async function ingestBatchForWorker(
   bypassSameMtimeUnchanged = false,
   strictParseErrors = false,
   cooperate?: () => Promise<void>,
+  withinPass = false,
 ): Promise<void> {
   const failures: unknown[] = [];
   for (const filePath of paths) {
     try {
-      await ingestFile(filePath, { forceFull, bypassSameMtimeUnchanged, strictParseErrors });
+      await ingestFile(filePath, { forceFull, bypassSameMtimeUnchanged, strictParseErrors, withinPass });
     } catch (error) {
       failures.push(error);
     }
@@ -2365,7 +2366,7 @@ export function persistExactCodexTitle(
   return true;
 }
 
-async function syncCodexIndexedTitlesForKnownRows(db: ReturnType<typeof getDb>): Promise<void> {
+async function syncCodexIndexedTitlesForKnownRows(db: ReturnType<typeof getDb>, cooperate?: () => Promise<void>): Promise<void> {
   const rows = db.prepare(`
     SELECT id, source_path, session_id, title, block_count
     FROM conversations
@@ -2405,12 +2406,13 @@ async function syncCodexIndexedTitlesForKnownRows(db: ReturnType<typeof getDb>):
     }
     for (const row of indexRows) {
       await syncCodexIndexedTitle(row.source_path, row);
+      await cooperate?.();
     }
     codexSessionIndexSyncMtimes.set(indexPath, stat.mtimeMs);
   }
 }
 
-async function syncGeminiProjectIdentityForKnownRows(db: ReturnType<typeof getDb>): Promise<void> {
+async function syncGeminiProjectIdentityForKnownRows(db: ReturnType<typeof getDb>, cooperate?: () => Promise<void>): Promise<void> {
   const rows = db.prepare(`
     SELECT id, source_path, project_path, cwd, title, block_count
     FROM conversations
@@ -2426,6 +2428,7 @@ async function syncGeminiProjectIdentityForKnownRows(db: ReturnType<typeof getDb
 
   const identityCache = new Map<string, Awaited<ReturnType<typeof inferGeminiProjectIdentity>>>();
   for (const row of rows) {
+    await cooperate?.();
     const projectHash = row.project_path && /^[a-f0-9]{64}$/i.test(row.project_path)
       ? row.project_path
       : null;
@@ -3989,8 +3992,8 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
     repairLegacyOrphanConversations(db);
   }
 
-  await syncCodexIndexedTitlesForKnownRows(db);
-  await syncGeminiProjectIdentityForKnownRows(db);
+  await syncCodexIndexedTitlesForKnownRows(db, options.cooperate);
+  await syncGeminiProjectIdentityForKnownRows(db, options.cooperate);
 
   const knownPaths = new Set<string>();
   const scannedBases: string[] = [];
@@ -4026,6 +4029,7 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
   let relocatedCount = 0;
   let changedCount = 0;
   for (const [sourcePath, sourceMtime] of Array.from(dbPaths)) {
+    await options.cooperate?.();
     const relocated = await relocateMovedCodexSource(db, sourcePath);
     if (!relocated) continue;
     relocatedCount += 1;
@@ -4046,6 +4050,7 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
       codexSessionIds.set(relocated, relocatedIds);
     }
   }
+  await options.cooperate?.();
 
   const workflowRows = db
     .prepare("SELECT file_path, source_mtime FROM workflow_ingest_state")
@@ -4182,8 +4187,11 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
     // deletion; relocate it before recording missing-source tombstones.
     let unavailableCount = 0;
     for (const sourcePath of missingPaths) {
-      if (await removeConversationForMissingSource(db, sourcePath)) relocatedCount += 1;
-      else unavailableCount += 1;
+      if (!await logicalSourceExists(sourcePath)) {
+        if (await removeConversationForMissingSource(db, sourcePath)) relocatedCount += 1;
+        else unavailableCount += 1;
+      }
+      await options.cooperate?.();
     }
     if (unavailableCount > 0) {
       logger("info", "ingestion_sources_unavailable", { count: unavailableCount });
@@ -4202,12 +4210,10 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
   );
   if (missingWorkflowPaths.length > 0) {
     const deleteState = db.prepare("DELETE FROM workflow_ingest_state WHERE file_path = ?");
-    const cleanupMissingWorkflow = db.transaction(() => {
-      for (const sourcePath of missingWorkflowPaths) {
-        deleteState.run(sourcePath);
-      }
-    });
-    cleanupMissingWorkflow();
+    for (const sourcePath of missingWorkflowPaths) {
+      if (!await logicalSourceExists(sourcePath)) deleteState.run(sourcePath);
+      await options.cooperate?.();
+    }
   }
 
   const missingAppendPaths = Array.from(appendPaths).filter((sourcePath) =>
@@ -4216,12 +4222,10 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
   );
   if (missingAppendPaths.length > 0) {
     const deleteState = db.prepare("DELETE FROM conversation_ingest_state WHERE file_path = ?");
-    const cleanupMissingAppend = db.transaction(() => {
-      for (const sourcePath of missingAppendPaths) {
-        deleteState.run(sourcePath);
-      }
-    });
-    cleanupMissingAppend();
+    for (const sourcePath of missingAppendPaths) {
+      if (!await logicalSourceExists(sourcePath)) deleteState.run(sourcePath);
+      await options.cooperate?.();
+    }
   }
 
   // After relocations are followed, so moved rollouts are read where they are.

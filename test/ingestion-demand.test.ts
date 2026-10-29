@@ -20,7 +20,7 @@ vi.mock("../src/ingestion-actor.js", async (importOriginal) => {
   };
 });
 
-interface Observation { message: string; details: Record<string, unknown> }
+interface Observation { message: string; details: Record<string, unknown>; level?: string }
 let fixture: ReturnType<typeof setup> | undefined;
 
 function setup() {
@@ -31,7 +31,7 @@ function setup() {
   const db = openDb(dbPath);
   const observations: Observation[] = [];
   const actor = new IngestionActor({
-    dbPath, logger: (_level, message, details) => observations.push({ message, details: details ?? {} }),
+    dbPath, logger: (level, message, details) => observations.push({ level, message, details: details ?? {} }),
     publish: () => undefined, workerUrl: new URL("./helpers/ingestion-demand-worker.ts", import.meta.url),
   });
   return {
@@ -100,6 +100,7 @@ describe("selected source demand through the ingestion actor", () => {
     f.gate(`before-${path.basename(next)}`);
     const background = kind === "reconcile" ? f.actor.reconcile() : f.actor.fullIngest();
     await f.barrier(`after-${path.basename(first)}`);
+    expect(f.observations.find((event) => event.message === "ingestion_complete" && event.details.file === first)?.level).toBe("debug");
     const normal = f.actor.ingest([selected], kind === "full-ingest");
     const strict = f.actor.ingest([selected], false, true, true);
     await f.received(3);
@@ -115,6 +116,58 @@ describe("selected source demand through the ingestion actor", () => {
     f.release(`before-${path.basename(next)}`);
     await background;
     expect(blocks(f.db, next)).toBe(1);
+  });
+
+  it.each([false, true])("retains arrivals newer than an asynchronous freshness observation (strict: %s)", async (strict) => {
+    const f = fixture = setup();
+    const selected = f.source("verification");
+    f.gate("after-verification.jsonl");
+    f.gate("verified-verification.jsonl");
+    let settled = false;
+    const first = f.actor.ingest([selected], false, strict, strict).then(() => { settled = true; });
+    await f.barrier("after-verification.jsonl");
+    const second = f.actor.ingest([selected], false, strict, strict);
+    await f.received(2);
+    f.release("after-verification.jsonl");
+    await f.barrier("verified-verification.jsonl");
+    fs.appendFileSync(selected, message("append after the clean observation"));
+    const latest = f.actor.ingest([selected], false, strict, strict);
+    await f.received(3);
+    expect(settled).toBe(false);
+    expect(blocks(f.db, selected)).toBe(1);
+    f.release("verified-verification.jsonl");
+    await Promise.all([first, second, latest]);
+    expect(blocks(f.db, selected)).toBe(2);
+    expect(f.observations.filter((event) => event.message === "source_start")).toHaveLength(2);
+  });
+
+  it("services selection between populated-source relocation prepasses", async () => {
+    const f = fixture = setup();
+    const first = f.source("first");
+    const second = f.source("second");
+    const selected = f.source("selected");
+    await f.actor.ingest([first, second]);
+    const archive = path.join(f.root, "home", ".codex", "archived_sessions");
+    fs.mkdirSync(archive, { recursive: true });
+    fs.renameSync(first, path.join(archive, path.basename(first)));
+    fs.renameSync(second, path.join(archive, path.basename(second)));
+    f.gate("relocated-first.jsonl");
+    f.gate("before-selected.jsonl");
+    const background = f.actor.reconcile();
+    await f.barrier("relocated-first.jsonl");
+    const strict = f.actor.ingest([selected], false, true, true);
+    await f.received(3);
+    f.release("relocated-first.jsonl");
+    await f.barrier("before-selected.jsonl");
+    expect(blocks(f.db, second)).toBe(1);
+    expect(blocks(f.db, path.join(archive, "second.jsonl"))).toBe(0);
+    f.release("before-selected.jsonl");
+    await Promise.all([strict, background]);
+    const completed = f.observations.findIndex((event) => event.message === "source_done" && event.details.name === "selected.jsonl");
+    const laterRelocation = f.observations.findIndex((event) => event.message === "ingestion_source_relocated" && event.details.from === second);
+    expect(completed).toBeGreaterThan(-1);
+    expect(laterRelocation).toBeGreaterThan(completed);
+    expect(blocks(f.db, path.join(archive, "second.jsonl"))).toBe(1);
   });
 
   it("deduplicates stronger follow-up work and keeps strict waiters behind an append", async () => {

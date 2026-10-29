@@ -52,8 +52,8 @@ const checkpointTimer = setInterval(() => {
 }, checkpointIntervalMs);
 
 const service = new IngestionWorkerService({
-  ingest: (filePath, requirements) => withBusyRetry(() => ingestBatchForWorker(
-    [filePath], requirements.forceFull, requirements.bypassSameMtimeUnchanged, true,
+  ingest: (filePath, requirements, withinPass) => withBusyRetry(() => ingestBatchForWorker(
+    [filePath], requirements.forceFull, requirements.bypassSameMtimeUnchanged, true, undefined, withinPass,
   )),
   needsFollowup: ingestedPathNeedsFollowup,
   reconcile: (startup, cooperate, ingest) => withBusyRetry(() => reconcileForWorker(startup, cooperate, ingest)),
