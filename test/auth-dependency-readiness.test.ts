@@ -71,22 +71,22 @@ describe("auth dependency readiness", () => {
     const dependent = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
       command: "echo dependent",
       title: "Dependent",
-      depends_on_id: dependency.id,
+      depends_on_ids: [dependency.id],
     }));
 
-    expect(queue.dependencyForRequest(dependent)?.state).toBe("pending");
+    expect(queue.dependenciesForRequest(dependent)[0]?.state).toBe("pending");
 
     setDependencyResult(database, dependency.id, { status: "rejected", exitCode: null, finalizedAt: null });
-    expect(queue.dependencyForRequest(dependent)?.state).toBe("failed");
+    expect(queue.dependenciesForRequest(dependent)[0]?.state).toBe("failed");
 
     setDependencyResult(database, dependency.id, { status: "failed", exitCode: 9, finalizedAt: 10 });
-    expect(queue.dependencyForRequest(dependent)?.state).toBe("failed");
+    expect(queue.dependenciesForRequest(dependent)[0]?.state).toBe("failed");
 
     setDependencyResult(database, dependency.id, { status: "completed", exitCode: 0, finalizedAt: null });
-    expect(queue.dependencyForRequest(dependent)?.state).toBe("unfinalized");
+    expect(queue.dependenciesForRequest(dependent)[0]?.state).toBe("unfinalized");
 
     setDependencyResult(database, dependency.id, { status: "completed", exitCode: 0, finalizedAt: 10 });
-    expect(queue.dependencyForRequest(dependent)).toMatchObject({
+    expect(queue.dependenciesForRequest(dependent)[0]).toMatchObject({
       state: "ready",
       request_id: dependency.id,
       status: "completed",
@@ -95,10 +95,10 @@ describe("auth dependency readiness", () => {
       merge_finalized_at: 10,
     });
 
-    expect(queue.dependencyForRequest({ depends_on_id: "does-not-exist" })?.state).toBe("missing");
+    expect(queue.dependenciesForRequest({ depends_on_ids: ["does-not-exist"] })[0]?.state).toBe("missing");
 
     const ambiguousPrefix = (await createAmbiguousRequestPrefix(database, queue));
-    expect(queue.dependencyForRequest({ depends_on_id: ambiguousPrefix })?.state).toBe("ambiguous");
+    expect(queue.dependenciesForRequest({ depends_on_ids: [ambiguousPrefix] })[0]?.state).toBe("ambiguous");
     (await queue.dispose());
   });
 
@@ -107,24 +107,24 @@ describe("auth dependency readiness", () => {
     const dependency = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo dependency", title: "Dependency" }));
     setDependencyResult(database, dependency.id, { status: "completed", exitCode: 0, finalizedAt: 42 });
     const active = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
-      command: "echo active", title: "Active dependent", depends_on_id: dependency.id,
+      command: "echo active", title: "Active dependent", depends_on_ids: [dependency.id],
     }));
     const historical = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
-      command: "echo historical", title: "Historical dependent", depends_on_id: dependency.id,
+      command: "echo historical", title: "Historical dependent", depends_on_ids: [dependency.id],
     }));
     setDependencyResult(database, historical.id, { status: "rejected", exitCode: null, finalizedAt: null });
 
     const detail = await router.invoke({ method: "GET", url: `/api/auth/request/${active.id}` });
     const queueResponse = await router.invoke({ method: "GET", url: "/api/auth/queue" });
     const history = await router.invoke({ method: "GET", url: "/api/auth/history" });
-    const queueRow = (queueResponse.body as { requests: Array<{ id: string; dependency: unknown }> })
+    const queueRow = (queueResponse.body as { requests: Array<{ id: string; dependencies: unknown[] }> })
       .requests.find((request) => request.id === active.id);
-    const historyRow = (history.body as { requests: Array<{ id: string; dependency: unknown }> })
+    const historyRow = (history.body as { requests: Array<{ id: string; dependencies: unknown[] }> })
       .requests.find((request) => request.id === historical.id);
 
-    expect((detail.body as { dependency: unknown }).dependency).toMatchObject({ state: "ready" });
-    expect(queueRow?.dependency).toMatchObject({ state: "ready" });
-    expect(historyRow?.dependency).toMatchObject({ state: "ready" });
+    expect((detail.body as { dependencies: unknown[] }).dependencies[0]).toMatchObject({ state: "ready" });
+    expect(queueRow?.dependencies[0]).toMatchObject({ state: "ready" });
+    expect(historyRow?.dependencies[0]).toMatchObject({ state: "ready" });
     (await queue.dispose());
   });
 
@@ -132,7 +132,7 @@ describe("auth dependency readiness", () => {
     const { db: database, queue } = setup();
     const dependency = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo dependency", title: "Dependency" }));
     const dependent = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
-      command: "echo dependent", title: "Dependent", depends_on_id: dependency.id,
+      command: "echo dependent", title: "Dependent", depends_on_ids: [dependency.id],
     }));
 
     await expect(approveFixtureRequest(queue, dependent.id)).rejects.toThrow(/Dependency .* is pending/);
@@ -143,16 +143,16 @@ describe("auth dependency readiness", () => {
     setDependencyResult(database, dependency.id, { status: "completed", exitCode: 0, finalizedAt: null });
     await expect(approveFixtureRequest(queue, dependent.id)).rejects.toThrow(/is unfinalized/);
 
-    database.prepare("UPDATE auth_requests SET depends_on_id = ? WHERE id = ?")
+    database.prepare("UPDATE auth_requests SET depends_on_ids = NULL, depends_on_id = ? WHERE id = ?")
       .run("missing-dependency", dependent.id);
     await expect(approveFixtureRequest(queue, dependent.id)).rejects.toThrow(/is missing/);
 
     const ambiguousPrefix = (await createAmbiguousRequestPrefix(database, queue));
-    database.prepare("UPDATE auth_requests SET depends_on_id = ? WHERE id = ?")
+    database.prepare("UPDATE auth_requests SET depends_on_ids = NULL, depends_on_id = ? WHERE id = ?")
       .run(ambiguousPrefix, dependent.id);
     await expect(approveFixtureRequest(queue, dependent.id)).rejects.toThrow(/is ambiguous/);
 
-    database.prepare("UPDATE auth_requests SET depends_on_id = ? WHERE id = ?")
+    database.prepare("UPDATE auth_requests SET depends_on_ids = NULL, depends_on_id = ? WHERE id = ?")
       .run(dependency.id, dependent.id);
     setDependencyResult(database, dependency.id, { status: "completed", exitCode: 0, finalizedAt: 42 });
     expect((await approveFixtureRequest(queue, dependent.id)).status).toBe("executing");

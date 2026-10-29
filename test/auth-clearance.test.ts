@@ -213,7 +213,7 @@ describe("scoped protected-merge clearance", () => {
     const f = fixture();
     try {
       const dependency = (await f.submit("dependency"));
-      const request = (await f.submit("dependent", { depends_on_id: dependency.id }));
+      const request = (await f.submit("dependent", { depends_on_ids: [dependency.id] }));
       const clearance = await f.manager.issue({
         requestId: request.id, grantee: f.agent.id, issueRef: f.issue.id, headBranch: "feature/scoped",
       }, f.operator.id);

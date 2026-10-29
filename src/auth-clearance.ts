@@ -1,3 +1,4 @@
+import { mapRow } from "./auth-request-row.js";
 import { createHash, randomUUID } from "node:crypto";
 
 import type SqliteDatabase from "./sqlite.js";
@@ -499,25 +500,7 @@ export class AuthClearanceManager {
 }
 
 function mapRequest(row: Record<string, unknown>): AuthRequest {
-  const array = (value: unknown): string[] | null => {
-    if (value == null) return null;
-    const parsed = typeof value === "string" ? JSON.parse(value) : value;
-    return Array.isArray(parsed) ? parsed.map(String) : null;
-  };
-  return {
-    ...(row as unknown as AuthRequest),
-    id: String(row.id),
-    status: String(row.status) as AuthRequest["status"],
-    type: String(row.type) as AuthRequest["type"],
-    command: String(row.command),
-    execution_mode: String(row.execution_mode) as AuthRequest["execution_mode"],
-    requested_by_user_id: row.requested_by_user_id == null ? null : String(row.requested_by_user_id),
-    requester_evidence_method: row.requester_evidence_method == null ? null : String(row.requester_evidence_method),
-    requester_credential_id: row.requester_credential_id == null ? null : String(row.requester_credential_id),
-    issue_references: array(row.issue_references),
-    issue_closures: array(row.issue_closures),
-    issues: array(row.issues),
-  };
+  return mapRow(row);
 }
 
 function requestSnapshot(request: AuthRequest): Record<string, unknown> {
@@ -535,6 +518,7 @@ function requestSnapshot(request: AuthRequest): Record<string, unknown> {
     merge_head_sha: request.merge_head_sha ?? null,
     issue_references: request.issue_references ?? null,
     issue_closures: request.issue_closures ?? request.issues ?? null,
+    depends_on_ids: request.depends_on_ids ?? [],
     execution_mode: request.execution_mode,
   };
 }

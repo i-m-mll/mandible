@@ -501,7 +501,7 @@ describe("auth queue", () => {
       }
       registerWorkRepo(db, repo);
       configureSigningCredential(db, repo, "ssh_key");
-      const submit = async (branch: string, extra: { depends_on_id?: string } = {}) => (await queue.submit({ ...AUTH_MERGE_REVIEW,
+      const submit = async (branch: string, extra: { depends_on_ids?: string[] } = {}) => (await queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: `mandible auth merge feature/${branch} --into main`,
         title: `Merge feature/${branch}`,
@@ -517,7 +517,7 @@ describe("auth queue", () => {
       const sibling = await submitPausedSibling(queue, db, repo);
       // Submitted first: without prioritization `other` would be revalidated first.
       const other = (await submit("other"));
-      const dep = (await submit("dep", { depends_on_id: sibling.id }));
+      const dep = (await submit("dep", { depends_on_ids: [sibling.id] }));
       const drifted = (await submit("drifted"));
       for (const request of [other, dep, drifted]) expect(request.merge_candidate_pin_sha).toMatch(/^[0-9a-f]{40,64}$/);
 

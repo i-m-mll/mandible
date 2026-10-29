@@ -123,7 +123,7 @@ verification_text=""
 canonical_message="false"
 diff_summary=""
 post_merge_handoff=""
-depends_on_id=""
+DEPENDS_ON_IDS=()
 supersedes_request_id=""
 expected_revision=""
 expected_custody_generation=""
@@ -143,7 +143,7 @@ promote_briefing_group=""
 promote_briefing_expected_base=""
 promote_briefing_proposal=""
 
-binding=$(mandible_bind_main_arguments "@auth request" '{"space_publication_id":{"option":"space-publication"},"title":{"option":"title"},"auth_type":{"option":"type"},"command":{"option":"command"},"command_set":{"option":"command","constant":"1"},"change_message_text":{"option":"message"},"change_message_set":[{"option":"message","constant":"1"},{"option":"message-file","constant":"1"}],"change_message_file":{"option":"message-file"},"verification_text":{"option":"verification"},"diff_summary":{"option":"diff-summary"},"post_merge_handoff":{"option":"handoff"},"dirty_policy":{"option":"dirty-policy"},"dirty_branch_prefix":{"option":"dirty-branch-prefix"},"depends_on_id":{"option":"depends-on"},"supersedes_request_id":{"option":"supersedes"},"expected_revision":{"option":"expected-revision"},"expected_custody_generation":{"option":"expected-custody-generation"},"SUPERSEDED_ACTION_DISPOSITIONS":{"option":"drop-superseded-action","array":true},"ISSUE_REFERENCES":{"option":["issue","ref-issue","references-issue"],"array":true},"ISSUE_CLOSURES":{"option":["closes-issue","close-issue"],"array":true},"promote_briefing_group":{"option":"promote-briefing","valueIndex":0},"promote_briefing_expected_base":{"option":"promote-briefing","valueIndex":1},"promote_briefing_proposal":{"option":"promote-briefing","valueIndex":2},"repo":{"option":"repo"},"cwd_override":{"option":"cwd"},"target_override":{"option":"target"},"timeout":{"option":"timeout"},"no_watch":{"option":"no-watch","constant":"1"},"force":{"option":["force","f"],"constant":"true"},"branch":{"position":0}}' "$@") || exit $?
+binding=$(mandible_bind_main_arguments "@auth request" '{"space_publication_id":{"option":"space-publication"},"title":{"option":"title"},"auth_type":{"option":"type"},"command":{"option":"command"},"command_set":{"option":"command","constant":"1"},"change_message_text":{"option":"message"},"change_message_set":[{"option":"message","constant":"1"},{"option":"message-file","constant":"1"}],"change_message_file":{"option":"message-file"},"verification_text":{"option":"verification"},"diff_summary":{"option":"diff-summary"},"post_merge_handoff":{"option":"handoff"},"dirty_policy":{"option":"dirty-policy"},"dirty_branch_prefix":{"option":"dirty-branch-prefix"},"DEPENDS_ON_IDS":{"option":"depends-on","array":true},"supersedes_request_id":{"option":"supersedes"},"expected_revision":{"option":"expected-revision"},"expected_custody_generation":{"option":"expected-custody-generation"},"SUPERSEDED_ACTION_DISPOSITIONS":{"option":"drop-superseded-action","array":true},"ISSUE_REFERENCES":{"option":["issue","ref-issue","references-issue"],"array":true},"ISSUE_CLOSURES":{"option":["closes-issue","close-issue"],"array":true},"promote_briefing_group":{"option":"promote-briefing","valueIndex":0},"promote_briefing_expected_base":{"option":"promote-briefing","valueIndex":1},"promote_briefing_proposal":{"option":"promote-briefing","valueIndex":2},"repo":{"option":"repo"},"cwd_override":{"option":"cwd"},"target_override":{"option":"target"},"timeout":{"option":"timeout"},"no_watch":{"option":"no-watch","constant":"1"},"force":{"option":["force","f"],"constant":"true"},"branch":{"position":0}}' "$@") || exit $?
 eval "$binding"
 
 if [[ -z "$title" ]]; then
@@ -277,6 +277,10 @@ conversation_id="${CLAUDE_CODE_SESSION_ID:-}"
 # --- Build issue relationship JSON arrays ---
 # Bug: 7b83c1f — reference-only issues are distinct from close-on-merge issues.
 
+depends_on_ids_json='[]'
+if [[ ${#DEPENDS_ON_IDS[@]} -gt 0 ]]; then
+  depends_on_ids_json=$(printf '%s\n' "${DEPENDS_ON_IDS[@]}" | jq -R . | jq -sc .)
+fi
 issue_references_json="null"
 if [[ ${#ISSUE_REFERENCES[@]} -gt 0 ]]; then
   issue_references_json=$(printf '%s\n' "${ISSUE_REFERENCES[@]}" | jq -R . | jq -sc .)
@@ -333,7 +337,7 @@ payload=$(jq -nc \
   --argjson canonical_message "$canonical_message" \
   --arg verification "$verification_text" \
   --arg post_merge_handoff "$post_merge_handoff" \
-  --arg depends_on_id "$depends_on_id" \
+  --argjson depends_on_ids "$depends_on_ids_json" \
   --arg supersedes_request_id "$supersedes_request_id" \
   --arg expected_revision "$expected_revision" \
   --arg expected_custody_generation "$expected_custody_generation" \
@@ -365,7 +369,7 @@ payload=$(jq -nc \
     issue_closures: $issue_closures,
     issues: $issue_closures,
     actions: $actions,
-    depends_on_id: (if $depends_on_id == "" then null else $depends_on_id end),
+    depends_on_ids: $depends_on_ids,
     supersedes_request_id: (if $supersedes_request_id == "" then null else $supersedes_request_id end),
     expected_revision: (if $expected_revision == "" then null else ($expected_revision | tonumber) end),
     expected_custody_generation: (if $expected_custody_generation == "" then null else ($expected_custody_generation | tonumber) end),
