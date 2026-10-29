@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { getConversationSearchCache } from "../src/conversations/search-cache.js";
+import {readConversationSourceGeneration,readConversationSourceGenerations} from "../src/conversations/source-generation.js";
 import { ConversationSourceReader } from "../src/conversations/source-reader.js";
 import { ConversationSourceStore } from "../src/conversations/source-store.js";
 import { sparseConversationBlockId } from "../src/conversations/structure-cache.js";
@@ -222,6 +223,18 @@ async function publishAppend(file: string, rewrite = false) {
   await stopIngestionGracefully();
 }
 describe("conversation full-text API parity", () => {
+  it("bounds retained source fingerprints and scaled native snapshot metadata while detecting publication",async()=>{
+    const paths=await appendFixturePair("oldneedle A","oldneedle B");const store=new ConversationSourceStore(db);const version=store.resolveConversation("append-a")!.currentVersionId!;const versions=new Map([["append-a",version]]);
+    const authority=store.searchSnapshotAuthorities(["append-a"],versions).get("append-a")!;
+    const observed=readConversationSourceGenerations(db,["append-a"]).get("append-a")!;
+    expect(Buffer.byteLength(authority)).toBeLessThanOrEqual(64);expect(Buffer.byteLength(observed)).toBeLessThanOrEqual(64);expect(readConversationSourceGeneration(db,"append-a")).toBe(observed);
+    const router=new Router();registerConversationRoutes(router,inlineLedgerReader());const result=await settled(router,{method:"GET",url:"/api/conversations?search=oldneedle&full_text=true&since=2026-08-18"});expect(result.status).toBe(200);
+    const snapshot=result.body as {coverage:{eligible:number};search_metrics:{snapshot_pin_bytes:number;snapshot_metadata_bytes:number}};
+    const scale=15_346/snapshot.coverage.eligible;const scaledPins=Math.ceil(snapshot.search_metrics.snapshot_pin_bytes*scale);const scaledMetadata=Math.ceil(snapshot.search_metrics.snapshot_metadata_bytes*scale);
+    expect(scaledMetadata).toBeLessThanOrEqual(32*1024*1024);console.info("native snapshot metadata capacity",{eligible:15346,scaled_pin_bytes:scaledPins,scaled_metadata_bytes:scaledMetadata});
+    await publishAppend(paths.get("append-a")!);expect(store.searchSnapshotAuthorities(["append-a"],versions).get("append-a")).toBe(authority);const next=readConversationSourceGeneration(db,"append-a");expect(Buffer.byteLength(next)).toBeLessThanOrEqual(64);expect(next).not.toBe(observed);
+  });
+
   it.each(["before-scan", "after-negative", "rewrite-after-negative"])("keeps admitted coverage across canonical publication: %s", async (boundary) => {
     const paths = await appendFixturePair("oldbody A", "tailneedle old B");
     const store = new ConversationSourceStore(db);

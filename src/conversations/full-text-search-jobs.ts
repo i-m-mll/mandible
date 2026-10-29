@@ -101,6 +101,7 @@ interface Job {
     projection_ms: number;
     paging_ms: number;
     source_verification_ms: number;
+    snapshot_pin_bytes:number;
   };
 }
 const MAX_METADATA = 32 * 1024 * 1024;
@@ -197,7 +198,7 @@ export class FullTextSearchJobs {
       if (queued >= 9)
         return this.response(terminal(id, "admission_full", { eligible: 0, prepared: 0, scanned: 0, matched: 0, failed: 0, complete: false }));
       const observer = query.observer_token || randomUUID();
-      job = { id, key, pending: pendingSearch(id, observer), coverage: { eligible: 0, prepared: 0, scanned: 0, matched: 0, failed: 0, complete: false }, observers: new Map(), controller: new AbortController(), pins: [], matches: [], redaction: "", complete: false, accessed: Date.now(), bytes: 0, prepare, metrics: { preparation_ms: 0, scan_ms: 0, projection_ms: 0, paging_ms: 0, source_verification_ms: 0 } };
+      job = { id, key, pending: pendingSearch(id, observer), coverage: { eligible: 0, prepared: 0, scanned: 0, matched: 0, failed: 0, complete: false }, observers: new Map(), controller: new AbortController(), pins: [], matches: [], redaction: "", complete: false, accessed: Date.now(), bytes: 0, prepare, metrics: { preparation_ms: 0, scan_ms: 0, projection_ms: 0, paging_ms: 0, source_verification_ms: 0,snapshot_pin_bytes:0 } };
       if (this.jobs.size >= 128)
         for (const [oldId, item] of this.jobs)
           if (item.terminal) {
@@ -246,7 +247,7 @@ export class FullTextSearchJobs {
     if (!(await this.validate(job, rendered)))
       return this.response(job.terminal!);
     job.metrics.paging_ms += performance.now() - pagingStarted;
-    return this.response({ ...result as object, search_metrics: { ...job.metrics }, state: "complete", search_id: job.id, snapshot_id: job.id, coverage: { ...job.coverage, complete: true } });
+    return this.response({ ...result as object, search_metrics: { ...job.metrics,snapshot_metadata_bytes:job.bytes }, state: "complete", search_id: job.id, snapshot_id: job.id, coverage: { ...job.coverage, complete: true } });
   }
   private response(body: FullTextSearchResponse<Record<string, unknown>>): {
     status: number;
@@ -411,7 +412,8 @@ export class FullTextSearchJobs {
       prepared.set(pin.id, pin);
     job.coverage.eligible = plan.ids.length;
     job.coverage.prepared = plan.ids.length;
-    job.bytes = plan.metadataBytes + Buffer.byteLength(JSON.stringify(job.pins));
+    job.metrics.snapshot_pin_bytes=Buffer.byteLength(JSON.stringify(job.pins));
+    job.bytes = plan.metadataBytes + job.metrics.snapshot_pin_bytes;
     job.prepare = () => { throw new Error("search plan already pinned"); };
     if (!this.evict()) {
       this.fail(job, "metadata_limit");

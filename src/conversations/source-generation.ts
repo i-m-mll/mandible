@@ -1,3 +1,4 @@
+import {createHash} from "node:crypto";
 import type { Db } from "../db.js";
 import { ConversationSourceStore } from "./source-store.js";
 
@@ -10,7 +11,7 @@ export function readConversationSourceGenerations(db:Db,conversationIds:readonly
     const aliases=store.listAliasesForSources([...sources.values()].map(source=>source.sourceId));
     return new Map(conversationIds.map(id=>{
       const source=sources.get(id)??null;
-      return [id,JSON.stringify({source,version:source?.currentVersionId?versions.get(source.currentVersionId)??null:null,aliases:source?(aliases.get(source.sourceId)??[]).sort((left,right)=>left.id.localeCompare(right.id)):[]})];
+      return [id,createHash("sha256").update(JSON.stringify({source,version:source?.currentVersionId?versions.get(source.currentVersionId)??null:null,aliases:source?(aliases.get(source.sourceId)??[]).sort((left,right)=>left.id.localeCompare(right.id)):[]})).digest("hex")];
     }));
   })();
 }

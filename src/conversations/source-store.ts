@@ -403,7 +403,7 @@ export class ConversationSourceStore {
       LEFT JOIN conversation_source_versions p ON p.id=json_extract(pin.value,'$.version_id') AND p.source_id=s.id
       LEFT JOIN conversation_source_versions c ON c.id=s.current_version_id AND c.source_id=s.id
     `).all(JSON.stringify(selected)) as Array<Record<string,unknown>&{source_id:string}>;
-    const bySource=new Map(rows.map(row=>[row.source_id,JSON.stringify(row)]));
+    const bySource=new Map(rows.map(row=>[row.source_id,createHash("sha256").update(JSON.stringify(row)).digest("hex")]));
     return new Map([...latest].flatMap(([id,source])=>{const authority=bySource.get(source.sourceId);return authority?[[id,authority] as const]:[];}));
   }
 
