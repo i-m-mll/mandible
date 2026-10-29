@@ -66,8 +66,8 @@ export function resolveAppSigning(root, configArguments = [], environment = proc
 }
 
 /** Apple operations never include command arguments or credential values in errors. */
-export function appleTool(command, args, { timeout = 60_000, secrets = [], output = 'stdout' } = {}) {
-  const result = spawnSync(command, args, { encoding: 'utf8', timeout, maxBuffer: 4 * 1024 * 1024 });
+export function appleTool(command, args, { timeout = 60_000, secrets = [], output = 'stdout', env } = {}) {
+  const result = spawnSync(command, args, { encoding: 'utf8', timeout, maxBuffer: 4 * 1024 * 1024, env });
   if (result.error || result.status !== 0) {
     let message = result.stderr || result.error?.message || `exit ${result.status}`;
     for (const secret of secrets.filter(Boolean)) message = message.replaceAll(secret, '[redacted]');
@@ -102,7 +102,9 @@ export function verifyNativeAppSignatures(app, signer, release) {
 }
 
 /** One keychain/identity lifetime covers every code signature and notarization operation. */
-export function openAppSigner(plan, { until } = {}) {
+export function openAppSigner(plan, { until, accountHome } = {}) {
+  if (accountHome !== undefined && !path.isAbsolute(accountHome)) throw new Error('Signing tool account home must be absolute.');
+  const toolEnvironment = accountHome === undefined ? undefined : { ...process.env, HOME: accountHome };
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-app-signing-'));
   const keychain = plan.certificate !== undefined ? path.join(temporary, 'signing.keychain-db') : null;
   const password = randomBytes(24).toString('hex');
@@ -110,10 +112,10 @@ export function openAppSigner(plan, { until } = {}) {
   const run = (command, args, options = {}) => {
     const timeout = Math.min(options.timeout ?? 60_000, until === undefined ? Infinity : until - Date.now());
     if (timeout <= 0) throw new Error('App signing deadline exceeded.');
-    return appleTool(command, args, { ...options, timeout, secrets });
+    return appleTool(command, args, { ...options, timeout, secrets, env: toolEnvironment });
   };
   const close = () => {
-    try { if (keychain && fs.existsSync(keychain)) appleTool('/usr/bin/security', ['delete-keychain', keychain], { timeout: 2500, secrets }); }
+    try { if (keychain && fs.existsSync(keychain)) appleTool('/usr/bin/security', ['delete-keychain', keychain], { timeout: 2500, secrets, env: toolEnvironment }); }
     finally { fs.rmSync(temporary, { recursive: true, force: true }); }
   };
   try {
