@@ -7,6 +7,8 @@ pub struct CandidateAcceptance {
     pub origin: String,
     pub nonce: String,
     pub home: PathBuf,
+    #[serde(rename = "workUntil")]
+    pub work_until: u64,
 }
 
 fn accepts_origin(url: &tauri::Url, origin: &str) -> bool {
@@ -26,6 +28,8 @@ pub fn configuration() -> Result<Option<CandidateAcceptance>, String> {
     let url = tauri::Url::parse(&config.origin).map_err(|e| e.to_string())?;
     if !accepts_origin(&url, &config.origin)
         || config.nonce.len() != 64
+        || config.work_until == 0
+        || config.work_until > 9_007_199_254_740_991
         || !config.home.is_absolute()
         || config.home != crate::mandible_home()
         || !crate::isolated_home_selected()
@@ -95,8 +99,12 @@ pub fn page_loaded(
         return;
     }
     let nonce = serde_json::to_string(&config.nonce).unwrap();
-    let script =
-        include_str!("acceptance-interaction.js").replace("__MANDIBLE_ACCEPTANCE_NONCE__", &nonce);
+    let script = include_str!("acceptance-interaction.js")
+        .replace("__MANDIBLE_ACCEPTANCE_NONCE__", &nonce)
+        .replace(
+            "__MANDIBLE_ACCEPTANCE_WORK_UNTIL__",
+            &config.work_until.to_string(),
+        );
     if let Err(error) = webview.eval(&script) {
         eprintln!("candidate_acceptance_eval_failed: {error}");
     }
