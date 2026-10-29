@@ -13,6 +13,7 @@ import { StringDecoder } from "node:string_decoder";
 import { randomUUID } from "node:crypto";
 import SqliteDatabase from "./sqlite.js";
 import { getDb, type Db } from "./db.js";
+import { getUserHome } from "./platform-paths.js";
 import { projectChildRetentionActivity } from "./conversations/retention-state.js";
 import { reconcileIngestedChildRetention } from "./conversations/retention-ingestion.js";
 import { resolveConversationId } from './conversations/identity.js';
@@ -60,15 +61,15 @@ import { getConversationStructureCache } from "./conversations/structure-cache.j
 // --- Watch configuration ---
 
 const WATCH_CONFIGS = [
-  { base: path.join(os.homedir(), ".claude", "projects"), glob: "**/*.jsonl" },
-  { base: path.join(os.homedir(), ".claude", "projects"), glob: "**/workflows/wf_*.json" },
-  { base: path.join(os.homedir(), ".codex", "sessions"), glob: "**/*.jsonl" },
+  { base: path.join(getUserHome(), ".claude", "projects"), glob: "**/*.jsonl" },
+  { base: path.join(getUserHome(), ".claude", "projects"), glob: "**/workflows/wf_*.json" },
+  { base: path.join(getUserHome(), ".codex", "sessions"), glob: "**/*.jsonl" },
   // `codex archive` (which Mandible itself triggers on merge/resume) moves
   // rollout files here. Watching the archive root keeps those conversations
   // ingestable instead of looking like deleted sources.
-  { base: path.join(os.homedir(), ".codex", "archived_sessions"), glob: "**/*.jsonl" },
-  { base: path.join(os.homedir(), ".gemini", "tmp"), glob: "**/chats/*.json" },
-  { base: path.join(os.homedir(), ".gemini", "tmp"), glob: "**/chats/*.jsonl" },
+  { base: path.join(getUserHome(), ".codex", "archived_sessions"), glob: "**/*.jsonl" },
+  { base: path.join(getUserHome(), ".gemini", "tmp"), glob: "**/chats/*.json" },
+  { base: path.join(getUserHome(), ".gemini", "tmp"), glob: "**/chats/*.jsonl" },
 ];
 
 const DEBOUNCE_MS = 200;
@@ -921,7 +922,6 @@ export async function stopIngestionGracefully(): Promise<void> {
   await actor?.close();
   await Promise.allSettled([pendingDrain, pendingReconcile].filter((pending): pending is Promise<void> => Boolean(pending)));
   requestedReparseFlights.clear();
-  activeActorPathFlights.clear();
   requestedReparseFailures.clear();
 }
 
@@ -936,7 +936,10 @@ export async function triggerFullIngest(): Promise<{ processed: number; errors: 
   return triggerFullIngestForWorker();
 }
 
-export async function triggerFullIngestForWorker(): Promise<{ processed: number; errors: number }> {
+export async function triggerFullIngestForWorker(
+  cooperate?: () => Promise<void>,
+  ingestSource = (filePath: string) => ingestFile(filePath, { forceFull: true, withinPass: true }),
+): Promise<{ processed: number; errors: number }> {
   let processed = 0;
   let errors = 0;
 
@@ -944,7 +947,7 @@ export async function triggerFullIngestForWorker(): Promise<{ processed: number;
     if (!fs.existsSync(config.base)) continue;
     for await (const filePath of walkFiles(config.base, config.glob)) {
       try {
-        await ingestFile(filePath, { forceFull: true, withinPass: true });
+        await ingestSource(filePath);
         processed++;
       } catch (error) {
         if (isSqliteBusy(error)) throw error;
@@ -954,6 +957,7 @@ export async function triggerFullIngestForWorker(): Promise<{ processed: number;
           error: String(error),
         });
       }
+      await cooperate?.();
     }
   }
 
@@ -1002,8 +1006,7 @@ export async function triggerTargetedIngest(input: TargetedIngestInput): Promise
   queuedIngestPaths.delete(transcriptPath);
 
   if (ingestionActor) {
-    await (activeActorPathFlights.get(transcriptPath)
-      ?? trackActorPathFlight([transcriptPath], ingestionActor.ingest([transcriptPath])));
+    await ingestionActor.ingest([transcriptPath]);
   } else {
     await ingestFile(transcriptPath);
   }
@@ -1023,47 +1026,49 @@ export async function triggerExactPathIngest(transcriptPath: string): Promise<Ta
     debounceTimers.delete(normalized);
   }
   queuedIngestPaths.delete(normalized);
-  if (ingestionActor) await (activeActorPathFlights.get(normalized)
-    ?? trackActorPathFlight([normalized], ingestExactSelectedPath(ingestionActor, normalized)));
+  if (ingestionActor) await ingestExactSelectedPath(ingestionActor, normalized);
   else await ingestFile(normalized, { bypassSameMtimeUnchanged: true, strictParseErrors: true });
   clearHookNotificationAttention({ sessionRef: null, transcriptPath: normalized });
   return { ok: true, status: "ingested", transcript_path: normalized, session_ref: null };
 }
 
 const requestedReparseFlights = new Map<string, Promise<void>>();
-const activeActorPathFlights = new Map<string, Promise<void>>();
 const watcherRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const watcherRetryAttempted = new Set<string>();
 const requestedReparseFailures = new Map<string, { at: number; error: string }>();
 const REQUESTED_REPARSE_RETRY_MS = 30_000;
 
-function trackActorPathFlight(paths: readonly string[], flight: Promise<void>): Promise<void> {
-  for (const filePath of paths) activeActorPathFlights.set(filePath, flight);
-  void flight.then(
-    () => { for (const filePath of paths) if (activeActorPathFlights.get(filePath) === flight) activeActorPathFlights.delete(filePath); },
-    () => { for (const filePath of paths) if (activeActorPathFlights.get(filePath) === flight) activeActorPathFlights.delete(filePath); },
-  );
-  return flight;
-}
-
-async function pathNeedsFollowupAfterActor(filePath: string): Promise<boolean> {
+export async function ingestedPathNeedsFollowup(filePath: string): Promise<boolean> {
+  if (!isWorkflowIngestArtifactPath(filePath) && !getParserForFile(filePath)) return false;
+  let stat: Awaited<ReturnType<typeof logicalSourceStat>>;
   try {
-    const stat = await logicalSourceStat(filePath);
-    const indexed = getDb().prepare(`
-      SELECT state.byte_offset, state.tail_hash, c.source_mtime
+    stat = await logicalSourceStat(filePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+    throw error;
+  }
+  const db = getDb();
+  if (isWorkflowIngestArtifactPath(filePath)) {
+    const state = getWorkflowIngestState(db, filePath);
+    return !state || Math.abs(state.source_mtime - stat.mtimeMs) >= 1;
+  }
+  const indexed = db.prepare(`
+      SELECT state.byte_offset, state.tail_hash, state.empty_source_mtime, state.empty_source_size, c.source_mtime
         FROM conversation_ingest_state state
-        JOIN conversations c ON c.source_path = state.file_path
+        LEFT JOIN conversations c ON c.source_path = state.file_path
        WHERE state.file_path = ?
        LIMIT 1
     `).get(filePath) as {
-      byte_offset: number; tail_hash: string; source_mtime: number;
+      byte_offset: number; tail_hash: string; source_mtime: number | null;
+      empty_source_mtime: number | null; empty_source_size: number | null;
     } | undefined;
-    return !indexed || indexed.byte_offset !== stat.size
+  if (!indexed) return true;
+  if (indexed.empty_source_mtime !== null) {
+    return indexed.empty_source_mtime !== stat.mtimeMs || indexed.empty_source_size !== stat.size;
+  }
+  return indexed.byte_offset !== stat.size || indexed.source_mtime === null
       || Math.abs(indexed.source_mtime - stat.mtimeMs) >= 1
       || indexed.tail_hash !== await hashFileTailAt(filePath, indexed.byte_offset);
-  } catch {
-    return true;
-  }
 }
 
 export function selectedConversationSourceEpochIsCurrent(db: Db, sourceId: string): boolean {
@@ -1110,6 +1115,7 @@ function notifySelectedReparseFailure(conversationId: string): void {
 export function scheduleExactPathReparse(transcriptPath: string, sourceId: string, conversationId: string): boolean {
   const normalized = normalizeTargetPath(transcriptPath);
   const actor = ingestionActor;
+  const runToken = ingestionRunToken;
   if (!ingestionActive || !actor || !normalized || !getParserForFile(normalized)) return false;
   if (requestedReparseFlights.has(normalized)) return true;
   const recentFailure = requestedReparseFailures.get(normalized);
@@ -1123,16 +1129,16 @@ export function scheduleExactPathReparse(transcriptPath: string, sourceId: strin
     debounceTimers.delete(normalized);
   }
   queuedIngestPaths.delete(normalized);
-  const actorFlight = activeActorPathFlights.get(normalized)
-    ?? trackActorPathFlight([normalized], ingestExactSelectedPath(actor, normalized));
+  const actorFlight = ingestExactSelectedPath(actor, normalized);
   const flight = actorFlight
     .then(() => {
+      if (!isCurrentIngestionRun(runToken)) return;
       if (!selectedConversationSourceEpochIsCurrent(getDb(), sourceId)) {
         throw new Error("Selected source did not reach the current parser version");
       }
     })
     .catch((error) => {
-      if (!ingestionActive) return;
+      if (!isCurrentIngestionRun(runToken)) return;
       requestedReparseFlights.delete(normalized);
       requestedReparseFailures.set(normalized, { at: Date.now(), error: String(error) });
       logger("warn", "ingestion_requested_reparse_failed", { file: normalized, error: String(error) });
@@ -1196,11 +1202,11 @@ async function findTranscriptPathForSession(sessionRef: string | null): Promise<
     if (indexed) return indexed;
     if (row?.source === "claude_code" && row.cwd) {
       const encodedProject = row.cwd.replace(/[^A-Za-z0-9]/g, "-");
-      const candidate = path.join(os.homedir(), ".claude", "projects", encodedProject, `${sessionRef}.jsonl`);
+      const candidate = path.join(getUserHome(), ".claude", "projects", encodedProject, `${sessionRef}.jsonl`);
       return fs.existsSync(candidate) ? candidate : null;
     }
     if (row?.source === "codex") {
-      const codexRoot = path.resolve(process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex"));
+      const codexRoot = path.resolve(process.env.CODEX_HOME?.trim() || path.join(getUserHome(), ".codex"));
       let stateDb: SqliteDatabase | null = null;
       try {
         stateDb = new SqliteDatabase(path.join(codexRoot, "state_5.sqlite"), { readonly: true, fileMustExist: true });
@@ -1292,27 +1298,10 @@ async function drainIngestQueue(runToken: number): Promise<void> {
       try {
         const actor = ingestionActor;
         if (actor) {
-          const alreadyRunning = paths.filter((filePath) => activeActorPathFlights.has(filePath));
-          const ready = paths.filter((filePath) => !activeActorPathFlights.has(filePath));
-          // A watcher event arriving during exact work must be checked after
-          // that work, so a genuinely newer append is not lost.
-          for (const filePath of alreadyRunning) {
-            const active = activeActorPathFlights.get(filePath);
-            if (active) void active.then(
-              async () => {
-                if (isCurrentIngestionRun(runToken) && await pathNeedsFollowupAfterActor(filePath)) {
-                  enqueueIngest(filePath, runToken);
-                }
-              },
-              () => scheduleWatcherRetry(filePath, runToken),
-            );
-          }
-          // Each path needs its own outcome. A failed sibling must not reject
-          // the selected source's exact freshness barrier.
-          const settled = await Promise.allSettled(ready.map((filePath) =>
-            trackActorPathFlight([filePath], actor.ingest([filePath]))));
+          const settled = await Promise.allSettled(paths.map((filePath) => actor.ingest([filePath])));
+          if (!isCurrentIngestionRun(runToken)) break;
           settled.forEach((result, index) => {
-            const filePath = ready[index];
+            const filePath = paths[index];
             if (result.status === "fulfilled") {
               watcherRetryAttempted.delete(filePath);
               return;
@@ -1368,6 +1357,7 @@ export async function ingestBatchForWorker(
   forceFull = false,
   bypassSameMtimeUnchanged = false,
   strictParseErrors = false,
+  cooperate?: () => Promise<void>,
 ): Promise<void> {
   const failures: unknown[] = [];
   for (const filePath of paths) {
@@ -1376,6 +1366,7 @@ export async function ingestBatchForWorker(
     } catch (error) {
       failures.push(error);
     }
+    await cooperate?.();
   }
   if (failures.length > 0) throw new AggregateError(failures, `Failed to ingest ${failures.length} source(s)`);
 }
@@ -4111,7 +4102,6 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
   // directory entries so the HTTP server stays responsive during startup scans.
   // Bug: 737df04 — findFiles() used readdirSync recursively, blocking the event
   // loop for the entire scan before any yielding could occur.
-  let scannedEntries = 0;
   for (const config of options.watchConfigs ?? WATCH_CONFIGS) {
     if (!isCurrentIngestionRun(runToken)) {
       return;
@@ -4119,9 +4109,7 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
     if (!fs.existsSync(config.base)) continue;
     scannedBases.push(config.base);
     for await (const filePath of walkFiles(config.base, config.glob)) {
-      if (options.cooperate && scannedEntries++ % 32 === 0) {
-        await options.cooperate();
-      }
+      await options.cooperate?.();
       if (!isCurrentIngestionRun(runToken)) {
         return;
       }
@@ -4246,11 +4234,12 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
 export async function reconcileForWorker(
   startupPasses = false,
   cooperate?: () => Promise<void>,
+  ingestChanged = (filePath: string) => ingestFile(filePath, { withinPass: true }),
 ): Promise<void> {
   const runToken = ingestionRunToken;
   await reconcile(runToken, {
     startupPasses,
-    ingestChanged: (filePath) => ingestFile(filePath, { withinPass: true }),
+    ingestChanged,
     cooperate,
   });
 }

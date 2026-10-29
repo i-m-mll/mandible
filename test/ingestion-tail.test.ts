@@ -7,6 +7,7 @@ import path from "node:path";
 import SqliteDatabase from "../src/sqlite.ts";
 
 import { setDb, type Db } from "../src/db.js";
+import { getUserHome } from "../src/platform-paths.js";
 import {
   startIngestion,
   stopIngestionGracefully,
@@ -29,7 +30,7 @@ let previousCodexHome: string | undefined;
 const TEST_APPEND_BATCH_BYTES = 16 * 1024 * 1024;
 // The watcher roots are fixed when src/ingestion.ts loads, before beforeEach
 // points HOME at a per-test directory.
-const WATCHED_CODEX_SESSIONS = path.join(os.homedir(), ".codex", "sessions");
+const WATCHED_CODEX_SESSIONS = path.join(getUserHome(), ".codex", "sessions");
 
 function row(record: unknown): string {
   return `${JSON.stringify(record)}\n`;

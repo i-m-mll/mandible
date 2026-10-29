@@ -29,6 +29,36 @@ describe("event-driven ingestion scheduling", () => {
 });
 
 describe("ingestion priority queue", () => {
+  it("resumes a background source loop while interactive arrivals keep replenishing the lane", async () => {
+    let serviced = 0;
+    let servicedAtResume = 0;
+    let finish!: () => void;
+    const completed = new Promise<void>((resolve) => { finish = resolve; });
+    const queue = new IngestionPriorityQueue<string>(async (value, cooperate) => {
+      if (value === "background") {
+        void queue.enqueue("interactive", true);
+        await cooperate();
+        servicedAtResume = serviced;
+      } else {
+        serviced += 1;
+        if (serviced < 40) void queue.enqueue("interactive", true);
+        else finish();
+      }
+    });
+    await queue.enqueue("background");
+    expect(servicedAtResume).toBeGreaterThan(0);
+    expect(servicedAtResume).toBeLessThan(40);
+    await completed;
+    expect(serviced).toBe(40);
+  });
+
+  it("honors priority submitted before the first scheduled job starts", async () => {
+    const events: string[] = [];
+    const queue = new IngestionPriorityQueue<string>(async (value) => { events.push(value); });
+    await Promise.all([queue.enqueue("first"), queue.enqueue("second"), queue.enqueue("selected", true)]);
+    expect(events).toEqual(["selected", "first", "second"]);
+  });
+
   it("runs an exact ingest at a background reconciliation boundary", async () => {
     const events: string[] = [];
     let releaseBackground!: () => void;
