@@ -1,3 +1,4 @@
+import { serializeAssignmentTarget, assignmentTargetForSession, parseAssignmentTarget, resolveAssignmentTarget } from "../work-unit-assignment.js";
 import { mutateWorkUnit } from "../work-unit-history.js";
 import { requestOriginJson } from "../request-origin.js";
 import { randomUUID } from "node:crypto";
@@ -307,6 +308,12 @@ export function registerWorkUnitRoutes(
     if (existing) {
       const current = db.prepare("SELECT * FROM work_units WHERE id = ?").get(existing.id) as CustodyRow & { kind: string; ledger_issue_id: string | null };
       const changingKind = body.kind !== undefined && body.kind !== current.kind;
+      const ancestry = current as typeof current & { parent_branch: string | null };
+      const changingParent = body.parent_branch != null && body.parent_branch !== ancestry.parent_branch;
+      if (changingParent && (ancestry.parent_branch || current.auth_request_id)) {
+        sendJson(res, 409, { error: current.auth_request_id ? "Auth-bound work-unit ancestry cannot change." : "Existing parent branch conflicts with the requested parent." });
+        return;
+      }
       if (changingKind || body.expected_generation !== undefined) {
         const failure = custodyMutationFailure(db, req, current, body.expected_generation);
         if (failure) { sendJson(res, failure.status, failure); return; }
@@ -351,10 +358,21 @@ export function registerWorkUnitRoutes(
         params.push(body.kind);
       }
       if (!existing.branch && body.branch) {
-        updates.push("branch = ?", "parent_branch = COALESCE(parent_branch, ?)");
-        params.push(body.branch, body.parent_branch ?? null);
+        updates.push("branch = ?");
+        params.push(body.branch);
       }
-      if (assignedSessionId && existing.assigned_session_id !== assignedSessionId) {
+      if (changingParent) {
+        updates.push("parent_branch = ?");
+        params.push(body.parent_branch);
+      }
+      if ("assigned_session_id" in body) {
+        updates.push("assignment_target_json = ?");
+        params.push(assignedSessionId ? serializeAssignmentTarget(assignmentTargetForSession(db, assignedSessionId, ambientIdentity)) : null);
+      } else if (!(current as unknown as Record<string, unknown>).assignment_target_json && !existing.assigned_session_id && ambientIdentity) {
+        updates.push("assignment_target_json = ?");
+        params.push(serializeAssignmentTarget(assignmentTargetForSession(db, null, ambientIdentity)));
+      }
+      if ("assigned_session_id" in body && existing.assigned_session_id !== assignedSessionId) {
         updates.push("assigned_session_id = ?");
         params.push(assignedSessionId);
       }
@@ -371,8 +389,8 @@ export function registerWorkUnitRoutes(
       // Issue 72b00f8 — a claim that re-records the session or credential on a
       // held unit obeys the holder rule. The holder's own handoff
       // (`claim --session <worker>`) passes because the caller is the holder.
-      const recordsSession = Boolean(ambientIdentity) ||
-        Boolean(assignedSessionId && existing.assigned_session_id !== assignedSessionId);
+      const recordsSession = changingParent || Boolean(ambientIdentity) ||
+        Boolean("assigned_session_id" in body && existing.assigned_session_id !== assignedSessionId);
       if (credential && (recordsSession || (owned.owner_credential_id && owned.owner_credential_id !== credential.credential_id))) {
         const refusal = holderRefusal(db, mapRow(current as unknown as Record<string, unknown>), credential,
           ambientIdentity?.provider_session_id ?? null, sessionManager, readCodexTask);
@@ -449,8 +467,8 @@ export function registerWorkUnitRoutes(
     mutateWorkUnit(db, id, () => db.prepare(
       `INSERT INTO work_units (
         id, issue_id, repo_id, branch, parent_branch, kind, state, assigned_session_id,
-        provider, provider_session_id, created_at, owner_user_id, owner_credential_id, custody_generation
-      ) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)`
+        provider, provider_session_id, created_at, owner_user_id, owner_credential_id, custody_generation, assignment_target_json
+      ) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id,
       body.issue_id,
@@ -465,6 +483,7 @@ export function registerWorkUnitRoutes(
       ownerUserId,
       null,
       0,
+      "assigned_session_id" in body && !assignedSessionId ? null : serializeAssignmentTarget(assignmentTargetForSession(db, assignedSessionId, ambientIdentity)),
     ));
     if (credential) assignInitialCustody(db, id, credential.user_id, credential.credential_id, now);
 
@@ -545,6 +564,21 @@ export function registerWorkUnitRoutes(
         params.push(body.branch);
       }
       if ("assigned_session_id" in body) {
+        updates.push("assignment_target_json = ?");
+        params.push(assignedSessionId ? serializeAssignmentTarget(assignmentTargetForSession(db, assignedSessionId, ambientIdentity)) : null);
+      } else if (ambientIdentity) {
+        const row = db.prepare("SELECT * FROM work_units WHERE id = ?").get(existing.id) as Record<string, unknown>;
+        const holder = assignmentTargetForSession(db, existing.assigned_session_id,
+          row.provider && row.provider_session_id ? { provider: String(row.provider), provider_session_id: String(row.provider_session_id) } : null);
+        const identity = resolveAssignmentTarget(db, holder);
+        const ambient = assignmentTargetForSession(db, null, ambientIdentity);
+        if (!parseAssignmentTarget(row.assignment_target_json) && identity && ambient?.kind === "native"
+          && identity.provider === ambient.provider && identity.session_id === ambient.session_id) {
+          updates.push("assignment_target_json = ?");
+          params.push(JSON.stringify(ambient));
+        }
+      }
+      if ("assigned_session_id" in body) {
         updates.push("assigned_session_id = ?");
         params.push(assignedSessionId);
       }
@@ -583,8 +617,8 @@ export function registerWorkUnitRoutes(
         `INSERT INTO work_units (
           id, issue_id, repo_id, branch, kind, state, assigned_session_id,
           provider, provider_session_id, created_at, activated_at, last_commit_at,
-          owner_user_id, worker_provider_session_id, owner_credential_id, custody_generation
-        ) VALUES (?, ?, ?, ?, 'solo', 'committed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          owner_user_id, worker_provider_session_id, owner_credential_id, custody_generation, assignment_target_json
+        ) VALUES (?, ?, ?, ?, 'solo', 'committed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         id,
         body.issue_id,
@@ -600,6 +634,7 @@ export function registerWorkUnitRoutes(
         null,
         null,
         0,
+        "assigned_session_id" in body && !assignedSessionId ? null : serializeAssignmentTarget(assignmentTargetForSession(db, assignedSessionId, ambientIdentity)),
       ));
       if (credential) assignInitialCustody(db, id, credential.user_id, credential.credential_id, now);
 
@@ -650,7 +685,7 @@ export function registerWorkUnitRoutes(
       sendJson(res, 409, { error: "Resolved work cannot be released." });
       return;
     }
-    const changed = mutateWorkUnit(db, row.id, () => db.prepare(`UPDATE work_units SET state = 'abandoned', assigned_session_id = NULL
+    const changed = mutateWorkUnit(db, row.id, () => db.prepare(`UPDATE work_units SET state = 'abandoned', assigned_session_id = NULL, assignment_target_json = NULL
       WHERE id = ? AND custody_generation = ? AND state != 'abandoned'`)
       .run(row.id, body.expected_generation), attributionForRequest(db, req));
     sendJson(res, 200, { ok: true, id: row.id, released: changed.changes, unchanged: changed.changes === 0 });
@@ -682,7 +717,7 @@ export function registerWorkUnitRoutes(
       }
     }
     db.transaction(() => {
-      const release = db.prepare("UPDATE work_units SET state = 'abandoned', assigned_session_id = NULL WHERE id = ?");
+      const release = db.prepare("UPDATE work_units SET state = 'abandoned', assigned_session_id = NULL, assignment_target_json = NULL WHERE id = ?");
       for (const row of rows) mutateWorkUnit(db, row.id, () => release.run(row.id), attributionForRequest(db, req));
     })();
     sendJson(res, 200, { ok: true, released: rows.length });
@@ -1033,6 +1068,9 @@ export function registerWorkUnitRoutes(
     }
 
     if ("assigned_session_id" in body) {
+      updates.push("assignment_target_json = ?");
+      const assigned = normalizeWorkUnitSessionId(body.assigned_session_id);
+      params.push(assigned ? serializeAssignmentTarget(assignmentTargetForSession(db, assigned, ambientIdentity)) : null);
       updates.push("assigned_session_id = ?");
       params.push(normalizeWorkUnitSessionId(body.assigned_session_id));
     }

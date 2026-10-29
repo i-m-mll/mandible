@@ -94,6 +94,38 @@ function makeRepo(repo: string, files: Record<string, string>): string {
 }
 
 describe("floor to head", () => {
+  it("observes retained assignment evidence without inventing actor ownership or historical binding time", () => {
+    const db = migrateFixtureThrough(220);
+    const prior = Date.now();
+    db.prepare("INSERT INTO sessions(id,app,status,conversation_id) VALUES ('session','codex','ended','native')").run();
+    const insert = db.prepare(`INSERT INTO work_units(id,issue_id,repo_id,state,created_at,assigned_session_id,
+      provider,provider_session_id,worker_provider,worker_provider_session_id) VALUES (?, '', '', 'resolved', 1, ?, 'codex', 'actor', ?, ?)`);
+    insert.run('actor-only', null, null, null);
+    insert.run('explicit', 'session', null, null);
+    insert.run('pending', 'unindexed-alias', null, null);
+    insert.run('positive', null, 'codex', 'positive-native');
+    insert.run('conflict', 'session', 'codex', 'other');
+    insert.run('uncertain-conflict', 'unknown', 'codex', 'other');
+    db.prepare("INSERT INTO sessions(id,app,status,conversation_id) VALUES ('collision-codex','codex','ended','shared-native'),('collision-claude','claude','ended','shared-native')").run();
+    insert.run('ambiguous', 'shared-native', null, null);
+    migrate(db);
+    const rows = db.prepare("SELECT id,assignment_target_json,provider_session_id FROM work_units ORDER BY id").all() as Array<{id:string;assignment_target_json:string|null;provider_session_id:string}>;
+    expect(rows.map(row => [row.id, row.assignment_target_json ? JSON.parse(row.assignment_target_json) : null])).toEqual([
+      ['actor-only',null], ['ambiguous',{kind:'alias',session_id:'shared-native'}], ['conflict',null], ['explicit',{kind:'native',provider:'codex',session_id:'native'}],
+      ['pending',{kind:'alias',session_id:'unindexed-alias'}], ['positive',{kind:'native',provider:'codex',session_id:'positive-native'}], ['uncertain-conflict',null],
+    ]);
+    expect(rows.every(row => row.provider_session_id === 'actor')).toBe(true);
+    const events = db.prepare("SELECT occurred_at,observed_at,payload_json FROM ledger_events WHERE event_type='work_unit.assignment.observed'").all() as Array<{occurred_at:number;observed_at:number;payload_json:string}>;
+    expect(events).toHaveLength(4);
+    for (const event of events) {
+      expect(event.occurred_at).toBeGreaterThanOrEqual(prior);
+      expect(event.observed_at).toBe(event.occurred_at);
+      expect(JSON.parse(event.payload_json).provenance).toBe('legacy_retained_assignment_observation');
+    }
+    migrate(db);
+    expect((db.prepare("SELECT count(*) AS n FROM ledger_events WHERE event_type='work_unit.assignment.observed'").get() as {n:number}).n).toBe(4);
+    db.close();
+  });
   it("converges original execution v208 without losing native observations or preferences", () => {
     const bytes = gunzipSync(fs.readFileSync(new URL('./fixtures/afe677c-schema-v208.db.gz', import.meta.url)));
     const database = SqliteDatabase.fromSnapshot(bytes);

@@ -1,3 +1,4 @@
+import { WORK_UNIT_ASSIGNMENT_SCHEMA_SQL, seedLegacyAssignmentTargets } from "./work-unit-assignment-schema.js";
 import { CHILD_RETENTION_SCHEMA_SQL } from "./conversations/retention-schema.js";
 import { AUTH_HOOK_EXECUTIONS_TABLE_SQL, AUTH_HOOK_EXECUTIONS_INDEX_SQL } from './auth-hook-schema.js';
 import { LEDGER_ORIGIN_SCHEMA_SQL, MANAGED_SESSION_ORIGIN_INDEX_SQL } from "./ledger-origin-schema.js";
@@ -2211,6 +2212,7 @@ export const MIGRATIONS: readonly Migration[] = [
     'DROP TABLE auth_hook_executions_v221',
     AUTH_HOOK_EXECUTIONS_INDEX_SQL,
   ] },
+  { version: 223, name: "durable_work_unit_assignment", statements: [...WORK_UNIT_ASSIGNMENT_SCHEMA_SQL] },
 ];
 
 /**
@@ -2394,6 +2396,7 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
           for (const statement of migration.statements) db.exec(statement);
         }
         if (migration.version === 190) loadHistoricalMigrations().preserveLegacyDocuments(db);
+        if (migration.version === 223) seedLegacyAssignmentTargets(db);
         setVersion.run(SCHEMA_VERSION_KEY, String(migration.version));
       }
     })();

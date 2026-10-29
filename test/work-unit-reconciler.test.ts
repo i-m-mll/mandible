@@ -29,6 +29,7 @@ beforeEach(() => {
       branch TEXT,
       state TEXT NOT NULL,
       assigned_session_id TEXT,
+      assignment_target_json TEXT,
       provider TEXT,
       provider_session_id TEXT,
       worker_provider TEXT,

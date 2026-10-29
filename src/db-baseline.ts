@@ -1,3 +1,4 @@
+import { WORK_UNIT_ASSIGNMENT_SCHEMA_SQL } from "./work-unit-assignment-schema.js";
 import { AUTH_HOOK_EXECUTIONS_TABLE_SQL, AUTH_HOOK_EXECUTIONS_INDEX_SQL } from './auth-hook-schema.js';
 import { CHILD_RETENTION_SCHEMA_SQL } from "./conversations/retention-schema.js";
 import { LEDGER_ORIGIN_SCHEMA_SQL, MANAGED_SESSION_ORIGIN_INDEX_SQL } from "./ledger-origin-schema.js";
@@ -28,7 +29,7 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-migration-convergence.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 222;
+export const BASELINE_SCHEMA_VERSION = 223;
 
 export const AUTH_REQUEST_HISTORY_INDEX_SQL =
   `CREATE INDEX idx_auth_requests_history ON auth_requests(resolved_at DESC)
@@ -1196,6 +1197,7 @@ export function createFreshSchemaBaseline(db: Db, schemaVersion: number): void {
     for (const statement of LEDGER_ORIGIN_SCHEMA_SQL) db.exec(statement);
     db.exec(MANAGED_SESSION_ORIGIN_INDEX_SQL);
     for (const statement of CHILD_RETENTION_SCHEMA_SQL) db.exec(statement);
+    for (const statement of WORK_UNIT_ASSIGNMENT_SCHEMA_SQL) db.exec(statement);
     const clearanceFreezeTrigger = AUTH_CLEARANCE_SCHEMA_SQL.find((sql) => sql.includes("auth_requests_clearance_review_frozen"));
     if (clearanceFreezeTrigger) db.exec(clearanceFreezeTrigger);
     db.prepare("INSERT INTO meta (key, value) VALUES (?, ?)")
