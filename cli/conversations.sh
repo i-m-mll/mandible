@@ -280,12 +280,13 @@ file_rpc_warn_truncated_blocks() {
 }
 
 conversation_search_read() (
-  local request="$1" output_file status response state search_id="" observer_token=""
+  local request="$1" output_file status response state search_id="" observer_token="" cancel_request
   local previous_progress="" progress unchanged=0 retry_ms delay
   output_file=$(api_temp_file)
   release_search() {
     if [[ -n "$observer_token" ]]; then
-      api_capture GET "${request}&search_id=$(urlencode "$search_id")&observer_token=$(urlencode "$observer_token")&cancel=true" "" "$output_file" >/dev/null
+      cancel_request="${request}&search_id=$(urlencode "$search_id")&observer_token=$(urlencode "$observer_token")&cancel=true"
+      api_send_capture GET "$cancel_request" "" "$output_file" >/dev/null
     fi
     rm -f "$output_file"
   }
@@ -294,7 +295,7 @@ conversation_search_read() (
   trap 'exit 143' TERM
   local current_request="$request"
   while true; do
-    status=$(api_capture GET "$current_request" "" "$output_file")
+    status=$(api_send_capture GET "$current_request" "" "$output_file")
     response=$(cat "$output_file")
     state=$(printf '%s\n' "$response" | jq -r '.state // "complete"') || return 1
     if [[ "$status" != 200 && "$status" != 202 && !( "$status" == 409 && ( "$state" == incomplete || "$state" == superseded || "$state" == expired ) ) ]]; then

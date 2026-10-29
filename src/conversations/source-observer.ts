@@ -174,7 +174,7 @@ export class VerifiedSourceLease {
         offset += size;
       }
       if (hash.digest("hex") !== this.expected.contentSha256) {
-        throw new SourceObservationError("source prefix no longer matches indexed version", "changed");
+        throw new SourceObservationError("conversation source prefix no longer matches its indexed version", "changed");
       }
     }
     const after = await this.stat();
