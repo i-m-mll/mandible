@@ -20,12 +20,12 @@ export function processReleaseBlocked(record, stopped = false) {
   return observed !== null && !(stopped && processLifetimeMatches(record, observed) === false);
 }
 
-export async function withOwnedRunLock(root, operation) {
-  return withLifecycleLock(root, operation);
+export async function withOwnedRunLock(root, operation, options) {
+  return withLifecycleLock(root, operation, options);
 }
 
-export function createOwnedRun({ root, instanceId, project, workUnit, outputs, disposable = false, runId = randomUUID() }) {
-  if (!project || !workUnit || !instanceId) throw new Error('Owned run requires canonical project, work-unit and instance identities');
+export function createOwnedRun({ root, instanceId, project, workUnit, outputs, disposable = false, runId = randomUUID(), processOwned = false }) {
+  if (!instanceId || (!project || !workUnit) && !(processOwned && disposable && outputs.every(output => output.kind === 'generated'))) throw new Error('Owned run requires canonical delivery identities or disposable process ownership');
   if (!/^[a-zA-Z0-9-]+$/.test(runId)) throw new Error('Invalid owned run ID');
   const stat = fs.lstatSync(root);
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Owned run root must be a canonical directory');
@@ -36,6 +36,7 @@ export function createOwnedRun({ root, instanceId, project, workUnit, outputs, d
     schema: OWNED_RUN_SCHEMA, runId, revision: 1,
     root: fs.realpathSync(root), rootIdentity: { dev: stat.dev, ino: stat.ino },
     instanceId, project, workUnit, state: 'creating', disposable,
+    processOwner: { pid: process.pid, identity: processIdentity(process.pid) },
     outputs: outputs.map(output => ({ ...output, disposition: 'pending' })),
     cleanup: { state: 'pending', remaining: [] },
   };
@@ -159,8 +160,10 @@ export function finalizeOwnedRun(metadataFile, { expectedRevision, outcome, conv
   if (outcome === 'investigating') {
     const deadline = Date.parse(reviewBy);
     if (!summary?.trim() || !Number.isFinite(deadline) || deadline <= Date.now() || deadline > Date.now() + 7 * 86400000 || run.state === 'terminal') throw new Error('Investigation requires a named need and review within seven days before acceptance');
+    const priorState = run.investigation?.priorState ?? run.state;
     run.state = 'investigating';
-    run.investigation = { owner: run.workUnit, reviewBy: deadline, summary };
+    run.investigation = { owner: run.workUnit ?? `process:${run.processOwner?.pid}`, reviewBy: deadline, summary,
+      priorState };
     run.revision += 1;
     saveOwnedMetadata(metadataFile, metadata);
     return metadata;
@@ -192,12 +195,37 @@ export function finalizeOwnedRun(metadataFile, { expectedRevision, outcome, conv
     lifecycle: run.lifecycle, consumers: run.consumers, acquisition: run.acquisition, source: run.source,
     project: run.project, workUnit: run.workUnit, outcome, converged, disposition: disposition ?? 'disposable-fixture',
     destination: destination ? path.resolve(destination) : null, transferReference: transferReference ?? null, summary, finalizedAt: new Date().toISOString(),
-    cleanup: 'pending', manifestDigest: outputDigest(outputs), apparentBytes: outputs.flatMap(output => output.manifest).reduce((total, file) => total + (file.size ?? 0), 0) };
+    cleanup: 'pending', manifestDigest: outputDigest(outputs),
+    ...(disposableGenerated ? { generatedRecovery: { processOwner: run.processOwner, processes: run.processes, outputs: outputs.map(output => output.path) } } : {}),
+    apparentBytes: outputs.flatMap(output => output.manifest).reduce((total, file) => total + (file.size ?? 0), 0) };
   saveOwnedMetadata(receipt, result);
   metadata.ownership = { ...run, revision: run.revision + 1, state: 'terminal', outcome, converged, outputs, receipt,
     cleanup: { state: 'pending', remaining: outputs.flatMap(output => output.manifest.map(file => file.path)) } };
   saveOwnedMetadata(metadataFile, metadata);
   return metadata;
+}
+
+/** Resume deletion after metadata was unlinked, using the immutable root identity in the external outcome. */
+export function recoverGeneratedReceipt(file, { apply = false, inspect = inspectRunConsumers } = {}) {
+  const receipt = readOwnedMetadata(file);
+  if (receipt.schema !== OWNED_RUN_SCHEMA || !receipt.generatedRecovery || !receipt.root
+      || file !== path.join(path.dirname(receipt.root), '.receipts', `${receipt.runId}.json`)) return { action: 'skip', reason: 'no generated recovery authority' };
+  if (!fs.existsSync(receipt.root)) {
+    if (apply && receipt.cleanup !== 'completed') saveOwnedMetadata(file, { ...receipt, cleanup: 'completed', remaining: [] });
+    return { action: 'disposed', reason: 'root removed; external outcome retained' };
+  }
+  const root = receipt.root;
+  if (fs.existsSync(path.join(root, 'metadata.json'))) return { action: 'skip', reason: 'metadata owns recovery' };
+  const run = { schema: OWNED_RUN_SCHEMA, root, rootIdentity: receipt.rootIdentity };
+  if (!identityMatches(root, run)) return { action: 'skip', reason: 'root identity changed' };
+  const consumers = inspect(root);
+  if (!consumers.idle) return { action: 'skip', reason: consumers.reason };
+  if (!apply) return { action: 'delete-owned', reason: 'external generated outcome owns interrupted deletion' };
+  for (const relative of receipt.generatedRecovery.outputs) fs.rmSync(contained(root, relative, true), { recursive: true, force: true });
+  const remaining = fs.readdirSync(root);
+  if (!remaining.length) fs.rmdirSync(root);
+  saveOwnedMetadata(file, { ...receipt, cleanup: remaining.length ? 'pending' : 'completed', remaining });
+  return { action: remaining.length ? 'cleanup-pending' : 'delete-owned', remaining, receipt: file };
 }
 
 export function cleanupOwnedRun(metadataFile, { apply = false, inspect = inspectRunConsumers } = {}) {
@@ -207,17 +235,7 @@ export function cleanupOwnedRun(metadataFile, { apply = false, inspect = inspect
   const blocked = reason => ({ action: 'skip', reason, bytes: 0, reclaimedBytes: 0 });
   if (!run || !identityMatches(root, run)) return blocked('missing or invalid ownership; manual inspection required');
   if (run.state === 'investigating') {
-    if (run.investigation.reviewBy > Date.now()) return blocked(`investigation owned by ${run.investigation.owner}; review by ${new Date(run.investigation.reviewBy).toISOString()}`);
-    if (!apply) return blocked(`investigation expired for ${run.workUnit}; generated intermediates eligible, interactive material preserved`);
-    const consumers = inspect(root);
-    if (!consumers.idle) return blocked(consumers.reason);
-    const receiptDir = receiptDirectory(root);
-    run.receipt = path.join(receiptDir, `${run.runId}.json`);
-    run.outputs = run.outputs.map(output => output.kind === 'generated'
-      ? { ...output, disposition: 'disposable', manifest: inventory(root, output.path, false) } : output);
-    saveOwnedMetadata(run.receipt, { schema: OWNED_RUN_SCHEMA, runId: run.runId, project: run.project, workUnit: run.workUnit, outcome: 'failed', summary: `Investigation review expired: ${run.investigation.summary}`, cleanup: 'pending', manifestDigest: outputDigest(run.outputs) });
-    run.state = 'terminal'; run.outcome = 'failed'; run.revision += 1;
-    saveOwnedMetadata(metadataFile, metadata);
+    return blocked(`investigation owned by ${run.investigation.owner}; explicit release required; review by ${new Date(run.investigation.reviewBy).toISOString()}`);
   }
   const finalization = validateOwnedRunFinalization(root, run);
   if (!finalization.ok) return blocked(finalization.reason);
@@ -227,9 +245,16 @@ export function cleanupOwnedRun(metadataFile, { apply = false, inspect = inspect
   if (run.disposable && run.outputs.every(output => output.kind === 'generated' && output.disposition === 'disposable')) {
     if (!apply) return { action: 'delete-owned', reason: 'terminal disposable generated run may be removed', bytes: null, reclaimedBytes: null };
     if (!identityMatches(root, run) || readOwnedMetadata(metadataFile).ownership.revision !== run.revision) return blocked('owned root or metadata revision changed');
-    fs.rmSync(root, { recursive: true });
-    saveOwnedMetadata(run.receipt, { ...receipt, cleanup: 'completed', remaining: [], physicalRecovery: 'not measured' });
-    return { action: 'delete-owned', reason: 'terminal disposable generated run removed', bytes: null, reclaimedBytes: null, remaining: [], receipt: run.receipt };
+    try {
+      for (const output of run.outputs) fs.rmSync(contained(root, output.path, true), { recursive: true, force: true });
+      const extras = fs.readdirSync(root).filter(name => name !== path.basename(metadataFile));
+      saveOwnedMetadata(run.receipt, { ...receipt, cleanup: extras.length ? 'pending' : 'completed', remaining: extras, physicalRecovery: 'not measured' });
+      if (!extras.length) { fs.unlinkSync(metadataFile); fs.rmdirSync(root); }
+      return { action: 'delete-owned', reason: extras.length ? 'unknown entries preserved' : 'terminal disposable generated run removed', bytes: null, reclaimedBytes: null, remaining: extras, receipt: run.receipt };
+    } catch (error) {
+      saveOwnedMetadata(run.receipt, { ...receipt, cleanup: 'pending', reason: String(error) });
+      return { action: 'cleanup-pending', reason: String(error), bytes: null, reclaimedBytes: null, receipt: run.receipt };
+    }
   }
   if (receipt.disposition === 'transferred') {
     for (const output of run.outputs.filter(output => output.kind === 'interactive')) verifyTransfer(root, output.manifest, receipt.destination);

@@ -25,6 +25,7 @@ export interface SupervisedCommandFailure extends Error {
 export function runSupervisedCommand(binary: string, args: readonly string[], options?: {
   cwd?: string; env?: NodeJS.ProcessEnv; stdio?: StdioOptions; timeout?: number; graceMs?: number;
   deadline?: number; signal?: AbortSignal; capture?: boolean; maxBuffer?: number;
+  onSpawn?: (child: ChildProcess) => void;
 }): Promise<SupervisedCommandResult>;
 export class ProcessGroupSupervisor {
   constructor(options?: { graceMs?: number; deadline?: number; handleSignals?: boolean });

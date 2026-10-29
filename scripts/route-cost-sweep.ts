@@ -14,6 +14,8 @@ import { parseArgs } from "node:util";
 import { CONFIRMATION_TRIALS, judgeRoute, trialTurns, writeReplayPlan } from "./route-cost-judgment.ts";
 import { evictFileCache } from "./evict-file-cache.ts";
 import { SweepBudget, sweepBudgetForEnvironment, writeSweepProgress, runSweepWorker } from "./route-cost-budget.ts";
+import { withOwnedRunLock, createOwnedRun, saveOwnedMetadata, finalizeOwnedRun, cleanupOwnedRun } from './owned-run.mjs';
+import { reconcileGeneratedScratch, recordScratchProcess } from './generated-scratch.mjs';
 import SqliteDatabase from "../src/sqlite.ts";
 import { isProtectedIdentitySettingKey } from "../src/settings-key-policy.js";
 import { numericSourceExtent } from "../src/conversations/source-observer.ts";
@@ -52,7 +54,11 @@ unclassified, or when a request does not succeed.
   --fresh-each          Start a fresh daemon for each route, so every first call is cold
   --evict               Evict snapshot DB/WAL cache before first calls (macOS; timing report only)
   --cpu-prof            Profile the daemon and attribute each offender's window
-  --keep                Keep the sweep root (snapshot, logs, profile)
+  --keep                Retain an investigation; requires owner, reason and review
+  --project <id>        Canonical project for retained investigation
+  --work-unit <id>      Delivery work-unit owning retained investigation
+  --reason <text>       Investigation owner need
+  --review-by <date>    Investigation review date (within seven days)
   --json                Print the result as JSON on stdout`;
 
 export function parseSweepOptions(args: string[]) {
@@ -72,6 +78,10 @@ export function parseSweepOptions(args: string[]) {
       "fresh-each": { type: "boolean", default: false },
       evict: { type: "boolean", default: false },
       keep: { type: "boolean", default: false },
+      reason: { type: 'string' },
+      'review-by': { type: 'string' },
+      project: { type: 'string' },
+      'work-unit': { type: 'string' },
       json: { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
     },
@@ -1542,17 +1552,30 @@ async function supervisedMain() {
   if (!Number.isFinite(totalMs) || totalMs <= 5_000 || (opts.diagnostic && totalMs > 45_000)) throw new Error("Invalid sweep total budget");
   const workRoot = path.resolve(opts["work-root"] ?? path.join(os.homedir(), ".cache", "mandible", "route-cost-sweep"));
   fs.mkdirSync(workRoot, { recursive: true, mode: 0o700 });
+  const review = Date.parse(opts['review-by'] ?? '');
+  if (opts.keep && (!opts.project || !opts['work-unit'] || !opts.reason?.trim() || !Number.isFinite(review) || review <= Date.now() || review > Date.now() + 7 * 86400000)) throw new Error('--keep requires --project, --work-unit, --reason and --review-by within seven days');
+  await reconcileGeneratedScratch(workRoot, { apply: true, until: Math.min(Date.now() + 2000, parentBudget.deadline - 3000) });
   const owned = fs.mkdtempSync(path.join(workRoot, "owned-"));
+  return withOwnedRunLock(owned, async () => {
+  const metadataFile = path.join(owned, 'metadata.json');
+  const ownership = createOwnedRun({ root: owned, instanceId: path.basename(owned), project: opts.project, workUnit: opts['work-unit'], processOwned: true, disposable: true, outputs: [{ path: 'scratch', kind: 'generated' }] });
+  saveOwnedMetadata(metadataFile, { ownership });
+  const scratch = path.join(owned, 'scratch');
+  fs.mkdirSync(scratch);
+  if (opts.keep) finalizeOwnedRun(metadataFile, { expectedRevision: ownership.revision, outcome: 'investigating', summary: opts.reason, reviewBy: opts['review-by'] });
   const reportFile = path.resolve(opts["report-file"] ?? path.join(workRoot, `${path.basename(owned)}.json`));
   let failed: string | undefined;
   let processesJoined = false;
   let normalExit = false;
   let qualifying = false;
+  let cleanupComplete = false;
+  let cleanupError: string | undefined;
   try {
     await runSweepWorker(parentBudget, process.execPath, ["--no-install", fileURLToPath(import.meta.url), ...process.argv.slice(2),
-      "--work-root", owned, "--report-file", reportFile], {
+      "--work-root", scratch, "--report-file", reportFile], {
       cwd: REPO_ROOT, env: { ...process.env, MANDIBLE_SWEEP_WORKER: "1", MANDIBLE_SWEEP_STARTED_AT: String(started) },
       stdio: "inherit", graceMs: opts.representative ? 100 : undefined,
+      onSpawn: child => recordScratchProcess(metadataFile, child, true),
     });
     processesJoined = true;
     normalExit = true;
@@ -1564,23 +1587,31 @@ async function supervisedMain() {
   finally {
     const cleanupStarted = Date.now();
     parentBudget.close();
-    const sourceLog = path.join(owned, "source-preview.log");
-    const interruptedLog = fs.readdirSync(owned).filter(name => name.startsWith("run-")).map(name => path.join(owned, name, "stderr.log")).find(file => fs.existsSync(file));
+    const sourceLog = path.join(scratch, "source-preview.log");
+    const interruptedLog = fs.readdirSync(scratch).filter(name => name.startsWith("run-")).map(name => path.join(scratch, name, "stderr.log")).find(file => fs.existsSync(file));
     if (fs.existsSync(sourceLog) || interruptedLog) fs.writeFileSync(path.join(workRoot, "source-preview.log"), tail(fs.existsSync(sourceLog) ? sourceLog : interruptedLog!));
     const cleanupAdmitted = processesJoined && Date.now() < parentBudget.deadline;
-    if (!opts.keep && cleanupAdmitted) fs.rmSync(owned, { recursive: true, force: true });
+    if (!opts.keep && cleanupAdmitted) {
+      try {
+        finalizeOwnedRun(metadataFile, { expectedRevision: ownership.revision, outcome: failed ? 'failed' : 'assessed', summary: failed?.slice(0, 2000) || 'Route measurement finished; report retained outside generated scratch.' });
+        const cleanup = cleanupOwnedRun(metadataFile, { apply: true });
+        cleanupComplete = cleanup.action === 'delete-owned' && !cleanup.remaining?.length && !fs.existsSync(owned);
+        if (!cleanupComplete) cleanupError = cleanup.reason;
+      } catch (error) { cleanupError = String(error); }
+      if (cleanupError) failed ??= cleanupError;
+    }
     if (fs.existsSync(reportFile)) {
       const report = JSON.parse(fs.readFileSync(reportFile, "utf8"));
       const elapsed = Date.now() - started;
       if (!normalExit || elapsed > totalMs) { report.complete = false; report.error ??= failed ?? "Sweep total budget exceeded during cleanup"; }
       else if (opts.diagnostic && report.diagnostic && !report.error) failed = undefined;
-      if (!cleanupAdmitted && !opts.keep) {
+      if (!cleanupComplete && !opts.keep) {
         report.complete = false;
-        report.cleanup_error = processesJoined ? "Cleanup reserve insufficient; owned scratch preserved" : "Owned process group did not settle; scratch preserved";
+        report.cleanup_error = cleanupError ?? (processesJoined ? "Cleanup reserve insufficient; owned scratch preserved" : "Owned process group did not settle; scratch preserved");
         report.error ??= report.cleanup_error;
       }
-      report.root = opts.keep || !cleanupAdmitted ? owned : null;
-      report.progress.cleanup_complete = !opts.keep && cleanupAdmitted;
+      report.root = opts.keep || !cleanupComplete ? owned : null;
+      report.progress.cleanup_complete = cleanupComplete;
       if (!normalExit) report.progress.interrupted_phase = report.progress.phase;
       report.progress.elapsed_ms = elapsed;
       report.progress.phase_elapsed_ms = Date.now() - report.progress.phase_started_at;
@@ -1592,6 +1623,7 @@ async function supervisedMain() {
   }
   if (failed) throw new Error(failed);
   return qualifying ? 0 : 1;
+  });
 }
 
 if (import.meta.main) {

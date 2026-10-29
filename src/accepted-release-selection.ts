@@ -1,4 +1,4 @@
-import { resolveAcceptedRelease, readAcceptedReleaseReceipt } from '../scripts/accepted-release.mjs';
+import { resolveAcceptedRelease, readAcceptedReleaseReceipt, assertAcceptedReleaseAvailable } from '../scripts/accepted-release.mjs';
 import type { AcceptedReleaseCandidate } from '../scripts/accepted-release.mjs';
 import type { Db } from './db.js';
 import type { AuthRequest } from './types.js';
@@ -63,6 +63,7 @@ export function acceptedReleaseSelection(db: Db, request: Record<string, any>, a
 
 export function validateAcceptedReleaseSelection(db: Db, request: Record<string, any>, selection: AcceptedReleaseSelection, verifyPackage = true) {
   if (!selection || typeof selection.acceptanceId !== 'string' || typeof selection.reference !== 'string') throw new Error('Invalid accepted-release selection.');
+  assertAcceptedReleaseAvailable(selection.reference);
   const row = db.prepare('SELECT * FROM auth_candidate_acceptances WHERE id = ?').get(selection.acceptanceId) as Record<string, any> | undefined;
   const candidate: AcceptedReleaseCandidate = { pin_sha: request.merge_candidate_pin_sha, tree_sha: request.merge_candidate_tree_sha,
     base_sha: request.merge_preflight_base_sha, head_sha: request.merge_head_sha };

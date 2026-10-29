@@ -91,7 +91,7 @@ async function verifyAcceptedBytes(journal, cleanup = false) {
     const old = readAcceptedReleaseReceipt(superseded);
     if (ownedRunReceipt(old.package.handle)?.cleanup !== 'completed') {
       const result = await disposeAcceptedRelease(superseded, old.candidate, `Superseded by ${b.acceptedRelease.reference}`,
-        { home: b.home, assertHeld: () => assertObservationLease(journal) });
+        { home: b.home, database: journal.database, assertHeld: () => assertObservationLease(journal), releasingHandoff: { file: journalFile(b), bindingDigest: journal.bindingDigest } });
       if (result.action !== 'delete-owned' || result.remaining?.length) throw new Error('Superseded package cleanup is incomplete.');
     }
   }

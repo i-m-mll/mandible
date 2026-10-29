@@ -56,3 +56,18 @@ it("starts measurement preparation under elevated historical load and still reje
     });
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+it('finalizes failed supervised measurement scratch and preserves its external report and cleanup receipt', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sweep-owned-failure-'));
+  const report = path.join(root, 'report.json');
+  try {
+    await expect(runSupervisedCommand(process.execPath, [path.resolve('scripts/route-cost-sweep.ts'), '--representative', '--budget-ms', '10000',
+      '--work-root', root, '--report-file', report, '--source-db', path.join(root, 'missing.db')], { capture: true, timeout: 4000, graceMs: 100 }))
+      .rejects.toMatchObject({ exitCode: 2, processGroupSettled: true });
+    expect(JSON.parse(fs.readFileSync(report, 'utf8'))).toMatchObject({ complete: false, root: null, progress: { cleanup_complete: true } });
+    expect(fs.readdirSync(root).filter(name => name.startsWith('owned-'))).toEqual([]);
+    const receipts = fs.readdirSync(path.join(root, '.receipts'));
+    expect(receipts).toHaveLength(1);
+    expect(JSON.parse(fs.readFileSync(path.join(root, '.receipts', receipts[0]), 'utf8'))).toMatchObject({ outcome: 'failed', cleanup: 'completed' });
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

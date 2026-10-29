@@ -1,7 +1,7 @@
 import process from "node:process";
 import { spawn, spawnSync } from 'node:child_process';
 
-export async function runSupervisedCommand(binary, args, { cwd, env, stdio, timeout, graceMs = 1_500, deadline, signal, capture = false, maxBuffer = 1024 * 1024 } = {}) {
+export async function runSupervisedCommand(binary, args, { cwd, env, stdio, timeout, graceMs = 1_500, deadline, signal, capture = false, maxBuffer = 1024 * 1024, onSpawn } = {}) {
   const startedAt = Date.now();
   const hardDeadline = deadline ?? (Number.isFinite(timeout) ? startedAt + timeout + 2 * graceMs : Infinity);
   const supervisor = new ProcessGroupSupervisor({ graceMs, deadline: hardDeadline, handleSignals: !signal });
@@ -30,6 +30,7 @@ export async function runSupervisedCommand(binary, args, { cwd, env, stdio, time
     }
     if (!child.pid) await waitForExit(child);
     supervisor.attach(child);
+    onSpawn?.(child);
     signal?.addEventListener('abort', abort, { once: true });
     if (signal?.aborted) abort();
     if (Number.isFinite(workMs)) timer = setTimeout(() => { timedOut = true; void supervisor.stopActive().catch(() => {}); }, workMs);

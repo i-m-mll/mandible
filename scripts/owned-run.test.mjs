@@ -47,7 +47,7 @@ test('native cleanup signals only its owned executable and preserves the selecte
 });
 
 const idle = { inspect: () => ({ idle: true }) };
-test('wholly disposable generated scratch deletes extra files without following links, only after consumers close', async () => {
+test('disposable generated scratch preserves unknown entries and waits for consumers', async () => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-generated-run-'));
   const root = path.join(base, 'run'); fs.mkdirSync(root);
   const outside = path.join(base, 'keep'); fs.writeFileSync(outside, 'outside');
@@ -67,6 +67,9 @@ test('wholly disposable generated scratch deletes extra files without following 
     assert.equal(cleanupOwnedRun(metadataFile).action, 'delete-owned');
     assert.equal(fs.existsSync(log), true);
     assert.equal(cleanupOwnedRun(metadataFile, { apply: true }).action, 'delete-owned');
+    assert.equal(fs.readFileSync(path.join(root, 'extra'), 'utf8'), 'generated after disposition');
+    fs.unlinkSync(path.join(root, 'extra')); fs.unlinkSync(path.join(root, 'link'));
+    cleanupOwnedRun(metadataFile, { apply: true });
     assert.equal(fs.existsSync(root), false);
     assert.equal(fs.readFileSync(outside, 'utf8'), 'outside');
     assert.equal(JSON.parse(fs.readFileSync(final.ownership.receipt)).cleanup, 'completed');
@@ -165,7 +168,7 @@ test('partial deletion retries only remaining bytes and root replacement is bloc
   } finally { f.dispose(); }
 });
 
-test('investigation has a bounded review and expiry reclaims generated output while preserving unresolved edits', () => {
+test('investigation review deadline never substitutes for explicit release', () => {
   const f = fixture();
   try {
     assert.throws(() => finalizeOwnedRun(f.metadata, { expectedRevision: 1, outcome: 'investigating', summary: 'Need reproduction', reviewBy: '2099-01-01' }, idle), /seven days/);
@@ -174,9 +177,9 @@ test('investigation has a bounded review and expiry reclaims generated output wh
     const metadata = JSON.parse(fs.readFileSync(f.metadata)); metadata.ownership.investigation.reviewBy = Date.now() - 1;
     saveOwnedMetadata(f.metadata, metadata);
     const result = cleanupOwnedRun(f.metadata, { ...idle, apply: true });
-    assert.equal(fs.existsSync(path.join(f.root, 'stdout.log')), false);
+    assert.equal(fs.existsSync(path.join(f.root, 'stdout.log')), true);
     assert.equal(fs.readFileSync(path.join(f.root, 'ledger.db'), 'utf8'), 'unique edited ledger');
-    assert.ok(result.remaining.includes('ledger.db'));
+    assert.equal(result.action, 'skip');
     const latest = JSON.parse(fs.readFileSync(f.metadata));
     finalizeOwnedRun(f.metadata, { expectedRevision: latest.ownership.revision, outcome: 'abandoned', disposition: 'discard', summary: 'Owner explicitly discarded reproduction' }, idle);
     assert.equal(cleanupOwnedRun(f.metadata, { ...idle, apply: true }).remaining.length, 0);

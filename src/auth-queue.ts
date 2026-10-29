@@ -142,6 +142,7 @@ import { raiseDaemonIncident, resolveDaemonIncident } from "./operational-incide
 import { promoteBriefingGroupProposal } from "./feedback/briefing-groups.js";
 import { appendAuthLifecycleEvent, listAuthLifecycleEvents, authRequestInitiatingOrigin } from "./auth-lifecycle.js";
 import { acceptedReleaseSelection, bindAcceptedRelease } from "./accepted-release-selection.js";
+import { GeneratedStorageMaintenance } from './generated-storage.js';
 import { authPublicationSnapshot, authRequestSnapshot, authSnapshotDigest } from "./auth-request-snapshot.js";
 import type {
   AuthConvergence,
@@ -633,6 +634,7 @@ export class AuthQueue {
   private rebuildWindowRequestId: string | null = null;
   private _rebuildFailure: RebuildFailure | null = null;
   private readonly acceptanceRuns: CandidateAcceptanceRuns | null;
+  private readonly generatedStorage: GeneratedStorageMaintenance | null;
   // Bug: 681739e — durable marker (meta key) recording when a self-merge
   // scheduled the restart. On the next startup, requests approved before this
   // instant that never recorded a result are recovered immediately instead of
@@ -653,9 +655,12 @@ export class AuthQueue {
     this.ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
     this.allowExternalEffects = options.allowExternalEffects !== false;
     this.backgroundMaintenance = options.backgroundMaintenance !== false && this.allowExternalEffects;
+    this.generatedStorage = this.backgroundMaintenance && this.db.name !== ':memory:'
+      ? new GeneratedStorageMaintenance(getMandibleHome(), this.db.name, error => authLog('warn', 'generated_storage_cleanup_pending', { subsystem: 'auth', error: error instanceof Error ? error.message : JSON.stringify(error) })) : null;
     const broadcast = options.broadcast ?? defaultBroadcast;
     this.broadcast = (event) => {
       broadcast(projectAuthAttributionEvent(this.db, event));
+      if (event.event === DOMAIN_EVENTS.AUTH_RESOLVED || event.event === DOMAIN_EVENTS.AUTH_UPDATED || event.event === DOMAIN_EVENTS.AUTH_LIFECYCLE) this.generatedStorage?.enqueue();
       // Issue 7d83fe5 — every resolution path broadcasts here, so this is
       // where a request that left pending gives up its acceptance run.
       if (event.event === DOMAIN_EVENTS.AUTH_RESOLVED) {
@@ -697,6 +702,7 @@ export class AuthQueue {
   }
 
   private async startRecovery(): Promise<void> {
+    this.generatedStorage?.enqueue();
     this.watchRuntimeHandoffCompletion();
     await this.reconcileRuntimeHandoffs();
     if (this.disposed || !this.isDbOpen()) return;
@@ -897,7 +903,7 @@ export class AuthQueue {
     if (!project?.ok) throw new Error(`Project ${request.repo ?? "(none)"} is not one registered project.`);
     if (!request.custody_work_unit_id) throw new Error("The request has no delivery work unit in custody.");
     const home = getUserHome();
-    const env: NodeJS.ProcessEnv = { GIT_OPTIONAL_LOCKS: "0", MANDIBLE_HOME: getMandibleHome(), PATH: authHookPath(this.db, home) };
+    const env: NodeJS.ProcessEnv = { GIT_OPTIONAL_LOCKS: "0", MANDIBLE_HOME: getMandibleHome(), MANDIBLE_DB: this.db.name, PATH: authHookPath(this.db, home) };
     for (const key of AUTH_HOOK_ENV_ALLOWLIST) if (process.env[key] !== undefined) env[key] = process.env[key];
     env.HOME = home;
     return { repoRoot: request.cwd!, pinSha, projectId: project.project.id, workUnitId: request.custody_work_unit_id, env };
@@ -1067,6 +1073,7 @@ export class AuthQueue {
         // whose finalizers never completed, but only when the queue is idle so
         // the 30 s tick never piles work onto an already-busy queue.
         if (this.finalizerQueue.idle) {
+          this.generatedStorage?.enqueue();
           (await this.sweepSuccessfulMergeFinalizers());
           // Issue fbf2a58 — periodic backstop for merges whose finalization was
           // lost while the queue was idle (mirrors the startup reconciliation).
@@ -1149,7 +1156,7 @@ export class AuthQueue {
     this.handoffCompletionWatcher?.close(); this.handoffCompletionWatcher = null;
     await Promise.allSettled([
       this.startupRecovery, this.expiryReconciliation, ...this.phaseRuns, ...this.observations, ...this.queuedAdmissions,
-      this.finalizerQueue.drain(), this.acceptanceRuns?.stop(),
+      this.finalizerQueue.drain(), this.acceptanceRuns?.stop(), this.generatedStorage?.stop(),
     ]);
   }
 
@@ -2607,7 +2614,7 @@ export class AuthQueue {
     expectedGeneration: number | undefined,
     mutate: () => T,
   ): T {
-    if (!actor) return mutate();
+    if (!actor) return this.db.transaction(mutate).immediate();
     const custody = this.requireRequestCustody(request, actor, expectedRevision, expectedGeneration);
     const priorSnapshot = authRequestSnapshot(this.db, request.id);
     let result!: T;

@@ -16,6 +16,7 @@ import type {
 } from "./types.js";
 import { parseJsonObject } from "./row-coerce.js";
 import { resolveId } from "./entity-refs.js";
+import { assertAcceptedReleaseAvailable } from '../scripts/accepted-release.mjs';
 
 /**
  * Whether a staged action must be withheld when convergence has not completed.
@@ -78,6 +79,12 @@ export function normalizeAuthActionInputs(value: unknown): AuthRequestActionInpu
 }
 
 export function insertAuthRequestActions(
+  db: Db, request: AuthRequest, actions: readonly AuthRequestActionInput[], now: number,
+): AuthRequestAction[] {
+  return db.transaction(() => insertAuthRequestActionsLocked(db, request, actions, now)).immediate();
+}
+
+function insertAuthRequestActionsLocked(
   db: Db,
   request: AuthRequest,
   actions: readonly AuthRequestActionInput[],
@@ -158,6 +165,12 @@ export function addAuthRequestAction(
 }
 
 export function updateAuthRequestAction(
+  db: Db, request: AuthRequest, actionId: string, input: unknown, now: number,
+): AuthRequestAction {
+  return db.transaction(() => updateAuthRequestActionLocked(db, request, actionId, input, now)).immediate();
+}
+
+function updateAuthRequestActionLocked(
   db: Db,
   request: AuthRequest,
   actionId: string,
@@ -187,6 +200,10 @@ function validateAuthActionForRequest(
   request: AuthRequest,
   action: AuthRequestActionInput,
 ): AuthRequestActionInput {
+  if (action.kind === 'checkpoint_add' && action.payload.kind === 'accepted-release') {
+    const selection = action.payload.payload as { reference?: string } | undefined;
+    assertAcceptedReleaseAvailable(selection?.reference ?? '');
+  }
   if (action.kind !== "briefing_group_promote") return action;
   if (request.type !== "merge") {
     throw new AuthActionValidationError("briefing_group_promote requires a merge auth request");
@@ -220,6 +237,12 @@ export function deleteAuthRequestAction(db: Db, requestId: string, actionId: str
 }
 
 export function setAuthRequestActionVeto(
+  db: Db, requestId: string, actionId: string, vetoed: boolean, now: number,
+): AuthRequestAction {
+  return db.transaction(() => setAuthRequestActionVetoLocked(db, requestId, actionId, vetoed, now)).immediate();
+}
+
+function setAuthRequestActionVetoLocked(
   db: Db,
   requestId: string,
   actionId: string,
@@ -234,6 +257,9 @@ export function setAuthRequestActionVeto(
     );
   }
   const nextState: AuthRequestActionState = vetoed ? "vetoed" : "staged";
+  if (!vetoed && existing.kind === 'checkpoint_add' && existing.payload.kind === 'accepted-release') {
+    assertAcceptedReleaseAvailable((existing.payload.payload as { reference: string }).reference);
+  }
   db.prepare(
     `UPDATE auth_request_actions
      SET state = ?, updated_at = ?
