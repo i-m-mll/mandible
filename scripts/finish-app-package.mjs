@@ -1,16 +1,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { finalizeAppPayload, assertUnsignedApp } from './finalize-app-payload.mjs';
-import { openAppSigner } from './app-signing.mjs';
+import { openAppSigner, verifyNativeAppSignatures } from './app-signing.mjs';
 import { verifyInstalledRelease, installedFileIdentity } from './installed-release.mjs';
 
 const digest = file => installedFileIdentity(file).sha256;
 
 /** Signing is complete before submission; only Apple's stapler may then change the app. */
-export function finishAppPackage(app, plan, { dmg = false, archive = false } = {}) {
+export function finishAppPackage(app, plan, { dmg = false, archive = false, signer: suppliedSigner } = {}) {
   assertUnsignedApp(app);
   for (const stale of [`${app}.packaging.json`, `${app}.zip`, app.replace(/\.app$/, '.dmg')]) fs.rmSync(stale, { force: true });
-  const signer = openAppSigner(plan);
+  const signer = suppliedSigner ?? openAppSigner(plan);
   try {
     const release = finalizeAppPayload(app, signer);
     const resources = path.join(app, 'Contents/Resources');
@@ -35,6 +35,7 @@ export function finishAppPackage(app, plan, { dmg = false, archive = false } = {
     if (beforeNotarization && signatures.some((digest, index) => digest !== beforeNotarization[index])) throw new Error('Signed app content changed after finalization. Distribution refused.');
     verifyInstalledRelease(resources);
     signer.run('/usr/bin/codesign', ['--verify', '--deep', '--strict', app]);
+    verifyNativeAppSignatures(app, signer, release);
     const containers = [];
     if (archive) {
       const output = `${app}.zip`;
@@ -57,5 +58,5 @@ export function finishAppPackage(app, plan, { dmg = false, archive = false } = {
       order: ['tauri-unsigned-assembly', 'native-signatures', 'resource-inventory', 'app-signature', 'notarization-and-stapling', 'distribution-containers'] };
     fs.writeFileSync(`${app}.packaging.json`, `${JSON.stringify(receipt, null, 2)}\n`);
     return receipt;
-  } finally { signer.close(); }
+  } finally { if (!suppliedSigner) signer.close(); }
 }

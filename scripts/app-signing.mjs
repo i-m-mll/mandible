@@ -66,14 +66,14 @@ export function resolveAppSigning(root, configArguments = [], environment = proc
 }
 
 /** Apple operations never include command arguments or credential values in errors. */
-export function appleTool(command, args, { timeout = 60_000, secrets = [] } = {}) {
+export function appleTool(command, args, { timeout = 60_000, secrets = [], output = 'stdout' } = {}) {
   const result = spawnSync(command, args, { encoding: 'utf8', timeout, maxBuffer: 4 * 1024 * 1024 });
   if (result.error || result.status !== 0) {
     let message = result.stderr || result.error?.message || `exit ${result.status}`;
     for (const secret of secrets.filter(Boolean)) message = message.replaceAll(secret, '[redacted]');
     throw new Error(`${path.basename(command)} failed: ${message.trim()}`);
   }
-  return result.stdout;
+  return output === 'stderr' ? result.stderr : result.stdout;
 }
 
 export function requireNativeAppSigning(plan) {
@@ -86,6 +86,19 @@ export function nativeSigningIdentifier(appIdentifier, role) {
   if (!suffix) return null;
   if (typeof appIdentifier !== 'string' || !/^[A-Za-z0-9.-]+$/.test(appIdentifier)) throw new Error('Native signing requires the app bundle identifier.');
   return `${appIdentifier}.${suffix}`;
+}
+
+export function verifyNativeAppSignatures(app, signer, release) {
+  if (signer.identity === '-') return;
+  if (!/^[a-fA-F0-9]{40}$/.test(signer.identity)) throw new Error('Native signature verification requires the resolved signing certificate.');
+  const evidence = signer.run('/usr/bin/codesign', ['--display', '--verbose=4', app], { output: 'stderr' });
+  const team = /^TeamIdentifier=([A-Z0-9]+)$/m.exec(evidence)?.[1];
+  const identifier = /^Identifier=([A-Za-z0-9.-]+)$/m.exec(evidence)?.[1];
+  if (!team || !identifier || !release.native.serviceHelper) throw new Error('Native package has no verifiable app/helper signing identity.');
+  const identity = `anchor apple generic and certificate leaf = H"${signer.identity}" and certificate leaf[subject.OU] = "${team}"`;
+  for (const [file, id] of [[app, identifier], [path.resolve(app, 'Contents/Resources', release.native.serviceHelper), nativeSigningIdentifier(identifier, 'serviceHelper')]]) {
+    signer.run('/usr/bin/codesign', ['--verify', '--strict', '-R', `=${identity} and identifier "${id}"`, file]);
+  }
 }
 
 /** One keychain/identity lifetime covers every code signature and notarization operation. */

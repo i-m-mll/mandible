@@ -5,9 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 
 const signing = vi.hoisted(() => ({ app: '', tamper: false, verified: [] as boolean[] }));
-vi.mock('../scripts/app-signing.mjs', () => ({
+vi.mock('../scripts/app-signing.mjs', async original => ({
+  ...await original<typeof import('../scripts/app-signing.mjs')>(),
   openAppSigner: (plan: any) => ({
-    identity: 'fixture', temporary: path.dirname(signing.app), plan,
+    identity: 'a'.repeat(40), temporary: path.dirname(signing.app), plan,
     sign: (file: string) => {
       if (file === signing.app) {
         fs.mkdirSync(path.join(file, 'Contents/_CodeSignature'));
@@ -15,13 +16,14 @@ vi.mock('../scripts/app-signing.mjs', () => ({
       } else fs.appendFileSync(file, '-signed');
     },
     run: (command: string, args: string[]) => {
-      if (command.endsWith('plutil')) return 'mandible-app';
+      if (command.endsWith('plutil')) return args[1] === 'CFBundleIdentifier' ? 'bio.mll.mandible.fixture' : 'mandible-app';
       if (args[0] === 'notarytool') return JSON.stringify({ status: 'Accepted' });
       if (args[0] === 'stapler' && args[1] === 'staple') {
         fs.writeFileSync(path.join(signing.app, 'Contents/ticket'), 'ticket');
         if (signing.tamper) fs.appendFileSync(path.join(signing.app, 'Contents/MacOS/mandible-app'), '-changed');
       }
-      if (command.endsWith('codesign')) signing.verified.push(fs.existsSync(path.join(signing.app, 'Contents/ticket')));
+      if (command.endsWith('codesign') && args[0] === '--display') return 'Identifier=bio.mll.mandible.fixture\nTeamIdentifier=FIXTURETEAM\n';
+      if (command.endsWith('codesign') && args.includes('--deep')) signing.verified.push(fs.existsSync(path.join(signing.app, 'Contents/ticket')));
       return '';
     }, close: () => {},
   }),
@@ -39,10 +41,11 @@ it('validates the final signed package after optional stapling and refuses chang
       fs.mkdirSync(path.join(signing.app, 'Contents/MacOS'));
       fs.writeFileSync(path.join(signing.app, 'Contents/Info.plist'), 'fixture');
       fs.writeFileSync(path.join(signing.app, 'Contents/MacOS/mandible-app'), 'app');
+      fs.writeFileSync(path.join(signing.app, 'Contents/MacOS/mandible-service'), 'helper');
       fs.writeFileSync(path.join(resources, 'program'), 'program');
       fs.writeFileSync(path.join(resources, 'release.json'), JSON.stringify({ schema: 'mandible-installed-release@1', version: 'fixture',
         target: `${process.platform}-${process.arch}`, provenance: { commit: 'a'.repeat(40), source_digest: 'b'.repeat(64) },
-        layout: { kind: 'macos-app', roots: { resources: '.' } }, entrypoints: { daemon: 'program' }, native: {}, signing: {}, files: {} }));
+        layout: { kind: 'macos-app', roots: { resources: '.', executable: '../MacOS' } }, entrypoints: { daemon: 'program' }, native: { serviceHelper: '../MacOS/mandible-service' }, signing: {}, files: {} }));
       const plan = { identity: 'fixture', notarization: notarization ? { kind: 'apple-id' } : null };
       if (tamper) {
         expect(() => finishAppPackage(signing.app, plan)).toThrow('Signed app content changed');

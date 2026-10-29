@@ -21,7 +21,7 @@ import { runSupervisedCommand } from '../../scripts/process-group-supervisor.mjs
 import { RuntimeObservationError, runtimeProcessChanged } from '../../scripts/runtime-observation.mjs';
 import type { ServiceKind } from '../../scripts/service-definitions.mjs';
 import type { RuntimeProcessIdentity } from '../../scripts/runtime-observation.mjs';
-import { resolveAppSigning, requireNativeAppSigning, openAppSigner, nativeSigningIdentifier } from '../../scripts/app-signing.mjs';
+import { resolveAppSigning, requireNativeAppSigning, openAppSigner, nativeSigningIdentifier, verifyNativeAppSignatures } from '../../scripts/app-signing.mjs';
 
 it('replaces retained signed bundles through real native service startup, qualified drain and exact package custody', async () => {
   if (process.platform !== 'darwin') throw new Error('The native replacement proof requires macOS.');
@@ -181,6 +181,7 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
         layout: { kind: 'macos-app', roots: { resources: '.', executables: '../MacOS', agents: '../Library/LaunchAgents' } },
         provenance: { commit: candidate.pin_sha, source_digest: pin.repeat(64) }, entrypoints: { daemon: 'foreground.mjs', service: 'foreground.mjs' }, serviceExecutables: { backend: 'bun', gateway: 'caddy' }, ...(index ? { serviceControlProtocol: 2 } : {}), native, files }));
       signer.sign(built, null, true, identifier);
+      verifyNativeAppSignatures(built, signer, { native });
       const evidence = path.join(root, `evidence-${pin}`);
       fs.writeFileSync(evidence, JSON.stringify({ scope: 'private native service replacement fixture', generation: candidate.pin_sha }));
       checkDeadline(`generation ${pin} retention admission`);
