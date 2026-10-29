@@ -560,13 +560,15 @@ export function IssuesView({
   const detailLoadFailed = fullQuery.isError;
   const detailError = fullQuery.error?.message ?? null;
   useEffect(() => {
-    if (selectedRepoId || !selectedIssueId || !fullDetail) return;
+    if (selectedRepoId || !selectedIssueId || !fullDetail || !fullQuery.isFetchedAfterMount
+      || !fullQuery.isSuccess || fullQuery.isPlaceholderData || fullQuery.isFetching) return;
     const repo = fullDetail.project.project_key;
     if (!repo) return;
     const canonicalOptions = issueDetailOptions(selectedIssueId, repo);
     if (hashKey(canonicalOptions.queryKey) !== hashKey(detailOptions.queryKey)) queryClient.setQueryData(canonicalOptions.queryKey, fullDetail);
     setSelectedRepoId(repo);
-  }, [selectedRepoId, selectedIssueId, fullDetail, detailOptions]);
+  }, [selectedRepoId, selectedIssueId, fullDetail, detailOptions, fullQuery.isFetchedAfterMount,
+    fullQuery.isSuccess, fullQuery.isPlaceholderData, fullQuery.isFetching]);
 
   useEffect(() => {
     setActionError(null);

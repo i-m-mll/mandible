@@ -421,6 +421,43 @@ it.each([undefined, 'mandible'])('keeps a full explicit ref intact across partia
     expect(document.querySelector('.issues-detail h2')).toBeNull();
   });
 
+it.each([
+  ['restart', 'collision'], ['stale Query', 'collision'],
+  ['restart', 'repo-b'], ['stale Query', 'repo-b'],
+])('resolves a repo-less cached prefix authoritatively before promoting scope (%s, %s)', async (source, resolution) => {
+    stubIssuesLocalStorage();
+    const prefix = '4c26383';
+    const key = detailKeys.issue(prefix);
+    const cached = issueDetailProjection({ displayId: prefix, title: 'Cached repo A', projectKey: 'repo-a' });
+    if (source === 'restart') writePersistedDetail('issue-detail-query-snapshot', hashKey(key), cached);
+    else queryClient.setQueryData(key, cached, { updatedAt: Date.now() - 60_001 });
+    let finish!: (response: Response) => void;
+    const signals: AbortSignal[] = [];
+    const requests: string[] = [];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push(String(input));
+      signals.push(init!.signal!);
+      return new Promise<Response>((resolve) => { finish = resolve; });
+    }));
+    render(h(IssuesView, { repos, onRescan: async () => undefined, initialIssueId: prefix }));
+    expect(await screen.findByRole('heading', { name: 'Cached repo A' })).toBeTruthy();
+    await act(async () => { await Promise.resolve(); });
+    expect(requests).toEqual(['/api/ledger/issues/4c26383']);
+    expect(signals[0].aborted).toBe(false);
+    expect(queryClient.getQueryData(detailKeys.issue(prefix, 'repo-a'))).toBeUndefined();
+    await act(async () => finish(resolution === 'collision'
+      ? Response.json({ error: 'New prefix collision' }, { status: 409 })
+      : Response.json(issueDetailProjection({ displayId: prefix, title: 'Authoritative repo B', projectKey: 'repo-b' }))));
+    if (resolution === 'collision') expect(await screen.findByText('New prefix collision')).toBeTruthy();
+    else {
+      expect(await screen.findByRole('heading', { name: 'Authoritative repo B' })).toBeTruthy();
+      await waitFor(() => expect(queryClient.getQueryData(detailKeys.issue(prefix, 'repo-b'))).toMatchObject({ title: 'Authoritative repo B' }));
+    }
+    expect(screen.queryByRole('heading', { name: 'Cached repo A' })).toBeNull();
+    expect(queryClient.getQueryData(detailKeys.issue(prefix, 'repo-a'))).toBeUndefined();
+    expect(requests).toEqual(['/api/ledger/issues/4c26383']);
+  });
+
 it('does not infer global uniqueness from one visible prefix match', async () => {
     const pending: Array<(response: Response) => void> = [];
     const requests: string[] = [];
