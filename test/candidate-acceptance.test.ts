@@ -6,15 +6,16 @@ import path from 'node:path';
 import https from 'node:https';
 import net from 'node:net';
 import { spawn, spawnSync } from 'node:child_process';
-import { acceptanceApplicationPolicy, acceptanceSummary, compactAcceptanceResult, acceptanceScope, acceptanceOwnedOutputs, createAcceptanceHome, acceptanceGatewayConfig, acceptanceHealth, acceptanceFailureLogs, assessAcceptanceLogs, awaitAcceptanceGatewayReadiness, awaitReadiness, loopbackListening, observeAcceptanceHealth, stopOwned } from '../scripts/candidate-acceptance.mjs';
+import { acceptanceApplicationPolicy, acceptanceSummary, compactAcceptanceResult, acceptanceScope, acceptanceOwnedOutputs, createAcceptanceHome, acceptanceGatewayConfig, acceptanceHealth, acceptanceFailureLogs, assessAcceptanceLogs, awaitAcceptanceGatewayReadiness, awaitReadiness, loopbackListening, observeAcceptanceHealth, stopOwned, finalizeAcceptance } from '../scripts/candidate-acceptance.mjs';
 import { createHash } from 'node:crypto';
-import { createOwnedRun, saveOwnedMetadata } from '../scripts/owned-run.mjs';
+import { createOwnedRun, saveOwnedMetadata, withOwnedRunLock } from '../scripts/owned-run.mjs';
 import { runSupervisedCommand } from '../scripts/process-group-supervisor.mjs';
 import { createAuthCheckRepo, createMigratedDb, insertSiblingMergeRequest } from './helpers/auth-queue-fixtures.js';
 import { readCandidateAcceptanceEvidence } from './helpers/candidate-acceptance-evidence.js';
-import { CandidateAcceptanceRuns } from '../src/candidate-acceptance.js';
+import { CandidateAcceptanceRuns, candidateAcceptanceOutcome } from '../src/candidate-acceptance.js';
 import { STATE_DEADLINE_MS } from './helpers/wait-until.js';
 import { acceptanceDeadline } from '../scripts/acceptance-deadline.mjs';
+import { acceptanceResultPath, readAcceptanceFailure } from '../scripts/acceptance-result.mjs';
 
 it.skipIf(process.platform !== 'darwin')('self-execs once per PID while preserving argv, process group and the original candidate clock', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'candidate-policy-entry-'));
@@ -83,7 +84,7 @@ it('rejects malformed or expired entry clocks before attempting resource normali
     expect(() => acceptanceApplicationPolicy()).toThrow('Invalid acceptance deadline');
     vi.stubEnv('MANDIBLE_ACCEPTANCE_STARTED_AT', String(Date.now() - 60_000));
     vi.stubEnv('MANDIBLE_ACCEPTANCE_DEADLINE', String(Date.now() - 1));
-    expect(() => acceptanceApplicationPolicy()).toThrow('Acceptance total deadline');
+    expect(() => acceptanceApplicationPolicy()).toThrow('Acceptance total budget');
     expect(exec).not.toHaveBeenCalled();
   } finally { exec.mockRestore(); vi.unstubAllEnvs(); }
 });
@@ -96,12 +97,46 @@ it('inherits the preparation deadline without renewing its cleanup reserve', () 
   expect(script.deadline).toBe(executor.deadline);
   expect(script.remaining()).toBe(43_000);
   now = executor.deadline - 5000;
-  expect(() => script.remaining()).toThrow('cleanup reserve');
-  expect(script.remaining(true)).toBe(5000);
+  expect(() => script.remaining()).toThrow('work budget');
+  expect(script.remaining('report')).toBe(3000);
+  expect(script.remaining('total')).toBe(5000);
   expect(script.reading().scope).toContain('executor');
+  expect(script.cutoffs).toEqual({ preparation: 46_000, readiness: 51_000, work: 56_000, report: 59_000, total: 61_000 });
+  now = script.cutoffs.preparation;
+  expect(() => script.remaining('preparation')).toThrow('readiness and desktop time is reserved');
+  expect(script.remaining('readiness')).toBe(5000);
+  expect(script.remaining()).toBe(10_000);
   now = executor.deadline;
-  expect(() => script.remaining(true)).toThrow('cleanup');
+  expect(() => script.remaining('total')).toThrow('total budget');
   expect(() => acceptanceDeadline({ MANDIBLE_ACCEPTANCE_DEADLINE: '90000', MANDIBLE_ACCEPTANCE_STARTED_AT: '1' }, () => 1)).toThrow('Invalid acceptance deadline');
+});
+
+it('retains an exact recorded primary failure through response loss without accepting stale or passing checkpoints', () => {
+  const cache = fs.mkdtempSync(path.join(os.tmpdir(), 'acceptance-primary-'));
+  const binding = { recordId: 'exact-run', requestId: 'request', projectId: 'project', workUnitId: 'unit',
+    pin_sha: 'p'.repeat(40), tree_sha: 't'.repeat(40), base_sha: 'b'.repeat(40), head_sha: 'h'.repeat(40), started_at: 1000, deadline: 61_000 };
+  const file = acceptanceResultPath(cache, binding.recordId);
+  const primary = { schema: 'mandible-candidate-acceptance@1', status: 'failed', candidate: binding.pin_sha,
+    binding: { ...binding, runId: binding.recordId }, error: 'Preparation consumed the reserved desktop budget.',
+    phases: { package_verification: { status: 'failed' } } };
+  const completion = { code: 1, stdout: '', stderr: JSON.stringify({ status: 'unavailable', error: 'Lifecycle ownership lock was lost; stopping effects.' }),
+    failure: 'Candidate exceeded its stage deadline.', diagnostics: { code: 'STAGE_DEADLINE', timed_out: true, process_group_settled: true } };
+  try {
+    fs.mkdirSync(path.dirname(file)); saveOwnedMetadata(file, primary);
+    const result = candidateAcceptanceOutcome(binding.pin_sha, completion, readAcceptanceFailure(cache, binding), true);
+    expect(result).toMatchObject({ status: 'failed', error: primary.error, result: { error: primary.error, phases: primary.phases,
+      subprocess: completion.diagnostics, secondary_errors: expect.arrayContaining([completion.failure, 'Lifecycle ownership lock was lost; stopping effects.']) } });
+    const stale = readAcceptanceFailure(cache, { ...binding, tree_sha: 'another-tree' });
+    expect(stale.result).toBeNull();
+    expect(candidateAcceptanceOutcome(binding.pin_sha, completion, stale, false)).toMatchObject({ status: 'failed',
+      error: 'Acceptance was unavailable: Lifecycle ownership lock was lost; stopping effects.' });
+    expect(candidateAcceptanceOutcome(binding.pin_sha, { ...completion, failure: null, stderr: '{"incomplete":true}' }, readAcceptanceFailure(cache, binding), false).error).toBe(primary.error);
+    saveOwnedMetadata(file, { ...primary, error: { message: primary.error } });
+    expect(readAcceptanceFailure(cache, binding).result).toBeNull();
+    saveOwnedMetadata(file, { ...primary, status: 'passed', error: null });
+    expect(readAcceptanceFailure(cache, binding).result).toBeNull();
+    expect(candidateAcceptanceOutcome(binding.pin_sha, completion, readAcceptanceFailure(cache, binding), false).status).toBe('failed');
+  } finally { fs.rmSync(cache, { recursive: true, force: true }); }
 });
 
 it('zero-soak acceptance still requires a fresh interval covering the completed interaction', async () => {
@@ -517,16 +552,11 @@ it("keeps large shipped inventories in the full receipt and returns bounded fina
   ])) } };
   expect(Buffer.byteLength(JSON.stringify(provenance))).toBeGreaterThan(1024 * 1024);
   try {
-    const input = path.join(run, "finalization.json");
-    saveOwnedMetadata(input, { metadataFile, run, cache, ownership, deadlineEnv: budget.env,
+    const finalized = await withOwnedRunLock(run, () => finalizeAcceptance({ metadataFile, run, cache, ownership, deadlineEnv: budget.env,
       result: { status: "failed", candidate: "candidate", scope: acceptanceScope, error: "request failed", provenance, checks: { health_coverage: { mode: "live production collectors" } }, phases: { finalization: { status: "running", started_at: Date.now() } }, budget: { ...budget.reading(), scope: "candidate-script" } },
-    });
-    const completed = await runSupervisedCommand(process.execPath, [path.resolve("scripts/candidate-acceptance.mjs"), "--finalize-owned-run", input], {
-      capture: true, maxBuffer: 1024 * 1024, timeout: 2000, graceMs: 250, deadline: Date.now() + 3000,
-    });
-    const result = JSON.parse(completed.stdout);
-    expect(completed.stdoutTruncated).toBe(false);
-    expect(Buffer.byteLength(completed.stdout)).toBeLessThan(60 * 1024);
+    }));
+    const result = compactAcceptanceResult(finalized);
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(60 * 1024);
     expect(result.truncated).toBe(true);
     expect(result.scope).toBe(acceptanceScope);
     expect(result.checks.health_coverage.mode).toBe("live production collectors");

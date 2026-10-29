@@ -27,15 +27,18 @@ function fixture() {
   return { root, lock, ownerFile: path.join(lock, 'owner.json'), guardFile: `${lock}.process` };
 }
 
-async function ownInBun(root: string) {
+async function ownInBun(root: string, cancelCleanup = false) {
   const runtime = spawnSync('/bin/sh', [path.resolve('scripts/bun-runtime.sh')], { encoding: 'utf8', timeout: 5000 });
   if (runtime.error || runtime.status !== 0) throw new Error(runtime.error?.message ?? runtime.stderr);
   const source = `import { withLifecycleLock } from ${JSON.stringify(pathToFileURL(path.resolve('scripts/lifecycle-lock.mjs')).href)};
+    import { saveOwnedMetadata } from ${JSON.stringify(pathToFileURL(path.resolve('scripts/owned-run.mjs')).href)};
+    if (${cancelCleanup}) process.on('SIGTERM', () => process.stdout.write('CANCELLED\\n'));
     await withLifecycleLock(${JSON.stringify(root)}, async () => {
       process.stdout.write('OWNED\\n'); process.stdin.resume();
       await new Promise(resolve => process.stdin.once('end', resolve));
+      if (${cancelCleanup}) saveOwnedMetadata(${JSON.stringify(path.join(root, 'failure.json'))}, { error: 'primary desktop failure', cleanupOwned: true });
     }, { recoverStale: true });`;
-  const child = spawn(runtime.stdout.trim(), ['--eval', source], { stdio: ['pipe', 'pipe', 'pipe'] });
+  const child = spawn(runtime.stdout.trim(), ['--eval', source], { detached: cancelCleanup, stdio: ['pipe', 'pipe', 'pipe'] });
   children.push(child);
   let stderr = '';
   child.stderr.on('data', chunk => { stderr += chunk; });
@@ -53,6 +56,20 @@ async function ownInBun(root: string) {
 const inode = (file: string) => { const stat = fs.statSync(file); return { dev: stat.dev, ino: stat.ino }; };
 
 describe.skipIf(process.platform !== 'darwin')('lifecycle lock ownership', () => {
+  it('keeps owned failure recording and cleanup leased after protected process-group cancellation', async () => {
+    const f = fixture(); const owner = await ownInBun(f.root, true);
+    let cancelled = false;
+    owner.stdout.on('data', chunk => { if (String(chunk).includes('CANCELLED')) cancelled = true; });
+    process.kill(-owner.pid!, 'SIGTERM');
+    await waitUntil(() => cancelled, 'the protected owner to observe cancellation');
+    expect(await inspectLifecycleLock(f.root)).toMatchObject({ state: 'held' });
+    owner.stdin.end();
+    await waitUntil(() => owner.exitCode !== null, 'the cancelled owner to finish leased cleanup');
+    expect(owner.exitCode).toBe(0);
+    expect(JSON.parse(fs.readFileSync(path.join(f.root, 'failure.json'), 'utf8'))).toEqual({ error: 'primary desktop failure', cleanupOwned: true });
+    expect(await inspectLifecycleLock(f.root)).toEqual({ state: 'free' });
+  });
+
   it('refuses live contenders and recovers no live ownership even when requested', async () => {
     const f = fixture(); const owner = await ownInBun(f.root);
     const before = fs.readFileSync(f.ownerFile, 'utf8');
