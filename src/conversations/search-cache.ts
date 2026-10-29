@@ -70,7 +70,7 @@ export interface ConversationSearchSourceAdapter {
   scanMaskedBlocks?(
     conversationId: string,
     visitor: (block: SearchBlockSource) => "stop" | void | Promise<"stop" | void>,
-    options?: { signal?: AbortSignal; expectedSourceVersionId?: string; onVerification?: (milliseconds: number) => void },
+    options?: { signal?: AbortSignal; expectedSourceVersionId?: string; expectedBlockCount?: number; expectedModel?: string | null; onVerification?: (milliseconds: number) => void },
   ): Promise<SourceReadResult<SourceScanProgress>>;
   /** `null` means no sound shortlist is available, so every input is parsed. */
   shortlistMaskedBlocks?(
@@ -293,10 +293,11 @@ export class SourceBackedConversationSearchSourceAdapter implements Conversation
   async scanMaskedBlocks(
     conversationId: string,
     visitor: (block: SearchBlockSource) => "stop" | void | Promise<"stop" | void>,
-    options: { signal?: AbortSignal; expectedSourceVersionId?: string; onVerification?: (milliseconds: number) => void } = {},
+    options: { signal?: AbortSignal; expectedSourceVersionId?: string; expectedBlockCount?: number; expectedModel?: string | null; onVerification?: (milliseconds: number) => void } = {},
   ): Promise<SourceReadResult<SourceScanProgress>> {
     try {
-      if (this.store.resolveConversation(conversationId)?.currentVersionId) {
+      const currentSource = this.store.resolveConversation(conversationId);
+      if (currentSource?.currentVersionId && (!options.expectedSourceVersionId || options.expectedSourceVersionId === currentSource.currentVersionId)) {
         const readiness = readConversationSourceReadiness(this.db, conversationId);
         if (readiness.status !== "ready") return {
           status: readiness.status === "repair_needed" ? "unsupported" : "unavailable",
@@ -680,6 +681,8 @@ export class ConversationSearchCache {
     limit: number;
     signal?: AbortSignal;
     expectedSourceVersions?: Readonly<Record<string, string>>;
+    expectedBlockCounts?: Readonly<Record<string, number>>;
+    expectedModels?: Readonly<Record<string, string | null>>;
   }): Promise<{ matches: ConversationSearchMatch[]; failures: ConversationSearchFailure[]; metrics: ConversationSearchMetrics }> {
     const started = performance.now();
     const budget = new TurnBudget(SEARCH_TURN_MS);
@@ -704,10 +707,6 @@ export class ConversationSearchCache {
     const failures: ConversationSearchFailure[] = [];
     const matches: ConversationSearchMatch[] = [];
     try {
-      // Probe native files in modest batches (the same approach used by editor
-      // search): cheap fixed-string search rules out most cold files, then only
-      // candidate conversations pay the parser cost. Exact masked block matching
-      // remains the authority, and unsupported needles simply skip the probe.
       for (let windowStart = 0;
         windowStart < input.conversationIds.length && matches.length < input.limit;
         windowStart += COLD_PROBE_BATCH_SIZE) {
@@ -720,8 +719,10 @@ export class ConversationSearchCache {
         for (const conversationId of input.conversationIds.slice(windowStart, windowStart + COLD_PROBE_BATCH_SIZE)) {
           if (!described.has(conversationId)) failures.push({ conversation_id: conversationId, status: "not_found", reason: "conversation source was not found" });
         }
-        for (const item of window) {
-          const expected = input.expectedSourceVersions?.[item.conversationId];
+        for (const describedItem of window) {
+          const expected = input.expectedSourceVersions?.[describedItem.conversationId];
+          const item = expected !== undefined && !expected.startsWith("legacy:") && !describedItem.sourceVersionId.startsWith("legacy:") && this.source.verifySource
+            ? { ...describedItem, sourceVersionId: expected } : describedItem;
           if (expected !== undefined && item.sourceVersionId !== expected) {
             failures.push({ conversation_id: item.conversationId, status: "stale", reason: "conversation source differs from pinned search version" });
             continue;
@@ -811,6 +812,7 @@ export class ConversationSearchCache {
                   match = matchBlock(block);
                   if (match) return "stop";
                 }, { signal: input.signal, expectedSourceVersionId: item.sourceVersionId,
+                  expectedBlockCount: input.expectedBlockCounts?.[item.conversationId], expectedModel: input.expectedModels?.[item.conversationId],
                   onVerification: milliseconds => { metrics.source_verification_ms += milliseconds; } });
                 if (result.status !== "source" && result.status !== "legacy") {
                   failures.push({ conversation_id: item.conversationId, status: result.status, reason: result.reason });

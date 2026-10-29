@@ -395,13 +395,23 @@ export class ConversationStructureCache {
   readPage(
     conversationId: string,
     sourceVersionId: string,
-    options: { offset: number; limit: number; types?: readonly string[] },
+    options: { offset: number; limit: number; types?: readonly string[]; prefix?: { blockCount: number; byteLength: number; verified?: boolean } },
   ): SparseConversationPage | null {
     const conversation = this.cachedConversation(conversationId, sourceVersionId);
     if (!conversation) return null;
     const typeCodes = options.types?.map(blockTypeCode);
     const conditions = ["cache_conversation_id = ?"];
     const params: unknown[] = [conversation.cache_id];
+    if (options.prefix) {
+      conditions.push("position >= 0 AND position < ?", "record_offset >= 0 AND record_length >= 0 AND record_offset + record_length <= ?",
+        "(parent_position IS NULL OR (parent_position >= 0 AND parent_position < ?))");
+      params.push(options.prefix.blockCount, options.prefix.byteLength, options.prefix.blockCount);
+      if (!options.prefix.verified) {
+        const coverage = this.cache.prepare(`SELECT COUNT(*) AS count, MIN(position) AS first, MAX(position) AS last
+          FROM cache_blocks WHERE ${conditions.join(" AND ")}`).get(...params) as { count: number; first: number | null; last: number | null };
+        if (coverage.count !== options.prefix.blockCount || (coverage.count > 0 && (coverage.first !== 0 || coverage.last !== coverage.count - 1))) return null;
+      }
+    }
     if (typeCodes && typeCodes.length > 0) {
       conditions.push(`type_code IN (${typeCodes.map(() => "?").join(",")})`);
       params.push(...typeCodes);
@@ -410,7 +420,7 @@ export class ConversationStructureCache {
     const total = typeCodes && typeCodes.length > 0
       ? (this.cache.prepare(`SELECT COUNT(*) AS count FROM cache_blocks WHERE ${where}`)
         .get(...params) as { count: number }).count
-      : conversation.block_count;
+      : options.prefix?.blockCount ?? conversation.block_count;
     const rows = this.cache.prepare(`
       SELECT position, type_code, role_code, parent_position, record_offset,
              record_length, record_ordinal, sub_block_ordinal

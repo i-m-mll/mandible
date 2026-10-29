@@ -8,6 +8,7 @@ import type { Db } from "../db.js";
 import { getAllParsers } from "../parsers/index.js";
 import type { ConversationBlock, ConversationSource } from "../parsers/types.js";
 import { ConversationSourceStore } from "./source-store.js";
+import { readConversationSourceGeneration } from "./source-generation.js";
 import {
   VerifiedSourceLease,
   type SourceReadInstrumentation,
@@ -19,6 +20,8 @@ import type {
   SourceBlockPage,
   SourceReadFailureKind,
   SourceReadResult,
+  ConversationSourceVersion,
+  ConversationSourceDescriptor,
 } from "./source-types.js";
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "./source-types.js";
 import {
@@ -40,6 +43,13 @@ interface ReadSession {
   sourceState: string;
   credentialState: string;
   versionState?: string;
+  pinnedVersion?: ConversationSourceVersion;
+  blockCount?: number;
+  context?: ConversationReadContext;
+  navigationVersion?: string;
+  navigationProof?: string;
+  navigationKind?: "dense" | "sparse";
+  canHydrateHistorical?: boolean;
   onVerification?: (milliseconds: number) => void;
   parsedRecord?: { key: string; hash: string; blocks: Array<Omit<ConversationBlock, "id" | "conversation_id">> };
   signal?: AbortSignal;
@@ -51,6 +61,8 @@ export interface SourceScanOptions {
   pageSize?: number;
   maxBatchBytes?: number;
   expectedSourceVersionId?: string;
+  expectedBlockCount?: number;
+  expectedModel?: string | null;
   onVerification?: (milliseconds: number) => void;
 }
 
@@ -200,16 +212,24 @@ export class ConversationSourceReader {
     this.onVerification = options.onVerification;
   }
 
-  async readBlock(blockRef: string): Promise<SourceReadResult<SourceBackedConversationBlock>> {
+  async readBlock(blockRef: string, options: SourceScanOptions = {}): Promise<SourceReadResult<SourceBackedConversationBlock>> {
     const durableId = this.store.resolveLegacyBlockId(blockRef) ?? blockRef;
     const row = this.db.prepare("SELECT conversation_id FROM conversation_structural_blocks WHERE id = ? AND status = 'current'").get(durableId) as { conversation_id: string } | undefined;
     const legacy = this.db.prepare("SELECT conversation_id FROM conversation_blocks WHERE id = ?").get(blockRef) as { conversation_id: string } | undefined;
     const conversationId = row?.conversation_id ?? parseSparseConversationBlockId(blockRef)?.conversationId ?? legacy?.conversation_id;
     if (!conversationId) return { status: "not_found", reason: "conversation block was not found" };
-    return this.withSession(conversationId, session => this.readBlockInSession(blockRef, session));
+    return this.withSession(conversationId, session => this.readBlockInSession(blockRef, session), options);
   }
 
   private async readBlockInSession(blockRef: string, session: ReadSession): Promise<SourceReadResult<SourceBackedConversationBlock>> {
+    const requestedPosition = parseSparseConversationBlockId(blockRef);
+    if (requestedPosition && session.blockCount !== undefined) {
+      session.navigationKind = "sparse";
+      const page = await this.readPageInSession(requestedPosition.conversationId, { offset: requestedPosition.position, limit: 1 }, session);
+      if (page.status !== "source" && page.status !== "legacy") return page;
+      return page.value.blocks[0] ? { ...page, value: page.value.blocks[0] }
+        : { status: "not_found", reason: "block is outside the pinned source prefix" };
+    }
     const durableId = this.store.resolveLegacyBlockId(blockRef) ?? blockRef;
     const row = this.db.prepare(`
       SELECT * FROM conversation_structural_blocks WHERE id = ? AND status = 'current'
@@ -252,9 +272,9 @@ export class ConversationSourceReader {
 
   async readPage(
     conversationId: string,
-    options: { offset?: number; limit?: number; types?: readonly string[] } = {},
+    options: { offset?: number; limit?: number; types?: readonly string[] } & SourceScanOptions = {},
   ): Promise<SourceReadResult<SourceBlockPage>> {
-    return this.withSession(conversationId, session => this.readPageInSession(conversationId, options, session));
+    return this.withSession(conversationId, session => this.readPageInSession(conversationId, options, session), options);
   }
 
   private async readPageInSession(
@@ -265,6 +285,48 @@ export class ConversationSourceReader {
     this.checkSession(session);
     const offset = Math.max(0, options.offset ?? 0);
     const limit = Math.max(1, Math.min(500, options.limit ?? 100));
+    const pinned = session.pinnedVersion;
+    const current = this.store.resolveConversation(conversationId);
+    if (session.navigationKind === undefined) {
+      const dense = this.db.prepare(`SELECT COUNT(*) AS count, COUNT(DISTINCT position) AS positions,
+        MIN(position) AS first, MAX(position) AS last FROM conversation_structural_blocks
+        WHERE conversation_id = ? AND status = 'current' AND position >= 0 AND position < ?`)
+        .get(conversationId, session.blockCount ?? Number.MAX_SAFE_INTEGER) as { count: number; positions: number; first: number | null; last: number | null };
+      session.navigationKind = dense.count > 0 && (session.blockCount === undefined
+        || (dense.count === session.blockCount && dense.positions === dense.count && dense.first === 0 && dense.last === dense.count - 1))
+        ? "dense" : "sparse";
+    }
+    if (pinned?.parserFormat === CURRENT_CONVERSATION_SOURCE_EPOCHS.parserFormat && current?.currentVersionId !== pinned.id
+        && session.navigationKind === "dense") return { status: "unsupported", reason: "historical dense navigation is unavailable" };
+    if (pinned?.parserFormat === CURRENT_CONVERSATION_SOURCE_EPOCHS.parserFormat && session.blockCount !== undefined && session.navigationKind === "sparse") {
+      if (current?.currentVersionId !== pinned.id && !session.canHydrateHistorical) {
+        return { status: "unsupported", reason: "historical navigation requires its admitted count and model context" };
+      }
+      const navigationVersion = this.structureCache.blockCount(conversationId, pinned.id) !== null
+        ? pinned.id : current?.currentVersionId;
+      if (navigationVersion && this.structureCache.blockCount(conversationId, navigationVersion) !== null) {
+        const navigationCount = this.structureCache.blockCount(conversationId, navigationVersion)!;
+        if (!this.structureCache.hasCompleteConversation(conversationId, navigationVersion, navigationCount, pinned)) {
+          return { status: "unsupported", reason: "admitted source navigation epochs diverge" };
+        }
+        const page = this.structureCache.readPage(conversationId, navigationVersion, {
+          offset, limit, types: options.types, prefix: { blockCount: session.blockCount, byteLength: pinned.byteLength,
+            verified: session.navigationProof === navigationVersion },
+        });
+        if (!page || page.rows.some(row => row.parserFormat !== pinned.parserFormat || row.parserVersion !== pinned.parserVersion
+            || row.normalizationVersion !== pinned.normalizationVersion || row.redactionEpoch !== pinned.redactionEpoch)) {
+          return { status: "unsupported", reason: "admitted source prefix navigation is incomplete" };
+        }
+        session.navigationVersion = navigationVersion;
+        session.navigationProof = navigationVersion;
+        const result = await this.readSparseRows(conversationId,
+          boundedRecordRows(page.rows, row => ({ offset: row.recordOffset, length: row.recordLength }), options.maxBatchBytes)
+            .map(row => ({ ...row, sourceVersionId: pinned.id })), offset, options.types, session);
+        return result.status === "source" || result.status === "legacy"
+          ? { ...result, value: { ...result.value, total: page.total, offset, limit } } : result;
+      }
+      if (current?.currentVersionId !== pinned.id) return { status: "unsupported", reason: "historical dense navigation is unavailable" };
+    }
     const params: unknown[] = [conversationId];
     const conditions = ["conversation_id = ?", "status = 'current'"];
     if (options.types && options.types.length > 0) {
@@ -340,7 +402,7 @@ export class ConversationSourceReader {
       const snapshot = await this.openVerifiedRecords(conversationId, versionId, [], session);
       return snapshot.ok ? { status: "source", value: undefined, sourceVersionId: snapshot.version.id }
         : { status: snapshot.kind, reason: snapshot.reason };
-    }, signal, versionId, onVerification);
+    }, { signal, expectedSourceVersionId: versionId, onVerification });
   }
 
   async streamBlocks(
@@ -364,9 +426,11 @@ export class ConversationSourceReader {
       let readBlocks = 0;
       let firstStatus: "source" | "legacy" | null = null;
       const source = this.store.resolveConversation(conversationId);
-      const declaredCount = source?.currentVersionId
-        ? (this.db.prepare("SELECT block_count FROM conversations WHERE id = ?").get(conversationId) as { block_count: number } | undefined)?.block_count
-        : undefined;
+      if (session.pinnedVersion && source?.currentVersionId !== session.pinnedVersion.id
+          && (options.expectedBlockCount === undefined || options.expectedModel === undefined)) {
+        return { status: "unsupported", reason: "historical scan requires its admitted block count and normalization model" };
+      }
+      const declaredCount = session.blockCount;
       for (;;) {
         this.checkSession(session);
         const page = await this.readPageInSession(conversationId, { offset, limit: pageSize, maxBatchBytes: options.maxBatchBytes ?? 512 * 1024 }, session);
@@ -393,45 +457,89 @@ export class ConversationSourceReader {
         }
         await new Promise<void>(resolve => setImmediate(resolve));
       }
-    }, options.signal, options.expectedSourceVersionId, options.onVerification);
+    }, options);
   }
 
   private credentialState(): string {
     return JSON.stringify(this.db.prepare("SELECT id, status, fingerprint, revoked_at FROM user_credentials WHERE type = 'api_token' ORDER BY id").all());
   }
 
-  private checkSession(session: ReadSession): void {
+  private sourceState(source: ConversationSourceDescriptor | null): string {
+    return JSON.stringify(source?.parserFormat === CURRENT_CONVERSATION_SOURCE_EPOCHS.parserFormat
+      ? { ...source, currentVersionId: undefined } : source);
+  }
+
+  private checkSession(session: ReadSession, expectedGeneration?: string): void {
     if (session.signal?.aborted) throw new SourceObservationError("conversation source read cancelled", "cancelled");
-    if (JSON.stringify(this.store.resolveConversation(session.conversationId)) !== session.sourceState
-        || this.credentialState() !== session.credentialState
-        || (session.snapshot && JSON.stringify(this.store.resolveVersion(session.snapshot.version.id)) !== session.versionState)) {
+    const { source, credentials, pinned, current, generation } = this.db.transaction(() => {
+      const source = this.store.resolveConversation(session.conversationId);
+      return { source, credentials: this.credentialState(),
+        pinned: session.pinnedVersion ? this.store.resolveVersion(session.pinnedVersion.id) : null,
+        current: source?.currentVersionId ? this.store.resolveVersion(source.currentVersionId) : null,
+        generation: expectedGeneration === undefined ? undefined : readConversationSourceGeneration(this.db, session.conversationId) };
+    })();
+    if (this.sourceState(source) !== session.sourceState
+        || credentials !== session.credentialState
+        || (session.pinnedVersion && JSON.stringify(pinned) !== session.versionState)
+        || generation !== expectedGeneration) {
       throw new SourceObservationError("conversation source or redaction facts changed during read", "changed");
+    }
+    if (session.pinnedVersion && source?.currentVersionId !== session.pinnedVersion.id) {
+      const admitted = session.pinnedVersion;
+      if (!current || current.sourceId !== admitted.sourceId || current.availability !== "available"
+          || current.generation !== "sealed_sha256" || current.byteLength < admitted.byteLength
+          || current.parserFormat !== admitted.parserFormat || current.parserVersion !== admitted.parserVersion
+          || current.normalizationVersion !== admitted.normalizationVersion || current.redactionEpoch !== admitted.redactionEpoch) {
+        throw new SourceObservationError("current source cannot prove the admitted version prefix", "changed");
+      }
     }
   }
 
   private async withSession<T>(
     conversationId: string,
     run: (session: ReadSession) => Promise<SourceReadResult<T>>,
-    signal?: AbortSignal,
-    expectedSourceVersionId?: string,
-    onVerification?: (milliseconds: number) => void,
+    options: SourceScanOptions = {},
   ): Promise<SourceReadResult<T>> {
-    const source = this.store.resolveConversation(conversationId);
-    if (expectedSourceVersionId && !expectedSourceVersionId.startsWith("legacy:") && source?.currentVersionId !== expectedSourceVersionId) {
+    const { signal, expectedSourceVersionId, onVerification } = options;
+    const { source, pinnedVersion, conversation, credentials } = this.db.transaction(() => {
+      const source = this.store.resolveConversation(conversationId);
+      const pinnedVersion = (expectedSourceVersionId && !expectedSourceVersionId.startsWith("legacy:"))
+        ? this.store.resolveVersion(expectedSourceVersionId)
+        : source?.currentVersionId ? this.store.resolveVersion(source.currentVersionId) : null;
+      const conversation = this.db.prepare("SELECT source, model, block_count FROM conversations WHERE id = ?")
+        .get(conversationId) as (ConversationReadContext & { block_count: number }) | undefined;
+      return { source, pinnedVersion, conversation, credentials: this.credentialState() };
+    })();
+    if (expectedSourceVersionId && !expectedSourceVersionId.startsWith("legacy:")
+        && (!pinnedVersion || pinnedVersion.sourceId !== source?.sourceId)) {
       return { status: "stale", reason: "conversation source differs from pinned version" };
+    }
+    if (pinnedVersion && source?.currentVersionId !== pinnedVersion.id
+        && pinnedVersion.parserFormat !== CURRENT_CONVERSATION_SOURCE_EPOCHS.parserFormat) {
+      return { status: "unsupported", reason: "historical managed navigation is unavailable" };
     }
     const session: ReadSession = {
       conversationId,
-      sourceState: JSON.stringify(source),
-      credentialState: this.credentialState(),
+      sourceState: this.sourceState(source),
+      credentialState: credentials,
+      pinnedVersion: pinnedVersion ?? undefined,
+      versionState: pinnedVersion ? JSON.stringify(pinnedVersion) : undefined,
+      blockCount: options.expectedBlockCount ?? (pinnedVersion ? conversation?.block_count : undefined),
+      context: conversation ? { source: conversation.source, model: options.expectedModel !== undefined ? options.expectedModel : conversation.model } : undefined,
+      canHydrateHistorical: source?.currentVersionId === pinnedVersion?.id
+        || (options.expectedBlockCount !== undefined && options.expectedModel !== undefined),
       signal,
       onVerification,
     };
     let result: SourceReadResult<T>;
+    let finalGeneration: string | undefined;
     try {
       this.checkSession(session);
       result = await run(session);
-      if (result.status === "source") await session.snapshot?.lease.verify();
+      if (result.status === "source") {
+        finalGeneration = readConversationSourceGeneration(this.db, conversationId);
+        await session.snapshot?.lease.verify();
+      }
     } catch (error) {
       if (!(error instanceof SourceObservationError)) throw error;
       result = { status: error.kind === "changed" ? "stale" : error.kind, reason: error.message };
@@ -439,7 +547,7 @@ export class ConversationSourceReader {
       await session.snapshot?.lease.close();
     }
     if (result.status === "source" || result.status === "legacy") {
-      try { this.checkSession(session); }
+      try { this.checkSession(session, finalGeneration); }
       catch (error) {
         if (!(error instanceof SourceObservationError)) throw error;
         return { status: error.kind === "changed" ? "stale" : error.kind, reason: error.message };
@@ -578,9 +686,7 @@ export class ConversationSourceReader {
     // time. Codex's model arrives in an earlier turn_context record, so recover
     // it only when the structural row carries the exact parser-state checkpoint
     // proving the full parser attached model metadata.
-    const conversation = this.db.prepare(`
-      SELECT source, model FROM conversations WHERE id = ?
-    `).get(conversationId) as ConversationReadContext | undefined;
+    const conversation = session.context;
     const checkpointIds = [...new Set(contextRows
       .map((row) => row.normalization_checkpoint_id)
       .filter((id): id is string => id !== null))];
@@ -692,7 +798,7 @@ export class ConversationSourceReader {
     if (rows.length === 0) {
       const source = this.store.resolveConversation(conversationId);
       if (!source?.currentVersionId) return { status: "unavailable", reason: "conversation source is unavailable" };
-      const snapshot = await this.openVerifiedRecords(conversationId, source.currentVersionId, [], session);
+      const snapshot = await this.openVerifiedRecords(conversationId, session.pinnedVersion?.id ?? source.currentVersionId, [], session);
       if (!snapshot.ok) return { status: snapshot.kind, reason: snapshot.reason };
       return { status: "source", value: { blocks: [], total: 0, offset: fallbackOffset, limit: 0 }, sourceVersionId: snapshot.version.id };
     }
@@ -701,8 +807,12 @@ export class ConversationSourceReader {
       .map((row) => row.parentPosition)
       .filter((position): position is number => position !== null))];
     const sparseParents = parentPositions.flatMap((position) => {
-      const parent = this.structureCache.readPosition(conversationId, sourceVersionId, position);
-      return parent ? [this.structuralRowFromSparse(parent)] : [];
+      const parent = this.structureCache.readPosition(conversationId, session.navigationVersion ?? sourceVersionId, position);
+      if (!parent || (session.pinnedVersion && (parent.recordOffset + parent.recordLength > session.pinnedVersion.byteLength
+          || parent.position >= (session.blockCount ?? Infinity)))) {
+        throw new SourceObservationError("parent context is outside admitted navigation", "changed");
+      }
+      return [this.structuralRowFromSparse({ ...parent, sourceVersionId })];
     });
     return this.readStructuralRows(
       conversationId,
@@ -817,6 +927,9 @@ export class ConversationSourceReader {
     session: ReadSession,
   ): Promise<SnapshotResult> {
     this.checkSession(session);
+    if (session.pinnedVersion && session.pinnedVersion.id !== versionId) {
+      return { ok: false, kind: "unsupported", reason: "navigation belongs to a different source version" };
+    }
     if (!session.snapshot) {
       const source = this.store.resolveConversation(conversationId);
       if (!source) return { ok: false, kind: "stale", reason: "conversation source is unavailable" };
@@ -837,7 +950,7 @@ export class ConversationSourceReader {
       if (!version.filesystem_device || !version.filesystem_inode || !version.filesystem_ctime_ns) {
         return { ok: false, kind: "stale", reason: "source version predates exact filesystem identity" };
       }
-      session.versionState = JSON.stringify(this.store.resolveVersion(versionId));
+
       for (const alias of this.store.listAliases(source.sourceId)) {
         if (alias.availability !== "available") continue;
         try {

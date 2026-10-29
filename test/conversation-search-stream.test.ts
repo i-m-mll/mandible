@@ -27,14 +27,14 @@ afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-async function fixture(texts: string[], compressed = false, id = "stream") {
+async function fixture(texts: string[], compressed = false, id = "stream", partialLine = "", preserveDense = false) {
   const filePath = path.join(root, `.codex/sessions/2026/10/29/${id}.jsonl`);
   const rows = [
     { type: "session_meta", timestamp: "2026-10-29T00:00:00Z", payload: { id, cwd: "/tmp/project" } },
     ...texts.map(text => ({ type: "response_item", timestamp: "2026-10-29T00:00:01Z", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text }] } })),
   ];
   const bytes = Buffer.from((rows.map(row => JSON.stringify(row)).join("\n") + "\n")
-    .replaceAll("EscapedAsciiNeedle", "\\u0045scapedAsciiNeedle"));
+    .replaceAll("EscapedAsciiNeedle", "\\u0045scapedAsciiNeedle") + partialLine);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(compressed ? `${filePath}.zst` : filePath, compressed ? zstdCompressSync(bytes) : bytes);
   const parsed = await new CodexParser().parse(filePath) ?? (texts.length === 0 ? {
@@ -48,7 +48,7 @@ async function fixture(texts: string[], compressed = false, id = "stream") {
   await new ConversationSourceStore(db).recordConversation({ conversationId: id, provider: "codex", nativeSessionId: id, filePath,
     blocks: parsed.blocks.map(block => ({ ...block, legacyId: `${id}-${block.position}` })), ...CURRENT_CONVERSATION_SOURCE_EPOCHS });
   getConversationStructureCache(db).captureDenseRows(db, id, "replace");
-  db.prepare("DELETE FROM conversation_structural_blocks WHERE conversation_id = ?").run(id);
+  if (!preserveDense) db.prepare("DELETE FROM conversation_structural_blocks WHERE conversation_id = ?").run(id);
   return { filePath, bytes, id };
 }
 
@@ -117,6 +117,24 @@ describe("verified conversation scans", () => {
     expect(stale.failures).toMatchObject([{ conversation_id: source.id, status: "stale" }]);
   });
 
+  it("preserves current dense block identity across pinned cold search, hot search and complete reads", async () => {
+    const source = await fixture(["first needle", "later needle"], false, "dense", "", true);
+    const reader = new ConversationSourceReader(db);
+    const all = await reader.readAll(source.id);
+    if (all.status !== "source") throw new Error("expected current dense source");
+    const version = all.sourceVersionId;
+    const cache = new ConversationSearchCache(new SourceBackedConversationSearchSourceAdapter(db), { cachePath: ":memory:" });
+    caches.push(cache);
+    const input = { conversationIds: [source.id], limit: 1, expectedSourceVersions: { [source.id]: version },
+      expectedBlockCounts: { [source.id]: 2 }, expectedModels: { [source.id]: null } };
+    expect((await cache.search({ ...input, needle: "needle" })).matches).toMatchObject([{ block_id: all.value[0].id }]);
+    await cache.search({ ...input, needle: "absent" });
+    await cache.whenIdle();
+    expect((await cache.search({ ...input, needle: "needle" })).matches).toMatchObject([{ block_id: all.value[0].id }]);
+    expect((await reader.readPage(source.id, { limit: 2, expectedSourceVersionId: version, expectedBlockCount: 2, expectedModel: null })))
+      .toMatchObject({ status: "source", value: { blocks: all.value } });
+  });
+
   it("keeps verified FTS-negative hits free of body reads while detecting lost sources", async () => {
     const source = await fixture(["retained content"]);
     const cache = new ConversationSearchCache(new SourceBackedConversationSearchSourceAdapter(db), { cachePath: ":memory:" });
@@ -152,6 +170,100 @@ describe("verified conversation scans", () => {
     expect(result.status).toBe("stale");
     expect(handles).toHaveLength(1);
     expect(handles[0].fd).toBe(-1);
+  });
+
+  it("finishes its admitted prefix when an append publishes a new source version during the scan", async () => {
+    const texts = Array.from({ length: 70 }, (_, index) => `original ${index}`);
+    const source = await fixture(texts);
+    const store = new ConversationSourceStore(db);
+    const version = store.resolveConversation(source.id)!.currentVersionId!;
+    let published = false;
+    const seen: string[] = [];
+    const reader = new ConversationSourceReader(db, { legacyFallback: false });
+    const result = await reader.scanBlocks(source.id, async block => {
+      seen.push(block.content);
+      if (!published) { published = true; await publishAppend(source, texts.length, nativeMessage("new snapshot only") + "\n"); }
+    }, { expectedSourceVersionId: version });
+    expect(store.resolveConversation(source.id)!.currentVersionId).not.toBe(version);
+    expect(result).toMatchObject({ status: "source", sourceVersionId: version, value: { count: texts.length, complete: true } });
+    expect(seen).toEqual(texts);
+    const options = { expectedSourceVersionId: version, expectedBlockCount: texts.length, expectedModel: null };
+    const oldPage = await reader.readBlock(`cblk:${source.id}:0`, options);
+    expect(oldPage).toMatchObject({ status: "source", sourceVersionId: version, value: { content: texts[0] } });
+    expect((await reader.scanBlocks(source.id, () => {}, options))).toMatchObject({ status: "source", value: { count: texts.length, complete: true } });
+  });
+
+  it.each(["rewrite", "alias"])("rejects a canonical %s publication during final verification and still closes its lease", async mutation => {
+    const source = await fixture(["original"]);
+    const version = new ConversationSourceStore(db).resolveConversation(source.id)!.currentVersionId!;
+    const open = logicalSource.openLogicalSource;
+    const handles: Awaited<ReturnType<typeof open>>[] = [];
+    let publication: Promise<void> | undefined;
+    vi.spyOn(logicalSource, "openLogicalSource").mockImplementation(async (...args) => {
+      const handle = await open(...args);
+      const readerLease = handles.length === 0;
+      handles.push(handle);
+      if (!readerLease) return handle;
+      return new Proxy(handle, { get(target, property) {
+        if (property === "close") return async () => { await publication; await target.close(); };
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      } });
+    });
+    let finalProof = false;
+    const reader = new ConversationSourceReader(db, { onVerification: () => {
+      if (!finalProof) return;
+      finalProof = false;
+      if (mutation === "alias") db.prepare("UPDATE conversation_source_aliases SET availability = 'missing'").run();
+      else {
+        fs.writeFileSync(source.filePath, source.bytes.toString().replace("original", "modified"));
+        publication = publishAppend(source, 1, nativeMessage("new snapshot only") + "\n", true);
+      }
+    } });
+    const result = await reader.scanBlocks(source.id, () => { finalProof = true; return "stop"; }, { expectedSourceVersionId: version });
+    expect(result.status).toBe("stale");
+    expect(handles[0].fd).toBe(-1);
+  });
+
+  it.each(["zero", "partial"])("preserves a published %s prefix, including an old hot negative", async kind => {
+    const tail = nativeMessage("new snapshot only");
+    const partial = kind === "partial" ? tail.slice(0, Math.floor(tail.length / 2)) : "";
+    const texts = kind === "partial" ? ["original"] : [];
+    const source = await fixture(texts, false, kind, partial);
+    const version = new ConversationSourceStore(db).resolveConversation(source.id)!.currentVersionId!;
+    const pins = { expectedSourceVersions: { [source.id]: version }, expectedBlockCounts: { [source.id]: texts.length }, expectedModels: { [source.id]: null } };
+    const adapter = new SourceBackedConversationSearchSourceAdapter(db);
+    const hot = new ConversationSearchCache(adapter, { cachePath: ":memory:" });
+    caches.push(hot);
+    await hot.search({ conversationIds: [source.id], needle: "new snapshot only", limit: 1, ...pins });
+    await hot.whenIdle();
+    await publishAppend(source, texts.length, tail.slice(partial.length) + "\n");
+    const oldHot = await hot.search({ conversationIds: [source.id], needle: "new snapshot only", limit: 1, ...pins });
+    expect(oldHot).toMatchObject({ matches: [], failures: [], metrics: { hot_conversations: 1 } });
+    const cold = new ConversationSearchCache(adapter, { cachePath: ":memory:" });
+    caches.push(cold);
+    expect(await cold.search({ conversationIds: [source.id], needle: "new snapshot only", limit: 1, ...pins }))
+      .toMatchObject({ matches: [], failures: [] });
+    expect((await cold.search({ conversationIds: [source.id], needle: "new snapshot only", limit: 1 })).matches).toHaveLength(1);
+    expect((await new ConversationSourceReader(db).scanBlocks(source.id, () => {}, {
+      expectedSourceVersionId: version, expectedBlockCount: texts.length, expectedModel: null,
+    }))).toMatchObject({ status: "source", sourceVersionId: version, value: { count: texts.length, complete: true } });
+  });
+
+  it.each(["rewrite", "replacement"])("rejects a published %s while preserving an old source version", async mutation => {
+    const source = await fixture(["original"]);
+    const version = new ConversationSourceStore(db).resolveConversation(source.id)!.currentVersionId!;
+    const cache = new ConversationSearchCache(new SourceBackedConversationSearchSourceAdapter(db), { cachePath: ":memory:" });
+    caches.push(cache);
+    const pins = { expectedSourceVersions: { [source.id]: version }, expectedBlockCounts: { [source.id]: 1 }, expectedModels: { [source.id]: null } };
+    await cache.search({ conversationIds: [source.id], needle: "absent", limit: 1, ...pins });
+    await cache.whenIdle();
+    if (mutation === "rewrite") fs.writeFileSync(source.filePath, source.bytes.toString().replace("original", "modified"));
+    else { fs.renameSync(source.filePath, `${source.filePath}.old`); fs.writeFileSync(source.filePath, source.bytes); }
+    await publishAppend(source, 1, nativeMessage("new snapshot only") + "\n", mutation === "rewrite");
+    const result = await cache.search({ conversationIds: [source.id], needle: "absent", limit: 1, ...pins });
+    expect(result.matches).toEqual([]);
+    expect(result.failures).toMatchObject([{ conversation_id: source.id, status: "stale" }]);
   });
 
   it("bounds source concurrency across searches and cancels queued scans without waiting for occupied leases", async () => {
@@ -235,3 +347,19 @@ describe("verified conversation scans", () => {
     console.log("large native record scan", { recordBytes: 8 * 1024 * 1024, elapsedMs: Math.round(performance.now() - started), preemption: "between native records" });
   });
 });
+
+function nativeMessage(text: string): string {
+  return JSON.stringify({ type: "response_item", timestamp: "2026-10-29T00:00:02Z", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text }] } });
+}
+
+async function publishAppend(source: { id: string; filePath: string }, oldCount: number, tail: string, replace = false): Promise<void> {
+  fs.appendFileSync(source.filePath, tail);
+  const parsed = await new CodexParser().parse(source.filePath);
+  if (!parsed) throw new Error("appended fixture did not parse");
+  db.prepare("UPDATE conversations SET block_count = ?, source_hash = ?, source_mtime = ? WHERE id = ?")
+    .run(parsed.blocks.length, parsed.conversation.source_hash, parsed.conversation.source_mtime, source.id);
+  await new ConversationSourceStore(db).recordConversation({ conversationId: source.id, provider: "codex", nativeSessionId: source.id,
+    filePath: source.filePath, structuralMode: replace ? "replace" : "append", ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
+    blocks: parsed.blocks.slice(replace ? 0 : oldCount).map(block => ({ ...block, legacyId: `${source.id}-${block.position}` })) });
+  getConversationStructureCache(db).captureDenseRows(db, source.id, replace ? "replace" : "append");
+}
