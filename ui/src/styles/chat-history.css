@@ -103,7 +103,7 @@
 }
 
 .chat-history-item {
-  --sidebar-item-row-padding-block-scale: 1.5625;
+  --sidebar-item-row-padding-block-scale: 1.875;
   --sidebar-item-row-padding-inline-scale: 1.25;
   --sidebar-item-row-provider-slot-size: 27px;
   border-radius: var(--radius-lg);
