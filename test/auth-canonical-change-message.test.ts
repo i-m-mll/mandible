@@ -2,7 +2,6 @@ import { MAIN_CLI_INSTANCE_RESPONSE } from "./helpers/cli-instance-response.js";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
-import os from "node:os";
 import path from "node:path";
 import SqliteDatabase from "../src/sqlite.ts";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -16,6 +15,7 @@ import {
 import { AuthQueue } from "../src/auth-queue.js";
 import { setupOperator } from "../src/users/store.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
+import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
 
 const AUTH_MERGE = path.join(process.cwd(), "cli", "auth-merge.sh");
 const CLI = path.join(process.cwd(), "bin", "mandible");
@@ -24,6 +24,8 @@ let repo = "";
 let homeDir = "";
 let keyDir = "";
 let key = "";
+let repoTemplate = "";
+let repoTemplateRefs = "";
 
 function git(args: string[], cwd = repo, env: Record<string, string> = {}): string {
   const result = spawnSync("git", args, {
@@ -165,7 +167,7 @@ function runMerge(
 }
 
 /** Call one helper from auth-merge.sh without running the merge flow. */
-function sourceHelper(snippet: string, env: Record<string, string> = {}): string {
+function sourceHelper(snippet: string, env: Record<string, string> = {}, cwd = process.cwd()): string {
   const result = spawnSync(
     "bash",
     [
@@ -177,7 +179,7 @@ function sourceHelper(snippet: string, env: Record<string, string> = {}): string
       ].join("\n"),
     ],
     {
-      cwd: repo,
+      cwd,
       encoding: "utf8",
       env: {
         ...process.env,
@@ -191,42 +193,53 @@ function sourceHelper(snippet: string, env: Record<string, string> = {}): string
   return result.stdout;
 }
 
-// One signing key for the whole file: key generation is the slowest step here
-// and nothing in these tests depends on a per-test key identity.
-beforeAll(() => {
-  keyDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-canonical-key-"));
-  key = path.join(keyDir, "signing-key");
-  const keygen = spawnSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", key], {
-    encoding: "utf8",
-  });
-  if (keygen.status !== 0) throw new Error(keygen.stderr);
-});
-
 afterAll(() => {
-  fs.rmSync(keyDir, { recursive: true, force: true });
+  if (repoTemplate) {
+    expect(git(["show-ref", "--head"], repoTemplate)).toBe(repoTemplateRefs);
+    expect(git(["status", "--porcelain"], repoTemplate)).toBe("");
+  }
+  if (keyDir) fs.rmSync(keyDir, { recursive: true, force: true });
 });
 
-beforeEach(() => {
-  repo = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-canonical-msg-"));
-  homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-canonical-home-"));
-  git(["init", "-b", "main"]);
-  git(["config", "user.name", "Canonical Test"]);
-  git(["config", "user.email", "canonical@example.invalid"]);
-  git(["config", "gpg.format", "ssh"]);
-  git(["config", "commit.gpgsign", "true"]);
-  git(["config", "user.signingkey", key]);
-  write("base.txt", "base\n");
-  commit("base");
-  git(["checkout", "-b", "feature/canonical"]);
-  write("feature.txt", "feature\n");
-  commit("feature\n\nMandible-Issue: 7d64d8f");
-  git(["checkout", "main"]);
-});
+function useGitRepo(): void {
+  beforeAll(() => {
+    if (repoTemplate) return;
+    keyDir = fs.mkdtempSync(path.join(testRuntimeRoot, "mandible-canonical-key-"));
+    key = path.join(keyDir, "signing-key");
+    const keygen = spawnSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", key], {
+      encoding: "utf8",
+    });
+    if (keygen.status !== 0) throw new Error(keygen.stderr);
 
-afterEach(() => {
-  fs.rmSync(repo, { recursive: true, force: true });
-  fs.rmSync(homeDir, { recursive: true, force: true });
-});
+    repo = path.join(keyDir, "repo-template");
+    fs.mkdirSync(repo);
+    git(["init", "-b", "main"]);
+    git(["config", "user.name", "Canonical Test"]);
+    git(["config", "user.email", "canonical@example.invalid"]);
+    git(["config", "gpg.format", "ssh"]);
+    git(["config", "commit.gpgsign", "true"]);
+    git(["config", "user.signingkey", key]);
+    write("base.txt", "base\n");
+    commit("base");
+    git(["checkout", "-b", "feature/canonical"]);
+    write("feature.txt", "feature\n");
+    commit("feature\n\nMandible-Issue: 7d64d8f");
+    git(["checkout", "main"]);
+    repoTemplate = repo;
+    repoTemplateRefs = git(["show-ref", "--head"], repoTemplate);
+  });
+
+  beforeEach(() => {
+    repo = fs.mkdtempSync(path.join(testRuntimeRoot, "mandible-canonical-msg-"));
+    fs.cpSync(repoTemplate, repo, { recursive: true });
+    homeDir = fs.mkdtempSync(path.join(testRuntimeRoot, "mandible-canonical-home-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  });
+}
 
 describe("canonical change message bytes", () => {
   it("normalizes exactly the way git's own message cleanup does", () => {
@@ -347,6 +360,8 @@ describe("canonical change message envelope validation", () => {
 });
 
 describe("auth request CLI change message composition", () => {
+  useGitRepo();
+
   function submitAndCapture(args: string[], port: number, releaseRoot?: string): Promise<ProcResult> {
     const executable = releaseRoot ? "/bin/zsh" : CLI;
     const cliArgs = releaseRoot ? [path.join(process.cwd(), "cli", "main.zsh"), ...args] : args;
@@ -713,6 +728,8 @@ describe("auth queue canonical message storage", () => {
 });
 
 describe("auth merge canonical message consumption", () => {
+  useGitRepo();
+
   const MESSAGE = [
     "Merge feature/canonical: agent-authored merge messages",
     "",
@@ -859,9 +876,11 @@ describe("auth merge canonical message consumption", () => {
 });
 
 describe("commit prose cannot select issue closures", () => {
+  useGitRepo();
+
   it("ignores historical closure text during merge cleanup", () => {
     git(["-c", "commit.gpgsign=false", "merge", "--no-ff", "-m",
       "Merge feature/canonical: outcome\n\nCloses-Mandible-Issue: abc1234", "feature/canonical"]);
-    expect(sourceHelper('collect_cleanup_issue_ids', { MANDIBLE_AUTH_REQUEST_ID: "" }).trim()).toBe("");
+    expect(sourceHelper('collect_cleanup_issue_ids', { MANDIBLE_AUTH_REQUEST_ID: "" }, repo).trim()).toBe("");
   });
 });

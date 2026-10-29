@@ -20,6 +20,7 @@ import {
   setupOperator,
 } from "../src/users/store.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
+import { preparedGitFixture } from "./helpers/prepared-git-fixture.js";
 
 function git(cwd: string, args: string[]): string {
   const env: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: "0" };
@@ -42,14 +43,13 @@ let mergeSha = "";
 let publicMaterial = "";
 let fingerprint = "";
 
-beforeEach(() => {
-  tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-signature-verify-"));
-  repo = path.join(tempDir, "repo");
-  keyPath = path.join(tempDir, "signing_key");
+const signedMerge = preparedGitFixture("signature-verify", (root) => {
+  const repo = path.join(root, "repo");
+  const keyPath = path.join(root, "signing_key");
   fs.mkdirSync(repo);
   execFileSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", keyPath]);
-  publicMaterial = fs.readFileSync(`${keyPath}.pub`, "utf8").trim();
-  fingerprint = execFileSync("ssh-keygen", ["-lf", `${keyPath}.pub`, "-E", "sha256"], {
+  const publicMaterial = fs.readFileSync(`${keyPath}.pub`, "utf8").trim();
+  const fingerprint = execFileSync("ssh-keygen", ["-lf", `${keyPath}.pub`, "-E", "sha256"], {
     encoding: "utf8",
   }).trim().split(/\s+/)[1]!;
 
@@ -67,17 +67,24 @@ beforeEach(() => {
   git(repo, ["config", "gpg.format", "ssh"]);
   git(repo, ["config", "user.signingkey", keyPath]);
   git(repo, ["merge", "--no-ff", "--no-edit", "-S", "feature/signed"]);
-  mergeSha = git(repo, ["rev-parse", "HEAD"]);
-
-  db = openDb(path.join(tempDir, "mandible.db"));
-});
-
-afterEach(() => {
-  db.close();
-  fs.rmSync(tempDir, { recursive: true, force: true });
+  return { mergeSha: git(repo, ["rev-parse", "HEAD"]), publicMaterial, fingerprint };
 });
 
 describe("merge signature verification", () => {
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-signature-verify-"));
+    ({ mergeSha, publicMaterial, fingerprint } = signedMerge.copyInto(tempDir));
+    repo = path.join(tempDir, "repo");
+    keyPath = path.join(tempDir, "signing_key");
+    git(repo, ["config", "user.signingkey", keyPath]);
+    db = openDb(path.join(tempDir, "mandible.db"));
+  });
+
+  afterEach(() => {
+    db.close();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
   it("refuses another registered user's key for this approver", () => {
     const operator = setupOperator(db, { slug: "operator", display_name: "Operator" });
     const other = createUser(db, { slug: "other", kind: "human", display_name: "Other" });
@@ -197,6 +204,7 @@ describe("merge signature verification", () => {
 });
 
 describe("successful merge result parsing", () => {
+  const mergeSha = "a".repeat(40);
   it("extracts only a full commit id from the merge script result marker", () => {
     const output = `noise\nMANDIBLE_MERGE_RESULT {"merge_sha":"${mergeSha}"}\n`;
     expect(extractSuccessfulMergeCommitSha(output)).toBe(mergeSha);
