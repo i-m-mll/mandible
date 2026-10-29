@@ -6,7 +6,7 @@ import net from 'node:net';
 import http from 'node:http';
 import https from 'node:https';
 import { localCaPaths, assertLocalCaIdentity, probeCurrentMacOsTrust } from './local-ca-trust.mjs';
-import { installedRuntimeEnvironment, releaseFile, verifyInstalledRelease } from './installed-release.mjs';
+import { installedRuntimeEnvironment, releaseFile, verifyInstalledRelease, verifyApplicationRelease } from './installed-release.mjs';
 import { installedExecutionProfile } from './installed-execution.mjs';
 import { applicationIdentity, createPendingRelease, retainAcceptedRelease, disposePendingRelease } from './accepted-release.mjs';
 import { createHash, randomBytes } from 'node:crypto';
@@ -461,11 +461,11 @@ async function main(budget) {
     boundedCommand('/usr/bin/codesign', ['--verify', '--deep', '--strict', app]);
     const resources = path.join(app, 'Contents', 'Resources');
     const marker = diagnostic?.marker || JSON.parse(fs.readFileSync(path.join(root, 'dist', 'build-revision.json'), 'utf8'));
-    const shipped = verifyInstalledRelease(resources);
+    const { release: shipped, digest } = verifyApplicationRelease(app);
     if (shipped.provenance.commit !== candidate || shipped.provenance.source_digest !== marker.source_digest) throw new Error("Finalized package provenance differs from the candidate.");
     const resourceEnv = installedRuntimeEnvironment(resources, { HOME: home, PATH: "/usr/bin:/bin:/usr/sbin:/sbin", TMPDIR: run });
     const packagedRuntime = resourceEnv.MANDIBLE_RUNTIME;
-    testedPackageDigest = applicationIdentity(app);
+    testedPackageDigest = digest;
     if (diagnostic && testedPackageDigest !== diagnostic.sha256) throw new Error('Diagnostic package changed while copying.');
     executionProfile = installedExecutionProfile({ checkout: root, commonDirectory: boundedCommand("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"]), app });
     if (!diagnostic) result.checks.updater_entrypoint = await verifyPackagedUpdaterEntrypoint({ resources, runtime: packagedRuntime,

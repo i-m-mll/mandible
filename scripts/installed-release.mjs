@@ -22,6 +22,30 @@ export function installedFileIdentity(file) {
   } finally { fs.closeSync(descriptor); }
 }
 
+/** Bind the entire signed app, including links, modes, and files outside the payload inventory. */
+function inspectApplication(app, onFile = () => {}) {
+  const entries = [];
+  const visit = relative => {
+    const file = path.join(app, relative);
+    const stat = fs.lstatSync(file);
+    const entry = { path: relative, mode: stat.mode & 0o777 };
+    if (stat.isSymbolicLink()) entries.push({ ...entry, link: fs.readlinkSync(file) });
+    else if (stat.isDirectory()) {
+      entries.push({ ...entry, directory: true });
+      for (const child of fs.readdirSync(file).sort()) visit(path.join(relative, child));
+    } else if (stat.isFile()) {
+      const identity = installedFileIdentity(file);
+      onFile(file, identity);
+      entries.push({ ...entry, ...identity });
+    }
+    else throw new Error(`Unsupported application entry: ${relative}`);
+  };
+  visit('');
+  return createHash('sha256').update(JSON.stringify(entries)).digest('hex');
+}
+
+export function applicationIdentity(app) { return inspectApplication(app); }
+
 /** Installed context is supplied by the native launcher or the installed module location. */
 export function installedResourceRoot() {
   const explicit = process.env.MANDIBLE_RELEASE_ROOT;
@@ -70,14 +94,34 @@ export function readInstalledRelease(root) {
 }
 
 /** Verify final shipped bytes, including signed native files; the package receipt binds this manifest. */
-export function verifyInstalledRelease(root) {
-  const release = readInstalledRelease(root);
+function verifyReleaseFiles(root, release, identify) {
   for (const [relative, expected] of Object.entries(release.files)) {
     const file = releaseFile(root, relative, release.layout);
-    const actual = installedFileIdentity(file);
+    const actual = identify(file);
     if (actual.size !== expected.size || actual.sha256 !== expected.sha256) throw new Error(`Installed resource changed: ${relative}`);
   }
+}
+
+export function verifyInstalledRelease(root) {
+  const release = readInstalledRelease(root);
+  verifyReleaseFiles(root, release, installedFileIdentity);
   return release;
+}
+
+/** Verify the shipped inventory and bind all app bytes in one traversal. */
+export function verifyApplicationRelease(app) {
+  if (!fs.lstatSync(app).isDirectory()) throw new Error('Application must be a directory.');
+  app = fs.realpathSync(app);
+  const resources = path.join(app, 'Contents/Resources');
+  const release = readInstalledRelease(resources);
+  const identities = new Map();
+  const digest = inspectApplication(app, (file, identity) => identities.set(file, identity));
+  verifyReleaseFiles(resources, release, file => {
+    const identity = identities.get(file);
+    if (!identity) throw new Error('Installed resource is outside the application tree: ' + file);
+    return identity;
+  });
+  return { release, digest };
 }
 
 export function installedRuntimeEnvironment(root, environment = process.env) {
