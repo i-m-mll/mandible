@@ -6,12 +6,14 @@ import { createHash } from 'node:crypto';
 export const RELEASE_SCHEMA = 'mandible-installed-release@1';
 const executionContext = 'source';
 const moduleRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+// Hashing is synchronous with no callbacks; each worker has its own module instance.
+let identityScratch;
 
 export function installedFileIdentity(file) {
   const descriptor = fs.openSync(file, 'r');
   try {
     const digest = createHash('sha256');
-    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    const buffer = identityScratch ??= Buffer.allocUnsafe(1024 * 1024);
     let size = 0;
     let count;
     while ((count = fs.readSync(descriptor, buffer, 0, buffer.length, null)) > 0) {
