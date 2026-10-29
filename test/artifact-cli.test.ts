@@ -8,13 +8,13 @@ import { artifactRepo } from "./helpers/artifact-repo-fixtures.js";
  */
 import fs from "node:fs";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 
 import { fileRpc, runCli, scratchDir, startStubDaemon, type StubDaemon, type StubHandler } from "./helpers/cli-process.js";
 import type { FileRpcHandler, FileRpcResponder } from "./helpers/file-rpc-responder.js";
 
 const cleanups: Array<() => unknown> = [];
-afterEach(async () => {
+afterAll(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
@@ -49,7 +49,7 @@ const recorded = (version: string) => ({
 const issue = { id: "issue-1234567890", display_id: "abc", project: { repo_id: "mandible" } };
 
 describe("artifact CLI", () => {
-  it("sends daemon-visible paths over HTTP, never bytes, for ingest, dry-run, and blob-only", async () => {
+  it.concurrent("sends daemon-visible paths over HTTP, never bytes, for ingest, dry-run, and blob-only", async () => {
     const cwd = repo();
     fs.writeFileSync(path.join(cwd, "packet.zip"), Buffer.alloc(2 * 1024 * 1024, 7));
     const stub = await daemon(({ body }) => {
@@ -81,7 +81,7 @@ describe("artifact CLI", () => {
     expect(paths).toEqual(expect.arrayContaining([fs.realpathSync(path.join(cwd, "report.md")), fs.realpathSync(path.join(cwd, "packet.zip"))]));
   });
 
-  it("carries multi-path file RPC snapshots as spool attachments and reports per-item partial failures", async () => {
+  it.concurrent("carries multi-path file RPC snapshots as spool attachments and reports per-item partial failures", async () => {
     const cwd = repo();
     fs.writeFileSync(path.join(cwd, "second.md"), "second snapshot");
     const attached: string[] = [];
@@ -108,7 +108,7 @@ describe("artifact CLI", () => {
     expect(attached).toEqual(["# Report\n\nReady.\n", "second snapshot"]);
   });
 
-  it("carries a multi-MiB file RPC snapshot through an attachment, never argv (issue 833e972)", async () => {
+  it.concurrent("carries a multi-MiB file RPC snapshot through an attachment, never argv (issue 833e972)", async () => {
     const cwd = repo();
     const bytes = Buffer.alloc(2 * 1024 * 1024, 0x5a);
     fs.writeFileSync(path.join(cwd, "big.bin"), bytes);
@@ -126,7 +126,7 @@ describe("artifact CLI", () => {
     expect(attachedSize).toBe(bytes.length);
   });
 
-  it("plans file RPC ingest as managed custody without in-band bytes and refuses git custody there", async () => {
+  it.concurrent("plans file RPC ingest as managed custody without in-band bytes and refuses git custody there", async () => {
     const cwd = repo();
     const env = { MANDIBLE_BASE: `file://${scratchDir("spool")}` };
 
