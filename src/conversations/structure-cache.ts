@@ -7,6 +7,7 @@ import SqliteDatabase from "../sqlite.js";
 import type { Db } from "../db.js";
 import type { BlockType, Role } from "../parsers/types.js";
 import { getUserHome } from "../platform-paths.js";
+import { conversationSourceEpochsMatch, type ConversationSourceEpochs } from "./source-types.js";
 
 export const CONVERSATION_STRUCTURE_CACHE_VERSION = 3;
 
@@ -502,9 +503,15 @@ export class ConversationStructureCache {
     conversationId: string,
     sourceVersionId: string,
     expectedBlockCount: number,
+    epochs?: ConversationSourceEpochs,
   ): boolean {
     const conversation = this.cachedConversation(conversationId, sourceVersionId);
-    return conversation?.block_count === expectedBlockCount;
+    return conversation?.block_count === expectedBlockCount && (!epochs || conversationSourceEpochsMatch({
+      parserFormat: conversation.parser_format,
+      parserVersion: conversation.parser_version,
+      normalizationVersion: conversation.normalization_version,
+      redactionEpoch: conversation.redaction_epoch,
+    }, epochs));
   }
 
   blockCount(conversationId: string, sourceVersionId: string): number | null {

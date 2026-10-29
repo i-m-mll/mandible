@@ -30,6 +30,16 @@ export interface ConversationSourceEpochs {
   redactionEpoch: number;
 }
 
+export function conversationSourceEpochsMatch(
+  actual: ConversationSourceEpochs,
+  expected: ConversationSourceEpochs,
+): boolean {
+  return actual.parserFormat === expected.parserFormat
+    && actual.parserVersion === expected.parserVersion
+    && actual.normalizationVersion === expected.normalizationVersion
+    && actual.redactionEpoch === expected.redactionEpoch;
+}
+
 export interface ConversationSourceDescriptor extends ConversationSourceEpochs {
   sourceId: string;
   conversationId: string;

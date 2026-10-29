@@ -54,6 +54,7 @@ import type {
 import { canUseDefaultIngestionWorker, IngestionActor } from "./ingestion-actor.js";
 import { ConversationSourceChangedError, ConversationSourceStore } from "./conversations/source-store.js";
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "./conversations/source-types.js";
+import { readConversationSourceReadiness, type ConversationSourceReadiness } from "./conversations/source-readiness.js";
 import { parseJsonObjectStrict } from "./row-coerce.js";
 import { backfillConversationLineageOnce } from "./conversations/lineage-backfill.js";
 import { getConversationStructureCache } from "./conversations/structure-cache.js";
@@ -1073,16 +1074,33 @@ export async function ingestedPathNeedsFollowup(filePath: string): Promise<boole
 
 export function selectedConversationSourceEpochIsCurrent(db: Db, sourceId: string): boolean {
   const source = db.prepare(`
-    SELECT parser_format, parser_version, normalization_version, redaction_epoch
+    SELECT conversation_id
       FROM conversation_sources WHERE id = ?
-  `).get(sourceId) as {
-    parser_format: string; parser_version: string; normalization_version: string; redaction_epoch: number;
-  } | undefined;
-  return Boolean(source
-    && source.parser_format === CURRENT_CONVERSATION_SOURCE_EPOCHS.parserFormat
-    && source.parser_version === CURRENT_CONVERSATION_SOURCE_EPOCHS.parserVersion
-    && source.normalization_version === CURRENT_CONVERSATION_SOURCE_EPOCHS.normalizationVersion
-    && source.redaction_epoch === CURRENT_CONVERSATION_SOURCE_EPOCHS.redactionEpoch);
+  `).get(sourceId) as { conversation_id: string } | undefined;
+  if (!source) return false;
+  const readiness = readConversationSourceReadiness(db, source.conversation_id);
+  return readiness.status === "ready" && readiness.sourceId === sourceId;
+}
+
+/** Repair native metadata through the serialized writer, never on the request thread. */
+export async function repairConversationSourceReadiness(
+  db: Db,
+  conversationId: string,
+  options: { priority?: boolean } = {},
+): Promise<ConversationSourceReadiness> {
+  const readiness = readConversationSourceReadiness(db, conversationId);
+  if (readiness.status !== "repair_needed") return readiness;
+  const actor = ingestionActor;
+  if (!ingestionActive || !actor || !readiness.sourcePath || !getParserForFile(readiness.sourcePath)) {
+    return { ...readiness, status: "unavailable", reason: "repair_unavailable" };
+  }
+  try {
+    await ingestExactSelectedPath(actor, readiness.sourcePath, undefined, options.priority === true);
+  } catch (error) {
+    logger("warn", "ingestion_readiness_repair_failed", { conversation_id: conversationId, error: String(error) });
+    return { ...readiness, status: "unavailable", reason: "repair_failed" };
+  }
+  return readConversationSourceReadiness(db, conversationId);
 }
 
 /** Use the same exact-path ingest request for selected reads and watcher work. */
@@ -1090,12 +1108,13 @@ export async function ingestExactSelectedPath(
   actor: Pick<IngestionActor, "ingest">,
   transcriptPath: string,
   onSourceChangeRetry?: (attempt: number) => void,
+  priority = true,
 ): Promise<void> {
   const maxRetries = 2;
   let retries = 0;
   for (;;) {
     try {
-      await actor.ingest([transcriptPath], false, true, true);
+      await actor.ingest([transcriptPath], false, true, priority);
       return;
     } catch (error) {
       if (!(error instanceof ConversationSourceChangedError) || retries >= maxRetries) throw error;
@@ -2583,10 +2602,7 @@ async function ingestFilePass(
     const expectedCount = existing.block_count ?? 0;
     alreadyIngestedCount = Math.max(actualCount, expectedCount);
     const currentSource = db.prepare(`
-      SELECT source.current_version_id, source.parser_format, source.parser_version,
-             source.normalization_version, source.redaction_epoch,
-             source.availability AS source_availability, version.availability AS version_availability,
-             version.byte_length AS source_byte_length, version.filesystem_device,
+      SELECT version.byte_length AS source_byte_length, version.filesystem_device,
              version.filesystem_inode, version.filesystem_ctime_ns
         FROM conversation_sources source
         JOIN conversation_source_versions version
@@ -2595,14 +2611,7 @@ async function ingestFilePass(
        ORDER BY CASE source.availability WHEN 'available' THEN 0 ELSE 1 END, source.updated_at DESC
        LIMIT 1
     `).get(existing.id) as {
-      current_version_id: string;
-      parser_format: string;
-      parser_version: string;
-      normalization_version: string;
-      redaction_epoch: number;
       source_byte_length: number;
-      source_availability: string;
-      version_availability: string;
       filesystem_device: string | null;
       filesystem_inode: string | null;
       filesystem_ctime_ns: string | null;
@@ -2611,13 +2620,8 @@ async function ingestFilePass(
       || currentSource.filesystem_device !== stat.physicalGeneration.device
       || currentSource.filesystem_inode !== stat.physicalGeneration.inode
       || currentSource.filesystem_ctime_ns !== stat.physicalGeneration.ctimeNs;
-    sourceEpochNeedsRebuild = !currentSource || (
-      currentSource.source_availability !== "available" || currentSource.version_availability !== "available"
-      || currentSource.parser_format !== CURRENT_CONVERSATION_SOURCE_EPOCHS.parserFormat
-      || currentSource.parser_version !== CURRENT_CONVERSATION_SOURCE_EPOCHS.parserVersion
-      || currentSource.normalization_version !== CURRENT_CONVERSATION_SOURCE_EPOCHS.normalizationVersion
-      || currentSource.redaction_epoch !== CURRENT_CONVERSATION_SOURCE_EPOCHS.redactionEpoch
-    );
+    const readiness = readConversationSourceReadiness(db, existing.id);
+    sourceEpochNeedsRebuild = readiness.status !== "ready";
     const pendingRangesContiguous = pendingAppendProof.ranges.every((range, index) =>
       index === 0 || range.byteStart === pendingAppendProof.ranges[index - 1].byteEnd,
     );
@@ -2640,13 +2644,7 @@ async function ingestFilePass(
         pending_append_ranges: pendingAppendProof.ranges.length,
       });
     }
-    const sparseComplete = Boolean(currentSource
-      && getConversationStructureCache(db).hasCompleteConversation(
-        existing.id,
-        currentSource.current_version_id,
-        expectedCount,
-      ));
-    structureCacheNeedsRebuild = expectedCount > 0 && actualCount === 0 && !sparseComplete;
+    structureCacheNeedsRebuild = readiness.reason === "projection_incomplete";
     if (structureCacheNeedsRebuild) {
       logger("warn", "ingestion_count_mismatch", {
         file: filePath,
@@ -4102,6 +4100,7 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
   }
   for (const repeated of repeatedPaths) indexedPhysicalSources.delete(repeated);
   for (const repeated of repeatedConversationPaths) indexedPhysicalSources.delete(repeated);
+  const conversationsAtPath = db.prepare("SELECT id FROM conversations WHERE source_path = ?");
 
   // Scan filesystem using async generator — yields to the event loop every 50
   // directory entries so the HTTP server stays responsive during startup scans.
@@ -4122,11 +4121,10 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
 
       // Check if file needs ingestion
       try {
+        const needsMetadataRepair = (conversationsAtPath.all(filePath) as Array<{ id: string }>).some((row) =>
+          readConversationSourceReadiness(db, row.id).status !== "ready");
         const indexed = indexedPhysicalSources.get(filePath);
-        if (indexed && indexed.parser_format === CURRENT_CONVERSATION_SOURCE_EPOCHS.parserFormat
-            && indexed.parser_version === CURRENT_CONVERSATION_SOURCE_EPOCHS.parserVersion
-            && indexed.normalization_version === CURRENT_CONVERSATION_SOURCE_EPOCHS.normalizationVersion
-            && indexed.redaction_epoch === CURRENT_CONVERSATION_SOURCE_EPOCHS.redactionEpoch
+        if (indexed && !needsMetadataRepair
             && appendStates.get(filePath)?.byte_offset === indexed.byte_length) {
           const physical = await inspectSourceRepresentation(filePath);
           if (physical.physicalGeneration.device === indexed.filesystem_device
@@ -4148,8 +4146,8 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
         const knownConversation = conversationPaths.has(filePath);
         const mtimeChanged = dbMtime === undefined || Math.abs(dbMtime - stat.mtimeMs) >= 100;
         const codexNeedsVerification = codexSessionIds.has(filePath);
-        let needsIngest = !knownConversation || mtimeChanged || codexNeedsVerification;
-        if (knownConversation && !mtimeChanged && !codexNeedsVerification) {
+        let needsIngest = !knownConversation || mtimeChanged || codexNeedsVerification || needsMetadataRepair;
+        if (knownConversation && !mtimeChanged && !codexNeedsVerification && !needsMetadataRepair) {
           const appendState = appendStates.get(filePath);
           if (appendState && appendState.byte_offset !== stat.size) {
             needsIngest = true;
