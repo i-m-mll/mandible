@@ -28,7 +28,7 @@ import { useCommandProbe } from "./helpers/event-loop-blocking.js";
 import { preparedGitFixture } from "./helpers/prepared-git-fixture.js";
 import {
   advanceMainViaAuthorizedMerge, approveFixtureRequest, commitOnBranch, configureSigningCredential, createAuthCheckRepo, createLedgerIssue, createLedgerProject,
-  createMigratedDb, git, publishFixtureExecution, registerWorkRepo, waitForStatus,
+  createMigratedDb, git, publishFixtureExecution, registerWorkRepo, trackTempPath, waitForStatus,
 } from "./helpers/auth-queue-fixtures.js";
 vi.mock('node:child_process', async original => ({ ...await original<typeof import('node:child_process')>(), spawnSync: vi.fn((await original<typeof import('node:child_process')>()).spawnSync) }));
 const actualSpawnSync = (await vi.importActual<typeof import('node:child_process')>('node:child_process')).spawnSync;
@@ -116,7 +116,7 @@ function acceptanceExecutor(input: CandidateAcceptanceInput) {
 
 beforeEach(() => {
   inspector = createServiceDefinitionInspector();
-  repo = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-self-update-repo-"));
+  repo = trackTempPath(fs.mkdtempSync(path.join(os.tmpdir(), "mandible-self-update-repo-")));
   selfUpdateRepo.copyInto(repo);
   home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-self-update-home-"));
   vi.stubEnv("MANDIBLE_HOME", home);
