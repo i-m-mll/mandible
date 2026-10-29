@@ -123,6 +123,30 @@ afterEach(() => {
 });
 
 describe('GraphView persisted detail panel state', () => {
+  it('retains the latest live revision through a pending and failed uncached spec', async () => {
+    let label = 'Revision A';
+    let finishSpec!: (response: Response) => void;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      if (new URL(String(input), 'http://localhost').searchParams.get('since') === '1d') {
+        return new Promise<Response>((resolve) => { finishSpec = resolve; });
+      }
+      return Promise.resolve(jsonResponse({ mode: 'issue', nodes: [{ id: 'retained', type: 'repo', label }], edges: [] }));
+    }));
+    const view = renderGraph();
+    expect(await view.findByRole('button', { name: 'Select Revision A' })).toBeTruthy();
+    label = 'Revision B';
+    act(() => invalidateDashboardApiCacheForEvent('ledger:comment:created'));
+    expect(await view.findByRole('button', { name: 'Select Revision B' })).toBeTruthy();
+    fireEvent.click(view.getByRole('button', { name: '1d' }));
+    await waitFor(() => expect(finishSpec).toBeTypeOf('function'));
+    expect(view.getByRole('button', { name: 'Select Revision B' })).toBeTruthy();
+    expect(view.queryByRole('button', { name: 'Select Revision A' })).toBeNull();
+    finishSpec(jsonResponse({ error: 'New spec temporarily unavailable' }, 503));
+    expect(await view.findByText('New spec temporarily unavailable')).toBeTruthy();
+    expect(view.getByRole('button', { name: 'Select Revision B' })).toBeTruthy();
+    expect(view.queryByRole('button', { name: 'Select Revision A' })).toBeNull();
+  });
+
   it('preserves viewport, selection and inspector through pending/error and empty topology reconciliation', async () => {
     const payload = (label: string, second = false) => ({ mode: 'issue', nodes: [
       { id: 'first', type: 'repo', label },

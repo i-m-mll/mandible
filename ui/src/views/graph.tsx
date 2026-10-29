@@ -966,7 +966,7 @@ export function GraphView({
   const retainedSource = source.current;
   const retainedPayload = useMemo(() => retainedSource
     ? queryClient.getQueryData(retainedSource.queryKey) ?? retainedSource.restartSnapshot()
-    : undefined, [retainedSource]);
+    : undefined, [retainedSource, currentPayload]);
   const pendingPayload = useMemo<GraphPayload>(
     () => ({ nodes: EMPTY_GRAPH_NODES, edges: EMPTY_GRAPH_EDGES, mode: spec.preset }),
     [spec.preset],
