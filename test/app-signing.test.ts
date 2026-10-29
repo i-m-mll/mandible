@@ -25,6 +25,30 @@ it('requires an explicit certificate for native qualification while preserving a
   expect(requireNativeAppSigning(development)).toBe(development);
 });
 
+it('uses an explicit account only for its signer subprocess lifetime without changing ambient isolation', () => {
+  const ambient = { HOME: process.env.HOME, MANDIBLE_HOME: process.env.MANDIBLE_HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME };
+  const accountHome = '/fixture/host-account';
+  const calls: Array<{ args: string[]; env: NodeJS.ProcessEnv | undefined }> = [];
+  vi.mocked(spawnSync).mockImplementation((_program, args = [], options = {}) => {
+    expect({ HOME: process.env.HOME, MANDIBLE_HOME: process.env.MANDIBLE_HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }).toEqual(ambient);
+    calls.push({ args: args.map(String), env: options.env });
+    if (args[0] === 'create-keychain') fs.writeFileSync(String(args.at(-1)), 'synthetic keychain');
+    return { status: 0, stdout: args[0] === 'find-identity' ? `1) ${'a'.repeat(40)} "Apple Development: Synthetic"` : '',
+      stderr: args[0] === '--display' ? 'Identifier=bio.mll.mandible.fixture\nTeamIdentifier=FAKETEAM\n' : '' } as any;
+  });
+  const signer = openAppSigner({ identity: 'Apple Development', certificate: Buffer.from('synthetic fixture').toString('base64'), certificatePassword: 'synthetic' }, { accountHome });
+  try {
+    signer.sign('/fixture/app/Contents/MacOS/mandible-service', null, true, 'bio.mll.mandible.fixture.service');
+    verifyNativeAppSignatures('/fixture/app', signer, { native: { serviceHelper: '../MacOS/mandible-service' } });
+  } finally { signer.close(); }
+  expect(calls.some(call => call.args[0] === 'delete-keychain')).toBe(true);
+  for (const call of calls) expect(call.env).toEqual({ ...process.env, HOME: accountHome });
+  const inherited = openAppSigner({ identity: '-' });
+  try { inherited.sign('/fixture/development'); } finally { inherited.close(); }
+  expect(calls.at(-1)?.env).toBeUndefined();
+  expect({ HOME: process.env.HOME, MANDIBLE_HOME: process.env.MANDIBLE_HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }).toEqual(ambient);
+});
+
 it('signs distinct native generations with one certificate and stable first-party identifiers before inventory', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-signing-')); roots.push(root);
   const identifier = 'bio.mll.mandible.fixture.same-installation';

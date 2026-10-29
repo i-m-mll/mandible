@@ -34,7 +34,13 @@ it('replaces retained signed bundles through real native service startup, qualif
     throw new Error('Run the native proof through test:provisioned with its original command deadline.');
   }
   const workUntil = deadline - 5_000;
-  const signer = openAppSigner(requireNativeAppSigning(resolveAppSigning(process.cwd())), { until: workUntil });
+  const signingAccountHome = execFileSync('/bin/sh', ['-c', 'eval "printf %s ~$(id -un)"'], {
+    encoding: 'utf8', timeout: Math.max(1, workUntil - Date.now()),
+  }).trim();
+  if (!path.isAbsolute(signingAccountHome)) throw new Error('Cannot resolve the OS account home for signing tools.');
+  const signer = openAppSigner(requireNativeAppSigning(resolveAppSigning(process.cwd())), {
+    until: workUntil, accountHome: signingAccountHome,
+  });
   try {
   const costs: Array<{ phase: string; ms: number }> = [];
   const checkDeadline = (phase: string, until = workUntil) => {
