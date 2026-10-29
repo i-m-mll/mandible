@@ -14,6 +14,7 @@ export type SidebarItemRowProps = {
   selected?: boolean;
   className?: string;
   provider?: SidebarItemProvider;
+  reserveProviderSlot?: boolean;
   trailingReveal?: 'interaction' | 'persistent-pin';
   leading?: ComponentChildren;
   badges?: ComponentChildren;
@@ -59,6 +60,7 @@ export function SidebarItemRow({
   selected = false,
   className,
   provider,
+  reserveProviderSlot = false,
   trailingReveal = 'interaction',
   leading,
   badges,
@@ -72,6 +74,7 @@ export function SidebarItemRow({
 }: SidebarItemRowProps): JSX.Element {
   const rowRef = useRef<HTMLDivElement>(null);
   const trailingRef = useRef<HTMLSpanElement>(null);
+  const hasProviderSlot = reserveProviderSlot || Boolean(provider?.mark);
   const syncTrailingWidth = useCallback((element: HTMLSpanElement | null) => {
     if (!element) {
       rowRef.current?.style.setProperty('--sidebar-item-row-trailing-width', '0px');
@@ -93,13 +96,13 @@ export function SidebarItemRow({
 
   useLayoutEffect(() => {
     syncTrailingWidth(trailingRef.current);
-  }, [actions, provider, syncTrailingWidth, trailingReveal]);
+  }, [actions, hasProviderSlot, provider, syncTrailingWidth, trailingReveal]);
 
   return (
     <div
       ref={rowRef}
       {...reorder?.root}
-      className={`sidebar-item-row contextual-action-owner${selected ? ' sidebar-item-row--selected' : ''}${provider?.mark ? ' sidebar-item-row--has-provider-mark' : ''}${trailingReveal === 'persistent-pin' ? ' sidebar-item-row--persistent-pin' : ''}${reorder ? ' sidebar-reorder-item' : ''}${reorder?.dragging ? ' sidebar-reorder-item--dragging' : ''}${reorder?.dropTarget ? ' sidebar-reorder-item--drop-target' : ''}${className ? ` ${className}` : ''}`}
+      className={`sidebar-item-row contextual-action-owner${selected ? ' sidebar-item-row--selected' : ''}${hasProviderSlot ? ' sidebar-item-row--has-provider-slot' : ''}${trailingReveal === 'persistent-pin' ? ' sidebar-item-row--persistent-pin' : ''}${reorder ? ' sidebar-reorder-item' : ''}${reorder?.dragging ? ' sidebar-reorder-item--dragging' : ''}${reorder?.dropTarget ? ' sidebar-reorder-item--drop-target' : ''}${className ? ` ${className}` : ''}`}
       data-provider={provider?.mark ?? undefined}
     >
       <button
@@ -125,7 +128,7 @@ export function SidebarItemRow({
           {badges ? <span className="sidebar-item-row__badges">{badges}</span> : null}
         </span>
       </button>
-      {provider?.mark || actions || reorder?.handleOnly ? (
+      {hasProviderSlot || actions || reorder?.handleOnly ? (
         <span
           ref={(element) => {
             trailingRef.current = element;
@@ -139,13 +142,15 @@ export function SidebarItemRow({
             </span>
           ) : null}
           {actions ? <span className={`sidebar-item-row__actions contextual-action-group${trailingReveal === 'persistent-pin' ? ' contextual-action-group--persistent' : ''}`}>{actions}</span> : null}
-          {provider?.mark ? (
+          {hasProviderSlot ? (
             <span className="sidebar-item-row__provider">
-              <OfficialProviderMark
-                kind={provider.mark}
-                className="sidebar-item-row__provider-mark"
-                accessibleLabel={`Provider: ${provider.label}`}
-              />
+              {provider?.mark ? (
+                <OfficialProviderMark
+                  kind={provider.mark}
+                  className="sidebar-item-row__provider-mark"
+                  accessibleLabel={`Provider: ${provider.label}`}
+                />
+              ) : null}
             </span>
           ) : null}
         </span>

@@ -35,8 +35,10 @@
 .sidebar-item-row {
   --sidebar-item-row-padding-block: 5px;
   --sidebar-item-row-padding-inline: 7px;
-  --sidebar-item-row-padding-scale: 1;
+  --sidebar-item-row-padding-block-scale: 1;
+  --sidebar-item-row-padding-inline-scale: 1;
   --sidebar-item-row-provider-size: 18px;
+  --sidebar-item-row-provider-slot-size: var(--sidebar-item-row-provider-size);
   --sidebar-item-row-reveal-width: 0px;
   position: relative;
   display: block;
@@ -51,8 +53,8 @@
   background: var(--neutral-alpha-05);
 }
 
-.sidebar-item-row--has-provider-mark {
-  --sidebar-item-row-reveal-width: calc(var(--sidebar-item-row-provider-size) + 4px);
+.sidebar-item-row--has-provider-slot {
+  --sidebar-item-row-reveal-width: calc(var(--sidebar-item-row-provider-slot-size) + 4px);
 }
 
 .sidebar-item-row--persistent-pin {
@@ -78,9 +80,9 @@
   width: 100%;
   min-width: 0;
   min-height: 32px;
-  padding-block: calc(var(--sidebar-item-row-padding-block) * var(--sidebar-item-row-padding-scale));
-  padding-inline-end: calc(var(--sidebar-item-row-padding-inline) * var(--sidebar-item-row-padding-scale));
-  padding-inline-start: calc(var(--sidebar-title-column-inset, var(--sidebar-item-row-padding-inline)) + var(--sidebar-item-row-padding-inline) * (var(--sidebar-item-row-padding-scale) - 1));
+  padding-block: calc(var(--sidebar-item-row-padding-block) * var(--sidebar-item-row-padding-block-scale));
+  padding-inline-end: calc(var(--sidebar-item-row-padding-inline) * var(--sidebar-item-row-padding-inline-scale));
+  padding-inline-start: calc(var(--sidebar-title-column-inset, var(--sidebar-item-row-padding-inline)) + var(--sidebar-item-row-padding-inline) * (var(--sidebar-item-row-padding-inline-scale) - 1));
   border: 0;
   border-radius: inherit;
   background: transparent;
@@ -135,9 +137,9 @@
 }
 
 .sidebar-item-row__provider {
-  width: var(--sidebar-item-row-provider-size);
-  height: max(24px, var(--sidebar-item-row-provider-size));
-  flex: 0 0 var(--sidebar-item-row-provider-size);
+  width: var(--sidebar-item-row-provider-slot-size);
+  height: max(24px, var(--sidebar-item-row-provider-slot-size));
+  flex: 0 0 var(--sidebar-item-row-provider-slot-size);
   display: inline-flex;
   align-items: center;
   justify-content: center;

@@ -2914,6 +2914,7 @@ function ChatEntryItem({
       label={title}
       selectionLabel={`Open ${entry.kind === 'conversation' ? 'conversation' : 'session'} ${title}`}
       provider={providerLabel && source ? { label: providerLabel, mark: CHAT_PROVIDER_MARKS[source] } : undefined}
+      reserveProviderSlot
       selected={isSelected}
       ariaCurrent={isSelected ? 'true' : undefined}
       className={`chat-history-item${isSubAgent ? ' chat-history-item--subagent' : ''}`}
