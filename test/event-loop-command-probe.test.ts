@@ -27,3 +27,29 @@ it("fails a supervised synchronous invocation even when the caller consumes its 
   expect(fs.existsSync(marker)).toBe(false);
   await expect(probe.close()).rejects.toThrow("event loop did not acknowledge invocation");
 });
+
+it("keeps cancellation on the caller's real command handle after acknowledgement", async () => {
+  const probe = await useCommandProbe(["sh"]);
+  await probe.run(() => new Promise<void>((resolve, reject) => {
+    const child = execFile("sh", ["-c", 'printf ready; exec sleep 30'], error => {
+      try {
+        expect(error).toMatchObject({ signal: "SIGTERM", killed: true });
+        resolve();
+      } catch (failure) { reject(failure); }
+    });
+    child.stdout!.once("data", () => child.kill("SIGTERM"));
+  }));
+});
+
+it("cancels a held handshake before deleting its journals and settles its operation", async () => {
+  const probe = await useCommandProbe({ fixture: 'touch "$1"' }, { hold: true });
+  await expect(probe.nextInvocation(Promise.reject(new Error("dispatch rejected")))).rejects.toThrow("dispatch rejected");
+  const marker = path.join(probe.dir, "executed");
+  const operation = new Promise<{ code: number | string | undefined; stderr: string }>(resolve => {
+    execFile("fixture", [marker], (error, _stdout, stderr) => resolve({ code: error?.code, stderr }));
+  });
+  await probe.nextInvocation(operation);
+  await expect(probe.close()).rejects.toThrow("Command probe failed");
+  expect(await operation).toEqual({ code: 124, stderr: "Command probe: fixture: probe closed before acknowledgement\n" });
+  expect(fs.existsSync(probe.dir)).toBe(false);
+});

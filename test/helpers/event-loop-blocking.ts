@@ -43,7 +43,7 @@ export function useStubCommand(name: string, script: string): { dir: string } {
 export const SYNCHRONOUS_WAIT_MS = 150;
 
 type Invocation = { command: string; args: string[] };
-type InvocationRecord = Invocation & { acknowledged: boolean; failure?: string };
+type InvocationRecord = Invocation & { acknowledged: boolean; settled: boolean; failure?: string };
 
 /** Each intercepted command must visit this test's event loop before executing. */
 export async function useCommandProbe(
@@ -51,23 +51,27 @@ export async function useCommandProbe(
   { hold = false } = {},
 ) {
   const dir = fs.mkdtempSync(path.join(testRuntimeRoot, "probe-"));
-  const sockets = new Set<net.Socket>();
+  const sockets = new Map<net.Socket, Promise<void>>();
   const invocations: Invocation[] = [];
-  const waiters: Array<(invocation: Invocation) => void> = [];
+  const waiters: Array<{ resolve: (invocation: Invocation) => void; reject: (error: Error) => void }> = [];
   const pending = new Set<net.Socket>();
-  let nextIndex = 0;
+  let closing = false;
   const server = net.createServer(socket => {
-    sockets.add(socket);
+    const closed = new Promise<void>(resolve => socket.once("close", resolve));
+    sockets.set(socket, closed);
+    socket.on("error", () => socket.destroy());
     socket.on("close", () => { sockets.delete(socket); pending.delete(socket); });
     let message = "";
     socket.on("data", data => {
       message += data.toString();
       if (!message.endsWith("\n")) return;
       const invocation: Invocation = JSON.parse(message);
-      invocations.push(invocation);
-      waiters.shift()?.(invocation);
-      if (hold) pending.add(socket);
-      else socket.end("ack\n");
+      const waiter = waiters.shift();
+      if (waiter) waiter.resolve(invocation);
+      else invocations.push(invocation);
+      if (closing) socket.end("cancel\n");
+      else if (hold) pending.add(socket);
+      else socket.write("ack\n");
     });
   });
   const previous = process.env.PATH;
@@ -76,14 +80,21 @@ export async function useCommandProbe(
     const records: InvocationRecord[] = fs.readdirSync(dir).filter(name => name.endsWith(".json"))
       .map(name => JSON.parse(fs.readFileSync(path.join(dir, name), "utf8")));
     if (!records.length) throw new Error("Command probe intercepted no invocations");
-    const failed = records.filter(record => !record.acknowledged || record.failure);
+    const failed = records.filter(record => !record.acknowledged || !record.settled || record.failure);
     if (failed.length) throw new Error(`Command probe failed: ${JSON.stringify(failed)}`);
   };
   const close = async () => {
+    closing = true;
     if (process.env.PATH === installed) process.env.PATH = previous;
-    for (const socket of sockets) socket.destroy();
-    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
-    fs.rmSync(dir, { recursive: true, force: true });
+    for (const waiter of waiters.splice(0)) waiter.reject(new Error("Command probe closed before invocation"));
+    try {
+      const closed = [...sockets.values()];
+      for (const socket of sockets.keys()) socket.end("cancel\n");
+      await Promise.all(closed);
+      if (server.listening) await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   };
   try {
     await new Promise<void>((resolve, reject) => {
@@ -101,7 +112,7 @@ export async function useCommandProbe(
         fs.writeFileSync(executable, `#!/bin/sh\n${commands[name]}\n`, { mode: 0o755 });
       }
       const child = fileURLToPath(new URL("./command-probe-child.mjs", import.meta.url));
-      fs.writeFileSync(path.join(dir, name), `#!/bin/sh\nexec ${[process.execPath, child, dir, name, executable].map(quote).join(" ")} "$@"\n`, { mode: 0o755 });
+      fs.writeFileSync(path.join(dir, name), `#!/bin/sh\n${[process.execPath, child, dir, name].map(quote).join(" ")} "$@" || exit "$?"\nexec ${quote(executable)} "$@"\n`, { mode: 0o755 });
     }
     process.env.PATH = installed;
   } catch (error) {
@@ -122,13 +133,27 @@ export async function useCommandProbe(
     async run<T>(run: () => Promise<T>): Promise<T> {
       try { return await run(); } finally { verify(); }
     },
-    nextInvocation(): Promise<Invocation> {
-      const index = nextIndex++;
-      return invocations[index] ? Promise.resolve(invocations[index]!) : new Promise(resolve => waiters.push(resolve));
+    nextInvocation(operation?: Promise<unknown>): Promise<Invocation> {
+      const invocation = invocations.shift();
+      if (invocation) return Promise.resolve(invocation);
+      return new Promise((resolve, reject) => {
+        const waiter = { resolve, reject };
+        waiters.push(waiter);
+        const ended = (error: Error) => {
+          const pendingIndex = waiters.indexOf(waiter);
+          if (pendingIndex < 0) return;
+          waiters.splice(pendingIndex, 1);
+          reject(error);
+        };
+        operation?.then(
+          () => ended(new Error("Operation settled before command probe invocation")),
+          error => ended(error instanceof Error ? error : new Error(String(error))),
+        );
+      });
     },
     release() {
       hold = false;
-      for (const socket of pending) socket.end("ack\n");
+      for (const socket of pending) socket.write("ack\n");
       pending.clear();
     },
   };

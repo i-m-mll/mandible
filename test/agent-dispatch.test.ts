@@ -70,17 +70,18 @@ describe("agent dispatch", () => {
     const { incident_id: incidentId } = raiseDaemonIncident(db, { task: "dispatch-race", exitClass: "config" });
     const probe = await useCommandProbe({ "claude-spawn": "echo 'tmux server unavailable' >&2\nexit 1" }, { hold: true });
     vi.stubEnv("MANDIBLE_CLAUDE_SPAWN_BIN", path.join(probe.dir, "claude-spawn"));
+    let dispatched: ReturnType<typeof dispatchAgent> | undefined;
     try {
       const subject = { kind: "incident" as const, incident_id: incidentId };
       const plan = previewAgentDispatch(db, { subject, instruction: "Fix it.", actorUserId: seeds.operator!.id });
-      const dispatched = dispatchAgent(db, {
+      dispatched = dispatchAgent(db, {
         subject,
         instruction: "Fix it.",
         actorUserId: seeds.operator!.id,
         expectedPromptSha256: plan.prompt_sha256,
         expectedIncidentTelemetrySha256: plan.incident_telemetry_sha256!,
       });
-      await probe.nextInvocation();
+      await probe.nextInvocation(dispatched);
       const triaging = getOperationalIncident(db, incidentId);
       expect(triaging.remediation).toBe("triaging");
       closeOperationalIncident(db, incidentId, seeds.operator!.id, "Fixed by hand.", triaging.updated_at);
@@ -91,8 +92,13 @@ describe("agent dispatch", () => {
       expect(outcome.incident).toEqual(getOperationalIncident(db, incidentId));
       expect(outcome.incident).toMatchObject({ remediation: "complete", operator_closed_by_user_id: seeds.operator!.id });
     } finally {
-      db.close();
-      fs.rmSync(path.join(path.dirname(getDbPath()), "agent-dispatch"), { recursive: true, force: true });
+      try {
+        await probe.close();
+      } finally {
+        await dispatched?.catch(() => undefined);
+        db.close();
+        fs.rmSync(path.join(path.dirname(getDbPath()), "agent-dispatch"), { recursive: true, force: true });
+      }
     }
   });
 });
