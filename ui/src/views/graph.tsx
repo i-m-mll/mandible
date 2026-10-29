@@ -774,6 +774,7 @@ export function GraphDetailPane({
               onOpenEntity={openLedgerEntity}
               onAddComment={async (body) => {
                 const next = await addLedgerIssueComment(ledgerIssueId, body);
+                await queryClient.cancelQueries({ queryKey: detailOptions.queryKey, exact: true });
                 queryClient.setQueryData(detailOptions.queryKey, next);
               }}
               onAddToSpace={() => setSpacePickerOpen(true)}

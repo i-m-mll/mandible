@@ -47,8 +47,10 @@ export function useArtifactDetail({ reference = null, seriesRef = null, versionN
   } else if (displayed && displayed.scope !== displayScope) {
     setDisplayed(null);
   } else if (selectedVersionNo === null && displayed?.scope === displayScope) {
-    const previousArtifact = queryClient.getQueryData(artifactRecordOptions(displayed.id).queryKey);
-    const previousContent = queryClient.getQueryData(artifactContentOptions(displayed.id).queryKey);
+    const previousRecordOptions = artifactRecordOptions(displayed.id);
+    const previousContentOptions = artifactContentOptions(displayed.id);
+    const previousArtifact = queryClient.getQueryData(previousRecordOptions.queryKey) ?? previousRecordOptions.restartSnapshot();
+    const previousContent = queryClient.getQueryData(previousContentOptions.queryKey) ?? previousContentOptions.restartSnapshot();
     const previousVersion = history?.versions.find((version) => version.artifact_id === displayed.id);
     if (previousArtifact && previousContent && previousVersion) {
       artifact = previousArtifact;
