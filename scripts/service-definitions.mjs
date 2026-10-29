@@ -61,7 +61,7 @@ export function parseLoadedService(detail) {
     bundleProgram: field('program identifier')?.replace(/ \(mode: \d+\)$/, ''), parentBundleIdentifier: field('parent bundle identifier'),
     workingDirectory: field('working directory'), stdoutPath: field('stdout path'), stderrPath: field('stderr path'),
     keepAlive: /\bkeepalive\b/.test(field('properties') ?? ''), pid: Number(field('pid')) || null,
-    runs: Number(field('runs')) || 0, lastExit: field('last exit code') ?? null };
+    runs: Number(field('runs')) || 0, state: field('state'), lastExit: field('last exit code') ?? null, lastSignal: field('last terminating signal') ?? null };
 }
 
 export function differingServiceFields(record, job) {
