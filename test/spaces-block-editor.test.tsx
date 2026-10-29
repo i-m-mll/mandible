@@ -3,7 +3,7 @@
 // and rejected writes; reads from a previously selected document are ignored;
 // deleting an embedded item waits for an explicit decision.
 
-import { clearApiGetCache, invalidateDashboardApiCacheForEvent } from '../ui/src/api';
+import { addSpaceItem, clearApiGetCache, invalidateDashboardApiCacheForEvent, invalidateDashboardCaches } from '../ui/src/api';
 import { bindSpacesOperationCatalog } from './helpers/spaces-operation-catalog';
 import { establishTestClientAccess } from './helpers/local-client-access';
 import { render, screen, cleanup, fireEvent, waitFor } from './helpers/dom.js';
@@ -16,8 +16,14 @@ import { queryClient } from '../ui/src/query/client';
 import { __resetBrowserSessionForTests } from '../ui/src/client-auth-token';
 
 import {
-  DocumentBlockEditor,
+  DocumentBlockEditor as DocumentSurface,
 } from '../ui/src/views/spaces/DocumentBlockEditor';
+import { useSpacePacket } from '../ui/src/query/spaces';
+
+function DocumentBlockEditor(props: Parameters<typeof DocumentSurface>[0]) {
+  const query = useSpacePacket(props.spaceId);
+  return <DocumentSurface {...props} factPacket={query.packet} />;
+}
 import { MarkdownSourceEditor } from '../ui/src/views/spaces/MarkdownSourceEditor';
 import {
   generateSortKey,
@@ -324,8 +330,8 @@ async function renderEditor(props: Partial<Parameters<typeof DocumentBlockEditor
   const { backend, instance = mainInstance, ...rest } = props;
   vi.stubGlobal('fetch', backend.fetchImpl);
   if (instance) bindSpacesOperationCatalog(instance);
-  render(
-    <AppShellProvider value={{ active: true, noticeHost: document.getElementById('editor-notices'), rightSidebar: null, registerRightSidebar: () => () => undefined, registerInitialRouteLoad: () => undefined, setViewSidebarWidth: () => undefined }}>
+  const content = (active: boolean) => (
+    <AppShellProvider value={{ active, noticeHost: document.getElementById('editor-notices'), rightSidebar: null, registerRightSidebar: () => () => undefined, registerInitialRouteLoad: () => undefined, setViewSidebarWidth: () => undefined }}>
     <DocumentBlockEditor
       projectId="prj1"
       spaceId="sp1"
@@ -333,9 +339,11 @@ async function renderEditor(props: Partial<Parameters<typeof DocumentBlockEditor
       fetchImpl={backend.fetchImpl}
       instance={instance}
       {...rest}
-    /></AppShellProvider>,
+    /></AppShellProvider>
   );
+  const view = render(content(true));
   await waitFor(() => expect(screen.getByTestId('spaces-block-editor-list')).toBeTruthy());
+  return { ...view, setActive: (active: boolean) => view.rerender(content(active)) };
 }
 
 type SourceHost = HTMLElement & { __spacesEditorView?: EditorView };
@@ -637,6 +645,47 @@ describe('DocumentBlockEditor draft persistence (UI-state-persistence)', () => {
 });
 
 describe('document refresh reliability', () => {
+  it('receives acknowledged packet membership in the open picker without another packet response', async () => {
+    const backend = makeBackend([makeBlock({ id: 'b1', markdown: 'initial' })]);
+    const original = backend.fetchImpl.getMockImplementation()!;
+    let packetReads = 0;
+    backend.fetchImpl.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url === '/api/spaces/sp1' && (init?.method ?? 'GET') === 'GET' && ++packetReads > 1) return new Promise<Response>(() => undefined);
+      if (url === '/api/spaces/sp1/items' && init?.method === 'POST') return Promise.resolve(json({ item: {
+        id: 'published-item', space_id: 'sp1', ref_type: 'artifact', ref_id: 'artifact-published', ref_uri: null,
+        title: 'Published member', metadata: {}, created_at: NOW, updated_at: NOW,
+      }, created: true, already_present: false }));
+      if (url.startsWith('/api/graph')) return Promise.resolve(json({ nodes: [], edges: [] }));
+      if (url.startsWith('/api/artifacts')) return Promise.resolve(json({ artifacts: [] }));
+      return original(input, init);
+    });
+    await renderEditor({ backend });
+    setSourceText(0, '/item');
+    fireEvent.keyDown(sourceView().contentDOM, { key: 'Enter', code: 'Enter' });
+    await screen.findByTestId('space-item-picker');
+    expect(packetReads).toBe(1);
+    await act(async () => { await addSpaceItem('sp1', { ref_type: 'artifact', ref_id: 'artifact-published' }); });
+    await screen.findByText('Published member');
+  });
+
+  it('defers hidden document reads and keeps the draft through activation reconciliation', async () => {
+    const backend = makeBackend([makeBlock({ id: 'b1', markdown: 'initial' })]);
+    const view = await renderEditor({ backend });
+    setSourceText(0, 'my pending draft');
+    view.setActive(false);
+    await flushEffects();
+    const readCount = () => backend.fetchImpl.mock.calls.filter(([input, init]) => (init?.method ?? 'GET') === 'GET'
+      && /\/(blocks|items)$/.test(String(input))).length;
+    const before = readCount();
+    act(() => invalidateDashboardCaches());
+    await flushEffects();
+    expect(readCount()).toBe(before);
+    view.setActive(true);
+    await waitFor(() => expect(readCount()).toBeGreaterThan(before));
+    expect(sourceText()).toBe('my pending draft');
+  });
+
   it('rejects an older same-Space read and ignores unrelated Space events', async () => {
     const backend = makeBackend([makeBlock({ id: 'b1', markdown: 'initial' })]);
     await renderEditor({ backend });

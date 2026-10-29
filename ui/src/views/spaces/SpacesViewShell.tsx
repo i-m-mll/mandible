@@ -37,10 +37,8 @@ import './SpacesViewShell.css';
 export type SpaceRendererMountPoint = ComponentType<SpaceRendererMountProps>;
 
 /**
- * Props every registered renderer mount point receives from the shell. The shell
- * stays renderer-agnostic: it forwards the active renderer id and the projectId
- * scope and otherwise leaves the renderer to source its own view-model/state via
- * the typed API client (`ui/src/api.ts`) and `./types.ts` view types.
+ * Renderers derive their models from the shell's current Query-owned packet.
+ * Browser-local intent and staged edits remain owned by each renderer.
  */
 export type SpaceRendererMountProps = {
   /** Project scope for the Spaces list/selection (before a Space is opened). */

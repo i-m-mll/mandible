@@ -93,13 +93,6 @@ type SaveState =
 type CaretTarget = { blockId: string; start: number; end: number };
 type ItemCommandRange = { blockId: string; start: number; end: number };
 
-async function getSpaceItemsWithFetch(spaceId: string, fetchImpl: typeof fetch): Promise<SpaceItem[]> {
-  const response = await fetchImpl(`/api/spaces/${encodeURIComponent(spaceId)}`);
-  if (!response.ok) throw new Error(`Failed to load Space fact packet (${response.status})`);
-  const payload = (await response.json()) as { items?: SpaceItem[] };
-  if (!Array.isArray(payload.items)) throw new Error('The Spaces service returned an invalid item collection.');
-  return payload.items;
-}
 type SelectionMenuState = {
   blockId: string;
   start: number;
@@ -244,6 +237,7 @@ function caretPositionForDocumentClick(view: EditorView, event: MouseEvent): num
 export function DocumentBlockEditor({
   projectId,
   spaceId,
+  factPacket,
   fetchImpl,
   instance = null,
   onEmbedDeleteDecision,
@@ -304,19 +298,13 @@ export function DocumentBlockEditor({
     },
     refetchOnWindowFocus: true,
   }, active && Boolean(spaceId));
-  const itemsQuery = useProjectionQuery({
-    queryKey: browserResourceKeys.spaceItems(spaceId),
-    queryFn: ({ signal }) => getSpaceItemsWithFetch(spaceId!, (input, init) => fetcher()(input, { ...init, signal })),
-    refetchOnWindowFocus: true,
-  }, active && Boolean(spaceId));
   const load = documentQuery.data
     ? { status: 'ready' as const, ...documentQuery.data }
     : { status: documentQuery.isPending ? 'loading' as const : 'error' as const };
   const refreshDocument = useCallback(async () => {
     await queryClient.cancelQueries({ queryKey: browserResourceKeys.spaceDocument(spaceId), exact: true });
-    void itemsQuery.refetch();
     await documentQuery.refetch();
-  }, [spaceId, documentQuery.refetch, itemsQuery.refetch]);
+  }, [spaceId, documentQuery.refetch]);
 
   const blocks = useMemo(() => {
     const live = load.status === 'ready' ? load.blocks : [];
@@ -325,7 +313,7 @@ export function DocumentBlockEditor({
       return draft === undefined ? block : { ...block, markdown: draft };
     });
   }, [load, viewState.drafts]);
-  const spaceItems = itemsQuery.data ?? [];
+  const spaceItems = factPacket?.items ?? [];
 
   const editable = load.status === 'ready' && !documentQuery.error && spaceId !== null && canPerformOperation(
     instance,
@@ -895,7 +883,6 @@ export function DocumentBlockEditor({
             {documentQuery.error.message}
           </DetailPaneNotice>
         )}
-        {itemsQuery.error && <DetailPaneNotice severity="error" density="compact" title="Space items could not be refreshed">{itemsQuery.error.message}</DetailPaneNotice>}
         {actionError && (
           <DetailPaneNotice severity="error" density="compact" testId="spaces-block-editor-action-error">{actionError}</DetailPaneNotice>
         )}

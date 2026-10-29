@@ -239,12 +239,12 @@ describe('dashboard API GET cache', () => {
       const path = String(input);
       const method = init?.method ?? 'GET';
       if (method === 'POST' && path === '/api/spaces/sp1/items') {
-        return jsonResponse({ item: { id: 'item1' } });
+        return jsonResponse({ item: { id: 'item1', space_id: 'sp1' } });
       }
-      if (method === 'GET' && path === '/api/spaces/sp1') {
+      if (method === 'GET' && ['/api/spaces/sp1', '/api/spaces/sp2'].includes(path)) {
         return jsonResponse({
           space: {
-            id: 'sp1',
+            id: path.split('/').at(-1),
             project_id: 'p1',
             title: 'Canvas',
             default_renderer: 'canvas',
@@ -259,12 +259,15 @@ describe('dashboard API GET cache', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     await queryClient.fetchQuery(spacePacketOptions('sp1'));
+    await queryClient.fetchQuery(spacePacketOptions('sp2'));
     await addSpaceItem('sp1', { ref_type: 'issue', ref_id: 'abc1234' });
+    await queryClient.fetchQuery(spacePacketOptions('sp2'));
     await queryClient.fetchQuery(spacePacketOptions('sp1'));
 
     const getCalls = fetchMock.mock.calls.filter(([path, init]) =>
       String(path) === '/api/spaces/sp1' && ((init as RequestInit | undefined)?.method ?? 'GET') === 'GET',
     );
     expect(getCalls).toHaveLength(2);
+    expect(fetchMock.mock.calls.filter(([path]) => String(path) === '/api/spaces/sp2')).toHaveLength(1);
   });
 });
