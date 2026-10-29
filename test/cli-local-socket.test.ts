@@ -130,7 +130,7 @@ describe("CLI private local transport", () => {
       for (const shell of ["bash", "zsh"]) {
         const count = seen.length;
         const result = await runShell(
-          'source "$API_HELPER"; secret_account_for_service() { printf lookup >> "$LOOKUPS"; printf codex; }; secret_get() { printf durable-token; }; while IFS= read -r route; do out=$(api_temp_file); api_http_exchange GET "$route" "" "$out"; printf "\\n"; done <<< "$ROUTES"',
+          'source "$API_HELPER"; secret_account_for_service() { printf lookup >> "$LOOKUPS"; printf codex; }; secret_get() { printf durable-token; }; api_keychain_operator_token() { printf lookup >> "$LOOKUPS"; printf operator-token; }; while IFS= read -r route; do out=$(api_temp_file); api_http_exchange GET "$route" "" "$out"; printf "\\n"; done <<< "$ROUTES"',
           { ...env, ROUTES: malformed.join("\n") }, shell);
         expect(result.code, result.stderr).toBe(0);
         expect(result.stdout.trim().split("\n")).toEqual(malformed.map(() => "000"));
