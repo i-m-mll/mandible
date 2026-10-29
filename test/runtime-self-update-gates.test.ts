@@ -282,7 +282,13 @@ describe('automatic accepted-package binding', () => {
     const actor = { user_id: operatorId, credential_id: credentialId, evidence_method: 'api_token' as const };
     const revision = queue.listLifecycleEvents(request.id).at(-1)!.revision;
     if (change === 'veto') queue.setActionVeto(request.id, initial.id, true, actor, revision, 1);
-    if (change === 'edit') queue.updateAction(request.id, initial.id, { ...initial, payload: { kind: 'accepted-release', payload: { ...initial.payload.payload, reference: 'explicit selection' } } }, actor, revision, 1);
+    if (change === 'edit') {
+      const reference = acceptedReleaseReceiptFixture(home, {
+        pin_sha: request.merge_candidate_pin_sha!, tree_sha: request.merge_candidate_tree_sha!,
+        base_sha: request.merge_preflight_base_sha!, head_sha: request.merge_head_sha!,
+      }, undefined, request.custody_work_unit_id!);
+      queue.updateAction(request.id, initial.id, { ...initial, payload: { kind: 'accepted-release', payload: { ...initial.payload.payload, reference } } }, actor, revision, 1);
+    }
     if (change === 'delete') queue.deleteAction(request.id, initial.id, actor, revision, 1);
     const before = queue.listActions(request.id);
     advanceMainViaAuthorizedMerge(db, repo, 'feature/other', 'merge-other');

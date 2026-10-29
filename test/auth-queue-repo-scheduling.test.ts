@@ -267,14 +267,17 @@ describe("AuthQueue per-repo canonical identity (ded17e6)", () => {
     }
   });
 
-  it("self-merge drain waits for a foreign execution before restarting", async () => {
+  it.each(['fulfilled', 'rejected'])("self-merge drain waits for a %s foreign execution before restarting", async (outcome) => {
     vi.useFakeTimers();
     try {
       let restarted = 0;
       const db = createMigratedDb();
-      const queue = new AuthQueue({ db, restartFn: () => { restarted += 1; } });
+      const queue = new AuthQueue({ db, backgroundMaintenance: false, restartFn: () => { restarted += 1; } });
+      const baselineTimers = vi.getTimerCount();
       let releaseForeign!: () => void;
-      const foreign = new Promise<void>((resolve) => { releaseForeign = resolve; });
+      const foreign = new Promise<void>((resolve, reject) => {
+        releaseForeign = () => outcome === 'fulfilled' ? resolve() : reject(new Error('foreign execution failed'));
+      });
       (queue as unknown as { inFlight: Map<string, Promise<void>> }).inFlight.set("foreign", foreign);
 
       const drain = (queue as unknown as { drainAndRestart(id: string): Promise<void> }).drainAndRestart("self");
@@ -282,11 +285,9 @@ describe("AuthQueue per-repo canonical identity (ded17e6)", () => {
       expect(restarted).toBe(0); // still waiting on the foreign execution
 
       releaseForeign();
-      await vi.advanceTimersByTimeAsync(0);
-      expect(restarted).toBe(0); // foreign settled, but SSE-flush delay pending
-      await vi.advanceTimersByTimeAsync(2000);
       await drain;
       expect(restarted).toBe(1);
+      expect(vi.getTimerCount()).toBe(baselineTimers);
       (await queue.dispose());
       db.close();
     } finally {
@@ -299,7 +300,8 @@ describe("AuthQueue per-repo canonical identity (ded17e6)", () => {
     try {
       let restarted = 0;
       const db = createMigratedDb();
-      const queue = new AuthQueue({ db, restartFn: () => { restarted += 1; } });
+      const queue = new AuthQueue({ db, backgroundMaintenance: false, restartFn: () => { restarted += 1; } });
+      const baselineTimers = vi.getTimerCount();
       const never = new Promise<void>(() => { /* never settles */ });
       (queue as unknown as { inFlight: Map<string, Promise<void>> }).inFlight.set("foreign", never);
 
@@ -307,12 +309,37 @@ describe("AuthQueue per-repo canonical identity (ded17e6)", () => {
       await vi.advanceTimersByTimeAsync(59000);
       expect(restarted).toBe(0);
       await vi.advanceTimersByTimeAsync(1000); // reach the 60s drain cap
-      await vi.advanceTimersByTimeAsync(2000); // SSE-flush delay
       await drain;
       expect(restarted).toBe(1);
+      expect(vi.getTimerCount()).toBe(baselineTimers);
       (await queue.dispose());
       db.close();
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(['ownership changed', 'ownership check failed', 'restart failed'])("self-merge drain releases its deadline when %s", async (outcome) => {
+    vi.useFakeTimers();
+    const db = createMigratedDb();
+    const hookManager = createNoopHookManager();
+    const failure = new Error(outcome);
+    hookManager.admittedDrainIdentity = async () => {
+      if (outcome === 'ownership check failed') throw failure;
+      return outcome === 'ownership changed' ? 'new-owner' : 'admitted';
+    };
+    const restart = vi.fn(() => { throw failure; });
+    const queue = new AuthQueue({ db, hookManager, backgroundMaintenance: false, restartFn: restart });
+    const baselineTimers = vi.getTimerCount();
+    try {
+      const drain = (queue as unknown as { drainAndRestart(id: string, admitted: string): Promise<void> }).drainAndRestart('self', 'admitted');
+      if (outcome === 'ownership changed') await drain;
+      else await expect(drain).rejects.toBe(failure);
+      expect(restart).toHaveBeenCalledTimes(outcome === 'restart failed' ? 1 : 0);
+      expect(vi.getTimerCount()).toBe(baselineTimers);
+    } finally {
+      await queue.dispose();
+      db.close();
       vi.useRealTimers();
     }
   });
