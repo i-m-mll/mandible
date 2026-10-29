@@ -47,17 +47,18 @@ async function fixture() {
   const ownership = { pending: false };
   vi.doMock('../scripts/service-definitions.mjs', async original => ({ ...await original(), inspectServiceDefinitionsSync: () => ownership.pending
     ? { ok: false, refusal: { category: 'starting', message: 'Native execution is starting.' } } : { ok: true, observations: [] } }));
-  const jobs = { backend: { loaded: true, pid: 41 as number | null, foreign: false, executable: path.join(app, 'Contents/MacOS/mandible-bun') }, gateway: { loaded: true, pid: 51 as number | null, foreign: false, executable: path.join(app, 'Contents/MacOS/mandible-caddy') } };
+  const jobs = { backend: { runs: 1, lastExit: '0' as string | null, lastSignal: null as string | null, loaded: true, pid: 41 as number | null, foreign: false, executable: path.join(app, 'Contents/MacOS/mandible-bun') }, gateway: { runs: 1, lastExit: '0' as string | null, lastSignal: null as string | null, loaded: true, pid: 51 as number | null, foreign: false, executable: path.join(app, 'Contents/MacOS/mandible-caddy') } };
   const birth = 'Wed Oct 28 18:08:18 2026';
   let processRead = () => {};
+  let kickstart = role => { jobs[role].pid = role === 'backend' ? 41 : 51; return { status: 0, stdout: '', stderr: '' }; };
   const commands: string[] = [];
-  vi.doMock('node:child_process', async original => ({ ...await original(), spawnSync: (binary, args) => {
+  vi.doMock('node:child_process', async original => ({ ...await original(), spawnSync: (binary, args, options) => {
     commands.push(`${binary} ${args.join(' ')}`);
     if (binary === '/bin/launchctl') {
       const role = args[1].endsWith('.backend') ? 'backend' : 'gateway';
-      if (args[0] === 'kickstart') { jobs[role].pid = role === 'backend' ? 41 : 51; return { status: 0, stdout: '', stderr: '' }; }
+      if (args[0] === 'kickstart') return kickstart(role, options);
       if (!jobs[role].loaded) return { status: 113, stdout: '', stderr: 'Could not find service' };
-      return { status: 0, stdout: `service = {\n program identifier = Contents/MacOS/mandible-service (mode: 2)\n parent bundle identifier = ${jobs[role].foreign ? 'foreign.app' : 'bio.mll.fixture'}\n arguments = {\nmandible-service\nforeground\n${role}\n }\n${jobs[role].pid ? ` pid = ${jobs[role].pid}\n` : ''} runs = ${jobs[role].runs ?? 1}\n last exit code = 17\n}`, stderr: '' };
+      return { status: 0, stdout: `service = {\n program identifier = Contents/MacOS/mandible-service (mode: 2)\n parent bundle identifier = ${jobs[role].foreign ? 'foreign.app' : 'bio.mll.fixture'}\n arguments = {\nmandible-service\nforeground\n${role}\n }\n${jobs[role].pid ? ` pid = ${jobs[role].pid}\n` : ''} runs = ${jobs[role].runs ?? 1}\n last exit code = ${jobs[role].lastExit ?? '(never exited)'}\n${jobs[role].lastSignal ? ` last terminating signal = ${jobs[role].lastSignal}\n` : ''}}`, stderr: '' };
     }
     if (binary === '/bin/ps') {
       const live = Object.values(jobs).filter(job => job.loaded && job.pid);
@@ -76,7 +77,7 @@ async function fixture() {
   fs.writeFileSync(journalFile, JSON.stringify(journal));
   fs.writeFileSync(path.join(runtimeDir, 'handoff-active.json'), JSON.stringify({ bindingDigest: journal.bindingDigest, journal: journalFile }));
   const health = { status: 'ok', ready: true, warm: true, startup_epoch: 'epoch', instance: { ...main, db_path: path.join(home, 'mandible.db') } };
-  return { api, binding, journal, context, prepared, assertHeld, health, commands, jobs, birth, batch, ownership, setProcessRead: callback => { processRead = callback; } };
+  return { api, binding, journal, context, prepared, assertHeld, health, commands, jobs, birth, batch, ownership, setProcessRead: callback => { processRead = callback; }, setKickstart: callback => { kickstart = callback; } };
 }
 
 it('qualifies real role execution chains without restarting live stages and keeps terminal continuity strict', async () => {
@@ -147,6 +148,50 @@ it.each(['settling registration', 'owned dormant job', 'permission refusal', 'fo
   if (failure) await expect(result).rejects.toMatchObject({ code: failure });
   else await expect(result).resolves.toMatchObject({ processes: { backend: { pid: 41 }, gateway: { pid: 51 } } });
   if (scenario !== 'owned dormant job') expect(fx.commands.some(command => command.includes('kickstart'))).toBe(false);
+});
+
+it('waits through a fresh RunAtLoad schedule and launcher to exact qualification without kickstart or repeated status', async () => {
+  const fx = await fixture();
+  fx.jobs.backend.loaded = false; fx.jobs.backend.pid = null; fx.jobs.backend.runs = 0; fx.jobs.backend.lastExit = null;
+  let registered = false, reads = 0;
+  fx.batch.mockImplementation((_context, operation, roles) => {
+    expect(operation).toBe('register'); expect(registered).toBe(false); registered = true;
+    fx.jobs.backend.loaded = true;
+    return Object.fromEntries(roles.map(role => [role, { status: 'enabled', registration_changed: role === 'backend' }]));
+  });
+  fx.setProcessRead(() => {
+    if (!registered) return;
+    reads++;
+    if (reads >= 2) { fx.jobs.backend.pid = 41; fx.jobs.backend.runs = 1; fx.jobs.backend.executable = reads < 4 ? 'xpcproxy' : path.join(fx.context.bundleRoot, 'Contents/MacOS/mandible-bun'); }
+  });
+  await expect(fx.api.startHandoffDefinitions(fx.binding, { context: fx.context, journal: fx.journal, prepared: fx.prepared,
+    assertHeld: fx.assertHeld, until: Date.now() + 1000, initialize: async () => {}, configure: async () => {} })).resolves.toMatchObject({ processes: { backend: { pid: 41 }, gateway: { pid: 51 } } });
+  expect(fx.batch).toHaveBeenCalledTimes(1); expect(fx.commands.some(command => command.includes('kickstart'))).toBe(false);
+});
+
+it.each(['acknowledged', 'indeterminate', 'failed exit', 'rejected command'] as const)('reconciles a dormant %s start from observed execution with one demand', async outcome => {
+  const fx = await fixture(); fx.jobs.backend.pid = null;
+  let demanded = false, reads = 0;
+  fx.setKickstart((_role, options) => { expect(demanded).toBe(false); demanded = true;
+    expect(options.timeout).toBeGreaterThan(2500);
+    if (outcome === 'rejected command') return { status: 113, signal: null, stdout: '', stderr: 'native denial' };
+    return outcome === 'indeterminate' ? { status: null, signal: 'SIGTERM', error: Object.assign(new Error('uncertain'), { code: 'ETIMEDOUT' }) }
+      : { status: 0, stdout: '', stderr: '' };
+  });
+  fx.setProcessRead(() => {
+    if (!demanded || ++reads < 2) return;
+    if (outcome === 'failed exit') { fx.jobs.backend.lastExit = '78'; fx.jobs.backend.runs = 2; }
+    else { fx.jobs.backend.pid = 41; fx.jobs.backend.runs = 2; }
+  });
+  const result = fx.api.startHandoffDefinitions(fx.binding, { context: fx.context, journal: fx.journal, prepared: fx.prepared,
+    assertHeld: fx.assertHeld, until: Date.now() + 10_000, initialize: async () => {}, configure: async () => {} });
+  if (outcome === 'rejected command') await expect(result).rejects.toMatchObject({ code: 'service_start_failed', evidence: {
+    command: { operation: 'kickstart', outcome: 'failed', status: 113, signal: null, code: null, message: 'native denial' },
+  } });
+  else if (outcome === 'failed exit') await expect(result).rejects.toMatchObject({ code: 'service_exited', outcome: 'failed' });
+  else await expect(result).resolves.toMatchObject({ processes: { backend: { pid: 41, runs: 2 } } });
+  expect(fx.commands.filter(command => command.includes('kickstart'))).toHaveLength(1);
+  expect(fx.batch.mock.calls.map(call => call[1])).toEqual(['register', 'status']);
 });
 
 it('polls only exact database/generation/epoch HTTPS health under explicit ownership', async () => {

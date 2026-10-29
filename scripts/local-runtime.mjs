@@ -23,7 +23,7 @@ import { reloadGatewayConfiguration, gatewayAdminNeedsRestart } from './gateway-
 export { parseLoadedService, loadedServiceMatches } from "./service-definitions.mjs";
 
 import { readBundleOwner, nativeServiceControl, nativeServiceControls, readBundleLaunch, bundleLoginSession } from './bundle-services.mjs';
-import { reconcileBundleServiceStart, bundleServiceStartAction, startOwnedJob, BUNDLE_SERVICE_START_TIMEOUT_MS } from './bundle-service-start.mjs';
+import { reconcileBundleServiceStart, bundleServiceStartAction, bundleServiceCompletedRun, startOwnedJob, BUNDLE_SERVICE_START_TIMEOUT_MS } from './bundle-service-start.mjs';
 import { installAcceptedApplication } from './accepted-app-install.mjs';
 
 import * as installedModuleReader from './installed-release.mjs';
@@ -518,36 +518,45 @@ export async function startHandoffDefinitions(binding, { context, journal, asser
     const statuses = nativeServiceControls(context, 'register', ['backend', 'gateway'], { until, release: application.release });
     if (Object.values(statuses).some(status => status.status === 'requires_approval')) throw new RuntimeObservationError('background_permission_required',
       'Allow Mandible background services in System Settings.', statuses, 'pending');
+    const commands = {};
     const progress = Object.fromEntries(Object.entries(statuses).map(([role, status]) => [role, { previousStatus: status.status, registered: true }]));
     for (;;) {
       assertHeld();
       const observed = inspectHandoffProcesses(binding, { context, prepared, assertHeld, until, processes });
       Object.assign(processes, observed.processes);
       if (!observed.pending) break;
-      if (Date.now() >= until) throw new RuntimeObservationError('starting', observed.pending, { processes }, 'pending');
+      if (Date.now() >= until) throw new RuntimeObservationError('starting', observed.pending, { processes, commands }, 'pending');
       const unqualified = ['backend', 'gateway'].filter(role => !processes[role]);
-      const native = nativeServiceControls(context, 'status', unqualified, { until, release: application.release });
-      if (Object.values(native).some(status => status.status === 'requires_approval')) throw new RuntimeObservationError('background_permission_required',
-        'Allow Mandible background services in System Settings.', { native, processes }, 'pending');
-      const current = inspectHandoffProcesses(binding, { context, prepared, assertHeld, until, processes });
-      Object.assign(processes, current.processes);
-      if (Date.now() >= until) throw new RuntimeObservationError('starting', current.pending, { processes }, 'pending');
-      if (!current.pending) break;
-      const register = [];
-      for (const role of unqualified.filter(role => !processes[role])) {
-        const action = bundleServiceStartAction(progress[role], native[role].status, current.jobs[role]);
-        if (action === 'register') register.push(role);
-        if (action === 'start') {
+      const actionable = unqualified.filter(role => !observed.jobs[role].loaded
+        || bundleServiceCompletedRun(observed.jobs[role]) === 'clean' && !progress[role].startAttempted);
+      if (actionable.length) {
+        const native = nativeServiceControls(context, 'status', actionable, { until, release: application.release });
+        if (Object.values(native).some(status => status.status === 'requires_approval')) throw new RuntimeObservationError('background_permission_required',
+          'Allow Mandible background services in System Settings.', { native, processes }, 'pending');
+        const register = [];
+        for (const role of actionable) {
+          const current = inspectHandoffProcesses(binding, { context, prepared, assertHeld, until, processes });
+          Object.assign(processes, current.processes);
+          if (Date.now() >= until) throw new RuntimeObservationError('starting', current.pending, { processes }, 'pending');
+          if (processes[role]) continue;
+          const action = bundleServiceStartAction(progress[role], native[role].status, current.jobs[role]);
+          if (!action) continue;
+          if (action === 'register') { register.push(role); continue; }
           assertHandoffMutation(binding, { context, journal, assertHeld });
-          const started = startOwnedJob(context, role, until);
-          if (!started.ok) throw new RuntimeObservationError('service_start_failed', `Could not start owned ${role} service: ${started.error}`, { processes });
+          const command = commands[role] = startOwnedJob(context, role, until);
+          if (command.outcome === 'failed') throw new RuntimeObservationError('service_start_failed',
+            `Could not start owned ${role} service: ${command.message}`, { command, processes });
         }
-      }
-      if (register.length) {
-        assertHandoffMutation(binding, { context, journal, assertHeld });
-        const registered = nativeServiceControls(context, 'register', register, { until, release: application.release });
-        if (Object.values(registered).some(status => status.status === 'requires_approval')) throw new RuntimeObservationError('background_permission_required',
-          'Allow Mandible background services in System Settings.', { registered, processes }, 'pending');
+        if (register.length) {
+          Object.assign(processes, inspectHandoffProcesses(binding, { context, prepared, assertHeld, until, processes }).processes);
+          const roles = register.filter(role => !processes[role]);
+          if (roles.length) {
+            assertHandoffMutation(binding, { context, journal, assertHeld });
+            const registered = nativeServiceControls(context, 'register', roles, { until, release: application.release });
+            if (Object.values(registered).some(status => status.status === 'requires_approval')) throw new RuntimeObservationError('background_permission_required',
+              'Allow Mandible background services in System Settings.', { registered, processes }, 'pending');
+          }
+        }
       }
       await new Promise(resolve => setTimeout(resolve, Math.min(25, until - Date.now())));
     }
@@ -734,6 +743,8 @@ export function inspectHandoffProcesses(binding, { context, prepared, assertHeld
   }
   for (const [role, job] of Object.entries(jobs)) {
     const process = actual.get(job.pid);
+    if (bundleServiceCompletedRun(job) === 'failed') throw new RuntimeObservationError('service_exited',
+      `The owned ${role} service exited unsuccessfully before qualification.`, { role, job, processes });
     const identity = identities[role];
     const stage = identity ? classifyNativeExecution(execution, role, process.executable) : 'pending';
     if (stage === 'pending') {
