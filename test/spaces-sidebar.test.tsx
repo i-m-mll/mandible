@@ -95,6 +95,25 @@ const spaceOrder = (group: HTMLElement) =>
   within(group).getAllByText(/^(Backlog|Roadmap)$/).map((node) => node.textContent);
 
 describe('SpacesSidebar render + grouping', () => {
+  it('keeps pending reads quiet, preserves loaded rows on refresh and shows only confirmed emptiness', async () => {
+    let finish!: (groups: SpaceGroup[]) => void;
+    const loadGroups = vi.fn(() => new Promise<SpaceGroup[]>(resolve => { finish = resolve; }));
+    const props = { onSelectSpace: vi.fn(), loadGroups };
+    const view = render(<SpacesSidebar {...props} refreshToken={0} />);
+    await waitFor(() => expect(loadGroups).toHaveBeenCalledTimes(1));
+    const sidebar = screen.getByTestId('spaces-tree-scroll');
+    expect(sidebar.querySelector('.spaces-tree__status')).toBeNull();
+    finish(sampleGroups());
+    await screen.findByText('Roadmap');
+    view.rerender(<SpacesSidebar {...props} refreshToken={1} />);
+    await waitFor(() => expect(loadGroups).toHaveBeenCalledTimes(2));
+    expect(within(sidebar).getByText('Roadmap')).toBeTruthy();
+    expect(sidebar.querySelector('.spaces-tree__status')).toBeNull();
+    finish([]);
+    await screen.findByTestId('spaces-tree-empty');
+    expect(within(sidebar).queryByText('Roadmap')).toBeNull();
+  });
+
   it('supplies the canonical project key when opening a project Space', async () => {
     const onSelectSpace = vi.fn();
     render(<SpacesSidebar onSelectSpace={onSelectSpace} loadGroups={vi.fn().mockResolvedValue(sampleGroups())} />);

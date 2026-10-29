@@ -2744,14 +2744,14 @@ function App(): JSX.Element {
             {clientAccess.failure}
           </DetailPaneNotice>
         ) : null}
-        {startupDestinationPending ? (
+        {startupDestinationPending && railOrderLoadError ? (
           <DetailPaneNotice
-            severity={railOrderLoadError ? 'error' : 'info'}
+            severity="error"
             source="startup-navigation"
-            title={railOrderLoadError ? 'Navigation preferences could not be loaded' : undefined}
-            actions={railOrderLoadError ? <button type="button" onClick={() => { void refreshRailOrder(); }}>Retry</button> : undefined}
+            title="Navigation preferences could not be loaded"
+            actions={<button type="button" onClick={() => { void refreshRailOrder(); }}>Retry</button>}
           >
-            {railOrderLoadError ?? 'Loading navigation preferences…'}
+            {railOrderLoadError}
           </DetailPaneNotice>
         ) : null}
         {renderTabPanel('auth', (() => {

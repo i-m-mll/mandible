@@ -165,7 +165,6 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
     queryClient.setQueryData<BriefingSidebarSnapshot>(browserResourceKeys.briefingSidebar, (current) => current ? update(current) : current);
   const { briefings, bundles, groups, invalidBriefings } = sidebar;
   const error = sidebarQuery.error instanceof ApiError && sidebarQuery.error.code === 'local_access_unavailable' ? null : sidebarQuery.error?.message ?? null;
-  const accessUnavailable = sidebarQuery.error instanceof ApiError && sidebarQuery.error.code === 'local_access_unavailable';
   const sidebarLoaded = sidebarQuery.data !== undefined;
   const explicitBriefingQuery = useQuery({
     ...briefingTargetQuery(initialBriefingId ?? '', initialRoundId ?? null),
@@ -307,7 +306,7 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
   };
 
   return (
-    <CollectionShell collections={briefings} bundles={bundles} groups={groups} loadError={error ?? (accessUnavailable ? 'Local access is resuming.' : null)} confirmedLoaded={sidebarLoaded} sidebarHidden={sidebarHidden} viewState={{ ...viewState, selectedCollectionId, selectedGroupId }} setViewState={setViewState} onSelect={selectBriefing} onSelectGroup={selectGroup} notice={<>
+    <CollectionShell collections={briefings} bundles={bundles} groups={groups} confirmedLoaded={sidebarLoaded} sidebarHidden={sidebarHidden} viewState={{ ...viewState, selectedCollectionId, selectedGroupId }} setViewState={setViewState} onSelect={selectBriefing} onSelectGroup={selectGroup} notice={<>
       {error ? (
         <DetailPaneNotice source="briefing:refresh" severity="error" density="compact" title="Briefings could not be refreshed">{error}</DetailPaneNotice>
       ) : null}

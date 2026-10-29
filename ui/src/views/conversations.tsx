@@ -166,7 +166,6 @@ import {
 } from '../query/conversationKeys';
 import { markSidebarListsStale, startSidebarRefresh } from '../query/conversationSidebarRefresh';
 import { FullTextSearchError, type SearchSnapshot } from '../query/fullTextSearch';
-import type { FullTextSearchPending } from '../../../src/conversations/full-text-search-contract';
 import { queryClient as appQueryClient } from '../query/client';
 import { useSidebarOrderPreference } from '../hooks/useSidebarOrderPreference';
 import { useSidebarReorder } from '../hooks/useSidebarReorder';
@@ -3335,19 +3334,13 @@ export function ConversationsView({
   // with its legacy starred grouping and keep reordering disabled.
   const sidebarEnabled = canonicalProjectsReady && shownProjectsState.ready;
   const sidebarQueryKey = useMemo(() => conversationKeys.sidebarInitial(sidebarFilters), [sidebarFilters]);
-  const [searchProgress, setSearchProgress] = useState<{ filters: string; pending: FullTextSearchPending } | null>(null);
   const fetchSidebarInitial = useCallback(
     ({ signal }: { signal: AbortSignal }) => {
-      setSearchProgress(null);
-      const initialLoad = getConversationSidebar({ ...sidebarFilters, signal,
-        onPending: (pending) => {
-          if (!signal.aborted) setSearchProgress({ filters: sidebarFiltersJson, pending });
-        },
-      });
+      const initialLoad = getConversationSidebar({ ...sidebarFilters, signal });
       registerInitialSidebarLoad(initialLoad);
       return initialLoad;
     },
-    [registerInitialSidebarLoad, sidebarFilters, sidebarFiltersJson],
+    [registerInitialSidebarLoad, sidebarFilters],
   );
   const sidebarLive = sidebarEnabled && viewActive;
   const cachedSnapshot = queryClient.getQueryData<import('../api').ConversationSidebarResponse>(sidebarQueryKey)?.snapshot_id;
@@ -3434,7 +3427,6 @@ export function ConversationsView({
   const showingPriorResults = Boolean(completed && (
     completed.filtersJson !== sidebarFiltersJson || loading || searchError
   ));
-  const pendingSearch = loading && searchProgress?.filters === sidebarFiltersJson ? searchProgress.pending : null;
   const loadingMoreKeys = new Set(continuationRequests.flatMap((request) => (
     queryClient.getQueryState(conversationKeys.sidebarPage(request.filters, request.group, request.cursor))?.fetchStatus === 'fetching'
       ? [request.group]
@@ -4269,17 +4261,6 @@ export function ConversationsView({
               ),
             } : undefined}
           />
-          {loading && sidebarFilters.full_text && sidebarFilters.search ? (
-            <div role="status" className="sidebar-group-node__placeholder">
-              {pendingSearch?.phase === 'queued' ? 'Waiting to search chats…'
-                : pendingSearch?.phase === 'scanning'
-                  ? `Searching chats (${pendingSearch.progress.scanned} of ${pendingSearch.progress.eligible} checked)…`
-                  : 'Searching chats…'}
-              {showingPriorResults ? ' Showing previous results.' : ''}
-            </div>
-          ) : showingPriorResults && !terminalSearch ? (
-            <div role="status" className="sidebar-group-node__placeholder">Showing previous results.</div>
-          ) : null}
           {terminalSearch ? (
             <DetailPaneNotice
               severity="warning"

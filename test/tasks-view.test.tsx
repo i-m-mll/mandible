@@ -235,6 +235,24 @@ afterEach(() => {
 });
 
 describe('TasksView', () => {
+  it('keeps an unresolved inventory quiet in the sidebar and reports failure only in the main notice outlet', async () => {
+    let fail!: (error: Error) => void;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      if (String(input) === '/api/tasks') return new Promise<Response>((_, reject) => { fail = reject; });
+      return Promise.resolve(new Response(JSON.stringify({ commands: [], polling: 'tick_aligned' }), {
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    }));
+    render(<TasksView />);
+    await waitFor(() => expect(fail).toBeTypeOf('function'));
+    const sidebar = screen.getByRole('complementary', { name: 'Tasks' });
+    expect(sidebar.querySelector('.tasks-sidebar__empty')).toBeNull();
+    fail(new Error('Inventory connection unavailable'));
+    await screen.findByText('Inventory connection unavailable');
+    expect(sidebar.querySelector('.tasks-sidebar__empty')).toBeNull();
+    expect(within(sidebar).queryByRole('alert')).toBeNull();
+    expect(document.getElementById('app-operational-notices')?.textContent).toContain('Inventory connection unavailable');
+  });
 
   it('uses shared search and filters without resetting search, selection, or filters on reconciliation', async () => {
     const created = createManagedReminder(

@@ -10,7 +10,6 @@ export type CollectionShellProps = {
   collections: readonly FeedbackCollection[];
   bundles?: readonly BriefingBundle[];
   groups?: readonly BriefingGroup[];
-  loadError?: string | null;
   notice?: ComponentChildren;
   sidebarHidden?: boolean;
   viewState: BriefingCollectionViewState;
@@ -25,7 +24,6 @@ export function CollectionShell({
   collections,
   bundles = [],
   groups = [],
-  loadError = null,
   notice,
   sidebarHidden = false,
   viewState,
@@ -51,7 +49,6 @@ export function CollectionShell({
         collections={collections}
         bundles={bundles}
         groups={groups}
-        loadError={loadError}
         confirmedLoaded={confirmedLoaded}
         hidden={sidebarHidden}
         selectedCollectionId={selectedCollectionId}

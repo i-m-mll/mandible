@@ -36,7 +36,6 @@ export type CollectionsSidebarProps = {
   collections: readonly FeedbackCollection[];
   bundles?: readonly BriefingBundle[];
   groups?: readonly BriefingGroup[];
-  loadError?: string | null;
   confirmedLoaded?: boolean;
   hidden?: boolean;
   selectedCollectionId: string | null;
@@ -51,7 +50,6 @@ export function CollectionsSidebar({
   collections,
   bundles = [],
   groups = [],
-  loadError = null,
   confirmedLoaded = false,
   hidden = false,
   selectedCollectionId,
@@ -391,11 +389,7 @@ export function CollectionsSidebar({
     >
       <div data-testid="feedback-collections-sidebar" {...topLevelReorder.list}>
         {topLevelReorder.assistive}
-        {!confirmedLoaded && loadError ? (
-          <div className="feedback-collections-sidebar__list">
-            <p className="feedback-collections-sidebar__empty">Briefings have not loaded.</p>
-          </div>
-        ) : !confirmedLoaded ? null : visibleGroups.length === 0 && visibleBundles.length === 0 && unbundled.length === 0 ? (
+        {!confirmedLoaded ? null : visibleGroups.length === 0 && visibleBundles.length === 0 && unbundled.length === 0 ? (
           <div className="feedback-collections-sidebar__list">
             <p className="feedback-collections-sidebar__empty" role="status">
               {collections.length === 0

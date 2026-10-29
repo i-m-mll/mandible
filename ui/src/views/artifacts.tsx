@@ -298,7 +298,6 @@ export function ArtifactsView({
     q: filters.q || undefined, location: filters.location || undefined, limit: 500, summary: true,
   }), enabled: active }, queryClient);
   const series = useMemo(() => sortArtifactSeries(listQuery.data ?? [], sortField, sortDirection), [listQuery.data, sortField, sortDirection]);
-  const loading = listQuery.isPending;
   const facetOptions = useMemo(() => buildFacetOptions(facetQuery.data ?? []), [facetQuery.data]);
   const registerInitialRead = useRegisterInitialRouteLoad();
   useEffect(() => {
@@ -444,8 +443,7 @@ export function ArtifactsView({
         }
         bodyClassName="artifacts-sidebar__list"
       >
-              {loading && series.length === 0 && <div className="artifacts-sidebar__empty">Loading artifacts...</div>}
-              {!loading && series.length === 0 && <div className="artifacts-sidebar__empty">No artifacts</div>}
+              {listQuery.isSuccess && series.length === 0 && <div className="artifacts-sidebar__empty">No artifacts</div>}
               {series.map((entry, index) => {
                 const navigation = artifactListNavigation.getItemNavigationProps(entry, index);
                 return (
