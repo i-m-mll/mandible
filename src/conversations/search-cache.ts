@@ -12,6 +12,7 @@ import type { Db } from "../db.js";
 import { getUserHome } from "../platform-paths.js";
 import { ConversationSourceReader } from "./source-reader.js";
 import { ConversationSourceStore } from "./source-store.js";
+import { inspectSourceRepresentation } from "./logical-source.js";
 
 export const CONVERSATION_SEARCH_EPOCHS = Object.freeze({
   parser: "source-reader-v1",
@@ -322,28 +323,30 @@ export class SourceBackedConversationSearchSourceAdapter implements Conversation
     }
     const aliasPaths = this.store.availableAliasPaths([...sources.values()].map((source) => source.sourceId));
     const candidatePaths = [...new Set([...aliasPaths.values()].flat())];
-    const existing = new Set((await Promise.all(candidatePaths.map(async (candidate) => {
+    const representations = new Map(await Promise.all(candidatePaths.map(async (candidate) => {
       try {
-        await fs.promises.access(candidate);
-        return [candidate];
-      } catch {
-        return [];
+        const representation = await inspectSourceRepresentation(candidate);
+        return [candidate, representation.physicalPath === representation.path
+          ? representation.physicalPath : null] as const;
+      } catch (error) {
+        // Only absence rules out a body. All other observations leave the
+        // verified reader responsible for deciding whether it is readable.
+        return [candidate, (error as NodeJS.ErrnoException).code === "ENOENT" ? undefined : null] as const;
       }
-    }))).flat());
+    })));
     const pathsToConversations = new Map<string, string[]>();
     const mustParse = new Set<string>();
     for (const conversationId of conversationIds) {
       const source = sources.get(conversationId);
-      const readable = source ? (aliasPaths.get(source.sourceId) ?? []).filter((alias) => existing.has(alias)) : [];
-      // A durable source record with no readable alias has no searchable body
-      // after sparse cutover. Do not invoke the parser only to rediscover that
-      // fact; legacy-only rows (no source descriptor) still take the fallback.
-      if (readable.length === 0) {
-        if (!source) mustParse.add(conversationId);
-        continue;
-      }
-      for (const alias of readable) {
-        const resolved = path.resolve(alias);
+      if (!source) mustParse.add(conversationId);
+      for (const alias of source ? aliasPaths.get(source.sourceId) ?? [] : []) {
+        const rawPath = representations.get(alias);
+        if (rawPath === undefined) continue;
+        if (rawPath === null) {
+          mustParse.add(conversationId);
+          continue;
+        }
+        const resolved = path.resolve(rawPath);
         const ids = pathsToConversations.get(resolved) ?? [];
         ids.push(conversationId);
         pathsToConversations.set(resolved, ids);

@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { zstdCompressSync } from "node:zlib";
 import SqliteDatabase from "../src/sqlite.ts";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -105,6 +106,7 @@ async function insertSourceBackedConversation(
   conversationId: string,
   sourcePath: string,
   rows: Record<string, unknown>[],
+  compressed = false,
 ): Promise<ParseResult> {
   fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
   fs.writeFileSync(sourcePath, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
@@ -150,6 +152,11 @@ async function insertSourceBackedConversation(
       block.dag_parent_uuid ?? null,
     );
   }
+  const bytes = fs.readFileSync(sourcePath);
+  if (compressed) {
+    fs.writeFileSync(`${sourcePath}.zst`, zstdCompressSync(bytes));
+    fs.unlinkSync(sourcePath);
+  }
   await new ConversationSourceStore(db).recordConversation({
     conversationId,
     provider: "codex",
@@ -157,7 +164,6 @@ async function insertSourceBackedConversation(
     filePath: sourcePath,
     ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
   });
-  const bytes = fs.readFileSync(sourcePath);
   const tail = bytes.subarray(Math.max(0, bytes.length - 4096));
   db.prepare(`
     INSERT INTO conversation_ingest_state (
@@ -171,6 +177,85 @@ async function insertSourceBackedConversation(
 }
 
 describe("conversation full-text API parity", () => {
+  it("keeps compressed source matches, exact totals and cursor pages identical cold and warm", async () => {
+    const paths = new Map<string, string>();
+    for (const id of ["compressed", "transition", "raw"]) {
+      const sourcePath = path.join(tempDir, `.codex/sessions/2026/08/17/${id}.jsonl`);
+      paths.set(id, sourcePath);
+      await insertSourceBackedConversation(id, sourcePath, [
+        { type: "session_meta", timestamp: "2026-08-17T00:00:00Z", payload: { id, cwd: "/tmp/project" } },
+        { type: "response_item", timestamp: "2026-08-17T00:00:01Z", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: `Archive Needle ${id} ${unverifiedCanary}` }] } },
+      ], id === "compressed");
+    }
+    const transition = paths.get("transition")!;
+    fs.writeFileSync(`${transition}.zst`, zstdCompressSync(fs.readFileSync(transition)));
+    fs.unlinkSync(transition);
+    // An alternate representation must never displace a present raw source.
+    fs.writeFileSync(`${paths.get("raw")!}.zst`, zstdCompressSync(Buffer.from("Phantom Needle")));
+
+    const router = new Router();
+    registerConversationRoutes(router, inlineLedgerReader());
+    const sidebarUrl = "/api/conversations/sidebar?search=Archive%20Needle&full_text=true&limit=1";
+    type Sidebar = { groups: Array<{ key: string; total: number; conversations: Array<{ id: string }>; next_cursor: string | null }> };
+    const cold = await router.invoke({ method: "GET", url: sidebarUrl });
+    expect(cold.status).toBe(200);
+    const group = (cold.body as Sidebar).groups[0];
+    expect(group.total).toBe(3);
+    expect(group.conversations).toHaveLength(1);
+    expect(group.next_cursor).toEqual(expect.any(String));
+    const visited = group.conversations.map(row => row.id);
+    const coldPages = [cold.body];
+    let cursor = group.next_cursor;
+    while (cursor) {
+      const page = await router.invoke({ method: "GET", url: `${sidebarUrl}&group_key=${encodeURIComponent(group.key)}&cursor=${encodeURIComponent(cursor)}` });
+      expect(page.status).toBe(200);
+      coldPages.push(page.body);
+      const next = (page.body as Sidebar).groups[0];
+      expect(next.total).toBe(3);
+      visited.push(...next.conversations.map(row => row.id));
+      cursor = next.next_cursor;
+    }
+    expect(visited.sort()).toEqual(["compressed", "raw", "transition"]);
+    await getConversationSearchCache(db).whenIdle();
+    const warm = await router.invoke({ method: "GET", url: sidebarUrl });
+    expect(warm.body).toEqual(cold.body);
+    for (const [index, coldPage] of coldPages.slice(0, -1).entries()) {
+      const previous = (coldPage as Sidebar).groups[0];
+      const page = await router.invoke({ method: "GET", url: `${sidebarUrl}&group_key=${encodeURIComponent(group.key)}&cursor=${encodeURIComponent(previous.next_cursor!)}` });
+      expect(page.body).toEqual(coldPages[index + 1]);
+    }
+    const list = await router.invoke({ method: "GET", url: "/api/conversations?search=Archive%20Needle&full_text=true&limit=1" });
+    expect(list.body).toMatchObject({ total: 3, pages: 3, conversations: [expect.any(Object)], search_metrics: { cold_conversations: 0 } });
+    const dedicated = await router.invoke({ method: "GET", url: "/api/conversations/search?q=Archive%20Needle" });
+    expect(dedicated.body).toMatchObject({ total: 3 });
+    expect(JSON.stringify(dedicated.body)).not.toContain(unverifiedCanary);
+    expect(JSON.stringify(dedicated.body)).toContain("[mandible-credential:unverified#1]");
+    for (const query of [unverifiedCanary, "Phantom Needle"]) {
+      const response = await router.invoke({ method: "GET", url: `/api/conversations/search?q=${encodeURIComponent(query)}` });
+      expect(response.body).toMatchObject({ total: 0, results: [] });
+    }
+  });
+
+  it("does not turn missing or corrupt compressed sources into matches from stripped bodies", async () => {
+    for (const id of ["missing", "corrupt"]) {
+      const sourcePath = path.join(tempDir, `.codex/sessions/2026/08/17/${id}.jsonl`);
+      await insertSourceBackedConversation(id, sourcePath, [
+        { type: "session_meta", timestamp: "2026-08-17T00:00:00Z", payload: { id, cwd: "/tmp/project" } },
+        { type: "response_item", timestamp: "2026-08-17T00:00:01Z", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "Unavailable Needle" }] } },
+      ], true);
+      if (id === "missing") fs.unlinkSync(`${sourcePath}.zst`);
+      else fs.writeFileSync(`${sourcePath}.zst`, "corrupt zstd");
+    }
+    db.prepare("UPDATE conversation_blocks SET content = '', payload_state = 'source' WHERE conversation_id IN ('missing', 'corrupt')").run();
+    const router = new Router();
+    registerConversationRoutes(router, inlineLedgerReader());
+    for (const url of ["/api/conversations/search?q=Unavailable%20Needle", "/api/conversations?search=Unavailable%20Needle&full_text=true"]) {
+      const response = await router.invoke({ method: "GET", url });
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({ total: 0 });
+    }
+  });
+
   it("makes the list full_text path reach exact body search while title mode stays title-only", async () => {
     const router = new Router();
     registerConversationRoutes(router, inlineLedgerReader());
