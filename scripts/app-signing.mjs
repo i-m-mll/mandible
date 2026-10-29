@@ -76,15 +76,31 @@ export function appleTool(command, args, { timeout = 60_000, secrets = [] } = {}
   return result.stdout;
 }
 
+export function requireNativeAppSigning(plan) {
+  if (!plan?.identity || plan.identity === '-') throw new Error('Native service qualification requires an Apple-issued signing identity. Provision an Apple Development or Developer ID Application certificate and select it with APPLE_SIGNING_IDENTITY or Tauri macOS.signingIdentity. Ad-hoc signing cannot qualify native replacement.');
+  return plan;
+}
+
+export function nativeSigningIdentifier(appIdentifier, role) {
+  const suffix = { serviceHelper: 'service', trustHelper: 'trust' }[role];
+  if (!suffix) return null;
+  if (typeof appIdentifier !== 'string' || !/^[A-Za-z0-9.-]+$/.test(appIdentifier)) throw new Error('Native signing requires the app bundle identifier.');
+  return `${appIdentifier}.${suffix}`;
+}
+
 /** One keychain/identity lifetime covers every code signature and notarization operation. */
-export function openAppSigner(plan) {
+export function openAppSigner(plan, { until } = {}) {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-app-signing-'));
   const keychain = plan.certificate !== undefined ? path.join(temporary, 'signing.keychain-db') : null;
   const password = randomBytes(24).toString('hex');
   const secrets = [plan.certificate, plan.certificatePassword, plan.notarization?.password, password];
-  const run = (command, args, options = {}) => appleTool(command, args, { ...options, secrets });
+  const run = (command, args, options = {}) => {
+    const timeout = Math.min(options.timeout ?? 60_000, until === undefined ? Infinity : until - Date.now());
+    if (timeout <= 0) throw new Error('App signing deadline exceeded.');
+    return appleTool(command, args, { ...options, timeout, secrets });
+  };
   const close = () => {
-    try { if (keychain && fs.existsSync(keychain)) run('/usr/bin/security', ['delete-keychain', keychain]); }
+    try { if (keychain && fs.existsSync(keychain)) appleTool('/usr/bin/security', ['delete-keychain', keychain], { timeout: 2500, secrets }); }
     finally { fs.rmSync(temporary, { recursive: true, force: true }); }
   };
   try {
@@ -100,12 +116,14 @@ export function openAppSigner(plan) {
     if (plan.identity !== '-') {
       const identities = run('/usr/bin/security', ['find-identity', '-v', '-p', 'codesigning', ...(keychain ? [keychain] : [])]);
       const found = [...identities.matchAll(/\b([A-Fa-f0-9]{40}) "([^"]+)"/g)].filter(match => match[1].toLowerCase() === plan.identity.toLowerCase() || match[2].includes(plan.identity));
-      if (found.length !== 1) throw new Error('The configured signing identity must select exactly one available code-signing certificate. No ad-hoc fallback is permitted.');
+      if (found.length !== 1) throw new Error('The configured signing identity must select exactly one available code-signing certificate. Provision the selected Apple Development or Developer ID Application certificate in the keychain. No ad-hoc fallback is permitted.');
       plan = { ...plan, identity: found[0][1] };
     }
     return { identity: plan.identity, plan, run, temporary, close,
-      sign(file, entitlements = null, hardened = plan.hardenedRuntime) {
+      sign(file, entitlements = null, hardened = plan.hardenedRuntime, identifier = null) {
+        if (identifier !== null && (typeof identifier !== 'string' || !/^[A-Za-z0-9.-]+$/.test(identifier))) throw new Error('Invalid native signing identifier.');
         run('/usr/bin/codesign', ['--force', '--sign', plan.identity, ...(keychain ? ['--keychain', keychain] : []),
+          ...(identifier ? ['--identifier', identifier] : []),
           ...(hardened ? ['--options', 'runtime'] : []), ...(plan.identity !== '-' ? ['--timestamp'] : []),
           ...(entitlements ? ['--entitlements', entitlements] : []), file]);
       },

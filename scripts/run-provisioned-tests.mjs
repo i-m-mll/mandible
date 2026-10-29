@@ -15,6 +15,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { ProcessGroupSupervisor } from "./process-group-supervisor.mjs";
 import { executeTestPhase, sharedProcessTreeRss } from "./test-phase-executor.mjs";
+import { resolveAppSigning, requireNativeAppSigning } from './app-signing.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SUITE_DIR = "test/provisioned";
@@ -219,6 +220,7 @@ export async function runUnits(units, {
 async function main(args) {
   const commandStartedAt = Date.now();
   const units = provisionedUnits(args.length > 0 ? args : undefined);
+  if (units.some(unit => path.normalize(unit.args[0] ?? '') === NATIVE_REPLACEMENT)) requireNativeAppSigning(resolveAppSigning(root));
   if (units.length === 1 && path.normalize(units[0].args[0] ?? '') === NATIVE_REPLACEMENT) units[0].nativeProofStartedAt = commandStartedAt;
   const jobs = Math.min(poolSize(), units.length);
   process.stdout.write(`provisioned: ${units.length} units, ${jobs} at a time\n`);
