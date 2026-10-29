@@ -123,6 +123,33 @@ afterEach(() => {
 });
 
 describe('GraphView persisted detail panel state', () => {
+  it('keeps a new uncached focus quiet while pending and routes its failure to the main notice owner', async () => {
+    let finish!: (response: Response) => void;
+    let refreshed = false;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      if (new URL(String(input), 'http://localhost').searchParams.get('since') === '1d') {
+        return refreshed
+          ? Promise.resolve(jsonResponse({ mode: 'issue', nodes: [{ id: 'new-focus', type: 'repo', label: 'Resolved focus' }], edges: [] }))
+          : new Promise<Response>(resolve => { finish = resolve; });
+      }
+      return Promise.resolve(jsonResponse({ mode: 'issue', nodes: [{ id: 'old-focus', type: 'repo', label: 'Previous focus' }], edges: [] }));
+    }));
+    const view = renderGraph(0, 'old-focus');
+    await view.findByRole('button', { name: 'Select Previous focus' });
+    fireEvent.click(view.getByRole('button', { name: '1d' }));
+    view.rerenderGraph(0, 'new-focus');
+    await waitFor(() => expect(finish).toBeTypeOf('function'));
+    expect(view.getByTestId('graph-inspector').textContent).toBe('');
+    finish(jsonResponse({ error: 'Selected graph could not be read' }, 503));
+    await view.findByText('Selected graph could not be read');
+    expect(view.getByTestId('graph-inspector').textContent).toBe('');
+    expect(view.getDescriptor()?.open).toBe(true);
+    refreshed = true;
+    view.rerenderGraph(1, 'new-focus');
+    await waitFor(() => expect(view.getByTestId('graph-inspector').textContent).toContain('Resolved focus'));
+    expect(view.getByTestId('graph-inspector').textContent).not.toContain('Previous focus');
+  });
+
   it('retains the latest live revision through a pending and failed uncached spec', async () => {
     let label = 'Revision A';
     let finishSpec!: (response: Response) => void;

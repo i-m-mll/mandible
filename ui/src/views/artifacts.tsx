@@ -471,7 +471,7 @@ export function ArtifactsView({
         {requestDetailLoading && !coherentSelectedArtifact && !resolution && (
           <LoadingSkeleton variant="detail" label="Loading artifact..." />
         )}
-        {!detailError && !requestDetailLoading && !coherentSelectedArtifact && !resolution && (
+        {listQuery.isSuccess && series.length === 0 && !detailError && !requestDetailLoading && !coherentSelectedArtifact && !resolution && (
           <div className="artifacts-empty">No artifacts in this view.</div>
         )}
         {!requestDetailLoading && resolution?.target_type === 'artifact_blob' && (

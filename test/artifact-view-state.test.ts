@@ -11,6 +11,29 @@ import { ArtifactsView } from '../ui/src/views/artifacts';
 const selectedTitle = () => screen.queryByRole('heading', { level: 2 });
 
 describe('ArtifactsView', () => {
+  it.each([false, true])('waits for a confirmed list before asserting emptiness (nonempty=%s)', async nonempty => {
+    const artifact = makeArtifactFixture('confirmed', 'confirmed.md');
+    const series = makeArtifactSeries('confirmed', [artifact]);
+    const finish: Array<(response: Response) => void> = [];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      if (String(input).startsWith('/api/artifacts/series?')) return new Promise<Response>(resolve => { finish.push(resolve); });
+      return new Promise<Response>(() => {});
+    }));
+    render(h(ArtifactsView, {}));
+    await waitFor(() => expect(finish.length).toBeGreaterThan(0));
+    expect(screen.queryByText('No artifacts in this view.')).toBeNull();
+    expect(screen.queryByText('No artifacts')).toBeNull();
+    await act(async () => {
+      for (const resolve of finish) resolve(await jsonResponse({ series: nonempty ? [series.summary] : [] }));
+    });
+    if (nonempty) {
+      await screen.findByRole('button', { name: /confirmed.md/ });
+      expect(screen.queryByText('No artifacts in this view.')).toBeNull();
+    } else {
+      await screen.findByText('No artifacts in this view.');
+    }
+  });
+
   it('keeps an explicit missing series deep link visible instead of selecting a fallback', async () => {
     const artifact = makeArtifactFixture('a', 'available.md');
     const series = makeArtifactSeries('available', [artifact]);
