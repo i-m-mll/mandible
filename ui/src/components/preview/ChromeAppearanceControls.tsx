@@ -31,7 +31,7 @@ function ParameterInput({ name, field, controller, percent = false, helper, disa
       <input className="preview-appearance-controls__number" type="number" aria-label={`${name} value`} aria-describedby={hintId}
         min={limits.min * scale} max={limits.max * scale} step={limits.step * scale} disabled={disabled}
         value={draft} onInput={(event) => update(event.currentTarget.value)} onBlur={() => setDraft(String(value))} />
-      <span aria-hidden="true">{percent ? '%' : field === 'widthPx' ? 'px' : field === 'textIncrementPt' ? 'pt' : ''}</span>
+      <span aria-hidden="true">{percent ? '%' : field === 'widthPx' ? 'px' : field === 'uiFontSizePt' ? 'pt' : ''}</span>
     </div>
     {helper ? <p className="preview-appearance-controls__hint" id={hintId}>{helper}</p> : null}
   </div>;
@@ -45,7 +45,7 @@ export function ChromeAppearanceControls({ controller }: { controller: ChromeApp
         <option value="light">Light</option><option value="dark">Dark</option>
       </NativeSelect>
     </div>
-    <ParameterInput name="UI font size" field="textIncrementPt" controller={controller} helper="Points added to sidebar and top-bar text." />
+    <ParameterInput name="UI font size" field="uiFontSizePt" controller={controller} helper="Base size for sidebar and top-bar text; smaller labels retain their hierarchy." />
     <ParameterInput name="Shadow width" field="widthPx" controller={controller} />
     <ParameterInput name="Profile" field="profile" controller={controller} helper="0: first pixel only · 1: linear." />
     <ParameterInput name="Maximum darkness" field="maxDarkness" controller={controller} percent />

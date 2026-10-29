@@ -52,7 +52,7 @@ it('keeps the app interactive and retains independent appearance and panel inten
   fireEvent.click(screen.getByRole('button', { name: 'Collapse preview appearance' }));
   expect({ left: initial.style.left, top: initial.style.top }).toEqual(initialPosition);
   fireEvent.click(screen.getByRole('button', { name: 'Expand preview appearance' }));
-  fireEvent.input(screen.getByLabelText('UI font size value'), { target: { value: '3.75' } });
+  fireEvent.input(screen.getByLabelText('UI font size value'), { target: { value: '11.75' } });
   expect({ left: initial.style.left, top: initial.style.top }).toEqual(initialPosition);
   fireEvent.click(screen.getByRole('button', { name: 'Underlying action 0' }));
   expect(screen.getByRole('button', { name: 'Underlying action 1' })).toBeTruthy();
@@ -87,11 +87,11 @@ it('keeps the app interactive and retains independent appearance and panel inten
   rerender(<Harness />);
   expect(container.querySelector('.preview-appearance-panel')?.getAttribute('data-collapsed')).toBe('true');
   fireEvent.click(screen.getByRole('button', { name: 'Expand preview appearance' }));
-  expect((screen.getByLabelText('UI font size value') as HTMLInputElement).value).toBe('3.75');
+  expect((screen.getByLabelText('UI font size value') as HTMLInputElement).value).toBe('11.75');
   unmount();
   render(<Harness />);
   expect(screen.getByRole('dialog')).toBeTruthy();
-  expect((screen.getByLabelText('UI font size value') as HTMLInputElement).value).toBe('3.75');
+  expect((screen.getByLabelText('UI font size value') as HTMLInputElement).value).toBe('11.75');
 });
 
 it('suspends for visible app modals without changing open intent or taking focus, ignores inactive modals, and excludes production', async () => {

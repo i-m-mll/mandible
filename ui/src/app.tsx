@@ -2729,7 +2729,7 @@ function App(): JSX.Element {
       <AppShellProvider value={appShellContext}>
         <AppFrame
           navigation={navigation}
-          chromeAppearance={chromeAppearancePreview.themes}
+          chromeAppearance={chromeAppearancePreview.controller?.themes}
           nativeControlsReservation={nativeControlsReservation}
           layoutClassName={`app-layout--route-${route.tab}`}
           headerHostRef={setFrameHeaderHost}

@@ -37,6 +37,30 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe('preview chrome appearance controls', () => {
+  it('migrates saved deltas once to absolute points while retaining both themes and other tuning', () => {
+    installMemoryLocalStorage({ [key]: JSON.stringify({ version: 1, theme: 'light', overrides: {
+      light: { widthPx: 9, profile: 0.75, maxDarkness: 0.08, glassTransparency: 0.3, textIncrementPt: 0.5 },
+      dark: { widthPx: 12, profile: 1, maxDarkness: 0.42, glassTransparency: 0.65, textIncrementPt: 2 },
+    } }) });
+    const writes = vi.spyOn(window.localStorage, 'setItem');
+    const { rerender, unmount } = render(<Harness />);
+    const expected = { version: 2, theme: 'light', overrides: {
+      light: { widthPx: 9, profile: 0.75, maxDarkness: 0.08, glassTransparency: 0.3, uiFontSizePt: 11 },
+      dark: { widthPx: 12, profile: 1, maxDarkness: 0.42, glassTransparency: 0.65, uiFontSizePt: 12.5 },
+    } };
+    expect(JSON.parse(window.localStorage.getItem(key)!)).toEqual(expected);
+    expect((screen.getByLabelText('UI font size value') as HTMLInputElement).value).toBe('11');
+    rerender(<Harness />);
+    unmount();
+    render(<Harness />);
+    expect(JSON.parse(window.localStorage.getItem(key)!)).toEqual(expected);
+    expect(writes.mock.calls.filter(([storageKey]) => storageKey === key)).toHaveLength(1);
+    const exported = JSON.parse((screen.getByLabelText('Chrome parameters') as HTMLTextAreaElement).value);
+    expect(exported.version).toBe(2);
+    expect(exported.dark.uiFontSizePt).toBe(12.5);
+    expect(exported.dark).not.toHaveProperty('textIncrementPt');
+  });
+
   it('shows the native glass value disabled in browsers and enables immediate per-theme tint updates only with Regular capability', async () => {
     installMemoryLocalStorage({ [key]: seeded });
     const { container, rerender, unmount } = render(<Harness />);
@@ -63,7 +87,7 @@ describe('preview chrome appearance controls', () => {
     expect((screen.getByLabelText('Liquid Glass transparency value') as HTMLInputElement).value).toBe('100');
     fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
     expect((screen.getByLabelText('Liquid Glass transparency value') as HTMLInputElement).value).toBe('12');
-    expect(JSON.parse(window.localStorage.getItem(key)!).overrides).toEqual({ dark: { widthPx: 12, profile: 1, maxDarkness: 0.42, glassTransparency: 0.65, textIncrementPt: 2 } });
+    expect(JSON.parse(window.localStorage.getItem(key)!).overrides).toEqual({ dark: { widthPx: 12, profile: 1, maxDarkness: 0.42, glassTransparency: 0.65, uiFontSizePt: 11 } });
   });
 
   it('reacts to the existing native capability owner and removes the material when Regular glass becomes unavailable', async () => {
@@ -98,15 +122,15 @@ describe('preview chrome appearance controls', () => {
     const { container, rerender, unmount } = render(<Harness />);
     const frame = container.querySelector<HTMLElement>('.app-frame')!;
     const originalFrame = frame;
-    fireEvent.input(screen.getByRole('slider', { name: 'UI font size' }), { target: { value: '3.25' } });
-    expect(frame.style.getPropertyValue('--app-chrome-light-text-increment')).toBe('3.25pt');
+    fireEvent.input(screen.getByRole('slider', { name: 'UI font size' }), { target: { value: '12.25' } });
+    expect(frame.style.getPropertyValue('--app-chrome-light-ui-font-size')).toBe('12.25pt');
     fireEvent.input(screen.getByRole('slider', { name: 'Shadow width' }), { target: { value: '12.25' } });
     expect(frame.style.getPropertyValue('--app-shadow-light-width')).toBe('12.25px');
     expect((screen.getByRole('spinbutton', { name: 'Shadow width value' }) as HTMLInputElement).value).toBe('12.25');
     fireEvent.input(screen.getByRole('spinbutton', { name: 'Profile value' }), { target: { value: '1' } });
     expect(frame.style.getPropertyValue('--app-shadow-light-linear')).toBe('rgba(0, 0, 0, 0) 0px, rgba(0, 0, 0, 0.04) 12.25px');
     fireEvent.change(screen.getByLabelText('Preview theme'), { target: { value: 'dark' } });
-    fireEvent.input(screen.getByRole('spinbutton', { name: 'UI font size value' }), { target: { value: '4.5' } });
+    fireEvent.input(screen.getByRole('spinbutton', { name: 'UI font size value' }), { target: { value: '13.5' } });
     fireEvent.input(screen.getByRole('slider', { name: 'Maximum darkness' }), { target: { value: '42.1' } });
     expect(frame.style.getPropertyValue('--app-shadow-dark-linear')).toContain('0.421');
     expect(screen.queryByText('Dark shadow is off')).toBeNull();
@@ -118,11 +142,11 @@ describe('preview chrome appearance controls', () => {
     unmount();
     render(<Harness />);
     expect((screen.getByLabelText('Maximum darkness value') as HTMLInputElement).value).toBe('42.1');
-    expect((screen.getByLabelText('UI font size value') as HTMLInputElement).value).toBe('4.5');
-    expect(JSON.parse(window.localStorage.getItem(key)!)).toMatchObject({ theme: 'dark', overrides: { light: { widthPx: 12.25, profile: 1, textIncrementPt: 3.25 }, dark: { maxDarkness: 0.421, textIncrementPt: 4.5 } } });
+    expect((screen.getByLabelText('UI font size value') as HTMLInputElement).value).toBe('13.5');
+    expect(JSON.parse(window.localStorage.getItem(key)!)).toMatchObject({ theme: 'dark', overrides: { light: { widthPx: 12.25, profile: 1, uiFontSizePt: 12.25 }, dark: { maxDarkness: 0.421, uiFontSizePt: 13.5 } } });
     fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
-    expect((screen.getByLabelText('UI font size value') as HTMLInputElement).value).toBe('2');
-    expect(JSON.parse(window.localStorage.getItem(key)!).overrides).toEqual({ light: { widthPx: 12.25, profile: 1, maxDarkness: 0.04, glassTransparency: 0.12, textIncrementPt: 3.25 } });
+    expect((screen.getByLabelText('UI font size value') as HTMLInputElement).value).toBe('11');
+    expect(JSON.parse(window.localStorage.getItem(key)!).overrides).toEqual({ light: { widthPx: 12.25, profile: 1, maxDarkness: 0.04, glassTransparency: 0.12, uiFontSizePt: 12.25 } });
   });
 
   it('resets only the edited override and exports both effective themes without local bookkeeping', async () => {
@@ -133,10 +157,10 @@ describe('preview chrome appearance controls', () => {
     fireEvent.change(screen.getByLabelText('Preview theme'), { target: { value: 'light' } });
     fireEvent.input(screen.getByLabelText('Shadow width value'), { target: { value: '8' } });
     fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
-    expect(JSON.parse(window.localStorage.getItem(key)!)).toEqual({ ...JSON.parse(seeded), theme: 'light', overrides: { dark: { widthPx: 12, profile: 1, maxDarkness: 0.42, glassTransparency: 0.12, textIncrementPt: 2 } } });
+    expect(JSON.parse(window.localStorage.getItem(key)!)).toEqual({ ...JSON.parse(seeded), version: 2, theme: 'light', overrides: { dark: { widthPx: 12, profile: 1, maxDarkness: 0.42, glassTransparency: 0.12, uiFontSizePt: 11 } } });
     fireEvent.click(screen.getByRole('button', { name: 'Copy parameters' }));
     await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Parameters copied.'));
-    const exported = { version: 1, light: { widthPx: 16, profile: 0.25, maxDarkness: 0.04, glassTransparency: 0.12, textIncrementPt: 2 }, dark: { widthPx: 12, profile: 1, maxDarkness: 0.42, glassTransparency: 0.12, textIncrementPt: 2 } };
+    const exported = { version: 2, light: { widthPx: 16, profile: 0.25, maxDarkness: 0.04, glassTransparency: 0.12, uiFontSizePt: 11 }, dark: { widthPx: 12, profile: 1, maxDarkness: 0.42, glassTransparency: 0.12, uiFontSizePt: 11 } };
     expect(JSON.parse(writeText.mock.calls[0]![0])).toEqual(exported);
     expect(JSON.parse((screen.getByLabelText('Chrome parameters') as HTMLTextAreaElement).value)).toEqual(exported);
     writeText.mockRejectedValue(new Error('clipboard denied'));
