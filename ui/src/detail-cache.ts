@@ -21,11 +21,7 @@ export type LiveDetailNamespace =
   | 'graph'
   | 'timeline'
   | 'issue-detail'
-  | 'spaces'
-  | 'artifact-versions'
-  | 'artifact-record'
-  | 'artifact-content'
-  | 'artifact-backrefs';
+  | 'spaces';
 
 const MAX_ENTRIES = 48;
 const MAX_ENTRIES_PER_NAMESPACE = 6;

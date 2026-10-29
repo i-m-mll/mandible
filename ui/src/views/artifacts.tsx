@@ -2,7 +2,7 @@ import { NativeSelect } from '../components/shared/NativeSelect';
 import { Icon } from '../components/icons/Icon';
 import { navigateAppHash } from '../app-history';
 import { resolvedArtifactRecord } from "../../../src/artifact-identity.js";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import hljs from 'highlight.js/lib/core';
 import bash from 'highlight.js/lib/languages/bash';
 import cpp from 'highlight.js/lib/languages/cpp';
@@ -21,8 +21,11 @@ import sql from 'highlight.js/lib/languages/sql';
 import typescript from 'highlight.js/lib/languages/typescript';
 import xml from 'highlight.js/lib/languages/xml';
 import yaml from 'highlight.js/lib/languages/yaml';
-import { useKeyedAsyncDetail } from '../hooks/useKeyedAsyncDetail';
-import { beginDetailRequest, detailRequestKey, removePersistedDetail, writePersistedDetail } from '../detail-cache';
+import { useQuery } from "@tanstack/preact-query";
+import { queryClient } from "../query/client";
+import { detailKeys } from "../query/detailKeys";
+import { artifactListOptions, artifactResolutionOptions, artifactVersionsOptions, artifactRecordOptions, artifactContentOptions, artifactBackrefsOptions, queryErrorMessage } from "../query/details";
+import { useArtifactDetail } from "../hooks/useArtifactDetail";
 import { ARTIFACT_ROUTE_SELECTORS, routeHashWithParams, parseArtifactVersionParam, shortRouteId } from '../routing';
 import { PRODUCTION_ORIGIN } from '../../../src/canonical-origin';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
@@ -30,19 +33,12 @@ import { LoadingSkeleton } from '../components/LoadingSkeleton';
 import {
   deleteArtifactDraft,
   createBriefingFromArtifactVersion,
-  getArtifact,
-  getArtifactContent,
   getArtifactDiff,
   getArtifactDraft,
-  getArtifactKnowledgeBackrefs,
-  getArtifactSeriesList,
-  getArtifactVersions,
   getLedgerIssueDetail,
-  isApiErrorStatus,
   openArtifactExternally,
   publishArtifactDraft,
   rebaseArtifactDraft,
-  resolveArtifact,
   saveArtifactDraft,
   type ArtifactContentResult,
   type ArtifactDiffResult,
@@ -54,7 +50,6 @@ import {
   type ArtifactResolveResult,
   type ArtifactSeriesRecord,
   type ArtifactSeriesSummary,
-  type ArtifactVersionHistory,
   type ArtifactVersionRecord,
   type KnowledgeBackrefRecord,
 } from '../api';
@@ -77,7 +72,7 @@ import { DetailPaneMenuTrigger } from '../components/shared/DetailPaneMenuTrigge
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { DetailPaneShell, type DetailPanePresentation } from '../components/shared/DetailPaneShell';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
-import { useRouteLoad } from '../app-shell';
+import { useViewActive, useRegisterInitialRouteLoad } from '../app-shell';
 import { artifactLinkBadgeLabel } from '../lib/format';
 import { useSidebarListNavigation } from '../hooks/useSidebarListNavigation';
 import { readPersistedViewState, usePersistedViewState } from '../hooks/usePersistedViewState';
@@ -204,15 +199,6 @@ function artifactSeriesListRequest(filters: ArtifactFilters): ArtifactQueryParam
   };
 }
 
-function artifactSelectedSeriesRef(
-  current: string | null,
-  hasDeepLink: boolean,
-  ordered: readonly ArtifactSeriesSummary[],
-): string | null {
-  if (current || hasDeepLink || !ordered[0]) return current;
-  return seriesRef(ordered[0]);
-}
-
 type BundleMemberPreview = {
   artifactId: string;
   role: string;
@@ -274,448 +260,107 @@ export function ArtifactsView({
     DEFAULT_ARTIFACT_LIST_STATE,
   );
   const { filters, sortField, sortDirection } = listViewState;
-  const [series, setSeries] = useState<ArtifactSeriesSummary[]>([]);
-  const [selectedSeriesRef, setSelectedSeriesRef] = useState<string | null>(
-    routeSelection.artifactId || routeSelection.ref
-      ? null
-      : initialSeriesSelection ?? (routeSelection.hasDeepLink ? null : listViewState.selectedSeriesRef),
-  );
-  const [selectedVersionNo, setSelectedVersionNo] = useState<number | null>(
-    routeSelection.artifactId || routeSelection.ref || routeSelection.hasInvalidSeries
-      ? null
-      : initialSeriesSelection
-        ? routeSelection.versionNo
-        : listViewState.selectedVersionNo,
-  );
-  const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(initialArtifactId ?? null);
-  const [selectedArtifact, setSelectedArtifact] = useState<ArtifactRecord | null>(null);
-  const [versionHistory, setVersionHistory] = useState<ArtifactVersionHistory | null>(null);
-  const [resolution, setResolution] = useState<ArtifactResolveResult | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [detailLoading, setDetailLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const active = useViewActive();
+  const [selection, setSelection] = useState(() => ({
+    reference: initialArtifactId ?? initialRef ?? null,
+    seriesRef: initialSeriesSelection ?? (routeSelection.hasDeepLink ? null : listViewState.selectedSeriesRef),
+    versionNo: initialSeriesSelection ? initialVersionNo : listViewState.selectedVersionNo,
+  }));
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
   const [detailMetadataOpen, setDetailMetadataOpen] = useState(false);
-  const [facetSeries, setFacetSeries] = useState<ArtifactSeriesSummary[]>([]);
-  const deepLinkActiveRef = useRef(routeSelection.hasDeepLink);
-  const listRequestIdRef = useRef(0);
-  const facetRequestIdRef = useRef(0);
   const lastWrittenHashRef = useRef<{ seriesRef: string; versionNo: number | null } | null>(null);
-  const lastAppliedInitialSeriesRef = useRef<{ seriesRef: string; versionNo: number | null } | null>(
-    initialSeriesSelection ? { seriesRef: initialSeriesSelection, versionNo: routeSelection.versionNo } : null,
-  );
-
   const routeKey = JSON.stringify([initialArtifactId, initialRef, initialSeriesRef, initialVersionNo]);
   const [appliedRouteKey, setAppliedRouteKey] = useState(routeKey);
-  const intentGenerationRef = useRef(0);
   if (appliedRouteKey !== routeKey) {
     setAppliedRouteKey(routeKey);
-    intentGenerationRef.current += 1;
-    deepLinkActiveRef.current = routeSelection.hasDeepLink;
     const ownWrite = lastWrittenHashRef.current;
     if (!(ownWrite && ownWrite.seriesRef === initialSeriesSelection && ownWrite.versionNo === initialVersionNo)) {
-      setSelectedSeriesRef(initialSeriesSelection ?? (routeSelection.hasDeepLink ? null : listViewState.selectedSeriesRef));
-      setSelectedVersionNo(initialSeriesSelection ? initialVersionNo : null);
-      setSelectedArtifactId(null);
-      setSelectedArtifact(null);
-      setVersionHistory(null);
-      setResolution(null);
-      setError(null);
-      setDetailLoading(Boolean(initialArtifactId || initialRef));
+      setSelection({
+        reference: initialArtifactId ?? initialRef ?? null,
+        seriesRef: initialSeriesSelection ?? (routeSelection.hasDeepLink ? null : listViewState.selectedSeriesRef),
+        versionNo: initialSeriesSelection ? initialVersionNo : null,
+      });
     }
+    lastWrittenHashRef.current = null;
   }
-
   useEffect(() => {
     setListViewState((current) => {
-      if (!initialRepo || current.filters.repo === initialRepo) return current;
-      return { ...current, filters: { ...current.filters, repo: initialRepo } };
+      const repo = initialRepo || current.filters.repo;
+      const role = initialRole || current.filters.role;
+      return repo === current.filters.repo && role === current.filters.role ? current
+        : { ...current, filters: { ...current.filters, repo, role } };
     });
-  }, [initialRepo, setListViewState]);
+  }, [initialRepo, initialRole, setListViewState]);
 
+  const listQuery = useQuery({ ...artifactListOptions(artifactSeriesListRequest(filters)), enabled: active }, queryClient);
+  const facetQuery = useQuery({ ...artifactListOptions({
+    q: filters.q || undefined, location: filters.location || undefined, limit: 500, summary: true,
+  }), enabled: active }, queryClient);
+  const series = useMemo(() => sortArtifactSeries(listQuery.data ?? [], sortField, sortDirection), [listQuery.data, sortField, sortDirection]);
+  const loading = listQuery.isPending;
+  const facetOptions = useMemo(() => buildFacetOptions(facetQuery.data ?? []), [facetQuery.data]);
+  const registerInitialRead = useRegisterInitialRouteLoad();
   useEffect(() => {
-    setListViewState((current) => {
-      if (!initialRole || current.filters.role === initialRole) return current;
-      return { ...current, filters: { ...current.filters, role: initialRole } };
-    });
-  }, [initialRole, setListViewState]);
+    if (active) registerInitialRead(queryClient.fetchQuery(artifactListOptions(artifactSeriesListRequest(filters))));
+  }, [active, registerInitialRead]);
 
+  const defaultSeriesRef = !selection.reference && !routeSelection.hasDeepLink && !routeSelection.hasInvalidSeries && series[0]
+    ? seriesRef(series[0]) : null;
   useEffect(() => {
-    deepLinkActiveRef.current = routeSelection.hasDeepLink;
-  }, [initialArtifactId, initialRef, initialSeriesRef]);
-
-  const applyResolutionSelection = useCallback((next: ArtifactResolveResult, options?: { forcePinned?: boolean }) => {
-    setResolution(next);
-    if (next.target_type === 'artifact_blob') {
-      setSelectedSeriesRef(null);
-      setSelectedVersionNo(null);
-      setSelectedArtifactId(null);
-      setSelectedArtifact(null);
-      return;
-    }
-    const nextSeriesRef = next.logical_artifact ? canonicalArtifactSeriesRef(next.logical_artifact.id) : null;
-    const latestTracking = next.warnings?.includes('series_latest_not_pinned') && !options?.forcePinned;
-    setSelectedSeriesRef(nextSeriesRef);
-    setSelectedVersionNo(next.artifact_version && !latestTracking ? next.artifact_version.version_no : null);
-    setSelectedArtifactId(resolvedArtifactRecord(next)?.id ?? next.artifact_version?.id ?? null);
-    setSelectedArtifact(resolvedArtifactRecord(next));
-  }, []);
-
-  const applyArtifactDeepLinkSelection = useCallback(async (
-    next: ArtifactResolveResult,
-    isCancelled: () => boolean,
-  ) => {
-    if (resolvedArtifactRecord(next) && !next.logical_artifact && !next.artifact_version) {
-      try {
-        const history = sortedVersionHistory(await getArtifactVersions(resolvedArtifactRecord(next)!.id));
-        if (isCancelled()) return;
-        const pinnedVersion = history.versions.find((version) => version.artifact_id === resolvedArtifactRecord(next)?.id) ?? null;
-        if (pinnedVersion) {
-          setResolution(next);
-          setVersionHistory(history);
-          setSelectedSeriesRef(seriesRecordRef(history.series));
-          setSelectedVersionNo(pinnedVersion.version_no);
-          setSelectedArtifactId(resolvedArtifactRecord(next)!.id);
-          setSelectedArtifact(resolvedArtifactRecord(next));
-          return;
-        }
-      } catch (err) {
-        if (!isApiErrorStatus(err, 404)) {
-          if (!isCancelled()) {
-            applyResolutionSelection(next, { forcePinned: !/^artifact-series:/i.test(next.ref) });
-            setError(err instanceof Error ? err.message : String(err));
-          }
-          return;
-        }
-      }
-    }
-    if (!isCancelled()) {
-      applyResolutionSelection(next, { forcePinned: !/^artifact-series:/i.test(next.ref) });
-    }
-  }, [applyResolutionSelection]);
-
-  const loadSeries = useCallback(async () => {
-    const requestId = listRequestIdRef.current + 1;
-    listRequestIdRef.current = requestId;
-    setLoading(true);
-    setError(null);
-    const show = (next: ArtifactSeriesSummary[]) => {
-      const ordered = sortArtifactSeries(next, sortField, sortDirection);
-      setSeries(ordered);
-      setSelectedSeriesRef((current) => {
-        return artifactSelectedSeriesRef(current, deepLinkActiveRef.current, ordered);
-      });
-      setSelectedArtifactId((current) => {
-        if (current || deepLinkActiveRef.current || !ordered[0]?.latest_version) return current;
-        return ordered[0].latest_version.artifact_id;
-      });
-      setSelectedArtifact((current) => {
-        if (current || deepLinkActiveRef.current || !ordered[0]?.latest_artifact) return current;
-        return ordered[0].latest_artifact;
-      });
-    };
-    try {
-      const next = await getArtifactSeriesList(artifactSeriesListRequest(filters), { onCached: show });
-      if (listRequestIdRef.current !== requestId) return;
-      show(next);
-    } catch (err) {
-      if (listRequestIdRef.current === requestId) {
-        setError(err instanceof Error ? err.message : String(err));
-      }
-    } finally {
-      if (listRequestIdRef.current === requestId) {
-        setLoading(false);
-      }
-    }
-  }, [filters, sortDirection, sortField]);
-
-  const initialFiltersApplied = !(initialRepo && filters.repo !== initialRepo) && !(initialRole && filters.role !== initialRole);
-  useRouteLoad((register) => {
-    const read = loadSeries();
-    if (initialFiltersApplied) register(read);
-  }, [loadSeries]);
-
-  const loadFacetSeries = useCallback(async () => {
-    const requestId = facetRequestIdRef.current + 1;
-    facetRequestIdRef.current = requestId;
-    try {
-      const next = await getArtifactSeriesList({
-        q: filters.q || undefined,
-        location: filters.location || undefined,
-        limit: 500,
-        summary: true,
-      });
-      if (facetRequestIdRef.current !== requestId) return;
-      setFacetSeries(next);
-    } catch {
-      // Keep the last successful option corpus so transient reload failures do not collapse selects.
-    }
-  }, [filters.q, filters.location]);
-
-  useRouteLoad((register) => {
-    const read = loadFacetSeries();
-    if (initialFiltersApplied) register(read);
-  }, [loadFacetSeries]);
-
-  useEffect(() => {
-    if (!initialArtifactId) return;
-    let cancelled = false;
-    const generation = intentGenerationRef.current;
-    const isCancelled = () => cancelled || generation !== intentGenerationRef.current;
-    setDetailLoading(true);
-    setError(null);
-    setResolution(null);
-    resolveArtifact(initialArtifactId)
-      .then((next) => {
-        if (isCancelled()) return;
-        return applyArtifactDeepLinkSelection(next, isCancelled);
-      })
-      .catch((err) => {
-        if (isCancelled()) return;
-        setSelectedSeriesRef(null);
-        setSelectedVersionNo(null);
-        setSelectedArtifactId(initialArtifactId);
-        setSelectedArtifact(null);
-        setError(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (!isCancelled()) setDetailLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [applyArtifactDeepLinkSelection, initialArtifactId]);
-
-  useEffect(() => {
-    if (!initialRef) return;
-    let cancelled = false;
-    const generation = intentGenerationRef.current;
-    const isCancelled = () => cancelled || generation !== intentGenerationRef.current;
-    setDetailLoading(true);
-    setError(null);
-    setResolution(null);
-    setSelectedArtifact(null);
-    resolveArtifact(initialRef)
-      .then((next) => {
-        if (isCancelled()) return;
-        applyResolutionSelection(next);
-      })
-      .catch((err) => {
-        if (!isCancelled()) setError(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (!isCancelled()) setDetailLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [applyResolutionSelection, initialRef]);
-
-  useEffect(() => {
-    if (!initialSeriesRef) return;
-    const nextSeriesRef = normalizeInitialSeriesRef(initialSeriesRef);
-    if (!nextSeriesRef) {
-      lastAppliedInitialSeriesRef.current = null;
-      setSelectedSeriesRef(null);
-      setSelectedVersionNo(null);
-      setSelectedArtifactId(null);
-      setSelectedArtifact(null);
-      setVersionHistory(null);
-      setResolution(null);
-      setError(`Invalid series reference: ${initialSeriesRef}`);
-      return;
-    }
-    const nextVersionNo = initialVersionNo;
-    const lastWritten = lastWrittenHashRef.current;
-    if (lastWritten?.seriesRef === nextSeriesRef && lastWritten.versionNo === nextVersionNo) {
-      lastWrittenHashRef.current = null;
-      lastAppliedInitialSeriesRef.current = { seriesRef: nextSeriesRef, versionNo: nextVersionNo };
-      return;
-    }
-    const lastApplied = lastAppliedInitialSeriesRef.current;
-    if (lastApplied?.seriesRef === nextSeriesRef && lastApplied.versionNo === nextVersionNo) return;
-    lastAppliedInitialSeriesRef.current = { seriesRef: nextSeriesRef, versionNo: nextVersionNo };
-    setSelectedSeriesRef(nextSeriesRef);
-    setSelectedVersionNo(nextVersionNo);
-    setResolution(null);
-    setError(null);
-  }, [initialSeriesRef, initialVersionNo]);
-
-  const loadVersions = useCallback(async (signal: AbortSignal) => (
-    sortedVersionHistory(await getArtifactVersions(selectedSeriesRef!, { signal }))
-  ), [selectedSeriesRef, selectedVersionNo]);
-  const versionsDetail = useKeyedAsyncDetail({
-    namespace: 'artifact-versions',
-    requestKey: selectedSeriesRef ? detailRequestKey('artifact-versions', { ref: selectedSeriesRef }) : null,
-    load: loadVersions,
+    if (!defaultSeriesRef) return;
+    setSelection((current) => current.reference || current.seriesRef ? current
+      : { reference: null, seriesRef: defaultSeriesRef, versionNo: null });
+  }, [defaultSeriesRef]);
+  const detail = useArtifactDetail({
+    reference: selection.reference,
+    seriesRef: selection.seriesRef ?? defaultSeriesRef,
+    ...(selection.reference ? {} : { versionNo: selection.versionNo }),
   });
-  useLayoutEffect(() => {
-    if (versionsDetail.error) {
-      const invalidIdentity = isApiErrorStatus(versionsDetail.failure, 404) || isApiErrorStatus(versionsDetail.failure, 409);
-      if (invalidIdentity) {
-        if (selectedSeriesRef) removePersistedDetail('artifact-versions', detailRequestKey('artifact-versions', { ref: selectedSeriesRef }));
-        setVersionHistory(null);
-        setSelectedArtifactId(null);
-        setSelectedArtifact(null);
-        setResolution(null);
-      }
-      if (isApiErrorStatus(versionsDetail.failure, 404) && !deepLinkActiveRef.current) {
-        setSelectedSeriesRef(null);
-        setSelectedVersionNo(null);
-        setSelectedArtifactId(null);
-        setSelectedArtifact(null);
-        setResolution(null);
-        setError(null);
-      }
-      return;
-    }
-    if (!selectedSeriesRef) {
-      setVersionHistory(null);
-      return;
-    }
-    if (!versionsDetail.data) return;
-    const history = sortedVersionHistory(versionsDetail.data);
-    const canonicalSeriesRef = seriesRecordRef(history.series);
-    if (!versionsDetail.stale && canonicalSeriesRef !== selectedSeriesRef) {
-      writePersistedDetail('artifact-versions', detailRequestKey('artifact-versions', { ref: canonicalSeriesRef }), history);
-      setSelectedSeriesRef(canonicalSeriesRef);
-    }
-    setVersionHistory(history);
-    const version = selectedVersionNo === null
-      ? history.versions[0] ?? null
-      : history.versions.find((entry) => entry.version_no === selectedVersionNo) ?? null;
-    if (version || !versionsDetail.stale) setSelectedArtifactId(version?.artifact_id ?? null);
-  }, [selectedSeriesRef, selectedVersionNo, versionsDetail.data, versionsDetail.error, versionsDetail.failure, versionsDetail.stale]);
-
-  const recordResolved = selectedArtifact?.id === selectedArtifactId
-    && resolvedArtifactRecord(resolution)?.id === selectedArtifactId
-    && Boolean(selectedArtifact?.links && selectedArtifact?.aliases);
-  const loadRecord = useCallback((signal: AbortSignal) => (
-    getArtifact(selectedArtifactId!, { signal })
-  ), [selectedArtifactId]);
-  const acceptRecord = useCallback((artifact: ArtifactRecord) => artifact.id === selectedArtifactId, [selectedArtifactId]);
-  const recordDetail = useKeyedAsyncDetail({
-    namespace: 'artifact-record',
-    requestKey: selectedArtifactId && !recordResolved ? detailRequestKey('artifact-record', { id: selectedArtifactId }) : null,
-    load: loadRecord,
-    accept: acceptRecord,
-  });
-  useLayoutEffect(() => {
-    if (recordDetail.data) setSelectedArtifact(recordDetail.data);
-  }, [recordDetail.data]);
-
-  const loadContent = useCallback((signal: AbortSignal) => (
-    getArtifactContent(selectedArtifactId!, { signal })
-  ), [selectedArtifactId]);
-  const acceptContent = useCallback((content: ArtifactContentResult) => content.artifact_id === selectedArtifactId, [selectedArtifactId]);
-  const contentDetail = useKeyedAsyncDetail({
-    namespace: 'artifact-content',
-    requestKey: selectedArtifactId ? detailRequestKey('artifact-content', { id: selectedArtifactId }) : null,
-    load: loadContent,
-    accept: acceptContent,
-  });
-  const artifactContent = contentDetail.data;
-  const contentLoading = contentDetail.loading || contentDetail.revalidating;
-  const contentError = contentDetail.error;
-
-  const backrefsId = selectedArtifact?.id === selectedArtifactId ? selectedArtifactId : null;
-  const loadBackrefs = useCallback((signal: AbortSignal) => (
-    getArtifactKnowledgeBackrefs(backrefsId!, { signal })
-  ), [backrefsId]);
-  const backrefsDetail = useKeyedAsyncDetail({
-    namespace: 'artifact-backrefs',
-    requestKey: backrefsId ? detailRequestKey('artifact-backrefs', { id: backrefsId }) : null,
-    load: loadBackrefs,
-  });
-  const knowledgeBackrefs = backrefsDetail.data ?? [];
-  const knowledgeLoading = backrefsDetail.loading || backrefsDetail.revalidating;
-  const knowledgeError = backrefsDetail.error;
-  const detailError = versionsDetail.error ?? recordDetail.error ?? error;
-  const requestDetailLoading = detailLoading || versionsDetail.loading || recordDetail.loading;
-
-  const facetOptions = useMemo(() => buildFacetOptions(facetSeries), [facetSeries]);
-  const coherentVersionHistory = selectedSeriesRef && versionHistory
-    && seriesRecordRef(versionHistory.series) === selectedSeriesRef
-    ? versionHistory
-    : null;
-  const selectedVersion = useMemo(() => (
-    selectedVersionNo === null
-      ? coherentVersionHistory?.versions.find((version) => version.artifact_id === selectedArtifactId) ?? coherentVersionHistory?.versions[0] ?? null
-      : coherentVersionHistory?.versions.find((version) => version.version_no === selectedVersionNo) ?? null
-  ), [coherentVersionHistory, selectedArtifactId, selectedVersionNo]);
-  const selectedSeries = useMemo(() => (
-    series.find((entry) => seriesRef(entry) === selectedSeriesRef) ?? null
-  ), [selectedSeriesRef, series]);
-  useEffect(() => {
-    if (selectedSeriesRef || deepLinkActiveRef.current) return;
-    const fallback = series[0];
-    if (!fallback) return;
-    setSelectedSeriesRef(seriesRef(fallback));
-    setSelectedVersionNo(null);
-    setSelectedArtifactId(fallback.latest_version?.artifact_id ?? null);
-    setSelectedArtifact(fallback.latest_artifact);
-    setResolution(null);
-  }, [selectedSeriesRef, series]);
-  const coherentSelectedArtifact = selectedArtifact?.id === selectedArtifactId ? selectedArtifact : null;
-  const coherentArtifactContent = artifactContent?.artifact_id === coherentSelectedArtifact?.id ? artifactContent : null;
-  const coherentContentLoading = Boolean(
-    coherentSelectedArtifact
-    && !contentError
-    && (contentLoading || !coherentArtifactContent)
-  );
-  const detailPending = Boolean(selectedArtifactId && !coherentSelectedArtifact);
-
-  const selectSeries = useCallback((entry: ArtifactSeriesSummary) => {
-    intentGenerationRef.current += 1;
-    setDetailLoading(false);
-    setError(null);
-    const ref = seriesRef(entry);
-    setSelectedSeriesRef(ref);
-    setSelectedVersionNo(null);
-    setSelectedArtifactId(entry.latest_version?.artifact_id ?? null);
-    setSelectedArtifact(entry.latest_artifact);
-    setResolution(null);
-    writeArtifactHash(ref, null, lastWrittenHashRef);
-  }, []);
+  const resolution = detail.resolution;
+  const coherentVersionHistory = detail.history;
+  const selectedSeriesRef = coherentVersionHistory && detail.historyCurrent ? seriesRecordRef(coherentVersionHistory.series)
+    : selection.seriesRef ?? defaultSeriesRef;
+  const selectedVersionNo = detail.selectedVersionNo;
+  const selectedVersion = detail.selectedVersion;
+  const selectedSeries = series.find((entry) => seriesRef(entry) === selectedSeriesRef) ?? null;
+  const coherentSelectedArtifact = detail.artifact;
+  const coherentArtifactContent = detail.content;
+  const coherentContentLoading = detail.contentLoading;
+  const knowledgeBackrefs = detail.backrefs;
+  const knowledgeLoading = detail.backrefsLoading;
+  const knowledgeError = detail.backrefsError;
+  const contentError = detail.contentError;
+  const detailError = routeSelection.hasInvalidSeries ? `Invalid series reference: ${initialSeriesRef}`
+    : detail.error ?? queryErrorMessage(listQuery.error);
+  const requestDetailLoading = detail.loading;
 
   useEffect(() => {
     if (!selectedSeriesRef) return;
-    setListViewState((current) => (
-      current.selectedSeriesRef === selectedSeriesRef && current.selectedVersionNo === selectedVersionNo
-        ? current
-        : { ...current, selectedSeriesRef, selectedVersionNo }
-    ));
+    setListViewState((current) => current.selectedSeriesRef === selectedSeriesRef && current.selectedVersionNo === selectedVersionNo
+      ? current : { ...current, selectedSeriesRef, selectedVersionNo });
   }, [selectedSeriesRef, selectedVersionNo, setListViewState]);
 
+  const selectSeries = useCallback((entry: ArtifactSeriesSummary) => {
+    const ref = seriesRef(entry);
+    setSelection({ reference: null, seriesRef: ref, versionNo: null });
+    writeArtifactHash(ref, null, lastWrittenHashRef);
+  }, []);
   const artifactListNavigation = useSidebarListNavigation({
-    items: series,
-    getKey: seriesRef,
-    selectedKey: selectedSeriesRef,
-    onSelect: selectSeries,
+    items: series, getKey: seriesRef, selectedKey: selectedSeriesRef, onSelect: selectSeries,
   });
-
   const selectVersion = (versionNo: number | null) => {
-    intentGenerationRef.current += 1;
-    setSelectedVersionNo(versionNo);
-    const version = versionNo === null
-      ? coherentVersionHistory?.versions[0] ?? null
-      : coherentVersionHistory?.versions.find((candidate) => candidate.version_no === versionNo) ?? null;
-    setSelectedArtifactId(version?.artifact_id ?? null);
-    setResolution(null);
     if (!selectedSeriesRef) return;
+    setSelection({ reference: null, seriesRef: selectedSeriesRef, versionNo });
     writeArtifactHash(selectedSeriesRef, versionNo, lastWrittenHashRef);
   };
-
   const handleVersionPublished = useCallback((published: ArtifactDraftPublishResult) => {
-    const nextSeriesRef = canonicalArtifactSeriesRef(published.result.logical_artifact.id);
-    setSelectedSeriesRef(nextSeriesRef);
-    setSelectedVersionNo(published.result.artifact_version.version_no);
-    setSelectedArtifactId(published.result.artifact_version.id);
-    setSelectedArtifact(resolvedArtifactRecord(published.result));
-    setResolution(published.result);
-    writeArtifactHash(nextSeriesRef, published.result.artifact_version.version_no, lastWrittenHashRef);
-    void loadSeries();
-  }, [loadSeries]);
+    const ref = canonicalArtifactSeriesRef(published.result.logical_artifact.id);
+    const versionNo = published.result.artifact_version.version_no;
+    setSelection({ reference: null, seriesRef: ref, versionNo });
+    writeArtifactHash(ref, versionNo, lastWrittenHashRef);
+    void queryClient.invalidateQueries({ queryKey: detailKeys.artifacts });
+  }, []);
 
   const updateFilter = (key: keyof ArtifactFilters, value: string) => {
     setListViewState((current) => ({
@@ -825,16 +470,16 @@ export function ArtifactsView({
       </ViewSidebar>
       <main className={`artifacts-detail${coherentSelectedArtifact && detailMetadataOpen ? ' artifacts-detail--metadata-open' : ''}`}>
         {detailError && !coherentSelectedArtifact && <DetailPaneNotice severity="error" title="Artifacts could not be loaded">{detailError}</DetailPaneNotice>}
-        {(requestDetailLoading || detailPending) && !coherentSelectedArtifact && !resolution && (
+        {requestDetailLoading && !coherentSelectedArtifact && !resolution && (
           <LoadingSkeleton variant="detail" label="Loading artifact..." />
         )}
-        {!detailError && !requestDetailLoading && !detailPending && !coherentSelectedArtifact && !resolution && (
+        {!detailError && !requestDetailLoading && !coherentSelectedArtifact && !resolution && (
           <div className="artifacts-empty">No artifacts in this view.</div>
         )}
-        {!requestDetailLoading && !detailPending && resolution?.target_type === 'artifact_blob' && (
+        {!requestDetailLoading && resolution?.target_type === 'artifact_blob' && (
           <UnsupportedArtifactBlob resolution={resolution} />
         )}
-        {!requestDetailLoading && !detailPending && resolution && resolution.target_type !== 'artifact_blob' && !resolvedArtifactRecord(resolution) && (
+        {!requestDetailLoading && resolution && resolution.target_type !== 'artifact_blob' && !resolvedArtifactRecord(resolution) && (
           <UnresolvedArtifact resolution={resolution} />
         )}
         {coherentSelectedArtifact && (
@@ -1039,7 +684,7 @@ export function ArtifactDetail({
 
   useEffect(() => {
     setJsonView('formatted');
-  }, [content?.artifact_id]);
+  }, [seriesRefValue]);
 
   useEffect(() => {
     if (!versionHistoryOpen) return undefined;
@@ -1122,7 +767,7 @@ export function ArtifactDetail({
     setDiffOpen(false);
     setVersionDiff(null);
     setDiffError(null);
-  }, [selectedVersion?.id]);
+  }, [selectedVersionNo, seriesRefValue]);
 
   useEffect(() => {
     if (!diffOpen || !selectedVersion || !previousVersion) return undefined;
@@ -1671,9 +1316,9 @@ export function ArtifactDetail({
           {(knowledgeLoading || knowledgeError || knowledgeBackrefs.length > 0) && (
             <section className="artifact-detail__section">
               <h3>Knowledge Backrefs</h3>
-              {knowledgeLoading && <div className="artifacts-empty">Loading knowledge references...</div>}
-              {!knowledgeLoading && knowledgeError && <div className="artifacts-empty">Knowledge references unavailable.</div>}
-              {!knowledgeLoading && !knowledgeError && knowledgeBackrefs.length > 0 && (
+              {knowledgeLoading && knowledgeBackrefs.length === 0 && <div className="artifacts-empty">Loading knowledge references...</div>}
+              {!knowledgeLoading && knowledgeError && knowledgeBackrefs.length === 0 && <div className="artifacts-empty">Knowledge references unavailable.</div>}
+              {knowledgeBackrefs.length > 0 && (
                 <div className="artifact-detail__list">
                   {knowledgeBackrefs.map((backref) => (
                     <div key={backref.id} className="artifact-detail__list-item artifact-detail__list-item--backref">
@@ -1876,7 +1521,7 @@ function PreviewSection({
   contentError: string | null;
   jsonView: 'formatted' | 'raw';
 }): JSX.Element {
-  const showPreview = !contentError && preview !== null;
+  const showPreview = preview !== null;
   const codePreview = preview && (preview.kind === 'json' || preview.kind === 'text') ? preview : null;
   const previewValue = codePreview
     ? (codePreview.autoFormatted && jsonView === 'raw' ? codePreview.rawValue : codePreview.value)
@@ -1903,7 +1548,7 @@ function PreviewSection({
   return (
     <>
         {!showPreview && contentLoading && <div className="artifacts-empty" role="status">Loading preview...</div>}
-        {!contentLoading && contentError && <div className="artifacts-empty">Content unavailable.</div>}
+        {!showPreview && !contentLoading && contentError && <div className="artifacts-empty">Content unavailable.</div>}
         {showPreview && content?.warnings?.map((warning) => (
         <div key={warning} className="artifact-detail__warning">{warning}</div>
         ))}
@@ -2087,7 +1732,7 @@ function BundlePreview({ preview }: { preview: Extract<ArtifactPreview, { kind: 
   );
 }
 
-function UnresolvedArtifact({ resolution }: { resolution: ArtifactResolveResult }): JSX.Element {
+export function UnresolvedArtifact({ resolution }: { resolution: ArtifactResolveResult }): JSX.Element {
   return (
     <article className="artifact-detail">
       <header className="artifact-detail__header">
@@ -2110,7 +1755,7 @@ function UnresolvedArtifact({ resolution }: { resolution: ArtifactResolveResult 
   );
 }
 
-function UnsupportedArtifactBlob({ resolution }: { resolution: ArtifactResolveResult }): JSX.Element {
+export function UnsupportedArtifactBlob({ resolution }: { resolution: ArtifactResolveResult }): JSX.Element {
   const issueUrl = `${PRODUCTION_ORIGIN}/#/issues?repo=mandible&issue=7da339a&sidebar=hidden`;
   return (
     <article className="artifact-detail">
@@ -2238,12 +1883,6 @@ function normalizeInitialSeriesRef(ref: string): string | null {
   return normalizeSeriesRef(trimmed);
 }
 
-function sortedVersionHistory(history: ArtifactVersionHistory): ArtifactVersionHistory {
-  return {
-    ...history,
-    versions: [...history.versions].sort((a, b) => b.version_no - a.version_no),
-  };
-}
 
 function writeArtifactHash(
   seriesRefValue: string,
@@ -2605,21 +2244,16 @@ function entityHref(type: string, id: string, repoId: string | null): string {
   return `#/graph?focus=${encodeURIComponent(id)}`;
 }
 
-async function warmArtifactDetail(artifactId: string, knownArtifact: ArtifactRecord | null): Promise<void> {
-  const detailStarted = beginDetailRequest();
-  const artifact = knownArtifact?.id === artifactId ? knownArtifact : await getArtifact(artifactId);
-  writePersistedDetail('artifact-record', detailRequestKey('artifact-record', { id: artifactId }), artifact, undefined, detailStarted);
-  const [content, backrefs] = await Promise.all([
-    getArtifactContent(artifactId),
-    getArtifactKnowledgeBackrefs(artifactId),
+async function warmArtifactDetail(artifactId: string): Promise<void> {
+  await Promise.all([
+    queryClient.fetchQuery(artifactRecordOptions(artifactId)),
+    queryClient.fetchQuery(artifactContentOptions(artifactId)),
+    queryClient.fetchQuery(artifactBackrefsOptions(artifactId)),
   ]);
-  writePersistedDetail('artifact-content', detailRequestKey('artifact-content', { id: artifactId }), content, undefined, detailStarted);
-  writePersistedDetail('artifact-backrefs', detailRequestKey('artifact-backrefs', { id: artifactId }), backrefs, undefined, detailStarted);
 }
 
 /** Warm the Artifacts list and only its explicit, saved, or default selection. */
 export async function warmInitialData(params: Record<string, string>): Promise<void> {
-  const detailStarted = beginDetailRequest();
   const selection = artifactRouteSelection({
     artifactId: params.artifact,
     ref: params.ref,
@@ -2637,7 +2271,7 @@ export async function warmInitialData(params: Record<string, string>): Promise<v
     role: params.role || viewState.filters.role,
   };
   const ordered = sortArtifactSeries(
-    await getArtifactSeriesList(artifactSeriesListRequest(listFilters)),
+    await queryClient.fetchQuery(artifactListOptions(artifactSeriesListRequest(listFilters))),
     viewState.sortField,
     viewState.sortDirection,
   );
@@ -2645,13 +2279,10 @@ export async function warmInitialData(params: Record<string, string>): Promise<v
   let selectedSeriesRef: string | null = null;
   let selectedVersionNo: number | null = null;
   let selectedArtifactId: string | null = null;
-  let resolvedArtifact: ArtifactRecord | null = null;
-  let loadedHistory: ArtifactVersionHistory | null = null;
 
   if (selection.artifactId || selection.ref) {
-    const resolution = await resolveArtifact(selection.artifactId ?? selection.ref ?? '');
+    const resolution = await queryClient.fetchQuery(artifactResolutionOptions(selection.artifactId ?? selection.ref ?? null));
     if (resolution.target_type === 'artifact_blob') return;
-    resolvedArtifact = resolvedArtifactRecord(resolution);
     selectedSeriesRef = resolution.logical_artifact
       ? canonicalArtifactSeriesRef(resolution.logical_artifact.id)
       : null;
@@ -2662,26 +2293,6 @@ export async function warmInitialData(params: Record<string, string>): Promise<v
       : null;
     selectedArtifactId = resolvedArtifactRecord(resolution)?.id ?? resolution.artifact_version?.id ?? null;
 
-    if (selection.artifactId && resolvedArtifactRecord(resolution) && !resolution.logical_artifact && !resolution.artifact_version) {
-      try {
-        loadedHistory = sortedVersionHistory(await getArtifactVersions(resolvedArtifactRecord(resolution)!.id));
-        writePersistedDetail(
-          'artifact-versions',
-          detailRequestKey('artifact-versions', { ref: resolvedArtifactRecord(resolution)!.id }),
-          loadedHistory,
-          undefined,
-          detailStarted,
-        );
-        const pinnedVersion = loadedHistory.versions.find((version) => version.artifact_id === resolvedArtifactRecord(resolution)?.id) ?? null;
-        if (pinnedVersion) {
-          selectedSeriesRef = seriesRecordRef(loadedHistory.series);
-          selectedVersionNo = pinnedVersion.version_no;
-          selectedArtifactId = resolvedArtifactRecord(resolution)!.id;
-        }
-      } catch (error) {
-        if (!isApiErrorStatus(error, 404)) throw error;
-      }
-    }
   } else if (selection.hasInvalidSeries) {
     return;
   } else {
@@ -2694,21 +2305,12 @@ export async function warmInitialData(params: Record<string, string>): Promise<v
   }
 
   if (selectedSeriesRef) {
-    loadedHistory = loadedHistory && seriesRecordRef(loadedHistory.series) === selectedSeriesRef
-      ? loadedHistory
-      : sortedVersionHistory(await getArtifactVersions(selectedSeriesRef));
-    writePersistedDetail(
-      'artifact-versions',
-      detailRequestKey('artifact-versions', { ref: selectedSeriesRef }),
-      loadedHistory,
-      undefined,
-      detailStarted,
-    );
+    const loadedHistory = await queryClient.fetchQuery(artifactVersionsOptions(selectedSeriesRef));
     const selectedVersion = selectedVersionNo === null
       ? loadedHistory.versions[0] ?? null
       : loadedHistory.versions.find((version) => version.version_no === selectedVersionNo) ?? null;
     selectedArtifactId = selectedVersion?.artifact_id ?? null;
   }
 
-  if (selectedArtifactId) await warmArtifactDetail(selectedArtifactId, resolvedArtifact);
+  if (selectedArtifactId) await warmArtifactDetail(selectedArtifactId);
 }

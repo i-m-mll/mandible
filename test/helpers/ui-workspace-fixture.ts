@@ -12,6 +12,7 @@ import type { AppThemePreference } from '../../ui/src/api';
 
 
 import { clearPersistedDetailCache } from '../../ui/src/detail-cache';
+import { queryClient } from '../../ui/src/query/client';
 import { PRODUCTION_ORIGIN } from '../../src/canonical-origin';
 import { PRODUCTION_EFFECTS } from '../../src/security/effect-policy.js';
 
@@ -144,6 +145,7 @@ const render: typeof testingRender = (view, options) => {
 };
 
 beforeEach(async () => {
+  queryClient.clear();
   installMemoryLocalStorage();
   clearPersistedDetailCache();
   const noticeHost = document.createElement('div');
@@ -180,6 +182,7 @@ afterEach(() => {
   __resetBrowserSessionForTests();
   clearApiGetCache();
   cleanup();
+  queryClient.clear();
   __resetSharedSseForTests();
   window.localStorage.removeItem?.('mandible:artifacts:list-controls:v1');
   window.sessionStorage?.clear?.();

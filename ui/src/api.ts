@@ -1,6 +1,7 @@
 import { parseManagedChatDefaults, type ManagedChatDefaults } from "../../src/managed-chat-defaults";
 import { DASHBOARD_BADGE_COUNTS, DOMAIN_EVENTS, isBriefingEvent, type DashboardBadgeCounts } from '../../src/contracts';
 import { queryClient } from './query/client';
+import { detailKeys, detailKeysForEvent } from './query/detailKeys';
 import { browserResourceKeys, browserResourceKeysForEvent, refreshBrowserResources } from './query/browserResources';
 import { LIST_ENVELOPE_KEYS } from '../../src/contracts';
 import type { SessionDescendant, SessionSummary } from '../../src/contracts';
@@ -742,6 +743,7 @@ export function invalidateDashboardCaches(): void {
   invalidateApiGetCache();
   invalidatePersistedDetail();
   void queryClient.invalidateQueries({ refetchType: 'none' });
+  void refreshBrowserResources(queryClient, [detailKeys.issues, detailKeys.artifacts]);
 }
 
 /** Exact cache families affected by a Briefing lifecycle event. */
@@ -769,14 +771,11 @@ function invalidateCrossEntityProjections(): void {
 
 function invalidateArtifactReads(): void {
   invalidateApiGetCache('/api/artifacts');
-  invalidatePersistedDetail('artifact-versions');
-  invalidatePersistedDetail('artifact-record');
-  invalidatePersistedDetail('artifact-content');
-  invalidatePersistedDetail('artifact-backrefs');
 }
 
 export function invalidateDashboardApiCacheForEvent(type: string): void {
   if (type === DOMAIN_EVENTS.HEARTBEAT) return;
+  void refreshBrowserResources(queryClient, detailKeysForEvent(type));
   // Logs are an all-event projection. Its view refetches on each event, so
   // discard a warmed snapshot before the visible consumer asks again.
   invalidateApiGetCache('/api/system/logs');
@@ -1510,8 +1509,8 @@ export type LedgerBodyRevision = {
   redaction_reason: string | null;
 };
 
-export async function getLedgerIssueDetail(issueId: string): Promise<LedgerIssueDetailProjection> {
-  const response = await apiGet(`/api/ledger/issues/${encodeURIComponent(issueId)}`);
+export async function getLedgerIssueDetail(issueId: string, options: { signal?: AbortSignal } = {}): Promise<LedgerIssueDetailProjection> {
+  const response = await apiGet(`/api/ledger/issues/${encodeURIComponent(issueId)}`, options);
   return (await parseMaybeJson(response)) as LedgerIssueDetailProjection;
 }
 
@@ -1542,18 +1541,20 @@ export async function getLedgerBodyRevision(revisionId: string): Promise<LedgerB
 export async function getLedgerIssueDetailByRef(
   repoId: string,
   issueId: string,
+  options: { signal?: AbortSignal } = {},
 ): Promise<LedgerIssueDetailProjection> {
   const response = await apiGet(
-    `/api/issues/${encodeURIComponent(repoId)}/${encodeURIComponent(issueId)}/ledger-detail`
+    `/api/issues/${encodeURIComponent(repoId)}/${encodeURIComponent(issueId)}/ledger-detail`, options
   );
   return (await parseMaybeJson(response)) as LedgerIssueDetailProjection;
 }
 
 export async function getLedgerIssueDetailByIssueId(
   issueId: string,
+  options: { signal?: AbortSignal } = {},
 ): Promise<LedgerIssueDetailProjection> {
   const response = await apiGet(
-    `/api/ledger/issues/${encodeURIComponent(issueId)}`
+    `/api/ledger/issues/${encodeURIComponent(issueId)}`, options
   );
   return (await parseMaybeJson(response)) as LedgerIssueDetailProjection;
 }
@@ -3192,14 +3193,10 @@ export async function getArtifacts(params: ArtifactQueryParams = {}): Promise<Ar
 
 export async function getArtifactSeriesList(
   params: ArtifactQueryParams = {},
-  read: CachedRead<ArtifactSeriesSummary[]> = {},
+  read: { signal?: AbortSignal } = {},
 ): Promise<ArtifactSeriesSummary[]> {
-  const { onCached } = read;
-  const payload = await cachedApiGetJson<{ series?: ArtifactSeriesSummary[] }>(`/api/artifacts/series${buildQuery(params)}`, {
-    ...WARMED_ROUTE_GET_OPTIONS,
-    signal: read.signal,
-    onCached: onCached && ((cached) => onCached(cached.series ?? [])),
-  });
+  const response = await apiGet(`/api/artifacts/series${buildQuery(params)}`, read);
+  const payload = await parseMaybeJson(response) as { series?: ArtifactSeriesSummary[] };
   return payload.series ?? [];
 }
 
@@ -3283,6 +3280,7 @@ export async function openArtifactExternally(id: string): Promise<void> {
 export async function createArtifactKnowledgeBackref(id: string, input: Record<string, unknown>): Promise<KnowledgeBackrefRecord> {
   const response = await apiPost(`/api/artifacts/${encodeURIComponent(id)}/knowledge-backrefs`, input);
   invalidateArtifactReads();
+  void refreshBrowserResources(queryClient, [detailKeys.artifacts]);
   const payload = await parseMaybeJson(response) as { backref: KnowledgeBackrefRecord };
   return payload.backref;
 }
@@ -3293,9 +3291,9 @@ export async function getArtifactKnowledgeBackrefs(id: string, options: { signal
   return payload.backrefs ?? [];
 }
 
-export async function resolveArtifact(ref: string): Promise<ArtifactResolveResult> {
+export async function resolveArtifact(ref: string, options: { signal?: AbortSignal } = {}): Promise<ArtifactResolveResult> {
   const query = buildQuery({ ref });
-  const response = await apiGet(`/api/artifacts/resolve${query}`);
+  const response = await apiGet(`/api/artifacts/resolve${query}`, options);
   const payload = (await parseMaybeJson(response)) as { resolution: ArtifactResolveResult };
   return payload.resolution;
 }
