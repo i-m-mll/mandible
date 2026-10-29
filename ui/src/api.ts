@@ -6,6 +6,8 @@ import { LIST_ENVELOPE_KEYS } from '../../src/contracts';
 import type { SessionDescendant, SessionSummary } from '../../src/contracts';
 export type { SessionDescendant, SessionSummary } from '../../src/contracts';
 import { browserSessionFetch } from './client-auth-token';
+import type { FullTextSearchPending, FullTextSearchResponse } from '../../src/conversations/full-text-search-contract';
+import { FullTextSearchError, isFullTextSearchTerminal, readFullTextSearch, type SearchReadOptions, type SearchSnapshot } from './query/fullTextSearch';
 import { invalidatePersistedDetail, ROUTE_DATA_FRESH_MS } from './detail-cache';
 import type { ChatAttachment } from '../../src/conversation-control/attachments';
 import type { InboxData } from './views/inbox';
@@ -2354,6 +2356,7 @@ export async function getConversations(params?: {
   session_id?: string;
   tag?: string;
   signal?: AbortSignal;
+  onPending?: (pending: FullTextSearchPending) => void;
 }): Promise<{ conversations: Conversation[]; total: number }> {
   const query = new URLSearchParams();
   if (params?.source) query.set('source', params.source);
@@ -2370,8 +2373,29 @@ export async function getConversations(params?: {
   if (params?.session_id) query.set('session_id', params.session_id);
   if (params?.tag) query.set('tag', params.tag);
   const qs = query.toString();
-  const response = await apiGet(`/api/conversations${qs ? '?' + qs : ''}`, { signal: params?.signal });
-  return (await parseMaybeJson(response)) as { conversations: Conversation[]; total: number };
+  return readConversationSearch(`/api/conversations${qs ? '?' + qs : ''}`, params);
+}
+
+async function readConversationSearch<Result extends object>(path: string, options: SearchReadOptions = {}): Promise<Result> {
+  const result = await readFullTextSearch<Result>(async (observer) => {
+    const query = new URLSearchParams(observer ?? options.snapshot);
+    const url = query.size ? `${path}${path.includes('?') ? '&' : '?'}${query}` : path;
+    const response = await browserSessionFetch(url, { headers: DEFAULT_HEADERS, signal: options.signal });
+    if (!response.ok && response.status !== 409) await throwOnError(response, 'GET', path);
+    const body = await parseMaybeJson(response) as Result | FullTextSearchResponse<Result>;
+    if (response.status === 409 && !isFullTextSearchTerminal(body)) {
+      throw new ApiError('Search could not be refreshed.', 409);
+    }
+    return body;
+  }, async (observer) => {
+    const query = new URLSearchParams({ ...observer, cancel: 'true' });
+    const response = await browserSessionFetch(`${path}${path.includes('?') ? '&' : '?'}${query}`, {
+      headers: DEFAULT_HEADERS, signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok && response.status !== 409) await throwOnError(response, 'GET', path);
+  }, options);
+  if (isFullTextSearchTerminal(result)) throw new FullTextSearchError(result);
+  return result;
 }
 
 export type ConversationSidebarConversation = Conversation & {
@@ -2395,7 +2419,7 @@ export type ConversationSidebarGroup = {
 export type ConversationSidebarResponse = {
   groups: ConversationSidebarGroup[];
   limit: number;
-};
+} & Partial<SearchSnapshot>;
 
 export async function getConversationSidebar(params: {
   lifecycle?: 'active' | 'archived';
@@ -2412,6 +2436,8 @@ export async function getConversationSidebar(params: {
   group_key?: string;
   cursor?: string;
   signal?: AbortSignal;
+  onPending?: (pending: FullTextSearchPending) => void;
+  snapshot?: SearchSnapshot;
 }): Promise<ConversationSidebarResponse> {
   const query = new URLSearchParams();
   if (params.lifecycle) query.set('lifecycle', params.lifecycle);
@@ -2430,8 +2456,7 @@ export async function getConversationSidebar(params: {
   query.set('limit', String(limit));
   if (params.group_key) query.set('group_key', params.group_key);
   if (params.cursor) query.set('cursor', params.cursor);
-  const response = await apiGet(`/api/conversations/sidebar?${query.toString()}`, { signal: params.signal });
-  return (await parseMaybeJson(response)) as ConversationSidebarResponse;
+  return readConversationSearch(`/api/conversations/sidebar?${query.toString()}`, params);
 }
 
 export type ConversationWindowRequest =
