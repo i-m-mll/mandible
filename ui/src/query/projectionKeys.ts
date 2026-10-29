@@ -21,7 +21,7 @@ export function normalizeTimelineInput(input: ProjectTimelineInput): ProjectTime
     root_specs: input.root_specs ?? root_row_specs,
     expanded_event_ids: sortedSet(input.expanded_event_ids),
     expanded_paths: sortedSet(input.expanded_paths),
-    event_kinds: sortedSet(input.event_kinds?.length ? input.event_kinds : ['body', 'comment', 'state']),
+    event_kinds: input.event_kinds ? [...new Set(input.event_kinds)].sort() : undefined,
   };
 }
 
