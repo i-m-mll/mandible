@@ -18,11 +18,14 @@ import { Icon } from '../../components/icons/Icon';
 // Per the project Dataful UX State rule the dialog is pure local view state:
 // the only canonical mutation is the explicit user-triggered seed POST.
 
-import { useCallback, useEffect, useMemo, useState } from 'preact/hooks';
+import { useCallback, useMemo, useState } from 'preact/hooks';
+import { graphOptions } from "../../query/graph";
+import { useProjectionQuery } from "../../query/useProjectionQuery";
+import { detailQueryData } from "../../query/snapshots";
+import { useViewActive } from "../../app-shell";
 import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
 
 import {
-  getGraph,
   seedSpace,
   type GraphNode,
   type SeedSpaceRequest,
@@ -123,54 +126,25 @@ export function SpaceSeedDialog({
   const [chips, setChips] = useState<TimelineFilterChip[]>([]);
 
   // Graph-selection state (loaded from the BACKEND graph endpoint).
-  const [graphNodes, setGraphNodes] = useState<GraphNode[]>([]);
-  const [graphLoading, setGraphLoading] = useState(false);
-  const [graphError, setGraphError] = useState<string | null>(null);
   const [selectedGraphIds, setSelectedGraphIds] = useState<string[]>([]);
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
-  const [graphLoaded, setGraphLoaded] = useState(false);
   // Opt-in cross-project seeding: when on, the graph-selection source pulls
   // issue nodes from ALL projects (not just this Space's project + null-project
   // nodes), so a Space can be seeded with cross-project items. Off by default to
   // keep the common single-project case scoped. (umbrella de56ffa, child 6a4a69a)
   const [allProjects, setAllProjects] = useState(false);
 
-  // Load the project's issue nodes from the backend graph adapter the first time
-  // the graph-selection source is chosen. This is the only source-of-truth read
-  // for graph membership — never a UI-side relationship query. The effect keys
-  // only off `source`/`repo`/`projectId` so it never cancels its own in-flight
-  // request by re-running on its own loading-state writes.
-  useEffect(() => {
-    if (source !== 'graph' || graphLoaded) return;
-    let cancelled = false;
-    setGraphLoading(true);
-    setGraphError(null);
-    getGraph({ repo, status: 'all' })
-      .then((payload) => {
-        if (cancelled) return;
-        const issueNodes = payload.nodes.filter(
-          (node) => node.type === 'issue'
-            // When "all projects" is on, keep every issue node; otherwise scope to
-            // this Space's project (and null-project / cross nodes as before).
-            && (allProjects || !projectId || node.detail?.project_id === projectId || node.detail?.project_id == null),
-        );
-        setGraphNodes(issueNodes);
-        setGraphLoaded(true);
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) setGraphError(error instanceof Error ? error.message : 'Failed to load graph');
-      })
-      .finally(() => {
-        if (!cancelled) setGraphLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source, repo, projectId, allProjects, graphLoaded]);
+  const graphRead = useMemo(() => graphOptions({ repo: allProjects ? undefined : repo, status: "all" }), [repo, allProjects]);
+  const graphQuery = useProjectionQuery(graphRead, useViewActive() && source === "graph");
+  const graph = useMemo(() => detailQueryData(graphQuery, graphRead), [graphQuery.data, graphQuery.isError, graphRead]);
+  const graphNodes = useMemo(() => graph?.nodes.filter((node) => node.type === "issue"
+    && (allProjects || !projectId || node.detail?.project_id === projectId || node.detail?.project_id == null)) ?? [],
+    [graph, allProjects, projectId]);
+  const graphLoading = graphQuery.isPending && !graph;
+  const graphError = graphQuery.error?.message ?? null;
 
   const addChipToken = useCallback((token: string): boolean => {
     const chip = parseFilterToken(token);
@@ -336,15 +310,13 @@ export function SpaceSeedDialog({
                 data-testid="seed-all-projects"
                 onChange={(event) => {
                   setAllProjects((event.currentTarget as HTMLInputElement).checked);
-                  // Re-read the graph under the new scope.
-                  setGraphLoaded(false);
                 }}
               />
               <span>Include issues from all projects</span>
             </label>
             {graphLoading ? (
               <p className="space-seed-dialog__hint">Loading graph issues…</p>
-            ) : graphError ? (
+            ) : graphError && graphNodes.length === 0 ? (
               <p className="space-seed-dialog__hint">Graph issues unavailable.</p>
             ) : graphNodes.length === 0 ? (
               <p className="space-seed-dialog__hint">No issue nodes in the graph.</p>

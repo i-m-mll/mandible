@@ -96,6 +96,41 @@ describe("conversations CLI", () => {
     expect(result.stderr).toContain("--limit 500 exceeds the server cap; at most 20 hits are returned");
   });
 
+  it("waits for a shared search snapshot and releases its observer over file RPC", async () => {
+    const { env, responder } = spool((request) => {
+      const url = new URL(String(request.path), 'http://fixture');
+      if (url.pathname !== '/api/conversations/search') return { status: 404, body: {} };
+      if (url.searchParams.has('cancel')) return { status: 200, body: { released: true } };
+      if (!url.searchParams.has('search_id')) return { status: 202, body: {
+        state: 'pending', search_id: 'search-1', observer_token: 'observer-1', phase: 'scanning',
+        progress: { eligible: 2, prepared: 2, scanned: 1, matched: 0 }, retry_after_ms: 250,
+      } };
+      return { status: 200, body: {
+        state: 'complete', search_id: 'search-1', snapshot_id: 'search-1',
+        coverage: { eligible: 2, prepared: 2, scanned: 2, matched: 1, failed: 0, complete: true },
+        results: [{ conversation, block, snippet: 'RPC' }], total: 1, limit: 20,
+      } };
+    });
+    const result = await runCli(['conversations', 'search', 'RPC', '--json'], { env });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ state: 'complete', total: 1 });
+    const paths = responder.requests.map(request => String(request.path));
+    expect(paths).toHaveLength(3);
+    expect(paths[1]).toContain('search_id=search-1&observer_token=observer-1');
+    expect(paths[2]).toContain('cancel=true');
+  });
+
+  it('reports incomplete search as a failed command with coverage, never as an empty result', async () => {
+    const terminal = { state: 'incomplete', search_id: 'search-1', reason: 'source_unavailable',
+      coverage: { eligible: 2, prepared: 1, scanned: 1, matched: 0, failed: 1, complete: false } };
+    const { env, responder } = spool(() => ({ status: 409, body: terminal }));
+    const result = await runCli(['conversations', 'search', 'RPC', '--json'], { env });
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.stdout)).toEqual(terminal);
+    expect(result.stderr).toContain('Search incomplete');
+    expect(responder.requests).toHaveLength(1);
+  });
+
   it("lists through the daemon with provider, tag, and limit filters", async () => {
     const db = migratedMemoryDb();
     const insert = db.prepare(`

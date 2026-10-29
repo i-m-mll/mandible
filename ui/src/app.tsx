@@ -689,8 +689,6 @@ function App(): JSX.Element {
   // either identity or optional chrome state.
   const [agentPageBinding, setAgentPageBinding] = useState<string | null>(() => getAgentPageBinding());
   useEffect(() => subscribeAgentPageBinding(setAgentPageBinding), []);
-  const [graphRefreshToken, setGraphRefreshToken] = useState(0);
-  const [timelineRefreshToken, setTimelineRefreshToken] = useState(0);
   const [registeredRightSidebar, setRegisteredRightSidebar] = useState<AppRightSidebarDescriptor | null>(null);
   const [fallbackRightSidebarState, updateFallbackRightSidebarState] = useAppRightSidebarState(
     'app',
@@ -715,9 +713,6 @@ function App(): JSX.Element {
   // poll can gate on connection health rather than last-event receipt.
   const sseStateRef = useRef<SseConnectionState>('idle');
   const [sseWireError, setSseWireError] = useState<string | null>(null);
-  // Set when a graph-affecting event arrives while the graph tab is hidden or
-  // inactive; the graph-activation effect flushes it on activation/visibility.
-  const graphDirtyRef = useRef(false);
   // Latest values for the SSE reconnect-resync closure, so the shared-SSE
   // effect need not re-run (and re-register handlers) on every route change.
   const routeTabRef = useRef(route.tab);
@@ -1363,26 +1358,6 @@ function App(): JSX.Element {
   useEffect(() => {
     if (!accessReady) return;
     const client = acquireSharedSse();
-    let timelineTokenTimer: number | null = null;
-    // Revalidate Timeline on ledger changes only while it is the active, visible
-    // tab; a hidden Timeline revalidates on activation from its stale cache.
-    const timelineRefreshHandler = (payload: SSEPayload) => {
-      if (!payload.type.startsWith('ledger:') || timelineTokenTimer !== null) return;
-      if (routeTabRef.current !== 'timeline' || document.visibilityState !== 'visible') return;
-      timelineTokenTimer = window.setTimeout(() => {
-        timelineTokenTimer = null;
-        setTimelineRefreshToken((n) => n + 1);
-      }, 300);
-    };
-    // Coalesced graph-token bump while the graph tab is active and visible.
-    let graphTokenTimer: number | null = null;
-    const scheduleGraphBump = () => {
-      if (graphTokenTimer !== null) return;
-      graphTokenTimer = window.setTimeout(() => {
-        graphTokenTimer = null;
-        setGraphRefreshToken((n) => n + 1);
-      }, 300);
-    };
     // Coalesced issues-list refetch while the issues tab is active.
     let issuesRefreshTimer: number | null = null;
     const scheduleIssuesRefresh = () => {
@@ -1440,20 +1415,9 @@ function App(): JSX.Element {
     const heartbeatHandler = () => {
       lastDashboardSseAtRef.current = Date.now();
     };
-    // Ledger issue liveness: thin `{issue_id, project_id}` payloads. Bump
-    // freshness, invalidate the affected cache, forward the raw payload for the
-    // open issue-detail view, and (only while the issues tab is active) schedule
-    // a debounced list refetch. When the tab is inactive, cache invalidation
-    // suffices — the route.tab activation effect refetches on activation.
-    const ledgerHandler = (payload: SSEPayload) => {
+    const ledgerHandler = () => {
       lastDashboardSseAtRef.current = Date.now();
-      const data = typeof payload.data === 'object' && payload.data !== null ? payload.data : payload;
-      window.dispatchEvent(
-        new CustomEvent('ledger:sse', { detail: { type: payload.type, data } }),
-      );
-      if (routeTabRef.current === 'issues') {
-        scheduleIssuesRefresh();
-      }
+      if (routeTabRef.current === "issues") scheduleIssuesRefresh();
     };
     // Coalesce streamed auth output: buffer chunks and flush one batched
     // dispatch per frame instead of re-rendering the whole app per chunk. Badge
@@ -1599,19 +1563,7 @@ function App(): JSX.Element {
       setRebuildFailure((payload.data as { message: string }).message);
     };
 
-    const graphRefreshHandler = () => {
-      // Only repaint the graph when it is the active, visible tab. Otherwise
-      // mark it dirty; the graph-activation effect flushes one bump on
-      // activation or when the tab becomes visible again.
-      if (routeTabRef.current === 'graph' && document.visibilityState === 'visible') {
-        scheduleGraphBump();
-      } else {
-        graphDirtyRef.current = true;
-      }
-    };
-
     const unsubscribes = [
-      client.on('*', timelineRefreshHandler),
       client.on('session:registered', handler),
       client.on('session:updated', handler),
       client.on('session:ended', handler),
@@ -1658,20 +1610,6 @@ function App(): JSX.Element {
       client.on('console:telemetry', consoleTelemetryHandler),
       client.on('console:permission:request', consolePermissionHandler),
       client.on('console:permission:cleared', consolePermissionHandler),
-      client.on('session:registered', graphRefreshHandler),
-      client.on('session:updated', graphRefreshHandler),
-      client.on('session:ended', graphRefreshHandler),
-      client.on('auth:new', graphRefreshHandler),
-      client.on('auth:updated', graphRefreshHandler),
-      client.on('auth:merged', graphRefreshHandler),
-      client.on('auth:resolved', graphRefreshHandler),
-      client.on('auth:finalized', graphRefreshHandler),
-      client.on('auth:lifecycle', graphRefreshHandler),
-      client.on('ledger:issue:created', graphRefreshHandler),
-      client.on('ledger:issue:updated', graphRefreshHandler),
-      client.on('ledger:issue:closed', graphRefreshHandler),
-      client.on('ledger:issue:reopened', graphRefreshHandler),
-      client.on('work:branch:updated', graphRefreshHandler),
       client.on('mandible:rebuilding', rebuildingHandler),
       client.on('mandible:rebuild-failed', rebuildFailedHandler),
       // Bug: b5abaea — push/sync SSE events forwarded to window for WorkOverviewView
@@ -1694,27 +1632,17 @@ function App(): JSX.Element {
       if (!reconnected) return;
       // Events may have been missed while disconnected: no cached read is fresh any more.
       invalidateDashboardCaches();
-      setTimelineRefreshToken((n) => n + 1);
       lastDashboardSseAtRef.current = Date.now();
       void loadVisibleRouteDataRef.current(routeTabRef.current);
       void loadDashboardBadges();
       void refreshRailOrder();
       void refreshBrowserResources(queryClient, [browserResourceKeys.briefings]);
-      // A reconnect gap may have missed graph-affecting events; converge the
-      // graph too (bump now if active/visible, else mark dirty).
-      if (routeTabRef.current === 'graph' && document.visibilityState === 'visible') {
-        setGraphRefreshToken((n) => n + 1);
-      } else {
-        graphDirtyRef.current = true;
-      }
     });
 
     // Connect AFTER all handlers are registered
     client.connect();
 
     return () => {
-      if (timelineTokenTimer !== null) window.clearTimeout(timelineTokenTimer);
-      if (graphTokenTimer !== null) window.clearTimeout(graphTokenTimer);
       if (issuesRefreshTimer !== null) window.clearTimeout(issuesRefreshTimer);
       if (authProjectionRefreshTimer !== null) window.clearTimeout(authProjectionRefreshTimer);
       unsubscribes.forEach((unsubscribe) => unsubscribe());
@@ -1723,22 +1651,6 @@ function App(): JSX.Element {
       client.close();
     };
   }, [accessReady, loadDashboardBadges, refreshRailOrder, refreshTypography]);
-
-  // Graph-activation flush: when the graph tab becomes active (or becomes
-  // visible again while active) and a graph-affecting event was buffered while
-  // it was hidden/inactive, repaint exactly once.
-  useEffect(() => {
-    if (route.tab !== 'graph') return undefined;
-    const flush = () => {
-      if (document.visibilityState !== 'visible') return;
-      if (!graphDirtyRef.current) return;
-      graphDirtyRef.current = false;
-      setGraphRefreshToken((n) => n + 1);
-    };
-    flush();
-    document.addEventListener('visibilitychange', flush);
-    return () => document.removeEventListener('visibilitychange', flush);
-  }, [route.tab]);
 
   // Fallback polling: periodically fetch fresh data so the UI stays current
   // even if the SSE connection drops events or disconnects silently.
@@ -2964,7 +2876,6 @@ function App(): JSX.Element {
           return (
             <LazyGraphView
               onNavigate={handleGraphNavigate}
-              refreshToken={graphRefreshToken}
               initialMode={tabRoute.params.mode}
               initialFocus={tabRoute.params.focus}
               sidebarHidden={isViewSidebarHidden(tabRoute)}
@@ -2976,7 +2887,6 @@ function App(): JSX.Element {
           return (
             <LazyTimelineView
               repos={state.workRepos}
-              refreshToken={timelineRefreshToken}
               params={tabRoute.params}
               sidebarHidden={isViewSidebarHidden(tabRoute)}
             />

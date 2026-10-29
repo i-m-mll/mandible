@@ -3,6 +3,7 @@ import { documentArtifactImportEffects, documentHistoryImportEffects } from "../
 import { getDb, type Db } from "../db.js";
 import { entityRefs, resolveCommentRef, resolveId, shortRef } from "../entity-refs.js";
 import { parseIssueRefTarget } from "../ledger/authored-references.js";
+import { batchLabelsByIssue } from "../ledger/issue-projection.js";
 import { LedgerStore } from "../ledger/store.js";
 import {
   projectArtifactPublicValue,
@@ -386,6 +387,7 @@ function resolveIssueRef(
     const entity = {
       ...issue,
       worker_status: effectiveWorkerStatus(db, issue.id),
+      labels: batchLabelsByIssue(db, [issue.id]).get(issue.id) ?? [],
       project_ref: projectRouteRef(db, issue.project_id),
     };
     return {

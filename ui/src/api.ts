@@ -1,12 +1,20 @@
 import { parseManagedChatDefaults, type ManagedChatDefaults } from "../../src/managed-chat-defaults";
 import { DASHBOARD_BADGE_COUNTS, DOMAIN_EVENTS, isBriefingEvent, type DashboardBadgeCounts } from '../../src/contracts';
 import { queryClient } from './query/client';
+import { detailKeys, detailKeysForEvent } from './query/detailKeys';
+import { isSpaceDocumentQuery, projectionAffectedByEvent, spacePacketMatches } from './query/resourceInvalidation';
+import { invalidateProjectionQueries } from './query/projectionRefresh';
+import { projectionKeys } from './query/projectionKeys';
+import { readRestartSnapshot, writeRestartSnapshot } from './query/snapshots';
 import { browserResourceKeys, browserResourceKeysForEvent, refreshBrowserResources } from './query/browserResources';
 import { LIST_ENVELOPE_KEYS } from '../../src/contracts';
 import type { SessionDescendant, SessionSummary } from '../../src/contracts';
 export type { SessionDescendant, SessionSummary } from '../../src/contracts';
 import { browserSessionFetch } from './client-auth-token';
-import { invalidatePersistedDetail, ROUTE_DATA_FRESH_MS } from './detail-cache';
+import { ROUTE_DATA_FRESH_MS } from './query/policy';
+import type { Query } from '@tanstack/preact-query';
+import type { FullTextSearchPending, FullTextSearchResponse } from '../../src/conversations/full-text-search-contract';
+import { FullTextSearchError, isFullTextSearchTerminal, readFullTextSearch, type SearchReadOptions, type SearchSnapshot } from './query/fullTextSearch';
 import type { ChatAttachment } from '../../src/conversation-control/attachments';
 import type { InboxData } from './views/inbox';
 import type { GraphEdge, GraphNode, GraphMode, GraphPayload } from './types/graph';
@@ -579,6 +587,7 @@ async function fetchJsonForCache(
 ): Promise<unknown> {
   const response = await apiGet(path, { signal });
   const value = await parseMaybeJson(response);
+  signal.throwIfAborted();
   if (!shouldCache()) return cachedApiGetJson(path, { ...options, signal, onCached: () => undefined });
   const now = Date.now();
   getJsonCache.set(cacheKeyForGet(path), {
@@ -619,7 +628,7 @@ function abortReason(signal: AbortSignal): unknown {
   return signal.reason ?? new DOMException('The request was cancelled.', 'AbortError');
 }
 
-function waitForGetWithSignal<T>(request: InflightGetRequest, signal?: AbortSignal): Promise<T> {
+function waitForGetWithSignal<T>(key: string, request: InflightGetRequest, signal?: AbortSignal): Promise<T> {
   if (signal?.aborted) return Promise.reject(abortReason(signal));
   request.consumers += 1;
   let released = false;
@@ -627,7 +636,10 @@ function waitForGetWithSignal<T>(request: InflightGetRequest, signal?: AbortSign
     if (released) return;
     released = true;
     request.consumers -= 1;
-    if (request.consumers === 0 && !request.settled) request.controller.abort();
+    if (request.consumers === 0 && !request.settled) {
+      if (inflightGetJson.get(key) === request) inflightGetJson.delete(key);
+      request.controller.abort();
+    }
   };
   if (!signal) {
     return request.promise.then(
@@ -676,7 +688,7 @@ async function cachedApiGetJson<T>(
   const inflight = inflightGetJson.get(key);
   if (options.onCached) {
     if (cached) options.onCached(cached.value as T);
-    return waitForGetWithSignal<T>(inflight ?? startCachedGet(key, path, resolvedOptions), options.signal);
+    return waitForGetWithSignal<T>(key, inflight ?? startCachedGet(key, path, resolvedOptions), options.signal);
   }
   if (cached && now < cached.staleUntil) {
     if (!inflight) {
@@ -686,7 +698,7 @@ async function cachedApiGetJson<T>(
     return cached.value as T;
   }
   const request = inflight ?? startCachedGet(key, path, resolvedOptions);
-  return waitForGetWithSignal<T>(request, options.signal);
+  return waitForGetWithSignal<T>(key, request, options.signal);
 }
 
 /**
@@ -740,8 +752,10 @@ export function clearApiGetCache(): void {
 /** A gap in the event stream makes every server-derived cache stale. */
 export function invalidateDashboardCaches(): void {
   invalidateApiGetCache();
-  invalidatePersistedDetail();
   void queryClient.invalidateQueries({ refetchType: 'none' });
+  void refreshBrowserResources(queryClient, [detailKeys.artifacts]);
+  void refreshBrowserResources(queryClient, [['space']], { predicate: isSpaceDocumentQuery });
+  invalidateProjectionQueries(queryClient);
 }
 
 /** Exact cache families affected by a Briefing lifecycle event. */
@@ -761,27 +775,23 @@ export function invalidateBriefingApiCacheForEvent(type: string): boolean {
 }
 
 /** Graph and Timeline project every entity family, so any change to one invalidates both. */
-function invalidateCrossEntityProjections(): void {
+function invalidateCrossEntityProjections(type: string, data?: unknown): void {
   invalidateApiGetCache('/api/graph');
-  invalidatePersistedDetail('graph');
-  invalidatePersistedDetail('timeline');
+  invalidateProjectionQueries(queryClient, undefined, (query) => projectionAffectedByEvent(query, type, data));
 }
 
 function invalidateArtifactReads(): void {
   invalidateApiGetCache('/api/artifacts');
-  invalidatePersistedDetail('artifact-versions');
-  invalidatePersistedDetail('artifact-record');
-  invalidatePersistedDetail('artifact-content');
-  invalidatePersistedDetail('artifact-backrefs');
 }
 
-export function invalidateDashboardApiCacheForEvent(type: string): void {
+export function invalidateDashboardApiCacheForEvent(type: string, data?: unknown): void {
   if (type === DOMAIN_EVENTS.HEARTBEAT) return;
+  void refreshBrowserResources(queryClient, detailKeysForEvent(type).filter((key) => key[0] !== 'issue-detail'));
   // Logs are an all-event projection. Its view refetches on each event, so
   // discard a warmed snapshot before the visible consumer asks again.
   invalidateApiGetCache('/api/system/logs');
   if (invalidateBriefingApiCacheForEvent(type)) {
-    invalidateCrossEntityProjections();
+    invalidateCrossEntityProjections(type, data);
     if (type === 'briefing:round-published') invalidateArtifactReads();
     return;
   }
@@ -789,43 +799,42 @@ export function invalidateDashboardApiCacheForEvent(type: string): void {
     invalidateApiGetCache('/api/inbox');
   } else if (type.startsWith('conversation:')) {
     invalidateApiGetCache('/api/conversations');
-    invalidateCrossEntityProjections();
+    invalidateCrossEntityProjections(type, data);
   } else if (type.startsWith('session:') || type.startsWith('console:session:')) {
     invalidateApiGetCache('/api/sessions');
     invalidateApiGetCache('/api/console/sessions');
     invalidateApiGetCache('/api/conversations');
-    invalidateCrossEntityProjections();
+    invalidateCrossEntityProjections(type, data);
   } else if (type.startsWith('auth:')) {
     invalidateApiGetCache('/api/auth/');
     invalidateApiGetCache('/api/inbox');
-    if (type !== 'auth:output') invalidateCrossEntityProjections();
+    if (type !== 'auth:output') invalidateCrossEntityProjections(type, data);
   } else if (type.startsWith('work:') || type.startsWith('push:')) {
     invalidateApiGetCache('/api/work/');
     invalidateApiGetCache('/api/inbox');
-    invalidateCrossEntityProjections();
+    invalidateCrossEntityProjections(type, data);
   } else if (type.startsWith('ledger:')) {
     // Covers ledger:issue:*, ledger:comment:*, ledger:label:*, and other
     // ledger:* events; all can change an issue list row or detail projection.
     invalidateApiGetCache('/api/issues');
     invalidateApiGetCache('/api/ledger');
     invalidateApiGetCache('/api/inbox');
-    invalidatePersistedDetail('issue-detail');
-    invalidateCrossEntityProjections();
+    invalidateCrossEntityProjections(type, data);
   } else if (type.startsWith('space:')) {
     invalidateApiGetCache('/api/spaces');
-    invalidatePersistedDetail('spaces');
-    invalidateCrossEntityProjections();
+    void refreshBrowserResources(queryClient, browserResourceKeysForEvent(type, data), { predicate: isSpaceDocumentQuery });
+    invalidateCrossEntityProjections(type, data);
   } else if (type.startsWith('artifact:')) {
     invalidateArtifactReads();
-    invalidateCrossEntityProjections();
+    invalidateCrossEntityProjections(type, data);
   } else if (type.startsWith('managed-reminders.')) {
     invalidateApiGetCache('/api/tasks');
     invalidateApiGetCache('/api/inbox');
-    invalidateCrossEntityProjections();
+    invalidateCrossEntityProjections(type, data);
   } else if (type.startsWith('tasks.')) {
     invalidateApiGetCache('/api/tasks');
     invalidateApiGetCache('/api/tasks/commands');
-    invalidateCrossEntityProjections();
+    invalidateCrossEntityProjections(type, data);
   }
 }
 
@@ -1510,8 +1519,8 @@ export type LedgerBodyRevision = {
   redaction_reason: string | null;
 };
 
-export async function getLedgerIssueDetail(issueId: string): Promise<LedgerIssueDetailProjection> {
-  const response = await apiGet(`/api/ledger/issues/${encodeURIComponent(issueId)}`);
+export async function getLedgerIssueDetail(issueId: string, options: { signal?: AbortSignal } = {}): Promise<LedgerIssueDetailProjection> {
+  const response = await apiGet(`/api/ledger/issues/${encodeURIComponent(issueId)}`, options);
   return (await parseMaybeJson(response)) as LedgerIssueDetailProjection;
 }
 
@@ -1542,18 +1551,20 @@ export async function getLedgerBodyRevision(revisionId: string): Promise<LedgerB
 export async function getLedgerIssueDetailByRef(
   repoId: string,
   issueId: string,
+  options: { signal?: AbortSignal } = {},
 ): Promise<LedgerIssueDetailProjection> {
   const response = await apiGet(
-    `/api/issues/${encodeURIComponent(repoId)}/${encodeURIComponent(issueId)}/ledger-detail`
+    `/api/issues/${encodeURIComponent(repoId)}/${encodeURIComponent(issueId)}/ledger-detail`, options
   );
   return (await parseMaybeJson(response)) as LedgerIssueDetailProjection;
 }
 
 export async function getLedgerIssueDetailByIssueId(
   issueId: string,
+  options: { signal?: AbortSignal } = {},
 ): Promise<LedgerIssueDetailProjection> {
   const response = await apiGet(
-    `/api/ledger/issues/${encodeURIComponent(issueId)}`
+    `/api/ledger/issues/${encodeURIComponent(issueId)}`, options
   );
   return (await parseMaybeJson(response)) as LedgerIssueDetailProjection;
 }
@@ -1561,18 +1572,20 @@ export async function getLedgerIssueDetailByIssueId(
 export async function getLedgerIssueInitialDetailByRef(
   repoId: string,
   issueId: string,
+  options: { signal?: AbortSignal } = {},
 ): Promise<LedgerIssueDetailProjection> {
   const response = await apiGet(
-    `/api/issues/${encodeURIComponent(repoId)}/${encodeURIComponent(issueId)}/ledger-detail?stage=initial`
+    `/api/issues/${encodeURIComponent(repoId)}/${encodeURIComponent(issueId)}/ledger-detail?stage=initial`, options
   );
   return (await parseMaybeJson(response)) as LedgerIssueDetailProjection;
 }
 
 export async function getLedgerIssueInitialDetailByIssueId(
   issueId: string,
+  options: { signal?: AbortSignal } = {},
 ): Promise<LedgerIssueDetailProjection> {
   const response = await apiGet(
-    `/api/ledger/issues/${encodeURIComponent(issueId)}?stage=initial`
+    `/api/ledger/issues/${encodeURIComponent(issueId)}?stage=initial`, options
   );
   return (await parseMaybeJson(response)) as LedgerIssueDetailProjection;
 }
@@ -2354,7 +2367,9 @@ export async function getConversations(params?: {
   session_id?: string;
   tag?: string;
   signal?: AbortSignal;
-}): Promise<{ conversations: Conversation[]; total: number }> {
+  onPending?: (pending: FullTextSearchPending) => void;
+  snapshot?: SearchSnapshot;
+}): Promise<{ conversations: Conversation[]; total: number } & Partial<SearchSnapshot>> {
   const query = new URLSearchParams();
   if (params?.source) query.set('source', params.source);
   if (params?.starred) query.set('starred', '1');
@@ -2370,8 +2385,29 @@ export async function getConversations(params?: {
   if (params?.session_id) query.set('session_id', params.session_id);
   if (params?.tag) query.set('tag', params.tag);
   const qs = query.toString();
-  const response = await apiGet(`/api/conversations${qs ? '?' + qs : ''}`, { signal: params?.signal });
-  return (await parseMaybeJson(response)) as { conversations: Conversation[]; total: number };
+  return readConversationSearch(`/api/conversations${qs ? '?' + qs : ''}`, params);
+}
+
+async function readConversationSearch<Result extends object>(path: string, options: SearchReadOptions = {}): Promise<Result> {
+  const result = await readFullTextSearch<Result>(async (observer) => {
+    const query = new URLSearchParams(observer ?? options.snapshot);
+    const url = query.size ? `${path}${path.includes('?') ? '&' : '?'}${query}` : path;
+    const response = await browserSessionFetch(url, { headers: DEFAULT_HEADERS, signal: options.signal });
+    if (!response.ok && response.status !== 409) await throwOnError(response, 'GET', path);
+    const body = await parseMaybeJson(response) as Result | FullTextSearchResponse<Result>;
+    if (response.status === 409 && !isFullTextSearchTerminal(body)) {
+      throw new ApiError('Search could not be refreshed.', 409);
+    }
+    return body;
+  }, async (observer) => {
+    const query = new URLSearchParams({ ...observer, cancel: 'true' });
+    const response = await browserSessionFetch(`${path}${path.includes('?') ? '&' : '?'}${query}`, {
+      headers: DEFAULT_HEADERS, signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok && response.status !== 409) await throwOnError(response, 'GET', path);
+  }, options);
+  if (isFullTextSearchTerminal(result)) throw new FullTextSearchError(result);
+  return result;
 }
 
 export type ConversationSidebarConversation = Conversation & {
@@ -2395,7 +2431,7 @@ export type ConversationSidebarGroup = {
 export type ConversationSidebarResponse = {
   groups: ConversationSidebarGroup[];
   limit: number;
-};
+} & Partial<SearchSnapshot>;
 
 export async function getConversationSidebar(params: {
   lifecycle?: 'active' | 'archived';
@@ -2412,6 +2448,8 @@ export async function getConversationSidebar(params: {
   group_key?: string;
   cursor?: string;
   signal?: AbortSignal;
+  onPending?: (pending: FullTextSearchPending) => void;
+  snapshot?: SearchSnapshot;
 }): Promise<ConversationSidebarResponse> {
   const query = new URLSearchParams();
   if (params.lifecycle) query.set('lifecycle', params.lifecycle);
@@ -2430,8 +2468,7 @@ export async function getConversationSidebar(params: {
   query.set('limit', String(limit));
   if (params.group_key) query.set('group_key', params.group_key);
   if (params.cursor) query.set('cursor', params.cursor);
-  const response = await apiGet(`/api/conversations/sidebar?${query.toString()}`, { signal: params.signal });
-  return (await parseMaybeJson(response)) as ConversationSidebarResponse;
+  return readConversationSearch(`/api/conversations/sidebar?${query.toString()}`, params);
 }
 
 export type ConversationWindowRequest =
@@ -2995,6 +3032,7 @@ export type { GraphNode, GraphEdge };
 
 export async function getGraph(
   params: GraphQueryParams = {},
+  options: { signal?: AbortSignal } = {},
 ): Promise<GraphPayload> {
   const query = new URLSearchParams();
   if (params.mode) query.set('mode', params.mode);
@@ -3006,7 +3044,8 @@ export async function getGraph(
   if (params.nodeTypes?.length) query.set('node_type', params.nodeTypes.join(','));
   if (params.edgeTypes?.length) query.set('edge_type', params.edgeTypes.join(','));
   const qs = query.toString();
-  return cachedApiGetJson<GraphPayload>(`/api/graph${qs ? '?' + qs : ''}`, WARMED_ROUTE_GET_OPTIONS);
+  const response = await apiGet(`/api/graph${qs ? '?' + qs : ''}`, options);
+  return await parseMaybeJson(response) as GraphPayload;
 }
 
 // ── Artifact API ──
@@ -3192,14 +3231,10 @@ export async function getArtifacts(params: ArtifactQueryParams = {}): Promise<Ar
 
 export async function getArtifactSeriesList(
   params: ArtifactQueryParams = {},
-  read: CachedRead<ArtifactSeriesSummary[]> = {},
+  read: { signal?: AbortSignal } = {},
 ): Promise<ArtifactSeriesSummary[]> {
-  const { onCached } = read;
-  const payload = await cachedApiGetJson<{ series?: ArtifactSeriesSummary[] }>(`/api/artifacts/series${buildQuery(params)}`, {
-    ...WARMED_ROUTE_GET_OPTIONS,
-    signal: read.signal,
-    onCached: onCached && ((cached) => onCached(cached.series ?? [])),
-  });
+  const response = await apiGet(`/api/artifacts/series${buildQuery(params)}`, read);
+  const payload = await parseMaybeJson(response) as { series?: ArtifactSeriesSummary[] };
   return payload.series ?? [];
 }
 
@@ -3283,6 +3318,7 @@ export async function openArtifactExternally(id: string): Promise<void> {
 export async function createArtifactKnowledgeBackref(id: string, input: Record<string, unknown>): Promise<KnowledgeBackrefRecord> {
   const response = await apiPost(`/api/artifacts/${encodeURIComponent(id)}/knowledge-backrefs`, input);
   invalidateArtifactReads();
+  void refreshBrowserResources(queryClient, [detailKeys.artifacts]);
   const payload = await parseMaybeJson(response) as { backref: KnowledgeBackrefRecord };
   return payload.backref;
 }
@@ -3293,9 +3329,9 @@ export async function getArtifactKnowledgeBackrefs(id: string, options: { signal
   return payload.backrefs ?? [];
 }
 
-export async function resolveArtifact(ref: string): Promise<ArtifactResolveResult> {
+export async function resolveArtifact(ref: string, options: { signal?: AbortSignal } = {}): Promise<ArtifactResolveResult> {
   const query = buildQuery({ ref });
-  const response = await apiGet(`/api/artifacts/resolve${query}`);
+  const response = await apiGet(`/api/artifacts/resolve${query}`, options);
   const payload = (await parseMaybeJson(response)) as { resolution: ArtifactResolveResult };
   return payload.resolution;
 }
@@ -3424,10 +3460,24 @@ export type SpaceFactPacket = {
 };
 
 function invalidateSpaceCaches(spaceId?: string): void {
+  invalidateProjectionQueries(queryClient, projectionKeys.spacePackets, spaceId ? (query) => spacePacketMatches(query, spaceId) : undefined);
   invalidateApiGetCache('/api/spaces');
   if (spaceId) {
     invalidateApiGetCache(`/api/spaces/${encodeURIComponent(spaceId)}`);
   }
+}
+
+async function publishSpacePacketUpdate(spaceId: string, update: (packet: SpaceFactPacket) => SpaceFactPacket): Promise<void> {
+  const packets = { queryKey: projectionKeys.spacePackets, predicate: (query: Query) => spacePacketMatches(query, spaceId) };
+  await queryClient.cancelQueries(packets);
+  for (const query of queryClient.getQueryCache().findAll(packets)) {
+    const packet = (query.state.data as SpaceFactPacket | undefined) ?? readRestartSnapshot<SpaceFactPacket>(query.queryKey);
+    if (!packet || packet.space.id !== spaceId) continue;
+    const next = update(packet);
+    queryClient.setQueryData(query.queryKey, next);
+    writeRestartSnapshot(query.queryKey, next);
+  }
+  invalidateSpaceCaches(spaceId);
 }
 
 /**
@@ -3491,10 +3541,7 @@ export async function updateProjectAccessSettings(
 }
 
 export async function getSpace(spaceId: string): Promise<ContractSpace> {
-  const payload = await cachedApiGetJson<{ space: ContractSpace }>(
-    `/api/spaces/${encodeURIComponent(spaceId)}`,
-  );
-  return payload.space;
+  return (await getSpaceFactPacket(spaceId)).space;
 }
 
 /**
@@ -3503,13 +3550,14 @@ export async function getSpace(spaceId: string): Promise<ContractSpace> {
  * C9a canvas, …) assemble their `SpaceViewModel` from this single read. Older
  * responses that omit the collections degrade to empty arrays.
  */
-export async function getSpaceFactPacket(spaceId: string): Promise<SpaceFactPacket> {
-  const payload = await cachedApiGetJson<{
+export async function getSpaceFactPacket(spaceId: string, read: { signal?: AbortSignal } = {}): Promise<SpaceFactPacket> {
+  const response = await apiGet(`/api/spaces/${encodeURIComponent(spaceId)}`, { signal: read.signal });
+  const payload = await parseMaybeJson(response) as {
     space: ContractSpace;
     items?: ContractSpaceItem[];
     occurrences?: ContractSpaceOccurrence[];
     edges?: ContractSpaceEdge[];
-  }>(`/api/spaces/${encodeURIComponent(spaceId)}`, WARMED_ROUTE_GET_OPTIONS);
+  };
   return {
     space: payload.space,
     items: payload.items ?? [],
@@ -3528,7 +3576,7 @@ export async function createSpace(body: CreateSpaceRequest): Promise<ContractSpa
 export async function updateSpace(spaceId: string, body: UpdateSpaceRequest): Promise<ContractSpace> {
   const response = await apiPatch(`/api/spaces/${encodeURIComponent(spaceId)}`, body);
   const payload = (await parseMaybeJson(response)) as { space: ContractSpace };
-  invalidateSpaceCaches(spaceId);
+  await publishSpacePacketUpdate(payload.space.id, (packet) => ({ ...packet, space: payload.space }));
   return payload.space;
 }
 
@@ -3542,7 +3590,12 @@ export async function deleteSpace(spaceId: string): Promise<void> {
 export async function addSpaceItem(spaceId: string, body: AddSpaceItemRequest): Promise<AddSpaceItemResponse> {
   const response = await apiPost(`/api/spaces/${encodeURIComponent(spaceId)}/items`, body);
   const payload = (await parseMaybeJson(response)) as AddSpaceItemResponse;
-  invalidateSpaceCaches(spaceId);
+  await publishSpacePacketUpdate(payload.item.space_id, (packet) => ({
+    ...packet,
+    items: packet.items.some((item) => item.id === payload.item.id)
+      ? packet.items.map((item) => item.id === payload.item.id ? payload.item : item)
+      : [...packet.items, payload.item],
+  }));
   return payload;
 }
 

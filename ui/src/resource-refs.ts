@@ -447,13 +447,13 @@ export type { ResolverRefKind, ResolverResult };
  */
 export async function resolveResourceRef(
   ref: string,
-  options: { project?: string; fetchImpl?: typeof fetch } = {},
+  options: { project?: string; signal?: AbortSignal; fetchImpl?: typeof fetch } = {},
 ): Promise<ResolverResult> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const params = new URLSearchParams({ ref });
   if (options.project) params.set('project', options.project);
   const path = `/api/spaces/resolve?${params.toString()}`;
-  const response = await fetchImpl(path, { headers: { Accept: 'application/json' } });
+  const response = await fetchImpl(path, { headers: { Accept: 'application/json' }, signal: options.signal });
   if (!response.ok) {
     throw new Error(`resolve ${ref} failed: ${response.status}`);
   }

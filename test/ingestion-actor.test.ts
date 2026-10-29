@@ -3,6 +3,7 @@ import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { openDb } from "../src/db.js";
 import SqliteDatabase from "../src/sqlite.js";
 import { describe, expect, it } from "vitest";
@@ -31,6 +32,18 @@ function testWorkerUrl(): URL {
 }
 
 describe("ingestion worker actor", () => {
+  it("repairs unchanged old epochs through the unmocked Bun TypeScript source-runtime actor", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-source-runtime-actor-"));
+    try {
+      const result = spawnSync(process.execPath, [fileURLToPath(new URL("./helpers/ingestion-source-runtime.ts", import.meta.url)), root],
+        { encoding: "utf8", timeout: 15_000 });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain("source-runtime actor repaired unchanged Gemini epochs");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("keeps the caller event loop responsive during CPU-heavy ingestion work", async () => {
     const actor = new IngestionActor({
       dbPath: ":memory:",

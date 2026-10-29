@@ -8,11 +8,15 @@
 // storage (per Space) so it survives tab switches, refreshes, and SSE
 // reconciliation, mirroring the C8 collection view-state pattern.
 
+import { normalizeFilterChips, type TimelineFilterChip } from '../filters/issue-predicate-filter';
 import type { SpaceSelection } from './types';
 
 export type BoardViewState = {
   /** Free-text card filter applied across all columns. */
   cardFilter: string;
+  renameDrafts: Record<string, string>;
+  filterDraft: { chips: TimelineFilterChip[]; token: string; open: boolean };
+  scroll: { left: number; columns: Record<string, number> };
   /** Currently selected occurrence/item ids (UI selection, not persisted to the ledger). */
   selection: SpaceSelection;
   /** Collapsed column keys, keyed for stable per-column persistence. */
@@ -21,6 +25,9 @@ export type BoardViewState = {
 
 export const EMPTY_BOARD_VIEW_STATE: BoardViewState = {
   cardFilter: '',
+  renameDrafts: {},
+  filterDraft: { chips: [], token: '', open: false },
+  scroll: { left: 0, columns: {} },
   selection: { kind: null, ids: [] },
   collapsedColumns: {},
 };
@@ -61,7 +68,22 @@ export function normalizeBoardViewState(raw: unknown): BoardViewState {
     }
   }
 
-  return { cardFilter, selection, collapsedColumns };
+  const renameDrafts: Record<string, string> = {};
+  if (isPlainRecord(raw.renameDrafts)) for (const [key, value] of Object.entries(raw.renameDrafts)) {
+    if (typeof value === 'string') renameDrafts[key] = value;
+  }
+  const draft = isPlainRecord(raw.filterDraft) ? raw.filterDraft : {};
+  const chips = Array.isArray(draft.chips) ? draft.chips.filter((chip): chip is TimelineFilterChip =>
+    isPlainRecord(chip) && typeof chip.field === 'string' && Array.isArray(chip.values) && chip.values.every((value) => typeof value === 'string')) : [];
+  const rawScroll = isPlainRecord(raw.scroll) ? raw.scroll : {};
+  const columns: Record<string, number> = {};
+  if (isPlainRecord(rawScroll.columns)) for (const [key, value] of Object.entries(rawScroll.columns)) {
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) columns[key] = value;
+  }
+  return { cardFilter, selection, collapsedColumns, renameDrafts,
+    filterDraft: { chips: normalizeFilterChips(chips), token: typeof draft.token === 'string' ? draft.token : '', open: draft.open === true },
+    scroll: { left: typeof rawScroll.left === 'number' && Number.isFinite(rawScroll.left) && rawScroll.left >= 0 ? rawScroll.left : 0, columns },
+  };
 }
 
 /**
@@ -82,7 +104,9 @@ export function reconcileBoardViewState(
     if (liveColumnKeys.has(key)) collapsedColumns[key] = value;
   }
   return {
-    cardFilter: prior.cardFilter,
+    ...prior,
+    renameDrafts: Object.fromEntries(Object.entries(prior.renameDrafts).filter(([key]) => liveColumnKeys.has(key))),
+    scroll: { ...prior.scroll, columns: Object.fromEntries(Object.entries(prior.scroll.columns).filter(([key]) => liveColumnKeys.has(key))) },
     selection:
       ids.length === prior.selection.ids.length && ids.length > 0
         ? prior.selection

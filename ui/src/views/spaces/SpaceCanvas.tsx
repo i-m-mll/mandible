@@ -61,9 +61,6 @@ import {
 import { layoutGraph } from '../../graph/layout';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 import type { GraphEdge, GraphNode } from '../../types/graph';
-import { type SSEPayload } from '../../sse-client';
-import { acquireSharedSse, type SseHandle } from '../../sse-shared';
-import { LoadingSkeleton } from '../../components/LoadingSkeleton';
 import type { SpaceRendererMountProps } from './SpacesViewShell';
 import { SpaceItemPicker } from './SpaceItemPicker';
 import {
@@ -503,16 +500,6 @@ export function nextAddedItemPosition(placed: CanvasNode[]): { x: number; y: num
   return { x: rightMost + 260, y: topMost };
 }
 
-// ---------------------------------------------------------------------------
-// Data source: this lane consumes the FROZEN C2/C3 surfaces. The C2 routes do
-// not (yet) expose a GET fact-packet route — `loadSpaceFactPacket` is exported
-// from `src/routes/spaces.ts` but unwired — so the canvas takes its initial
-// view-model and its SSE-refetch through an injected loader. The default loader
-// is a no-op placeholder that returns the seeded model the host passes in; a
-// host that has a read endpoint can inject a real fetcher. Drag persistence and
-// re-layout go through the frozen `batchWriteSpaceOccurrences` client helper.
-// ---------------------------------------------------------------------------
-
 export type SpaceCanvasModel = {
   occurrences: SpaceOccurrence[];
   items: SpaceItem[];
@@ -523,21 +510,9 @@ export type SpaceCanvasModel = {
   edges?: SpaceEdge[];
 };
 
-export type SpaceCanvasLoader = (spaceId: string) => Promise<SpaceCanvasModel>;
-
 export type SpaceCanvasProps = SpaceRendererMountProps & {
-  /**
-   * Optional initial model (occurrences + items). When the host already holds a
-   * seeded fact packet (e.g. from `seedSpace`) it passes it here so the canvas
-   * renders without a read round-trip.
-   */
-  initialModel?: SpaceCanvasModel;
-  /**
-   * Loader used for the initial fetch (when no `initialModel`) and for SSE
-   * reconciliation refetches. Injected so the canvas stays decoupled from the
-   * read surface and is unit-testable.
-   */
-  loadModel?: SpaceCanvasLoader;
+  /** Current Query-owned packet projected to canvas inputs. Local edits reconcile against it. */
+  model?: SpaceCanvasModel;
   /** Batch-write client (injected for tests); defaults to the real C2 client. */
   batchWrite?: typeof batchWriteSpaceOccurrences;
   /**
@@ -560,8 +535,6 @@ export type SpaceCanvasProps = SpaceRendererMountProps & {
    * `canvas` occurrence so a freshly-added item lands directly on the canvas.
    */
   createOccurrence?: typeof createSpaceOccurrence;
-  /** SSE client factory (injected for tests); defaults to the shared client. */
-  createSse?: () => SseHandle;
   /** Debounce window (ms) for the batched drag-position write. */
   debounceMs?: number;
 };
@@ -574,12 +547,9 @@ type PendingAckPosition = {
   previewDisabled?: boolean;
 };
 
-type InitialModelStatus = 'pending' | 'loaded' | 'error';
 
 const DEFAULT_DEBOUNCE_MS = 400;
 const POSITION_ACK_PROTECTION_MS = 10_000;
-const OCCURRENCE_MOVED_EVENT = 'space:occurrence:moved';
-const EDGE_EVENTS = ['space:edge:created', 'space:edge:updated', 'space:edge:removed'] as const;
 const MIN_INSPECTOR_HEIGHT = 160;
 const MAX_INSPECTOR_BODY_FRACTION = 0.7;
 
@@ -600,29 +570,23 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
     spaceId,
     projectId,
     instance,
-    initialModel,
-    loadModel,
+    model,
     batchWrite = batchWriteSpaceOccurrences,
     createEdge = createSpaceEdge,
     updateEdge = updateSpaceEdge,
     removeEdge = deleteSpaceEdge,
     promote = promoteEdgeToLedger,
     createOccurrence = createSpaceOccurrence,
-    createSse = acquireSharedSse,
     debounceMs = DEFAULT_DEBOUNCE_MS,
   } = props;
 
   const [occurrences, setOccurrences] = useState<SpaceOccurrence[]>(
-    () => initialModel?.occurrences ?? [],
+    () => model?.occurrences ?? [],
   );
-  const [items, setItems] = useState<SpaceItem[]>(() => initialModel?.items ?? []);
+  const [items, setItems] = useState<SpaceItem[]>(() => model?.items ?? []);
   // Authored `space_edges` rendered as lines on the canvas and edited through the
   // Canvas selection inspector.
-  const [edges, setEdges] = useState<SpaceEdge[]>(() => initialModel?.edges ?? []);
-  const [initialModelStatus, setInitialModelStatus] = useState<InitialModelStatus>(() =>
-    !initialModel && spaceId && loadModel ? 'pending' : 'loaded',
-  );
-  const [initialModelError, setInitialModelError] = useState<string | null>(null);
+  const [edges, setEdges] = useState<SpaceEdge[]>(() => model?.edges ?? []);
   const [autosave, setAutosave] = useState<AutosaveStatus>('idle');
   const [edgeStatus, setEdgeStatus] = useState<AutosaveStatus>('idle');
   const [edgeStatusMessage, setEdgeStatusMessage] = useState('');
@@ -640,7 +604,6 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
   const draggingIds = useRef<Set<string>>(new Set());
   const pendingPositions = useRef<Record<string, { x: number; y: number }>>({});
   const pendingAckPositions = useRef<Record<string, PendingAckPosition>>({});
-  const reconcileRequestSeq = useRef(0);
   const debounceTimer = useRef<number | null>(null);
   const occurrencesRef = useRef<SpaceOccurrence[]>(occurrences);
   const flowEdgesRef = useRef<FlowEdge[]>([]);
@@ -745,33 +708,9 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
     [protectedPositionsForIncoming],
   );
 
-  // --- initial load (only when no initialModel was provided) ---
   useEffect(() => {
-    if (initialModel || !spaceId || !loadModel) {
-      setInitialModelStatus('loaded');
-      setInitialModelError(null);
-      return;
-    }
-    let cancelled = false;
-    setInitialModelStatus('pending');
-    setInitialModelError(null);
-    void loadModel(spaceId)
-      .then((model) => {
-        if (cancelled) return;
-        setOccurrences(model.occurrences);
-        setItems(model.items);
-        setEdges(model.edges ?? []);
-        setInitialModelStatus('loaded');
-      })
-      .catch((error: unknown) => {
-        if (cancelled) return;
-        setInitialModelStatus('error');
-        setInitialModelError(error instanceof Error ? error.message : String(error));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [spaceId, initialModel, loadModel]);
+    if (model) reconcileModel(model);
+  }, [model, reconcileModel]);
 
   // --- flush the debounced batch write ---
   const flushPending = useCallback(async () => {
@@ -851,34 +790,6 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
     pendingPositions.current = { ...pendingPositions.current, ...nextPositions };
     scheduleFlush();
   }, [shelf, itemsById, placed, protectPositionsUntilAck, scheduleFlush]);
-
-  // --- SSE reconciliation: refetch + reconcile WITHOUT touching viewport/sel ---
-  // Subscribes to both occurrence moves AND edge events so drag-created or
-  // external edge mutations reconcile onto the canvas. Reconciliation only
-  // updates occurrence/edge data; it never resets selection or viewport
-  // (Dataful-UX contract).
-  useEffect(() => {
-    if (!spaceId || !loadModel) return;
-    const client = createSse();
-    const reconcile = (payload: SSEPayload) => {
-      const data = (payload.data ?? payload) as { space_id?: string };
-      if (data?.space_id && data.space_id !== spaceId) return;
-      const requestSeq = ++reconcileRequestSeq.current;
-      void loadModel(spaceId).then((model) => {
-        if (requestSeq !== reconcileRequestSeq.current) return;
-        reconcileModel(model);
-        // NOTE: selection and viewport state are intentionally untouched here.
-      });
-    };
-    const unsubscribers = [OCCURRENCE_MOVED_EVENT, ...EDGE_EVENTS].map((event) =>
-      client.on(event, reconcile),
-    );
-    client.connect();
-    return () => {
-      for (const unsubscribe of unsubscribers) unsubscribe();
-      client.close();
-    };
-  }, [spaceId, loadModel, createSse, reconcileModel]);
 
   // --- React Flow nodes (positions come from persisted occurrence x/y) ---
   const flowNodes = useMemo(
@@ -1068,18 +979,6 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
     [selection, items, protectPositionsUntilAck, scheduleFlush],
   );
 
-  // --- refetch (after an add) WITHOUT touching viewport/selection ---
-  // This mirrors the SSE reconciliation path: it reconciles occurrences
-  // (preserving in-flight drags) and never resets the
-  // ephemeral selection/viewport (Dataful-UX contract).
-  const reload = useCallback(async () => {
-    if (!spaceId || !loadModel) return;
-    const requestSeq = ++reconcileRequestSeq.current;
-    const model = await loadModel(spaceId);
-    if (requestSeq !== reconcileRequestSeq.current) return;
-    reconcileModel(model);
-  }, [spaceId, loadModel, reconcileModel]);
-
   // --- "Add items" picker: immediately place a canvas occurrence per new item ---
   const afterAddItem = useCallback(
     async (item: SpaceItem) => {
@@ -1193,9 +1092,6 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
                 isItemInView={isItemOnCanvas}
                 alreadyInViewLabel="Already on canvas"
                 afterAdd={afterAddItem}
-                onAdded={() => {
-                  void reload();
-                }}
                 onClose={() => setPickerMode(null)}
               />
             </div>
@@ -1253,9 +1149,6 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
         </div>
         <span className="space-canvas__toolbar-spacer" />
       </div>
-      {initialModelError && (
-        <DetailPaneNotice severity="error" density="compact" title="Could not load canvas items">{initialModelError}</DetailPaneNotice>
-      )}
       {autosave === 'error' && (
         <DetailPaneNotice severity="error" density="compact" title="Canvas positions were not saved">
           Your last change remains on screen; retry by moving the item again.
@@ -1266,15 +1159,7 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
       )}
       <div className="space-canvas__body" ref={bodyRef}>
         <div className="space-canvas__flow" data-testid="space-canvas-flow">
-          {initialModelStatus === 'pending' && placed.length === 0 ? (
-            <div data-testid="space-canvas-loading">
-              <LoadingSkeleton variant="canvas" label="Loading canvas items..." />
-            </div>
-          ) : initialModelStatus === 'error' && placed.length === 0 ? (
-            <div className="space-canvas__empty" data-testid="space-canvas-load-error">
-              Unable to load canvas items.
-            </div>
-          ) : placed.length === 0 ? (
+          {placed.length === 0 ? (
             <div className="space-canvas__empty" data-testid="space-canvas-empty">
               No canvas items yet.
             </div>

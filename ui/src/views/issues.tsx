@@ -2,10 +2,6 @@ import { pushAppHistory, navigateAppHash } from '../app-history';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import {
   addLedgerIssueComment,
-  getLedgerIssueDetailByIssueId,
-  getLedgerIssueDetailByRef,
-  getLedgerIssueInitialDetailByIssueId,
-  getLedgerIssueInitialDetailByRef,
   getIssueRepos,
   patchLedgerIssue,
   spawnIssueAgent,
@@ -21,9 +17,12 @@ import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFil
 import { readPersistedViewState, usePersistedViewState } from '../hooks/usePersistedViewState';
 import { routeHashWithParams, shortRouteId } from '../routing';
 import { renderInlineMarkdown } from '../lib/markdown';
-import { beginDetailRequest, detailRequestKey, isPersistedDetailFresh, readPersistedDetail, removePersistedDetail, writePersistedDetail } from '../detail-cache';
+import { hashKey } from "@tanstack/preact-query";
+import { queryClient } from "../query/client";
+import { issueDetailOptions, issueInitialDetailOptions, publishIssueDetail, refreshIssueDetail, detailQueryData } from "../query/details";
+import { useProjectionQuery } from "../query/useProjectionQuery";
 import { useSidebarListNavigation } from '../hooks/useSidebarListNavigation';
-import { useAppShell, useRouteLoad } from '../app-shell';
+import { useAppShell, useViewActive } from '../app-shell';
 import {
   LEDGER_ISSUE_KINDS,
   LEDGER_ISSUE_RESOLUTIONS,
@@ -299,56 +298,6 @@ function ledgerDetailMatchesSelection(
   return [...refs].some((ref) => ref === issueId || ref.startsWith(issueId));
 }
 
-function shouldAcceptInitialLedgerDetail(
-  current: LedgerIssueDetailProjection | null,
-  initial: LedgerIssueDetailProjection,
-  repoId: string | null,
-  issueId: string,
-): boolean {
-  if (!ledgerDetailMatchesSelection(initial, repoId, issueId)) return false;
-  if (!current || !ledgerDetailMatchesSelection(current, repoId, issueId)) return true;
-  return current.detail_stage === 'initial' || current.timeline_partial === true;
-}
-
-const ISSUE_DETAIL_CACHE_LIMIT = 15;
-type IssueDetailCache = Map<string, LedgerIssueDetailProjection>;
-
-function issueDetailCacheKeys(repoId: string | null, issueId: string): string[] {
-  return [`${repoId ?? ''}:${issueId}`];
-}
-
-function putCachedIssueDetail(
-  cache: IssueDetailCache,
-  repoId: string | null,
-  issueId: string,
-  detail: LedgerIssueDetailProjection,
-): void {
-  if (detail.detail_stage === 'initial') return;
-  const key = issueDetailCacheKeys(repoId, issueId)[0];
-  cache.delete(key);
-  cache.set(key, detail);
-  while (cache.size > ISSUE_DETAIL_CACHE_LIMIT) {
-    const oldest = cache.keys().next().value;
-    if (!oldest) break;
-    cache.delete(oldest);
-  }
-}
-
-function getCachedIssueDetail(
-  cache: IssueDetailCache,
-  repoId: string | null,
-  issueId: string,
-): LedgerIssueDetailProjection | null {
-  for (const key of issueDetailCacheKeys(repoId, issueId)) {
-    const detail = cache.get(key);
-    if (!detail) continue;
-    cache.delete(key);
-    cache.set(key, detail);
-    return detail;
-  }
-  return null;
-}
-
 // Detail scroll intentionally remains session-scoped; promoting it to durable browser
 // storage would change its lifetime and is outside the local filter contract below.
 const ISSUE_DETAIL_SCROLL_STORAGE_PREFIX = 'mandible:issues:detail-scroll:';
@@ -572,35 +521,24 @@ export function IssuesView({
   const [filterMenuOpen, setFilterMenuOpen] = useState(false);
   type SortField = 'created_at';
   const [sortField] = useState<SortField>('created_at');
-  const [ledgerIssueDetail, setLedgerIssueDetail] = useState<LedgerIssueDetailProjection | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
-  const [detailLoadFailed, setDetailLoadFailed] = useState(false);
-  const [detailError, setDetailError] = useState<string | null>(null);
   const [actionInFlight, setActionInFlight] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
   const routeKey = JSON.stringify([initialRepoId, initialIssueId]);
   const [appliedRouteKey, setAppliedRouteKey] = useState(routeKey);
   const lastScrolledCommentRef = useRef<string | null>(null);
-  const detailRequestSeqRef = useRef(0);
   const selectedIssueKeyRef = useRef<string | null>(null);
   const selectedIssueGenerationRef = useRef(0);
   const issueDetailScrollRef = useRef<HTMLDivElement>(null);
   const scrollSaveTimerRef = useRef<number | null>(null);
   const lastRestoredScrollKeyRef = useRef<string | null>(null);
-  const issueDetailCacheRef = useRef<IssueDetailCache>(new Map());
   if (appliedRouteKey !== routeKey) {
     setAppliedRouteKey(routeKey);
     const nextRepoId = initialIssueId ? resolveIssueRepoDeepLink(repos, initialRepoId) : viewState.selectedRepoId;
     const nextIssueId = initialIssueId ?? viewState.selectedIssueId;
     if (nextRepoId !== selectedRepoId || nextIssueId !== selectedIssueId) {
-      detailRequestSeqRef.current += 1;
       setSelectedRepoId(nextRepoId);
       setSelectedIssueId(nextIssueId);
-      setLedgerIssueDetail(null);
-      setDetailLoading(Boolean(nextIssueId));
-      setDetailLoadFailed(false);
-      setDetailError(null);
     }
   }
   const nextSelectedIssueKey = `${selectedRepoId ?? ''}:${selectedIssueId ?? ''}`;
@@ -608,6 +546,29 @@ export function IssuesView({
     selectedIssueGenerationRef.current += 1;
   }
   selectedIssueKeyRef.current = nextSelectedIssueKey;
+
+  const active = useViewActive();
+  const detailOptions = useMemo(() => issueDetailOptions(selectedIssueId, selectedRepoId ?? undefined), [selectedIssueId, selectedRepoId]);
+  const fullQuery = useProjectionQuery(detailOptions, active && Boolean(selectedIssueId));
+  const fullDetail = useMemo(() => detailQueryData(fullQuery, detailOptions), [fullQuery.data, fullQuery.isError, detailOptions]);
+  const identityInvalid = isApiErrorStatus(fullQuery.error, 404) || isApiErrorStatus(fullQuery.error, 409);
+  const initialOptions = useMemo(() => issueInitialDetailOptions(selectedIssueId, selectedRepoId ?? undefined), [selectedIssueId, selectedRepoId]);
+  const initialQuery = useProjectionQuery(initialOptions, active && Boolean(selectedIssueId) && !fullDetail && !identityInvalid);
+  const initialDetail = useMemo(() => detailQueryData(initialQuery, initialOptions), [initialQuery.data, initialQuery.isError, initialOptions]);
+  const ledgerIssueDetail = identityInvalid ? null : fullDetail ?? initialDetail ?? null;
+  const detailLoading = Boolean(selectedIssueId) && fullQuery.isFetching && !fullDetail;
+  const detailLoadFailed = fullQuery.isError;
+  const detailError = fullQuery.error?.message ?? null;
+  useEffect(() => {
+    if (selectedRepoId || !selectedIssueId || !fullDetail || !fullQuery.isFetchedAfterMount
+      || !fullQuery.isSuccess || fullQuery.isPlaceholderData || fullQuery.isFetching) return;
+    const repo = fullDetail.project.project_key;
+    if (!repo) return;
+    const canonicalOptions = issueDetailOptions(selectedIssueId, repo);
+    if (hashKey(canonicalOptions.queryKey) !== hashKey(detailOptions.queryKey)) queryClient.setQueryData(canonicalOptions.queryKey, fullDetail);
+    setSelectedRepoId(repo);
+  }, [selectedRepoId, selectedIssueId, fullDetail, detailOptions, fullQuery.isFetchedAfterMount,
+    fullQuery.isSuccess, fullQuery.isPlaceholderData, fullQuery.isFetching]);
 
   useEffect(() => {
     setActionError(null);
@@ -638,7 +599,7 @@ export function IssuesView({
   }, [repos]);
 
   useEffect(() => {
-    if (!ledgerIssueDetail || !initialCommentId) return;
+    if (!ledgerIssueDetail || !initialCommentId || ledgerIssueDetail.timeline_partial) return;
     const scrollKey = `${ledgerIssueDetail.id}:${initialCommentId}`;
     if (lastScrolledCommentRef.current === scrollKey) return;
     const comment = Array.from(issueDetailScrollRef.current?.querySelectorAll<HTMLElement>('[id], [data-comment-ordinal]') ?? [])
@@ -712,10 +673,10 @@ export function IssuesView({
   }, [repos, selectedRepoId, selectedIssueId, resolveRepoId, ledgerIssueDetail]);
 
   const synthesizedLedgerIssueDetail = useMemo(
-    () => !initialIssueId && !detailLoadFailed && selectedIssueSummary
+    () => (!initialIssueId || selectedIssueId !== initialIssueId) && !identityInvalid && selectedIssueSummary
       ? synthesizeLedgerIssueDetail(selectedIssueSummary.repo, selectedIssueSummary.issue)
       : null,
-    [initialIssueId, detailLoadFailed, selectedIssueSummary],
+    [initialIssueId, selectedIssueId, identityInvalid, selectedIssueSummary],
   );
 
   const visibleLedgerIssueDetail = useMemo(
@@ -787,104 +748,7 @@ export function IssuesView({
   ]);
 
   // Fetch canonical ledger detail when selection changes.
-  useRouteLoad((registerInitialRouteLoad) => {
-    if (!selectedIssueId) {
-      detailRequestSeqRef.current += 1;
-      setLedgerIssueDetail(null);
-      setDetailLoading(false);
-      setDetailLoadFailed(false);
-      return;
-    }
-    const repoId = selectedRepoId;
-    const issueId = selectedIssueId;
-    let identityInvalidated = false;
-    const requestSeq = detailRequestSeqRef.current + 1;
-    detailRequestSeqRef.current = requestSeq;
-    const persistedKey = detailRequestKey('issue', { repoId, issueId });
-    const cachedDetail = getCachedIssueDetail(issueDetailCacheRef.current, repoId, issueId)
-      ?? readPersistedDetail<LedgerIssueDetailProjection>('issue-detail', persistedKey);
-    const hasCachedDetail = Boolean(cachedDetail && ledgerDetailMatchesSelection(cachedDetail, repoId, issueId));
-    if (hasCachedDetail && cachedDetail) {
-      setLedgerIssueDetail(cachedDetail);
-    }
-    setDetailLoading(!hasCachedDetail);
-    setDetailLoadFailed(false);
-    setDetailError(null);
-    if (repoId && hasCachedDetail && isPersistedDetailFresh('issue-detail', persistedKey)) return undefined;
-    const detailStarted = beginDetailRequest();
-    const initialDetail = hasCachedDetail
-      ? null
-      : repoId
-        ? getLedgerIssueInitialDetailByRef(repoId, issueId)
-        : getLedgerIssueInitialDetailByIssueId(issueId);
-    const fullDetail = repoId
-      ? getLedgerIssueDetailByRef(repoId, issueId)
-      : getLedgerIssueDetailByIssueId(issueId);
-    registerInitialRouteLoad(Promise.allSettled([
-      ...(initialDetail ? [initialDetail] : []),
-      fullDetail,
-    ]));
-    if (initialDetail) {
-      initialDetail
-        .then((detail) => {
-          if (detailRequestSeqRef.current !== requestSeq || identityInvalidated) return;
-          setLedgerIssueDetail((current) => (
-            shouldAcceptInitialLedgerDetail(current, detail, repoId, issueId) ? detail : current
-          ));
-        })
-        .catch(() => {
-          // The full projection fetch below remains authoritative.
-        });
-    }
-    fullDetail
-      .then((detail) => {
-        if (detailRequestSeqRef.current !== requestSeq) return;
-        putCachedIssueDetail(issueDetailCacheRef.current, repoId, issueId, detail);
-        writePersistedDetail('issue-detail', persistedKey, detail, undefined, detailStarted);
-        setLedgerIssueDetail(detail);
-        if (!repoId) {
-          const canonicalRepo = detail.project.project_key;
-          putCachedIssueDetail(issueDetailCacheRef.current, canonicalRepo, issueId, detail);
-          setSelectedRepoId(canonicalRepo);
-        }
-      })
-      .catch((error) => {
-        if (detailRequestSeqRef.current !== requestSeq) return;
-        identityInvalidated = isApiErrorStatus(error, 404) || isApiErrorStatus(error, 409);
-        if (identityInvalidated) {
-          for (const key of issueDetailCacheKeys(repoId, issueId)) issueDetailCacheRef.current.delete(key);
-          removePersistedDetail('issue-detail', persistedKey);
-          setLedgerIssueDetail(null);
-        }
-        if (identityInvalidated || !hasCachedDetail) {
-          setDetailLoadFailed(true);
-          setDetailError(error instanceof Error ? error.message : String(error));
-        }
-      })
-      .finally(() => {
-        if (detailRequestSeqRef.current === requestSeq) setDetailLoading(false);
-      });
-    return () => {
-      if (detailRequestSeqRef.current === requestSeq) detailRequestSeqRef.current += 1;
-    };
-  }, [selectedRepoId, selectedIssueId]);
-
   const selectIssue = useCallback((repoId: string, issueId: string) => {
-    if (selectedIssueKeyRef.current !== `${repoId}:${issueId}`) detailRequestSeqRef.current += 1;
-    const cachedDetail = getCachedIssueDetail(issueDetailCacheRef.current, repoId, issueId);
-    if (cachedDetail && ledgerDetailMatchesSelection(cachedDetail, repoId, issueId)) {
-      setLedgerIssueDetail(cachedDetail);
-      setDetailLoading(false);
-      setDetailLoadFailed(false);
-    } else {
-      const repo = repos.find((candidate) => candidate.repo_id === repoId);
-      const issue = repo?.issues.find((candidate) => candidate.id === issueId);
-      if (repo && issue) {
-        setLedgerIssueDetail(synthesizeLedgerIssueDetail(repo, issue));
-        setDetailLoading(true);
-        setDetailLoadFailed(false);
-      }
-    }
     const nextHash = issueRouteHash(repoId, issueId);
     if (typeof window !== 'undefined' && window.location.hash !== nextHash) {
       pushAppHistory(nextHash, null);
@@ -892,7 +756,7 @@ export function IssuesView({
     }
     setSelectedRepoId(repoId);
     setSelectedIssueId(issueId);
-  }, [repos]);
+  }, []);
 
   useEffect(() => {
     if (!selectedRepoId || !selectedIssueId) return;
@@ -917,61 +781,6 @@ export function IssuesView({
     onSelect: (item) => selectIssue(item.repo.repo_id, item.issue.id),
   });
 
-  const refreshLedgerIssueDetail = useCallback(async () => {
-    if (!selectedRepoId || !selectedIssueId) return;
-    const requestSeq = detailRequestSeqRef.current + 1;
-    detailRequestSeqRef.current = requestSeq;
-    setDetailLoadFailed(false);
-    const detailStarted = beginDetailRequest();
-    try {
-      const detail = await getLedgerIssueDetailByRef(selectedRepoId, selectedIssueId);
-      if (detailRequestSeqRef.current === requestSeq) {
-        putCachedIssueDetail(issueDetailCacheRef.current, selectedRepoId, selectedIssueId, detail);
-        writePersistedDetail(
-          'issue-detail',
-          detailRequestKey('issue', { repoId: selectedRepoId, issueId: selectedIssueId }),
-          detail,
-          undefined,
-          detailStarted,
-        );
-        setLedgerIssueDetail(detail);
-      }
-    } catch {
-      if (detailRequestSeqRef.current === requestSeq) setDetailLoadFailed(true);
-    }
-  }, [selectedRepoId, selectedIssueId]);
-
-  // Live detail refresh: when a ledger:* event (forwarded from the app-level
-  // SSE handler as a `ledger:sse` window event) targets the open issue, refetch
-  // the detail through a trailing 300 ms debounce. Events for other issues, and
-  // unfiltered events with no issue_id, are ignored here — list freshness is
-  // handled at the app level.
-  useEffect(() => {
-    const detailId = visibleLedgerIssueDetail?.id;
-    const detailDisplayId = visibleLedgerIssueDetail?.display_id;
-    if (!detailId && !detailDisplayId) return undefined;
-    let debounceTimer: number | null = null;
-    const handleLedgerSse = (event: Event) => {
-      const detail = (event as CustomEvent<{ type: string; data?: { issue_id?: unknown } }>).detail;
-      const issueId = detail?.data?.issue_id;
-      if (typeof issueId !== 'string' || !issueId) return;
-      const matches = [detailId, detailDisplayId].some(
-        (ref) => Boolean(ref) && (ref === issueId || ref!.startsWith(issueId) || issueId.startsWith(ref!)),
-      );
-      if (!matches) return;
-      if (debounceTimer !== null) window.clearTimeout(debounceTimer);
-      debounceTimer = window.setTimeout(() => {
-        debounceTimer = null;
-        void refreshLedgerIssueDetail();
-      }, 300);
-    };
-    window.addEventListener('ledger:sse', handleLedgerSse);
-    return () => {
-      if (debounceTimer !== null) window.clearTimeout(debounceTimer);
-      window.removeEventListener('ledger:sse', handleLedgerSse);
-    };
-  }, [visibleLedgerIssueDetail?.id, visibleLedgerIssueDetail?.display_id, refreshLedgerIssueDetail]);
-
   const handleIssueActionFailure = useCallback(async (
     action: string,
     selectionKey: string,
@@ -989,10 +798,9 @@ export function IssuesView({
       return;
     }
     try {
-      const detail = await getLedgerIssueDetailByRef(selectedRepoId, selectedIssueId);
+      const detail = await refreshIssueDetail(detailOptions);
       if (!isCurrentSelection()) return;
-      putCachedIssueDetail(issueDetailCacheRef.current, selectedRepoId, selectedIssueId, detail);
-      setLedgerIssueDetail(detail);
+      await publishIssueDetail(detailOptions.queryKey, detail);
       const state = detail.status === 'closed'
         ? `closed as ${detail.resolution ?? 'an unknown resolution'}`
         : 'open';
@@ -1003,7 +811,7 @@ export function IssuesView({
       if (!isCurrentSelection()) return;
       setActionError(`${action} request could not be confirmed: ${reason}. Refresh the issue before retrying.`);
     }
-  }, [selectedRepoId, selectedIssueId]);
+  }, [selectedRepoId, selectedIssueId, detailOptions]);
 
   const handleCloseIssue = useCallback(async (resolution?: LedgerIssueCloseResolution) => {
     if (!visibleLedgerIssueDetail || actionInFlight) return;
@@ -1017,12 +825,11 @@ export function IssuesView({
     setActionInFlight(true);
     try {
       const detail = await patchLedgerIssue(visibleLedgerIssueDetail.id, { status: 'closed', resolution });
+      await publishIssueDetail(detailOptions.queryKey, detail);
       if (
         selectedIssueKeyRef.current !== selectionKey ||
         selectedIssueGenerationRef.current !== selectionGeneration
       ) return;
-      putCachedIssueDetail(issueDetailCacheRef.current, selectedRepoId, selectedIssueId ?? visibleLedgerIssueDetail.display_id, detail);
-      setLedgerIssueDetail(detail);
       void onRescan();
     } catch (error) {
       await handleIssueActionFailure(`Close as ${resolution}`, selectionKey, selectionGeneration, error);
@@ -1032,7 +839,7 @@ export function IssuesView({
         selectedIssueGenerationRef.current === selectionGeneration
       ) setActionInFlight(false);
     }
-  }, [visibleLedgerIssueDetail, actionInFlight, onRescan, selectedRepoId, selectedIssueId, handleIssueActionFailure]);
+  }, [visibleLedgerIssueDetail, actionInFlight, onRescan, detailOptions, handleIssueActionFailure]);
 
   const handleReopenIssue = useCallback(async () => {
     if (!visibleLedgerIssueDetail || actionInFlight) return;
@@ -1042,12 +849,11 @@ export function IssuesView({
     setActionInFlight(true);
     try {
       const detail = await patchLedgerIssue(visibleLedgerIssueDetail.id, { status: 'open', resolution: null });
+      await publishIssueDetail(detailOptions.queryKey, detail);
       if (
         selectedIssueKeyRef.current !== selectionKey ||
         selectedIssueGenerationRef.current !== selectionGeneration
       ) return;
-      putCachedIssueDetail(issueDetailCacheRef.current, selectedRepoId, selectedIssueId ?? visibleLedgerIssueDetail.display_id, detail);
-      setLedgerIssueDetail(detail);
       void onRescan();
     } catch (error) {
       await handleIssueActionFailure('Reopen', selectionKey, selectionGeneration, error);
@@ -1057,21 +863,20 @@ export function IssuesView({
         selectedIssueGenerationRef.current === selectionGeneration
       ) setActionInFlight(false);
     }
-  }, [visibleLedgerIssueDetail, actionInFlight, onRescan, selectedRepoId, selectedIssueId, handleIssueActionFailure]);
+  }, [visibleLedgerIssueDetail, actionInFlight, onRescan, detailOptions, handleIssueActionFailure]);
 
   const handleAddCommentBody = useCallback(async (message: string) => {
     if (!visibleLedgerIssueDetail || !message.trim() || actionInFlight) return;
+    const selectionKey = selectedIssueKeyRef.current;
+    const selectionGeneration = selectedIssueGenerationRef.current;
     setActionInFlight(true);
     try {
       const detail = await addLedgerIssueComment(visibleLedgerIssueDetail.id, message.trim());
-      putCachedIssueDetail(issueDetailCacheRef.current, selectedRepoId, selectedIssueId ?? visibleLedgerIssueDetail.display_id, detail);
-      setLedgerIssueDetail(detail);
-    } catch {
-      // silently fail
+      await publishIssueDetail(detailOptions.queryKey, detail);
     } finally {
-      setActionInFlight(false);
+      if (selectedIssueKeyRef.current === selectionKey && selectedIssueGenerationRef.current === selectionGeneration) setActionInFlight(false);
     }
-  }, [visibleLedgerIssueDetail, actionInFlight]);
+  }, [visibleLedgerIssueDetail, actionInFlight, detailOptions]);
 
   const handleUpdateWorkNotes = useCallback(async (workNotes: string, expectedRevision: string | null) => {
     if (!visibleLedgerIssueDetail || actionInFlight) return;
@@ -1082,21 +887,13 @@ export function IssuesView({
       const payload: Record<string, unknown> = { work_notes: workNotes };
       payload.expected_work_notes_revision = expectedRevision;
       const detail = await patchLedgerIssue(saveIssueId, payload);
-      if (selectedIssueKeyRef.current !== saveSelectionKey) return;
-      putCachedIssueDetail(
-        issueDetailCacheRef.current,
-        selectedRepoId,
-        selectedIssueId ?? visibleLedgerIssueDetail.display_id,
-        detail,
-      );
-      setLedgerIssueDetail(detail);
+      await publishIssueDetail(detailOptions.queryKey, detail);
     } catch (error) {
       if (isApiErrorStatus(error, 409) && selectedIssueKeyRef.current === saveSelectionKey && selectedRepoId && selectedIssueId) {
         try {
-          const latest = await getLedgerIssueDetailByRef(selectedRepoId, selectedIssueId);
+          const latest = await refreshIssueDetail(detailOptions);
           if (selectedIssueKeyRef.current === saveSelectionKey) {
-            putCachedIssueDetail(issueDetailCacheRef.current, selectedRepoId, selectedIssueId, latest);
-            setLedgerIssueDetail(latest);
+            await publishIssueDetail(detailOptions.queryKey, latest);
           }
         } catch {
           // Preserve the original conflict so the editor can explain it.
@@ -1104,9 +901,9 @@ export function IssuesView({
       }
       throw error;
     } finally {
-      setActionInFlight(false);
+      if (selectedIssueKeyRef.current === saveSelectionKey) setActionInFlight(false);
     }
-  }, [visibleLedgerIssueDetail, actionInFlight, selectedRepoId, selectedIssueId]);
+  }, [visibleLedgerIssueDetail, actionInFlight, selectedRepoId, selectedIssueId, detailOptions]);
 
   const handleStartAgent = useCallback(async () => {
     if (!selectedRepoId || !selectedIssueId || actionInFlight) return;
@@ -1333,6 +1130,7 @@ export function IssuesView({
           </div>
         ) : visibleLedgerIssueDetail ? (
           <div className="issues-detail__content" ref={issueDetailScrollRef}>
+            {detailError && <DetailPaneNotice severity="error" title="Issue could not be refreshed">{detailError}</DetailPaneNotice>}
             {actionError ? (
               <DetailPaneNotice
                 severity="error"
@@ -1379,7 +1177,6 @@ export async function warmInitialData(
   params: Record<string, string>,
   context: IssueWarmupContext = {},
 ): Promise<void> {
-  const detailStarted = beginDetailRequest();
   const repos = await getIssueRepos<IssueRepoSummary>();
   const normalizedDefaultFilter = normalizeIssueDefaultFilter(context.settings?.['issues.default_filter']);
   const defaults: IssuesViewState = {
@@ -1409,10 +1206,5 @@ export async function warmInitialData(
   }
   if (!issueId) return;
 
-  const key = detailRequestKey('issue', { repoId, issueId });
-  if (readPersistedDetail<LedgerIssueDetailProjection>('issue-detail', key)) return;
-  const detail = repoId
-    ? await getLedgerIssueDetailByRef(repoId, issueId)
-    : await getLedgerIssueDetailByIssueId(issueId);
-  writePersistedDetail('issue-detail', key, detail, undefined, detailStarted);
+  await queryClient.fetchQuery(issueDetailOptions(issueId, repoId ?? undefined));
 }

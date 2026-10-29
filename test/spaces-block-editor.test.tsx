@@ -3,12 +3,11 @@
 // and rejected writes; reads from a previously selected document are ignored;
 // deleting an embedded item waits for an explicit decision.
 
-import { clearApiGetCache } from '../ui/src/api';
+import { addSpaceItem, clearApiGetCache, invalidateDashboardApiCacheForEvent, invalidateDashboardCaches } from '../ui/src/api';
 import { bindSpacesOperationCatalog } from './helpers/spaces-operation-catalog';
 import { establishTestClientAccess } from './helpers/local-client-access';
 import { render, screen, cleanup, fireEvent, waitFor } from './helpers/dom.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { __resetSharedSseForTests } from '../ui/src/sse-shared';
 import { act } from 'preact/test-utils';
 import { EditorSelection } from '@codemirror/state';
 import type { EditorView } from '@codemirror/view';
@@ -17,8 +16,14 @@ import { queryClient } from '../ui/src/query/client';
 import { __resetBrowserSessionForTests } from '../ui/src/client-auth-token';
 
 import {
-  DocumentBlockEditor,
+  DocumentBlockEditor as DocumentSurface,
 } from '../ui/src/views/spaces/DocumentBlockEditor';
+import { useSpacePacket } from '../ui/src/query/spaces';
+
+function DocumentBlockEditor(props: Parameters<typeof DocumentSurface>[0]) {
+  const query = useSpacePacket(props.spaceId);
+  return <DocumentSurface {...props} factPacket={query.packet} />;
+}
 import { MarkdownSourceEditor } from '../ui/src/views/spaces/MarkdownSourceEditor';
 import {
   generateSortKey,
@@ -44,34 +49,6 @@ const mainInstance: InstanceInfo = {
   db_path: '/tmp/mandible-main.db',
   db_path_source: 'test',
 };
-
-// --- SSE mock (matches the createSSEClient EventSource transport) ------------
-
-class MockEventSource {
-  static instances: MockEventSource[] = [];
-  readyState = 1;
-  onerror: (() => void) | null = null;
-  onopen: (() => void) | null = null;
-  private handlers = new Map<string, Set<(e: MessageEvent) => void>>();
-  constructor(public url: string) {
-    MockEventSource.instances.push(this);
-  }
-  addEventListener(type: string, handler: (e: MessageEvent) => void): void {
-    const set = this.handlers.get(type) ?? new Set();
-    set.add(handler);
-    this.handlers.set(type, set);
-  }
-  removeEventListener(type: string, handler: (e: MessageEvent) => void): void {
-    this.handlers.get(type)?.delete(handler);
-  }
-  close(): void {
-    this.readyState = 2;
-  }
-  emit(data: unknown): void {
-    const event = { data: JSON.stringify(data) } as MessageEvent;
-    this.handlers.get('message')?.forEach((h) => h(event));
-  }
-}
 
 function stubLocalStorage(): void {
   const store = new Map<string, string>();
@@ -267,9 +244,6 @@ beforeEach(async () => {
   document.body.append(notices);
   queryClient.clear();
   await establishTestClientAccess();
-  MockEventSource.instances = [];
-  vi.stubGlobal('EventSource', MockEventSource);
-  __resetSharedSseForTests();
   if (!Range.prototype.getClientRects) {
     Object.defineProperty(Range.prototype, 'getClientRects', {
       configurable: true,
@@ -356,8 +330,8 @@ async function renderEditor(props: Partial<Parameters<typeof DocumentBlockEditor
   const { backend, instance = mainInstance, ...rest } = props;
   vi.stubGlobal('fetch', backend.fetchImpl);
   if (instance) bindSpacesOperationCatalog(instance);
-  render(
-    <AppShellProvider value={{ active: true, noticeHost: document.getElementById('editor-notices'), rightSidebar: null, registerRightSidebar: () => () => undefined, registerInitialRouteLoad: () => undefined, setViewSidebarWidth: () => undefined }}>
+  const content = (active: boolean) => (
+    <AppShellProvider value={{ active, noticeHost: document.getElementById('editor-notices'), rightSidebar: null, registerRightSidebar: () => () => undefined, registerInitialRouteLoad: () => undefined, setViewSidebarWidth: () => undefined }}>
     <DocumentBlockEditor
       projectId="prj1"
       spaceId="sp1"
@@ -365,9 +339,11 @@ async function renderEditor(props: Partial<Parameters<typeof DocumentBlockEditor
       fetchImpl={backend.fetchImpl}
       instance={instance}
       {...rest}
-    /></AppShellProvider>,
+    /></AppShellProvider>
   );
+  const view = render(content(true));
   await waitFor(() => expect(screen.getByTestId('spaces-block-editor-list')).toBeTruthy());
+  return { ...view, setActive: (active: boolean) => view.rerender(content(active)) };
 }
 
 type SourceHost = HTMLElement & { __spacesEditorView?: EditorView };
@@ -658,8 +634,7 @@ describe('DocumentBlockEditor draft persistence (UI-state-persistence)', () => {
     expect(stored.editingId).toBe('b1');
 
     // A `space:*` SSE event triggers a reconciliation refetch.
-    expect(MockEventSource.instances.length).toBeGreaterThan(0);
-    MockEventSource.instances[0].emit({ type: 'space:block:changed', data: { space_id: 'sp1' } });
+    invalidateDashboardApiCacheForEvent('space:block:changed', { space_id: 'sp1' });
 
     // The draft survives the refetch (Dataful-UX: reconcile never resets intent).
     await waitFor(() => {
@@ -670,6 +645,47 @@ describe('DocumentBlockEditor draft persistence (UI-state-persistence)', () => {
 });
 
 describe('document refresh reliability', () => {
+  it('receives acknowledged packet membership in the open picker without another packet response', async () => {
+    const backend = makeBackend([makeBlock({ id: 'b1', markdown: 'initial' })]);
+    const original = backend.fetchImpl.getMockImplementation()!;
+    let packetReads = 0;
+    backend.fetchImpl.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url === '/api/spaces/sp1' && (init?.method ?? 'GET') === 'GET' && ++packetReads > 1) return new Promise<Response>(() => undefined);
+      if (url === '/api/spaces/sp1/items' && init?.method === 'POST') return Promise.resolve(json({ item: {
+        id: 'published-item', space_id: 'sp1', ref_type: 'artifact', ref_id: 'artifact-published', ref_uri: null,
+        title: 'Published member', metadata: {}, created_at: NOW, updated_at: NOW,
+      }, created: true, already_present: false }));
+      if (url.startsWith('/api/graph')) return Promise.resolve(json({ nodes: [], edges: [] }));
+      if (url.startsWith('/api/artifacts')) return Promise.resolve(json({ artifacts: [] }));
+      return original(input, init);
+    });
+    await renderEditor({ backend });
+    setSourceText(0, '/item');
+    fireEvent.keyDown(sourceView().contentDOM, { key: 'Enter', code: 'Enter' });
+    await screen.findByTestId('space-item-picker');
+    expect(packetReads).toBe(1);
+    await act(async () => { await addSpaceItem('sp1', { ref_type: 'artifact', ref_id: 'artifact-published' }); });
+    await screen.findByText('Published member');
+  });
+
+  it('defers hidden document reads and keeps the draft through activation reconciliation', async () => {
+    const backend = makeBackend([makeBlock({ id: 'b1', markdown: 'initial' })]);
+    const view = await renderEditor({ backend });
+    setSourceText(0, 'my pending draft');
+    view.setActive(false);
+    await flushEffects();
+    const readCount = () => backend.fetchImpl.mock.calls.filter(([input, init]) => (init?.method ?? 'GET') === 'GET'
+      && /\/(blocks|items)$/.test(String(input))).length;
+    const before = readCount();
+    act(() => invalidateDashboardCaches());
+    await flushEffects();
+    expect(readCount()).toBe(before);
+    view.setActive(true);
+    await waitFor(() => expect(readCount()).toBeGreaterThan(before));
+    expect(sourceText()).toBe('my pending draft');
+  });
+
   it('rejects an older same-Space read and ignores unrelated Space events', async () => {
     const backend = makeBackend([makeBlock({ id: 'b1', markdown: 'initial' })]);
     await renderEditor({ backend });
@@ -683,13 +699,12 @@ describe('document refresh reliability', () => {
       }
       return Promise.resolve(json(String(input).endsWith('/exports') ? { exports: [] } : { items: [] }));
     });
-    const stream = MockEventSource.instances[0];
-    stream.emit({ type: 'space:block:changed', data: { space_id: 'other' } });
+    invalidateDashboardApiCacheForEvent('space:block:changed', { space_id: 'other' });
     await flushEffects();
     expect(blockReads).toBe(0);
-    stream.emit({ type: 'space:block:changed', data: { space_id: 'sp1' } });
+    invalidateDashboardApiCacheForEvent('space:block:changed', { space_id: 'sp1' });
     await waitFor(() => expect(blockReads).toBe(1));
-    stream.emit({ type: 'space:block:changed', data: { space_id: 'sp1' } });
+    invalidateDashboardApiCacheForEvent('space:block:changed', { space_id: 'sp1' });
     await waitFor(() => expect(sourceText()).toBe('newer'));
     resolveOlder(json({ blocks: [makeBlock({ id: 'b1', markdown: 'older' })] }));
     await flushEffects();
@@ -713,12 +728,12 @@ describe('document refresh reliability', () => {
     );
     expect(sourceText()).toBe('my retained draft');
     failReads = true;
-    MockEventSource.instances[0].emit({ type: 'space:block:changed', data: { space_id: 'sp1' } });
+    invalidateDashboardApiCacheForEvent('space:block:changed', { space_id: 'sp1' });
     await screen.findByTestId('spaces-block-editor-error');
     expect(screen.getByText('my retained draft')).toBeTruthy();
     failReads = false;
     backend.blocks.delete('b1');
-    MockEventSource.instances[0].emit({ type: 'space:block:changed', data: { space_id: 'sp1' } });
+    invalidateDashboardApiCacheForEvent('space:block:changed', { space_id: 'sp1' });
     await screen.findByRole('textbox', { name: 'Retained block draft' });
     expect((screen.getByRole('textbox', { name: 'Retained block draft' }) as HTMLTextAreaElement).value).toBe('my retained draft');
     fireEvent.click(screen.getByRole('button', { name: 'Restore as a new block' }));

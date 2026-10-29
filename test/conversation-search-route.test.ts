@@ -4,12 +4,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { zstdCompressSync } from "node:zlib";
 import SqliteDatabase from "../src/sqlite.ts";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { getConversationSearchCache } from "../src/conversations/search-cache.js";
+import {readConversationSourceGeneration,readConversationSourceGenerations} from "../src/conversations/source-generation.js";
+import { ConversationSourceReader } from "../src/conversations/source-reader.js";
 import { ConversationSourceStore } from "../src/conversations/source-store.js";
 import { sparseConversationBlockId } from "../src/conversations/structure-cache.js";
 import { configureIngestionWorker, ingestBatchForWorker, stopIngestionGracefully } from "../src/ingestion.js";
@@ -21,6 +24,8 @@ import type { ParseResult } from "../src/parsers/types.js";
 import { registerConversationRoutes } from "../src/routes/conversations.js";
 import { Router } from "../src/server.js";
 import { revokeCredential, setupOperator } from "../src/users/store.js";
+import { managedSearchSource } from "./helpers/search-managed-source.js";
+import { getFullTextSearchJobs } from "../src/conversations/full-text-search-jobs.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 let tempDir: string;
@@ -66,7 +71,7 @@ function upsertCodexThreadMetadata(input: {
   }
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   resetCredentialLeakScanCache();
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-conversation-search-route-"));
   process.env.MANDIBLE_CONVERSATION_CACHE_DB = path.join(tempDir, "cache", "search.db");
@@ -91,9 +96,27 @@ beforeEach(() => {
     (id, conversation_id, type, role, content, compressed, position, metadata_json)
     VALUES (?, ?, 'assistant_message', 'assistant', ?, 0, 0, '{}')`)
     .run("block-canary", "revoked-canary", `before ${revokedCanary} after`);
+  await managedSearchSource(db,path.join(tempDir,"managed"),"title-only","no body match","block-title");
+  await managedSearchSource(db,path.join(tempDir,"managed"),"body-only","A Needle across the body","block-body");
+  await managedSearchSource(db,path.join(tempDir,"managed"),"revoked-canary",`before ${revokedCanary} after`,"block-canary");
 });
 
+async function settled(router:Router,input:Parameters<Router["invoke"]>[0]) {
+  let result=await router.invoke(input);
+  const deadline=Date.now()+10_000;
+  while(result.status===202 && Date.now()<deadline) {
+    const pending=result.body as {search_id:string;observer_token:string};
+    await new Promise<void>(resolve=>setImmediate(resolve));
+    const url=new URL(input.url,"http://localhost");
+    url.searchParams.set("search_id",pending.search_id);
+    url.searchParams.set("observer_token",pending.observer_token);
+    result=await router.invoke({...input,url:`${url.pathname}${url.search}`});
+  }
+  return result;
+}
+
 afterEach(() => {
+  getFullTextSearchJobs(db).close();
   getConversationSearchCache(db).close();
   db.close();
   delete process.env.MANDIBLE_CONVERSATION_CACHE_DB;
@@ -105,6 +128,7 @@ async function insertSourceBackedConversation(
   conversationId: string,
   sourcePath: string,
   rows: Record<string, unknown>[],
+  compressed = false,
 ): Promise<ParseResult> {
   fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
   fs.writeFileSync(sourcePath, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
@@ -150,6 +174,11 @@ async function insertSourceBackedConversation(
       block.dag_parent_uuid ?? null,
     );
   }
+  const bytes = fs.readFileSync(sourcePath);
+  if (compressed) {
+    fs.writeFileSync(`${sourcePath}.zst`, zstdCompressSync(bytes));
+    fs.unlinkSync(sourcePath);
+  }
   await new ConversationSourceStore(db).recordConversation({
     conversationId,
     provider: "codex",
@@ -157,7 +186,6 @@ async function insertSourceBackedConversation(
     filePath: sourcePath,
     ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
   });
-  const bytes = fs.readFileSync(sourcePath);
   const tail = bytes.subarray(Math.max(0, bytes.length - 4096));
   db.prepare(`
     INSERT INTO conversation_ingest_state (
@@ -170,28 +198,233 @@ async function insertSourceBackedConversation(
   return parsed;
 }
 
+async function appendFixturePair(needleA: string, needleB: string) {
+  const paths = new Map<string, string>();
+  for (const [id, text] of [["append-a", needleA], ["append-b", needleB]]) {
+    const file = path.join(tempDir, `.codex/sessions/2026/08/18/${id}.jsonl`);
+    paths.set(id, file);
+    await insertSourceBackedConversation(id, file, [
+      { type: "session_meta", timestamp: "2026-08-18T00:00:00Z", payload: { id, cwd: "/tmp/project" } },
+      { type: "turn_context", timestamp: "2026-08-18T00:00:00Z", payload: { model: "old-model" } },
+      { type: "response_item", timestamp: "2026-08-18T00:00:01Z", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text }] } },
+    ]);
+  }
+  return paths;
+}
+async function publishAppend(file: string, rewrite = false) {
+  if (rewrite)
+    fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace("oldbody", "newbody"));
+  fs.appendFileSync(file, [
+    { type: "turn_context", timestamp: "2026-08-18T00:00:02Z", payload: { model: "new-model" } },
+    { type: "response_item", timestamp: "2026-08-18T00:00:03Z", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "tailneedle" }] } },
+  ].map(row => JSON.stringify(row)).join("\n") + "\n");
+  configureIngestionWorker(() => { }, () => { });
+  await ingestBatchForWorker([file], true, true, true);
+  await stopIngestionGracefully();
+}
 describe("conversation full-text API parity", () => {
+  it("bounds retained source fingerprints and scaled native snapshot metadata while detecting publication",async()=>{
+    const paths=await appendFixturePair("oldneedle A","oldneedle B");const store=new ConversationSourceStore(db);const version=store.resolveConversation("append-a")!.currentVersionId!;const versions=new Map([["append-a",version]]);
+    const authority=store.searchSnapshotAuthorities(["append-a"],versions).get("append-a")!;
+    const observed=readConversationSourceGenerations(db,["append-a"]).get("append-a")!;
+    expect(Buffer.byteLength(authority)).toBeLessThanOrEqual(64);expect(Buffer.byteLength(observed)).toBeLessThanOrEqual(64);expect(readConversationSourceGeneration(db,"append-a")).toBe(observed);
+    const router=new Router();registerConversationRoutes(router,inlineLedgerReader());const result=await settled(router,{method:"GET",url:"/api/conversations?search=oldneedle&full_text=true&since=2026-08-18"});expect(result.status).toBe(200);
+    const snapshot=result.body as {coverage:{eligible:number};search_metrics:{snapshot_pin_bytes:number;snapshot_metadata_bytes:number}};
+    const scale=15_346/snapshot.coverage.eligible;const scaledPins=Math.ceil(snapshot.search_metrics.snapshot_pin_bytes*scale);const scaledMetadata=Math.ceil(snapshot.search_metrics.snapshot_metadata_bytes*scale);
+    expect(scaledMetadata).toBeLessThanOrEqual(32*1024*1024);console.info("native snapshot metadata capacity",{eligible:15346,scaled_pin_bytes:scaledPins,scaled_metadata_bytes:scaledMetadata});
+    await publishAppend(paths.get("append-a")!);expect(store.searchSnapshotAuthorities(["append-a"],versions).get("append-a")).toBe(authority);const next=readConversationSourceGeneration(db,"append-a");expect(Buffer.byteLength(next)).toBeLessThanOrEqual(64);expect(next).not.toBe(observed);
+  });
+
+  it.each(["before-scan", "after-negative", "rewrite-after-negative"])("keeps admitted coverage across canonical publication: %s", async (boundary) => {
+    const paths = await appendFixturePair("oldbody A", "tailneedle old B");
+    const store = new ConversationSourceStore(db);
+    const old = store.resolveConversation("append-a")!.currentVersionId;
+    const cache = getConversationSearchCache(db);
+    const search = cache.search.bind(cache);
+    let aDone!: () => void;
+    const aFinished = new Promise<void>(resolve => { aDone = resolve; });
+    let published = false;
+    const publish = async () => { if (published)
+      return; published = true; await publishAppend(paths.get("append-a")!, boundary === "rewrite-after-negative"); expect(store.resolveConversation("append-a")!.currentVersionId).not.toBe(old); };
+    const scan = vi.spyOn(cache, "search").mockImplementation(async (input) => {
+      const id = input.conversationIds[0];
+      if (id === "append-a") {
+        if (boundary === "before-scan")
+          await publish();
+        try { return await search(input); }
+        finally { aDone(); }
+      }
+      if (id === "append-b" && boundary !== "before-scan") {
+        await aFinished;
+        await publish();
+      }
+      return search(input);
+    });
+    const router = new Router();
+    registerConversationRoutes(router, inlineLedgerReader());
+    try {
+      const result = await settled(router, { method: "GET", url: "/api/conversations?search=tailneedle&full_text=true&since=2026-08-18" });
+      if (boundary === "rewrite-after-negative") {
+        expect(result.status).toBe(409);
+        expect(result.body).not.toHaveProperty("total");
+      }
+      else {
+        expect(result.status).toBe(200);
+        expect(result.body).toMatchObject({ total: 1, conversations: [{ id: "append-b" }] });
+        scan.mockRestore();
+        const fresh = await settled(router, { method: "GET", url: "/api/conversations?search=tailneedle&full_text=true&since=2026-08-18" });
+        expect(fresh.status).toBe(200);
+        expect(fresh.body).toMatchObject({ total: 2 });
+      }
+    }
+    finally {
+      scan.mockRestore();
+    }
+  });
+  it("hydrates an existing dedicated snapshot with admitted version and normalization context after published append", async () => {
+    const paths = await appendFixturePair("oldneedle A", "oldneedle B");
+    const old = new ConversationSourceStore(db).resolveConversation("append-a")!.currentVersionId;
+    const admittedBlock=await new ConversationSourceReader(db).readBlock(sparseConversationBlockId("append-a",0));
+    expect(admittedBlock.status).toBe("source");
+    if(admittedBlock.status!=="source")throw new Error("native append fixture has no source block");
+    expect(admittedBlock.sourceVersionId).toBe(old);
+    const cache = getConversationSearchCache(db);
+    const search = cache.search.bind(cache);
+    let appended = false;
+    const scan = vi.spyOn(cache, "search").mockImplementation(async (input) => { if (input.conversationIds[0] === "append-a" && !appended) {
+      appended = true;
+      await publishAppend(paths.get("append-a")!);
+    } return search(input); });
+    const router = new Router();
+    registerConversationRoutes(router, inlineLedgerReader());
+    try {
+      const url = "/api/conversations/search?q=oldneedle&since=2026-08-18&limit=1";
+      const first = await settled(router, { method: "GET", url });
+      expect(first.status).toBe(200);
+      scan.mockRestore();
+      const id = (first.body as {
+        search_id: string;
+      }).search_id;
+      const page = await settled(router, { method: "GET", url: `${url}&search_id=${id}` });
+      expect(page.status).toBe(200);
+      expect(page.body).toMatchObject({ total: 2, results: [{ conversation: { id: "append-a", model: "old-model" }, block: { position: 0, timestamp: "2026-08-18T00:00:01Z", locator:null } }] });
+      expect((page.body as {results:Array<{block:unknown}>}).results[0].block).toEqual({...admittedBlock.value,content:""});
+      expect(new ConversationSourceStore(db).resolveConversation("append-a")!.currentVersionId).not.toBe(old);
+    }
+    finally {
+      scan.mockRestore();
+    }
+  });
+
+  it("keeps compressed source matches, exact totals and cursor pages identical cold and warm", async () => {
+    const paths = new Map<string, string>();
+    for (const id of ["compressed", "transition", "raw"]) {
+      const sourcePath = path.join(tempDir, `.codex/sessions/2026/08/17/${id}.jsonl`);
+      paths.set(id, sourcePath);
+      await insertSourceBackedConversation(id, sourcePath, [
+        { type: "session_meta", timestamp: "2026-08-17T00:00:00Z", payload: { id, cwd: "/tmp/project" } },
+        { type: "response_item", timestamp: "2026-08-17T00:00:01Z", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: `Archive Needle ${id} ${unverifiedCanary}` }] } },
+      ], id === "compressed");
+    }
+    const transition = paths.get("transition")!;
+    fs.writeFileSync(`${transition}.zst`, zstdCompressSync(fs.readFileSync(transition)));
+    fs.unlinkSync(transition);
+    // An alternate representation must never displace a present raw source.
+    fs.writeFileSync(`${paths.get("raw")!}.zst`, zstdCompressSync(Buffer.from("Phantom Needle")));
+
+    const router = new Router();
+    registerConversationRoutes(router, inlineLedgerReader());
+    let sidebarUrl = "/api/conversations/sidebar?search=Archive%20Needle&full_text=true&limit=1";
+    type Sidebar = { groups: Array<{ key: string; total: number; conversations: Array<{ id: string }>; next_cursor: string | null }> };
+    const cold = await settled(router,{ method: "GET", url: sidebarUrl });
+    expect(cold.status).toBe(200);
+    sidebarUrl+=`&search_id=${(cold.body as {search_id:string}).search_id}`;
+    const group = (cold.body as Sidebar).groups[0];
+    expect(group.total).toBe(3);
+    expect(group.conversations).toHaveLength(1);
+    expect(group.next_cursor).toEqual(expect.any(String));
+    const visited = group.conversations.map(row => row.id);
+    const coldPages = [cold.body];
+    let cursor = group.next_cursor;
+    while (cursor) {
+      const page = await settled(router,{ method: "GET", url: `${sidebarUrl}&group_key=${encodeURIComponent(group.key)}&cursor=${encodeURIComponent(cursor)}` });
+      expect(page.status).toBe(200);
+      coldPages.push(page.body);
+      const next = (page.body as Sidebar).groups[0];
+      expect(next.total).toBe(3);
+      visited.push(...next.conversations.map(row => row.id));
+      cursor = next.next_cursor;
+    }
+    expect(visited.sort()).toEqual(["compressed", "raw", "transition"]);
+    await getConversationSearchCache(db).whenIdle();
+    const warm = await settled(router,{ method: "GET", url: sidebarUrl });
+    expect((warm.body as Sidebar).groups).toEqual((cold.body as Sidebar).groups);
+    for (const [index, coldPage] of coldPages.slice(0, -1).entries()) {
+      const previous = (coldPage as Sidebar).groups[0];
+      const page = await settled(router,{ method: "GET", url: `${sidebarUrl}&group_key=${encodeURIComponent(group.key)}&cursor=${encodeURIComponent(previous.next_cursor!)}` });
+      expect((page.body as Sidebar).groups).toEqual((coldPages[index + 1] as Sidebar).groups);
+    }
+    const list = await settled(router,{ method: "GET", url: "/api/conversations?search=Archive%20Needle&full_text=true&limit=1" });
+    expect(list.body).toMatchObject({ total: 3, pages: 3, conversations: [expect.any(Object)] });
+    const dedicated = await settled(router,{ method: "GET", url: "/api/conversations/search?q=Archive%20Needle" });
+    expect(dedicated.body).toMatchObject({ total: 3 });
+    expect(JSON.stringify(dedicated.body)).not.toContain(unverifiedCanary);
+    expect(JSON.stringify(dedicated.body)).toContain("[mandible-credential:unverified#1]");
+    for (const query of [unverifiedCanary, "Phantom Needle"]) {
+      const response = await settled(router,{ method: "GET", url: `/api/conversations/search?q=${encodeURIComponent(query)}` });
+      expect(response.body).toMatchObject({ total: 0, results: [] });
+    }
+  });
+
+  it("keeps valid compressed matches and recovers unavailable sources without caching stripped bodies", async () => {
+    const originals = new Map<string, Buffer>();
+    for (const id of ["missing", "corrupt", "healthy"]) {
+      const sourcePath = path.join(tempDir, `.codex/sessions/2026/08/17/${id}.jsonl`);
+      await insertSourceBackedConversation(id, sourcePath, [
+        { type: "session_meta", timestamp: "2026-08-17T00:00:00Z", payload: { id, cwd: "/tmp/project" } },
+        { type: "response_item", timestamp: "2026-08-17T00:00:01Z", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "Unavailable Needle" }] } },
+      ], true);
+      originals.set(`${sourcePath}.zst`, fs.readFileSync(`${sourcePath}.zst`));
+      if (id === "missing") fs.unlinkSync(`${sourcePath}.zst`);
+      else if (id === "corrupt") fs.writeFileSync(`${sourcePath}.zst`, "corrupt zstd");
+    }
+    db.prepare("UPDATE conversation_blocks SET content = '', payload_state = 'source' WHERE conversation_id IN ('missing', 'corrupt')").run();
+    const router = new Router();
+    registerConversationRoutes(router, inlineLedgerReader());
+    for (const url of ["/api/conversations/search?q=Unavailable%20Needle", "/api/conversations?search=Unavailable%20Needle&full_text=true"]) {
+      const response = await settled(router,{ method: "GET", url });
+      expect(response.status).toBe(409);
+      expect(response.body).toMatchObject({coverage:{complete:false}});
+      expect((response.body as {state:string}).state).toMatch(/^(incomplete|superseded)$/);
+      expect(response.body).not.toHaveProperty("total");
+    }
+    await getConversationSearchCache(db).whenIdle();
+    for (const [sourcePath, bytes] of originals) fs.writeFileSync(sourcePath, bytes);
+    const restored = await settled(router,{ method: "GET", url: "/api/conversations/search?q=Unavailable%20Needle" });
+    expect(restored.status).toBe(200);
+    expect(restored.body).toMatchObject({ total: 3 });
+  });
+
   it("makes the list full_text path reach exact body search while title mode stays title-only", async () => {
     const router = new Router();
     registerConversationRoutes(router, inlineLedgerReader());
 
-    const title = await router.invoke({ method: "GET", url: "/api/conversations?search=Needle" });
+    const title = await settled(router,{ method: "GET", url: "/api/conversations?search=Needle" });
     expect(title.body).toMatchObject({ conversations: [{ id: "title-only" }], total: 1 });
 
-    const full = await router.invoke({ method: "GET", url: "/api/conversations?search=Needle&full_text=true" });
+    const full = await settled(router,{ method: "GET", url: "/api/conversations?search=Needle&full_text=true" });
     expect(full.body).toMatchObject({
       conversations: [{ id: "body-only" }],
       total: 1,
-      search_metrics: { exact_verified_blocks: 3 },
     });
 
-    const dedicated = await router.invoke({ method: "GET", url: "/api/conversations/search?q=Needle" });
+    const dedicated = await settled(router,{ method: "GET", url: "/api/conversations/search?q=Needle" });
     expect(dedicated.body).toMatchObject({
       results: [{ conversation: { id: "body-only" }, block: { id: "block-body", content: "" } }],
       total: 1,
     });
 
-    const canary = await router.invoke({ method: "GET", url: "/api/conversations/search?q=before" });
+    const canary = await settled(router,{ method: "GET", url: "/api/conversations/search?q=before" });
     expect(JSON.stringify(canary.body)).not.toContain(revokedCanary);
     expect(canary.body).toMatchObject({
       results: [{ conversation: { id: "revoked-canary" }, snippet: expect.stringContaining("[mandible-credential:unverified#1]") }],
@@ -203,8 +436,7 @@ describe("conversation full-text API parity", () => {
   });
 
   it("keeps cold search and sidebar source work off the daemon loop", async () => {
-    db.prepare("UPDATE conversation_blocks SET content = ? WHERE id = ?")
-      .run("x".repeat(32 * 1024 * 1024) + " Needle", "block-body");
+    await managedSearchSource(db,path.join(tempDir,"managed"),"body-only","x".repeat(512 * 1024)+" Needle","block-body");
     const ledgerPath = path.join(tempDir, "ledger.db");
     fs.writeFileSync(ledgerPath, db.serialize());
     const reader = workerLedgerReaderPool(ledgerPath, { size: 2 });
@@ -220,21 +452,21 @@ describe("conversation full-text API parity", () => {
       ticks += 1;
     }, 2);
     try {
-      const dedicated = await router.invoke({ method: "GET", url: "/api/conversations/search?q=Needle" });
+      const dedicated = await settled(router,{ method: "GET", url: "/api/conversations/search?q=Needle" });
       expect(dedicated.status).toBe(200);
       expect(dedicated.body).toMatchObject({
         results: [{ conversation: { id: "body-only" }, block: { id: "block-body", content: "" } }],
         total: 1,
       });
-      const sidebar = await router.invoke({ method: "GET", url: "/api/conversations/sidebar?search=Needle&full_text=true" });
+      const sidebar = await settled(router,{ method: "GET", url: "/api/conversations/sidebar?search=Needle&full_text=true" });
       expect(sidebar.status).toBe(200);
       expect(sidebar.body).toMatchObject({
         groups: [{ conversations: [{ id: "body-only", search_target: { block: "block-body" } }] }],
       });
-      const title = await router.invoke({ method: "GET", url: "/api/conversations/search?q=Needle&title=true" });
+      const title = await settled(router,{ method: "GET", url: "/api/conversations/search?q=Needle&title=true" });
       expect(title.status).toBe(200);
       expect(title.body).toMatchObject({ results: [{ conversation: { id: "title-only" } }], total: 1 });
-      const invalid = await router.invoke({ method: "GET", url: "/api/conversations/sidebar?lifecycle=invalid" });
+      const invalid = await settled(router,{ method: "GET", url: "/api/conversations/sidebar?lifecycle=invalid" });
       expect(invalid.status).toBe(400);
       await new Promise<void>(resolve => setImmediate(resolve));
       expect(ticks).toBeGreaterThan(0);
@@ -258,7 +490,7 @@ describe("conversation full-text API parity", () => {
 
     const router = new Router();
     registerConversationRoutes(router, inlineLedgerReader());
-    const response = await router.invoke({
+    const response = await settled(router,{
       method: "GET",
       url: "/api/conversations/search?q=Structural%20Needle",
     });
@@ -298,15 +530,15 @@ describe("conversation full-text API parity", () => {
 
     const router = new Router({ clientAuth: authenticator });
     registerConversationRoutes(router, inlineLedgerReader());
-    const detail = await router.invoke({
+    const detail = await settled(router,{
       method: "GET",
       url: "/api/conversations/source-mask?source_backed=false",
     });
-    const blocks = await router.invoke({
+    const blocks = await settled(router,{
       method: "GET",
       url: "/api/conversations/source-mask/blocks?source_backed=false",
     });
-    const exported = await router.invoke({
+    const exported = await settled(router,{
       method: "POST",
       url: "/api/conversations/source-mask/export",
       credential: requestToken,

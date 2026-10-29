@@ -1,9 +1,11 @@
+import { clearPersistedDetailCache } from '../ui/src/detail-cache';
+import { queryClient } from '../ui/src/query/client';
 // @vitest-environment jsdom
 // An explicit legacy renderer link still mounts that renderer, and the user can
 // navigate back to the Space's primary type.
 import { act, screen, cleanup, fireEvent, waitFor } from './helpers/dom.js';
 import { render } from './helpers/notice-test-render';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // The shell renders SpacesSidebar, which loads grouped spaces. Stub the grouped
 // read so the shell mounts without a daemon.
@@ -35,7 +37,10 @@ function makeSpace(defaultRenderer: Space['default_renderer'] = 'document'): Spa
   };
 }
 
+beforeEach(() => { queryClient.clear(); clearPersistedDetailCache(); });
+
 afterEach(() => {
+  queryClient.clear();
   cleanup();
 });
 
@@ -49,11 +54,11 @@ describe('SpacesViewShell renderer routing', () => {
         renderer="canvas"
         onNavigate={onNavigate}
         renderers={{ document: Mount, canvas: Mount }}
-        loadSpace={vi.fn().mockResolvedValue(makeSpace('document'))}
+        loadSpaceFactPacket={vi.fn().mockResolvedValue({ space: makeSpace('document'), items: [], occurrences: [], edges: [] })}
       />,
     );
 
-    expect(screen.getByTestId('mount').textContent).toBe('canvas');
+    expect((await screen.findByTestId('mount')).textContent).toBe('canvas');
     await waitFor(() => expect(screen.getByTestId('spaces-shell-legacy-renderer')).toBeTruthy());
 
     fireEvent.click(screen.getByTestId('spaces-shell-open-primary'));
@@ -62,14 +67,14 @@ describe('SpacesViewShell renderer routing', () => {
 it('keeps mounted space targets through absent groups and ignores superseded detail responses', async () => {
   let finishB!: (space: Space) => void;
   const pendingB = new Promise<Space>((resolve) => { finishB = resolve; });
-  const loadSpace = vi.fn(async (id: string) => id === 'B' ? pendingB : { ...makeSpace(), id, title: `Space ${id}` });
+  const loadSpaceFactPacket = vi.fn(async (id: string) => ({ space: await (id === 'B' ? pendingB : { ...makeSpace(), id, title: `Space ${id}` }), items: [], occurrences: [], edges: [] }));
   const onNavigate = vi.fn();
-  const props = { projectId: 'p1', onNavigate, loadSpace, renderers: { document: Mount } };
+  const props = { projectId: 'p1', onNavigate, loadSpaceFactPacket, renderers: { document: Mount } };
   const view = render(<SpacesViewShell {...props} spaceId="A" />);
   await screen.findByText('Space A');
   view.rerender(<SpacesViewShell {...props} spaceId="B" />);
   expect(screen.queryByText('Space A')).toBeNull();
-  await waitFor(() => expect(loadSpace).toHaveBeenCalledWith('B'));
+  await waitFor(() => expect(loadSpaceFactPacket).toHaveBeenCalledWith('B', expect.objectContaining({ signal: expect.any(AbortSignal) })));
   view.rerender(<SpacesViewShell {...props} spaceId="C" />);
   await screen.findByText('Space C');
   await act(async () => finishB({ ...makeSpace(), id: 'B', title: 'Space B' }));

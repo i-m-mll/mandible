@@ -1,0 +1,45 @@
+import { hashKey, queryOptions, type UseQueryOptions } from "@tanstack/preact-query";
+import { isApiErrorStatus } from "../api";
+import { readPersistedDetail, writePersistedDetail, removePersistedDetail } from "../detail-cache";
+import { ROUTE_DATA_FRESH_MS } from './policy';
+import { isProjectionKey } from './projectionKeys';
+import { readWithDeadline } from './readWithDeadline';
+
+
+export function snapshotOptions<T>(queryKey: readonly unknown[], load: (signal: AbortSignal) => Promise<T>, accept: (data: T) => boolean = () => true) {
+  const restartSnapshot = () => {
+    const data = readRestartSnapshot<T>(queryKey);
+    return data && accept(data) ? data : undefined;
+  };
+  return { ...queryOptions<T>({
+    queryKey,
+    staleTime: ROUTE_DATA_FRESH_MS,
+    placeholderData: restartSnapshot as UseQueryOptions<T>['placeholderData'],
+    queryFn: async ({ signal }) => {
+      const data = await (isProjectionKey(queryKey) ? readWithDeadline(load, signal) : load(signal)).catch((error: unknown) => {
+        if (isApiErrorStatus(error, 404) || isApiErrorStatus(error, 409)) removeRestartSnapshot(queryKey);
+        throw error;
+      });
+      signal.throwIfAborted();
+      if (!accept(data)) throw new Error('Detail response does not match the selected identity');
+      writeRestartSnapshot(queryKey, data);
+      return data;
+    },
+  }), restartSnapshot };
+}
+
+export function removeRestartSnapshot(queryKey: readonly unknown[]): void {
+  removePersistedDetail(`${queryKey[0]}-query-snapshot`, hashKey(queryKey));
+}
+
+export function readRestartSnapshot<T>(queryKey: readonly unknown[]): T | null {
+  return readPersistedDetail<T>(`${queryKey[0]}-query-snapshot`, hashKey(queryKey));
+}
+
+export function writeRestartSnapshot(queryKey: readonly unknown[], data: unknown): void {
+  writePersistedDetail(`${queryKey[0]}-query-snapshot`, hashKey(queryKey), data);
+}
+
+export function detailQueryData<T>(query: { data: T | undefined; isError: boolean }, options: { restartSnapshot: () => T | undefined }): T | undefined {
+  return query.data ?? (query.isError ? options.restartSnapshot() : undefined);
+}

@@ -5,7 +5,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 import { App } from '../ui/src/app';
 import { bindOperationCatalog, clearApiGetCache, type InstanceInfo } from '../ui/src/api';
-import { clearPersistedDetailCache, isPersistedDetailFresh, writePersistedDetail, ROUTE_DATA_FRESH_MS } from '../ui/src/detail-cache';
+import { clearPersistedDetailCache, readPersistedDetail, writePersistedDetail } from '../ui/src/detail-cache';
+import { ROUTE_DATA_FRESH_MS } from '../ui/src/query/policy';
 import { queryClient } from '../ui/src/query/client';
 import { CHILD_RETENTION_SETTINGS_SCHEMA, DEFAULT_CHILD_RETENTION_SETTINGS } from '../src/conversations/retention-contract';
 import { StrictUiFixture, jsonFixture, PENDING_RESPONSE, type FixtureHandler } from './helpers/strict-ui-fixture';
@@ -13,7 +14,7 @@ import { StrictUiFixture, jsonFixture, PENDING_RESPONSE, type FixtureHandler } f
 // Route chunks load from the module cache, so idle-time work settles within event-loop turns.
 const viewModules = import.meta.glob('../ui/src/views/**/*.tsx');
 
-type WarmedTab = 'overview' | 'timeline' | 'console' | 'artifacts';
+type WarmedTab = 'overview' | 'timeline' | 'console' | 'artifacts' | 'graph';
 
 /** Requests every page load makes, whichever view is active. */
 const STARTUP_GLOBALS = new Set([
@@ -264,9 +265,38 @@ const WARM_TEXT: Record<WarmedTab, string> = {
   artifacts: 'Warm artifact body',
   timeline: 'Warm timeline issue',
   console: 'Warm chat title',
+  graph: 'Warm graph node',
 };
 
 describe('startup route warmup', () => {
+  it('reconciles mounted Graph through actual ledger/artifact SSE and the fallback poll', async () => {
+    const harness = new Harness();
+    harness.install();
+    let poll: (() => void) | undefined;
+    const interval = window.setInterval.bind(window);
+    vi.spyOn(window, 'setInterval').mockImplementation((handler, delay, ...args) => {
+      if (delay === 10_000 && typeof handler === 'function') poll = () => handler(...args);
+      return interval(handler, delay, ...args);
+    });
+    window.history.replaceState(null, '', '#/graph');
+    render(h(App, {}));
+    await harness.settle(false);
+    expect((await screen.findAllByText('Warm graph node', { exact: false })).length).toBeGreaterThan(0);
+    const reads = () => harness.requested.filter((request) => request.startsWith('GET /api/graph?')).length;
+    for (const type of ['ledger:relationship:added', 'ledger:comment:created', 'ledger:label:updated', 'artifact:changed']) {
+      const before = reads();
+      act(() => harness.events.emit({ type, data: {} }));
+      await waitFor(() => expect(reads()).toBeGreaterThan(before));
+      await harness.settle(false);
+    }
+    expect(poll).toBeTypeOf('function');
+    const beforePoll = reads();
+    const now = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(now + 46_000);
+    act(() => poll!());
+    await waitFor(() => expect(reads()).toBeGreaterThan(beforePoll));
+  });
+
   it.each([null, {}, { ready: true }, { ready: false, warm: true }, { ready: true, warm: false }])('does not warm inactive routes without affirmative health: %j', async (health) => {
     await Promise.all(Object.values(viewModules).map((load) => load()));
     const harness = new Harness();
@@ -290,12 +320,12 @@ describe('startup route warmup', () => {
     await harness.settle();
     writePersistedDetail('timeline', 'poll-test', { rows: [] });
     queryClient.setQueryData(['poll-test'], { rows: [] });
-    expect(isPersistedDetailFresh('timeline', 'poll-test')).toBe(true);
+    expect(queryClient.getQueryState(['poll-test'])?.isInvalidated).toBe(false);
     const poll = intervals.mock.calls.find(([, delay]) => delay === 10_000)?.[0];
     expect(typeof poll).toBe('function');
     vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 46_000);
     await act(async () => { (poll as () => void)(); });
-    expect(isPersistedDetailFresh('timeline', 'poll-test')).toBe(false);
+    expect(readPersistedDetail('timeline', 'poll-test')).toEqual({ rows: [] });
     expect(queryClient.getQueryState(['poll-test'])?.isInvalidated).toBe(true);
   });
 
@@ -330,7 +360,7 @@ describe('startup route warmup', () => {
     expect(harness.routeRequests(afterWarm)).toEqual([]);
   });
 
-  const cases = (['overview', 'timeline', 'console', 'artifacts'] as const)
+  const cases = (['overview', 'timeline', 'console', 'artifacts', 'graph'] as const)
     .flatMap((tab) => [[tab, 'inside'], [tab, 'after']] as const);
   it.each(cases)('%s shows its warm data when opened %s the freshness window', async (tab, window) => {
     await Promise.all(Object.values(viewModules).map((load) => load()));
