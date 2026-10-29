@@ -402,6 +402,49 @@ describe("CLI instance mutation preflight", () => {
     }));
   });
 
+  it("classifies exact path segments in catalog order and validates every route before sending", async () => {
+    const main = withCatalog({ ...MAIN_INSTANCE, role: "dev", operational_mutations: "reject" });
+    const route = { ...operations.routes[0], method: "POST", path: "/api/custom/:id", operationalMutationCategory: null };
+    const cases: Array<[string, typeof operations.routes, string | null]> = [
+      ["/api/custom/item?mode=1", [route, { ...route, operationalMutationCategory: "shared" }], null],
+      ["/api/custom/", [route], "cli_operation_unknown"],
+      ["/api/custom/item/extra", [route], "cli_operation_unknown"],
+      ["/api/custom/item", [{ ...route, method: "PUT" }], "cli_operation_unknown"],
+      ["/api/custom/a.b", [{ ...route, path: "/api/custom/a.b" }], null],
+      ["/api/custom/axb", [{ ...route, path: "/api/custom/a.b" }], "cli_operation_unknown"],
+      ["/api/custom/item", [route, { ...route, operationId: "" }], "cli_operation_metadata_incompatible"],
+    ];
+    await Promise.all(cases.map(async ([requestPath, routes, error]) => {
+      const target = await listenForInstancePreflight({
+        instanceResponses: [{ status: 200, body: { ...main, operations: { ...operations, routes } } }],
+        routeResponses: [{ method: "POST", url: requestPath, response: { status: 200, body: { ok: true } } }],
+      });
+      const result = await bash(capture("POST", requestPath), target.port);
+      expect(result.status, result.stderr).toBe(0);
+      if (error) {
+        expect(JSON.parse(result.stdout.slice(result.stdout.indexOf("\n") + 1))).toMatchObject({ error, request_sent: false });
+        expect(lines(target.requests)).toEqual(["GET /api/instance"]);
+      } else {
+        expect(result.stdout).toBe('200\n{"ok":true}');
+        expect(lines(target.requests)).toEqual(["GET /api/instance", `POST ${requestPath}`]);
+      }
+    }));
+  });
+
+  it("fetches current instance policy again for each mutation in the same shell", async () => {
+    const target = await listenForInstancePreflight({ instanceResponses: [
+      { status: 200, body: withCatalog(MAIN_INSTANCE) },
+      { status: 200, body: withCatalog({ ...MAIN_INSTANCE, role: "dev", operational_mutations: "reject" }) },
+    ] });
+    const send = capture("POST", "/api/ledger/issues/abc/comments");
+    const script = `${send}\n${send.replace("source cli/api.sh\n", "")}`;
+    const result = await bash(script, target.port);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('200\n{"id":"comment-1"}');
+    expect(result.stdout).toContain("cli_instance_mutation_forbidden");
+    expect(lines(target.requests)).toEqual(["GET /api/instance", "POST /api/ledger/issues/abc/comments", "GET /api/instance"]);
+  });
+
   it("forwards writes on copied data to a preview daemon after validating its metadata", async () => {
     const sends: Array<[string, (port: number) => Promise<{ status: number | null; stdout: string; stderr: string }>, string]> = [
       ["comment", (port) => bash(capture("POST", "/api/ledger/issues/abc/comments", '{"message":"New comment"}'), port), "POST /api/ledger/issues/abc/comments"],
