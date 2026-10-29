@@ -14,7 +14,7 @@ import { AuthQueue } from "../src/auth-queue.js";
 import { resetDb, setDb, type Db } from "../src/db.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import type { RequestLike, ResponseLike, RouteHandler, RouteOptions, RouteRegistrar } from "../src/server.js";
-import type { AuthApprovalContext } from "../src/delegated-signing-resource.js";
+import { DelegatedSigningResource, type AuthApprovalContext } from "../src/delegated-signing-resource.js";
 import { buildMetadataBackupSql } from "../src/ledger/backup.js";
 import {
   addCredential,
@@ -36,6 +36,12 @@ function git(cwd: string, args: string[]): string {
     encoding: "utf8",
     env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
   }).trim();
+}
+
+function gate() {
+  let resolve!: () => void;
+  const promise = new Promise<void>(done => { resolve = done; });
+  return { promise, resolve };
 }
 
 function fixture() {
@@ -83,89 +89,50 @@ function fixture() {
   }, 4);
   let clock = 10_000;
   const released: string[] = [];
-  const contexts = new Map<string, AuthApprovalContext>();
-  const borrowCounts = new Map<string, number>();
-  const draining = new Map<string, Array<() => void>>();
-  const finishDrain = (leaseId: string) => {
-    if ((borrowCounts.get(leaseId) ?? 0) > 0) return;
-    contexts.delete(leaseId);
-    released.push(leaseId);
-    db.prepare(
-      "UPDATE delegated_signing_runtime_bindings SET state = 'retired', retired_at = ?, retired_reason = 'test' WHERE lease_id = ?",
-    ).run(clock, leaseId);
-    for (const resolve of draining.get(leaseId) ?? []) resolve();
-    draining.delete(leaseId);
-  };
-  const signer = {
-    status: () => ({ configured: true }),
-    setup: async () => ({ configured: true }),
-    remove: async () => ({ configured: false }),
-    issueFresh: async (ttlSeconds: number): Promise<AuthApprovalContext> => {
-      const leaseId = `lease-${clock}-${Math.random()}`;
+  let nextLease = 0;
+  let stopRuntime: (context: AuthApprovalContext) => Promise<void> = async context => { released.push(context.leaseId); };
+  const autoSigner = {
+    getDelegatedSigningStatus: () => ({ configured: true }),
+    setupDelegatedSigning: async () => ({ configured: true }),
+    removeDelegatedSigning: async () => undefined,
+    freshPresenceChallenge: async (ttlSeconds: number): Promise<AuthApprovalContext> => {
+      const leaseId = `lease-${++nextLease}`;
       addDelegatedSigningLease(db, {
-        id: leaseId,
-        credential_id: delegated.id,
-        owner_user_id: operator.id,
-        minted_at: clock,
-        expires_at: clock + ttlSeconds * 1000,
-        mint_method: "fresh_presence",
+        id: leaseId, credential_id: delegated.id, owner_user_id: operator.id,
+        minted_at: clock, expires_at: clock + ttlSeconds * 1000, mint_method: "fresh_presence",
       });
-      const context: AuthApprovalContext = {
-        source: "clearance",
-        leaseId,
-        approverUserId: operator.id,
-        env: { SSH_AUTH_SOCK: `/tmp/${leaseId}.sock` },
-      };
-      contexts.set(leaseId, context);
-      db.prepare(
-        `INSERT INTO delegated_signing_runtime_bindings (
-          lease_id, agent_pid, agent_uid, agent_process_start, agent_executable,
-          socket_path, socket_dev, socket_ino, socket_uid, socket_mode,
-          credential_fingerprint, public_key_path, issued_runtime_epoch,
-          owner_runtime_epoch, owner_pid, owner_uid, owner_process_start, owner_executable, attached_at,
-          last_validated_at, state
-        ) VALUES (?, 101, 1, 'agent-start', '/usr/bin/ssh-agent', ?, '1', '2', 1, 384,
-          ?, '/tmp/key.pub', 'runtime-a', 'runtime-a', 100, 1, 'daemon-start', '/usr/bin/node', ?, ?, 'available')`,
-      ).run(leaseId, context.env.SSH_AUTH_SOCK, delegated.fingerprint, clock, clock);
-      return context;
-    },
-    borrow: (leaseId: string) => {
-      const context = contexts.get(leaseId);
-      if (!context) throw new Error("signer unavailable");
-      borrowCounts.set(leaseId, (borrowCounts.get(leaseId) ?? 0) + 1);
       return {
-        approval: context,
-        settle: async () => {
-          borrowCounts.set(leaseId, (borrowCounts.get(leaseId) ?? 1) - 1);
-          if (draining.has(leaseId)) finishDrain(leaseId);
-        },
+        source: "clearance", leaseId, approverUserId: operator.id,
+        env: { SSH_AUTH_SOCK: `/tmp/${leaseId}.sock` },
+        runtime: { sshAgentPid: "101", sshAuthSock: `/tmp/${leaseId}.sock`, publicKeyPath: "/tmp/key.pub" },
       };
     },
-    drain: async (leaseId: string) => {
-      if ((borrowCounts.get(leaseId) ?? 0) === 0) {
-        finishDrain(leaseId);
-        return;
-      }
-      await new Promise<void>((resolve) => {
-        const waiters = draining.get(leaseId) ?? [];
-        waiters.push(resolve);
-        draining.set(leaseId, waiters);
-      });
+    stopApprovalRuntime: (context: AuthApprovalContext) => stopRuntime(context),
+  } as unknown as AuthAutoApproveManager;
+  const signer = new DelegatedSigningResource(autoSigner, {
+    db, runtimeEpoch: "runtime-a", pid: 100, now: () => clock,
+    inspector: {
+      process: async pid => ({ pid, uid: 1, start: `${pid}-start`, executable: pid === 101 ? "/usr/bin/ssh-agent" : "/usr/bin/bun" }),
+      socket: socketPath => ({ path: socketPath, dev: "1", ino: "2", uid: 1, mode: 0o600 }),
+      ownsSocket: async () => true,
+      keyFingerprint: async () => delegated.fingerprint,
+      challenge: async () => undefined,
     },
-    release: async (context: AuthApprovalContext) => { await signer.drain(context.leaseId); },
-  };
+  });
   const manager = new AuthClearanceManager(db, signer as never, "runtime-a", { now: () => clock });
   const executions: Array<{ request_id: string; env?: NodeJS.ProcessEnv; released_at_start: number }> = [];
+  let execute: NonNullable<ConstructorParameters<typeof AuthQueue>[0]>["executor"] = async () => ({
+    exit_code: 0, signal: null, stdout: "merged\n", stderr: "", output: "merged\n", started_at: clock, finished_at: clock + 1,
+  });
+  let broadcast: (event: { event: string }) => void = () => undefined;
   const queue = new AuthQueue({
     db,
     clearanceManager: manager,
     backgroundMaintenance: false,
+    broadcast: event => broadcast(event),
     executor: async (options) => {
       executions.push({ request_id: options.request_id, env: options.env, released_at_start: released.length });
-      return {
-        exit_code: 0, signal: null, stdout: "merged\n", stderr: "", output: "merged\n",
-        started_at: clock, finished_at: clock + 1,
-      };
+      return execute!(options);
     },
   });
   const submit = async (suffix = "", overrides: Record<string, unknown> = {}) => (await queue.submit({ ...AUTH_MERGE_REVIEW,
@@ -188,10 +155,140 @@ function fixture() {
     db, repo, project, issue, agent, agentCredential, operator, manager, signer,
     released, submit, queue, executions,
     setClock: (value: number) => { clock = value; },
+    setExecutor: (value: typeof execute) => { execute = value; },
+    setStop: (value: typeof stopRuntime) => { stopRuntime = value; },
+    setBroadcast: (value: typeof broadcast) => { broadcast = value; },
   };
 }
 
 describe("scoped protected-merge clearance", () => {
+  it("keeps signer and database owned through a late executor and held retirement during close", async () => {
+    const f = fixture();
+    const execution = gate();
+    const retiring = gate();
+    const stopped = gate();
+    let closed = false;
+    f.setExecutor(async () => {
+      await execution.promise;
+      expect(f.db.prepare("SELECT COUNT(*) AS count FROM auth_clearance_uses").get()).toEqual({ count: 1 });
+      expect(f.released).toEqual([]);
+      return { exit_code: 1, signal: null, stdout: "", stderr: "refused", output: "refused", started_at: 1, finished_at: 2 };
+    });
+    f.setStop(async context => {
+      retiring.resolve();
+      await stopped.promise;
+      f.released.push(context.leaseId);
+    });
+    try {
+      const request = await f.submit();
+      const clearance = await f.manager.issue({ requestId: request.id, grantee: f.agent.id }, f.operator.id);
+      await f.queue.approveWithClearance(request.id);
+      await waitUntil(() => f.executions.length === 1, "held executor admission");
+      const closing = f.queue.dispose().then(() => { closed = true; });
+      await expect(f.manager.issue({ requestId: request.id, grantee: f.agent.id }, f.operator.id)).rejects.toThrow(/closing/);
+      expect(closed).toBe(false);
+      expect(f.released).toEqual([]);
+      execution.resolve();
+      await retiring.promise;
+      expect(closed).toBe(false);
+      expect(f.db.prepare("SELECT state FROM delegated_signing_runtime_bindings WHERE lease_id = ?").get(clearance.signing_lease_id))
+        .toEqual({ state: "draining" });
+      stopped.resolve();
+      await closing;
+      expect(f.released).toEqual([clearance.signing_lease_id]);
+      expect(f.db.prepare("SELECT state FROM delegated_signing_runtime_bindings WHERE lease_id = ?").get(clearance.signing_lease_id))
+        .toEqual({ state: "retired" });
+    } finally {
+      execution.resolve(); stopped.resolve();
+      await f.queue.dispose();
+      f.db.close();
+      fs.rmSync(f.repo, { recursive: true, force: true });
+    }
+  });
+
+  it("settles consumed authority when publication throws before executor admission", async () => {
+    const f = fixture();
+    try {
+      const request = await f.submit();
+      const clearance = await f.manager.issue({ requestId: request.id, grantee: f.agent.id }, f.operator.id);
+      f.setBroadcast(() => { throw new Error("publication failed"); });
+      await expect(f.queue.approveWithClearance(request.id)).rejects.toThrow("publication failed");
+      expect(f.executions).toEqual([]);
+      expect(f.manager.uses(clearance.id)).toHaveLength(1);
+      expect(f.released).toEqual([clearance.signing_lease_id]);
+    } finally {
+      await f.queue.dispose(); f.db.close();
+      fs.rmSync(f.repo, { recursive: true, force: true });
+    }
+  });
+
+  it("settles consumption when shutdown cancels admission before the executor starts", async () => {
+    const f = fixture();
+    try {
+      const request = await f.submit();
+      const clearance = await f.manager.issue({ requestId: request.id, grantee: f.agent.id }, f.operator.id);
+      let closing: Promise<void> | undefined;
+      f.setBroadcast(() => { closing ??= f.queue.dispose(); });
+      await f.queue.approveWithClearance(request.id);
+      await closing;
+      expect(f.executions).toEqual([]);
+      expect(f.released).toEqual([clearance.signing_lease_id]);
+      expect(f.db.prepare("SELECT COUNT(*) AS count FROM auth_clearance_uses").get()).toEqual({ count: 1 });
+    } finally {
+      await f.queue.dispose(); f.db.close();
+      fs.rmSync(f.repo, { recursive: true, force: true });
+    }
+  });
+
+  it("retains a failed signer stop as draining and retries it before closing", async () => {
+    const f = fixture();
+    try {
+      const request = await f.submit();
+      const clearance = await f.manager.issue({ requestId: request.id, grantee: f.agent.id }, f.operator.id);
+      const consumed = await f.manager.consume(request.id, () => undefined);
+      f.setStop(async () => { throw new Error("stop refused"); });
+      await expect(consumed.settle()).rejects.toThrow("stop refused");
+      await expect(f.queue.dispose()).rejects.toThrow(/failed to close/);
+      expect(f.released).toEqual([]);
+      expect(f.db.prepare("SELECT state, retired_at FROM delegated_signing_runtime_bindings WHERE lease_id = ?").get(clearance.signing_lease_id))
+        .toEqual({ state: "draining", retired_at: null });
+      f.setStop(async context => { f.released.push(context.leaseId); });
+      await f.queue.dispose();
+      expect(f.released).toEqual([clearance.signing_lease_id]);
+    } finally {
+      await f.queue.dispose(); f.db.close();
+      fs.rmSync(f.repo, { recursive: true, force: true });
+    }
+  });
+
+  it("fails close while retaining authority when executor cleanup is explicitly unproven", async () => {
+    const f = fixture();
+    const consume = f.manager.consume.bind(f.manager);
+    let consumed: Awaited<ReturnType<typeof consume>> | undefined;
+    vi.spyOn(f.manager, "consume").mockImplementation(async (...args) => {
+      consumed = await consume(...args);
+      return consumed;
+    });
+    f.setExecutor(async () => { throw Object.assign(new Error("process group still alive"), { processGroupSettled: false }); });
+    try {
+      const request = await f.submit();
+      const clearance = await f.manager.issue({ requestId: request.id, grantee: f.agent.id }, f.operator.id);
+      await f.queue.approveWithClearance(request.id);
+      await waitUntil(() => f.executions.length === 1, "executor cleanup refusal");
+      await expect(f.queue.dispose()).rejects.toThrow(/authority remains owned/);
+      expect(f.released).toEqual([]);
+      expect(f.db.prepare("SELECT state, retired_at FROM delegated_signing_runtime_bindings WHERE lease_id = ?").get(clearance.signing_lease_id))
+        .toEqual({ state: "draining", retired_at: null });
+      await expect(f.queue.dispose()).rejects.toThrow(/authority remains owned/);
+    } finally {
+      // The fixture now proves its fake executor terminal before releasing the retained borrow.
+      await consumed?.settle();
+      await f.manager.close();
+      f.db.close();
+      fs.rmSync(f.repo, { recursive: true, force: true });
+    }
+  });
+
   it("refuses a clearance whose head differs from its selected request", async () => {
     const f = fixture();
     try {
@@ -320,6 +417,7 @@ describe("scoped protected-merge clearance", () => {
         .toThrow(/append-only/);
       expect(() => f.db.prepare("DELETE FROM auth_clearances WHERE id = ?").run(clearance.id))
         .toThrow(/append-only/);
+      await consumed.settle();
     } finally {
       (await f.queue.dispose());
       f.db.close();
@@ -340,7 +438,9 @@ describe("scoped protected-merge clearance", () => {
       }, f.operator.id);
       expect(clearance.created_from_request_id).toBeNull();
       const request = (await f.submit("later"));
-      expect((await f.manager.consume(request.id, () => undefined)).clearance.id).toBe(clearance.id);
+      const consumption = await f.manager.consume(request.id, () => undefined);
+      expect(consumption.clearance.id).toBe(clearance.id);
+      await consumption.settle();
     } finally {
       (await f.queue.dispose());
       f.db.close();
@@ -390,7 +490,8 @@ describe("scoped protected-merge clearance", () => {
 
       const second = (await f.submit("second"));
       const oneUse = await f.manager.issue({ requestId: second.id, grantee: f.agent.id, issueRef: f.issue.id }, f.operator.id);
-      (await f.manager.consume(second.id, () => undefined));
+      const consumption = await f.manager.consume(second.id, () => undefined);
+      await consumption.settle();
       await expect((async () => (await f.manager.consume(second.id, () => undefined))())).rejects.toThrow(/No active/);
       expect(f.manager.show(oneUse.id).consumed_uses).toBe(1); // execution failure would not refund this use
 
@@ -463,6 +564,7 @@ describe("auth clearance API", () => {
     setDb(db);
     const issue = vi.fn(async (input: unknown, issuer: string) => ({ id: "clearance-1", input, issuer }));
     const manager = {
+      close: async () => undefined,
       issue,
       list: () => [], show: () => ({}), uses: () => [], revoke: async () => ({}),
       signingStatus: () => ({}), setupSigning: async () => ({}), removeSigning: async () => ({}),
