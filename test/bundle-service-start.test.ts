@@ -85,11 +85,11 @@ it.each(['acknowledged', 'indeterminate'] as const)('qualifies a dormant clean r
   expect(starts).toBe(1); expect(statuses).toBe(1); expect(time.now()).toBe(2000);
 });
 
-it('waits for RunAtLoad and fails a definitive exit without kickstart', async () => {
+it.each(['78', '0'])('waits for RunAtLoad and reports its completed exit %s without kickstart', async exit => {
   const time = clock(); const actions: string[] = [];
   const result = await reconcileBundleServiceStart(context, 'backend', { ...time, until: 3000, readProcess: process,
     control: (_context, operation, role) => { actions.push(operation); return { service: role, label: context.backendLabel, status: operation === 'register' ? 'enabled' : 'not_registered', registration_changed: operation === 'register' }; },
-    observe: () => inspection(time.tick() > 0, null, program, argv, { runs: time.tick() >= 2 ? 1 : 0, lastExit: time.tick() >= 2 ? '78' : null }),
+    observe: () => inspection(time.tick() > 0, null, program, argv, { runs: time.tick() >= 2 ? 1 : 0, lastExit: time.tick() >= 2 ? exit : null }),
     start: () => { throw new Error('RunAtLoad must not be kickstarted'); },
   });
   expect(result).toMatchObject({ ok: false, error: { code: 'service_exited', outcome: 'failed' } });

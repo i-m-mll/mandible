@@ -8,8 +8,8 @@ export interface ServiceStartCommandResult {
   code: string | null; status: number | null; signal: string | null; message: string | null;
 }
 export function startOwnedJob(context: BundleContext, role: ServiceKind, until?: number): ServiceStartCommandResult;
-export function bundleServiceCompletedRun(job?: LoadedService): 'clean' | 'failed' | null;
-export function bundleServiceStartAction(state: { previousStatus?: string; registered?: boolean; startAttempted?: boolean }, nativeStatus: string,
+export function bundleServiceCompletedRun(job?: LoadedService, demand?: { registrationChanged?: boolean; startRuns?: number }): 'clean' | 'consumed' | 'failed' | null;
+export function bundleServiceStartAction(state: { previousStatus?: string; registered?: boolean; startAttempted?: boolean; startRuns?: number; registrationChanged?: boolean }, nativeStatus: string,
   job?: LoadedService): 'start' | 'register' | null;
 export function reconcileBundleServiceStart(context: BundleContext, role: ServiceKind, options: {
   until: number;

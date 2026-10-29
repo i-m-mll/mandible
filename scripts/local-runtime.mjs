@@ -519,7 +519,7 @@ export async function startHandoffDefinitions(binding, { context, journal, asser
     if (Object.values(statuses).some(status => status.status === 'requires_approval')) throw new RuntimeObservationError('background_permission_required',
       'Allow Mandible background services in System Settings.', statuses, 'pending');
     const commands = {};
-    const progress = Object.fromEntries(Object.entries(statuses).map(([role, status]) => [role, { previousStatus: status.status, registered: true }]));
+    const progress = Object.fromEntries(Object.entries(statuses).map(([role, status]) => [role, { previousStatus: status.status, registered: true, registrationChanged: status.registration_changed === true }]));
     for (;;) {
       assertHeld();
       const observed = inspectHandoffProcesses(binding, { context, prepared, assertHeld, until, processes });
@@ -527,6 +527,10 @@ export async function startHandoffDefinitions(binding, { context, journal, asser
       if (!observed.pending) break;
       if (Date.now() >= until) throw new RuntimeObservationError('starting', observed.pending, { processes, commands }, 'pending');
       const unqualified = ['backend', 'gateway'].filter(role => !processes[role]);
+      for (const role of unqualified) {
+        if (bundleServiceCompletedRun(observed.jobs[role], progress[role]) === 'consumed') throw new RuntimeObservationError('service_exited',
+          `The owned ${role} service exited before qualification.`, { role, job: observed.jobs[role], command: commands[role], processes });
+      }
       const actionable = unqualified.filter(role => !observed.jobs[role].loaded
         || bundleServiceCompletedRun(observed.jobs[role]) === 'clean' && !progress[role].startAttempted);
       if (actionable.length) {
@@ -553,6 +557,7 @@ export async function startHandoffDefinitions(binding, { context, journal, asser
           if (roles.length) {
             assertHandoffMutation(binding, { context, journal, assertHeld });
             const registered = nativeServiceControls(context, 'register', roles, { until, release: application.release });
+            for (const role of roles) progress[role].registrationChanged ||= registered[role].registration_changed === true;
             if (Object.values(registered).some(status => status.status === 'requires_approval')) throw new RuntimeObservationError('background_permission_required',
               'Allow Mandible background services in System Settings.', { registered, processes }, 'pending');
           }

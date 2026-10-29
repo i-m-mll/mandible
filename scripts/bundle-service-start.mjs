@@ -17,10 +17,11 @@ export function startOwnedJob(context, role, until = Date.now() + BUNDLE_SERVICE
     message: result.error?.message || result.stderr?.trim() || null };
 }
 
-export function bundleServiceCompletedRun(job) {
+export function bundleServiceCompletedRun(job, demand = {}) {
   if (!job?.loaded || job.pid || !(job.runs > 0)) return null;
   if (job.lastSignal || job.lastExit && !['0', '(never exited)'].includes(job.lastExit)) return 'failed';
-  return job.lastExit === '0' && (!job.state || job.state === 'not running') ? 'clean' : null;
+  if (job.lastExit !== '0' || job.state && job.state !== 'not running') return null;
+  return demand.registrationChanged || job.runs > demand.startRuns ? 'consumed' : 'clean';
 }
 
 /** RunAtLoad owns initial launch; only a completed clean run admits an explicit Start. */
@@ -29,7 +30,7 @@ export function bundleServiceStartAction(state, nativeStatus, job) {
   state.previousStatus = nativeStatus;
   if (!job) return null;
   if (nativeStatus === 'enabled' && job.loaded) {
-    if (bundleServiceCompletedRun(job) === 'clean' && !state.startAttempted) { state.startAttempted = true; return 'start'; }
+    if (bundleServiceCompletedRun(job, state) === 'clean' && !state.startAttempted) { state.startAttempted = true; state.startRuns = job.runs; return 'start'; }
   } else if (['not_found', 'not_registered'].includes(nativeStatus) && !state.registered) {
     state.registered = true;
     return 'register';
@@ -63,7 +64,7 @@ export async function reconcileBundleServiceStart(context, role, { until, contro
       const changed = continuity(); if (changed) return changed;
       inspection = observe(context, { until });
       const job = inspection.ok ? inspection.observations.find(item => item.service === role)?.job : null;
-      if (!native || inspection.ok && (!job?.loaded || bundleServiceCompletedRun(job) === 'clean' && !progress.startAttempted)) {
+      if (!native || inspection.ok && (!job?.loaded || bundleServiceCompletedRun(job, progress) === 'clean' && !progress.startAttempted)) {
         native = control(context, 'status', role, { until });
         inspection = observe(context, { until });
       }
@@ -86,7 +87,7 @@ export async function reconcileBundleServiceStart(context, role, { until, contro
         return fail('ownership_conflict', `The loaded ${role} is not the expected bundle-owned native service.`);
       }
     }
-    if (bundleServiceCompletedRun(observed?.job) === 'failed') return fail('service_exited', 'The owned service exited unsuccessfully before qualification.');
+    if (['failed', 'consumed'].includes(bundleServiceCompletedRun(observed?.job, progress))) return fail('service_exited', 'The owned service exited before qualification.');
     if (native.status === 'requires_approval') return fail('background_permission_required', 'Allow Mandible background services in System Settings.', 'pending');
     if (now() >= until) break;
     const action = bundleServiceStartAction(progress, native.status, observed?.job);
@@ -107,6 +108,7 @@ export async function reconcileBundleServiceStart(context, role, { until, contro
         assertLifecycleLockHeld();
         try { native = sample.registration = control(context, 'register', role, { until }); }
         catch (error) { return fail('service_registration_failed', error.message); }
+        progress.registrationChanged ||= sample.registration.registration_changed === true;
         if (sample.registration.status === 'requires_approval') return fail('background_permission_required', 'Allow Mandible background services in System Settings.', 'pending');
       }
     }

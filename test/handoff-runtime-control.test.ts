@@ -150,7 +150,7 @@ it.each(['settling registration', 'owned dormant job', 'permission refusal', 'fo
   if (scenario !== 'owned dormant job') expect(fx.commands.some(command => command.includes('kickstart'))).toBe(false);
 });
 
-it('waits through a fresh RunAtLoad schedule and launcher to exact qualification without kickstart or repeated status', async () => {
+it.each(['qualified', 'clean exit'])('observes fresh RunAtLoad %s without kickstart or repeated status', async outcome => {
   const fx = await fixture();
   fx.jobs.backend.loaded = false; fx.jobs.backend.pid = null; fx.jobs.backend.runs = 0; fx.jobs.backend.lastExit = null;
   let registered = false, reads = 0;
@@ -162,10 +162,16 @@ it('waits through a fresh RunAtLoad schedule and launcher to exact qualification
   fx.setProcessRead(() => {
     if (!registered) return;
     reads++;
-    if (reads >= 2) { fx.jobs.backend.pid = 41; fx.jobs.backend.runs = 1; fx.jobs.backend.executable = reads < 4 ? 'xpcproxy' : path.join(fx.context.bundleRoot, 'Contents/MacOS/mandible-bun'); }
+    if (reads >= 2) {
+      fx.jobs.backend.runs = 1;
+      if (outcome === 'clean exit') fx.jobs.backend.lastExit = '0';
+      else { fx.jobs.backend.pid = 41; fx.jobs.backend.executable = reads < 4 ? 'xpcproxy' : path.join(fx.context.bundleRoot, 'Contents/MacOS/mandible-bun'); }
+    }
   });
-  await expect(fx.api.startHandoffDefinitions(fx.binding, { context: fx.context, journal: fx.journal, prepared: fx.prepared,
-    assertHeld: fx.assertHeld, until: Date.now() + 1000, initialize: async () => {}, configure: async () => {} })).resolves.toMatchObject({ processes: { backend: { pid: 41 }, gateway: { pid: 51 } } });
+  const result = fx.api.startHandoffDefinitions(fx.binding, { context: fx.context, journal: fx.journal, prepared: fx.prepared,
+    assertHeld: fx.assertHeld, until: Date.now() + 1000, initialize: async () => {}, configure: async () => {} });
+  if (outcome === 'clean exit') await expect(result).rejects.toMatchObject({ code: 'service_exited', evidence: { role: 'backend', job: { runs: 1, lastExit: '0' } } });
+  else await expect(result).resolves.toMatchObject({ processes: { backend: { pid: 41 }, gateway: { pid: 51 } } });
   expect(fx.batch).toHaveBeenCalledTimes(1); expect(fx.commands.some(command => command.includes('kickstart'))).toBe(false);
 });
 
@@ -192,6 +198,15 @@ it.each(['acknowledged', 'indeterminate', 'failed exit', 'rejected command'] as 
   else await expect(result).resolves.toMatchObject({ processes: { backend: { pid: 41, runs: 2 } } });
   expect(fx.commands.filter(command => command.includes('kickstart'))).toHaveLength(1);
   expect(fx.batch.mock.calls.map(call => call[1])).toEqual(['register', 'status']);
+});
+
+it('does not repeat a native demand when the same attempt resumes past its original deadline', async () => {
+  const fx = await fixture(); fx.jobs.backend.pid = null;
+  const until = Date.now() - 1;
+  await expect(fx.api.startHandoffDefinitions(fx.binding, { context: fx.context, journal: fx.journal, prepared: fx.prepared,
+    assertHeld: fx.assertHeld, until, initialize: async () => { throw new Error('Expired attempt cannot initialize'); }, configure: async () => {} }))
+    .rejects.toMatchObject({ code: 'observation_deadline', outcome: 'pending' });
+  expect(fx.batch).not.toHaveBeenCalled(); expect(fx.commands).toEqual([]);
 });
 
 it('polls only exact database/generation/epoch HTTPS health under explicit ownership', async () => {
