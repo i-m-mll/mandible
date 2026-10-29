@@ -20,7 +20,7 @@ import {
 import { deriveReapingSafety, WorkScanner } from "../src/work-scanner.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 import { waitUntil } from "./helpers/wait-until.js";
-import { longestEventLoopBlockMs, useSlowCommand, SYNCHRONOUS_WAIT_MS } from "./helpers/event-loop-blocking.js";
+import { useCommandProbe } from "./helpers/event-loop-blocking.js";
 import { createOwnedRun, saveOwnedMetadata, finalizeOwnedRun } from "../scripts/owned-run.mjs";
 import { previewPaths } from "../scripts/preview-custody.mjs";
 
@@ -566,16 +566,14 @@ describe.sequential("trash custody", () => {
     fs.writeFileSync(path.join(featureWorktree, ".env"), "SECRET=1\n");
     fs.writeFileSync(path.join(featureWorktree, "tracked.txt"), "dirty tracked\n");
     const restoredPath = path.join(repoRoot, "worktrees", "feature-restored");
-    useSlowCommand("git");
+    const probe = await useCommandProbe(["git"]);
     let created: Awaited<ReturnType<typeof createTrashEntry>> | undefined;
-    const blockedMs = await longestEventLoopBlockMs(async () => {
+    await probe.run(async () => {
       created = await createTrashEntry(db, {
         project: "trash-test", branch: "feature/trash", reason: "merged", merged_into: "main",
       }, 1_000);
       await restoreTrashEntry(db, created.entry.id, { worktree_path: restoredPath }, 2_000);
     });
-
-    expect(blockedMs).toBeLessThan(SYNCHRONOUS_WAIT_MS);
     expect(created?.outcome).toMatchObject({ merge_evidence: "merged", ignored: { kept: 1 } });
     expect(fs.readFileSync(path.join(restoredPath, "tracked.txt"), "utf8")).toBe("dirty tracked\n");
     expect(fs.readFileSync(path.join(restoredPath, ".env"), "utf8")).toBe("SECRET=1\n");
@@ -588,13 +586,11 @@ describe.sequential("trash custody", () => {
       reason: "merged",
       retention_days: 1,
     }, 1_000);
-    useSlowCommand("git");
+    const probe = await useCommandProbe(["git"]);
     let result: unknown;
-    const blockedMs = await longestEventLoopBlockMs(async () => {
+    await probe.run(async () => {
       result = await gcTrashEntries(db, { now: 86_401_001 });
     });
-
-    expect(blockedMs).toBeLessThan(SYNCHRONOUS_WAIT_MS);
     expect(result).toMatchObject({ expired: 1, failed: 0 });
     expect((await listTrashEntries(db))[0]).toMatchObject({ id: created.entry.id, state: "expired" });
   });
