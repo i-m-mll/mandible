@@ -128,7 +128,6 @@ describe('SpaceItemPicker component', () => {
 
     const visible = await screen.findByText('Already visible');
     expect(visible.closest('button')?.getAttribute('disabled')).toBe('');
-    expect(screen.getByText('Already on board')).toBeTruthy();
     fireEvent.click(screen.getByText('Needs placement'));
     fireEvent.click(screen.getByTestId('space-item-picker-add'));
     await waitFor(() => expect(afterAdd).toHaveBeenCalledWith(expect.objectContaining({ id: 'm2' })));

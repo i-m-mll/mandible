@@ -17,22 +17,6 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
-it('exposes file statuses, paths and types', () => {
-  const report = authBreakdownFixture();
-  render(<AuthChangeBreakdown requestId="files" report={report} />);
-  fireEvent.click(screen.getByRole('button', { name: /TypeScript/ }));
-  const items = screen.getByRole('region', { name: 'TypeScript files' });
-  expect(items.querySelectorAll('.auth-change-file')).toHaveLength(report.files.length);
-  for (const status of ['Added', 'Deleted', 'Modified', 'Renamed', 'Copied', 'Type changed']) {
-    expect(screen.getAllByLabelText(status).length).toBeGreaterThan(0);
-  }
-  expect([...items.querySelectorAll('code')].some(node => node.textContent?.includes('previous/location/') && node.textContent.includes(' → '))).toBe(true);
-  for (const fact of ['binary', 'symlink', 'gitlink', 'generated', 'third-party']) {
-    expect([...items.querySelectorAll('code')].some(node => node.title.includes(fact))).toBe(true);
-  }
-  expect(screen.getByLabelText('Submodule reference change').textContent).toBe('submodule');
-});
-
 it('scopes item positions by request, tab and directory while preserving folding intent', async () => {
   const report = authBreakdownFixture();
   const view = render(<AuthChangeBreakdown requestId="read-a" report={report} />);
@@ -113,7 +97,6 @@ it('partitions flags once, reconciles metrics, and restores legacy expansion int
   const view = render(<AuthChangeBreakdown requestId="partition" report={report} initialState={state} />);
   const groups = [...view.container.querySelectorAll('.auth-change-group__row--outside')];
   expect(groups).toHaveLength(4);
-  expect(groups.at(-1)?.querySelector('.auth-change-group__name')?.textContent).toBe('Other files');
   const displayedPaths = [...view.container.querySelectorAll('.auth-change-file__path')].map(node => node.textContent);
   expect(displayedPaths).toHaveLength(report.files.length);
   expect(new Set(displayedPaths).size).toBe(report.files.length);

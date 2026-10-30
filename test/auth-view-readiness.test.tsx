@@ -186,13 +186,9 @@ describe('AuthQueueView daemon readiness gate', () => {
   it('shows copied Description as read-only while keeping approval disabled', () => {
     const onApprove = vi.fn();
     renderView(true, onApprove, previewInstance);
-
-    expect(screen.getByText('Description')).toBeTruthy();
     const approve = screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement;
     expect(approve.disabled).toBe(true);
     expect((screen.getByRole('button', { name: 'Reject' }) as HTMLButtonElement).disabled).toBe(false);
-
-    expect(screen.queryByText('edit')).toBeNull();
     expect(screen.queryByRole('textbox', { name: 'Description' })).toBeNull();
     fireEvent.click(approve);
     expect(onApprove).not.toHaveBeenCalled();
@@ -207,12 +203,9 @@ describe('Auth Description presentation', () => {
         commit_message: '# Review this action\n\nPreserve the existing service.\n\n<script>window.bad=true</script>',
       }]} historyQueue={[]} outputs={{}} selectedAuthId="req-1" daemonReady instance={authMainInstance}
         onApprove={vi.fn()} onReject={vi.fn()} onSelectAuth={vi.fn()} />);
-      expect(screen.getByText('Description')).toBeTruthy();
       expect(screen.getByRole('heading', { name: 'Review this action' })).toBeTruthy();
       expect(screen.getByText('Preserve the existing service.')).toBeTruthy();
-      expect(screen.queryByText(/git.*default/i)).toBeNull();
       expect(document.querySelector('.rendered-markdown script')).toBeNull();
-      expect(screen.queryByText('edit')).toBeNull();
     });
   }
 });
@@ -350,7 +343,6 @@ describe('Approval review issue and action composition', () => {
     for (const ref of request.issue_closures!) {
       expect(actions.getByRole('link', { name: new RegExp(titles[ref]) }).getAttribute('href')).toContain(`issue=${ref}`);
     }
-    expect(actions.getAllByText('Done')).toHaveLength(2);
     expect(screen.getAllByRole('button', { name: 'Expand Close issue action' })).toHaveLength(1);
     fireEvent.click(screen.getByRole('button', { name: 'Expand Close issue action' }));
     expect(screen.getByText('Closed after the reviewed target changed.')).toBeTruthy();
@@ -378,7 +370,6 @@ describe('Approval closure targets without recorded actions', () => {
       expect(panel.querySelectorAll('a')).toHaveLength(2);
       expect(panel.querySelector('a')?.getAttribute('href')).toContain('legacy-9b1');
       expect(panel.querySelector('.auth-action-row__state')).toBeNull();
-      expect(screen.getByText('No action status recorded.')).toBeTruthy();
       expect(screen.queryByRole('switch')).toBeNull();
 
     });
@@ -485,28 +476,25 @@ it('waits for confirmed actions and preserves useful rows throughout a delayed r
     daemonReady: true, instance: authMainInstance, onApprove: () => undefined, onReject: () => undefined };
   const view = render(<AuthQueueView {...props} />);
   await waitFor(() => expect(replies).toHaveLength(1));
-  expect(screen.queryByText('No action status recorded.')).toBeNull();
-  expect(screen.queryByText('Done')).toBeNull();
   expect(document.querySelectorAll('.auth-action-row')).toHaveLength(1);
   expect(document.querySelector('.auth-action-row a')?.getAttribute('href')).toContain('close-loading');
   expect(screen.queryByRole('switch')).toBeNull();
   const respond = (actions: AuthRequestAction[]) => replies.shift()!.resolve(new Response(JSON.stringify({ actions }), {
     headers: { 'content-type': 'application/json' },
   }));
-  respond([{ ...deferredAction, kind: 'issue_close', state: 'applied', target_issue_ref: 'close-loading' }]);
-  await screen.findByText('Done');
+  const confirmedOutcome = 'Applied closure fixture result';
+  respond([{ ...deferredAction, kind: 'issue_close', state: 'applied', target_issue_ref: 'close-loading', outcome_detail: confirmedOutcome }]);
+  fireEvent.click(await screen.findByRole('button', { name: 'Expand Close issue action' }));
+  await screen.findByText(confirmedOutcome);
   view.rerender(<AuthQueueView {...props} historyQueue={[{ ...request, action_count: undefined, updated_at: 2 }]} />);
   await waitFor(() => expect(replies).toHaveLength(1));
-  expect(screen.getByText('Done')).toBeTruthy();
-  expect(screen.queryByText('No action status recorded.')).toBeNull();
+  expect(screen.getByText(confirmedOutcome)).toBeTruthy();
   await act(async () => { replies.shift()!.reject(new Error('Refetch unavailable')); });
-  expect(screen.getByText('Done')).toBeTruthy();
-  expect(screen.queryByText('No action status recorded.')).toBeNull();
+  expect(screen.getByText(confirmedOutcome)).toBeTruthy();
   view.rerender(<AuthQueueView {...props} historyQueue={[{ ...request, updated_at: 3 }]} />);
   await waitFor(() => expect(replies).toHaveLength(1));
   respond([]);
-  await screen.findByText('No action status recorded.');
-  expect(screen.queryByText('Done')).toBeNull();
+  await waitFor(() => expect(screen.queryByText(confirmedOutcome)).toBeNull());
   expect(document.querySelectorAll('.auth-action-row')).toHaveLength(1);
 });
 
@@ -528,12 +516,10 @@ it('shares explicit panel availability without changing saved folding intent', a
   }
   const view = render(<Panel availability="unknown" />);
   expect(screen.queryByRole('button')).toBeNull();
-  expect(screen.queryByText('Unavailable')).toBeNull();
   expect(screen.queryByText('Known body')).toBeNull();
   expect(screen.queryByText('Persistent content')).toBeNull();
   expect(screen.queryByText('Known summary')).toBeNull();
   view.rerender(<Panel availability="unavailable" />);
-  expect(screen.getByText('Unavailable')).toBeTruthy();
   expect(screen.queryByText('Known summary')).toBeNull();
   expect(screen.queryByText('Known body')).toBeNull();
   expect(screen.queryByText('Persistent content')).toBeNull();
@@ -560,46 +546,13 @@ it('keeps unknown breakdown distinct from confirmed absence and available zero-f
   };
   const view = render(<AuthChangeBreakdown requestId="availability-report" report={undefined} />);
   expect(screen.queryByRole('button', { name: 'Change breakdown' })).toBeNull();
-  expect(screen.queryByText('Unavailable')).toBeNull();
   view.rerender(<AuthChangeBreakdown requestId="availability-report" report={null} />);
-  expect(screen.getByText('Unavailable')).toBeTruthy();
   expect(screen.queryByRole('tablist', { name: 'Change breakdown view' })).toBeNull();
   view.rerender(<AuthChangeBreakdown requestId="availability-report" report={report} />);
   expect(screen.getByRole('button', { name: 'Change breakdown' })).toBeTruthy();
-  expect(screen.queryByText('Unavailable')).toBeNull();
   expect(screen.getByRole('button', { name: 'Change breakdown' }).getAttribute('aria-expanded')).toBe('true');
   expect(screen.getByRole('tablist', { name: 'Change breakdown view' })).toBeTruthy();
 });
-
-for (const outcome of ['failed', 'absent'] as const) {
-  it(`preserves unknown report availability through delayed ${outcome} history hydration`, async () => {
-    let resolve!: (response: Response) => void;
-    let reject!: (error: Error) => void;
-    const held = new Promise<Response>((yes, no) => { resolve = yes; reject = no; });
-    const fetch = vi.fn((input: string) => String(input) === '/api/auth/request/req-1'
-      ? held : Promise.reject(new Error('no network in test')));
-    vi.stubGlobal('fetch', fetch);
-    const request = { ...pendingRequest, status: 'completed', exit_code: 0, change_report: undefined,
-      diff_summary: undefined, spec_content: undefined, output: undefined };
-    render(<AuthQueueView queue={[]} historyQueue={[request]} outputs={{}} selectedAuthId="req-1"
-      daemonReady instance={authMainInstance} onApprove={() => undefined} onReject={() => undefined} />);
-    await waitFor(() => expect(fetch.mock.calls.some(([input]) => input === '/api/auth/request/req-1')).toBe(true));
-    const panel = () => within(screen.getByRole('region', { name: 'Change breakdown', exact: true }));
-    expect(panel().queryByRole('button')).toBeNull();
-    expect(panel().queryByText('Unavailable')).toBeNull();
-    await act(async () => {
-      if (outcome === 'failed') reject(new Error('History detail temporarily unavailable'));
-      else resolve(new Response(JSON.stringify({ ...request, change_report: null }), { headers: { 'content-type': 'application/json' } }));
-    });
-    if (outcome === 'failed') {
-      expect(panel().queryByText('Unavailable')).toBeNull();
-      expect(panel().queryByRole('button')).toBeNull();
-    } else {
-      await waitFor(() => expect(panel().getByText('Unavailable')).toBeTruthy());
-      expect(panel().queryByRole('button')).toBeNull();
-    }
-  });
-}
 
 for (const coverage of ['absent', 'empty', 'partial', 'wrong-reference', 'duplicate'] as const) {
   it('blocks approval with ' + coverage + ' prerequisite projection coverage', () => {

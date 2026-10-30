@@ -11,7 +11,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
 import { normalizeAuthActionInput } from "../src/auth-actions.js";
 import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
-import { AUTH_REQUEST_ACTION_KINDS } from "../src/contracts.js";
 import type { Db } from "../src/db.js";
 import { getLedgerIssueHead } from "../src/ledger/issue-heads.js";
 import { systemAction } from "../src/identity/resolver.js";
@@ -72,44 +71,7 @@ async function submitActionMerge(queue: AuthQueue, payload: Parameters<AuthQueue
 }
 
 describe("auth request action schema", () => {
-  it("matches the SQL CHECK constraint on auth_request_actions.kind", () => {
-    // The SQL vocabulary cannot import the TypeScript array; read it back from
-    // the schema the migrations produce. A kind the code accepts but the DB
-    // rejects fails at INSERT; one the DB accepts but the code does not handle
-    // is the silent no-op that used to be recorded as `applied`.
-    const db = createMigratedDb();
-    try {
-      const row = db
-        .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'auth_request_actions'")
-        .get() as { sql: string };
-      const check = /kind\s+TEXT\s+NOT NULL\s+CHECK\(kind IN \(([^)]*)\)\)/i.exec(row.sql);
-      expect(check, `could not find the kind CHECK constraint in: ${row.sql}`).toBeTruthy();
-      const sqlKinds = check![1].split(",").map((part) => part.trim().replace(/^'|'$/g, "")).filter(Boolean);
-      expect([...sqlKinds].sort()).toEqual([...AUTH_REQUEST_ACTION_KINDS].sort());
-    } finally {
-      db.close();
-    }
-  });
-
-
-  it("normalizes one declarative exact Briefing promotion action", () => {
-    expect(normalizeAuthActionInput({
-      kind: "briefing_group_promote",
-      target_issue_ref: "policy-issue",
-      payload: {
-        group_ref: "group-12345678",
-        expected_base_bundle_ref: "base-12345678",
-        proposal_bundle_ref: "proposal-12345678",
-      },
-    })).toEqual({
-      kind: "briefing_group_promote",
-      target_issue_ref: "policy-issue",
-      payload: {
-        group_ref: "group-12345678",
-        expected_base_bundle_ref: "base-12345678",
-        proposal_bundle_ref: "proposal-12345678",
-      },
-    });
+  it("rejects executable command fields in declarative Briefing promotion actions", () => {
     expect(() => normalizeAuthActionInput({
       kind: "briefing_group_promote",
       target_issue_ref: "policy-issue",

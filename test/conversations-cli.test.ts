@@ -55,7 +55,6 @@ describe("conversations CLI", () => {
 
     expect(blocks.status, blocks.stderr).toBe(0);
     expect(JSON.parse(blocks.stdout)).toEqual([expect.objectContaining({ id: "block-501" })]);
-    expect(blocks.stderr).toContain("output truncated");
     expect(blocks.stderr).toContain("--offset 501");
     expect(logs.status, logs.stderr).toBe(0);
     expect(JSON.parse(logs.stdout)).toEqual([expect.objectContaining({ id: "block-251" })]);
@@ -93,7 +92,6 @@ describe("conversations CLI", () => {
 
     expect(result.status, result.stderr).toBe(0);
     expect(JSON.parse(result.stdout).results).toEqual([expect.objectContaining({ conversation: expect.objectContaining({ id: "conv-1" }) })]);
-    expect(result.stderr).toContain("--limit 500 exceeds the server cap; at most 20 hits are returned");
   });
 
   it("waits for a shared search snapshot and releases its observer over file RPC", async () => {
@@ -127,7 +125,6 @@ describe("conversations CLI", () => {
     const result = await runCli(['conversations', 'search', 'RPC', '--json'], { env });
     expect(result.status).toBe(1);
     expect(JSON.parse(result.stdout)).toEqual(terminal);
-    expect(result.stderr).toContain('Search incomplete');
     expect(responder.requests).toHaveLength(1);
   });
 

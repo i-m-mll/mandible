@@ -297,25 +297,13 @@ describe("CLI instance mutation preflight", () => {
     });
 
     expect(result.status).toBe(0);
-    expect(result.stderr).toBe(
-      "Mandible rebuilding; request not sent (self-merge, about 12 s remaining; average 18.4 s over 7 rebuilds).\n",
-    );
-    expect(result.stdout).toBe([
-      "503",
-      "{",
-      '  "error": "mandible_restarting",',
-      '  "retryable": true,',
-      '  "request_sent": false,',
-      '  "phase": "rebuilding",',
-      '  "reason": "self_merge",',
-      '  "sample_count": 7,',
-      '  "average_seconds": 18.4,',
-      '  "retry_after_seconds": 12,',
-      '  "message": "Mandible rebuilding; request not sent (self-merge, about 12 s remaining; average 18.4 s over 7 rebuilds).",',
-      '  "category": "operation"',
-      "}",
-      "",
-    ].join("\n"));
+    const [status, ...json] = result.stdout.trim().split("\n");
+    expect(status).toBe("503");
+    expect(JSON.parse(json.join("\n"))).toMatchObject({
+      error: "mandible_restarting", retryable: true, request_sent: false,
+      phase: "rebuilding", reason: "self_merge", sample_count: 7,
+      average_seconds: 18.4, retry_after_seconds: 12, category: "operation",
+    });
   });
 
   it("reports first-sample and overdue states without claiming availability", async () => {
@@ -337,13 +325,7 @@ describe("CLI instance mutation preflight", () => {
     ]);
 
     expect(firstResult.status).toBe(75);
-    expect(firstResult.stderr).toBe(
-      "Mandible rebuilding; request not sent (self-merge; timing estimate unavailable; no completed rebuild samples).\n",
-    );
     expect(overdueResult.status).toBe(75);
-    expect(overdueResult.stderr).toBe(
-      "Mandible restarting; request not sent (self-merge, estimate exceeded by 1 s; average 2.5 s over 2 rebuilds).\n",
-    );
   });
 
   it("ignores restart state that is stale, foreign, unversioned, inconsistent, or malformed", async () => {

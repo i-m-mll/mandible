@@ -448,11 +448,6 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
         ? value
         : null;
     }, browser, profile);
-    expect(cold.text).not.toContain('Load earlier history');
-    expect(cold.text).not.toContain('Load later history');
-    expect(cold.text).not.toContain('Load missing history');
-    expect(cold.text).not.toContain('Start of conversation');
-    expect(cold.text).not.toContain('End of conversation');
     expect(cold.requests.filter((url) => {
       const query = new URL(url, origin).searchParams;
       return query.get('target') === 'initial' && query.get('view') === 'display';

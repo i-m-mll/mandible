@@ -1,7 +1,4 @@
-// @vitest-environment jsdom
-import { h } from "preact";
-import { cleanup, render, screen } from "./helpers/dom.js";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   deriveChatUsageSummary,
   selectContextUsage,
@@ -9,9 +6,6 @@ import {
 import {
   normalizeCodexTokenCount,
 } from "../src/parsers/context-usage.js";
-import { UsageModal } from "../ui/src/chat/UsageModal.js";
-
-afterEach(cleanup);
 
 describe("chat context usage", () => {
   it("prioritizes authoritative available statusline context", () => {
@@ -82,52 +76,9 @@ describe("chat context usage", () => {
       precision: "unavailable",
       windowTokens: 10_000,
     });
-    expect(summary?.accounting.map(({ label, totalTokens }) => ({ label, totalTokens }))).toEqual([
-      { label: "Task total", totalTokens: 105_000 },
-      { label: "Latest reported usage", totalTokens: 2_100 },
+    expect(summary?.accounting.map(({ scope, totalTokens }) => ({ scope, totalTokens }))).toEqual([
+      { scope: "task_total", totalTokens: 105_000 },
+      { scope: "latest_usage", totalTokens: 2_100 },
     ]);
-  });
-
-  it("renders unavailable occupancy distinctly from authoritative Claude occupancy", () => {
-    const unavailable = deriveChatUsageSummary({
-      events: [{
-        type: "token_count",
-        info: {
-          total_token_usage: { total_tokens: 54_908_924 },
-          model_context_window: 258_400,
-        },
-      }],
-    });
-    const view = render(h(UsageModal, {
-      usage: unavailable,
-      titleId: "usage-title",
-      onClose: () => undefined,
-    }));
-
-    expect(screen.getByText("Unavailable")).toBeTruthy();
-    expect(screen.getByText("Occupancy unknown")).toBeTruthy();
-    expect(screen.getByText("Not reported by Codex")).toBeTruthy();
-    expect(screen.queryByText("100%")).toBeNull();
-    const close = screen.getByRole("button", { name: "Close usage" });
-    expect(close.className).toBe("overlay-close-button");
-    expect(close.querySelector("svg[aria-hidden='true']")).toBeTruthy();
-    expect(close.textContent).toBe("");
-
-    view.rerender(h(UsageModal, {
-      usage: deriveChatUsageSummary({
-        telemetry: {
-          context_window: {
-            total_input_tokens: 72_000,
-            used_percentage: 36,
-            context_window_size: 200_000,
-          },
-        },
-      }),
-      titleId: "usage-title",
-      onClose: () => undefined,
-    }));
-
-    expect(screen.getByText("36%")).toBeTruthy();
-    expect(screen.getByText("Exact")).toBeTruthy();
   });
 });

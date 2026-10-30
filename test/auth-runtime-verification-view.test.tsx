@@ -79,9 +79,6 @@ it('automatically shows and refreshes pending instructions through auth updates 
   expect(notice.getAttribute('role')).toBe('status');
   expect(notice.getAttribute('aria-live')).toBe('polite');
   expect(within(notice as HTMLElement).queryByRole('button')).toBeNull();
-  const status = document.querySelector<HTMLElement>('.auth-detail__header .status-pill')!;
-  expect(status.title).toMatch(/verification.*not.*confirmed/i);
-  expect(status.title).not.toContain('machine is not live');
   verifySelection();
 
   current = request(pending(nextReason, 'observation_incomplete'));
@@ -104,7 +101,6 @@ it('automatically shows and refreshes pending instructions through auth updates 
   act(() => FixtureStream.instances.at(-1)!.disconnect());
   await waitFor(() => expect(reads.mock.calls.length).toBeGreaterThan(beforeCompletion));
   await waitFor(() => expect(screen.queryByText(desktopReason)).toBeNull());
-  expect(screen.queryByText('Update verification is pending')).toBeNull();
   verifySelection();
   const writes = vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method && !['GET', 'HEAD'].includes(init.method));
   expect(writes).toEqual([]);

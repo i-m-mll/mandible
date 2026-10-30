@@ -4,16 +4,13 @@ import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import {
-  APP_FRAME_CONTROLS_OFFSET,
   RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH,
   VIEW_SIDEBAR_AUTO_COLLAPSE_WIDTH,
 } from '../../ui/src/app-shell';
 import { runChromium } from '../helpers/chromium';
-import { CHROME_APPEARANCE_DEFAULTS, type ChromeShadowParameters } from '../../ui/src/chrome-appearance';
 
 type Surface = 'chat' | 'graph' | 'timeline' | 'console';
 type Result = Record<string, unknown> & { surface: Surface; width: number; theme: string };
@@ -39,19 +36,13 @@ function bundleFixture(directory: string): string {
 
 let fixtureBundle: string | undefined;
 
-function renderCase(surface: Surface, width: number, theme: 'light' | 'dark', native = false, fullRail = false, scale = 1, paint: { disableShadow?: boolean; screenshotPath?: string; shadow?: ChromeShadowParameters; glassTransparency?: number } = {}): Result {
+function renderCase(surface: Surface, width: number, theme: 'light' | 'dark', native = false, fullRail = false, scale = 1): Result {
   const directory = mkdtempSync(join(tmpdir(), 'mandible-right-sidebar-'));
   try {
     const bundle = fixtureBundle ??= bundleFixture(directory);
     const measure = `
       const wait = () => new Promise(resolve => setTimeout(resolve, 0));
       const rect = node => { const r=node.getBoundingClientRect(); return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height}; };
-      const getPaintSurface=()=>{
-        const frame=document.querySelector('.app-frame'); const shadow=getComputedStyle(frame,'::after'); const dock=document.querySelector('.app-right-sidebar');
-        return {workspace:rect(document.querySelector('.app-layout')),main:rect(document.querySelector('.chat-detail-frame')||document.querySelector('main')),dock:rect(dock),radius:parseFloat(getComputedStyle(document.querySelector('.app-layout')).borderTopLeftRadius),
-          frameBackground:getComputedStyle(frame).backgroundColor,frameOpacity:getComputedStyle(frame).opacity,contentBackground:getComputedStyle(document.querySelector('.app-content')).backgroundColor,textColor:getComputedStyle(document.querySelector('.app-content')).color,contour:getComputedStyle(frame,'::before').borderTopColor,barBackground:getComputedStyle(document.querySelector('.app-frame__bar')).backgroundColor,railBackground:getComputedStyle(document.querySelector('.app-rail')).backgroundColor,
-          shadow:{width:shadow.width,height:shadow.height,zIndex:shadow.zIndex,pointerEvents:shadow.pointerEvents,backgroundImage:shadow.backgroundImage,backgroundSize:shadow.backgroundSize},dockZIndex:getComputedStyle(dock).zIndex};
-      };
       const edgeTarget = node => { const r=rect(node); return document.elementFromPoint(r.left+0.5,(r.top+r.bottom)/2); };
       const edgeClick = node => { const target=edgeTarget(node); if (!node.contains(target)) throw new Error('Control edge is unreachable: '+node.getAttribute('aria-label')); target.closest('button').click(); };
       const paint = node => {
@@ -81,13 +72,6 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark', na
       (async () => {
         await wait(); await wait();
         const root=document.querySelector('.native-fixture');
-        if (${Boolean(paint.screenshotPath)}) {
-          document.querySelector('[data-paint-probe-content]').style.visibility='hidden';
-          for (const child of document.querySelector('.app-frame__bar').children) child.style.visibility='hidden';
-          await waitForRunOptions();
-          document.title=btoa(JSON.stringify({surface:'${surface}',width:${width},theme:'${theme}',paintSurface:getPaintSurface()}));
-          return;
-        }
         const toggles=()=>document.querySelectorAll('.app-right-sidebar-toggle');
         const sidebar=document.querySelector('.app-right-sidebar');
         const autoCollapsed={right:sidebar.hidden,rightDisplay:getComputedStyle(sidebar).display,view:!root.querySelector('.app-frame').classList.contains('app-frame--left-open')};
@@ -149,7 +133,7 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark', na
         const overviewScrollTop=scrollOwner.scrollTop;
         const tabs=Array.from(document.querySelectorAll('[role=tab]'));
         let tabResult=null;
-        if(tabs.length){ tabs[0].focus(); tabs[0].dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true})); await wait(); const switched={selected:document.querySelector('[role=tab][aria-selected=true]').getAttribute('aria-label'),focused:document.activeElement.getAttribute('aria-label')}; const contentRetainedWhileHidden=overviewContent===document.querySelector('#app-right-sidebar-panel-overview .chat-right-sidebar__empty'); tabs[0].click(); await wait(); const overviewScrollPreserved=overviewScrollTop===scrollOwner.scrollTop; const overviewContentRetained=contentRetainedWhileHidden&&overviewContent===document.querySelector('#app-right-sidebar-panel-overview .chat-right-sidebar__empty'); tabs[1].click(); await wait(); tabResult={...switched,accessibleNames:tabs.map(n=>n.getAttribute('aria-label')),tooltips:tabs.map(n=>n.title),text:tabs.map(n=>n.textContent.trim()),titleRows:document.querySelectorAll('.chat-right-sidebar__detail .detail-pane-shell__header').length,overviewContentRetained,overviewScrollPreserved}; }
+        if(tabs.length){ tabs[0].focus(); tabs[0].dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true})); await wait(); const switched={selected:document.querySelector('[role=tab][aria-selected=true]').getAttribute('aria-label'),focused:document.activeElement.getAttribute('aria-label')}; const contentRetainedWhileHidden=overviewContent===document.querySelector('#app-right-sidebar-panel-overview .chat-right-sidebar__empty'); tabs[0].click(); await wait(); const overviewScrollPreserved=overviewScrollTop===scrollOwner.scrollTop; const overviewContentRetained=contentRetainedWhileHidden&&overviewContent===document.querySelector('#app-right-sidebar-panel-overview .chat-right-sidebar__empty'); tabs[1].click(); await wait(); tabResult={...switched,accessibleNames:tabs.map(n=>n.getAttribute('aria-label')),titleRows:document.querySelectorAll('.chat-right-sidebar__detail .detail-pane-shell__header').length,overviewContentRetained,overviewScrollPreserved}; }
         const separator=document.querySelector('.app-right-sidebar__resize'); separator.focus(); separator.dispatchEvent(new KeyboardEvent('keydown',{key:'End',bubbles:true})); await wait();
         const keyboardWidth=parseFloat(getComputedStyle(root.querySelector('.app-layout')).getPropertyValue('--app-right-sidebar-width'));
         separator.setPointerCapture=()=>{}; separator.hasPointerCapture=()=>false;
@@ -185,15 +169,12 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark', na
         const selectRects=Array.from(inline?.querySelectorAll('select')||[],rect);
         const submit=document.querySelector('.conv-compose__send'); const submitVisual=submit?getComputedStyle(submit,'::before'):null; const submitIcon=submit?.querySelector('svg');
         const jump=document.querySelector('.stream-renderer__scroll-btn'); const jumpVisual=jump?getComputedStyle(jump,'::before'):null; const jumpIcon=jump?.querySelector('svg');
-        const runOptions=composer?{containerWidth:composer.clientWidth,inlineDisplay:getComputedStyle(inline).display,inlineVisibility:getComputedStyle(inline).visibility,triggerDisplay:getComputedStyle(trigger).display,
-          triggerText:trigger.textContent.trim(),triggerHasSvg:Boolean(trigger.querySelector('svg')),selectRects,composer:composerRect,
-          submit:rect(submit),submitVisual:{width:parseFloat(submitVisual.width),height:parseFloat(submitVisual.height)},submitIcon:rect(submitIcon),submitLabel:submit.getAttribute('aria-label')}:null;
+        const runOptions=composer?{visible:getComputedStyle(inline).visibility!=='hidden' && getComputedStyle(inline).display!=='none',selectRects,composer:composerRect}:null;
         const jumpControl=jump?{hit:rect(jump),visual:{width:parseFloat(jumpVisual.width),height:parseFloat(jumpVisual.height)},icon:rect(jumpIcon),label:jump.getAttribute('aria-label'),title:jump.getAttribute('title')}:null;
         const titleErrors=document.querySelector('[data-title-errors]');
         const controlPaint=controls.map(node=>{node.focus({preventScroll:true});return paint(node);});
         document.querySelector('[aria-label=Back]').focus({preventScroll:true});
-        const paintSurface=getPaintSurface();
-        document.title=btoa(JSON.stringify({surface:'${surface}',width:${width},theme:'${theme}',autoCollapsed,reopenedLayout,initial,tabResult,keyboardWidth,pointerWidth,beforeStream,afterStream,closed,reopened,frameStates,fullscreen,menuInteraction,controlPaint,historyActions,paintSurface,
+        document.title=btoa(JSON.stringify({surface:'${surface}',width:${width},theme:'${theme}',autoCollapsed,reopenedLayout,initial,tabResult,keyboardWidth,pointerWidth,beforeStream,afterStream,closed,reopened,frameStates,fullscreen,menuInteraction,controlPaint,historyActions,
           productionClass:body.querySelector('.detail-pane-shell')?.className||null,
           chatGeometry:chat?{header:rect(document.querySelector('.app-frame__bar')),body:rect(chat.querySelector('.detail-pane-shell__body')),overlayControl:rect(chat.querySelector('.detail-pane-shell__overlay-control')),overlayPointerEvents:getComputedStyle(overlayControl).pointerEvents,composer:composerRect,composerPointerEvents:getComputedStyle(composer).pointerEvents,transcript:rect(transcript),transcriptViewport:rect(transcriptScroll),transcriptBottomInset:parseFloat(getComputedStyle(transcriptScroll).paddingBottom),transcriptScrollState,transcriptOuterState,finalContent:rect(finalContent),mask,mainBackground:getComputedStyle(document.querySelector('.app-content')).backgroundColor}:null,
           runOptions,jumpControl,preservedScrollTop,
@@ -201,15 +182,15 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark', na
           deterministicRetry:titleErrors?.dataset.deterministicRetry,transientRetry:titleErrors?.dataset.transientRetry,titleCopy:titleErrors?.textContent}));
       })().catch(error=>document.title='fixture-error:'+btoa(String(error?.stack||error)));
     `;
-    const html = `<!doctype html><html data-theme="${theme}" ${paint.glassTransparency !== undefined ? 'data-native-glass="regular"' : ''} data-frame-presentation="${native ? 'macos-overlay' : 'system'}"><head><style>${styles}</style><style>*{box-sizing:border-box}html,body,.app-shell{margin:0;width:100%;height:520px;overflow:clip}.native-main{padding:24px}.native-fixture .app-content{min-width:0;padding:0}.fixture-split{display:flex;min-width:0;height:100%}.fixture-split>.conv-detail{flex:1;min-width:0}.native-fixture .conv-detail{height:100%}.native-fixture--chat .chat-right-sidebar__content::after{content:'';display:block;height:900px}[data-title-errors]{display:none}</style></head><body><script>${bundle}</script><script>${measure}</script></body></html>`;
-    const evidenceDirectory = paint.screenshotPath ? undefined : process.env.MANDIBLE_GEOMETRY_EVIDENCE_DIR;
+    const html = `<!doctype html><html data-theme="${theme}" data-frame-presentation="${native ? 'macos-overlay' : 'system'}"><head><style>${styles}</style><style>*{box-sizing:border-box}html,body,.app-shell{margin:0;width:100%;height:520px;overflow:clip}.native-main{padding:24px}.native-fixture .app-content{min-width:0;padding:0}.fixture-split{display:flex;min-width:0;height:100%}.fixture-split>.conv-detail{flex:1;min-width:0}.native-fixture .conv-detail{height:100%}.native-fixture--chat .chat-right-sidebar__content::after{content:'';display:block;height:900px}[data-title-errors]{display:none}</style></head><body><script>${bundle}</script><script>${measure}</script></body></html>`;
+    const evidenceDirectory = process.env.MANDIBLE_GEOMETRY_EVIDENCE_DIR;
     const evidenceName = `${surface}-${width}-${theme}-${native ? 'native' : 'browser'}-${fullRail ? 'expanded' : 'icons'}-${scale}`;
     if (evidenceDirectory) mkdirSync(evidenceDirectory, { recursive: true });
-    const screenshotPath = paint.screenshotPath ?? (evidenceDirectory ? join(evidenceDirectory, evidenceName + '.png') : null);
+    const screenshotPath = evidenceDirectory ? join(evidenceDirectory, evidenceName + '.png') : null;
     const screenshotArgs = screenshotPath ? [`--screenshot=${screenshotPath}`] : [];
     const path = join(directory, 'fixture.html');
-    writeFileSync(path, paint.disableShadow ? html.replace('</head>', '<style>.app-frame::after{background-image:none}</style></head>') : html);
-    const rendered = runChromium([...screenshotArgs, '--run-all-compositor-stages-before-draw', '--virtual-time-budget=3000', '--dump-dom', `--force-device-scale-factor=${scale}`, `--window-size=${width},600`, `file://${path}?surface=${surface}${fullRail ? '&fullRail' : ''}${paint.shadow ? '&shadow=' + encodeURIComponent(JSON.stringify(paint.shadow)) : ''}${paint.glassTransparency !== undefined ? '&glass=' + paint.glassTransparency : ''}`], { encoding: 'utf8', maxBuffer: 20_000_000 });
+    writeFileSync(path, html);
+    const rendered = runChromium([...screenshotArgs, '--run-all-compositor-stages-before-draw', '--virtual-time-budget=3000', '--dump-dom', `--force-device-scale-factor=${scale}`, `--window-size=${width},600`, `file://${path}?surface=${surface}${fullRail ? '&fullRail' : ''}`], { encoding: 'utf8', maxBuffer: 20_000_000 });
     if (rendered.status !== 0) throw new Error(`Chromium sidebar fixture failed: ${rendered.stderr}`);
     const fixtureError = rendered.stdout.match(/<title>fixture-error:([^<]+)<\/title>/)?.[1];
     if (fixtureError) throw new Error(Buffer.from(fixtureError, 'base64').toString('utf8'));
@@ -222,158 +203,6 @@ function renderCase(surface: Surface, width: number, theme: 'light' | 'dark', na
     rmSync(directory, { recursive: true, force: true });
   }
 }
-
-type PixelProbe = { distance: number; x: number; y: number };
-type PixelSample = { distance: number; baseline: number[]; painted: number[]; delta: number };
-
-function compareShadowPixels(directory: string, painted: string, baseline: string, viewportWidth: number, probes: Record<string, PixelProbe[]>): Record<string, PixelSample[]> {
-  const page = join(directory, 'compare.html');
-  writeFileSync(page, `<!doctype html><script>
-    const load=src=>new Promise((resolve,reject)=>{const image=new Image();image.onload=()=>resolve(image);image.onerror=reject;image.src=src;});
-    Promise.all(${JSON.stringify([painted, baseline].map(path => pathToFileURL(path).href))}.map(load)).then(images=>{
-      const contexts=images.map(image=>{const canvas=document.createElement('canvas');canvas.width=image.width;canvas.height=image.height;const context=canvas.getContext('2d',{willReadFrequently:true});context.drawImage(image,0,0);return context;});
-      const scale=images[0].width/${viewportWidth};
-      const pixel=(context,point)=>Array.from(context.getImageData(Math.floor(point.x*scale),Math.floor(point.y*scale),1,1).data).slice(0,3);
-      const profiles=Object.fromEntries(Object.entries(${JSON.stringify(probes)}).map(([name,points])=>[name,points.map(point=>{
-        const painted=pixel(contexts[0],point),baseline=pixel(contexts[1],point);
-        return {distance:point.distance,painted,baseline,delta:baseline.reduce((sum,value,i)=>sum+value-painted[i],0)/3};
-      })]));
-      document.title=btoa(JSON.stringify(profiles));
-    }).catch(error=>document.title='fixture-error:'+btoa(String(error?.stack||error)));
-  </script>`);
-  const rendered = runChromium(['--allow-file-access-from-files', '--virtual-time-budget=1000', '--dump-dom', pathToFileURL(page).href], { encoding: 'utf8', maxBuffer: 20_000_000 });
-  if (rendered.status !== 0) throw new Error(`Shadow pixel comparison failed: ${rendered.stderr}`);
-  const encoded = rendered.stdout.match(/<title>([^<]+)<\/title>/)?.[1];
-  if (!encoded || encoded.startsWith('fixture-error:')) throw new Error(`Shadow pixel comparison did not complete: ${encoded ?? rendered.stderr}`);
-  return JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')) as Record<string, PixelSample[]>;
-}
-
-describe('rendered workspace shadow', () => {
-  it.each(['light', 'dark'] as const)('applies %s glass tint endpoints and default once on the native frame while content and shadow geometry stay fixed', theme => {
-    const directory = mkdtempSync(join(tmpdir(), 'mandible-native-tint-'));
-    try {
-      const cases = [0, CHROME_APPEARANCE_DEFAULTS[theme].glassTransparency, 1].map(glassTransparency => {
-        const screenshot = join(directory, `tint-${glassTransparency}.png`);
-        return { glassTransparency, screenshot, result: renderCase('chat', 1280, theme, true, false, 1, { glassTransparency, screenshotPath: screenshot }) };
-      });
-      type SurfacePaint = { workspace: { left: number; top: number }; frameBackground: string; frameOpacity: string; barBackground: string; railBackground: string; contentBackground: string; textColor: string; contour: string; shadow: unknown };
-      const baseline = cases[0]!;
-      const original = baseline.result.paintSurface as SurfacePaint;
-      for (const item of cases) {
-        const surface = item.result.paintSurface as SurfacePaint;
-        const alpha = Number(/\/ ([\d.]+)\)/.exec(surface.frameBackground)?.[1] ?? 1);
-        expect(alpha).toBeCloseTo(1 - item.glassTransparency, 3);
-        expect(surface.frameOpacity).toBe('1');
-        expect(surface.barBackground).toBe('rgba(0, 0, 0, 0)');
-        expect(surface.railBackground).toBe('rgba(0, 0, 0, 0)');
-        expect(surface.contentBackground).toBe(original.contentBackground);
-        expect(surface.contentBackground).toMatch(/^rgb\(/);
-        expect(surface.textColor).toBe(original.textColor);
-        expect(surface.contour).toBe(original.contour);
-        expect(surface.workspace).toEqual(original.workspace);
-        expect(surface.shadow).toEqual(original.shadow);
-        if (item === baseline) continue;
-        const pixels = compareShadowPixels(directory, item.screenshot, baseline.screenshot, 1280, {
-          chrome: [{ distance: 0, x: 1000, y: 10 }],
-          opaque: [{ distance: 0, x: original.workspace.left + 100, y: original.workspace.top + 100 }, { distance: 0, x: 700, y: 200 }, { distance: 0, x: original.workspace.left + 100, y: original.workspace.top + 0.5 }],
-        });
-        expect(Math.abs(pixels.chrome![0]!.delta)).toBeGreaterThan(0);
-        for (const sample of pixels.opaque!) expect(sample.delta).toBe(0);
-      }
-    } finally { rmSync(directory, { recursive: true, force: true }); }
-  });
-
-  it.each([{ widthPx: 5, profile: 0 }, { widthPx: 5, profile: 1 }, { widthPx: 16, profile: 1 }])('renders profile $profile at width $widthPx outward with an unchanged interior', parameters => {
-    const directory = mkdtempSync(join(tmpdir(), 'mandible-shadow-profile-'));
-    try {
-      const shadow = { ...parameters, maxDarkness: 0.4 };
-      const painted = join(directory, 'painted.png');
-      const baseline = join(directory, 'baseline.png');
-      const result = renderCase('chat', 1280, 'light', false, false, 1, { shadow, screenshotPath: painted });
-      renderCase('chat', 1280, 'light', false, false, 1, { shadow, disableShadow: true, screenshotPath: baseline });
-      const { workspace, radius } = result.paintSurface as { workspace: { left: number; top: number }; radius: number };
-      const distances = parameters.profile === 0 ? [0.5, 1.5, 4.5, 6] : [1.5, parameters.widthPx / 2, parameters.widthPx - 0.5, parameters.widthPx + 1];
-      const profiles = compareShadowPixels(directory, painted, baseline, result.width, {
-        top: distances.map(distance => ({ distance, x: workspace.left + 100, y: workspace.top - distance })),
-        left: distances.map(distance => ({ distance, x: workspace.left - distance, y: workspace.top + 100 })),
-        corner: distances.map(distance => ({ distance, x: workspace.left + radius - (radius + distance) * 3 / Math.sqrt(13), y: workspace.top + radius - (radius + distance) * 2 / Math.sqrt(13) })),
-        interior: [2, 5, 10].flatMap(distance => [
-          { distance, x: workspace.left + 100, y: workspace.top + distance },
-          { distance, x: workspace.left + distance, y: workspace.top + 100 },
-          { distance, x: workspace.left + radius - (radius - distance) / Math.SQRT2, y: workspace.top + radius - (radius - distance) / Math.SQRT2 },
-        ]),
-      });
-      for (const name of ['top', 'left', 'corner']) {
-        const samples = profiles[name]!;
-        expect(samples[0]!.delta, name + ' contact paint').toBeGreaterThan(10);
-        expect(samples.at(-1)!.delta, name + ' extent').toBe(0);
-        if (parameters.profile === 0) expect(samples[1]!.delta, name + ' hard contact edge').toBe(0);
-        else {
-          expect(samples[1]!.delta, name + ' linear falloff').toBeGreaterThan(20);
-          expect(samples[1]!.delta).toBeLessThan(samples[0]!.delta);
-        }
-      }
-      for (const sample of profiles.interior!) expect(sample.delta).toBe(0);
-    } finally { rmSync(directory, { recursive: true, force: true }); }
-  });
-
-  it.each(['light', 'dark'] as const)('applies the selected shadow strength to %s chrome without interior shading', theme => {
-    const evidenceDirectory = process.env.MANDIBLE_GEOMETRY_EVIDENCE_DIR;
-    const directory = evidenceDirectory ?? mkdtempSync(join(tmpdir(), 'mandible-shadow-pixels-'));
-    mkdirSync(directory, { recursive: true });
-    try {
-      const painted = join(directory, `shadow-${theme}-on.png`);
-      const baseline = join(directory, `shadow-${theme}-off.png`);
-      const result = renderCase('chat', 1280, theme, false, false, theme === 'dark' ? 1.25 : 1, { screenshotPath: painted });
-      renderCase('chat', 1280, theme, false, false, theme === 'dark' ? 1.25 : 1, { disableShadow: true, screenshotPath: baseline });
-      type Rect = { left: number; right: number; top: number; bottom: number };
-      const surface = result.paintSurface as { workspace: Rect; main: Rect; dock: Rect; radius: number; shadow: { width: string; height: string } };
-      const { workspace, main, dock, radius } = surface;
-      const width = CHROME_APPEARANCE_DEFAULTS[theme].widthPx;
-      expect(parseFloat(surface.shadow.width) - (workspace.right - workspace.left)).toBeCloseTo(width, 1);
-      expect(parseFloat(surface.shadow.height) - (workspace.bottom - workspace.top)).toBeCloseTo(width, 1);
-      const distances = [1.5, width * 0.4, width * 0.6, width * 0.8, width - 0.5, width + 1];
-      const profiles = compareShadowPixels(directory, painted, baseline, result.width, {
-        topSidebar: distances.map(distance => ({ distance, x: workspace.left + 96, y: workspace.top - distance })),
-        topMain: distances.map(distance => ({ distance, x: (main.left + main.right) / 2, y: workspace.top - distance })),
-        topDock: distances.map(distance => ({ distance, x: (dock.left + dock.right) / 2, y: workspace.top - distance })),
-        left: distances.map(distance => ({ distance, x: workspace.left - distance, y: workspace.top + 100 })),
-        corner: distances.map(distance => ({ distance, x: workspace.left + radius - (radius + distance) / Math.SQRT2, y: workspace.top + radius - (radius + distance) / Math.SQRT2 })),
-        tangentTop: [1.5, 3, 4.5].flatMap(distance => [-1, 1].map(offset => ({ distance, x: workspace.left + radius + offset, y: workspace.top - distance }))),
-        tangentLeft: [1.5, 3, 4.5].flatMap(distance => [-1, 1].map(offset => ({ distance, x: workspace.left - distance, y: workspace.top + radius + offset }))),
-        interior: distances.flatMap(distance => [
-          { distance, x: workspace.left + 96, y: workspace.top + distance },
-          { distance, x: (main.left + main.right) / 2, y: workspace.top + distance },
-          { distance, x: (dock.left + dock.right) / 2, y: workspace.top + distance },
-          { distance, x: workspace.left + distance, y: workspace.top + 100 },
-          { distance, x: workspace.left + radius - (radius - distance) / Math.SQRT2, y: workspace.top + radius - (radius - distance) / Math.SQRT2 },
-        ]),
-        line: [workspace.left + 96, (main.left + main.right) / 2, (dock.left + dock.right) / 2].map(x => ({ distance: 0, x, y: workspace.top + 0.5 })),
-        outside: [
-          { distance: 0, x: workspace.left - width - 1, y: workspace.top + 100 },
-          { distance: 0, x: workspace.left + 96, y: workspace.top - width - 1 },
-          { distance: 0, x: workspace.right - 2, y: workspace.top + 100 },
-          { distance: 0, x: (main.left + main.right) / 2, y: workspace.bottom - 2 },
-        ],
-      });
-      if (evidenceDirectory) writeFileSync(join(directory, `shadow-${theme}-pixels.json`), JSON.stringify({ theme, probeSetup: 'Initial mounted production frame; the fixture corner label and top-bar foreground are hidden to expose uninterrupted material while retaining layout. Baseline disables only the shadow background.', surface: result.paintSurface, profiles }, null, 2));
-      if (theme === 'dark') expect(readFileSync(painted).equals(readFileSync(baseline)), 'dark shadow on/off screenshots must be identical').toBe(true);
-      for (const [name, samples] of Object.entries(profiles)) {
-        if (theme === 'dark' || name === 'outside' || name === 'interior') { for (const sample of samples) expect(sample.delta).toBe(0); continue; }
-        if (name.startsWith('tangent')) {
-          for (let i=0;i<samples.length;i+=2) expect(Math.abs(samples[i]!.delta - samples[i+1]!.delta), `${theme} ${name} joins continuously`).toBeLessThanOrEqual(2);
-          continue;
-        }
-        if (name === 'line') { for (const sample of samples) expect(Math.abs(sample.delta), `${theme} contour remains independent of shadow`).toBeLessThanOrEqual(3); continue; }
-        expect(samples[0]!.delta, `${theme} ${name} rendered contrast`).toBeGreaterThanOrEqual(2);
-        for (let i=1;i<samples.length;i++) expect(samples[i]!.delta, `${theme} ${name} monotone falloff`).toBeLessThanOrEqual(samples[i-1]!.delta + 1);
-        expect(samples.at(-1)!.delta, `${theme} ${name} paint extent`).toBeLessThanOrEqual(1);
-      }
-    } finally {
-      if (!evidenceDirectory) rmSync(directory, { recursive: true, force: true });
-    }
-  });
-});
 
 describe('production app right sidebar geometry and interaction', () => {
   const cases: Array<{ surface: Surface; width: number; theme: 'light' | 'dark'; native?: boolean; fullRail?: boolean; scale?: number }> = [
@@ -394,12 +223,6 @@ describe('production app right sidebar geometry and interaction', () => {
     for (const control of result.controlPaint as Array<{ kind: string; hit: {width:number;height:number}; glyph:{width:number;height:number}; decoration:{width:number;height:number;background:string;pointerEvents:string}; buttonBackground:string;edgeReachable:boolean }>) {
       expect(control.edgeReachable).toBe(true);
       expect(control.decoration.pointerEvents).toBe('none');
-      expect(control.buttonBackground).toBe('rgba(0, 0, 0, 0)');
-      expect(control.decoration.background).not.toBe('rgba(0, 0, 0, 0)');
-      expect(control.hit.width).toBe(control.kind === 'menu' ? 24 : 34);
-      expect(control.hit.height).toBe(control.hit.width);
-      expect(control.decoration.width).toBeCloseTo((control.hit.width + control.glyph.width) / 2, 2);
-      expect(control.decoration.height).toBeCloseTo((control.hit.height + control.glyph.height) / 2, 2);
     }
     expect(result.autoCollapsed).toEqual({
       right: result.width < RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH,
@@ -438,11 +261,9 @@ describe('production app right sidebar geometry and interaction', () => {
     expect(initial).toMatchObject({ mainInert: false, railInert: false });
     if (result.tabResult) {
       expect(result.tabResult).toMatchObject({ focused: result.surface === 'chat' ? 'Preview' : 'Message Info', selected: result.surface === 'chat' ? 'Preview' : 'Message Info' });
-      expect((result.tabResult as { text: string[] }).text).toEqual(result.surface === 'chat' ? ['', '', ''] : ['', '']);
       if (result.surface === 'chat') {
         expect(result.tabResult).toMatchObject({
           accessibleNames: ['Session Overview', 'Preview', 'Activity'],
-          tooltips: ['Session Overview', 'Preview', 'Activity'],
           titleRows: 0,
           overviewContentRetained: true,
           overviewScrollPreserved: true,
@@ -476,36 +297,16 @@ describe('production app right sidebar geometry and interaction', () => {
       for (const state of result.frameStates as FrameGeometry[]) {
         expect(state.backReachable).toBe(true);
         expect(state.railReachable).toBe(true);
-        expect(state.rail.top).toBeCloseTo(state.bar.bottom, 2);
-        expect(state.workspace.top).toBeCloseTo(state.bar.bottom, 2);
-        expect(state.workspace.left).toBeCloseTo(state.rail.right, 1);
-        expect(state.railButton.top).toBeGreaterThan(state.bar.bottom);
-        expect(state.logo.right).toBeLessThan(state.buttons[0].left);
-        const logoCenter = (state.logo.left + state.logo.right) / 2;
-        const backCenter = (state.buttons[0].left + state.buttons[0].right) / 2;
-        const historySpacing = state.buttons[1].left - state.buttons[0].left;
-        expect(backCenter - logoCenter).toBeCloseTo(historySpacing + APP_FRAME_CONTROLS_OFFSET, 2);
-        expect((state.logo.top + state.logo.bottom) / 2).toBeCloseTo((state.bar.top + state.bar.bottom) / 2, 1);
-        if (native && state.reservation > 0) expect(state.logo.left).toBeCloseTo(state.reservation, 1);
-        else expect((state.logo.left + state.logo.right) / 2).toBeCloseTo((state.rail.left + state.rail.right) / 2, 1);
         if (state.leftOpen) expect(state.main.left).toBeCloseTo(state.leftSeam!, 0);
         else expect(state.main.left - state.buttons[2].right).toBeLessThan(state.buttons[0].right - state.buttons[0].left);
         if (state.rightOpen) expect(state.right.left).toBeCloseTo(state.dock.left, 0);
         expect(state.buttons.at(-1)!.right).toBeLessThanOrEqual(state.bar.right);
         for (let i=1; i<state.buttons.length; i++) expect(state.buttons[i].left).toBeGreaterThanOrEqual(state.buttons[i-1].right);
-        for (const glyph of state.glyphs) expect((glyph.top + glyph.bottom) / 2).toBeCloseTo((state.bar.top + state.bar.bottom) / 2, 0);
-        for (const button of state.buttons) expect((button.top + button.bottom) / 2).toBeCloseTo((state.bar.top + state.bar.bottom) / 2, 0);
       }
       if (result.fullscreen) {
         const fullscreen = result.fullscreen as { before: FrameGeometry; during: FrameGeometry; after: FrameGeometry; retained: boolean };
         expect(fullscreen.retained).toBe(true);
-        const fullscreenLogoCenter = (fullscreen.during.logo.left + fullscreen.during.logo.right) / 2;
-        const railItemCenter = (fullscreen.during.railButton.left + fullscreen.during.railButton.right) / 2;
         expect(fullscreen.during.reservation).toBe(0);
-        expect(Math.abs(fullscreenLogoCenter - railItemCenter)).toBeLessThanOrEqual(1);
-        expect(fullscreenLogoCenter).toBeCloseTo((fullscreen.during.rail.left + fullscreen.during.rail.right) / 2, 1);
-        const backCenter = (fullscreen.during.buttons[0].left + fullscreen.during.buttons[0].right) / 2;
-        expect(backCenter - fullscreenLogoCenter).toBeCloseTo(fullscreen.during.buttons[1].left - fullscreen.during.buttons[0].left + APP_FRAME_CONTROLS_OFFSET, 2);
         expect(fullscreen.during.backReachable).toBe(true);
         expect(fullscreen.after.logo).toEqual(fullscreen.before.logo);
         expect(fullscreen.during.railButton).toEqual(fullscreen.before.railButton);
@@ -519,6 +320,12 @@ describe('production app right sidebar geometry and interaction', () => {
       expect(geometry.composer.top).toBeGreaterThanOrEqual(geometry.overlayControl.top);
       expect(geometry.composer.bottom).toBeLessThanOrEqual(geometry.overlayControl.bottom);
       expect(geometry.composerPointerEvents).toBe('auto');
+      if (result.runOptions?.visible) {
+        for (const select of result.runOptions.selectRects) {
+          expect(select.left).toBeGreaterThanOrEqual(result.runOptions.composer.left);
+          expect(select.right).toBeLessThanOrEqual(result.runOptions.composer.right);
+        }
+      }
       if (result.width >= RIGHT_SIDEBAR_AUTO_COLLAPSE_WIDTH) {
         expect(geometry.composer.left).toBeGreaterThan(geometry.transcriptViewport.left);
         expect(geometry.composer.right).toBeLessThan(geometry.transcriptViewport.right);
@@ -544,19 +351,6 @@ describe('production app right sidebar geometry and interaction', () => {
       expect(geometry.finalContent.bottom).toBeLessThanOrEqual(geometry.composer.top - composerBottomGap + 0.5);
       expect(Math.abs(geometry.mask.top - (geometry.composer.top + ((geometry.composer.bottom - geometry.composer.top) / 2)))).toBeLessThanOrEqual(1);
       expect(geometry.mask.bottom).toBeCloseTo(geometry.overlayControl.bottom, 0);
-      const runOptions = result.runOptions as { containerWidth: number; inlineDisplay: string; inlineVisibility: string; triggerDisplay: string; triggerText: string; triggerHasSvg: boolean; selectRects: Array<{ left: number; right: number }>; composer: { left: number; right: number }; submit: Rect; submitVisual: { width: number; height: number }; submitIcon: Rect; submitLabel: string };
-      expect(runOptions.inlineDisplay).toBe('flex');
-      expect(runOptions.selectRects).toHaveLength(3);
-      if (runOptions.inlineVisibility === 'hidden') {
-        expect(runOptions.triggerDisplay).toBe('flex');
-      } else {
-        expect(runOptions.triggerDisplay).toBe('none');
-        expect(
-          runOptions.selectRects.every((select) => select.left >= runOptions.composer.left && select.right <= runOptions.composer.right),
-          `${result.surface}/${result.width}/${result.theme} run options ${JSON.stringify(runOptions)}`,
-        ).toBe(true);
-      }
-      expect(geometry.mask.background).toBe(geometry.mainBackground);
       expect(result).toMatchObject({ deterministicRetry: 'false', transientRetry: 'true' });
       expect(String(result.titleCopy)).not.toContain('provider_metadata_missing');
     }

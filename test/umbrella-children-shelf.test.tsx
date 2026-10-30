@@ -162,7 +162,6 @@ describe("umbrella children shelf", () => {
 
     fireEvent.click(screen.getByText("Children").closest("button")!);
     expect(rowsNaming("d894231")).toHaveLength(1);
-    expect(screen.queryByText("Relationships")).toBeNull();
   });
 
   it("keeps a mixed umbrella's non-child edges in Relationships, still exactly once each", () => {

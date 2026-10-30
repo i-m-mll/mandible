@@ -60,12 +60,11 @@ describe("delegated signing settings", () => {
     expect(fetch.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
 
     fireEvent.click(screen.getByRole("button", { name: "Remove key material" }));
-    await waitFor(() => expect(screen.getByText("Delegated signing material removed")).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Set up" })).toBeTruthy());
     expect(fetch.mock.calls.find(([input, init]) =>
       String(input) === "/api/auth/clearances/signing" && init?.method === "DELETE")?.[1])
       .toMatchObject({ method: "DELETE", credentials: "same-origin" });
     const removal = fetch.mock.calls.find(([, init]) => init?.method === "DELETE")?.[1];
     expect(new Headers(removal?.headers).get("X-Mandible-CSRF")).toBe("test-csrf");
-    expect(screen.getByRole("button", { name: "Set up" })).toBeTruthy();
   });
 });

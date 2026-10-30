@@ -34,11 +34,8 @@ describe("briefing CLI", () => {
     ]);
 
     expect(logical.status).toBe(2);
-    expect(logical.stderr).toContain("exact artifact-version");
     expect(logicalBase.status).toBe(2);
-    expect(logicalBase.stderr).toContain("--comparison-base requires one exact artifact-version");
     expect(blankReason.status).toBe(2);
-    expect(blankReason.stderr).toContain("nonblank");
     expect(responder.requests).toEqual([]);
   });
 

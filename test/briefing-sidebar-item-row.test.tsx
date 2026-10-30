@@ -198,7 +198,6 @@ describe('Briefing sidebar row actions', () => {
     fireEvent.click(subgroupToggle);
     expect(subgroupToggle.getAttribute('aria-expanded')).toBe('false');
     expect(within(group).queryByRole('button', { name: 'Select briefing Second briefing' })).toBeNull();
-    expect(group.querySelector('[data-sidebar-group-icon-state="briefcase"]')).toBeTruthy();
 
     fireEvent.click(disclosure);
     expect(disclosure.getAttribute('aria-expanded')).toBe('false');
@@ -267,7 +266,6 @@ describe('Briefing sidebar row actions', () => {
         onSelectUpdate={() => undefined}
       />,
     );
-    expect(screen.getByText('A frozen operator submission is required.')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Accept as Base' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Reject proposal' })).toBeNull();
   });

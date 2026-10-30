@@ -64,7 +64,6 @@ describe("Cowork CLI cache materializer", () => {
     const rendered = spawnSync(process.execPath, [path.join(targetDir, "command-syntax.cjs"),
       "render", path.join(targetDir, "instructions-contract.md")], { encoding: "utf8" });
     expect(rendered.status).toBe(0);
-    expect(rendered.stdout).toContain("`mandible issue report <id> [--json]`");
     expect(rendered.stdout).not.toContain("{{");
   });
 

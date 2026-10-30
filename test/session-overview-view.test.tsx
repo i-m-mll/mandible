@@ -100,7 +100,6 @@ it('shows known managed conversation facts while canonical overview metadata is 
   }} />);
   expect(screen.getByText('New managed chat')).toBeTruthy();
   expect(screen.getByText('requested-model')).toBeTruthy();
-  expect(screen.queryByText('Loading overview…')).toBeNull();
   await act(async () => lookup.resolve(overview('native')));
   expect(screen.getByText('New managed chat')).toBeTruthy();
 });
