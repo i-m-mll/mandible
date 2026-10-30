@@ -12,6 +12,8 @@ import {
   type ProjectRole,
 } from "../permissions/store.js";
 import { queryString, sendJson } from "./http.js";
+import { parseCheckoutRelocation } from "../checkout-relocation.js";
+import { ClientAuthzError, requireIdentity } from "../client-auth/authz.js";
 
 type BranchSort = "recency" | "name" | "activity";
 type CompareMode = "merge-base" | "range";
@@ -302,6 +304,32 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
     }
     sendJson(res, 200, branch);
   }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/work/repos/:id/branch/:name", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+
+  // The scanner owns repos.json, work_repos and branches, so checkout
+  // relocation registers here rather than with the other project routes.
+  server.post("/api/projects/checkouts/relocate", async (req, res) => {
+    const body = (req.body ?? {}) as { old_root?: unknown; new_root?: unknown };
+    const relocation = parseCheckoutRelocation(body.old_root, body.new_root);
+    if (!relocation.ok) { sendJson(res, 400, { ...relocation.error, error: relocation.error.message }); return; }
+    try {
+      const db = getDb();
+      const actor = requireIdentity(req).user_id;
+      const result = await workScanner.relocateCheckout(relocation.value, {
+        actor,
+        authorize: (projectIds) => { for (const id of projectIds) requireProjectAccess(db, req, id, "write"); },
+      });
+      if (!result.ok) {
+        const status = result.error.code === "invalid_root" || result.error.code === "nested_roots" ? 400 : 409;
+        sendJson(res, status, { ...result.error, error: result.error.message });
+        return;
+      }
+      sendJson(res, 200, result.value);
+    } catch (error) {
+      if (error instanceof PermissionError) { sendPermissionError(res, error); return; }
+      if (error instanceof ClientAuthzError) { sendJson(res, error.status, { error: error.message, code: error.code }); return; }
+      throw error;
+    }
+  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/projects/checkouts/relocate", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write","files:preview"] : ["ledger:write","files:production"], requestSchema: null, reportingCategory: "projects" }, fileRpc: "deny" });
 
   server.post("/api/work/scan", async (_req, res) => {
     const summary = await workScanner.scanAllAsync();

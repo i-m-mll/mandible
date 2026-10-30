@@ -7,12 +7,22 @@ import path from "path";
 import { promisify } from "util";
 import { parse as parseToml } from "smol-toml";
 import { getDaemonLogger } from "./daemon-log.js";
-import { getDb } from "./db.js";
+import { getDb, type Db } from "./db.js";
 import { DEFAULT_PROTECTED_BRANCHES_SETTING, parseProtectedBranchSetting, readProtectedBranchSetting } from "./protected-branches.js";
 import { ensureMandibleConfigFile } from "./platform-paths.js";
 import { broadcast, type SseEvent } from "./sse.js";
 import { canonicalizeCheckoutWorkRepoId } from "./ledger/projects.js";
 import { isPreservedAppWorktreePath } from "./worktree-preservation.js";
+import {
+  isAtOrUnder,
+  relocateCheckoutRows,
+  relocatePath,
+  type CheckoutRelocation,
+  type RelocateCheckoutRowsInput,
+  type RelocationFailure,
+  type RelocationReport,
+  type RelocationResult,
+} from "./checkout-relocation.js";
 
 function localBranchRef(branch: string): string {
   return `refs/heads/${branch}`;
@@ -161,25 +171,13 @@ export interface RepoInfo {
 export type ScanSummary = import("./contracts.js").WorkScanSummary;
 
 export interface WorkScannerOptions {
-  db?: SqliteDatabase;
+  db?: Db;
   repo_roots?: string[];
   default_repo_root?: string;
   config_path?: string;
   config_root?: string;
   on_event?: (event: SseEvent) => void;
   scan_skip_window_ms?: number;
-}
-
-export interface SqliteStatement {
-  run(...args: unknown[]): { changes?: number };
-  get(...args: unknown[]): unknown;
-  all(...args: unknown[]): unknown[];
-}
-
-export interface SqliteDatabase {
-  exec(sql: string): void;
-  prepare(sql: string): SqliteStatement;
-  transaction(callback: () => void): () => void;
 }
 
 const workScannerLog = getDaemonLogger();
@@ -810,8 +808,12 @@ function rowChanged(existing: Record<string, unknown>, next: Record<string, unkn
   return false;
 }
 
+class RelocationRefused extends Error {
+  constructor(readonly failure: RelocationFailure) { super(failure.message); }
+}
+
 export class WorkScanner {
-  private readonly db: SqliteDatabase;
+  private readonly db: Db;
   private readonly defaultRepoRoot: string;
   private readonly configPath: string;
   private readonly configRoot: string | null;
@@ -1473,6 +1475,85 @@ export class WorkScanner {
 
     this.repoInfos = this.repoInfos.filter((r) => r.id !== id);
     return true;
+  }
+
+  /**
+   * Moves every stored root and path at or under `old_root` to `new_root`,
+   * together with `repos.json`, in one transaction. In-flight scans settle
+   * first, so none of them writes a path under the old root afterwards.
+   */
+  async relocateCheckout(
+    relocation: CheckoutRelocation,
+    options: Pick<RelocateCheckoutRowsInput, "actor" | "authorize">,
+  ): Promise<RelocationResult<RelocationReport>> {
+    if (this.stopped) throw new Error("Work scanner is stopped");
+    for (;;) {
+      const inFlight = [this.activeScan?.promise, this.repoInfoRefresh, ...this.repoRefreshes.values(), ...this.repoScans.values()]
+        .filter(Boolean);
+      if (inFlight.length === 0) break;
+      await Promise.allSettled(inFlight);
+    }
+
+    let previousConfig: string | null = null;
+    try {
+      previousConfig = fs.readFileSync(this.configPath, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    let nextConfig: string | null = null;
+    let configEntries = 0;
+    if (previousConfig !== null) {
+      const config = JSON.parse(previousConfig) as { repos?: unknown };
+      if (Array.isArray(config.repos)) {
+        const repos = config.repos.map((repo) => {
+          if (typeof repo !== "string") return repo;
+          const resolved = path.resolve(resolveHome(repo));
+          if (!isAtOrUnder(relocation.old_root, resolved)) return repo;
+          configEntries += 1;
+          return relocatePath(relocation, resolved);
+        });
+        config.repos = repos.filter((repo, index) => typeof repo !== "string" || repos.indexOf(repo) === index);
+        nextConfig = JSON.stringify(config, null, 2);
+      }
+    }
+
+    let configChanged = false;
+    let report: RelocationReport;
+    try {
+      report = this.db.transaction(() => {
+        const result = relocateCheckoutRows(this.db, { relocation, config_entries: configEntries, ...options });
+        if (!result.ok) throw new RelocationRefused(result.error);
+        if (configEntries > 0 && nextConfig !== null) {
+          this.writeRepoConfig(nextConfig);
+          configChanged = true;
+        }
+        return result.value;
+      }).immediate();
+    } catch (error) {
+      if (configChanged && previousConfig !== null) {
+        try {
+          this.writeRepoConfig(previousConfig);
+        } catch (restoreError) {
+          workScannerLog("error", "work_scanner_repo_config_restore_failed", {
+            subsystem: "work-scanner",
+            path: this.configPath,
+            error: String(restoreError),
+          });
+        }
+      }
+      if (error instanceof RelocationRefused) return { ok: false, error: error.failure };
+      throw error;
+    }
+
+    if (report.status === "relocated") {
+      this.repoInfos = this.repoInfos.map((repo) => isAtOrUnder(relocation.old_root, repo.root)
+        ? { ...repo, root: relocatePath(relocation, repo.root), exists: pathExists(relocatePath(relocation, repo.root)) }
+        : repo);
+      for (const root of [...this.scanSnapshots.keys()]) {
+        if (isAtOrUnder(relocation.old_root, root)) this.scanSnapshots.delete(root);
+      }
+    }
+    return { ok: true, value: report };
   }
 
   private writeRepoConfig(content: string): void {

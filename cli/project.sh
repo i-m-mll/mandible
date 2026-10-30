@@ -8,6 +8,7 @@
 #   PATCH /api/projects/<ref>            update
 #   POST /api/projects/<ref>/checkouts   add-checkout
 #   POST /api/projects/checkouts         update-checkout (by root)
+#   POST /api/projects/checkouts/relocate relocate-checkout
 #   GET  /api/projects/audit             audit
 #   POST /api/projects/repair            repair
 source "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)/command-syntax.sh"
@@ -181,6 +182,33 @@ cmd_update_checkout() {
   emit "$response" "$json" '"updated checkout \(.checkout.root) in \(.project.project_key)"'
 }
 
+cmd_relocate_checkout() {
+  local old_root="" new_root="" json=0
+  local binding
+  binding=$(mandible_bind_arguments "project.relocate-checkout" '{"old_root":{"position":0},"new_root":{"position":1},"json":{"option":"json","constant":"1"}}' "$@") || return $?
+  eval "$binding"
+  [[ -n "$old_root" && -n "$new_root" ]] || die "Usage: $(mandible_command_syntax project.relocate-checkout)" 2
+  require_tools
+  local payload tmp_response status_code response
+  payload="$(jq -n --arg old_root "${old_root:a}" --arg new_root "${new_root:a}" '{old_root:$old_root, new_root:$new_root}')"
+  tmp_response=$(mktemp)
+  status_code=$(api_send_capture POST "/api/projects/checkouts/relocate" "$payload" "$tmp_response")
+  response=$(cat "$tmp_response")
+  rm -f "$tmp_response"
+  if [[ "$status_code" =~ ^2 ]]; then
+    emit "$response" "$json" \
+      '"\(.status) \(.old_root) -> \(.new_root)", (.moved | to_entries[] | select(.value > 0) | "  \(.key): \(.value)")'
+    return 0
+  fi
+  if (( json )); then
+    printf '%s\n' "$response" | jq .
+  else
+    err "${RED}Error: $(printf '%s' "$response" | jq -r '.error // "relocation failed"')${RESET}"
+    printf '%s' "$response" | jq -r '(.occupants // [])[] | "  \(.key): \(.value)"' >&2
+  fi
+  exit 1
+}
+
 cmd_audit() {
   local json=0
   local binding
@@ -267,6 +295,7 @@ case "$cmd" in
   update)          cmd_update "$@" ;;
   add-checkout)    cmd_add_checkout "$@" ;;
   update-checkout) cmd_update_checkout "$@" ;;
+  relocate-checkout) cmd_relocate_checkout "$@" ;;
   audit)           cmd_audit "$@" ;;
   repair)          cmd_repair "$@" ;;
   *) die "Unknown project subcommand: $cmd" 2 ;;
