@@ -224,6 +224,29 @@ describe("auth queue", () => {
     }
   });
 
+  it("reports a hidden skip-worktree edit that would block the checkout sync as a merge preflight error", async () => {
+    const repo = createAuthCheckRepo();
+    const queue = createQueue();
+    try {
+      commitOnBranch(repo, "feature/demo", { "shared.txt": "changed by the merge\n" });
+      git(repo, ["update-index", "--skip-worktree", "shared.txt"]);
+      writeFile(repo, "shared.txt", "local edit\n");
+
+      const check = (await queue.checkMergeIndependence({
+        repo: path.basename(repo),
+        base_branch: "main",
+        head_branch: "feature/demo",
+        cwd: repo,
+      }));
+
+      expect(check.status).toBe("error");
+      expect(check.reason).toContain("shared.txt: marked skip-worktree");
+      expect(check.reason).toContain("update-index --no-skip-worktree -- 'shared.txt'");
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   it("rejects merge request submission when shared preflight reports an error", async () => {
     const repo = createAuthCheckRepo();
     const queue = createQueue();
