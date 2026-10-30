@@ -2824,6 +2824,21 @@ export class AuthQueue {
         };
       }
 
+      const checkoutSync = (await this.checkCheckoutSync(cwd, baseBranch, targetHeadSha, candidateTarget.tree));
+      if (checkoutSync.status === "error") {
+        return {
+          status: "error",
+          repo,
+          base_branch: baseBranch,
+          head_branch: headBranch,
+          checked_requests: 0,
+          conflicts: [],
+          target_head_sha: targetHeadSha,
+          queue_fingerprint: queueFingerprint,
+          reason: checkoutSync.message
+        };
+      }
+
       let simulatedBase = baseBranch;
       let checked = 0;
       const staleRequests: AuthMergeStaleRequest[] = [];
@@ -7014,6 +7029,31 @@ export class AuthQueue {
         status: "error",
         message: errorMessage(error) || "could not inspect worktree status"
       };
+    }
+  }
+
+  /**
+   * Whether the protected checkout at `cwd` could follow the target branch
+   * from `base` to `target`, judged by `cli/checkout-sync-check.sh` — the
+   * same dry run the merge executor repeats just before advancing the ref.
+   * A checkout that is not on the target branch has no sync to predict.
+   */
+  private async checkCheckoutSync(cwd: string, baseBranch: string, base: string, target: string): Promise<{ status: "clean" } | { status: "error"; message: string }> {
+    const gitOptions = { cwd, encoding: "utf8" as const, timeout: 5_000, env: authGitEnv() };
+    try {
+      const branch = (await childOutput("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], gitOptions).catch(() => "")).trim();
+      if (branch !== baseBranch) return { status: "clean" };
+      const root = (await childOutput("git", ["rev-parse", "--show-toplevel"], gitOptions)).trim();
+      const script = join(process.env.MANDIBLE_CLI_DIR ?? join(process.cwd(), "cli"), "checkout-sync-check.sh");
+      await childOutput("bash", [script, root, base, target], { ...gitOptions, timeout: 30_000, maxBuffer: 1024 * 1024 });
+      return { status: "clean" };
+    } catch (error) {
+      const failure = classifyGitFailure(error);
+      if (failure.kind === "exit" && failure.status === 1) {
+        const report = String((error as { stdout?: Buffer | string }).stdout ?? "").trim();
+        if (report) return { status: "error", message: report };
+      }
+      return { status: "error", message: `checkout sync check failed: ${describeGitFailure(failure, "merge check")}` };
     }
   }
 

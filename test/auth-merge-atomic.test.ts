@@ -365,19 +365,61 @@ describe("atomic auth merge", () => {
     expect(result.stderr).not.toContain("MANDIBLE_MERGE_PREPARED");
   });
 
-  it("leaves an untracked collision intact and reports applied-needs-recovery after CAS", () => {
+  it("refuses before the ref advance when a hidden skip-worktree edit would block the checkout sync", () => {
     const base = git(["rev-parse", "main"]);
-    const head = git(["rev-parse", "feature/atomic"]);
+    const shared = git(["ls-tree", "--name-only", "main"]).split("\n")[0]!;
+    git(["checkout", "-q", "feature/atomic"]);
+    write(shared, "changed by the merge\n");
+    const head = commit("change a shared file");
+    git(["checkout", "-q", "main"]);
     const cached = candidate(base, head);
-    write("feature.txt", "local collision\n");
+    git(["update-index", "--skip-worktree", shared]);
+    write(shared, "local edit\n");
+    expect(git(["status", "--porcelain", "--untracked-files=no"])).toBe("");
 
     const result = runAtomic(base, head, cached);
 
-    expect(result.status).toBe(75);
-    expect(git(["rev-parse", "main"])).not.toBe(base);
-    expect(fs.readFileSync(path.join(repo, "feature.txt"), "utf8")).toBe("local collision\n");
-    expect(result.stderr).toContain("MANDIBLE_MERGE_APPLIED");
-    expect(result.stderr).toContain("recovery is required");
+    expect(result.status).toBe(1);
+    expect(git(["rev-parse", "main"])).toBe(base);
+    expect(fs.readFileSync(path.join(repo, shared), "utf8")).toBe("local edit\n");
+    expect(result.stderr).toContain(`${shared}: marked skip-worktree`);
+    expect(result.stderr).toContain(`update-index --no-skip-worktree -- '${shared}'`);
+    expect(result.stderr).toContain("Merge not applied");
+    expect(result.stderr).not.toContain("MANDIBLE_MERGE_PREPARED");
+  });
+
+  it("restores the ref when the checkout changes between the preflight and the ref advance", () => {
+    const base = git(["rev-parse", "main"]);
+    const head = git(["rev-parse", "feature/atomic"]);
+    const cached = candidate(base, head);
+    const realGit = spawnSync("bash", ["-lc", "command -v git"], { encoding: "utf8" }).stdout.trim();
+    const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-atomic-sync-race-"));
+    fs.writeFileSync(path.join(fakeBin, "git"), [
+      "#!/usr/bin/env bash",
+      "if [[ \"$1\" == update-ref && \"$*\" == *\"refs/heads/main\"* && ! -e feature.txt ]]; then",
+      "  printf 'editor wrote this\\n' > feature.txt",
+      "fi",
+      "exec \"$MANDIBLE_REAL_GIT\" \"$@\"",
+      "",
+    ].join("\n"), { mode: 0o755 });
+
+    try {
+      const result = runAtomic(base, head, cached, {
+        PATH: `${fakeBin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+        MANDIBLE_REAL_GIT: realGit,
+      });
+      expect(result.status).toBe(1);
+      expect(git(["rev-parse", "main"])).toBe(base);
+      expect(git(["write-tree"])).toBe(git(["rev-parse", `${base}^{tree}`]));
+      expect(fs.readFileSync(path.join(repo, "feature.txt"), "utf8")).toBe("editor wrote this\n");
+      expect(result.stderr).toContain("feature.txt: untracked file where the merge adds one");
+      expect(result.stderr).toContain("MANDIBLE_MERGE_PREPARED");
+      expect(result.stderr).toContain(`main was restored to ${base.slice(0, 10)}`);
+      expect(result.stderr).not.toContain("MANDIBLE_MERGE_APPLIED");
+      expect(extractAtomicMergeState(result.stderr as string).applied).toBeNull();
+    } finally {
+      fs.rmSync(fakeBin, { recursive: true, force: true });
+    }
   });
 
   it("refuses a CAS race without applying the signed candidate", () => {

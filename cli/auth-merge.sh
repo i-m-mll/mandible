@@ -763,6 +763,12 @@ cas_update_and_sync_target() {
     err "${RED}Target ${target} moved before ref update; compare-and-swap refused.${RESET}"
     return 1
   fi
+  local sync_blockers
+  if ! sync_blockers=$(checkout_sync_check "$expected_sha" "$merge_sha"); then
+    err "$sync_blockers"
+    err "${RED}Merge not applied: the protected checkout could not be synced to it. Nothing was changed; clear the paths above and retry the request.${RESET}"
+    return 1
+  fi
   verify_atomic_merge_signature "$merge_sha" || return 1
   local prepared_marker applied_marker
   prepared_marker="MANDIBLE_MERGE_PREPARED $(jq -nc --arg merge_sha "$merge_sha" --arg base_sha "$expected_sha" --arg head_sha "${MANDIBLE_AUTH_CANDIDATE_HEAD_SHA:-}" --arg tree_sha "${MANDIBLE_AUTH_CANDIDATE_TREE_SHA:-}" '{merge_sha:$merge_sha,base_sha:$base_sha,head_sha:$head_sha,tree_sha:$tree_sha}')"
@@ -776,6 +782,18 @@ cas_update_and_sync_target() {
     err "${RED}Target ${target} moved during ref update; compare-and-swap refused. No worktree was changed.${RESET}"
     return 1
   fi
+  local sync_error
+  if ! sync_error=$(git read-tree -m -u "$expected_sha" "$merge_sha" 2>&1); then
+    restore_unsynced_target "$target" "$expected_sha" "$merge_sha" "$sync_error"
+    return $?
+  fi
+  local merge_tree index_tree
+  merge_tree=$(git rev-parse --verify "${merge_sha}^{tree}") || return 75
+  index_tree=$(git write-tree) || return 75
+  if [[ "$index_tree" != "$merge_tree" ]] || ! tracked_worktree_is_clean || [[ "$(git rev-parse --verify HEAD)" != "$merge_sha" ]]; then
+    err "${RED}Protected worktree did not synchronize cleanly to ${merge_sha}.${RESET}"
+    return 75
+  fi
   if ! git update-ref ORIG_HEAD "$expected_sha"; then
     err "Protected publication succeeded, but its native-hook original-head input could not be recorded; recovery is required."
     return 75
@@ -786,17 +804,28 @@ cas_update_and_sync_target() {
     return 75
   }
   err "$applied_marker"
-  if ! git read-tree -m -u "$expected_sha" "$merge_sha"; then
-    err "${RED}Target ref advanced to ${merge_sha}, but collision-safe protected worktree synchronization was blocked; recovery is required.${RESET}"
+}
+
+checkout_sync_check() {
+  bash "${MANDIBLE_CLI_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}/checkout-sync-check.sh" "$(git rev-parse --show-toplevel)" "$1" "$2"
+}
+
+# The checkout changed between the dry run and the ref advance, so the sync
+# refused. The advanced ref is local and unconsumed: put it back, so the
+# request is either merged and synced or not merged at all.
+restore_unsynced_target() {
+  local target=$1 expected_sha=$2 merge_sha=$3 sync_error=$4 blockers
+  blockers=$(checkout_sync_check "$expected_sha" "$merge_sha") || true
+  if [[ "$(git write-tree 2>/dev/null)" != "$(git rev-parse --verify "${expected_sha}^{tree}")" ]] || \
+     ! git update-ref -m "mandible auth merge ${MANDIBLE_AUTH_REQUEST_ID:-unknown} not synced" \
+       "refs/heads/${target}" "$expected_sha" "$merge_sha"; then
+    err "$sync_error"
+    err "${RED}Target ref advanced to ${merge_sha} and the protected checkout could not follow it, and the ref could not be restored; recovery is required.${RESET}"
     return 75
   fi
-  local merge_tree index_tree
-  merge_tree=$(git rev-parse --verify "${merge_sha}^{tree}") || return 75
-  index_tree=$(git write-tree) || return 75
-  if [[ "$index_tree" != "$merge_tree" ]] || ! tracked_worktree_is_clean || [[ "$(git rev-parse --verify HEAD)" != "$merge_sha" ]]; then
-    err "${RED}Protected worktree did not synchronize cleanly to ${merge_sha}.${RESET}"
-    return 75
-  fi
+  err "${blockers:-$sync_error}"
+  err "${RED}Merge not applied: the protected checkout changed after the preflight and could not follow it. ${target} was restored to ${expected_sha:0:10}; nothing was changed. Clear the paths above and retry the request.${RESET}"
+  return 1
 }
 
 # Resolve the on-disk worktree path linked to a branch, if any.
