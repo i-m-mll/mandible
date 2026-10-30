@@ -1063,9 +1063,9 @@ export function GraphView({
 
   const detailPanelContent = useMemo(() => (
     selectedNodeId && !selectedNode
-      ? <div role="status">{loading ? 'Loading graph focus' : error ? 'Could not load graph focus' : 'Graph focus not found'}: {selectedNodeId}</div>
+      ? graphQuery.isSuccess ? <div role="status">Graph focus not found: {selectedNodeId}</div> : null
       : <GraphDetailPane presentation="sidebar" node={selectedNode} edges={visibleEdges} onNavigate={onNavigate} />
-  ), [onNavigate, selectedNode, visibleEdges, explicitFocus, loading, error, selectedNodeId]);
+  ), [onNavigate, selectedNode, visibleEdges, explicitFocus, graphQuery.isSuccess, selectedNodeId]);
 
   const detailPanelDescriptor = useMemo(() => ({
     id: 'graph-detail',

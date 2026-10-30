@@ -1390,6 +1390,11 @@ export function WorkOverviewView({
   const hasActiveFilters = Boolean(globalBranchFilter || repoFilter);
   return (
     <div className="view work-view">
+      {repoLoadState === 'error' ? (
+        <DetailPaneNotice severity="error" source="work:projects" title="Projects could not be refreshed"
+          actions={<button type="button" onClick={() => { void fetchRepos(showExcluded); }}>Retry</button>}
+        >Could not load projects.</DetailPaneNotice>
+      ) : null}
       {pushState.authPending && (
         <div className="work-auth-status" role="status" aria-live="polite">
           <span aria-hidden="true">!</span>
@@ -1529,7 +1534,7 @@ export function WorkOverviewView({
                       ? `Pushing... (${pushState.completedCount ?? 0}/${pushState.repoCount ?? '?'})`
                       : <><Icon name="pushAll" /> Push All</>}
                 </button>
-                {!canAddProject || !canPushAll ? (
+                {instance && (!canAddProject || !canPushAll) ? (
                   <span className="work-sidebar__capability-note" role="status">
                     Some project actions are {capabilityReason.toLowerCase()}
                   </span>
@@ -1538,20 +1543,13 @@ export function WorkOverviewView({
             </>
           )}
         >
-          {repoLoadState === "error" && repoRows.length > 0 ? (
-            <div role="status">Could not refresh projects. Showing previous results.</div>
-          ) : null}
           <div role="list">
             {repoRows.length === 0 ? (
-              <div className="empty-state">
-                {repoLoadState === 'pending'
-                  ? 'Projects are still loading.'
-                  : repoLoadState === 'error'
-                    ? 'Could not load projects. Try refreshing.'
-                    : hasActiveFilters
+              repoLoadState === 'ready' ? <div className="empty-state">
+                {hasActiveFilters
                   ? 'No projects match these filters.'
                   : 'No projects found. Register a session or add a project.'}
-              </div>
+              </div> : null
             ) : (
               repoRows.map(({ repo, repoId, repoTitle, branches, activity, totalBranches }) => {
                 const repoPath = getRepoPath(repo);

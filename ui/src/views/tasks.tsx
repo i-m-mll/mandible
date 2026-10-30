@@ -1310,11 +1310,7 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
         }
         bodyClassName="tasks-sidebar__list"
       >
-        {loading && !inventory ? (
-          <div className="tasks-sidebar__empty">Loading…</div>
-        ) : error && !inventory ? (
-          <div className="tasks-sidebar__empty">Could not load the inventory.</div>
-        ) : neverRegistered ? (
+        {!inventory ? null : neverRegistered ? (
           <div className="tasks-sidebar__empty">No executor has registered an inventory.</div>
         ) : registeredButEmpty ? (
           <div className="tasks-sidebar__empty">The executor reported no tasks.</div>

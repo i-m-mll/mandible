@@ -270,7 +270,6 @@ export function SpacesSidebar({
   onSelectedSpaceResolved,
 }: SpacesSidebarProps): JSX.Element | null {
   const [groups, setGroups] = useState<SpaceGroup[]>(() => loadCachedGroups());
-  const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
@@ -298,7 +297,6 @@ export function SpacesSidebar({
   // --- data load (grouped read) ---
   useRouteLoad((registerInitialRouteLoad) => {
     let active = true;
-    setLoading(true);
     setLoadError(null);
     const initialLoad = loadGroups()
       .then((next) => {
@@ -310,9 +308,6 @@ export function SpacesSidebar({
       })
       .catch((error: unknown) => {
         if (active) setLoadError(error instanceof Error ? error.message : String(error));
-      })
-      .finally(() => {
-        if (active) setLoading(false);
       });
     registerInitialRouteLoad(initialLoad);
     return () => {
@@ -764,10 +759,6 @@ export function SpacesSidebar({
         />
         {projectReorder.assistive}
 
-        {loading && groups.length === 0 ? (
-          <p className="spaces-tree__status">Loading spaces…</p>
-        ) : null}
-
         {/* TOP-LEVEL GROUP (null-project spaces) above the project headers. */}
         {filteredTopLevel.length > 0 ? (
           <div className="spaces-tree__group spaces-tree__group--top" data-testid="spaces-group-top-level">
@@ -816,7 +807,7 @@ export function SpacesSidebar({
           );
         })}
 
-        {!loading
+        {loaded
           && !loadError
           && filteredTopLevel.length === 0
           && filteredProjectGroups.length === 0 ? (

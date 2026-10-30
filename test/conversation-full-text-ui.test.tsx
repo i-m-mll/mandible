@@ -168,7 +168,7 @@ describe('completed search snapshots in Chat', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Expand Chats' }));
     expect(sidebar().getByText('Prior chat')).toBeTruthy();
     expect(sidebar().getByText('Prior page')).toBeTruthy();
-    expect(screen.getByRole('status').textContent).toContain('Showing previous results');
+    expect(sidebar().queryByRole('status')).toBeNull();
     expect(sidebar().queryByText('No chats')).toBeNull();
     expect(sidebar().queryByText('First match')).toBeNull();
     ready = true;
@@ -201,7 +201,7 @@ describe('completed search snapshots in Chat', () => {
     await tick();
     expect(sidebar().queryByText('No chats')).toBeNull();
     expect(screen.queryByText('No chats in this view')).toBeNull();
-    expect(sidebar().getByRole('status').textContent).toContain('Searching chats');
+    expect(sidebar().queryByRole('status')).toBeNull();
     await tick(525);
     expect(screen.getByRole('button', { name: 'Retry search' })).toBeTruthy();
     expect(screen.queryByText('No chats in this view')).toBeNull();
