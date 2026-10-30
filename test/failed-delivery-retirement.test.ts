@@ -15,7 +15,7 @@ import { authRequestSnapshot } from '../src/auth-request-snapshot.js';
 import { AuthHookManager } from '../src/auth-hooks.js';
 import { systemAction } from '../src/identity/resolver.js';
 import { addAttributionEvidence, createUser, addCredential } from '../src/users/store.js';
-import { migrate } from '../src/db-migrations.js';
+import { CURRENT_SCHEMA_VERSION, migrate } from '../src/db-migrations.js';
 import { AuthQueue } from '../src/auth-queue.js';
 import { acceptedReleaseProducerReferencesAsync } from '../scripts/accepted-release-retention.mjs';
 import type { AuthRequest, AuthLifecycleActor } from '../src/types.js';
@@ -191,7 +191,7 @@ it.each([221, 222])('migrates failed hook evidence unchanged from v%i and admits
     const history = listAuthLifecycleEvents(f.db, f.id);
     expect(f.db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: String(version) });
     migrate(f.db);
-    expect(f.db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: '223' });
+    expect(f.db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: String(CURRENT_SCHEMA_VERSION) });
     expect(f.hook()).toEqual(original);
     expect(authRequestSnapshot(f.db, f.id)).toBe(snapshot);
     expect(listAuthLifecycleEvents(f.db, f.id)).toEqual(history);

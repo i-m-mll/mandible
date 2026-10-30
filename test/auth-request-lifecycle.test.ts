@@ -42,15 +42,7 @@ function requesterFixture() {
   const project = createLedgerProject(db, process.cwd());
   const issue = createLedgerIssue(db, project.project.id, "f15617a", "Auth lifecycle");
   const queue = new AuthQueue({ db });
-  const submit = async (patch: Partial<AuthRequestInput> = {}) => {
-    const head = patch.head_branch ?? "feature/original";
-    if (!patch.supersedes_request_id) {
-      db.prepare(`INSERT INTO work_units
-        (id, issue_id, repo_id, branch, kind, state, created_at, activated_at,
-         ledger_issue_id, owner_user_id, owner_credential_id, custody_generation)
-        VALUES (?, 'f15617a', ?, ?, 'solo', 'committed', 1, 1, ?, ?, ?, 1)`)
-        .run(crypto.randomUUID(), project.project.project_key, head, issue.id, operator.id, credential.id);
-    }
+  const submitExisting = async (patch: Partial<AuthRequestInput> = {}) => {
     return (await queue.submit({ ...AUTH_MERGE_REVIEW,
     command: "mandible auth merge feature/original --into main",
     title: "Original",
@@ -64,7 +56,18 @@ function requesterFixture() {
     ...patch,
   }, operator.id));
   };
-  return { db, queue, operator, credential, otherCredential, actor, submit };
+  const submit = async (patch: Partial<AuthRequestInput> = {}) => {
+    const head = patch.head_branch ?? "feature/original";
+    if (!patch.supersedes_request_id) {
+      db.prepare(`INSERT INTO work_units
+        (id, issue_id, repo_id, branch, kind, state, created_at, activated_at,
+         ledger_issue_id, owner_user_id, owner_credential_id, custody_generation)
+        VALUES (?, 'f15617a', ?, ?, 'solo', 'committed', 1, 1, ?, ?, ?, 1)`)
+        .run(crypto.randomUUID(), project.project.project_key, head, issue.id, operator.id, credential.id);
+    }
+    return submitExisting(patch);
+  };
+  return { db, queue, operator, credential, otherCredential, actor, submit, submitExisting };
 }
 
 describe("auth request immutable lifecycle", () => {
@@ -184,6 +187,36 @@ describe("auth request immutable lifecycle", () => {
     expect(() => db.prepare(
       "DELETE FROM auth_request_lifecycle_events WHERE id = ?",
     ).run(events[1]!.id)).toThrow();
+  });
+
+  it("resubmits the same branch and delivery work unit after withdrawal", async () => {
+    const { db, queue, actor, submit, submitExisting } = requesterFixture();
+    const original = await submit();
+    const custodyBefore = db.prepare("SELECT * FROM work_units WHERE id = ?")
+      .get(original.custody_work_unit_id!);
+    await queue.withdraw(original.id, "Revise the submission", actor, 1, 1);
+    expect(db.prepare("SELECT * FROM work_units WHERE id = ?")
+      .get(original.custody_work_unit_id!)).toEqual({ ...custodyBefore!, auth_request_id: null });
+    expect((await queue.getRequest(original.id))?.custody_work_unit_id).toBe(original.custody_work_unit_id);
+
+    const resubmitted = await submitExisting();
+    expect(resubmitted.id).not.toBe(original.id);
+    expect(resubmitted.status).toBe("pending");
+    expect(resubmitted.custody_work_unit_id).toBe(original.custody_work_unit_id);
+    expect(db.prepare("SELECT auth_request_id FROM work_units WHERE id = ?")
+      .get(original.custody_work_unit_id!)).toEqual({ auth_request_id: resubmitted.id });
+    expect((await queue.getRequest(original.id))?.status).toBe("withdrawn");
+  });
+
+  it("keeps rejected delivery work units bound and blocks resubmission", async () => {
+    const { db, queue, submit, submitExisting } = requesterFixture();
+    const original = await submit();
+    await queue.reject(original.id, "Requires operator review");
+
+    await expect(submitExisting()).rejects.toMatchObject({ code: "custody_required" });
+    expect(db.prepare("SELECT auth_request_id FROM work_units WHERE id = ?")
+      .get(original.custody_work_unit_id!)).toEqual({ auth_request_id: original.id });
+    expect((await queue.getRequest(original.id))?.status).toBe("rejected");
   });
 
   it("binds delivery custody for a request that only closes its issue", async () => {

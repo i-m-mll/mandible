@@ -3458,6 +3458,16 @@ export class AuthQueue {
         if (result.changes !== 1) {
           throw new AuthQueueError("invalid_status", "Request changed before withdrawal completed.");
         }
+        if (custody) {
+          const released = mutateWorkUnit(this.db, custody.id, () => this.db.prepare(
+            `UPDATE work_units SET auth_request_id = NULL
+             WHERE id = ? AND auth_request_id = ?
+               AND owner_user_id IS ? AND owner_credential_id IS ? AND custody_generation = ?`,
+          ).run(custody.id, request.id, custody.owner_user_id, custody.owner_credential_id, custody.custody_generation));
+          if (released.changes !== 1) {
+            throw new AuthQueueError("custody_conflict", "Work-unit custody changed before withdrawal completed.");
+          }
+        }
         appendAuthLifecycleEvent(this.db, {
           requestId: request.id,
           eventType: "withdrawn",
