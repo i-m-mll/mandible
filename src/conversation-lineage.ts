@@ -27,7 +27,7 @@ export interface LineageEvidence extends ConversationParent {
 /**
  * The row that stands for `child`'s declared parent session. A row that is
  * itself a declared child of the same session (a Claude subagent transcript
- * carries its parent's session id) is never a parent.
+ * carries its parent's session id) is never a parent, nor is a retired alias.
  */
 const DECLARED_PARENT_ROW_SQL = `(
   SELECT parent.id
@@ -36,6 +36,7 @@ const DECLARED_PARENT_ROW_SQL = `(
      AND parent.session_id = conversations.parent_session_id
      AND parent.id != conversations.id
      AND parent.parent_session_id IS NOT parent.session_id
+     AND NOT EXISTS (SELECT 1 FROM conversation_identity_aliases alias WHERE alias.alias_id = parent.id)
    ORDER BY parent.is_sidechain ASC, parent.started_at ASC, parent.created_at ASC, parent.id ASC
    LIMIT 1
 )`;

@@ -16,7 +16,7 @@ import type {
 import type { ConversationParent } from "../conversation-lineage.js";
 import { attachTranscriptChatItem, firstUserMessageOpening } from "./types.js";
 import { normalizeClaudeTranscriptUsage } from "./context-usage.js";
-import { parseJsonlStringRecords, readJsonlFileRecords } from "./jsonl.js";
+import { findJsonlRecord, parseJsonlStringRecords, readJsonlFileRecords } from "./jsonl.js";
 
 // --- Raw JSONL record shapes ---
 
@@ -182,6 +182,19 @@ function claudeTranscriptLineage(
   return legacyAgentId
     ? { parent: { source: "claude_code", sessionId }, agentId: legacyAgentId }
     : { parent: null, agentId: null };
+}
+
+/**
+ * The provider-authored session id the parser would assign, read from the
+ * transcript's prefix without parsing it. Null when the prefix carries none.
+ */
+export async function loadClaudeNativeSessionId(filePath: string): Promise<string | null> {
+  const record = await findJsonlRecord<ClaudeRecord>(
+    filePath,
+    (candidate) => candidate.type !== "file-history-snapshot" && !candidate.isSnapshotUpdate
+      && Boolean(candidate.sessionId || candidate.session_id),
+  );
+  return record ? record.sessionId || record.session_id || null : null;
 }
 
 // --- Parser ---
