@@ -2213,6 +2213,11 @@ export const MIGRATIONS: readonly Migration[] = [
     AUTH_HOOK_EXECUTIONS_INDEX_SQL,
   ] },
   { version: 223, name: "durable_work_unit_assignment", statements: [...WORK_UNIT_ASSIGNMENT_SCHEMA_SQL] },
+  { version: 224, name: "release_withdrawn_work_unit_custody", statements: [
+    `UPDATE work_units SET auth_request_id = NULL
+     WHERE resolved_at IS NULL
+       AND auth_request_id IN (SELECT id FROM auth_requests WHERE status = 'withdrawn')`,
+  ] },
 ];
 
 /**
