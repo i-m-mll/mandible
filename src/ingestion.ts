@@ -17,7 +17,7 @@ import { getUserHome } from "./platform-paths.js";
 import { projectChildRetentionActivity } from "./conversations/retention-state.js";
 import { reconcileIngestedChildRetention } from "./conversations/retention-ingestion.js";
 import { foldConversationIdentity, resolveConversationId } from './conversations/identity.js';
-import { createRelocationCandidateFinder, sourcePathsRelocationEquivalent } from "./conversations/relocation.js";
+import { createRelocationCandidateFinder, sourcePathRespelling, sourcePathsRelocationEquivalent } from "./conversations/relocation.js";
 import { loadClaudeNativeSessionId } from "./parsers/claude.js";
 import { broadcast } from "./sse.js";
 import { compressContentAsync } from "./compression.js";
@@ -1835,8 +1835,8 @@ function foldRelocatedDuplicate(
 }
 
 /**
- * If a missing source file was relocated by its provider, follow the move and
- * return its new path. A row ingested at the new path before the move was
+ * If a missing source file was relocated by its provider, or survives only as
+ * a stale letter-case spelling, follow the move and return its new path. A row ingested at the new path before the move was
  * recognized folds into the original. Returns null when the file is really
  * gone, leaving normal cleanup to the caller.
  */
@@ -1845,9 +1845,20 @@ async function relocateMovedSource(
   filePath: string,
   findCandidates: RelocationCandidateFinder,
 ): Promise<string | null> {
-  const candidates = await findCandidates(filePath);
+  let candidates = await findCandidates(filePath);
   if (candidates.length === 0) return null;
-  if (await logicalSourceExists(filePath)) return null;
+  if (await logicalSourceExists(filePath)) {
+    // A case-only rename on a case-insensitive volume leaves the old spelling
+    // resolvable; the file now lives under its on-disk spelling.
+    const respelled = await sourcePathRespelling(filePath);
+    if (!respelled) return null;
+    candidates = [respelled];
+  }
+  const matches: Array<{
+    candidate: string;
+    proof: NonNullable<Awaited<ReturnType<typeof proveRelocationCandidate>>>;
+    row: { id: string; source_id: string | null };
+  }> = [];
   for (const candidate of candidates) {
     if (!await logicalSourceExists(candidate)) continue;
     let proof: Awaited<ReturnType<typeof proveRelocationCandidate>>;
@@ -1862,7 +1873,7 @@ async function relocateMovedSource(
       continue;
     }
     if (!proof) continue;
-    const match = db.prepare(`
+    const row = db.prepare(`
       SELECT c.id, ${LATEST_PROVIDER_SOURCE_SQL} AS source_id
         FROM conversations c
        WHERE c.source_path = ? AND c.source = ? AND c.session_id = ? AND ${NOT_IDENTITY_ALIAS_SQL}
@@ -1876,7 +1887,7 @@ async function relocateMovedSource(
        c.updated_at DESC, c.id
        LIMIT 1
     `).get(filePath, proof.source, proof.sessionId, filePath) as { id: string; source_id: string | null } | undefined;
-    if (!match) {
+    if (!row) {
       logger("info", "ingestion_relocation_identity_mismatch", {
         from: filePath,
         candidate,
@@ -1885,48 +1896,62 @@ async function relocateMovedSource(
       });
       continue;
     }
-    const duplicates = db.prepare(`
-      SELECT c.id FROM conversations c
-       WHERE c.source_path = ? AND c.source = ? AND c.session_id = ? AND c.id != ? AND ${NOT_IDENTITY_ALIAS_SQL}
-       ORDER BY c.created_at, c.id
-    `).all(candidate, proof.source, proof.sessionId, match.id) as Array<{ id: string }>;
-    try {
-      for (const duplicate of duplicates) foldRelocatedDuplicate(db, match.id, duplicate.id);
-    } catch (error) {
-      // Conflicting controller state cannot be merged automatically; both rows
-      // stay as they are and the move is not followed.
-      logger("warn", "ingestion_relocation_fold_refused", {
-        from: filePath,
-        candidate,
-        conversation_id: match.id,
-        duplicate_ids: duplicates.map((duplicate) => duplicate.id),
-        error: String(error),
-      });
-      continue;
-    }
-    if (!repointConversationSource(db, filePath, candidate, match.id, match.source_id)) continue;
-    const stat = await logicalSourceStat(candidate);
-    await refreshAppendState(db, candidate, stat, await countCompleteLines(candidate));
-    if (proof.blocks) reconcileIngestedChildRetention(db, match.id, candidate, proof.blocks);
-    // A bulk move relocates many transcripts at once. The durable source alias
-    // is the record of each move; reconcile summarizes its relocations per pass.
-    logger("debug", "ingestion_source_relocated", {
-      from: filePath,
-      to: candidate,
-      conversation_id: match.id,
-      session_id: proof.sessionId,
-      folded_duplicates: duplicates.map((duplicate) => duplicate.id),
-    });
-    return candidate;
+    matches.push({ candidate, proof, row });
   }
-  return null;
+  // The same transcript under several live keys (two worktrees, a backup
+  // copy) leaves no single destination; following any one would pair rows
+  // arbitrarily, so the move is declined.
+  if (matches.length !== 1) {
+    if (matches.length > 1) {
+      logger("warn", "ingestion_relocation_candidate_ambiguous", {
+        from: filePath,
+        candidates: matches.map(({ candidate }) => candidate),
+      });
+    }
+    return null;
+  }
+  const [{ candidate, proof, row: match }] = matches;
+  const duplicates = db.prepare(`
+    SELECT c.id FROM conversations c
+     WHERE c.source_path = ? AND c.source = ? AND c.session_id = ? AND c.id != ? AND ${NOT_IDENTITY_ALIAS_SQL}
+     ORDER BY c.created_at, c.id
+  `).all(candidate, proof.source, proof.sessionId, match.id) as Array<{ id: string }>;
+  try {
+    for (const duplicate of duplicates) foldRelocatedDuplicate(db, match.id, duplicate.id);
+  } catch (error) {
+    // Conflicting controller state cannot be merged automatically; both rows
+    // stay as they are and the move is not followed.
+    logger("warn", "ingestion_relocation_fold_refused", {
+      from: filePath,
+      candidate,
+      conversation_id: match.id,
+      duplicate_ids: duplicates.map((duplicate) => duplicate.id),
+      error: String(error),
+    });
+    return null;
+  }
+  if (!repointConversationSource(db, filePath, candidate, match.id, match.source_id)) return null;
+  const stat = await logicalSourceStat(candidate);
+  await refreshAppendState(db, candidate, stat, await countCompleteLines(candidate));
+  if (proof.blocks) reconcileIngestedChildRetention(db, match.id, candidate, proof.blocks);
+  // A bulk move relocates many transcripts at once. The durable source alias
+  // is the record of each move; reconcile summarizes its relocations per pass.
+  logger("debug", "ingestion_source_relocated", {
+    from: filePath,
+    to: candidate,
+    conversation_id: match.id,
+    session_id: proof.sessionId,
+    folded_duplicates: duplicates.map((duplicate) => duplicate.id),
+  });
+  return candidate;
 }
 
 /**
  * The reverse of `relocateMovedSource`: a transcript seen at a path no row
  * owns may be a relocated one whose move has not been observed yet. Adopt the
  * single row with the same native identity whose relocation-equivalent path
- * has vanished, so the move keeps its conversation id.
+ * has vanished, or now resolves to this file only through case folding, so the
+ * move keeps its conversation id.
  */
 async function adoptRelocatedPredecessor(
   db: ReturnType<typeof getDb>,
@@ -1943,7 +1968,7 @@ async function adoptRelocatedPredecessor(
   const predecessors: typeof rows = [];
   for (const row of rows) {
     if (!sourcePathsRelocationEquivalent(row.source_path, filePath)) continue;
-    if (await logicalSourceExists(row.source_path)) continue;
+    if (await logicalSourceExists(row.source_path) && await sourcePathRespelling(row.source_path) !== filePath) continue;
     predecessors.push(row);
   }
   if (predecessors.length !== 1) {

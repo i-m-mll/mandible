@@ -117,6 +117,43 @@ describe("Claude project rekey", () => {
     expect(availability(original.id)).toEqual(["available"]);
   });
 
+  it("follows a case-only key rename and folds a twin made under the new spelling", async () => {
+    await reconcile();
+    const before = visible();
+    const [original] = before;
+    const recased = path.join(projects, "-tmp-Old-Place-Proj");
+
+    // On a case-insensitive volume the new spelling resolves before the
+    // rename, which is how case-only renames produced twins.
+    await triggerExactPathIngest(main(recased));
+    fs.renameSync(oldDir, recased);
+    await reconcile();
+
+    const after = visible();
+    expect(after.map(({ id, source_path }) => ({ id, source_path }))).toEqual([
+      { id: original.id, source_path: main(recased) },
+      { id: before[1].id, source_path: subagent(recased) },
+    ]);
+    expect(availability(original.id)).toEqual(["available"]);
+    const twin = db.prepare("SELECT alias_id FROM conversation_identity_aliases").get() as { alias_id: string } | undefined;
+    if (twin) expect(resolveConversationId(db, twin.alias_id)).toBe(original.id);
+  });
+
+  it("declines to pair rows when the same transcript lived under two keys", async () => {
+    const sibling = path.join(projects, "-tmp-old-place-proj-worktrees-b");
+    fs.cpSync(oldDir, sibling, { recursive: true });
+    await reconcile();
+    const before = db.prepare("SELECT id, source_path FROM conversations ORDER BY id").all();
+
+    fs.renameSync(oldDir, newDir);
+    fs.renameSync(sibling, path.join(projects, "-tmp-new-proj-worktrees-b"));
+    await reconcile();
+
+    expect(db.prepare("SELECT COUNT(*) AS n FROM conversation_identity_aliases").get()).toEqual({ n: 0 });
+    expect(db.prepare(`SELECT id, source_path FROM conversations WHERE id IN (${before.map(() => "?").join(",")}) ORDER BY id`)
+      .all(...before.map((row) => (row as { id: string }).id))).toEqual(before);
+  });
+
   it("folds a duplicate ingested at the new key back into the original id", async () => {
     await reconcile();
     const [original] = visible();
