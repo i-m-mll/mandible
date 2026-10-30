@@ -46,6 +46,8 @@ Approval of a request within that scope requires a passing result for its exact 
 
 A record is written when a run starts, as `running`, and ends `passed` or `failed` with a reason. A newer candidate or a resolution of the request aborts the open run and fails it with the reason. A run a daemon restart interrupted is failed at the next start and runs again. The request view shows the state (`none`, `running`, `passed`, `failed` or `stale`) with any reason. `mandible auth acceptance show <request>` reports it with the local time the current run started, and `mandible auth acceptance run <request>` reruns a failed or stale result after a cause outside the candidate is fixed.
 
+A failure reason is written for the approver, in product terms: it says what was checked, with the values compared where there are any, and ends by saying whether the failure points at the branch (fix it), at the acceptance environment (rerun), or could be either (rerun once; a repeat points at the branch). `scripts/acceptance-failure.mjs` owns that wording. A check that knows its cause throws an `AcceptanceFailure` with its fault and compared values. Any other error is described by the stage that was running when it happened. The result's `failure` field keeps the fault, the raw detail and the compared values.
+
 A passing result is a pre-merge package/runtime assessment. It does not attest
 the SMAppService upgrade transition, installation adoption, delivery convergence,
 native Connections setup, secure gateway trust, or every product workflow.

@@ -20,8 +20,9 @@ import { generatedStorage } from './generated-storage.mjs';
 import Database from '../src/sqlite.ts';
 import { readBuildRevision } from './build-revision.mjs';
 import { acceptanceResultPath } from './acceptance-result.mjs';
-import { acceptanceDeadline } from './acceptance-deadline.mjs';
-import { observeRuntimeHealthCoverage, RuntimeHealthObservationError } from '../src/runtime-health-contract.ts';
+import { acceptanceDeadline, acceptanceBudgetExhausted } from './acceptance-deadline.mjs';
+import { acceptanceFailure, compactFailure, describeAcceptanceFailure, sentence } from './acceptance-failure.mjs';
+import { observeRuntimeHealthCoverage, RuntimeHealthObservationError, EVENT_LOOP_STALL_BUDGET_MS } from '../src/runtime-health-contract.ts';
 import { gatewayCaddyfile, GATEWAY_GRACE_SECONDS } from './gateway-config.mjs';
 import { resolveAppSigning, requireNativeAppSigning } from './app-signing.mjs';
 
@@ -33,7 +34,7 @@ const applicationPolicyProgram = '/usr/sbin/taskpolicy';
 export function acceptanceApplicationPolicy() {
   const budget = acceptanceDeadline();
   budget.remaining('total');
-  if (process.platform !== 'darwin') throw new Error('Packaged desktop acceptance requires macOS; evidence is unavailable on this platform.');
+  if (process.platform !== 'darwin') throw acceptanceFailure('environment', `Candidate acceptance runs the packaged desktop app, which needs macOS; this machine runs ${process.platform}.`);
   const scope = process.env.MANDIBLE_ACCEPTANCE_CLOCK_SCOPE ?? budget.reading().scope;
   if (process.env.MANDIBLE_ACCEPTANCE_APPLICATION_POLICY_PID !== String(process.pid)) {
     process.execve(applicationPolicyProgram, [applicationPolicyProgram, '-a', process.execPath, ...process.execArgv, ...process.argv.slice(1)], {
@@ -42,12 +43,26 @@ export function acceptanceApplicationPolicy() {
       MANDIBLE_ACCEPTANCE_APPLICATION_POLICY_PID: String(process.pid),
       MANDIBLE_ACCEPTANCE_CLOCK_SCOPE: scope,
     });
-    throw new Error('Candidate application-policy exec unexpectedly returned before owned state');
+    throw acceptanceFailure('environment', 'Acceptance could not relaunch itself under the macOS application policy (taskpolicy).');
   }
   return { ...budget, reading: () => ({ ...budget.reading(), scope }) };
 }
 export const acceptanceOwnedOutputs = ['home', 'build.log', 'daemon.log', 'desktop.log', 'gateway.log', 'Caddyfile'].map(path => ({ path, kind: 'generated' }));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+const instant = ms => Number.isFinite(ms) ? new Date(ms).toISOString() : String(ms);
+const exit = child => child.signalCode ? `signal ${child.signalCode}` : `exit code ${child.exitCode}`;
+const restarted = () => acceptanceFailure('either', 'The packaged daemon restarted during acceptance (its startup epoch changed), which usually means it crashed; the daemon log excerpt in the acceptance result shows why.');
+const stopped = () => acceptanceFailure('environment', 'Acceptance was stopped before it finished, because its time ran out or the daemon cancelled the run.');
+const interaction = 'In the packaged app, acceptance skips the optional-integrations setup, changes the app theme in Settings, completes the setup, and reloads twice, checking after each step that the change persisted.';
+const interactionReport = [
+  [evidence => evidence.rendered, 'the edited theme showing after reload'],
+  [evidence => evidence.edit, 'the Settings edit'],
+  [evidence => evidence.setup?.skipped === 'skipped', 'setup recorded as skipped'],
+  [evidence => evidence.setup?.completed === 'complete', 'setup recorded as complete'],
+  [evidence => evidence.setup?.reloads === 2, 'both reloads'],
+  [evidence => evidence.setup?.promptDismissedAfterReload, 'the setup prompt staying dismissed after reload'],
+  [evidence => evidence.setup?.integrationsUnchanged, 'integrations left unchanged by setup'],
+];
 const sha256 = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
 function command(binary, args, options = {}) {
@@ -74,7 +89,7 @@ export function compactAcceptanceResult(result) {
   const checks = result.checks ?? {};
   const route = checks.route_cost;
   return { schema: result.schema, truncated: true, status: result.status, candidate: result.candidate, binding: result.binding, scope: result.scope,
-    budget: result.budget, phases: result.phases, error: result.error?.slice(0, 512), cleanup_error: result.cleanup_error?.slice(0, 512), receipt: result.receipt,
+    budget: result.budget, phases: result.phases, error: result.error?.slice(0, 1024), failure: compactFailure(result.failure), cleanup_error: result.cleanup_error?.slice(0, 512), receipt: result.receipt,
     checks: { readiness: checks.readiness, desktop_interaction: checks.desktop_interaction, health_coverage: checks.health_coverage,
       log_digest: checks.log_digest, log_bytes: checks.log_bytes, cleanup: checks.cleanup,
       initial_transport_error: checks.initial_transport_error,
@@ -83,6 +98,18 @@ export function compactAcceptanceResult(result) {
         progress: route.progress, counts: route.counts, pending_confirmations: route.pending_confirmations?.slice(0, 32),
         routes_not_run: route.routes_not_run?.slice(0, 32), source_stderr: route.source_stderr?.slice(-1000) } : route,
     } };
+}
+
+/**
+ * The app's completion time, in whole milliseconds, which must fall within the
+ * health observation. Flooring keeps a sub-millisecond mtime from rounding
+ * past the clock reading it is compared with.
+ */
+export function interactionCompletion(evidenceMtimeMs, daemonReadyAt, checkedAt) {
+  const completedAt = Math.floor(evidenceMtimeMs);
+  if (Number.isFinite(completedAt) && completedAt >= daemonReadyAt && completedAt <= checkedAt) return completedAt;
+  throw acceptanceFailure('environment', `Acceptance monitors the daemon's health for as long as the packaged app works, but the app's Settings edit is dated ${instant(completedAt)}, outside the period acceptance monitored: from the daemon's readiness at ${instant(daemonReadyAt)} to ${instant(checkedAt)}, when it found the app's result. The system clock most likely moved during the run.`,
+    { daemon_ready_at: daemonReadyAt, interaction_completed_at: evidenceMtimeMs, checked_at: checkedAt });
 }
 
 export function createAcceptanceHome(home) {
@@ -104,9 +131,10 @@ async function verifyPackagedUpdaterEntrypoint({ resources, runtime, environment
     if (error.exitCode === 1 && error.processGroupSettled && error.stderr?.trim() === 'Runtime handoff binding is malformed or changed.') {
       return { status: 'passed', exit_code: 1, refusal: error.stderr.trim() };
     }
-    throw new Error(`Packaged updater did not reach its journal-validation boundary: ${error.stderr || error.message}`);
+    if (error.timedOut) throw error;
+    throw acceptanceFailure('candidate', `The packaged updater was given a deliberately invalid handoff journal and should have refused it with "Runtime handoff binding is malformed or changed.", but it ended differently: ${sentence(error.stderr?.trim() || error.message)}`);
   }
-  throw new Error('Packaged updater accepted an invalid journal.');
+  throw acceptanceFailure('candidate', 'The packaged updater accepted a deliberately invalid handoff journal; it must refuse one.');
 }
 
 export function diagnosticReplayPackage(receiptFile, app) {
@@ -155,6 +183,12 @@ export function assessAcceptanceLogs(text, context) {
   return { failures: [...failures, ...diagnostics.health_events.retained.map(entry => `Runtime health event: ${JSON.stringify(entry)}`)], diagnostics };
 }
 
+const healthFindings = {
+  event_loop_stall: sample => `While the packaged app ran, the daemon's event loop was blocked for ${sample.maxMs} ms at once; acceptance allows less than ${EVENT_LOOP_STALL_BUDGET_MS} ms. Blocks that long usually come from daemon code doing slow synchronous work, though a heavily loaded machine can cause them.`,
+  event_loop_lag: () => "While the packaged app ran, the daemon raised its event-loop lag warning: requests waited noticeably before being handled.",
+  memory_warning: () => 'While the packaged app ran, the daemon raised its memory warning.',
+};
+
 export async function observeAcceptanceHealth({
   probe,
   now = Date.now,
@@ -168,7 +202,7 @@ export async function observeAcceptanceHealth({
     probe,
     healthOf: value => value,
     validate: (value, initial) => {
-      if (value.startup_epoch !== initial.startup_epoch) throw new Error('Daemon startup epoch changed during acceptance observation.');
+      if (value.startup_epoch !== initial.startup_epoch) throw restarted();
     },
     now,
     wait,
@@ -181,13 +215,13 @@ export async function observeAcceptanceHealth({
     periodic_windows_completed: Math.max(0, (result.samples.last.eventLoop?.sequence ?? 0) - (result.samples.initial.eventLoop?.sequence ?? 0)) });
   // A performance finding on the owned fixture fails acceptance.
   const [finding] = result.performance.findings;
-  if (finding) throw new RuntimeHealthObservationError(finding.code, finding.message, { observation: result.observation, performance: result.performance });
+  if (finding) throw Object.assign(new RuntimeHealthObservationError(finding.code, healthFindings[finding.code](finding.sample), { observation: result.observation, performance: result.performance }), { acceptanceFault: 'either' });
   return result.value;
 }
 
 export function copyAcceptanceCa(sourceHome, home, { timeoutMs = 5000 } = {}) {
   const source = localCaPaths(sourceHome);
-  if (assertLocalCaIdentity(source).state !== 'trusted') throw new Error('Acceptance requires an already trusted installation CA; run explicit secure-local-connections setup first.');
+  if (assertLocalCaIdentity(source).state !== 'trusted') throw acceptanceFailure('environment', "Acceptance serves the packaged app over HTTPS with this installation's local certificate authority, which is not trusted yet; set up secure local connections first.");
   probeCurrentMacOsTrust(source, { timeoutMs });
   const ca = localCaPaths(home);
   fs.mkdirSync(path.dirname(ca.installationAuthority), { recursive: true });
@@ -209,12 +243,12 @@ export function acceptanceHealth(origin, rootCert, signal) {
       response.on('error', reject);
       response.on('end', () => {
         try {
-          if (response.statusCode !== 200) throw new Error(`Health HTTPS ${response.statusCode}`);
+          if (response.statusCode !== 200) throw new Error(`The daemon's health endpoint answered HTTP ${response.statusCode} through the HTTPS gateway${response.statusCode === 502 ? ', meaning the gateway could not reach the daemon' : ''}.`);
           resolve(JSON.parse(bytes));
         } catch (error) { reject(error); }
       });
     });
-    request.setTimeout(1500, () => request.destroy(new Error('Acceptance HTTPS health timed out')));
+    request.setTimeout(1500, () => request.destroy(new Error("The daemon's health endpoint did not answer within 1.5 seconds.")));
     if (signal) {
       const abort = () => request.destroy(signal.reason instanceof Error ? signal.reason : new Error('Acceptance health observation aborted'));
       if (signal.aborted) abort();
@@ -246,19 +280,19 @@ export function loopbackListening(port) {
  */
 export async function awaitReadiness(probe, isReady, { timeout, description, interval = 100, pending = readinessPending }) {
   const end = Date.now() + timeout;
-  let last = 'no probe completed';
+  let last = 'no attempt completed';
   while (Date.now() < end) {
     try {
       const value = await probe();
       if (isReady(value)) return value;
-      last = 'answered, not ready';
+      last = 'it answered but was not ready';
     } catch (error) {
       if (!pending(error)) throw error;
       last = error.message;
     }
     await delay(interval);
   }
-  throw new Error(`${description} did not complete within ${timeout}ms; last observation: ${last}`);
+  throw new Error(`${description} (waited ${timeout} ms; last observation: ${last}).`);
 }
 
 export function awaitAcceptanceGatewayReadiness(probe, isReady, { onInitialTlsError = () => {}, ...options }) {
@@ -304,23 +338,23 @@ async function freePort() {
   return port;
 }
 
-async function until(predicate, timeout, description) {
+async function until(predicate, timeout, failure, fault = 'either') {
   const end = Date.now() + timeout;
   while (Date.now() < end) {
     if (await predicate()) return;
     await delay(100);
   }
-  throw new Error(`${description} did not complete within ${timeout}ms`);
+  throw acceptanceFailure(fault, `${failure} (waited ${timeout} ms)`);
 }
 
-export async function stopOwned(child, remaining) {
+export async function stopOwned(child, remaining, label = 'owned process') {
   if (!child || child.exitCode !== null || child.signalCode !== null) return;
   const requestedAt = Date.now();
   const signalled = child.kill('SIGTERM');
-  try { await until(() => child.exitCode !== null || child.signalCode !== null, Math.max(1, remaining() - 1000), 'Owned process shutdown'); }
+  try { await until(() => child.exitCode !== null || child.signalCode !== null, Math.max(1, remaining() - 1000), `The ${label} did not exit after acceptance asked it to stop`); }
   catch (error) {
     child.kill('SIGKILL');
-    await until(() => child.exitCode !== null || child.signalCode !== null, Math.min(1000, remaining()), 'Owned process termination');
+    await until(() => child.exitCode !== null || child.signalCode !== null, Math.min(1000, remaining()), `The ${label} did not exit after acceptance killed it`);
     throw error;
   }
   if (signalled) return { pid: child.pid, signal: 'SIGTERM', requestedAt, exitedAt: Date.now(),
@@ -357,11 +391,11 @@ export async function finalizeAcceptance({ metadataFile, result, candidateBindin
     if (pendingPackage && !accepted) {
       try {
         result.checks.package_cleanup = await disposePendingRelease(pendingPackage, testedPackageDigest, 'Candidate acceptance did not pass.');
-        if (result.checks.package_cleanup.action !== 'delete-owned' || result.checks.package_cleanup.remaining?.length) throw new Error('Pending package cleanup preserved owned material.');
+        if (result.checks.package_cleanup.action !== 'delete-owned' || result.checks.package_cleanup.remaining?.length) throw new Error('some of its files remain.');
       } catch (error) {
         if (error.code === 'PROCESS_LOCK_LOST') throw error;
         result.status = 'failed';
-        result.cleanup_error = [result.cleanup_error, `Pending package preserved: ${error.message}`].filter(Boolean).join('; ');
+        result.cleanup_error = [result.cleanup_error, `The built package could not be fully deleted: ${error.message}`].filter(Boolean).join('; ');
         result.checks.package_cleanup ??= { action: 'skip', reason: error.message, handle: { root: pendingPackage.root, runId: pendingPackage.runId } };
       }
     }
@@ -376,7 +410,7 @@ export async function finalizeAcceptance({ metadataFile, result, candidateBindin
     result.checks.cleanup = cleanupOwnedRun(metadataFile, { apply: true });
     if (result.checks.cleanup.action !== 'delete-owned' || result.checks.cleanup.remaining?.length) result.status = 'failed';
     result.budget = reading();
-    if (Date.now() >= deadline.cutoffs.report) { result.status = 'failed'; result.cleanup_error = 'Acceptance report budget exhausted during cleanup/receipt.'; }
+    if (Date.now() >= deadline.cutoffs.report) { result.status = 'failed'; result.cleanup_error = 'The time reserved for reporting the result ran out during cleanup.'; }
     result.receipt = acceptedReference || receipt;
 
   } catch (error) { if (error.code === 'PROCESS_LOCK_LOST') throw error; result.status = 'failed'; result.cleanup_error = error.message; }
@@ -401,7 +435,7 @@ async function main(budget) {
   const parents = boundedCommand('git', ['show', '-s', '--format=%P', candidate]).split(' ');
   const candidateBinding = { pin_sha: candidate, tree_sha: boundedCommand('git', ['rev-parse', `${candidate}^{tree}`]),
     base_sha: process.env.MANDIBLE_ACCEPTANCE_BASE || parents[0], head_sha: process.env.MANDIBLE_ACCEPTANCE_HEAD || parents[1] || candidate };
-  if (boundedCommand('git', ['status', '--porcelain', '--untracked-files=all'])) throw new Error('Candidate acceptance requires a clean committed checkout.');
+  if (boundedCommand('git', ['status', '--porcelain', '--untracked-files=all'])) throw acceptanceFailure('environment', 'The acceptance checkout of the candidate has uncommitted or untracked files, so a build there would not be the exact candidate.');
   const runtime = boundedCommand('/bin/sh', [path.join(root, 'scripts', 'bun-runtime.sh')]);
   const buildEnv = { ...process.env, GIT_OPTIONAL_LOCKS: '0', PATH: `${path.dirname(runtime)}${path.delimiter}${process.env.PATH}` };
   const cache = path.join(os.homedir(), '.cache', 'mandible', 'acceptance');
@@ -413,7 +447,7 @@ async function main(budget) {
   } else await reconcileGeneratedScratch(cache, { apply: true, until: Math.min(Date.now() + 2000, budget.cutoffs.preparation) });
   const run = fs.mkdtempSync(path.join(cache, 'candidate-'));
   const project = option('--project'); const workUnit = option('--work-unit');
-  if (!project || !workUnit) { fs.rmdirSync(run); throw new Error('Candidate acceptance requires --project <canonical-id> and --work-unit <canonical-id>'); }
+  if (!project || !workUnit) { fs.rmdirSync(run); throw acceptanceFailure('environment', 'Acceptance was started without the project and work unit to record its result under (--project and --work-unit).'); }
   return withOwnedRunLock(run, async () => {
   const nonce = randomBytes(32).toString('hex');
   const instanceId = `acceptance-${nonce.slice(0, 16)}`;
@@ -447,6 +481,14 @@ async function main(budget) {
     }
     finally { result.phases[name].elapsed_ms = Date.now() - start; }
   };
+  const stage = () => Object.keys(result.phases).at(-1) ?? 'startup';
+  const recordFailure = (error, at = stage()) => {
+    if (result.error) return;
+    const described = describeAcceptanceFailure(error, at);
+    result.error = described.text;
+    result.failure = { fault: described.fault, detail: described.detail, ...(described.values ? { values: described.values } : {}),
+      ...(error?.code ? { code: error.code } : {}), ...(error?.evidence ? { evidence: error.evidence } : {}) };
+  };
   if (diagnostic) result.diagnostic = { qualifying: false, source: diagnostic, deadline_ms: 60_000 };
   let daemon, desktop, gateway, stallProbe, diagnosticDeadline, testedPackageDigest, pendingPackage;
   let passiveHealth, passiveError;
@@ -466,15 +508,20 @@ async function main(budget) {
     return child;
   };
   let interrupted = false;
-  const interrupt = () => { interrupted = true; interactionController.abort(new Error('Acceptance interrupted or deadline reached.')); daemon?.kill('SIGTERM'); desktop?.kill('SIGTERM'); gateway?.kill('SIGTERM'); stallProbe?.kill('SIGTERM'); };
+  const interrupt = () => { interrupted = true; interactionController.abort(stopped()); daemon?.kill('SIGTERM'); desktop?.kill('SIGTERM'); gateway?.kill('SIGTERM'); stallProbe?.kill('SIGTERM'); };
   process.once('SIGINT', interrupt); process.once('SIGTERM', interrupt);
-  const deadlineTimer = setTimeout(() => { result.error ??= 'Acceptance work budget exhausted; finalization reserve started.'; interrupt(); }, budget.remaining());
+  const deadlineTimer = setTimeout(() => { recordFailure(acceptanceBudgetExhausted('work')); interrupt(); }, budget.remaining());
   try {
     let builtApp = diagnostic?.app;
     if (!diagnostic) {
     const buildLog = fs.openSync(path.join(run, 'build.log'), 'w'); files.push(buildLog);
-    await phase('package_build', () => runSupervisedCommand(runtime, ['run', 'tauri:build', '--', '--bundles', 'app'], { cwd: root, env: buildEnv, stdio: ['ignore', buildLog, buildLog], timeout: budget.remaining('preparation'), graceMs: 250, deadline: budget.cutoffs.report, onSpawn: child => recordScratchProcess(metadataFile, child, true) }));
-    if (readBuildRevision(root) !== candidate) throw new Error('Built daemon revision does not match the exact candidate.');
+    await phase('package_build', () => runSupervisedCommand(runtime, ['run', 'tauri:build', '--', '--bundles', 'app'], { cwd: root, env: buildEnv, stdio: ['ignore', buildLog, buildLog], timeout: budget.remaining('preparation'), graceMs: 250, deadline: budget.cutoffs.report, onSpawn: child => recordScratchProcess(metadataFile, child, true) })
+      .catch(error => {
+        if (error.timedOut || error.exitCode == null) throw error;
+        throw acceptanceFailure('either', `Building the signed Mandible.app from the candidate failed with exit code ${error.exitCode}. The end of the build log is kept with the acceptance result (build_failure_excerpt): a compile or bundling error there points at the branch, a missing tool or signing identity at the environment.`);
+      }));
+    const builtRevision = readBuildRevision(root);
+    if (builtRevision !== candidate) throw acceptanceFailure('either', `The build produced a daemon for revision ${builtRevision}, not the candidate ${candidate}, so the package was not built from the candidate.`, { built: builtRevision, candidate });
     builtApp = path.join(root, 'src-tauri', 'target', 'release', 'bundle', 'macos', 'Mandible.app');
     }
     budget.remaining('preparation');
@@ -487,7 +534,10 @@ async function main(budget) {
     const resources = path.join(app, 'Contents', 'Resources');
     const marker = diagnostic?.marker || JSON.parse(fs.readFileSync(path.join(root, 'dist', 'build-revision.json'), 'utf8'));
     const { release: shipped, digest } = verifyApplicationRelease(app);
-    if (shipped.provenance.commit !== candidate || shipped.provenance.source_digest !== marker.source_digest) throw new Error("Finalized package provenance differs from the candidate.");
+    if (shipped.provenance.commit !== candidate || shipped.provenance.source_digest !== marker.source_digest) {
+      const values = { package_commit: shipped.provenance.commit, package_source_digest: shipped.provenance.source_digest, candidate, candidate_source_digest: marker.source_digest };
+      throw acceptanceFailure('either', `The built Mandible.app records commit ${values.package_commit} with source digest ${values.package_source_digest}, but the candidate is commit ${candidate} with source digest ${values.candidate_source_digest}, so the package is not the candidate.`, values);
+    }
     const resourceEnv = installedRuntimeEnvironment(resources, { HOME: home, PATH: "/usr/bin:/bin:/usr/sbin:/sbin", TMPDIR: run });
     const packagedRuntime = resourceEnv.MANDIBLE_RUNTIME;
     testedPackageDigest = digest;
@@ -521,23 +571,31 @@ async function main(budget) {
     }
     // The gateway answers 502, and logs an error, for any request that reaches
     // it before its upstream is listening, so it starts only after the bind.
+    const daemonRunning = () => {
+      if (interrupted) throw stopped();
+      if (daemon.exitCode !== null || daemon.signalCode !== null) throw acceptanceFailure('either', `The packaged daemon exited (${exit(daemon)}) before acceptance finished, which usually means it crashed; the daemon log excerpt in the acceptance result shows why.`, { exit_code: daemon.exitCode, signal: daemon.signalCode });
+    };
     await awaitReadiness(() => {
-      if (interrupted || daemon.exitCode !== null || daemon.signalCode !== null) throw new Error('Owned daemon exited before acceptance completed.');
+      daemonRunning();
       return loopbackListening(port);
-    }, () => true, { timeout: Math.min(30_000, budget.remaining('readiness')), description: 'Candidate daemon port binding' });
+    }, () => true, { timeout: Math.min(30_000, budget.remaining('readiness')), description: 'The packaged daemon did not start listening on its port' });
     gateway = launch(gatewayBinary, ['run', '--config', gatewayConfig, '--adapter', 'caddyfile'], env, 'gateway');
     const probe = async (signal) => {
-      if (interrupted || daemon.exitCode !== null || daemon.signalCode !== null) throw new Error('Owned daemon exited before acceptance completed.');
-      if (gateway.exitCode !== null || gateway.signalCode !== null) throw new Error('Owned HTTPS gateway exited before acceptance completed.');
+      daemonRunning();
+      if (gateway.exitCode !== null || gateway.signalCode !== null) throw acceptanceFailure('either', `The HTTPS gateway in front of the packaged daemon exited (${exit(gateway)}) before acceptance finished; the gateway log excerpt in the acceptance result shows why.`, { exit_code: gateway.exitCode, signal: gateway.signalCode });
       const value = await acceptanceHealth(origin, ca.rootCert, signal);
-      if (value.instance?.instance_id !== env.MANDIBLE_INSTANCE_ID || value.instance?.backend_generation !== candidate || value.instance?.public_origin !== origin) throw new Error('Wrong or stale instance answered acceptance health.');
+      if (value.instance?.instance_id !== env.MANDIBLE_INSTANCE_ID || value.instance?.backend_generation !== candidate || value.instance?.public_origin !== origin) {
+        const values = { expected: { instance_id: env.MANDIBLE_INSTANCE_ID, backend_generation: candidate, public_origin: origin },
+          answered: { instance_id: value.instance?.instance_id ?? null, backend_generation: value.instance?.backend_generation ?? null, public_origin: value.instance?.public_origin ?? null } };
+        throw acceptanceFailure('either', `The daemon that answered the health check is not the one acceptance started: it reported instance ${values.answered.instance_id}, revision ${values.answered.backend_generation} and origin ${values.answered.public_origin}, where acceptance expected instance ${env.MANDIBLE_INSTANCE_ID}, revision ${candidate} and origin ${origin}. Another Mandible instance on the same port causes this; so does a candidate daemon that misreports its identity.`, values);
+      }
       return value;
     };
     const health = await awaitAcceptanceGatewayReadiness(probe, value => value.ready === true && value.startup_commit?.hash === candidate,
-      { timeout: Math.min(30_000, budget.remaining('readiness')), description: 'Exact production daemon readiness',
+      { timeout: Math.min(30_000, budget.remaining('readiness')), description: 'The packaged daemon did not report ready for this exact candidate',
         onInitialTlsError: error => { result.checks.initial_transport_error ??= error; } });
     result.checks.readiness = { startup_epoch: health.startup_epoch, instance_id: health.instance.instance_id, origin };
-    if (!health.current) throw new Error('Production live collector diagnostics are unavailable at readiness.');
+    if (!health.current) throw acceptanceFailure('candidate', 'The packaged daemon reported ready without the live health diagnostics (event-loop delay and memory) that acceptance samples while the app runs.');
     passiveHealth = observeAcceptanceHealth({
       live: { startedAt: health.current.observedAt, through: () => interactionCompletedAt },
       deadlineMs: budget.remaining(),
@@ -548,15 +606,15 @@ async function main(budget) {
       probe: async (_deadline, signal) => {
         if (passiveController.signal.aborted) throw passiveController.signal.reason;
         const current = await probe(AbortSignal.any([signal, passiveController.signal]));
-        if (current.startup_epoch !== health.startup_epoch) throw new Error('Daemon startup epoch changed during packaged interaction.');
-        if (desktop && (desktop.exitCode !== null || desktop.signalCode !== null)) throw new Error('Packaged app closed during acceptance observation.');
+        if (current.startup_epoch !== health.startup_epoch) throw restarted();
+        if (desktop && (desktop.exitCode !== null || desktop.signalCode !== null)) throw acceptanceFailure('either', `The packaged app closed (${exit(desktop)}) before acceptance finished watching it, which usually means it crashed.`, { exit_code: desktop.exitCode, signal: desktop.signalCode });
         return current;
       },
       onEvidence: evidence => { result.checks.health_coverage = evidence; },
     }).catch(error => { if (!passiveController.signal.aborted) { passiveError = error; interactionController.abort(error); } });
     if (passiveError) throw passiveError;
     interactionController.signal.throwIfAborted();
-    if (!health.local_socket_path?.startsWith(`${home}${path.sep}`)) throw new Error('Fixture bootstrap socket escapes its isolated home.');
+    if (!health.local_socket_path?.startsWith(`${home}${path.sep}`)) throw acceptanceFailure('candidate', `The packaged daemon reported its local API socket at ${health.local_socket_path}, outside the isolated home acceptance gave it (${home}); it must keep its files inside that home.`, { socket: health.local_socket_path ?? null, home });
     if (diagnostic) {
       const out = fs.openSync(path.join(diagnostics, 'probe.jsonl'), 'w'); files.push(out);
       const err = fs.openSync(path.join(diagnostics, 'probe.stderr'), 'w'); files.push(err);
@@ -570,9 +628,10 @@ async function main(budget) {
       const body = JSON.stringify({ slug: 'candidate-operator', display_name: 'Candidate operator', email: 'candidate@example.invalid' });
       const request = http.request({ signal: interactionController.signal, socketPath: health.local_socket_path, path: '/api/users/setup', method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, response => {
         let bytes = ''; response.on('data', chunk => { bytes += chunk; });
-        response.on('end', () => response.statusCode === 200 ? resolve() : reject(new Error(`Fixture bootstrap HTTP ${response.statusCode}: ${bytes}`)));
+        response.on('end', () => response.statusCode === 200 ? resolve() : reject(acceptanceFailure('candidate', `Creating the operator account on the packaged daemon (POST /api/users/setup) answered HTTP ${response.statusCode}: ${sentence(bytes.slice(0, 500))}`)));
       });
-      request.setTimeout(Math.min(5000, budget.remaining('readiness')), () => request.destroy(new Error('Fixture bootstrap timed out')));
+      const bootstrapTimeout = Math.min(5000, budget.remaining('readiness'));
+      request.setTimeout(bootstrapTimeout, () => request.destroy(acceptanceFailure('either', `Creating the operator account on the packaged daemon (POST /api/users/setup) did not answer within ${bootstrapTimeout} ms.`)));
       request.on('error', reject); request.end(body);
     });
     interactionController.signal.throwIfAborted();
@@ -585,14 +644,20 @@ async function main(budget) {
     await until(async () => {
       interactionController.signal.throwIfAborted();
       const current = await probe(interactionController.signal);
-      if (current.startup_epoch !== health.startup_epoch) throw new Error('Daemon startup epoch changed during acceptance.');
-      if (desktop.exitCode !== null || desktop.signalCode !== null) throw new Error('Packaged app exited before its interaction completed.');
+      if (current.startup_epoch !== health.startup_epoch) throw restarted();
+      if (desktop.exitCode !== null || desktop.signalCode !== null) throw acceptanceFailure('either', `The packaged app exited (${exit(desktop)}) before finishing its first-run setup and Settings edit, which usually means it crashed.`, { exit_code: desktop.exitCode, signal: desktop.signalCode });
       return fs.existsSync(evidencePath);
-    }, Math.min(45_000, budget.remaining()), 'Packaged dashboard setup persistence and Settings edit');
-    interactionCompletedAt = Math.ceil(fs.statSync(evidencePath).mtimeMs);
-    if (!Number.isFinite(interactionCompletedAt) || interactionCompletedAt < health.current.observedAt || interactionCompletedAt > Date.now()) throw new Error('Packaged interaction completion timestamp is outside its observed workload.');
+    }, Math.min(45_000, budget.remaining()), 'The packaged app did not finish its first-run setup and Settings edit');
+    interactionCompletedAt = interactionCompletion(fs.statSync(evidencePath).mtimeMs, health.current.observedAt, Date.now());
     const evidence = JSON.parse(fs.readFileSync(evidencePath, 'utf8'));
-    if (!evidence.passed || !evidence.rendered || !evidence.edit || evidence.setup?.skipped !== 'skipped' || evidence.setup?.completed !== 'complete' || evidence.setup?.reloads !== 2 || !evidence.setup?.promptDismissedAfterReload || !evidence.setup?.integrationsUnchanged) throw new Error(`Packaged interaction failed: ${JSON.stringify(evidence)}`);
+    if (!evidence.passed) {
+      const reason = typeof evidence.error === 'string' ? evidence.error : 'it reported no reason';
+      throw /deadline exceeded/.test(reason)
+        ? acceptanceFailure('either', `${interaction} The app ran out of time before finishing: ${sentence(reason)} A busy machine usually causes this, though a branch that makes the app much slower can too.`)
+        : acceptanceFailure('candidate', `${interaction} The app stopped with: ${sentence(reason)}`);
+    }
+    const missing = interactionReport.filter(([holds]) => !holds(evidence)).map(([, name]) => name);
+    if (missing.length) throw acceptanceFailure('candidate', `${interaction} The app reported success, but its report lacks ${missing.join(', ')}.`, { report: evidence });
     result.checks.desktop_interaction = evidence;
     result.checks.desktop_interaction_completed_at = interactionCompletedAt;
     result.phases.desktop_interaction.status = 'passed';
@@ -602,13 +667,12 @@ async function main(budget) {
       await passiveHealth;
       if (passiveError) throw passiveError;
     });
-    if (interrupted) throw new Error('Acceptance interrupted or total deadline reached.');
+    if (interrupted) throw stopped();
     result.status = 'passed';
   } catch (error) {
-    result.error ??= error.message;
+    recordFailure(error, error instanceof RuntimeHealthObservationError ? 'health_coverage' : stage());
     result.budget = budget.reading();
     for (const phase of Object.values(result.phases)) if (phase.status === 'running') { phase.status = 'failed'; phase.error = result.error; phase.elapsed_ms = Date.now() - phase.started_at; }
-    if (error.evidence) result.failure = { code: error.code, evidence: error.evidence };
     saveOwnedMetadata(evidence, compactAcceptanceResult(result));
   }
   finally {
@@ -618,8 +682,10 @@ async function main(budget) {
     passiveController.abort();
     await passiveHealth;
     const shutdowns = {};
+    const labels = { probe: 'stall probe', desktop: 'packaged app', gateway: 'HTTPS gateway', daemon: 'packaged daemon' };
     await Promise.all([['probe', stallProbe], ['desktop', desktop], ['gateway', gateway], ['daemon', daemon]].map(async ([name, child]) => {
-      try { shutdowns[name] = await stopOwned(child, () => budget.remaining('report')); } catch (error) { result.status = 'failed'; result.cleanup_error = [result.cleanup_error, error.message].filter(Boolean).join('; '); }
+      try { shutdowns[name] = await stopOwned(child, () => budget.remaining('report'), labels[name]); }
+      catch (error) { result.status = 'failed'; result.cleanup_error = [result.cleanup_error, error.message].filter(Boolean).join('; '); recordFailure(error, 'finalization'); }
     }));
     for (const fd of files) fs.closeSync(fd);
     const logSources = [['daemon', daemon], ['desktop', desktop], ['gateway', gateway]].map(([name, child]) => {
@@ -634,13 +700,22 @@ async function main(budget) {
     if (result.status !== 'passed' && fs.existsSync(path.join(run, 'build.log'))) result.checks.build_failure_excerpt = fs.readFileSync(path.join(run, 'build.log'), 'utf8').split('\n').slice(-30).join('\n').slice(-8000);
     result.checks.log_digest = createHash('sha256').update(logs).digest('hex');
     result.checks.log_bytes = Buffer.byteLength(logs);
-    if (result.checks.log_failures.length) result.status = 'failed';
+    if (result.checks.log_failures.length) {
+      result.status = 'failed';
+      const count = result.checks.log_failures.length;
+      recordFailure(acceptanceFailure('either', `The logs of the packaged daemon, app and HTTPS gateway from this run contain ${count === 1 ? 'a problem' : `${count} problems`} acceptance does not allow, starting with: ${result.checks.log_failures.slice(0, 2).map(line => line.slice(0, 300)).join('; ')}`));
+    }
     result.checks.shutdown = { daemon_exit: daemon?.exitCode, daemon_signal: daemon?.signalCode, desktop_exit: desktop?.exitCode, desktop_signal: desktop?.signalCode, gateway_exit: gateway?.exitCode, gateway_signal: gateway?.signalCode };
     if (diagnostic) Object.assign(result.checks.shutdown, { probe_exit: stallProbe?.exitCode, probe_signal: stallProbe?.signalCode });
-    if ([daemon, gateway].some(child => child && (child.exitCode !== 0 || child.signalCode))) result.status = 'failed';
+    for (const [name, child] of [['daemon', daemon], ['gateway', gateway]]) {
+      if (!child || (child.exitCode === 0 && !child.signalCode)) continue;
+      result.status = 'failed';
+      recordFailure(acceptanceFailure('either', `The ${labels[name]} ended with ${exit(child)} instead of exiting cleanly when acceptance stopped it; its log excerpt in the acceptance result shows why.`, { exit_code: child.exitCode, signal: child.signalCode }));
+    }
     if (result.status !== 'passed') result.checks.failure_logs = acceptanceFailureLogs(run);
     if (![stallProbe, daemon, desktop, gateway].every(child => !child || child.exitCode !== null || child.signalCode !== null)) {
-      result.status = 'failed'; result.cleanup_error = 'Owned process remains alive; scratch data preserved';
+      result.status = 'failed'; result.cleanup_error = 'A process acceptance started was still running after shutdown, so acceptance kept its scratch files instead of deleting them.';
+      recordFailure(acceptanceFailure('environment', result.cleanup_error));
     } else {
       result.phases.finalization = { status: 'running', started_at: Date.now(), cutoff: budget.cutoffs.report, remaining_ms: budget.reading().remaining_ms.report };
       result.budget = budget.reading();
@@ -664,9 +739,9 @@ async function main(budget) {
       }
     }
     result.budget = budget.reading();
-    if (Date.now() >= budget.cutoffs.report) { result.status = 'failed'; result.cleanup_error = 'Acceptance report budget exhausted during cleanup/receipt.'; }
+    if (Date.now() >= budget.cutoffs.report) { result.status = 'failed'; result.cleanup_error = 'The time reserved for reporting the result ran out during cleanup.'; }
     if (result.status === 'failed') {
-      result.error ??= result.cleanup_error || 'Acceptance behavior, shutdown or log checks failed.';
+      recordFailure(new Error(result.cleanup_error || 'acceptance could not delete all of its scratch files.'), 'finalization');
       const sealed = path.join(process.env.MANDIBLE_HOME || path.join(os.userInfo().homedir, '.mandible'), 'accepted-releases', '.receipts', ownership.runId + '-accepted-release.json');
       if (!fs.existsSync(sealed)) saveOwnedMetadata(evidence, compactAcceptanceResult(result));
     }
@@ -685,5 +760,5 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     const budget = acceptanceApplicationPolicy();
     await main(budget);
   })();
-  execution.catch(error => { console.error(JSON.stringify({ status: 'unavailable', error: error.message })); process.exitCode = 1; });
+  execution.catch(error => { console.error(JSON.stringify({ status: 'unavailable', error: describeAcceptanceFailure(error, 'startup').text })); process.exitCode = 1; });
 }

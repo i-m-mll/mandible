@@ -17,10 +17,11 @@ import type { Db } from "./db.js";
 import { getUserHome } from "./platform-paths.js";
 import { readAcceptanceFailure } from "../scripts/acceptance-result.mjs";
 import { acceptanceDeadline, ACCEPTANCE_TOTAL_MS } from "../scripts/acceptance-deadline.mjs";
+import { acceptanceFailure, compactFailure, describeAcceptanceFailure, failureText, sentence } from "../scripts/acceptance-failure.mjs";
 
 import { runSupervisedCommand, type SupervisedCommandFailure } from "../scripts/process-group-supervisor.mjs";
 
-export const CANDIDATE_ACCEPTANCE_INTERRUPTED = "Interrupted by a daemon restart.";
+export const CANDIDATE_ACCEPTANCE_INTERRUPTED = failureText("environment", "Acceptance stopped because the Mandible daemon restarted while it was running");
 
 export type CandidateAcceptanceStatus = "running" | "passed" | "failed";
 
@@ -115,7 +116,7 @@ export function candidateAcceptanceRefusal(acceptance: CandidateAcceptanceProjec
   switch (acceptance.state) {
     case "passed": return null;
     case "running": return "Candidate acceptance of this exact candidate is in progress. Approve after it passes.";
-    case "failed": return `Candidate acceptance of this exact candidate failed: ${acceptance.reason}. Fix the cause and run ${run} again.`;
+    case "failed": return `Candidate acceptance of this exact candidate failed. ${sentence(acceptance.reason ?? "It recorded no reason.")} To run it again: ${run}.`;
     case "stale": return `The recorded candidate acceptance was for a different candidate. ${acceptance.reason} Run ${run} for the current candidate.`;
     case "none": return `Runtime self-update approval requires a passing candidate acceptance of the exact candidate merge, and none has run. Run ${run}.`;
   }
@@ -157,7 +158,7 @@ export class CandidateAcceptanceRuns {
    * throws, the run fails with that reason.
    */
   enqueue(requestId: string, candidate: CandidateAcceptanceCandidate, input: () => Omit<CandidateAcceptanceInput, "signal">): void {
-    this.abort(requestId, "Replaced by a run of a newer candidate.");
+    this.abort(requestId, "Acceptance stopped because the request's candidate changed; the run of the new candidate replaces this one.");
     this.waiting.set(requestId, { candidate, input });
     this.schedule(requestId);
   }
@@ -231,7 +232,7 @@ export class CandidateAcceptanceRuns {
     try { result = outcome.result == null ? null : JSON.stringify(outcome.result) ?? null; }
     catch (error) {
       result = null;
-      outcome = { status: 'failed', result: null, error: `Invalid acceptance result: ${error instanceof Error ? error.message : String(error)}` };
+      outcome = { status: 'failed', result: null, error: failureText('environment', `The acceptance result could not be stored: ${error instanceof Error ? error.message : String(error)}`) };
     }
     if (result && result.length > MAX_RESULT_CHARS) {
       const value = outcome.result as Record<string, unknown>;
@@ -243,7 +244,7 @@ export class CandidateAcceptanceRuns {
           excerpt: typeof log.excerpt === 'string' ? log.excerpt.slice(-4000) : null })) : undefined;
       result = JSON.stringify({ truncated: true, status: text(value?.status, 16), candidate: text(value?.candidate, 128), binding: value?.binding, budget: value?.budget, phases: value?.phases,
         secondary_errors: Array.isArray(value?.secondary_errors) ? value.secondary_errors.map(item => text(item, 512)).slice(0, 8) : undefined,
-        subprocess: value?.subprocess, error: text(value?.error, 512), receipt: text(value?.receipt, 512), checks: {
+        subprocess: value?.subprocess, error: text(value?.error, 1024), failure: compactFailure(value?.failure), receipt: text(value?.receipt, 512), checks: {
           ...(checks?.initial_transport_error ? { initial_transport_error: {
             code: text(checks.initial_transport_error.code, 64), message: text(checks.initial_transport_error.message, 512),
           } } : {}),
@@ -263,18 +264,18 @@ export class CandidateAcceptanceRuns {
     let closed: boolean;
     try {
       closed = this.db.transaction(() => {
-        if (outcome.status === 'passed' && deadline !== undefined && this.now() >= deadline) throw new Error('Acceptance total deadline exceeded before retained-package binding.');
+        if (outcome.status === 'passed' && deadline !== undefined && this.now() >= deadline) throw new Error(`acceptance passed but ran past its ${ACCEPTANCE_TOTAL_MS / 1000}-second limit before the tested package was recorded.`);
         const changed = close.run(outcome.status, this.now(), result, outcome.error, recordId).changes === 1;
         // The receipt selection and lifecycle revision commit with the verdict.
         // A replay of an already terminal row must not revise the request.
         if (changed && outcome.status === 'passed') finalize?.(recordId);
-        if (changed && outcome.status === 'passed' && deadline !== undefined && this.now() >= deadline) throw new Error('Acceptance total deadline exceeded during retained-package binding.');
+        if (changed && outcome.status === 'passed' && deadline !== undefined && this.now() >= deadline) throw new Error(`acceptance passed but ran past its ${ACCEPTANCE_TOTAL_MS / 1000}-second limit while the tested package was recorded.`);
         if (changed) this.db.prepare("UPDATE auth_candidate_acceptances SET finished_at = ? WHERE id = ?").run(this.now(), recordId);
         return changed;
       })();
     } catch (error) {
       closed = close.run('failed', this.now(), result,
-        `Acceptance finalization failed: ${error instanceof Error ? error.message : String(error)}`, recordId).changes === 1;
+        failureText('environment', `Acceptance finished, but recording its verdict on the request failed: ${error instanceof Error ? error.message : String(error)}`), recordId).changes === 1;
     }
     if (closed) this.changed(requestId);
   }
@@ -303,14 +304,49 @@ export function candidateAcceptanceOutcome(pin: string, run: AcceptanceCommandCo
   const parsed = parse(run.stdout.trim()) ?? parse(run.stderr.trim().split('\n').at(-1) ?? '');
   const primary = (run.failure || run.code !== 0 || parsed?.status !== 'passed' || parsed.candidate !== pin) && checkpoint.result ? checkpoint.result : parsed;
   const secondary = [checkpoint.error, run.failure, primary !== parsed && typeof parsed?.error === 'string' ? parsed.error : null,
-    deadlineExpired ? 'Acceptance total deadline exceeded, including preparation and cleanup.' : null].filter((text): text is string => !!text);
+    deadlineExpired ? `Acceptance ran past its ${ACCEPTANCE_TOTAL_MS / 1000}-second limit, counting checkout, build, checks and cleanup.` : null].filter((text): text is string => !!text);
   const result = primary || run.diagnostics || secondary.length ? { ...primary,
     ...(run.failure ? { subprocess: run.diagnostics } : {}), ...(secondary.length ? { secondary_errors: secondary } : {}) } : null;
   if (!deadlineExpired && !run.failure && run.code === 0 && parsed?.status === 'passed' && parsed.candidate === pin) return { status: 'passed', result, error: null };
-  const reason = (typeof primary?.error === 'string' && primary.error) || (typeof primary?.cleanup_error === 'string' && primary.cleanup_error)
-    || run.failure || secondary[0] || (parsed?.status === 'passed' ? 'Acceptance passed for a different candidate revision.' : null)
-    || run.stderr.trim().split('\n').slice(-5).join('\n') || ('Acceptance exited with ' + run.code + '.');
-  return { status: 'failed', result, error: primary?.status === 'unavailable' ? 'Acceptance was unavailable: ' + reason : reason };
+  const stderr = run.stderr.trim().split('\n').slice(-5).join('\n');
+  const reason = (typeof primary?.error === 'string' && primary.error)
+    || (typeof primary?.cleanup_error === 'string' && describeAcceptanceFailure(new Error(primary.cleanup_error), 'finalization').text)
+    || (run.failure && failureText('either', `The acceptance run ended without reporting a result: ${run.failure}`))
+    || (secondary[0] && failureText('either', secondary[0]))
+    || (parsed?.status === 'passed' && failureText('environment', `Acceptance reported a pass for commit ${String(parsed.candidate)}, not for the candidate ${pin}, so the pass does not count`))
+    || failureText('either', `The acceptance run exited with code ${run.code} without reporting a result${stderr ? `; its last output was: ${stderr}` : ''}`);
+  return { status: 'failed', result, error: reason };
+}
+
+/** Reset the persistent acceptance checkout to the exact pin and install its dependencies. */
+async function prepareAcceptanceCheckout(input: CandidateAcceptanceInput, budget: ReturnType<typeof acceptanceDeadline>): Promise<{ checkout: string; runtime: string; env: NodeJS.ProcessEnv }> {
+  const { signal } = input;
+  const checkout = acceptanceCheckoutPath();
+  const common = fs.realpathSync(await git(input.repoRoot, ["rev-parse", "--path-format=absolute", "--git-common-dir"], input.env, signal, budget.remaining('preparation'), budget.deadline));
+  if (!fs.existsSync(checkout)) {
+    fs.mkdirSync(path.dirname(checkout), { recursive: true, mode: 0o700 });
+    await git(input.repoRoot, ["worktree", "add", "--detach", checkout, input.pinSha], input.env, signal, budget.remaining('preparation'), budget.deadline);
+  } else {
+    const owner = fs.realpathSync(await git(checkout, ["rev-parse", "--path-format=absolute", "--git-common-dir"], input.env, signal, budget.remaining('preparation'), budget.deadline));
+    if (owner !== common) throw acceptanceFailure("environment", `The acceptance checkout at ${checkout} belongs to another repository, so acceptance left it alone instead of reusing it.`);
+    await git(checkout, ["checkout", "--detach", "--force", input.pinSha], input.env, signal, budget.remaining('preparation'), budget.deadline);
+    await git(checkout, ["clean", "-ffd"], input.env, signal, budget.remaining('preparation'), budget.deadline);
+  }
+  const checkedOut = await git(checkout, ["rev-parse", "HEAD"], input.env, signal, budget.remaining('preparation'), budget.deadline);
+  if (checkedOut !== input.pinSha) throw acceptanceFailure("environment", `The acceptance checkout is at commit ${checkedOut} after checking out the candidate ${input.pinSha}.`, { checked_out: checkedOut, candidate: input.pinSha });
+  const { stdout: runtimeOut } = await runSupervisedCommand("/bin/sh", [path.join(checkout, "scripts", "bun-runtime.sh")], { cwd: checkout, env: input.env, capture: true, timeout: budget.remaining('preparation'), deadline: budget.deadline, graceMs: 750, signal });
+  const runtime = runtimeOut.trim();
+  // The candidate's own canonical runtime PATH: pinned runtime and checkout
+  // CLI, then native macOS tools (a Homebrew `xattr` breaks app bundling),
+  // then Cargo and the inherited hook PATH.
+  const { stdout: runtimePath } = await runSupervisedCommand(runtime, [path.join(checkout, "scripts", "runtime-environment-path.mjs"), runtime, checkout], { cwd: checkout, env: input.env, capture: true, timeout: budget.remaining('preparation'), deadline: budget.deadline, graceMs: 750, signal });
+  const env = { ...input.env, MANDIBLE_RUNTIME: runtime, PATH: runtimePath.trim() };
+  await runSupervisedCommand(runtime, ["install", "--frozen-lockfile"], { cwd: checkout, env, capture: true, timeout: budget.remaining('preparation'), deadline: budget.deadline, graceMs: 750, maxBuffer: 16 * 1024 * 1024, signal })
+    .catch((error: SupervisedCommandFailure) => {
+      if (error.timedOut || error.aborted || error.exitCode == null) throw error;
+      throw acceptanceFailure("either", `Installing the candidate's dependencies (bun install --frozen-lockfile) failed with exit code ${error.exitCode}. A lockfile that does not match package.json points at the branch; a network or registry problem points at the environment.`);
+    });
+  return { checkout, runtime, env };
 }
 
 /**
@@ -319,29 +355,15 @@ export function candidateAcceptanceOutcome(pin: string, run: AcceptanceCommandCo
  * the exact pin commit before each run.
  */
 export const runCandidateAcceptance: CandidateAcceptanceExecutor = async (input) => {
-  const { signal } = input;
   const budget = acceptanceDeadline(input.env);
   input = { ...input, env: { ...input.env, ...budget.env } };
-  const checkout = acceptanceCheckoutPath();
-  const common = fs.realpathSync(await git(input.repoRoot, ["rev-parse", "--path-format=absolute", "--git-common-dir"], input.env, signal, budget.remaining('preparation'), budget.deadline));
-  if (!fs.existsSync(checkout)) {
-    fs.mkdirSync(path.dirname(checkout), { recursive: true, mode: 0o700 });
-    await git(input.repoRoot, ["worktree", "add", "--detach", checkout, input.pinSha], input.env, signal, budget.remaining('preparation'), budget.deadline);
-  } else {
-    const owner = fs.realpathSync(await git(checkout, ["rev-parse", "--path-format=absolute", "--git-common-dir"], input.env, signal, budget.remaining('preparation'), budget.deadline));
-    if (owner !== common) throw new Error(`Acceptance checkout ${checkout} belongs to another repository; preserving it.`);
-    await git(checkout, ["checkout", "--detach", "--force", input.pinSha], input.env, signal, budget.remaining('preparation'), budget.deadline);
-    await git(checkout, ["clean", "-ffd"], input.env, signal, budget.remaining('preparation'), budget.deadline);
+  const prepared = await prepareAcceptanceCheckout(input, budget).then(value => ({ value }), (error: unknown) => ({ error }));
+  if ("error" in prepared) {
+    const subprocess = subprocessFailureEvidence(prepared.error);
+    return { status: "failed", result: subprocess ? { subprocess } : null, error: describeAcceptanceFailure(prepared.error, "checkout").text };
   }
-  if (await git(checkout, ["rev-parse", "HEAD"], input.env, signal, budget.remaining('preparation'), budget.deadline) !== input.pinSha) throw new Error("Acceptance checkout is not at the exact candidate.");
-  const { stdout: runtimeOut } = await runSupervisedCommand("/bin/sh", [path.join(checkout, "scripts", "bun-runtime.sh")], { cwd: checkout, env: input.env, capture: true, timeout: budget.remaining('preparation'), deadline: budget.deadline, graceMs: 750, signal });
-  const runtime = runtimeOut.trim();
-  // The candidate's own canonical runtime PATH: pinned runtime and checkout
-  // CLI, then native macOS tools (a Homebrew `xattr` breaks app bundling),
-  // then Cargo and the inherited hook PATH.
-  const { stdout: runtimePath } = await runSupervisedCommand(runtime, [path.join(checkout, "scripts", "runtime-environment-path.mjs"), runtime, checkout], { cwd: checkout, env: input.env, capture: true, timeout: budget.remaining('preparation'), deadline: budget.deadline, graceMs: 750, signal });
-  const env = { ...input.env, MANDIBLE_RUNTIME: runtime, PATH: runtimePath.trim() };
-  await runSupervisedCommand(runtime, ["install", "--frozen-lockfile"], { cwd: checkout, env, capture: true, timeout: budget.remaining('preparation'), deadline: budget.deadline, graceMs: 750, maxBuffer: 16 * 1024 * 1024, signal });
+  const { checkout, runtime, env } = prepared.value;
+  const { signal } = input;
   // Candidate reporting ends before the executor's single TERM/KILL/join and DB reserve.
   const run = await runSupervisedCommand(runtime, [path.join(checkout, "scripts", "candidate-acceptance.mjs"), "--project", input.projectId, "--work-unit", input.workUnitId],
     { cwd: checkout, env, capture: true, timeout: budget.remaining('report'), deadline: budget.deadline, graceMs: 750, maxBuffer: 16 * 1024 * 1024, signal })

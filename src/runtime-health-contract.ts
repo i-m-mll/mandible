@@ -87,7 +87,7 @@ export async function observeRuntimeHealthCoverage<T>(options: {
     value = await probeByDeadline(options.probe, deadline, now);
   } catch (error) {
     if (error instanceof RuntimeObservationError) throw error;
-    throw new RuntimeHealthObservationError("probe_failed", `Runtime health probe failed: ${error instanceof Error ? error.message : String(error)}`, { startedAt, mustCover, deadline, lastSample: null });
+    throw Object.assign(new RuntimeHealthObservationError("probe_failed", `Runtime health probe failed: ${error instanceof Error ? error.message : String(error)}`, { startedAt, mustCover, deadline, lastSample: null }), { cause: error });
   }
   const initial = value;
   const firstHealth = options.healthOf(value);
@@ -108,7 +108,7 @@ export async function observeRuntimeHealthCoverage<T>(options: {
     try { options.validate?.(value, initial); }
     catch (error) {
       if (error instanceof RuntimeObservationError) throw error;
-      throw new RuntimeHealthObservationError("observation_changed", error instanceof Error ? error.message : String(error), { startedAt, mustCover, deadline, initial, current: value });
+      throw Object.assign(new RuntimeHealthObservationError("observation_changed", error instanceof Error ? error.message : String(error), { startedAt, mustCover, deadline, initial, current: value }), { cause: error });
     }
     for (const finding of assessment.performance) {
       const sample = finding.sample as DiagnosticInterval;
@@ -137,7 +137,7 @@ export async function observeRuntimeHealthCoverage<T>(options: {
       value = await probeByDeadline(options.probe, deadline, now);
     } catch (error) {
       if (error instanceof RuntimeObservationError) throw error;
-      throw new RuntimeHealthObservationError("probe_failed", `Runtime health probe failed: ${error instanceof Error ? error.message : String(error)}`, { startedAt, mustCover, deadline, initialSample: firstHealth, lastSample: health });
+      throw Object.assign(new RuntimeHealthObservationError("probe_failed", `Runtime health probe failed: ${error instanceof Error ? error.message : String(error)}`, { startedAt, mustCover, deadline, initialSample: firstHealth, lastSample: health }), { cause: error });
     }
   }
 }
