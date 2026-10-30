@@ -1283,11 +1283,18 @@ export class ConversationSourceStore {
         "UPDATE conversation_source_aliases SET availability = 'missing', last_seen_at = ? WHERE path = ?",
       ).run(now, aliasPath);
       for (const row of rows) {
-        this.db.prepare(`
+        // A source that a verified relocation moved elsewhere stays available
+        // through its other alias; losing a former path does not lose it.
+        const changed = this.db.prepare(`
           UPDATE conversation_sources
              SET availability = 'missing', unavailable_reason = ?, updated_at = ?
            WHERE id = ?
+             AND NOT EXISTS (
+               SELECT 1 FROM conversation_source_aliases alias
+                WHERE alias.source_id = conversation_sources.id AND alias.availability = 'available'
+             )
         `).run(reason, now, row.source_id);
+        if (changed.changes === 0) continue;
         this.db.prepare(`
           UPDATE conversation_source_versions SET availability = 'missing'
            WHERE id = (SELECT current_version_id FROM conversation_sources WHERE id = ?)

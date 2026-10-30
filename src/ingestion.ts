@@ -16,14 +16,14 @@ import { getDb, type Db } from "./db.js";
 import { getUserHome } from "./platform-paths.js";
 import { projectChildRetentionActivity } from "./conversations/retention-state.js";
 import { reconcileIngestedChildRetention } from "./conversations/retention-ingestion.js";
-import { resolveConversationId } from './conversations/identity.js';
+import { foldConversationIdentity, resolveConversationId } from './conversations/identity.js';
+import { createRelocationCandidateFinder, sourcePathsRelocationEquivalent } from "./conversations/relocation.js";
+import { loadClaudeNativeSessionId } from "./parsers/claude.js";
 import { broadcast } from "./sse.js";
 import { compressContentAsync } from "./compression.js";
 import { getParserForFile } from "./parsers/index.js";
 import {
-  codexRelocationCandidates,
   getCodexSessionIndexPath,
-  isCodexRolloutPath,
   locateCodexRollout,
   loadCodexNativeSessionId,
   loadCodexSessionIndexTitle,
@@ -547,8 +547,8 @@ function superviseWatchRoot(root: WatchRoot, ctx: WatchSupervisorContext): RootS
  * delete of a glob-matching file all funnel into the same `onFile` callback
  * (the old code bound `add`, `change`, and `unlink` to one handler), so no
  * event-type classification or existence stat is needed. Downstream ingestion
- * already distinguishes present from missing sources, including the Codex
- * archive relocation probe.
+ * already distinguishes present from missing sources, including the provider
+ * relocation probes.
  *
  * Each root is supervised: a startup failure or a runtime `error` retries on a
  * bounded ladder and then takes the platform fallback — per-glob chokidar
@@ -1731,14 +1731,17 @@ function deleteAppendState(db: ReturnType<typeof getDb>, filePath: string): void
 /**
  * Re-point an ingested conversation at the same file in its new location.
  *
- * `codex archive` / `codex unarchive` rename a rollout between
- * `~/.codex/sessions/**` and `~/.codex/archived_sessions/**`. The bytes and the
- * conversation identity is unchanged, but the path may have historical rows
- * for other identities. The caller proves provider/session identity first, so
- * only that exact row and source alias follow the move.
+ * Providers move transcripts without changing them: `codex archive` /
+ * `codex unarchive` rename a rollout between `~/.codex/sessions/**` and
+ * `~/.codex/archived_sessions/**`, and moving a Claude Code project renames
+ * its `~/.claude/projects/<key>` directory. The conversation identity is
+ * unchanged, but the path may have historical rows for other identities. The
+ * caller proves provider/session identity first, so only that exact row and
+ * source alias follow the move.
  *
- * Bug: c927726 — archiving a Codex thread silently deleted its conversation
- * and every block from SQLite on the next reconcile.
+ * Bugs: c927726 — archiving a Codex thread silently deleted its conversation
+ * and every block from SQLite on the next reconcile; 1abb772 — a rekeyed Claude
+ * project was re-ingested under new conversation ids.
  */
 function repointConversationSource(
   db: ReturnType<typeof getDb>,
@@ -1769,26 +1772,87 @@ function repointConversationSource(
   return true;
 }
 
+type RelocationCandidateFinder = (filePath: string) => Promise<string[]>;
+
+const NOT_IDENTITY_ALIAS_SQL = "NOT EXISTS (SELECT 1 FROM conversation_identity_aliases identity WHERE identity.alias_id = c.id)";
+
+const LATEST_PROVIDER_SOURCE_SQL = `(SELECT cs.id FROM conversation_sources cs
+  WHERE cs.conversation_id = c.id AND cs.provider = c.source
+  ORDER BY cs.updated_at DESC LIMIT 1)`;
+
 /**
- * If a missing source file is a Codex rollout that was archived or unarchived,
- * follow the move and return its new path. Returns null when the file is really
- * gone (or is not a Codex rollout), leaving normal cleanup to the caller.
+ * Native identity of a relocation candidate, read from the provider's own
+ * records. Codex parses the rollout, whose blocks also re-derive its archive
+ * retention state; a Claude move changes nothing but the project key.
  */
-async function relocateMovedCodexSource(
+async function proveRelocationCandidate(candidate: string): Promise<{
+  source: string;
+  sessionId: string;
+  blocks: ParseResult["blocks"] | null;
+} | null> {
+  const parser = getParserForFile(candidate);
+  if (parser?.source === "codex") {
+    const nativeSessionId = await loadCodexNativeSessionId(candidate);
+    const parsed = await parser.parse(candidate);
+    if (!parsed || !nativeSessionId || parsed.conversation.session_id !== nativeSessionId) return null;
+    return { source: parser.source, sessionId: nativeSessionId, blocks: parsed.blocks };
+  }
+  if (parser?.source === "claude_code") {
+    const sessionId = await loadClaudeNativeSessionId(candidate);
+    return sessionId ? { source: parser.source, sessionId, blocks: null } : null;
+  }
+  return null;
+}
+
+/**
+ * Retire a row that ingestion created for a relocated transcript before the
+ * move was recognized. The predecessor keeps its id; the duplicate becomes an
+ * alias of it and gives up the path, keeping its own transcript-derived rows.
+ */
+function foldRelocatedDuplicate(
+  db: ReturnType<typeof getDb>,
+  predecessorId: string,
+  duplicateId: string,
+): void {
+  db.transaction(() => {
+    const canonical = db.prepare("SELECT * FROM conversations WHERE id = ?").get(predecessorId) as Record<string, unknown>;
+    const alias = db.prepare("SELECT * FROM conversations WHERE id = ?").get(duplicateId) as Record<string, unknown>;
+    foldConversationIdentity(db, {
+      alias,
+      canonical,
+      schema: "mandible-relocation-identity-repair@1",
+      aliasKey: "duplicate",
+      retainedTables: [
+        "conversation_blocks",
+        "conversation_structural_blocks",
+        "conversation_sources",
+        "conversation_provider_usage",
+      ],
+    });
+    db.prepare("UPDATE conversations SET source_path = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(`mandible-preserved://conversation/${encodeURIComponent(duplicateId)}`, duplicateId);
+  })();
+}
+
+/**
+ * If a missing source file was relocated by its provider, follow the move and
+ * return its new path. A row ingested at the new path before the move was
+ * recognized folds into the original. Returns null when the file is really
+ * gone, leaving normal cleanup to the caller.
+ */
+async function relocateMovedSource(
   db: ReturnType<typeof getDb>,
   filePath: string,
+  findCandidates: RelocationCandidateFinder,
 ): Promise<string | null> {
-  if (!isCodexRolloutPath(filePath)) return null;
+  const candidates = await findCandidates(filePath);
+  if (candidates.length === 0) return null;
   if (await logicalSourceExists(filePath)) return null;
-  for (const candidate of codexRelocationCandidates(filePath)) {
+  for (const candidate of candidates) {
     if (!await logicalSourceExists(candidate)) continue;
-    const parser = getParserForFile(candidate);
-    if (!parser || parser.source !== "codex") continue;
-    let nativeSessionId: string | null;
-    let parsed: ParseResult | null;
+    let proof: Awaited<ReturnType<typeof proveRelocationCandidate>>;
     try {
-      nativeSessionId = await loadCodexNativeSessionId(candidate);
-      parsed = await parser.parse(candidate);
+      proof = await proveRelocationCandidate(candidate);
     } catch (error) {
       logger("warn", "ingestion_relocation_probe_failed", {
         from: filePath,
@@ -1797,14 +1861,11 @@ async function relocateMovedCodexSource(
       });
       continue;
     }
-    if (!parsed || !nativeSessionId || parsed.conversation.session_id !== nativeSessionId) continue;
+    if (!proof) continue;
     const match = db.prepare(`
-      SELECT c.id,
-             (SELECT cs.id FROM conversation_sources cs
-               WHERE cs.conversation_id = c.id AND cs.provider = ?
-               ORDER BY cs.updated_at DESC LIMIT 1) AS source_id
+      SELECT c.id, ${LATEST_PROVIDER_SOURCE_SQL} AS source_id
         FROM conversations c
-       WHERE c.source_path = ? AND c.source = ? AND c.session_id = ?
+       WHERE c.source_path = ? AND c.source = ? AND c.session_id = ? AND ${NOT_IDENTITY_ALIAS_SQL}
        ORDER BY CASE WHEN EXISTS (
          SELECT 1
            FROM conversation_sources cs
@@ -1814,44 +1875,105 @@ async function relocateMovedCodexSource(
        ) THEN 0 ELSE 1 END,
        c.updated_at DESC, c.id
        LIMIT 1
-    `).get(
-      parsed.conversation.source,
-      filePath,
-      parsed.conversation.source,
-      nativeSessionId,
-      filePath,
-    ) as { id: string; source_id: string | null } | undefined;
+    `).get(filePath, proof.source, proof.sessionId, filePath) as { id: string; source_id: string | null } | undefined;
     if (!match) {
       logger("info", "ingestion_relocation_identity_mismatch", {
         from: filePath,
         candidate,
-        candidate_source: parsed.conversation.source,
-        candidate_session_id: nativeSessionId,
+        candidate_source: proof.source,
+        candidate_session_id: proof.sessionId,
+      });
+      continue;
+    }
+    const duplicates = db.prepare(`
+      SELECT c.id FROM conversations c
+       WHERE c.source_path = ? AND c.source = ? AND c.session_id = ? AND c.id != ? AND ${NOT_IDENTITY_ALIAS_SQL}
+       ORDER BY c.created_at, c.id
+    `).all(candidate, proof.source, proof.sessionId, match.id) as Array<{ id: string }>;
+    try {
+      for (const duplicate of duplicates) foldRelocatedDuplicate(db, match.id, duplicate.id);
+    } catch (error) {
+      // Conflicting controller state cannot be merged automatically; both rows
+      // stay as they are and the move is not followed.
+      logger("warn", "ingestion_relocation_fold_refused", {
+        from: filePath,
+        candidate,
+        conversation_id: match.id,
+        duplicate_ids: duplicates.map((duplicate) => duplicate.id),
+        error: String(error),
       });
       continue;
     }
     if (!repointConversationSource(db, filePath, candidate, match.id, match.source_id)) continue;
     const stat = await logicalSourceStat(candidate);
     await refreshAppendState(db, candidate, stat, await countCompleteLines(candidate));
-    reconcileIngestedChildRetention(db, match.id, candidate, parsed.blocks);
-    // A bulk archive moves many rollouts at once. The durable source alias is
-    // the record of each move; reconcile summarizes its relocations per pass.
+    if (proof.blocks) reconcileIngestedChildRetention(db, match.id, candidate, proof.blocks);
+    // A bulk move relocates many transcripts at once. The durable source alias
+    // is the record of each move; reconcile summarizes its relocations per pass.
     logger("debug", "ingestion_source_relocated", {
       from: filePath,
       to: candidate,
       conversation_id: match.id,
-      session_id: nativeSessionId,
+      session_id: proof.sessionId,
+      folded_duplicates: duplicates.map((duplicate) => duplicate.id),
     });
     return candidate;
   }
   return null;
 }
 
+/**
+ * The reverse of `relocateMovedSource`: a transcript seen at a path no row
+ * owns may be a relocated one whose move has not been observed yet. Adopt the
+ * single row with the same native identity whose relocation-equivalent path
+ * has vanished, so the move keeps its conversation id.
+ */
+async function adoptRelocatedPredecessor(
+  db: ReturnType<typeof getDb>,
+  filePath: string,
+  source: string,
+  sessionId: string,
+): Promise<boolean> {
+  if (!sessionId) return false;
+  const rows = db.prepare(`
+    SELECT c.id, c.source_path, ${LATEST_PROVIDER_SOURCE_SQL} AS source_id
+      FROM conversations c
+     WHERE c.source = ? AND c.session_id = ? AND c.source_path != ? AND ${NOT_IDENTITY_ALIAS_SQL}
+  `).all(source, sessionId, filePath) as Array<{ id: string; source_path: string; source_id: string | null }>;
+  const predecessors: typeof rows = [];
+  for (const row of rows) {
+    if (!sourcePathsRelocationEquivalent(row.source_path, filePath)) continue;
+    if (await logicalSourceExists(row.source_path)) continue;
+    predecessors.push(row);
+  }
+  if (predecessors.length !== 1) {
+    if (predecessors.length > 1) {
+      logger("warn", "ingestion_relocation_predecessor_ambiguous", {
+        file: filePath,
+        conversation_ids: predecessors.map((row) => row.id),
+      });
+    }
+    return false;
+  }
+  const [predecessor] = predecessors;
+  if (!repointConversationSource(db, predecessor.source_path, filePath, predecessor.id, predecessor.source_id)) return false;
+  logger("debug", "ingestion_source_relocated", {
+    from: predecessor.source_path,
+    to: filePath,
+    conversation_id: predecessor.id,
+    session_id: sessionId,
+  });
+  return true;
+}
+
 async function removeConversationForMissingSource(
   db: ReturnType<typeof getDb>,
   filePath: string,
+  findCandidates: RelocationCandidateFinder = createRelocationCandidateFinder(),
 ): Promise<boolean> {
-  if (await relocateMovedCodexSource(db, filePath)) {
+  const relocated = await relocateMovedSource(db, filePath, findCandidates);
+  if (relocated) {
+    await ingestFile(relocated);
     return true;
   }
   // Source loss is a tombstone transition, never a conversation deletion.
@@ -1863,11 +1985,12 @@ async function removeConversationForMissingSource(
     db.prepare("DELETE FROM workflow_ingest_state WHERE file_path = ?").run(filePath);
   });
   remove();
-  // A same-shaped archive path can hold an unrelated rollout. It is not a
+  // A relocation-shaped path can hold an unrelated transcript. It is not a
   // relocation, but watcher-driven ingestion still needs to index it on its
   // own identity instead of waiting for the next broad reconcile.
-  for (const candidate of codexRelocationCandidates(filePath)) {
-    if (!await logicalSourceExists(candidate)) continue;
+  const owned = db.prepare("SELECT 1 FROM conversations WHERE source_path = ? LIMIT 1");
+  for (const candidate of await findCandidates(filePath)) {
+    if (owned.get(candidate) || !await logicalSourceExists(candidate)) continue;
     await ingestFile(candidate);
   }
   return false;
@@ -2506,40 +2629,9 @@ async function ingestFile(filePath: string, options: IngestFileOptions = {}): Pr
   }
 }
 
-async function ingestFilePass(
-  filePath: string,
-  options: IngestFileOptions,
-  pendingAppendProof: PendingAppendProof,
-): Promise<boolean | undefined> {
-  const ingestStartedAt = Date.now();
-  if (isWorkflowIngestArtifactPath(filePath)) {
-    await ingestWorkflowArtifact(filePath, { force: options.forceFull === true });
-    return;
-  }
-
-  const parser = getParserForFile(filePath);
-  if (!parser) {
-    logger("debug", "ingestion_no_parser", { file: filePath });
-    return;
-  }
-
-  // Check if file still exists
-  let stat: Awaited<ReturnType<typeof logicalSourceStat>>;
-  try {
-    stat = await logicalSourceStat(filePath);
-  } catch {
-    logger("debug", "ingestion_file_gone", { file: filePath });
-    try {
-      await removeConversationForMissingSource(getDb(), filePath);
-    } catch {
-      // Best effort cleanup only.
-    }
-    return;
-  }
-
-  // Check if we already have this version
-  const db = getDb();
-  let existingRows = db.prepare(`
+/** Rows whose legacy projection names `filePath`, the path's alias owner first. */
+function selectConversationsAtPath(db: ReturnType<typeof getDb>, filePath: string): ExistingConversationRow[] {
+  return db.prepare(`
     SELECT
       c.id,
       c.source_hash,
@@ -2581,6 +2673,42 @@ async function ingestFilePass(
     ) THEN 0 ELSE 1 END,
     actual_count DESC, c.updated_at DESC
   `).all(filePath) as ExistingConversationRow[];
+}
+
+async function ingestFilePass(
+  filePath: string,
+  options: IngestFileOptions,
+  pendingAppendProof: PendingAppendProof,
+): Promise<boolean | undefined> {
+  const ingestStartedAt = Date.now();
+  if (isWorkflowIngestArtifactPath(filePath)) {
+    await ingestWorkflowArtifact(filePath, { force: options.forceFull === true });
+    return;
+  }
+
+  const parser = getParserForFile(filePath);
+  if (!parser) {
+    logger("debug", "ingestion_no_parser", { file: filePath });
+    return;
+  }
+
+  // Check if file still exists
+  let stat: Awaited<ReturnType<typeof logicalSourceStat>>;
+  try {
+    stat = await logicalSourceStat(filePath);
+  } catch {
+    logger("debug", "ingestion_file_gone", { file: filePath });
+    try {
+      await removeConversationForMissingSource(getDb(), filePath);
+    } catch {
+      // Best effort cleanup only.
+    }
+    return;
+  }
+
+  // Check if we already have this version
+  const db = getDb();
+  let existingRows = selectConversationsAtPath(db, filePath);
   let existing: ExistingConversationRow | undefined = existingRows[0];
 
   const appendState = getAppendState(db, filePath);
@@ -3052,6 +3180,21 @@ async function ingestFilePass(
         .map((row) => row.id),
       matched_conversation_id: existing?.id ?? null,
     });
+  }
+
+  if (
+    !existing
+    && !spawnIdentity
+    && await adoptRelocatedPredecessor(db, filePath, result.conversation.source, result.conversation.session_id)
+  ) {
+    existingRows = selectConversationsAtPath(db, filePath);
+    existing = existingRows.find((row) =>
+      row.source === result.conversation.source
+      && row.session_id === result.conversation.session_id
+    );
+    ingestMode = "full";
+    forceFullReingest = true;
+    alreadyIngestedCount = existing ? Math.max(existing.actual_count ?? 0, existing.block_count ?? 0) : 0;
   }
 
   const agentId = result.conversation.agent_id;
@@ -4025,15 +4168,19 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
     }
   }
 
-  // Follow `codex archive` / `codex unarchive` relocations before scanning, so
-  // the moved rollout is recognized as the conversation it already is instead
-  // of being ingested as a new row and then deleted as a missing source.
-  // Bug: c927726.
+  // Follow provider relocations (`codex archive` / `codex unarchive`, a
+  // rekeyed Claude project) before scanning, so the moved transcript is
+  // recognized as the conversation it already is instead of being ingested as
+  // a new row. Bugs: c927726, 1abb772.
+  const findRelocationCandidates = createRelocationCandidateFinder();
+  // A relocated transcript may have grown after its move, or folded a newer
+  // duplicate's row; the scan re-reads it whatever its mtime says.
+  const relocatedPaths = new Set<string>();
   let relocatedCount = 0;
   let changedCount = 0;
   for (const [sourcePath, sourceMtime] of Array.from(dbPaths)) {
     await options.cooperate?.();
-    const relocated = await relocateMovedCodexSource(db, sourcePath);
+    const relocated = await relocateMovedSource(db, sourcePath, findRelocationCandidates);
     if (!relocated) continue;
     relocatedCount += 1;
     const remaining = db.prepare(
@@ -4046,6 +4193,7 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
       dbPaths.set(sourcePath, remaining.source_mtime);
     }
     dbPaths.set(relocated, sourceMtime);
+    relocatedPaths.add(relocated);
     conversationPaths.add(relocated);
     const relocatedIds = codexSessionIds.get(sourcePath);
     if (relocatedIds) {
@@ -4151,8 +4299,9 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
         const knownConversation = conversationPaths.has(filePath);
         const mtimeChanged = dbMtime === undefined || Math.abs(dbMtime - stat.mtimeMs) >= 100;
         const codexNeedsVerification = codexSessionIds.has(filePath);
-        let needsIngest = !knownConversation || mtimeChanged || codexNeedsVerification || needsMetadataRepair;
-        if (knownConversation && !mtimeChanged && !codexNeedsVerification && !needsMetadataRepair) {
+        const relocated = relocatedPaths.has(filePath);
+        let needsIngest = !knownConversation || mtimeChanged || codexNeedsVerification || needsMetadataRepair || relocated;
+        if (knownConversation && !mtimeChanged && !codexNeedsVerification && !needsMetadataRepair && !relocated) {
           const appendState = appendStates.get(filePath);
           if (appendState && appendState.byte_offset !== stat.size) {
             needsIngest = true;
@@ -4186,12 +4335,13 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
     !knownPaths.has(sourcePath)
   );
   if (missingPaths.length > 0) {
-    // A rollout archived while this reconcile was scanning is a move, not a
-    // deletion; relocate it before recording missing-source tombstones.
+    // A transcript relocated while this reconcile was scanning is a move, not
+    // a deletion; relocate it before recording missing-source tombstones.
+    const findMovedDuringScan = createRelocationCandidateFinder();
     let unavailableCount = 0;
     for (const sourcePath of missingPaths) {
       if (!await logicalSourceExists(sourcePath)) {
-        if (await removeConversationForMissingSource(db, sourcePath)) relocatedCount += 1;
+        if (await removeConversationForMissingSource(db, sourcePath, findMovedDuringScan)) relocatedCount += 1;
         else unavailableCount += 1;
       }
       await options.cooperate?.();
