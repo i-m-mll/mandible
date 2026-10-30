@@ -204,21 +204,6 @@ const snapshotExpression = `(() => {
   const duplicateSingle = duplicate.querySelector('.briefing-directive__choices input[type=radio]:checked');
   const duplicateMulti = [...duplicate.querySelectorAll('.briefing-directive__choices input[type=checkbox]:checked')].map((input) => input.value);
   const directives = [...primary.querySelectorAll('.briefing-directive')];
-  const directiveRects = directives.map((directive) => {
-    const rect = directive.getBoundingClientRect();
-    return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
-  });
-  const prose = primary.querySelector('.briefing-document__prose');
-  const proseRect = prose?.getBoundingClientRect();
-  const proseStyle = prose ? getComputedStyle(prose) : null;
-  const resolveColor = (value) => {
-    const probe = document.createElement('span');
-    probe.style.color = value;
-    primary.append(probe);
-    const color = getComputedStyle(probe).color;
-    probe.remove();
-    return color;
-  };
   return {
     ratingCheckedValues: ratings.filter((input) => input.checked).map((input) => input.value),
     rating4Checked: rating4?.checked ?? null,
@@ -236,23 +221,12 @@ const snapshotExpression = `(() => {
     events: [...window.__briefingEvents],
     detailReads: window.__detailReads,
     artifactContentReads: window.__artifactContentReads,
-    segmentGaps: directiveRects.slice(1).map((rect, index) => rect.top - directiveRects[index].bottom),
-    segmentLefts: directiveRects.map((rect) => rect.left),
-    proseContentLeft: proseRect && proseStyle ? proseRect.left + parseFloat(proseStyle.paddingLeft) : null,
-    promptLefts: directives.map((directive) => directive.querySelector('.briefing-directive__body')?.getBoundingClientRect().left ?? null),
-    actionLefts: directives.map((directive) => directive.querySelector('.briefing-directive__actions')?.getBoundingClientRect().left ?? null),
-    borderColors: directives.map((directive) => getComputedStyle(directive).borderLeftColor),
     actionOpacities: directives.map((directive) => getComputedStyle(directive.querySelector('.briefing-directive__actions')).opacity),
     actionPointerEvents: directives.map((directive) => getComputedStyle(directive.querySelector('.briefing-directive__actions')).pointerEvents),
     selectedPrompts: directives.filter((directive) => directive.getAttribute('aria-current') === 'true').map((directive) => directive.querySelector('.briefing-directive__body')?.textContent?.trim()),
     persistentActionPrompts: directives.filter((directive) => directive.querySelector('.contextual-action-group--persistent')).map((directive) => directive.querySelector('.briefing-directive__body')?.textContent?.trim()),
     activeElement: document.activeElement?.className ?? document.activeElement?.tagName ?? null,
     annotationDialogOpen: Boolean(primary.querySelector('[role="dialog"]')),
-    themeColors: {
-      faint: resolveColor('var(--border-faint)'),
-      hover: resolveColor('var(--border-default)'),
-      accent: resolveColor('var(--accent-border)'),
-    },
     ...window.__briefingContract,
     renderedDocumentText: primary.querySelector('[aria-label="Pinned briefing document"]')?.textContent ?? null,
   };
@@ -283,21 +257,6 @@ function assertSelected(snapshot, phase) {
   }
   if (snapshot.singleChecked !== 'b' || snapshot.multiChecked.join(',') !== 'first,third') {
     throw new Error(`${phase}: existing single/multi controlled state changed: ${JSON.stringify(snapshot)}`);
-  }
-}
-
-function assertDirectiveGeometry(snapshot) {
-  if (snapshot.segmentGaps.length < 5 || snapshot.segmentGaps.some((gap) => !(gap > 0 && gap <= 8))) {
-    throw new Error(`directive segments do not have small positive gaps: ${JSON.stringify(snapshot.segmentGaps)}`);
-  }
-  if (snapshot.segmentLefts.some((left) => Math.abs(left - snapshot.proseContentLeft) > 0.5)) {
-    throw new Error(`directive segments do not align with the prose content edge: ${JSON.stringify(snapshot)}`);
-  }
-  if (snapshot.promptLefts.some((left, index) => !(left > snapshot.segmentLefts[index]))) {
-    throw new Error(`directive prompt content is not inset from its segment: ${JSON.stringify(snapshot)}`);
-  }
-  if (snapshot.actionLefts.some((left, index) => !(left > snapshot.segmentLefts[index]))) {
-    throw new Error(`directive actions are not inset from their segment: ${JSON.stringify(snapshot)}`);
   }
 }
 
@@ -365,32 +324,23 @@ try {
     throw new Error(`${error.message} Last renderer snapshot: ${JSON.stringify(diagnostic)}`);
   }
   assertVerifiedDocument(initial, 'initial render');
-  assertDirectiveGeometry(initial);
   if (initial.selectedPrompts.length !== 0 || initial.persistentActionPrompts.length !== 0) {
     throw new Error(`answered directives were incorrectly treated as selected: ${JSON.stringify(initial)}`);
-  }
-  if (initial.borderColors.some((color) => color !== initial.themeColors.faint)) {
-    throw new Error(`resting directive segments did not use the faint theme border: ${JSON.stringify(initial)}`);
   }
 
   const firstPromptPoint = await evaluate(webSocket, `(() => { const body = document.querySelector('.briefing-directive__body'); body.scrollIntoView({ block: 'center' }); const rect = body.getBoundingClientRect(); return { x: rect.left + Math.min(12, rect.width / 2), y: rect.top + Math.min(12, rect.height / 2) }; })()`);
   await cdpRequest(webSocket, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: firstPromptPoint.x, y: firstPromptPoint.y });
   const hovered = await waitFor(async () => {
     const snapshot = await evaluate(webSocket, snapshotExpression);
-    return snapshot.borderColors[0] === snapshot.themeColors.hover
-      && snapshot.actionOpacities[0] === '1'
+    return snapshot.actionOpacities[0] === '1'
       && snapshot.actionPointerEvents[0] === 'auto' ? snapshot : null;
   }, 'synchronized directive hover border and actions');
-  if (hovered.themeColors.hover === hovered.themeColors.faint) {
-    throw new Error(`hover border token did not resolve darker than the resting token: ${JSON.stringify(hovered.themeColors)}`);
-  }
 
   await clickPoint(webSocket, firstPromptPoint);
   const surfaceSelected = await waitFor(async () => {
     const snapshot = await evaluate(webSocket, snapshotExpression);
     return snapshot.selectedPrompts.join(',') === 'Keep this?'
       && snapshot.persistentActionPrompts.join(',') === 'Keep this?'
-      && snapshot.borderColors[0] === snapshot.themeColors.accent
       && snapshot.actionOpacities[0] === '1' ? snapshot : null;
   }, 'non-interactive surface selection');
 

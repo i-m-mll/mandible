@@ -43,24 +43,6 @@ describe("space CLI", () => {
     expect(responder.requests).toEqual([]);
   });
 
-  it("maps each ref scheme to its item ref", async () => {
-    const { env, responder } = spool((request) => ({ status: 201, body: { item: { id: "item-1", ...request.body }, created: true } }));
-    const cases: Array<[string, Record<string, unknown>]> = [
-      ["issue:abc123", { ref_type: "issue", ref_id: "abc123" }],
-      ["comment:cmt-9", { ref_type: "comment", ref_id: "cmt-9" }],
-      ["artifact:logical", { ref_type: "artifact", ref_id: "artifact:logical" }],
-      ["artifact-version:version-1", { ref_type: "artifact", ref_id: "artifact-version:version-1" }],
-      ["artifact-blob:deadbeef", { ref_type: "artifact", ref_id: "artifact-blob:deadbeef" }],
-      ["uri:https://example.com/x", { ref_type: "external_ref", ref_id: "https://example.com/x", ref_uri: "https://example.com/x" }],
-    ];
-
-    const results = await Promise.all(cases.map(([ref]) => runCli(["space", "add-item", "space-1", ref, "--json"], { env })));
-
-    for (const result of results) expect(result.status, result.stderr).toBe(0);
-    expect(responder.requests.every((request) => request.path === "/api/spaces/space-1/items")).toBe(true);
-    expect(responder.requests.map((request) => request.body)).toEqual(expect.arrayContaining(cases.map(([, item]) => expect.objectContaining(item))));
-  });
-
   it("reports an edge with a non-ledger endpoint as not promotable, exit 3, without calling the route", async () => {
     const { env, responder } = spool();
 

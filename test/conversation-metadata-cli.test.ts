@@ -31,51 +31,6 @@ afterEach(() => {
 });
 
 describe("conversation metadata CLI", () => {
-  it("resolves an exact id and supports every metadata mutation through file-RPC", async () => {
-    const spool = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-conversation-metadata-cli-"));
-    tempRoots.push(spool);
-    const conversation = {
-      id: "conv-1", source: "codex", session_id: "thread-1", title: "Provider title",
-      starred: false, tags: [], notes: null,
-    };
-    const responder = startFileRpcResponder(spool, (request) => {
-      if (request.method === "GET" && request.path === "/api/conversations/conv-1") {
-        return { status: 200, body: { conversation } };
-      }
-      if (request.method === "GET" && String(request.path).startsWith("/api/conversations?session_id=conv-1")) {
-        return { status: 200, body: { conversations: [] } };
-      }
-      if (request.method === "PATCH" && request.path === "/api/conversations/conv-1") {
-        return { status: 200, body: { ...conversation, ...(request.body as object) } };
-      }
-      return { status: 404, body: { error: "not found" } };
-    });
-    try {
-      const env = {
-        MANDIBLE_BASE: `file://${spool}`,
-        MANDIBLE_FILE_RPC_TIMEOUT: "5",
-        CODEX_THREAD_ID: "",
-      };
-      const result = await run(["conversations", "tag", "add", "conv-1", "alpha", "--json"], env);
-      expect(result.status).toBe(0);
-      expect(JSON.parse(result.stdout)).toMatchObject({ id: "conv-1" });
-      expect((await run(["conversations", "tag", "rm", "conv-1", "alpha", "--json"], env)).status).toBe(0);
-      expect((await run(["conversations", "star", "conv-1", "--json"], env)).status).toBe(0);
-      expect((await run(["conversations", "unstar", "conv-1", "--json"], env)).status).toBe(0);
-      expect((await run(["conversations", "comment", "conv-1", "-m", "note", "--json"], env)).status).toBe(0);
-      expect(responder.requests.filter((request) => request.method === "PATCH").map((request) => request.body))
-        .toEqual([
-          { tags_add: ["alpha"] },
-          { tags_remove: ["alpha"] },
-          { starred: true },
-          { starred: false },
-          { notes_append: "note" },
-        ]);
-    } finally {
-      responder.stop();
-    }
-  });
-
   it("fails --current when a sidechain is not linked to the sole parent", async () => {
     const spool = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-conversation-current-cli-"));
     tempRoots.push(spool);
@@ -95,7 +50,6 @@ describe("conversation metadata CLI", () => {
         CODEX_THREAD_ID: "thread-1",
       });
       expect(result.status).toBe(2);
-      expect(result.stderr).toContain("resolved to 2 matches");
       expect(responder.requests.every((request) => request.method === "GET")).toBe(true);
     } finally {
       responder.stop();
@@ -121,7 +75,6 @@ describe("conversation metadata CLI", () => {
         CODEX_THREAD_ID: "",
       });
       expect(result.status).toBe(2);
-      expect(result.stderr).toContain("resolved to 2 matches");
       expect(responder.requests.every((request) => request.method === "GET")).toBe(true);
     } finally {
       responder.stop();

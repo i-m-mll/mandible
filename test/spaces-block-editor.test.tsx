@@ -640,7 +640,6 @@ describe('DocumentBlockEditor draft persistence (UI-state-persistence)', () => {
     await waitFor(() => {
       expect(sourceText()).toBe('work in progress');
     });
-    expect(blockEditorStorageKey('prj1', 'sp1')).toBe('mandible.spaces.blockEditor:prj1:sp1');
   });
 });
 

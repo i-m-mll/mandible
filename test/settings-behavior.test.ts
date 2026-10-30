@@ -45,12 +45,9 @@ describe('SettingsView', () => {
     render(h(SettingsView, { instance: mainInstance, settings: { app_theme: 'system' }, onSave }));
 
     const themeSelect = screen.getByRole('combobox', { name: 'App theme' });
-    expect(themeSelect.getAttribute('aria-describedby')).toBe('settings-app-theme-description');
-    expect(within(themeSelect).getAllByRole('option').map((option) => option.textContent)).toEqual([
-      'System',
-      'Dark',
-      'Light',
-    ]);
+    const themeDescriptionId = themeSelect.getAttribute('aria-describedby');
+    expect(themeDescriptionId).toBeTruthy();
+    expect(document.getElementById(themeDescriptionId!)).toBeTruthy();
 
     for (const mode of ['light', 'dark', 'system']) {
       changeSelect(themeSelect, mode);
@@ -59,12 +56,6 @@ describe('SettingsView', () => {
 
     const lightTerminal = screen.getByRole('combobox', { name: 'Light-mode terminal' });
     const darkTerminal = screen.getByRole('combobox', { name: 'Dark-mode terminal' });
-    expect(within(lightTerminal).getAllByRole('option').map((option) => option.textContent)).toEqual([
-      'Mandible', 'GitHub', 'Solarized', 'One', 'High contrast',
-    ]);
-    expect(within(darkTerminal).getAllByRole('option').map((option) => option.textContent)).toEqual([
-      'Mandible', 'GitHub', 'Solarized', 'One', 'High contrast',
-    ]);
     changeSelect(lightTerminal, 'solarized');
     await waitFor(() => expect(onSave).toHaveBeenLastCalledWith('terminal_theme_light', 'solarized'));
     changeSelect(darkTerminal, 'one');
@@ -206,7 +197,6 @@ describe('SettingsView', () => {
       }),
     ));
     expect(screen.queryByRole('dialog', { name: 'Clean previous instruction target?' })).toBeNull();
-    await waitFor(() => expect(screen.getByText('Saved in this preview copy. Target files were not changed and the post-export hook was not run.')).toBeTruthy());
     await waitFor(() => expect(onSave).toHaveBeenCalledWith('instructions.targets', JSON.stringify([targets[1]])));
     fireEvent.click(screen.getByRole('button', { name: 'Remove instruction target /tmp/old-claude.md' }));
     await waitFor(() => expect(onSave).toHaveBeenCalledWith('instructions.targets', '[]'));

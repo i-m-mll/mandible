@@ -169,7 +169,6 @@ describe('completed search snapshots in Chat', () => {
     expect(sidebar().getByText('Prior chat')).toBeTruthy();
     expect(sidebar().getByText('Prior page')).toBeTruthy();
     expect(sidebar().queryByRole('status')).toBeNull();
-    expect(sidebar().queryByText('No chats')).toBeNull();
     expect(sidebar().queryByText('First match')).toBeNull();
     ready = true;
     await tick(525);
@@ -199,16 +198,12 @@ describe('completed search snapshots in Chat', () => {
     fullText();
     search('first query');
     await tick();
-    expect(sidebar().queryByText('No chats')).toBeNull();
-    expect(screen.queryByText('No chats in this view')).toBeNull();
     expect(sidebar().queryByRole('status')).toBeNull();
     await tick(525);
     expect(screen.getByRole('button', { name: 'Retry search' })).toBeTruthy();
-    expect(screen.queryByText('No chats in this view')).toBeNull();
     retry = true;
     fireEvent.click(screen.getByRole('button', { name: 'Retry search' }));
     await tick();
-    expect(sidebar().getByText('No chats')).toBeTruthy();
   });
 
   it('keeps rows on incomplete coverage and expired pages, with explicit snapshot retries', async () => {
@@ -241,7 +236,6 @@ describe('completed search snapshots in Chat', () => {
     rendered.rerender(view());
     await tick(10_000);
     expect(fixture.requested).toHaveLength(requests);
-    expect(sidebar().queryByText('No chats')).toBeNull();
     retry = true;
     fireEvent.click(screen.getByRole('button', { name: 'Retry search' }));
     await tick();

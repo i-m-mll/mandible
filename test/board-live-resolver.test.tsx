@@ -47,8 +47,7 @@ it('moves a real Board card through claim, resolution, and release from the emit
     render(<SpaceBoardRenderer projectId="sidebar-other" spaceId={spaceId} renderer="board" factPacket={packet} />);
     const location = () => screen.getByText('Work card').closest('[data-occurrence-id]')!.getAttribute('data-column-key');
     await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(screen.queryByText('Resolving issue facts…')).toBeNull());
-    expect(location()).toBe('worker_status:none');
+    await waitFor(() => expect(location()).toBe('worker_status:none'));
     const events: Array<{ type: string; data: unknown }> = [];
     const manager = new SseManager();
     setSseManager(manager);

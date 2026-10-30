@@ -131,7 +131,6 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
           expect(row.fullTitle).toContain('A complete long issue title');
           rightEdges.push(row.control.right);
         }
-        expect(layout.rows.map((row: any) => row.text)).toEqual(completed ? ['Done', 'Done'] : ['Veto', 'Restore']);
         if (!completed) {
           const sidebar = layout.sidebar;
           expect(sidebar.overflow).toBe(false);

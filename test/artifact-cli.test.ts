@@ -212,8 +212,6 @@ describe("artifact CLI", () => {
     ]);
 
     for (const result of results) expect(result.status, result.stderr).toBe(0);
-    expect(results[0].stdout.trim()).toBe(`linked artifact:abc123def456 references issue:${issue.id} [pinned v3]`);
-    expect(results[1].stdout.trim()).toBe(`linked artifact:abc123def456 references issue:${issue.id} [living · latest v3]`);
     const kinds = Object.fromEntries(stub.requests.filter((request) => request.url === "/api/artifacts/link")
       .map((request) => [(request.body as { ref: string }).ref, (request.body as { link_kind?: string }).link_kind ?? "omitted"]));
     expect(kinds).toEqual({

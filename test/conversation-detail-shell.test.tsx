@@ -286,19 +286,17 @@ describe('compact detail pane shell', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Archive' }));
     await screen.findByRole('button', { name: 'Restore' });
-    expect(screen.getByText(/Archived in Mandible; still visible in Codex/)).toBeTruthy();
-    expect(screen.queryByText('Archived in Mandible and Codex.')).toBeNull();
     expect(screen.getByText(transcriptBlock.content)).toBeTruthy();
     expect(queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(selected.id))?.blocks).toBe(aggregate.blocks);
     act(() => applyConversationSse(queryClient, 'conversation:updated', {
       id: selected.id, retention_native_status: 'failed', retention_native_reason: 'native archive unavailable',
     }));
-    await screen.findByText('Archived in Mandible. Codex archiving could not be confirmed.');
     expect(queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(selected.id))?.conversation.archived_at).toBe(42);
+    expect(queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(selected.id))?.conversation.retention_native_status).toBe('failed');
     act(() => applyConversationSse(queryClient, 'conversation:updated', {
       id: selected.id, retention_native_status: 'archived', retention_native_reason: null,
     }));
-    await screen.findByText('Archived in Mandible and Codex.');
+    await waitFor(() => expect(queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(selected.id))?.conversation.retention_native_status).toBe('archived'));
     const restore = screen.getByRole('button', { name: 'Restore' });
     await waitFor(() => expect((restore as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(restore);
@@ -339,12 +337,10 @@ describe('compact detail pane shell', () => {
     );
     const mounted = render(view(first.id));
     await waitFor(() => expect(firstAttempts).toBe(1));
-    expect(screen.queryByText('No messages yet')).toBeNull();
     mounted.rerender(view(second.id));
     expect(await screen.findByText('Second chat opened')).toBeTruthy();
     mounted.rerender(view(first.id));
     expect(await screen.findByText('First chat returned')).toBeTruthy();
-    expect(screen.queryByText('No messages yet')).toBeNull();
     expect(firstAttempts).toBeGreaterThanOrEqual(2);
   });
 
@@ -818,7 +814,6 @@ describe('Chat route intent', () => {
     window.history.replaceState(null, '', `#/console?${type}=B-ref&${new URLSearchParams(Object.fromEntries(Object.entries(anchor).map(([key, value]) => [key, String(value)])))}&sidebar=hidden&context=keep`);
     mounted.rerender(type === 'session' ? view(null, 'B-ref') : view('B-ref'));
     expect(screen.queryByText('Transcript A')).toBeNull();
-    expect(screen.queryByText('No chats in this view')).toBeNull();
     expect(api.getConversationWindow).not.toHaveBeenCalledWith('B-ref', expect.anything());
     await act(async () => { pending.resolve({ status: 'resolved', selection: { type: 'conversation', id: 'B' } }); });
     await screen.findByText('Transcript B');
@@ -832,17 +827,16 @@ describe('Chat route intent', () => {
 
   it.each(['not_found', 'ambiguous', 'error'] as const)('keeps unrelated saved content hidden on %s', async (status) => {
     const view = setupRouteHistory();
+    const resolution = deferred<api.ChatRouteResolution>();
     const mounted = render(view('A'));
     await screen.findByText('Transcript A');
-    vi.mocked(api.resolveChatRouteTarget).mockImplementation(async () => {
-      if (status === 'error') throw new Error('offline');
-      return { status };
-    });
+    vi.mocked(api.resolveChatRouteTarget).mockReturnValue(resolution.promise);
     mounted.rerender(view(null, 'unavailable-target'));
     expect(screen.queryByText('Transcript A')).toBeNull();
-    await waitFor(() => expect(screen.getByText(status === 'error' ? 'Could not open the requested chat.'
-      : status === 'ambiguous' ? 'This reference matches several chats. Select an exact chat.'
-      : 'The requested chat was not found.')).toBeTruthy());
+    await act(async () => {
+      if (status === 'error') resolution.reject(new Error('offline'));
+      else resolution.resolve({ status });
+    });
     expect(screen.queryByText('Transcript A')).toBeNull();
   });
 

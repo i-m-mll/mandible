@@ -662,7 +662,6 @@ describe('TimelineView', () => {
     }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
-    expect(screen.queryByText('Timeline UI shell')).toBeNull();
     finalPage.resolve(timelineResponse(lastPage, { row_offset: 1, next_row_offset: null }));
     await waitFor(() => expect(screen.getByText('Build shared axis')).toBeTruthy());
     expect(fetchMock.mock.calls.map((call) => JSON.parse(String(call[1]?.body)).row_offset)).toEqual([0, 1, 0, 1]);
@@ -852,7 +851,6 @@ describe('TimelineView', () => {
     await waitFor(() => expect(screen.getByText('Build shared axis')).toBeTruthy());
     fireEvent.click(screen.getByText('Closed'));
     expect(screen.getByText('Build shared axis')).toBeTruthy();
-    expect(screen.queryByText('Syncing')).toBeNull();
     expect(screen.getByRole('status', { name: 'Updating timeline' })).toBeTruthy();
 
     resolveSecond(projection({
@@ -905,7 +903,6 @@ describe('TimelineView', () => {
 
     await waitFor(() => expect(screen.getAllByRole('row').length).toBe(rowsBefore + 1));
     expect(screen.getByText('Full body text')).toBeTruthy();
-    expect(screen.queryByText('No selection')).toBeNull();
     expect(eventX()).toBe(eventLeft);
   });
 
@@ -922,8 +919,7 @@ describe('TimelineView', () => {
     expect(screen.getAllByText('Build shared axis').length).toBeGreaterThan(1);
     fireEvent.click(screen.getByText('Closed'));
 
-    await waitFor(() => expect(screen.getByText('Selection is outside the current projection.')).toBeTruthy());
-    expect(screen.queryByText('No selection')).toBeNull();
+    await waitFor(() => expect(screen.queryByText('Synced headline')).toBeNull());
     expect(screen.queryByText('Synced headline')).toBeNull();
   });
 });

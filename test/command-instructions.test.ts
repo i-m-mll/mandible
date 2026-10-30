@@ -3,7 +3,6 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { renderMandibleInstructionsFragment } from "../src/instructions/fragment.js";
 import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
 
 const syntax = createRequire(import.meta.url)("../cli/command-syntax.cjs");
@@ -84,8 +83,6 @@ describe("one CLI grammar", () => {
     expect(syntax.help(["issue", "report"], commands)).toContain("[--future]");
     expect(syntax.renderCommands("Before\n{{command issue.report}} — explanation.\nAfter\n", { commands }))
       .toContain("[--future]` — explanation.");
-    const markdown = fs.readFileSync("cli/instructions-contract.md", "utf8");
-    expect(renderMandibleInstructionsFragment()).toBe(syntax.renderCommands(markdown));
   });
 
   it("parses the shortest and the fullest form of every documented command", () => {

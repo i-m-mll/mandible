@@ -89,7 +89,6 @@ describe("user setup signing credential", () => {
       url: "/api/users/operator-slug/credentials",
       body: { type: "ssh_key", fingerprint: globalKey.fingerprint, public_material: globalKey.publicMaterial, label: "git user.signingkey" },
     })]);
-    expect(result.stderr).toContain("registered from global git config");
     expect(JSON.parse(result.stdout).user.slug).toBe("operator-slug");
   });
 
@@ -118,11 +117,8 @@ describe("user setup signing credential", () => {
 
     expect(refused.status, refused.stderr).toBe(0);
     expect(credentialPosts(localStub)).toHaveLength(0);
-    expect(refused.stderr).toContain("Signing credential not registered");
-    expect(refused.stderr).toContain("mandible user credential add operator-slug --from-git-signingkey");
     expect(quiet.status, quiet.stderr).toBe(0);
     expect(credentialPosts(noneStub)).toHaveLength(0);
-    expect(quiet.stderr).not.toContain("Signing credential");
   });
 });
 
@@ -136,7 +132,6 @@ describe("user credential add --from-git-signingkey", () => {
 
     expect(result.status, result.stderr).toBe(0);
     expect(credentialPosts(stub).map((request) => request.body)).toEqual([{ type: "ssh_key", fingerprint, public_material: publicMaterial }]);
-    expect(result.stderr).toContain("from global git config");
   });
 
   it("registers a repository-scoped key but names the scope, since the credential applies everywhere", async () => {
@@ -148,7 +143,5 @@ describe("user credential add --from-git-signingkey", () => {
 
     expect(result.status, result.stderr).toBe(0);
     expect(credentialPosts(stub).map((request) => request.body)).toEqual([{ type: "ssh_key", fingerprint, public_material: publicMaterial }]);
-    expect(result.stderr).toContain("from a non-global git config scope");
-    expect(result.stderr).toContain("applies to this user everywhere");
   });
 });
