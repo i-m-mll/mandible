@@ -105,3 +105,34 @@ async function buildClaudeProjectIndex(root: string): Promise<Map<string, string
   }
   return index;
 }
+
+/**
+ * The on-disk spelling of a source path that still resolves only because the
+ * filesystem ignores case, or null when the stored spelling is current or the
+ * path cannot be resolved.
+ *
+ * On a case-insensitive volume a project-key rename that changes only letter
+ * case leaves the old spelling resolvable, so the source never looks missing.
+ * The real path is compared component by component from the file upwards, so
+ * a symlinked prefix (such as `/var` -> `/private/var`) is not mistaken for a
+ * respelling.
+ */
+export async function sourcePathRespelling(filePath: string): Promise<string | null> {
+  let real: string;
+  try {
+    real = await fs.promises.realpath(filePath);
+  } catch {
+    return null;
+  }
+  if (real === filePath) return null;
+  const stored = filePath.split(path.sep);
+  const resolved = real.split(path.sep);
+  const limit = Math.min(stored.length, resolved.length);
+  let shared = 0;
+  while (
+    shared < limit
+    && stored[stored.length - 1 - shared].toLowerCase() === resolved[resolved.length - 1 - shared].toLowerCase()
+  ) shared += 1;
+  const respelled = [...stored.slice(0, stored.length - shared), ...resolved.slice(resolved.length - shared)].join(path.sep);
+  return respelled === filePath ? null : respelled;
+}
