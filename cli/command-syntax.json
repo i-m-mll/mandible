@@ -1082,6 +1082,17 @@
         ]
       }
     },
+    "project.relocate-checkout": {
+      "route": ["project", "relocate-checkout"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "argument","name": "old-root","value": {"type": "string"}},
+          {"kind": "argument","name": "new-root","value": {"type": "string"}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
+        ]
+      }
+    },
     "project.audit": {
       "route": ["project", "audit"],
       "grammar": {

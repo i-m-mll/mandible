@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it } from 'vitest';
-import { WorkScanner, type SqliteDatabase } from '../src/work-scanner.js';
+import { WorkScanner } from '../src/work-scanner.js';
+import type { Db } from '../src/db.js';
 
 import { createMigratedDb } from './helpers/ledger-fixtures.js';
 import { waitUntil } from './helpers/wait-until.js';
@@ -19,14 +20,14 @@ it('cancels an in-flight repository probe and drains before the database closes'
   const marker = path.join(root, 'probe-started');
   fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\n: > "$SCANNER_PROBE_MARKER"\nexec sleep 30\n', { mode: 0o755 });
   let closed = false;
-  const db: SqliteDatabase = {
+  const db = {
     exec() { if (closed) throw new Error('database closed'); },
-    transaction: (callback) => callback,
-    prepare(sql) {
+    transaction: (callback: () => void) => callback,
+    prepare(sql: string) {
       if (closed) throw new Error('database closed');
       return { run: () => ({ changes: 0 }), get: () => undefined, all: () => sql.includes('FROM work_repos') ? [{ id: 'test', root, name: 'test', default_branch: 'main', dir_exists: 1, excluded: 0, user_modified: 0, last_scanned_at: null }] : [] };
     },
-  };
+  } as unknown as Db;
   const scanner = new WorkScanner({ db, repo_roots: [root], config_path: path.join(root, 'repos.json'), on_event() {} });
   const previousPath = process.env.PATH;
   const previousMarker = process.env.SCANNER_PROBE_MARKER;
