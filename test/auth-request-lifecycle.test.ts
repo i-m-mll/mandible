@@ -61,9 +61,9 @@ function requesterFixture() {
     if (!patch.supersedes_request_id) {
       db.prepare(`INSERT INTO work_units
         (id, issue_id, repo_id, branch, kind, state, created_at, activated_at,
-         ledger_issue_id, owner_user_id, owner_credential_id, custody_generation)
+         ledger_issue_id, owner_user_id, responsibility_session_id, custody_generation)
         VALUES (?, 'f15617a', ?, ?, 'solo', 'committed', 1, 1, ?, ?, ?, 1)`)
-        .run(crypto.randomUUID(), project.project.project_key, head, issue.id, operator.id, credential.id);
+        .run(crypto.randomUUID(), project.project.project_key, head, issue.id, operator.id, null);
     }
     return submitExisting(patch);
   };
@@ -71,31 +71,6 @@ function requesterFixture() {
 }
 
 describe("auth request immutable lifecycle", () => {
-  it("refuses the actual local browser identity without changing revision authority", async () => {
-    const { db, queue, submit } = requesterFixture();
-    setDb(db);
-    const request = (await submit());
-    const authenticator = new ClientAuthenticator(db, {
-      secretsDir: uniqueMissingPath("description-browser-auth"), contextVerificationKeyPem: "",
-    });
-    const identity = authenticator.localBrowserIdentity();
-    expect(identity).toMatchObject({ method: "local_os_user", source: "local_os_user", credential_id: null });
-    const router = new Router({ clientAuth: {
-      authenticate: () => identity, mode: () => "strict", recordUnattributedWrite: () => undefined,
-    } });
-    registerAuthRoutes(router,queue,new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
-    const before = queue.listLifecycleEvents(request.id);
-    for (const operator_recovery of [false,true]) {
-      const refused = await router.invoke({ method: "PUT", url: `/api/auth/v2/request/${request.id}`,
-        body: { commit_message: "Browser cannot claim durable custody.", expected_revision: 1,
-          expected_custody_generation: 1, operator_recovery } });
-      expect(refused.status).toBe(401);
-      expect(refused.body).toMatchObject({ code: "durable_credential_required" });
-    }
-    expect((await queue.getRequest(request.id))?.commit_message).toBe(request.commit_message);
-    expect(queue.listLifecycleEvents(request.id)).toEqual(before);
-    (await queue.dispose());
-  });
 
   it("preserves canonical Description revisions by the existing durable credential owner", async () => {
     const { db, queue, operator, credential, submit } = requesterFixture();
@@ -135,59 +110,19 @@ describe("auth request immutable lifecycle", () => {
     expect(JSON.parse(submitted!.snapshot_json).request.spec_content).toBe(spec);
 
     // The guarded transition re-derives the snapshot digest; it must still match.
+    queue.assumeRequestResponsibility("spec-request", { user_id: operator.id, session_id: null }, "Retire old request", 1, 0);
     const withdrawn = (await queue.withdraw("spec-request", "Operator retired an old request", {
       user_id: operator.id,
       evidence_method: "api_token",
       credential_id: credential.id,
       authority_path: "operator_recovery",
-    }, 1, 0));
+    }, 1, 1));
     expect(withdrawn).toMatchObject({ status: "withdrawn", spec_content: spec });
     const last = queue.listLifecycleEvents("spec-request").at(-1)!;
     expect(last.snapshot_sha256).toBe(authSnapshotDigest(last.snapshot_json));
     expect(JSON.parse(last.snapshot_json).request.spec_content).toBe(spec);
   });
 
-  it("allows only the exact requester credential to withdraw a pending request", async () => {
-    const { db, queue, operator, otherCredential, actor, submit } = requesterFixture();
-    const request = (await submit());
-
-    await expect((async () => (await queue.withdraw(request.id, "wrong credential", {
-      ...actor,
-      credential_id: otherCredential.id,
-    }, 1, 1))())).rejects.toThrow(AuthQueueError);
-    const outsider = createUser(db, {
-      slug: `outsider-${crypto.randomUUID()}`,
-      kind: "agent",
-      display_name: "Outsider",
-    });
-    await expect((async () => (await queue.withdraw(request.id, "wrong user", {
-      ...actor,
-      user_id: outsider.id,
-    }, 1, 1))())).rejects.toThrow(AuthQueueError);
-    expect((await queue.getRequest(request.id))?.status).toBe("pending");
-
-    const withdrawn = (await queue.withdraw(request.id, "Branch abandoned", actor, 1, 1));
-    expect(withdrawn.status).toBe("withdrawn");
-    expect(withdrawn.error).toBe("Branch abandoned");
-
-    const events = queue.listLifecycleEvents(request.id);
-    expect(events.map((event) => event.event_type)).toEqual(["submitted", "withdrawn"]);
-    expect(events[1]).toMatchObject({
-      revision: 2,
-      prior_status: "pending",
-      next_status: "withdrawn",
-      actor_user_id: operator.id,
-      credential_id: actor.credential_id,
-      reason: "Branch abandoned",
-    });
-    expect(events[1]!.snapshot_sha256).toMatch(/^[0-9a-f]{64}$/);
-    expect(() => db.prepare(
-      "UPDATE auth_request_lifecycle_events SET reason = 'rewritten' WHERE id = ?",
-    ).run(events[1]!.id)).toThrow();
-    expect(() => db.prepare(
-      "DELETE FROM auth_request_lifecycle_events WHERE id = ?",
-    ).run(events[1]!.id)).toThrow();
-  });
 
   it("resubmits the same branch and delivery work unit after withdrawal", async () => {
     const { db, queue, actor, submit, submitExisting } = requesterFixture();
@@ -225,58 +160,8 @@ describe("auth request immutable lifecycle", () => {
     expect(request.custody_work_unit_id).toBeTruthy();
   });
 
-  it("treats sessions as provenance only and permits a same-credential successor", async () => {
-    const { queue, operator, credential, submit } = requesterFixture();
-    const request = (await submit({ session_id: "originating-session" }));
 
-    await expect((async () => (await queue.withdraw(request.id, "session is not custody", {
-      user_id: operator.id,
-      evidence_method: "session_claim",
-      session_id: "originating-session",
-    }, 1, 1))())).rejects.toThrow(AuthQueueError);
 
-    const successor = (await queue.withdraw(request.id, "successor completed the handoff", {
-      user_id: operator.id,
-      evidence_method: "api_token",
-      credential_id: credential.id,
-      session_id: "successor-session",
-      authority_path: "custodian",
-    }, 1, 1));
-    expect(successor.status).toBe("withdrawn");
-  });
-
-  it("records operator recovery as a distinct audited authority path", async () => {
-    const { queue, operator, credential, submit } = requesterFixture();
-    const request = (await submit({ head_branch: "feature/operator-recovery" }));
-    (await queue.withdraw(request.id, "Operator recovered an abandoned lane", {
-      user_id: operator.id,
-      evidence_method: "api_token",
-      credential_id: credential.id,
-      authority_path: "operator_recovery",
-    }, 1, 1));
-    expect(queue.listLifecycleEvents(request.id).at(-1)).toMatchObject({
-      event_type: "withdrawn",
-      authority_path: "operator_recovery",
-      custody_generation: 1,
-    });
-  });
-
-  it("lets the operator recover a legacy pending request without fabricating custody", async () => {
-    const { queue, operator, credential } = requesterFixture();
-    const legacy = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  command: "echo legacy", title: "Legacy", type: "commit" }));
-    const recovered = (await queue.withdraw(legacy.id, "Operator retired an unowned legacy request", {
-      user_id: operator.id,
-      evidence_method: "api_token",
-      credential_id: credential.id,
-      authority_path: "operator_recovery",
-    }, 1, 0));
-    expect(recovered.status).toBe("withdrawn");
-    expect(queue.listLifecycleEvents(legacy.id).at(-1)).toMatchObject({
-      authority_path: "operator_recovery",
-      custody_work_unit_id: null,
-      custody_generation: null,
-    });
-  });
 
   it("rejects stale lifecycle and custody preconditions", async () => {
     const { queue, actor, submit } = requesterFixture();
@@ -286,21 +171,6 @@ describe("auth request immutable lifecycle", () => {
     expect((await queue.getRequest(request.id))?.status).toBe("pending");
   });
 
-  it("fails closed for legacy rows and terminal requests", async () => {
-    const { queue, operator, actor, submit } = requesterFixture();
-    const legacy = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  command: "echo legacy", title: "Legacy", type: "commit" }));
-    await expect((async () => (await queue.withdraw(legacy.id, "unknown requester", actor, 1, 0))())).rejects.toThrow(AuthQueueError);
-
-    const withdrawn = (await submit({ head_branch: "feature/withdrawn" }));
-    (await queue.withdraw(withdrawn.id, "done", actor, 1, 1));
-    await expect((async () => (await queue.withdraw(withdrawn.id, "again", actor, 2, 1))())).rejects.toThrow(AuthQueueError);
-    await expect((async () => (await submit({
-      head_branch: "feature/replacement",
-      supersedes_request_id: withdrawn.id,
-      expected_revision: 2,
-      expected_custody_generation: 1,
-    }))())).rejects.toThrow(AuthQueueError);
-  });
 
   it("inherits prerequisites on supersession and leaves dependent identities unchanged", async () => {
     const { db, queue, actor, submit } = requesterFixture();

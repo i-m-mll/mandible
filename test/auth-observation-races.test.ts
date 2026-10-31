@@ -227,7 +227,7 @@ function bindCustody(f: Awaited<ReturnType<typeof fixture>>) {
   const id = "private-custody-race";
   insertWorkUnit(f.db, { id, issueShortId: issue.id.slice(0, 7), ledgerIssueId: issue.id,
     repoId: path.basename(f.repo), assignedSessionId: "private-race", authRequestId: f.request.id });
-  f.db.prepare("UPDATE work_units SET branch = 'feature/target', owner_user_id = ?, owner_credential_id = ? WHERE id = ?").run(f.signing.operatorId, f.signing.credentialId, id);
+  f.db.prepare("UPDATE work_units SET branch = 'feature/target', owner_user_id = ?, responsibility_session_id = ? WHERE id = ?").run(f.signing.operatorId, f.signing.credentialId, id);
   f.db.prepare("UPDATE auth_requests SET custody_work_unit_id = ? WHERE id = ?").run(id, f.request.id);
   appendAuthLifecycleEvent(f.db, { requestId: f.request.id, eventType: "revised", priorStatus: "pending", nextStatus: "pending", actor: systemAction(), occurredAt: Date.now() });
   return id;

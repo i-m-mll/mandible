@@ -1,3 +1,4 @@
+import { RESPONSIBILITY_SCHEMA_SQL } from "./responsibility-schema.js";
 import { WORK_UNIT_ASSIGNMENT_SCHEMA_SQL, seedLegacyAssignmentTargets } from "./work-unit-assignment-schema.js";
 import { CHILD_RETENTION_SCHEMA_SQL } from "./conversations/retention-schema.js";
 import { AUTH_HOOK_EXECUTIONS_TABLE_SQL, AUTH_HOOK_EXECUTIONS_INDEX_SQL } from './auth-hook-schema.js';
@@ -2228,6 +2229,13 @@ export const MIGRATIONS: readonly Migration[] = [
     "DROP TABLE conversation_blocks",
     "ALTER TABLE conversation_sources DROP COLUMN navigation_kind",
     "UPDATE conversation_sources SET availability = 'unsupported', unavailable_reason = 'normalized body source retired' WHERE parser_format = 'mandible-normalized-jsonl'",
+  ] },
+  { version: 227, name: "explicit_agent_responsibility", statements: [
+    "ALTER TABLE work_units ADD COLUMN responsibility_session_id TEXT",
+    "UPDATE work_units SET responsibility_session_id = COALESCE(worker_provider_session_id, provider_session_id, assigned_session_id)",
+    "ALTER TABLE work_units DROP COLUMN owner_credential_id",
+    ...RESPONSIBILITY_SCHEMA_SQL,
+    "INSERT INTO auth_request_responsibility (auth_request_id, owner_user_id, responsibility_session_id) SELECT id, requested_by_user_id, session_id FROM auth_requests",
   ] },
 ];
 

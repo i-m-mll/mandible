@@ -1026,6 +1026,23 @@ export async function getAuthRequestDetail(requestId: string): Promise<Record<st
   return payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : null;
 }
 
+export type RequestResponsibilitySnapshot = {
+  owner_user_id: string | null; responsibility_session_id: string | null; custody_generation: number;
+};
+export async function changeAuthResponsibility(requestId: string, action: 'assume' | 'release' | 'withdraw',
+  detail: Record<string, unknown>, reason: string): Promise<void> {
+  const owner = detail.responsibility as RequestResponsibilitySnapshot;
+  const events = detail.lifecycle_events as Array<{ revision: number }>;
+  const workUnitId = detail.custody_work_unit_id as string | null;
+  const body = { reason, expected_generation: owner.custody_generation,
+    expected_revision: events.at(-1)?.revision, expected_custody_generation: owner.custody_generation };
+  const url = action === 'withdraw' ? `/api/auth/request/${encodeURIComponent(requestId)}/withdraw`
+    : workUnitId ? action === 'assume' ? `/api/work-units/${encodeURIComponent(workUnitId)}/custody/assume` : '/api/work-units/release'
+    : `/api/auth/request/${encodeURIComponent(requestId)}/responsibility/${action}`;
+  const response = await apiPost(url, { ...body, ...(workUnitId && action === 'release' ? { id: workUnitId } : {}) });
+  if (!response.ok) throw new Error((await response.json()).error ?? 'Responsibility changed; refresh and retry.');
+}
+
 export async function getAuthRequestActions(requestId: string): Promise<AuthRequestAction[]> {
   const response = await apiGet(`/api/auth/request/${encodeURIComponent(requestId)}/actions`);
   const payload = await parseMaybeJson(response);

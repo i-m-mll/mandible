@@ -1,3 +1,4 @@
+import { LedgerStore } from "../src/ledger/store.js";
 import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 /**
  * Issue 5b2cdbf — `mandible issue parent-role assume` used to accept any
@@ -84,18 +85,19 @@ function seedCodexConversation(sessionId = DESKTOP_TASK): void {
 }
 
 /** `caller` is the calling agent's own session, as its ambient provider identity. */
-async function assume(sessionId: string, override = false, caller?: string) {
+async function assume(sessionId: string, _override = false, caller?: string) {
   return router.invoke({
     method: "POST",
     url: `/api/ledger/issues/${umbrellaId}/parent-role`,
-    body: { session_id: sessionId, mechanism: "codex", override },
-    ambient_identity: caller ? { provider: "codex", provider_session_id: caller } : undefined,
+    body: { session_id: sessionId, mechanism: "codex", reason: "Coordinate delivery", expected_checkpoint_id: new LedgerStore(db).getLatestIssueCheckpoint(umbrellaId, "parent-role")?.id ?? null },
+    ambient_identity: { provider: "codex", provider_session_id: caller ?? sessionId },
   });
 }
 
 async function release(caller: string) {
   return router.invoke({
     method: "DELETE",
+    body: { reason: "Hand off coordination", expected_checkpoint_id: new LedgerStore(db).getLatestIssueCheckpoint(umbrellaId, "parent-role")?.id ?? null },
     url: `/api/ledger/issues/${umbrellaId}/parent-role`,
     ambient_identity: { provider: "codex", provider_session_id: caller },
   });
@@ -317,95 +319,18 @@ describe("Codex Desktop provider tasks", () => {
   });
 });
 
-describe("parent-role holder identity is the agent, not the spelling of its id", () => {
-  beforeEach(() => {
-    seedSession(MANDIBLE_SESSION, "active");
-    seedConsoleSession({
-      id: CONSOLE_SESSION,
-      status: "running",
-      mandibleSessionId: MANDIBLE_SESSION,
-      providerSessionId: PROVIDER_THREAD,
-    });
-  });
-
-  it("lets the same live agent re-assume under a different alias without an override", async () => {
-    expect((await assume(PROVIDER_THREAD)).status).toBe(200);
-
-    const again = await assume(MANDIBLE_SESSION, false, PROVIDER_THREAD);
-    expect(again.status).toBe(200);
-  });
-
-  it("refuses another agent that names the live holder's session as its own", async () => {
-    expect((await assume(PROVIDER_THREAD)).status).toBe(200);
-    seedSession("sess-other", "active");
-
-    const impersonation = await assume(MANDIBLE_SESSION, false, "sess-other");
-    expect(impersonation.status).toBe(409);
-    expect((await parentRoleStatus()).holder).toMatchObject({ session_id: PROVIDER_THREAD });
-  });
-
-  it("still refuses a different live agent without an override", async () => {
-    expect((await assume(PROVIDER_THREAD)).status).toBe(200);
-
-    seedSession("sess-other", "active");
-    const conflict = await assume("sess-other");
-    expect(conflict.status).toBe(409);
-    const body = conflict.body as { error: string; blocking_holder: Record<string, unknown> };
-    expect(body.error).toContain("only the operator can displace it");
-    // The conflict names the holder, so a coordinator can decide rather than
-    // guess (issue 7a97e2c's `- (-)` was unactionable).
-    expect(body.blocking_holder.session_id).toBe(PROVIDER_THREAD);
-    expect(body.blocking_holder.mechanism).toBe("codex");
-
-    const deniedOverride = await assume("sess-other", true, "sess-other");
-    expect(deniedOverride.status).toBe(409);
-    expect((deniedOverride.body as { error: string }).error).toContain("only for the operator");
-  });
-
-  it("lets the live holder hand the role to a successor from its own session", async () => {
-    expect((await assume(PROVIDER_THREAD)).status).toBe(200);
-    seedSession("sess-successor", "active");
-
-    const handoff = await assume("sess-successor", false, PROVIDER_THREAD);
-    expect(handoff.status).toBe(200);
-    // The predecessor stays live but no longer holds the role.
-    expect((await parentRoleStatus()).live_holder).toMatchObject({ session_id: "sess-successor" });
-    expect((await assume(MANDIBLE_SESSION, false, PROVIDER_THREAD)).status).toBe(409);
-  });
-
-  it("lets only the holder release the role", async () => {
-    expect((await assume(PROVIDER_THREAD)).status).toBe(200);
-    seedSession("sess-other", "active");
-
-    expect((await release("sess-other")).status).toBe(409);
-    expect((await parentRoleStatus()).holder).toMatchObject({ session_id: PROVIDER_THREAD });
-
-    const released = await release(PROVIDER_THREAD);
-    expect(released.status).toBe(200);
+describe("explicit parent-role responsibility", () => {
+  it("allows live takeover while refusing stale revision and stale-holder release", async () => {
+    seedSession("old", "active"); seedSession("new", "active");
+    expect((await assume("old")).status).toBe(200);
+    const first = new LedgerStore(db).getLatestIssueCheckpoint(umbrellaId, "parent-role")!.id;
+    expect((await assume("new")).status).toBe(200);
+    const stale = await router.invoke({ method: "POST", url: `/api/ledger/issues/${umbrellaId}/parent-role`,
+      ambient_identity: { provider: "codex", provider_session_id: "old" },
+      body: { session_id: "old", reason: "Stale takeover", expected_checkpoint_id: first } });
+    expect(stale.status).toBe(409);
+    expect((await release("old")).status).toBe(409);
+    expect((await release("new")).status).toBe(200);
     expect((await parentRoleStatus()).holder).toBeNull();
-    expect((await assume("sess-other")).status).toBe(200);
-  });
-
-  it("does not block on a stale holder", async () => {
-    seedSession("sess-dead", "ended");
-    expect((await assume("sess-dead")).status).toBe(200);
-    expect((await parentRoleStatus()).live_holder).toBeNull();
-
-    expect((await assume(MANDIBLE_SESSION)).status).toBe(200);
-  });
-
-  it("blocks on a holder whose lock check cannot complete, as on a live one", async () => {
-    seedCodexConversation(OUTAGE_TASK);
-    expect((await assume(OUTAGE_TASK)).status).toBe(200);
-    const status = await parentRoleStatus();
-    expect(status.live_holder).toBeNull();
-    expect(status.holder).toMatchObject({ session_id: OUTAGE_TASK, liveness: { state: "unknown" } });
-
-    seedSession("sess-other", "active");
-    const conflict = await assume("sess-other");
-    expect(conflict.status).toBe(409);
-    expect(conflict.body).toMatchObject({
-      blocking_holder: { session_id: OUTAGE_TASK, liveness: { state: "unknown" } },
-    });
   });
 });

@@ -111,6 +111,7 @@ case "${1:-}" in
       check)   shift; exec "$MANDIBLE_CLI_DIR/auth-check.sh" "$@" ;;
       clearance) shift; exec "$MANDIBLE_CLI_DIR/auth-clearance.sh" "$@" ;;
       request) shift; exec "$MANDIBLE_CLI_DIR/auth-request.sh" "$@" ;;
+      responsibility) shift; exec "$MANDIBLE_CLI_DIR/auth-responsibility.sh" "$@" ;;
       withdraw) shift; exec "$MANDIBLE_CLI_DIR/auth-withdraw.sh" "$@" ;;
       candidate-repair) shift; exec "$MANDIBLE_CLI_DIR/auth-candidate-repair.sh" "$@" ;;
       replay-archives) shift; exec "$MANDIBLE_CLI_DIR/auth-replay-archives.sh" "$@" ;;

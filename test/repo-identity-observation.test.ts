@@ -152,9 +152,9 @@ it.each(["custody", "registry", "continuation"])("binds original submission auth
   const credential = addCredential(db, operator.id, { type: "api_token", fingerprint: `submit-owner-${change}` });
   const branch = "feature/authority";
   commitOnBranch(repo, branch, { "authority.txt": "reviewed authority\n" });
-  db.prepare(`INSERT INTO work_units (id,issue_id,ledger_issue_id,repo_id,branch,kind,state,created_at,owner_user_id,owner_credential_id,custody_generation)
+  db.prepare(`INSERT INTO work_units (id,issue_id,ledger_issue_id,repo_id,branch,kind,state,created_at,owner_user_id,responsibility_session_id,custody_generation)
     VALUES ('submission-unit','c01d123',?,?,?,'solo','committed',0,?,?,1)`)
-    .run(issue.id, project.project_key, branch, operator.id, credential.id);
+    .run(issue.id, project.project_key, branch, operator.id, null);
   const router = authenticatedTestRouter(operator, { credentialId: credential.id });
   registerWorkUnitRoutes(router, {} as never);
   const queue = new AuthQueue({ db, backgroundMaintenance: false, hookManager: createNoopHookManager() });
@@ -202,9 +202,9 @@ it.each(["continuation", "authority"])("validates bound custody at cold admissio
   const credential = addCredential(db, operator.id, { type: "api_token", fingerprint: `bound-owner-${change}` });
   const branch = "feature/bound-custody";
   commitOnBranch(repo, branch, { "custody.txt": "reviewed custody\n" });
-  db.prepare(`INSERT INTO work_units (id,issue_id,ledger_issue_id,repo_id,branch,kind,state,created_at,owner_user_id,owner_credential_id,custody_generation)
+  db.prepare(`INSERT INTO work_units (id,issue_id,ledger_issue_id,repo_id,branch,kind,state,created_at,owner_user_id,responsibility_session_id,custody_generation)
     VALUES ('bound-unit','c0570d2',?,?,?,'solo','committed',0,?,?,1)`)
-    .run(issue.id, project.project_key, branch, operator.id, credential.id);
+    .run(issue.id, project.project_key, branch, operator.id, null);
   const router = authenticatedTestRouter(operator, { credentialId: credential.id });
   registerWorkUnitRoutes(router, {} as never);
   const enteredExecutor = barrier();
@@ -240,12 +240,12 @@ it.each(["continuation", "authority"])("validates bound custody at cold admissio
     await Promise.race([admissionEntered.promise, approval.then(() => { throw new Error("Approval completed before admission"); })]);
     await hold!.reached(approval);
     if (change === "continuation") {
-      const response = await router.invoke({ method: "PATCH", url: "/api/work-units/bound-unit", body: { continuation: "Continue without changing authority" } });
+      const response = await router.invoke({ method: "PATCH", url: "/api/work-units/bound-unit", body: { expected_generation: 1, continuation: "Continue without changing authority" } });
       expect(response.status, JSON.stringify(response.body)).toBe(200);
     } else {
       const replacement = addCredential(db, operator.id, { type: "api_token", fingerprint: "replacement-bound-owner" });
       // Storage adversary isolates a credential change without a generation increment.
-      db.prepare("UPDATE work_units SET owner_credential_id = ? WHERE id = 'bound-unit'").run(replacement.id);
+      db.prepare("UPDATE work_units SET responsibility_session_id = ? WHERE id = 'bound-unit'").run(replacement.id);
     }
     hold!.release();
     if (change === "authority") {
@@ -429,9 +429,9 @@ it.each(["auto-commit", "abandon"])("preserves explicit work-unit changes during
   const operator = getOperator(db)!;
   const credential = addCredential(db, operator.id, { type: "api_token", fingerprint: `reconciler-owner-${passName}` });
   const branch = passName === "auto-commit" ? "feature/ahead" : "feature/missing";
-  db.prepare(`INSERT INTO work_units (id,issue_id,repo_id,branch,kind,state,created_at,owner_user_id,owner_credential_id,custody_generation)
+  db.prepare(`INSERT INTO work_units (id,issue_id,repo_id,branch,kind,state,created_at,owner_user_id,responsibility_session_id,custody_generation)
     VALUES ('racing-unit','private',?,?,'solo',?,0,?,?,1)`)
-    .run(project.project_key, branch, passName === "auto-commit" ? "open" : "committed", operator.id, credential.id);
+    .run(project.project_key, branch, passName === "auto-commit" ? "open" : "committed", operator.id, null);
   if (passName === "auto-commit") db.prepare("INSERT INTO branches (repo_root,branch,ahead_default) VALUES (?,?,1)").run(repo, branch);
   const router = authenticatedTestRouter(operator, { credentialId: credential.id });
   registerWorkUnitRoutes(router, {} as never);

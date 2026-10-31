@@ -1,13 +1,11 @@
+import { responsibilityActor, sameResponsibilitySession, sessionResponsibilityActor } from "../responsibility.js";
 import type { LedgerReader } from "../ledger-reads/index.js";
-import type { SessionExecutionObservation } from "../contracts.js";
-import { formatExecutionEvidence } from "../session-execution-format.js";
 import { existsSync } from "node:fs";
 import { WorkScanner } from "../work-scanner.js";
 import { getDb, type Db } from "../db.js";
 import { tableExists } from "../db-introspection.js";
 import {
   resolveSessionAlias,
-  sessionAliasIds,
   freshSessionAliasResolver,
   type LivenessState,
   type SessionAliasResolver,
@@ -18,7 +16,6 @@ import { ledgerIssueLifecycleError, LedgerSingletonKindError, LedgerStore, store
 import type { AttributionContext } from "../identity/resolver.js";
 import {
   attributionForRequest,
-  isOperator,
   operatorOnlyManagedSessionRoute,
 } from "../client-auth/authz.js";
 import {
@@ -333,36 +330,6 @@ function sessionLiveness(
   };
 }
 
-/**
- * Every id that names the same agent as this parent-role holder.
- *
- * A holder recorded under one alias must not be treated as a different holder
- * when the same coordinator returns with another: the lease is on the agent,
- * not on the spelling of its id.
- */
-function holderAliasIds(holder: Record<string, unknown> | null): Set<string> {
-  const ids = new Set<string>();
-  if (!holder) return ids;
-  const liveness = holder.liveness as Record<string, unknown> | undefined;
-  const payload = holder.payload as Record<string, unknown> | undefined;
-  for (const source of [holder, liveness, payload]) {
-    if (!source) continue;
-    for (const key of PARENT_ROLE_IDENTITY_KEYS) {
-      const value = source[key];
-      if (typeof value === "string" && value.trim()) ids.add(value.trim());
-    }
-  }
-  return ids;
-}
-
-const PARENT_ROLE_IDENTITY_KEYS = [
-  "session_id",
-  "agent_session_id",
-  "resolved_session_id",
-  "console_session_id",
-  "provider_session_id",
-] as const;
-
 function unregisteredSessionResponse(suppliedId: string): Record<string, unknown> {
   return {
     error: `unknown session id "${suppliedId}": Mandible has no session row, console session, `
@@ -424,47 +391,16 @@ function buildParentRoleStatus(
   };
 }
 
-/** Every id the given session is known by, or just the id when Mandible has no record of it. */
-function sessionAliasSet(db: Db, resolver: SessionAliasResolver, sessionId: string | null | undefined): Set<string> {
-  if (!sessionId) return new Set();
-  const resolution = resolver(db, sessionId);
-  return new Set([sessionId, ...(resolution ? sessionAliasIds(resolution) : [])]);
-}
-
-type ParentRoleAuthority = "vacant" | "holder" | "operator_override";
-
-/**
- * Who may change the parent role. A stopped holder is informational, so the
- * role is vacant. Otherwise the holder itself may (re-assume, hand off, or
- * release), and only the operator may displace it with an override. Session
- * ids are claimed attribution: this is advisory coordination between
- * cooperating agents, not a security boundary.
- */
-function parentRoleAuthority(
-  db: Db,
-  req: RequestLike,
-  holder: Record<string, unknown> | null,
-  callerAliases: Set<string>,
-  override: boolean,
-): { ok: true; authority: ParentRoleAuthority } | { ok: false; refusal: Record<string, unknown> } {
-  const state = (holder?.liveness as { state: LivenessState } | undefined)?.state;
-  if (!holder || state === "stopped") return { ok: true, authority: "vacant" };
-  if ([...holderAliasIds(holder)].some((id) => callerAliases.has(id))) return { ok: true, authority: "holder" };
-  const identity = req.client_identity;
-  if (override && identity && isOperator(db, identity)) return { ok: true, authority: "operator_override" };
-  const execution = (holder?.liveness as { execution?: SessionExecutionObservation | null } | undefined)?.execution;
-  const held = (state === "live"
-    ? "parent role is held by a live session"
-    : "parent role is held by a session whose liveness cannot be established") + formatExecutionEvidence(execution);
-  return {
-    ok: false,
-    refusal: {
-      error: override
-        ? `${held}; --override displaces another session's holder only for the operator, and the holder can hand the role over with --session <successor>`
-        : `${held}; the holder can hand the role over with --session <successor>, and only the operator can displace it with --override`,
-      blocking_holder: holder,
-    },
-  };
+function parentRolePrecondition(db: Db, req: RequestLike, issueId: string, body: Record<string, unknown>, release: boolean): { error: string } | null {
+  const latest = new LedgerStore(db).getLatestIssueCheckpoint(issueId, "parent-role");
+  if (!("expected_checkpoint_id" in body) || body.expected_checkpoint_id !== (latest?.id ?? null)) return { error: "Parent-role revision changed or expected_checkpoint_id is missing; refresh and retry." };
+  if (typeof body.reason !== "string" || !body.reason.trim()) return { error: "A transfer reason is required." };
+  if (release && latest) {
+    const payload = JSON.parse(latest.payload_json) as Record<string, unknown>;
+    const actor = responsibilityActor(req);
+    if (payload.authenticated_user_id !== actor.user_id || !sameResponsibilitySession(db, payload.session_id as string | null, actor.session_id)) return { error: "Only the current responsible session may relinquish the parent role." };
+  }
+  return null;
 }
 
 function latestCheckpoint(projection: LedgerIssueDetailProjection, kind: string): unknown {
@@ -1069,7 +1005,7 @@ export function registerIssueRoutes(
       : freshSessionAliasResolver((resolve) => {
         const db = getDb();
         currentParentRoleHolder(db, issueId, resolve);
-        sessionAliasSet(db, resolve, req.ambient_identity?.provider_session_id);
+        if (req.ambient_identity?.provider_session_id) resolve(db, req.ambient_identity.provider_session_id);
       });
 
   // GET /api/issues — list repo summaries with optional filtering
@@ -1281,7 +1217,6 @@ export function registerIssueRoutes(
     const mechanism = typeof body.mechanism === "string" && body.mechanism.trim()
       ? body.mechanism.trim()
       : "unknown";
-    const override = body.override === true;
     const issueId = parentRoleIssue(req, res);
     if (!issueId) return;
     const decisionResolver = await parentRoleResolver(req, issueId);
@@ -1300,16 +1235,15 @@ export function registerIssueRoutes(
       return;
     }
     const holder = currentParentRoleHolder(db, issueId, decisionResolver);
-    // Holder authority comes only from the caller's own session: a re-assume
-    // under any alias, or the holder handing the role to a successor with
-    // --session (issue 23a4edf). Naming the holder's session confers nothing,
-    // since the checkpoint carries the caller's credential.
-    const callerAliases = sessionAliasSet(db, decisionResolver, req.ambient_identity?.provider_session_id);
-    const decision = parentRoleAuthority(db, req, holder, callerAliases, override);
-    if (!decision.ok) {
-      sendJson(res, 409, { ...decision.refusal, parent_role: buildParentRoleStatus(db, issueId, decisionResolver) });
-      return;
+    const failure = parentRolePrecondition(db, req, issueId, body, false);
+    if (failure) { sendJson(res, 409, failure); return; }
+    const actor = responsibilityActor(req);
+    const handingOff = !sameResponsibilitySession(db, sessionId, actor.session_id);
+    if (handingOff && (!holder || !sameResponsibilitySession(db, holder.session_id as string | null, actor.session_id) || (holder.payload as Record<string, unknown>)?.authenticated_user_id !== actor.user_id)) {
+      sendJson(res, 403, { error: "Assume responsibility before handing the role to another session." }); return;
     }
+    const successor = handingOff ? sessionResponsibilityActor(db, sessionId) : actor;
+    if (!successor) { sendJson(res, 400, { error: "Successor user is unresolved." }); return; }
     const checkpoint = recordParentRoleCheckpoint(req, issueId, (now) => ({
       // `session_id` stays exactly what the caller supplied; existing readers
       // (including the archive path's holder protection) depend on it.
@@ -1320,27 +1254,23 @@ export function registerIssueRoutes(
       provider_session_id: resolution.provider_session_id,
       mechanism,
       assumed_at: now,
-      override,
-      authority: decision.authority,
+      reason: body.reason,
+      authority: handingOff ? "handoff" : "explicit_assumption",
       previous_holder: holder,
-      // The audited credential an integration promotion or custody handoff
-      // checks against this checkpoint.
-      authenticated_user_id: req.client_identity?.method === "api_token" ? req.client_identity.user_id : null,
-      authenticated_credential_id: req.client_identity?.method === "api_token" ? req.client_identity.credential_id : null,
+      // Current responsibility is independent of the checkpoint author.
+      authenticated_user_id: successor.user_id,
+      responsibility_session_id: resolution.provider_session_id ?? sessionId,
     }));
     sendJson(res, 200, {
       ok: true,
       checkpoint: checkpointResponse(checkpoint),
       parent_role: buildParentRoleStatus(db, issueId, decisionResolver),
     });
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: "post:/api/ledger/issues/:issueId/parent-role", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow", refs: { body: { session_id: entityRefs.session } } });
+  }, { localCliCredential: {"mode":"durable"}, operation: { id: "post:/api/ledger/issues/:issueId/parent-role", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow", refs: { body: { session_id: entityRefs.session, expected_checkpoint_id: entityRefs.checkpoint } } });
 
-  // The holder steps down. Its authority is the caller's own session, never a
-  // session named in the request, so releasing someone else's live holder
-  // stays an operator override.
+  // Relinquishment is a guarded action of the current responsible session.
   server.delete?.("/api/ledger/issues/:issueId/parent-role", async (req, res) => {
     const body = getBody(req) ?? {};
-    const override = body.override === true;
     const issueId = parentRoleIssue(req, res);
     if (!issueId) return;
     const decisionResolver = await parentRoleResolver(req, issueId);
@@ -1350,19 +1280,14 @@ export function registerIssueRoutes(
       sendJson(res, 200, { ok: true, released: false, checkpoint: null, parent_role: buildParentRoleStatus(db, issueId, decisionResolver) });
       return;
     }
-    const callerAliases = sessionAliasSet(db, decisionResolver, req.ambient_identity?.provider_session_id);
-    const decision = parentRoleAuthority(db, req, holder, callerAliases, override);
-    if (!decision.ok) {
-      sendJson(res, 409, { ...decision.refusal, parent_role: buildParentRoleStatus(db, issueId, decisionResolver) });
-      return;
-    }
-    // A release carries no `session_id` and no authenticated credential, so it
-    // names no holder and authorizes no integration promotion or handoff.
+    const failure = parentRolePrecondition(db, req, issueId, body, true);
+    if (failure) { sendJson(res, 409, failure); return; }
     const checkpoint = recordParentRoleCheckpoint(req, issueId, (now) => ({
       released: true,
       released_at: now,
       released_by_session_id: req.ambient_identity?.provider_session_id ?? null,
-      authority: decision.authority,
+      reason: body.reason,
+      authority: "relinquishment",
       previous_holder: holder,
     }));
     sendJson(res, 200, {
@@ -1371,7 +1296,7 @@ export function registerIssueRoutes(
       checkpoint: checkpointResponse(checkpoint),
       parent_role: buildParentRoleStatus(db, issueId, decisionResolver),
     });
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: "delete:/api/ledger/issues/:issueId/parent-role", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
+  }, { localCliCredential: {"mode":"durable"}, operation: { id: "delete:/api/ledger/issues/:issueId/parent-role", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow", refs: { body: { expected_checkpoint_id: entityRefs.checkpoint } } });
 
   server.get("/api/ledger/issues/:issueId/head", (req, res) => {
     const issueRef = getParam(req, "issueId");

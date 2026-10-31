@@ -1,3 +1,4 @@
+import { RESPONSIBILITY_SCHEMA_SQL } from "./responsibility-schema.js";
 import { WORK_UNIT_ASSIGNMENT_SCHEMA_SQL } from "./work-unit-assignment-schema.js";
 import { AUTH_HOOK_EXECUTIONS_TABLE_SQL, AUTH_HOOK_EXECUTIONS_INDEX_SQL } from './auth-hook-schema.js';
 import { CHILD_RETENTION_SCHEMA_SQL } from "./conversations/retention-schema.js";
@@ -29,7 +30,7 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-migration-convergence.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 226;
+export const BASELINE_SCHEMA_VERSION = 227;
 
 export const AUTH_REQUEST_HISTORY_INDEX_SQL =
   `CREATE INDEX idx_auth_requests_history ON auth_requests(resolved_at DESC)
@@ -1150,7 +1151,6 @@ export function createFreshSchemaBaseline(db: Db, schemaVersion: number): void {
         OR OLD.deletions IS NOT NEW.deletions
       )
       BEGIN SELECT RAISE(ABORT, 'captured auth headline counts are immutable'); END`);
-    db.exec("ALTER TABLE work_units ADD COLUMN owner_credential_id TEXT REFERENCES user_credentials(id) ON DELETE RESTRICT");
     // Match forward migration order: publication binding follows all prior auth columns.
     for (const statement of SPACE_PUBLICATION_AUTH_SCHEMA_SQL) db.exec(statement);
     db.exec(AUTH_PROTECTED_ROOT_DIRTY_ACTION_COLUMN_SQL);
@@ -1162,6 +1162,8 @@ export function createFreshSchemaBaseline(db: Db, schemaVersion: number): void {
     db.exec(MANAGED_SESSION_ORIGIN_INDEX_SQL);
     for (const statement of CHILD_RETENTION_SCHEMA_SQL) db.exec(statement);
     for (const statement of WORK_UNIT_ASSIGNMENT_SCHEMA_SQL) db.exec(statement);
+    db.exec("ALTER TABLE work_units ADD COLUMN responsibility_session_id TEXT");
+    for (const sql of RESPONSIBILITY_SCHEMA_SQL) db.exec(sql);
     const clearanceFreezeTrigger = AUTH_CLEARANCE_SCHEMA_SQL.find((sql) => sql.includes("auth_requests_clearance_review_frozen"));
     if (clearanceFreezeTrigger) db.exec(clearanceFreezeTrigger);
     db.prepare("INSERT INTO meta (key, value) VALUES (?, ?)")

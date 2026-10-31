@@ -1201,10 +1201,10 @@ cmd_parent_role_assume() {
   session_id="$(api_ambient_session_id)"
   session_id="${session_id:-${MANDIBLE_SESSION_ID:-}}"
   local mechanism=""
-  local override=0
+  local reason="" expected_checkpoint=""
   local json=0
   local binding
-  binding=$(mandible_bind_arguments "issue.parent-role.assume" '{"session_id":{"option":"session"},"mechanism":{"option":"mechanism"},"override":{"option":"override","constant":"1"},"json":{"option":"json","constant":"1"},"issue_ref":{"position":0}}' "$@") || return $?
+  binding=$(mandible_bind_arguments "issue.parent-role.assume" '{"session_id":{"option":"session"},"mechanism":{"option":"mechanism"},"reason":{"option":"reason"},"expected_checkpoint":{"option":"expected-checkpoint"},"json":{"option":"json","constant":"1"},"issue_ref":{"position":0}}' "$@") || return $?
   eval "$binding"
   if [[ -z "$issue_ref" ]]; then
     die "Usage: $(mandible_command_syntax issue.parent-role.assume)" 2
@@ -1212,13 +1212,15 @@ cmd_parent_role_assume() {
   if [[ -z "$session_id" ]]; then
     die "Missing parent-role session id. Pass --session <id>, or run inside a Claude, Codex or Gemini session (CLAUDE_CODE_SESSION_ID, CODEX_THREAD_ID, GEMINI_SESSION_ID) or a Mandible-launched one (MANDIBLE_SESSION_ID)." 2
   fi
+  [[ -n "${reason//[[:space:]]/}" && -n "$expected_checkpoint" ]] || die "reason and expected-checkpoint (ID or none) required" 2
+  [[ "$expected_checkpoint" == none ]] && expected_checkpoint=""
   require_tools
   local payload
   payload=$(jq -n \
     --arg session_id "$session_id" \
     --arg mechanism "$mechanism" \
-    --arg override "$override" \
-    '{session_id:$session_id, override:($override == "1")} + (if $mechanism == "" then {} else {mechanism:$mechanism} end)')
+    --arg reason "$reason" --arg expected_checkpoint "$expected_checkpoint" \
+    '{session_id:$session_id, reason:$reason, expected_checkpoint_id:(if $expected_checkpoint == "" then null else $expected_checkpoint end)} + (if $mechanism == "" then {} else {mechanism:$mechanism} end)')
   local tmp_response status
   tmp_response=$(mktemp)
   status=$(api_send_capture POST "/api/ledger/issues/$(urlencode "$issue_ref")/parent-role" "$payload" "$tmp_response")
@@ -1228,17 +1230,19 @@ cmd_parent_role_assume() {
 
 cmd_parent_role_release() {
   local issue_ref=""
-  local override=0
+  local reason="" expected_checkpoint=""
   local json=0
   local binding
-  binding=$(mandible_bind_arguments "issue.parent-role.release" '{"override":{"option":"override","constant":"1"},"json":{"option":"json","constant":"1"},"issue_ref":{"position":0}}' "$@") || return $?
+  binding=$(mandible_bind_arguments "issue.parent-role.release" '{"reason":{"option":"reason"},"expected_checkpoint":{"option":"expected-checkpoint"},"json":{"option":"json","constant":"1"},"issue_ref":{"position":0}}' "$@") || return $?
   eval "$binding"
   if [[ -z "$issue_ref" ]]; then
     die "Usage: $(mandible_command_syntax issue.parent-role.release)" 2
   fi
+  [[ -n "${reason//[[:space:]]/}" && -n "$expected_checkpoint" ]] || die "reason and expected-checkpoint (ID or none) required" 2
+  [[ "$expected_checkpoint" == none ]] && expected_checkpoint=""
   require_tools
   local payload
-  payload=$(jq -n --arg override "$override" '{override:($override == "1")}')
+  payload=$(jq -n --arg reason "$reason" --arg expected_checkpoint "$expected_checkpoint" '{reason:$reason, expected_checkpoint_id:(if $expected_checkpoint == "" then null else $expected_checkpoint end)}')
   local tmp_response status
   tmp_response=$(mktemp)
   status=$(api_send_capture DELETE "/api/ledger/issues/$(urlencode "$issue_ref")/parent-role" "$payload" "$tmp_response")
