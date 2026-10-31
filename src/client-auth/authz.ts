@@ -143,6 +143,7 @@ export function requireOperator(db: Db, req: RequestLike): ResolvedClientIdentit
 }
 
 export function requireProtectedOperator(db: Db, req: RequestLike): ResolvedClientIdentity {
+  requireIdentity(req);
   if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return requireOperator(db, req);
   const proof = operatorPresenceIdentity(req);
   if (!proof) throw new ClientAuthzError(403, "operator_presence_required", "Fresh action-bound operator presence is required.");

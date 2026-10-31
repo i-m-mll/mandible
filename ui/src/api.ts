@@ -1188,7 +1188,9 @@ export type AuthClearance = {
   id: string;
   issuer_user_id: string;
   grantee_user_id: string;
-  grantee_credential_id: string;
+  grantee_credential_id: string | null;
+  retired_at: number | null;
+  retirement_reason: string | null;
   project_id: string;
   base_branch: string;
   issue_id: string | null;
@@ -1211,7 +1213,6 @@ export async function getAuthClearances(): Promise<AuthClearance[]> {
 export async function createAuthClearance(input: {
   request_id?: string;
   grantee: string;
-  grantee_credential_id?: string;
   project?: string;
   base?: string;
   issue?: string;

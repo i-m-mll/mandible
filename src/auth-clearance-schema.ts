@@ -32,7 +32,7 @@ export const AUTH_CLEARANCE_SCHEMA_SQL: readonly string[] = [
     id TEXT PRIMARY KEY,
     issuer_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     grantee_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-    grantee_credential_id TEXT NOT NULL REFERENCES user_credentials(id) ON DELETE RESTRICT,
+    grantee_credential_id TEXT REFERENCES user_credentials(id) ON DELETE RESTRICT,
     project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
     base_branch TEXT NOT NULL CHECK(trim(base_branch) != ''),
     issue_id TEXT REFERENCES ledger_issues(id) ON DELETE RESTRICT,
@@ -46,6 +46,9 @@ export const AUTH_CLEARANCE_SCHEMA_SQL: readonly string[] = [
     runtime_epoch TEXT NOT NULL CHECK(trim(runtime_epoch) != ''),
     signing_lease_id TEXT NOT NULL REFERENCES delegated_signing_leases(id) ON DELETE RESTRICT,
     created_from_request_id TEXT,
+    retired_at INTEGER,
+    retirement_reason TEXT,
+    CHECK((retired_at IS NULL AND retirement_reason IS NULL) OR (retired_at IS NOT NULL AND retirement_reason IS NOT NULL)),
     CHECK(issue_id IS NOT NULL OR (head_branch IS NOT NULL AND trim(head_branch) != '')),
     CHECK((revoked_at IS NULL AND revoked_by_user_id IS NULL)
        OR (revoked_at IS NOT NULL AND revoked_by_user_id IS NOT NULL))
@@ -63,8 +66,8 @@ export const AUTH_CLEARANCE_SCHEMA_SQL: readonly string[] = [
     use_ordinal INTEGER NOT NULL CHECK(use_ordinal >= 1),
     evidence_id TEXT NOT NULL UNIQUE REFERENCES attribution_evidence(id) ON DELETE RESTRICT,
     requester_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-    requester_evidence_method TEXT NOT NULL CHECK(requester_evidence_method IN ('api_token','credential_signature')),
-    requester_credential_id TEXT NOT NULL REFERENCES user_credentials(id) ON DELETE RESTRICT,
+    requester_evidence_method TEXT NOT NULL CHECK(requester_evidence_method IN ('api_token','credential_signature','session_claim','ephemeral')),
+    requester_credential_id TEXT REFERENCES user_credentials(id) ON DELETE RESTRICT,
     signing_lease_id TEXT NOT NULL REFERENCES delegated_signing_leases(id) ON DELETE RESTRICT,
     request_snapshot_json TEXT NOT NULL CHECK(json_valid(request_snapshot_json) AND json_type(request_snapshot_json) = 'object'),
     request_snapshot_digest TEXT NOT NULL CHECK(length(request_snapshot_digest) = 64 AND request_snapshot_digest NOT GLOB '*[^0-9a-f]*'),
@@ -76,6 +79,9 @@ export const AUTH_CLEARANCE_SCHEMA_SQL: readonly string[] = [
        base_branch, issue_id, head_branch, action, issued_at, expires_at, max_uses,
        runtime_epoch, signing_lease_id, created_from_request_id ON auth_clearances
      BEGIN SELECT RAISE(ABORT, 'auth clearance scope is immutable'); END`,
+  `CREATE TRIGGER IF NOT EXISTS auth_clearances_retirement_immutable
+     BEFORE UPDATE OF retired_at, retirement_reason ON auth_clearances
+     BEGIN SELECT RAISE(ABORT, 'auth clearance retirement is immutable'); END`,
   `CREATE TRIGGER IF NOT EXISTS auth_clearances_revocation_immutable
      BEFORE UPDATE OF revoked_at, revoked_by_user_id ON auth_clearances
      WHEN OLD.revoked_at IS NOT NULL OR NEW.revoked_at IS NULL OR NEW.revoked_by_user_id IS NULL
