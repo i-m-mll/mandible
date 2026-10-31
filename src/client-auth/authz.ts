@@ -1,13 +1,5 @@
-// Authorization checks for client-auth management routes (finding 2).
-//
-// Token mint/list/revoke surfaces are self-administration surfaces: an
-// unauthenticated caller must never mint tokens for arbitrary users, revoke
-// others' credentials, or alter authentication state. These routes are always
-// guarded because they administer authentication itself.
-//
-// This is deliberately narrow — authentication-material administration only, not
-// general project authorization, which is the permissions umbrella child.
-
+import { requireProjectAccess, PermissionError } from "../permissions/store.js";
+import { operatorPresenceIdentity } from "./operator-presence.js";
 import { getDb, type Db } from "../db.js";
 import {
   resolveProviderSessionAttributionResult,
@@ -55,15 +47,6 @@ export function isLocalHumanRequest(req: RequestLike): boolean {
     && (req as RequestLike & { managed_client?: boolean }).managed_client !== true
     && !(req as RequestLike & { local_managed_identity?: unknown }).local_managed_identity
     && !req.ambient_identity;
-}
-
-export function requireDurableIdentity(req: RequestLike): ResolvedClientIdentity {
-  const identity = requireIdentity(req);
-  if (identity.method !== "api_token" || !identity.credential_id) {
-    throw new ClientAuthzError(401, "durable_credential_required",
-      "This action requires an authenticated durable client credential.");
-  }
-  return identity;
 }
 
 /**
@@ -159,18 +142,11 @@ export function requireOperator(db: Db, req: RequestLike): ResolvedClientIdentit
   return identity;
 }
 
-export function requireDurableOperator(db: Db, req: RequestLike): ResolvedClientIdentity {
-  const identity = requireDurableIdentity(req);
-  if (!isOperator(db, identity)) {
-    throw new ClientAuthzError(403, "operator_required", "Only the local operator may perform this action.");
-  }
-  return identity;
-}
-
 export function requireProtectedOperator(db: Db, req: RequestLike): ResolvedClientIdentity {
-  return req.client_identity?.method === "local_socket"
-    ? requireDurableOperator(db, req)
-    : requireOperator(db, req);
+  if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return requireOperator(db, req);
+  const proof = operatorPresenceIdentity(req);
+  if (!proof) throw new ClientAuthzError(403, "operator_presence_required", "Fresh action-bound operator presence is required.");
+  return proof;
 }
 
 export function authorizeOperatorSetup(db: Db, req: RequestLike): void {
@@ -186,17 +162,20 @@ export function authorizeOperatorSetup(db: Db, req: RequestLike): void {
   }
 }
 
-/**
- * Central HTTP boundary for routes that construct or fork managed agent
- * sessions. Those routes can activate an app-bound credential, so admission is
- * operator-only even while the general mutation gate remains in compat mode.
- */
-export function operatorOnlyManagedSessionRoute(handler: RouteHandler): RouteHandler {
+/** Managed Chat access follows identity, instance effects, and target project permission. */
+export function managedSessionRoute(handler: RouteHandler): RouteHandler {
   return (req, res) => {
     try {
-      requireOperator(getDb(), req);
+      requireIdentity(req);
+      const db = getDb();
+      const target = req.params.issueId ? db.prepare("SELECT project_id FROM ledger_issues WHERE id = ?").get(req.params.issueId)
+        : req.params.id && req.url.startsWith("/api/conversations/") ? db.prepare(`SELECT s.project_id FROM conversation_spawn_requests s
+          WHERE s.id = ? OR s.id IN (SELECT alias_id FROM conversation_identity_aliases WHERE canonical_id = ?)
+          LIMIT 1`).get(req.params.id, req.params.id) : null;
+      const projectId = (target as { project_id?: string } | null)?.project_id;
+      if (projectId) requireProjectAccess(db, req, projectId, ["GET", "HEAD", "OPTIONS"].includes(req.method) ? "read" : "write");
     } catch (error) {
-      if (error instanceof ClientAuthzError) {
+      if (error instanceof ClientAuthzError || error instanceof PermissionError) {
         res.status(error.status).json({ error: error.message, code: error.code });
         return;
       }
@@ -216,7 +195,7 @@ export function requireSelfOrOperator(
   targetUserId: string,
 ): ResolvedClientIdentity {
   const identity = requireIdentity(req);
-  if (identity.method === "local_socket") return requireDurableOperator(db, req);
+  if (!["GET", "HEAD", "OPTIONS"].includes(req.method)) return requireProtectedOperator(db, req);
   if (identity.user_id === targetUserId) return identity;
   if (isOperator(db, identity)) return identity;
   throw new ClientAuthzError(

@@ -99,7 +99,7 @@ export const BRIEFING_GROUP_SCHEMA_SQL: readonly string[] = [
     item_count INTEGER NOT NULL CHECK(item_count > 0),
     destination_change_count INTEGER NOT NULL DEFAULT 0 CHECK(destination_change_count >= 0),
     actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-    evidence_method TEXT NOT NULL CHECK(evidence_method = 'api_token'),
+    evidence_method TEXT NOT NULL CHECK(evidence_method IN ('api_token','credential_signature')),
     credential_id TEXT REFERENCES user_credentials(id) ON DELETE RESTRICT,
     created_at INTEGER NOT NULL,
     UNIQUE(group_id, proposal_bundle_id),
@@ -169,12 +169,12 @@ export const BRIEFING_GROUP_SCHEMA_SQL: readonly string[] = [
     logical_artifact_id TEXT PRIMARY KEY REFERENCES artifact(id) ON DELETE RESTRICT,
     group_id TEXT NOT NULL REFERENCES briefing_groups(id) ON DELETE RESTRICT,
     bound_by_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT,
-    evidence_method TEXT NOT NULL CHECK(evidence_method IN ('api_token','migration')),
+    evidence_method TEXT NOT NULL CHECK(evidence_method IN ('api_token','local_default','session_claim','credential_signature','migration')),
     credential_id TEXT REFERENCES user_credentials(id) ON DELETE RESTRICT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     CHECK((evidence_method = 'migration' AND bound_by_user_id IS NULL AND credential_id IS NULL)
-      OR (evidence_method = 'api_token' AND bound_by_user_id IS NOT NULL))
+      OR (evidence_method IN ('api_token','local_default','session_claim','credential_signature') AND bound_by_user_id IS NOT NULL))
   )`,
   `CREATE INDEX IF NOT EXISTS idx_briefing_destination_owners_group
     ON briefing_destination_owners(group_id, logical_artifact_id)`,
@@ -229,7 +229,7 @@ export const BRIEFING_GROUP_SCHEMA_SQL: readonly string[] = [
     owner_id TEXT NOT NULL CHECK(trim(owner_id) != ''),
     reason TEXT NOT NULL CHECK(trim(reason) != ''),
     actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-    evidence_method TEXT NOT NULL CHECK(evidence_method = 'api_token'),
+    evidence_method TEXT NOT NULL CHECK(evidence_method IN ('api_token','local_default','session_claim')),
     credential_id TEXT REFERENCES user_credentials(id) ON DELETE RESTRICT,
     created_at INTEGER NOT NULL
   )`,

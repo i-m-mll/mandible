@@ -58,6 +58,7 @@ export function resolveAmbientProviderIdentity(
 ): AmbientProviderIdentity | null {
   let resolved: AmbientProviderIdentity | null = null;
   for (const descriptor of PROVIDER_DESCRIPTORS) {
+    if (descriptor.envVar === "CODEX_SESSION_ID" && normalizeProviderSessionId(env.CODEX_THREAD_ID)) continue;
     const providerSessionId = normalizeProviderSessionId(env[descriptor.envVar]);
     if (providerSessionId) {
       if (resolved && (resolved.provider !== descriptor.provider || resolved.provider_session_id !== providerSessionId)) {

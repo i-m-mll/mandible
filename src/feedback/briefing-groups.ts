@@ -566,7 +566,7 @@ export type BriefingGroupHumanReviewInput = {
 
 export type BriefingGroupHumanReviewActor = {
   userId: string;
-  evidenceMethod: "api_token";
+  evidenceMethod: "credential_signature";
   credentialId: string | null;
 };
 
@@ -578,7 +578,7 @@ export type BriefingGroupHumanReviewResult = {
 
 export type BriefingDestinationOwnerActor = {
   userId: string;
-  evidenceMethod: "api_token";
+  evidenceMethod: "api_token" | "local_default" | "session_claim" | "credential_signature";
   credentialId: string | null;
 };
 

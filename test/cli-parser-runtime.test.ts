@@ -14,7 +14,7 @@ const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 function fixture(fail = false) {
   const root = scratchDir('parser-runtime'); roots.push(root);
   fs.mkdirSync(path.join(root, 'cli'));
-  for (const name of ['main.zsh', 'api.sh', 'user.sh', 'command-syntax.sh', 'command-syntax.cjs', 'command-syntax.json', 'canonical-origin.sh', 'local-credential-routes.json', 'mandible-identity.jq']) {
+  for (const name of ['main.zsh', 'api.sh', 'user.sh', 'command-syntax.sh', 'command-syntax.cjs', 'command-syntax.json', 'canonical-origin.sh', 'mandible-identity.jq']) {
     fs.copyFileSync(path.resolve('cli', name), path.join(root, 'cli', name));
   }
   fs.mkdirSync(path.join(root, 'bin'));

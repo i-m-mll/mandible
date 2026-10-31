@@ -213,8 +213,7 @@ async function listen(): Promise<void> {
   const instance = resolveInstanceInfo({ env: {}, dbPath: join(directory, 'mandible.db') });
   const router = new Router({ instance });
   registerConversationRoutes(router, inlineLedgerReader());
-  router.get('/source-backed-history', (_req, res) => res.html?.(fixtureHtml()), { localCliCredential: {"mode":"omit"},
-    operation: { id: 'fixture:get:/source-backed-history', effects: [], requestSchema: null, reportingCategory: null },
+  router.get('/source-backed-history', (_req, res) => res.html?.(fixtureHtml()), { operation: { id: 'fixture:get:/source-backed-history', effects: [], requestSchema: null, reportingCategory: null },
     fileRpc: 'deny',
   });
   server = createServer({

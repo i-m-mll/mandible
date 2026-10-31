@@ -15,10 +15,6 @@ import type {
   UndeliveredAuthResult,
 } from "./types.js";
 import http from "node:http";
-import fs from "node:fs";
-import path from "node:path";
-import { execFileSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import { resolveBaseUrl, resolveTransport } from "./base-url.js";
 
 const TIMEOUT_MS = 10_000;
@@ -51,80 +47,22 @@ export function ambientHeaders(): Record<string, string> {
 export function channelTransportHeaders(kind: "socket" | "http"): Record<string, string> {
   const headers = ambientHeaders();
   if (kind === "http") {
-    const token = process.env.MANDIBLE_TOKEN?.trim()
-      || (process.env.MANDIBLE_MANAGED_CLIENT === "1" ? localCredential() : "");
+    const token = process.env.MANDIBLE_TOKEN?.trim();
     if (token) headers.Authorization = `Bearer ${token}`;
   }
   return headers;
 }
 
-function localRouteCredentialRule(method: string, route: string, body?: unknown): { optional: boolean } | null {
-  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
-  const candidates = [
-    process.env.MANDIBLE_LOCAL_CREDENTIAL_ROUTES_FILE,
-    path.resolve(moduleDir, "../../cli/local-credential-routes.json"),
-    path.resolve(moduleDir, "../cli/local-credential-routes.json"),
-  ].filter((value): value is string => Boolean(value));
-  const manifest = candidates.find((candidate) => fs.existsSync(candidate));
-  if (!manifest) throw new Error("Mandible local credential route manifest is unavailable");
-  const projection = JSON.parse(fs.readFileSync(manifest, "utf8")) as {
-    version: number; routes: Array<{ method: string; path: string; localCliCredential: { mode: string; field?: string } }>;
-  };
-  if (projection?.version !== 1 || !Array.isArray(projection.routes) || !projection.routes.length
-      || !projection.routes.every(entry => typeof entry.path === "string"
-        && /^\/([a-zA-Z0-9_.-]+|:[a-zA-Z0-9_]+)(\/([a-zA-Z0-9_.-]+|:[a-zA-Z0-9_]+))*$/.test(entry.path)
-        && ["GET", "POST", "PUT", "PATCH", "DELETE"].includes(entry.method)
-        && entry.localCliCredential && (entry.localCliCredential.mode === "body-nonempty"
-          ? Object.keys(entry.localCliCredential).sort().join() === "field,mode"
-            && typeof entry.localCliCredential.field === "string" && /^[a-zA-Z_][a-zA-Z_0-9]*$/.test(entry.localCliCredential.field)
-          : Object.keys(entry.localCliCredential).join() === "mode"
-            && ["omit", "durable", "optional", "managed-durable"].includes(entry.localCliCredential.mode)))) {
-    throw new Error("Invalid Mandible local credential route manifest");
-  }
-  const pathname = route.split("?", 1)[0];
-  if (!/^\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*$/.test(pathname)
-      || new URL(pathname, "http://localhost").pathname !== pathname
-      || /%(?:0[0-9a-f]|1[0-9a-f]|7f)/i.test(pathname)) {
-    throw new Error("Malformed local API route");
-  }
-  try { decodeURIComponent(pathname); }
-  catch { throw new Error("Malformed local API route encoding"); }
-  const parts = pathname.split("/");
-  const match = projection.routes.find(entry => entry.method === method
-    && entry.path.split("/").length === parts.length
-    && entry.path.split("/").every((part, index) => part.startsWith(":") ? Boolean(parts[index]) : part === parts[index]));
-  if (!match) throw new Error(`Unregistered local API route: ${method} ${pathname}`);
-  const policy = match.localCliCredential;
-  if (policy.mode === "omit") return null;
-  if (policy.mode === "body-nonempty" && !(typeof body === "object" && body !== null
-      && typeof (body as Record<string, unknown>)[policy.field!] === "string"
-      && (body as Record<string, string>)[policy.field!].length > 0)) return null;
-  return { optional: policy.mode === "optional" };
-}
-
-function localCredential(): string {
-  if (process.env.MANDIBLE_NO_KEYCHAIN_TOKEN === "1") {
-    throw new Error("Mandible Keychain credential use is disabled");
-  }
-  try {
-    return execFileSync("/usr/bin/security", ["find-generic-password", "-s", "mandible-agent-claude", "-w"], {
-      encoding: "utf8", timeout: 2_000, stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-  } catch {
-    throw new Error("Mandible durable Claude credential is required in Keychain");
-  }
-}
-
 async function socketRequest<T>(method: string, route: string, body: unknown): Promise<T> {
   const transport = resolveTransport();
   if (transport.kind !== "socket") throw new Error("Expected local socket transport");
+  const pathname = route.split("?", 1)[0];
+  if (!/^\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*$/.test(pathname)
+      || new URL(pathname, "http://localhost").pathname !== pathname
+      || /%(?:0[0-9a-f]|1[0-9a-f]|7f)/i.test(pathname)) throw new Error("Malformed local API route");
+  try { decodeURIComponent(pathname); } catch { throw new Error("Malformed local API route encoding"); }
   const payload = body === undefined ? undefined : JSON.stringify(body);
   const headers: Record<string, string> = { ...channelTransportHeaders("socket"), "Content-Type": "application/json" };
-  const credentialRule = localRouteCredentialRule(method, route, body);
-  if (credentialRule) {
-    try { headers.Authorization = `Bearer ${localCredential()}`; }
-    catch (error) { if (!credentialRule.optional) throw error; }
-  }
   return new Promise<T>((resolve, reject) => {
     const req = http.request({ socketPath: transport.socketPath, host: "localhost", path: route, method, headers, timeout: TIMEOUT_MS }, (res) => {
       const chunks: Buffer[] = [];
