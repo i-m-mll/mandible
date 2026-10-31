@@ -172,7 +172,7 @@ it.each(["custody", "registry", "continuation"])("binds original submission auth
     if (change === "registry") addOrUpdateCheckout(db, otherProject.id, { root: repo, name: "Explicit reassociation", default_branch: "main" });
     else {
       const response = await router.invoke({ method: "PATCH", url: "/api/work-units/submission-unit", body: {
-        expected_generation: 1, ...(change === "custody" ? { state: "abandoned" } : { continuation: "Continue the same authority" }),
+        expected_generation: 1, ...(change === "custody" ? { state: "abandoned", reason: "Retire delivery during submission observation" } : { continuation: "Continue the same authority" }),
       } });
       expect(response.status, JSON.stringify(response.body)).toBe(200);
     }
