@@ -23,7 +23,8 @@ ledger owns conversation identity, source descriptors and versions, the current
 publication pointer, user-authored metadata, and actual durable references.
 The existing structure cache owns rebuildable block navigation and parser
 state. Its location is derived from the owning ledger unless explicitly
-overridden; independent ledgers must not silently share a writable cache.
+overridden and deterministically qualified by cache format; independent
+ledgers must not silently share a writable cache.
 
 Prepare a validated source descriptor and complete version-qualified structure
 outside a ledger write transaction. Publish canonical source/conversation
@@ -47,7 +48,10 @@ old generation before publication. Cache loss rebuilds through the existing
 worker/source-readiness path from validated source bytes; it must not report an
 unverified empty conversation or make cache bytes authoritative. Retain bounded
 generations using the existing maintenance owner; do not grow an unbounded
-history of disposable indexes.
+history of disposable indexes. An admitted file-backed reader holds a dedicated
+read-only SQLite snapshot for navigation until its source-read session ends.
+WAL preserves that snapshot while the worker prunes obsolete generations.
+In-memory caches use local reader ownership to defer pruning.
 
 Request reads perform no synchronous cache write for access accounting. Cache
 schema initialization and pruning must likewise not introduce a bulk writer
@@ -76,9 +80,9 @@ limit or prove acceptable write latency.
 1. Native publication and cache: one worker owns the coherent source-store,
    structure-cache, reader/readiness, and ingestion change. It incorporates the
    committed-outcome portion of [issue:dd12c79].
-2. Worker-state ownership: a separate worker repairs the bounded ACP ingestion
-   suppression bug [issue:311d396], coordinating edits in ingestion.ts with the
-   first worker. This need not change the storage design.
+2. Retired worker state: remove the unused ACP suppression map and guard
+   [issue:311d396]. The ACP producer was removed in commit 450d0559; there is no
+   remaining producer whose suppression state should cross the worker boundary.
 3. Regression evidence: a worker replaces the obsolete contention tests and
    maintains a bounded representative performance witness. It coordinates test
    ownership with the first worker and validates the combined change once.
