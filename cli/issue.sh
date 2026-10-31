@@ -1163,7 +1163,7 @@ cmd_parent_role_status() {
 }
 
 # Report one parent-role mutation's captured answer and consume its file. A
-# refusal exits non-zero: 3 when a holder blocks the change, 1 otherwise, with
+# refusal exits non-zero: 3 for revision conflicts, 1 otherwise, with
 # --json printing the server's answer either way.
 parent_role_report() {
   local status="$1" response_file="$2" json="$3" success_filter="$4"
@@ -1173,20 +1173,12 @@ parent_role_report() {
   local code=0
   if [[ ! "$status" =~ ^2 ]]; then
     code=1
-    # Only a response that actually carries a holder is a holder conflict.
-    # Other refusals (and the 400 for an unregistered session id) carry their
-    # own `error` and must be shown as themselves, not as a phantom holder
-    # "- (-)" (issue 7a97e2c).
-    if [[ "$status" == "409" ]] && printf '%s\n' "$response" | jq -e '.blocking_holder != null' >/dev/null 2>&1; then
-      code=3
-    fi
+    [[ "$status" == "409" ]] && code=3
   fi
   if (( json )); then
     printf '%s\n' "$response" | jq '.' 2>/dev/null || printf '%s\n' "$response"
   elif (( code == 0 )); then
     printf '%s\n' "$response" | api_jq_human "$success_filter"
-  elif (( code == 3 )); then
-    printf '%s\n' "$response" | api_jq_human "${PARENT_ROLE_HOLDER_JQ}"'"parent role held by \(.blocking_holder | parent_role_holder): \(.error)"' >&2
   else
     printf '%s\n' "$response" \
       | jq -r 'if type == "object" and (.error | type) == "string" then .error else . end' >&2 2>/dev/null \

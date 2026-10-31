@@ -1,3 +1,7 @@
+import { MAIN_CLI_INSTANCE_RESPONSE } from "./helpers/cli-instance-response.js";
+import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
+import { setupOperator } from "../src/users/store.js";
+import { registerWorkUnitRoutes } from "../src/routes/work-units.js";
 import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import fs from "node:fs";
 import os from "node:os";
@@ -193,6 +197,7 @@ function allowsFileRpcRoute(method: string, pathname: string): boolean {
 async function runCliWithTransport(
   args: string[],
   transport: FileRpcTransport,
+  extraEnv: Record<string, string> = {},
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
   let stopped = false;
   const pump = async () => {
@@ -210,6 +215,8 @@ async function runCliWithTransport(
         ...process.env,
         MANDIBLE_BASE: `file://${transport.dir}`,
         MANDIBLE_FILE_RPC_TIMEOUT: "5",
+        CODEX_SESSION_ID: "", CODEX_THREAD_ID: "", CLAUDE_CODE_SESSION_ID: "", CLAUDE_SESSION_ID: "", GEMINI_SESSION_ID: "", MANDIBLE_SESSION_ID: "",
+        ...extraEnv,
       },
     });
     let stdout = "";
@@ -283,52 +290,40 @@ describe("file RPC transport", () => {
     });
   });
 
-  it("passes explicit ambient identity through allowed file-RPC work-unit mutations", async () => {
-    const router = new Router();
-    router.post("/api/work-units/claim", (req, res) => {
-      res.json({ ambient_identity: req.ambient_identity });
-    }, { operation: { id: "fixture:post:/api/work-units/claim", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: "allow" });
-    router.post("/api/work-units/release", (req, res) => {
-      res.json({ ambient_identity: req.ambient_identity, body: req.body });
-    }, { operation: { id: "fixture:post:/api/work-units/release", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: "allow" });
-    const transport = new FileRpcTransport({ router, dir: tempDir, responseTtlMs: 60_000 });
-
-    fs.writeFileSync(
-      path.join(tempDir, "req-work.request.json"),
-      JSON.stringify({
-        id: "req-work",
-        method: "POST",
-        path: "/api/work-units/claim",
-        ambient_identity: { provider: "codex", provider_session_id: "thread-file-rpc" },
-        body: { issue_id: "abc123", repo_id: "mandible" },
-      }),
-      "utf8",
-    );
-    fs.writeFileSync(
-      path.join(tempDir, "req-release.request.json"),
-      JSON.stringify({
-        id: "req-release",
-        method: "POST",
-        path: "/api/work-units/release",
-        ambient_identity: { provider: "codex", provider_session_id: "thread-release-rpc" },
-        body: { issue_id: "abc123", repo_id: "mandible" },
-      }),
-      "utf8",
-    );
-
-    await transport.processOnce();
-
-    const response = JSON.parse(fs.readFileSync(path.join(tempDir, "req-work.response.json"), "utf8"));
-    expect(response.status).toBe(200);
-    expect(response.body).toEqual({
-      ambient_identity: { provider: "codex", provider_session_id: "thread-file-rpc" },
-    });
-    const release = JSON.parse(fs.readFileSync(path.join(tempDir, "req-release.response.json"), "utf8"));
-    expect(release.status).toBe(200);
-    expect(release.body).toEqual({
-      ambient_identity: { provider: "codex", provider_session_id: "thread-release-rpc" },
-      body: { issue_id: "abc123", repo_id: "mandible" },
-    });
+  it("carries real CLI responsibility transitions, stale-write refusals and native attribution over file RPC", async () => {
+    const db = migratedMemoryDb(); setDb(db);
+    try {
+      const user = setupOperator(db, { slug: "file-rpc-owner" });
+      const project = addProject(db, { project_key: "rpc-responsibility", display_name: "RPC responsibility" });
+      const issue = createLedgerIssue(db, { project_id: project.id });
+      const router = authenticatedTestRouter(user);
+      router.get("/api/instance", (_req, res) => res.json(MAIN_CLI_INSTANCE_RESPONSE), { operation: { id: "fixture:get:/api/instance", effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+      registerWorkUnitRoutes(router, {} as never);
+      const transport = new FileRpcTransport({ router, dir: tempDir });
+      const invoke = (session: string, args: string[]) => runCliWithTransport(args, transport, {
+        CODEX_THREAD_ID: session, MANDIBLE_TEST_ONLY_ALLOW_NON_MAIN_OPERATIONAL_MUTATIONS: "1",
+      });
+      const created = await invoke("old-holder", ["work-unit", "activate", "--issue", issue.id,
+        "--repo", project.project_key, "--branch", "feature/rpc"]);
+      expect(created.status, created.stderr).toBe(0);
+      const read = () => db.prepare("SELECT * FROM work_units WHERE ledger_issue_id = ?").get(issue.id) as Record<string, unknown>;
+      const id = String(read().id);
+      const take = (generation: string) => invoke("successor", ["work-unit", "custody-assume", "--id", id,
+        "--expected-generation", generation, "--reason", "Continue implementation"]);
+      expect((await take("0")).status).not.toBe(0);
+      const transferred = await take("1");
+      expect(transferred.status, transferred.stderr).toBe(0);
+      expect(read()).toMatchObject({ responsibility_session_id: "successor", custody_generation: 2, state: "committed" });
+      const stale = await invoke("old-holder", ["work-unit", "resolve", "--id", id, "--expected-generation", "1"]);
+      expect(stale.status).not.toBe(0);
+      const released = await invoke("successor", ["work-unit", "release", "--id", id,
+        "--expected-generation", "2", "--reason", "Ready for another session"]);
+      expect(released.status, released.stderr).toBe(0);
+      expect(read()).toMatchObject({ owner_user_id: null, responsibility_session_id: null, custody_generation: 3, state: "committed" });
+      const receipts = db.prepare("SELECT request_origin_json FROM responsibility_events WHERE entity_id = ? ORDER BY generation").all(id) as Array<{ request_origin_json: string }>;
+      expect(receipts).toHaveLength(2);
+      expect(JSON.parse(receipts[0].request_origin_json)).toMatchObject({ provider: "codex", provider_session_id: "successor" });
+    } finally { db.close(); }
   });
 
   it("injects a spool attachment as a daemon-visible content_path and cleans it up (issue 833e972)", async () => {
