@@ -28,7 +28,7 @@ pending → executing → completed (exit_code 0)
 pending → executing → failed (non-zero exit_code; nothing was merged unless the output says otherwise)
 pending → needs_rebase (post-merge revalidation found a new conflict)
 pending → rejected
-pending → withdrawn (exact requester credential or session)
+pending → withdrawn (current responsible actor)
 pending → superseded (one explicit atomic replacement)
 pending → expired (TTL exceeded, default 24 hours)
 failed → pending (via retry)
@@ -45,7 +45,7 @@ needs_rebase → pending (via retry after rebasing or integration)
 - **failed** — Execution exited non-zero. `failure_reason` says why in one line, for example `signing failed: user presence not confirmed; no ref changed`. Retry returns the request to `pending` for a new approval. Every execution stays in the request's lifecycle revisions, and `execution_attempts` on the request lists them, so a failure remains visible after a successful retry.
 - **rejected** — The user explicitly declined the request.
 - **expired** — The request sat in `pending` for longer than the TTL (24 hours by default) without action. Expiry is checked every 30 seconds.
-- **withdrawn** — The exact original requester withdrew a still-pending request with a reason.
+- **withdrawn** — The current responsible actor withdrew a still-pending request with a reason.
 - **superseded** — An explicit replacement atomically made this request inert, or a successful request proved an exact sibling obsolete.
 
 Every transition appends an immutable revision containing the resulting request/action snapshot, its SHA-256 digest, the prior snapshot when applicable, actor evidence, reason, related request, and timestamp. Migrated historical rows receive an honest baseline snapshot without invented provenance.
@@ -90,7 +90,7 @@ read-only.
 - `issues` — Legacy close-on-merge issue list; prefer `issue_closures`.
 - `depends_on_ids` — The set of direct prerequisite requests that must succeed and durably finalize before approval.
 - `execution_mode` — `"daemon"` (default, Mandible executes locally) or `"remote"` (an external process manages execution).
-- `supersedes_request_id` — Exact pending predecessor replaced in the same transaction. The requester, canonical project, and protected target must match.
+- `supersedes_request_id` — Exact pending predecessor replaced in the same transaction. The delivery work unit, canonical project, and protected target must match.
 - `superseded_action_dispositions` — One `{ordinal, reason}` entry for every predecessor action not carried with byte-equivalent semantics.
 
 ### Change breakdown
@@ -169,7 +169,7 @@ The dashboard and `mandible auth list` display the auth queue with all active re
 
 **Skip** (`POST /api/auth/request/:id/skip`) — Moves the request to the back of the queue without rejecting it. Useful when you want to approve a different request first.
 
-**Withdraw** (`POST /api/auth/request/:id/withdraw`) — Lets the exact original requester withdraw its own pending request. A reason is required. API-token requests require the same credential; session requests require the same exact session.
+**Withdraw** (`POST /api/auth/request/:id/withdraw`) — Lets the current responsible actor withdraw a pending request with a reason and observed lifecycle revision and responsibility generation. A bound request follows its delivery work unit; an unbound request has its own responsibility.
 
 **Retry** (`POST /api/auth/request/:id/retry`) — Resets a failed or expired request to `pending` with a fresh TTL when no prepared publication state exists. Retained publication state requires recovery or operator inspection and cannot be erased for another execution.
 

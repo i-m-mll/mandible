@@ -109,14 +109,13 @@ bun run iab-preview -- cleanup --apply --json
 
 A pass examines at most 64 cache entries and yields between entries. Root-level
 unowned snapshots and legacy preview directories remain preserved. No worktree,
-conversation custody, historical artifact, backup or legacy operational-log
-reclamation occurs here.
+conversation custody, historical artifact or backup reclamation occurs here.
 
 Preview stdout and stderr use their own instance paths and the daemon's configured
 rotation bounds: 16 MiB and five segments by default. Persisted operational-log
 retention remains seven days by default and honors explicit settings. Shutdown
-waits for in-flight retention before closing its database. Failed legacy
-verification blocks retention. Startup never performs blocking `VACUUM`.
+waits for in-flight retention before closing its database. Startup never performs
+blocking `VACUUM`.
 
 Reports count apparent bytes unlinked; they do not claim measured physical APFS
 recovery. Compact receipts remain outside the removed intermediate root.

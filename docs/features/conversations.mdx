@@ -1,16 +1,12 @@
 # Conversations
 
-For exact provider-native preservation, integrity verification, archive
-round-trips, and collision-safe restore staging, see
-[Conversation custody and recovery](/conversation-custody).
-
-Mandible ingests, stores, and indexes conversations from every AI agent you use — Claude Code, Codex, and Gemini. Each conversation is broken into typed blocks (user messages, assistant responses, tool calls, thinking, etc.) and stored in a queryable SQLite database with full-text search, filtering, and export capabilities.
-
-Provider-native source logs are the veridical transcript content. The
-`conversations` database tables are Mandible's normalized index for UI, search,
-export, and metadata workflows. Use `mandible logs inspect --parse` when a
-fresh read of the source file matters; use `mandible conversations blocks` when
-the DB-backed normalized index is the intended surface.
+Mandible discovers and indexes Claude Code, Codex, and Gemini conversations.
+Provider-native files own the transcript bytes; Mandible stores identities,
+annotations, relationships, and source bindings in its ledger. Navigation and
+masked search indexes are disposable. Blocks shown in the UI or returned by the
+API are read from available native sources, not a stored transcript archive.
+See [Conversation recovery](/docs/conversation-recovery) and
+[Conversation custody](/docs/conversation-custody).
 
 Parser capabilities live in `src/parsers/capabilities.ts`. When a provider
 parser changes the block types, roles, timestamps, or tool metadata it emits,
@@ -36,7 +32,7 @@ Each directory is watched via `chokidar` with write-finish detection (stabilityT
 
 When a new or modified transcript file is detected, the ingestion service parses it into normalized blocks using the appropriate parser (Claude, Codex, or Gemini). Files still being written are debounced to avoid partial reads.
 
-For active sessions where new messages are being appended, only the new blocks are processed --- the service avoids re-parsing the entire file. If a file has been modified in a non-append way, it's re-ingested from scratch. Block content is compressed before storage, reducing database size significantly.
+Ingestion reconciles changed native sources and their metadata. Sparse navigation anchors and masked search indexes can be rebuilt from available sources.
 
 The dashboard updates in real time as conversations are ingested via SSE events.
 
@@ -127,7 +123,7 @@ PATCH /api/conversations/:id
 { "starred": true }
 ```
 
-Starred conversations are protected from cleanup — they won't be deleted during reconciliation even if their source file is removed or becomes empty. You can also attach a custom label and free-form notes to any conversation.
+Stars, labels, and notes are ledger metadata. They do not by themselves guarantee that provider-native transcript bytes remain available.
 
 ## Export
 
@@ -206,10 +202,6 @@ POST /api/conversations/:id/resume
 ```
 
 Resume creates an SDK-backend console session with `resume_at_message` set, so the Claude Agent SDK picks up the conversation from that point. The new session inherits the original session's provider session ID for continuity.
-
-## Compression
-
-Block content is stored compressed in the database, reducing storage size by approximately 76% compared to raw text. Compression and decompression are transparent --- the API and export functions handle it automatically.
 
 ## Sources Summary
 

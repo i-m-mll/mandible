@@ -33,8 +33,8 @@ export type HolderLivenessState = LivenessState;
  * Codex thread with no such record, a completed thread-writer lock scan that
  * finds no Codex process holding the thread's lock. A Claude or Gemini
  * transcript alone, an id Mandible never registered, a liveness check that
- * could not complete, or a unit with no session identity is `unknown`, which
- * blocks takeover exactly like `live`.
+ * could not complete, or a unit with no session identity is `unknown`. Liveness
+ * is informational for an explicit responsibility transfer.
  */
 export interface HolderLiveness {
   state: HolderLivenessState;
