@@ -743,8 +743,6 @@ let reconcileRequiredAfterBackpressure = false;
 const codexSessionIndexSyncMtimes = new Map<string, number>();
 const targetedIngestLastRun = new Map<string, number>();
 const TARGETED_INGEST_MIN_INTERVAL_MS = 250;
-const acpSuppressedSessions = new Map<string, number>();
-const ACP_SUPPRESSION_TTL_MS = 24 * 60 * 60 * 1000;
 
 type ExistingConversationRow = {
   id: string;
@@ -1177,13 +1175,6 @@ export function scheduleExactPathReparse(transcriptPath: string, sourceId: strin
   return true;
 }
 
-export function suppressAcpIngestForSession(source: string, sessionId: string): void {
-  if (!source.trim() || !sessionId.trim()) {
-    return;
-  }
-  acpSuppressedSessions.set(acpSuppressionKey(source, sessionId), Date.now() + ACP_SUPPRESSION_TTL_MS);
-}
-
 // --- Internal ---
 
 function normalizeTargetRef(value: string | null | undefined): string | null {
@@ -1542,19 +1533,6 @@ function makeWatchFileMatcher(baseDir: string, glob: string): (filePath: string)
   };
 }
 
-export function isAcpIngestSuppressed(source: string, sessionId: string, now = Date.now()): boolean {
-  const key = acpSuppressionKey(source, sessionId);
-  const expiresAt = acpSuppressedSessions.get(key);
-  if (!expiresAt) {
-    return false;
-  }
-  if (expiresAt <= now) {
-    acpSuppressedSessions.delete(key);
-    return false;
-  }
-  return true;
-}
-
 export async function triggerReconcileForTest(
   options: {
     watchConfigs?: Array<{ base: string; glob: string }>;
@@ -1579,10 +1557,6 @@ export async function triggerReconcileForTest(
     logger = previousLogger;
     ingestionRunToken++;
   }
-}
-
-function acpSuppressionKey(source: string, sessionId: string): string {
-  return `${source.trim().toLowerCase()}:${sessionId.trim()}`;
 }
 
 async function hashFileTailAt(filePath: string, offset: number): Promise<string> {
@@ -3061,18 +3035,6 @@ async function ingestFilePass(
       error: String(error),
     });
     if (options.strictParseErrors) throw error;
-    return;
-  }
-
-  if (
-    result?.conversation.session_id
-    && isAcpIngestSuppressed(result.conversation.source, result.conversation.session_id)
-  ) {
-    logger("debug", "ingestion_skip_acp_originated_session", {
-      file: filePath,
-      source: result.conversation.source,
-      session_id: result.conversation.session_id,
-    });
     return;
   }
 
