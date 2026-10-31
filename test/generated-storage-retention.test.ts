@@ -118,11 +118,16 @@ it('retains operational roots and evidence while reclaiming abandoned payloads i
     expect(fs.existsSync(packages.get('abandoned')!.evidence)).toBe(true);
     const prior = packages.get('prior')!.reference;
     const journalFile = path.join(runtime, 'handoff/failed/journal.json');
-    const terminal = { ...journal, bindingDigest: 'binding', attempt: { state: 'complete', fence: { reason: 'receipt-accepted' } } };
-    fs.writeFileSync(journalFile, JSON.stringify(terminal));
+    const replacement = packages.get('replacement')!.reference;
     expect(acceptedReleaseFilesystemReferences(home, prior)).toHaveLength(1);
-    expect(acceptedReleaseFilesystemReferences(home, prior, { file: journalFile, bindingDigest: 'binding' })).toEqual([]);
-    expect(acceptedReleaseFilesystemReferences(home, packages.get('replacement')!.reference, { file: journalFile, bindingDigest: 'binding' })).toHaveLength(1);
+    expect(acceptedReleaseFilesystemReferences(home, replacement)).toHaveLength(1);
+    // A fenced journal no longer needs its predecessor; its own release holds its helper until that is fenced.
+    const terminal = { ...journal, bindingDigest: 'binding', attempt: { state: 'complete', fence: { reason: 'terminal-completion' } }, cleanup: { state: 'pending' } };
+    fs.writeFileSync(journalFile, JSON.stringify(terminal));
+    expect(acceptedReleaseFilesystemReferences(home, prior)).toEqual([]);
+    expect(acceptedReleaseFilesystemReferences(home, replacement)).toHaveLength(1);
+    fs.writeFileSync(journalFile, JSON.stringify({ ...terminal, helperFencedAt: 1 }));
+    expect(acceptedReleaseFilesystemReferences(home, replacement)).toEqual([]);
     const scratch = path.join(home, 'scratch'); fs.mkdirSync(scratch); fs.writeFileSync(path.join(scratch, 'data'), 'generated');
     const scratchOwner = createOwnedRun({ root: scratch, instanceId: 'scratch', project: 'project', workUnit: 'unit', disposable: true, outputs: [{ path: 'data', kind: 'generated' }] }); scratchOwner.processOwner = producer;
     saveOwnedMetadata(path.join(scratch, 'metadata.json'), { ownership: scratchOwner });

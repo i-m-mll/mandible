@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import { bindingDigest, handoffDirectory, runRuntimeHandoffWorker, readRuntimeHandoff, closeQuiescentRuntimeHandoff, acknowledgeRuntimeHandoff, runtimeHandoffNeedsAcknowledgment, cleanupRuntimeHandoff, scheduleRuntimeHandoffCleanup, withRuntimeObservation } from '../scripts/runtime-handoff.mjs';
+import { bindingDigest, handoffDirectory, runRuntimeHandoffWorker, readRuntimeHandoff, closeQuiescentRuntimeHandoff, acknowledgeRuntimeHandoff, runtimeHandoffNeedsAcknowledgment, cleanupRuntimeHandoff, scheduleRuntimeHandoffCleanup, runtimeHandoffCleanupWake, withRuntimeObservation } from '../scripts/runtime-handoff.mjs';
+import { acceptedInstallPaths, applicationRootIdentity } from '../scripts/accepted-app-install.mjs';
 import { installedFileIdentity } from '../scripts/installed-release.mjs';
 import { waitUntil } from './helpers/wait-until.js';
 import { assessRuntimeLogs } from '../scripts/runtime-log-assessment.mjs';
@@ -226,11 +227,53 @@ it('runs historical cleanup with current installed code and reports only the rea
   await waitUntil(() => fs.existsSync(started), 'cleanup child entered current helper');
   expect(settled).toBe(false); expect(fs.readFileSync(started, 'utf8')).toBe(resources);
   fs.writeFileSync(proceed, 'continue');
-  expect(await pending).toEqual({ cleanup: 'pending' });
+  expect(await pending).toEqual({ cleanup: 'pending', reason: 'Runtime delivery cleanup remains pending.', wake: runtimeHandoffCleanupWake(journal) });
   vi.stubEnv('MANDIBLE_TEST_CLEANUP_OUTCOME', 'fail');
   await expect(scheduleRuntimeHandoffCleanup(journal)).rejects.toThrow('failed');
   vi.stubEnv('MANDIBLE_TEST_CLEANUP_OUTCOME', 'complete');
   expect(await scheduleRuntimeHandoffCleanup(journal)).toEqual({ cleanup: 'complete' });
   fs.chmodSync(runtime, 0o644);
   await expect(scheduleRuntimeHandoffCleanup(journal)).rejects.toThrow();
+});
+
+it('settles each cleanup obligation independently and waits on the exact processes holding the previous app', async () => {
+  const f = fixture();
+  const database = path.join(f.home, 'acceptance.db');
+  const db = new SqliteDatabase(database);
+  db.exec('CREATE TABLE auth_hook_executions (id TEXT, auth_request_id TEXT, hook_id TEXT, state TEXT, output TEXT, command_digest TEXT)');
+  const previous = acceptedInstallPaths(f.binding).previous;
+  fs.mkdirSync(path.join(previous, 'Contents'), { recursive: true });
+  const bridge = path.join(f.home, 'bridge.mjs'); fs.writeFileSync(bridge, 'bridge');
+  const binding = { ...f.binding, hookId: 'hook', commandDigest: 'command', domain: `gui/${process.getuid!()}`, priorAppIdentity: applicationRootIdentity(previous),
+    priorBackend: { argv: ['/runtime', bridge] }, legacyBridgeSha256: createHash('sha256').update('bridge').digest('hex') };
+  const digest = bindingDigest(binding);
+  const receipt = { schema: 'mandible-runtime-receipt@2', bindingDigest: digest, attemptId: 'attempt' };
+  const journal = { ...f.journal, binding, bindingDigest: digest, database, helperLabel: 'fixture-helper',
+    attempt: { id: 'attempt', state: 'complete', effects: {}, receipt, receiptDigest: createHash('sha256').update(JSON.stringify(receipt)).digest('hex'),
+      fence: { reason: 'terminal-completion' } }, cleanup: { state: 'pending' } };
+  db.prepare('INSERT INTO auth_hook_executions VALUES (?,?,?,?,?,?)').run(binding.executionId, binding.requestId, binding.hookId, 'complete', runtimeReceiptAcceptanceMarker(journal), binding.commandDigest);
+  db.close();
+  fs.writeFileSync(f.file, JSON.stringify(journal));
+  vi.mocked(childProcess.spawnSync).mockImplementation((program, args, options) => {
+    if (program === '/bin/launchctl') return { status: 113, stdout: '', stderr: 'Could not find service' } as any;
+    return originalSpawn(program, args, options);
+  });
+  const holder = childProcess.spawn('/bin/sleep', ['30'], { cwd: previous, stdio: 'ignore' });
+  try {
+    await waitUntil(() => originalSpawn('lsof', ['-F', 'p', '+D', previous], { encoding: 'utf8' }).stdout.includes(`p${holder.pid}`), 'holder opened the previous app');
+    expect(await cleanupRuntimeHandoff(f.file)).toEqual({ cleanup: 'pending' });
+    const blocked = readRuntimeHandoff(f.home, binding.requestId, binding.executionId)!;
+    expect(fs.existsSync(bridge)).toBe(false);
+    expect(blocked.helperFencedAt).toEqual(expect.any(Number));
+    expect(blocked.cleanup).toMatchObject({ state: 'pending', blockers: [{ obligation: 'previous-app',
+      processes: [{ pid: holder.pid, command: expect.stringContaining('sleep 30'), owner: { pid: process.pid } }] }] });
+    expect(blocked.cleanup.reason).toContain(`Quit or restart: ${blocked.cleanup.blockers[0].processes[0].owner.command.slice(0, 40)}`);
+    const waiting = runtimeHandoffCleanupWake(blocked);
+    expect(runtimeHandoffCleanupWake(blocked)).toBe(waiting);
+    const exited = new Promise(resolve => holder.once('exit', resolve));
+    holder.kill(); await exited;
+    expect(runtimeHandoffCleanupWake(blocked)).not.toBe(waiting);
+    expect(await cleanupRuntimeHandoff(f.file)).toEqual({ cleanup: 'complete' });
+    expect(fs.existsSync(previous)).toBe(false);
+  } finally { holder.kill(); }
 });

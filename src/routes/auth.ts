@@ -622,9 +622,13 @@ export function registerAuthRoutes(
 
   // Issue a09b4d2 — the installation runtime handoff lock, and operator
   // retirement of a failed one. Retirement preserves the journal as evidence.
-  app.get("/api/runtime-handoff/lock", (_req, res) => {
-    const lock = authQueue.runtimeHandoffLock();
-    res.json({ lock, message: lock ? runtimeHandoffLockRefusal(lock) : null });
+  app.get("/api/runtime-handoff/lock", async (_req, res) => {
+    try {
+      const lock = authQueue.runtimeHandoffLock();
+      res.json({ lock, message: lock ? runtimeHandoffLockRefusal(lock) : null, cleanups: await authQueue.pendingRuntimeCleanups() });
+    } catch (error) {
+      handleQueueError(error, res);
+    }
   }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/runtime-handoff/lock", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   app.post("/api/runtime-handoff/retire", async (req, res) => {

@@ -5,7 +5,7 @@ import { applicationIdentity, installedFileIdentity, readInstalledRelease } from
 import { createOwnedRun, saveOwnedMetadata, withOwnedRunLock, ownedRunIdentityMatches, finalizeOwnedRun, cleanupOwnedRun, inspectRunConsumers } from './owned-run.mjs';
 import { withInstallationGatewayLock } from './lifecycle-lock.mjs';
 import { readBundleOwner } from './bundle-services.mjs';
-import { readRuntimeHandoffLock } from './runtime-handoff-lock.mjs';
+import { readRuntimeHandoffLock, runtimeHandoffSettled } from './runtime-handoff-lock.mjs';
 
 export const ACCEPTED_RELEASE_SCHEMA = 'mandible-accepted-release@1';
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -35,17 +35,25 @@ export function emptyPreAdmissionHandoff(directory) {
     && fs.readdirSync(directory).length === 0;
 }
 
-export function acceptedReleaseFilesystemReferences(home, reference, releasingHandoff) {
+/**
+ * The accepted releases a handoff journal still needs. Its predecessor's release
+ * matters only while the journal holds mutation authority. Its own release holds
+ * the helper that drives it, so it is needed until that helper is fenced.
+ */
+export function handoffRetainedReleases(journal) {
+  if (journal.cleanup?.state === 'complete' || journal.phase === 'acknowledged') return [];
+  const settled = runtimeHandoffSettled(journal);
+  return [
+    ...(!settled || !journal.helperFencedAt ? [journal.binding?.acceptedRelease?.reference] : []),
+    ...(!settled ? [journal.binding?.bundleOwner?.acceptedRelease] : []),
+  ].filter(Boolean);
+}
+
+export function acceptedReleaseFilesystemReferences(home, reference) {
   const reasons = [];
   if (readBundleOwner({ runtimeDir: path.join(home, 'config/local-sessions') })?.acceptedRelease === reference) reasons.push('The installed release still owns these bytes.');
   const active = readRuntimeHandoffLock(home);
   if (active && (!active.journalPath || !active.bindingDigest || !active.requestId || !active.executionId)) reasons.push('unreadable handoff ownership');
-  if (active?.journalPath) {
-    const journal = JSON.parse(fs.readFileSync(active.journalPath, 'utf8'));
-    const released = releasingHandoff?.file === active.journalPath && releasingHandoff?.bindingDigest === journal.bindingDigest
-      && journal.attempt?.fence && journal.attempt?.state === 'complete' && journal.binding?.bundleOwner?.acceptedRelease === reference;
-    if (!released && [journal.binding?.acceptedRelease?.reference, journal.binding?.bundleOwner?.acceptedRelease].includes(reference)) reasons.push('An unresolved handoff still owns these bytes.');
-  }
   const directory = path.join(home, 'config/local-sessions/handoff');
   if (fs.existsSync(directory)) for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
@@ -57,15 +65,12 @@ export function acceptedReleaseFilesystemReferences(home, reference, releasingHa
     const bytes = fs.readFileSync(file);
     const journal = JSON.parse(bytes);
     if (journal.schema !== 'mandible-runtime-handoff@1' || !journal.binding || typeof journal.phase !== 'string') { reasons.push(`unclassified handoff journal ${entry.name}`); continue; }
-    if (releasingHandoff?.file === file && releasingHandoff?.bindingDigest === journal.bindingDigest && journal.attempt?.fence
-        && journal.attempt?.state === 'complete' && journal.binding?.bundleOwner?.acceptedRelease === reference) continue;
     const retirement = path.join(path.dirname(file), 'retirement.json');
     if (fs.existsSync(retirement)) {
       const retired = JSON.parse(fs.readFileSync(retirement, 'utf8'));
       if (retired.bindingDigest === journal.bindingDigest && retired.journalSha256 === hash(bytes)) continue;
     }
-    if (journal.cleanup?.state === 'complete' || journal.phase === 'acknowledged') continue;
-    if ([journal.binding?.acceptedRelease?.reference, journal.binding?.bundleOwner?.acceptedRelease].includes(reference)) reasons.push(`unresolved handoff ${entry.name}`);
+    if (handoffRetainedReleases(journal).includes(reference)) reasons.push(`unresolved handoff ${entry.name}`);
   }
   return reasons;
 }
@@ -124,18 +129,17 @@ export function resolveAcceptedRelease(reference, expectedCandidate) {
 }
 
 /** Explicit delivery-owner disposal; pending acceptances never expire as cache material. */
-export async function disposeAcceptedRelease(reference, expectedCandidate, reason, { home, assertHeld, claim, releasingHandoff, database, deferCleanup = false, inspect = inspectRunConsumers } = {}) {
+export async function disposeAcceptedRelease(reference, expectedCandidate, reason, { home, assertHeld, claim, database, deferCleanup = false, inspect = inspectRunConsumers } = {}) {
   if (!reason?.trim()) throw new Error('Accepted release disposal requires an owner reason.');
   const receipt = readAcceptedReleaseReceipt(reference, expectedCandidate);
   const root = receipt.package.handle.root;
   home ??= path.dirname(path.dirname(root));
-  if (!assertHeld && releasingHandoff) throw new Error('Handoff release requires its existing observation authority.');
   if (!assertHeld) return withInstallationGatewayLock(home, (_token, held) => disposeAcceptedRelease(reference, expectedCandidate, reason, { home, assertHeld: held, claim, database, deferCleanup, inspect }));
   assertHeld();
   if (!fs.existsSync(root)) return { action: 'delete-owned', reason: 'payload already removed', remaining: [] };
   return withOwnedRunLock(root, async () => {
     const exact = readAcceptedReleaseReceipt(reference, expectedCandidate);
-    const references = acceptedReleaseFilesystemReferences(home, reference, releasingHandoff);
+    const references = acceptedReleaseFilesystemReferences(home, reference);
     if (references.length) throw new Error(`Accepted release is retained: ${references.join(', ')}`);
     const metadataFile = path.join(root, 'metadata.json');
     const metadata = JSON.parse(fs.readFileSync(metadataFile, 'utf8'));
@@ -149,7 +153,7 @@ export async function disposeAcceptedRelease(reference, expectedCandidate, reaso
       if (producers.length) throw new Error(`Accepted release is retained: ${producers.join(', ')}`);
     }
     const consumers = await inspect(root);
-    if (!consumers.idle) throw new Error(consumers.reason);
+    if (!consumers.idle) throw Object.assign(new Error(consumers.reason), { consumers: consumers.pids ?? [] });
     assertHeld();
     const mark = () => { if (ownership.state !== 'terminal') {
       metadata.ownership = { ...ownership, disposable: true,

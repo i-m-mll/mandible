@@ -39,7 +39,11 @@ if [[ "$action" == status ]]; then
       (if $l.lastObservation then "  verification pending: \($l.lastObservation.reason)" else empty end),
       "  journal \($l.journalPath // "unknown")",
       "  binding digest \($l.bindingDigest // "unknown")"
-    end'
+    end,
+    (.cleanups // [] | if length == 0 then empty else
+      "Cleanup of \(length) delivered self-update(s) is waiting:",
+      (.[] | "  \(.request_id[0:8]): \(.reason // "not attempted yet by this daemon")")
+    end)'
   exit 0
 fi
 if [[ "$action" == recover ]]; then

@@ -82,7 +82,7 @@ import {
   type CandidateAcceptanceInput,
 } from "./candidate-acceptance.js";
 import type { AuthPublicationBlocker, CandidateAcceptanceProjection, ProtectedBaseAudit } from "./contracts.js";
-import { AUTH_HOOK_ENV_ALLOWLIST, AuthHookManager, authHookPath, formatHookExecutionResult, MANDIBLE_REBUILD_HOOK_ID, type RuntimeVerificationResult } from "./auth-hooks.js";
+import { AUTH_HOOK_ENV_ALLOWLIST, AuthHookManager, authHookPath, formatHookExecutionResult, MANDIBLE_REBUILD_HOOK_ID, type RuntimeCleanupDebt, type RuntimeVerificationResult } from "./auth-hooks.js";
 import { getMandibleHome, getUserHome } from "./platform-paths.js";
 import {
   describeRecomputeRefusal,
@@ -823,6 +823,11 @@ export class AuthQueue {
   /** The installation's runtime handoff lock, or null when it is free. */
   runtimeHandoffLock(): RuntimeHandoffLock | null {
     return this.hookManager.runtimeHandoffLock();
+  }
+
+  /** Delivered self-updates whose cleanup is still waiting. */
+  pendingRuntimeCleanups(): Promise<RuntimeCleanupDebt[]> {
+    return this.hookManager.pendingRuntimeCleanups();
   }
 
   async publicationBlockersForRequests(requests: AuthRequest[]): Promise<Map<string, AuthPublicationBlocker | null>> {

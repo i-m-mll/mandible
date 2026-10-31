@@ -187,10 +187,30 @@ A retry after committed receipt acceptance uses the exact durable marker and dig
 without repeating publication adoption or runtime probes. A foreign active owner
 never grants mutation authority over this journal.
 
-Cleanup has its own pending or complete state. It validates only the obsolete
-objects it deletes, including previous app bytes and retained package ownership.
-Cleanup failure preserves runtime success and can be retried after ownership has
-been released. A successor can close an old mutator under the same ordered leases
+Cleanup has its own pending or complete state, and its failure never changes
+runtime success. It validates only the obsolete objects it deletes. It consists
+of independent obligations, and every attempt tries each of them: fence the
+exact helper, remove the previous app copy, dispose of the superseded accepted
+release, and remove a legacy bridge. Each blocked obligation records its own
+blocker in the journal. When the blocker is a set of running processes, the
+record lists them with the parent that started them, which is what the user has
+to quit or restart. `mandible auth handoff status` and the daemon's stuck-cleanup
+incident show that text.
+
+A journal keeps an accepted release from disposal only while it still needs it.
+It needs its predecessor's release while it holds mutation authority. It needs
+its own release, which holds the helper that drives it, until that helper is
+fenced (`helperFencedAt`). The cleanups of successive updates therefore never
+wait on one another.
+
+The daemon starts cleanup children one at a time. A blocked cleanup runs again
+only when its wake key changes: the key is the recorded blockers, with only the
+blocking processes that are still alive. A cleanup also runs again when another
+handoff's cleanup or outcome changes, when the daemon starts, or when someone
+asks for verification-only recovery. No timer retries it, so a cleanup waiting
+on a process never takes the installation gateway lock while it waits.
+
+A successor can close an old mutator under the same ordered leases
 by fencing its exact helper and preserving its historical outcome; an old failed
 phase or a missing PID alone is not permission to release ownership.
 

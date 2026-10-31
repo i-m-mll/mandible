@@ -67,34 +67,66 @@ function installedApplication(journal) {
   return application;
 }
 export const bindingDigest = runtimeHandoffBindingDigest;
-async function verifyAcceptedBytes(journal, cleanup = false) {
-  assertObservationLease(journal);
+/** Processes still using a superseded copy, each with the parent that started it: that parent is what to quit. */
+function describeConsumers(pids) {
+  const row = pid => {
+    const result = spawnSync('/bin/ps', ['-ww', '-p', String(pid), '-o', 'ppid=,command='], { encoding: 'utf8', timeout: 1500 });
+    const match = result.status === 0 ? /^\s*(\d+)\s+(.*)$/s.exec(result.stdout.trim()) : null;
+    return match ? { ppid: Number(match[1]), command: match[2].slice(0, 300) } : null;
+  };
+  return pids.map(pid => {
+    const own = row(pid);
+    const parent = own && own.ppid > 1 ? row(own.ppid) : null;
+    return { pid, startedAt: startedAt(pid), command: own?.command ?? null, owner: parent ? { pid: own.ppid, command: parent.command } : null };
+  }).filter(process => process.startedAt);
+}
+function inUse(subject, pids) {
+  const processes = describeConsumers(pids);
+  const short = command => (command.length > 120 ? `${command.slice(0, 117)}...` : command);
+  const quit = [...new Map(processes.map(process => process.owner
+    ? [`o${process.owner.pid}`, `${short(process.owner.command)} (pid ${process.owner.pid}), which runs ${short(process.command)} (pid ${process.pid})`]
+    : [`p${process.pid}`, `${short(process.command ?? 'an exited process')} (pid ${process.pid})`])).values()];
+  const message = quit.length
+    ? `${subject} is still in use. Quit or restart: ${quit.join('; ')}. Cleanup resumes by itself once they exit.`
+    : `${subject} was in use by processes that have since exited.`;
+  return Object.assign(new Error(message), { processes });
+}
+function removePreviousApplication(journal) {
   const b = journal.binding;
-  if (!b.acceptedRelease) return;
-  if (!cleanup) {
-    installedApplication(journal);
-    return;
-  }
   const previous = acceptedInstallPaths(b).previous;
-  if (fs.existsSync(previous)) {
-    const prior = applicationRootIdentity(previous);
-    if (!b.priorAppIdentity || prior.dev !== b.priorAppIdentity.dev || prior.ino !== b.priorAppIdentity.ino) throw new Error('Previous app custody changed.');
-    const oldProcesses = [b.oldProcess, ...Object.values(journal.attempt?.effects.drain?.processes ?? {})];
-    if (oldProcesses.some(identity => identity && startedAt(identity.pid) === identity.startedAt)) throw new Error('Prior application still has a live owned process.');
-    const consumers = inspectRunConsumers(previous);
-    if (!consumers.idle) throw new Error(consumers.reason);
-    assertObservationLease(journal);
-    fs.rmSync(previous, { recursive: true });
-  }
+  if (!fs.existsSync(previous)) return;
+  const prior = applicationRootIdentity(previous);
+  if (!b.priorAppIdentity || prior.dev !== b.priorAppIdentity.dev || prior.ino !== b.priorAppIdentity.ino) throw new Error('Previous app custody changed.');
+  const owned = [b.oldProcess, ...Object.values(journal.attempt?.effects.drain?.processes ?? {})]
+    .filter(identity => identity && startedAt(identity.pid) === identity.startedAt).map(identity => identity.pid);
+  const consumers = owned.length ? { idle: false, pids: owned } : inspectRunConsumers(previous);
+  if (!consumers.idle) throw consumers.pids?.length ? inUse(`The superseded app copy ${previous}`, consumers.pids) : new Error(consumers.reason);
+  assertObservationLease(journal);
+  fs.rmSync(previous, { recursive: true });
+}
+async function disposeSupersededRelease(journal) {
+  const b = journal.binding;
   const superseded = b.bundleOwner?.acceptedRelease;
-  if (superseded && superseded !== b.acceptedRelease.reference) {
-    const old = readAcceptedReleaseReceipt(superseded);
-    if (ownedRunReceipt(old.package.handle)?.cleanup !== 'completed') {
-      const result = await disposeAcceptedRelease(superseded, old.candidate, `Superseded by ${b.acceptedRelease.reference}`,
-        { home: b.home, database: journal.database, assertHeld: () => assertObservationLease(journal), releasingHandoff: { file: journalFile(b), bindingDigest: journal.bindingDigest } });
-      if (result.action !== 'delete-owned' || result.remaining?.length) throw new Error('Superseded package cleanup is incomplete.');
-    }
+  if (!superseded || superseded === b.acceptedRelease.reference) return;
+  const old = readAcceptedReleaseReceipt(superseded);
+  if (ownedRunReceipt(old.package.handle)?.cleanup === 'completed') return;
+  let result;
+  try {
+    result = await disposeAcceptedRelease(superseded, old.candidate, `Superseded by ${b.acceptedRelease.reference}`,
+      { home: b.home, database: journal.database, assertHeld: () => assertObservationLease(journal) });
+  } catch (error) {
+    if (error.consumers?.length) throw inUse(`The superseded release ${old.package.handle.root}`, error.consumers);
+    throw error;
   }
+  if (result.action !== 'delete-owned' || result.remaining?.length) throw new Error('Superseded package cleanup is incomplete.');
+}
+function removeLegacyBridge(journal) {
+  const runner = journal.binding.priorBackend.argv[1];
+  if (!fs.existsSync(runner)) return;
+  const stat = fs.lstatSync(runner);
+  if (!stat.isFile() || stat.isSymbolicLink() || fileHash(runner) !== journal.binding.legacyBridgeSha256) throw new Error('Legacy bridge custody changed.');
+  assertObservationLease(journal);
+  fs.unlinkSync(runner);
 }
 
 function atomic(file, value) {
@@ -766,25 +798,55 @@ function clearOwnPointer(journal) {
   assertObservationLease(journal);
   fs.unlinkSync(active);
 }
+/**
+ * A terminal delivery's cleanup is a set of independent obligations. Each one is
+ * attempted every time and records its own blocker, so one that waits on a
+ * running process never holds back another.
+ */
 async function cleanupHandoff(journal) {
   assertObservationLease(journal);
-  try {
-    await verifyAcceptedBytes(journal, true);
-    if (journal.binding.legacyBridgeSha256) {
-      const runner = journal.binding.priorBackend.argv[1];
-      if (fs.existsSync(runner)) {
-        const stat = fs.lstatSync(runner);
-        if (!stat.isFile() || stat.isSymbolicLink() || fileHash(runner) !== journal.binding.legacyBridgeSha256) throw new Error('Legacy bridge custody changed.');
-        assertObservationLease(journal);
-        fs.unlinkSync(runner);
-      }
+  const b = journal.binding;
+  const obligations = [
+    ...(!journal.helperFencedAt ? [['helper', async () => { await fenceHelper(journal); save(journal, { helperFencedAt: Date.now() }); }]] : []),
+    ...(b.acceptedRelease ? [['previous-app', () => removePreviousApplication(journal)], ['superseded-release', () => disposeSupersededRelease(journal)]] : []),
+    ...(b.legacyBridgeSha256 ? [['legacy-bridge', () => removeLegacyBridge(journal)]] : []),
+  ];
+  const blockers = [];
+  for (const [obligation, settle] of obligations) {
+    try { await settle(); }
+    catch (error) {
+      if (error instanceof RuntimeObservationError) throw error;
+      blockers.push({ obligation, reason: error.message, ...(error.processes ? { processes: error.processes } : {}) });
     }
+  }
+  if (!blockers.length) {
     save(journal, { cleanup: { state: 'complete', completedAt: Date.now() } });
     return { cleanup: 'complete' };
-  } catch (error) {
-    save(journal, { cleanup: { state: 'pending', attemptedAt: Date.now(), reason: error.message } });
-    return { cleanup: 'pending' };
   }
+  save(journal, { cleanup: { state: 'pending', attemptedAt: Date.now(), reason: blockers.map(blocker => blocker.reason).join(' '), blockers } });
+  return { cleanup: 'pending' };
+}
+/**
+ * What a pending cleanup waits for: its blockers, with only the blocking
+ * processes still alive. A retry can only succeed after this changes.
+ */
+export function runtimeHandoffCleanupWake(journal) {
+  const blockers = journal.cleanup?.state === 'pending' ? journal.cleanup.blockers ?? [] : [];
+  const pids = blockers.flatMap(blocker => blocker.processes ?? []).map(process => process.pid);
+  const starts = new Map();
+  if (pids.length) {
+    const listed = spawnSync('/bin/ps', ['-p', [...new Set(pids)].join(','), '-o', 'pid=,lstart='], { encoding: 'utf8', timeout: 1500 });
+    for (const line of listed.stdout?.split('\n') ?? []) {
+      const match = /^\s*(\d+)\s+(.+)$/.exec(line);
+      if (match) starts.set(Number(match[1]), match[2].trim());
+    }
+  }
+  const waits = blockers.map(blocker => (blocker.processes
+    ? { obligation: blocker.obligation, live: blocker.processes.filter(process => starts.get(process.pid) === process.startedAt).map(process => process.pid) }
+    : { obligation: blocker.obligation, reason: blocker.reason }));
+  // Every process a blocker waited on has exited, so that blocker has already changed.
+  if (waits.some(wait => wait.live?.length === 0)) return `due:${randomBytes(8).toString('hex')}`;
+  return hash(JSON.stringify({ helperFenced: Boolean(journal.helperFencedAt), state: journal.cleanup?.state ?? null, waits }));
 }
 export async function cleanupRuntimeHandoff(file) {
   const raw = validateJournal(JSON.parse(fs.readFileSync(file, 'utf8')));
@@ -797,11 +859,6 @@ export async function cleanupRuntimeHandoff(file) {
         || await readRuntimeObservationAcceptance(journal) !== 'accepted') throw new Error('Cleanup requires an accepted terminal delivery.');
     if (journal.cleanup?.state === 'complete') return { cleanup: 'complete' };
     clearOwnPointer(journal);
-    try { await fenceHelper(journal); }
-    catch (error) {
-      save(journal, { cleanup: { state: 'pending', attemptedAt: Date.now(), reason: error.message } });
-      return { cleanup: 'pending' };
-    }
     return cleanupHandoff(journal);
     }); } catch (error) {
       if (error.code !== 'observer_busy' || Date.now() >= until) throw error;
@@ -826,7 +883,8 @@ export async function scheduleRuntimeHandoffCleanup(journal) {
     const current = readRuntimeHandoff(journal.binding.home, journal.binding.requestId, journal.binding.executionId);
     if (!current || current.bindingDigest !== journal.bindingDigest || current.attempt?.receiptDigest !== journal.attempt.receiptDigest) throw new Error('Cleanup result no longer belongs to its terminal receipt.');
     currentReceipt(current);
-    return { cleanup: current.cleanup?.state === 'complete' ? 'complete' : 'pending' };
+    return current.cleanup?.state === 'complete' ? { cleanup: 'complete' }
+      : { cleanup: 'pending', reason: current.cleanup?.reason ?? 'Runtime delivery cleanup remains pending.', wake: runtimeHandoffCleanupWake(current) };
   } finally { fs.closeSync(log); }
 }
 export function runtimeHandoffNeedsAcknowledgment(journal) {
@@ -859,7 +917,7 @@ async function acknowledgeReceipt(binding, { verifiedReceipt, acceptedReceiptDig
   if (!journal.attempt?.fence) {
     save(journal, { phase: 'complete', acknowledgedAt: null, drainReady: null });
     await fenceHelper(journal);
-    if (journal.attempt) save(journal, { attempt: { ...journal.attempt, fence: { fencedAt: Date.now(), reason: 'receipt-accepted' } } });
+    if (journal.attempt) save(journal, { helperFencedAt: Date.now(), attempt: { ...journal.attempt, fence: { fencedAt: Date.now(), reason: 'receipt-accepted' } } });
     else save(journal, { phase: 'acknowledged', acceptedAt: Date.now() });
     clearOwnPointer(journal);
   }
@@ -886,7 +944,7 @@ export async function closeQuiescentRuntimeHandoff(home, { actor } = {}, { fence
         save(journal, { phase: journal.attempt?.state === 'complete' ? 'complete' : 'failed', acknowledgedAt: null, drainReady: null });
         await fenceMutator(journal);
         const fence = { fencedAt: Date.now(), actor, reason: 'successor-publication' };
-        save(journal, { phase: journal.attempt?.state === 'complete' ? 'complete' : 'failed', acknowledgedAt: null, drainReady: null,
+        save(journal, { phase: journal.attempt?.state === 'complete' ? 'complete' : 'failed', acknowledgedAt: null, drainReady: null, helperFencedAt: Date.now(),
           ...(journal.attempt ? { attempt: { ...journal.attempt, fence } } : { mutationFence: fence }) });
         clearOwnPointer(journal);
         return { outcome: 'released', requestId: journal.binding.requestId, executionId: journal.binding.executionId };
@@ -1093,7 +1151,7 @@ export async function runRuntimeHandoffWorker(file, {
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const [command, file, expected, actor] = process.argv.slice(2);
-  (command === 'cleanup' ? cleanupRuntimeHandoff(file) : ['recovery-start', 'recovery-desktop'].includes(command) ? (command === 'recovery-start' ? startFailedRuntimeHandoff : restoreFailedRuntimeHandoffDesktop)(file, { bindingDigest: expected, actor: JSON.parse(actor) }).then(j => {
+  (command === 'cleanup' ? cleanupRuntimeHandoff(file).catch(error => { if (error.code !== 'observer_busy') throw error; process.stderr.write(`${error.message}\n`); process.exitCode = 75; }) : ['recovery-start', 'recovery-desktop'].includes(command) ? (command === 'recovery-start' ? startFailedRuntimeHandoff : restoreFailedRuntimeHandoffDesktop)(file, { bindingDigest: expected, actor: JSON.parse(actor) }).then(j => {
     process.stdout.write(`${JSON.stringify({ phase: j.phase, recoveryStart: j.recoveryStart })}\n`);
   }) : command === 'worker' ? runRuntimeHandoffWorker(file).then(j => { if (j.attempt?.state === 'running' && !j.attempt.fence) process.exitCode = 75; }) : command === 'arm' ? armRuntimeHandoff(path.resolve(file || process.cwd())).then(j => {
     if (j) { process.stderr.write(`MANDIBLE_RUNTIME_HANDOFF_PENDING:${j.bindingDigest}\n`); process.exitCode = 75; }

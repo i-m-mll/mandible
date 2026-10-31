@@ -1,4 +1,4 @@
-export interface ConsumerInspection { idle: boolean; reason?: string }
+export interface ConsumerInspection { idle: boolean; reason?: string; pids?: number[] }
 export interface OwnedRunHandle { root: string; runId: string }
 export interface OwnedRun {
   schema: string; runId: string; root: string; rootIdentity: { dev: number; ino: number };

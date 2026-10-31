@@ -165,8 +165,7 @@ it('seals the exercised app in place after scratch disposal and refuses changed 
       const runtimeDir = path.join(root, 'home/config/local-sessions');
       fs.mkdirSync(runtimeDir, { recursive: true });
       const owner = path.join(runtimeDir, 'bundle-owner.json');
-      const lock = path.join(runtimeDir, 'handoff-active.json');
-      const journal = path.join(runtimeDir, 'journal.json');
+      const journal = path.join(runtimeDir, 'handoff/fixture-handoff/journal.json');
       const dispose = () => spawnSync(process.execPath, [path.resolve('scripts/dispose-accepted-release.mjs'), 'request', acceptance.id, 'Abandoned fixture'], {
         env: { ...process.env, MANDIBLE_HOME: path.join(root, 'home'), MANDIBLE_DB: database, MANDIBLE_RELEASE_ROOT: '' }, encoding: 'utf8', timeout: 5000,
       });
@@ -178,14 +177,14 @@ it('seals the exercised app in place after scratch disposal and refuses changed 
       expect(installed.stderr).toContain('installed release still owns these bytes');
       expect(fs.existsSync(app)).toBe(true);
       fs.unlinkSync(owner);
-      fs.writeFileSync(journal, JSON.stringify({ phase: 'failed', binding: { acceptedRelease: { reference } } }));
-      fs.writeFileSync(lock, JSON.stringify({ journal }));
-      await expect(disposeAcceptedRelease(reference, candidate, 'Journal-owned fixture', { home: path.join(root, 'home') })).rejects.toThrow('unresolved handoff still owns these bytes');
+      fs.mkdirSync(path.dirname(journal), { recursive: true });
+      fs.writeFileSync(journal, JSON.stringify({ schema: 'mandible-runtime-handoff@1', phase: 'failed', binding: { acceptedRelease: { reference } } }));
+      await expect(disposeAcceptedRelease(reference, candidate, 'Journal-owned fixture', { home: path.join(root, 'home') })).rejects.toThrow('unresolved handoff fixture-handoff');
       const unresolved = dispose();
       expect(unresolved.status).not.toBe(0);
-      expect(unresolved.stderr).toContain('unresolved handoff still owns these bytes');
+      expect(unresolved.stderr).toContain('unresolved handoff fixture-handoff');
       expect(fs.existsSync(app)).toBe(true);
-      fs.unlinkSync(lock);
+      fs.rmSync(path.dirname(journal), { recursive: true });
       fs.writeFileSync(program, 'accepted program');
     } finally { db.close(); fs.rmSync(repo, { recursive: true, force: true }); }
     const selected = resolveAcceptedRelease(storedReference!, candidate);
