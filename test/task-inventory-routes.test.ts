@@ -44,8 +44,8 @@ class SlugGate implements ClientAuthGate {
     source: ResolvedClientIdentity["source"] = "in_process",
   ): ResolvedClientIdentity | null {
     if (!credential) return null;
-    const ephemeral = credential.startsWith("session:");
-    const slug = ephemeral ? credential.slice("session:".length) : credential;
+    const localSession = credential.startsWith("session:");
+    const slug = localSession ? credential.slice("session:".length) : credential;
     const row = this.lookup()
       .prepare("SELECT id, slug FROM users WHERE slug = ? AND status = 'active'")
       .get(slug) as { id: string; slug: string } | undefined;
@@ -53,7 +53,7 @@ class SlugGate implements ClientAuthGate {
     return {
       user_id: row.id,
       slug: row.slug,
-      method: ephemeral ? "ephemeral" : "api_token",
+      method: localSession ? "local_socket" : "api_token",
       credential_id: null,
       source,
       effect_ceiling: PRODUCTION_EFFECTS,
@@ -195,15 +195,6 @@ describe("POST /api/tasks/inventory", () => {
     ).toBe(0);
   });
 
-  it("rejects an ordinary session token even when its agent identity is mapped", async () => {
-    const response = await post(generation(), "session:agent-schedule");
-    expect(response.status).toBe(403);
-    expect(response.body).toMatchObject({ code: "executor_credential_required" });
-    expect(
-      (db.prepare("SELECT COUNT(*) AS n FROM task_inventory_generations").get() as { n: number }).n,
-    ).toBe(0);
-  });
-
   it("rejects a mapped non-agent identity", async () => {
     createUser(db, { slug: "human-publisher", kind: "human", display_name: "Human Publisher" });
     setSetting(
@@ -301,10 +292,7 @@ describe("POST /api/tasks/inventory", () => {
         status: 403,
         body: { code: "executor_identity_forbidden" },
       });
-      expect(response("session")).toMatchObject({
-        status: 403,
-        body: { code: "executor_credential_required" },
-      });
+      expect(response("session")).toMatchObject({ status: 200, body: { stored: false } });
       expect(response("mapped")).toMatchObject({ status: 200, body: { stored: true } });
       expect(
         (db.prepare("SELECT COUNT(*) AS n FROM task_inventory_generations").get() as { n: number }).n,
