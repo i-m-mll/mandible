@@ -32,7 +32,7 @@ try {
   assert.equal(readConversationSourceReadiness(db, id).status, "repair_needed");
   assert.equal((await repairConversationSourceReadiness(db, id)).status, "ready");
   assert.equal(fs.statSync(file).mtimeMs, mtime);
-  const read = await new ConversationSourceReader(db, { legacyFallback: false }).readAll(id);
+  const read = await new ConversationSourceReader(db).readAll(id);
   assert.equal(read.status, "source");
   if (read.status === "source") assert.equal(read.value[0]?.content, "Source-runtime repair fixture");
   process.stdout.write("source-runtime actor repaired unchanged Gemini epochs\n");

@@ -42,16 +42,11 @@ export const METADATA_BACKUP_TABLES = [
   "console_session_telemetry",
   "conversations",
   "conversation_identity_aliases",
-  // Durable source identity and restore metadata (migration 140). These rows
-  // are the compact map from a conversation to provider or managed-custody
-  // bytes, including stable block aliases and the exact parser epoch needed to
-  // reconstitute bodies. Parent-before-child ordering is required for restore.
+  // Durable native source identity, custody and version evidence. Navigation
+  // and search are rebuilt through normal discovery after a metadata restore.
   "conversation_sources",
   "conversation_source_aliases",
   "conversation_source_versions",
-  "conversation_normalization_checkpoints",
-  "conversation_structural_blocks",
-  "conversation_block_aliases",
   // Operator intent and Mandible-owned delivery custody for live
   // conversations: archive and runtime choices, the immutable control journal,
   // every message Mandible queued for a provider, spawn receipts, and usage
@@ -261,7 +256,7 @@ export const METADATA_BACKUP_TABLES = [
 // Include that inert table only when it exists; new databases never create it.
 const HISTORICAL_METADATA_BACKUP_TABLE = "runtime_patches";
 
-function metadataBackupTables(db: Db): readonly string[] {
+export function metadataBackupTables(db: Db): readonly string[] {
   const historical = db.prepare(
     "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
   ).get(HISTORICAL_METADATA_BACKUP_TABLE);
@@ -285,7 +280,6 @@ export const REPRODUCIBLE_OR_RUNTIME_TABLES = [
   "branches",
   "work_repos",
   "push_history",
-  "conversation_blocks",
   "conversation_ingest_state",
   "workflow_ingest_state",
   "graph_entities",
@@ -450,7 +444,7 @@ function* metadataBackupLines(db: Db): Generator<string> {
     "-- Mandible metadata backup",
     `-- Generated: ${timestamp}`,
     `-- Tables: ${tables.join(" ")}`,
-    "-- Restore is intentionally deferred until the restore path has a tested round trip.",
+    "-- Restore into a new ledger with mandible conversation-recovery restore.",
     "",
     "PRAGMA foreign_keys=OFF;",
     "BEGIN TRANSACTION;",

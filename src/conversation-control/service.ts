@@ -919,27 +919,8 @@ export class ConversationControlService {
           // Invalid metadata cannot establish durable coverage.
         }
       };
-      const rows = this.db.prepare(`
-        SELECT metadata_json
-          FROM conversation_blocks
-         WHERE conversation_id = ?
-           AND metadata_json LIKE '%"chat_item"%'
-         ORDER BY position DESC
-         LIMIT 512
-      `).all(conversationId) as Array<{ metadata_json: string }>;
-      for (const row of rows) addDurableIdentity(row.metadata_json);
-
       const reader = new ConversationSourceReader(this.db);
-      const recentBlockIds = (this.db.prepare(`
-        SELECT id
-          FROM conversation_structural_blocks
-         WHERE conversation_id = ? AND status = 'current'
-         ORDER BY position DESC
-         LIMIT 256
-      `).all(conversationId) as Array<{ id: string }>).map((row) => row.id);
-
-      // Source-backed conversations reclaim dense rows, so exact terminal
-      // reconciliation reads the same bounded tail from the sparse index.
+      const recentBlockIds: string[] = [];
       const source = this.db.prepare(`
         SELECT current_version_id, parser_format AS parserFormat, parser_version AS parserVersion,
                normalization_version AS normalizationVersion, redaction_epoch AS redactionEpoch
@@ -967,7 +948,7 @@ export class ConversationControlService {
 
       for (const blockId of new Set(recentBlockIds)) {
         const read = await reader.readBlock(blockId);
-        if (read.status !== "source" && read.status !== "legacy") continue;
+        if (read.status !== "source") continue;
         addDurableIdentity(read.value.metadata_json);
       }
 

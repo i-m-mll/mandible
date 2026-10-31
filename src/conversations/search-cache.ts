@@ -4,13 +4,12 @@ import path from "node:path";
 
 import SqliteDatabase from "../sqlite.js";
 
-import { decompressContentAsync } from "../compression.js";
 import { maskUnverifiedCandidates } from "../credential-leak-scan.js";
 import { getDaemonLogger } from "../daemon-log.js";
 import type { Db } from "../db.js";
 import { getUserHome } from "../platform-paths.js";
 import { ConversationSourceReader, type SourceScanProgress } from "./source-reader.js";
-import type { SourceReadResult, SourceReadFailureKind, ConversationNavigationKind } from "./source-types.js";
+import type { SourceReadResult, SourceReadFailureKind } from "./source-types.js";
 import { ConversationSourceStore } from "./source-store.js";
 import { readConversationSourceReadiness } from "./source-readiness.js";
 
@@ -47,11 +46,10 @@ const FREQUENCY_SAMPLE_SIZE = 16_384;
 export interface SearchConversationSource {
   conversationId: string;
   sourceVersionId: string;
-  navigationKind?: ConversationNavigationKind;
 }
 
 function searchCacheVersion(source: SearchConversationSource): string {
-  return source.navigationKind ? JSON.stringify([source.sourceVersionId, source.navigationKind]) : source.sourceVersionId;
+  return source.sourceVersionId;
 }
 
 export interface SearchBlockSource {
@@ -64,9 +62,7 @@ export interface SearchBlockSource {
 }
 
 /**
- * Deliberately small seam for the source-store lane. Its verified reader can
- * replace this legacy adapter without teaching the disposable cache about
- * canonical source tables or locator schemas.
+ * Native-source access for the disposable search cache.
  */
 export interface ConversationSearchSourceAdapter {
   describe(conversationIds: readonly string[]): SearchConversationSource[];
@@ -75,7 +71,7 @@ export interface ConversationSearchSourceAdapter {
   scanMaskedBlocks?(
     conversationId: string,
     visitor: (block: SearchBlockSource) => "stop" | void | Promise<"stop" | void>,
-    options?: { signal?: AbortSignal; expectedSourceVersionId?: string; expectedBlockCount?: number; expectedModel?: string | null; expectedNavigationKind?: ConversationNavigationKind; onVerification?: (milliseconds: number) => void },
+    options?: { signal?: AbortSignal; expectedSourceVersionId?: string; expectedBlockCount?: number; expectedModel?: string | null; onVerification?: (milliseconds: number) => void },
   ): Promise<SourceReadResult<SourceScanProgress>>;
   /** `null` means no sound shortlist is available, so every input is parsed. */
   shortlistMaskedBlocks?(
@@ -161,10 +157,6 @@ export interface ConversationSearchCacheOptions {
   maxPhysicalBytes?: number;
 }
 
-function isMissingSourceSchema(error: unknown): boolean {
-  return error instanceof Error && /no such table: conversation_(sources|structural_blocks)/i.test(error.message);
-}
-
 export function defaultConversationSearchCachePath(db?: Db): string {
   const override = process.env.MANDIBLE_CONVERSATION_CACHE_DB?.trim();
   if (override) return path.resolve(override);
@@ -175,173 +167,47 @@ export function defaultConversationSearchCachePath(db?: Db): string {
   return path.join(getUserHome(), ".cache", "mandible", "conversations", "search-cache.db");
 }
 
-export class LegacyConversationSearchSourceAdapter implements ConversationSearchSourceAdapter {
-  constructor(private readonly db: Db) {}
-
-  describe(conversationIds: readonly string[]): SearchConversationSource[] {
-    if (conversationIds.length === 0) return [];
-    const rows = this.db.prepare(
-      `SELECT c.id, c.source_hash FROM json_each(?) ids JOIN conversations c ON c.id = ids.value`,
-    ).all(JSON.stringify([...new Set(conversationIds)])) as Array<{ id: string; source_hash: string }>;
-    const byId = new Map(rows.map((row) => [row.id, row.source_hash]));
-    return conversationIds.flatMap((conversationId) => {
-      const sourceHash = byId.get(conversationId);
-      return sourceHash === undefined ? [] : [{ conversationId, sourceVersionId: `legacy:${sourceHash}` }];
-    });
-  }
-
-  async readMaskedBlocks(conversationId: string): Promise<SearchBlockSource[]> {
-    const rows = this.db.prepare(
-      `SELECT id, conversation_id, type, role, position, content, compressed
-       FROM conversation_blocks WHERE conversation_id = ? ORDER BY position ASC`,
-    ).all(conversationId) as Array<{
-      id: string;
-      conversation_id: string;
-      type: string;
-      role: string;
-      position: number;
-      content: Buffer | string;
-      compressed: number;
-    }>;
-    const blocks: SearchBlockSource[] = [];
-    for (const row of rows) {
-      const normalized = await decompressContentAsync(row.content, row.compressed === 1);
-      // The durable ingest path masks verified live credentials. The cache has
-      // a stricter boundary: any remaining token-shaped text (including a
-      // revoked token or a fixture that bypassed ingest) is masked fail-closed.
-      const masked = maskUnverifiedCandidates(normalized).text;
-      blocks.push({
-        id: row.id,
-        conversationId: row.conversation_id,
-        type: row.type,
-        role: row.role,
-        position: row.position,
-        content: masked,
-      });
-    }
-    return blocks;
-  }
-
-  redactionEpoch(): string {
-    let rows: Array<{ id: string; status: string; fingerprint: string; revoked_at: number | null }> = [];
-    try {
-      rows = this.db.prepare(
-        `SELECT id, status, fingerprint, revoked_at FROM user_credentials
-         WHERE type = 'api_token' ORDER BY id`,
-      ).all() as typeof rows;
-    } catch {
-      // Minimal legacy fixtures can omit the credential subsystem entirely.
-    }
-    const digest = createHash("sha256").update(JSON.stringify(rows)).digest("hex").slice(0, 24);
-    return `credentials:${digest}`;
-  }
-}
-
-/**
- * Prefer verified provider bytes while retaining the legacy body adapter as
- * the explicit migration fallback for legacy-only rows and narrow fixtures.
- */
 export class SourceBackedConversationSearchSourceAdapter implements ConversationSearchSourceAdapter {
   private readonly store: ConversationSourceStore;
   private readonly reader: ConversationSourceReader;
-  private readonly legacy: LegacyConversationSearchSourceAdapter;
-
   constructor(private readonly db: Db) {
     this.store = new ConversationSourceStore(db);
     this.reader = new ConversationSourceReader(db);
-    this.legacy = new LegacyConversationSearchSourceAdapter(db);
   }
-
   describe(conversationIds: readonly string[]): SearchConversationSource[] {
-    let sources: ReturnType<ConversationSourceStore["latestSources"]> = new Map();
-    try {
-      sources = this.store.latestSources(conversationIds);
-    } catch (error) {
-      if (!isMissingSourceSchema(error)) throw error;
-      // Minimal pre-v140 fixtures deliberately exercise the legacy seam.
-    }
-    const legacy = new Map(
-      this.legacy.describe(conversationIds.filter((id) => !sources.get(id)?.currentVersionId))
-        .map((item) => [item.conversationId, item]),
-    );
-    return conversationIds.flatMap((conversationId) => {
-      const currentVersionId = sources.get(conversationId)?.currentVersionId;
-      if (currentVersionId) return [{ conversationId, sourceVersionId: currentVersionId, navigationKind: sources.get(conversationId)!.navigationKind }];
-      const fallback = legacy.get(conversationId);
-      return fallback ? [fallback] : [];
-    });
+    return [...this.store.latestSources(conversationIds)].flatMap(([conversationId, source]) =>
+      source.currentVersionId ? [{ conversationId, sourceVersionId: source.currentVersionId }] : []);
   }
-
   async readMaskedBlocks(conversationId: string): Promise<SearchBlockSource[] | null> {
-    try {
-      const result = await this.reader.readAll(conversationId);
-      if (result.status === "source" || result.status === "legacy") {
-        return result.value.map((block) => ({
-          id: block.id,
-          conversationId: block.conversation_id,
-          type: block.type,
-          role: block.role,
-          position: block.position,
-          // Source reads mask active credentials. The disposable search
-          // boundary also masks revoked or unverified token-shaped material.
-          content: maskUnverifiedCandidates(block.content).text,
-        }));
-      }
-      return null;
-    } catch (error) {
-      if (!isMissingSourceSchema(error)) throw error;
-      // Missing v140 tables in a narrow legacy fixture fall through below.
-    }
-    return this.legacy.readMaskedBlocks(conversationId);
+    const result = await this.reader.readAll(conversationId);
+    return result.status === "source" ? result.value.map(block => ({
+      id: block.id, conversationId: block.conversation_id, type: block.type,
+      role: block.role, position: block.position, content: maskUnverifiedCandidates(block.content).text,
+    })) : null;
   }
-
   async scanMaskedBlocks(
     conversationId: string,
     visitor: (block: SearchBlockSource) => "stop" | void | Promise<"stop" | void>,
-    options: { signal?: AbortSignal; expectedSourceVersionId?: string; expectedBlockCount?: number; expectedModel?: string | null; expectedNavigationKind?: ConversationNavigationKind; onVerification?: (milliseconds: number) => void } = {},
+    options: import("./source-reader.js").SourceScanOptions = {},
   ): Promise<SourceReadResult<SourceScanProgress>> {
-    try {
-      const currentSource = this.store.resolveConversation(conversationId);
-      if (currentSource?.currentVersionId && (!options.expectedSourceVersionId || options.expectedSourceVersionId === currentSource.currentVersionId)) {
-        const readiness = readConversationSourceReadiness(this.db, conversationId);
-        if (readiness.status !== "ready") return {
-          status: readiness.status === "repair_needed" ? "unsupported" : "unavailable",
-          reason: readiness.reason,
-        };
-      }
-      const result = await this.reader.scanBlocks(conversationId, block => visitor({
-        id: block.id,
-        conversationId: block.conversation_id,
-        type: block.type,
-        role: block.role,
-        position: block.position,
-        content: maskUnverifiedCandidates(block.content).text,
-      }), options);
-      if (result.status === "legacy" && this.store.resolveConversation(conversationId)?.currentVersionId) {
-        return { status: result.reason, reason: "conversation source could not be verified" };
-      }
-      return result;
-    } catch (error) {
-      if (!isMissingSourceSchema(error)) throw error;
+    const current = this.store.resolveConversation(conversationId);
+    if (!options.expectedSourceVersionId || options.expectedSourceVersionId === current?.currentVersionId) {
+      const readiness = readConversationSourceReadiness(this.db, conversationId);
+      if (readiness.status !== "ready") return {
+        status: readiness.status === "repair_needed" ? "unsupported" : "unavailable", reason: readiness.reason,
+      };
     }
-    const blocks = await this.legacy.readMaskedBlocks(conversationId);
-    let count = 0;
-    for (const block of blocks) {
-      if (options.signal?.aborted) return { status: "cancelled", reason: "conversation search cancelled" };
-      count += 1;
-      if (await visitor(block) === "stop") return { status: "legacy", value: { count, readBlocks: blocks.length, complete: false }, reason: "not_found" };
-    }
-    return { status: "legacy", value: { count, readBlocks: blocks.length, complete: true }, reason: "not_found" };
+    return this.reader.scanBlocks(conversationId, block => visitor({
+      id: block.id, conversationId: block.conversation_id, type: block.type,
+      role: block.role, position: block.position, content: maskUnverifiedCandidates(block.content).text,
+    }), options);
   }
-
-
   verifySource(conversationId: string, sourceVersionId: string, signal?: AbortSignal, onVerification?: (milliseconds: number) => void): Promise<SourceReadResult<void>> {
-    if (sourceVersionId.startsWith("legacy:")) return Promise.resolve({ status: "legacy", value: undefined, reason: "not_found" });
     return this.reader.verifyVersion(conversationId, sourceVersionId, signal, onVerification);
   }
-
   redactionEpoch(): string {
-    return this.legacy.redactionEpoch();
+    const rows = this.db.prepare("SELECT id, status, fingerprint, revoked_at FROM user_credentials WHERE type = 'api_token' ORDER BY id").all();
+    return `credentials:${createHash("sha256").update(JSON.stringify(rows)).digest("hex").slice(0, 24)}`;
   }
 }
 
@@ -688,7 +554,6 @@ export class ConversationSearchCache {
     expectedSourceVersions?: Readonly<Record<string, string>>;
     expectedBlockCounts?: Readonly<Record<string, number>>;
     expectedModels?: Readonly<Record<string, string | null>>;
-    expectedNavigationKinds?: Readonly<Record<string, ConversationNavigationKind>>;
   }): Promise<{ matches: ConversationSearchMatch[]; failures: ConversationSearchFailure[]; metrics: ConversationSearchMetrics }> {
     const started = performance.now();
     const budget = new TurnBudget(SEARCH_TURN_MS);
@@ -727,9 +592,7 @@ export class ConversationSearchCache {
         }
         for (const describedItem of window) {
           const expected = input.expectedSourceVersions?.[describedItem.conversationId];
-          const describedNavigation = input.expectedNavigationKinds?.[describedItem.conversationId] ?? describedItem.navigationKind;
-          const item = expected !== undefined && !expected.startsWith("legacy:") && !describedItem.sourceVersionId.startsWith("legacy:") && this.source.verifySource
-            ? { ...describedItem, sourceVersionId: expected, navigationKind: describedNavigation } : { ...describedItem, navigationKind: describedNavigation };
+          const item = expected !== undefined && this.source.verifySource ? { ...describedItem, sourceVersionId: expected } : describedItem;
           if (expected !== undefined && item.sourceVersionId !== expected) {
             failures.push({ conversation_id: item.conversationId, status: "stale", reason: "conversation source differs from pinned search version" });
             continue;
@@ -769,7 +632,7 @@ export class ConversationSearchCache {
               if (this.source.verifySource) {
                 const verified = await this.coldRead(input.signal, () => this.source.verifySource!(item.conversationId, item.sourceVersionId, input.signal,
                   milliseconds => { metrics.source_verification_ms += milliseconds; }));
-                if (verified.status !== "source" && verified.status !== "legacy") {
+                if (verified.status !== "source") {
                   failures.push({ conversation_id: item.conversationId, status: verified.status, reason: verified.reason });
                   return false;
                 }
@@ -819,9 +682,9 @@ export class ConversationSearchCache {
                   match = matchBlock(block);
                   if (match) return "stop";
                 }, { signal: input.signal, expectedSourceVersionId: item.sourceVersionId,
-                  expectedBlockCount: input.expectedBlockCounts?.[item.conversationId], expectedModel: input.expectedModels?.[item.conversationId], expectedNavigationKind: item.navigationKind,
+                  expectedBlockCount: input.expectedBlockCounts?.[item.conversationId], expectedModel: input.expectedModels?.[item.conversationId],
                   onVerification: milliseconds => { metrics.source_verification_ms += milliseconds; } });
-                if (result.status !== "source" && result.status !== "legacy") {
+                if (result.status !== "source") {
                   failures.push({ conversation_id: item.conversationId, status: result.status, reason: result.reason });
                   return null;
                 }
@@ -835,7 +698,7 @@ export class ConversationSearchCache {
                 }
                 metrics.cold_blocks += result.value.readBlocks;
                 this.recordAccess(item.conversationId);
-                if (result.value.complete && retained && (result.status === "source" || item.sourceVersionId.startsWith("legacy:"))) {
+                if (result.value.complete && retained && result.status === "source") {
                   this.offer(item.conversationId, this.key(searchCacheVersion(item), redactionEpoch), retained);
                 }
                 return match;

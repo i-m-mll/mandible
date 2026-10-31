@@ -156,7 +156,7 @@ export async function conversationSearch(db: Db, input: {
         const reader = new ConversationSourceReader(db);
         for (const match of selected) {
           const conversation = rows.get(match.conversation_id);
-          const read = await reader.readBlock(match.block_id, { expectedSourceVersionId: match.source_version_id, expectedBlockCount: match.source_block_count, expectedModel: match.source_model, expectedNavigationKind: match.source_navigation_kind });
+          const read = await reader.readBlock(match.block_id, { expectedSourceVersionId: match.source_version_id, expectedBlockCount: match.source_block_count, expectedModel: match.source_model});
           if (!conversation || read.status !== "source" || read.sourceVersionId !== match.source_version_id)
             throw new SearchSnapshotProjectionError("source_changed");
           const snippet = snippetFor(maskUnverifiedCandidates(read.value.content).text, needle);

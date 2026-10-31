@@ -10,7 +10,7 @@ import { getDb } from "../db.js";
 import { entityRefs, resolveSessionRef } from "../entity-refs.js";
 import { sessionAliasIds } from "../session-liveness.js";
 import { sessionConversationsSql } from "../session-summary.js";
-import { decompressContent, decompressContentAsync } from "../compression.js";
+import { decompressContent } from "../compression.js";
 import {
   ClientAuthzError,
   attributionForRequest,
@@ -155,71 +155,15 @@ function projectDisplayBlock(row: SourceBackedConversationBlock): SourceBackedCo
 
 type PositionTargetKind = "initial" | "latest" | "position" | "block" | "turn";
 
-function turnIdForBlock(db: ReturnType<typeof getDb>, block: Pick<BlockRow, "id" | "conversation_id" | "position" | "type">): string {
-  if (block.type === "user_message") return block.id;
-  const first = db.prepare(
-    `SELECT id
-       FROM conversation_blocks
-      WHERE conversation_id = ?
-        AND position <= ?
-        AND position > COALESCE((
-          SELECT MAX(position)
-            FROM conversation_blocks
-           WHERE conversation_id = ? AND position <= ? AND type = 'user_message'
-        ), -1)
-        AND type != 'user_message'
-      ORDER BY position ASC
-      LIMIT 1`,
-  ).get(block.conversation_id, block.position, block.conversation_id, block.position) as { id: string } | undefined;
-  return first?.id ?? block.id;
-}
-
-function resolvePositionTarget(
-  db: ReturnType<typeof getDb>,
-  conversationId: string,
-  kind: PositionTargetKind,
-  requestedValue: string | number | null,
-): { block: BlockRow | null; turnId: string | null } | null {
-  let block: BlockRow | undefined;
-  if (kind === "initial" || kind === "latest") {
-    block = db.prepare(
-      "SELECT * FROM conversation_blocks WHERE conversation_id = ? ORDER BY position DESC LIMIT 1",
-    ).get(conversationId) as BlockRow | undefined;
-  } else if (kind === "position") {
-    block = db.prepare(
-      "SELECT * FROM conversation_blocks WHERE conversation_id = ? AND position = ?",
-    ).get(conversationId, requestedValue) as BlockRow | undefined;
-  } else {
-    block = db.prepare(
-      "SELECT * FROM conversation_blocks WHERE conversation_id = ? AND id = ?",
-    ).get(conversationId, requestedValue) as BlockRow | undefined;
-  }
-  if (!block) return kind === "initial" || kind === "latest" ? { block: null, turnId: null } : null;
-  const turnId = turnIdForBlock(db, block);
-  if (kind === "turn" && turnId !== requestedValue) return null;
-  return { block, turnId };
-}
-
 async function readAllBlocks(
   reader: ConversationSourceReader,
   conversationId: string,
-): Promise<{ blocks: SourceBackedConversationBlock[]; bodySource: "source" | "legacy" }> {
+): Promise<{ blocks: SourceBackedConversationBlock[]; bodySource: "source" }> {
   const result = await reader.readAll(conversationId);
-  if (result.status !== "source" && result.status !== "legacy") {
+  if (result.status !== "source") {
     throw new ConversationFreshnessError("source_unavailable", result.reason);
   }
   return { blocks: result.value, bodySource: result.status };
-}
-
-function conversationRequiresSourceReader(
-  db: ReturnType<typeof getDb>,
-  conversationId: string,
-): boolean {
-  return Boolean(db.prepare(`
-    SELECT 1 FROM conversation_sources
-     WHERE conversation_id = ?
-     LIMIT 1
-  `).get(conversationId));
 }
 
 export function sendFreshnessError(res: ResponseLike, error: unknown): boolean {
@@ -239,15 +183,6 @@ export function sendFreshnessError(res: ResponseLike, error: unknown): boolean {
 
 /** A BlockRow after decompression — content is guaranteed to be a string. */
 type DecompressedBlock = Omit<BlockRow, "content"> & { content: string };
-
-/** Decompress a batch of BlockRows, returning rows with string content.
- *  Bug: e5a945d — used by export helpers that access block.content directly. */
-function decompressBlocks(rows: BlockRow[]): DecompressedBlock[] {
-  return rows.map((row) => ({
-    ...row,
-    content: decompressContent(row.content, row.compressed === 1),
-  }));
-}
 
 // --- Export helpers ---
 
@@ -354,7 +289,7 @@ export function registerConversationRoutes(
 ): void {
   const db = getDb();
   const sourceReader = new ConversationSourceReader(db);
-  const displaySourceReader = new ConversationSourceReader(db, { legacyFallback: false });
+  const displaySourceReader = new ConversationSourceReader(db, {});
   const ensureFresh = (ref: string, waitForFresh?: boolean) => ensureExactConversationFresh(db, ref, {
     ...sourceFreshness,
     ...(waitForFresh === undefined ? {} : { waitForFresh }),
@@ -542,7 +477,7 @@ export function registerConversationRoutes(
            WHERE ${where.join(" AND ")}
            ORDER BY c.id
         `).all(...params) as Array<Pick<ConversationRow, "id" | "title" | "session_id" | "source" | "branch">>;
-        const rawReader = new ConversationSourceReader(scanDb, { legacyFallback: false, maskCredentials: false });
+        const rawReader = new ConversationSourceReader(scanDb, { maskCredentials: false });
         for (const conversation of sourceConversations) {
           let offset = 0;
           let scannedConversation = false;
@@ -713,26 +648,7 @@ export function registerConversationRoutes(
     `).get(id) as ({ current_version_id: string } & ConversationSourceEpochs) | undefined;
     const version = source?.current_version_id ?? null;
     const cached = version === null ? null : getConversationStructureCache(db).readStructure(id, version, source);
-    const dense = cached === null ? db.prepare(`
-      SELECT id, position, type, role, parent_block_id, record_offset, record_length
-        FROM conversation_structural_blocks
-       WHERE conversation_id = ? AND status = 'current' ORDER BY position
-    `).all(id) as Array<{ id: string; position: number; type: string; role: string;
-      parent_block_id: string | null; record_offset: number | null; record_length: number | null }> : [];
-    const densePositionById = new Map(dense.map((row) => [row.id, row.position]));
-    const legacy = cached === null && dense.length === 0 ? db.prepare(`
-      SELECT id, position, type, role, parent_id, length(content) AS record_length
-        FROM conversation_blocks WHERE conversation_id = ? ORDER BY position
-    `).all(id) as Array<{ id: string; position: number; type: string; role: string;
-      parent_id: string | null; record_length: number }> : [];
-    const rows = cached ?? (dense.length > 0 ? dense.map((row) => ({
-      id: row.id, position: row.position, type: row.type, role: row.role,
-      parent_position: row.parent_block_id ? densePositionById.get(row.parent_block_id) ?? null : null,
-      record_offset: row.record_offset, record_length: row.record_length ?? 0,
-    })) : legacy.map((row) => ({
-      id: row.id, position: row.position, type: row.type, role: row.role,
-      parent_position: null, record_offset: null, record_length: row.record_length,
-    })));
+    const rows = cached ?? [];
     const expected = db.prepare("SELECT block_count FROM conversations WHERE id = ?")
       .get(id) as { block_count: number } | undefined;
     if (!expected) return sendJson(res, 404, { error: "Conversation not found" });
@@ -751,11 +667,11 @@ export function registerConversationRoutes(
     }
     sendJson(res, 200, { conversation_id: id, source_version_id: version, total: rows.length,
       rows: rows.map((row) => ({
-        id: "id" in row ? row.id : sparseConversationBlockId(id, row.position),
+        id: sparseConversationBlockId(id, row.position),
         position: row.position, type: row.type, role: row.role,
-        parent_position: "parentPosition" in row ? row.parentPosition : row.parent_position,
-        record_offset: "recordOffset" in row ? row.recordOffset : row.record_offset,
-        record_length: "recordLength" in row ? row.recordLength : row.record_length,
+        parent_position: row.parentPosition,
+        record_offset: row.recordOffset,
+        record_length: row.recordLength,
       })) });
   }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/conversations/:id/structure", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow", refs: { params: { id: entityRefs.conversation } } });
 
@@ -794,9 +710,7 @@ export function registerConversationRoutes(
       return;
     }
     if (displayView) trackSelectedConversation(id);
-    const sourceBacked = conversationRequiresSourceReader(db, id);
-    const useSourceReader = displayView || sourceBacked
-      || query.source_backed === "true" || query.source_backed === "1";
+
     const requestedLimit = Math.max(1, parseInt(query.limit || "160", 10) || 160);
     let limit = Math.min(500, requestedLimit);
     if (query.target && query.target !== "initial" && query.target !== "latest") {
@@ -827,13 +741,12 @@ export function registerConversationRoutes(
     }
     let total = conv.block_count;
     let windowOffset = 0;
-    let blocks: BlockRow[] = [];
     let readableBlocks: Array<BlockRow | SourceBackedConversationBlock> = [];
-    let bodySource: "source" | "legacy" = "legacy";
+    let bodySource: "source" = "source";
     let resolvedBlock: BlockRow | SourceBackedConversationBlock | null = null;
     let resolvedTurnId: string | null = null;
     let sourceVersionId: string | null = null;
-    if (useSourceReader) {
+    {
       const source = db.prepare(`
         SELECT current_version_id, parser_format AS parserFormat, parser_version AS parserVersion,
              normalization_version AS normalizationVersion, redaction_epoch AS redactionEpoch FROM conversation_sources
@@ -846,18 +759,7 @@ export function registerConversationRoutes(
       const cachedTotal = source
         ? structureCache.blockCount(id, source.current_version_id, source)
         : null;
-      const retainedStructuralTotal = (db.prepare(`
-        SELECT COUNT(*) AS total FROM conversation_structural_blocks
-         WHERE conversation_id = ? AND status = 'current'
-      `).get(id) as { total: number }).total;
-      const retainedLegacyTotal = (db.prepare(`
-        SELECT COUNT(*) AS total FROM conversation_blocks
-         WHERE conversation_id = ? AND payload_state = 'legacy'
-      `).get(id) as { total: number }).total;
-      // A projected or retention-bounded database can preserve the conversation's
-      // logical block_count while retaining only a readable tail. Page offsets are
-      // ordinals within the retained representation, not global block positions.
-      const retainedTotal = Math.max(cachedTotal ?? 0, retainedStructuralTotal, retainedLegacyTotal);
+      const retainedTotal = cachedTotal ?? 0;
       if (cachedTotal !== null) total = cachedTotal;
       if (query.limit === undefined && (targetKind === "initial" || targetKind === "latest")
           && source && cachedTotal !== null && cachedTotal === retainedTotal && total > 0) {
@@ -876,16 +778,7 @@ export function registerConversationRoutes(
         const sparsePosition = typeof requestedValue === "string"
           ? sparseConversationBlockPosition(id, requestedValue)
           : null;
-        const densePosition = sparsePosition === null && typeof requestedValue === "string"
-          ? db.prepare(`
-              SELECT position FROM conversation_structural_blocks
-               WHERE conversation_id = ? AND status = 'current'
-                 AND id = COALESCE((
-                   SELECT block_id FROM conversation_block_aliases WHERE alias = ?
-                 ), ?)
-            `).get(id, requestedValue, requestedValue) as { position: number } | undefined
-          : undefined;
-        anchorPosition = sparsePosition ?? densePosition?.position ?? null;
+        anchorPosition = sparsePosition;
       }
       const emptyInitial = retainedTotal === 0 && (targetKind === "initial" || targetKind === "latest");
       if (!emptyInitial && targetKind !== "initial" && targetKind !== "latest"
@@ -900,7 +793,7 @@ export function registerConversationRoutes(
         : Math.max(0, anchorPosition! - Math.floor((limit - 1) / 2));
       const sourcePage = await (displayView && source ? displaySourceReader : sourceReader)
         .readPage(id, { offset: windowOffset, limit });
-      if (sourcePage.status !== "source" && sourcePage.status !== "legacy") {
+      if (sourcePage.status !== "source") {
         if (sourcePage.status === "stale") {
           // The source can append after the pre-read extent check. Reconcile
           // that race through the same exact-path freshness boundary instead
@@ -961,61 +854,6 @@ export function registerConversationRoutes(
         sendJson(res, 404, { error: "Turn anchor not found" });
         return;
       }
-    } else {
-      const resolved = resolvePositionTarget(db, id, targetKind, requestedValue);
-      if (!resolved) {
-        sendJson(res, 404, { error: `${targetKind === "turn" ? "Turn" : targetKind === "block" ? "Block" : "Position"} anchor not found` });
-        return;
-      }
-      total = (db.prepare(
-        "SELECT COUNT(*) AS total FROM conversation_blocks WHERE conversation_id = ?",
-      ).get(id) as { total: number }).total;
-      resolvedBlock = resolved.block;
-      resolvedTurnId = resolved.turnId;
-      if (resolved.block) {
-        if (targetKind === "initial" || targetKind === "latest") {
-          if (query.limit === undefined) {
-            const turnStart = db.prepare(`
-              SELECT MAX(position) AS position FROM conversation_blocks
-               WHERE conversation_id = ? AND position <= ? AND type = 'user_message'
-            `).get(id, resolved.block.position) as { position: number | null };
-            const firstPosition = turnStart.position ?? (db.prepare(`
-              SELECT MIN(position) AS position FROM conversation_blocks
-               WHERE conversation_id = ? AND position <= ?
-            `).get(id, resolved.block.position) as { position: number | null }).position;
-            const completeTurnSize = firstPosition === null ? null : (db.prepare(`
-              SELECT COUNT(*) AS total FROM conversation_blocks
-               WHERE conversation_id = ? AND position >= ? AND position <= ?
-            `).get(id, firstPosition, resolved.block.position) as { total: number }).total;
-            if (completeTurnSize !== null && completeTurnSize <= 500) {
-              limit = Math.max(limit, completeTurnSize);
-            }
-          }
-          blocks = db.prepare(
-            `SELECT * FROM (
-               SELECT * FROM conversation_blocks
-                WHERE conversation_id = ?
-                ORDER BY position DESC LIMIT ?
-             ) ORDER BY position ASC`,
-          ).all(id, limit) as BlockRow[];
-        } else {
-          const before = Math.floor((limit - 1) / 2);
-          const start = db.prepare(
-            `SELECT position FROM conversation_blocks
-              WHERE conversation_id = ? AND position <= ?
-              ORDER BY position DESC LIMIT 1 OFFSET ?`,
-          ).get(id, resolved.block.position, before) as { position: number } | undefined;
-          const first = start ?? db.prepare(
-            "SELECT MIN(position) AS position FROM conversation_blocks WHERE conversation_id = ?",
-          ).get(id) as { position: number };
-          blocks = db.prepare(
-            `SELECT * FROM conversation_blocks
-              WHERE conversation_id = ? AND position >= ?
-              ORDER BY position ASC LIMIT ?`,
-          ).all(id, first.position, limit) as BlockRow[];
-        }
-      }
-      readableBlocks = blocks;
     }
 
     // Fetch sub-agent (child) conversations — Bug: d0759d1
@@ -1076,20 +914,10 @@ export function registerConversationRoutes(
     const startPosition = readableBlocks[0]?.position ?? null;
     const endPosition = readableBlocks[readableBlocks.length - 1]?.position ?? null;
     const externalNavigation = projectConversationExternalNavigation(db, [conv]).get(conv.id);
-    const mapped = useSourceReader
-      ? mapConversation(maskSourceBackedConversationRow(conv), externalNavigation)
-      : mapConversation(conv, externalNavigation);
+    const mapped = mapConversation(maskSourceBackedConversationRow(conv), externalNavigation);
     mapped.children_count = children.length;
-    const hasBefore = startPosition !== null && (useSourceReader
-      ? startPosition > 0
-      : Boolean(db.prepare(`SELECT 1 FROM conversation_blocks
-          WHERE conversation_id = ? AND position < ? LIMIT 1`).get(id, startPosition)));
-    const afterCount = endPosition === null
-      ? 0
-      : useSourceReader
-        ? Math.max(0, total - endPosition - 1)
-        : (db.prepare(`SELECT COUNT(*) AS count FROM conversation_blocks
-            WHERE conversation_id = ? AND position > ?`).get(id, endPosition) as { count: number }).count;
+    const hasBefore = startPosition !== null && startPosition > 0;
+    const afterCount = endPosition === null ? 0 : Math.max(0, total - endPosition - 1);
 
     sendJson(res, 200, {
       conversation: mapped,
@@ -1137,10 +965,9 @@ export function registerConversationRoutes(
       return;
     }
 
-    const sourceBacked = conversationRequiresSourceReader(db, id);
-    if (sourceBacked) {
+    {
       const read = await sourceReader.readAll(id);
-      if (read.status !== "source" && read.status !== "legacy") {
+      if (read.status !== "source") {
         sendJson(res, read.status === "not_found" ? 404 : 409, {
           error: read.reason,
           status: read.status,
@@ -1177,104 +1004,6 @@ export function registerConversationRoutes(
       return;
     }
 
-    const hasStructuralForkRows = Boolean(db.prepare(`
-      SELECT 1 FROM conversation_structural_blocks
-       WHERE conversation_id = ? AND status = 'current' LIMIT 1
-    `).get(id));
-    const forkTable = hasStructuralForkRows ? "conversation_structural_blocks" : "conversation_blocks";
-    const forkStatus = hasStructuralForkRows ? "AND status = 'current'" : "";
-
-    // Find fork points: dag_parent_uuid values with multiple distinct dag_uuid children
-    const forkPoints = db
-      .prepare(
-        `SELECT dag_parent_uuid, COUNT(DISTINCT dag_uuid) as branch_count
-         FROM ${forkTable}
-         WHERE conversation_id = ? ${forkStatus} AND dag_parent_uuid IS NOT NULL
-         GROUP BY dag_parent_uuid
-         HAVING COUNT(DISTINCT dag_uuid) > 1`
-      )
-      .all(id) as Array<{ dag_parent_uuid: string; branch_count: number }>;
-
-    const forkParentUuids = new Set(forkPoints.map((fp) => fp.dag_parent_uuid));
-    const childRows = db
-      .prepare(
-        `SELECT dag_parent_uuid, dag_uuid
-         FROM ${forkTable}
-         WHERE conversation_id = ? ${forkStatus} AND dag_parent_uuid IS NOT NULL AND dag_uuid IS NOT NULL
-         GROUP BY dag_parent_uuid, dag_uuid
-         ORDER BY MIN(position) ASC`,
-      )
-      .all(id) as Array<{ dag_parent_uuid: string; dag_uuid: string }>;
-
-    const previewRows = db
-      .prepare(
-        `SELECT dag_parent_uuid, dag_uuid, id${hasStructuralForkRows ? "" : ", content, compressed"}
-         FROM (
-           SELECT dag_parent_uuid, dag_uuid, id${hasStructuralForkRows ? "" : ", content, compressed"},
-                  ROW_NUMBER() OVER (
-                    PARTITION BY dag_parent_uuid, dag_uuid
-                    ORDER BY position ASC
-                  ) AS rn
-             FROM ${forkTable}
-            WHERE conversation_id = ?
-              ${forkStatus}
-              AND dag_parent_uuid IS NOT NULL
-              AND dag_uuid IS NOT NULL
-              AND type IN ('assistant_message', 'assistant')
-         )
-         WHERE rn = 1`,
-      )
-      .all(id) as Array<{
-        dag_parent_uuid: string;
-        dag_uuid: string;
-        id: string;
-        content?: Buffer | string;
-        compressed?: number;
-      }>;
-
-    const countRows = db
-      .prepare(
-        `SELECT dag_uuid, COUNT(*) as cnt
-         FROM ${forkTable}
-         WHERE conversation_id = ? ${forkStatus} AND dag_uuid IS NOT NULL
-         GROUP BY dag_uuid`,
-      )
-      .all(id) as Array<{ dag_uuid: string; cnt: number }>;
-
-    const previews = new Map<string, string>();
-    await Promise.all(previewRows
-      .filter((row) => forkParentUuids.has(row.dag_parent_uuid))
-      .map(async (row) => {
-        if (!hasStructuralForkRows) {
-          const text = await decompressContentAsync(row.content ?? "", row.compressed === 1);
-          previews.set(`${row.dag_parent_uuid}\0${row.dag_uuid}`, text.slice(0, 60));
-          return;
-        }
-        const read = await sourceReader.readBlock(row.id);
-        if (read.status === "source" || read.status === "legacy") {
-          previews.set(`${row.dag_parent_uuid}\0${row.dag_uuid}`, read.value.content.slice(0, 60));
-        }
-      }));
-
-    const blockCounts = new Map(countRows.map((row) => [row.dag_uuid, row.cnt]));
-    const childUuidsByParent = new Map<string, string[]>();
-    for (const child of childRows) {
-      if (!forkParentUuids.has(child.dag_parent_uuid)) continue;
-      const children = childUuidsByParent.get(child.dag_parent_uuid) ?? [];
-      children.push(child.dag_uuid);
-      childUuidsByParent.set(child.dag_parent_uuid, children);
-    }
-
-    const forks = forkPoints.map((fp) => ({
-      parent_dag_uuid: fp.dag_parent_uuid,
-      branches: (childUuidsByParent.get(fp.dag_parent_uuid) ?? []).map((dagUuid) => ({
-        dag_uuid: dagUuid,
-        first_text: previews.get(`${fp.dag_parent_uuid}\0${dagUuid}`) ?? "",
-        block_count: blockCounts.get(dagUuid) ?? 0,
-      })),
-    }));
-
-    sendJson(res, 200, { forks });
   }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/conversations/:id/forks", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow", refs: { params: { id: entityRefs.conversation } } });
 
   // POST /api/conversations/:id/fork — Fork a conversation at a specific message
@@ -1362,39 +1091,8 @@ export function registerConversationRoutes(
     if (query.type) {
       types = query.type.split(",").map((t) => t.trim()).filter(Boolean);
     }
-    const useSourceReader = (query.source_backed !== "false" && query.source_backed !== "0")
-      || conversationRequiresSourceReader(db, id);
-    if (!useSourceReader) {
-      const params: unknown[] = [id];
-      const conditions = ["conversation_id = ?"];
-      if (types && types.length > 0) {
-        conditions.push(`type IN (${types.map(() => "?").join(",")})`);
-        params.push(...types);
-      }
-      const where = conditions.join(" AND ");
-      const total = (db.prepare(`SELECT COUNT(*) AS total FROM conversation_blocks WHERE ${where}`)
-        .get(...params) as { total: number }).total;
-      const blocks = db.prepare(`
-        SELECT * FROM conversation_blocks WHERE ${where}
-         ORDER BY position ASC LIMIT ? OFFSET ?
-      `).all(...params, limit, offset) as BlockRow[];
-      sendJson(res, 200, {
-        blocks: blocks.map(mapBlock),
-        body_source: "legacy",
-        total,
-        offset,
-        page: Math.floor(offset / limit) + 1,
-        limit,
-        requested_limit: requestedLimit,
-        cap: 500,
-        pages: Math.ceil(total / limit),
-        truncated: offset + blocks.length < total,
-      });
-      return;
-    }
-
     const result = await sourceReader.readPage(id, { offset, limit, types });
-    if (result.status !== "source" && result.status !== "legacy") {
+    if (result.status !== "source") {
       sendJson(res, result.status === "not_found" ? 404 : 409, { error: result.reason, status: result.status });
       return;
     }
@@ -1458,7 +1156,6 @@ export function registerConversationRoutes(
     const body = readBody<{
       format?: "markdown" | "mdx" | "json";
       block_types?: string[];
-      source_backed?: boolean;
     }>(req);
 
     const format = body.format || "markdown";
@@ -1479,9 +1176,7 @@ export function registerConversationRoutes(
     }
 
     let readable: Awaited<ReturnType<typeof readAllBlocks>> | null = null;
-    const useSourceReader = body.source_backed !== false
-      || conversationRequiresSourceReader(db, id);
-    if (useSourceReader) {
+    {
       try {
         readable = await readAllBlocks(sourceReader, id);
       } catch (error) {
@@ -1490,20 +1185,14 @@ export function registerConversationRoutes(
         return;
       }
     }
-    const blocks = readable
-      ? readable.blocks.map((block) => ({ ...block, compressed: 0 })) as DecompressedBlock[]
-      : decompressBlocks(db.prepare(
-        "SELECT * FROM conversation_blocks WHERE conversation_id = ? ORDER BY position ASC",
-      ).all(id) as BlockRow[]);
+    const blocks = readable!.blocks.map(block => ({ ...block, compressed: 0 })) as DecompressedBlock[];
 
     const blockTypes = body.block_types ? new Set(body.block_types) : undefined;
 
     let output: string;
     let contentType: string;
 
-    const exportConversation = useSourceReader
-      ? maskSourceBackedConversationRow(conv)
-      : conv;
+    const exportConversation = maskSourceBackedConversationRow(conv);
 
     if (format === "mdx") {
       output = exportToMdx(exportConversation, blocks, blockTypes);
@@ -1523,7 +1212,7 @@ export function registerConversationRoutes(
       block_count: blockTypes
         ? blocks.filter((b) => blockTypes.has(b.type)).length
         : blocks.length,
-      body_source: readable?.bodySource ?? "legacy",
+      body_source: readable!.bodySource,
     });
   }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/conversations/:id/export", effects: ["files:production"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "allow", refs: { params: { id: entityRefs.conversation } } });
 

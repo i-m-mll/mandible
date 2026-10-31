@@ -2524,9 +2524,9 @@ export async function updateConversationArchive(id: string, archived: boolean): 
 export async function exportConversationBlocks(id: string, data: {
   block_ids?: string[];
   format: 'mdx' | 'markdown' | 'json';
-}): Promise<{ content: string; block_count: number; body_source: 'source' | 'legacy' }> {
+}): Promise<{ content: string; block_count: number; body_source: 'source' }> {
   const resp = await apiPost(`/api/conversations/${encodeURIComponent(id)}/export`, data);
-  return (await parseMaybeJson(resp)) as { content: string; block_count: number; body_source: 'source' | 'legacy' };
+  return (await parseMaybeJson(resp)) as { content: string; block_count: number; body_source: 'source' };
 }
 
 export async function transformExport(data: {

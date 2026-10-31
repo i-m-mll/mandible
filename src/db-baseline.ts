@@ -29,7 +29,7 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-migration-convergence.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 225;
+export const BASELINE_SCHEMA_VERSION = 226;
 
 export const AUTH_REQUEST_HISTORY_INDEX_SQL =
   `CREATE INDEX idx_auth_requests_history ON auth_requests(resolved_at DESC)
@@ -269,7 +269,6 @@ const CONVERSATION_SOURCE_SCHEMA_SQL: readonly string[] = [
     availability TEXT NOT NULL DEFAULT 'unchecked' CHECK(availability IN ('available','missing','stale','unsupported','unchecked')),
     custody_state TEXT NOT NULL DEFAULT 'provider' CHECK(custody_state IN ('provider','requested','capturing','verified','mirroring','sealed','error')),
     current_version_id TEXT, unavailable_reason TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-    navigation_kind TEXT NOT NULL DEFAULT 'legacy' CHECK(navigation_kind IN ('legacy','sparse')),
     UNIQUE(conversation_id, provider)
   )`,
   `CREATE INDEX idx_conversation_sources_native_session ON conversation_sources(provider, native_session_id)`,
@@ -298,37 +297,7 @@ const CONVERSATION_SOURCE_SCHEMA_SQL: readonly string[] = [
   )`,
   `CREATE INDEX idx_conversation_source_versions_source ON conversation_source_versions(source_id, created_at DESC)`,
   `CREATE INDEX idx_conversation_source_versions_custody ON conversation_source_versions(custody_state, availability)`,
-  `CREATE TABLE conversation_normalization_checkpoints (
-    id TEXT PRIMARY KEY, source_version_id TEXT NOT NULL REFERENCES conversation_source_versions(id) ON DELETE CASCADE,
-    record_ordinal INTEGER NOT NULL, prefix_offset INTEGER NOT NULL CHECK(prefix_offset >= 0),
-    parser_format TEXT NOT NULL, parser_version TEXT NOT NULL, normalization_version TEXT NOT NULL,
-    redaction_epoch INTEGER NOT NULL DEFAULT 0 CHECK(redaction_epoch >= 0),
-    state_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(state_json)), created_at INTEGER NOT NULL,
-    UNIQUE(source_version_id, record_ordinal, parser_version, normalization_version, redaction_epoch)
-  )`,
-  `CREATE TABLE conversation_structural_blocks (
-    id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-    source_version_id TEXT REFERENCES conversation_source_versions(id) ON DELETE SET NULL,
-    status TEXT NOT NULL DEFAULT 'current' CHECK(status IN ('current','retired')), provider_key TEXT NOT NULL,
-    position INTEGER NOT NULL CHECK(position >= 0), type TEXT NOT NULL, role TEXT NOT NULL, timestamp TEXT,
-    parent_block_id TEXT REFERENCES conversation_structural_blocks(id) ON DELETE SET NULL,
-    dag_uuid TEXT, dag_parent_uuid TEXT,
-    record_offset INTEGER CHECK(record_offset IS NULL OR record_offset >= 0),
-    record_length INTEGER CHECK(record_length IS NULL OR record_length >= 0), record_hash TEXT, record_ordinal INTEGER,
-    sub_block_ordinal INTEGER NOT NULL DEFAULT 0 CHECK(sub_block_ordinal >= 0),
-    normalization_checkpoint_id TEXT REFERENCES conversation_normalization_checkpoints(id) ON DELETE SET NULL,
-    parser_format TEXT NOT NULL, parser_version TEXT NOT NULL, normalization_version TEXT NOT NULL,
-    redaction_epoch INTEGER NOT NULL DEFAULT 0 CHECK(redaction_epoch >= 0), created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-    UNIQUE(conversation_id, provider_key)
-  )`,
-  `CREATE UNIQUE INDEX idx_conversation_structural_blocks_current_position ON conversation_structural_blocks(conversation_id, position) WHERE status = 'current'`,
-  `CREATE INDEX idx_conversation_structural_blocks_version ON conversation_structural_blocks(source_version_id, record_offset)`,
-  `CREATE INDEX idx_conversation_structural_blocks_parent ON conversation_structural_blocks(parent_block_id) WHERE parent_block_id IS NOT NULL`,
-  `CREATE TABLE conversation_block_aliases (
-    alias TEXT PRIMARY KEY, block_id TEXT NOT NULL REFERENCES conversation_structural_blocks(id) ON DELETE CASCADE,
-    alias_kind TEXT NOT NULL CHECK(alias_kind IN ('legacy','provider','external')), created_at INTEGER NOT NULL
-  )`,
-  `CREATE INDEX idx_conversation_block_aliases_block ON conversation_block_aliases(block_id)`,
+
 ];
 
 const TASK_COMMAND_REQUESTS_V2_SQL = `CREATE TABLE task_command_requests (
@@ -461,7 +430,6 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE TABLE console_session_telemetry (\n        telemetry_key TEXT PRIMARY KEY,\n        console_session_id TEXT REFERENCES console_sessions(id) ON DELETE CASCADE,\n        provider_session_id TEXT,\n        transcript_path TEXT,\n        model TEXT,\n        context_used_percentage REAL,\n        context_window_size INTEGER,\n        context_input_tokens INTEGER,\n        context_output_tokens INTEGER,\n        context_cache_creation_input_tokens INTEGER,\n        context_cache_read_input_tokens INTEGER,\n        rate_limit_five_hour_used_percentage REAL,\n        rate_limit_five_hour_resets_at TEXT,\n        rate_limit_seven_day_used_percentage REAL,\n        rate_limit_seven_day_resets_at TEXT,\n        raw_payload_json TEXT NOT NULL,\n        received_at INTEGER NOT NULL\n      )",
   "CREATE TABLE console_session_usage (\n        id                            TEXT PRIMARY KEY,\n        console_session_id            TEXT NOT NULL,\n        provider_session_id           TEXT,\n        recorded_at                   INTEGER NOT NULL,\n        input_tokens                  INTEGER NOT NULL DEFAULT 0,\n        cache_creation_input_tokens   INTEGER NOT NULL DEFAULT 0,\n        cache_read_input_tokens       INTEGER NOT NULL DEFAULT 0,\n        output_tokens                 INTEGER NOT NULL DEFAULT 0,\n        web_search_requests           INTEGER NOT NULL DEFAULT 0,\n        cost_usd                      REAL NOT NULL DEFAULT 0,\n        total_cost_usd                REAL NOT NULL DEFAULT 0,\n        duration_ms                   INTEGER NOT NULL DEFAULT 0,\n        num_turns                     INTEGER NOT NULL DEFAULT 0,\n        is_error                      INTEGER NOT NULL DEFAULT 0,\n        result_subtype                TEXT,\n        usage_json                    TEXT NOT NULL DEFAULT '{}',\n        model_usage_json              TEXT NOT NULL DEFAULT '{}',\n        errors_json                   TEXT NOT NULL DEFAULT '[]',\n        FOREIGN KEY (console_session_id) REFERENCES console_sessions(id) ON DELETE CASCADE\n      )",
   "CREATE TABLE console_sessions (\n        id            TEXT PRIMARY KEY,\n        label         TEXT NOT NULL,\n        command       TEXT NOT NULL,\n        args_json     TEXT NOT NULL DEFAULT '[]',\n        cwd           TEXT,\n        env_json      TEXT NOT NULL DEFAULT '{}',\n        cols          INTEGER NOT NULL DEFAULT 120,\n        rows          INTEGER NOT NULL DEFAULT 30,\n        status        TEXT NOT NULL DEFAULT 'stopped',\n        pid           INTEGER,\n        exit_code     INTEGER,\n        auto_restart  INTEGER NOT NULL DEFAULT 0,\n        is_operator   INTEGER NOT NULL DEFAULT 0,\n        interaction_mode TEXT NOT NULL DEFAULT 'both',\n        created_at    INTEGER NOT NULL,\n        updated_at    INTEGER NOT NULL,\n        started_at    INTEGER,\n        stopped_at    INTEGER\n      , provider_session_id TEXT, backend_type TEXT NOT NULL DEFAULT 'pty', allowed_tools TEXT, mandible_session_id TEXT, resume_at_message TEXT, channel_enabled INTEGER NOT NULL DEFAULT 0, transport_lane TEXT NOT NULL DEFAULT 'pty', owner_user_id TEXT REFERENCES users(id) ON DELETE SET NULL, run_options_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(run_options_json) AND json_type(run_options_json) = 'object'))",
-  "CREATE TABLE conversation_blocks (\n        id TEXT PRIMARY KEY,\n        conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,\n        type TEXT NOT NULL,\n        role TEXT NOT NULL,\n        content TEXT NOT NULL DEFAULT '',\n        position INTEGER NOT NULL,\n        timestamp TEXT,\n        parent_id TEXT,\n        metadata_json TEXT NOT NULL DEFAULT '{}',\n        dag_uuid TEXT,\n        dag_parent_uuid TEXT, compressed INTEGER NOT NULL DEFAULT 0, timestamp_ms INTEGER, payload_state TEXT NOT NULL DEFAULT 'legacy' CHECK(payload_state IN ('legacy','source')),\n        UNIQUE(conversation_id, position)\n      )",
   "CREATE TABLE conversation_ingest_state (\n        file_path TEXT PRIMARY KEY,\n        byte_offset INTEGER NOT NULL DEFAULT 0,\n        line_count INTEGER NOT NULL DEFAULT 0,\n        tail_hash TEXT NOT NULL DEFAULT '',\n        partial_line TEXT NOT NULL DEFAULT '',\n        updated_at INTEGER NOT NULL\n      , empty_source_mtime REAL, empty_source_size INTEGER)",
   "CREATE TABLE conversations (\n        id TEXT PRIMARY KEY,\n        source TEXT NOT NULL CHECK(source IN ('claude_code', 'codex', 'gemini')),\n        source_path TEXT NOT NULL,\n        source_hash TEXT NOT NULL,\n        source_mtime INTEGER NOT NULL,\n        title TEXT NOT NULL DEFAULT '',\n        summary TEXT,\n        started_at TEXT NOT NULL,\n        ended_at TEXT,\n        block_count INTEGER NOT NULL DEFAULT 0,\n        session_id TEXT NOT NULL,\n        project_path TEXT,\n        cwd TEXT,\n        branch TEXT,\n        model TEXT,\n        cli_version TEXT,\n        starred INTEGER NOT NULL DEFAULT 0,\n        notes TEXT,\n        created_at TEXT NOT NULL DEFAULT (datetime('now')),\n        updated_at TEXT NOT NULL DEFAULT (datetime('now'))\n      , parent_conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL, is_sidechain INTEGER NOT NULL DEFAULT 0, agent_id TEXT, started_at_ms INTEGER, ended_at_ms INTEGER, created_at_ms INTEGER, updated_at_ms INTEGER, tags TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(tags) AND json_type(tags) = 'array'))",
   ...CONVERSATION_DECLARED_PARENT_SQL,
@@ -591,11 +559,6 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE INDEX idx_auth_requests_target_session\n        ON auth_requests(target_session_id) WHERE target_session_id IS NOT NULL",
   AUTH_REQUEST_UNACKNOWLEDGED_INDEX_SQL,
   AUTH_REQUEST_HISTORY_INDEX_SQL,
-  "CREATE INDEX idx_blocks_conv ON conversation_blocks(conversation_id)",
-  "CREATE INDEX idx_blocks_dag_parent\n      ON conversation_blocks(conversation_id, dag_parent_uuid)\n      WHERE dag_parent_uuid IS NOT NULL",
-  "CREATE INDEX idx_blocks_parent ON conversation_blocks(parent_id) WHERE parent_id IS NOT NULL",
-  "CREATE INDEX idx_blocks_timestamp_ms\n        ON conversation_blocks(timestamp_ms) WHERE timestamp_ms IS NOT NULL",
-  "CREATE INDEX idx_blocks_type ON conversation_blocks(conversation_id, type)",
   "CREATE INDEX idx_console_session_telemetry_console\n        ON console_session_telemetry(console_session_id)\n        WHERE console_session_id IS NOT NULL",
   "CREATE INDEX idx_console_session_telemetry_provider\n        ON console_session_telemetry(provider_session_id)\n        WHERE provider_session_id IS NOT NULL",
   "CREATE INDEX idx_console_session_usage_session\n        ON console_session_usage(console_session_id, recorded_at DESC)",

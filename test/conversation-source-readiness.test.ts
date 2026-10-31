@@ -11,7 +11,6 @@ import { ConversationSourceStore } from "../src/conversations/source-store.js";
 import { ConversationSourceReader } from "../src/conversations/source-reader.js";
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../src/conversations/source-types.js";
 import { ConversationStructureCache, getConversationStructureCache } from "../src/conversations/structure-cache.js";
-import { MANAGED_NORMALIZED_SOURCE_EPOCHS, serializeManagedNormalizedRecords, writeManagedNormalizedSource } from "../src/conversations/managed-normalized-source.js";
 
 let actor: IngestionActor;
 vi.mock("../src/ingestion-actor.js", async (importOriginal) => {
@@ -86,11 +85,11 @@ describe("source metadata readiness and canonical ingestion repair", () => {
     db.prepare("UPDATE conversation_sources SET normalization_version = 'old' WHERE conversation_id = ?").run(id);
     db.prepare("UPDATE conversation_source_versions SET parser_version = 'old' WHERE source_id IN (SELECT id FROM conversation_sources WHERE conversation_id = ?)").run(id);
     expect(readConversationSourceReadiness(db, id)).toMatchObject({ status: "repair_needed", reason: "epochs_outdated" });
-    expect((await new ConversationSourceReader(db, { legacyFallback: false }).readAll(id)).status).not.toBe("source");
+    expect((await new ConversationSourceReader(db).readAll(id)).status).not.toBe("source");
     await actor.reconcile();
     expect(fs.statSync(file).mtimeMs).toBe(beforeMtime);
     expect(readConversationSourceReadiness(db, id).status).toBe("ready");
-    const read = await new ConversationSourceReader(db, { legacyFallback: false }).readAll(id);
+    const read = await new ConversationSourceReader(db).readAll(id);
     expect(read.status).toBe("source");
     if (read.status === "source") expect(read.value.some((block) => block.content.includes("needle provider content"))).toBe(true);
   });
@@ -111,7 +110,7 @@ describe("source metadata readiness and canonical ingestion repair", () => {
     const repaired = await repairConversationSourceReadiness(db, id);
     expect(repaired.status).toBe("ready");
     expect(fs.statSync(file).mtimeMs).toBe(mtime);
-    expect((await new ConversationSourceReader(db, { legacyFallback: false }).readAll(id)).status).toBe("source");
+    expect((await new ConversationSourceReader(db).readAll(id)).status).toBe("source");
   });
 
   it("isolates independent ledger caches outside the test environment", async () => {
@@ -145,7 +144,7 @@ describe("source metadata readiness and canonical ingestion repair", () => {
     await actor.ingest([file]);
     const before = readConversationSourceReadiness(db, id).sourceVersionId!;
     const contents: string[] = [];
-    const scan = await new ConversationSourceReader(db, { legacyFallback: false }).scanBlocks(id, async block => {
+    const scan = await new ConversationSourceReader(db).scanBlocks(id, async block => {
       contents.push(block.content);
       if (contents.length === 1) {
         for (let index = 2; index < 8; index++) { append(index); await actor.ingest([file]); }
@@ -172,7 +171,7 @@ describe("source metadata readiness and canonical ingestion repair", () => {
     else fs.writeFileSync(file, "{not valid provider json}\n");
     const repaired = await repairConversationSourceReadiness(db, id);
     expect(repaired.status).toBe("unavailable");
-    expect((await new ConversationSourceReader(db, { legacyFallback: false }).readAll(id)).status).not.toBe("source");
+    expect((await new ConversationSourceReader(db).readAll(id)).status).not.toBe("source");
   });
 
   it("accepts a proved zero-block native projection without scheduling another parse", async () => {
@@ -184,42 +183,10 @@ describe("source metadata readiness and canonical ingestion repair", () => {
       filePath: file, expectedContentHash: createHash("sha256").update(content).digest("hex"), blocks: [], structuralMode: "replace", ...CURRENT_CONVERSATION_SOURCE_EPOCHS });
     db.prepare("UPDATE conversation_ingest_state SET byte_offset = ?, tail_hash = ?, line_count = 1, partial_line = '' WHERE file_path = ?")
       .run(Buffer.byteLength(content), createHash("sha256").update(content).digest("hex"), file);
-    getConversationStructureCache(db).captureDenseRows(db, id, "replace");
     expect(readConversationSourceReadiness(db, id).status).toBe("ready");
     const calls = observations.filter((event) => event.message === "source_start").length;
     expect((await repairConversationSourceReadiness(db, id)).status).toBe("ready");
     await actor.reconcile();
     expect(observations.filter((event) => event.message === "source_start")).toHaveLength(calls);
-  });
-
-  it.each([0, 1])("uses the managed decoder contract including %s durable records", async (count) => {
-    const { id, file } = await seed();
-    const record = { format: "mandible-normalized-block/1" as const, id: "managed-block", conversation_id: id,
-      type: "user_message" as const, role: "user" as const, content: "managed needle", position: 0, timestamp: null,
-      parent_id: null, metadata_json: "{}", dag_uuid: null, dag_parent_uuid: null };
-    const serialized = serializeManagedNormalizedRecords(count ? [record] : []);
-    const location = writeManagedNormalizedSource({ rootPath: path.join(root, "managed"), conversationId: id, ...serialized });
-    db.prepare("UPDATE conversations SET block_count = ? WHERE id = ?").run(count, id);
-    const input = { conversationId: id, provider: "codex" as const, nativeSessionId: "fixture",
-      ...location, expectedContentHash: serialized.contentHash,
-      blocks: serialized.ranges.map((range) => ({ id: record.id, type: record.type, role: record.role, position: 0,
-        timestamp: null, parentId: null, dagUuid: null, dagParentUuid: null, recordOffset: range.offset,
-        recordLength: range.length, recordHash: range.hash, recordOrdinal: range.ordinal })),
-      ...MANAGED_NORMALIZED_SOURCE_EPOCHS };
-    await new ConversationSourceStore(db).recordManagedNormalizedSource(input);
-    expect(readConversationSourceReadiness(db, id).status).toBe("ready");
-    if (count) {
-      db.prepare("UPDATE conversation_structural_blocks SET record_offset = NULL WHERE conversation_id = ?").run(id);
-      expect(readConversationSourceReadiness(db, id)).toMatchObject({ status: "unavailable", reason: "projection_incomplete" });
-      await new ConversationSourceStore(db).recordManagedNormalizedSource(input);
-    }
-    db.prepare("UPDATE conversation_source_versions SET parser_format = 'unknown-managed' WHERE id = ?")
-      .run(readConversationSourceReadiness(db, id).sourceVersionId);
-    expect(readConversationSourceReadiness(db, id)).toMatchObject({ status: "unavailable", reason: "unsupported_representation" });
-    const calls = observations.filter((event) => event.message === "source_start").length;
-    expect((await repairConversationSourceReadiness(db, id)).status).toBe("unavailable");
-    expect(observations.filter((event) => event.message === "source_start")).toHaveLength(calls);
-    await actor.ingest([file], true);
-    expect(readConversationSourceReadiness(db, id).status).toBe("ready");
   });
 });

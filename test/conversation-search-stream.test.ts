@@ -7,9 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as logicalSource from "../src/conversations/logical-source.js";
 import { ConversationSourceReader } from "../src/conversations/source-reader.js";
 import { ConversationSourceStore } from "../src/conversations/source-store.js";
-import { getConversationStructureCache } from "../src/conversations/structure-cache.js";
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../src/conversations/source-types.js";
-import { MANAGED_NORMALIZED_SOURCE_EPOCHS } from "../src/conversations/managed-normalized-source.js";
 import { ConversationSearchCache, SourceBackedConversationSearchSourceAdapter } from "../src/conversations/search-cache.js";
 import { CodexParser } from "../src/parsers/codex.js";
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
@@ -27,7 +25,7 @@ afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-async function fixture(texts: string[], compressed = false, id = "stream", partialLine = "", preserveDense = false) {
+async function fixture(texts: string[], compressed = false, id = "stream", partialLine = "", _preserveDense = false) {
   const filePath = path.join(root, `.codex/sessions/2026/10/29/${id}.jsonl`);
   const rows = [
     { type: "session_meta", timestamp: "2026-10-29T00:00:00Z", payload: { id, cwd: "/tmp/project" } },
@@ -47,8 +45,6 @@ async function fixture(texts: string[], compressed = false, id = "stream", parti
     .run(id, filePath, parsed.conversation.source_hash, parsed.conversation.source_mtime, id, parsed.blocks.length);
   await new ConversationSourceStore(db).recordConversation({ conversationId: id, provider: "codex", nativeSessionId: id, filePath,
     blocks: parsed.blocks.map(block => ({ ...block, legacyId: `${id}-${block.position}` })), ...CURRENT_CONVERSATION_SOURCE_EPOCHS });
-  getConversationStructureCache(db).captureDenseRows(db, id, "replace");
-  if (!preserveDense) db.prepare("DELETE FROM conversation_structural_blocks WHERE conversation_id = ?").run(id);
   return { filePath, bytes, id };
 }
 
@@ -58,7 +54,7 @@ describe("verified conversation scans", () => {
     const source = await fixture(texts, compressed);
     const reads: Array<{ position: number; length: number }> = [];
     const open = vi.spyOn(logicalSource, "openLogicalSource");
-    const reader = new ConversationSourceReader(db, { legacyFallback: false, instrumentation: read => reads.push(read) });
+    const reader = new ConversationSourceReader(db, { instrumentation: read => reads.push(read) });
     const early = await reader.scanBlocks(source.id, block => block.content.includes("é.\n") ? "stop" : undefined);
     expect(early).toMatchObject({ status: "source", value: { count: 1, complete: false } });
     expect(open).toHaveBeenCalledTimes(1);
@@ -117,42 +113,6 @@ describe("verified conversation scans", () => {
     expect(stale.failures).toMatchObject([{ conversation_id: source.id, status: "stale" }]);
   });
 
-  it("preserves current dense block identity across pinned cold search, hot search and complete reads", async () => {
-    const source = await fixture(["first needle", "later needle"], false, "dense", "", true);
-    const reader = new ConversationSourceReader(db);
-    const all = await reader.readAll(source.id);
-    if (all.status !== "source") throw new Error("expected current dense source");
-    const version = all.sourceVersionId;
-    const cache = new ConversationSearchCache(new SourceBackedConversationSearchSourceAdapter(db), { cachePath: ":memory:" });
-    caches.push(cache);
-    const input = { conversationIds: [source.id], limit: 1, expectedSourceVersions: { [source.id]: version },
-      expectedBlockCounts: { [source.id]: 2 }, expectedModels: { [source.id]: null } };
-    expect((await cache.search({ ...input, needle: "needle" })).matches).toMatchObject([{ block_id: all.value[0].id }]);
-    await cache.search({ ...input, needle: "absent" });
-    await cache.whenIdle();
-    expect((await cache.search({ ...input, needle: "needle" })).matches).toMatchObject([{ block_id: all.value[0].id }]);
-    expect((await reader.readPage(source.id, { limit: 2, expectedSourceVersionId: version, expectedBlockCount: 2, expectedModel: null })))
-      .toMatchObject({ status: "source", value: { blocks: all.value } });
-    const parsed = (await new CodexParser().parse(source.filePath))!;
-    const prepared = await new ConversationSourceStore(db).prepareConversation({
-      conversationId: source.id, provider: "codex", nativeSessionId: source.id, filePath: source.filePath,
-      sourceSnapshot: parsed.sourceSnapshot, blockCount: parsed.blocks.length,
-      blocks: parsed.blocks.map(block => ({ ...block, legacyId: `${source.id}-${block.position}` })),
-      ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
-    });
-    try {
-      expect(await reader.readAll(source.id)).toEqual(all);
-      db.transaction(() => prepared.publish()).immediate();
-    } finally { await prepared.dispose(); }
-    const published = await reader.readAll(source.id);
-    expect(published.status).toBe("source");
-    if (published.status !== "source") throw new Error("published source is unavailable");
-    expect((await cache.search({ ...input, needle: "needle" })).matches)
-      .toMatchObject([{ block_id: published.value[0].id }]);
-    expect(await reader.readBlock(all.value[0].id)).toMatchObject({ status: "source", value: all.value[0] });
-
-  });
-
   it("keeps verified FTS-negative hits free of body reads while detecting lost sources", async () => {
     const source = await fixture(["retained content"]);
     const cache = new ConversationSearchCache(new SourceBackedConversationSearchSourceAdapter(db), { cachePath: ":memory:" });
@@ -197,7 +157,7 @@ describe("verified conversation scans", () => {
     const version = store.resolveConversation(source.id)!.currentVersionId!;
     let published = false;
     const seen: string[] = [];
-    const reader = new ConversationSourceReader(db, { legacyFallback: false });
+    const reader = new ConversationSourceReader(db);
     const result = await reader.scanBlocks(source.id, async block => {
       seen.push(block.content);
       if (!published) { published = true; await publishAppend(source, texts.length, nativeMessage("new snapshot only") + "\n"); }
@@ -318,7 +278,7 @@ describe("verified conversation scans", () => {
     const operator = setupOperator(db, { display_name: "Operator" });
     const credential = new ClientAuthenticator(db, { secretsDir: path.join(root, "auth") }).mintApiToken(operator.id, { label: "scan redaction" }).credential;
     const source = await fixture(["needle", ...Array.from({ length: 40 }, (_, i) => `tail ${i}`)]);
-    const reader = new ConversationSourceReader(db, { legacyFallback: false });
+    const reader = new ConversationSourceReader(db);
     for (const mutation of ["rewrite", "remove", "replace", "version", "redaction", "cancel", "append"] as const) {
       fs.writeFileSync(source.filePath, source.bytes);
       const descriptor = db.prepare("SELECT id, redaction_epoch FROM conversation_sources WHERE conversation_id = ?").get(source.id) as { id: string; redaction_epoch: number };
@@ -343,21 +303,10 @@ describe("verified conversation scans", () => {
 
   it("verifies physically empty navigation and bounds one large native record as an indivisible parse", async () => {
     const empty = await fixture([], true, "empty");
-    const reader = new ConversationSourceReader(db, { legacyFallback: false });
+    const reader = new ConversationSourceReader(db);
     expect(await reader.scanBlocks(empty.id, () => {})).toMatchObject({ status: "source", value: { count: 0, complete: true } });
     fs.unlinkSync(`${empty.filePath}.zst`);
     expect((await reader.scanBlocks(empty.id, () => {})).status).not.toBe("source");
-    const managed = await fixture([], false, "managed-empty");
-    const managedPath = path.join(root, "managed.jsonl");
-    fs.writeFileSync(managedPath, "", { mode: 0o600 });
-    await new ConversationSourceStore(db).recordManagedNormalizedSource({
-      conversationId: managed.id, provider: "codex", nativeSessionId: managed.id,
-      rootPath: root, filePath: managedPath, expectedContentHash: createHash("sha256").digest("hex"),
-      blocks: [], ...MANAGED_NORMALIZED_SOURCE_EPOCHS,
-    });
-    expect(await reader.scanBlocks(managed.id, () => {})).toMatchObject({ status: "source", value: { count: 0, complete: true } });
-    fs.unlinkSync(managedPath);
-    expect((await reader.scanBlocks(managed.id, () => {})).status).not.toBe("source");
     const large = await fixture(["large " + "x".repeat(8 * 1024 * 1024), "later"], false, "large");
     const started = performance.now();
     const result = await reader.scanBlocks(large.id, () => "stop", { maxBatchBytes: 128 * 1024 });
@@ -379,5 +328,4 @@ async function publishAppend(source: { id: string; filePath: string }, oldCount:
   await new ConversationSourceStore(db).recordConversation({ conversationId: source.id, provider: "codex", nativeSessionId: source.id,
     filePath: source.filePath, structuralMode: replace ? "replace" : "append", ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
     blocks: parsed.blocks.slice(replace ? 0 : oldCount).map(block => ({ ...block, legacyId: `${source.id}-${block.position}` })) });
-  getConversationStructureCache(db).captureDenseRows(db, source.id, replace ? "replace" : "append");
 }

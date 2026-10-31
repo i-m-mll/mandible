@@ -2221,6 +2221,14 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 225, name: "conversation_navigation_publication", statements: [
     "ALTER TABLE conversation_sources ADD COLUMN navigation_kind TEXT NOT NULL DEFAULT 'legacy' CHECK(navigation_kind IN ('legacy','sparse'))",
   ] },
+  { version: 226, name: "native_conversation_content", statements: [
+    "DROP TABLE conversation_block_aliases",
+    "DROP TABLE conversation_structural_blocks",
+    "DROP TABLE conversation_normalization_checkpoints",
+    "DROP TABLE conversation_blocks",
+    "ALTER TABLE conversation_sources DROP COLUMN navigation_kind",
+    "UPDATE conversation_sources SET availability = 'unsupported', unavailable_reason = 'normalized body source retired' WHERE parser_format = 'mandible-normalized-jsonl'",
+  ] },
 ];
 
 /**

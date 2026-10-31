@@ -23,7 +23,6 @@
     "iab-preview-cleanup": "scripts/bun-runtime.sh --exec --no-install scripts/iab-preview.mjs cleanup",
     "demo:briefing": "scripts/bun-runtime.sh --exec --no-install scripts/demo-briefing.mjs",
     "preview-db-snapshot": "scripts/bun-runtime.sh --exec --no-install scripts/project-db-snapshot.mjs",
-    "conversation-cutover": "scripts/bun-runtime.sh --exec --no-install scripts/conversation-cutover-proof.mjs",
     "generate:codex-app-server": "scripts/bun-runtime.sh --exec --no-install scripts/generate-codex-app-server-bindings.mjs",
     "scan:duplication": "scripts/bun-runtime.sh --exec --no-install scripts/ncd-scan.mjs",
     "test:iab-preview-cleanup": "scripts/bun-runtime.sh --exec --no-install scripts/test-iab-preview-cleanup.mjs",

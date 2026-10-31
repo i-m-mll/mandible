@@ -2050,17 +2050,6 @@
         ]
       }
     },
-    "conversations.storage.prepare": {
-      "route": ["conversations", "storage", "prepare"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--apply"],"values": []}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--limit"],"values": [{"kind": "argument","name": "N","value": {"type": "integer","min": 1}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
-        ]
-      }
-    },
     "conversations.custody.status": {
       "route": ["conversations", "custody", "status"],
       "grammar": {
@@ -2725,18 +2714,8 @@
         ]
       }
     },
-    "conversation-storage.prepare": {
-      "route": ["conversation-storage", "prepare"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-          {"kind": "option","names": ["--db"],"values": [{"kind": "argument","name": "path","value": {"type": "string"}}]},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--apply"],"values": []}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--limit"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 1}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
-        ]
-      }
-    },
+    "conversation-recovery.inspect": {"route": ["conversation-recovery", "inspect"], "grammar": {"kind": "sequence", "items": [{"kind": "option", "names": ["--db"], "values": [{"kind": "argument", "name": "db", "value": {"type": "string"}}]}, {"kind": "optional", "item": {"kind": "option", "names": ["--limit"], "values": [{"kind": "argument", "name": "limit", "value": {"type": "integer"}}]}}, {"kind": "optional", "item": {"kind": "option", "names": ["--offset"], "values": [{"kind": "argument", "name": "offset", "value": {"type": "integer"}}]}}]}},
+    "conversation-recovery.restore": {"route": ["conversation-recovery", "restore"], "grammar": {"kind": "sequence", "items": [{"kind": "option", "names": ["--metadata-sql"], "values": [{"kind": "argument", "name": "metadata-sql", "value": {"type": "string"}}]}, {"kind": "option", "names": ["--destination"], "values": [{"kind": "argument", "name": "destination", "value": {"type": "string"}}]}, {"kind": "optional", "item": {"kind": "option", "names": ["--limit"], "values": [{"kind": "argument", "name": "limit", "value": {"type": "integer"}}]}}]}},
     "conversation-blocks.logs": {
       "route": ["conversation-blocks", "logs"],
       "grammar": {
@@ -2876,67 +2855,6 @@
         "kind": "sequence",
         "items": [
           {"kind": "optional","item": {"kind": "option","names": ["--settings"],"values": [{"kind": "argument","name": "settings","value": {"type": "string"}}]}},
-          {"kind": "optional","item": {"kind": "option","names": ["--json"],"values": []}}
-        ]
-      }
-    },
-    "conversation-cutover.binding": {
-      "route": ["conversation-cutover", "binding"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-          {"kind": "option","names": ["--source"],"values": [{"kind": "argument","name": "source","value": {"type": "string"}}]},
-          {"kind": "optional","item": {"kind": "option","names": ["--json"],"values": []}}
-        ]
-      }
-    },
-    "conversation-cutover.rebuild": {
-      "route": ["conversation-cutover", "rebuild"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-          {"kind": "option","names": ["--source"],"values": [{"kind": "argument","name": "source","value": {"type": "string"}}]},
-          {"kind": "option","names": ["--destination"],"values": [{"kind": "argument","name": "destination","value": {"type": "string"}}]},
-          {"kind": "repeat","min": 0,"item": {"kind": "option","names": ["--exclude-table"],"values": [{"kind": "argument","name": "exclude-table","value": {"type": "string"}}]}},
-          {"kind": "optional","item": {"kind": "option","names": ["--json"],"values": []}}
-        ]
-      }
-    },
-    "conversation-cutover.reclaim": {
-      "route": ["conversation-cutover", "reclaim"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-          {"kind": "option","names": ["--source"],"values": [{"kind": "argument","name": "source","value": {"type": "string"}}]},
-          {"kind": "option","names": ["--destination"],"values": [{"kind": "argument","name": "destination","value": {"type": "string"}}]},
-          {"kind": "optional","item": {"kind": "option","names": ["--log-db"],"values": [{"kind": "argument","name": "log-db","value": {"type": "string"}}]}},
-          {"kind": "optional","item": {"kind": "option","names": ["--structure-cache"],"values": [{"kind": "argument","name": "structure-cache","value": {"type": "string"}}]}},
-          {"kind": "optional","item": {"kind": "option","names": ["--json"],"values": []}}
-        ]
-      }
-    },
-    "conversation-cutover.restore-drill": {
-      "route": ["conversation-cutover", "restore-drill"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-          {"kind": "option","names": ["--source"],"values": [{"kind": "argument","name": "source","value": {"type": "string"}}]},
-          {"kind": "option","names": ["--metadata-sql"],"values": [{"kind": "argument","name": "metadata-sql","value": {"type": "string"}}]},
-          {"kind": "option","names": ["--custody-root"],"values": [{"kind": "argument","name": "custody-root","value": {"type": "string"}}]},
-          {"kind": "option","names": ["--destination-root"],"values": [{"kind": "argument","name": "destination-root","value": {"type": "string"}}]},
-          {"kind": "optional","item": {"kind": "option","names": ["--json"],"values": []}}
-        ]
-      }
-    },
-    "conversation-cutover.audit": {
-      "route": ["conversation-cutover", "audit"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-          {"kind": "option","names": ["--source"],"values": [{"kind": "argument","name": "source","value": {"type": "string"}}]},
-          {"kind": "option","names": ["--evidence"],"values": [{"kind": "argument","name": "evidence","value": {"type": "string"}}]},
-          {"kind": "optional","item": {"kind": "option","names": ["--rebuild-report"],"values": [{"kind": "argument","name": "rebuild-report","value": {"type": "string"}}]}},
-          {"kind": "repeat","min": 0,"item": {"kind": "option","names": ["--restore-report"],"values": [{"kind": "argument","name": "restore-report","value": {"type": "string"}}]}},
           {"kind": "optional","item": {"kind": "option","names": ["--json"],"values": []}}
         ]
       }

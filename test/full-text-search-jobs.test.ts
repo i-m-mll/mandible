@@ -8,7 +8,7 @@ import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { setupOperator } from "../src/users/store.js";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
-import { managedSearchSource } from "./helpers/search-managed-source.js";
+import { nativeSearchSource } from "./helpers/search-native-source.js";
 import { setDb, type Db } from "../src/db.js";
 import { Router } from "../src/server.js";
 import { registerConversationRoutes } from "../src/routes/conversations.js";
@@ -17,11 +17,11 @@ import { configureSearchJobRuntime, getFullTextSearchJobs } from "../src/convers
 import { getConversationSearchCache } from "../src/conversations/search-cache.js";
 let db: Db;
 let root: string;
-beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), "search-jobs-")); process.env.MANDIBLE_CONVERSATION_CACHE_DB = path.join(root, "cache.db"); db = migratedMemoryDb(); setDb(db); });
-afterEach(() => { getFullTextSearchJobs(db).close(); getConversationSearchCache(db).close(); db.close(); delete process.env.MANDIBLE_CONVERSATION_CACHE_DB; fs.rmSync(root, { recursive: true, force: true }); });
+beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), "search-jobs-")); process.env.MANDIBLE_CONVERSATION_STRUCTURE_DB = path.join(root, "structure.db"); process.env.MANDIBLE_CONVERSATION_CACHE_DB = path.join(root, "cache.db"); db = migratedMemoryDb(); setDb(db); });
+afterEach(() => { getFullTextSearchJobs(db).close(); getConversationSearchCache(db).close(); db.close(); delete process.env.MANDIBLE_CONVERSATION_CACHE_DB; delete process.env.MANDIBLE_CONVERSATION_STRUCTURE_DB; fs.rmSync(root, { recursive: true, force: true }); });
 async function conversation(id: string, content = "needle"): Promise<string> {
   db.prepare(`INSERT INTO conversations(id,source,source_path,source_hash,source_mtime,title,started_at,session_id,block_count,tags,created_at,updated_at) VALUES (?,'codex',?,'hash',1,?,'2026-10-01',?,1,'[]','2026-10-01','2026-10-01')`).run(id, path.join(root, id), id, id);
-  return managedSearchSource(db, root, id, content);
+  return nativeSearchSource(db, root, id, content);
 }
 async function finish(router: Router, url: string, observer?: {
   search_id: string;
@@ -138,8 +138,7 @@ it("reuses facts without rescanning, rejects stale query cursors and invalidates
 });
 it("shares observers without cancelling a sibling and bounds queued corpus keys before preparation", async () => {
   await conversation("a");
-  db.prepare("DELETE FROM conversation_structural_blocks").run();
-  db.exec("UPDATE conversation_sources SET parser_format='provider-jsonl',parser_version='2',normalization_version='2',redaction_epoch=0; UPDATE conversation_source_versions SET parser_format='provider-jsonl',parser_version='2',normalization_version='2',redaction_epoch=0");
+  db.exec("UPDATE conversation_sources SET parser_format='provider-jsonl',parser_version='old',normalization_version='old',redaction_epoch=0; UPDATE conversation_source_versions SET parser_format='provider-jsonl',parser_version='old',normalization_version='old',redaction_epoch=0");
   // Hold actual readiness repair to exercise admitted jobs, without a fake matcher.
   let release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
@@ -300,10 +299,10 @@ it("rechecks the job redaction epoch after the last asynchronous physical proof"
 it("pins route ordering after readiness repair rather than before it", async () => {
   await conversation("a");
   await conversation("b");
-  db.exec("UPDATE conversations SET started_at='2020-01-01' WHERE id='a'; UPDATE conversation_sources SET parser_format='provider-jsonl',parser_version='2',normalization_version='2',redaction_epoch=0 WHERE conversation_id='a'; UPDATE conversation_source_versions SET parser_format='provider-jsonl',parser_version='2',normalization_version='2',redaction_epoch=0 WHERE source_id IN (SELECT id FROM conversation_sources WHERE conversation_id='a')");
+  db.exec("UPDATE conversations SET started_at='2020-01-01' WHERE id='a'; UPDATE conversation_sources SET parser_format='provider-jsonl',parser_version='old',normalization_version='old',redaction_epoch=0 WHERE conversation_id='a'; UPDATE conversation_source_versions SET parser_format='provider-jsonl',parser_version='old',normalization_version='old',redaction_epoch=0 WHERE source_id IN (SELECT id FROM conversation_sources WHERE conversation_id='a')");
   configureSearchJobRuntime(db, { publish() { }, async repair(id) {
       expect(id).toBe("a");
-      db.exec("UPDATE conversation_sources SET parser_format='mandible-normalized-jsonl',parser_version='1',normalization_version='1',redaction_epoch=1 WHERE conversation_id='a'; UPDATE conversation_source_versions SET parser_format='mandible-normalized-jsonl',parser_version='1',normalization_version='1',redaction_epoch=1 WHERE source_id IN (SELECT id FROM conversation_sources WHERE conversation_id='a'); UPDATE conversations SET started_at='2027-01-01' WHERE id='a'");
+      db.exec("UPDATE conversation_sources SET parser_format='provider-jsonl',parser_version='2',normalization_version='2',redaction_epoch=0 WHERE conversation_id='a'; UPDATE conversation_source_versions SET parser_format='provider-jsonl',parser_version='2',normalization_version='2',redaction_epoch=0 WHERE source_id IN (SELECT id FROM conversation_sources WHERE conversation_id='a'); UPDATE conversations SET started_at='2027-01-01' WHERE id='a'");
     } });
   const router = new Router();
   registerConversationRoutes(router, inlineLedgerReader());

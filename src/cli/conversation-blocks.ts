@@ -102,7 +102,7 @@ async function runConversations(args: CliArgs): Promise<void> {
     const conversation = exact ?? conversations[0];
     if (!conversation?.id) throw new Error(`conversation not found: ${ident}`);
     const read = await new ConversationSourceReader(db).readAll(conversation.id);
-    if (read.status !== "source" && read.status !== "legacy") {
+    if (read.status !== "source") {
       throw new Error(`conversation source ${read.status}: ${read.reason}`);
     }
     const blocks = read.value;

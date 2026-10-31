@@ -810,7 +810,7 @@ export type ConversationPositionTarget = {
 
 export type ConversationPositionWindow = {
   conversation: Conversation;
-  body_source: "source" | "legacy";
+  body_source: "source";
   source_version_id: string | null;
   children: ConversationChild[];
   parent: ConversationParent | null;
