@@ -91,7 +91,7 @@ it('keeps pending lifecycle and registered health work live while preserving sam
     expect(result.status, JSON.stringify(result.body)).toBe(201);
     return (result.body as { request_id: string }).request_id;
   };
-  const revisionControl = (id: string) => ({ operator_recovery: true,
+  const revisionControl = (id: string) => ({
     expected_revision: queue.listLifecycleEvents(id).at(-1)!.revision, expected_custody_generation: 0 });
   try {
     const first = await submitCommand('held first execution');
@@ -139,7 +139,9 @@ it('keeps pending lifecycle and registered health work live while preserving sam
         ...revisionControl(targets.withdraw), reason: 'Withdraw the private fixture action.' });
       const skipped = await invoke('POST', `/api/auth/request/${targets.skip}/skip`, {});
       expect(revised.status, JSON.stringify(revised.body)).toBe(200);
-      expect(rejected.body).toMatchObject({ status: 'rejected' });
+      expect(rejected.status).toBe(403);
+      expect(rejected.body).toMatchObject({ code: 'operator_presence_required' });
+      expect(queue.getRequestExact(targets.reject)?.status).toBe('pending');
       expect(withdrawn.body).toMatchObject({ status: 'withdrawn' });
       expect(skipped.status).toBe(200);
       expect(queue.getRequestExact(targets.skip)?.skipped_at).toBe(clock);

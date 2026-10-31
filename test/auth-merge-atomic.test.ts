@@ -246,7 +246,7 @@ describe("atomic auth merge", () => {
     const server = createServer({
       db,
       sse: new SseManager(),
-      logger: configureDaemonLogger(db),
+      logger: configureDaemonLogger(db, { persist: false }),
       version: "test",
       router,
       getStartupInfo: () => null,
