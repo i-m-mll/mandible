@@ -133,6 +133,24 @@ describe("verified conversation scans", () => {
     expect((await cache.search({ ...input, needle: "needle" })).matches).toMatchObject([{ block_id: all.value[0].id }]);
     expect((await reader.readPage(source.id, { limit: 2, expectedSourceVersionId: version, expectedBlockCount: 2, expectedModel: null })))
       .toMatchObject({ status: "source", value: { blocks: all.value } });
+    const parsed = (await new CodexParser().parse(source.filePath))!;
+    const prepared = await new ConversationSourceStore(db).prepareConversation({
+      conversationId: source.id, provider: "codex", nativeSessionId: source.id, filePath: source.filePath,
+      sourceSnapshot: parsed.sourceSnapshot, blockCount: parsed.blocks.length,
+      blocks: parsed.blocks.map(block => ({ ...block, legacyId: `${source.id}-${block.position}` })),
+      ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
+    });
+    try {
+      expect(await reader.readAll(source.id)).toEqual(all);
+      db.transaction(() => prepared.publish()).immediate();
+    } finally { await prepared.dispose(); }
+    const published = await reader.readAll(source.id);
+    expect(published.status).toBe("source");
+    if (published.status !== "source") throw new Error("published source is unavailable");
+    expect((await cache.search({ ...input, needle: "needle" })).matches)
+      .toMatchObject([{ block_id: published.value[0].id }]);
+    expect(await reader.readBlock(all.value[0].id)).toMatchObject({ status: "source", value: all.value[0] });
+
   });
 
   it("keeps verified FTS-negative hits free of body reads while detecting lost sources", async () => {

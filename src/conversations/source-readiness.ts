@@ -4,7 +4,7 @@ import { canonicalSourcePath } from "./logical-source.js";
 import { MANAGED_NORMALIZED_SOURCE_EPOCHS } from "./managed-normalized-source.js";
 import { ConversationSourceStore } from "./source-store.js";
 import { getConversationStructureCache } from "./structure-cache.js";
-import { conversationSourceEpochsMatch, CURRENT_CONVERSATION_SOURCE_EPOCHS } from "./source-types.js";
+import { conversationSourceEpochsMatch, CURRENT_CONVERSATION_SOURCE_EPOCHS, type ConversationNavigationKind } from "./source-types.js";
 
 export type ConversationSourceReadinessReason =
   | "current"
@@ -26,6 +26,7 @@ export interface ConversationSourceReadiness {
   sourceId: string | null;
   sourceVersionId: string | null;
   sourcePath: string | null;
+  navigationKind: ConversationNavigationKind;
 }
 
 /** Metadata readiness only; the source reader still proves the physical bytes. */
@@ -41,7 +42,7 @@ export function readConversationSourceReadiness(db: Db, conversationId: string):
   const result = (
     status: ConversationSourceReadiness["status"], reason: ConversationSourceReadinessReason,
   ): ConversationSourceReadiness => ({
-    status, reason, conversationId, sourceId: source?.sourceId ?? null,
+    status, reason, conversationId, navigationKind: source?.navigationKind ?? "legacy", sourceId: source?.sourceId ?? null,
     sourceVersionId: source?.currentVersionId ?? null,
     sourcePath: sourcePath ? canonicalSourcePath(sourcePath) : null,
   });

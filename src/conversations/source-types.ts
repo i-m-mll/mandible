@@ -40,7 +40,10 @@ export function conversationSourceEpochsMatch(
     && actual.redactionEpoch === expected.redactionEpoch;
 }
 
+export type ConversationNavigationKind = "legacy" | "sparse";
+
 export interface ConversationSourceDescriptor extends ConversationSourceEpochs {
+  navigationKind: ConversationNavigationKind;
   sourceId: string;
   conversationId: string;
   provider: ConversationSource;
