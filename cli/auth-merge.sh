@@ -573,7 +573,12 @@ run_merge_preflight() {
 
 tracked_worktree_is_clean() {
   local readiness="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}/checkout-readiness.sh"
-  bash "$readiness" "$(pwd)" >&2
+  local report
+  CHECKOUT_READINESS_FAILURE=""
+  if report=$(bash "$readiness" "$(pwd)" 2>&1); then return 0; fi
+  err "$report"
+  CHECKOUT_READINESS_FAILURE="${report##*$'\n'}"
+  return 1
 }
 
 cached_candidate_tree() {
@@ -763,7 +768,7 @@ cas_update_and_sync_target() {
     return 1
   fi
   if ! tracked_worktree_is_clean; then
-    err "${RED}Tracked worktree state changed before ref update; refusing atomic merge.${RESET}"
+    err "${CHECKOUT_READINESS_FAILURE} No ref or worktree was changed."
     return 1
   fi
   if [[ "$(current_branch_sha "$target")" != "$expected_sha" ]]; then
@@ -1260,7 +1265,7 @@ main() {
       die "Atomic auth merge must run in the worktree already tracking target branch '$target'; current branch is '${current_branch:-detached HEAD}'." 1
     fi
     if ! tracked_worktree_is_clean; then
-      die "Tracked worktree state changed after preflight; no ref or worktree was changed." 1
+      die "${CHECKOUT_READINESS_FAILURE} No ref or worktree was changed." 1
     fi
 
     local atomic_base

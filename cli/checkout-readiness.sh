@@ -18,6 +18,7 @@ if ! g status --porcelain=v1 -z --untracked-files=no --ignore-submodules=none > 
 fi
 if [[ -s "$status_file" ]]; then
   printf 'Protected checkout %q: tracked worktree changes are present:\n' "$root"
+  summary=""
   while IFS= read -r -d '' record; do
     state=${record:0:2}
     file=${record:3}
@@ -32,12 +33,14 @@ if [[ -s "$status_file" ]]; then
     else
       description=unstaged
     fi
-    printf '  %s [%s]: %q\n' "$description" "$state" "$file"
+    entry=$(printf '%s [%s]: %q' "$description" "$state" "$file")
+    printf '  %s\n' "$entry"
+    summary="${summary:+$summary; }$entry"
     if [[ "$index_state" == R || "$index_state" == C ]]; then
       IFS= read -r -d '' original || exit 2
     fi
   done < "$status_file"
-  printf 'Preserve these edits in their intended worktree and restore a clean protected checkout, then refresh this request. This readiness check changed no checkout files.\n'
+  printf 'Checkout blocked: %s (checkout %q). Preserve the edits in their intended worktree, restore a clean checkout and refresh. This readiness check changed no checkout files.\n' "$summary" "$root"
   exit 1
 fi
 if [[ $# -eq 4 ]]; then

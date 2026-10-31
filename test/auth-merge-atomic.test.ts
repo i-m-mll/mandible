@@ -14,6 +14,7 @@ import { registerAuthRoutes } from "../src/routes/auth.js";
 import { createServer, Router } from "../src/server.js";
 import { SseManager } from "../src/sse.js";
 import { setupOperator } from "../src/users/store.js";
+import { describeAuthExecutionFailure } from "../src/contracts.js";
 import { createAuthCheckRepo, commitOnBranch } from "./helpers/auth-queue-fixtures.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 import { preparedGitFixture } from "./helpers/prepared-git-fixture.js";
@@ -224,6 +225,8 @@ describe("atomic auth merge", () => {
     expect(result.stderr).toContain(fs.realpathSync(repo));
     expect(result.stderr).toContain("unstaged [ M]: shared.txt");
     expect(result.stderr).toContain("This readiness check changed no checkout files");
+    const reason = describeAuthExecutionFailure(result.stderr, result.status);
+    expect(reason).toContain("Checkout blocked: unstaged [ M]: shared.txt");
     expect(git(["rev-parse", "main"])).toBe(base);
     expect(fs.readFileSync(path.join(repo, ".git", "index"))).toEqual(index);
     expect(fs.readFileSync(path.join(repo, "shared.txt"), "utf8")).toBe("Edit during confirmation\n");
