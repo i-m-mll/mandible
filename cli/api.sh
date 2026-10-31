@@ -224,47 +224,7 @@ api_is_file_rpc() {
   [[ "${MANDIBLE_BASE:-}" == file://* ]]
 }
 
-api_local_credential_routes_file() {
-  printf '%s' "${MANDIBLE_LOCAL_CREDENTIAL_ROUTES_FILE:-${MANDIBLE_CLI_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)}/local-credential-routes.json}"
-}
 
-# Resolve the actual registered operation first; credentials never affect routing.
-api_local_route_requires_credential() {
-  local method="$1" pathname="${2%%\?*}" body="${3:-}" file route_method route_path mode field routes
-  file="$(api_local_credential_routes_file)"
-  [[ -r "$file" ]] || { printf 'Mandible local credential route manifest is unavailable: %s\n' "$file" >&2; return 2; }
-  routes="$(jq -er '
-    def policy:
-      type == "object" and
-      (if .mode == "body-nonempty" then
-        keys == ["field", "mode"] and (.field | type == "string" and test("^[a-zA-Z_][a-zA-Z_0-9]*$"))
-      else keys == ["mode"] and (.mode | IN("omit", "durable", "optional", "managed-durable")) end);
-    if type == "object" and .version == 1 and (.routes | type == "array" and length > 0)
-      and all(.routes[]; (.method | IN("GET", "POST", "PUT", "PATCH", "DELETE"))
-        and (.path | type == "string" and test("^/([a-zA-Z0-9_.-]+|:[a-zA-Z0-9_]+)(/([a-zA-Z0-9_.-]+|:[a-zA-Z0-9_]+))*$"))
-        and (.localCliCredential | policy))
-    then .routes[] | [.method, .path, .localCliCredential.mode, (.localCliCredential.field // "")] | join("|")
-    else error("invalid credential route projection") end' "$file")" || return 2
-  if ! api_local_path_is_canonical "$pathname"; then
-    printf 'Malformed local API route: %s\n' "$pathname" >&2
-    return 2
-  fi
-  while IFS='|' read -r route_method route_path mode field; do
-    [[ "$route_method" == "$method" ]] || continue
-    api_route_template_matches "$route_path" "$pathname" || continue
-    case "$mode" in
-      omit) return 1 ;;
-      durable) return 0 ;;
-      optional) return 3 ;;
-      managed-durable) api_managed_client_markers_present && return 0; return 1 ;;
-      body-nonempty)
-        jq -e --arg key "$field" '.[$key] | type == "string" and length > 0' <<< "$body" >/dev/null 2>&1 && return 0
-        return 1 ;;
-    esac
-  done <<< "$routes"
-  printf 'Unregistered local API route: %s %s; nothing was sent.\n' "$method" "$pathname" >&2
-  return 2
-}
 
 # Managed-session marker guard for the durable operator keychain credential: any
 # of these markers means the caller is a managed/agent process that must receive
@@ -300,7 +260,6 @@ api_agent_provider() {
   local hint="${1:-}" provider="" count=0
   local has_codex=0 has_claude=0 has_gemini=0
   [[ -z "$hint" ]] || secret_material_valid "$hint" || return 1
-  [[ -z "${CODEX_THREAD_ID:-}" || -z "${CODEX_SESSION_ID:-}" || "$CODEX_THREAD_ID" == "$CODEX_SESSION_ID" ]] || return 1
   [[ -z "${CLAUDE_CODE_SESSION_ID:-}" || -z "${CLAUDE_SESSION_ID:-}" || "$CLAUDE_CODE_SESSION_ID" == "$CLAUDE_SESSION_ID" ]] || return 1
 
   [[ -z "${CODEX_THREAD_ID:-}${CODEX_SESSION_ID:-}" ]] || has_codex=1
@@ -326,29 +285,7 @@ api_agent_provider() {
   printf '%s' "$provider"
 }
 
-# api_durable_credential_missing_reason <reason> [service]
-# The sentence a refused credential-gated call prints: why no durable
-# credential was attached, and what to do about it.
-api_durable_credential_missing_reason() {
-  local reason="$1" service="${2:-}" name markers=()
-  case "$reason" in
-    keychain_disabled)
-      printf 'MANDIBLE_NO_KEYCHAIN_TOKEN=1 disables the Keychain lookup; unset it to use the stored credential.' ;;
-    codex_sandbox)
-      printf 'This command runs inside the Codex sandbox (CODEX_SANDBOX=%s), which hides the Keychain and the Mandible socket. Rerun it outside the sandbox: request escalated permissions, or run Codex with sandbox_mode = "danger-full-access".' \
-        "${CODEX_SANDBOX:-}" ;;
-    provider_unresolved)
-      for name in CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID CODEX_THREAD_ID CODEX_SESSION_ID GEMINI_SESSION_ID MANDIBLE_SESSION_ID MANDIBLE_MANAGED_CLIENT; do
-        [[ -z "$(printenv "$name")" ]] || markers+=("$name")
-      done
-      printf 'This is an agent process, but its markers (%s) name no single provider, so neither an agent nor the operator credential applies. Run the command from the agent'"'"'s own shell, where exactly one provider'"'"'s session id is set.' \
-        "${markers[*]}" ;;
-    keychain_item_missing)
-      printf 'No Keychain item exists for service %s. The operator can store one with: mandible user token mint <user> --store' "$service" ;;
-    *)
-      printf 'The Keychain lookup for service %s failed: the keychain may be locked, or this process was denied access to the item.' "$service" ;;
-  esac
-}
+
 
 # ── Secret backend seam (issue e2cb93f) ──────────────────────────────────────
 # One place that knows how OS secret storage is reached, so readers (this file's
@@ -930,52 +867,10 @@ api_http_exchange() {
   local token_traced=0
   case "$-" in *x*) token_traced=1; { set +x; } 2>/dev/null ;; esac
   if api_is_local_socket; then
-    if api_local_route_requires_credential "$method" "$request_path" "$data"; then
-      gated=1
-    else
-      gate_status=$?
-      if (( gate_status == 3 )); then
-        gated=1
-        optional_gate=1
-      elif (( gate_status != 1 )); then
-        (( token_traced == 0 )) || set -x
-        rm -f "$body_tmp" "$stderr_tmp" 2>/dev/null || true
-        printf '000'
-        return 0
-      fi
-    fi
-    if (( gated )); then
-      if [[ "${MANDIBLE_NO_KEYCHAIN_TOKEN:-}" == "1" ]]; then
-        missing="keychain_disabled"
-      elif provider="$(api_agent_provider)"; then
-        service="mandible-agent-$provider"
-        account="$(secret_account_for_service "$service")" || lookup_status=$?
-        if [[ -n "$account" ]]; then
-          token="$(secret_get "$service" "$account")" || token=""
-        fi
-      elif ! api_managed_client_markers_present; then
-        service="mandible-operator"
-        token="$(api_keychain_operator_token)"
-        [[ -n "$token" ]] || lookup_status=1
-      else
-        missing="provider_unresolved"
-      fi
-      if [[ -z "$token" && "$optional_gate" == 0 ]]; then
-        if [[ "$missing" != "keychain_disabled" && -n "${CODEX_SANDBOX:-}" ]]; then
-          missing="codex_sandbox"
-        elif [[ -z "$missing" ]]; then
-          missing="keychain_lookup_failed"
-          (( lookup_status != 1 )) || missing="keychain_item_missing"
-        fi
-        printf 'Mandible durable credential required for %s %s; nothing was sent. %s\n' \
-          "$method" "$request_path" "$(api_durable_credential_missing_reason "$missing" "$service")" >&2
-        (( token_traced == 0 )) || set -x
-        rm -f "$body_tmp" "$stderr_tmp" 2>/dev/null || true
-        jq -n --arg reason "$missing" --arg service "$service" \
-          '{error:"cli_durable_credential_missing", reason:$reason, service:($service | select(length > 0)), request_sent:false}' > "$output_file"
-        printf '401'
-        return 0
-      fi
+    if ! api_local_path_is_canonical "${request_path%%\?*}"; then
+      rm -f "$body_tmp" "$stderr_tmp"
+      printf '400'
+      return 0
     fi
   else
     token="$(api_client_token "$method")"
@@ -1166,41 +1061,7 @@ api_curl_ambient_headers() {
   fi
 }
 
-api_route_template_matches() {
-  local route_template="$1"
-  local pathname="$2"
-  local template_part path_part template_more path_more
 
-  # This helper is sourced by both bash and zsh CLIs. Split one path segment at
-  # a time instead of using either shell's incompatible `read` array option.
-  while true; do
-    template_more=0
-    path_more=0
-    if [[ "$route_template" == */* ]]; then
-      template_part="${route_template%%/*}"
-      route_template="${route_template#*/}"
-      template_more=1
-    else
-      template_part="$route_template"
-    fi
-    if [[ "$pathname" == */* ]]; then
-      path_part="${pathname%%/*}"
-      pathname="${pathname#*/}"
-      path_more=1
-    else
-      path_part="$pathname"
-    fi
-
-    if [[ "$template_part" == :* ]]; then
-      [[ -n "$path_part" ]] || return 1
-    else
-      [[ "$template_part" == "$path_part" ]] || return 1
-    fi
-
-    [[ "$template_more" -eq "$path_more" ]] || return 1
-    [[ "$template_more" -eq 1 ]] || return 0
-  done
-}
 
 api_instance_preflight_bindings() {
   local input_file="$1" method="$2" pathname="${3%%\?*}"

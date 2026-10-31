@@ -1,6 +1,5 @@
 import { withLedgerMutationActor } from "./ledger/mutation-history.js";
 import fs from "node:fs";
-import { isLocalCliCredential } from "./local-cli-credential.js";
 import http from "node:http";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
@@ -104,6 +103,7 @@ export interface ResolvedClientIdentity {
   effect_ceiling: readonly import("./security/effect-policy.js").Effect[];
   audience?: string | null;
   csrf_token?: string | null;
+  session_id?: string | null;
 }
 
 export interface ClientAuthRequestContext {
@@ -124,6 +124,7 @@ export interface UnattributedWriteRecord {
  * route tests may omit the boundary.
  */
 export interface ClientAuthGate {
+  authorizeProtectedMutation?(request: RequestLike, operation: import("./security/operation-policy.js").Operation): Promise<void>;
   mutationAttribution?(request: RequestLike): import("./ledger/types.js").LedgerAttributionInput | null;
   resolveManagedOrigin?(identity: LocalManagedIdentity): import("./request-origin.js").ManagedRequestOrigin;
   localBrowserIdentity?(): ResolvedClientIdentity | null;
@@ -160,25 +161,6 @@ function clientAuthSourceForTransport(
   return "in_process";
 }
 
-function resolveLocalSocketIdentity(
-  gate: ClientAuthGate,
-  credential: string | null | undefined,
-  ambient: AmbientProviderIdentity | null,
-  managed: boolean,
-  localManaged: LocalManagedIdentity | null,
-  context: ClientAuthRequestContext,
-): ResolvedClientIdentity | null {
-  const claimed = ambient || localManaged
-    ? gate.localSocketIdentity?.(ambient, true, localManaged) ?? null
-    : null;
-  if ((ambient || localManaged) && !claimed) return null;
-  if (credential !== null && credential !== undefined) {
-    const verified = gate.authenticate(credential, "local_socket", context);
-    return verified && (!claimed || claimed.user_id === verified.user_id) ? verified : null;
-  }
-  return claimed ?? gate.localSocketIdentity?.(null, managed, null) ?? null;
-}
-
 export interface ResponseLike {
   status(code: number): ResponseLike;
   header?(name: string, value: string | string[]): ResponseLike;
@@ -203,7 +185,6 @@ export type FileRpcPolicy = "allow" | "deny" | {
 };
 
 export interface RouteOptions {
-  localCliCredential: import("./local-cli-credential.js").LocalCliCredential;
   operation: OperationDescriptor;
   fileRpc: FileRpcPolicy;
   // Infrastructure mutations may opt out of historical unattributed-write
@@ -225,7 +206,6 @@ export interface RouteRefs {
 }
 
 export interface RoutePolicyEntry {
-  localCliCredential: import("./local-cli-credential.js").LocalCliCredential;
   method: string;
   path: string;
   fileRpc: "allow" | "deny" | "conditional";
@@ -442,8 +422,8 @@ export class Router implements RouteRegistrar {
 
   private addRoute(method: string, path: string, handler: RouteHandler, options: RouteOptions): void {
     const operation = options?.operation;
-    if (!isLocalCliCredential(options?.localCliCredential)
-        || !operation || typeof operation.id !== "string" || !operation.id.trim()
+    if (!operation || typeof operation.id !== "string" || !operation.id.trim()
+        || !(operation.operatorPresence === undefined || typeof operation.operatorPresence === "boolean")
         || !(operation.reportingCategory === null || typeof operation.reportingCategory === "string" && operation.reportingCategory.length > 0)
         || !(operation.requestSchema === null || typeof operation.requestSchema?.safeParse === "function")
         || !(typeof operation.effects === "function" || Array.isArray(operation.effects) && operation.effects.every(effect => EFFECTS.includes(effect)))
@@ -481,7 +461,6 @@ export class Router implements RouteRegistrar {
       return {
         method: route.method,
         path: route.path,
-        localCliCredential: route.options.localCliCredential,
         fileRpc: serializeFileRpcPolicy(route.options.fileRpc),
         operationId: route.options.operation.id,
         operationalMutationCategory: route.options.operation.reportingCategory,
@@ -631,10 +610,7 @@ export class Router implements RouteRegistrar {
       const gate = this.options.clientAuth;
       if (gate) {
         clientIdentity = transport === "local-socket"
-          ? resolveLocalSocketIdentity(
-              gate, credential, requestAmbientIdentity, httpAuth?.managed === true,
-              httpAuth?.localManaged ?? null, { method: normalizedMethod, pathname },
-            )
+          ? gate.localSocketIdentity?.(requestAmbientIdentity, httpAuth?.managed === true, httpAuth?.localManaged ?? null) ?? null
           : httpAuth?.internalContext && gate.authenticateInternalContext
           ? await gate.authenticateInternalContext(httpAuth.internalContext)
           : httpAuth?.browserRequest && gate.localBrowserIdentity
@@ -646,7 +622,7 @@ export class Router implements RouteRegistrar {
               ) : null;
         const localBootstrap = transport === "local-socket"
           && normalizedMethod === "POST" && pathname === "/api/users/setup"
-          && credential == null && !httpAuth?.managed && !requestAmbientIdentity && !httpAuth?.localManaged
+          && !httpAuth?.managed && !requestAmbientIdentity && !httpAuth?.localManaged
           && gate.localSocketBootstrapAllowed?.() === true;
         if (transport === "local-socket" && !clientIdentity && pathname !== "/api/health" && !localBootstrap) {
           response.status(401).json({ error: "authentication_required", reason: "local_identity_unknown" });
@@ -755,6 +731,9 @@ export class Router implements RouteRegistrar {
       };
 
       try {
+        if (gate && transport !== "in-process") {
+          await gate.authorizeProtectedMutation?.(request, resolveOperation(route.options.operation, { instanceRole: this.instance.role, body, params }));
+        }
         const origin = requestOriginForRequest(request, this.options.clientAuth?.resolveManagedOrigin?.bind(this.options.clientAuth));
         await withRequestOrigin(origin, () => withLedgerMutationActor({
           attribution: this.options.clientAuth?.mutationAttribution?.(request) ?? null,
@@ -997,22 +976,22 @@ export function createServer(options: ServerOptions, transport: "http" | "local-
         : {}),
     };
     res.json(payload);
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/health", effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { operation: { id: "get:/api/health", effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   const readEventLoopTurnMs = options.readEventLoopTurnMs;
   if (instance.role === "preview" && readEventLoopTurnMs) {
     router.post("/api/diagnostics/event-loop-turn", (_req, res) => {
       res.json({ max_turn_ms: readEventLoopTurnMs() });
-    }, { localCliCredential: {"mode":"omit"}, operation: { id: "diagnostics.event_loop_turn", effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+    }, { operation: { id: "diagnostics.event_loop_turn", effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
   }
 
   router.post("/api/events/subscribe", (_req, res) => {
     res.status(400).json({ error: "stream_transport_required" });
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "events.subscribe", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { operation: { id: "events.subscribe", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   router.get("/api/instance", (_req, res) => {
     res.json({ instance, operations: router.operationCatalog(version) });
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/instance", effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { operation: { id: "get:/api/instance", effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
   }
 
   return http.createServer(async (req, res) => {
@@ -1074,10 +1053,7 @@ export function createServer(options: ServerOptions, transport: "http" | "local-
         }
       }
       const identity = transport === "local-socket" && options.clientAuth
-        ? resolveLocalSocketIdentity(
-            options.clientAuth, bearerFromHeaders(req.headers), ambientIdentityFromHeaders(req.headers),
-            managedClientFromHeaders(req.headers), localManaged, { method, pathname },
-          )
+        ? options.clientAuth.localSocketIdentity?.(ambientIdentityFromHeaders(req.headers), managedClientFromHeaders(req.headers), localManaged) ?? null
         : (await options.clientAuth?.authenticateInternalContext?.(
           headerValue(req.headers["x-mandible-session-context"]),
         ))

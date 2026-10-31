@@ -1,6 +1,6 @@
 import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, expect, it } from "vitest";
-import { attributionForRequest, authorizeOperatorSetup, isLocalHumanRequest, requireDurableIdentity, requireOperator,
+import { attributionForRequest, authorizeOperatorSetup, isLocalHumanRequest, requireIdentity, requireOperator,
   requireProtectedOperator } from "../src/client-auth/authz.js";
 import { migrate, type Db } from "../src/db.js";
 import type { RequestLike, ResolvedClientIdentity } from "../src/server.js";
@@ -21,13 +21,13 @@ function socketRequest(user: { id: string; slug: string }, managed = false): Req
   } as RequestLike;
 }
 
-it("grants local human operator access while withholding durable authority", () => {
+it("grants local human operator access while withholding protected authority", () => {
   const operator = setupOperator(db, { slug: "operator", display_name: "Operator" });
   const req = socketRequest(operator);
   expect(isLocalHumanRequest(req)).toBe(true);
   expect(requireOperator(db, req).user_id).toBe(operator.id);
   expect(attributionForRequest(db, req)).toEqual({ user_id: operator.id, evidence_method: "local_default" });
-  expect(() => requireDurableIdentity(req)).toThrow();
+  expect(requireIdentity(req).user_id).toBe(operator.id);
   expect(() => requireProtectedOperator(db, req)).toThrow();
 });
 
@@ -63,7 +63,7 @@ it("attributes a validated managed app/session alias before a provider task exis
   expect(() => authorizeOperatorSetup(db, mislabeledOperator)).toThrow();
 });
 
-it("allows first-run human setup and requires durable evidence thereafter", () => {
+it("allows first-run human setup and requires fresh presence thereafter", () => {
   const initial = socketRequest({ id: "", slug: "" });
   initial.client_identity = null;
   expect(() => authorizeOperatorSetup(db, initial)).not.toThrow();
@@ -73,5 +73,5 @@ it("allows first-run human setup and requires durable evidence thereafter", () =
   const durable = socketRequest(operator);
   durable.client_identity = { ...durable.client_identity!, method: "api_token", source: "http_bearer",
     credential_id: "verified-credential" };
-  expect(() => authorizeOperatorSetup(db, durable)).not.toThrow();
+  expect(() => authorizeOperatorSetup(db, durable)).toThrow();
 });

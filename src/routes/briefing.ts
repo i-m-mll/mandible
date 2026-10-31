@@ -1,5 +1,5 @@
 import type { LedgerReader } from "../ledger-reads/index.js";
-import { attributionForRequest, ClientAuthzError, isLocalHumanRequest, isOperator, requireIdentity } from "../client-auth/authz.js";
+import { attributionForRequest, ClientAuthzError, isLocalHumanRequest, isOperator, requireIdentity, requireOperator, requireProtectedOperator } from "../client-auth/authz.js";
 import { createHash, randomUUID } from "node:crypto";
 import { canonicalJson } from "../canonical-json.js";
 import { artifactRequiredProjects, getArtifactCurrentSource } from "../artifact-source.js";
@@ -48,7 +48,7 @@ import {
   updateBriefingGroupName,
 } from "../feedback/briefing-groups.js";
 import type { BriefingGroupDestinationChangeInput } from "../feedback/briefing-groups.js";
-import { requireDurableAgentPublisher } from "./agent-publisher-auth.js";
+import { requireAgentPublisher } from "./agent-publisher-auth.js";
 import { evaluateProjectAccess, PermissionError, requireProjectAccess } from "../permissions/store.js";
 import { resolveArtifactProject } from "../permissions/resources.js";
 import { resolveArtifactIdentity } from "../provider-artifacts.js";
@@ -104,8 +104,6 @@ function publicationPrincipal(
   db: Db,
   req: RequestLike,
   messages: {
-    credentialCode: string;
-    credentialMessage: string;
     agentCode: string;
     agentMessage: string;
   },
@@ -126,7 +124,7 @@ function publicationPrincipal(
     throw new ClientAuthzError(403, "briefing_collection_sharing_credential_required",
       "Intentional cross-collection sharing requires a durable API token.");
   }
-  const publisher = requireDurableAgentPublisher(db, req, messages);
+  const publisher = requireAgentPublisher(db, req, messages);
   return { publisherUserId: publisher.userId, kind: "agent", operator: false };
 }
 
@@ -139,13 +137,7 @@ function configuredHumanOperator(db: Db, code: string, message: string) {
 }
 
 function destinationPrincipal(db: Db, req: RequestLike) {
-  if (localAgent(db, req)) {
-    throw new ClientAuthzError(403, "briefing_destination_route_credential_required",
-      "Briefing destination receipts require a durable API token.");
-  }
   const principal = publicationPrincipal(db, req, {
-    credentialCode: "briefing_destination_route_credential_required",
-    credentialMessage: "Agent destination writes require a durable API token.",
     agentCode: "briefing_destination_actor_required",
     agentMessage: "Destination writes require an active agent or the configured operator.",
   });
@@ -153,7 +145,9 @@ function destinationPrincipal(db: Db, req: RequestLike) {
     throw new ClientAuthzError(403, "briefing_destination_actor_required",
       "Destination writes require an active agent or the configured operator.");
   }
-  return { userId: principal.publisherUserId, credentialId: req.client_identity?.credential_id ?? null };
+  return { userId: principal.publisherUserId, credentialId: req.client_identity?.credential_id ?? null,
+    evidenceMethod: req.client_identity?.method === "api_token" ? "api_token" as const
+      : principal.kind === "agent" ? "session_claim" as const : "local_default" as const };
 }
 
 function artifactPublisherAccess(db: Db, req: RequestLike, artifactId: string): void {
@@ -196,15 +190,13 @@ function renameViewer(
   const prefix = subject === "Briefing" ? "briefing_title"
     : subject === "Briefing bundle" ? "briefing_bundle_name" : "briefing_group_name";
   const principal = publicationPrincipal(db, req, {
-    credentialCode: `${prefix}_publisher_credential_required`,
-    credentialMessage: `${subject} renames by an agent require a durable API token, not a session credential.`,
     agentCode: `${prefix}_publisher_agent_required`,
     agentMessage: `${subject} renames by an agent require an active agent identity.`,
   });
   if (principal.kind === "human") {
     if (!principal.operator) {
       throw new ClientAuthzError(403, `${prefix}_operator_required`,
-        `${subject} renames require the configured human operator or a durable agent publisher.`);
+        `${subject} renames require the configured human operator or an admitted agent publisher.`);
     }
     return { userId: principal.publisherUserId, operator: true };
   }
@@ -217,15 +209,13 @@ function renameViewer(
 
 function groupUpdateViewer(db: Db, req: RequestLike): { userId: string; operator: true } {
   const principal = publicationPrincipal(db, req, {
-    credentialCode: "briefing_group_update_publisher_credential_required",
-    credentialMessage: "Agent Briefing group updates require a durable API token.",
     agentCode: "briefing_group_update_publisher_agent_required",
     agentMessage: "Briefing group updates require an active agent identity.",
   });
   if (principal.kind === "human") {
     if (!principal.operator) {
       throw new ClientAuthzError(403, "briefing_group_update_operator_required",
-        "Briefing group updates require the configured human operator or a durable agent publisher.");
+        "Briefing group updates require the configured human operator or an admitted agent publisher.");
     }
     return { userId: principal.publisherUserId, operator: true };
   }
@@ -233,20 +223,14 @@ function groupUpdateViewer(db: Db, req: RequestLike): { userId: string; operator
     "Briefing group updates by an agent require a configured active human operator.").id, operator: true };
 }
 
-function humanReviewOperator(db: Db, req: RequestLike) {
-  const identity = requireIdentity(req);
-  if (identity.method !== "api_token") {
-    throw new ClientAuthzError(403, "briefing_group_review_credential_required",
-      "Briefing proposal disposition requires the configured human operator's durable API token.");
-  }
-  const caller = getUserById(db, identity.user_id);
-  if (!caller || caller.status !== "active" || caller.kind !== "human" || !isOperator(db, identity)) {
-    throw new ClientAuthzError(403, "briefing_group_review_operator_required",
-      "Only the configured active human operator may accept or reject a Briefing proposal.");
-  }
+function humanReviewOperator(db: Db, req: RequestLike, protectedAction = false) {
+  const identity = protectedAction ? requireProtectedOperator(db, req) : requireOperator(db, req);
   return {
-    actor: { userId: caller.id, evidenceMethod: "api_token" as const, credentialId: identity.credential_id },
-    viewer: { userId: caller.id, operator: true as const, humanReviewOperator: true as const },
+    actor: { userId: identity.user_id,
+      evidenceMethod: protectedAction ? "credential_signature" as const
+        : identity.method === "api_token" ? "api_token" as const : "local_default" as const,
+      credentialId: identity.credential_id },
+    viewer: { userId: identity.user_id, operator: true as const, humanReviewOperator: true as const },
   };
 }
 
@@ -276,15 +260,13 @@ function destinationChanges(value: unknown): BriefingGroupDestinationChangeInput
 
 function briefingOrganizationViewer(db: Db, req: RequestLike): { userId: string; operator: true } {
   const principal = publicationPrincipal(db, req, {
-    credentialCode: "briefing_organization_publisher_credential_required",
-    credentialMessage: "Agent Briefing Archive and Restore require a durable API token.",
     agentCode: "briefing_organization_publisher_agent_required",
     agentMessage: "Briefing Archive and Restore require an active agent identity.",
   });
   if (principal.kind === "human") {
     if (!principal.operator) {
       throw new ClientAuthzError(403, "briefing_organization_operator_required",
-        "Briefing Archive and Restore require the configured human operator or a durable agent publisher.");
+        "Briefing Archive and Restore require the configured human operator or an admitted agent publisher.");
     }
     return { userId: principal.publisherUserId, operator: true };
   }
@@ -294,8 +276,6 @@ function briefingOrganizationViewer(db: Db, req: RequestLike): { userId: string;
 
 function bundleMembershipViewer(db: Db, req: RequestLike): { userId: string; operator: true } {
   const principal = publicationPrincipal(db, req, {
-    credentialCode: "briefing_bundle_membership_publisher_credential_required",
-    credentialMessage: "Agent Briefing bundle membership replacement requires a durable API token.",
     agentCode: "briefing_bundle_membership_publisher_agent_required",
     agentMessage: "Briefing bundle membership replacement requires an active agent identity.",
   });
@@ -304,7 +284,7 @@ function bundleMembershipViewer(db: Db, req: RequestLike): { userId: string; ope
       throw new ClientAuthzError(
         403,
         "briefing_bundle_membership_operator_required",
-        "Briefing bundle membership replacement requires the configured human operator or a durable agent publisher.",
+        "Briefing bundle membership replacement requires the configured human operator or an admitted agent publisher.",
       );
     }
     return { userId: principal.publisherUserId, operator: true };
@@ -328,9 +308,7 @@ function briefingLayoutViewer(db: Db, req: RequestLike): {
   const caller = getUserById(db, identity.user_id);
   if ((identity.method === "api_token" || socketAgent)
       && caller?.status === "active" && caller.kind === "agent") {
-    if (!socketAgent) requireDurableAgentPublisher(db, req, {
-      credentialCode: "briefing_layout_publisher_credential_required",
-      credentialMessage: "Operator-visible Briefing layout reads require a durable API token.",
+    if (!socketAgent) requireAgentPublisher(db, req, {
       agentCode: "briefing_layout_publisher_agent_required",
       agentMessage: "Operator-visible Briefing layout reads require an active agent identity.",
     });
@@ -344,8 +322,7 @@ function briefingLayoutViewer(db: Db, req: RequestLike): {
   return {
     userId: identity.user_id,
     operator,
-    humanReviewOperator: identity.method === "api_token"
-      && caller?.status === "active" && caller.kind === "human" && operator,
+    humanReviewOperator: caller?.status === "active" && caller.kind === "human" && operator,
   };
 }
 
@@ -376,8 +353,6 @@ function publicationPrincipalAndResponder(db: Db, req: RequestLike): {
 } {
   const identity = requireIdentity(req);
   const publisher = publicationPrincipal(db, req, {
-    credentialCode: "briefing_publisher_credential_required",
-    credentialMessage: "Exact-version Briefing publication requires a durable API token, not a session credential.",
     agentCode: "briefing_publisher_agent_required",
     agentMessage: "Exact-version Briefing publication requires an active agent identity.",
   });
@@ -414,15 +389,12 @@ function body(req: RequestLike): Record<string, unknown> {
 function placementOverride(req: RequestLike, requestBody: Record<string, unknown>, actorUserId: string) {
   if (requestBody.sharing_reason === undefined) return undefined;
   const identity = requireIdentity(req);
-  if (identity.method !== "api_token") {
-    throw new ClientAuthzError(403, "briefing_collection_sharing_credential_required",
-      "Intentional cross-collection sharing requires a durable API token.");
-  }
   if (typeof requestBody.sharing_reason !== "string" || !requestBody.sharing_reason.trim()) {
     throw new BriefingStoreError("sharing_reason must be a nonblank string");
   }
   return { reason: requestBody.sharing_reason, actorUserId,
-    evidenceMethod: identity.method, credentialId: identity.credential_id };
+    evidenceMethod: identity.method === "api_token" ? "api_token" as const
+      : identity.method === "local_socket" && !isLocalHumanRequest(req) ? "session_claim" as const : "local_default" as const, credentialId: identity.credential_id };
 }
 
 /** Canonical plural Briefing API. Singular /api/briefing and /api/asks do not exist. */
@@ -442,7 +414,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
       }
       sendJson(res, 200, { routes, omitted_count: omittedCount, unresolved_count: unresolvedCount });
     } catch (error) { handleError(res, error); }
-  }, { localCliCredential: {"mode":"managed-durable"}, operation: { id: "get:/api/briefing-destination-routes", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/briefing-destination-routes", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.get("/api/briefing-destination-routes/:routeKey", (req, res) => {
     try {
@@ -451,7 +423,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
       for (const entry of route.routes) artifactProjectForWrite(db, req, entry.logical_artifact_id);
       sendJson(res, 200, route);
     } catch (error) { handleError(res, error); }
-  }, { localCliCredential: {"mode":"managed-durable"}, operation: { id: "get:/api/briefing-destination-routes/:routeKey", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/briefing-destination-routes/:routeKey", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.post("/api/briefing-destination-routes/plan", (req, res) => {
     try {
@@ -460,7 +432,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
       routeProjectsForWrite(db, req, manifest);
       sendJson(res, 200, planBriefingDestinationRoutes(db, manifest));
     } catch (error) { handleError(res, error); }
-  }, { localCliCredential: {"mode":"managed-durable"}, operation: { id: "post:/api/briefing-destination-routes/plan", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/briefing-destination-routes/plan", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.post("/api/briefing-destination-routes", (req, res) => {
     try {
@@ -491,7 +463,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
       }
       sendJson(res, 200, result);
     } catch (error) { handleError(res, error); }
-  }, { localCliCredential: {"mode":"managed-durable"}, operation: { id: "post:/api/briefing-destination-routes", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/briefing-destination-routes", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.post("/api/briefing-groups/:groupId/report-placement", (req, res) => {
     try {
@@ -520,7 +492,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
         expectedSourceBaseRef: typeof requestBody.expected_source_base_ref === "string"
           ? requestBody.expected_source_base_ref : null,
         routeManifest: route,
-      }, { userId: actor.userId, credentialId: actor.credentialId, projectId: scope.projectId }, viewer);
+      }, { ...actor, projectId: scope.projectId }, viewer);
       if (result.changed) {
         broadcast(BRIEFING_EVENTS.groupConfigurationUpdated, { group_id: result.group_id });
         if (result.source_group_id) broadcast(BRIEFING_EVENTS.groupConfigurationUpdated,
@@ -528,7 +500,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
       }
       sendJson(res, 200, result);
     } catch (error) { handleError(res, error); }
-  }, { localCliCredential: {"mode":"managed-durable"}, operation: { id: "post:/api/briefing-groups/:groupId/report-placement", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/briefing-groups/:groupId/report-placement", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.post("/api/briefings/:briefingId/report-rounds", (req, res) => {
     try {
@@ -599,14 +571,12 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
         briefing_id: briefingId, round_id: result.round_id });
       sendJson(res, 200, result);
     } catch (error) { handleError(res, error); }
-  }, { localCliCredential: {"mode":"managed-durable"}, operation: { id: "post:/api/briefings/:briefingId/report-rounds", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow",
+  }, { operation: { id: "post:/api/briefings/:briefingId/report-rounds", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow",
     refs: { body: { expected_current_round_id: entityRefs.briefingRound } } });
 
   server.post("/api/briefing-groups", (req, res) => {
     try {
       const publisher = publicationPrincipal(db, req, {
-        credentialCode: "briefing_group_publisher_credential_required",
-        credentialMessage: "Briefing group publication requires a durable API token, not a session credential.",
         agentCode: "briefing_group_publisher_agent_required",
         agentMessage: "Briefing group publication requires an active agent identity.",
       });
@@ -631,7 +601,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
       broadcast(BRIEFING_EVENTS.groupCreated, { group_id: group.id });
       sendJson(res, 201, { group });
     } catch (error) { handleError(res, error); }
-  }, { localCliCredential: {"mode":"body-nonempty","field":"sharing_reason"}, operation: { id: "post:/api/briefing-groups", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/briefing-groups", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.put("/api/briefing-groups/:groupId/configuration", (req, res) => {
     try {
@@ -659,7 +629,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
       if (result.changed) broadcast(BRIEFING_EVENTS.groupConfigurationUpdated, { group_id: result.group.id });
       sendJson(res, 200, result);
     } catch (error) { handleError(res, error); }
-  }, { localCliCredential: {"mode":"body-nonempty","field":"sharing_reason"}, operation: { id: "put:/api/briefing-groups/:groupId/configuration", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
+  }, { operation: { id: "put:/api/briefing-groups/:groupId/configuration", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.post("/api/briefing-groups/:groupId/updates", (req, res) => {
     try {
@@ -675,7 +645,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
       });
       sendJson(res, 200, result);
     } catch (error) { handleError(res, error); }
-  }, { localCliCredential: {"mode":"body-nonempty","field":"sharing_reason"}, operation: { id: "post:/api/briefing-groups/:groupId/updates", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/briefing-groups/:groupId/updates", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.post("/api/briefing-groups/:groupId/promotions/apply", (req, res) => {
     try {
@@ -700,11 +670,11 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
       });
       sendJson(res, 200, result);
     } catch (error) { handleError(res, error); }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/briefing-groups/:groupId/promotions/apply", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/briefing-groups/:groupId/promotions/apply", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.post("/api/briefing-groups/:groupId/review-dispositions", (req, res) => {
     try {
-      const principal = humanReviewOperator(db, req);
+      const principal = humanReviewOperator(db, req, true);
       const requestBody = body(req);
       const allowed = ["decision", "expected_base_bundle_ref", "proposal_bundle_ref", "binding_digest",
         "destination_changes"];
@@ -722,7 +692,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
         decision: requestBody.decision,
         bindingDigest: typeof requestBody.binding_digest === "string" ? requestBody.binding_digest : "",
         destinationChanges: destinationChanges(requestBody.destination_changes),
-      }, principal.actor, principal.viewer);
+      }, { ...principal.actor, evidenceMethod: "credential_signature" }, principal.viewer);
       if (result.changed) broadcast(result.disposition.kind === "accepted"
         ? BRIEFING_EVENTS.groupProposalAccepted : BRIEFING_EVENTS.groupProposalRejected, {
         group_id: result.group.id,
@@ -732,7 +702,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
       });
       sendJson(res, 200, result);
     } catch (error) { handleError(res, error); }
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: "post:/api/briefing-groups/:groupId/review-dispositions", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/briefing-groups/:groupId/review-dispositions", operatorPresence: true, effects: ["ledger:write", "auth:protected"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.post("/api/briefing-groups/:groupId/review-candidates", (req, res) => {
     try {
@@ -751,7 +721,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
       }, principal.actor.userId);
       sendJson(res, 200, { candidate });
     } catch (error) { handleError(res, error); }
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: "post:/api/briefing-groups/:groupId/review-candidates", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/briefing-groups/:groupId/review-candidates", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.post("/api/briefing-groups/:groupId/destinations", (req, res) => {
     try {
@@ -766,7 +736,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
       }, principal.actor, principal.viewer);
       sendJson(res, result.changed ? 201 : 200, result);
     } catch (error) { handleError(res, error); }
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: "post:/api/briefing-groups/:groupId/destinations", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/briefing-groups/:groupId/destinations", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.patch("/api/briefing-groups/:groupId", (req, res) => {
     try {
@@ -778,7 +748,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
       if (result.changed) broadcast(BRIEFING_EVENTS.groupNameUpdated, { group_id: result.group.id });
       sendJson(res, 200, result);
     } catch (error) { handleError(res, error); }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "patch:/api/briefing-groups/:groupId", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/briefing-groups/:groupId", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   const setGroupArchiveState = (archived: boolean) => (req: RequestLike, res: ResponseLike) => {
       try {
@@ -791,26 +761,24 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
         sendJson(res, 200, result);
       } catch (error) { handleError(res, error); }
     };
-  server.post("/api/briefing-groups/:groupId/archive", setGroupArchiveState(true), { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/briefing-groups/:groupId/archive", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
-  server.post("/api/briefing-groups/:groupId/restore", setGroupArchiveState(false), { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/briefing-groups/:groupId/restore", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
+  server.post("/api/briefing-groups/:groupId/archive", setGroupArchiveState(true), { operation: { id: "post:/api/briefing-groups/:groupId/archive", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
+  server.post("/api/briefing-groups/:groupId/restore", setGroupArchiveState(false), { operation: { id: "post:/api/briefing-groups/:groupId/restore", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.get("/api/briefing-groups", (req, res) => {
     try {
       sendJson(res, 200, { groups: listBriefingGroups(db, briefingLayoutViewer(db, req)) });
     } catch (error) { handleError(res, error); }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/briefing-groups", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/briefing-groups", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.get("/api/briefing-groups/:groupId", (req, res) => {
     try {
       sendJson(res, 200, { group: readBriefingGroup(db, req.params.groupId, briefingLayoutViewer(db, req)) });
     } catch (error) { handleError(res, error); }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/briefing-groups/:groupId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/briefing-groups/:groupId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.post("/api/briefing-bundles", (req, res) => {
     try {
       const publisher = publicationPrincipal(db, req, {
-        credentialCode: "briefing_bundle_publisher_credential_required",
-        credentialMessage: "Briefing bundle publication requires a durable API token, not a session credential.",
         agentCode: "briefing_bundle_publisher_agent_required",
         agentMessage: "Briefing bundle publication requires an active agent identity.",
       });
@@ -841,7 +809,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"body-nonempty","field":"sharing_reason"}, operation: { id: "post:/api/briefing-bundles", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/briefing-bundles", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.post("/api/briefing-bundles/:bundleId/briefings", (req, res) => {
     try {
@@ -869,7 +837,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"body-nonempty","field":"sharing_reason"}, operation: { id: "post:/api/briefing-bundles/:bundleId/briefings", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/briefing-bundles/:bundleId/briefings", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.patch("/api/briefing-bundles/:bundleId", (req, res) => {
     try {
@@ -925,7 +893,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"body-nonempty","field":"sharing_reason"}, operation: { id: "patch:/api/briefing-bundles/:bundleId", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/briefing-bundles/:bundleId", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.delete("/api/briefing-bundles/:bundleId", (req, res) => {
     try {
@@ -941,7 +909,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "delete:/api/briefing-bundles/:bundleId", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
+  }, { operation: { id: "delete:/api/briefing-bundles/:bundleId", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.get("/api/briefing-bundles", (req, res) => {
     try {
@@ -949,7 +917,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/briefing-bundles", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/briefing-bundles", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.get("/api/briefing-bundles/:bundleId", (req, res) => {
     try {
@@ -957,7 +925,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/briefing-bundles/:bundleId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/briefing-bundles/:bundleId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.post("/api/briefings", (req, res) => {
     try {
@@ -1039,14 +1007,12 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/briefings", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/briefings", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.post("/api/briefings/runs", (req, res) => {
     try {
       requireIdentity(req);
-      const publisher = requireDurableAgentPublisher(db, req, {
-        credentialCode: "briefing_publisher_credential_required",
-        credentialMessage: "Briefing publication requires a durable API token, not a session credential.",
+      const publisher = requireAgentPublisher(db, req, {
         agentCode: "briefing_publisher_agent_required",
         agentMessage: "Briefing publication requires an agent identity.",
       });
@@ -1104,7 +1070,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: "post:/api/briefings/runs", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/briefings/runs", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.get("/api/briefings", async (req, res) => {
     try {
@@ -1113,7 +1079,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/briefings", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/briefings", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.get("/api/briefings/:briefingId", (req, res) => {
     try {
@@ -1157,7 +1123,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/briefings/:briefingId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/briefings/:briefingId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.patch("/api/briefings/:briefingId", (req, res) => {
     try {
@@ -1188,7 +1154,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "patch:/api/briefings/:briefingId", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/briefings/:briefingId", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   const setArchiveState = (archived: boolean) => (req: RequestLike, res: ResponseLike) => {
     try {
@@ -1204,8 +1170,8 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
     } catch (error) { handleError(res, error); }
   };
 
-  server.post("/api/briefings/:briefingId/archive", setArchiveState(true), { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/briefings/:briefingId/archive", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
-  server.post("/api/briefings/:briefingId/restore", setArchiveState(false), { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/briefings/:briefingId/restore", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
+  server.post("/api/briefings/:briefingId/archive", setArchiveState(true), { operation: { id: "post:/api/briefings/:briefingId/archive", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
+  server.post("/api/briefings/:briefingId/restore", setArchiveState(false), { operation: { id: "post:/api/briefings/:briefingId/restore", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.post("/api/briefings/:briefingId/rounds/:roundId/answers", (req, res) => {
     try {
@@ -1219,7 +1185,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/briefings/:briefingId/rounds/:roundId/answers", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "deny" });
+  }, { operation: { id: "post:/api/briefings/:briefingId/rounds/:roundId/answers", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "deny" });
 
   server.post("/api/briefings/:briefingId/rounds/:roundId/annotations", (req, res) => {
     try {
@@ -1233,7 +1199,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/briefings/:briefingId/rounds/:roundId/annotations", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "deny" });
+  }, { operation: { id: "post:/api/briefings/:briefingId/rounds/:roundId/annotations", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "deny" });
 
   server.post("/api/briefings/:briefingId/rounds/:roundId/submit", (req, res) => {
     try {
@@ -1246,7 +1212,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/briefings/:briefingId/rounds/:roundId/submit", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "deny" });
+  }, { operation: { id: "post:/api/briefings/:briefingId/rounds/:roundId/submit", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "deny" });
 
   server.get("/api/briefings/:briefingId/rounds/:roundId/submissions/:submissionId/export", (req, res) => {
     try {
@@ -1256,5 +1222,5 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/briefings/:briefingId/rounds/:roundId/submissions/:submissionId/export", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/briefings/:briefingId/rounds/:roundId/submissions/:submissionId/export", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 }

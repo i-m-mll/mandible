@@ -80,14 +80,14 @@ export function registerRedirectRoutes(
     });
 
   };
-  router.get("/r/issue/:ref", redirect("issue", "mandible:///"), { localCliCredential: { mode: "omit" }, operation: { id: "redirect.issue", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
-  router.get("/r/auth/:ref", redirect("auth", "mandible:///"), { localCliCredential: { mode: "omit" }, operation: { id: "redirect.auth", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
-  router.get("/r/artifact/:ref", redirect("artifact", "mandible:///"), { localCliCredential: { mode: "omit" }, operation: { id: "redirect.artifact", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
-  router.get("/r/briefing/:ref", redirect("briefing", "mandible:///"), { localCliCredential: { mode: "omit" }, operation: { id: "redirect.briefing", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
-  router.get("/issue/:ref", redirect("issue", "/#/"), { localCliCredential: { mode: "omit" }, operation: { id: "link.issue", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
-  router.get("/auth/:ref", redirect("auth", "/#/"), { localCliCredential: { mode: "omit" }, operation: { id: "link.auth", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
-  router.get("/artifact/:ref", redirect("artifact", "/#/"), { localCliCredential: { mode: "omit" }, operation: { id: "link.artifact", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
-  router.get("/briefing/:ref", redirect("briefing", "/#/"), { localCliCredential: { mode: "omit" }, operation: { id: "link.briefing", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  router.get("/r/issue/:ref", redirect("issue", "mandible:///"), { operation: { id: "redirect.issue", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  router.get("/r/auth/:ref", redirect("auth", "mandible:///"), { operation: { id: "redirect.auth", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  router.get("/r/artifact/:ref", redirect("artifact", "mandible:///"), { operation: { id: "redirect.artifact", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  router.get("/r/briefing/:ref", redirect("briefing", "mandible:///"), { operation: { id: "redirect.briefing", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  router.get("/issue/:ref", redirect("issue", "/#/"), { operation: { id: "link.issue", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  router.get("/auth/:ref", redirect("auth", "/#/"), { operation: { id: "link.auth", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  router.get("/artifact/:ref", redirect("artifact", "/#/"), { operation: { id: "link.artifact", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  router.get("/briefing/:ref", redirect("briefing", "/#/"), { operation: { id: "link.briefing", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 }
 
 // Briefing refs resolve server-side because agents may hold a typed

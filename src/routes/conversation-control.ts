@@ -1,5 +1,5 @@
 import { entityRefs } from "../entity-refs.js";
-import { operatorOnlyManagedSessionRoute } from "../client-auth/authz.js";
+import { managedSessionRoute } from "../client-auth/authz.js";
 import { AttachmentValidationError, ChatAttachmentStore } from "../conversation-control/attachment-store.js";
 import type { ConversationControlService } from "../conversation-control/service.js";
 import type { ConversationControlError, ConversationSubmitRequest } from "../conversation-control/types.js";
@@ -54,7 +54,7 @@ export function registerConversationControlRoutes(
     });
   };
 
-  server.post("/api/chat-attachments", operatorOnlyManagedSessionRoute((req, res) => {
+  server.post("/api/chat-attachments", managedSessionRoute((req, res) => {
     if (!attachmentStore) return sendJson(res, 503, { error: "attachment_store_unavailable" });
     const body = bodyRecord(req);
     try {
@@ -64,16 +64,16 @@ export function registerConversationControlRoutes(
       if (!(error instanceof AttachmentValidationError)) throw error;
       sendJson(res, 400, { error: "invalid_attachment", message: error.message });
     }
-  }), { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/chat-attachments", effects: ["ledger:write"], requestSchema: null, reportingCategory: "api" }, fileRpc: "deny" });
+  }), { operation: { id: "post:/api/chat-attachments", effects: ["ledger:write"], requestSchema: null, reportingCategory: "api" }, fileRpc: "deny" });
 
-  server.get("/api/chat-attachments/:id/content", operatorOnlyManagedSessionRoute((req, res) => {
+  server.get("/api/chat-attachments/:id/content", managedSessionRoute((req, res) => {
     if (!attachmentStore) return sendJson(res, 503, { error: "attachment_store_unavailable" });
     const file = attachmentStore.get(req.params.id);
     if (!file) return sendJson(res, 404, { error: "attachment_not_found" });
     res.binary?.(attachmentStore.content(file), file.media_type);
-  }), { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/chat-attachments/:id/content", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }), { operation: { id: "get:/api/chat-attachments/:id/content", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
-  server.get("/api/conversations/:id/control/attachments", operatorOnlyManagedSessionRoute((req, res) => {
+  server.get("/api/conversations/:id/control/attachments", managedSessionRoute((req, res) => {
     if (!options.db) return sendJson(res, 503, { error: "attachment_store_unavailable" });
     const snapshot = control.getSnapshot(req.params.id);
     if (!snapshot.ok) return sendJson(res, statusFor(snapshot.error), snapshot);
@@ -81,19 +81,19 @@ export function registerConversationControlRoutes(
       FROM conversation_control_outbox WHERE conversation_id = ? AND attachments_json != '[]' ORDER BY created_at, id`)
       .all(req.params.id) as { delivery_id: string; turn_id: string; attachments_json: string; state: string; created_at: number }[];
     sendJson(res, 200, rows.map(({ attachments_json, ...row }) => ({ ...row, attachments: JSON.parse(attachments_json) })));
-  }), { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/conversations/:id/control/attachments", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny", refs: { params: { id: entityRefs.conversation } } });
+  }), { operation: { id: "get:/api/conversations/:id/control/attachments", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny", refs: { params: { id: entityRefs.conversation } } });
 
   server.get("/api/conversations/:id/control", (req, res) => {
     const result = control.getSnapshot(req.params.id);
     sendJson(res, result.ok ? 200 : statusFor(result.error), result);
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/conversations/:id/control", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow", refs: { params: { id: entityRefs.conversation } } });
+  }, { operation: { id: "get:/api/conversations/:id/control", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow", refs: { params: { id: entityRefs.conversation } } });
 
   server.get("/api/conversations/:id/control/live", (req, res) => {
     const result = control.getLiveProjection(req.params.id);
     sendJson(res, result.ok ? 200 : statusFor(result.error), result);
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/conversations/:id/control/live", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow", refs: { params: { id: entityRefs.conversation } } });
+  }, { operation: { id: "get:/api/conversations/:id/control/live", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow", refs: { params: { id: entityRefs.conversation } } });
 
-  server.post("/api/conversations/:id/control/submit", operatorOnlyManagedSessionRoute(async (req, res) => {
+  server.post("/api/conversations/:id/control/submit", managedSessionRoute(async (req, res) => {
     const body = bodyRecord(req);
     const operation = typeof body.operation === "string" ? body.operation : "";
     if (!["send", "steer", "queue", "resume-provider-session", "resume-message-anchor"].includes(operation)) {
@@ -146,24 +146,24 @@ export function registerConversationControlRoutes(
       return;
     }
     sendJson(res, result.ok ? 202 : statusFor(result.error), result);
-  }), { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/conversations/:id/control/submit", effects: ["provider:send"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "deny", refs: { params: { id: entityRefs.conversation } } });
+  }), { operation: { id: "post:/api/conversations/:id/control/submit", effects: ["provider:send"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "deny", refs: { params: { id: entityRefs.conversation } } });
 
-  server.get("/api/conversations/:id/control/permissions", operatorOnlyManagedSessionRoute((req, res) => {
+  server.get("/api/conversations/:id/control/permissions", managedSessionRoute((req, res) => {
     const result = control.permissions(req.params.id);
     sendJson(res, result.ok ? 200 : statusFor(result.error), result);
-  }), { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/conversations/:id/control/permissions", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny", refs: { params: { id: entityRefs.conversation } } });
+  }), { operation: { id: "get:/api/conversations/:id/control/permissions", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny", refs: { params: { id: entityRefs.conversation } } });
 
-  server.get("/api/conversations/:id/control/options", operatorOnlyManagedSessionRoute(async (req, res) => {
+  server.get("/api/conversations/:id/control/options", managedSessionRoute(async (req, res) => {
     const result = await control.runOptions(req.params.id, { discoverModels });
     sendJson(res, result.ok ? 200 : statusFor(result.error), result);
-  }), { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/conversations/:id/control/options", effects: discoverModels ? ["ledger:read", "provider:send"] : ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny", refs: { params: { id: entityRefs.conversation } } });
+  }), { operation: { id: "get:/api/conversations/:id/control/options", effects: discoverModels ? ["ledger:read", "provider:send"] : ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny", refs: { params: { id: entityRefs.conversation } } });
 
-  server.get("/api/conversations/:id/control/settings", operatorOnlyManagedSessionRoute((req, res) => {
+  server.get("/api/conversations/:id/control/settings", managedSessionRoute((req, res) => {
     const result = control.getRuntimeSettings(req.params.id);
     sendJson(res, result.ok ? 200 : statusFor(result.error), result);
-  }), { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/conversations/:id/control/settings", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny", refs: { params: { id: entityRefs.conversation } } });
+  }), { operation: { id: "get:/api/conversations/:id/control/settings", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny", refs: { params: { id: entityRefs.conversation } } });
 
-  server.patch("/api/conversations/:id/control/settings", operatorOnlyManagedSessionRoute(async (req, res) => {
+  server.patch("/api/conversations/:id/control/settings", managedSessionRoute(async (req, res) => {
     const body = bodyRecord(req);
     const revision = Number(body.expected_revision);
     if (!Number.isSafeInteger(revision) || revision < 0) return sendJson(res, 400, { error: "invalid_revision" });
@@ -177,9 +177,9 @@ export function registerConversationControlRoutes(
     } catch (error) {
       sendJson(res, 400, { error: "invalid_runtime_options", message: error instanceof Error ? error.message : String(error) });
     }
-  }), { localCliCredential: {"mode":"omit"}, operation: { id: "patch:/api/conversations/:id/control/settings", effects: ["ledger:write", "provider:send"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "deny", refs: { params: { id: entityRefs.conversation } } });
+  }), { operation: { id: "patch:/api/conversations/:id/control/settings", effects: ["ledger:write", "provider:send"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "deny", refs: { params: { id: entityRefs.conversation } } });
 
-  server.post("/api/conversations/:id/control/permission/:requestId", operatorOnlyManagedSessionRoute(async (req, res) => {
+  server.post("/api/conversations/:id/control/permission/:requestId", managedSessionRoute(async (req, res) => {
     const body = bodyRecord(req);
     const generation = Number(body.generation);
     const decision = body.decision;
@@ -189,9 +189,9 @@ export function registerConversationControlRoutes(
     if (!await previewControlAllowed(req.params.id, generation)) return rejectIneligiblePreviewControl(res);
     const result = await control.decidePermission({ conversation_id: req.params.id, generation, request_id: req.params.requestId, decision: decision as import("../conversation-control/types.js").ManagedRequestResponse["decision"], answers: body.answers as Record<string, string[]> | undefined });
     sendJson(res, result.ok ? 200 : statusFor(result.error), result);
-  }), { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/conversations/:id/control/permission/:requestId", effects: ["ledger:write", "provider:send"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "deny", refs: { params: { id: entityRefs.conversation } } });
+  }), { operation: { id: "post:/api/conversations/:id/control/permission/:requestId", effects: ["ledger:write", "provider:send"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "deny", refs: { params: { id: entityRefs.conversation } } });
 
-  server.post("/api/conversations/:id/control/interrupt", operatorOnlyManagedSessionRoute(async (req, res) => {
+  server.post("/api/conversations/:id/control/interrupt", managedSessionRoute(async (req, res) => {
     const body = bodyRecord(req);
     const generation = Number(body.generation);
     if (body.turn_id !== undefined && (typeof body.turn_id !== "string" || !body.turn_id)) return sendJson(res, 400, { error: "invalid_turn_id" });
@@ -199,9 +199,9 @@ export function registerConversationControlRoutes(
     if (!await previewControlAllowed(req.params.id, generation)) return rejectIneligiblePreviewControl(res);
     const result = await control.interrupt(req.params.id, generation, body.turn_id as string | undefined);
     sendJson(res, result.ok ? 200 : statusFor(result.error), result);
-  }), { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/conversations/:id/control/interrupt", effects: ["provider:send"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "deny", refs: { params: { id: entityRefs.conversation } } });
+  }), { operation: { id: "post:/api/conversations/:id/control/interrupt", effects: ["provider:send"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "deny", refs: { params: { id: entityRefs.conversation } } });
 
-  server.post("/api/conversations/:id/control/stop", operatorOnlyManagedSessionRoute(async (req, res) => {
+  server.post("/api/conversations/:id/control/stop", managedSessionRoute(async (req, res) => {
     const body = bodyRecord(req);
     const generation = Number(body.generation);
     if (!Number.isSafeInteger(generation) || generation < 1) {
@@ -215,5 +215,5 @@ export function registerConversationControlRoutes(
     }
     const result = await control.stop(req.params.id, generation);
     sendJson(res, result.ok ? 200 : statusFor(result.error), result);
-  }), { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/conversations/:id/control/stop", effects: ["provider:send"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "deny", refs: { params: { id: entityRefs.conversation } } });
+  }), { operation: { id: "post:/api/conversations/:id/control/stop", effects: ["provider:send"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "deny", refs: { params: { id: entityRefs.conversation } } });
 }

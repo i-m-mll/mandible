@@ -76,7 +76,7 @@ export function registerProjectRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/projects/audit", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/projects/audit", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   router.post("/api/projects/repair", async (req, res) => {
     try {
@@ -98,7 +98,7 @@ export function registerProjectRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: { mode: "omit" }, operation: { id: "post:/api/projects/repair", effects: ({ body }) => (body as { apply?: boolean }).apply === true ? ["ledger:write"] : ["ledger:read"], requestSchema: RepairOptionsSchema, reportingCategory: "projects" }, fileRpc: "deny" });
+  }, { operation: { id: "post:/api/projects/repair", effects: ({ body }) => (body as { apply?: boolean }).apply === true ? ["ledger:write"] : ["ledger:read"], requestSchema: RepairOptionsSchema, reportingCategory: "projects" }, fileRpc: "deny" });
 
   // PATCH a checkout by root (registered under /checkouts to avoid the :ref
   // param route shadowing it).
@@ -120,7 +120,7 @@ export function registerProjectRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/projects/checkouts", effects: ["ledger:write"], requestSchema: null, reportingCategory: "projects" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/projects/checkouts", effects: ["ledger:write"], requestSchema: null, reportingCategory: "projects" }, fileRpc: "allow" });
 
   router.get("/api/projects/:ref/access", (req, res) => {
     try {
@@ -128,7 +128,7 @@ export function registerProjectRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/projects/:ref/access", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/projects/:ref/access", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   router.patch("/api/projects/:ref/access", (req, res) => {
     try {
@@ -143,7 +143,7 @@ export function registerProjectRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "patch:/api/projects/:ref/access", effects: ["ledger:write"], requestSchema: null, reportingCategory: "projects" }, fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/projects/:ref/access", effects: ["ledger:write"], requestSchema: null, reportingCategory: "projects" }, fileRpc: "allow" });
 
   router.get("/api/projects", (_req, res) => {
     try {
@@ -151,7 +151,7 @@ export function registerProjectRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/projects", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/projects", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   router.post("/api/projects", (req, res) => {
     try {
@@ -161,7 +161,7 @@ export function registerProjectRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/projects", effects: ["ledger:write"], requestSchema: null, reportingCategory: "projects" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/projects", effects: ["ledger:write"], requestSchema: null, reportingCategory: "projects" }, fileRpc: "allow" });
 
   router.get("/api/projects/:ref", (req, res) => {
     try {
@@ -184,7 +184,7 @@ export function registerProjectRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/projects/:ref", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/projects/:ref", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   router.patch("/api/projects/:ref", (req, res) => {
     try {
@@ -193,7 +193,7 @@ export function registerProjectRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "patch:/api/projects/:ref", effects: ["ledger:write"], requestSchema: null, reportingCategory: "projects" }, fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/projects/:ref", effects: ["ledger:write"], requestSchema: null, reportingCategory: "projects" }, fileRpc: "allow" });
 
   router.post("/api/projects/:ref/checkouts", (req, res) => {
     try {
@@ -211,5 +211,5 @@ export function registerProjectRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/projects/:ref/checkouts", effects: ["ledger:write"], requestSchema: null, reportingCategory: "projects" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/projects/:ref/checkouts", effects: ["ledger:write"], requestSchema: null, reportingCategory: "projects" }, fileRpc: "allow" });
 }

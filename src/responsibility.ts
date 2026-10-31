@@ -8,7 +8,8 @@ import { requestOriginJson } from "./request-origin.js";
 
 export interface ResponsibilityActor { user_id: string; session_id: string | null }
 export function responsibilityActor(req: RequestLike): ResponsibilityActor {
-  return { user_id: requireIdentity(req).user_id, session_id: req.ambient_identity?.provider_session_id ?? null };
+  const identity = requireIdentity(req);
+  return { user_id: identity.user_id, session_id: identity.session_id ?? req.ambient_identity?.provider_session_id ?? null };
 }
 export function sameResponsibilitySession(db: Db, left: string | null | undefined, right: string | null | undefined): boolean {
   if (!left || !right) return left === right;

@@ -507,9 +507,9 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
       handleError(res, error);
     }
   };
-  router.get("/api/spaces/resolve", resolveHandler, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/spaces/resolve", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  router.get("/api/spaces/resolve", resolveHandler, { operation: { id: "get:/api/spaces/resolve", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
-  router.get("/api/refs/resolve", resolveHandler, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/refs/resolve", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  router.get("/api/refs/resolve", resolveHandler, { operation: { id: "get:/api/refs/resolve", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   // --- spaces CRUD ---
   // List modes (issue 812df41):
@@ -536,7 +536,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/spaces", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/spaces", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   router.post("/api/spaces", (req, res) => {
     try {
@@ -563,7 +563,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/spaces", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   router.get("/api/spaces/:id", (req, res) => {
     try {
@@ -583,7 +583,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/spaces/:id", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/spaces/:id", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   router.patch("/api/spaces/:id", (req, res) => {
     try {
@@ -603,7 +603,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "patch:/api/spaces/:id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
+  }, { operation: { id: "patch:/api/spaces/:id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   router.delete("/api/spaces/:id", (req, res) => {
     try {
@@ -615,7 +615,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "delete:/api/spaces/:id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
+  }, { operation: { id: "delete:/api/spaces/:id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   // --- items ---
   router.post("/api/spaces/:id/items", (req, res) => {
@@ -643,7 +643,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/spaces/:id/items", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/:id/items", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   router.patch("/api/spaces/:id/items/:item_id", (req, res) => {
     try {
@@ -666,7 +666,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "patch:/api/spaces/:id/items/:item_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow", refs: { params: { item_id: entityRefs.spaceItem } } });
+  }, { operation: { id: "patch:/api/spaces/:id/items/:item_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow", refs: { params: { item_id: entityRefs.spaceItem } } });
 
   router.delete("/api/spaces/:id/items/:item_id", (req, res) => {
     try {
@@ -680,7 +680,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "delete:/api/spaces/:id/items/:item_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow", refs: { params: { item_id: entityRefs.spaceItem } } });
+  }, { operation: { id: "delete:/api/spaces/:id/items/:item_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow", refs: { params: { item_id: entityRefs.spaceItem } } });
 
   // --- occurrences ---
   router.post("/api/spaces/:id/occurrences", (req, res) => {
@@ -694,7 +694,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/spaces/:id/occurrences", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/:id/occurrences", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   router.post("/api/spaces/:id/occurrences/batch", (req, res) => {
     try {
@@ -720,7 +720,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/spaces/:id/occurrences/batch", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/:id/occurrences/batch", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   router.patch("/api/spaces/:id/occurrences/:occurrence_id", (req, res) => {
     try {
@@ -740,7 +740,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "patch:/api/spaces/:id/occurrences/:occurrence_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow", refs: { params: { occurrence_id: entityRefs.spaceOccurrence } } });
+  }, { operation: { id: "patch:/api/spaces/:id/occurrences/:occurrence_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow", refs: { params: { occurrence_id: entityRefs.spaceOccurrence } } });
 
   router.delete("/api/spaces/:id/occurrences/:occurrence_id", (req, res) => {
     try {
@@ -754,7 +754,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "delete:/api/spaces/:id/occurrences/:occurrence_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow", refs: { params: { occurrence_id: entityRefs.spaceOccurrence } } });
+  }, { operation: { id: "delete:/api/spaces/:id/occurrences/:occurrence_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow", refs: { params: { occurrence_id: entityRefs.spaceOccurrence } } });
 
   // --- edges ---
   router.post("/api/spaces/:id/edges", (req, res) => {
@@ -778,7 +778,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/spaces/:id/edges", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/:id/edges", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   router.patch("/api/spaces/:id/edges/:edge_id", (req, res) => {
     try {
@@ -804,7 +804,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "patch:/api/spaces/:id/edges/:edge_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow", refs: { params: { edge_id: entityRefs.spaceEdge } } });
+  }, { operation: { id: "patch:/api/spaces/:id/edges/:edge_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow", refs: { params: { edge_id: entityRefs.spaceEdge } } });
 
   router.delete("/api/spaces/:id/edges/:edge_id", (req, res) => {
     try {
@@ -818,7 +818,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "delete:/api/spaces/:id/edges/:edge_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow", refs: { params: { edge_id: entityRefs.spaceEdge } } });
+  }, { operation: { id: "delete:/api/spaces/:id/edges/:edge_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow", refs: { params: { edge_id: entityRefs.spaceEdge } } });
 
   // --- seed-from-filter ---
   router.post("/api/spaces/:id/seed", (req, res) => {
@@ -840,7 +840,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/spaces/:id/seed", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/:id/seed", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   // --- blocks (C11, issue d2a8e77) ---
   // The document/canvas block tree. Block identity (`id`/`parent`/`sort`/`type`/
@@ -856,7 +856,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/spaces/:id/blocks", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/spaces/:id/blocks", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   router.post("/api/spaces/:id/blocks", (req, res) => {
     try {
@@ -870,7 +870,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/spaces/:id/blocks", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/:id/blocks", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   router.patch("/api/spaces/:id/blocks/:block_id", (req, res) => {
     try {
@@ -886,7 +886,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "patch:/api/spaces/:id/blocks/:block_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow", refs: { params: { block_id: entityRefs.spaceBlock } } });
+  }, { operation: { id: "patch:/api/spaces/:id/blocks/:block_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow", refs: { params: { block_id: entityRefs.spaceBlock } } });
 
   router.delete("/api/spaces/:id/blocks/:block_id", (req, res) => {
     try {
@@ -900,7 +900,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "delete:/api/spaces/:id/blocks/:block_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow", refs: { params: { block_id: entityRefs.spaceBlock } } });
+  }, { operation: { id: "delete:/api/spaces/:id/blocks/:block_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow", refs: { params: { block_id: entityRefs.spaceBlock } } });
 
   // Detach/degrade: drop the item_id embed from every block in the Space that
   // embeds it (preserving item_snapshot_json as a placeholder) so the item can
@@ -918,7 +918,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/spaces/:id/items/:item_id/detach-blocks", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow", refs: { params: { item_id: entityRefs.spaceItem } } });
+  }, { operation: { id: "post:/api/spaces/:id/items/:item_id/detach-blocks", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow", refs: { params: { item_id: entityRefs.spaceItem } } });
 
   router.get("/api/spaces/:id/publications", (req,res)=> {
     try { const db=getDb(), space=loadSpaceOr404(db,req.params.id);
@@ -932,7 +932,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
         destinations:publicationDestinations(db,space.id).flatMap(value=>visibleDocument(()=>requireProjectAccess(db,req,value.project_id,"write"),value)),
       });
     } catch(error) { handleExportError(res,error); }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/spaces/:id/publications", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/spaces/:id/publications", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
   router.post("/api/spaces/:id/publications", (req,res)=> {
     try { const db=getDb(), space=loadSpaceOr404(db,req.params.id), body=bodyRecord(req);
       documentProjectAccess(db,req,space.project_id,"write");
@@ -943,7 +943,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
       emit(SPACE_EVENTS.SPACE_BLOCK_CHANGED,space.id);
       sendJson(res,201,publication);
     } catch(error) { handleExportError(res,error); }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/spaces/:id/publications", effects: ["ledger:write", "files:production"], requestSchema: z.object({ repo_id: z.string().trim().min(1).nullish(), path: z.string().trim().min(1), issue: z.string().trim().min(1), message: z.string().optional() }).strict(), reportingCategory: "spaces" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/:id/publications", effects: ["ledger:write", "files:production"], requestSchema: z.object({ repo_id: z.string().trim().min(1).nullish(), path: z.string().trim().min(1), issue: z.string().trim().min(1), message: z.string().optional() }).strict(), reportingCategory: "spaces" }, fileRpc: "allow" });
   router.post("/api/spaces/:id/publications/:publication_id/submit", async (req,res)=> {
     try { const db=getDb(), space=loadSpaceOr404(db,req.params.id);
       documentProjectAccess(db,req,space.project_id,"write");
@@ -955,7 +955,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
       emit(SPACE_EVENTS.SPACE_BLOCK_CHANGED,space.id);
       sendJson(res,200,publication);
     } catch(error) { handleExportError(res,error); }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/spaces/:id/publications/:publication_id/submit", effects: ["ledger:write", "files:production", "process:external", "auth:protected"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/:id/publications/:publication_id/submit", effects: ["ledger:write", "files:production", "process:external", "auth:protected"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
   router.post("/api/spaces/documents/import", (req,res)=> {
     try { const db=getDb(),body=bodyRecord(req);
       const destination=optionalString(body,"project_id");
@@ -972,7 +972,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
       emit(SPACE_EVENTS.SPACE_CREATED,space.id);
       sendJson(res,201,space);
     } catch(error) { handleExportError(res,error); }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/spaces/documents/import", effects: ({ body }) => (body as { ref?: string }).ref ? documentArtifactImportEffects(getDb(), (body as { ref: string }).ref) : ["ledger:read", "ledger:write", "files:production"], requestSchema: z.union([z.object({ ref: z.string().trim().min(1), title: z.string().trim().min(1), project_id: z.string().trim().min(1).nullish() }).strict(), z.object({ project: z.string().trim().min(1), commit: z.string().trim().min(1), path: z.string().trim().min(1), title: z.string().trim().min(1), project_id: z.string().trim().min(1).nullish() }).strict()]), reportingCategory: "spaces" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/documents/import", effects: ({ body }) => (body as { ref?: string }).ref ? documentArtifactImportEffects(getDb(), (body as { ref: string }).ref) : ["ledger:read", "ledger:write", "files:production"], requestSchema: z.union([z.object({ ref: z.string().trim().min(1), title: z.string().trim().min(1), project_id: z.string().trim().min(1).nullish() }).strict(), z.object({ project: z.string().trim().min(1), commit: z.string().trim().min(1), path: z.string().trim().min(1), title: z.string().trim().min(1), project_id: z.string().trim().min(1).nullish() }).strict()]), reportingCategory: "spaces" }, fileRpc: "allow" });
   router.post("/api/spaces/:id/history/:history_id/import",(req,res)=> {
     try {const db=getDb(),source=loadSpaceOr404(db,req.params.id),body=bodyRecord(req);
       documentProjectAccess(db,req,source.project_id,"write");
@@ -982,7 +982,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
       const space=publicationValue(importHistoryDocument(db,source.id,req.params.history_id,requireString(body,"title")));
       emit(SPACE_EVENTS.SPACE_CREATED,space.id);sendJson(res,201,space);
     } catch(error){handleExportError(res,error);}
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/spaces/:id/history/:history_id/import", effects: ({ params }) => documentHistoryImportEffects(getDb(), params.id, params.history_id), requestSchema: z.object({ title: z.string().trim().min(1) }).strict(), reportingCategory: "spaces" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/:id/history/:history_id/import", effects: ({ params }) => documentHistoryImportEffects(getDb(), params.id, params.history_id), requestSchema: z.object({ title: z.string().trim().min(1) }).strict(), reportingCategory: "spaces" }, fileRpc: "allow" });
   router.get("/api/spaces/:id/document/download", (req,res)=> {
     try { const db=getDb(),space=loadSpaceOr404(db,req.params.id);
       documentProjectAccess(db,req,space.project_id,"read");
@@ -992,7 +992,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
       if (!res.text) throw new HttpError(500,"Download response unavailable");
       res.text(result,"text/markdown; charset=utf-8");
     } catch(error) { handleExportError(res,error); }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/spaces/:id/document/download", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/spaces/:id/document/download", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
   router.post("/api/spaces/:id/document/export", (req,res)=> {
     try { const db=getDb(),space=loadSpaceOr404(db,req.params.id),body=bodyRecord(req);
       documentProjectAccess(db,req,space.project_id,"read");
@@ -1000,7 +1000,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
       if(checkoutId) documentCheckoutAccess(db,req,checkoutId,"read");
       sendJson(res,200,exportUntrackedCopy(db,{spaceId:space.id,destPath:requireString(body,"dest_path"),repoId:optionalString(body,"repo_id")}));
     } catch(error) { handleExportError(res,error); }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/spaces/:id/document/export", effects: ["ledger:read", "files:production"], requestSchema: z.object({ dest_path: z.string().trim().min(1), repo_id: z.string().trim().min(1).nullish() }).strict(), reportingCategory: "spaces" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/:id/document/export", effects: ["ledger:read", "files:production"], requestSchema: z.object({ dest_path: z.string().trim().min(1), repo_id: z.string().trim().min(1).nullish() }).strict(), reportingCategory: "spaces" }, fileRpc: "allow" });
 
 }
 

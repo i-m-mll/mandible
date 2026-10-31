@@ -10,5 +10,5 @@ export function registerGraphRoutes(app: RouteRegistrar, reader: LedgerReader): 
       params, providerId: firstQueryValue(query, "provider"), root: firstQueryValue(query, "root"),
     }));
 
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/graph", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { operation: { id: "get:/api/graph", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 }

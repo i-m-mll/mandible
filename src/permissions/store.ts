@@ -1,3 +1,4 @@
+import { operatorPresenceIdentity } from "../client-auth/operator-presence.js";
 import { mutateLedgerRecord } from "../ledger/mutation-history.js";
 import type { Db } from "../db.js";
 import { getClientAuthMode } from "../client-auth/mode.js";
@@ -429,7 +430,7 @@ export function requireGlobalCapability(
   capability: GlobalCapability,
 ): AccessDecision {
   const decision = evaluateGlobalCapability(db, {
-    identity: req.client_identity ?? null,
+    identity: operatorPresenceIdentity(req) ?? req.client_identity ?? null,
     capability,
   });
   if (!decision.allowed) {

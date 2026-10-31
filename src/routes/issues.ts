@@ -16,7 +16,7 @@ import { ledgerIssueLifecycleError, LedgerSingletonKindError, LedgerStore, store
 import type { AttributionContext } from "../identity/resolver.js";
 import {
   attributionForRequest,
-  operatorOnlyManagedSessionRoute,
+  managedSessionRoute,
 } from "../client-auth/authz.js";
 import {
   LEDGER_CONCRETE_ISSUE_KINDS,
@@ -1032,7 +1032,7 @@ export function registerIssueRoutes(
     } catch (error) {
       sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/issues", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/issues", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.get("/api/issues/search", (req, res) => {
     const expression = issueSearchExpression(getQueryParam(req, "q") ?? "");
@@ -1056,7 +1056,7 @@ export function registerIssueRoutes(
       identity: req.client_identity ?? null, project_id, required_role: "read",
     }).allowed);
     sendJson(res, 200, searchLedgerIssues(db, { expression, projectIds, status: status as LedgerIssueStatus | "all", limit }));
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/issues/search", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/issues/search", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   // GET /api/ledger/issues/:issueId — canonical ledger issue detail projection
   server.get("/api/ledger/issues/:issueId", (req, res) => {
@@ -1076,7 +1076,7 @@ export function registerIssueRoutes(
       stage: getQueryParam(req, "stage") === "initial" ? "initial" : "full",
       profile: getQueryParam(req, "profile") === "1",
     });
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/ledger/issues/:issueId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/ledger/issues/:issueId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.get("/api/ledger/issues/:issueId/umbrella-status", (req, res) => {
     const issueRef = getParam(req, "issueId");
@@ -1097,7 +1097,7 @@ export function registerIssueRoutes(
     } catch (error) {
       sendJson(res, 404, { error: error instanceof Error ? error.message : "ledger issue not found" });
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/ledger/issues/:issueId/umbrella-status", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/ledger/issues/:issueId/umbrella-status", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.post("/api/ledger/issues/:issueId/umbrella-adopt", (req, res) => {
     const issueRef = getParam(req, "issueId");
@@ -1128,7 +1128,7 @@ export function registerIssueRoutes(
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : "failed to adopt children" });
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/ledger/issues/:issueId/umbrella-adopt", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/ledger/issues/:issueId/umbrella-adopt", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
 
   server.post("/api/ledger/issues/:issueId/umbrella-manifest-refresh", (req, res) => {
     const issueRef = getParam(req, "issueId");
@@ -1154,7 +1154,7 @@ export function registerIssueRoutes(
         error: error instanceof Error ? error.message : "failed to refresh umbrella manifest",
       });
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/ledger/issues/:issueId/umbrella-manifest-refresh", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/ledger/issues/:issueId/umbrella-manifest-refresh", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
 
   server.get("/api/ledger/issues/:issueId/parent-role", (req, res) => {
     const issueRef = getParam(req, "issueId");
@@ -1170,7 +1170,7 @@ export function registerIssueRoutes(
     }
     if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "read")) return;
     sendJson(res, 200, buildParentRoleStatus(db, resolved.issue_id, sessionAliasResolver));
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/ledger/issues/:issueId/parent-role", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/ledger/issues/:issueId/parent-role", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   // Resolves the umbrella and the caller's write access, or answers the request.
   const parentRoleIssue = (req: RequestLike, res: ResponseLike): string | null => {
@@ -1266,7 +1266,7 @@ export function registerIssueRoutes(
       checkpoint: checkpointResponse(checkpoint),
       parent_role: buildParentRoleStatus(db, issueId, decisionResolver),
     });
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: "post:/api/ledger/issues/:issueId/parent-role", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow", refs: { body: { session_id: entityRefs.session, expected_checkpoint_id: entityRefs.checkpoint } } });
+  }, { operation: { id: "post:/api/ledger/issues/:issueId/parent-role", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow", refs: { body: { session_id: entityRefs.session, expected_checkpoint_id: entityRefs.checkpoint } } });
 
   // Relinquishment is a guarded action of the current responsible session.
   server.delete?.("/api/ledger/issues/:issueId/parent-role", async (req, res) => {
@@ -1296,7 +1296,7 @@ export function registerIssueRoutes(
       checkpoint: checkpointResponse(checkpoint),
       parent_role: buildParentRoleStatus(db, issueId, decisionResolver),
     });
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: "delete:/api/ledger/issues/:issueId/parent-role", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow", refs: { body: { expected_checkpoint_id: entityRefs.checkpoint } } });
+  }, { operation: { id: "delete:/api/ledger/issues/:issueId/parent-role", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow", refs: { body: { expected_checkpoint_id: entityRefs.checkpoint } } });
 
   server.get("/api/ledger/issues/:issueId/head", (req, res) => {
     const issueRef = getParam(req, "issueId");
@@ -1355,7 +1355,7 @@ export function registerIssueRoutes(
     } catch (error) {
       sendJson(res, 404, { error: error instanceof Error ? error.message : "ledger issue not found" });
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/ledger/issues/:issueId/head", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/ledger/issues/:issueId/head", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.get("/api/ledger/issues/:issueId/body/revisions", (req, res) => {
     const issueRef = getParam(req, "issueId");
@@ -1375,7 +1375,7 @@ export function registerIssueRoutes(
       entity_id: resolved.issue_id,
     });
     sendJson(res, 200, { revisions });
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/ledger/issues/:issueId/body/revisions", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/ledger/issues/:issueId/body/revisions", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.get("/api/ledger/issues/:issueId/work-notes/history", (req, res) => {
     const issueRef = getParam(req, "issueId");
@@ -1395,7 +1395,7 @@ export function registerIssueRoutes(
       entity_id: resolved.issue_id,
     });
     sendJson(res, 200, { revisions });
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/ledger/issues/:issueId/work-notes/history", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/ledger/issues/:issueId/work-notes/history", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.post("/api/ledger/relationships", (req, res) => {
     const body = getBody(req) ?? {};
@@ -1459,7 +1459,7 @@ export function registerIssueRoutes(
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : "failed to link relationship" });
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/ledger/relationships", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/ledger/relationships", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
 
   server.post("/api/ledger/relationships/unlink", (req, res) => {
     const body = getBody(req) ?? {};
@@ -1516,7 +1516,7 @@ export function registerIssueRoutes(
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : "failed to unlink relationship" });
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/ledger/relationships/unlink", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/ledger/relationships/unlink", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
 
   server.get("/api/ledger/comments/:commentId/revisions", (req, res) => {
     const commentId = getParam(req, "commentId");
@@ -1543,7 +1543,7 @@ export function registerIssueRoutes(
     } catch (error) {
       sendJson(res, 404, { error: error instanceof Error ? error.message : "comment not found" });
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/ledger/comments/:commentId/revisions", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow", refs: { params: { commentId: entityRefs.comment } } });
+  }, { operation: { id: "get:/api/ledger/comments/:commentId/revisions", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow", refs: { params: { commentId: entityRefs.comment } } });
 
   server.get("/api/ledger/body-revisions/:revisionId", (req, res) => {
     const revisionId = getParam(req, "revisionId");
@@ -1557,7 +1557,7 @@ export function registerIssueRoutes(
     } catch (error) {
       sendJson(res, 404, { error: error instanceof Error ? error.message : "body revision not found" });
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/ledger/body-revisions/:revisionId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow", refs: { params: { revisionId: entityRefs.bodyRevision } } });
+  }, { operation: { id: "get:/api/ledger/body-revisions/:revisionId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow", refs: { params: { revisionId: entityRefs.bodyRevision } } });
 
   // GET /api/issues/:repoId/:issueId/ledger-detail — resolve a route issue ref
   // into the canonical projection used by graph and issue detail panes.
@@ -1578,7 +1578,7 @@ export function registerIssueRoutes(
       stage: getQueryParam(req, "stage") === "initial" ? "initial" : "full",
       profile: getQueryParam(req, "profile") === "1",
     });
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/issues/:repoId/:issueId/ledger-detail", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { operation: { id: "get:/api/issues/:repoId/:issueId/ledger-detail", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // POST /api/issues/resolutions — record a commit that resolved an issue
   // Registered before /:repoId to avoid "resolutions" being treated as repoId.
@@ -1622,7 +1622,7 @@ export function registerIssueRoutes(
     }
 
     sendJson(res, 200, { ok: true, ledger_issue_id: ledgerIssueId });
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/issues/resolutions", effects: ["ledger:write"], requestSchema: null, reportingCategory: "issues" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/issues/resolutions", effects: ["ledger:write"], requestSchema: null, reportingCategory: "issues" }, fileRpc: "allow" });
 
   server.post("/api/issues/:repoId", (req, res) => {
     const repoRef = getParam(req, "repoId");
@@ -1735,7 +1735,7 @@ export function registerIssueRoutes(
       throw error;
     }
     sendLedgerIssueProjection(res, db, issue.id, markdownPolicy.warnings);
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/issues/:repoId", effects: ["ledger:write"], requestSchema: null, reportingCategory: "issues" }, fileRpc: { allowWhen: ({ params }) => !["migration", "reconcile", "scan"].includes(params.repoId ?? "") } });
+  }, { operation: { id: "post:/api/issues/:repoId", effects: ["ledger:write"], requestSchema: null, reportingCategory: "issues" }, fileRpc: { allowWhen: ({ params }) => !["migration", "reconcile", "scan"].includes(params.repoId ?? "") } });
 
   server.post("/api/ledger/issues/:issueId/comments", (req, res) => {
     const issueRef = getParam(req, "issueId");
@@ -1776,7 +1776,7 @@ export function registerIssueRoutes(
       throw error;
     }
     sendLedgerIssueProjection(res, db, resolved.issue_id, markdownPolicy.warnings);
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/ledger/issues/:issueId/comments", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/ledger/issues/:issueId/comments", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
 
   server.post("/api/ledger/issues/:issueId/checkpoints", (req, res) => {
     const issueRef = getParam(req, "issueId");
@@ -1815,7 +1815,7 @@ export function registerIssueRoutes(
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : "invalid checkpoint" });
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/ledger/issues/:issueId/checkpoints", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/ledger/issues/:issueId/checkpoints", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
 
   server.get("/api/ledger/issues/:issueId/checkpoints", (req, res) => {
     const issueRef = getParam(req, "issueId");
@@ -1856,7 +1856,7 @@ export function registerIssueRoutes(
       .listIssueCheckpoints(resolved.issue_id, kind)
       .map(checkpointResponse);
     sendJson(res, 200, { checkpoints });
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/ledger/issues/:issueId/checkpoints", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow", refs: { query: { id: entityRefs.checkpoint } } });
+  }, { operation: { id: "get:/api/ledger/issues/:issueId/checkpoints", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow", refs: { query: { id: entityRefs.checkpoint } } });
 
   server.patch?.("/api/ledger/comments/:commentId", (req, res) => {
     const commentId = getParam(req, "commentId");
@@ -1909,7 +1909,7 @@ export function registerIssueRoutes(
       }
       sendJson(res, 404, { error: error instanceof Error ? error.message : "comment not found" });
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "patch:/api/ledger/comments/:commentId", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow",
+  }, { operation: { id: "patch:/api/ledger/comments/:commentId", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow",
     refs: { params: { commentId: entityRefs.comment }, body: { base_body_revision_id: entityRefs.bodyRevision, base_revision_id: entityRefs.bodyRevision } } });
 
   server.patch?.("/api/ledger/issues/:issueId", (req, res) => {
@@ -2029,7 +2029,7 @@ export function registerIssueRoutes(
       throw error;
     }
     sendLedgerIssueProjection(res, db, resolved.issue_id, markdownWarnings);
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "patch:/api/ledger/issues/:issueId", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow", refs: { body: { base_body_revision_id: entityRefs.bodyRevision, base_revision_id: entityRefs.bodyRevision, expected_work_notes_revision: entityRefs.bodyRevision } } });
+  }, { operation: { id: "patch:/api/ledger/issues/:issueId", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow", refs: { body: { base_body_revision_id: entityRefs.bodyRevision, base_revision_id: entityRefs.bodyRevision, expected_work_notes_revision: entityRefs.bodyRevision } } });
 
   server.post("/api/ledger/issues/:issueId/worker-status", (req, res) => {
     const issueRef = getParam(req, "issueId");
@@ -2058,7 +2058,7 @@ export function registerIssueRoutes(
       "mandible",
     );
     sendLedgerIssueProjection(res, db, resolved.issue_id);
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/ledger/issues/:issueId/worker-status", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/ledger/issues/:issueId/worker-status", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
 
   server.post("/api/ledger/issues/:issueId/branches", (req, res) => {
     const issueRef = getParam(req, "issueId");
@@ -2092,7 +2092,7 @@ export function registerIssueRoutes(
       "mandible",
     );
     sendLedgerIssueProjection(res, db, resolved.issue_id);
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/ledger/issues/:issueId/branches", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/ledger/issues/:issueId/branches", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
 
   server.post("/api/ledger/issues/:issueId/labels", (req, res) => {
     const issueRef = getParam(req, "issueId");
@@ -2130,7 +2130,7 @@ export function registerIssueRoutes(
       attribution: attributionForRequest(db, req),
     });
     sendLedgerIssueProjection(res, db, resolved.issue_id);
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/ledger/issues/:issueId/labels", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/ledger/issues/:issueId/labels", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
 
   // GET /api/issues/resolutions/:issueId — get resolutions for an issue
   // Bug: c934e60 — issue lifecycle tracking
@@ -2157,7 +2157,7 @@ export function registerIssueRoutes(
     ).all(issueId);
 
     sendJson(res, 200, rows);
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/issues/resolutions/:issueId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { operation: { id: "get:/api/issues/resolutions/:issueId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // GET /api/issues/:repoId/:issueId — issue detail with comments
   server.get("/api/issues/:repoId/:issueId", (req, res) => {
@@ -2185,7 +2185,7 @@ export function registerIssueRoutes(
     );
     if (ledgerIssueId && !enforceIssueProjectAccess(db, req, res, ledgerIssueId, "read")) return;
     sendJson(res, 200, result.resolved.issue);
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/issues/:repoId/:issueId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { operation: { id: "get:/api/issues/:repoId/:issueId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // GET /api/issues/:repoId/:issueId/context — comprehensive issue context hub
   // Bug: 84cd5ae — issue detail hub aggregation endpoint
@@ -2342,7 +2342,7 @@ export function registerIssueRoutes(
       auth_requests: authRequests,
       branch_info: branchInfo,
     });
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/issues/:repoId/:issueId/context", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { operation: { id: "get:/api/issues/:repoId/:issueId/context", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // GET /api/issues/:repoId/:issueId/sessions — get linked sessions for an issue
   server.get("/api/issues/:repoId/:issueId/sessions", (req, res) => {
@@ -2381,10 +2381,10 @@ export function registerIssueRoutes(
       created_at: link.created_at,
       ledger_issue_id: ledgerIssueId,
     })));
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/issues/:repoId/:issueId/sessions", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { operation: { id: "get:/api/issues/:repoId/:issueId/sessions", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // Resume the explicitly selected assignment; this action never transfers custody.
-  server.post("/api/issues/:repoId/:issueId/spawn", operatorOnlyManagedSessionRoute(async (req, res) => {
+  server.post("/api/issues/:repoId/:issueId/spawn", managedSessionRoute(async (req, res) => {
     const db = getDb();
     const resolved = resolveIssueDetailForRoute(db, workScanner, getParam(req, "repoId") ?? "", getParam(req, "issueId") ?? "");
     if (!resolved.ok) return sendJson(res, resolved.status, { error: resolved.error });
@@ -2434,7 +2434,7 @@ export function registerIssueRoutes(
     }
     sendJson(res, 200, { conversation_id: conversation.id, work_unit_id: row.id, continuation: row.continuation,
       branch: row.branch, cwd: checkout, custody_generation: row.custody_generation });
-  }), { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/issues/:repoId/:issueId/spawn", effects: ["ledger:write", "files:production", "process:external"], requestSchema: null, reportingCategory: "issues" }, fileRpc: "deny" });
+  }), { operation: { id: "post:/api/issues/:repoId/:issueId/spawn", effects: ["ledger:write", "files:production", "process:external"], requestSchema: null, reportingCategory: "issues" }, fileRpc: "deny" });
 
 }
 

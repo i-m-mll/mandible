@@ -34,10 +34,9 @@ describe("channel-server local socket", () => {
     // Directly under the temp dir: a path below the runtime root exceeds the 104-byte socket path limit.
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-channel-socket-"));
     const socket = path.join(root, "daemon.sock");
-    const routes = path.join(root, "routes.json");
-    fs.writeFileSync(routes, fs.readFileSync(path.resolve("cli/local-credential-routes.json")));
+
     const original = { base: process.env.MANDIBLE_BASE, socket: process.env.MANDIBLE_SOCKET,
-      token: process.env.MANDIBLE_TOKEN, routes: process.env.MANDIBLE_LOCAL_CREDENTIAL_ROUTES_FILE };
+      token: process.env.MANDIBLE_TOKEN };
     const received: Array<{ url?: string; auth?: string; managed?: string }> = [];
     const server = http.createServer((req, res) => {
       received.push({ url: req.url, auth: req.headers.authorization,
@@ -50,14 +49,13 @@ describe("channel-server local socket", () => {
       process.env.MANDIBLE_BASE = "https://app.mandible.localhost:19420";
       process.env.MANDIBLE_SOCKET = socket;
       process.env.MANDIBLE_TOKEN = "stale-token";
-      process.env.MANDIBLE_LOCAL_CREDENTIAL_ROUTES_FILE = routes;
       const { checkInboxGlobal } = await import("../channel-server/client.js");
       await checkInboxGlobal();
       expect(received).toEqual([{ url: "/api/inbox/global", auth: undefined, managed: "1" }]);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       for (const [key, value] of Object.entries({ MANDIBLE_BASE: original.base, MANDIBLE_SOCKET: original.socket,
-        MANDIBLE_TOKEN: original.token, MANDIBLE_LOCAL_CREDENTIAL_ROUTES_FILE: original.routes })) {
+        MANDIBLE_TOKEN: original.token })) {
         if (value === undefined) delete process.env[key]; else process.env[key] = value;
       }
       fs.rmSync(root, { recursive: true, force: true });
@@ -70,7 +68,7 @@ describe("channel-server local socket", () => {
     const server = http.createServer((_req, res) => { requests++; res.end('{}'); });
     await new Promise<void>(resolve => server.listen(socket, resolve));
     const values = { MANDIBLE_BASE: "https://app.mandible.localhost:19420", MANDIBLE_SOCKET: socket,
-      MANDIBLE_NO_KEYCHAIN_TOKEN: "1", MANDIBLE_LOCAL_CREDENTIAL_ROUTES_FILE: path.resolve("cli/local-credential-routes.json") };
+      MANDIBLE_NO_KEYCHAIN_TOKEN: "1" };
     const original = Object.fromEntries(Object.keys(values).map(key => [key, process.env[key]]));
     Object.assign(process.env, values);
     try {
