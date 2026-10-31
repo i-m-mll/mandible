@@ -128,11 +128,24 @@ merely encode an obsolete implementation.
 
 ## Related work and delivery
 
-Review open database issues for overlap, but close them only on evidence that
-their full acceptance contract is satisfied. The old source/custody/search
-umbrella includes broader backup, redaction, and restore work which this change
-does not imply complete. Operational log migration and durable-settings backup
-have independent contracts. Record larger affected work explicitly.
+Native sources remain authoritative; this change introduces no full-body
+ledger retention or automatic archival. The navigation marker preserves an
+admitted representation and actual historical references, not a requirement
+to retain every normalized body. Existing masked search text remains a bounded,
+disposable acceleration cache.
+
+The original source-reader and masked-search implementations are delivered.
+Remaining recovery work in [issue:2389894] aligns proof tooling with the current
+source-backed contract and verifies ledger metadata plus separately retained
+native sources. Old dual-read cutover and blanket legacy-body retention gates
+are superseded. Explicit transfer between provider and Mandible ownership is
+the separate design in [issue:acbd195]; historical custody code is not an
+accepted foundation. Operational log schema retirement is independent.
+
+The combined delivery also includes [issue:4e5c75b] and [issue:843f250]: handoff
+locks derive from journal authority, and superseded cleanup waits on actual
+resource users. These runtime lifecycle changes do not change conversation
+content ownership. All changes are reviewed through one protected request.
 
 The protected merge remains the user's action through Mandible. The historical
 go-live issue [issue:2c6c87a] stays open until production delivery evidence can
