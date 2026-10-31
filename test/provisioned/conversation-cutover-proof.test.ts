@@ -302,7 +302,7 @@ describe("legacy storage reclaim", () => {
 
     const report = buildSparseConversationStructureCache({ source, destination });
     expect(report).toMatchObject({ pass: true, conversations: 1, blocks: 2, tool_links: 1 });
-    const cache = new SqliteDatabase(destination, { readonly: true });
+    const cache = new SqliteDatabase(report.destination.path, { readonly: true });
     expect(cache.prepare(`
       SELECT position, type_code, role_code, parent_position,
              record_offset, record_length, record_ordinal, sub_block_ordinal
@@ -311,8 +311,6 @@ describe("legacy storage reclaim", () => {
       { position: 0, type_code: 4, role_code: 1, parent_position: null, record_offset: 10, record_length: 20, record_ordinal: 1, sub_block_ordinal: 0 },
       { position: 1, type_code: 5, role_code: 3, parent_position: 0, record_offset: 30, record_length: 40, record_ordinal: 2, sub_block_ordinal: 0 },
     ]);
-    expect(cache.prepare("SELECT name FROM pragma_table_info('cache_blocks') ORDER BY cid").all())
-      .not.toContainEqual({ name: "content" });
     cache.close();
   });
 

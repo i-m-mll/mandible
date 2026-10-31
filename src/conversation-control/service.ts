@@ -1,3 +1,4 @@
+import type { ConversationSourceEpochs } from "../conversations/source-types.js";
 import { SessionExecutionStore } from "../session-execution.js";
 import type { ProviderExecutionEvent } from "./types.js";
 import { RUNTIME_SETTING_FIELDS } from "./types.js";
@@ -940,18 +941,21 @@ export class ConversationControlService {
       // Source-backed conversations reclaim dense rows, so exact terminal
       // reconciliation reads the same bounded tail from the sparse index.
       const source = this.db.prepare(`
-        SELECT current_version_id
+        SELECT current_version_id, parser_format AS parserFormat, parser_version AS parserVersion,
+               normalization_version AS normalizationVersion, redaction_epoch AS redactionEpoch
           FROM conversation_sources
          WHERE conversation_id = ? AND availability = 'available'
-      `).get(conversationId) as { current_version_id: string | null } | undefined;
+      `).get(conversationId) as ({ current_version_id: string | null } & ConversationSourceEpochs) | undefined;
       if (source?.current_version_id) {
         const cache = getConversationStructureCache(this.db);
         const head = cache.readPage(conversationId, source.current_version_id, {
+          epochs: source,
           offset: 0,
           limit: 1,
         });
         if (head && head.total > 0) {
           const tail = cache.readPage(conversationId, source.current_version_id, {
+            epochs: source,
             offset: Math.max(0, head.total - 256),
             limit: 256,
           });

@@ -17,6 +17,7 @@ import { SweepBudget, sweepBudgetForEnvironment, writeSweepProgress, runSweepWor
 import { withOwnedRunLock, createOwnedRun, saveOwnedMetadata, finalizeOwnedRun, cleanupOwnedRun } from './owned-run.mjs';
 import { reconcileGeneratedScratch, recordScratchProcess } from './generated-scratch.mjs';
 import SqliteDatabase from "../src/sqlite.ts";
+import { conversationStructureCachePath } from "../src/conversations/structure-cache-path.ts";
 import { isProtectedIdentitySettingKey } from "../src/settings-key-policy.js";
 import { numericSourceExtent } from "../src/conversations/source-observer.ts";
 import { localApiSocketPath } from "../src/local-api-socket.ts";
@@ -1303,7 +1304,7 @@ async function main() {
     await phase("snapshot_sanitize", () => sanitizePreviewDatabase(dbCopy));
     const conversationsDir = path.join(root, "conversations");
     await phase("cache_preparation", () => seedProjectedConversationStructureCache({
-      sourceCache: path.join(os.homedir(), ".cache", "mandible", "conversations", "structure.db"),
+      sourceCache: conversationStructureCachePath(sourceDb, process.env.MANDIBLE_CONVERSATION_STRUCTURE_DB),
       targetCache: path.join(conversationsDir, "structure.db"),
       projectedDb: dbCopy,
       signal: budget.controller.signal,

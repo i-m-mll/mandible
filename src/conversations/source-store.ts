@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import path from "node:path";
 import { decompressContent } from "../compression.js";
 import type { Db } from "../db.js";
-import type { ConversationSource } from "../parsers/types.js";
+import type { ConversationSource, ConversationBlock } from "../parsers/types.js";
 import type {
   ConversationSourceAlias,
   ConversationSourceDescriptor,
@@ -17,12 +17,14 @@ import type {
 } from "./source-types.js";
 import {
   ConversationSourceChangedError,
+  observeStableSourceAliasRanges,
   numericSourceExtent,
   sameSourceFilesystemIdentity,
   sourceFilesystemIdentity,
   type SourceFilesystemIdentity,
 } from "./source-observer.js";
 export { ConversationSourceChangedError } from "./source-observer.js";
+import { getConversationStructureCache } from "./structure-cache.js";
 import { parseJsonObjectStrict } from "../row-coerce.js";
 
 interface RecordRange {
@@ -812,9 +814,22 @@ export class ConversationSourceStore {
   }
 
   async recordConversation(input: RecordConversationSourceInput): Promise<string> {
+    const prepared = await this.prepareConversation(input, true);
+    try {
+      this.db.transaction(() => prepared.publish()).immediate();
+      return prepared.versionId;
+    } finally { await prepared.dispose(); }
+  }
+
+  /** Prepare source proof and disposable navigation without acquiring the ledger writer. */
+  async prepareConversation(input: RecordConversationSourceInput, legacyStructure = false): Promise<{
+    versionId: string;
+    publish(): void;
+    dispose(): Promise<void>;
+  }> {
     const existingSource = this.db.prepare(`
-      SELECT id FROM conversation_sources WHERE conversation_id = ? AND provider = ?
-    `).get(input.conversationId, input.provider) as { id: string } | undefined;
+      SELECT id, current_version_id, parser_format, parser_version, normalization_version, redaction_epoch FROM conversation_sources WHERE conversation_id = ? AND provider = ?
+    `).get(input.conversationId, input.provider) as { id: string; current_version_id: string | null; parser_format: string; parser_version: string; normalization_version: string; redaction_epoch: number } | undefined;
     const sourceId = existingSource?.id ?? stableId("csrc", input.conversationId, input.provider);
     let expectedPriorContentHash: string | undefined;
     if (input.sourceSnapshot?.kind === "append") {
@@ -901,7 +916,71 @@ export class ConversationSourceStore {
         : [],
     );
 
-    const apply = this.db.transaction(() => {
+    if (!legacyStructure) {
+      const cache = getConversationStructureCache(this.db);
+      const tools = new Map<string, number>();
+      for (const block of input.blocks ?? []) {
+        if (block.type === "tool_use" && typeof block.metadata.tool_id === "string") {
+          tools.set(block.metadata.tool_id, block.position);
+        }
+      }
+      const priorId = structuralMode === "append" ? existingSource?.current_version_id ?? undefined : undefined;
+      const rows = structuralBlocks.map(({ block, range, subBlockOrdinal }) => {
+        const metadata = parseJsonObjectStrict(block.metadata_json, "conversation block metadata_json");
+        const tool = block.type === "tool_result" && typeof metadata.tool_id === "string" ? metadata.tool_id : null;
+        const parent = block.parent_id !== null && /^\d+$/.test(block.parent_id) ? Number(block.parent_id) : null;
+        return {
+          position: block.position, type: block.type as ConversationBlock["type"], role: block.role as ConversationBlock["role"],
+          parentPosition: parent ?? (tool ? tools.get(tool) ?? cache.findToolPosition(input.conversationId, tool, priorId, input) : null),
+          recordOffset: range.offset, recordLength: range.length, recordOrdinal: range.ordinal, subBlockOrdinal,
+          model: typeof metadata.model === "string" ? metadata.model : null,
+        };
+      });
+      const priorCount = priorId ? cache.blockCount(input.conversationId, priorId, input) : 0;
+      if (priorId && priorCount === null) throw new ConversationSourceChangedError("append structure generation is missing");
+      cache.replaceRows({
+        conversation_id: input.conversationId, source_version_id: versionId,
+        parser_format: input.parserFormat, parser_version: input.parserVersion,
+        normalization_version: input.normalizationVersion, redaction_epoch: input.redactionEpoch,
+        block_count: input.blockCount ?? (priorCount ?? 0) + rows.length,
+      }, rows, tools, priorId);
+      cache.prune(input.conversationId, existingSource?.current_version_id ?? null);
+    }
+    let proof: LogicalSourceHandle | undefined;
+    let publicationIdentity = snapshot.filesystemIdentity;
+    if (!legacyStructure) {
+      const verified = await observeStableSourceAliasRanges({
+        id: aliasId, sourceId, rootKind: "provider", rootPath: alias.rootPath,
+        relativePath: alias.relativePath, path: aliasPath, aliasKind: alias.aliasKind, availability: "available",
+      }, [], { prefix: { byteLength: snapshot.size, contentSha256: snapshot.contentHash,
+        filesystemIdentity: snapshot.filesystemIdentity } });
+      publicationIdentity = verified.filesystemIdentity;
+      snapshot.filesystemIdentity = verified.filesystemIdentity;
+      snapshot.mtimeMs = verified.fileMtimeMs;
+      proof = await openLogicalSource(input.filePath, { rootPath: alias.rootPath });
+      try {
+        const observed = proof.statSync();
+        if (Number(observed.size) < snapshot.size
+            || !sameSourceFilesystemIdentity(sourceFilesystemIdentity(observed), publicationIdentity)) {
+          throw new ConversationSourceChangedError("conversation source changed after prefix validation");
+        }
+      } catch (error) { await proof.close(); throw error; }
+    }
+    const publish = () => {
+      if (proof) {
+        const observed = proof.statSync();
+        if (Number(observed.size) < snapshot.size
+            || !sameSourceFilesystemIdentity(sourceFilesystemIdentity(observed), publicationIdentity)) {
+          throw new ConversationSourceChangedError("conversation source changed before publication");
+        }
+      }
+      const current = this.db.prepare(`SELECT id, current_version_id, parser_format, parser_version,
+        normalization_version, redaction_epoch FROM conversation_sources WHERE conversation_id = ? AND provider = ?`)
+        .get(input.conversationId, input.provider);
+      if (JSON.stringify(current) !== JSON.stringify(existingSource)) {
+        throw new ConversationSourceChangedError("conversation publication changed after preparation");
+      }
+
       this.db.prepare(`
         INSERT INTO conversation_sources (
           id, conversation_id, provider, native_session_id, parser_format, parser_version,
@@ -971,6 +1050,8 @@ export class ConversationSourceStore {
            SET current_version_id = ?, updated_at = ?
          WHERE id = ?
       `).run(versionId, now, sourceId);
+
+      if (!legacyStructure) return;
 
       const inheritedCodexModelPositions = new Set<number>();
       if (structuralMode === "append") {
@@ -1123,9 +1204,8 @@ export class ConversationSourceStore {
           pending.blockId,
         );
       }
-    });
-    apply();
-    return versionId;
+    };
+    return { versionId, publish, dispose: async () => { await proof?.close(); } };
   }
 
   /** Register an immutable Mandible-owned normalized source without stripping DB payload. */
