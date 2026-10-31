@@ -25,6 +25,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const require = createRequire(import.meta.url);
 const { liveDbPath } = require("../cli/mandible-paths.cjs");
 import SqliteDatabase from "../src/sqlite.ts";
+import { conversationStructureCachePath } from "../src/conversations/structure-cache-path.ts";
 
 const DEFAULT_PORT_START = 29421;
 const DEFAULT_PORT_END = 29499;
@@ -1612,7 +1613,7 @@ export async function createProjectedSnapshot({ sourceDb, dbCopy, worktree, allo
   }
   const previewRoot = path.dirname(dbCopy);
   const structureCache = await seedProjectedConversationStructureCache({
-    sourceCache: sourceConversationStructureCachePath(),
+    sourceCache: sourceConversationStructureCachePath(sourceDb),
     targetCache: previewIsolationEnv(previewRoot, sourceDb).MANDIBLE_CONVERSATION_STRUCTURE_DB,
     projectedDb: dbCopy,
   });
@@ -1625,9 +1626,9 @@ export async function createProjectedSnapshot({ sourceDb, dbCopy, worktree, allo
   return { ...projection, structureCache, briefingDemo };
 }
 
-function sourceConversationStructureCachePath() {
+function sourceConversationStructureCachePath(sourceDb) {
   const override = process.env.MANDIBLE_CONVERSATION_STRUCTURE_DB?.trim();
-  return path.resolve(override || path.join(os.homedir(), ".cache", "mandible", "conversations", "structure.db"));
+  return conversationStructureCachePath(sourceDb, override);
 }
 
 /**
@@ -1639,6 +1640,7 @@ function sourceConversationStructureCachePath() {
  * source read may have advanced it beyond main.
  */
 export async function seedProjectedConversationStructureCache({ sourceCache, targetCache, projectedDb, preserveExisting = false, signal }) {
+  targetCache = conversationStructureCachePath("", targetCache);
   const preserveTarget = preserveExisting && fs.existsSync(targetCache);
   if (!preserveTarget && !fs.existsSync(sourceCache)) {
     return { status: "unavailable", source: sourceCache, target: targetCache, conversations: 0, blocks: 0 };

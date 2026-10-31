@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { conversationStructureCachePath } from "../src/conversations/structure-cache-path.ts";
 
 import fs from "node:fs";
 import os from "node:os";
@@ -44,7 +45,7 @@ const SPARSE_BLOCK_TYPES = Object.freeze([
   "tool_result", "system", "event",
 ]);
 const SPARSE_ROLES = Object.freeze(["user", "assistant", "system", "tool"]);
-const SPARSE_STRUCTURE_CACHE_VERSION = 3;
+const SPARSE_STRUCTURE_CACHE_VERSION = 4;
 
 function sparseToolKey(toolId) {
   return createHash("sha256").update(toolId).digest().subarray(0, 16);
@@ -488,7 +489,7 @@ export function buildCompactDestination(options) {
  */
 export function buildSparseConversationStructureCache(options) {
   const sourcePath = path.resolve(options.source);
-  const destinationPath = path.resolve(options.destination);
+  const destinationPath = conversationStructureCachePath("", options.destination);
   const partialPath = `${destinationPath}.partial`;
   const markerPath = `${destinationPath}.rebuild-in-progress.json`;
   assertSafeDestination(sourcePath, destinationPath);
@@ -525,7 +526,7 @@ export function buildSparseConversationStructureCache(options) {
       ) WITHOUT ROWID;
       CREATE TABLE cache_conversations (
         cache_id INTEGER PRIMARY KEY,
-        conversation_id TEXT NOT NULL UNIQUE,
+        conversation_id TEXT NOT NULL,
         source_version_id TEXT NOT NULL,
         parser_format TEXT NOT NULL,
         parser_version TEXT NOT NULL,
@@ -533,7 +534,8 @@ export function buildSparseConversationStructureCache(options) {
         redaction_epoch INTEGER NOT NULL,
         block_count INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
-        accessed_at INTEGER NOT NULL
+        accessed_at INTEGER NOT NULL,
+        UNIQUE (conversation_id, source_version_id, parser_format, parser_version, normalization_version, redaction_epoch)
       );
       CREATE TABLE cache_blocks (
         cache_conversation_id INTEGER NOT NULL
@@ -546,6 +548,7 @@ export function buildSparseConversationStructureCache(options) {
         record_length INTEGER NOT NULL,
         record_ordinal INTEGER NOT NULL,
         sub_block_ordinal INTEGER NOT NULL,
+        model TEXT,
         PRIMARY KEY (cache_conversation_id, position)
       ) WITHOUT ROWID;
       CREATE TABLE cache_tool_links (
@@ -817,7 +820,7 @@ export function buildLegacyReclaimedDestination(options) {
       emptyConversationIndex: true,
     });
   } catch (error) {
-    removeDbFamily(structureCachePath);
+    removeDbFamily(conversationStructureCachePath("", structureCachePath));
     throw error;
   }
   return {

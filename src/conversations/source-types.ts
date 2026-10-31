@@ -132,6 +132,7 @@ export interface RecordConversationSourceInput extends ConversationSourceEpochs 
    */
   blocks?: ReadonlyArray<Omit<ConversationBlock, "id" | "conversation_id"> & { legacyId: string }>;
   structuralMode?: "replace" | "append";
+  blockCount?: number;
 }
 
 export interface RecordConversationSourceAliasInput {
