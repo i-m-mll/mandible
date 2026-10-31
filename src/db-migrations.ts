@@ -2218,6 +2218,9 @@ export const MIGRATIONS: readonly Migration[] = [
      WHERE resolved_at IS NULL
        AND auth_request_id IN (SELECT id FROM auth_requests WHERE status = 'withdrawn')`,
   ] },
+  { version: 225, name: "conversation_navigation_publication", statements: [
+    "ALTER TABLE conversation_sources ADD COLUMN navigation_kind TEXT NOT NULL DEFAULT 'legacy' CHECK(navigation_kind IN ('legacy','sparse'))",
+  ] },
 ];
 
 /**

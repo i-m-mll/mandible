@@ -22,6 +22,7 @@ import type {
   SourceReadResult,
   ConversationSourceVersion,
   ConversationSourceDescriptor,
+  ConversationNavigationKind,
 } from "./source-types.js";
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "./source-types.js";
 import {
@@ -65,6 +66,7 @@ export interface SourceScanOptions {
   expectedSourceVersionId?: string;
   expectedBlockCount?: number;
   expectedModel?: string | null;
+  expectedNavigationKind?: ConversationNavigationKind;
   onVerification?: (milliseconds: number) => void;
 }
 
@@ -303,7 +305,7 @@ export class ConversationSourceReader {
         ? "dense" : "sparse";
     }
     if (pinned?.parserFormat === CURRENT_CONVERSATION_SOURCE_EPOCHS.parserFormat && current?.currentVersionId !== pinned.id
-        && session.navigationKind === "dense") return { status: "unsupported", reason: "historical dense navigation is unavailable" };
+        && session.navigationKind === "dense" && !session.canHydrateHistorical) return { status: "unsupported", reason: "historical dense navigation requires admitted context" };
     if (pinned?.parserFormat === CURRENT_CONVERSATION_SOURCE_EPOCHS.parserFormat && session.blockCount !== undefined && session.navigationKind === "sparse") {
       if (current?.currentVersionId !== pinned.id && !session.canHydrateHistorical) {
         return { status: "unsupported", reason: "historical navigation requires its admitted count and model context" };
@@ -334,6 +336,7 @@ export class ConversationSourceReader {
     }
     const params: unknown[] = [conversationId];
     const conditions = ["conversation_id = ?", "status = 'current'"];
+    if (pinned) { conditions.push("source_version_id = ?"); params.push(pinned.id); }
     if (options.types && options.types.length > 0) {
       conditions.push(`type IN (${options.types.map(() => "?").join(",")})`);
       params.push(...options.types);
@@ -472,7 +475,7 @@ export class ConversationSourceReader {
 
   private sourceState(source: ConversationSourceDescriptor | null): string {
     return JSON.stringify(source?.parserFormat === CURRENT_CONVERSATION_SOURCE_EPOCHS.parserFormat
-      ? { ...source, currentVersionId: undefined } : source);
+      ? { ...source, currentVersionId: undefined, navigationKind: undefined } : source);
   }
 
   private checkSession(session: ReadSession, expectedGeneration?: string): void {
@@ -527,6 +530,7 @@ export class ConversationSourceReader {
     const navigation = this.structureCache.openReadSession();
     const session: ReadSession = {
       navigationCache: navigation.cache,
+      navigationKind: (options.expectedNavigationKind ?? source?.navigationKind) === "sparse" ? "sparse" : undefined,
       conversationId,
       sourceState: this.sourceState(source),
       credentialState: credentials,

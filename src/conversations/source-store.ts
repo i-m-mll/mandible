@@ -319,6 +319,7 @@ function sameJson(left: string, right: string): boolean {
 
 function sourceDescriptor(row:Record<string,unknown>):ConversationSourceDescriptor {
     return {
+      navigationKind: row.navigation_kind as ConversationSourceDescriptor["navigationKind"],
       sourceId: String(row.id),
       conversationId: String(row.conversation_id),
       provider: row.provider as ConversationSource,
@@ -378,7 +379,7 @@ export class ConversationSourceStore {
     const result=new Map<string,ConversationSourceDescriptor>();
     if(conversationIds.length===0)return result;
     const rows=this.db.prepare(`SELECT id, conversation_id, provider, native_session_id, availability,
-             custody_state, current_version_id, unavailable_reason,
+             custody_state, current_version_id, unavailable_reason, navigation_kind,
              parser_format, parser_version, normalization_version, redaction_epoch FROM conversation_sources
       WHERE conversation_id IN (SELECT value FROM json_each(?)) ORDER BY conversation_id,updated_at DESC,id
     `).all(JSON.stringify(conversationIds)) as Array<Record<string,unknown>>;
@@ -387,8 +388,8 @@ export class ConversationSourceStore {
   }
 
   /** The source `resolveConversation` would pick, for many conversations in one statement. */
-  latestSources(conversationIds:readonly string[]):Map<string,{sourceId:string;currentVersionId:string|null}> {
-    return new Map([...this.resolveConversations(conversationIds)].map(([id,source])=>[id,{sourceId:source.sourceId,currentVersionId:source.currentVersionId}]));
+  latestSources(conversationIds:readonly string[]):Map<string,{sourceId:string;currentVersionId:string|null;navigationKind:ConversationSourceDescriptor["navigationKind"]}> {
+    return new Map([...this.resolveConversations(conversationIds)].map(([id,source])=>[id,{sourceId:source.sourceId,currentVersionId:source.currentVersionId,navigationKind:source.navigationKind}]));
   }
 
   /** Canonical identity, availability and epochs plus the immutable admitted version facts. */
@@ -828,8 +829,8 @@ export class ConversationSourceStore {
     dispose(): Promise<void>;
   }> {
     const existingSource = this.db.prepare(`
-      SELECT id, current_version_id, parser_format, parser_version, normalization_version, redaction_epoch FROM conversation_sources WHERE conversation_id = ? AND provider = ?
-    `).get(input.conversationId, input.provider) as { id: string; current_version_id: string | null; parser_format: string; parser_version: string; normalization_version: string; redaction_epoch: number } | undefined;
+      SELECT id, current_version_id, parser_format, parser_version, normalization_version, redaction_epoch, navigation_kind FROM conversation_sources WHERE conversation_id = ? AND provider = ?
+    `).get(input.conversationId, input.provider) as { id: string; current_version_id: string | null; parser_format: string; parser_version: string; normalization_version: string; redaction_epoch: number; navigation_kind: ConversationSourceDescriptor["navigationKind"] } | undefined;
     const sourceId = existingSource?.id ?? stableId("csrc", input.conversationId, input.provider);
     let expectedPriorContentHash: string | undefined;
     if (input.sourceSnapshot?.kind === "append") {
@@ -975,7 +976,7 @@ export class ConversationSourceStore {
         }
       }
       const current = this.db.prepare(`SELECT id, current_version_id, parser_format, parser_version,
-        normalization_version, redaction_epoch FROM conversation_sources WHERE conversation_id = ? AND provider = ?`)
+        normalization_version, redaction_epoch, navigation_kind FROM conversation_sources WHERE conversation_id = ? AND provider = ?`)
         .get(input.conversationId, input.provider);
       if (JSON.stringify(current) !== JSON.stringify(existingSource)) {
         throw new ConversationSourceChangedError("conversation publication changed after preparation");
@@ -1047,9 +1048,9 @@ export class ConversationSourceStore {
       // therefore fails on every changed source when foreign_keys is enabled.
       this.db.prepare(`
         UPDATE conversation_sources
-           SET current_version_id = ?, updated_at = ?
+           SET current_version_id = ?, navigation_kind = ?, updated_at = ?
          WHERE id = ?
-      `).run(versionId, now, sourceId);
+      `).run(versionId, legacyStructure ? "legacy" : "sparse", now, sourceId);
 
       if (!legacyStructure) return;
 
@@ -1302,7 +1303,7 @@ export class ConversationSourceStore {
         input.normalizationVersion, input.redactionEpoch, now,
       );
       this.db.prepare(`
-        UPDATE conversation_sources SET current_version_id = ?, updated_at = ? WHERE id = ?
+        UPDATE conversation_sources SET current_version_id = ?, navigation_kind = 'legacy', updated_at = ? WHERE id = ?
       `).run(versionId, now, sourceId);
       this.db.prepare(`
         UPDATE conversation_structural_blocks SET status = 'retired', updated_at = ?
