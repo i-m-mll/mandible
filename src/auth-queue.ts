@@ -7743,7 +7743,7 @@ export class AuthQueue {
    */
   private async resolveDirectWorkUnitsOnMerge(completed: AuthRequest): Promise<{ resolvedIds: string[]; observation: string }> {
     const observed = this.observationToken(completed.id, completed);
-    const read = () => (this.db.prepare("SELECT * FROM work_units WHERE branch = ? AND state IN ('open', 'committed', 'abandoned') ORDER BY id").all(completed.head_branch) as Record<string, unknown>[]).map(row => Object.fromEntries(["id", "repo_id", "branch", "state", "auth_request_id", "assigned_session_id", "owner_user_id", "responsibility_session_id", "custody_generation"].map(key => [key, row[key] ?? null]))) as Array<{ repo_id: string }>;
+    const read = () => (completed.head_branch ? this.db.prepare("SELECT * FROM work_units WHERE branch = ? AND state IN ('open', 'committed', 'abandoned') ORDER BY id").all(completed.head_branch) as Record<string, unknown>[] : []).map(row => Object.fromEntries(["id", "repo_id", "branch", "state", "auth_request_id", "assigned_session_id", "owner_user_id", "responsibility_session_id", "custody_generation"].map(key => [key, row[key] ?? null]))) as Array<{ repo_id: string }>;
     for (let attempt = 0; ; attempt++) {
       const rows = read();
       const identity = await observeRepoIdentities(this.db, [completed.repo, ...rows.map(row => row.repo_id)], [completed.target_repo_root, completed.cwd, ...rows.map(row => row.repo_id)], this.phaseAbort.signal);

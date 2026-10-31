@@ -116,7 +116,6 @@ export interface CustodyHolder {
   user_id: string | null;
   user_slug: string | null;
   session_id: string | null;
-  /** Ambiguity-safe short credential id for people. */
 
 }
 
