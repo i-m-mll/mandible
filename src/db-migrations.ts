@@ -2237,6 +2237,9 @@ export const MIGRATIONS: readonly Migration[] = [
     ...RESPONSIBILITY_SCHEMA_SQL,
     "INSERT INTO auth_request_responsibility (auth_request_id, owner_user_id, responsibility_session_id) SELECT id, requested_by_user_id, session_id FROM auth_requests",
   ] },
+  { version: 228, name: "retire_ledger_operational_logs", statements: [
+    "DROP TABLE IF EXISTS daemon_log",
+  ] },
 ];
 
 /**

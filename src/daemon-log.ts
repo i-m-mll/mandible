@@ -6,7 +6,6 @@ import type { Readable } from "node:stream";
 import type { SqliteStatement } from "./sqlite.js";
 import type { Db } from "./db.js";
 import type { Logger, LogLevel } from "./types.js";
-import { hasCurrentOperationalLogVerification } from "./operational-log-verification.js";
 import { stderrLogRotationRecord } from "./stderr-log-chain.js";
 
 const LEVELS: LogLevel[] = ["debug", "info", "warn", "error"];
@@ -465,13 +464,11 @@ export async function pruneDaemonLogs(
   const batchSize = parseBoundedInteger(options.batchSize, DEFAULT_RETENTION_BATCH_SIZE, 1, 10_000);
   const maxBatches = parseBoundedInteger(options.maxBatches, DEFAULT_RETENTION_MAX_BATCHES, 1, 100);
   const yieldMs = parseBoundedInteger(options.yieldMs, DEFAULT_RETENTION_YIELD_MS, 0, 10_000);
-  const legacyProtection = unverifiedLegacyRetentionProtection(db);
   const removeBatch = db.prepare(
     `DELETE FROM main.daemon_log
      WHERE id IN (
        SELECT id FROM main.daemon_log
        WHERE ts < ?
-       ${legacyProtection}
        ORDER BY ts ASC
        LIMIT ?
      )`,
@@ -492,7 +489,7 @@ export async function pruneDaemonLogs(
   }
 
   const hasMore = Boolean(db
-    .prepare(`SELECT 1 FROM main.daemon_log WHERE ts < ? ${legacyProtection} LIMIT 1`)
+    .prepare(`SELECT 1 FROM main.daemon_log WHERE ts < ? LIMIT 1`)
     .get(cutoff));
   return { retentionDays, cutoff, deleted, batches, hasMore };
 }
@@ -624,21 +621,6 @@ function readRetentionDays(db: Db): number {
     return parseBoundedInteger(row?.value, DEFAULT_LOG_RETENTION_DAYS, 1, MAX_LOG_RETENTION_DAYS);
   } catch {
     return DEFAULT_LOG_RETENTION_DAYS;
-  }
-}
-
-function unverifiedLegacyRetentionProtection(db: Db): string {
-  try {
-    const attached = (db.pragma("database_list") as Array<{ name: string }>).some(
-      (entry) => entry.name === "legacy_ledger",
-    );
-    if (!attached) return "";
-    const verified = hasCurrentOperationalLogVerification(db);
-    return verified
-      ? ""
-      : "AND id NOT IN (SELECT id FROM legacy_ledger.daemon_log)";
-  } catch (error) {
-    throw new Error("Operational log legacy verification failed; retention is blocked", { cause: error });
   }
 }
 

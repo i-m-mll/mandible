@@ -27,13 +27,15 @@ import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
 
 let tempDir = "";
 let db: Db;
+let ledgerDb: Db;
 let stderrSpy: ReturnType<typeof vi.spyOn>;
 const originalStderrLogPath = process.env.MANDIBLE_STDERR_LOG_PATH;
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(testRuntimeRoot, "daemon-log-"));
   process.env.MANDIBLE_STDERR_LOG_PATH = path.join(tempDir, "launchd-stderr.log");
-  db = openDb(path.join(tempDir, "mandible.db"));
+  ledgerDb = openDb(path.join(tempDir, "mandible.db"));
+  db = openOperationalLogStore(path.join(tempDir, "mandible.db"))!.db;
   stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 });
 
@@ -41,6 +43,7 @@ afterEach(() => {
   stopDaemonLogger();
   stderrSpy.mockRestore();
   db.close();
+  ledgerDb.close();
   if (originalStderrLogPath === undefined) {
     delete process.env.MANDIBLE_STDERR_LOG_PATH;
   } else {
@@ -113,7 +116,7 @@ describe("daemon logger", () => {
   });
 
   it("persists info and above while dropping debug noise", () => {
-    const logger = configureDaemonLogger(db);
+    const logger = configureDaemonLogger(db, { settingsDb: ledgerDb });
 
     logger("debug", "debug_row_dropped", {
       subsystem: "test",
@@ -153,7 +156,7 @@ describe("daemon logger", () => {
   });
 
   it("logs a child's piped stderr per pipe read, not per line, and caps a huge read", async () => {
-    configureDaemonLogger(db);
+    configureDaemonLogger(db, { settingsDb: ledgerDb });
     const burst = Array.from({ length: 300 }, (_, index) => `    at frame${index} (file.js:${index}:1)`).join("\n");
     const huge = "x".repeat(40 * 1024);
     const child = spawn("/bin/sh", ["-c", `printf '%s\\n' "$1" >&2; sleep 0.2; printf '%s' "$2" >&2`, "sh", `Error: boom\n${burst}`, huge], { stdio: ["ignore", "ignore", "pipe"] });
@@ -210,11 +213,11 @@ describe("preview log ownership", () => {
     const production = path.join(tempDir, "production.log");
     fs.writeFileSync(production, "production sentinel");
     fs.writeFileSync(stdout, "preview stdout"); fs.writeFileSync(stderr, "preview stderr");
-    db.prepare("INSERT OR REPLACE INTO settings(key,value,updated_at) VALUES('stderr_rotation_max_bytes','4',1),('stderr_rotation_keep_segments','2',1)").run();
+    ledgerDb.prepare("INSERT OR REPLACE INTO settings(key,value,updated_at) VALUES('stderr_rotation_max_bytes','4',1),('stderr_rotation_keep_segments','2',1)").run();
     vi.stubEnv("MANDIBLE_INSTANCE_ROLE", "preview"); vi.stubEnv("MANDIBLE_PREVIEW_ROOT", preview);
     vi.stubEnv("MANDIBLE_STDOUT_LOG_PATH", stdout); vi.stubEnv("MANDIBLE_STDERR_LOG_PATH", stderr);
     try {
-      configureDaemonLogger(db);
+      configureDaemonLogger(db, { settingsDb: ledgerDb });
       for (const file of [stdout, stderr]) expect(JSON.parse(fs.readFileSync(file, "utf8")).event).toBe(STDERR_LOG_ROTATED);
       expect(fs.readFileSync(`${stdout}.1`, "utf8")).toBe("preview stdout");
       expect(fs.readFileSync(production, "utf8")).toBe("production sentinel");
@@ -238,18 +241,18 @@ describe("daemon log retention", () => {
   }
 
   it("deletes only expired rows in bounded resumable batches", async () => {
-    db.prepare("UPDATE settings SET value = '3' WHERE key = 'log_retention_days'").run();
+    ledgerDb.prepare("UPDATE settings SET value = '3' WHERE key = 'log_retention_days'").run();
     for (let index = 0; index < 7; index += 1) {
       insertLog(`old-${index}`, now - 4 * dayMs - index);
     }
     insertLog("cutoff", now - 3 * dayMs);
     insertLog("new", now - dayMs);
 
-    const first = await pruneDaemonLogs(db, { now, batchSize: 2, maxBatches: 2, yieldMs: 0 });
+    const first = await pruneDaemonLogs(db, { settingsDb: ledgerDb, now, batchSize: 2, maxBatches: 2, yieldMs: 0 });
     expect(first).toMatchObject({ retentionDays: 3, deleted: 4, batches: 2, hasMore: true });
     expect(db.prepare("SELECT COUNT(*) AS count FROM daemon_log").get()).toEqual({ count: 5 });
 
-    const second = await pruneDaemonLogs(db, { now, batchSize: 2, maxBatches: 10, yieldMs: 0 });
+    const second = await pruneDaemonLogs(db, { settingsDb: ledgerDb, now, batchSize: 2, maxBatches: 10, yieldMs: 0 });
     expect(second).toMatchObject({ retentionDays: 3, deleted: 3, hasMore: false });
     expect(db.prepare("SELECT id FROM daemon_log ORDER BY id").all()).toEqual([
       { id: "cutoff" },
@@ -260,7 +263,7 @@ describe("daemon log retention", () => {
   it("drains an in-flight yielding retention batch before shutdown", async () => {
     vi.useFakeTimers();
     for (let index = 0; index < 3; index++) insertLog(`old-${index}`, now - 8 * dayMs);
-    const retention = startDaemonLogRetention(db, () => {}, { now, initialDelayMs: 0, maxBatches: 2, batchSize: 1, yieldMs: 10 });
+    const retention = startDaemonLogRetention(db, () => {}, { settingsDb: ledgerDb, now, initialDelayMs: 0, maxBatches: 2, batchSize: 1, yieldMs: 10 });
     try {
       await vi.advanceTimersByTimeAsync(0);
       let drained = false;
@@ -274,19 +277,11 @@ describe("daemon log retention", () => {
       expect(db.prepare("SELECT COUNT(*) AS count FROM daemon_log").get()).toEqual({ count: 1 });
     } finally { await retention.stop(); vi.useRealTimers(); }
   });
-
-  it("blocks retention when legacy verification cannot be inspected", async () => {
-    insertLog("old", now - 8 * dayMs);
-    vi.spyOn(db, "pragma").mockImplementation(() => { throw new Error("inspection unavailable"); });
-    await expect(pruneDaemonLogs(db, { now })).rejects.toThrow(/verification failed/);
-    expect(db.prepare("SELECT id FROM daemon_log").all()).toEqual([{ id: "old" }]);
-    vi.restoreAllMocks();
-  });
 });
 
 describe("request logging", () => {
   it("records file-RPC requests as structured daemon_log rows", async () => {
-    const logger = configureDaemonLogger(db);
+    const logger = configureDaemonLogger(db, { settingsDb: ledgerDb });
     const router = new Router({ logger });
     router.get("/api/ledger/issues/:issueId", (req, res) => {
       res.json({ issue_id: req.params.issueId });
@@ -325,7 +320,7 @@ describe("request logging", () => {
   });
 
   it("records HTTP requests after response completion with status and duration", async () => {
-    const logger = configureDaemonLogger(db);
+    const logger = configureDaemonLogger(db, { settingsDb: ledgerDb });
     const router = new Router({ logger });
     router.get("/api/ping", (_req, res) => {
       res.json({ ok: true });
@@ -376,23 +371,17 @@ describe("request logging", () => {
 });
 
 describe("system log route daemon_log source", () => {
-  it("preserves filters, facets, and cursor pagination while both stores coexist", async () => {
+  it("preserves filters, facets, and cursor pagination across new writes", async () => {
     const canonicalPath = path.join(tempDir, "mandible.db");
     const opened = openOperationalLogStore(canonicalPath);
     if (!opened) throw new Error("expected operational log store");
     try {
-      const insertLegacy = db.prepare(
-        `INSERT INTO daemon_log
-         (id, ts, level, event, subsystem, fields_json, issue_id)
-         VALUES (?, ?, ?, ?, ?, '{}', ?)`,
-      );
       const insertPrimary = opened.db.prepare(
         `INSERT INTO daemon_log
          (id, ts, level, event, subsystem, fields_json, issue_id)
          VALUES (?, ?, ?, ?, ?, '{}', ?)`,
       );
-      insertLegacy.run("a", 1_000, "warn", "legacy-a", "auth", "issue-1");
-      insertLegacy.run("b", 2_000, "error", "duplicate-b", "auth", "issue-1");
+      insertPrimary.run("a", 1_000, "warn", "first-a", "auth", "issue-1");
       insertPrimary.run("b", 2_000, "error", "duplicate-b", "auth", "issue-1");
       insertPrimary.run("c", 3_000, "warn", "primary-c", "auth", "issue-1");
 

@@ -30,7 +30,7 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-migration-convergence.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 227;
+export const BASELINE_SCHEMA_VERSION = 228;
 
 export const AUTH_REQUEST_HISTORY_INDEX_SQL =
   `CREATE INDEX idx_auth_requests_history ON auth_requests(resolved_at DESC)
@@ -449,7 +449,6 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   ...CONVERSATION_SPAWN_SCHEMA_SQL,
   CONVERSATION_IDENTITY_SCHEMA_SQL,
   ...CONVERSATION_SIDEBAR_INDEX_SQL,
-  "CREATE TABLE daemon_log (\n        id              TEXT PRIMARY KEY,\n        ts              INTEGER NOT NULL,\n        level           TEXT NOT NULL CHECK(level IN ('debug','info','warn','error')),\n        event           TEXT NOT NULL,\n        subsystem       TEXT NOT NULL DEFAULT 'daemon',\n        fields_json     TEXT NOT NULL DEFAULT '{}',\n        issue_id        TEXT,\n        auth_request_id TEXT,\n        artifact_id     TEXT,\n        session_id      TEXT,\n        repo_id         TEXT\n      )",
   "CREATE TABLE delegated_signing_leases (\n        id            TEXT PRIMARY KEY,\n        credential_id TEXT NOT NULL REFERENCES user_credentials(id) ON DELETE RESTRICT,\n        owner_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,\n        minted_at     INTEGER NOT NULL,\n        expires_at    INTEGER NOT NULL,\n        mint_method   TEXT NOT NULL\n                        CHECK(mint_method IN ('fresh_presence','reused_lease'))\n      )",
   "CREATE TABLE graph_edges (\n        id            TEXT PRIMARY KEY,\n        source_id     TEXT NOT NULL,\n        target_id     TEXT NOT NULL,\n        edge_type     TEXT NOT NULL,\n        edge_class    TEXT NOT NULL DEFAULT 'provenance',\n        provenance    TEXT NOT NULL DEFAULT 'system',\n        confidence    TEXT NOT NULL DEFAULT 'observed',\n        metadata_json TEXT NOT NULL DEFAULT '{}',\n        created_at    INTEGER,\n        observed_at   INTEGER NOT NULL,\n        source        TEXT NOT NULL\n      )",
   "CREATE TABLE graph_entities (\n        id                  TEXT PRIMARY KEY,\n        entity_type         TEXT NOT NULL,\n        repo_id             TEXT,\n        provider_id         TEXT,\n        external_id         TEXT,\n        title               TEXT NOT NULL,\n        status              TEXT,\n        labels_json         TEXT NOT NULL DEFAULT '[]',\n        summary_json        TEXT NOT NULL DEFAULT '{}',\n        detail_ref_json     TEXT NOT NULL DEFAULT '{}',\n        action_context_json TEXT NOT NULL DEFAULT '{}',\n        visual_json         TEXT NOT NULL DEFAULT '{}',\n        created_at          INTEGER,\n        updated_at          INTEGER,\n        observed_at         INTEGER NOT NULL,\n        source              TEXT NOT NULL\n      )",
@@ -576,13 +575,6 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE INDEX idx_conv_started ON conversations(started_at)",
   "CREATE INDEX idx_conv_started_ms\n        ON conversations(started_at_ms) WHERE started_at_ms IS NOT NULL",
   "CREATE INDEX idx_conversation_ingest_state_updated\n        ON conversation_ingest_state(updated_at)",
-  "CREATE INDEX idx_daemon_log_artifact\n        ON daemon_log(artifact_id, ts DESC)\n        WHERE artifact_id IS NOT NULL",
-  "CREATE INDEX idx_daemon_log_auth_request\n        ON daemon_log(auth_request_id, ts DESC)\n        WHERE auth_request_id IS NOT NULL",
-  "CREATE INDEX idx_daemon_log_facets\n        ON daemon_log(subsystem, level, event, ts DESC)",
-  "CREATE INDEX idx_daemon_log_issue\n        ON daemon_log(issue_id, ts DESC)\n        WHERE issue_id IS NOT NULL",
-  "CREATE INDEX idx_daemon_log_repo\n        ON daemon_log(repo_id, ts DESC)\n        WHERE repo_id IS NOT NULL",
-  "CREATE INDEX idx_daemon_log_session\n        ON daemon_log(session_id, ts DESC)\n        WHERE session_id IS NOT NULL",
-  "CREATE INDEX idx_daemon_log_ts\n        ON daemon_log(ts DESC)",
   "CREATE INDEX idx_delegated_signing_leases_credential\n        ON delegated_signing_leases(credential_id)",
   "CREATE INDEX idx_delegated_signing_leases_owner\n        ON delegated_signing_leases(owner_user_id)",
   "CREATE INDEX idx_graph_edges_class\n        ON graph_edges(edge_class)",

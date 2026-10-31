@@ -6,7 +6,6 @@ import type { Db } from "../db.js";
 import { globalCapabilityRoute } from "../permissions/routes.js";
 import { tableExists } from "../db-introspection.js";
 import { daemonStderrLogPath } from "../daemon-log.js";
-import { visibleDaemonLogSource } from "../operational-log-db.js";
 import { broadcast } from "../sse.js";
 import type { RequestLike, RouteRegistrar } from "../server.js";
 import type { WorkScanner } from "../work-scanner.js";
@@ -311,12 +310,11 @@ function queryDaemonLog(db: Db, filters: LogFilters): {
   older_cursor: string | null;
   has_older: boolean;
 } {
-  const source = visibleDaemonLogSource(db);
   const { access, residual } = buildDaemonLogQuery(filters);
   const candidates = db
     .prepare(
-      `${source.cte} SELECT id, ts, subsystem, event, ${ENTITY_COLUMN_NAMES.join(", ")}, ${residual.sql} AS hit
-       FROM ${source.table}
+      `SELECT id, ts, subsystem, event, ${ENTITY_COLUMN_NAMES.join(", ")}, ${residual.sql} AS hit
+       FROM daemon_log
        WHERE ${access.sql}
        ORDER BY ts DESC, id DESC
        LIMIT ?`,
@@ -330,7 +328,7 @@ function queryDaemonLog(db: Db, filters: LogFilters): {
     : candidates.length === LOG_WINDOW_ROWS ? candidates.at(-1) : undefined;
   const rows = page.length === 0 ? [] : db
     .prepare(
-      `${source.cte} SELECT * FROM ${source.table}
+      `SELECT * FROM daemon_log
        WHERE id IN (${page.map(() => "?").join(", ")})
        ORDER BY ts ASC, id ASC`,
     )
