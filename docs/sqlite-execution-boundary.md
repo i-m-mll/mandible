@@ -33,6 +33,12 @@ events and follow-up work from that committed outcome. A source race or failed
 preparation leaves the old publication and progress intact. Reject a stale
 publisher against the version it prepared from.
 
+The committed publication also identifies its navigation representation.
+Prepared cache presence must not change legacy reads before publication, and
+retained legacy rows must not override a published sparse representation.
+Admitted read and search descriptors retain this choice across later updates;
+historical opaque block references keep their stored source-version binding.
+
 Native ingestion must no longer insert compressed bodies and dense structural
 rows into the ledger, copy them into the cache, then delete them. First ingest,
 append, forced re-ingest, truncation and middle rewrite use one publication
