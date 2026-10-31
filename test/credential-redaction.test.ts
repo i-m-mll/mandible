@@ -1,3 +1,4 @@
+import * as operatorProof from "../src/auth-operator-proof.js";
 // Native transcript credential masking, source-file race handling and operator controls.
 
 import fs from "node:fs";
@@ -65,6 +66,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   db.close();
   fs.rmSync(tempDir, { recursive: true, force: true });
   if (previousHome === undefined) delete process.env.HOME;
@@ -1092,7 +1094,7 @@ describe("POST /api/users/credentials/:id/redact", () => {
     return { router, authenticator };
   }
 
-  it("rejects anonymous and non-operator callers", async () => {
+  it("rejects anonymous callers and credential possession without presence", async () => {
     makeAgent();
     const credential = registerToken("mandible-agent-codex", LEAKED_TOKEN);
     seedConversation("conv-a", { blocks: [`here: ${LEAKED_TOKEN}`] });
@@ -1115,19 +1117,22 @@ describe("POST /api/users/credentials/:id/redact", () => {
       transport: "http",
     });
     expect(asAgent.status).toBe(403);
-    expect(asAgent.body).toMatchObject({ code: "operator_required" });
+    expect(asAgent.body).toMatchObject({ code: "operator_presence_required" });
 
     // Nothing was redacted by a rejected call.
     expect(db.prepare("SELECT title FROM conversations WHERE id = 'conv-a'").get()).toEqual({ title: `here: ${LEAKED_TOKEN}` });
   });
 
-  it("redacts for the operator and returns counts without any token material", async () => {
+  it("redacts with fresh operator proof and returns counts without any token material", async () => {
     makeAgent();
     const credential = registerToken("mandible-agent-codex", LEAKED_TOKEN);
     seedConversation("conv-a", { blocks: [`here: ${LEAKED_TOKEN}`, "clean"] });
     const { router, authenticator } = makeRouter();
     const operator = setupOperator(db, { display_name: "Op", email: "op@example.com" });
     const operatorToken = authenticator.mintApiToken(operator.id, { label: "op" }).token;
+    const signingCredential = addCredential(db, operator.id, { type: "ssh_key", fingerprint: `SHA256:${"R".repeat(43)}`,
+      public_material: `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI${"R".repeat(20)}` });
+    vi.spyOn(operatorProof, "signOperatorChallenge").mockResolvedValueOnce({ ok: true, credentialId: signingCredential.id, signature: "verified-operator-proof" });
 
     const response = await router.invoke({
       method: "POST",

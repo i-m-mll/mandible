@@ -201,7 +201,7 @@ describe("client-auth durable attribution", () => {
       .toBeUndefined();
   });
 
-  it("admits only the operator before validating exact issue continuation custody", async () => {
+  it("admits project-authorized agents and operators while requiring exact issue continuation custody", async () => {
     const createIssue = await router.invoke({
       method: "POST",
       url: "/api/issues/mandible",
@@ -217,9 +217,9 @@ describe("client-auth durable attribution", () => {
       "SELECT short_id FROM ledger_issues WHERE title = ?",
     ).get("Managed spawn authorization") as { short_id: string };
     const agent = createUser(db, {
-      slug: "agent-spawn-denied",
+      slug: "agent-continuation",
       kind: "agent",
-      display_name: "Agent Spawn Denied",
+      display_name: "Agent Continuation",
     });
     const agentToken = authenticator.mintApiToken(agent.id).token;
     const request = (credential?: string) => router.invoke({
@@ -233,7 +233,7 @@ describe("client-auth durable attribution", () => {
     expect(anonymous.status).toBe(401);
     expect(anonymous.body).not.toHaveProperty("console_session_id");
     const ordinary = await request(agentToken);
-    expect(ordinary.status).toBe(403);
+    expect(ordinary).toMatchObject({ status: 400, body: { error: "exact_work_unit_required" } });
     expect(ordinary.body).not.toHaveProperty("console_session_id");
     expect(controllerSnapshot).not.toHaveBeenCalled();
 
