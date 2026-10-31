@@ -14,6 +14,7 @@ export const OPERATIONAL_LOG_DB_FILENAME = "operational-logs.db";
 export const OPERATIONAL_LOG_BACKUP_CLASSIFICATION = "excluded-runtime-telemetry" as const;
 
 const OPERATIONAL_LOG_SCHEMA = `
+  DROP TABLE IF EXISTS operational_log_copy_state;
   CREATE TABLE IF NOT EXISTS daemon_log (
     id              TEXT PRIMARY KEY,
     ts              INTEGER NOT NULL,

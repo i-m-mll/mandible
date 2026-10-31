@@ -1,4 +1,5 @@
 import { RESPONSIBILITY_SCHEMA_SQL } from "./responsibility-schema.js";
+import { migrateLocalAuthorizationEvidence } from "./local-authorization-migration.js";
 import { WORK_UNIT_ASSIGNMENT_SCHEMA_SQL, seedLegacyAssignmentTargets } from "./work-unit-assignment-schema.js";
 import { CHILD_RETENTION_SCHEMA_SQL } from "./conversations/retention-schema.js";
 import { AUTH_HOOK_EXECUTIONS_TABLE_SQL, AUTH_HOOK_EXECUTIONS_INDEX_SQL } from './auth-hook-schema.js';
@@ -2240,6 +2241,7 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 228, name: "retire_ledger_operational_logs", statements: [
     "DROP TABLE IF EXISTS daemon_log",
   ] },
+  { version: 229, name: "local_authorization_evidence", statements: [], requires_foreign_keys_off: true },
 ];
 
 /**
@@ -2440,6 +2442,7 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
     try {
       db.transaction(() => {
         for (const statement of migration.statements) db.exec(statement);
+        if (migration.version === 229) migrateLocalAuthorizationEvidence(db);
         const remainingViolations = db.pragma("foreign_key_check") as Array<Record<string, unknown>>;
         const baselineCounts = new Map<string, number>();
         for (const violation of baselineForeignKeyViolations) {
