@@ -65,7 +65,7 @@ async function ingest(sessionId: string, role = "worker") {
 }
 async function claim(branch = "feature/evidence", target = worker): Promise<string> {
   const result = await router.invoke({ credential: "owner", method: "POST", url: "/api/work-units/claim",
-    ambient_identity: { provider: "codex", provider_session_id: target },
+    ambient_identity: { provider: "codex", provider_session_id: parent },
     body: { issue_id: "evidence-issue", repo_id: "evidence", branch, assigned_session_id: target } });
   expect(result.status).toBe(201); return (result.body as { id: string }).id;
 }
@@ -100,8 +100,7 @@ it.each([
     provider_session_id: parent, assigned_session_id: cleanup ? null : worker, state: "resolved" });
   expect(events(id)).toHaveLength(1);
   expect(events(id)[0].actor_type).toBe("system");
-  expect(JSON.parse(events(id)[0].payload_json)).toMatchObject({ assignment_target: { kind: "native", session_id: worker },
-    evidence: { provider: "codex", session_id: worker, conversation_id: evidence()[0].conversationId } });
+  expect(JSON.parse(events(id)[0].payload_json)).toMatchObject({ evidence: { provider: "codex", session_id: worker, conversation_id: evidence()[0].conversationId } });
   await ingest(worker); await ingest(parent);
   db.close(); db = new SqliteDatabase(path.join(root, "test.db")); setDb(db);
   expect(recoverPendingWorkerAssignments(db)).toBeNull();

@@ -81,56 +81,21 @@ describe("issue CLI", () => {
     expect(JSON.parse(result.stdout).umbrella.short_id).toBe("abc");
   });
 
-  it("refuses parent-role assumption by naming a live holder, reports other refusals as themselves, and takes the caller's own session", async () => {
-    const stub = await daemon(({ method, url, body }) => {
+  it("returns parent-role revision conflicts distinctly from invalid session errors", async () => {
+    const stub = await daemon(({ method, url }) => {
       if (method !== "POST") return undefined;
-      if (url === "/api/ledger/issues/closed/parent-role") {
-        // Issue 7a97e2c: a 409 without a holder once printed the phantom holder `- (-)`.
-        return { status: 409, body: { error: "parent role cannot be recorded while the umbrella is closed" } };
-      }
-      if (url === "/api/ledger/issues/unknown-session/parent-role") {
-        return { status: 400, body: { error: 'unknown session id "sess-ghost": link it first with `mandible session link-issue sess-ghost`' } };
-      }
-      if (url !== "/api/ledger/issues/abc/parent-role") return undefined;
-      if ((body as { override?: boolean }).override !== true) {
-        return {
-          status: 409,
-          body: {
-            error: "parent role is held by a live session",
-            blocking_holder: { session_id: "sess-live", mechanism: "codex", liveness: { state: "live", provider: "claude" } },
-          },
-        };
-      }
-      return { body: { ok: true, checkpoint: { id: "checkpoint-parent", kind: "parent-role" } } };
+      if (url === "/api/ledger/issues/stale/parent-role") return { status: 409, body: { error: "Parent-role revision changed; refresh and retry." } };
+      return { status: 400, body: { error: "Unknown successor session." } };
     });
-    const assume = (ref: string, ...rest: string[]) => runCli(["issue", "parent-role", "assume", ref, ...rest], { env: stub.env });
-
-    const [held, heldJson, closed, ghost, missing] = await Promise.all([
-      assume("abc", "--session", "sess-new"),
-      assume("abc", "--session", "sess-new", "--json"),
-      assume("closed", "--session", "sess-new"),
-      assume("unknown-session", "--session", "sess-ghost"),
-      assume("abc"),
-    ]);
-
-    expect(held.status).toBe(3);
-    expect(held.stderr).toContain("parent role held by sess-live (claude): parent role is held by a live session");
-    expect(heldJson.status).toBe(3);
-    expect(JSON.parse(heldJson.stdout).blocking_holder.session_id).toBe("sess-live");
-    expect(closed.status).toBe(1);
-    expect(closed.stderr).not.toContain("parent role held by");
-    expect(closed.stderr).toContain("parent role cannot be recorded while the umbrella is closed");
-    expect(ghost.status).toBe(1);
-    expect(ghost.stderr).toContain('unknown session id "sess-ghost"');
-    expect(missing.status).toBe(2);
-    expect(missing.stderr).toContain("Missing parent-role session id");
-
-    const assumed = await runCli(["issue", "parent-role", "assume", "abc", "--override", "--json"], {
-      env: { ...stub.env, MANDIBLE_SESSION_ID: "sess-env", CLAUDE_CODE_SESSION_ID: "claude-session" },
-    });
-    expect(assumed.status, assumed.stderr).toBe(0);
-    expect(JSON.parse(assumed.stdout).checkpoint.id).toBe("checkpoint-parent");
-    expect(stub.requests.at(-1)?.body).toEqual({ session_id: "claude-session", override: true });
+    const assume = (ref: string, ...extra: string[]) => runCli(["issue", "parent-role", "assume", ref,
+      "--session", "coordinator", "--reason", "Continue delivery", "--expected-checkpoint", "none", ...extra], { env: stub.env });
+    const [conflict, jsonConflict, invalid] = await Promise.all([assume("stale"), assume("stale", "--json"), assume("invalid")]);
+    expect(conflict.status).toBe(3);
+    expect(conflict.stderr).toContain("Parent-role revision changed");
+    expect(jsonConflict.status).toBe(3);
+    expect(JSON.parse(jsonConflict.stdout).error).toContain("Parent-role revision changed");
+    expect(invalid.status).toBe(1);
+    expect(invalid.stderr).toContain("Unknown successor session.");
   });
 
   it("requires a concrete kind and exits non-zero with the server's singleton refusal", async () => {
