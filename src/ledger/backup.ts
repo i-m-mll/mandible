@@ -35,6 +35,8 @@ export const METADATA_BACKUP_TABLES = [
   "meta",
   "settings",
   "auth_requests",
+  "auth_request_responsibility",
+  "responsibility_events",
   "auth_request_actions",
   "sessions",
   "console_sessions",

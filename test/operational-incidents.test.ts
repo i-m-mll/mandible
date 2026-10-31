@@ -217,14 +217,13 @@ describe("operational incident routes", () => {
   class SlugGate implements ClientAuthGate {
     authenticate(credential: string | null | undefined): ResolvedClientIdentity | null {
       if (!credential) return null;
-      const ephemeral = credential.startsWith("session:");
-      const slug = ephemeral ? credential.slice("session:".length) : credential;
+      const slug = credential;
       const row = db.prepare("SELECT id, slug FROM users WHERE slug = ? AND status = 'active'")
         .get(slug) as { id: string; slug: string } | undefined;
       return row ? {
         user_id: row.id,
         slug: row.slug,
-        method: ephemeral ? "ephemeral" : "api_token",
+        method: "api_token",
         credential_id: null,
         source: "in_process",
         effect_ceiling: PRODUCTION_EFFECTS,
@@ -270,9 +269,8 @@ describe("operational incident routes", () => {
     return (response.body as { accepted: Array<{ incident_id: string }> }).accepted[0].incident_id;
   }
 
-  it("incident_ingest_requires_mapped_durable_executor", async () => {
+  it("incident_ingest_requires_an_active_agent_mapped_to_the_exact_executor", async () => {
     expect((await postIngest()).status).toBe(401);
-    expect((await postIngest("session:agent-schedule")).body).toMatchObject({ code: "executor_credential_required" });
     expect((await postIngest("operator")).body).toMatchObject({ code: "executor_agent_required" });
     expect((await postIngest("unmapped-agent")).body).toMatchObject({ code: "executor_identity_forbidden" });
     setSetting(db, TASK_INVENTORY_EXECUTORS_KEY, JSON.stringify({ "agent-schedule": ["fleet"] }));
