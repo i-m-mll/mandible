@@ -51,7 +51,7 @@ import { createSpace } from "../src/ledger/spaces.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import { serializeSpaceDocument } from "../src/spaces/export.js";
 import { listDocumentHistory } from "../src/spaces/history.js";
-import { setupOperator } from "../src/users/store.js";
+import { createUser, setupOperator } from "../src/users/store.js";
 import { insertRawLedgerIssue, insertRawLedgerProject, SYSTEM_ACTOR } from "./helpers/ledger-fixtures.js";
 import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
 import {
@@ -1196,5 +1196,24 @@ it("migrates responsibility without changing reviewed candidates, approval evide
     expect(history.at(-1)!.snapshot_sha256).toBe(authSnapshotDigest(reviewed));
     expect(db.prepare("SELECT owner_user_id, responsibility_session_id, custody_generation FROM work_units WHERE id = 'reviewed-unit'").get())
       .toEqual({ owner_user_id: operator.id, responsibility_session_id: 'responsible-session', custody_generation: 7 });
+  } finally { db.close(); }
+});
+
+it("preserves historical token receipts while admitting truthful local attribution in the one-time migration", () => {
+  const db = migrateFixtureThrough(228);
+  try {
+    const user = createUser(db, { slug: "publisher", kind: "agent", display_name: "Publisher" });
+    const insert = () => db.prepare(`INSERT INTO briefing_collection_sharing_receipts
+      (id, operation, target_kind, target_id, subject_kind, subject_id, owner_kind, owner_id,
+        reason, actor_user_id, evidence_method, credential_id, created_at)
+      VALUES (?, 'share', 'group', 'group', 'briefing', 'briefing', 'group', 'owner', 'share report', ?, ?, NULL, 1)`);
+    insert().run("historical", user.id, "api_token");
+    const before = db.prepare("SELECT * FROM briefing_collection_sharing_receipts WHERE id = 'historical'").get();
+    migrate(db);
+    expect(db.prepare("SELECT * FROM briefing_collection_sharing_receipts WHERE id = 'historical'").get()).toEqual(before);
+    insert().run("local", user.id, "session_claim");
+    expect(db.prepare("SELECT evidence_method FROM briefing_collection_sharing_receipts WHERE id = 'local'").get()).toEqual({ evidence_method: "session_claim" });
+    expect(db.pragma("foreign_key_check")).toEqual([]);
+    expect(() => db.prepare("UPDATE briefing_collection_sharing_receipts SET reason = 'changed'").run()).toThrow();
   } finally { db.close(); }
 });

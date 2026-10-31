@@ -24,7 +24,12 @@ export function migrateLocalAuthorizationEvidence(db: Db): void {
     if (table === "auth_clearances") {
       definition = definition.replace("grantee_credential_id TEXT NOT NULL", "grantee_credential_id TEXT");
       if (!db.prepare(`PRAGMA table_info(${table})`).all().some((column: { name: string }) => column.name === "retired_at")) {
-        definition = definition.slice(0, definition.lastIndexOf(")")) + ", retired_at INTEGER, retirement_reason TEXT, CHECK((retired_at IS NULL AND retirement_reason IS NULL) OR (retired_at IS NOT NULL AND retirement_reason IS NOT NULL)))";
+        const column = "created_from_request_id TEXT,";
+        if (!definition.includes(column)) throw new Error("Clearance schema is missing its final provenance column.");
+        definition = definition.replace(column, `${column}
+          retired_at INTEGER,
+          retirement_reason TEXT,
+          CHECK((retired_at IS NULL AND retirement_reason IS NULL) OR (retired_at IS NOT NULL AND retirement_reason IS NOT NULL)),`);
       }
     }
     if (table === "auth_clearance_uses") {
