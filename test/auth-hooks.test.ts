@@ -1,3 +1,4 @@
+import * as operatorProof from "../src/auth-operator-proof.js";
 import { AUTH_COMMAND_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import { waitUntil } from "./helpers/wait-until.js";
 import { approveFixtureRequest, createAuthCheckRepo } from "./helpers/auth-queue-fixtures.js";
@@ -14,7 +15,7 @@ import { approveFixtureRequest, createAuthCheckRepo } from "./helpers/auth-queue
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   AUTH_HOOK_ENV_ALLOWLIST,
@@ -32,7 +33,7 @@ import { addGrant } from "../src/permissions/store.js";
 import { registerAuthHookRoutes } from "../src/routes/auth-hooks.js";
 import { Router } from "../src/server.js";
 import type { AuthHookRun, AuthRequest } from "../src/types.js";
-import { createUser, setupOperator } from "../src/users/store.js";
+import { addCredential, createUser, setupOperator } from "../src/users/store.js";
 import {
   SYSTEM_ACTOR,
   createLedgerIssue,
@@ -42,6 +43,7 @@ import {
 const tempDirs: string[] = [];
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const dir of tempDirs.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -527,12 +529,12 @@ describe("convergence gates deferred issue closure (issue 27241e6)", () => {
 });
 
 describe("hook registration authority (issue 27241e6)", () => {
-  it("denies hook mutation without the change_settings capability and allows it with the grant", async () => {
+  it("requires fresh operator presence for hook configuration even with a settings grant", async () => {
     const db = migratedMemoryDb();
     const dir = tempDir("mandible-hook-authority-");
     try {
       setDb(db);
-      setupOperator(db, { slug: "authority-operator", display_name: "Authority Operator" }, 1);
+      const operator = setupOperator(db, { slug: "authority-operator", display_name: "Authority Operator" }, 1);
       setClientAuthMode(db, "strict");
 
       const authenticator = new ClientAuthenticator(db, { secretsDir: path.join(dir, "auth") });
@@ -578,7 +580,7 @@ describe("hook registration authority (issue 27241e6)", () => {
       });
       expect(read.status).toBe(200);
 
-      // With the explicit prior operator grant, registration succeeds.
+      // A standing settings grant still cannot authorize a protected hook change.
       addGrant(db, {
         subject_type: "user",
         subject: agent.id,
@@ -592,8 +594,13 @@ describe("hook registration authority (issue 27241e6)", () => {
         credential: token,
         transport: "http",
       });
-      expect(granted.status).toBe(201);
-      const created = granted.body as { id: string; required: boolean };
+      expect(granted).toMatchObject({ status: 403, body: { code: "operator_presence_required" } });
+      const signingCredential = addCredential(db, operator.id, { type: "ssh_key", fingerprint: `SHA256:${"H".repeat(43)}`,
+        public_material: `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI${"H".repeat(20)}` });
+      vi.spyOn(operatorProof, "signOperatorChallenge").mockResolvedValue({ ok: true, credentialId: signingCredential.id, signature: "verified-operator-proof" });
+      const approved = await router.invoke({ method: "POST", url: "/api/auth/hooks", body, credential: token, transport: "http" });
+      expect(approved.status).toBe(201);
+      const created = approved.body as { id: string; required: boolean };
       expect(created.required).toBe(true);
 
       // Update and delete carry the same fence.

@@ -62,7 +62,7 @@ describe('SettingsView', () => {
     await waitFor(() => expect(onSave).toHaveBeenLastCalledWith('terminal_theme_dark', 'one'));
   });
 
-  it('disables App theme without saving when operational mutations are rejected', () => {
+  it('disables host appearance while preserving writable copied terminal preferences', async () => {
     const onSave = vi.fn(async () => undefined);
 
     render(h(SettingsView, {
@@ -74,11 +74,13 @@ describe('SettingsView', () => {
     const themeSelect = screen.getByRole('combobox', { name: 'App theme' });
     expect((themeSelect as HTMLSelectElement).disabled).toBe(true);
     expect((screen.getByRole('combobox', { name: 'Light-mode terminal' }) as HTMLSelectElement).disabled)
-      .toBe(true);
+      .toBe(false);
     expect((screen.getByRole('combobox', { name: 'Dark-mode terminal' }) as HTMLSelectElement).disabled)
-      .toBe(true);
+      .toBe(false);
     changeSelect(themeSelect, 'dark');
     expect(onSave).not.toHaveBeenCalled();
+    changeSelect(screen.getByRole('combobox', { name: 'Light-mode terminal' }), 'solarized');
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith('terminal_theme_light', 'solarized'));
   });
 
   it('skips unavailable automatic reads while keeping copied Settings preferences editable', async () => {

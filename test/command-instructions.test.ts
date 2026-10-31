@@ -125,7 +125,7 @@ describe("one CLI grammar", () => {
       ["changes", "--project", "mandible", "--limit", "201"], ["issue", "status", "id", "invalid"],
       ["issue", "report", "id", "extra"], ["issue", "report", "id", "--json", "--json"]])
       expect(() => syntax.parse(argv)).toThrow();
-    expect(syntax.parse(["work-unit", "release", "--repo", "mandible", "--branch", "feature/x", "--expected-generation", "1"]).options.branch).toBe("feature/x");
+    expect(syntax.parse(["work-unit", "release", "--repo", "mandible", "--branch", "feature/x", "--expected-generation", "1", "--reason", "finished"]).options.branch).toBe("feature/x");
     expect(syntax.parse(["issue", "new", "--kind", "bug", "--title", "title", "--message", "body"]).options.message).toBe("body");
   });
 
