@@ -270,9 +270,9 @@ describe("exact conversation freshness", () => {
     }
   });
 
-  it("allows one moving-source retry, then returns source_changed while retaining fallback bytes", async () => {
+  it("allows one moving-source retry, then returns source_changed while retaining authored metadata", async () => {
     const seeded = await seed("moving-session");
-    const before = db.prepare("SELECT COUNT(*) AS count FROM conversation_blocks WHERE conversation_id = ?").get(seeded.id);
+    const before = db.prepare("SELECT notes, starred FROM conversations WHERE id = ?").get(seeded.id);
     await appendAt(seeded.file, assistant("unindexed one", 3), 2);
     const schedule = vi.fn(() => true);
     const read = vi.fn();
@@ -288,7 +288,7 @@ describe("exact conversation freshness", () => {
     };
     await expect(ensureExactConversationFresh(db, seeded.id, { ingest: movingIngest })).rejects.toMatchObject({ code: "source_changed" });
     expect(pass).toBe(2);
-    expect(db.prepare("SELECT COUNT(*) AS count FROM conversation_blocks WHERE conversation_id = ?").get(seeded.id)).toEqual(before);
+    expect(db.prepare("SELECT notes, starred FROM conversations WHERE id = ?").get(seeded.id)).toEqual(before);
   });
 
   it("rejects the bounded extent match after a middle rewrite restores size, mtime, and tail", async () => {
@@ -384,12 +384,12 @@ describe("exact conversation freshness", () => {
       .toEqual({ source_path: archivedFile });
   });
 
-  it("reports unavailable sources explicitly without deleting normalized fallback bytes", async () => {
+  it("reports unavailable sources explicitly without deleting authored metadata", async () => {
     const seeded = await seed("missing-session");
-    const before = db.prepare("SELECT id, content FROM conversation_blocks WHERE conversation_id = ? ORDER BY position").all(seeded.id);
+    const before = db.prepare("SELECT notes, starred FROM conversations WHERE id = ?").all(seeded.id);
     await fsp.unlink(seeded.file);
     await expect(ensureExactConversationFresh(db, seeded.id)).rejects.toMatchObject({ code: "source_unavailable" });
-    expect(db.prepare("SELECT id, content FROM conversation_blocks WHERE conversation_id = ? ORDER BY position").all(seeded.id)).toEqual(before);
+    expect(db.prepare("SELECT notes, starred FROM conversations WHERE id = ?").all(seeded.id)).toEqual(before);
   });
 
   it("times out a caller without cancelling the authoritative single-flight", async () => {

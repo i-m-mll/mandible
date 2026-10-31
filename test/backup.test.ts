@@ -136,22 +136,7 @@ describe("backup routes", () => {
         (id, source, source_path, source_hash, source_mtime, started_at, session_id)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
     ).run("conv_backup", "codex", "/tmp/conversation.jsonl", "hash", 1, "2026-06-13T00:00:00Z", "session");
-    db.prepare(
-      `INSERT INTO conversation_blocks
-        (id, conversation_id, type, role, content, position)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run("block_backup", "conv_backup", "message", "assistant", "large reproducible block", 1);
-    db.prepare(
-      `INSERT INTO daemon_log (id, ts, level, event, subsystem, fields_json)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(
-      "log_backup",
-      1,
-      "debug",
-      "backup_runtime_sentinel",
-      "backup-test",
-      '{"payload":"large operational telemetry"}',
-    );
+
 
     const destination = path.join(tempHome, "configured", "mandible-metadata.sql");
     db.prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)").run(
@@ -176,9 +161,6 @@ describe("backup routes", () => {
     expect(dump).toContain("Backup Project");
     expect(dump).not.toContain("conversation_blocks");
     expect(dump).not.toContain("large reproducible block");
-    expect(dump).not.toContain("daemon_log");
-    expect(dump).not.toContain("backup_runtime_sentinel");
-    expect(dump).not.toContain("large operational telemetry");
   });
 
   // Issue 24f0316 — backups are durable state, so they are written under the

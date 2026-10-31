@@ -12,12 +12,10 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { type Db } from "../src/db.js";
-import { compressContent } from "../src/compression.js";
 import { addCredential, createUser, listCredentials } from "../src/users/store.js";
 import { API_TOKEN_PREFIX, fingerprintForToken } from "../src/client-auth/tokens.js";
 import { loadOrCreatePepper } from "../src/client-auth/secret-store.js";
 import {
-  backfillCredentialLeakScan,
   CREDENTIAL_LEAK_EVENT_TYPE,
   credentialMaskFor,
   extractTokenCandidates,
@@ -78,40 +76,6 @@ function webhookRows() {
       priority: string;
       status: string;
     }>;
-}
-
-function seedConversation(
-  conversationId: string,
-  blocks: Array<{ content: string; position: number }>,
-  meta: { sessionId?: string; title?: string } = {},
-) {
-  db.prepare(
-    `INSERT INTO conversations
-       (id, source, source_path, source_hash, source_mtime, title, summary,
-        started_at, ended_at, block_count, session_id, created_at, updated_at)
-     VALUES (?, 'claude_code', ?, 'hash', 0, ?, NULL,
-             '2026-07-25T00:00:00Z', '2026-07-25T01:00:00Z', ?, ?,
-             datetime('now'), datetime('now'))`,
-  ).run(
-    conversationId,
-    `/tmp/${conversationId}.jsonl`,
-    meta.title ?? "Seeded transcript",
-    blocks.length,
-    meta.sessionId ?? `session-${conversationId}`,
-  );
-  for (const block of blocks) {
-    db.prepare(
-      `INSERT INTO conversation_blocks
-         (id, conversation_id, type, role, content, position, timestamp,
-          parent_id, metadata_json, compressed)
-       VALUES (?, ?, 'text', 'assistant', ?, ?, NULL, NULL, '{}', 1)`,
-    ).run(
-      `${conversationId}-b${block.position}`,
-      conversationId,
-      compressContent(block.content),
-      block.position,
-    );
-  }
 }
 
 describe("candidate extraction", () => {
@@ -280,49 +244,6 @@ describe("revocation policy", () => {
     expect(payload.remediation.revoke).toBe(`mandible user token revoke ${credential.id}`);
   });
 });
-
-describe("backfill over the existing index", () => {
-  it("finds a live PAT sitting in an already-indexed transcript", () => {
-    makeUser();
-    const credential = registerToken("mandible-agent-claude", REAL_TOKEN, { label: "agent pat" });
-    seedConversation("conv-old", [
-      { content: "ordinary message", position: 0 },
-      { content: `here it is: ${REAL_TOKEN}`, position: 1 },
-    ], { sessionId: "sess-old", title: "Old transcript" });
-    seedConversation("conv-clean", [{ content: `decoy ${FAKE_TOKEN}`, position: 0 }]);
-
-    const result = backfillCredentialLeakScan(db, { pepper });
-
-    expect(result.scanned_blocks).toBe(3);
-    expect(result.scanned_conversations).toBe(2);
-    expect(result.detections).toHaveLength(1);
-    expect(result.detections[0].credential.credential_id).toBe(credential.id);
-    expect(result.detections[0].location.conversation_id).toBe("conv-old");
-    expect(result.detections[0].location.conversation_title).toBe("Old transcript");
-    expect(result.detections[0].location.session_id).toBe("sess-old");
-    expect(result.detections[0].location.block_position).toBe(1);
-    expect(webhookRows()).toHaveLength(1);
-    expect(JSON.stringify(webhookRows())).not.toContain(REAL_TOKEN);
-  });
-
-  it("honours dry-run: reports without recording or revoking", () => {
-    makeUser();
-    const credential = registerToken("mandible-agent-claude", REAL_TOKEN, {
-      metadata: { scope: "session" },
-    });
-    seedConversation("conv-old", [{ content: REAL_TOKEN, position: 0 }]);
-
-    const result = backfillCredentialLeakScan(db, { pepper, record: false });
-
-    expect(result.detections).toHaveLength(1);
-    expect(result.detections[0].revoked).toBe(false);
-    expect(webhookRows()).toEqual([]);
-    const stored = listCredentials(db, "mandible-agent-claude").find((r) => r.id === credential.id);
-    expect(stored?.status).toBe("active");
-  });
-});
-
-// --- Metadata surfaces (issue b3e4a09, review finding 1) ---------------------
 
 describe("block metadata masking", () => {
   it("masks the token in metadata as well as content", () => {

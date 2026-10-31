@@ -10,7 +10,6 @@ import { getDb } from "../db.js";
 import { entityRefs, resolveSessionRef } from "../entity-refs.js";
 import { sessionAliasIds } from "../session-liveness.js";
 import { sessionConversationsSql } from "../session-summary.js";
-import { decompressContent } from "../compression.js";
 import {
   ClientAuthzError,
   attributionForRequest,
@@ -18,9 +17,10 @@ import {
   requireOperator,
 } from "../client-auth/authz.js";
 import {
-  backfillCredentialLeakScan,
   remediationFor,
   scanBlocksForCredentialLeaks,
+  hasActiveApiTokenCredentials,
+  type CredentialLeakDetection,
 } from "../credential-leak-scan.js";
 import { triggerFullIngest } from "../ingestion.js";
 import { transformContent } from "../transform.js";
@@ -51,47 +51,6 @@ import {
 } from "../conversation-external-navigation.js";
 
 // --- Row mapping helpers ---
-
-interface BlockRow {
-  id: string;
-  conversation_id: string;
-  type: string;
-  role: string;
-  content: Buffer | string;
-  compressed: number;
-  position: number;
-  timestamp: string | null;
-  parent_id: string | null;
-  metadata_json: string;
-  dag_uuid: string | null;
-  dag_parent_uuid: string | null;
-}
-
-
-// Bug: bce7370 — return metadata_json as a raw string so the client type
-// ConversationBlock.metadata_json (string) receives the correct field name.
-// Previously returned as `metadata` (parsed object), which left the client's
-// `block.metadata_json` undefined, causing all tool-use metadata to be empty.
-function mapBlock(row: BlockRow) {
-  return {
-    id: row.id,
-    conversation_id: row.conversation_id,
-    type: row.type,
-    role: row.role,
-    // Bug: e5a945d — transparently decompress gzipped content
-    content: decompressContent(row.content, row.compressed === 1),
-    position: row.position,
-    timestamp: row.timestamp,
-    parent_id: row.parent_id,
-    metadata_json: row.metadata_json,
-    dag_uuid: row.dag_uuid ?? null,
-    dag_parent_uuid: row.dag_parent_uuid ?? null,
-  };
-}
-
-function mapReadableBlock(row: BlockRow | SourceBackedConversationBlock) {
-  return "compressed" in row ? mapBlock(row) : row;
-}
 
 function projectDisplayBlock(row: SourceBackedConversationBlock): SourceBackedConversationBlock & { details_loaded?: false } {
   let metadata: Record<string, unknown> = {};
@@ -181,14 +140,11 @@ export function sendFreshnessError(res: ResponseLike, error: unknown): boolean {
   return true;
 }
 
-/** A BlockRow after decompression — content is guaranteed to be a string. */
-type DecompressedBlock = Omit<BlockRow, "content"> & { content: string };
-
 // --- Export helpers ---
 
 function exportToMarkdown(
   conversation: ConversationRow,
-  blocks: DecompressedBlock[],
+  blocks: SourceBackedConversationBlock[],
   blockTypes?: Set<string>,
 ): string {
   const lines: string[] = [];
@@ -217,7 +173,7 @@ function exportToMarkdown(
 
 function exportToMdx(
   conversation: ConversationRow,
-  blocks: DecompressedBlock[],
+  blocks: SourceBackedConversationBlock[],
   blockTypes?: Set<string>,
 ): string {
   const lines: string[] = [];
@@ -263,7 +219,7 @@ function exportToMdx(
 
 function exportToJson(
   conversation: ConversationRow,
-  blocks: DecompressedBlock[],
+  blocks: SourceBackedConversationBlock[],
   blockTypes?: Set<string>,
 ): string {
   const filteredBlocks = blockTypes
@@ -272,7 +228,7 @@ function exportToJson(
   return JSON.stringify(
     {
       conversation: mapConversation(conversation),
-      blocks: filteredBlocks.map(mapBlock),
+      blocks: filteredBlocks,
     },
     null,
     2,
@@ -438,7 +394,7 @@ export function registerConversationRoutes(
   }, { operation: { id: "post:/api/conversations/ingest", effects: ["ledger:write"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "deny" });
 
   // POST /api/conversations/scan-credentials — issue 71a287e.
-  // On-demand sweep of the normalized index for leaked Mandible credentials.
+  // On-demand sweep of native transcripts for leaked Mandible credentials.
   // Operator-only: it reports which credentials leaked where and applies the
   // guarded auto-revoke policy to future persisted session-scoped credentials.
   // Current in-memory wrap-session tokens are intentionally invisible here and
@@ -454,17 +410,13 @@ export function registerConversationRoutes(
       const conversationId = typeof body.conversation_id === "string" ? body.conversation_id : null;
       const requestedLimit = typeof body.limit === "number" && body.limit > 0
         ? body.limit : Number.POSITIVE_INFINITY;
-      const result = backfillCredentialLeakScan(scanDb, {
-        conversationId,
-        limit: requestedLimit,
-        record: body.record === false ? false : undefined,
-      });
-      const detections = new Map(result.detections.map((detection) => [detection.event_id, detection]));
+      const skipped = hasActiveApiTokenCredentials(scanDb) ? null : "no_active_api_tokens";
+      const detections = new Map<string, CredentialLeakDetection>();
       const sourceErrors: Array<{ conversation_id: string; error: string }> = [];
       let scannedSourceBlocks = 0;
       let scannedSourceConversations = 0;
       let sourceTruncated = false;
-      if (!result.skipped && result.scanned_blocks < requestedLimit) {
+      if (!skipped) {
         const params: unknown[] = [];
         const where = ["EXISTS (SELECT 1 FROM conversation_sources source WHERE source.conversation_id = c.id)"];
         if (conversationId) {
@@ -481,8 +433,8 @@ export function registerConversationRoutes(
         for (const conversation of sourceConversations) {
           let offset = 0;
           let scannedConversation = false;
-          while (result.scanned_blocks + scannedSourceBlocks < requestedLimit) {
-            const take = Math.min(100, requestedLimit - result.scanned_blocks - scannedSourceBlocks);
+          while (scannedSourceBlocks < requestedLimit) {
+            const take = Math.min(100, requestedLimit - scannedSourceBlocks);
             const page = await rawReader.readPage(conversation.id, { offset, limit: take });
             if (page.status !== "source") {
               sourceErrors.push({ conversation_id: conversation.id, error: page.reason });
@@ -516,14 +468,14 @@ export function registerConversationRoutes(
             if (offset >= page.value.total) break;
           }
           if (scannedConversation) scannedSourceConversations += 1;
-          if (result.scanned_blocks + scannedSourceBlocks >= requestedLimit) break;
+          if (scannedSourceBlocks >= requestedLimit) break;
         }
       }
       sendJson(res, 200, {
-        scanned_blocks: result.scanned_blocks + scannedSourceBlocks,
-        scanned_conversations: result.scanned_conversations + scannedSourceConversations,
-        truncated: result.truncated || sourceTruncated,
-        skipped: result.skipped ?? null,
+        scanned_blocks: scannedSourceBlocks,
+        scanned_conversations: scannedSourceConversations,
+        truncated: sourceTruncated,
+        skipped: skipped,
         source_errors: sourceErrors,
         detections: [...detections.values()].map((detection) => ({
           event_id: detection.event_id,
@@ -741,9 +693,9 @@ export function registerConversationRoutes(
     }
     let total = conv.block_count;
     let windowOffset = 0;
-    let readableBlocks: Array<BlockRow | SourceBackedConversationBlock> = [];
+    let readableBlocks: Array<SourceBackedConversationBlock> = [];
     let bodySource: "source" = "source";
-    let resolvedBlock: BlockRow | SourceBackedConversationBlock | null = null;
+    let resolvedBlock: SourceBackedConversationBlock | null = null;
     let resolvedTurnId: string | null = null;
     let sourceVersionId: string | null = null;
     {
@@ -943,8 +895,8 @@ export function registerConversationRoutes(
         limit,
       },
       blocks: readableBlocks.map((block) => displayView
-        ? projectDisplayBlock(mapReadableBlock(block) as SourceBackedConversationBlock)
-        : mapReadableBlock(block)),
+        ? projectDisplayBlock(block)
+        : block),
     });
   }, { operation: { id: "get:/api/conversations/:id", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow", refs: { params: { id: entityRefs.conversation } } });
 
@@ -1185,7 +1137,7 @@ export function registerConversationRoutes(
         return;
       }
     }
-    const blocks = readable!.blocks.map(block => ({ ...block, compressed: 0 })) as DecompressedBlock[];
+    const blocks = readable!.blocks;
 
     const blockTypes = body.block_types ? new Set(body.block_types) : undefined;
 

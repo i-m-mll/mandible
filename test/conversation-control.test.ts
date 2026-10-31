@@ -22,7 +22,6 @@ import {
   CONVERSATION_CONTROL_PENDING_IDENTITY_MIGRATION_SQL,
 } from "../src/conversation-control/schema.js";
 import { ConversationSourceStore } from "../src/conversations/source-store.js";
-import { getConversationStructureCache } from "../src/conversations/structure-cache.js";
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../src/conversations/source-types.js";
 import { CodexParser } from "../src/parsers/codex.js";
 import type { ActivityItem, ChatItem, MessageItem } from "../src/parsers/types.js";
@@ -686,59 +685,6 @@ describe("authoritative conversation control", () => {
     expect(snapshot.ok && snapshot.value.capability).toMatchObject({ kind: "unavailable", reason: "turn-transition" });
   });
 
-  it("retires only live messages covered by the terminal durable transcript barrier", async () => {
-    const diagnostics: Array<Record<string, unknown>> = [];
-    const emitted: import("../src/conversation-control/types.js").ProviderAdapterEvent[] = [];
-    const service = new ConversationControlService(db, {
-      onTerminalTurn: async () => ({ status: "ingested:fresh" }),
-      onProviderEvent: (event) => emitted.push(event),
-      logger: (_level, _message, details) => diagnostics.push(details!),
-    });
-    const adapter = new FakeAdapter();
-    service.registerAdapter(adapter);
-    const submitted = await service.submit(request(0, "intent-1"));
-    expect(submitted.ok).toBe(true);
-    if (!submitted.ok) return;
-    const generation = submitted.value.snapshot.ownership.generation;
-    const userEvent = {
-      ...liveEvent(liveMessage("intent-1", "hello"), generation, 1),
-      correlation: { intent_id: "intent-1", delivery_id: submitted.value.delivery_id, turn_id: submitted.value.turn_id, provider_message_id: "provider-user-1" },
-    };
-    const assistantEvent = liveEvent(liveMessage("assistant-incomplete", "partial"), generation, 2);
-    const completeLiveOnly = liveEvent({
-      ...liveMessage("provider-complete-without-durable-id", "provider-only completion"),
-      content_completion: "complete" as const,
-    }, generation, 3);
-    adapter.emitProvider(userEvent);
-    adapter.emitProvider(assistantEvent);
-    adapter.emitProvider(completeLiveOnly);
-    const durableUserItem = {
-      ...userEvent.item,
-      provenance: { source: "verified-provider-transcript", provider: "codex", source_event_type: "message" },
-      content_completion: "complete",
-    };
-    db.prepare(`INSERT INTO conversation_blocks (
-      id, conversation_id, type, role, content, position, metadata_json, dag_uuid
-    ) VALUES ('block-1', 'conversation-1', 'user_message', 'user', 'durable text wins', 0,
-      ?, 'intent-1')`).run(JSON.stringify({ chat_item: durableUserItem }));
-
-    adapter.emit({ conversation_id: "conversation-1", generation, kind: "turn-started", turn_id: submitted.value.turn_id, at: 3 });
-    adapter.emit({ conversation_id: "conversation-1", generation, kind: "turn-completed", turn_id: submitted.value.turn_id, at: 4 });
-    await waitUntil(() => emitted.at(-1)?.kind === "durable-reconciliation", "the durable reconciliation event");
-
-    expect(service.getLiveProjection("conversation-1")).toMatchObject({
-      ok: true,
-      value: { events: [expect.objectContaining({ identity: assistantEvent.identity }), expect.objectContaining({ identity: completeLiveOnly.identity })] },
-    });
-    expect(emitted.at(-1)).toMatchObject({
-      kind: "durable-reconciliation",
-      covered_identities: [userEvent.identity],
-    });
-    expect(diagnostics).toEqual([expect.objectContaining({
-      ingest_status: "ingested:fresh", retired_live_count: 1, retained_live_count: 2,
-    })]);
-    expect(JSON.stringify(diagnostics)).not.toContain("hello");
-  });
 
   it("retires a source-backed Codex prompt through its exact client identity", async () => {
     const emitted: import("../src/conversation-control/types.js").ProviderAdapterEvent[] = [];
@@ -798,12 +744,10 @@ describe("authoritative conversation control", () => {
       nativeSessionId: "provider-1",
       filePath: sourcePath,
       expectedContentHash: parsed.conversation.source_hash,
-      blocks: parsed.blocks.map((block) => ({ ...block, legacyId: `legacy-${block.position}` })),
+      blocks: parsed.blocks,
       ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
     });
-    expect(getConversationStructureCache(db).captureDenseRows(db, "conversation-1", "replace").captured)
-      .toBe(parsed.blocks.length);
-    db.exec("DELETE FROM conversation_structural_blocks; DELETE FROM conversation_blocks;");
+
 
     adapter.emit({ conversation_id: "conversation-1", generation, kind: "turn-started", turn_id: submitted.value.turn_id, at: 3 });
     adapter.emit({ conversation_id: "conversation-1", generation, kind: "turn-completed", turn_id: submitted.value.turn_id, at: 4 });

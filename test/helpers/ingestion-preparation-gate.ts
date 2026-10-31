@@ -5,7 +5,7 @@ const prepare = SqliteDatabase.prototype.prepare;
 let observed = false;
 SqliteDatabase.prototype.prepare = function (sql: string) {
   const statement = prepare.call(this, sql);
-  if (!/^\s*INSERT\s+(?:OR\s+\w+\s+)?INTO\s+(?:conversation_blocks|cache_blocks)\b/i.test(sql)) return statement;
+  if (!/^\s*INSERT\s+(?:OR\s+\w+\s+)?INTO\s+cache_blocks\b/i.test(sql)) return statement;
   const run = statement.run.bind(statement);
   statement.run = (...values: unknown[]) => {
     const result = run(...values);
