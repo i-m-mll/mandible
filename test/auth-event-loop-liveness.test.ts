@@ -96,6 +96,8 @@ it('keeps pending lifecycle and registered health work live while preserving sam
   try {
     const first = await submitCommand('held first execution');
     firstId = first.id;
+    db.prepare(`INSERT INTO work_units (id, issue_id, repo_id, state, created_at, auth_request_id)
+      VALUES ('held-command-unit', 'command-work', ?, 'committed', ?, ?)`).run(project.project_key, clock, first.id);
     gates.set(first.id, releaseFirst);
     await approveFixtureRequest(queue, first.id);
     await firstStarted.promise;
@@ -165,6 +167,8 @@ it('keeps pending lifecycle and registered health work live while preserving sam
     expect(order.indexOf(`finish:${first.id}`)).toBeLessThan(order.indexOf(`start:${follower.id}`));
     releaseFollower.resolve();
     expect((await waitForStatus(queue, first.id, 'completed')).exit_code).toBe(0);
+    expect(db.prepare("SELECT state, auth_request_id FROM work_units WHERE id = 'held-command-unit'").get())
+      .toEqual({ state: 'resolved', auth_request_id: first.id });
     expect((await waitForStatus(queue, follower.id, 'completed')).exit_code).toBe(0);
   } finally {
     firstReleased = true;
