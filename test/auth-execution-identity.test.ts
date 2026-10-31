@@ -31,9 +31,9 @@ it.each(['continuation', 'owner', 'credential'] as const)('binds execution to au
   const unitId = crypto.randomUUID();
   db.prepare(`INSERT INTO work_units
     (id,issue_id,repo_id,branch,kind,state,created_at,activated_at,ledger_issue_id,
-      owner_user_id,owner_credential_id,custody_generation)
+      owner_user_id,responsibility_session_id,custody_generation)
     VALUES (?, '8409abc', ?, 'feature/continuation-stability', 'solo', 'committed', 1, 1, ?, ?, ?, 1)`)
-    .run(unitId, project.project_key, issue.id, operator.id, credential.id);
+    .run(unitId, project.project_key, issue.id, operator.id, null);
   const enteredExecutor = barrier();
   const releaseExecutor = barrier();
   const output = 'distinct executor output after continuation edit\n';
@@ -54,7 +54,7 @@ it.each(['continuation', 'owner', 'credential'] as const)('binds execution to au
   });
   const router = authenticatedTestRouter(operator, { credentialId: credential.id });
   registerWorkUnitRoutes(router, {} as never);
-  const authority = () => db.prepare(`SELECT id,owner_user_id,owner_credential_id,custody_generation,
+  const authority = () => db.prepare(`SELECT id,owner_user_id,responsibility_session_id,custody_generation,
     auth_request_id,state,branch,repo_id,ledger_issue_id FROM work_units WHERE id = ?`).get(unitId);
   try {
     const request = await queue.submit({ ...AUTH_MERGE_REVIEW, type: 'merge',
@@ -71,7 +71,7 @@ it.each(['continuation', 'owner', 'credential'] as const)('binds execution to au
     if (scenario === 'continuation') {
       const continuation = 'Continue the existing reviewed work without transferring authority.';
       const patched = await router.invoke({ method: 'PATCH', url: `/api/work-units/${unitId}`,
-        body: { continuation, continuation_by: 'private-owner', continuation_at: Date.now() } });
+        body: { expected_generation: 1, continuation, continuation_by: 'private-owner', continuation_at: Date.now() } });
       expect(patched.status, JSON.stringify(patched.body)).toBe(200);
       expect(db.prepare('SELECT continuation FROM work_units WHERE id = ?').get(unitId)).toEqual({ continuation });
       expect(authority()).toEqual(before);
@@ -79,11 +79,11 @@ it.each(['continuation', 'owner', 'credential'] as const)('binds execution to au
       const other = createUser(db, { slug: 'identity-other', kind: 'agent', display_name: 'Other private custodian' });
       const otherCredential = addCredential(db, other.id, { type: 'api_token', fingerprint: 'other-identity-owner' });
       // Storage adversary: keep the generation fixed to isolate fresh owner/credential binding.
-      db.prepare('UPDATE work_units SET owner_user_id = ?, owner_credential_id = ? WHERE id = ?')
+      db.prepare('UPDATE work_units SET owner_user_id = ?, responsibility_session_id = ? WHERE id = ?')
         .run(other.id, otherCredential.id, unitId);
     } else {
       const replacement = addCredential(db, operator.id, { type: 'api_token', fingerprint: 'replacement-identity-credential' });
-      db.prepare('UPDATE work_units SET owner_credential_id = ? WHERE id = ?').run(replacement.id, unitId);
+      db.prepare('UPDATE work_units SET responsibility_session_id = ? WHERE id = ?').run(replacement.id, unitId);
     }
     // Observe only the real execution owner; no map/token mutation or private execution call.
     runner = (queue as unknown as { inFlight: Map<string, Promise<unknown>> }).inFlight.get(request.id);

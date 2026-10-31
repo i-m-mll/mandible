@@ -585,7 +585,7 @@ export type WorkUnit = {
   resolved_at: number | null;
   auth_request_id: string | null;
   owner_user_id: string | null;
-  owner_credential_id: string | null;
+  responsibility_session_id: string | null;
   custody_generation: number;
 };
 

@@ -121,10 +121,10 @@ function createRepo(label: string): string {
   const issue = createLedgerIssue(db!, project.project.id, "608d1db", `Dedup ${label}`);
   db!.prepare(`INSERT INTO work_units
     (id, issue_id, repo_id, branch, kind, state, created_at, activated_at,
-     ledger_issue_id, owner_user_id, owner_credential_id, custody_generation)
+     ledger_issue_id, owner_user_id, responsibility_session_id, custody_generation)
     VALUES (?, '608d1db', ?, ?, 'solo', 'committed', 1, 1, ?, ?, ?, 1)`)
     .run(crypto.randomUUID(), project.project.project_key, SHARED_BRANCH, issue.id,
-      testRequesterUserId, testRequesterCredentialId);
+      testRequesterUserId, null);
   return root;
 }
 

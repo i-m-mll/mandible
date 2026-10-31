@@ -350,9 +350,9 @@ describe("auth change reports", () => {
     const issue = createLedgerIssue(db, project.project.id, "d5edbb9", "Auth report");
     db.prepare(`INSERT INTO work_units
       (id, issue_id, repo_id, branch, kind, state, created_at, activated_at,
-       ledger_issue_id, owner_user_id, owner_credential_id, custody_generation)
+       ledger_issue_id, owner_user_id, responsibility_session_id, custody_generation)
       VALUES (?, 'd5edbb9', ?, 'feature/report', 'solo', 'committed', 1, 1, ?, ?, ?, 1)`)
-      .run(crypto.randomUUID(), project.project.project_key, issue.id, operator.id, credential.id);
+      .run(crypto.randomUUID(), project.project.project_key, issue.id, operator.id, null);
     const queue = new AuthQueue({ db, backgroundMaintenance: false, broadcast: () => {} });
     const router = new Router({ clientAuth: authenticator });
     registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));

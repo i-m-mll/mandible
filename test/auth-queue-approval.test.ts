@@ -740,9 +740,9 @@ describe("auth queue", () => {
       db.prepare(
         `INSERT INTO work_units
           (id, issue_id, repo_id, branch, kind, state, created_at, activated_at, last_commit_at,
-           ledger_issue_id, owner_user_id, owner_credential_id, custody_generation)
+           ledger_issue_id, owner_user_id, responsibility_session_id, custody_generation)
          VALUES (?, 'abc1234', ?, ?, 'solo', 'committed', 1, 1, 1, ?, ?, ?, 1)`,
-      ).run(`wu-${branch}`, project.project.id, branch, issue.id, agent.id, credential.id);
+      ).run(`wu-${branch}`, project.project.id, branch, issue.id, agent.id, null);
     }
     const router = authenticatedTestRouter(agent, { credentialId: credential.id });
     const queue = new AuthQueue({

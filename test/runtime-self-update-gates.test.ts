@@ -76,8 +76,8 @@ interface AcceptanceRun { input: CandidateAcceptanceInput; settle: (outcome: Can
 /** Submit a self-update with durable custody of its delivery work unit, which names the acceptance owner. */
 async function submit(branch = "feature/self-update", patch: Partial<AuthRequestInput> = {}) {
   if (!patch.supersedes_request_id) {
-    db.prepare(`INSERT INTO work_units (id, issue_id, ledger_issue_id, repo_id, branch, kind, state, created_at, owner_user_id, owner_credential_id, custody_generation)
-      VALUES (?, ?, ?, ?, ?, 'solo', 'committed', 1, ?, ?, 1)`).run(`wu-${branch}`, issue.id, issue.id, path.basename(repo), branch, operatorId, credentialId);
+    db.prepare(`INSERT INTO work_units (id, issue_id, ledger_issue_id, repo_id, branch, kind, state, created_at, owner_user_id, responsibility_session_id, custody_generation)
+      VALUES (?, ?, ?, ?, ?, 'solo', 'committed', 1, ?, ?, 1)`).run(`wu-${branch}`, issue.id, issue.id, path.basename(repo), branch, operatorId, null);
   }
   return (await queue.submit({ ...AUTH_MERGE_REVIEW,  type: "merge", title: "Self-update", command: `mandible auth merge ${branch} --into main`,
     repo: path.basename(repo), cwd: repo, base_branch: "main", head_branch: branch,
@@ -659,29 +659,5 @@ describe("failed handoff retirement", () => {
     expect(JSON.parse(fs.readFileSync(path.join(held.dir, "retirement.json"), "utf8"))).toMatchObject({ bindingDigest: held.digest, actor: { user_id: "operator" } });
   });
 
-  it("requires the operator at the retirement route", async () => {
-    setDb(db);
-    const held = holdHandoffLock('failed', true);
-    const request = await submit();
-    await waitUntilPasses(() => expect(runs).toHaveLength(1));
-    const agent = createUser(db, { slug: "retire-agent", display_name: "Retire agent", kind: "agent" });
-    const agentRouter = authenticatedTestRouter(agent);
-    registerAuthRoutes(agentRouter, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
-    const refused = await agentRouter.invoke({ method: "POST", url: "/api/runtime-handoff/retire", body: { binding_digest: held.digest, reason: "stale" } });
-    expect(refused.status).toBe(403);
-    expect(fs.existsSync(held.lockPath)).toBe(true);
 
-    const operatorRouter = authenticatedTestRouter(getOperator(db)!);
-    registerAuthRoutes(operatorRouter, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
-    const detail = await operatorRouter.invoke({ method: "GET", url: `/api/auth/request/${request.id}` });
-    expect(detail.body).toMatchObject({ publication_blocker: { code: "runtime_handoff_lock", message: expect.stringContaining("Candidate runtime readiness failed") } });
-    const status = await operatorRouter.invoke({ method: "GET", url: "/api/runtime-handoff/lock" });
-    expect(status.body).toMatchObject({ lock: { phase: "failed", bindingDigest: held.digest } });
-    const retired = await operatorRouter.invoke({ method: "POST", url: "/api/runtime-handoff/retire", body: { binding_digest: held.digest, reason: "stale" } });
-    expect(retired.status).toBe(200);
-    expect(retired.body).toMatchObject({ retirement: { actor: { user_id: operatorId } } });
-    expect(fs.existsSync(held.lockPath)).toBe(false);
-    await waitUntilPasses(() => expect(runs).toHaveLength(1));
-    expect(runs[0]!.input.pinSha).toBe((await queue.getRequest(request.id))!.merge_candidate_pin_sha);
-  });
 });

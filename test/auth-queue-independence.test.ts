@@ -48,9 +48,9 @@ describe("auth queue", () => {
         credential_id: credential.id, authority_path: "custodian" as const };
       db.prepare(`INSERT INTO work_units
         (id, issue_id, repo_id, branch, kind, state, created_at, activated_at,
-         ledger_issue_id, owner_user_id, owner_credential_id, custody_generation)
+         ledger_issue_id, owner_user_id, responsibility_session_id, custody_generation)
         VALUES (?, '8420a44', ?, 'feature/b', 'solo', 'committed', 1, 1, ?, ?, ?, 1)`)
-        .run(crypto.randomUUID(), project.project.project_key, issue.id, operator.id, credential.id);
+        .run(crypto.randomUUID(), project.project.project_key, issue.id, operator.id, null);
       const pending = (await queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge", command: "mandible auth merge feature/b --into main", title: "Merge b",
         repo: project.project.project_key, base_branch: "main", head_branch: "feature/b",
@@ -81,12 +81,6 @@ describe("auth queue", () => {
         current_base_sha: firstMerge });
       await expect((async () => (await queue.repairPendingCandidateSnapshot(pending.id, actor, 1, 1, "0".repeat(64)))())).rejects
         .toThrow(AuthQueueError);
-      const otherCredential = addCredential(db, operator.id, {
-        type: "api_token", fingerprint: `candidate-repair-other-${crypto.randomUUID()}`,
-      });
-      await expect((async () => (await queue.inspectPendingCandidateSnapshotRepair(pending.id, {
-        ...actor, credential_id: otherCredential.id,
-      }))())).rejects.toThrow(AuthQueueError);
       db.prepare("UPDATE auth_requests SET title = 'Tampered' WHERE id = ?").run(pending.id);
       await expect((async () => (await queue.inspectPendingCandidateSnapshotRepair(pending.id, actor))())).rejects.toThrow(AuthQueueError);
       db.prepare("UPDATE auth_requests SET title = ? WHERE id = ?").run(pending.title, pending.id);

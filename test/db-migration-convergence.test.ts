@@ -1173,3 +1173,28 @@ it("preserves pending review bytes and lifecycle history when prerequisite sets 
     expect(db.prepare("SELECT * FROM auth_request_lifecycle_events WHERE auth_request_id = 'pending-preserved'").all()).toEqual(history);
   } finally { db.close(); }
 });
+
+it("migrates responsibility without changing reviewed candidates, approval evidence or lifecycle digests", () => {
+  const db = migrateFixtureThrough(225);
+  try {
+    const operator = setupOperator(db, { slug: "responsibility-migration-operator" });
+    db.prepare("INSERT INTO work_units (id, issue_id, repo_id, state, created_at, owner_user_id, provider, provider_session_id, custody_generation) VALUES ('reviewed-unit', 'issue', 'repo', 'committed', 1, ?, 'codex', 'responsible-session', 7)").run(operator.id);
+    db.prepare(`INSERT INTO auth_requests (id, type, command, title, status, created_at, updated_at, expires_at,
+      requested_by_user_id, approved_by_user_id, session_id, custody_work_unit_id,
+      merge_preflight_base_sha, merge_head_sha, merge_candidate_tree_sha, merge_candidate_pin_sha)
+      VALUES ('reviewed-request', 'merge', 'reviewed command', 'Reviewed candidate', 'executing', 1, 2, 9999999999999,
+        ?, ?, 'responsible-session', 'reviewed-unit', ?, ?, ?, ?)`)
+      .run(operator.id, operator.id, 'a'.repeat(40), 'b'.repeat(40), 'c'.repeat(40), 'd'.repeat(40));
+    appendAuthLifecycleEvent(db, { requestId: "reviewed-request", eventType: "executing", priorStatus: "approved", nextStatus: "executing", occurredAt: 2 });
+    const request = db.prepare("SELECT * FROM auth_requests WHERE id = 'reviewed-request'").get();
+    const history = listAuthLifecycleEvents(db, "reviewed-request");
+    const reviewed = authRequestSnapshot(db, "reviewed-request");
+    migrate(db);
+    expect(db.prepare("SELECT * FROM auth_requests WHERE id = 'reviewed-request'").get()).toEqual(request);
+    expect(authRequestSnapshot(db, "reviewed-request")).toBe(reviewed);
+    expect(listAuthLifecycleEvents(db, "reviewed-request")).toEqual(history);
+    expect(history.at(-1)!.snapshot_sha256).toBe(authSnapshotDigest(reviewed));
+    expect(db.prepare("SELECT owner_user_id, responsibility_session_id, custody_generation FROM work_units WHERE id = 'reviewed-unit'").get())
+      .toEqual({ owner_user_id: operator.id, responsibility_session_id: 'responsible-session', custody_generation: 7 });
+  } finally { db.close(); }
+});

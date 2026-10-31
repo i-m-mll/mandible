@@ -109,12 +109,12 @@ function registerWorkRepo(db: InstanceType<typeof SqliteDatabase>, repoRoot: str
   const insertWorkUnit = db.prepare(
     `INSERT INTO work_units
       (id, issue_id, repo_id, branch, kind, state, created_at, activated_at, last_commit_at,
-       ledger_issue_id, owner_user_id, owner_credential_id, custody_generation)
+       ledger_issue_id, owner_user_id, responsibility_session_id, custody_generation)
      VALUES (?, 'abc1234', ?, ?, 'solo', 'committed', 1, 1, 1, ?, ?, ?, 1)`,
   );
   for (const branch of ["feature/mandible-issue", "feature/large-diff"]) {
     insertWorkUnit.run(`wu-${branch}`, project.project.id, branch, issue.id,
-      testRequesterUserId, testRequesterCredentialId);
+      testRequesterUserId, null);
   }
 }
 

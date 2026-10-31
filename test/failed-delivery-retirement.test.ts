@@ -28,8 +28,9 @@ async function fixture(db = createMigratedDb()) {
   const owner = createUser(db, { slug: 'retirement-owner', display_name: 'Retirement owner', kind: 'agent' });
   const credential = addCredential(db, owner.id, { type: 'api_token', fingerprint: 'retirement-held' });
   const currentActor: AuthLifecycleActor = { user_id: owner.id, credential_id: credential.id, evidence_method: 'api_token', authority_path: 'custodian' };
-  db.prepare("INSERT INTO work_units (id, issue_id, repo_id, kind, state, auth_request_id, owner_user_id, owner_credential_id, custody_generation, created_at) VALUES ('unit', 'fixture', 'fixture', 'solo', 'committed', ?, ?, ?, 3, 1)")
-    .run(id, owner.id, credential.id);
+  const currentSchema = (db.pragma("table_info(work_units)") as Array<{ name: string }>).some(column => column.name === "responsibility_session_id");
+  db.prepare(`INSERT INTO work_units (id, issue_id, repo_id, kind, state, auth_request_id, owner_user_id, ${currentSchema ? "responsibility_session_id" : "owner_credential_id"}, custody_generation, created_at) VALUES ('unit', 'fixture', 'fixture', 'solo', 'committed', ?, ?, ?, 3, 1)`)
+    .run(id, owner.id, currentSchema ? null : credential.id);
   const pending = await createPendingRelease({ storage: path.join(home, 'accepted-releases'), ownership: { runId: record, instanceId: 'fixture', project: 'project', workUnit: 'unit' } });
   fs.mkdirSync(pending.resources, { recursive: true });
   const program = path.join(pending.resources, 'program'); fs.writeFileSync(program, 'accepted program');
@@ -210,8 +211,8 @@ it('enforces real request custody and generation at the AuthQueue retirement ent
   f.db.prepare('UPDATE auth_requests SET execution_evidence_id = ?, output = ? WHERE id = ?').run(evidence.id, `MANDIBLE_MERGE_RESULT ${JSON.stringify({ merge_sha: commit })}\npost-completion hook retries`, f.id);
   const queue = new AuthQueue({ db: f.db, backgroundMaintenance: false, broadcast: () => {} });
   try {
-    await expect(queue.retireFailedDelivery(f.id, 'Retire obsolete attempt', { ...currentActor, credential_id: other.id }, event.revision, 3))
-      .rejects.toThrow('current delivery-work-unit credential');
+    await expect(queue.retireFailedDelivery(f.id, 'Retire obsolete attempt', { ...currentActor, session_id: 'another-session', credential_id: other.id }, event.revision, 3))
+      .rejects.toThrow('Explicitly assume current request responsibility');
     await expect(queue.retireFailedDelivery(f.id, 'Retire obsolete attempt', currentActor, event.revision, 4))
       .rejects.toThrow('lifecycle or work-unit custody changed');
     expect(f.hook().state).toBe('failed');
