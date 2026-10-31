@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { expect, it } from "vitest";
-import { openDb, setDb } from "../src/db.js";
+import { openDb, setDb, CURRENT_SCHEMA_VERSION } from "../src/db.js";
 import { buildMetadataBackupSql } from "../src/ledger/backup.js";
 import { configureIngestionWorker, ingestBatchForWorker, stopIngestionGracefully } from "../src/ingestion.js";
 import { restoreConversationMetadata, inspectConversationRecovery } from "../src/conversations/recovery.js";
@@ -9,6 +9,7 @@ import { IngestionActor } from "../src/ingestion-actor.js";
 import { ConversationSourceReader } from "../src/conversations/source-reader.js";
 import { getConversationStructureCache } from "../src/conversations/structure-cache.js";
 import { ConversationSearchCache, SourceBackedConversationSearchSourceAdapter } from "../src/conversations/search-cache.js";
+import { migrateFixtureThrough } from "./helpers/schema-snapshot.js";
 import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
 
 it("restores authored metadata and discovers native content, with honest missing-source results", async () => {
@@ -57,6 +58,26 @@ it("restores authored metadata and discovers native content, with honest missing
     if (restored) { getConversationStructureCache(restored).close(); restored.close(); }
     await stopIngestionGracefully();
     original.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("recovers a prior metadata backup through production forward migrations without overwriting a ledger", () => {
+  const root = fs.mkdtempSync(path.join(testRuntimeRoot, "prior-recovery-"));
+  const prior = migrateFixtureThrough(224);
+  let restored: ReturnType<typeof openDb> | undefined;
+  try {
+    prior.prepare("INSERT INTO conversations (id, source, source_path, source_hash, source_mtime, session_id, started_at, title, notes, created_at, updated_at) VALUES ('prior', 'codex', '/missing/native.jsonl', 'hash', 0, 'prior-native', '2026-10-01', 'Retained title', 'authored note', '2026-10-01', '2026-10-01')").run();
+    const metadata = buildMetadataBackupSql(prior);
+    const destination = path.join(root, "restored.db");
+    restored = restoreConversationMetadata(metadata, destination);
+    expect(restored.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: String(CURRENT_SCHEMA_VERSION) });
+    expect(restored.prepare("SELECT title, notes FROM conversations WHERE id = 'prior'").get()).toEqual({ title: 'Retained title', notes: 'authored note' });
+    expect(restored.pragma("foreign_key_check")).toEqual([]);
+    expect(() => restoreConversationMetadata(metadata, destination)).toThrow("must not exist");
+  } finally {
+    restored?.close();
+    prior.close();
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

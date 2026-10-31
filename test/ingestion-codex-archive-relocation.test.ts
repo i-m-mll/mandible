@@ -86,7 +86,7 @@ function blockCount(conversationId: string): number {
     if (sparse !== null) return sparse;
   }
   const result = db
-    .prepare("SELECT COUNT(*) AS count FROM conversation_blocks WHERE conversation_id = ?")
+    .prepare("SELECT block_count AS count FROM conversations WHERE id = ?")
     .get(conversationId) as { count: number };
   return result.count;
 }
@@ -131,7 +131,7 @@ describe("codex archive relocation", () => {
     expect(conversation).toBeDefined();
     db.prepare("UPDATE conversations SET starred = 1, notes = 'keep notes' WHERE id = ?").run(conversation.id);
     const before = db.prepare("SELECT current_version_id FROM conversation_sources WHERE conversation_id = ?").get(conversation.id);
-    expect((await new ConversationSourceReader(db, { legacyFallback: false }).readAll(conversation.id)).status).toBe("source");
+    expect((await new ConversationSourceReader(db).readAll(conversation.id)).status).toBe("source");
     db.prepare("UPDATE conversation_sources SET availability = 'missing' WHERE conversation_id = ?").run(conversation.id);
     db.prepare("UPDATE conversation_source_aliases SET availability = 'missing'").run();
     await ensureExactConversationFresh(db, conversation.id, { ingest: triggerExactPathIngest });
@@ -140,7 +140,7 @@ describe("codex archive relocation", () => {
     expect(db.prepare("SELECT current_version_id FROM conversation_sources WHERE conversation_id = ?").get(conversation.id)).toEqual(before);
     fs.appendFileSync(sessionPath, row({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "resumed" }] } }));
     await triggerReconcileForTest({ watchConfigs: watchConfigs() });
-    const blocks = await new ConversationSourceReader(db, { legacyFallback: false }).readAll(conversation.id);
+    const blocks = await new ConversationSourceReader(db).readAll(conversation.id);
     expect(blocks.status).toBe("source");
     if (blocks.status === "source") expect(blocks.value.at(-1)?.content).toBe("resumed");
     expect(db.prepare("SELECT starred, notes FROM conversations WHERE id = ?").get(conversation.id)).toEqual({ starred: 1, notes: "keep notes" });
@@ -263,12 +263,7 @@ describe("codex archive relocation", () => {
       ) VALUES ('archive-path-bystander', 'codex', ?, 'bystander-hash', 0,
         'Bystander', datetime('now'), 1, 'archive-path-bystander')
     `).run(archivedPath);
-    db.prepare(`
-      INSERT INTO conversation_blocks (
-        id, conversation_id, type, role, content, position, metadata_json
-      ) VALUES ('archive-path-bystander-block', 'archive-path-bystander',
-        'assistant_message', 'assistant', 'preserve me', 0, '{}')
-    `).run();
+
 
     await archiveRollout();
     await triggerReconcileForTest({ watchConfigs: watchConfigs() });
@@ -281,8 +276,8 @@ describe("codex archive relocation", () => {
     ].sort((a, b) => a.id.localeCompare(b.id)));
     expect(blockCount(ingested.id)).toBe(ingested.block_count);
     expect(db.prepare(
-      "SELECT content FROM conversation_blocks WHERE id = 'archive-path-bystander-block'",
-    ).get()).toEqual({ content: "preserve me" });
+      "SELECT title FROM conversations WHERE id = 'archive-path-bystander'",
+    ).get()).toEqual({ title: "Bystander" });
   });
 
   it("rejects an unrelated archive candidate and ingests it independently", async () => {

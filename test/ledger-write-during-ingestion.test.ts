@@ -61,7 +61,7 @@ it("commits comments and references and serves health while real ingestion prepa
     Atomics.notify(gate!, 0);
     await ingestion;
     const conversation = db.prepare("SELECT id FROM conversations WHERE session_id = ?").get(session) as { id: string };
-    const read = await new ConversationSourceReader(db, { legacyFallback: false }).readAll(conversation.id);
+    const read = await new ConversationSourceReader(db).readAll(conversation.id);
     expect(read.status).toBe("source");
     if (read.status === "source") expect(read.value.map(block => block.content)).toEqual(["prepared content"]);
   } finally {

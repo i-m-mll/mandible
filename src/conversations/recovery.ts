@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import SqliteDatabase from "../sqlite.js";
-import { openDb, CURRENT_SCHEMA_VERSION, type Db } from "../db.js";
+import { openDb, migrate, type Db } from "../db.js";
 import { metadataBackupTables } from "../ledger/backup.js";
 import { IngestionActor } from "../ingestion-actor.js";
 import { ConversationSourceReader } from "./source-reader.js";
@@ -8,7 +8,7 @@ import { readConversationSourceReadiness } from "./source-readiness.js";
 
 const quote = (value: string): string => `"${value.replaceAll('"', '""')}"`;
 
-/** Restore a current metadata backup into a new ledger, without copying disposable indexes. */
+/** Forward-migrate and restore a supported metadata backup into a new ledger, without copying disposable indexes. */
 export function restoreConversationMetadata(metadataSql: string, destination: string): Db {
   if (fs.existsSync(destination)) throw new Error("Recovery destination must not exist");
   const backup = new SqliteDatabase(":memory:");
@@ -16,8 +16,7 @@ export function restoreConversationMetadata(metadataSql: string, destination: st
   let claimed = false;
   try {
     backup.exec(metadataSql);
-    const version = backup.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as { value: string } | undefined;
-    if (Number(version?.value) !== CURRENT_SCHEMA_VERSION) throw new Error("Recovery requires a metadata backup from the current schema");
+    migrate(backup);
     const tables = metadataBackupTables(backup).filter(table => backup.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table));
     fs.closeSync(fs.openSync(destination, "wx", 0o600));
     claimed = true;

@@ -87,7 +87,7 @@ if (!process.argv.includes("--isolated-child")) {
         const elapsedMs = performance.now() - started;
         const conversation = db.prepare("SELECT id, block_count FROM conversations WHERE session_id = ?").get(session) as { id: string; block_count: number };
         assert.equal(conversation.block_count, count);
-        const tail = await new ConversationSourceReader(db, { legacyFallback: false }).readPage(conversation.id, { offset: count - 1, limit: 1 });
+        const tail = await new ConversationSourceReader(db).readPage(conversation.id, { offset: count - 1, limit: 1 });
         assert.equal(tail.status, "source");
         if (tail.status === "source") assert.equal(tail.value.blocks[0]?.content, body(count - 1));
         const passed = writes > 0 && errors.length === 0 && maxWriteMs < HANDLER_TURN_BUDGET_MS && maxLoopDelayMs < EVENT_LOOP_STALL_BUDGET_MS;

@@ -174,8 +174,6 @@ describe("incremental tail ingestion", () => {
     const conversation = db.prepare("SELECT id, block_count FROM conversations WHERE source_path = ?")
       .get(sessionPath) as { id: string; block_count: number };
     expect(conversation.block_count).toBe(3);
-    expect(db.prepare("SELECT COUNT(*) AS count FROM conversation_blocks WHERE conversation_id = ?")
-      .get(conversation.id)).toEqual({ count: 0 });
     const sourcePage = await new ConversationSourceReader(db).readPage(conversation.id, { limit: 10 });
     expect(sourcePage.status).toBe("source");
     if (sourcePage.status === "source") {
@@ -187,35 +185,6 @@ describe("incremental tail ingestion", () => {
     ).toMatchObject({ byte_offset: fs.statSync(sessionPath).size, line_count: 4 });
   });
 
-  it("keeps legacy references readable on append and uses the publication count after a rewrite", async () => {
-    const sessionPath = await makeCodexSession();
-    await writeWithMtime(sessionPath, initialCodexRows() + assistantRow("historical tail", 3), 1);
-    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 1_000 });
-    const { id } = db.prepare("SELECT id FROM conversations WHERE source_path = ?").get(sessionPath) as { id: string };
-    const parsed = (await new CodexParser().parse(sessionPath))!;
-    const blocks = parsed.blocks.map(block => ({ ...block, legacyId: `retained-${block.position}` }));
-    for (const block of blocks) db.prepare(`INSERT INTO conversation_blocks
-      (id, conversation_id, type, role, content, position, timestamp, parent_id, metadata_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(block.legacyId, id, block.type, block.role,
-        block.content, block.position, block.timestamp, block.parent_id, JSON.stringify(block.metadata));
-    await new ConversationSourceStore(db).recordConversation({ conversationId: id, provider: "codex", nativeSessionId: "tailtest",
-      filePath: sessionPath, blocks, ...CURRENT_CONVERSATION_SOURCE_EPOCHS });
-    db.prepare("UPDATE conversations SET notes = 'authored note', starred = 1 WHERE id = ?").run(id);
-    await appendWithMtime(sessionPath, assistantRow("new tail", 4), 2);
-    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 2_000 });
-    const retained = await new ConversationSourceReader(db, { legacyFallback: false }).readBlock("retained-0");
-    expect(retained.status).toBe("source");
-    if (retained.status === "source") expect(retained.value.content).toBe("hello");
-    await writeWithMtime(sessionPath, initialCodexRows().split("\n").slice(0, 2).join("\n") + "\n", 3);
-    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 3_000 });
-    await appendWithMtime(sessionPath, assistantRow("after rewrite", 5), 4);
-    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 4_000 });
-    expect(db.prepare("SELECT block_count, notes, starred FROM conversations WHERE id = ?").get(id))
-      .toEqual({ block_count: 2, notes: "authored note", starred: 1 });
-    const latest = await new ConversationSourceReader(db, { legacyFallback: false }).readAll(id);
-    expect(latest.status).toBe("source");
-    if (latest.status === "source") expect(latest.value.map(block => block.content)).toEqual(["hello", "after rewrite"]);
-  });
 
   it("keeps the old publication and append progress when the prepared source disappears", async () => {
     const sessionPath = await makeCodexSession();
@@ -406,8 +375,6 @@ describe("incremental tail ingestion", () => {
        WHERE source_path = ? AND session_id = 'tailtest-rewritten'
     `).get(sessionPath) as { id: string; session_id: string; block_count: number };
     expect(conversation).toMatchObject({ session_id: "tailtest-rewritten", block_count: 3 });
-    expect(db.prepare("SELECT COUNT(*) AS count FROM conversation_blocks WHERE conversation_id = ?")
-      .get(conversation.id)).toEqual({ count: 0 });
     const sourcePage = await new ConversationSourceReader(db).readPage(conversation.id, { limit: 10 });
     expect(sourcePage.status).toBe("source");
     if (sourcePage.status === "source") expect(sourcePage.value.blocks[0].content).toBe("rewritten hello");
@@ -417,8 +384,6 @@ describe("incremental tail ingestion", () => {
     ).toMatchObject({ byte_offset: fs.statSync(sessionPath).size });
     expect(db.prepare("SELECT block_count FROM conversations WHERE id = ?")
       .get(original.id)).toEqual({ block_count: 3 });
-    expect(db.prepare("SELECT COUNT(*) AS count FROM conversation_blocks WHERE conversation_id = ?")
-      .get(original.id)).toEqual({ count: 0 });
   });
 
   it("detects a replacement with the exact previously indexed mtime", async () => {
@@ -454,30 +419,6 @@ describe("incremental tail ingestion", () => {
     ).all(sessionPath)).toEqual([{ session_id: "same-mtime-unchanged" }]);
   });
 
-  it("preserves fallback data when a source truncates at the exact indexed mtime", async () => {
-    const sessionPath = await makeCodexSession();
-    await writeWithMtime(sessionPath, initialCodexRows("same-mtime-truncation"), 1);
-    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 1_000 });
-    const indexedMtime = fs.statSync(sessionPath).mtimeMs;
-    const conversation = db.prepare(
-      "SELECT id FROM conversations WHERE source_path = ?",
-    ).get(sessionPath) as { id: string };
-    const before = db.prepare(
-      "SELECT id, content FROM conversation_blocks WHERE conversation_id = ? ORDER BY position",
-    ).all(conversation.id);
-
-    await fsp.writeFile(sessionPath, "", "utf8");
-    await fsp.utimes(sessionPath, new Date(indexedMtime), new Date(indexedMtime));
-    expect(fs.statSync(sessionPath).mtimeMs).toBe(indexedMtime);
-    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 2_000 });
-
-    expect(db.prepare(
-      "SELECT id, content FROM conversation_blocks WHERE conversation_id = ? ORDER BY position",
-    ).all(conversation.id)).toEqual(before);
-    expect(db.prepare(
-      "SELECT availability FROM conversation_sources WHERE conversation_id = ?",
-    ).get(conversation.id)).toEqual({ availability: "missing" });
-  });
 
   it("reconcile detects a replacement with the exact indexed mtime", async () => {
     const sessionPath = await makeCodexSession();
@@ -576,101 +517,6 @@ describe("incremental tail ingestion", () => {
     await expect(triggerExactPathIngest(sessionPath)).resolves.toMatchObject({ status: "ingested" });
   });
 
-  it("does not warn when a touched already-source-backed conversation has no legacy payload to promote", async () => {
-    const sessionPath = await makeCodexSession();
-    const source = initialCodexRows("reconcile-source-backed");
-    await writeWithMtime(sessionPath, source, 1);
-    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
-    await writeWithMtime(sessionPath, source, 2);
-    const events: string[] = [];
-
-    await triggerReconcileForTest({
-      watchConfigs: watchConfigs(),
-      log: (_level, event) => events.push(event),
-    });
-
-    expect(events).not.toContain("conversation_source_projection_mismatch");
-    expect(events).not.toContain("conversation_source_snapshot_failed");
-  });
-
-  it("reconcile preserves fallback data after same-mtime truncation", async () => {
-    const sessionPath = await makeCodexSession();
-    await writeWithMtime(sessionPath, initialCodexRows("reconcile-same-mtime-truncated"), 1);
-    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
-    const indexedMtime = fs.statSync(sessionPath).mtimeMs;
-    const conversation = db.prepare(
-      "SELECT id FROM conversations WHERE source_path = ?",
-    ).get(sessionPath) as { id: string };
-    const before = db.prepare(
-      "SELECT id, content FROM conversation_blocks WHERE conversation_id = ? ORDER BY position",
-    ).all(conversation.id);
-
-    await fsp.writeFile(sessionPath, "", "utf8");
-    await fsp.utimes(sessionPath, new Date(indexedMtime), new Date(indexedMtime));
-    expect(fs.statSync(sessionPath).mtimeMs).toBe(indexedMtime);
-    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
-
-    expect(db.prepare(
-      "SELECT id, content FROM conversation_blocks WHERE conversation_id = ? ORDER BY position",
-    ).all(conversation.id)).toEqual(before);
-    expect(db.prepare(`
-      SELECT s.availability AS source_availability, v.availability AS version_availability
-        FROM conversation_sources s
-        JOIN conversation_source_versions v ON v.id = s.current_version_id
-       WHERE s.conversation_id = ?
-    `).get(conversation.id)).toEqual({
-      source_availability: "missing",
-      version_availability: "missing",
-    });
-  });
-
-  it("preserves fallback bodies and source history while the source is empty or truncated", async () => {
-    const sessionPath = await makeCodexSession();
-    const original = initialCodexRows();
-    await writeWithMtime(sessionPath, original, 1);
-    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 1_000 });
-
-    const conversation = db.prepare("SELECT id FROM conversations WHERE source_path = ?")
-      .get(sessionPath) as { id: string };
-    const beforeBlocks = db.prepare(
-      "SELECT id, content FROM conversation_blocks WHERE conversation_id = ? ORDER BY position",
-    ).all(conversation.id);
-    const beforeVersions = db.prepare(`
-      SELECT COUNT(*) AS count FROM conversation_source_versions
-       WHERE source_id = (SELECT id FROM conversation_sources WHERE conversation_id = ?)
-    `).get(conversation.id);
-    const beforeAliases = db.prepare(`
-      SELECT alias, block_id FROM conversation_block_aliases
-       WHERE block_id IN (SELECT id FROM conversation_structural_blocks WHERE conversation_id = ?)
-       ORDER BY alias
-    `).all(conversation.id);
-
-    await writeWithMtime(sessionPath, "", 2);
-    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 2_000 });
-    await writeWithMtime(sessionPath, initialCodexRows().split("\n", 1)[0] + "\n", 3);
-    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 3_000 });
-
-    expect(db.prepare("SELECT id FROM conversations WHERE id = ?").get(conversation.id))
-      .toBeDefined();
-    expect(db.prepare(
-      "SELECT id, content FROM conversation_blocks WHERE conversation_id = ? ORDER BY position",
-    ).all(conversation.id)).toEqual(beforeBlocks);
-    expect(db.prepare(`
-      SELECT COUNT(*) AS count FROM conversation_source_versions
-       WHERE source_id = (SELECT id FROM conversation_sources WHERE conversation_id = ?)
-    `).get(conversation.id)).toEqual(beforeVersions);
-    expect(db.prepare(`
-      SELECT alias, block_id FROM conversation_block_aliases
-       WHERE block_id IN (SELECT id FROM conversation_structural_blocks WHERE conversation_id = ?)
-       ORDER BY alias
-    `).all(conversation.id)).toEqual(beforeAliases);
-    expect(db.prepare(
-      "SELECT availability, unavailable_reason FROM conversation_sources WHERE conversation_id = ?",
-    ).get(conversation.id)).toEqual({
-      availability: "missing",
-      unavailable_reason: "source parsed as empty or temporarily truncated",
-    });
-  });
 
   it("treats a reused path as an alias and preserves both conversation identities", async () => {
     const sessionPath = await makeCodexSession();
@@ -680,7 +526,7 @@ describe("incremental tail ingestion", () => {
       "SELECT id FROM conversations WHERE source_path = ? AND session_id = 'path-owner-a'",
     ).get(sessionPath) as { id: string };
     const originalBlocks = db.prepare(
-      "SELECT id, content FROM conversation_blocks WHERE conversation_id = ? ORDER BY position",
+      "SELECT notes, starred FROM conversations WHERE id = ?",
     ).all(original.id);
 
     await writeWithMtime(sessionPath, initialCodexRows("path-owner-b"), 2);
@@ -695,7 +541,7 @@ describe("incremental tail ingestion", () => {
       { session_id: "path-owner-b" },
     ]);
     expect(db.prepare(
-      "SELECT id, content FROM conversation_blocks WHERE conversation_id = ? ORDER BY position",
+      "SELECT notes, starred FROM conversations WHERE id = ?",
     ).all(original.id)).toEqual(originalBlocks);
     expect(db.prepare(
       "SELECT block_count FROM conversations WHERE source_path = ? AND session_id = 'path-owner-b'",
@@ -709,10 +555,7 @@ describe("incremental tail ingestion", () => {
       availability: "missing",
       unavailable_reason: "source path reused by a distinct conversation identity",
     });
-    expect(db.prepare(`
-      SELECT COUNT(*) AS count FROM conversation_block_aliases
-       WHERE block_id IN (SELECT id FROM conversation_structural_blocks WHERE conversation_id = ?)
-    `).get(original.id)).toEqual({ count: originalBlocks.length });
+
   });
 });
 
@@ -768,9 +611,6 @@ describe("watched tail ingestion", () => {
        WHERE a.path = ?`).get(sessionPath) as { availability: string } | undefined)?.availability === "missing",
     "the watched source tombstone");
     expect(blockCount(sessionPath)).toBe(2);
-    expect(db.prepare(`
-      SELECT COUNT(*) AS count FROM conversation_blocks b
-        LEFT JOIN conversations c ON c.id = b.conversation_id
-       WHERE c.id IS NULL`).get()).toMatchObject({ count: 0 });
+
   });
 });

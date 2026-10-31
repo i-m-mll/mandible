@@ -16,10 +16,8 @@ const { liveDbPath } = createRequire(import.meta.url)("../cli/mandible-paths.cjs
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 const DEFAULT_SOURCE = liveDbPath();
-const REQUIRED_PROJECTED_TABLES = new Set(["conversations", "conversation_blocks"]);
-const PROJECTED_TABLES = new Set(["daemon_log", ...REQUIRED_PROJECTED_TABLES]);
-const LOG_ALL_WINDOW_MS = DAY_MS;
-const LOG_SEVERE_WINDOW_MS = 7 * DAY_MS;
+const REQUIRED_PROJECTED_TABLES = new Set(["conversations"]);
+const PROJECTED_TABLES = REQUIRED_PROJECTED_TABLES;
 const CONVERSATION_WINDOW_MS = 7 * DAY_MS;
 const SPACE_MARGIN_BYTES = 128 * 1024 * 1024;
 
@@ -61,14 +59,11 @@ export function projectDatabaseSnapshot(options) {
     const schema = userSchema(db, "source");
     requireProjectedTables(schema.tables);
     const sourceTableNames = new Set(schema.tables.map((table) => table.name));
-    const hasLegacyDaemonLog = sourceTableNames.has("daemon_log");
     const sourcePragmas = readSourcePragmas(db);
     const sourceForeignKeyViolations = normalizedForeignKeyViolations(db, "source");
-    const cutoffMs = resolveCutoffMs(db, options.cutoffMs, hasLegacyDaemonLog);
+    const cutoffMs = resolveCutoffMs(db, options.cutoffMs);
     const windows = {
       cutoff_ms: cutoffMs,
-      logs_all_after_ms: Math.max(0, cutoffMs - LOG_ALL_WINDOW_MS),
-      logs_severe_after_ms: Math.max(0, cutoffMs - LOG_SEVERE_WINDOW_MS),
       conversations_after_ms: Math.max(0, cutoffMs - CONVERSATION_WINDOW_MS),
     };
 
@@ -79,10 +74,10 @@ export function projectDatabaseSnapshot(options) {
     for (const table of schema.tables) db.exec(table.sql);
     selectConversationProjection(db, windows);
 
-    const space = estimateAndCheckSpace(db, outputPath, windows, hasLegacyDaemonLog, options);
+    const space = estimateAndCheckSpace(db, outputPath, options);
     const copied = {};
     for (const table of schema.tables) {
-      copied[table.name] = copyTable(db, table.name, windows);
+      copied[table.name] = copyTable(db, table.name);
     }
     copySqliteSequence(db, schema.tables);
 
@@ -112,7 +107,7 @@ export function projectDatabaseSnapshot(options) {
       throw new Error(`Projected database introduced ${introducedViolations.length} foreign-key violation(s)`);
     }
 
-    const outputCounts = readProjectedCounts(db, hasLegacyDaemonLog);
+    const outputCounts = readProjectedCounts(db);
     db.close();
     db = null;
 
@@ -130,10 +125,6 @@ export function projectDatabaseSnapshot(options) {
       },
       projection: {
         cutoff_ms: windows.cutoff_ms,
-        logs: {
-          all_after_ms: windows.logs_all_after_ms,
-          warn_error_after_ms: windows.logs_severe_after_ms,
-        },
         conversations: {
           active_after_ms: windows.conversations_after_ms,
           preserve_starred: true,
@@ -245,21 +236,9 @@ function readSourcePragmas(db) {
   };
 }
 
-function resolveCutoffMs(db, explicitCutoff, hasLegacyDaemonLog) {
-  if (explicitCutoff !== null && explicitCutoff !== undefined) return explicitCutoff;
-  if (!hasLegacyDaemonLog) {
-    const row = db.prepare("SELECT COALESCE(MAX(source_mtime), 0) AS cutoff_ms FROM source.conversations").get();
-    return Number(row.cutoff_ms ?? 0);
-  }
-  const row = db.prepare(
-    `SELECT COALESCE(MAX(value), 0) AS cutoff_ms
-       FROM (
-         SELECT MAX(ts) AS value FROM source.daemon_log
-         UNION ALL
-         SELECT MAX(source_mtime) AS value FROM source.conversations
-       )`,
-  ).get();
-  return Number(row.cutoff_ms ?? 0);
+function resolveCutoffMs(db, explicit) {
+  if (explicit !== undefined && explicit !== null) return explicit;
+  return Number(db.prepare("SELECT MAX(source_mtime) AS cutoff_ms FROM source.conversations").get().cutoff_ms ?? 0);
 }
 
 function selectConversationProjection(db, windows) {
@@ -331,10 +310,10 @@ function conversationForeignKeyReferences(db) {
       }
     }
   }
-  return references.filter((reference) => reference.table !== "conversation_blocks");
+  return references;
 }
 
-function estimateAndCheckSpace(db, outputPath, windows, hasLegacyDaemonLog, options = {}) {
+function estimateAndCheckSpace(db, outputPath, options = {}) {
   let canonicalPhysicalBytes;
   try {
     canonicalPhysicalBytes = Number(db.prepare(
@@ -344,32 +323,15 @@ function estimateAndCheckSpace(db, outputPath, windows, hasLegacyDaemonLog, opti
         WHERE stats.aggregate = TRUE
           AND stats.name NOT LIKE 'sqlite_%'
           AND COALESCE(objects.tbl_name, stats.name)
-              NOT IN ('daemon_log', 'conversations', 'conversation_blocks')`,
+              != 'conversations'`,
     ).get().bytes);
   } catch {
     canonicalPhysicalBytes = fs.statSync(db.prepare("PRAGMA source.database_list").all()
       .find((row) => row.name === "source").file).size;
   }
 
-  const logPayloadBytes = hasLegacyDaemonLog ? Number(db.prepare(
-    `SELECT COALESCE(SUM(
-       length(id) + length(level) + length(event) + length(subsystem) + length(fields_json) +
-       COALESCE(length(issue_id), 0) + COALESCE(length(auth_request_id), 0) +
-       COALESCE(length(artifact_id), 0) + COALESCE(length(session_id), 0) +
-       COALESCE(length(repo_id), 0) + 8
-     ), 0) AS bytes
-       FROM source.daemon_log
-      WHERE ts >= @logs_all_after_ms
-         OR (ts >= @logs_severe_after_ms AND level IN ('warn', 'error'))`,
-  ).get(windows).bytes) : 0;
-  const conversationPayloadBytes = Number(db.prepare(
-    `SELECT COALESCE(SUM(length(b.content) + length(b.metadata_json)), 0) AS bytes
-       FROM source.conversation_blocks b
-       JOIN selected_conversation_ids selected ON selected.id = b.conversation_id`,
-  ).get().bytes);
-
   const estimatedRequiredBytes = Math.ceil(
-    canonicalPhysicalBytes + (logPayloadBytes * 3) + (conversationPayloadBytes * 2) + SPACE_MARGIN_BYTES,
+    canonicalPhysicalBytes + SPACE_MARGIN_BYTES,
   );
   const statfs = fs.statfsSync(path.dirname(outputPath));
   const availableBytes = Number(statfs.bavail) * Number(statfs.bsize);
@@ -384,29 +346,18 @@ function estimateAndCheckSpace(db, outputPath, windows, hasLegacyDaemonLog, opti
     available_bytes: availableBytes,
     estimated_required_bytes: estimatedRequiredBytes,
     canonical_physical_bytes: canonicalPhysicalBytes,
-    selected_log_payload_bytes: logPayloadBytes,
-    selected_conversation_payload_bytes: conversationPayloadBytes,
   };
 }
 
-function copyTable(db, tableName, windows) {
+function copyTable(db, tableName) {
   const columns = visibleColumns(db, tableName);
   const columnList = columns.map((column) => quoteIdentifier(column.name)).join(", ");
   const target = quoteIdentifier(tableName);
   let sql = `INSERT INTO ${target} (${columnList}) SELECT ${columnList} FROM source.${target}`;
-  let parameters = undefined;
 
-  if (tableName === "daemon_log") {
-    sql += ` WHERE ts >= @logs_all_after_ms
-              OR (ts >= @logs_severe_after_ms AND level IN ('warn', 'error'))
-             ORDER BY ts, id`;
-    parameters = windows;
-  } else if (tableName === "conversations") {
+  if (tableName === "conversations") {
     sql += ` WHERE id IN (SELECT id FROM selected_conversation_ids)
              ORDER BY source_mtime, id`;
-  } else if (tableName === "conversation_blocks") {
-    sql += ` WHERE conversation_id IN (SELECT id FROM selected_conversation_ids)
-             ORDER BY conversation_id, position, id`;
   } else {
     const primaryKey = columns.filter((column) => column.pk > 0).sort((a, b) => a.pk - b.pk);
     if (primaryKey.length > 0) {
@@ -415,7 +366,7 @@ function copyTable(db, tableName, windows) {
   }
 
   const statement = db.prepare(sql);
-  return parameters === undefined ? statement.run().changes : statement.run(parameters).changes;
+  return statement.run().changes;
 }
 
 function visibleColumns(db, tableName) {
@@ -436,13 +387,9 @@ function copySqliteSequence(db, tables) {
   }
 }
 
-function readProjectedCounts(db, hasLegacyDaemonLog) {
+function readProjectedCounts(db) {
   return {
-    daemon_log: hasLegacyDaemonLog
-      ? Number(db.prepare("SELECT COUNT(*) AS count FROM daemon_log").get().count)
-      : 0,
     conversations: Number(db.prepare("SELECT COUNT(*) AS count FROM conversations").get().count),
-    conversation_blocks: Number(db.prepare("SELECT COUNT(*) AS count FROM conversation_blocks").get().count),
   };
 }
 

@@ -26,7 +26,7 @@ afterEach(() => {
 
 afterAll(() => resetDb({ poison: false }));
 
-function createFixture(options: { includeLegacyDaemonLog?: boolean } = {}): { root: string; source: string } {
+function createFixture(): { root: string; source: string } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-projected-db-test-"));
   tempRoots.push(root);
   const source = path.join(root, "source.db");
@@ -67,22 +67,6 @@ function createFixture(options: { includeLegacyDaemonLog?: boolean } = {}): { ro
       created_at_ms INTEGER,
       updated_at_ms INTEGER
     );
-    CREATE TABLE conversation_blocks (
-      id TEXT PRIMARY KEY,
-      conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-      type TEXT NOT NULL,
-      role TEXT NOT NULL,
-      content TEXT NOT NULL DEFAULT '',
-      position INTEGER NOT NULL,
-      timestamp TEXT,
-      parent_id TEXT,
-      metadata_json TEXT NOT NULL DEFAULT '{}',
-      dag_uuid TEXT,
-      dag_parent_uuid TEXT,
-      compressed INTEGER NOT NULL DEFAULT 0,
-      timestamp_ms INTEGER,
-      UNIQUE(conversation_id, position)
-    );
     CREATE TABLE conversation_ingest_state (
       file_path TEXT PRIMARY KEY,
       byte_offset INTEGER NOT NULL DEFAULT 0,
@@ -92,19 +76,6 @@ function createFixture(options: { includeLegacyDaemonLog?: boolean } = {}): { ro
       updated_at INTEGER NOT NULL,
       empty_source_mtime REAL,
       empty_source_size INTEGER
-    );
-    CREATE TABLE daemon_log (
-      id TEXT PRIMARY KEY,
-      ts INTEGER NOT NULL,
-      level TEXT NOT NULL,
-      event TEXT NOT NULL,
-      subsystem TEXT NOT NULL DEFAULT 'daemon',
-      fields_json TEXT NOT NULL DEFAULT '{}',
-      issue_id TEXT,
-      auth_request_id TEXT,
-      artifact_id TEXT,
-      session_id TEXT,
-      repo_id TEXT
     );
     CREATE TABLE sessions (
       id TEXT PRIMARY KEY,
@@ -119,8 +90,6 @@ function createFixture(options: { includeLegacyDaemonLog?: boolean } = {}): { ro
       workflow_id TEXT NOT NULL REFERENCES workflow_runs(id),
       conversation_id TEXT REFERENCES conversations(id)
     );
-    CREATE INDEX idx_daemon_log_ts ON daemon_log(ts DESC);
-    CREATE INDEX idx_blocks_conv ON conversation_blocks(conversation_id);
     CREATE INDEX idx_conv_source_path ON conversations(source_path);
   `);
 
@@ -154,11 +123,7 @@ function createFixture(options: { includeLegacyDaemonLog?: boolean } = {}): { ro
       source_path: `/source/${conversation.id}.jsonl`,
       session_id: `session-${conversation.id}`,
     });
-    db.prepare(`
-      INSERT INTO conversation_blocks
-        (id, conversation_id, type, role, content, position, metadata_json)
-      VALUES (?, ?, 'message', 'user', ?, 0, '{}')
-    `).run(`block-${conversation.id}`, conversation.id, conversation.id);
+
   }
 
   db.prepare("INSERT INTO sessions VALUES (?, 'active', 0, '2026-01-01', ?)")
@@ -166,14 +131,7 @@ function createFixture(options: { includeLegacyDaemonLog?: boolean } = {}): { ro
   db.prepare("INSERT INTO workflow_runs VALUES ('workflow-1')").run();
   db.prepare("INSERT INTO workflow_workers VALUES ('worker-1', 'workflow-1', 'workflow-old')").run();
 
-  const insertLog = db.prepare(
-    "INSERT INTO daemon_log VALUES (?, ?, ?, ?, 'daemon', '{}', NULL, NULL, NULL, NULL, NULL)",
-  );
-  insertLog.run("recent-info", CUTOFF_MS - 2 * 60 * 60 * 1000, "info", "recent");
-  insertLog.run("old-warn", CUTOFF_MS - 2 * DAY_MS, "warn", "warning");
-  insertLog.run("old-info", CUTOFF_MS - 2 * DAY_MS, "info", "old-info");
-  insertLog.run("expired-error", CUTOFF_MS - 8 * DAY_MS, "error", "expired");
-  if (options.includeLegacyDaemonLog === false) db.exec("DROP TABLE daemon_log");
+
   db.close();
   return { root, source };
 }
@@ -239,13 +197,6 @@ function createLegacyTitleFixture(options: { malformed?: boolean } = {}): {
     "This session is being continued from a previous conversation that ran out of context. The summary be",
     sessionId,
   );
-  const insertBlock = db.prepare(`
-    INSERT INTO conversation_blocks (
-      id, conversation_id, type, role, content, position, metadata_json, compressed
-    ) VALUES (?, ?, ?, ?, ?, ?, '{}', 0)
-  `);
-  insertBlock.run("legacy-block-user", conversationId, "user_message", "user", "continued", 0);
-  insertBlock.run("legacy-block-assistant", conversationId, "assistant_message", "assistant", "Ready.", 1);
   db.prepare(`
     INSERT INTO conversation_ingest_state (
       file_path, byte_offset, line_count, tail_hash, partial_line, updated_at
@@ -295,8 +246,8 @@ describe("project-db-snapshot", () => {
     expect(crypto.createHash("sha256").update(fs.readFileSync(source)).digest("hex")).toBe(before);
   });
 
-  it("projects a canonical source after daemon_log moved to the operational-log database", () => {
-    const { root, source } = createFixture({ includeLegacyDaemonLog: false });
+  it("projects metadata using the newest native-source timestamp", () => {
+    const { root, source } = createFixture();
     const output = path.join(root, "preview.db");
     const result = runSnapshotWithAutomaticCutoff(source, output);
 
@@ -304,9 +255,7 @@ describe("project-db-snapshot", () => {
     const manifest = JSON.parse(result.stdout);
     expect(manifest.projection.cutoff_ms).toBe(CUTOFF_MS - DAY_MS);
     expect(manifest.tables.projected_counts).toEqual({
-      daemon_log: 0,
       conversations: 6,
-      conversation_blocks: 6,
     });
     expect(manifest.tables.copied_rows).not.toHaveProperty("daemon_log");
     expect(manifest.tables.complete_table_count).toBe(5);
@@ -322,7 +271,7 @@ describe("project-db-snapshot", () => {
     projected.close();
   });
 
-  it("copies canonical data and applies the deterministic log/conversation projection", () => {
+  it("copies canonical data and preserves the selected conversation closure", () => {
     const { root, source } = createFixture();
     const output = path.join(root, "preview.db");
     const sourceSizeBefore = fs.statSync(source).size;
@@ -332,9 +281,7 @@ describe("project-db-snapshot", () => {
     const manifest = JSON.parse(result.stdout);
     expect(manifest.projection.cutoff_ms).toBe(CUTOFF_MS);
     expect(manifest.tables.projected_counts).toEqual({
-      daemon_log: 2,
       conversations: 6,
-      conversation_blocks: 6,
     });
     expect(manifest.safety.integrity).toBe("ok");
     expect(manifest.safety.foreign_key_violations).toBe(0);
@@ -344,8 +291,6 @@ describe("project-db-snapshot", () => {
     const projected = new SqliteDatabase(output, { readonly: true });
     expect(projected.prepare("SELECT id FROM canonical_records ORDER BY id").all().map((row: { id: string }) => row.id))
       .toEqual(["canonical-1", "canonical-2"]);
-    expect(projected.prepare("SELECT id FROM daemon_log ORDER BY id").all().map((row: { id: string }) => row.id))
-      .toEqual(["old-warn", "recent-info"]);
     expect(projected.prepare("SELECT id FROM conversations ORDER BY id").all().map((row: { id: string }) => row.id))
       .toEqual(["newest-b", "old-parent", "recent-child", "session-old", "starred-old", "workflow-old"]);
     expect(projected.prepare("PRAGMA quick_check").get()?.quick_check).toBe("ok");
@@ -364,7 +309,7 @@ describe("project-db-snapshot", () => {
 
     const firstDb = new SqliteDatabase(first, { readonly: true });
     const secondDb = new SqliteDatabase(second, { readonly: true });
-    for (const table of ["canonical_records", "daemon_log", "conversations", "conversation_blocks"]) {
+    for (const table of ["canonical_records", "conversations"]) {
       const sql = `SELECT * FROM ${table} ORDER BY 1`;
       expect(secondDb.prepare(sql).all()).toEqual(firstDb.prepare(sql).all());
     }
@@ -422,12 +367,6 @@ describe("project-db-snapshot", () => {
       title: "This session is being continued from a previous conversation that ran out of context. The summary be",
       block_count: 2,
     });
-    const canonicalBlocks = canonical.prepare(`
-      SELECT id, type, role, content, position, metadata_json, compressed
-      FROM conversation_blocks
-      WHERE conversation_id = ?
-      ORDER BY position
-    `).all(fixture.conversationId);
     canonical.close();
 
     const projected = new SqliteDatabase(output) as Db;
@@ -440,14 +379,6 @@ describe("project-db-snapshot", () => {
       source_mtime: 1_800_000_005_000,
       block_count: 2,
     });
-    expect(canonicalBlocks).toHaveLength(2);
-    expect(projected.prepare(`
-      SELECT id, type, role, content, position, metadata_json, compressed
-      FROM conversation_blocks
-      WHERE conversation_id = ?
-      ORDER BY position
-    `).all(fixture.conversationId)).toEqual([]);
-
     // The projection excludes its disposable coordinate cache. Prepare it
     // through normal ingestion before checking source-backed route reads.
     const { configureIngestionWorker, ingestBatchForWorker, stopIngestionGracefully } = await import("../../src/ingestion.js");
@@ -509,7 +440,7 @@ describe("project-db-snapshot", () => {
 
     const result = runSnapshot(source, output);
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("missing projected table(s): conversations, conversation_blocks");
+    expect(result.stderr).toContain("missing projected table(s): conversations");
     expect(result.stderr).not.toContain("daemon_log");
     expect(fs.existsSync(output)).toBe(false);
     expect(fs.readdirSync(root).some((name) => name.includes(".partial-"))).toBe(false);

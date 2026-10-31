@@ -126,10 +126,6 @@ describe("Claude provider title ingestion", () => {
     ).get(sessionPath) as { id: string; title: string; block_count: number };
     const maskedTitle = `Provider renamed ${credentialMaskFor(credential.id)}`;
     expect(after).toEqual({ ...before, title: maskedTitle });
-    expect(
-      db.prepare("SELECT COUNT(*) AS count FROM conversation_blocks WHERE conversation_id = ?")
-        .get(before.id),
-    ).toMatchObject({ count: 0 });
     expect(events).toContainEqual({
       event: "conversation:updated",
       data: expect.objectContaining({
