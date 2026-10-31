@@ -88,6 +88,7 @@ interface ReleaseIssueInput {
 
 interface PatchInput {
   expected_generation?: number;
+  reason?: string;
   state?: string;
   assigned_session_id?: string | null;
   continuation?: string | null;
@@ -889,6 +890,10 @@ export function registerWorkUnitRoutes(
     }
 
     const body = readBody<PatchInput>(req);
+    if ((body.reason !== undefined && (typeof body.reason !== "string" || !body.reason.trim())) ||
+        (body.state === "abandoned" && !body.reason?.trim())) {
+      sendJson(res, 400, { error: "A non-empty reason is required to abandon work." }); return;
+    }
     {
       const failure = custodyMutationFailure(db, req, existing, body.expected_generation);
       if (failure) { sendJson(res, failure.status, failure); return; }
@@ -959,7 +964,7 @@ export function registerWorkUnitRoutes(
     params.push(id);
     mutateWorkUnit(db, id, () => db.prepare(
       `UPDATE work_units SET ${updates.join(", ")} WHERE id = ?`
-    ).run(...params), attributionForRequest(db, req));
+    ).run(...params), attributionForRequest(db, req), body.reason ? { reason: body.reason.trim() } : undefined);
 
     const updatedRow = db
       .prepare("SELECT * FROM work_units WHERE id = ?")

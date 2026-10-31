@@ -154,17 +154,34 @@ mandible_work_unit_find() {
   mandible_ledger_request GET "/api/work-units?${query}" "" "$graceful"
 }
 
-mandible_work_unit_resolve() {
-  local id="" auth_request_id="" expected_generation="" graceful="${MANDIBLE_LEDGER_GRACEFUL:-0}"
+mandible_work_unit_resolve() { mandible_work_unit_transition resolved "$@"; }
+mandible_work_unit_abandon() { mandible_work_unit_transition abandoned "$@"; }
+
+mandible_work_unit_transition() {
+  local state="$1"
+  shift
+  local action="resolve" id="" auth_request_id="" expected_generation="" reason="" graceful="${MANDIBLE_LEDGER_GRACEFUL:-0}"
+  local spec
+  if [[ "$state" == abandoned ]]; then
+    action="abandon"
+    spec='{"id":{"option":"id"},"expected_generation":{"option":"expected-generation"},"reason":{"option":"reason"},"graceful":{"option":"graceful","constant":"1"}}'
+  else
+    spec='{"id":{"option":"id"},"expected_generation":{"option":"expected-generation"},"auth_request_id":{"option":"auth-request-id"},"graceful":{"option":"graceful","constant":"1"}}'
+  fi
   local binding
-  binding=$(mandible_bind_arguments "work-unit.resolve" '{"id":{"option":"id"},"auth_request_id":{"option":"auth-request-id"},"expected_generation":{"option":"expected-generation"},"graceful":{"option":"graceful","constant":"1"}}' "$@") || return $?
+  binding=$(mandible_bind_arguments "work-unit.$action" "$spec" "$@") || return $?
   eval "$binding"
   [[ -n "$id" ]] || mandible_ledger_die "Missing --id" 2 || return $?
   [[ "$expected_generation" =~ ^[0-9]+$ ]] || mandible_ledger_die "Missing or invalid --expected-generation" 2 || return $?
+  if [[ "$state" == abandoned && -z "${reason//[[:space:]]/}" ]]; then
+    mandible_ledger_die "Missing --reason" 2 || return $?
+  fi
   mandible_ledger_require_tools || return $?
   local payload
-  payload=$(jq -n --arg auth_request_id "$auth_request_id" --argjson expected_generation "$expected_generation" \
-    '{state:"resolved",expected_generation:$expected_generation} + (if $auth_request_id != "" then {auth_request_id:$auth_request_id} else {} end)')
+  payload=$(jq -n --arg state "$state" --arg reason "$reason" --arg auth_request_id "$auth_request_id" --argjson expected_generation "$expected_generation" \
+    '{state:$state,expected_generation:$expected_generation}
+      + (if $reason != "" then {reason:$reason} else {} end)
+      + (if $auth_request_id != "" then {auth_request_id:$auth_request_id} else {} end)')
   mandible_ledger_request PATCH "/api/work-units/$(mandible_ledger_urlencode "$id")" "$payload" "$graceful"
 }
 

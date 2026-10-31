@@ -323,6 +323,21 @@ describe("file RPC transport", () => {
       const receipts = db.prepare("SELECT request_origin_json FROM responsibility_events WHERE entity_id = ? ORDER BY generation").all(id) as Array<{ request_origin_json: string }>;
       expect(receipts).toHaveLength(2);
       expect(JSON.parse(receipts[0].request_origin_json)).toMatchObject({ provider: "codex", provider_session_id: "successor" });
+      expect((await take("3")).status).toBe(0);
+      db.prepare("UPDATE work_units SET continuation = ? WHERE id = ?").run("Retain existing handoff notes", id);
+      const abandon = (generation: string) => invoke("successor", ["work-unit", "abandon", "--id", id,
+        "--expected-generation", generation, "--reason", "Removed branch with no unique work"]);
+      expect((await abandon("3")).status).not.toBe(0);
+      const abandoned = await abandon("4");
+      expect(abandoned.status, abandoned.stderr).toBe(0);
+      expect(read()).toMatchObject({ state: "abandoned", continuation: "Retain existing handoff notes" });
+      expect(db.prepare("SELECT count(*) AS count FROM work_units WHERE ledger_issue_id = ? AND state IN ('open', 'committed')").get(issue.id)).toEqual({ count: 0 });
+      expect(db.prepare("SELECT status FROM ledger_issues WHERE id = ?").get(issue.id)).toEqual({ status: "open" });
+      const history = db.prepare("SELECT payload_json FROM ledger_events WHERE entity_type = 'work_unit' AND entity_id = ?").all(id) as Array<{ payload_json: string }>;
+      expect(history.map(event => JSON.parse(event.payload_json))).toContainEqual(expect.objectContaining({
+        reason: "Removed branch with no unique work", changed_fields: expect.arrayContaining(["state"]),
+      }));
+
     } finally { db.close(); }
   });
 
