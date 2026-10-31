@@ -8,7 +8,6 @@ import chokidar from "chokidar";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import * as os from "node:os";
 import { StringDecoder } from "node:string_decoder";
 import { randomUUID } from "node:crypto";
 import SqliteDatabase from "./sqlite.js";
@@ -20,7 +19,6 @@ import { foldConversationIdentity, resolveConversationId } from './conversations
 import { createRelocationCandidateFinder, sourcePathRespelling, sourcePathsRelocationEquivalent } from "./conversations/relocation.js";
 import { loadClaudeNativeSessionId } from "./parsers/claude.js";
 import { broadcast } from "./sse.js";
-import { compressContentAsync } from "./compression.js";
 import { getParserForFile } from "./parsers/index.js";
 import {
   getCodexSessionIndexPath,
@@ -38,7 +36,6 @@ import {
   maskUnverifiedCandidates,
   redactCredentialLeaksInBlocks,
 } from "./credential-leak-scan.js";
-import { assignConversationBlockIds, conversationBlockId } from "./conversation-block-id.js";
 import {
   ingestClaudeWorkflowArtifact,
   isClaudeWorkflowJournalPath,
@@ -56,9 +53,8 @@ import { canUseDefaultIngestionWorker, IngestionActor } from "./ingestion-actor.
 import { ConversationSourceChangedError, ConversationSourceStore } from "./conversations/source-store.js";
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "./conversations/source-types.js";
 import { readConversationSourceReadiness, type ConversationSourceReadiness } from "./conversations/source-readiness.js";
-import { parseJsonObjectStrict } from "./row-coerce.js";
 import { backfillConversationLineageOnce } from "./conversations/lineage-backfill.js";
-import { getConversationStructureCache } from "./conversations/structure-cache.js";
+import { sparseConversationBlockId, getConversationStructureCache } from "./conversations/structure-cache.js";
 
 // --- Watch configuration ---
 
@@ -90,7 +86,6 @@ export const MAX_BUFFERED_APPEND_BYTES = 16 * 1024 * 1024;
 // the total append extent; a larger unterminated record is left checkpointed
 // for a visible retry instead of falling back to an unbounded whole-file parse.
 export const MAX_BUFFERED_APPEND_RECORD_BYTES = 64 * 1024 * 1024;
-export const INGEST_COMPRESSION_CONCURRENCY = 4;
 
 /** One recursive watch root: every glob that shares a base directory. */
 export interface WatchRoot {
@@ -610,83 +605,6 @@ export function watchConversationRoots(options: ConversationWatchOptions): Conve
   };
 }
 
-interface StagedCompressedContents {
-  readonly length: number;
-  read(index: number): Buffer;
-  dispose(): Promise<void>;
-}
-
-interface StagedContentRef {
-  offset: number;
-  length: number;
-}
-
-async function writeBufferAt(handle: fs.promises.FileHandle, buffer: Buffer, offset: number): Promise<void> {
-  let written = 0;
-  while (written < buffer.length) {
-    const result = await handle.write(buffer, written, buffer.length - written, offset + written);
-    written += result.bytesWritten;
-  }
-}
-
-/**
- * Compress in small ordered batches and spool results outside V8's retained heap.
- * The final SQLite transaction reads one staged buffer at a time, so a full
- * re-ingest never keeps every compressed block Buffer alive concurrently.
- */
-export async function stageCompressedBlockContents(
-  contents: readonly string[],
-  compressor: (content: string) => Promise<Buffer> = compressContentAsync,
-): Promise<StagedCompressedContents> {
-  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "mandible-ingest-compression-"));
-  const spoolPath = path.join(dir, "blocks.gzpack");
-  const handle = await fs.promises.open(spoolPath, "w+");
-  const refs: StagedContentRef[] = [];
-  let offset = 0;
-  let disposed = false;
-
-  try {
-    for (let start = 0; start < contents.length; start += INGEST_COMPRESSION_CONCURRENCY) {
-      const batch = await Promise.all(
-        contents
-          .slice(start, start + INGEST_COMPRESSION_CONCURRENCY)
-          .map((content) => compressor(content)),
-      );
-      for (const compressed of batch) {
-        await writeBufferAt(handle, compressed, offset);
-        refs.push({ offset, length: compressed.length });
-        offset += compressed.length;
-      }
-    }
-  } catch (error) {
-    await handle.close().catch(() => undefined);
-    await fs.promises.rm(dir, { recursive: true, force: true });
-    throw error;
-  }
-
-  return {
-    length: refs.length,
-    read(index: number): Buffer {
-      const ref = refs[index];
-      if (!ref) throw new RangeError(`missing staged compressed content at index ${index}`);
-      const buffer = Buffer.allocUnsafe(ref.length);
-      let read = 0;
-      while (read < buffer.length) {
-        const bytesRead = fs.readSync(handle.fd, buffer, read, buffer.length - read, ref.offset + read);
-        if (bytesRead === 0) throw new Error(`short read for staged compressed content at index ${index}`);
-        read += bytesRead;
-      }
-      return buffer;
-    },
-    async dispose(): Promise<void> {
-      if (disposed) return;
-      disposed = true;
-      await handle.close().catch(() => undefined);
-      await fs.promises.rm(dir, { recursive: true, force: true });
-    },
-  };
-}
-
 // --- State ---
 
 let conversationWatch: ConversationWatchHandle | null = null;
@@ -743,8 +661,6 @@ let reconcileRequiredAfterBackpressure = false;
 const codexSessionIndexSyncMtimes = new Map<string, number>();
 const targetedIngestLastRun = new Map<string, number>();
 const TARGETED_INGEST_MIN_INTERVAL_MS = 250;
-const acpSuppressedSessions = new Map<string, number>();
-const ACP_SUPPRESSION_TTL_MS = 24 * 60 * 60 * 1000;
 
 type ExistingConversationRow = {
   id: string;
@@ -808,16 +724,6 @@ type AppendReadResult =
     }
   | { kind: "blocked"; reason: string }
   | { kind: "fallback"; reason: string };
-
-type AppendParserSourceRange = AppendParserSourceSnapshot["appendRanges"][number];
-
-interface PendingAppendProof {
-  filesystemDevice: string | null;
-  filesystemInode: string | null;
-  ranges: AppendParserSourceRange[];
-}
-
-// --- Public API ---
 
 export interface StartIngestionOptions {
   dbPath?: string;
@@ -1175,13 +1081,6 @@ export function scheduleExactPathReparse(transcriptPath: string, sourceId: strin
     });
   requestedReparseFlights.set(normalized, flight);
   return true;
-}
-
-export function suppressAcpIngestForSession(source: string, sessionId: string): void {
-  if (!source.trim() || !sessionId.trim()) {
-    return;
-  }
-  acpSuppressedSessions.set(acpSuppressionKey(source, sessionId), Date.now() + ACP_SUPPRESSION_TTL_MS);
 }
 
 // --- Internal ---
@@ -1542,19 +1441,6 @@ function makeWatchFileMatcher(baseDir: string, glob: string): (filePath: string)
   };
 }
 
-export function isAcpIngestSuppressed(source: string, sessionId: string, now = Date.now()): boolean {
-  const key = acpSuppressionKey(source, sessionId);
-  const expiresAt = acpSuppressedSessions.get(key);
-  if (!expiresAt) {
-    return false;
-  }
-  if (expiresAt <= now) {
-    acpSuppressedSessions.delete(key);
-    return false;
-  }
-  return true;
-}
-
 export async function triggerReconcileForTest(
   options: {
     watchConfigs?: Array<{ base: string; glob: string }>;
@@ -1579,10 +1465,6 @@ export async function triggerReconcileForTest(
     logger = previousLogger;
     ingestionRunToken++;
   }
-}
-
-function acpSuppressionKey(source: string, sessionId: string): string {
-  return `${source.trim().toLowerCase()}:${sessionId.trim()}`;
 }
 
 async function hashFileTailAt(filePath: string, offset: number): Promise<string> {
@@ -2169,24 +2051,6 @@ async function refreshAppendState(
   });
 }
 
-async function refreshAppendStateFromParse(
-  db: ReturnType<typeof getDb>,
-  filePath: string,
-  stat: fs.Stats,
-  result: ParseResult,
-): Promise<void> {
-  const snapshot = result.sourceSnapshot;
-  await refreshAppendState(
-    db,
-    filePath,
-    stat,
-    snapshot?.completeLineCount ?? await countCompleteLines(filePath),
-    snapshot ? "" : undefined,
-    snapshot?.tailHash,
-    snapshot?.byteLength ?? stat.size,
-  );
-}
-
 async function readAppend(
   filePath: string,
   stat: fs.Stats,
@@ -2382,6 +2246,7 @@ function resolveIncrementalToolParents(
   result: ParseResult,
 ): void {
   const structureCache = getConversationStructureCache(db);
+  const source = new ConversationSourceStore(db).resolveConversation(conversationId);
   const priorToolCall = db.prepare(`
     SELECT position
       FROM conversation_structural_blocks
@@ -2395,7 +2260,7 @@ function resolveIncrementalToolParents(
   for (const block of result.blocks) {
     const toolId = block.metadata.tool_id;
     if (block.type !== "tool_result" || block.parent_id != null || !toolId?.trim()) continue;
-    const cachedPosition = structureCache.findToolPosition(conversationId, toolId);
+    const cachedPosition = structureCache.findToolPosition(conversationId, toolId, source?.currentVersionId ?? undefined, source ?? undefined);
     if (cachedPosition !== null) {
       block.parent_id = String(cachedPosition);
       continue;
@@ -2413,13 +2278,7 @@ function insertedBlockPayload(
   conversationId: string,
   block: Omit<ConversationBlock, "id" | "conversation_id">,
 ): Omit<ConversationBlock, "metadata"> & { metadata_json: string } {
-  const id = conversationBlockId({
-    conversation_id: conversationId,
-    type: block.type,
-    timestamp: block.timestamp,
-    content: block.content,
-    position: block.position,
-  });
+  const id = sparseConversationBlockId(conversationId, block.position);
   return {
     id,
     conversation_id: conversationId,
@@ -2644,12 +2503,7 @@ type IngestFileOptions = {
 async function ingestFile(filePath: string, options: IngestFileOptions = {}): Promise<void> {
   filePath = canonicalSourcePath(filePath);
   let passOptions = options;
-  const pendingAppendProof: PendingAppendProof = {
-    filesystemDevice: null,
-    filesystemInode: null,
-    ranges: [],
-  };
-  while (await ingestFilePass(filePath, passOptions, pendingAppendProof)) {
+  while (await ingestFilePass(filePath, passOptions)) {
     passOptions = { bypassSameMtimeUnchanged: true, strictParseErrors: options.strictParseErrors, withinPass: options.withinPass };
   }
 }
@@ -2703,7 +2557,6 @@ function selectConversationsAtPath(db: ReturnType<typeof getDb>, filePath: strin
 async function ingestFilePass(
   filePath: string,
   options: IngestFileOptions,
-  pendingAppendProof: PendingAppendProof,
 ): Promise<boolean | undefined> {
   const ingestStartedAt = Date.now();
   if (isWorkflowIngestArtifactPath(filePath)) {
@@ -2771,39 +2624,24 @@ async function ingestFilePass(
       filesystem_inode: string | null;
       filesystem_ctime_ns: string | null;
     } | undefined;
+    if (currentSource) alreadyIngestedCount = expectedCount;
     sourceGenerationChanged = !currentSource
       || currentSource.filesystem_device !== stat.physicalGeneration.device
       || currentSource.filesystem_inode !== stat.physicalGeneration.inode
       || currentSource.filesystem_ctime_ns !== stat.physicalGeneration.ctimeNs;
     const readiness = readConversationSourceReadiness(db, existing.id);
     sourceEpochNeedsRebuild = readiness.status !== "ready" && readiness.reason !== "projection_incomplete";
-    const pendingRangesContiguous = pendingAppendProof.ranges.every((range, index) =>
-      index === 0 || range.byteStart === pendingAppendProof.ranges[index - 1].byteEnd,
-    );
-    appendCheckpointNeedsFullParse = Boolean(currentSource && (
-      pendingAppendProof.ranges.length > 0
-        ? !appendState
-          || pendingAppendProof.filesystemDevice !== String(stat.dev)
-          || pendingAppendProof.filesystemInode !== String(stat.ino)
-          || pendingAppendProof.ranges[0].byteStart !== currentSource.source_byte_length
-          || pendingAppendProof.ranges.at(-1)?.byteEnd !== appendState.byte_offset
-          || !pendingRangesContiguous
-        : appendState && appendState.byte_offset !== currentSource.source_byte_length
-    ));
+    appendCheckpointNeedsFullParse = Boolean(currentSource && appendState
+      && appendState.byte_offset !== currentSource.source_byte_length);
     if (appendCheckpointNeedsFullParse && currentSource) {
       logger("warn", "ingestion_append_fallback", {
         file: filePath,
         reason: "append_checkpoint_source_extent_mismatch",
         append_byte_offset: appendState?.byte_offset,
         source_byte_length: currentSource.source_byte_length,
-        pending_append_ranges: pendingAppendProof.ranges.length,
       });
     }
-    // A durable append checkpoint may temporarily be ahead of its sparse
-    // projection while its next bounded batch is being indexed. Resume that
-    // append rather than reparsing the entire source in the middle of it.
-    structureCacheNeedsRebuild = readiness.reason === "projection_incomplete"
-      && pendingAppendProof.ranges.length === 0;
+    structureCacheNeedsRebuild = readiness.reason === "projection_incomplete";
     if (structureCacheNeedsRebuild) {
       logger("warn", "ingestion_count_mismatch", {
         file: filePath,
@@ -2952,20 +2790,8 @@ async function ingestFilePass(
           }
         }
         if (!result) {
-          await refreshAppendState(
-            db,
-            filePath,
-            stat,
-            (appendState?.line_count ?? alreadyIngestedCount) + append.completeLineCount,
-            append.nextPartialLine,
-            append.tailHash,
-            append.byteOffset,
-          );
-          logger("debug", "ingestion_append_metadata_only", {
-            file: filePath,
-            appended_bytes: append.appendedBytes,
-          });
-          return append.hasMore;
+          forceFullReingest = true;
+          result = await parser.parse(filePath);
         } else {
           resolveIncrementalToolParents(db, existing.id, result);
           const anomaly = incrementalParseAnomaly(result, alreadyIngestedCount, result.blocks.length);
@@ -2978,15 +2804,7 @@ async function ingestFilePass(
             forceFullReingest = true;
             result = await parser.parse(filePath);
           } else if (!forceFullReingest) {
-            const sourceSnapshot: AppendParserSourceSnapshot = {
-              ...append.sourceSnapshot,
-              appendRanges: [...pendingAppendProof.ranges, ...append.sourceSnapshot.appendRanges],
-            };
-            if (pendingAppendProof.ranges.length === 0) {
-              pendingAppendProof.filesystemDevice = append.sourceSnapshot.filesystemDevice;
-              pendingAppendProof.filesystemInode = append.sourceSnapshot.filesystemInode;
-            }
-            pendingAppendProof.ranges.push(...append.sourceSnapshot.appendRanges);
+            const sourceSnapshot = append.sourceSnapshot;
             result = {
               ...mergeAppendConversationMetadata(result, existing),
               sourceSnapshot,
@@ -3061,18 +2879,6 @@ async function ingestFilePass(
       error: String(error),
     });
     if (options.strictParseErrors) throw error;
-    return;
-  }
-
-  if (
-    result?.conversation.session_id
-    && isAcpIngestSuppressed(result.conversation.source, result.conversation.session_id)
-  ) {
-    logger("debug", "ingestion_skip_acp_originated_session", {
-      file: filePath,
-      source: result.conversation.source,
-      session_id: result.conversation.session_id,
-    });
     return;
   }
 
@@ -3224,69 +3030,6 @@ async function ingestFilePass(
 
   const agentId = result.conversation.agent_id;
 
-  // Check hash — if same content, just update mtime
-  if (existing && existing.source_hash === result.conversation.source_hash) {
-    // Issue b3e4a09, re-review finding 1: identical parsed bytes still rewrite
-    // and broadcast the derived title and summary here, so this path needs the
-    // same masking as the main one below. A source touched without a byte
-    // change (or re-parsed after the credential became known) otherwise puts
-    // the plaintext back on the conversations row and on the SSE payload.
-    result.conversation.title = maskDerivedConversationText(
-      db,
-      result.conversation.title,
-      { file: filePath, stage: "unchanged_source_hash" },
-    );
-    if (result.conversation.summary !== null && result.conversation.summary !== undefined) {
-      result.conversation.summary = maskDerivedConversationText(
-        db,
-        result.conversation.summary,
-        { file: filePath, stage: "unchanged_source_hash" },
-      );
-    }
-    db.prepare(`
-      UPDATE conversations SET
-        source_mtime = ?,
-        title = ?,
-        summary = ?,
-        ended_at = ?,
-        block_count = ?,
-        model = ?,
-        cli_version = ?,
-        is_sidechain = MAX(is_sidechain, ?),
-        agent_id = COALESCE(?, agent_id),
-        updated_at = datetime('now')
-      WHERE id = ?
-    `).run(
-      stat.mtimeMs,
-      result.conversation.title,
-      result.conversation.summary,
-      result.conversation.ended_at,
-      result.conversation.block_count,
-      result.conversation.model,
-      result.conversation.cli_version,
-      isSidechain ? 1 : 0,
-      agentId,
-      existing.id,
-    );
-    applyIngestedLineage(db, { ...result.conversation, id: existing.id }, result);
-    await refreshAppendStateFromParse(db, filePath, stat, result);
-    await recordDurableConversationSource(db, existing.id, result, filePath, "replace", result.blocks, options.strictParseErrors);
-    // The selected Chat reacts to this event by reading its source-backed
-    // window. Publish only after the locator map and disposable cache have
-    // converged; publishing before recordDurableConversationSource let the
-    // refetch race the re-index and remain pending with no later event.
-    eventPublisher(DOMAIN_EVENTS.CONVERSATION_UPDATED, {
-      id: existing.id,
-      source: result.conversation.source,
-      title: result.conversation.title,
-      block_count: result.conversation.block_count,
-    });
-    if (isClaudeWorkflowTranscriptPath(filePath)) {
-      await ingestWorkflowArtifact(filePath);
-    }
-    return;
-  }
-
   // Determine if this is new or updated
   const isNew = !existing;
   const conversationId = existing?.id ?? spawnIdentity?.id ?? randomUUID();
@@ -3301,96 +3044,8 @@ async function ingestFilePass(
     return;
   }
 
-  // Bug: 871765b — Delta ingestion: for existing conversations, only insert
-  // blocks that haven't been ingested yet. JSONL files are append-only, so if
-  // the new parse has at least as many blocks as already in the DB, we can
-  // skip re-compressing and re-inserting the already-persisted blocks.
-  // Fall back to full re-ingest if block count shrank (truncation/modification).
-  const isDeltaAppend = ingestMode === "append"
-    || (!forceFullReingest && !isNew && result.blocks.length >= alreadyIngestedCount && alreadyIngestedCount > 0);
-  const newBlocks = ingestMode === "append"
-    ? result.blocks
-    : isDeltaAppend
-      ? result.blocks.slice(alreadyIngestedCount)
-      : result.blocks;
-
-  if (isDeltaAppend && newBlocks.length === 0) {
-    // Hash changed but no new blocks — metadata-only change (title, timestamps, etc.)
-    // Update conversation metadata and return.
-    //
-    // Issue b3e4a09: this early return still writes derived text, so it needs
-    // the same masking as the main path below — a token pasted into the first
-    // user message reaches the conversations row through here too.
-    result.conversation.title = maskDerivedConversationText(
-      db,
-      result.conversation.title,
-      { file: filePath, stage: "metadata_only_update" },
-    );
-    if (result.conversation.summary !== null && result.conversation.summary !== undefined) {
-      result.conversation.summary = maskDerivedConversationText(
-        db,
-        result.conversation.summary,
-        { file: filePath, stage: "metadata_only_update" },
-      );
-    }
-    db.prepare(`
-      UPDATE conversations SET
-        source_hash = ?, source_mtime = ?,
-        title = ?, summary = ?, ended_at = ?,
-        block_count = ?, model = ?, cli_version = ?,
-        is_sidechain = MAX(is_sidechain, ?),
-        agent_id = COALESCE(?, agent_id),
-        updated_at = datetime('now')
-      WHERE id = ?
-    `).run(
-      result.conversation.source_hash,
-      result.conversation.source_mtime,
-      result.conversation.title,
-      result.conversation.summary,
-      result.conversation.ended_at,
-      result.conversation.block_count,
-      result.conversation.model,
-      result.conversation.cli_version,
-      isSidechain ? 1 : 0,
-      agentId,
-      conversationId,
-    );
-    applyIngestedLineage(db, { ...result.conversation, id: conversationId }, result);
-    await refreshAppendState(
-      db,
-      filePath,
-      stat,
-      ingestMode === "append"
-        ? (appendState?.line_count ?? alreadyIngestedCount) + (appendInfo?.completeLineCount ?? 0)
-        : result.sourceSnapshot?.completeLineCount ?? await countCompleteLines(filePath),
-      appendInfo?.nextPartialLine ?? (result.sourceSnapshot ? "" : undefined),
-      appendInfo?.tailHash ?? result.sourceSnapshot?.tailHash,
-      appendInfo?.byteOffset ?? result.sourceSnapshot?.byteLength ?? stat.size,
-    );
-    if (!appendInfo?.hasMore) {
-      await recordDurableConversationSource(
-        db,
-        conversationId,
-        result,
-        filePath,
-        isDeltaAppend ? "append" : "replace",
-        newBlocks,
-        options.strictParseErrors,
-      );
-    }
-    if (isProviderTitleOnlyAppend) {
-      eventPublisher(DOMAIN_EVENTS.CONVERSATION_UPDATED, {
-        id: conversationId,
-        source: result.conversation.source,
-        title: result.conversation.title,
-        block_count: result.conversation.block_count,
-      });
-    }
-    if (isClaudeWorkflowTranscriptPath(filePath)) {
-      await ingestWorkflowArtifact(filePath);
-    }
-    return appendInfo?.hasMore ?? false;
-  }
+  const isDeltaAppend = ingestMode === "append";
+  const newBlocks = result.blocks;
 
   // Issues 71a287e / b3e4a09 — detect leaked Mandible credentials and mask them
   // before anything about these blocks is persisted, compressed, hashed into a
@@ -3480,23 +3135,33 @@ async function ingestFilePass(
     });
   }
 
-  // Pre-compress outside the transaction in bounded batches. Compressed bytes
-  // are staged on disk so full re-ingests do not retain every output Buffer.
-  const compressedContents = await stageCompressedBlockContents(
-    newBlocks.map((block) => block.content),
-  );
-
-  // Atomic upsert: for full re-ingest, delete old data and re-insert;
-  // for delta append, insert only new blocks and update conversation metadata.
-  const upsert = db.transaction(() => {
-    if (!isDeltaAppend) {
+  const nextAppendState: IngestAppendState = {
+    file_path: filePath,
+    byte_offset: appendInfo?.byteOffset ?? result.sourceSnapshot?.byteLength ?? stat.size,
+    line_count: ingestMode === "append"
+      ? (appendState?.line_count ?? alreadyIngestedCount) + (appendInfo?.completeLineCount ?? 0)
+      : result.sourceSnapshot?.completeLineCount ?? await countCompleteLines(filePath),
+    tail_hash: appendInfo?.tailHash ?? result.sourceSnapshot?.tailHash
+      ?? await hashFileTailAt(filePath, stat.size),
+    partial_line: appendInfo?.nextPartialLine ?? (result.sourceSnapshot ? "" : await readTrailingPartialLine(filePath, stat.size)),
+    empty_source_mtime: null,
+    empty_source_size: null,
+  };
+  try {
+    const prepared = await new ConversationSourceStore(db).prepareConversation({
+      conversationId,
+      provider: result.conversation.source,
+      nativeSessionId: result.conversation.session_id,
+      filePath,
+      expectedContentHash: result.conversation.source_hash,
+      sourceSnapshot: result.sourceSnapshot,
+      structuralMode: isDeltaAppend ? "append" : "replace",
+      blockCount: result.conversation.block_count,
+      blocks: newBlocks.map(block => ({ ...block, legacyId: sparseConversationBlockId(conversationId, block.position) })),
+      ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
+    });
+    const publish = db.transaction(() => {
       const metadata = preservedConversationMetadata(db, conversationId);
-      // Full re-ingest path: delete existing rows and re-insert from scratch
-      if (!isNew) {
-        db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?")
-          .run(conversationId);
-      }
-
       // Insert conversation
       db.prepare(`
         INSERT INTO conversations (
@@ -3547,288 +3212,24 @@ async function ingestFilePass(
         isSidechain ? 1 : 0,
         agentId,
       );
-    } else {
-      // Delta append path: update conversation metadata only, no block deletion
-      db.prepare(`
-        UPDATE conversations SET
-          source_hash = ?, source_mtime = ?,
-          title = ?, summary = ?, ended_at = ?,
-          block_count = ?, model = ?, cli_version = ?,
-          is_sidechain = MAX(is_sidechain, ?),
-          agent_id = COALESCE(?, agent_id),
-          updated_at = datetime('now')
-        WHERE id = ?
-      `).run(
-        result.conversation.source_hash,
-        result.conversation.source_mtime,
-        result.conversation.title,
-        result.conversation.summary,
-        result.conversation.ended_at,
-        result.conversation.block_count,
-        result.conversation.model,
-        result.conversation.cli_version,
-        isSidechain ? 1 : 0,
-        agentId,
-        conversationId,
-      );
+      prepared.publish();
+      writeAppendState(db, nextAppendState);
+    });
+    try { publish.immediate(); }
+    finally {
+      try { await prepared.dispose(); }
+      catch (error) {
+        logger("error", "conversation_source_proof_cleanup_failed", {
+          file: filePath, conversation_id: conversationId, error: String(error),
+        });
+      }
     }
-
-    // Insert blocks — content is gzip-compressed as BLOB (Bug: e5a945d)
-    // In delta mode, newBlocks contains only the newly appended blocks.
-    // compressedContents was staged async above, outside this transaction.
-    const insertBlock = db.prepare(`
-      INSERT INTO conversation_blocks (
-        id, conversation_id, type, role, content, position,
-        timestamp, parent_id, metadata_json, compressed,
-        dag_uuid, dag_parent_uuid
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-    `);
-
-    for (let i = 0; i < newBlocks.length; i++) {
-      const block = newBlocks[i];
-      // Bug: 7b47c6c — include block.position in hash to prevent collisions.
-      // Many blocks share the same type + timestamp + content prefix (e.g. multiple
-      // empty tool_result blocks). Without position, the hash is identical for all of
-      // them → UNIQUE constraint fails → entire transaction rolls back → file stuck
-      // in perpetual re-ingest loop. Position is stable: it's the block's index within
-      // the conversation and never changes for already-ingested blocks.
-      const blockHash = conversationBlockId({
-        conversation_id: conversationId,
-        type: block.type,
-        timestamp: block.timestamp,
-        content: block.content,
-        position: block.position,
-      });
-
-      insertBlock.run(
-        blockHash,
-        conversationId,
-        block.type,
-        block.role,
-        compressedContents.read(i),
-        block.position,
-        block.timestamp,
-        block.parent_id,
-        JSON.stringify(block.metadata),
-        block.dag_uuid ?? null,
-        block.dag_parent_uuid ?? null,
-      );
-    }
-  });
-
-  try {
-    upsert();
   } catch (error) {
-    const errStr = String(error);
-    // Bug: 7b47c6c — UNIQUE constraint on conversation_blocks.id indicates stale blocks
-    // in the DB with the same hash IDs (from a prior ingest cycle where the conversation
-    // row was deleted but blocks were not cleaned up due to FK being disabled).
-    // Recovery: force-delete all blocks for this conversation, then retry as full re-ingest.
-    if (errStr.includes("UNIQUE constraint failed: conversation_blocks.id")) {
-      if (ingestMode === "append") {
-        deleteAppendState(db, filePath);
-        logger("warn", "ingestion_append_fallback", {
-          file: filePath,
-          reason: "append_unique_conflict",
-        });
-        await ingestFile(filePath, {
-          forceFull: true,
-          fallbackReason: "append_unique_conflict",
-          strictParseErrors: options.strictParseErrors,
-        });
-        return;
-      }
-      try {
-        // Recovery re-inserts every block of this fresh parse, including the
-        // ones the masking pass above skipped as already indexed. Mask the full
-        // set first — the mask is idempotent, so this is a no-op for blocks
-        // already handled, and it stops recovery from reintroducing plaintext
-        // an earlier ingest had masked (issue b3e4a09).
-        try {
-          redactCredentialLeaksInBlocks(db, result.blocks, {
-            conversation_id: conversationId,
-            conversation_title: result.conversation.title,
-            session_id: result.conversation.session_id,
-            source: result.conversation.source,
-            branch: result.conversation.branch,
-          });
-        } catch (maskError) {
-          const masked = maskAllCandidatesInBlocks(result.blocks);
-          logger("error", "credential_leak_scan_failed", {
-            file: filePath,
-            error: String(maskError),
-            stage: "unique_recovery",
-            unverified_spans: masked.spans,
-          });
-        }
-        // Re-stage every block for the clean recovery transaction.
-        const recoveryCompressedContents = await stageCompressedBlockContents(
-          result.blocks.map((block) => block.content),
-        );
-        // Ids for the recovery insert are assigned over the whole parse at once
-        // so two blocks that derive the same id get different rows instead of
-        // failing the transaction a second time (issue b3e4a09, third-pass
-        // finding 3). `conversationBlockId` concatenates its inputs unframed,
-        // so content "payload1" at position 2 and content "payload" at position
-        // 12 hash identical bytes without any hash collision; the plain
-        // derivation therefore has no fixed point for such a conversation and
-        // recovery used to rethrow the same UNIQUE failure and leave the file
-        // unindexed forever. The first block in position order still keeps the
-        // plain id, so no existing block is renumbered by this.
-        const recoveryBlockIds = assignConversationBlockIds(
-          result.blocks.map((block) => ({
-            conversation_id: conversationId,
-            type: block.type,
-            timestamp: block.timestamp,
-            content: block.content,
-            position: block.position,
-          })),
-        );
-        try {
-          const recoveryUpsert = db.transaction(() => {
-            const metadata = preservedConversationMetadata(db, conversationId);
-            // Also purge any blocks still attached to this conversation id
-            // (orphaned rows from a prior failed transaction that the
-            // FK-disabled DB did not cascade). Scoped to this conversation —
-            // the previous form deleted every row whose id matched one of the
-            // incoming ids regardless of which conversation it belonged to, so
-            // a block id collision across conversations silently destroyed an
-            // unrelated conversation's block (issue b3e4a09, re-review finding
-            // 2). The orphans this is aimed at always carry this conversation
-            // id, because the id being re-derived hashes it.
-            db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?")
-              .run(conversationId);
-            // A row of some *other* conversation holding one of the incoming
-            // ids can only be a truncated-hash collision. Recovery refuses to
-            // delete it: the insert below fails loudly instead of quietly
-            // taking data that does not belong to this file.
-            const foreign = foreignBlockIdHolders(db, conversationId, recoveryBlockIds);
-            if (foreign.length > 0) {
-              logger("error", "ingestion_block_id_collision_foreign", {
-                file: filePath,
-                conversation_id: conversationId,
-                colliding_ids: foreign.length,
-                other_conversations: [...new Set(foreign.map((row) => row.conversation_id))],
-              });
-            }
-            // Re-insert conversation
-            db.prepare(`
-              INSERT INTO conversations (
-                id, source, source_path, source_hash, source_mtime,
-                title, summary, started_at, ended_at, block_count,
-                session_id, project_path, cwd, branch, model, cli_version,
-                starred, tags, notes, is_sidechain, agent_id,
-                created_at, updated_at
-              ) VALUES (
-                ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?,
-                datetime('now'), datetime('now')
-              )
-              ON CONFLICT(id) DO UPDATE SET
-                source = excluded.source, source_path = excluded.source_path,
-                source_hash = excluded.source_hash, source_mtime = excluded.source_mtime,
-                title = excluded.title, summary = excluded.summary,
-                started_at = excluded.started_at, ended_at = excluded.ended_at,
-                block_count = excluded.block_count, session_id = excluded.session_id,
-                project_path = excluded.project_path, cwd = excluded.cwd,
-                branch = excluded.branch, model = excluded.model, cli_version = excluded.cli_version,
-                starred = excluded.starred, tags = excluded.tags, notes = excluded.notes,
-                is_sidechain = MAX(conversations.is_sidechain, excluded.is_sidechain),
-                agent_id = COALESCE(excluded.agent_id, conversations.agent_id),
-                updated_at = excluded.updated_at
-            `).run(
-              conversationId,
-              result.conversation.source,
-              result.conversation.source_path,
-              result.conversation.source_hash,
-              result.conversation.source_mtime,
-              result.conversation.title,
-              result.conversation.summary,
-              result.conversation.started_at,
-              result.conversation.ended_at,
-              result.conversation.block_count,
-              result.conversation.session_id,
-              result.conversation.project_path,
-              result.conversation.cwd,
-              result.conversation.branch,
-              result.conversation.model,
-              result.conversation.cli_version,
-              metadata.starred,
-              metadata.tags,
-              metadata.notes,
-              isSidechain ? 1 : 0,
-              agentId,
-            );
-            // Re-insert all blocks using staged compressed buffers.
-            const insertBlock2 = db.prepare(`
-              INSERT INTO conversation_blocks (
-                id, conversation_id, type, role, content, position,
-                timestamp, parent_id, metadata_json, compressed,
-                dag_uuid, dag_parent_uuid
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-            `);
-            for (let i = 0; i < result.blocks.length; i++) {
-              const block = result.blocks[i];
-              insertBlock2.run(
-                recoveryBlockIds[i], conversationId, block.type, block.role,
-                recoveryCompressedContents.read(i), block.position,
-                block.timestamp, block.parent_id, JSON.stringify(block.metadata),
-                block.dag_uuid ?? null, block.dag_parent_uuid ?? null,
-              );
-            }
-          });
-          recoveryUpsert();
-          logger("info", "ingestion_unique_recovery_succeeded", {
-            file: filePath,
-            blocks: result.blocks.length,
-          });
-        } finally {
-          await recoveryCompressedContents.dispose();
-        }
-      } catch (recoveryError) {
-        if (isSqliteBusy(recoveryError)) throw recoveryError;
-        logger("warn", "ingestion_db_error", {
-          file: filePath,
-          error: errStr,
-          recovery_error: String(recoveryError),
-        });
-        return;
-      }
-    } else {
-      if (isSqliteBusy(error)) throw error;
-      logger("warn", "ingestion_db_error", {
-        file: filePath,
-        error: errStr,
-      });
-      return;
-    }
-  } finally {
-    await compressedContents.dispose();
-  }
-
-  await refreshAppendState(
-    db,
-    filePath,
-    stat,
-    ingestMode === "append"
-      ? (appendState?.line_count ?? alreadyIngestedCount) + (appendInfo?.completeLineCount ?? 0)
-      : result.sourceSnapshot?.completeLineCount ?? await countCompleteLines(filePath),
-    appendInfo?.nextPartialLine ?? (result.sourceSnapshot ? "" : undefined),
-    appendInfo?.tailHash ?? result.sourceSnapshot?.tailHash,
-    appendInfo?.byteOffset ?? result.sourceSnapshot?.byteLength ?? stat.size,
-  );
-  if (!appendInfo?.hasMore) {
-    await recordDurableConversationSource(
-      db,
-      conversationId,
-      result,
-      filePath,
-      isDeltaAppend ? "append" : "replace",
-      newBlocks,
-      options.strictParseErrors,
-    );
+    logger("warn", "conversation_source_snapshot_failed", {
+      file: filePath, conversation_id: conversationId, error: String(error),
+    });
+    if (options.strictParseErrors || isSqliteBusy(error)) throw error;
+    return;
   }
 
   // Bug: e01653d — update last_active on the matching session so the
@@ -3878,186 +3279,6 @@ async function ingestFilePass(
     event: eventType,
   });
   return appendInfo?.hasMore ?? false;
-}
-
-function unindexedConversationBlocksForCache(
-  db: ReturnType<typeof getDb>,
-  conversationId: string,
-): Array<Pick<ConversationBlock, "type" | "position" | "parent_id" | "metadata">> {
-  const rows = db.prepare(`
-    SELECT block.type, block.position, block.parent_id, block.metadata_json
-      FROM conversation_blocks block
-     WHERE block.conversation_id = ?
-       AND NOT EXISTS (
-         SELECT 1 FROM conversation_structural_blocks structural
-          WHERE structural.conversation_id = block.conversation_id
-            AND structural.position = block.position
-            AND structural.status = 'current'
-       )
-     ORDER BY block.position
-  `).all(conversationId) as Array<{
-    type: ConversationBlock["type"];
-    position: number;
-    parent_id: string | null;
-    metadata_json: string | null;
-  }>;
-  return rows.map((row) => ({
-    type: row.type,
-    position: row.position,
-    parent_id: row.parent_id,
-    metadata: parseJsonObjectStrict(
-      row.metadata_json,
-      "conversation block metadata_json",
-    ) as ConversationBlock["metadata"],
-  }));
-}
-
-async function recordDurableConversationSource(
-  db: ReturnType<typeof getDb>,
-  conversationId: string,
-  result: ParseResult,
-  filePath: string,
-  structuralMode: "replace" | "append",
-  blocks: readonly Omit<ConversationBlock, "id" | "conversation_id">[],
-  strict = false,
-): Promise<void> {
-  try {
-    const usePersistedAppendBlocks = structuralMode === "append" && result.sourceSnapshot?.kind === "append";
-    const cacheBlocks = usePersistedAppendBlocks
-      ? unindexedConversationBlocksForCache(db, conversationId)
-      : blocks;
-    const legacyIds = usePersistedAppendBlocks ? [] : assignConversationBlockIds(
-      blocks.map((block) => ({
-        conversation_id: conversationId,
-        type: block.type,
-        timestamp: block.timestamp,
-        content: block.content,
-        position: block.position,
-      })),
-    );
-    const store = new ConversationSourceStore(db);
-    await store.recordConversation({
-      conversationId,
-      provider: result.conversation.source,
-      nativeSessionId: result.conversation.session_id,
-      filePath,
-      expectedContentHash: result.conversation.source_hash,
-      sourceSnapshot: result.sourceSnapshot,
-      structuralMode,
-      ...(usePersistedAppendBlocks
-        ? {}
-        : { blocks: blocks.map((block, index) => ({ ...block, legacyId: legacyIds[index] })) }),
-      ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
-    });
-    reconcileIngestedChildRetention(db, conversationId, filePath, blocks);
-    // Publish the complete navigation before the source reader verifies the
-    // payload. An append temporarily has its old prefix in the sparse cache
-    // and its new tail in dense rows; verification must see both together.
-    const cache = getConversationStructureCache(db);
-    const currentToolPositions = new Map<string, number>();
-    for (const block of cacheBlocks) {
-      const toolId = block.metadata.tool_id;
-      if (block.type === "tool_use" && typeof toolId === "string" && toolId) {
-        currentToolPositions.set(toolId, block.position);
-      }
-    }
-    const parentPositions = new Map(cacheBlocks.map((block) => {
-      const explicit = block.parent_id !== null && /^\d+$/.test(block.parent_id)
-        ? Number(block.parent_id)
-        : null;
-      const toolId = block.metadata.tool_id;
-      const linked = block.type === "tool_result" && typeof toolId === "string" && toolId
-        ? currentToolPositions.get(toolId) ?? cache.findToolPosition(conversationId, toolId)
-        : null;
-      return [block.position, explicit ?? linked ?? null] as const;
-    }));
-    const captured = cache.captureDenseRows(
-      db, conversationId, structuralMode, parentPositions, currentToolPositions,
-    );
-    const promotion = await store.promoteNativeConversationPayload(conversationId);
-    if (!promotion.promoted
-        && promotion.reason !== "no legacy payload is available for promotion") {
-      logger("warn", "conversation_source_projection_mismatch", {
-        file: filePath,
-        conversation_id: conversationId,
-        reason: promotion.reason,
-      });
-    }
-    if (promotion.promoted || promotion.reason === "no legacy payload is available for promotion") {
-      if (captured.sourceVersionId
-          && captured.cached === result.conversation.block_count) {
-        db.transaction(() => {
-          db.prepare("DELETE FROM conversation_structural_blocks WHERE conversation_id = ?")
-            .run(conversationId);
-          db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?")
-            .run(conversationId);
-          db.prepare(`DELETE FROM conversation_normalization_checkpoints
-            WHERE NOT EXISTS (
-              SELECT 1 FROM conversation_structural_blocks block
-               WHERE block.normalization_checkpoint_id = conversation_normalization_checkpoints.id
-            )`).run();
-        }).immediate();
-        logger("debug", "conversation_structure_cached", {
-          file: filePath,
-          conversation_id: conversationId,
-          captured_blocks: captured.captured,
-          cached_blocks: captured.cached,
-          dense_rows_retained: 0,
-        });
-      } else {
-        logger("warn", "conversation_structure_cache_incomplete", {
-          file: filePath,
-          conversation_id: conversationId,
-          expected_blocks: result.conversation.block_count,
-          captured_blocks: captured.captured,
-          cached_blocks: captured.cached,
-        });
-      }
-    }
-  } catch (error) {
-    // Promotion happens only after the exact snapshot succeeds. A failed
-    // snapshot therefore leaves newly inserted payload rows intact; a
-    // previously promoted conversation keeps its existing verified structure.
-    logger("warn", "conversation_source_snapshot_failed", {
-      file: filePath,
-      conversation_id: conversationId,
-      error: String(error),
-    });
-    if (strict) throw error;
-  }
-}
-
-/**
- * Rows outside `conversationId` that already hold one of these block ids.
- *
- * Block ids hash the conversation id and the block position, and
- * `conversation_blocks` carries UNIQUE(conversation_id, position), so a
- * foreign holder is only possible through a truncated-hash collision. This
- * exists so that case is reported rather than resolved by deletion.
- *
- * Queried in chunks: a long conversation can carry more blocks than SQLite
- * allows bound parameters in one statement.
- */
-function foreignBlockIdHolders(
-  db: ReturnType<typeof getDb>,
-  conversationId: string,
-  ids: readonly string[],
-): Array<{ id: string; conversation_id: string }> {
-  const found: Array<{ id: string; conversation_id: string }> = [];
-  const chunkSize = 400;
-  for (let start = 0; start < ids.length; start += chunkSize) {
-    const chunk = ids.slice(start, start + chunkSize);
-    if (chunk.length === 0) continue;
-    const placeholders = chunk.map(() => "?").join(",");
-    const rows = db
-      .prepare(
-        `SELECT id, conversation_id FROM conversation_blocks
-         WHERE conversation_id != ? AND id IN (${placeholders})`,
-      )
-      .all(conversationId, ...chunk) as Array<{ id: string; conversation_id: string }>;
-    found.push(...rows);
-  }
-  return found;
 }
 
 

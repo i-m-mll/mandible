@@ -514,8 +514,17 @@ Return `{ "request_id": "…", "acceptance": … }` with the same shape.
 
 #### GET /api/runtime-handoff/lock
 
-Return `{ "lock": null }` or the held lock with its `journalPath`,
-`bindingDigest`, `requestId`, `phase`, and `error`.
+Return `{ "lock": null, "message": null, "cleanups": [] }` when no handoff holds the lock and no cleanup is waiting.
+Otherwise `lock` carries its `journalPath`, `bindingDigest`, `requestId`,
+`phase`, `state` (`installing`, `verifying`, `failed` or `unreadable`) and
+`error`, and `message` explains in product terms why it is held and what to do.
+A finished handoff never holds the lock, even if its lock file remains.
+`cleanups` lists delivered self-updates whose cleanup is still waiting:
+`request_id`, `reason`, `attempted_at` and `blockers`. Each blocker names its
+`obligation` (`helper`, `previous-app`, `superseded-release` or
+`legacy-bridge`) and `reason`. A blocker that waits on running processes also
+lists them in `processes`, each with `pid`, `startedAt`, `command` and the
+`owner` process that started it.
 
 #### POST /api/runtime-handoff/retire
 

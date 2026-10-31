@@ -6,10 +6,10 @@ import SqliteDatabase from "../sqlite.js";
 
 import type { Db } from "../db.js";
 import type { BlockType, Role } from "../parsers/types.js";
-import { getUserHome } from "../platform-paths.js";
 import { conversationSourceEpochsMatch, type ConversationSourceEpochs } from "./source-types.js";
 
-export const CONVERSATION_STRUCTURE_CACHE_VERSION = 3;
+import { conversationStructureCachePath, CONVERSATION_STRUCTURE_CACHE_VERSION } from "./structure-cache-path.js";
+export { CONVERSATION_STRUCTURE_CACHE_VERSION } from "./structure-cache-path.js";
 
 const BLOCK_TYPES: readonly BlockType[] = [
   "user_message",
@@ -37,6 +37,7 @@ export interface SparseConversationBlockRow {
   recordLength: number;
   recordOrdinal: number;
   subBlockOrdinal: number;
+  model?: string | null;
   parserFormat: string;
   parserVersion: string;
   normalizationVersion: string;
@@ -70,6 +71,7 @@ interface CacheBlockRow {
   record_length: number;
   record_ordinal: number;
   sub_block_ordinal: number;
+  model: string | null;
 }
 
 export interface SourceManifestRow {
@@ -84,17 +86,11 @@ export interface SourceManifestRow {
 
 export interface ConversationStructureCacheOptions {
   cachePath?: string;
+  readonly?: boolean;
 }
 
 export function defaultConversationStructureCachePath(db?: Db): string {
-  const override = process.env.MANDIBLE_CONVERSATION_STRUCTURE_DB?.trim();
-  if (override) return path.resolve(override);
-  const dbName = db && typeof db.name === "string" ? db.name : "";
-  if (dbName === ":memory:") return ":memory:";
-  if ((process.env.VITEST === "true" || process.env.NODE_ENV === "test") && dbName) {
-    return `${dbName}.conversation-structure.db`;
-  }
-  return path.join(getUserHome(), ".cache", "mandible", "conversations", "structure.db");
+  return conversationStructureCachePath(db?.name ?? "", process.env.MANDIBLE_CONVERSATION_STRUCTURE_DB);
 }
 
 export function sparseConversationBlockId(conversationId: string, position: number): string {
@@ -165,20 +161,30 @@ function toolKey(toolId: string): Buffer {
 export class ConversationStructureCache {
   readonly cachePath: string;
   private readonly cache: SqliteDatabase;
+  private activeReaders = 0;
 
   constructor(mainDb?: Db, options: ConversationStructureCacheOptions = {}) {
-    this.cachePath = options.cachePath ?? defaultConversationStructureCachePath(mainDb);
+    this.cachePath = options.readonly ? options.cachePath! : options.cachePath
+      ? conversationStructureCachePath("", options.cachePath)
+      : defaultConversationStructureCachePath(mainDb);
     if (this.cachePath !== ":memory:") {
       fs.mkdirSync(path.dirname(this.cachePath), { recursive: true });
     }
-    this.cache = new SqliteDatabase(this.cachePath);
+    this.cache = new SqliteDatabase(this.cachePath, options.readonly ? { readonly: true, fileMustExist: true } : undefined);
+    if (options.readonly) {
+      this.cache.pragma("query_only = ON");
+      return;
+    }
     this.cache.pragma("journal_mode = WAL");
     this.cache.pragma("synchronous = NORMAL");
     this.cache.pragma("foreign_keys = ON");
-    this.initialize();
+    const initialized = this.cache.prepare("SELECT name FROM sqlite_master WHERE name = 'cache_meta'").get();
+    if (!initialized) this.cache.transaction(() => this.initialize()).immediate();
   }
 
   private initialize(): void {
+    const initialized = this.cache.prepare("SELECT name FROM sqlite_master WHERE name = 'cache_meta'").get();
+    if (initialized) return;
     this.cache.exec(`
       CREATE TABLE IF NOT EXISTS cache_meta (
         key   TEXT PRIMARY KEY,
@@ -186,7 +192,7 @@ export class ConversationStructureCache {
       ) WITHOUT ROWID;
       CREATE TABLE IF NOT EXISTS cache_conversations (
         cache_id               INTEGER PRIMARY KEY,
-        conversation_id        TEXT NOT NULL UNIQUE,
+        conversation_id        TEXT NOT NULL,
         source_version_id      TEXT NOT NULL,
         parser_format          TEXT NOT NULL,
         parser_version         TEXT NOT NULL,
@@ -194,7 +200,8 @@ export class ConversationStructureCache {
         redaction_epoch        INTEGER NOT NULL,
         block_count            INTEGER NOT NULL,
         updated_at             INTEGER NOT NULL,
-        accessed_at            INTEGER NOT NULL
+        accessed_at            INTEGER NOT NULL,
+        UNIQUE (conversation_id, source_version_id, parser_format, parser_version, normalization_version, redaction_epoch)
       );
       CREATE TABLE IF NOT EXISTS cache_blocks (
         cache_conversation_id  INTEGER NOT NULL
@@ -207,6 +214,7 @@ export class ConversationStructureCache {
         record_length          INTEGER NOT NULL,
         record_ordinal         INTEGER NOT NULL,
         sub_block_ordinal      INTEGER NOT NULL,
+        model                  TEXT,
         PRIMARY KEY (cache_conversation_id, position)
       ) WITHOUT ROWID;
       CREATE TABLE IF NOT EXISTS cache_tool_links (
@@ -217,14 +225,8 @@ export class ConversationStructureCache {
         PRIMARY KEY (cache_conversation_id, tool_key)
       ) WITHOUT ROWID;
     `);
-    const version = this.cache.prepare(
-      "SELECT value FROM cache_meta WHERE key = 'schema_version'",
-    ).get() as { value: string } | undefined;
-    if (version && Number(version.value) !== CONVERSATION_STRUCTURE_CACHE_VERSION) {
-      this.cache.exec("DELETE FROM cache_tool_links; DELETE FROM cache_blocks; DELETE FROM cache_conversations; DELETE FROM cache_meta");
-    }
-    this.cache.prepare(`INSERT INTO cache_meta (key, value) VALUES ('schema_version', ?)
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(String(CONVERSATION_STRUCTURE_CACHE_VERSION));
+    this.cache.prepare("INSERT INTO cache_meta (key, value) VALUES ('schema_version', ?)")
+      .run(String(CONVERSATION_STRUCTURE_CACHE_VERSION));
   }
 
   close(): void {
@@ -249,9 +251,10 @@ export class ConversationStructureCache {
   }
 
   private cacheConversation(manifest: SourceManifestRow, mode: "replace" | "append"): number {
-    const existing = this.cache.prepare(
-      "SELECT cache_id, source_version_id FROM cache_conversations WHERE conversation_id = ?",
-    ).get(manifest.conversation_id) as { cache_id: number; source_version_id: string } | undefined;
+    const existing = this.cachedConversation(manifest.conversation_id, manifest.source_version_id, {
+      parserFormat: manifest.parser_format, parserVersion: manifest.parser_version,
+      normalizationVersion: manifest.normalization_version, redactionEpoch: manifest.redaction_epoch,
+    });
     const now = Date.now();
     if (!existing) {
       const inserted = this.cache.prepare(`
@@ -317,7 +320,19 @@ export class ConversationStructureCache {
     let captured = 0;
     let cached = 0;
     const write = this.cache.transaction(() => {
+      const prior = mode === "append" ? this.cache.prepare(`SELECT cache_id FROM cache_conversations
+        WHERE conversation_id = ? AND source_version_id <> ? AND parser_format = ? AND parser_version = ?
+          AND normalization_version = ? AND redaction_epoch = ? ORDER BY cache_id DESC LIMIT 1`)
+        .get(conversationId, manifest.source_version_id, manifest.parser_format, manifest.parser_version,
+          manifest.normalization_version, manifest.redaction_epoch) as { cache_id: number } | undefined : undefined;
       const cacheId = this.cacheConversation(manifest, mode);
+      if (prior) {
+        this.cache.prepare(`INSERT OR IGNORE INTO cache_blocks SELECT ?, position, type_code, role_code, parent_position,
+          record_offset, record_length, record_ordinal, sub_block_ordinal, model FROM cache_blocks WHERE cache_conversation_id = ?`)
+          .run(cacheId, prior.cache_id);
+        this.cache.prepare("INSERT OR IGNORE INTO cache_tool_links SELECT ?, tool_key, position FROM cache_tool_links WHERE cache_conversation_id = ?")
+          .run(cacheId, prior.cache_id);
+      }
       const insert = this.cache.prepare(`
         INSERT INTO cache_blocks (
           cache_conversation_id, position, type_code, role_code, parent_position,
@@ -362,42 +377,96 @@ export class ConversationStructureCache {
     rows: readonly Omit<SparseConversationBlockRow,
       "conversationId" | "sourceVersionId" | "parserFormat" | "parserVersion" |
       "normalizationVersion" | "redactionEpoch">[],
+    tools: ReadonlyMap<string, number> = new Map(),
+    priorVersionId?: string,
   ): void {
     const write = this.cache.transaction(() => {
       const cacheId = this.cacheConversation(manifest, "replace");
       const insert = this.cache.prepare(`
         INSERT INTO cache_blocks (
           cache_conversation_id, position, type_code, role_code, parent_position,
-          record_offset, record_length, record_ordinal, sub_block_ordinal
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          record_offset, record_length, record_ordinal, sub_block_ordinal, model
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
+      if (priorVersionId) {
+        const prior = this.cachedConversation(manifest.conversation_id, priorVersionId, {
+          parserFormat: manifest.parser_format, parserVersion: manifest.parser_version,
+          normalizationVersion: manifest.normalization_version, redactionEpoch: manifest.redaction_epoch,
+        });
+        if (!prior) throw new Error("append structure generation is missing");
+        this.cache.prepare(`INSERT INTO cache_blocks SELECT ?, position, type_code, role_code, parent_position,
+          record_offset, record_length, record_ordinal, sub_block_ordinal, model FROM cache_blocks WHERE cache_conversation_id = ?`)
+          .run(cacheId, prior.cache_id);
+        this.cache.prepare("INSERT INTO cache_tool_links SELECT ?, tool_key, position FROM cache_tool_links WHERE cache_conversation_id = ?")
+          .run(cacheId, prior.cache_id);
+      }
       for (const row of rows) {
         insert.run(
           cacheId, row.position, blockTypeCode(row.type), roleCode(row.role), row.parentPosition,
-          row.recordOffset, row.recordLength, row.recordOrdinal, row.subBlockOrdinal,
+          row.recordOffset, row.recordLength, row.recordOrdinal, row.subBlockOrdinal, row.model ?? null,
         );
       }
-      this.cache.prepare("UPDATE cache_conversations SET block_count = ? WHERE cache_id = ?")
-        .run(rows.length, cacheId);
+      const count = this.cache.prepare("SELECT COUNT(*) AS count, MIN(position) AS first, MAX(position) AS last FROM cache_blocks WHERE cache_conversation_id = ?")
+        .get(cacheId) as { count: number; first: number | null; last: number | null };
+      if (count.count !== manifest.block_count || (count.count > 0 && (count.first !== 0 || count.last !== count.count - 1))) {
+        throw new Error("prepared conversation structure is incomplete");
+      }
+      const insertTool = this.cache.prepare(`INSERT INTO cache_tool_links VALUES (?, ?, ?)
+        ON CONFLICT(cache_conversation_id, tool_key) DO UPDATE SET position = excluded.position`);
+      for (const [id, position] of tools) insertTool.run(cacheId, toolKey(id), position);
     });
     write();
   }
 
-  private cachedConversation(conversationId: string, sourceVersionId: string): CacheConversationRow | null {
+  private cachedConversation(conversationId: string, sourceVersionId: string, epochs?: ConversationSourceEpochs): CacheConversationRow | null {
+    const conditions = epochs ? "AND parser_format = ? AND parser_version = ? AND normalization_version = ? AND redaction_epoch = ?" : "";
     return (this.cache.prepare(`
       SELECT cache_id, conversation_id, source_version_id, parser_format, parser_version,
              normalization_version, redaction_epoch, block_count
         FROM cache_conversations
-       WHERE conversation_id = ? AND source_version_id = ?
-    `).get(conversationId, sourceVersionId) as CacheConversationRow | undefined) ?? null;
+       WHERE conversation_id = ? AND source_version_id = ? ${conditions}
+       ORDER BY cache_id DESC LIMIT 1
+    `).get(conversationId, sourceVersionId, ...(epochs ? [epochs.parserFormat, epochs.parserVersion, epochs.normalizationVersion, epochs.redactionEpoch] : [])) as CacheConversationRow | undefined) ?? null;
+  }
+
+  /** A read-only WAL snapshot pins all admitted navigation until the source read finishes. */
+  openReadSession(): { cache: ConversationStructureCache; close(): void } {
+    if (this.cachePath === ":memory:") {
+      this.activeReaders += 1;
+      return { cache: this, close: () => { this.activeReaders -= 1; } };
+    }
+    const reader = new ConversationStructureCache(undefined, { cachePath: this.cachePath, readonly: true });
+    try {
+      reader.cache.exec("BEGIN");
+      reader.cache.prepare("SELECT cache_id FROM cache_conversations LIMIT 1").get();
+    } catch (error) { reader.close(); throw error; }
+    return { cache: reader, close: () => { try { reader.cache.exec("ROLLBACK"); } finally { reader.close(); } } };
+  }
+
+  /** Only the preparation owner prunes; admitted WAL readers retain their own snapshot. */
+  prune(conversationId: string, protectedVersionId: string | null): void {
+    if (this.activeReaders > 0) return;
+    const generations = this.cache.prepare(`SELECT cache_id, source_version_id FROM cache_conversations
+      WHERE conversation_id = ? ORDER BY cache_id DESC`).all(conversationId) as CacheConversationRow[];
+    let retained = 0;
+    let protectedCurrent = false;
+    const remove = this.cache.prepare("DELETE FROM cache_conversations WHERE cache_id = ?");
+    this.cache.transaction(() => {
+      for (const row of generations) {
+        const protect = !protectedCurrent && row.source_version_id === protectedVersionId;
+        if (protect) protectedCurrent = true;
+        if (protect || retained++ < 3) continue;
+        remove.run(row.cache_id);
+      }
+    })();
   }
 
   readPage(
     conversationId: string,
     sourceVersionId: string,
-    options: { offset: number; limit: number; types?: readonly string[]; prefix?: { blockCount: number; byteLength: number; verified?: boolean } },
+    options: { offset: number; limit: number; types?: readonly string[]; epochs?: ConversationSourceEpochs; prefix?: { blockCount: number; byteLength: number; verified?: boolean } },
   ): SparseConversationPage | null {
-    const conversation = this.cachedConversation(conversationId, sourceVersionId);
+    const conversation = this.cachedConversation(conversationId, sourceVersionId, options.epochs);
     if (!conversation) return null;
     const typeCodes = options.types?.map(blockTypeCode);
     const conditions = ["cache_conversation_id = ?"];
@@ -423,12 +492,10 @@ export class ConversationStructureCache {
       : options.prefix?.blockCount ?? conversation.block_count;
     const rows = this.cache.prepare(`
       SELECT position, type_code, role_code, parent_position, record_offset,
-             record_length, record_ordinal, sub_block_ordinal
+             record_length, record_ordinal, sub_block_ordinal, model
         FROM cache_blocks WHERE ${where}
        ORDER BY position LIMIT ? OFFSET ?
     `).all(...params, options.limit, options.offset) as CacheBlockRow[];
-    this.cache.prepare("UPDATE cache_conversations SET accessed_at = ? WHERE cache_id = ?")
-      .run(Date.now(), conversation.cache_id);
     return {
       rows: rows.map((row) => ({
         conversationId,
@@ -441,6 +508,7 @@ export class ConversationStructureCache {
         recordLength: row.record_length,
         recordOrdinal: row.record_ordinal,
         subBlockOrdinal: row.sub_block_ordinal,
+        model: row.model,
         parserFormat: conversation.parser_format,
         parserVersion: conversation.parser_version,
         normalizationVersion: conversation.normalization_version,
@@ -452,7 +520,7 @@ export class ConversationStructureCache {
     };
   }
 
-  readStructure(conversationId: string, sourceVersionId: string): Array<{
+  readStructure(conversationId: string, sourceVersionId: string, epochs?: ConversationSourceEpochs): Array<{
     position: number;
     type: BlockType;
     role: Role;
@@ -460,7 +528,7 @@ export class ConversationStructureCache {
     recordOffset: number;
     recordLength: number;
   }> | null {
-    const conversation = this.cachedConversation(conversationId, sourceVersionId);
+    const conversation = this.cachedConversation(conversationId, sourceVersionId, epochs);
     if (!conversation) return null;
     const rows = this.cache.prepare(`
       SELECT position, type_code, role_code, parent_position, record_offset, record_length
@@ -482,12 +550,13 @@ export class ConversationStructureCache {
     conversationId: string,
     sourceVersionId: string,
     position: number,
+    epochs?: ConversationSourceEpochs,
   ): SparseConversationBlockRow | null {
-    const conversation = this.cachedConversation(conversationId, sourceVersionId);
+    const conversation = this.cachedConversation(conversationId, sourceVersionId, epochs);
     if (!conversation) return null;
     const row = this.cache.prepare(`
       SELECT position, type_code, role_code, parent_position, record_offset,
-             record_length, record_ordinal, sub_block_ordinal
+             record_length, record_ordinal, sub_block_ordinal, model
         FROM cache_blocks WHERE cache_conversation_id = ? AND position = ?
     `).get(conversation.cache_id, position) as CacheBlockRow | undefined;
     if (!row) return null;
@@ -502,6 +571,7 @@ export class ConversationStructureCache {
       recordLength: row.record_length,
       recordOrdinal: row.record_ordinal,
       subBlockOrdinal: row.sub_block_ordinal,
+        model: row.model,
       parserFormat: conversation.parser_format,
       parserVersion: conversation.parser_version,
       normalizationVersion: conversation.normalization_version,
@@ -515,7 +585,7 @@ export class ConversationStructureCache {
     expectedBlockCount: number,
     epochs?: ConversationSourceEpochs,
   ): boolean {
-    const conversation = this.cachedConversation(conversationId, sourceVersionId);
+    const conversation = this.cachedConversation(conversationId, sourceVersionId, epochs);
     return conversation?.block_count === expectedBlockCount && (!epochs || conversationSourceEpochsMatch({
       parserFormat: conversation.parser_format,
       parserVersion: conversation.parser_version,
@@ -524,16 +594,17 @@ export class ConversationStructureCache {
     }, epochs));
   }
 
-  blockCount(conversationId: string, sourceVersionId: string): number | null {
-    return this.cachedConversation(conversationId, sourceVersionId)?.block_count ?? null;
+  blockCount(conversationId: string, sourceVersionId: string, epochs?: ConversationSourceEpochs): number | null {
+    return this.cachedConversation(conversationId, sourceVersionId, epochs)?.block_count ?? null;
   }
 
   turnPosition(
     conversationId: string,
     sourceVersionId: string,
     position: number,
+    epochs?: ConversationSourceEpochs,
   ): number | null {
-    const conversation = this.cachedConversation(conversationId, sourceVersionId);
+    const conversation = this.cachedConversation(conversationId, sourceVersionId, epochs);
     if (!conversation) return null;
     const userType = blockTypeCode("user_message");
     const target = this.cache.prepare(`
@@ -563,8 +634,9 @@ export class ConversationStructureCache {
     conversationId: string,
     sourceVersionId: string,
     position: number,
+    epochs?: ConversationSourceEpochs,
   ): number | null {
-    const conversation = this.cachedConversation(conversationId, sourceVersionId);
+    const conversation = this.cachedConversation(conversationId, sourceVersionId, epochs);
     if (!conversation) return null;
     const userType = blockTypeCode("user_message");
     const target = this.cache.prepare(`
@@ -584,10 +656,10 @@ export class ConversationStructureCache {
     `).get(conversation.cache_id, position) as { position: number | null }).position;
   }
 
-  findToolPosition(conversationId: string, toolId: string): number | null {
-    const conversation = this.cache.prepare(
-      "SELECT cache_id FROM cache_conversations WHERE conversation_id = ?",
-    ).get(conversationId) as { cache_id: number } | undefined;
+  findToolPosition(conversationId: string, toolId: string, sourceVersionId?: string, epochs?: ConversationSourceEpochs): number | null {
+    const conversation = sourceVersionId && epochs ? this.cachedConversation(conversationId, sourceVersionId, epochs) : this.cache.prepare(
+      "SELECT cache_id FROM cache_conversations WHERE conversation_id = ? AND (? IS NULL OR source_version_id = ?) ORDER BY cache_id DESC LIMIT 1",
+    ).get(conversationId, sourceVersionId ?? null, sourceVersionId ?? null) as { cache_id: number } | undefined;
     if (!conversation) return null;
     return (this.cache.prepare(`
       SELECT position FROM cache_tool_links

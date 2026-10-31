@@ -1,3 +1,4 @@
+import type { ConversationSourceEpochs } from "../conversations/source-types.js";
 import { updateConversationMetadata } from "../conversations/metadata.js";
 import { mapConversation, maskSourceBackedConversationRow } from "../conversations/response-mapping.js";
 import { parseSinceQuery, sourceFromQuery } from "../conversations/search-query.js";
@@ -705,12 +706,13 @@ export function registerConversationRoutes(
       return sendJson(res, 503, { error: "freshness_error", message: error instanceof Error ? error.message : String(error) });
     }
     const source = db.prepare(`
-      SELECT current_version_id FROM conversation_sources
+      SELECT current_version_id, parser_format AS parserFormat, parser_version AS parserVersion,
+             normalization_version AS normalizationVersion, redaction_epoch AS redactionEpoch FROM conversation_sources
        WHERE conversation_id = ? AND current_version_id IS NOT NULL
        ORDER BY CASE availability WHEN 'available' THEN 0 ELSE 1 END, updated_at DESC LIMIT 1
-    `).get(id) as { current_version_id: string } | undefined;
+    `).get(id) as ({ current_version_id: string } & ConversationSourceEpochs) | undefined;
     const version = source?.current_version_id ?? null;
-    const cached = version === null ? null : getConversationStructureCache(db).readStructure(id, version);
+    const cached = version === null ? null : getConversationStructureCache(db).readStructure(id, version, source);
     const dense = cached === null ? db.prepare(`
       SELECT id, position, type, role, parent_block_id, record_offset, record_length
         FROM conversation_structural_blocks
@@ -738,10 +740,11 @@ export function registerConversationRoutes(
       return sendJson(res, 409, { error: "freshness_pending", code: "freshness_pending",
         message: "conversation structure is incomplete; retry after indexing" });
     }
-    const current = db.prepare(`SELECT current_version_id FROM conversation_sources
+    const current = db.prepare(`SELECT current_version_id, parser_format AS parserFormat, parser_version AS parserVersion,
+             normalization_version AS normalizationVersion, redaction_epoch AS redactionEpoch FROM conversation_sources
       WHERE conversation_id = ? AND current_version_id IS NOT NULL
       ORDER BY CASE availability WHEN 'available' THEN 0 ELSE 1 END, updated_at DESC LIMIT 1`
-    ).get(id) as { current_version_id: string } | undefined;
+    ).get(id) as ({ current_version_id: string } & ConversationSourceEpochs) | undefined;
     if ((current?.current_version_id ?? null) !== version) {
       return sendJson(res, 409, { error: "freshness_pending", code: "freshness_pending",
         message: "conversation source changed during structure read" });
@@ -832,15 +835,16 @@ export function registerConversationRoutes(
     let sourceVersionId: string | null = null;
     if (useSourceReader) {
       const source = db.prepare(`
-        SELECT current_version_id FROM conversation_sources
+        SELECT current_version_id, parser_format AS parserFormat, parser_version AS parserVersion,
+             normalization_version AS normalizationVersion, redaction_epoch AS redactionEpoch FROM conversation_sources
          WHERE conversation_id = ? AND current_version_id IS NOT NULL
          ORDER BY CASE availability WHEN 'available' THEN 0 ELSE 1 END, updated_at DESC
          LIMIT 1
-      `).get(id) as { current_version_id: string } | undefined;
+      `).get(id) as ({ current_version_id: string } & ConversationSourceEpochs) | undefined;
       sourceVersionId = source?.current_version_id ?? null;
       const structureCache = getConversationStructureCache(db);
       const cachedTotal = source
-        ? structureCache.blockCount(id, source.current_version_id)
+        ? structureCache.blockCount(id, source.current_version_id, source)
         : null;
       const retainedStructuralTotal = (db.prepare(`
         SELECT COUNT(*) AS total FROM conversation_structural_blocks
@@ -857,7 +861,7 @@ export function registerConversationRoutes(
       if (cachedTotal !== null) total = cachedTotal;
       if (query.limit === undefined && (targetKind === "initial" || targetKind === "latest")
           && source && cachedTotal !== null && cachedTotal === retainedTotal && total > 0) {
-        const turnStart = structureCache.turnWindowStart(id, source.current_version_id, total - 1);
+        const turnStart = structureCache.turnWindowStart(id, source.current_version_id, total - 1, source);
         const completeTurnSize = turnStart === null ? null : total - turnStart;
         if (completeTurnSize !== null && completeTurnSize <= 500) {
           limit = Math.max(limit, completeTurnSize);
@@ -939,7 +943,7 @@ export function registerConversationRoutes(
         return;
       }
       const cachedTurnPosition = anchorPosition !== null && source && cachedTotal !== null
-        ? structureCache.turnPosition(id, source.current_version_id, anchorPosition)
+        ? structureCache.turnPosition(id, source.current_version_id, anchorPosition, source)
         : null;
       if (cachedTurnPosition !== null) {
         resolvedTurnId = sparseConversationBlockId(id, cachedTurnPosition);

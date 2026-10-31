@@ -168,16 +168,49 @@ and commits the exact receipt acceptance marker. Acknowledgment consumes an
 opaque one-use verification result bound to that same observation owner and
 receipt digest. It does not repeat package or health verification.
 
-Acknowledgment unregisters the exact helper, confirms its captured process has
-drained, persists its mutation fence, and releases only its exact active owner.
+The installation-wide handoff lock is derived from the journal, not from the
+existence of `handoff-active.json`. That file names the latest admitted journal,
+and the lock is held exactly while that journal still holds mutation authority:
+no attempt or mutation fence closed it, and it was neither acknowledged nor
+retired. A completed delivery writes its receipt and its terminal fence in one
+journal write, so it releases the lock at that moment; deleting the file later
+(during acknowledgment, cleanup or successor closure) is tidying that no decision
+depends on, and it never touches a file that names a successor. A failed or
+verification-pending attempt stays unfenced and keeps the lock until
+verification-only recovery fences it or the operator retires it. Every reader,
+including the lifecycle commands in `local-runtime.mjs`, goes through
+`readRuntimeHandoffLock`.
+
+Legacy acknowledgment unregisters the exact helper, confirms its captured process
+has drained, and persists its mutation fence, which releases the lock.
 A retry after committed receipt acceptance uses the exact durable marker and digest
 without repeating publication adoption or runtime probes. A foreign active owner
 never grants mutation authority over this journal.
 
-Cleanup has its own pending or complete state. It validates only the obsolete
-objects it deletes, including previous app bytes and retained package ownership.
-Cleanup failure preserves runtime success and can be retried after ownership has
-been released. A successor can close an old mutator under the same ordered leases
+Cleanup has its own pending or complete state, and its failure never changes
+runtime success. It validates only the obsolete objects it deletes. It consists
+of independent obligations, and every attempt tries each of them: fence the
+exact helper, remove the previous app copy, dispose of the superseded accepted
+release, and remove a legacy bridge. Each blocked obligation records its own
+blocker in the journal. When the blocker is a set of running processes, the
+record lists them with the parent that started them, which is what the user has
+to quit or restart. `mandible auth handoff status` and the daemon's stuck-cleanup
+incident show that text.
+
+A journal keeps an accepted release from disposal only while it still needs it.
+It needs its predecessor's release while it holds mutation authority. It needs
+its own release, which holds the helper that drives it, until that helper is
+fenced (`helperFencedAt`). The cleanups of successive updates therefore never
+wait on one another.
+
+The daemon starts cleanup children one at a time. A blocked cleanup runs again
+only when its wake key changes: the key is the recorded blockers, with only the
+blocking processes that are still alive. A cleanup also runs again when another
+handoff's cleanup or outcome changes, when the daemon starts, or when someone
+asks for verification-only recovery. No timer retries it, so a cleanup waiting
+on a process never takes the installation gateway lock while it waits.
+
+A successor can close an old mutator under the same ordered leases
 by fencing its exact helper and preserving its historical outcome; an old failed
 phase or a missing PID alone is not permission to release ownership.
 

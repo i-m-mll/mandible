@@ -709,14 +709,14 @@ describe("iab-preview launcher", () => {
       projectedDb,
     });
     expect(result.status, result.stderr).toBe(0);
+    const physicalTarget = JSON.parse(result.stdout).target;
     expect(JSON.parse(result.stdout)).toMatchObject({
       status: "seeded",
       source: sourceCache,
-      target: targetCache,
       conversations: 1,
       blocks: 1,
     });
-    const seeded = new SqliteDatabase(targetCache, { readonly: true });
+    const seeded = new SqliteDatabase(physicalTarget, { readonly: true });
     expect(seeded.prepare("SELECT conversation_id, source_version_id FROM cache_conversations").all())
       .toEqual([{ conversation_id: "kept", source_version_id: "version-current" }]);
     expect(seeded.prepare("SELECT cache_conversation_id, position FROM cache_blocks").all())
@@ -726,7 +726,7 @@ describe("iab-preview launcher", () => {
     const previewDb = new SqliteDatabase(projectedDb);
     previewDb.prepare("UPDATE conversation_sources SET current_version_id = 'version-preview' WHERE conversation_id = 'kept'").run();
     previewDb.close();
-    const privateCache = new SqliteDatabase(targetCache);
+    const privateCache = new SqliteDatabase(physicalTarget);
     privateCache.prepare("UPDATE cache_conversations SET source_version_id = 'version-preview' WHERE conversation_id = 'kept'").run();
     privateCache.prepare("UPDATE cache_blocks SET position = 17 WHERE cache_conversation_id = 1").run();
     privateCache.close();
@@ -739,7 +739,7 @@ describe("iab-preview launcher", () => {
     });
     expect(refreshed.status, refreshed.stderr).toBe(0);
     expect(JSON.parse(refreshed.stdout)).toMatchObject({ status: "preserved", conversations: 1, blocks: 1 });
-    const retained = new SqliteDatabase(targetCache, { readonly: true });
+    const retained = new SqliteDatabase(physicalTarget, { readonly: true });
     expect(retained.prepare("SELECT conversation_id, source_version_id FROM cache_conversations").all())
       .toEqual([{ conversation_id: "kept", source_version_id: "version-preview" }]);
     expect(retained.prepare("SELECT cache_conversation_id, position FROM cache_blocks").all())

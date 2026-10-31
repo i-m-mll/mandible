@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import SqliteDatabase from "../src/sqlite.ts";
+import { conversationStructureCachePath } from "../src/conversations/structure-cache-path.ts";
 import { userSchema } from "./sqlite-user-schema.mjs";
 
 // Issue 24f0316 — the ledger database lives under the durable root.
@@ -40,7 +41,7 @@ export function projectDatabaseSnapshot(options) {
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
   removeDatabaseArtifacts(partialPath);
-  removeDatabaseArtifacts(partialStructureCachePath);
+  removeDatabaseArtifacts(conversationStructureCachePath("", partialStructureCachePath));
   removeIfExists(partialManifestPath);
 
   let db = null;
@@ -97,7 +98,7 @@ export function projectDatabaseSnapshot(options) {
     // Title convergence may rebuild the disposable source-coordinate cache.
     // A projected database does not own that cache, so never publish it with
     // the snapshot or leave it behind when a candidate succeeds.
-    removeDatabaseArtifacts(partialStructureCachePath);
+    removeDatabaseArtifacts(conversationStructureCachePath("", partialStructureCachePath));
     db = new SqliteDatabase(partialPath);
     db.pragma("foreign_keys = ON");
 
@@ -191,7 +192,7 @@ export function projectDatabaseSnapshot(options) {
       }
     }
     removeDatabaseArtifacts(partialPath);
-    removeDatabaseArtifacts(partialStructureCachePath);
+    removeDatabaseArtifacts(conversationStructureCachePath("", partialStructureCachePath));
     removeIfExists(partialManifestPath);
     throw error;
   }

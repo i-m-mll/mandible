@@ -1,3 +1,4 @@
+import type { ConversationNavigationKind } from "./source-types.js";
 import { createHash, randomUUID } from "node:crypto";
 import { readSnapshot } from "../ledger-reads/snapshot.js";
 import { readConversationSourceGenerations } from "./source-generation.js";
@@ -16,6 +17,7 @@ export type SearchMatchFact = Omit<ConversationSearchMatch, "snippet"> & {
   source_version_id: string;
   source_block_count: number;
   source_model: string | null;
+  source_navigation_kind: ConversationNavigationKind;
 };
 export interface SearchPlan {
   ids: string[];
@@ -78,6 +80,7 @@ interface Pin {
   observed?: string;
   blockCount?: number;
   model?: string | null;
+  navigationKind?: ConversationNavigationKind;
 }
 interface Job {
   id: string;
@@ -407,7 +410,7 @@ export class FullTextSearchJobs {
     plan = snapshot.plan;
     job.plan = plan;
     const normalization = new Map(snapshot.normalization.map(row => [row.id, row]));
-    job.pins = snapshot.sources.map(source => ({ id: source.conversationId, version: source.sourceVersionId!, authority:snapshot.authorities.get(source.conversationId),observed:snapshot.observed.get(source.conversationId), blockCount: normalization.get(source.conversationId)!.block_count, model: normalization.get(source.conversationId)!.model }));
+    job.pins = snapshot.sources.map(source => ({ id: source.conversationId, version: source.sourceVersionId!, authority:snapshot.authorities.get(source.conversationId),observed:snapshot.observed.get(source.conversationId), blockCount: normalization.get(source.conversationId)!.block_count, model: normalization.get(source.conversationId)!.model, navigationKind: source.navigationKind }));
     for (const pin of job.pins)
       prepared.set(pin.id, pin);
     job.coverage.eligible = plan.ids.length;
@@ -429,7 +432,7 @@ export class FullTextSearchJobs {
       if (job.terminal)
         return;
       const ids = plan.ids.slice(index, index + 4);
-      const results = await Promise.all(ids.map(id => cache.search({ conversationIds: [id], needle: plan.needle, blockType: plan.blockType, limit: 1, signal: job.controller.signal, expectedSourceVersions: { [id]: prepared.get(id)!.version }, expectedBlockCounts: { [id]: prepared.get(id)!.blockCount! }, expectedModels: { [id]: prepared.get(id)!.model ?? null } })));
+      const results = await Promise.all(ids.map(id => cache.search({ conversationIds: [id], needle: plan.needle, blockType: plan.blockType, limit: 1, signal: job.controller.signal, expectedSourceVersions: { [id]: prepared.get(id)!.version }, expectedBlockCounts: { [id]: prepared.get(id)!.blockCount! }, expectedModels: { [id]: prepared.get(id)!.model ?? null }, expectedNavigationKinds: { [id]: prepared.get(id)!.navigationKind! } })));
       if (job.terminal)
         return;
       for (const result of results) {
@@ -440,7 +443,7 @@ export class FullTextSearchJobs {
           this.fail(job, changed ? "source_changed" : "source_unavailable", changed ? "superseded" : "incomplete");
           return;
         }
-        const facts = result.matches.map(({ snippet: _snippet, ...match }) => ({ ...match, source_version_id: prepared.get(match.conversation_id)!.version, source_block_count: prepared.get(match.conversation_id)!.blockCount!, source_model: prepared.get(match.conversation_id)!.model ?? null }));
+        const facts = result.matches.map(({ snippet: _snippet, ...match }) => ({ ...match, source_version_id: prepared.get(match.conversation_id)!.version, source_block_count: prepared.get(match.conversation_id)!.blockCount!, source_model: prepared.get(match.conversation_id)!.model ?? null, source_navigation_kind: prepared.get(match.conversation_id)!.navigationKind! }));
         job.matches.push(...facts);
         job.bytes += Buffer.byteLength(JSON.stringify(facts));
       }

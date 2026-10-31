@@ -10,7 +10,7 @@ import { getDaemonLogger } from "../daemon-log.js";
 import type { Db } from "../db.js";
 import { getUserHome } from "../platform-paths.js";
 import { ConversationSourceReader, type SourceScanProgress } from "./source-reader.js";
-import type { SourceReadResult, SourceReadFailureKind } from "./source-types.js";
+import type { SourceReadResult, SourceReadFailureKind, ConversationNavigationKind } from "./source-types.js";
 import { ConversationSourceStore } from "./source-store.js";
 import { readConversationSourceReadiness } from "./source-readiness.js";
 
@@ -47,6 +47,11 @@ const FREQUENCY_SAMPLE_SIZE = 16_384;
 export interface SearchConversationSource {
   conversationId: string;
   sourceVersionId: string;
+  navigationKind?: ConversationNavigationKind;
+}
+
+function searchCacheVersion(source: SearchConversationSource): string {
+  return source.navigationKind ? JSON.stringify([source.sourceVersionId, source.navigationKind]) : source.sourceVersionId;
 }
 
 export interface SearchBlockSource {
@@ -70,7 +75,7 @@ export interface ConversationSearchSourceAdapter {
   scanMaskedBlocks?(
     conversationId: string,
     visitor: (block: SearchBlockSource) => "stop" | void | Promise<"stop" | void>,
-    options?: { signal?: AbortSignal; expectedSourceVersionId?: string; expectedBlockCount?: number; expectedModel?: string | null; onVerification?: (milliseconds: number) => void },
+    options?: { signal?: AbortSignal; expectedSourceVersionId?: string; expectedBlockCount?: number; expectedModel?: string | null; expectedNavigationKind?: ConversationNavigationKind; onVerification?: (milliseconds: number) => void },
   ): Promise<SourceReadResult<SourceScanProgress>>;
   /** `null` means no sound shortlist is available, so every input is parsed. */
   shortlistMaskedBlocks?(
@@ -261,7 +266,7 @@ export class SourceBackedConversationSearchSourceAdapter implements Conversation
     );
     return conversationIds.flatMap((conversationId) => {
       const currentVersionId = sources.get(conversationId)?.currentVersionId;
-      if (currentVersionId) return [{ conversationId, sourceVersionId: currentVersionId }];
+      if (currentVersionId) return [{ conversationId, sourceVersionId: currentVersionId, navigationKind: sources.get(conversationId)!.navigationKind }];
       const fallback = legacy.get(conversationId);
       return fallback ? [fallback] : [];
     });
@@ -293,7 +298,7 @@ export class SourceBackedConversationSearchSourceAdapter implements Conversation
   async scanMaskedBlocks(
     conversationId: string,
     visitor: (block: SearchBlockSource) => "stop" | void | Promise<"stop" | void>,
-    options: { signal?: AbortSignal; expectedSourceVersionId?: string; expectedBlockCount?: number; expectedModel?: string | null; onVerification?: (milliseconds: number) => void } = {},
+    options: { signal?: AbortSignal; expectedSourceVersionId?: string; expectedBlockCount?: number; expectedModel?: string | null; expectedNavigationKind?: ConversationNavigationKind; onVerification?: (milliseconds: number) => void } = {},
   ): Promise<SourceReadResult<SourceScanProgress>> {
     try {
       const currentSource = this.store.resolveConversation(conversationId);
@@ -683,6 +688,7 @@ export class ConversationSearchCache {
     expectedSourceVersions?: Readonly<Record<string, string>>;
     expectedBlockCounts?: Readonly<Record<string, number>>;
     expectedModels?: Readonly<Record<string, string | null>>;
+    expectedNavigationKinds?: Readonly<Record<string, ConversationNavigationKind>>;
   }): Promise<{ matches: ConversationSearchMatch[]; failures: ConversationSearchFailure[]; metrics: ConversationSearchMetrics }> {
     const started = performance.now();
     const budget = new TurnBudget(SEARCH_TURN_MS);
@@ -721,14 +727,15 @@ export class ConversationSearchCache {
         }
         for (const describedItem of window) {
           const expected = input.expectedSourceVersions?.[describedItem.conversationId];
+          const describedNavigation = input.expectedNavigationKinds?.[describedItem.conversationId] ?? describedItem.navigationKind;
           const item = expected !== undefined && !expected.startsWith("legacy:") && !describedItem.sourceVersionId.startsWith("legacy:") && this.source.verifySource
-            ? { ...describedItem, sourceVersionId: expected } : describedItem;
+            ? { ...describedItem, sourceVersionId: expected, navigationKind: describedNavigation } : { ...describedItem, navigationKind: describedNavigation };
           if (expected !== undefined && item.sourceVersionId !== expected) {
             failures.push({ conversation_id: item.conversationId, status: "stale", reason: "conversation source differs from pinned search version" });
             continue;
           }
           const checkpoint = checkpoints.get(item.conversationId);
-          if (checkpoint?.sourceVersionId === item.sourceVersionId) {
+          if (checkpoint?.sourceVersionId === searchCacheVersion(item)) {
             metrics.hot_conversations += 1;
             metrics.hot_blocks += checkpoint.blockCount;
             if (!this.source.verifySource && (checkpoint.blockCount === 0
@@ -812,7 +819,7 @@ export class ConversationSearchCache {
                   match = matchBlock(block);
                   if (match) return "stop";
                 }, { signal: input.signal, expectedSourceVersionId: item.sourceVersionId,
-                  expectedBlockCount: input.expectedBlockCounts?.[item.conversationId], expectedModel: input.expectedModels?.[item.conversationId],
+                  expectedBlockCount: input.expectedBlockCounts?.[item.conversationId], expectedModel: input.expectedModels?.[item.conversationId], expectedNavigationKind: item.navigationKind,
                   onVerification: milliseconds => { metrics.source_verification_ms += milliseconds; } });
                 if (result.status !== "source" && result.status !== "legacy") {
                   failures.push({ conversation_id: item.conversationId, status: result.status, reason: result.reason });
@@ -829,7 +836,7 @@ export class ConversationSearchCache {
                 metrics.cold_blocks += result.value.readBlocks;
                 this.recordAccess(item.conversationId);
                 if (result.value.complete && retained && (result.status === "source" || item.sourceVersionId.startsWith("legacy:"))) {
-                  this.offer(item.conversationId, this.key(item.sourceVersionId, redactionEpoch), retained);
+                  this.offer(item.conversationId, this.key(searchCacheVersion(item), redactionEpoch), retained);
                 }
                 return match;
               }
@@ -840,7 +847,7 @@ export class ConversationSearchCache {
               }
               metrics.cold_blocks += blocks.length;
               this.recordAccess(item.conversationId);
-              metrics.uncached_oversize_blocks += this.offer(item.conversationId, this.key(item.sourceVersionId, redactionEpoch), blocks);
+              metrics.uncached_oversize_blocks += this.offer(item.conversationId, this.key(searchCacheVersion(item), redactionEpoch), blocks);
               for (const block of blocks) {
                 if (budget.due()) await budget.yield();
                 const match = matchBlock(block);

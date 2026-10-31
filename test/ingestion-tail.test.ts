@@ -187,35 +187,54 @@ describe("incremental tail ingestion", () => {
     ).toMatchObject({ byte_offset: fs.statSync(sessionPath).size, line_count: 4 });
   });
 
-  it("retains the appended payload when the sealed source disappears before promotion", async () => {
+  it("keeps legacy references readable on append and uses the publication count after a rewrite", async () => {
+    const sessionPath = await makeCodexSession();
+    await writeWithMtime(sessionPath, initialCodexRows() + assistantRow("historical tail", 3), 1);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 1_000 });
+    const { id } = db.prepare("SELECT id FROM conversations WHERE source_path = ?").get(sessionPath) as { id: string };
+    const parsed = (await new CodexParser().parse(sessionPath))!;
+    const blocks = parsed.blocks.map(block => ({ ...block, legacyId: `retained-${block.position}` }));
+    for (const block of blocks) db.prepare(`INSERT INTO conversation_blocks
+      (id, conversation_id, type, role, content, position, timestamp, parent_id, metadata_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(block.legacyId, id, block.type, block.role,
+        block.content, block.position, block.timestamp, block.parent_id, JSON.stringify(block.metadata));
+    await new ConversationSourceStore(db).recordConversation({ conversationId: id, provider: "codex", nativeSessionId: "tailtest",
+      filePath: sessionPath, blocks, ...CURRENT_CONVERSATION_SOURCE_EPOCHS });
+    db.prepare("UPDATE conversations SET notes = 'authored note', starred = 1 WHERE id = ?").run(id);
+    await appendWithMtime(sessionPath, assistantRow("new tail", 4), 2);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 2_000 });
+    const retained = await new ConversationSourceReader(db, { legacyFallback: false }).readBlock("retained-0");
+    expect(retained.status).toBe("source");
+    if (retained.status === "source") expect(retained.value.content).toBe("hello");
+    await writeWithMtime(sessionPath, initialCodexRows().split("\n").slice(0, 2).join("\n") + "\n", 3);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 3_000 });
+    await appendWithMtime(sessionPath, assistantRow("after rewrite", 5), 4);
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 4_000 });
+    expect(db.prepare("SELECT block_count, notes, starred FROM conversations WHERE id = ?").get(id))
+      .toEqual({ block_count: 2, notes: "authored note", starred: 1 });
+    const latest = await new ConversationSourceReader(db, { legacyFallback: false }).readAll(id);
+    expect(latest.status).toBe("source");
+    if (latest.status === "source") expect(latest.value.map(block => block.content)).toEqual(["hello", "after rewrite"]);
+  });
+
+  it("keeps the old publication and append progress when the prepared source disappears", async () => {
     const sessionPath = await makeCodexSession();
     await writeWithMtime(sessionPath, initialCodexRows(), 1);
     await triggerTargetedIngest({ transcriptPath: sessionPath, now: 1_000 });
-
+    const before = db.prepare("SELECT id, source_hash, block_count FROM conversations WHERE source_path = ?").get(sessionPath);
+    const progress = db.prepare("SELECT byte_offset, line_count FROM conversation_ingest_state WHERE file_path = ?").get(sessionPath);
+    const publication = db.prepare("SELECT current_version_id FROM conversation_sources").get();
     await appendWithMtime(sessionPath, assistantRow("unverified tail", 3), 2);
-    const promote = ConversationSourceStore.prototype.promoteNativeConversationPayload;
-    let intercepted = false;
-    vi.spyOn(ConversationSourceStore.prototype, "promoteNativeConversationPayload")
-      .mockImplementation(async function (conversationId) {
-        if (!intercepted) {
-          intercepted = true;
-          fs.unlinkSync(sessionPath);
-        }
-        return promote.call(this, conversationId);
-      });
-
+    const prepare = ConversationSourceStore.prototype.prepareConversation;
+    vi.spyOn(ConversationSourceStore.prototype, "prepareConversation").mockImplementation(async function (input) {
+      const prepared = await prepare.call(this, input);
+      fs.unlinkSync(sessionPath);
+      return prepared;
+    });
     await triggerTargetedIngest({ transcriptPath: sessionPath, now: 2_000 });
-    expect(intercepted).toBe(true);
-    const conversation = db.prepare("SELECT id FROM conversations WHERE source_path = ?")
-      .get(sessionPath) as { id: string };
-    const tail = db.prepare(`SELECT payload_state, content FROM conversation_blocks
-      WHERE conversation_id = ? AND position = 2`).get(conversation.id) as {
-      payload_state: string; content: Buffer;
-    };
-    expect(tail.payload_state).toBe("legacy");
-    expect(tail.content.length).toBeGreaterThan(0);
-    const source = await new ConversationSourceReader(db, { legacyFallback: false }).readAll(conversation.id);
-    expect(source.status).not.toBe("source");
+    expect(db.prepare("SELECT id, source_hash, block_count FROM conversations WHERE source_path = ?").get(sessionPath)).toEqual(before);
+    expect(db.prepare("SELECT byte_offset, line_count FROM conversation_ingest_state WHERE file_path = ?").get(sessionPath)).toEqual(progress);
+    expect(db.prepare("SELECT current_version_id FROM conversation_sources").get()).toEqual(publication);
   });
 
   it("indexes the exact incremental append prefix when the writer grows during source capture", async () => {
@@ -235,9 +254,9 @@ describe("incremental tail ingestion", () => {
     const concurrentTail = assistantRow("writer tail", 4);
     await appendWithMtime(sessionPath, parsedTail, 2);
     const expectedByteLength = fs.statSync(sessionPath).size;
-    const originalRecordConversation = ConversationSourceStore.prototype.recordConversation;
+    const originalRecordConversation = ConversationSourceStore.prototype.prepareConversation;
     let capturedByteLength: number | null = null;
-    vi.spyOn(ConversationSourceStore.prototype, "recordConversation").mockImplementation(async function (input) {
+    vi.spyOn(ConversationSourceStore.prototype, "prepareConversation").mockImplementation(async function (input) {
       if (input.sourceSnapshot?.kind === "append" && capturedByteLength === null) {
         capturedByteLength = input.sourceSnapshot.byteLength;
         await fsp.appendFile(sessionPath, concurrentTail, "utf8");
@@ -336,12 +355,11 @@ describe("incremental tail ingestion", () => {
     const fullParse = vi.spyOn(CodexParser.prototype, "parse").mockRejectedValue(
       new Error("unbounded whole-file reparse invoked"),
     );
-    let capturedRanges: Array<{ byteStart: number; byteEnd: number; contentHash: string }> | undefined;
-    vi.spyOn(ConversationSourceStore.prototype, "recordConversation").mockImplementation(async (input) => {
-      if (input.sourceSnapshot?.kind === "append") {
-        capturedRanges = input.sourceSnapshot.appendRanges;
-      }
-      return "test-source";
+    const capturedRanges: Array<{ byteStart: number; byteEnd: number; contentHash: string }> = [];
+    const prepare = ConversationSourceStore.prototype.prepareConversation;
+    vi.spyOn(ConversationSourceStore.prototype, "prepareConversation").mockImplementation(async function (input) {
+      if (input.sourceSnapshot?.kind === "append") capturedRanges.push(...input.sourceSnapshot.appendRanges);
+      return prepare.call(this, input);
     });
     const appendBatchBytes: number[] = [];
     await triggerReconcileForTest({
@@ -356,7 +374,6 @@ describe("incremental tail ingestion", () => {
     expect(fullParse).not.toHaveBeenCalled();
     expect(appendBatchBytes.length).toBeGreaterThan(1);
     expect(Math.max(...appendBatchBytes)).toBeLessThanOrEqual(TEST_APPEND_BATCH_BYTES);
-    if (!capturedRanges) throw new Error("append range proof was not passed to the source store");
     expect(capturedRanges.length).toBeGreaterThan(1);
     expect(capturedRanges[0].byteStart).toBe(sealedBase.byte_length);
     for (let index = 1; index < capturedRanges.length; index += 1) {

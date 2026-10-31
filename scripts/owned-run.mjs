@@ -75,9 +75,10 @@ function consumerInspection(result) {
   if (result.error || ![0, 1].includes(result.status) || result.stderr.trim()) {
     return { idle: false, reason: `open-file inspection failed: ${result.error?.message ?? result.stderr ?? result.status}` };
   }
-  return result.stdout.trim()
-    ? { idle: false, reason: `owned files have active consumers: ${result.stdout.trim().slice(0, 2000)}` }
-    : { idle: true };
+  const output = result.stdout.trim();
+  if (!output) return { idle: true };
+  const pids = [...new Set(output.split('\n').filter(line => /^p\d+$/.test(line)).map(line => Number(line.slice(1))))];
+  return { idle: false, pids, reason: `owned files have active consumers: ${output.slice(0, 2000)}` };
 }
 
 export async function inspectRunConsumersAsync(root) {

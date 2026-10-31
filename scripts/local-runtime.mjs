@@ -17,6 +17,7 @@ import { readBuildRevision, compiledBuildDigest, runtimeDependenciesDigest } fro
 import { serviceInstallationContext, parseLoadedService, loadedServiceMatches, ownsServiceDefinition, inspectServiceDefinitionsSync, matchingServiceDefinitions, loadedServiceDefinition, runtimeHandoffReadiness } from "./service-definitions.mjs";
 import { installationRuntime, servicePath, readServiceConfiguration, publishServiceConfiguration, validateServiceConfiguration } from "./service-configuration.mjs";
 import { withInstallationGatewayLock, assertLifecycleLockHeld } from './lifecycle-lock.mjs';
+import { readRuntimeHandoffLock } from './runtime-handoff-lock.mjs';
 import { RUNTIME_HEALTH_PROBE_INTERVAL_MS } from './runtime-probe-cadence.mjs';
 import { RuntimeObservationError, runtimeProcessChanged, runtimeObservationTimeout } from './runtime-observation.mjs';
 import { reloadGatewayConfiguration, gatewayAdminNeedsRestart } from './gateway-admin.mjs';
@@ -1234,12 +1235,11 @@ function runnerChanged(root) {
 }
 
 function assertLifecycleMutation(allowHandoff = false) {
-  const file = path.join(RUNTIME_DIR, 'handoff-active.json');
-  if (!fs.existsSync(file)) return;
-  const active = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const active = readRuntimeHandoffLock(HOME);
+  if (!active) return;
   const journalPath = process.env.MANDIBLE_RUNTIME_HANDOFF_JOURNAL;
   const journal = journalPath ? JSON.parse(fs.readFileSync(journalPath, 'utf8')) : null;
-  if (!allowHandoff || active.journal !== journalPath || active.bindingDigest !== journal?.bindingDigest || journal?.binding.home !== HOME) throw new Error('A production runtime handoff is pending; preserve its owned service definitions.');
+  if (!allowHandoff || active.journalPath !== journalPath || active.bindingDigest !== journal?.bindingDigest || journal?.binding.home !== HOME) throw new Error('A production runtime handoff is pending; preserve its owned service definitions.');
 }
 
 async function unloadOwnedDefinition(label, job) {
@@ -1542,10 +1542,9 @@ function explicitServiceConfiguration(args) {
 async function mainLocked() {
   const [command, ...args] = process.argv.slice(2);
   const journalPath = process.env.MANDIBLE_RUNTIME_HANDOFF_JOURNAL;
-  const activePath = path.join(RUNTIME_DIR, 'handoff-active.json');
-  const active = fs.existsSync(activePath) ? JSON.parse(fs.readFileSync(activePath, 'utf8')) : null;
+  const active = readRuntimeHandoffLock(HOME);
   const journal = journalPath ? JSON.parse(fs.readFileSync(journalPath, 'utf8')) : null;
-  const directHandoff = !!journal && active?.journal === journalPath && active?.bindingDigest === journal.bindingDigest && journal.binding.home === HOME;
+  const directHandoff = !!journal && active?.journalPath === journalPath && active?.bindingDigest === journal.bindingDigest && journal.binding.home === HOME;
   if (active && !directHandoff && command !== 'status') throw new Error('A production runtime handoff is pending; preserve its owned service definitions.');
   if (installedResources && !command?.startsWith('handoff-')) {
     const launchMode = args.find(arg => arg.startsWith('--launch-mode='))?.split('=')[1] ?? 'on_demand';

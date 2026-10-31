@@ -2,6 +2,7 @@ import type { LedgerReader } from "../ledger-reads/index.js";
 import { parseProtectedRootDirtyAction } from "../auth-protected-root-dirty-action.js";
 import { AUTH_REQUEST_TYPES } from "../contracts.js";
 import { AuthQueue, AuthQueueError, publicationBlockerFor } from "../auth-queue.js";
+import { runtimeHandoffLockRefusal } from "../../scripts/runtime-handoff-lock.mjs";
 import { AuthActionValidationError } from "../auth-actions.js";
 import { listAuthExecutionAttempts } from "../auth-lifecycle.js";
 import { mergeChangeMessageRequirement, authDescriptionRequirement } from "../auth-change-message.js";
@@ -621,8 +622,13 @@ export function registerAuthRoutes(
 
   // Issue a09b4d2 — the installation runtime handoff lock, and operator
   // retirement of a failed one. Retirement preserves the journal as evidence.
-  app.get("/api/runtime-handoff/lock", (_req, res) => {
-    res.json({ lock: authQueue.runtimeHandoffLock() });
+  app.get("/api/runtime-handoff/lock", async (_req, res) => {
+    try {
+      const lock = authQueue.runtimeHandoffLock();
+      res.json({ lock, message: lock ? runtimeHandoffLockRefusal(lock) : null, cleanups: await authQueue.pendingRuntimeCleanups() });
+    } catch (error) {
+      handleQueueError(error, res);
+    }
   }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/runtime-handoff/lock", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   app.post("/api/runtime-handoff/retire", async (req, res) => {

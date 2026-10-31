@@ -10,7 +10,7 @@ import { readConversationSourceReadiness } from "../src/conversations/source-rea
 import { ConversationSourceStore } from "../src/conversations/source-store.js";
 import { ConversationSourceReader } from "../src/conversations/source-reader.js";
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../src/conversations/source-types.js";
-import { getConversationStructureCache } from "../src/conversations/structure-cache.js";
+import { ConversationStructureCache, getConversationStructureCache } from "../src/conversations/structure-cache.js";
 import { MANAGED_NORMALIZED_SOURCE_EPOCHS, serializeManagedNormalizedRecords, writeManagedNormalizedSource } from "../src/conversations/managed-normalized-source.js";
 
 let actor: IngestionActor;
@@ -100,17 +100,61 @@ describe("source metadata readiness and canonical ingestion repair", () => {
     const readiness = readConversationSourceReadiness(db, id);
     const cache = getConversationStructureCache(db);
     const rows = cache.readPage(id, readiness.sourceVersionId!, { offset: 0, limit: 10 })!.rows;
+    cache.clear();
     cache.replaceRows({ conversation_id: id, source_version_id: readiness.sourceVersionId!,
       parser_format: CURRENT_CONVERSATION_SOURCE_EPOCHS.parserFormat,
       parser_version: failure === "old-epochs" ? "old" : CURRENT_CONVERSATION_SOURCE_EPOCHS.parserVersion,
       normalization_version: CURRENT_CONVERSATION_SOURCE_EPOCHS.normalizationVersion,
-      redaction_epoch: CURRENT_CONVERSATION_SOURCE_EPOCHS.redactionEpoch, block_count: 1 }, failure === "missing" ? [] : rows);
+      redaction_epoch: CURRENT_CONVERSATION_SOURCE_EPOCHS.redactionEpoch, block_count: failure === "missing" ? 0 : rows.length }, failure === "missing" ? [] : rows);
     expect(readConversationSourceReadiness(db, id)).toMatchObject({ status: "repair_needed", reason: "projection_incomplete" });
     const mtime = fs.statSync(file).mtimeMs;
     const repaired = await repairConversationSourceReadiness(db, id);
     expect(repaired.status).toBe("ready");
     expect(fs.statSync(file).mtimeMs).toBe(mtime);
     expect((await new ConversationSourceReader(db, { legacyFallback: false }).readAll(id)).status).toBe("source");
+  });
+
+  it("isolates independent ledger caches outside the test environment", async () => {
+    const { id } = await seed();
+    const version = readConversationSourceReadiness(db, id).sourceVersionId!;
+    const rows = getConversationStructureCache(db).readPage(id, version, { offset: 0, limit: 10 })!.rows;
+    const otherDb = openDb(path.join(root, "other-ledger.db"));
+    const environment = { VITEST: process.env.VITEST, NODE_ENV: process.env.NODE_ENV };
+    process.env.VITEST = "false"; process.env.NODE_ENV = "production";
+    const first = new ConversationStructureCache(db);
+    const second = new ConversationStructureCache(otherDb);
+    try {
+      first.replaceRows({ conversation_id: id, source_version_id: version,
+        parser_format: CURRENT_CONVERSATION_SOURCE_EPOCHS.parserFormat, parser_version: CURRENT_CONVERSATION_SOURCE_EPOCHS.parserVersion,
+        normalization_version: CURRENT_CONVERSATION_SOURCE_EPOCHS.normalizationVersion,
+        redaction_epoch: CURRENT_CONVERSATION_SOURCE_EPOCHS.redactionEpoch, block_count: rows.length }, rows);
+      expect(second.readPage(id, version, { offset: 0, limit: 10 })).toBeNull();
+    } finally {
+      first.close(); second.close(); otherDb.close();
+      for (const [key, value] of Object.entries(environment)) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
+    }
+  });
+
+  it("finishes an admitted scan while newer publications prune its navigation generation", async () => {
+    const { file, id } = await seed();
+    const append = (index: number) => fs.appendFileSync(file, row({ type: "response_item", timestamp: `2026-10-01T00:00:${index + 2}Z`,
+      payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: `tail ${index}` }] } }));
+    append(0); append(1);
+    await actor.ingest([file]);
+    const before = readConversationSourceReadiness(db, id).sourceVersionId!;
+    const contents: string[] = [];
+    const scan = await new ConversationSourceReader(db, { legacyFallback: false }).scanBlocks(id, async block => {
+      contents.push(block.content);
+      if (contents.length === 1) {
+        for (let index = 2; index < 8; index++) { append(index); await actor.ingest([file]); }
+        expect(getConversationStructureCache(db).blockCount(id, before)).toBeNull();
+      }
+    }, { pageSize: 1 });
+    expect(scan.status).toBe("source");
+    expect(contents).toEqual(["needle provider content", "tail 0", "tail 1"]);
+    expect(readConversationSourceReadiness(db, id).status).toBe("ready");
   });
 
   it("reports unavailable repair ownership without parsing on the request thread", async () => {

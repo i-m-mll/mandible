@@ -40,7 +40,10 @@ export function conversationSourceEpochsMatch(
     && actual.redactionEpoch === expected.redactionEpoch;
 }
 
+export type ConversationNavigationKind = "legacy" | "sparse";
+
 export interface ConversationSourceDescriptor extends ConversationSourceEpochs {
+  navigationKind: ConversationNavigationKind;
   sourceId: string;
   conversationId: string;
   provider: ConversationSource;
@@ -132,6 +135,7 @@ export interface RecordConversationSourceInput extends ConversationSourceEpochs 
    */
   blocks?: ReadonlyArray<Omit<ConversationBlock, "id" | "conversation_id"> & { legacyId: string }>;
   structuralMode?: "replace" | "append";
+  blockCount?: number;
 }
 
 export interface RecordConversationSourceAliasInput {
