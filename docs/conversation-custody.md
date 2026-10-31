@@ -56,9 +56,9 @@ SHA256SUMS
 ```
 
 `custody import` verifies every declared file before reconstructing the
-immutable custody version. The recovery metadata and annotation sidecar are
-retained at the manifest-backed repository seam for the canonical source-store
-integration to apply. This is the Mandible recovery promise.
+immutable custody version. The archive includes metadata and an annotation sidecar. Metadata database
+recovery is separate; see [Conversation recovery](/docs/conversation-recovery).
+Neither path promises to reconstruct a missing native provider session.
 
 Provider reinjection is a separate, weaker promise. `custody stage-restore`
 first verifies custody, refuses if any corresponding provider target already

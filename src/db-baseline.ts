@@ -204,10 +204,9 @@ export const WORKER_THREAD_ARCHIVES_SCHEMA_SQL = [
   "CREATE INDEX idx_worker_thread_archives_thread ON worker_thread_archives(thread_id)",
 ];
 
-// Issue 72b00f8 — immutable work-unit custody receipts. An agent may take over a
-// unit whose holder is provably stopped (the receipt keeps that liveness
-// evidence), and an operator-approved custody-transfer request names its
-// request. Shared by the fresh baseline and migration v202.
+// Historical immutable work-unit custody receipts, shared by the fresh baseline
+// and migration v202. Their authority paths and liveness evidence describe the
+// transfers recorded at the time, not the current transfer policy.
 export const WORK_UNIT_CUSTODY_EVENTS_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE work_unit_custody_events (
         id TEXT PRIMARY KEY,
