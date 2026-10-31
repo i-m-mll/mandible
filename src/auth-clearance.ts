@@ -1,3 +1,4 @@
+import { evaluateProjectAccess } from "./permissions/store.js";
 import { mapRow } from "./auth-request-row.js";
 import { createHash, randomUUID } from "node:crypto";
 
@@ -7,8 +8,8 @@ import { isAuthMergeCommand, resolveAuthMergeExecutionContext } from "./auth-con
 import type { Db } from "./db.js";
 import { LedgerStore } from "./ledger/store.js";
 import { resolveProjectRef, type RegistryProject } from "./ledger/project-registry.js";
-import type { AuthRequest } from "./types.js";
-import { getOperator, listCredentials, resolveUser } from "./users/store.js";
+import type { AuthRequest, AuthLifecycleActor } from "./types.js";
+import { getOperator, resolveUser } from "./users/store.js";
 import type { AuthApprovalContext, DelegatedSignerBorrow } from "./delegated-signing-resource.js";
 import { DelegatedSigningResource } from "./delegated-signing-resource.js";
 import { canonicalJson } from "./canonical-json.js";
@@ -23,7 +24,8 @@ export interface AuthClearance {
   id: string;
   issuer_user_id: string;
   grantee_user_id: string;
-  grantee_credential_id: string;
+  /** Historical credential-bound grant evidence; new grants leave this null. */
+  grantee_credential_id: string | null;
   project_id: string;
   base_branch: string;
   issue_id: string | null;
@@ -34,6 +36,8 @@ export interface AuthClearance {
   max_uses: number;
   consumed_uses: number;
   revoked_at: number | null;
+  retired_at: number | null;
+  retirement_reason: string | null;
   revoked_by_user_id: string | null;
   runtime_epoch: string;
   signing_lease_id: string;
@@ -47,8 +51,8 @@ export interface AuthClearanceUse {
   use_ordinal: number;
   evidence_id: string;
   requester_user_id: string;
-  requester_evidence_method: "api_token" | "credential_signature";
-  requester_credential_id: string;
+  requester_evidence_method: "api_token" | "credential_signature" | "session_claim" | "ephemeral";
+  requester_credential_id: string | null;
   signing_lease_id: string;
   request_snapshot_json: string;
   request_snapshot_digest: string;
@@ -58,7 +62,6 @@ export interface AuthClearanceUse {
 export interface IssueClearanceInput {
   requestId?: string | null;
   grantee: string;
-  granteeCredentialId?: string | null;
   project?: string | null;
   baseBranch?: string | null;
   issueRef?: string | null;
@@ -141,17 +144,7 @@ export class AuthClearanceManager {
     }
     const grantee = resolveUser(this.db, input.grantee);
     if (!grantee || grantee.kind !== "agent" || grantee.status !== "active") {
-      throw new AuthClearanceError("invalid_grantee", "Clearance grantee must be an active durable agent user.");
-    }
-    const credentials = listCredentials(this.db, grantee.id).filter((credential) =>
-      credential.type === "api_token" &&
-      (!input.granteeCredentialId || credential.id === input.granteeCredentialId)
-    );
-    if (credentials.length !== 1) {
-      throw new AuthClearanceError(
-        "ambiguous_grantee_credential",
-        "Select exactly one active durable API-token credential for the grantee.",
-      );
+      throw new AuthClearanceError("invalid_grantee", "Clearance grantee must be an active agent user.");
     }
     const requestIssues = request ? this.requestIssueIds(request, project.id) : [];
     const inferredIssue = requestIssues.length === 1 ? requestIssues[0] : null;
@@ -176,12 +169,12 @@ export class AuthClearanceManager {
     try {
       this.db.prepare(
         `INSERT INTO auth_clearances (
-          id, issuer_user_id, grantee_user_id, grantee_credential_id, project_id,
+          id, issuer_user_id, grantee_user_id, project_id,
           base_branch, issue_id, head_branch, action, issued_at, expires_at,
           max_uses, runtime_epoch, signing_lease_id, created_from_request_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'merge', ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'merge', ?, ?, ?, ?, ?, ?)`,
       ).run(
-        id, operator.id, grantee.id, credentials[0].id, project.id,
+        id, operator.id, grantee.id, project.id,
         baseBranch, issueId, headBranch, now, expiresAt, maxUses,
         this.runtimeEpoch, approval.leaseId, request?.id ?? null,
       );
@@ -259,22 +252,27 @@ export class AuthClearanceManager {
 
   async consume(
     requestId: string,
+    actor: AuthLifecycleActor,
     transition: (input: ClearanceConsumption) => undefined,
     observeBeforeCommit?: () => Promise<void>,
   ): Promise<ClearanceConsumption> {
-    return this.lifecycle.run(() => this.consumeAdmitted(requestId, transition, observeBeforeCommit));
+    return this.lifecycle.run(() => this.consumeAdmitted(requestId, actor, transition, observeBeforeCommit));
   }
 
   private async consumeAdmitted(
     requestId: string,
+    actor: AuthLifecycleActor,
     transition: (input: ClearanceConsumption) => undefined,
     observeBeforeCommit?: () => Promise<void>,
   ): Promise<ClearanceConsumption> {
+    if (!["api_token", "credential_signature", "session_claim", "ephemeral"].includes(actor.evidence_method)) {
+      throw new AuthClearanceError("requester_provenance_required", "Clearance execution requires an admitted agent identity.");
+    }
     const initialRequest = this.readRequest(requestId);
     const observed = canonicalJson(requestSnapshot(initialRequest));
     await this.assertConsumableRequest(initialRequest);
     await observeBeforeCommit?.();
-    const initialMatches = this.matchingClearances(initialRequest, this.now());
+    const initialMatches = this.matchingClearances(initialRequest, this.now(), actor.user_id);
     if (initialMatches.length !== 1) {
       throw new AuthClearanceError(
         initialMatches.length === 0 ? "no_matching_clearance" : "ambiguous_clearance",
@@ -296,7 +294,7 @@ export class AuthClearanceManager {
       const request = this.readRequest(requestId);
       if (canonicalJson(requestSnapshot(request)) !== observed) throw new AuthClearanceError("runtime_invalidated", "Request changed during clearance observation.");
       const now = this.now();
-      const matches = this.matchingClearances(request, now);
+      const matches = this.matchingClearances(request, now, actor.user_id);
       if (matches.length !== 1) {
         throw new AuthClearanceError(
           matches.length === 0 ? "no_matching_clearance" : "ambiguous_clearance",
@@ -339,8 +337,9 @@ export class AuthClearanceManager {
         canonicalJson({
           auth_request_id: request.id,
           authorizer_user_id: clearance.issuer_user_id,
-          requester_user_id: request.requested_by_user_id,
-          requester_credential_id: request.requester_credential_id,
+          requested_by_user_id: request.requested_by_user_id,
+          requester_user_id: actor.user_id, requester_session_id: actor.session_id ?? null,
+          requester_credential_id: actor.credential_id ?? null,
           clearance_id: clearance.id,
           clearance_use_id: useId,
           approval_source: "clearance",
@@ -356,8 +355,8 @@ export class AuthClearanceManager {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         useId, clearance.id, request.id, ordinal, evidenceId,
-        request.requested_by_user_id, request.requester_evidence_method,
-        request.requester_credential_id, clearance.signing_lease_id,
+        actor.user_id, actor.evidence_method,
+        actor.credential_id ?? null, clearance.signing_lease_id,
         snapshotJson, snapshotDigest, now,
       );
       const result: ClearanceConsumption = {
@@ -368,9 +367,9 @@ export class AuthClearanceManager {
           auth_request_id: request.id,
           use_ordinal: ordinal,
           evidence_id: evidenceId,
-          requester_user_id: request.requested_by_user_id!,
-          requester_evidence_method: request.requester_evidence_method as "api_token" | "credential_signature",
-          requester_credential_id: request.requester_credential_id!,
+          requester_user_id: actor.user_id,
+          requester_evidence_method: actor.evidence_method as AuthClearanceUse["requester_evidence_method"],
+          requester_credential_id: actor.credential_id ?? null,
           signing_lease_id: clearance.signing_lease_id,
           request_snapshot_json: snapshotJson,
           request_snapshot_digest: snapshotDigest,
@@ -396,18 +395,19 @@ export class AuthClearanceManager {
     return result;
   }
 
-  private matchingClearances(request: AuthRequest, now: number): AuthClearance[] {
+  private matchingClearances(request: AuthRequest, now: number, granteeUserId: string): AuthClearance[] {
     this.assertConsumableShape(request);
     const operator = getOperator(this.db);
     if (!operator || operator.status !== "active") return [];
     const project = this.resolveRequestProject(request);
+    const grantee = resolveUser(this.db, granteeUserId);
+    if (!grantee || !evaluateProjectAccess(this.db, { identity: { user_id: grantee.id, slug: grantee.slug },
+      project_id: project.id, required_role: "write" }).allowed) return [];
     const issueIds = this.requestIssueIds(request, project.id);
     const rows = this.db.prepare(
       `SELECT c.* FROM auth_clearances c
        JOIN users issuer ON issuer.id = c.issuer_user_id AND issuer.kind = 'human' AND issuer.status = 'active'
        JOIN users grantee ON grantee.id = c.grantee_user_id AND grantee.kind = 'agent' AND grantee.status = 'active'
-       JOIN user_credentials credential ON credential.id = c.grantee_credential_id
-         AND credential.user_id = c.grantee_user_id AND credential.type = 'api_token' AND credential.status = 'active'
        JOIN delegated_signing_leases lease ON lease.id = c.signing_lease_id
          AND lease.owner_user_id = c.issuer_user_id AND lease.expires_at > ?
        JOIN user_credentials signing_credential ON signing_credential.id = lease.credential_id
@@ -417,13 +417,13 @@ export class AuthClearanceManager {
          AND binding.state = 'available' AND binding.retired_at IS NULL
        WHERE c.project_id = ? AND c.base_branch = ? AND c.action = 'merge'
          AND c.issuer_user_id = ?
-         AND c.grantee_user_id = ? AND c.grantee_credential_id = ?
-         AND c.revoked_at IS NULL AND c.expires_at > ?
+         AND c.grantee_user_id = ?
+         AND c.revoked_at IS NULL AND c.retired_at IS NULL AND c.expires_at > ?
          AND (SELECT COUNT(*) FROM auth_clearance_uses used WHERE used.clearance_id = c.id) < c.max_uses
        ORDER BY c.issued_at, c.id`,
     ).all(
-      now, project.id, request.base_branch, operator.id, request.requested_by_user_id,
-      request.requester_credential_id, now,
+      now, project.id, request.base_branch, operator.id, granteeUserId,
+      now,
     ) as AuthClearance[];
     return rows.filter((clearance) => {
       if (clearance.head_branch && clearance.head_branch !== request.head_branch) return false;
@@ -466,13 +466,7 @@ export class AuthClearanceManager {
         "Clearance applies only to a pending real daemon-mode protected merge request.",
       );
     }
-    if (!request.requested_by_user_id || request.requester_evidence_method !== "api_token"
-        || !request.requester_credential_id) {
-      throw new AuthClearanceError(
-        "requester_provenance_required",
-        "Clearance requires requester provenance from an active durable API-token credential.",
-      );
-    }
+
   }
 
   private resolveExplicitProject(ref: string | null | undefined) {

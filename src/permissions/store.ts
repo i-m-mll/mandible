@@ -312,7 +312,7 @@ export function projectAccessSettings(db: Db, projectRef: string): {
   };
 }
 
-function identityIsValid(db: Db, identity: ResolvedClientIdentity): boolean {
+function identityIsValid(db: Db, identity: Pick<ResolvedClientIdentity, "user_id" | "slug">): boolean {
   const user = getUserById(db, identity.user_id);
   return Boolean(user && user.status === "active" && user.slug === identity.slug);
 }
@@ -326,7 +326,7 @@ function subjectPredicateSql(): string {
 }
 
 export function evaluateProjectAccess(db: Db, input: {
-  identity: ResolvedClientIdentity | null;
+  identity: Pick<ResolvedClientIdentity, "user_id" | "slug"> | null;
   project_id: string;
   required_role: ProjectRole;
 }): AccessDecision {

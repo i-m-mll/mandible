@@ -3854,7 +3854,7 @@ export class AuthQueue {
   }
 
   /** Consume one exact scoped clearance and begin the protected merge. */
-  async approveWithClearance(id: string): Promise<AuthRequest> {
+  async approveWithClearance(id: string, actor: AuthLifecycleActor): Promise<AuthRequest> {
     const finishObservation = this.beginObservation();
     try {
       await this.expireStale();
@@ -3866,6 +3866,15 @@ export class AuthQueue {
       if (request.status !== "pending") {
         throw new AuthQueueError("invalid_status", `Request is ${request.status}, cannot use clearance.`, request.status);
       }
+      this.requestCustodyForActor(request, actor);
+      const responsibility = this.requestResponsibility(request);
+      const assertResponsibility = () => {
+        const current = this.requireRequest(request.id);
+        this.requestCustodyForActor(current, actor);
+        if (this.requestResponsibility(current).custody_generation !== responsibility.custody_generation) {
+          throw new AuthQueueError("custody_required", "Request responsibility changed during clearance observation.");
+        }
+      };
       const admission = this.observationToken(request.id, request);
       await this.assertRequestRepoExecutionCertain(request);
       this.assertObservation(request.id, admission);
@@ -3878,8 +3887,9 @@ export class AuthQueue {
       const requestId = request.id;
       let consumed: ClearanceConsumption;
       try {
-        consumed = (await this.clearanceManager.consume(requestId, (authorization) => {
+        consumed = (await this.clearanceManager.consume(requestId, actor, (authorization) => {
           this.assertObservation(requestId, observed);
+          assertResponsibility();
           const now = this.now();
           const lease = getDelegatedSigningLease(this.db, authorization.approval.leaseId);
           if (!lease || lease.owner_user_id !== authorization.clearance.issuer_user_id) {

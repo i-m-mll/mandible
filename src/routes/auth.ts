@@ -1,3 +1,4 @@
+import { attributionForRequest } from "../client-auth/authz.js";
 import { responsibilityActor, holdsResponsibility, sessionResponsibilityActor } from "../responsibility.js";
 import type { LedgerReader } from "../ledger-reads/index.js";
 import { parseProtectedRootDirtyAction } from "../auth-protected-root-dirty-action.js";
@@ -860,6 +861,11 @@ export function registerAuthRoutes(
   app.post("/api/auth/clearances", async (req, res) => {
     const body = readBody<Record<string, unknown>>(req);
     try {
+      const allowed = ["request_id", "grantee", "project", "base", "issue", "head", "action", "duration_minutes", "max_uses"];
+      if (Object.keys(body).some(key => !allowed.includes(key))) {
+        res.status(400).json({ error: "Unsupported clearance field." });
+        return;
+      }
       if (body.action !== undefined && body.action !== "merge") {
         throw new AuthClearanceError("unsupported_action", "Clearance action is fixed to merge.");
       }
@@ -867,7 +873,6 @@ export function registerAuthRoutes(
       const clearance = await clearanceManager.issue({
         requestId: typeof body.request_id === "string" ? body.request_id : null,
         grantee: String(body.grantee ?? ""),
-        granteeCredentialId: typeof body.grantee_credential_id === "string" ? body.grantee_credential_id : null,
         project: typeof body.project === "string" ? body.project : null,
         baseBranch: typeof body.base === "string" ? body.base : null,
         issueRef: typeof body.issue === "string" ? body.issue : null,
@@ -898,7 +903,10 @@ export function registerAuthRoutes(
       if (!request || !owner || !holdsResponsibility(db, owner, responsibilityActor(req))) {
         res.status(403).json({ error: "Current request responsibility is required." }); return;
       }
-      const executing = (await authQueue.approveWithClearance(request.id));
+      if (!enforceAuthProjectWrite(db, req, res, request.repo)) return;
+      const executing = (await authQueue.approveWithClearance(request.id, { ...responsibilityActor(req),
+        evidence_method: attributionForRequest(db, req)?.evidence_method ?? req.client_identity!.method,
+        credential_id: req.client_identity!.credential_id }));
       res.status(202).json({ request_id: executing.id, status: executing.status, clearance_use_id: executing.clearance_use_id });
     } catch (error) {
       if (error instanceof AuthClearanceError) handleClearanceError(error, res);

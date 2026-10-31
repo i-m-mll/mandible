@@ -13,18 +13,17 @@ command_name="${1:-}"
 shift
 case "$command_name" in
   create)
-    request_id=""; grantee=""; credential=""; project=""; base=""; issue=""; head=""; duration=""; max_uses=""
-    binding=$(mandible_bind_main_arguments "auth.clearance.create" '{"json":{"option":"json","inert":true},"request_id":{"option":"request"},"grantee":{"option":"grantee"},"credential":{"option":"credential"},"project":{"option":"project"},"base":{"option":"base"},"issue":{"option":"issue"},"head":{"option":"head"},"duration":{"option":"duration-minutes"},"max_uses":{"option":"max-uses"}}' "$@") || exit $?
+    request_id=""; grantee=""; project=""; base=""; issue=""; head=""; duration=""; max_uses=""
+    binding=$(mandible_bind_main_arguments "auth.clearance.create" '{"json":{"option":"json","inert":true},"request_id":{"option":"request"},"grantee":{"option":"grantee"},"project":{"option":"project"},"base":{"option":"base"},"issue":{"option":"issue"},"head":{"option":"head"},"duration":{"option":"duration-minutes"},"max_uses":{"option":"max-uses"}}' "$@") || exit $?
     eval "$binding"
     [[ -n "$grantee" && ( -n "$issue" || -n "$head" ) ]] || { usage >&2; exit 2; }
     [[ -n "$request_id" || ( -n "$project" && -n "$base" ) ]] || { usage >&2; exit 2; }
     payload=$(jq -n \
-      --arg request_id "$request_id" --arg grantee "$grantee" --arg credential "$credential" \
+      --arg request_id "$request_id" --arg grantee "$grantee" \
       --arg project "$project" --arg base "$base" --arg issue "$issue" --arg head "$head" \
       --arg duration "$duration" --arg max_uses "$max_uses" \
       '{grantee:$grantee,action:"merge"}
        + (if $request_id == "" then {} else {request_id:$request_id} end)
-       + (if $credential == "" then {} else {grantee_credential_id:$credential} end)
        + (if $project == "" then {} else {project:$project} end)
        + (if $base == "" then {} else {base:$base} end)
        + (if $issue == "" then {} else {issue:$issue} end)
