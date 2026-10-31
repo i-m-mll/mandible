@@ -152,7 +152,7 @@ describe("runtime handoff lock gate", () => {
       status: "clean",
       publication_blocker: {
         code: "runtime_handoff_lock",
-        message: expect.stringMatching(/Runtime handoff lock .* phase failed \(Candidate runtime readiness failed\)/),
+        message: expect.stringMatching(/self-update from auth request f3ecce00 failed while going live: Candidate runtime readiness failed\./),
       },
     });
 
@@ -172,7 +172,7 @@ describe("runtime handoff lock gate", () => {
     expect((await queue.getRequest(original.id))?.status).toBe("superseded");
     expect((await queue.getRequest(replacement.id))?.status).toBe("pending");
     await waitUntilPasses(() => expect(runs).toHaveLength(2));
-    await expect(queue.approveWithOperatorProof(replacement.id, operatorId)).rejects.toThrow(/Runtime handoff lock/);
+    await expect(queue.approveWithOperatorProof(replacement.id, operatorId)).rejects.toThrow(/self-update from auth request f3ecce00/);
 
     // A request admitted to the repo chain before the lock appeared is parked
     // if publication is blocked by the time its execution turn begins.
@@ -190,6 +190,19 @@ describe("runtime handoff lock gate", () => {
     await queue.refreshPendingCandidates();
     expect(runs).toHaveLength(2);
     expect(runs[1]!.input.pinSha).toBe((await queue.getRequest(replacement.id))!.merge_candidate_pin_sha);
+  });
+});
+
+describe("finished handoff", () => {
+  // Issue 4e5c75b — a finished update whose lock file was never removed blocked every later self-update.
+  it("does not hold the lock once its attempt is terminally fenced, whatever happened to the lock file", async () => {
+    const held = holdHandoffLock("complete");
+    const journal = JSON.parse(fs.readFileSync(held.journalPath, "utf8"));
+    fs.writeFileSync(held.journalPath, JSON.stringify({ ...journal, attempt: { id: "attempt", state: "complete", fence: { reason: "terminal-completion" } } }));
+    expect(fs.existsSync(held.lockPath)).toBe(true);
+    expect(readRuntimeHandoffLock(home)).toBeNull();
+    expect(await queue.checkMergeIndependence({ repo: path.basename(repo), cwd: repo, base_branch: "main", head_branch: "feature/other" }))
+      .toMatchObject({ status: "clean", publication_blocker: null });
   });
 });
 
@@ -450,7 +463,7 @@ describe("candidate acceptance gate", () => {
     runs[0]!.settle({ status: "passed", result: { status: "passed" }, error: null });
     await queue.drainCandidateAcceptances();
     expect(await acceptanceOf(request.id)).toMatchObject({ state: "passed" });
-    await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(/Runtime handoff lock/);
+    await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(/self-update from auth request f3ecce00/);
     fs.unlinkSync(lock.lockPath);
     await queue.refreshPendingCandidates();
     expect(runs).toHaveLength(1);

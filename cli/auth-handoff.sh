@@ -30,15 +30,20 @@ if [[ "$action" == status ]]; then
   response=$(api_get "/api/runtime-handoff/lock") || { printf '%s\n' 'Error: could not read the runtime handoff lock.' >&2; exit 1; }
   if [[ "$json" == 1 ]]; then printf '%s\n' "$response" | jq .; exit 0; fi
   printf '%s\n' "$response" | jq -r '
-    if .lock == null then "No runtime handoff lock is held."
+    if .lock == null then "No self-update holds the runtime handoff lock."
     else .lock as $l |
-      "Runtime handoff lock held: \($l.file)",
-      "  request \(($l.requestId // "unknown")[0:8]) phase \($l.phase // "unknown")",
+      "Runtime handoff lock held by auth request \(($l.requestId // "unknown")[0:8]), phase \($l.phase // "unknown").",
+      (if .message then "  \(.message)" else empty end),
+      "  lock \($l.file)",
       (if $l.error then "  error: \($l.error)" else empty end),
       (if $l.lastObservation then "  verification pending: \($l.lastObservation.reason)" else empty end),
       "  journal \($l.journalPath // "unknown")",
       "  binding digest \($l.bindingDigest // "unknown")"
-    end'
+    end,
+    (.cleanups // [] | if length == 0 then empty else
+      "Cleanup of \(length) delivered self-update(s) is waiting:",
+      (.[] | "  \(.request_id[0:8]): \(.reason // "not attempted yet by this daemon")")
+    end)'
   exit 0
 fi
 if [[ "$action" == recover ]]; then

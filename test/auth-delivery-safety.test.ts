@@ -77,9 +77,11 @@ describe("protected delivery evidence", () => {
       if (release.mock.calls.length === 1) throw new Error('Active pointer release interrupted');
       active = false; return { release: 'complete' };
     });
-    const cleanupJobs: Array<ReturnType<typeof Promise.withResolvers<{ cleanup: 'complete' | 'pending' }>>> = [];
+    type CleanupResult = { cleanup: 'complete' } | { cleanup: 'pending'; reason: string; wake: string };
+    const cleanupJobs: Array<ReturnType<typeof Promise.withResolvers<CleanupResult>>> = [];
+    let wake = 'blocked';
     const cleanup = vi.fn(async () => {
-      const job = Promise.withResolvers<{ cleanup: 'complete' | 'pending' }>();
+      const job = Promise.withResolvers<CleanupResult>();
       cleanupJobs.push(job);
       const result = await job.promise;
       if (result.cleanup === 'complete') journal!.cleanup = { state: 'complete' };
@@ -92,6 +94,7 @@ describe("protected delivery evidence", () => {
       runtimeHandoffNeedsAcknowledgment: () => active,
       acknowledgeRuntimeHandoff: release,
       scheduleRuntimeHandoffCleanup: cleanup,
+      runtimeHandoffCleanupWake: () => wake,
     } });
     db.prepare("UPDATE auth_hooks SET repo_pattern = ?, command = ? WHERE id = ?").run("*", "exit 75", "builtin-mandible-rebuild");
     queue = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: false, executor: async () => new Promise(() => {}) });
@@ -193,16 +196,22 @@ describe("protected delivery evidence", () => {
     cleanupJobs[0].reject(new Error('Cleanup child failed to spawn'));
     await new Promise<void>(resolve => setImmediate(resolve));
     await queue.resumeHookConvergence();
-    expect(cleanup).toHaveBeenCalledTimes(1); // Ordinary sweeps respect the short retry cooldown.
-    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 2000);
-    try { await queue.resumeHookConvergence(); } finally { clock.mockRestore(); }
+    await queue.resumeHookConvergence();
+    expect(cleanup).toHaveBeenCalledTimes(1); // A failed attempt waits for what blocked it to change, not for a timer.
+    wake = 'blocker exited';
+    await queue.resumeHookConvergence();
     expect(cleanup).toHaveBeenCalledTimes(2);
     expect(await hooks.verifyCurrentRuntimeHandoff(request, {}, () => {}, adopt)).toEqual({ outcome: 'confirmed' });
     expect(cleanup).toHaveBeenCalledTimes(2);
-    cleanupJobs[1].resolve({ cleanup: 'pending' }); // A completed child can leave transient disposal debt.
+    wake = 'held by a running process';
+    cleanupJobs[1].resolve({ cleanup: 'pending', reason: 'Quit the process holding the superseded app copy.', wake });
     await new Promise<void>(resolve => setImmediate(resolve));
+    await queue.resumeHookConvergence();
+    await queue.resumeHookConvergence();
+    expect(cleanup).toHaveBeenCalledTimes(2); // An unchanged blocker is not retried.
+    expect(await hooks.pendingRuntimeCleanups()).toEqual([{ request_id: request.id, reason: null, blockers: [], attempted_at: null }]);
     expect(await hooks.verifyCurrentRuntimeHandoff(request, {}, () => {}, adopt)).toEqual({ outcome: 'confirmed' });
-    expect(cleanup).toHaveBeenCalledTimes(3); // Explicit reconciliation can retry before the cooldown expires.
+    expect(cleanup).toHaveBeenCalledTimes(3); // Explicit reconciliation retries regardless.
     cleanupJobs[2].resolve({ cleanup: 'complete' });
     await new Promise<void>(resolve => setImmediate(resolve));
     await queue.resumeHookConvergence();
