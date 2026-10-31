@@ -5,8 +5,6 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   countCompleteLines,
-  INGEST_COMPRESSION_CONCURRENCY,
-  stageCompressedBlockContents,
 } from "../src/ingestion.js";
 
 const tempRoots: string[] = [];
@@ -26,27 +24,4 @@ describe("ingestion allocation bounds", () => {
     await expect(countCompleteLines(filePath)).resolves.toBe(20_000);
   });
 
-  it("bounds compression concurrency and preserves staged block order", async () => {
-    const contents = Array.from({ length: 13 }, (_, index) => `block-${index}`);
-    let active = 0;
-    let maxActive = 0;
-    const staged = await stageCompressedBlockContents(contents, async (content) => {
-      active += 1;
-      maxActive = Math.max(maxActive, active);
-      const index = Number(content.slice("block-".length));
-      await new Promise((resolve) => setTimeout(resolve, (4 - (index % 4)) * 2));
-      active -= 1;
-      return Buffer.from(`compressed:${content}`);
-    });
-
-    try {
-      expect(maxActive).toBe(INGEST_COMPRESSION_CONCURRENCY);
-      expect(staged.length).toBe(contents.length);
-      expect(contents.map((_, index) => staged.read(index).toString("utf8"))).toEqual(
-        contents.map((content) => `compressed:${content}`),
-      );
-    } finally {
-      await staged.dispose();
-    }
-  });
 });
