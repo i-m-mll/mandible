@@ -6,7 +6,10 @@ import path from 'node:path';
 import https from 'node:https';
 import net from 'node:net';
 import { spawn, spawnSync } from 'node:child_process';
-import { acceptanceApplicationPolicy, acceptanceSummary, compactAcceptanceResult, acceptanceScope, acceptanceOwnedOutputs, createAcceptanceHome, acceptanceGatewayConfig, acceptanceHealth, acceptanceFailureLogs, assessAcceptanceLogs, awaitAcceptanceGatewayReadiness, awaitReadiness, loopbackListening, observeAcceptanceHealth, stopOwned, finalizeAcceptance } from '../scripts/candidate-acceptance.mjs';
+import { acceptanceApplicationPolicy, acceptanceSummary, compactAcceptanceResult, acceptanceScope, acceptanceOwnedOutputs, createAcceptanceHome, acceptanceGatewayConfig, acceptanceHealth, acceptanceFailureLogs, assessAcceptanceLogs, awaitAcceptanceGatewayReadiness, awaitReadiness, loopbackListening, observeAcceptanceHealth, stopOwned, finalizeAcceptance, interactionCompletion } from '../scripts/candidate-acceptance.mjs';
+import { acceptanceFailure, describeAcceptanceFailure } from '../scripts/acceptance-failure.mjs';
+import { acceptanceBudgetExhausted } from '../scripts/acceptance-deadline.mjs';
+import { RuntimeHealthObservationError } from '../src/runtime-health-contract.ts';
 import { createHash } from 'node:crypto';
 import { createOwnedRun, saveOwnedMetadata, withOwnedRunLock } from '../scripts/owned-run.mjs';
 import { runSupervisedCommand } from '../scripts/process-group-supervisor.mjs';
@@ -84,9 +87,37 @@ it('rejects malformed or expired entry clocks before attempting resource normali
     expect(() => acceptanceApplicationPolicy()).toThrow('Invalid acceptance deadline');
     vi.stubEnv('MANDIBLE_ACCEPTANCE_STARTED_AT', String(Date.now() - 60_000));
     vi.stubEnv('MANDIBLE_ACCEPTANCE_DEADLINE', String(Date.now() - 1));
-    expect(() => acceptanceApplicationPolicy()).toThrow('Acceptance total budget');
+    expect(() => acceptanceApplicationPolicy()).toThrow(expect.objectContaining({ code: 'acceptance_budget_exhausted', phase: 'total' }));
     expect(exec).not.toHaveBeenCalled();
   } finally { exec.mockRestore(); vi.unstubAllEnvs(); }
+});
+
+it('accepts an app completion written in the same millisecond as the check, and records the compared values when outside', () => {
+  expect(interactionCompletion(2000.4, 1000, 2000)).toBe(2000);
+  let failure: unknown;
+  try { interactionCompletion(2002.5, 1000, 2000); } catch (error) { failure = error; }
+  expect(describeAcceptanceFailure(failure, 'desktop_interaction')).toMatchObject({ fault: 'environment',
+    values: { daemon_ready_at: 1000, interaction_completed_at: 2002.5, checked_at: 2000 } });
+  expect(() => interactionCompletion(999.9, 1000, 2000)).toThrow(expect.objectContaining({ acceptanceFault: 'environment' }));
+});
+
+it('attributes every acceptance failure to the branch, the environment, or either', () => {
+  const branch = acceptanceFailure('candidate', 'The packaged updater accepted an invalid journal');
+  const verdicts = new Map([['candidate', 'points at the branch'], ['environment', 'not the branch'], ['either', 'can come from the branch or from the acceptance environment']]);
+  for (const [error, stage, fault] of [
+    [branch, 'package_verification', 'candidate'],
+    [acceptanceBudgetExhausted('preparation'), 'package_build', 'either'],
+    [Object.assign(new Error('bun run exceeded its stage deadline.'), { timedOut: true }), 'package_build', 'either'],
+    [new Error('rm failed'), 'finalization', 'environment'],
+    [new Error('git failed'), 'startup', 'environment'],
+    [Object.assign(new Error('lock lost'), { code: 'PROCESS_LOCK_LOST' }), 'readiness', 'environment'],
+    [Object.assign(new RuntimeHealthObservationError('probe_failed', 'Runtime health probe failed: x', {}), { cause: branch }), 'health_coverage', 'candidate'],
+  ] as const) {
+    const described = describeAcceptanceFailure(error, stage);
+    expect(described.fault).toBe(fault);
+    expect(described.text).toContain(verdicts.get(fault));
+  }
+  expect(describeAcceptanceFailure(new Error('HTTP 502'), 'readiness').text).toContain('HTTP 502');
 });
 
 it('inherits the preparation deadline without renewing its cleanup reserve', () => {
@@ -97,17 +128,17 @@ it('inherits the preparation deadline without renewing its cleanup reserve', () 
   expect(script.deadline).toBe(executor.deadline);
   expect(script.remaining()).toBe(43_000);
   now = executor.deadline - 5000;
-  expect(() => script.remaining()).toThrow('work budget');
+  expect(() => script.remaining()).toThrow(expect.objectContaining({ code: 'acceptance_budget_exhausted', phase: 'work' }));
   expect(script.remaining('report')).toBe(3000);
   expect(script.remaining('total')).toBe(5000);
   expect(script.reading().scope).toContain('executor');
   expect(script.cutoffs).toEqual({ preparation: 46_000, readiness: 51_000, work: 56_000, report: 59_000, total: 61_000 });
   now = script.cutoffs.preparation;
-  expect(() => script.remaining('preparation')).toThrow('readiness and desktop time is reserved');
+  expect(() => script.remaining('preparation')).toThrow(expect.objectContaining({ code: 'acceptance_budget_exhausted', phase: 'preparation' }));
   expect(script.remaining('readiness')).toBe(5000);
   expect(script.remaining()).toBe(10_000);
   now = executor.deadline;
-  expect(() => script.remaining('total')).toThrow('total budget');
+  expect(() => script.remaining('total')).toThrow(expect.objectContaining({ code: 'acceptance_budget_exhausted', phase: 'total' }));
   expect(() => acceptanceDeadline({ MANDIBLE_ACCEPTANCE_DEADLINE: '90000', MANDIBLE_ACCEPTANCE_STARTED_AT: '1' }, () => 1)).toThrow('Invalid acceptance deadline');
 });
 
@@ -129,7 +160,7 @@ it('retains an exact recorded primary failure through response loss without acce
     const stale = readAcceptanceFailure(cache, { ...binding, tree_sha: 'another-tree' });
     expect(stale.result).toBeNull();
     expect(candidateAcceptanceOutcome(binding.pin_sha, completion, stale, false)).toMatchObject({ status: 'failed',
-      error: 'Acceptance was unavailable: Lifecycle ownership lock was lost; stopping effects.' });
+      error: 'Lifecycle ownership lock was lost; stopping effects.' });
     expect(candidateAcceptanceOutcome(binding.pin_sha, { ...completion, failure: null, stderr: '{"incomplete":true}' }, readAcceptanceFailure(cache, binding), false).error).toBe(primary.error);
     saveOwnedMetadata(file, { ...primary, error: { message: primary.error } });
     expect(readAcceptanceFailure(cache, binding).result).toBeNull();
@@ -202,9 +233,11 @@ describe('production acceptance evidence', () => {
     expect(summary).toContain('packaged Settings edit not completed');
     expect(summary).not.toContain('daemon readiness checked');
     expect(summary).not.toContain('packaged Settings edit checked');
-    const output = compactAcceptanceResult({ ...result, receipt: 'retained-receipt', provenance: { details: 'large manifest'.repeat(10_000) } });
+    const failure = { fault: 'environment', detail: 'outside', values: { checked_at: 2000 }, evidence: { samples: 'large'.repeat(10_000) } };
+    const output = compactAcceptanceResult({ ...result, failure, receipt: 'retained-receipt', provenance: { details: 'large manifest'.repeat(10_000) } });
     expect(JSON.stringify(output).length).toBeLessThan(64 * 1024);
-    expect(output).toMatchObject({ receipt: 'retained-receipt', checks: { route_cost: { complete: false, counts: { measured: 173 } } } });
+    expect(output).toMatchObject({ receipt: 'retained-receipt', failure: { fault: 'environment', values: failure.values }, checks: { route_cost: { complete: false, counts: { measured: 173 } } } });
+    expect(output.failure).not.toHaveProperty('evidence');
   });
 
   it('rejects closed-database shutdown errors and event storms', () => {
@@ -258,7 +291,7 @@ describe('production acceptance evidence', () => {
         const deadline = Date.now() + (finishAfter === null ? 1000 : 3000);
         const remaining = () => Math.max(1, deadline - Date.now());
         if (finishAfter === null) {
-          await expect(stopOwned(child, remaining)).rejects.toThrow('Owned process shutdown');
+          await expect(stopOwned(child, remaining)).rejects.toThrow('did not exit after acceptance asked it to stop');
           expect(child.signalCode).toBe('SIGKILL');
         } else expect(await stopOwned(child, remaining)).toMatchObject({ pid: child.pid, signal: 'SIGTERM', exitCode: 0, exitSignal: null });
       } finally { clearTimeout(safety); if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); }
@@ -390,7 +423,7 @@ it('waits for a late bind, and fails at once on a gateway status or at the deadl
     expect(probes).toBeGreaterThanOrEqual(3);
     const unbound = await freePort();
     await expect(awaitReadiness(() => loopbackListening(unbound), () => true, { timeout: 100, description: 'Bind', interval: 5 }))
-      .rejects.toThrow(/^Bind did not complete within 100ms; last observation: .*ECONNREFUSED/);
+      .rejects.toThrow(/^Bind \(waited 100 ms; last observation: .*ECONNREFUSED/);
 
     // The gateway: any non-200 answer, 502 included, ends the wait at once.
     let statuses: number[] = [];
@@ -404,7 +437,7 @@ it('waits for a late bind, and fails at once on a gateway status or at the deadl
       { timeout: STATE_DEADLINE_MS, description: 'Readiness', interval: 1 });
     await expect(health()).resolves.toEqual({ ready: true });
     statuses = [502];
-    await expect(health()).rejects.toThrow('Health HTTPS 502');
+    await expect(health()).rejects.toThrow('answered HTTP 502');
   } finally {
     if (server) await new Promise<void>(resolve => server!.close(() => resolve()));
     if (late) await new Promise<void>(resolve => late!.close(() => resolve()));
@@ -492,7 +525,7 @@ it.each([false, true])('records nested acceptance diagnostics through private cl
     fs.writeFileSync(path.join(home, 'route-cost.log'), routeLog);
     fs.mkdirSync(path.join(home, 'route-cost-work'));
     fs.writeFileSync(path.join(home, 'route-cost-work/source-preview.log'), previewLog);
-    const result = { status: 'failed', candidate: 'exact-candidate', error: 'TLS alert', ...(oversized ? { routeReport: 'route diagnostics'.repeat(5000) } : {}), checks: {
+    const result = { status: 'failed', candidate: 'exact-candidate', error: 'TLS alert', failure: { fault: 'either', values: { checked_at: 2000 } }, ...(oversized ? { routeReport: 'route diagnostics'.repeat(5000) } : {}), checks: {
       initial_transport_error: { code: 'ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR', message: 'TLS alert' },
       failure_logs: acceptanceFailureLogs(home),
     } };
@@ -506,7 +539,7 @@ it.each([false, true])('records nested acceptance diagnostics through private cl
     fs.rmSync(home, { recursive: true });
     const retained = JSON.parse(fs.readFileSync(packet, 'utf8')).candidateAcceptance;
     expect(JSON.stringify(retained.result).length).toBeLessThanOrEqual(64 * 1024);
-    expect(retained).toMatchObject({ status: 'failed', result: { status: 'failed', candidate: result.candidate, error: result.error,
+    expect(retained).toMatchObject({ status: 'failed', result: { status: 'failed', candidate: result.candidate, error: result.error, failure: result.failure,
       checks: { initial_transport_error: result.checks.initial_transport_error } } });
     if (oversized) expect(retained.result.truncated).toBe(true);
     for (const [name, content, diagnostic] of [

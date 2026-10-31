@@ -1,6 +1,7 @@
 export const ACCEPTANCE_TOTAL_MS: number;
 export const ACCEPTANCE_CLEANUP_MS: number;
 export type AcceptanceDeadlinePhase = 'preparation' | 'readiness' | 'work' | 'report' | 'total';
+export function acceptanceBudgetExhausted(phase: AcceptanceDeadlinePhase): Error & { code: 'acceptance_budget_exhausted'; phase: AcceptanceDeadlinePhase };
 export function acceptanceDeadline(env?: NodeJS.ProcessEnv, now?: () => number): {
   started: number;
   deadline: number;

@@ -672,7 +672,7 @@ export class AuthQueue {
       // where a request that left pending gives up its acceptance run.
       if (event.event === DOMAIN_EVENTS.AUTH_RESOLVED) {
         const { request_id, status } = event.data as { request_id: string; status: string };
-        this.acceptanceRuns?.abort(request_id, `The request is ${status.replace(/_/g, " ")}.`);
+        this.acceptanceRuns?.abort(request_id, `Acceptance stopped because the request was ${status.replace(/_/g, " ")}.`);
       }
     };
     this.executor = options.executor ?? executeAuthCommand;

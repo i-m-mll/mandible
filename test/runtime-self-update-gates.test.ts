@@ -263,7 +263,7 @@ describe('automatic accepted-package binding', () => {
     }) } : {};
     runs[0].settle({ status: 'passed', result: change === 'receipt' ? { receipt: 'invalid' } : wrongOwner, error: null });
     await queue.drainCandidateAcceptances();
-    expect(latestCandidateAcceptance(db, request.id)).toMatchObject({ status: 'failed', error: expect.stringContaining('finalization failed') });
+    expect(latestCandidateAcceptance(db, request.id)).toMatchObject({ status: 'failed', error: expect.stringContaining('recording its verdict on the request failed') });
     expect(queue.listActions(request.id)).toEqual([]);
     expect(db.prepare("SELECT id FROM auth_candidate_acceptances WHERE status IN ('running', 'passed')").all()).toEqual([]);
   });
@@ -515,7 +515,7 @@ describe("candidate acceptance gate", () => {
     runs[0]!.settle({ status: "failed", result: null, error: "Daemon readiness timed out" });
     await queue.drainCandidateAcceptances();
     expect((await acceptanceOf(request.id))).toMatchObject({ state: "failed", reason: "Daemon readiness timed out" });
-    await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(/failed: Daemon readiness timed out/);
+    await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(/failed\. Daemon readiness timed out\./);
 
     await queue.runCandidateAcceptance((await queue.getRequest(request.id))!);
     await waitUntilPasses(() => expect(runs).toHaveLength(2));
@@ -537,7 +537,7 @@ describe("candidate acceptance gate", () => {
     const replacement = (await submit("feature/self-update", { supersedes_request_id: original.id, expected_revision: 1, expected_custody_generation: 1 }));
 
     expect(runs[0]!.input.signal.aborted).toBe(true);
-    expect(latestCandidateAcceptance(db, original.id)).toMatchObject({ status: "failed", error: "The request is superseded." });
+    expect(latestCandidateAcceptance(db, original.id)).toMatchObject({ status: "failed", error: "Acceptance stopped because the request was superseded." });
     await waitUntilPasses(() => expect(runs).toHaveLength(2));
     const open = db.prepare("SELECT auth_request_id FROM auth_candidate_acceptances WHERE status = 'running'").all();
     expect(open).toEqual([{ auth_request_id: replacement.id }]);
@@ -596,7 +596,7 @@ describe("candidate acceptance gate", () => {
     await waitUntilPasses(() => expect(runs).toHaveLength(2));
     expect(runs[1]!.input.pinSha).toBe(runs[0]!.input.pinSha);
     expect(db.prepare("SELECT status, error FROM auth_candidate_acceptances WHERE auth_request_id = ? ORDER BY started_at, rowid").all(request.id))
-      .toEqual([{ status: "failed", error: "Interrupted by a daemon restart." }, { status: "running", error: null }]);
+      .toEqual([{ status: "failed", error: expect.stringContaining("daemon restarted") }, { status: "running", error: null }]);
   });
 });
 

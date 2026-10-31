@@ -1,5 +1,12 @@
 export const ACCEPTANCE_TOTAL_MS = 60_000;
 export const ACCEPTANCE_CLEANUP_MS = 5_000;
+const reservations = { preparation: 'building and verifying the package', readiness: 'starting the packaged daemon', work: 'the checks',
+  report: 'reporting the result', total: 'the whole run' };
+
+export function acceptanceBudgetExhausted(phase) {
+  return Object.assign(new Error(`The time acceptance reserves for ${reservations[phase]} ran out; a run has ${ACCEPTANCE_TOTAL_MS / 1000} seconds in total, including checkout and build.`),
+    { code: 'acceptance_budget_exhausted', phase });
+}
 
 /** One executor clock allocates preparation, runtime work, reporting and forced cleanup once. */
 export function acceptanceDeadline(env = process.env, now = Date.now) {
@@ -13,7 +20,7 @@ export function acceptanceDeadline(env = process.env, now = Date.now) {
   const remaining = (phase = 'work') => {
     if (!Object.hasOwn(cutoffs, phase)) throw new Error('Unknown acceptance deadline phase.');
     const ms = cutoffs[phase] - now();
-    if (ms <= 0) throw new Error(`Acceptance ${phase} budget exhausted${phase === 'preparation' ? '; readiness and desktop time is reserved' : ''}.`);
+    if (ms <= 0) throw acceptanceBudgetExhausted(phase);
     return ms;
   };
   return { started, deadline, cutoffs, remaining,
