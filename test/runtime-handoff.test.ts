@@ -8,6 +8,7 @@ import { installedFileIdentity } from '../scripts/installed-release.mjs';
 import { waitUntil } from './helpers/wait-until.js';
 import { assessRuntimeLogs } from '../scripts/runtime-log-assessment.mjs';
 import { RuntimeObservationError } from '../scripts/runtime-observation.mjs';
+import { readRuntimeHandoffLock } from '../scripts/runtime-handoff-lock.mjs';
 import { runtimeReceiptAcceptanceMarker } from '../scripts/runtime-observation.mjs';
 import { createHash } from 'node:crypto';
 import * as childProcess from 'node:child_process';
@@ -149,7 +150,7 @@ it('consumes durable acceptance without probing a removed package, fences the he
   expect(calls).toEqual(['print']);
 });
 
-it('releases an accepted terminal receipt directly without package/native/cleanup work, preserves foreign ownership, and rejects changed receipt bytes', async () => {
+it('releases the lock at the terminal fence without acknowledgment, and cleanup removes only its own lock file', async () => {
   const f = fixture();
   const database = path.join(f.home, 'acceptance.db');
   const db = new SqliteDatabase(database);
@@ -170,23 +171,27 @@ it('releases an accepted terminal receipt directly without package/native/cleanu
     if (program === '/bin/launchctl') throw new Error('Terminal receipt adoption must not control native services.');
     return originalSpawn(program, args, options);
   });
-  fs.writeFileSync(f.file, JSON.stringify({ ...journal, attempt: { ...journal.attempt, receiptDigest: '0'.repeat(64) } }));
-  await expect(acknowledgeRuntimeHandoff(binding, { acceptedReceiptDigest: receiptDigest })).rejects.toThrow('completion receipt differs');
-  expect(fs.existsSync(active)).toBe(true);
-  fs.writeFileSync(f.file, bytes);
-  expect(await acknowledgeRuntimeHandoff(binding, { acceptedReceiptDigest: receiptDigest })).toEqual({ cleanup: 'pending' });
+  // The lock file still names the journal, yet the fenced terminal receipt has released the lock.
+  expect(readRuntimeHandoffLock(f.home)).toBeNull();
   expect(runtimeHandoffNeedsAcknowledgment(journal)).toBe(false);
-  expect(fs.readFileSync(f.file, 'utf8')).toBe(bytes);
-  const foreign = JSON.stringify({ journal: path.join(f.home, 'foreign.json'), bindingDigest: 'f'.repeat(64) });
-  fs.writeFileSync(active, foreign);
-  expect(await acknowledgeRuntimeHandoff(binding, { acceptedReceiptDigest: receiptDigest })).toEqual({ cleanup: 'pending' });
-  expect(fs.readFileSync(active, 'utf8')).toBe(foreign);
+  fs.writeFileSync(f.file, JSON.stringify({ ...journal, phase: 'armed', attempt: { ...journal.attempt, state: 'running', fence: undefined } }));
+  expect(readRuntimeHandoffLock(f.home)).toMatchObject({ state: 'installing', bindingDigest: digest });
   vi.mocked(childProcess.spawnSync).mockImplementation((program, args, options) => {
     if (program === '/bin/launchctl') return { status: 113, stdout: '', stderr: 'Could not find service' } as any;
     return originalSpawn(program, args, options);
   });
+  fs.writeFileSync(f.file, JSON.stringify({ ...journal, attempt: { ...journal.attempt, receiptDigest: '0'.repeat(64) } }));
+  await expect(cleanupRuntimeHandoff(f.file)).rejects.toThrow('completion receipt differs');
+  expect(fs.existsSync(active)).toBe(true);
+  const foreign = JSON.stringify({ journal: path.join(f.home, 'foreign.json'), bindingDigest: 'f'.repeat(64) });
+  fs.writeFileSync(active, foreign);
+  fs.writeFileSync(f.file, bytes);
   expect(await cleanupRuntimeHandoff(f.file)).toEqual({ cleanup: 'complete' });
   expect(fs.readFileSync(active, 'utf8')).toBe(foreign);
+  fs.writeFileSync(active, JSON.stringify({ journal: f.file, bindingDigest: digest }));
+  fs.writeFileSync(f.file, bytes);
+  expect(await cleanupRuntimeHandoff(f.file)).toEqual({ cleanup: 'complete' });
+  expect(fs.existsSync(active)).toBe(false);
 });
 
 it('runs historical cleanup with current installed code and reports only the real child outcome', async () => {

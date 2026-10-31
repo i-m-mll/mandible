@@ -756,12 +756,13 @@ async function fenceHelper(journal) {
     fs.unlinkSync(journal.helperPlist);
   }
 }
-function releaseExactOwner(journal) {
+/** Remove the lock file when it still names this journal; a successor's file is left alone. */
+function clearOwnPointer(journal) {
   assertObservationLease(journal);
   const active = runtimeHandoffLockFile(journal.binding.home);
   if (!fs.existsSync(active)) return;
   const owner = JSON.parse(fs.readFileSync(active, 'utf8'));
-  if (owner.journal !== journalFile(journal.binding) || owner.bindingDigest !== journal.bindingDigest) throw new Error('Active handoff owner changed.');
+  if (owner.journal !== journalFile(journal.binding) || owner.bindingDigest !== journal.bindingDigest) return;
   assertObservationLease(journal);
   fs.unlinkSync(active);
 }
@@ -795,8 +796,7 @@ export async function cleanupRuntimeHandoff(file) {
     if (receipt.schema !== 'mandible-runtime-receipt@2' || !journal.attempt.fence
         || await readRuntimeObservationAcceptance(journal) !== 'accepted') throw new Error('Cleanup requires an accepted terminal delivery.');
     if (journal.cleanup?.state === 'complete') return { cleanup: 'complete' };
-    const active = readRuntimeHandoffLock(journal.binding.home);
-    if (active?.bindingDigest === journal.bindingDigest && active.journalPath === file) releaseExactOwner(journal);
+    clearOwnPointer(journal);
     try { await fenceHelper(journal); }
     catch (error) {
       save(journal, { cleanup: { state: 'pending', attemptedAt: Date.now(), reason: error.message } });
@@ -837,14 +837,6 @@ export function runtimeHandoffNeedsAcknowledgment(journal) {
   return active.bindingDigest === journal.bindingDigest && active.journalPath === journalFile(journal.binding);
 }
 export async function acknowledgeRuntimeHandoff(binding, options = {}) {
-  const journal = readRuntimeHandoff(binding.home, binding.requestId, binding.executionId);
-  if (journal?.attempt?.receipt?.schema === 'mandible-runtime-receipt@2' && installationOperations.getStore()?.home !== binding.home) {
-    try { return await withRuntimeObservation(journal, () => acknowledgeReceipt(binding, options)); }
-    catch (error) {
-      if (error.code === 'observer_busy') return { cleanup: 'pending', release: 'pending' };
-      throw error;
-    }
-  }
   if (installationOperations.getStore()?.home !== binding.home) throw new Error('Acknowledgment requires its ordered installation and observation ownership.');
   return acknowledgeReceipt(binding, options);
 }
@@ -864,17 +856,12 @@ async function acknowledgeReceipt(binding, { verifiedReceipt, acceptedReceiptDig
   } else {
     if (acceptedReceiptDigest !== digest) throw new Error('Receipt acceptance has not committed.');
   }
-  if (receipt.schema === 'mandible-runtime-receipt@2') {
-    if (!journal.attempt.fence) throw new Error('Completed delivery has no terminal mutation fence.');
-    if (runtimeHandoffNeedsAcknowledgment(journal)) releaseExactOwner(journal);
-    return { cleanup: journal.cleanup?.state === 'complete' ? 'complete' : 'pending' };
-  }
   if (!journal.attempt?.fence) {
     save(journal, { phase: 'complete', acknowledgedAt: null, drainReady: null });
     await fenceHelper(journal);
     if (journal.attempt) save(journal, { attempt: { ...journal.attempt, fence: { fencedAt: Date.now(), reason: 'receipt-accepted' } } });
     else save(journal, { phase: 'acknowledged', acceptedAt: Date.now() });
-    releaseExactOwner(journal);
+    clearOwnPointer(journal);
   }
   if (journal.cleanup?.state === 'complete') return { cleanup: 'complete' };
   return cleanupHandoff(journal);
@@ -896,16 +883,12 @@ export async function closeQuiescentRuntimeHandoff(home, { actor } = {}, { fence
         const journal = readRuntimeHandoff(raw.binding.home, raw.binding.requestId, raw.binding.executionId);
         if (!journal || journal.bindingDigest !== raw.bindingDigest) throw new Error('Owner changed before closure.');
         exactActiveOwner(journal);
-        if (journal.attempt?.state === 'complete' && journal.attempt.fence) {
-          releaseExactOwner(journal);
-          return { outcome: 'released', requestId: journal.binding.requestId, executionId: journal.binding.executionId };
-        }
         save(journal, { phase: journal.attempt?.state === 'complete' ? 'complete' : 'failed', acknowledgedAt: null, drainReady: null });
         await fenceMutator(journal);
         const fence = { fencedAt: Date.now(), actor, reason: 'successor-publication' };
         save(journal, { phase: journal.attempt?.state === 'complete' ? 'complete' : 'failed', acknowledgedAt: null, drainReady: null,
           ...(journal.attempt ? { attempt: { ...journal.attempt, fence } } : { mutationFence: fence }) });
-        releaseExactOwner(journal);
+        clearOwnPointer(journal);
         return { outcome: 'released', requestId: journal.binding.requestId, executionId: journal.binding.executionId };
       });
     }

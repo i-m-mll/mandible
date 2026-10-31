@@ -56,7 +56,7 @@ describe("auth check", () => {
         body: {
           check: {
             status: "clean", repo: "repo", base_branch: "main", head_branch: "feature/live", checked_requests: 0, conflicts: [],
-            publication_blocker: { code: "runtime_handoff_lock", message: "Runtime handoff lock abc is not acknowledged." },
+            publication_blocker: { code: "runtime_handoff_lock", message: "Mandible is still installing the self-update from auth request abc." },
           },
         },
       }
@@ -66,7 +66,7 @@ describe("auth check", () => {
 
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain("Auth check: clean");
-    expect(result.stdout).toContain("Publication blocked: Runtime handoff lock abc is not acknowledged.");
+    expect(result.stdout).toContain("Publication blocked: Mandible is still installing the self-update from auth request abc.");
   });
 
   it("renders a stale queue request as remediation, not a conflict (fbf2a58)", async () => {

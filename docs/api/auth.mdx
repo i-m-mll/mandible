@@ -514,8 +514,11 @@ Return `{ "request_id": "…", "acceptance": … }` with the same shape.
 
 #### GET /api/runtime-handoff/lock
 
-Return `{ "lock": null }` or the held lock with its `journalPath`,
-`bindingDigest`, `requestId`, `phase`, and `error`.
+Return `{ "lock": null, "message": null }` when no handoff holds the lock.
+Otherwise `lock` carries its `journalPath`, `bindingDigest`, `requestId`,
+`phase`, `state` (`installing`, `verifying`, `failed` or `unreadable`) and
+`error`, and `message` explains in product terms why it is held and what to do.
+A finished handoff never holds the lock, even if its lock file remains.
 
 #### POST /api/runtime-handoff/retire
 

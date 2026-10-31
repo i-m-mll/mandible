@@ -1,3 +1,4 @@
+import { readRuntimeHandoffLock } from '../../scripts/runtime-handoff-lock.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -79,9 +80,10 @@ export async function admissionScenario(protocol: number, predecessorReader?: st
   f.predecessor.send('exit'); await worker.event('done');
   expect(fs.existsSync(path.join(f.dir, '.verification.lock'))).toBe(false);
   expect(f.read().attempt.state).toBe('complete');
-  const closer = launch('close', f.file); expect(await closer.event('closed')).toMatchObject({ outcome: 'released' });
-  expect(fs.existsSync(f.active)).toBe(false);
+  // The terminal fence released the lock; a successor's closure has nothing left to close.
+  expect(readRuntimeHandoffLock(f.home)).toBeNull();
+  const closer = launch('close', f.file); expect(await closer.event('closed')).toMatchObject({ outcome: 'none' });
   const replay = launch('producer', f.file); await replay.event('done');
   expect(replay.events.some(event => event.event === 'bootstrap')).toBe(false);
-  expect(fs.existsSync(f.active)).toBe(false);
+  expect(readRuntimeHandoffLock(f.home)).toBeNull();
 }

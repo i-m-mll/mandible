@@ -488,14 +488,10 @@ export class AuthHookManager {
     let disposalError: unknown;
     try {
       if (!runtime.runtimeHandoffNeedsAcknowledgment) throw new Error('Runtime delivery release status is unavailable.');
-      let releasePending = false;
       if (await runtime.runtimeHandoffNeedsAcknowledgment(journal)) {
-        const released = await runtime.acknowledgeRuntimeHandoff(journal.binding, {
-          verifiedReceipt, acceptedReceiptDigest: current.receiptDigest,
-        }) as { release?: string } | undefined;
-        releasePending = released?.release === 'pending';
+        await runtime.acknowledgeRuntimeHandoff(journal.binding, { verifiedReceipt, acceptedReceiptDigest: current.receiptDigest });
       }
-      if (!releasePending) disposalError = this.reconcileDeliveryCleanup(runtime, journal, current.receiptDigest!, explicitCleanupRetry);
+      disposalError = this.reconcileDeliveryCleanup(runtime, journal, current.receiptDigest!, explicitCleanupRetry);
     } catch (error) { disposalError = error; }
     return { outcome: 'confirmed', adopted, disposalError };
   }

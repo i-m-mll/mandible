@@ -168,8 +168,21 @@ and commits the exact receipt acceptance marker. Acknowledgment consumes an
 opaque one-use verification result bound to that same observation owner and
 receipt digest. It does not repeat package or health verification.
 
-Acknowledgment unregisters the exact helper, confirms its captured process has
-drained, persists its mutation fence, and releases only its exact active owner.
+The installation-wide handoff lock is derived from the journal, not from the
+existence of `handoff-active.json`. That file names the latest admitted journal,
+and the lock is held exactly while that journal still holds mutation authority:
+no attempt or mutation fence closed it, and it was neither acknowledged nor
+retired. A completed delivery writes its receipt and its terminal fence in one
+journal write, so it releases the lock at that moment; deleting the file later
+(during acknowledgment, cleanup or successor closure) is tidying that no decision
+depends on, and it never touches a file that names a successor. A failed or
+verification-pending attempt stays unfenced and keeps the lock until
+verification-only recovery fences it or the operator retires it. Every reader,
+including the lifecycle commands in `local-runtime.mjs`, goes through
+`readRuntimeHandoffLock`.
+
+Legacy acknowledgment unregisters the exact helper, confirms its captured process
+has drained, and persists its mutation fence, which releases the lock.
 A retry after committed receipt acceptance uses the exact durable marker and digest
 without repeating publication adoption or runtime probes. A foreign active owner
 never grants mutation authority over this journal.
