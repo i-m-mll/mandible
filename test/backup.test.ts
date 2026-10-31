@@ -11,6 +11,8 @@ import {
   METADATA_BACKUP_TABLES,
   REPRODUCIBLE_OR_RUNTIME_TABLES,
 } from "../src/ledger/backup.js";
+import { AuthQueue } from "../src/auth-queue.js";
+import { AUTH_COMMAND_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import { issueSearchExpression, searchLedgerIssues } from "../src/ledger/issue-search.js";
 import { addProject } from "../src/ledger/project-registry.js";
 import { LedgerStore } from "../src/ledger/store.js";
@@ -312,7 +314,7 @@ describe("metadata backup coverage", () => {
     }
   });
 
-  it("restores the schema, triggers and rows of every backed-up table exactly", () => {
+  it("restores the schema, triggers and rows of every backed-up table exactly", async () => {
     const db = migratedMemoryDb();
     const restored = new SqliteDatabase(":memory:");
     try {
@@ -333,6 +335,13 @@ describe("metadata backup coverage", () => {
         VALUES (?, ?, ?, ?)`).run("creation-shell", "indexed-transcript",
           JSON.stringify({ schema: "mandible-chat-identity-repair@1", shell: { id: "creation-shell" }, canonical: { id: "indexed-transcript" } }), 1000);
 
+      const queue = new AuthQueue({ db });
+      const request = await queue.submit({ ...AUTH_COMMAND_REVIEW, type: "command", command: "printf reviewed",
+        title: "Backup responsibility", repo: process.cwd(), session_id: "author",
+        requester_evidence_method: "session_claim" }, operator.id);
+      queue.assumeRequestResponsibility(request.id, { user_id: peer.id, session_id: "successor", evidence_method: "session_claim" },
+        "Continue review", 1, 0);
+
       const schema = (target: SqliteDatabase) => (target.prepare(
         "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type, name",
       ).all() as Array<{ type: string; name: string; tbl_name: string; sql: string }>)
@@ -345,6 +354,10 @@ describe("metadata backup coverage", () => {
       expect(schema(restored)).toEqual(schema(db));
       for (const table of METADATA_BACKUP_TABLES) expect(rows(restored, table), table).toEqual(rows(db, table));
       expect(rows(restored, "ledger_comments")).toHaveLength(1);
+      expect(restored.prepare("SELECT owner_user_id, responsibility_session_id, custody_generation FROM auth_request_responsibility WHERE auth_request_id = ?").get(request.id))
+        .toEqual({ owner_user_id: peer.id, responsibility_session_id: "successor", custody_generation: 1 });
+      expect(rows(restored, "responsibility_events")).toHaveLength(1);
+      expect(() => restored.prepare("DELETE FROM responsibility_events").run()).toThrow("responsibility events are immutable");
       expect(resolveConversationId(restored, "creation-shell")).toBe("indexed-transcript");
       expect(restored.pragma("foreign_key_check")).toEqual([]);
       expect(restored.pragma("integrity_check")).toEqual([{ integrity_check: "ok" }]);

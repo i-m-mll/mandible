@@ -1,3 +1,4 @@
+import { nativeSearchSource } from "./helpers/search-native-source.js";
 import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import fs from "node:fs";
 import os from "node:os";
@@ -72,6 +73,7 @@ describe("conversation metadata routes", () => {
   });
 
   it("returns parsed tags, filters exactly, and atomically applies canonical metadata updates", async () => {
+    await nativeSearchSource(db, tempDir, "conv-1", "Native transcript for metadata export");
     const router = new Router({ clientAuth: new ClientAuthenticator(db, { secretsDir: path.join(tempDir, "auth") }) });
     registerConversationRoutes(router, inlineLedgerReader());
 
