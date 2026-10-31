@@ -65,6 +65,7 @@ mandible work-unit claim --issue I --repo R [--branch B] [--parent-branch B] [--
 mandible work-unit activate --issue I --repo R [--branch B] [--session S] [--worker] [--graceful]
 mandible work-unit find --repo R (--issue I | --branch B) [--state open|committed|resolved|abandoned] [--graceful]
 mandible work-unit resolve --id WU --expected-generation N [--auth-request-id AR] [--graceful]
+mandible work-unit abandon --id WU --expected-generation N --reason T [--graceful]
 mandible work-unit release --repo R --branch B --expected-generation N --reason T [--graceful]
 mandible work-unit custody-assume --id WU --expected-generation N --reason T [--session S]
 mandible work-unit custody-check --repo R --branch B [--issue I] [--json]   # exit 0 held or initially claimable, 4 explicit assumption required

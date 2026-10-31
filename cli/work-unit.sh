@@ -19,6 +19,7 @@ case "$action" in
   activate) mandible_work_unit_activate "$@" ;;
   find) mandible_work_unit_find "$@" ;;
   resolve) mandible_work_unit_resolve "$@" ;;
+  abandon) mandible_work_unit_abandon "$@" ;;
   release) mandible_work_unit_release "$@" ;;
   release-issue) mandible_work_unit_release_issue "$@" ;;
   custody-assume) mandible_work_unit_custody_assume "$@" ;;

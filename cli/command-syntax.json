@@ -639,6 +639,18 @@
         ]
       }
     },
+    "work-unit.abandon": {
+      "route": ["work-unit", "abandon"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "option","names": ["--id"],"values": [{"kind": "argument","name": "work-unit-id","value": {"type": "string"}}]},
+          {"kind": "option","names": ["--expected-generation"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 0}}]},
+          {"kind": "option","names": ["--reason"],"values": [{"kind": "argument","name": "text","value": {"type": "string"}}]},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--graceful"],"values": []}]}}
+        ]
+      }
+    },
     "work-unit.release": {
       "route": [
         "work-unit",
