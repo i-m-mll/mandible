@@ -3226,51 +3226,6 @@
         ]
       }
     },
-    "logs.daemon.copy": {
-      "route": ["logs", "daemon", "copy"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--batch-size"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 1}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--max-batches"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 1}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--canonical-db"],"values": [{"kind": "argument","name": "path","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--log-db"],"values": [{"kind": "argument","name": "path","value": {"type": "string"}}]}]}}
-        ]
-      }
-    },
-    "logs.daemon.reconcile": {
-      "route": ["logs", "daemon", "reconcile"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--batch-size"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 1}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--max-batches"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 1}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--canonical-db"],"values": [{"kind": "argument","name": "path","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--log-db"],"values": [{"kind": "argument","name": "path","value": {"type": "string"}}]}]}}
-        ]
-      }
-    },
-    "logs.daemon.verify": {
-      "route": ["logs", "daemon", "verify"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--no-record"],"values": []}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--canonical-db"],"values": [{"kind": "argument","name": "path","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--log-db"],"values": [{"kind": "argument","name": "path","value": {"type": "string"}}]}]}}
-        ]
-      }
-    },
-    "logs.daemon.reclaim-plan": {
-      "route": ["logs", "daemon", "reclaim-plan"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--canonical-db"],"values": [{"kind": "argument","name": "path","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--log-db"],"values": [{"kind": "argument","name": "path","value": {"type": "string"}}]}]}}
-        ]
-      }
-    },
     "logs.daemon.export": {
       "route": ["logs", "daemon", "export"],
       "grammar": {

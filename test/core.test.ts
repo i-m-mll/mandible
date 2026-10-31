@@ -94,7 +94,7 @@ const priorSocket = process.env.MANDIBLE_SOCKET;
       { readonly: true },
     );
     try {
-      expect(canonical.prepare("SELECT COUNT(*) AS count FROM daemon_log").get()).toEqual({ count: 0 });
+      expect(canonical.prepare("SELECT name FROM sqlite_master WHERE name = 'daemon_log'").get()).toBeUndefined();
       expect(Number((operational.prepare("SELECT COUNT(*) AS count FROM daemon_log").get() as { count: number }).count))
         .toBeGreaterThan(0);
     } finally {
