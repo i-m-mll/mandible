@@ -490,7 +490,7 @@ export type AuthRequestAction = AuthRequestActionInput & {
 };
 
 export type AuthPublicationBlocker = {
-  code: "runtime_handoff_lock" | "ownership_conflict" | "unreadable_state" | "missing_definition" | "starting";
+  code: "runtime_handoff_lock" | "ownership_conflict" | "unreadable_state" | "missing_definition" | "starting" | "checkout_not_ready";
   message: string;
 };
 

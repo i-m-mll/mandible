@@ -544,3 +544,5 @@ A required hook that exhausts its attempts raises exactly one inbox alert per
 `GET /api/inbox/global`. Acknowledge one with
 `POST /api/inbox/hook_alert/:id/ack`. Acknowledging dismisses the notice only —
 the durable hook row still reads `failed` until a retry actually succeeds.
+
+Before requesting the operator signature, approval readiness rechecks the current protected checkout independently of the retained merge candidate. Tracked edits or an unfinished merge block approval while leaving the request pending. The existing `publication_blocker` projection reports `checkout_not_ready` with the checkout, affected paths and staged/unstaged state. Preserve those edits in their intended worktree, restore a clean protected checkout and refresh the request. Execution repeats the same check to catch later edits before publication.

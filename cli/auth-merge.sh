@@ -547,6 +547,12 @@ run_merge_preflight() {
   local cwd="$1"
   local head_branch="$2"
   local base_branch="$3"
+  local readiness="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}/checkout-readiness.sh"
+  local -a readiness_args=("$cwd")
+  if [[ -n "${MANDIBLE_AUTH_PREFLIGHT_BASE_SHA:-}" && -n "${MANDIBLE_AUTH_CANDIDATE_TREE_SHA:-}" ]]; then
+    readiness_args+=("$base_branch" "$MANDIBLE_AUTH_PREFLIGHT_BASE_SHA" "$MANDIBLE_AUTH_CANDIDATE_TREE_SHA")
+  fi
+  bash "$readiness" "${readiness_args[@]}" || return $?
 
   if [[ -n "${MANDIBLE_AUTH_PREFLIGHT_BASE_SHA:-}" ]]; then
     local current_base_sha
@@ -566,7 +572,8 @@ run_merge_preflight() {
 }
 
 tracked_worktree_is_clean() {
-  [[ -z "$(git status --porcelain --untracked-files=no --ignore-submodules=none)" ]]
+  local readiness="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}/checkout-readiness.sh"
+  bash "$readiness" "$(pwd)" >&2
 }
 
 cached_candidate_tree() {

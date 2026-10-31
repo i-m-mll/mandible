@@ -835,8 +835,20 @@ export class AuthQueue {
     const applicableIds = new Set(applicable.map(request => request.id));
     const ownershipIds = new Set(applicable.filter(request => this.candidateAcceptanceApplies(request)).map(request => request.id));
     const blocker = applicable.length ? await this.publicationObservation(ownershipIds.size > 0) : null;
-    return new Map(requests.map(request => [request.id,
-      publicationBlockerFor({ selfUpdates: applicableIds.has(request.id), changesBuildInputs: ownershipIds.has(request.id) }, blocker)]));
+    const checkoutReads = new Map<string, Promise<{ status: "clean" } | { status: "error"; message: string }>>();
+    return new Map(await Promise.all(requests.map(async request => {
+      const runtime = publicationBlockerFor({ selfUpdates: applicableIds.has(request.id), changesBuildInputs: ownershipIds.has(request.id) }, blocker);
+      if (runtime || request.status !== "pending" || !isAuthMergeCommand(request)) return [request.id, runtime] as const;
+      const cwd = request.target_repo_root ?? request.cwd;
+      if (!cwd) return [request.id, null] as const;
+      const candidate = request.base_branch && request.merge_preflight_base_sha && request.merge_candidate_tree_sha
+        ? { baseBranch: request.base_branch, base: request.merge_preflight_base_sha, target: request.merge_candidate_tree_sha } : undefined;
+      const key = JSON.stringify([cwd, candidate]);
+      let read = checkoutReads.get(key);
+      if (!read) { read = this.checkMergeWorktreeReady(cwd, candidate); checkoutReads.set(key, read); }
+      const readiness = await read;
+      return [request.id, readiness.status === "error" ? { code: "checkout_not_ready" as const, message: readiness.message } : null] as const;
+    })));
   }
 
   /**
@@ -6976,71 +6988,20 @@ export class AuthQueue {
     }
   }
 
-  private async checkMergeWorktreeReady(cwd: string): Promise<{ status: "clean" } | { status: "error"; message: string }> {
+  private async checkMergeWorktreeReady(cwd: string, candidate?: { baseBranch: string; base: string; target: string }): Promise<{ status: "clean" } | { status: "error"; message: string }> {
+    const script = join(process.env.MANDIBLE_CLI_DIR ?? join(process.cwd(), "cli"), "checkout-readiness.sh");
     try {
-      const gitDir = (await childOutput("git", ["rev-parse", "--path-format=absolute", "--git-dir"], {
-        cwd,
-        encoding: "utf8",
-        timeout: 5_000,
-        env: authGitEnv(),
-      })).trim();
-      if (gitDir && existsSync(join(gitDir, "MERGE_HEAD"))) {
-        return {
-          status: "error",
-          message: "merge already in progress; resume or abort it before running merge preflight"
-        };
-      }
-
-      const status = (await childOutput("git", ["status", "--porcelain", "--untracked-files=no"], {
-        cwd,
-        encoding: "utf8",
-        maxBuffer: 1024 * 1024,
-        timeout: 10_000,
-        env: authGitEnv(),
-      })).replace(/\r?\n$/, "");
-      if (!status.trim()) {
-        return { status: "clean" };
-      }
-      const files = status
-        .split(/\r?\n/)
-        .filter((line) => line.trim())
-        .slice(0, 20)
-        .map((line) => line.length > 3 ? line.slice(3) : line.trim());
-      return {
-        status: "error",
-        message: `tracked worktree changes are present: ${files.join(", ")}`
-      };
+      await childOutput("bash", [script, cwd, ...(candidate ? [candidate.baseBranch, candidate.base, candidate.target] : [])],
+        { cwd, encoding: "utf8", timeout: 5_000, maxBuffer: 1024 * 1024, env: authGitEnv() });
+      return { status: "clean" };
     } catch (error) {
-      return {
-        status: "error",
-        message: errorMessage(error) || "could not inspect worktree status"
-      };
+      const report = String((error as { stdout?: Buffer | string }).stdout ?? "").trim();
+      return { status: "error", message: report || `Checkout readiness inspection failed for ${cwd}: ${errorMessage(error)}` };
     }
   }
 
-  /**
-   * Whether the protected checkout at `cwd` could follow the target branch
-   * from `base` to `target`, judged by `cli/checkout-sync-check.sh` — the
-   * same dry run the merge executor repeats just before advancing the ref.
-   * A checkout that is not on the target branch has no sync to predict.
-   */
-  private async checkCheckoutSync(cwd: string, baseBranch: string, base: string, target: string): Promise<{ status: "clean" } | { status: "error"; message: string }> {
-    const gitOptions = { cwd, encoding: "utf8" as const, timeout: 5_000, env: authGitEnv() };
-    try {
-      const branch = (await childOutput("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], gitOptions).catch(() => "")).trim();
-      if (branch !== baseBranch) return { status: "clean" };
-      const root = (await childOutput("git", ["rev-parse", "--show-toplevel"], gitOptions)).trim();
-      const script = join(process.env.MANDIBLE_CLI_DIR ?? join(process.cwd(), "cli"), "checkout-sync-check.sh");
-      await childOutput("bash", [script, root, base, target], { ...gitOptions, timeout: 30_000, maxBuffer: 1024 * 1024 });
-      return { status: "clean" };
-    } catch (error) {
-      const failure = classifyGitFailure(error);
-      if (failure.kind === "exit" && failure.status === 1) {
-        const report = String((error as { stdout?: Buffer | string }).stdout ?? "").trim();
-        if (report) return { status: "error", message: report };
-      }
-      return { status: "error", message: `checkout sync check failed: ${describeGitFailure(failure, "merge check")}` };
-    }
+  private checkCheckoutSync(cwd: string, baseBranch: string, base: string, target: string): Promise<{ status: "clean" } | { status: "error"; message: string }> {
+    return this.checkMergeWorktreeReady(cwd, { baseBranch, base, target });
   }
 
   private async createSyntheticMergeCommit(
