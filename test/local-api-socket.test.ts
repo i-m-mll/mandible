@@ -147,7 +147,7 @@ describe('owner-only local API socket', () => {
       vi.stubEnv(key, value);
     }
     try {
-      const channel = await import('../channel-server/client.js');
+      const channel = await import('./helpers/channel-client.js');
       await channel.registerSession({ id, status: 'active', cwd: root, branch: null });
     } finally {
       vi.unstubAllEnvs();

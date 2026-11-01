@@ -10,6 +10,8 @@ export interface InstalledRelease {
   serviceControlProtocol?: 2;
   resources?: Record<string, string>;
   signing: Record<string, string>;
+  qualification?: { bun_sha256: string; sqlite_sha256: string; caddy_sha256: string };
+  channelRuntimePolicy?: { signingIdentifier: string; signer: string; hardenedRuntime: boolean; entitlements: string | null };
   files: Record<string, { sha256: string; size: number }>;
 }
 export const RELEASE_SCHEMA: string;

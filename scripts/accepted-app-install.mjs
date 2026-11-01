@@ -7,6 +7,7 @@ import { assertLifecycleLockHeld } from './lifecycle-lock.mjs';
 import { adoptBundleRelease, readBundleOwner } from './bundle-services.mjs';
 import { runtimeObservationTimeout } from './runtime-observation.mjs';
 import { serviceInstallationContext } from './service-definitions.mjs';
+import { reconcileChannelInstallation, retireLegacyChannels } from './channel-installation.mjs';
 
 export function acceptedApplication(binding) {
   if (!binding.acceptedRelease) throw new Error('Handoff has no frozen accepted release.');
@@ -113,6 +114,8 @@ export function installAcceptedApplication(binding, context, { until, prepared }
   if (accepted.installed) {
     check();
     if (!installedOwner) adoptBundleRelease(context, accepted.release, owner, binding.acceptedRelease.reference, { until });
+    reconcileChannelInstallation({ home: context.home, resources: accepted.resources, release: accepted.release });
+    retireLegacyChannels({ home: context.home, resources: accepted.resources });
     check();
     return { packageSha256: accepted.receipt.package.sha256, ...paths };
   }
@@ -131,6 +134,8 @@ export function installAcceptedApplication(binding, context, { until, prepared }
   verified.app = binding.nativeApp; verified.installed = true;
   check();
   adoptBundleRelease(context, accepted.receipt.shipped, owner, binding.acceptedRelease.reference, { until });
+  reconcileChannelInstallation({ home: context.home, resources: path.join(binding.nativeApp, 'Contents/Resources'), release: accepted.receipt.shipped });
+  retireLegacyChannels({ home: context.home, resources: path.join(binding.nativeApp, 'Contents/Resources') });
   check();
   return { packageSha256: accepted.receipt.package.sha256, ...paths };
 }

@@ -7,6 +7,11 @@ import http from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { installedRuntimeEnvironment, verifyInstalledRelease } from './installed-release.mjs';
+import { inspectRunConsumers } from './owned-run.mjs';
+import { channelEnvironment, reconcileChannelInstallation } from './channel-installation.mjs';
+import { withInstallationGatewayLock } from './lifecycle-lock.mjs';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const resources = fs.realpathSync(process.argv[2]);
@@ -17,15 +22,21 @@ fs.mkdirSync(path.join(home, ".mandible"), { recursive: true });
 const denied = [root, path.join(os.homedir(), '.dotfiles'), path.join(os.homedir(), '.local/share/mandible/runtimes'), path.join(os.homedir(), '.bun'), '/opt/homebrew', '/usr/local'];
 const profile = `(version 1)(allow default)\n${denied.filter(p => fs.existsSync(p)).map(p => `(deny file-read* (subpath ${JSON.stringify(fs.realpathSync(p))}))`).join('\n')}\n(deny network-outbound (remote ip "*:80") (remote ip "*:443"))`;
 const requests = [];
-const server = http.createServer((req, res) => {
+const handler = (req, res) => {
+  if (req.url.startsWith('/api/events?')) { res.writeHead(200, { 'Content-Type': 'text/event-stream' }); res.write(': connected\n\n'); return; }
   let body = '';
   req.on('data', chunk => body += chunk);
   req.on('end', () => {
     requests.push({ path: req.url, headers: req.headers, body: JSON.parse(body || '{}') });
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end('{}');
+    const result = req.url === '/api/channel/catalog' ? { protocol: 1, tools: [{ name: 'proof', inputSchema: { type: 'object' } }] }
+      : req.url === '/api/channel/connect' ? { session_id: null }
+      : req.url === '/api/channel/render' ? { notifications: [], delivered: [] }
+      : req.url === '/api/channel/call' ? { content: [{ type: 'text', text: 'installed bridge call' }] } : {};
+    res.end(JSON.stringify(result));
   });
-});
+};
+let server = http.createServer(handler);
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const environment = installedRuntimeEnvironment(resources, { HOME: home, PATH: '/usr/bin:/bin:/usr/sbin:/sbin', TMPDIR: scratch,
   MANDIBLE_HOME: path.join(home, '.mandible'), MANDIBLE_DB: path.join(home, '.mandible/proof.db'),
@@ -80,8 +91,90 @@ try {
   // Resolve the same outbox role as the hook rather than assuming its filesystem spelling.
   const outboxFiles = successful(await run(environment.MANDIBLE_RUNTIME, ['--no-install', '-e', `import {executionOutboxDir,listExecutionOutbox} from ${JSON.stringify(path.join(resources, 'dist/session-execution-outbox.js'))};import {localApiSocketPath} from ${JSON.stringify(path.join(resources, 'dist/local-api-socket.js'))};const dir=executionOutboxDir(localApiSocketPath({role:'main',instance_id:''}));console.log(JSON.stringify(listExecutionOutbox(dir).entries.map(name=>JSON.parse(require("node:fs").readFileSync(require("node:path").join(dir,name),"utf8")))));`]));
   assert.match(outboxFiles, new RegExp(provider));
-  const channel = successful(await run(cli, ['channel'], `${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'command-proof', version: '1' } } })}\n`, environment, scratch, /"name":"mandible"/));
-  assert.match(channel, /"name":"mandible"/);
+  const channelApp = path.join(scratch, 'ChannelProof.app');
+  fs.cpSync(path.resolve(resources, '../..'), channelApp, { recursive: true, mode: fs.constants.COPYFILE_FICLONE });
+  const channelResources = path.join(channelApp, 'Contents/Resources');
+  const channelHome = path.join(home, '.mandible');
+  fs.mkdirSync(path.join(channelHome, 'config/client-auth'), { recursive: true });
+  fs.mkdirSync(path.join(channelHome, 'config/local-sessions'), { recursive: true });
+  fs.writeFileSync(path.join(channelHome, 'config/client-auth/authority-id'), 'installed-channel-proof');
+  fs.writeFileSync(path.join(channelHome, 'config/local-sessions/bundle-owner.json'), JSON.stringify({
+    installationId: 'installed-channel-proof', bundleRoot: channelApp,
+    generation: release.provenance.commit, sourceDigest: release.provenance.source_digest }));
+  const channelEnv = installedRuntimeEnvironment(channelResources, environment);
+  // macOS forbids sandbox-exec from spawning setuid /bin/ps, which installation
+  // lease identity and precise legacy retirement require. Exercise that ordinary
+  // desktop launch context here; all other command proofs retain developer denial.
+  const channel = spawn(path.join(channelResources, release.entrypoints.cli), ['channel'],
+    { cwd: scratch, env: channelEnv, stdio: ['pipe', 'pipe', 'pipe'] });
+  let channelError = '', channelOutput = '', sequence = 0;
+  const waiting = new Map();
+  channel.stderr.on('data', chunk => channelError += chunk);
+  channel.stdout.on('data', chunk => {
+    channelOutput += chunk;
+    let boundary;
+    while ((boundary = channelOutput.indexOf('\n')) >= 0) {
+      const message = JSON.parse(channelOutput.slice(0, boundary)); channelOutput = channelOutput.slice(boundary + 1);
+      if (message.id != null) { const waiter = waiting.get(message.id); waiting.delete(message.id); waiter?.(message); }
+    }
+  });
+  const closed = new Promise(resolve => channel.once('close', resolve));
+  const rpc = async (method, params = {}) => {
+    const id = ++sequence;
+    let timer;
+    try {
+      return await Promise.race([
+        new Promise(resolve => { waiting.set(id, resolve); channel.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`); }),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`Installed channel ${method} timed out: ${channelError}`)), 10_000); }),
+        closed.then(() => { throw new Error(`Installed channel exited: ${channelError}`); }),
+      ]);
+    } finally { clearTimeout(timer); waiting.delete(id); }
+  };
+  try {
+    const initialized = await rpc('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'command-proof', version: '1' } });
+    assert.equal(initialized.result.serverInfo.name, 'mandible', channelError);
+    channel.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`);
+    assert.equal((await rpc('tools/list')).result.tools[0].name, 'proof', channelError);
+    const active = JSON.parse(fs.readFileSync(path.join(channelHome, 'channel/active.json'), 'utf8'));
+    const actual = spawnSync('/bin/ps', ['-p', String(channel.pid), '-o', 'comm='], { encoding: 'utf8', timeout: 1500 });
+    assert.equal(actual.stdout.trim(), active.runtime);
+    assert.equal((await rpc('tools/call', { name: 'proof' })).result.content[0].text, 'installed bridge call');
+    const previous = path.join(scratch, 'ChannelProof.previous.app'); fs.renameSync(channelApp, previous);
+    fs.cpSync(path.resolve(resources, '../..'), channelApp, { recursive: true, mode: fs.constants.COPYFILE_FICLONE });
+    const successor = { ...release, provenance: { ...release.provenance, commit: 'b'.repeat(40), source_digest: 'b'.repeat(64) } };
+    fs.writeFileSync(path.join(channelResources, 'release.json'), JSON.stringify(successor));
+    await withInstallationGatewayLock(channelHome, () => {
+      fs.writeFileSync(path.join(channelHome, 'config/local-sessions/bundle-owner.json'), JSON.stringify({
+        installationId: 'installed-channel-proof', bundleRoot: channelApp,
+        generation: successor.provenance.commit, sourceDigest: successor.provenance.source_digest }));
+      const reconciled = reconcileChannelInstallation({ home: channelHome, resources: channelResources, release: successor });
+      assert.equal(reconciled.generation, active.generation);
+      assert.equal(reconciled.runtime, active.runtime);
+    });
+    assert.equal(inspectRunConsumers(previous).idle, true, 'The installed bridge still pins its renamed app bundle');
+    const port = server.address().port;
+    server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
+    server = http.createServer(handler); await new Promise(resolve => server.listen(port, '127.0.0.1', resolve));
+    assert.equal((await rpc('tools/call', { name: 'proof' })).result.content[0].text, 'installed bridge call');
+    assert.equal(channel.exitCode, null);
+    assert.equal(inspectRunConsumers(previous).idle, true);
+    fs.rmSync(previous, { recursive: true });
+    const isolated = new Client({ name: 'sandboxed-independent-bridge-proof', version: '1' });
+    const isolatedTransport = new StdioClientTransport({ command: '/usr/bin/sandbox-exec',
+      args: ['-p', profile, active.runtime, '--no-install', active.bridge],
+      cwd: path.dirname(active.bridge), env: channelEnvironment({ ...active, active: path.join(channelHome, 'channel/active.json') }, channelEnv, scratch), stderr: 'pipe' });
+    let isolatedDiagnostics = '';
+    isolatedTransport.stderr.on('data', chunk => isolatedDiagnostics += chunk);
+    try {
+      await isolated.connect(isolatedTransport, { timeout: 10_000 });
+      const result = await isolated.callTool({ name: 'proof' }, undefined, { timeout: 10_000 });
+      assert.equal(result.content[0].text, 'installed bridge call', isolatedDiagnostics);
+    } finally { await isolated.close(); }
+  } finally {
+    channel.stdin.end();
+    const deadline = setTimeout(() => channel.kill('SIGKILL'), 2_000);
+    try { await closed; } finally { clearTimeout(deadline); }
+  }
 
   const repo = path.join(scratch, 'repo');
   fs.mkdirSync(repo);
@@ -112,7 +205,7 @@ try {
   const projected = await run('/bin/bash', [path.join(cache, 'issue.sh'), 'report'], '', { ...environment, MANDIBLE_CLI_DIR: cache });
   assert.equal(projected.status, 2, projected.stderr); assert.match(projected.stderr, /Arguments do not match/);
   assert.doesNotMatch(projected.stderr, /download|Cannot find|unavailable|denied/i);
-  process.stdout.write(`${JSON.stringify({ passed: true, commit: release.provenance.commit, source_digest: release.provenance.source_digest, resources, scratch, evidence: ['public CLI grammar and prebuilt SQLite query', 'native log inspection and parsed blocks', 'instruction rendering', 'generated hook stdin/stdout and provider identity', 'execution outbox hook', 'public channel MCP initialization', 'Git rejects unsigned update and unavailable guard', 'projected client grammar from packaged offline archive'] }, null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify({ passed: true, commit: release.provenance.commit, source_digest: release.provenance.source_digest, resources, scratch, evidence: ['sandboxed public CLI grammar and prebuilt SQLite query', 'sandboxed native log inspection and parsed blocks', 'sandboxed instruction rendering', 'sandboxed generated hook stdin/stdout and provider identity', 'sandboxed execution outbox hook', 'normal-context public channel uses copied Bun, releases renamed app, and survives daemon restart with same PID', 'developer-denial sandbox: copied Bun and independent bridge initialize MCP and complete a tool call', 'sandboxed Git rejects unsigned update and unavailable guard', 'sandboxed projected client grammar from packaged offline archive'] }, null, 2)}\n`);
 } finally {
   server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
 }

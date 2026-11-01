@@ -49,7 +49,7 @@ describe("channel-server local socket", () => {
       process.env.MANDIBLE_BASE = "https://app.mandible.localhost:19420";
       process.env.MANDIBLE_SOCKET = socket;
       process.env.MANDIBLE_TOKEN = "stale-token";
-      const { checkInboxGlobal } = await import("../channel-server/client.js");
+      const { checkInboxGlobal } = await import("./helpers/channel-client.js");
       await checkInboxGlobal();
       expect(received).toEqual([{ url: "/api/inbox/global", auth: undefined, managed: "1" }]);
     } finally {
@@ -72,7 +72,7 @@ describe("channel-server local socket", () => {
     const original = Object.fromEntries(Object.keys(values).map(key => [key, process.env[key]]));
     Object.assign(process.env, values);
     try {
-      const { patchWorkUnit } = await import("../channel-server/client.js");
+      const { patchWorkUnit } = await import("./helpers/channel-client.js");
       for (const id of ["..", ".", "%2e%2E", ".%2e", "%FF", "%C0%AF", "%E2%82", ".\\operator", "agent name", "%00"]) {
         await expect(patchWorkUnit(id, {})).rejects.toThrow("Malformed local API route");
       }
@@ -133,7 +133,7 @@ describe("channel-server client", () => {
     process.env.MANDIBLE_BASE = "http://127.0.0.1:31337";
     process.env.MANDIBLE_TOKEN = "agent-token";
     mockFetch(200, { continuations: [], auth_results: [], open_issues: [], work_units: [], work_unit_continuations: [], total: 0 });
-    const { checkInboxGlobal, channelTransportHeaders } = await import("../channel-server/client.js");
+    const { checkInboxGlobal, channelTransportHeaders } = await import("./helpers/channel-client.js");
     await checkInboxGlobal();
     const [url, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
     expect(url).toBe("http://127.0.0.1:31337/api/inbox/global");
@@ -142,7 +142,7 @@ describe("channel-server client", () => {
   });
 
   it("reports daemon failures and an unreachable daemon as MandibleClientError", async () => {
-    const { checkInbox, MandibleClientError } = await import("../channel-server/client.js");
+    const { checkInbox, MandibleClientError } = await import("./helpers/channel-client.js");
     mockFetch(500, { error: "Internal error" });
     await expect(checkInbox()).rejects.toThrow(MandibleClientError);
     await expect(checkInbox()).rejects.toThrow("500");
@@ -190,7 +190,7 @@ describe("mandible_submit_auth command shape (issue 08a5f04)", () => {
       statusText: "Created",
       json: async () => ({ request_id: "tool-auth-id" }),
     });
-    const { registerTools } = await import("../channel-server/tools.js");
+    const { registerTools } = await import("../src/channel/tools.js");
     const handlers = new Map<string, (a: Record<string, unknown>) => Promise<unknown>>();
     const mockServer = {
       tool: (
@@ -204,7 +204,7 @@ describe("mandible_submit_auth command shape (issue 08a5f04)", () => {
     };
     // sessionId null — registration/liveness calls are skipped, so the only
     // fetch is the auth submission itself.
-    registerTools(mockServer as never, null);
+    registerTools(mockServer as never, null, await import("./helpers/channel-client.js"), process.env.CLAUDE_CWD ?? process.cwd());
     const handler = handlers.get("mandible_submit_auth");
     if (!handler) throw new Error("mandible_submit_auth not registered");
     await handler(args);
@@ -248,7 +248,7 @@ describe("mandible_submit_auth command shape (issue 08a5f04)", () => {
 
 describe("SSE reconnect catch-up (Bug: 03d6cb0)", () => {
   it("replays a result missed during shutdown once on reconnect", async () => {
-    const mod = await import("../channel-server/index.js");
+    const mod = await import("../src/channel/catchup.js");
     const sent: Array<{ method?: string; params?: unknown }> = [];
     const delivered: string[] = [];
     let available = false;

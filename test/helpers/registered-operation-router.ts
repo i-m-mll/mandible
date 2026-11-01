@@ -1,3 +1,4 @@
+import { CHANNEL_CONTEXT_SCHEMA } from "../../src/routes/channel.js";
 import { RepairOptionsSchema } from "../../src/ledger/project-registry.js";
 import * as ts from "typescript";
 import { registeredOperationMetadata } from "./registered-operation-metadata.js";
@@ -21,10 +22,10 @@ function descriptorFactory(entries: Metadata): DescriptorFactory {
   // authored source set once; instance-dependent choices are evaluated afresh.
   const source = `const descriptors = [${entries.map(entry => entry.expression).join(",\n")}]; descriptors;`;
   const expression = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-  const evaluate = new Function("z", "isInlineManagedArtifactByteRequest", "documentArtifactImportEffects", "documentHistoryImportEffects", "getDb", "discoverModels", "CHILD_RETENTION_SETTINGS_SCHEMA", "INTEGRATION_ACTION", "RepairOptionsSchema",
+  const evaluate = new Function("z", "isInlineManagedArtifactByteRequest", "documentArtifactImportEffects", "documentHistoryImportEffects", "getDb", "discoverModels", "CHILD_RETENTION_SETTINGS_SCHEMA", "INTEGRATION_ACTION", "RepairOptionsSchema", "CHANNEL_CONTEXT_SCHEMA",
     expression.replace(/descriptors;\s*$/, "return descriptors;"));
   const factory: DescriptorFactory = discoverModels => evaluate(z, isInlineManagedArtifactByteRequest,
-    documentArtifactImportEffects, documentHistoryImportEffects, noDatabase, discoverModels, CHILD_RETENTION_SETTINGS_SCHEMA, INTEGRATION_ACTION, RepairOptionsSchema);
+    documentArtifactImportEffects, documentHistoryImportEffects, noDatabase, discoverModels, CHILD_RETENTION_SETTINGS_SCHEMA, INTEGRATION_ACTION, RepairOptionsSchema, CHANNEL_CONTEXT_SCHEMA);
   factories.set(entries, factory);
   return factory;
 }

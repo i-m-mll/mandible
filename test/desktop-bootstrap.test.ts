@@ -62,9 +62,16 @@ function status(overrides: Record<string, unknown> = {}) {
 }
 
 describe("desktop bootstrap navigation", () => {
+  it("reconciles a manual first open before status and keeps later status refreshes read-only", async () => {
+    const result = await bootBootstrap({ status: status({ launch_mode: "manual", state: "stopped", healthy: false, dashboard_ready: false }) });
+    expect(result.calls).toEqual(["daemon_reconcile_channel", "daemon_status"]);
+    result.listeners.get("retry-btn:click")?.();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(result.calls).toEqual(["daemon_reconcile_channel", "daemon_status", "daemon_status"]);
+  });
   it("opens the dashboard only through native navigation after both readiness checks pass", async () => {
     const result = await bootBootstrap({ status: status() });
-    expect(result.calls).toEqual(["daemon_status", "navigate_to_desktop_dashboard"]);
+    expect(result.calls).toEqual(["daemon_reconcile_channel", "daemon_status", "navigate_to_desktop_dashboard"]);
     expect(result.elements.get("status-badge")?.textContent).toBe("dashboard ready");
   });
 
@@ -76,7 +83,7 @@ describe("desktop bootstrap navigation", () => {
       gateway_error: "The service is not accepting connections.",
     });
     const result = await bootBootstrap({ status: unavailable });
-    expect(result.calls).toEqual(["daemon_status", "daemon_start"]);
+    expect(result.calls).toEqual(["daemon_reconcile_channel", "daemon_status", "daemon_start"]);
     expect(result.elements.get("status-copy")?.textContent).toContain("backend is healthy");
   });
 
@@ -89,7 +96,7 @@ describe("desktop bootstrap navigation", () => {
       gateway_state: "stopped",
     });
     const result = await bootBootstrap({ search: "?skip_autostart=1", status: stopped });
-    expect(result.calls).toEqual(["daemon_status"]);
+    expect(result.calls).toEqual(["daemon_reconcile_channel", "daemon_status"]);
     expect(result.elements.get("status-copy")?.textContent).toContain("can start it on demand");
   });
 
@@ -98,11 +105,11 @@ describe("desktop bootstrap navigation", () => {
       search: "?skip_autostart=1&dashboard_navigation_failed=1",
       status: status(),
     });
-    expect(result.calls).toEqual(["daemon_status"]);
+    expect(result.calls).toEqual(["daemon_reconcile_channel", "daemon_status"]);
     expect(result.elements.get("status-copy")?.textContent).toContain("did not finish loading");
 
     result.listeners.get("retry-btn:click")?.();
     await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(result.calls).toEqual(["daemon_status", "daemon_status", "navigate_to_desktop_dashboard"]);
+    expect(result.calls).toEqual(["daemon_reconcile_channel", "daemon_status", "daemon_status", "navigate_to_desktop_dashboard"]);
   });
 });
