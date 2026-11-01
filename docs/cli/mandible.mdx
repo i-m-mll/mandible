@@ -394,6 +394,13 @@ Unless `--no-watch` is specified, opens an authenticated POST stream at
 `/api/events/subscribe` and waits for the matching `auth:resolved` event. It
 falls back to one authenticated status read if that connection closes.
 
+Both `auth request` watching and `inbox watch` exit 0 only for `completed`.
+`pending`, `approved`, and `executing` remain in flight. Terminal failures,
+including `needs_rebase`, exit 1 with the recorded reason; `needs_rebase`
+instructs the caller to rebase and retry. Unknown statuses never report success.
+If the final status read is still in flight after SSE closes, the command
+reports that state and exits 1 without claiming delivery.
+
 **Fallback on submission interruption:**
 
 `mandible auth request` requires the daemon-owned preflight. If the daemon

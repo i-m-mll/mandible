@@ -191,12 +191,12 @@ api_local_human_http() {
 }
 
 api_local_operator_csrf() {
-  local output="" result="" status=""
+  local output="" result="" http_status=""
   output="$(api_temp_file)" || return 1
-  status=$(curl -s --max-time 5 -o "$output" -w '%{http_code}' \
+  http_status=$(curl -s --max-time 5 -o "$output" -w '%{http_code}' \
     -H "Origin: $MANDIBLE_CANONICAL_ORIGIN" -H 'Sec-Fetch-Site: same-origin' \
     "$(api_base)/api/client-auth/whoami" 2>/dev/null) || { rm -f "$output"; return 1; }
-  if [[ "$status" == "200" ]]; then
+  if [[ "$http_status" == "200" ]]; then
     result=$(jq -er '.session.csrf_token | select(type == "string" and length > 0)' "$output" 2>/dev/null) || result=""
   fi
   rm -f "$output"
