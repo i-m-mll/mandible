@@ -146,7 +146,7 @@ describe('independent channel installation', () => {
         const exited = once(child, 'close'); child.kill('SIGTERM'); await exited;
       }
     }
-  }, 10_000);
+  });
 });
 
 describe('live MCP bridge lifecycle', () => {
@@ -195,7 +195,7 @@ describe('live MCP bridge lifecycle', () => {
     } finally {
       await client.close(); daemon.closeAllConnections(); await new Promise<void>(resolve => daemon.close(() => resolve()));
     }
-  }, 10_000);
+  });
 
   it('exits on stdin EOF even before MCP initialization', async () => {
     const child = spawn(runtime, ['--no-install', path.resolve('channel-server/index.ts')], { stdio: ['pipe', 'pipe', 'pipe'], timeout: 4_000 });
