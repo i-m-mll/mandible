@@ -17,8 +17,7 @@ import {
 } from "./helpers/artifact-http-write-fixtures.js";
 import { getArtifactCurrentSource, planArtifactSourceMove, commitArtifactSourceMove, type ArtifactLifecycleResult } from '../src/artifact-source.js';
 import { readArtifactBytesFull, checkArtifactMaterialization } from '../src/artifact-content.js';
-import { resolveArtifactProject, artifactAccessProjectIds } from '../src/permissions/resources.js';
-import { evaluateProjectAccess, setProjectRestricted } from '../src/permissions/store.js';
+import { resolveArtifactProject } from '../src/ledger/resource-projects.js';
 import { setClientAuthMode } from '../src/client-auth/mode.js';
 import { ARTIFACT_SOURCE_SCHEMA_SQL, ARTIFACT_SOURCE_BACKFILL_SQL } from '../src/artifact-source-schema.js';
 import { insertRawLedgerProject, insertRawLedgerCheckout, migratedMemoryDb } from './helpers/ledger-fixtures.js';
@@ -44,7 +43,6 @@ it('moves across projects without transferring owner; old-path reuse and equal b
   const a=repo('source'), b=repo('destination');
   const first=recordArtifactVersion(db,{source_kind:'tracked_repo',path:a.file}); const id=identity(first.series.id);
   const move=ok(planArtifactSourceMove(db,{artifact_id:id,expected_revision:1,source:{kind:'repo',project_id:b.project,path:'report.md'},actor:'test-agent'}));
-  expect(move.required_project_ids).toEqual([a.project,b.project].sort());
   ok(commitArtifactSourceMove(db,move));
   expect(commitArtifactSourceMove(db,move)).toMatchObject({ok:false,error:{code:'stale_plan'}});
   const second=recordArtifactVersion(db,{source_kind:'tracked_repo',path:b.file,artifact_id:id});
@@ -52,16 +50,15 @@ it('moves across projects without transferring owner; old-path reuse and equal b
   expect(getCanonicalArtifactVersion(db,second.version.id)?.source_project_id).toBe(b.project);
   expect(resolveArtifactProject(db,id)).toEqual({ok:true,project_id:a.project});
   expect(resolveArtifactProject(db,second.version.id)).toEqual({ok:true,project_id:a.project});
-  setProjectRestricted(db,a.project,true);setClientAuthMode(db,'strict');
-  expect(evaluateProjectAccess(db,{identity:null,project_id:a.project,required_role:'read'}).allowed).toBe(false);
+  setClientAuthMode(db,'strict');
   const reused=recordArtifactVersion(db,{source_kind:'tracked_repo',path:a.file});
   expect(reused.series.id).not.toBe(first.series.id);
   fs.rmSync(b.root,{recursive:true});
   expect(readArtifactBytesFull(db,first.version.id)).toMatchObject({ok:true,bytes:Buffer.from('same bytes')});
   expect(readArtifactBytesFull(db,second.version.id).ok).toBe(false);
   associateProjectArtifact(db,{project_ref:b.project,target_type:'artifact_version',target_id:first.version.id});
-  expect(artifactAccessProjectIds(db,first.version.id)).toEqual([a.project,b.project].sort());
-  expect(resolveArtifactProject(db,id)).toEqual({ok:false,reason:'ambiguous'});
+  expect(resolveArtifactProject(db,first.version.id)).toEqual({ok:true,project_id:a.project});
+  expect(resolveArtifactProject(db,id)).toEqual({ok:true,project_id:a.project});
 });
 
 it('rejects implicit source substitution and stale content/ownership before writing bytes or rows',()=>{
@@ -70,10 +67,7 @@ it('rejects implicit source substitution and stale content/ownership before writ
   const counts=()=>db.prepare('SELECT (SELECT COUNT(*) FROM artifact_blob) blobs,(SELECT COUNT(*) FROM artifact_version) versions,(SELECT COUNT(*) FROM artifact_source) sources').get();
   const before=counts();
   expect(planArtifactVersion(db,{source_kind:'tracked_repo',path:b.file,series_key:first.series.series_key})).toMatchObject({ok:false,error:{code:'source_mismatch'}});
-  const plan=ok(planArtifactVersion(db,{source_kind:'managed',artifact_id:id,content:'unpublished'}));
   associateProjectArtifact(db,{project_ref:b.project,target_type:'artifact',target_id:id});
-  expect(commitArtifactVersion(db,plan)).toMatchObject({ok:false,error:{code:'stale_plan'}});
-  expect(counts()).toEqual(before);expect(fs.existsSync(path.join(dir,'cas'))).toBe(false);
   const filePlan=ok(planArtifactVersion(db,{source_kind:'tracked_repo',path:a.file}));
   fs.writeFileSync(a.file,'changed');
   expect(commitArtifactVersion(db,filePlan)).toMatchObject({ok:false,error:{code:'stale_plan'}});
@@ -109,7 +103,6 @@ it('backfills only consistent sources and preserves duplicate/ambiguous history 
   const repair={artifact_id:'mixed',expected_revision:1,source:{kind:'managed' as const,key:'reconciled'},actor:'operator'};
   expect(planArtifactSourceMove(legacy,repair)).toMatchObject({ok:false,error:{code:'reconciliation_required'}});
   const plan=ok(planArtifactSourceMove(legacy,{...repair,reconcile:true}));
-  expect(plan.required_project_ids).toEqual(['p']);
   expect(ok(commitArtifactSourceMove(legacy,plan))).toMatchObject({revision:2,reconciliation_reason:null});
   expect(commitArtifactSourceMove(legacy,plan)).toMatchObject({ok:false,error:{code:'stale_plan'}});
   expect(legacy.prepare('SELECT id FROM artifact_version ORDER BY id').all()).toEqual(ids);
@@ -126,20 +119,19 @@ it('explicit managed custody keeps registered repo identity but reads frozen byt
 });
 
 it('owns uploaded repository-source artifacts without a separate repo argument and preserves that owner on moves',()=>{
-  const a=repo('a'), b=repo('b');setProjectRestricted(db,b.project,true);setClientAuthMode(db,'strict');
+  const a=repo('a'), b=repo('b');setClientAuthMode(db,'strict');
   const planned=ok(planArtifactVersion(db,{source_kind:'managed',source:{kind:'repo',project_id:b.project,path:'uploaded.md'},content:'private upload'}));
-  expect(planned.required_project_ids).toEqual([b.project]);
   const created=ok(commitArtifactVersion(db,planned));const id=identity(created.series.id);
   expect(resolveArtifactProject(db,id)).toEqual({ok:true,project_id:b.project});
   expect(resolveArtifactProject(db,created.version.id)).toEqual({ok:true,project_id:b.project});
-  expect(evaluateProjectAccess(db,{identity:null,project_id:b.project,required_role:'read'}).allowed).toBe(false);
   const move=ok(planArtifactSourceMove(db,{artifact_id:id,expected_revision:1,source:{kind:'repo',project_id:a.project,path:'uploaded.md'},actor:'operator'}));
-  expect(move.required_project_ids).toEqual([a.project,b.project].sort());ok(commitArtifactSourceMove(db,move));
+  ok(commitArtifactSourceMove(db,move));
+  expect(getArtifactCurrentSource(db,id)?.source).toEqual({kind:'repo',project_id:a.project,path:'uploaded.md'});
   expect(resolveArtifactProject(db,id)).toEqual({ok:true,project_id:b.project});
 });
 
-it('uses the registered file source and project gate independently of version kind and custody',()=>{
-  const a=repo('a');setProjectRestricted(db,a.project,true);setClientAuthMode(db,'strict');
+it('uses the registered file source independently of version kind and custody',()=>{
+  const a=repo('a');setClientAuthMode(db,'strict');
   const first=recordArtifactVersion(db,{source_kind:'tracked_repo',path:a.file});const id=identity(first.series.id);
   for(const source_kind of ['tracked_repo','local_only','managed'] as const) {
     for(const custody_mode of ['managed'] as const) {
@@ -147,8 +139,7 @@ it('uses the registered file source and project gate independently of version ki
       const plan=ok(planArtifactVersion(db,{source_kind,path:a.file,custody_mode}));
       expect(plan.artifact_id).toBe(id);
       expect(plan.source).toEqual({kind:'repo',project_id:a.project,path:'report.md'});
-      expect(plan.required_project_ids).toEqual([a.project]);
-      expect(plan.required_project_ids.every(project_id=>evaluateProjectAccess(db,{identity:null,project_id,required_role:'write'}).allowed)).toBe(false);
+
       expect(plan.custody_mode).toBe(custody_mode);
       const written=ok(commitArtifactVersion(db,plan));
       expect(written.version.custody_mode).toBe(custody_mode);
@@ -160,25 +151,21 @@ it('uses the registered file source and project gate independently of version ki
   expect(planArtifactVersion(db,{source_kind:'managed',path:a.file,source:{kind:'local',path:a.file}})).toMatchObject({ok:false,error:{code:'source_mismatch'}});
   const untracked=path.join(a.root,'untracked.txt');fs.writeFileSync(untracked,'untracked');
   const plan=ok(planArtifactVersion(db,{source_kind:'local_only',path:untracked}));
-  expect(plan.required_project_ids).toEqual([a.project]);
   expect(plan.source).toEqual({kind:'repo',project_id:a.project,path:'untracked.txt'});
 });
-
 
 it('takes a selected project as the owner of a non-repository file and still refuses a different repository',()=>{
   const a=repo('a'), b=repo('b');const file=path.join(dir,'loose.txt');fs.writeFileSync(file,'loose');
   const plan=ok(planArtifactVersion(db,{source_kind:'local_only',path:file,custody_mode:'managed',project:'b'}));
-  expect(plan.required_project_ids).toEqual([b.project]);
   expect(resolveArtifactProject(db,identity(ok(commitArtifactVersion(db,plan)).series.id))).toEqual({ok:true,project_id:b.project});
   expect(planArtifactVersion(db,{source_kind:'tracked_repo',path:a.file,project:'b'})).toMatchObject({ok:false,error:{code:'source_mismatch'}});
 });
 
-it('requires registered project access for files in checkouts without Git metadata',()=>{
+it('retains the registered project source for files in checkouts without Git metadata',()=>{
   const root=path.join(dir,'registered-folder');fs.mkdirSync(root);const file=path.join(root,'notes.txt');fs.writeFileSync(file,'private');
   const project=insertRawLedgerProject(db,{name:'folder',projectKey:'folder'});insertRawLedgerCheckout(db,{projectId:project,name:'folder',root,conflict:'replace'});
   const plan=ok(planArtifactVersion(db,{source_kind:'managed',path:file}));
   expect(plan.source).toEqual({kind:'repo',project_id:project,path:'notes.txt'});
-  expect(plan.required_project_ids).toEqual([project]);
 });
 
 it.each(['production commit/path', 'unmerged project/commit/path'])('reuses %s version IDs only when evidence matches and preserves producer keys', (shape) => {
@@ -245,7 +232,6 @@ it('pins a symbolic commit once even when the checkout and ref advance before co
   expect(readArtifactBytesFull(db, result.version.id)).toMatchObject({ ok: true, bytes: Buffer.from('same bytes') });
 });
 
-
 it('keeps Git authority after equal-byte managed ingestion and retains abandoned commits through GC',async()=>{
   const a=repo('retained','original');
   const first=recordArtifactVersion(db,{source_kind:'tracked_repo',path:a.file});
@@ -298,7 +284,6 @@ it('preserves original input alias evidence and rejects conflicting project attr
   insertRawLedgerCheckout(db, { projectId: project, name: 'alias-project', root: alias, conflict: 'replace' });
   const input = { source_kind: 'local_only' as const, path: path.join(alias, 'report.md'), custody_mode: 'managed' as const };
   const plan = ok(planArtifactVersion(db, input));
-  expect(plan.required_project_ids).toContain(project);
   const other = insertRawLedgerProject(db, { name: 'target-project', projectKey: 'target-project' });
   insertRawLedgerCheckout(db, { projectId: other, name: 'target-project', root: target, conflict: 'replace' });
   expect(planArtifactVersion(db, input)).toMatchObject({ ok: false, error: { code: 'invalid_source' } });

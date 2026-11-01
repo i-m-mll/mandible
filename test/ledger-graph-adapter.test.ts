@@ -109,12 +109,11 @@ describe("ledger graph projection", () => {
       actor_type: "agent",
       source: "session",
     });
-    store.upsertIssueRelationship({
+    store.linkRelationshipEdges({
       actor: SYSTEM_ACTOR,
-      source_issue_id: parent.id,
-      target_issue_id: child.id,
-      relationship_type: "parent_child",
-      provenance: "manual",
+      source_entity: { entity_type: "issue", entity_id: parent.id },
+      target_entities: [{ entity_type: "issue", entity_id: child.id }],
+      link_type: "parent_child",
       metadata: { order: 3 },
     });
 
@@ -151,7 +150,7 @@ describe("ledger graph projection", () => {
         target: childNode.id,
         type: "umbrella_child",
         edge_class: "semantic",
-        provenance: "ledger_issue_relationships",
+        provenance: "ledger_relationship_edges",
         metadata: expect.objectContaining({
           relationship_type: "parent_child",
           label_default_visible: false,

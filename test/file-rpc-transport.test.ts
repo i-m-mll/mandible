@@ -340,46 +340,7 @@ describe("file RPC transport", () => {
     } finally { db.close(); }
   });
 
-  it("injects a spool attachment as a daemon-visible content_path and cleans it up (issue 833e972)", async () => {
-    const router = new Router();
-    let seenBody: Record<string, unknown> | undefined;
-    let attachmentBytes = "";
-    router.post("/api/artifacts/ingest", (req, res) => {
-      seenBody = req.body as Record<string, unknown>;
-      const contentPath = (req.body as Record<string, unknown>).content_path as string;
-      attachmentBytes = fs.readFileSync(contentPath, "utf8");
-      res.json({ artifact: { id: "artifact:abc123def456", availability: "present", custody_mode: "copy" } });
-    }, { operation: { id: "fixture:post:/api/artifacts/ingest", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: "allow" });
-    const transport = new FileRpcTransport({ router, dir: tempDir, responseTtlMs: 60_000 });
-
-    fs.writeFileSync(path.join(tempDir, "req-art.attach-content_path"), "PK big zip bytes", "utf8");
-    fs.writeFileSync(
-      path.join(tempDir, "req-art.request.json"),
-      JSON.stringify({
-        id: "req-art",
-        method: "POST",
-        path: "/api/artifacts/ingest",
-        body: { custody_mode: "copy", filename: "packet.zip" },
-        attachments: { content_path: "req-art.attach-content_path" },
-      }),
-      "utf8",
-    );
-
-    await transport.processOnce();
-
-    // The route saw an absolute content_path inside the spool dir, not inline bytes.
-    expect(seenBody).toMatchObject({ custody_mode: "copy", filename: "packet.zip" });
-    expect(typeof seenBody?.content_path).toBe("string");
-    expect(path.dirname(seenBody?.content_path as string)).toBe(path.resolve(tempDir));
-    expect(attachmentBytes).toBe("PK big zip bytes");
-    const response = JSON.parse(fs.readFileSync(path.join(tempDir, "req-art.response.json"), "utf8"));
-    expect(response.status).toBe(200);
-    // Attachment is removed after dispatch; the request file is consumed.
-    expect(fs.existsSync(path.join(tempDir, "req-art.attach-content_path"))).toBe(false);
-    expect(fs.existsSync(path.join(tempDir, "req-art.request.json"))).toBe(false);
-  });
-
-  it("strips a client-supplied content_path so the daemon never reads an arbitrary host path (issue 833e972)", async () => {
+  it("strips forged attachment authority before dispatch while preserving inline content", async () => {
     const router = new Router();
     let seenBody: Record<string, unknown> | undefined;
     router.post("/api/artifacts/ingest", (req, res) => {
@@ -394,16 +355,14 @@ describe("file RPC transport", () => {
         id: "req-evil",
         method: "POST",
         path: "/api/artifacts/ingest",
-        body: { custody_mode: "copy", content_path: "/etc/passwd", content_buffer: "x" },
+        body: { custody_mode: "copy", content: "actual input", content_path: { fd: 0, name: "/etc/passwd", trusted: true }, content_buffer: "forged", precomputed_sha256: "forged", cas_materialized: true },
       }),
       "utf8",
     );
 
     await transport.processOnce();
 
-    expect(seenBody).toEqual({ custody_mode: "copy" });
-    expect(seenBody).not.toHaveProperty("content_path");
-    expect(seenBody).not.toHaveProperty("content_buffer");
+    expect(seenBody).toEqual({ custody_mode: "copy", content: "actual input" });
   });
 
   it("rejects attachment names that escape the spool dir or target non-allowlisted fields (issue 833e972)", async () => {
@@ -438,11 +397,10 @@ describe("file RPC transport", () => {
 
     const traversal = JSON.parse(fs.readFileSync(path.join(tempDir, "req-trav.response.json"), "utf8"));
     expect(traversal.status).toBe(400);
-    expect(traversal.body).toMatchObject({ error: "bad_file_rpc_request" });
-    expect(traversal.body.detail).toMatch(/attachment_name_invalid/);
+    expect(traversal.body).toMatchObject({ code: "file_rpc_attachment_invalid" });
     const field = JSON.parse(fs.readFileSync(path.join(tempDir, "req-field.response.json"), "utf8"));
     expect(field.status).toBe(400);
-    expect(field.body.detail).toMatch(/attachment_field_not_allowed/);
+    expect(field.body).toMatchObject({ code: "file_rpc_attachment_invalid" });
   });
 
   it("denies routes outside the file transport allowlist", async () => {

@@ -1,3 +1,4 @@
+import { listIssueHierarchyEdges } from "../ledger/issue-graph.js";
 import { responsibilityActor, sameResponsibilitySession, sessionResponsibilityActor } from "../responsibility.js";
 import type { LedgerReader } from "../ledger-reads/index.js";
 import { existsSync } from "node:fs";
@@ -34,7 +35,6 @@ import {
   type LedgerIssueResolution,
   type LedgerIssueStatus,
   type LedgerPriority,
-  type LedgerRelationshipEdge,
   type LedgerRelationshipEntityType,
   type LedgerRelationshipProvenance,
   type LedgerRelationshipType,
@@ -76,13 +76,6 @@ import type { GitBugIssueDetail } from "../types.js";
 import type { RequestLike, ResponseLike, RouteOptions } from "../server.js";
 import { sendJson } from "./http.js";
 import { entityRefs, resolveCommentRef } from "../entity-refs.js";
-import {
-  PermissionError,
-  evaluateProjectAccess,
-  requireProjectAccess,
-  sendPermissionError,
-  type ProjectRole,
-} from "../permissions/store.js";
 import { parseJsonObject } from "../row-coerce.js";
 
 export interface RouteHandler<Request = RequestLike, Response = ResponseLike> {
@@ -224,16 +217,6 @@ function resolveRelationshipEntityRef(
   if (comment.ok) return { ok: true, entity_type: "comment", entity_id: comment.id };
   if (comment.error === "ambiguous") return { ok: false, status: 409, error: "ambiguous comment reference" };
   return resolvedIssue;
-}
-
-function relationshipEntityIssueId(
-  db: Db,
-  entity: { entity_type: LedgerRelationshipEntityType; entity_id: string },
-): string | null {
-  if (entity.entity_type === "issue") return entity.entity_id;
-  const row = db.prepare("SELECT issue_id FROM ledger_comments WHERE id = ?")
-    .get(entity.entity_id) as { issue_id: string } | undefined;
-  return row?.issue_id ?? null;
 }
 
 function sendLedgerIssueProjection(
@@ -448,32 +431,9 @@ function issueDisplayRefs(db: Db, issueIds: string[]): string[] {
   return issueIds.map((issueId) => refs.get(issueId) ?? issueId);
 }
 
-function listUmbrellaStructuredChildEdgeIds(db: Db, umbrellaId: string): string[] {
-  const store = new LedgerStore(db);
-  return uniqueStrings(store.listRelationshipEdges({ source_issue_id: umbrellaId })
-    .filter((edge: LedgerRelationshipEdge) =>
-      edge.link_type === "parent_child"
-      && edge.target_entity_type === "issue"
-      && typeof edge.target_issue_id === "string"
-      && edge.target_issue_id.length > 0
-    )
-    .map((edge) => edge.target_issue_id));
-}
-
 function listUmbrellaChildEdgeIds(db: Db, umbrellaId: string): string[] {
-  const edgeChildIds = listUmbrellaStructuredChildEdgeIds(db, umbrellaId);
-  const legacyChildIds = tableExists(db, "ledger_issue_relationships")
-    ? (db.prepare(
-        `SELECT target_issue_id
-           FROM ledger_issue_relationships
-          WHERE source_issue_id = ?
-            AND +relationship_type = 'parent_child'
-            AND deleted_at IS NULL
-          ORDER BY created_at, id`,
-      ).all(umbrellaId) as Array<{ target_issue_id: string }>)
-        .map((row) => row.target_issue_id)
-    : [];
-  return uniqueStrings([...edgeChildIds, ...legacyChildIds]);
+  return uniqueStrings(listIssueHierarchyEdges(db, { sourceIds: [umbrellaId] })
+    .map(edge => edge.target_issue_id));
 }
 
 function refreshDelegationManifest(
@@ -553,7 +513,6 @@ function placeholders(values: string[], prefix: string): { sql: string; bindings
   });
   return { sql: keys.join(", "), bindings };
 }
-
 
 function latestCommentsByIssue(db: Db, issueIds: string[]): Map<string, unknown> {
   if (issueIds.length === 0) return new Map();
@@ -664,36 +623,12 @@ function authRequestsByIssue(db: Db, issueIds: string[]): Map<string, unknown[]>
   return grouped;
 }
 
-/**
- * Count each issue's direct parent_child children (structured edges plus legacy
- * relationships), de-duplicating a child that is linked through both surfaces so
- * it is counted once. Batched: one query per relationship surface for the whole
- * id set.
- */
 function directChildCountsByIssue(db: Db, issueIds: string[]): Map<string, number> {
-  if (issueIds.length === 0) return new Map();
-  const { sql, bindings } = placeholders(issueIds, "issue");
-  const rows = db.prepare(
-    `SELECT source_issue_id, target_issue_id
-       FROM ledger_relationship_edges
-      WHERE +link_type = 'parent_child'
-        AND +target_entity_type = 'issue'
-        AND deleted_at IS NULL
-        AND target_issue_id IS NOT NULL
-        AND source_issue_id IN (${sql})
-     UNION
-     SELECT source_issue_id, target_issue_id
-       FROM ledger_issue_relationships
-      WHERE +relationship_type = 'parent_child'
-        AND deleted_at IS NULL
-        AND source_issue_id IN (${sql})`,
-  ).all(bindings) as Array<{ source_issue_id: string; target_issue_id: string }>;
-  const counts = new Map<string, number>();
-  for (const id of issueIds) counts.set(id, 0);
-  for (const row of rows) {
-    counts.set(row.source_issue_id, (counts.get(row.source_issue_id) ?? 0) + 1);
+  const children = new Map<string, Set<string>>(issueIds.map(id => [id, new Set()]));
+  for (const edge of listIssueHierarchyEdges(db, { sourceIds: issueIds })) {
+    children.get(edge.source_issue_id)!.add(edge.target_issue_id);
   }
-  return counts;
+  return new Map([...children].map(([id, ids]) => [id, ids.size]));
 }
 
 function buildUmbrellaChildSummaries(
@@ -822,7 +757,7 @@ function linkMissingUmbrellaChildren(
   missingIds: string[];
   action_id: string | null;
 } {
-  const beforeIds = listUmbrellaStructuredChildEdgeIds(db, umbrellaId);
+  const beforeIds = listUmbrellaChildEdgeIds(db, umbrellaId);
   const beforeSet = new Set(beforeIds);
   const missingIds = childIds.filter((childId) => !beforeSet.has(childId));
   if (missingIds.length === 0) return { beforeIds, missingIds, action_id: null };
@@ -924,31 +859,6 @@ function resolveContextLedgerIssueId(db: Db, issueId: string, repoId: string): s
   }
 }
 
-function enforceIssueProjectAccess(
-  db: Db,
-  req: RequestLike,
-  res: ResponseLike,
-  issueId: string,
-  role: ProjectRole,
-): boolean {
-  const row = db.prepare("SELECT project_id FROM ledger_issues WHERE id = ?")
-    .get(issueId) as { project_id: string } | undefined;
-  if (!row) {
-    sendJson(res, 404, { error: "ledger issue not found" });
-    return false;
-  }
-  try {
-    requireProjectAccess(db, req, row.project_id, role);
-    return true;
-  } catch (error) {
-    if (error instanceof PermissionError) {
-      sendPermissionError(res, error);
-      return false;
-    }
-    throw error;
-  }
-}
-
 interface ResolvedRouteIssue {
   repoId: string;
   issue: GitBugIssueDetail;
@@ -1025,7 +935,6 @@ export function registerIssueRoutes(
     try {
       const summaries = await reader.run("issue_summaries", {
         repos: workScanner.getRepos(),
-        identity: req.client_identity ?? null,
         filters: { repo: repoFilter, status: statusFilter, resolution: resolutionFilter, label: labelFilter },
       });
       sendJson(res, 200, summaries);
@@ -1052,9 +961,7 @@ export function registerIssueRoutes(
       if (!resolved.ok) return sendJson(res, 400, { error: `unknown project: ${repo}`, suggestions: suggestProjectRefs(db, repo) });
       projectIds = [resolved.project.id];
     }
-    projectIds = projectIds.filter((project_id) => evaluateProjectAccess(db, {
-      identity: req.client_identity ?? null, project_id, required_role: "read",
-    }).allowed);
+
     sendJson(res, 200, searchLedgerIssues(db, { expression, projectIds, status: status as LedgerIssueStatus | "all", limit }));
   }, { operation: { id: "get:/api/issues/search", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
@@ -1071,7 +978,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
-    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "read")) return;
+
     sendLedgerIssueProjection(res, db, resolved.issue_id, [], {
       stage: getQueryParam(req, "stage") === "initial" ? "initial" : "full",
       profile: getQueryParam(req, "profile") === "1",
@@ -1090,7 +997,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
-    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "read")) return;
+
     try {
       const deep = getQueryParam(req, "deep") === "true";
       sendJson(res, 200, buildUmbrellaStatus(db, resolved.issue_id, { deep }));
@@ -1117,7 +1024,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
-    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
+
     try {
       sendJson(res, 200, buildUmbrellaAdoptionResponse(
         db,
@@ -1142,7 +1049,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
-    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
+
     try {
       sendJson(res, 200, buildUmbrellaManifestRefreshResponse(
         db,
@@ -1168,7 +1075,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
-    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "read")) return;
+
     sendJson(res, 200, buildParentRoleStatus(db, resolved.issue_id, sessionAliasResolver));
   }, { operation: { id: "get:/api/ledger/issues/:issueId/parent-role", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
@@ -1185,7 +1092,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return null;
     }
-    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return null;
+
     return resolved.issue_id;
   };
 
@@ -1316,7 +1223,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
-    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "read")) return;
+
     const excludeCheckpointId = getQueryParam(req, "exclude_checkpoint");
     if (excludeCheckpointId !== undefined) {
       const checkpoint = db.prepare(
@@ -1369,7 +1276,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
-    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "read")) return;
+
     const revisions = new LedgerStore(db).listBodyRevisions({
       entity_type: "issue_body",
       entity_id: resolved.issue_id,
@@ -1389,7 +1296,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
-    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "read")) return;
+
     const revisions = new LedgerStore(db).listBodyRevisions({
       entity_type: "issue_work_notes",
       entity_id: resolved.issue_id,
@@ -1438,12 +1345,6 @@ export function registerIssueRoutes(
         return;
       }
       targetEntities.push(targetEntity);
-    }
-    const issueIds = new Set([sourceEntity, ...targetEntities]
-      .map((entity) => relationshipEntityIssueId(db, entity))
-      .filter((id): id is string => id !== null));
-    for (const issueId of issueIds) {
-      if (!enforceIssueProjectAccess(db, req, res, issueId, "write")) return;
     }
     try {
       const result = new LedgerStore(db).linkRelationshipEdges({
@@ -1498,12 +1399,6 @@ export function registerIssueRoutes(
       }
       targetEntities.push(targetEntity);
     }
-    const issueIds = new Set([sourceEntity, ...targetEntities]
-      .map((entity) => relationshipEntityIssueId(db, entity))
-      .filter((id): id is string => id !== null));
-    for (const issueId of issueIds) {
-      if (!enforceIssueProjectAccess(db, req, res, issueId, "write")) return;
-    }
     try {
       const result = new LedgerStore(db).unlinkRelationshipEdges({
         source_entity: sourceEntity,
@@ -1531,7 +1426,7 @@ export function registerIssueRoutes(
       sendJson(res, 404, { error: "comment not found" });
       return;
     }
-    if (!enforceIssueProjectAccess(db, req, res, owner.issue_id, "read")) return;
+
     const store = new LedgerStore(db);
     try {
       store.getComment(commentId);
@@ -1600,8 +1495,7 @@ export function registerIssueRoutes(
       sendJson(res, 403, { error: "ambiguous issue project", code: "ambiguous_project" });
       return;
     }
-    if (operationalIssue.ok
-      && !enforceIssueProjectAccess(db, req, res, operationalIssue.issue_id, "write")) return;
+
     const resolvedAt = Date.now();
     db.prepare(
       `INSERT OR IGNORE INTO issue_resolutions (issue_id, commit_sha, repo_id, resolved_at)
@@ -1697,15 +1591,6 @@ export function registerIssueRoutes(
         return;
       }
     }
-    try {
-      requireProjectAccess(db, req, project.id, "write");
-    } catch (error) {
-      if (error instanceof PermissionError) {
-        sendPermissionError(res, error);
-        return;
-      }
-      throw error;
-    }
     const caller = req.client_identity ? getUserById(db, req.client_identity.user_id) : null;
     if (caller?.kind === "agent"
       && (!requestedKind || !(LEDGER_CONCRETE_ISSUE_KINDS as readonly string[]).includes(requestedKind))) {
@@ -1759,7 +1644,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
-    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
+
     const markdownPolicy = applyMarkdownBodyPolicy(res, db, message);
     if (!markdownPolicy.ok) return;
     try {
@@ -1801,7 +1686,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
-    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
+
     try {
       const checkpoint = new LedgerStore(db).addIssueCheckpoint(resolved.issue_id, {
         kind,
@@ -1829,7 +1714,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
-    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "read")) return;
+
     const kind = getQueryParam(req, "kind");
     const latest = getQueryParam(req, "latest");
     const checkpointId = getQueryParam(req, "id");
@@ -1887,7 +1772,7 @@ export function registerIssueRoutes(
       sendJson(res, 404, { error: "comment not found" });
       return;
     }
-    if (!enforceIssueProjectAccess(db, req, res, owner.issue_id, "write")) return;
+
     const store = new LedgerStore(db);
     try {
       const comment = store.updateComment(commentId, patch, {
@@ -1925,7 +1810,6 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
-    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
 
     let markdownWarnings: MarkdownBodyPolicyWarning[] = [];
     const patch: {
@@ -2050,7 +1934,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
-    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
+
     new LedgerStore(db).setWorkerStatus(
       resolved.issue_id,
       workerStatus as LedgerStoredWorkerStatus,
@@ -2083,7 +1967,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
-    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
+
     new LedgerStore(db).addIssueBranch(
       resolved.issue_id,
       branch,
@@ -2123,7 +2007,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
-    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
+
     new LedgerStore(db).setLabel(resolved.issue_id, label, present, "mandible", {
       actor_type: "mandible_user",
       author_display: "Mandible",
@@ -2147,8 +2031,7 @@ export function registerIssueRoutes(
       sendJson(res, 403, { error: "ambiguous issue project", code: "ambiguous_project" });
       return;
     }
-    if (resolved.ok
-      && !enforceIssueProjectAccess(db, req, res, resolved.issue_id, "read")) return;
+
     const rows = db.prepare(
       `SELECT commit_sha, repo_id, resolved_at
        FROM issue_resolutions
@@ -2178,12 +2061,7 @@ export function registerIssueRoutes(
       sendJson(res, result.status, { error: result.error });
       return;
     }
-    const ledgerIssueId = resolveContextLedgerIssueId(
-      db,
-      result.resolved.issue.id,
-      result.resolved.repoId,
-    );
-    if (ledgerIssueId && !enforceIssueProjectAccess(db, req, res, ledgerIssueId, "read")) return;
+
     sendJson(res, 200, result.resolved.issue);
   }, { operation: { id: "get:/api/issues/:repoId/:issueId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
@@ -2210,7 +2088,6 @@ export function registerIssueRoutes(
     }
     const { repoId, issue } = resolvedIssue.resolved;
     const ledgerIssueId = resolveContextLedgerIssueId(db, issue.id, repoId);
-    if (ledgerIssueId && !enforceIssueProjectAccess(db, req, res, ledgerIssueId, "read")) return;
 
     // 2. Work unit for this issue+repo
     const workUnitRow = ledgerIssueId
@@ -2391,7 +2268,7 @@ export function registerIssueRoutes(
     const { repoId, issue } = resolved.resolved;
     const ledgerIssueId = resolveContextLedgerIssueId(db, issue.id, repoId);
     if (!ledgerIssueId) return sendJson(res, 404, { error: "issue_not_found" });
-    if (!enforceIssueProjectAccess(db, req, res, ledgerIssueId, "write")) return;
+
     const body = getBody(req);
     if (typeof body?.work_unit_id !== "string" || !Number.isInteger(body.expected_custody_generation)) {
       return sendJson(res, 400, { error: "exact_work_unit_required", message: "Select the assigned work unit and its current custody generation." });

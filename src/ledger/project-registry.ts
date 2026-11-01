@@ -932,7 +932,7 @@ export const RepairOptionsSchema = z.object({
 }).strict();
 export type RepairOptions = z.infer<typeof RepairOptionsSchema>;
 export interface MergeConflict {
-  kind: "short_id" | "alias" | "association" | "singleton" | "restricted_policy" | "historical_reference" | "schema_coverage" | "feed_continuity";
+  kind: "short_id" | "alias" | "association" | "singleton" | "historical_reference" | "schema_coverage" | "feed_continuity";
   value: string;
   count?: number;
   detail: string;
@@ -951,7 +951,6 @@ export interface MergePlan {
   moves: ReferenceCount[];
   reference_occurrences: number;
   distinct_rows: number;
-  grant_coalescences: Array<{ source_id: string; survivor_id: string }>;
   conflicts: MergeConflict[];
   applied: boolean;
 }
@@ -976,7 +975,7 @@ function inspectMerge(db: Db, sourceId: string, targetId: string, repositories: 
   }));
   if (conflicts.length) return {
     source_project_id: sourceId, target_project_id: targetId, references: [], moves: [],
-    reference_occurrences: 0, distinct_rows: 0, grant_coalescences: [], conflicts, applied: false,
+    reference_occurrences: 0, distinct_rows: 0, conflicts, applied: false,
   };
   const references: ReferenceCount[] = [];
   const distinct = new Set<string>();
@@ -1002,19 +1001,14 @@ function inspectMerge(db: Db, sourceId: string, targetId: string, repositories: 
     const rows = db.prepare(`SELECT id FROM ledger_issues WHERE project_id IN (?,?) AND kind=? AND status='open' AND deleted_at IS NULL`).all(sourceId, targetId, kind);
     if (rows.length > 1) conflicts.push({ kind: "singleton", value: kind, count: rows.length, detail: "Only one open issue of this kind is permitted per project" });
   }
-  const restricted = db.prepare("SELECT DISTINCT restricted FROM ledger_projects WHERE id IN (?,?)").all(sourceId, targetId);
-  if (restricted.length !== 1) conflicts.push({ kind: "restricted_policy", value: "restricted", detail: "Source and target must have equal restricted settings" });
   try { mergeLedgerChangeFeed(db, sourceId, targetId, 0, true); }
   catch (error) {
     if (!(error instanceof ProjectRegistryError)) throw error;
     conflicts.push({ kind: "feed_continuity", value: "ledger_change_log", detail: error.message });
   }
-  const grant_coalescences = db.prepare(`SELECT s.id source_id, d.id survivor_id FROM permission_grants s JOIN permission_grants d
-    ON d.resource_type='project' AND d.resource_id=? AND d.subject_type=s.subject_type AND d.subject_id=s.subject_id AND d.permission=s.permission
-    WHERE s.resource_type='project' AND s.resource_id=? ORDER BY s.id`).all(targetId, sourceId) as MergePlan["grant_coalescences"];
   return { source_project_id: sourceId, target_project_id: targetId, references,
     moves: references.filter(ref => ref.disposition !== "pin"), reference_occurrences: references.reduce((sum, ref) => sum + ref.rows, 0),
-    distinct_rows: distinct.size, grant_coalescences, conflicts, applied: false };
+    distinct_rows: distinct.size, conflicts, applied: false };
 }
 
 function mergeLedgerChangeFeed(db: Db, sourceId: string, targetId: string, now: number, inspectOnly = false): void {
@@ -1095,20 +1089,6 @@ function plannedKeyBackfills(db: Db): RepairReport["key_backfills"] {
   });
 }
 
-function mergeProjectGrants(db: Db, sourceId: string, targetId: string, plan: MergePlan): void {
-  const duplicates = new Map(plan.grant_coalescences.map(row => [row.source_id, row.survivor_id]));
-  const grants = db.prepare("SELECT id FROM permission_grants WHERE resource_type='project' AND resource_id=? ORDER BY id").all(sourceId) as { id: string }[];
-  for (const { id } of grants) {
-    const survivor = duplicates.get(id);
-    mutateLedgerRecord(db, {
-      entity_type: "grant", entity_id: id, project_id: targetId,
-      payload: { source_project_id: sourceId, target_project_id: targetId, ...(survivor ? { survivor_id: survivor } : {}) },
-      snapshot: () => db.prepare("SELECT * FROM permission_grants WHERE id=?").get(id) ?? null,
-    }, () => survivor ? db.prepare("DELETE FROM permission_grants WHERE id=?").run(id)
-      : db.prepare("UPDATE permission_grants SET resource_id=? WHERE id=?").run(targetId, id));
-  }
-}
-
 function executeMerge(db: Db, plan: MergePlan, repositories: ProjectRepositoryObservation): void {
   const sourceId = plan.source_project_id, targetId = plan.target_project_id;
   const handlers = new Set<string>();
@@ -1119,7 +1099,6 @@ function executeMerge(db: Db, plan: MergePlan, repositories: ProjectRepositoryOb
       handlers.add(policy.handler);
       switch (policy.handler) {
         case "feed": mergeLedgerChangeFeed(db, sourceId, targetId, Date.now()); break;
-        case "grants": mergeProjectGrants(db, sourceId, targetId, plan); break;
         case "checkout": {
           const checkouts = db.prepare("SELECT id FROM ledger_project_checkouts WHERE project_id=?").all(sourceId) as { id: string }[];
           for (const { id } of checkouts) mutateLedgerRecord(db, {

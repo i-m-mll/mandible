@@ -118,10 +118,10 @@ export function buildParentChildrenByIssueId(
   issues: IssueRow[],
   edges: ReadonlyArray<Pick<LedgerIssueRelationshipSource, "source_issue_id" | "target_issue_id" | "deleted_at">> = [],
 ): Map<string, string[]> {
-  const issueById = new Map(issues.map((issue) => [issue.id, issue]));
+  const liveIssueIds = new Set(issues.filter(issue => issue.deleted_at === null).map(issue => issue.id));
   const children = new Map<string, string[]>();
   for (const edge of edges) {
-    if (edge.deleted_at !== null || !issueById.has(edge.target_issue_id)) continue;
+    if (edge.deleted_at !== null || !liveIssueIds.has(edge.source_issue_id) || !liveIssueIds.has(edge.target_issue_id)) continue;
     const list = children.get(edge.source_issue_id) ?? [];
     list.push(edge.target_issue_id);
     children.set(edge.source_issue_id, list);
@@ -155,7 +155,7 @@ function parentSubtreeIssueIds(
     if (visiting.has(issueId)) {
       diagnostics.push(predicateDiagnostic({
         kind: "cycle",
-        message: "parent_subtree predicate encountered a parent-label cycle.",
+        message: "parent_subtree predicate encountered a parent-child cycle.",
         row_spec_id: rowSpecId,
         issue_id: issueId,
         target_issue_id: issueId,

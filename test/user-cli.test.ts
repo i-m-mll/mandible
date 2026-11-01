@@ -145,3 +145,18 @@ describe("user credential add --from-git-signingkey", () => {
     expect(credentialPosts(stub).map((request) => request.body)).toEqual([{ type: "ssh_key", fingerprint, public_material: publicMaterial }]);
   });
 });
+
+it("rejects retired project-grant and access arguments before contacting the daemon", async () => {
+  const box = sandbox();
+  const stub = await daemon();
+  for (const args of [
+    ['grant', 'add', '--subject-type', 'user', '--subject', 'agent', '--project', 'project', '--role', 'write'],
+    ['grant', 'list', '--resource-type', 'global'],
+    ['grant', 'list', '--resource-id', 'project'],
+    ['access', 'agent', 'project'],
+  ]) {
+    const result = await box.run(stub, ['user', ...args]);
+    expect(result.status, result.stdout).toBe(2);
+  }
+  expect(stub.requests).toEqual([]);
+});

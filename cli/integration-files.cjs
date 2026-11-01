@@ -12,6 +12,21 @@ function stampStandalone(text) {
   return `${text}\n<!-- MANDIBLE GENERATED sha256:${digest(text)} -->\n`;
 }
 
+function targetIdentity(target) {
+  let ancestor = path.resolve(target);
+  const missing = [];
+  for (;;) {
+    try { return path.join(fs.realpathSync.native(ancestor), ...missing); }
+    catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      missing.unshift(path.basename(ancestor));
+      const parent = path.dirname(ancestor);
+      if (parent === ancestor) throw error;
+      ancestor = parent;
+    }
+  }
+}
+
 function ownershipConflict(target) {
   const absolute = path.resolve(target);
   let current = path.parse(absolute).root;
@@ -28,4 +43,4 @@ function ownershipConflict(target) {
   return null;
 }
 
-module.exports = { ownershipConflict, standaloneOwned, stampStandalone };
+module.exports = { ownershipConflict, standaloneOwned, stampStandalone, targetIdentity };

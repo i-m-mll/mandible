@@ -7,7 +7,7 @@ import { listAuthHistorySummaries } from "./ledger-reads/auth-history.js";
 import { forEachInEventLoopSlices } from "./event-loop-slices.js";
 import { assertAuthPublication, bindAuthPublication } from "./auth-publication.js";
 import { operatorGitEnv, signOperatorChallenge } from "./auth-operator-proof.js";
-import { DOMAIN_EVENTS } from "./contracts.js";
+import { DOMAIN_EVENTS, type AuthResolvedPayload } from "./contracts.js";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { childOutput } from "./child-observation.js";
@@ -8322,7 +8322,7 @@ export class AuthQueue {
     return computeAuthRequestOutcome(request.status);
   }
 
-  private buildResolvedPayload(request: AuthRequest): Record<string, unknown> {
+  private buildResolvedPayload(request: AuthRequest): AuthResolvedPayload {
     // Bug: 929c6d0 — include tail of executor output when exit_code > 0 so the
     // agent receiving the event can diagnose without a follow-up API call. The
     // `error` field carries the stored error message (which now includes the

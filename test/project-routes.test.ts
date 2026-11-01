@@ -39,7 +39,7 @@ afterEach(() => {
 it("reserves repair reports and mutations to the operator across transports", async () => {
   const project = addProject(db, { project_key: "authority" });
   const agent = createUser(db, { slug: "repair-agent", kind: "agent", display_name: "Agent" });
-  addGrant(db, { subject_type: "user", subject: agent.id, resource_type: "project", resource: project.id, permission: "admin" });
+
   const agentRouter = authenticatedTestRouter(agent); registerProjectRoutes(agentRouter);
   const anonymous = new Router(); registerProjectRoutes(anonymous);
   for (const body of [{}, { apply: true }]) {

@@ -1,3 +1,4 @@
+import { addGrant } from "../src/permissions/store.js";
 import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import fs from "node:fs";
 import os from "node:os";
@@ -12,7 +13,6 @@ import { FileRpcTransport } from "../src/file-rpc-transport.js";
 import { systemAction } from "../src/identity/resolver.js";
 import { addProject } from "../src/ledger/project-registry.js";
 import { LedgerStore } from "../src/ledger/store.js";
-import { addGrant, setProjectRestricted } from "../src/permissions/store.js";
 import { associateProjectArtifact, ingestArtifact } from "../src/provider-artifacts.js";
 import { recordArtifactVersion } from "./helpers/artifact-http-write-fixtures.js";
 import { DEFAULT_MANAGED_CHAT_OPTIONS } from "../src/managed-chat-defaults.js";
@@ -41,7 +41,7 @@ const fakeScanner = {
   getBranches: () => [],
 } as never;
 
-describe("restricted project route enforcement", () => {
+describe("global effect route enforcement", () => {
   let db: Db;
   let tempDir: string;
   let authenticator: ClientAuthenticator;
@@ -61,79 +61,6 @@ describe("restricted project route enforcement", () => {
   afterEach(() => {
     db.close();
     fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  it("checks canonical project read access before resolving approval references", async () => {
-    registerSpacesRoutes(router);
-    const project = addProject(db, { project_key: "auth-restricted", display_name: "Restricted approvals" });
-    setProjectRestricted(db, project.id, true);
-    const agent = createUser(db, { slug: "approval-reader", kind: "agent", display_name: "Approval Reader" });
-    const { token } = authenticator.mintApiToken(agent.id);
-    const id = "2257522a-39a2-467b-b3f8-491aea66754c";
-    db.prepare(`INSERT INTO auth_requests (id, command, title, repo, created_at, updated_at, expires_at)
-      VALUES (?, 'true', 'Private approval title', ?, 1, 1, 9999999999999)`).run(id, project.project_key);
-    const resolve = (ref: string) => router.invoke({ method: "GET", url: `/api/refs/resolve?ref=${encodeURIComponent(ref)}`, credential: token, transport: "http" });
-    for (const ref of [`auth:${id}`, "auth:2257522a", `mandible:///auth?request=${id}`]) {
-      const denied = await resolve(ref);
-      expect(denied.status).toBe(403);
-      expect(JSON.stringify(denied.body)).not.toContain("Private approval title");
-    }
-    addGrant(db, { subject_type: "user", subject: agent.id, resource_type: "project", resource: project.id, permission: "read" });
-    const allowed = await resolve("auth:2257522a");
-    expect(allowed.status).toBe(200);
-    expect(allowed.body).toMatchObject({ resolution: { kind: "auth", resolved: true, entity: { id: "2257522a", title: "Private approval title" } } });
-  });
-
-  it("denies then restores agent HTTP and file-RPC writes through an agents-group grant", async () => {
-    const project = addProject(db, { project_key: "restricted", display_name: "Restricted" });
-    setProjectRestricted(db, project.id, true);
-    const agent = createUser(db, { slug: "route-agent", kind: "agent", display_name: "Route Agent" });
-    const { token } = authenticator.mintApiToken(agent.id);
-    const request = (title: string) => ({
-      method: "POST",
-      url: "/api/issues/anything",
-      body: { project: project.id, title, body: "Body", kind: "feature" },
-      credential: token,
-    } as const);
-
-    expect((await router.invoke({ ...request("HTTP denied"), transport: "http" })).status).toBe(403);
-    const rpc = new FileRpcTransport({ router, dir: path.join(tempDir, "rpc") });
-    expect((await runFileRpc(rpc, {
-      method: "POST",
-      path: "/api/issues/anything",
-      body: { project: project.id, title: "RPC denied", body: "Body", kind: "feature" },
-      capability_token: token,
-    })).status).toBe(403);
-
-    addGrant(db, {
-      subject_type: "group",
-      subject: "agents",
-      resource_type: "project",
-      resource: project.id,
-      permission: "write",
-    });
-    expect((await router.invoke({ ...request("HTTP granted"), transport: "http" })).status).toBe(200);
-    expect((await runFileRpc(rpc, {
-      method: "POST",
-      path: "/api/issues/anything",
-      body: { project: project.id, title: "RPC granted", body: "Body", kind: "feature" },
-      capability_token: token,
-    })).status).toBe(200);
-  });
-
-  it("keeps the operator implicit admin on restricted projects", async () => {
-    const project = addProject(db, { project_key: "restricted", display_name: "Restricted" });
-    setProjectRestricted(db, project.id, true);
-    const operator = setupOperator(db, { slug: "operator", display_name: "Operator" });
-    const { token } = authenticator.mintApiToken(operator.id);
-    const response = await router.invoke({
-      method: "POST",
-      url: "/api/issues/anything",
-      body: { project: project.id, title: "Operator write", body: "Body" },
-      credential: token,
-      transport: "http",
-    });
-    expect(response.status).toBe(200);
   });
 
   it("denies agent conversation spawn until spawn_console is granted", async () => {
@@ -195,7 +122,6 @@ describe("restricted project route enforcement", () => {
     addGrant(db, {
       subject_type: "user",
       subject: agent.id,
-      resource_type: "global",
       permission: "spawn_console",
     });
     const allowed = await router.invoke(input);
@@ -391,162 +317,13 @@ describe("restricted project route enforcement", () => {
     expect(control.submit).not.toHaveBeenCalled();
     expect(control.stop).not.toHaveBeenCalled();
   });
-
-  it("denies restricted issue, artifact, and work reads and restores them with read access", async () => {
-    const project = addProject(db, { project_key: "read-guard", display_name: "Read Guard" });
-    setProjectRestricted(db, project.id, true);
-    const issue = new LedgerStore(db).createIssue({
-      ...SYSTEM_ACTOR,
-      project_id: project.id,
-      title: "Restricted issue",
-      body: "secret issue body",
-      aliases: [{ alias_kind: "git_bug_short", alias: "read123" }],
-    });
-    const artifact = ingestArtifact(db, {
-      role: "report",
-      media_type: "text/plain",
-      content: "secret artifact bytes",
-    }, 1000, tempDir);
-    associateProjectArtifact(db, {
-      project_ref: project.id,
-      target_type: "artifact",
-      target_id: artifact.id,
-      source: "system",
-    });
-    const repo = {
-      id: "read-repo",
-      name: "Read Repo",
-      root: path.join(tempDir, "read-repo"),
-      exists: true,
-      default_branch: "main",
-      excluded: false,
-      user_modified: false,
-      last_scanned_at: null,
-    };
-    db.prepare(
-      `INSERT INTO ledger_project_checkouts (
-         id, project_id, root, name, work_repo_id, default_branch, remote_url, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, 'main', '', 1000, 1000)`,
-    ).run("checkout-read-repo", project.id, repo.root, repo.name, repo.id);
-    const workScanner = {
-      getRepos: () => [repo],
-      getRepoById: (id: string) => id === repo.id ? repo : undefined,
-      getRepoScan: vi.fn(async () => ({ repo, inventory: { known: true, worktrees: [] } })),
-      getBranches: () => [],
-      scanAllAsync: vi.fn(async () => ({ scanned_repos: 0 })),
-    };
-    registerProviderRoutes(router, inlineLedgerReader());
-    registerWorkRoutes(router, workScanner as never);
-
-    const agent = createUser(db, { slug: "read-agent", kind: "agent", display_name: "Read Agent" });
-    const { token } = authenticator.mintApiToken(agent.id);
-    const invoke = (url: string) => router.invoke({
-      method: "GET",
-      url,
-      credential: token,
-      transport: "http",
-    });
-    expect((await invoke(`/api/ledger/issues/${issue.id}`)).status).toBe(403);
-    expect((await invoke(`/api/artifacts/${encodeURIComponent(artifact.id)}/content`)).status).toBe(403);
-    expect((await invoke(`/api/work/repos/${repo.id}/audit`)).status).toBe(403);
-    expect(workScanner.getRepoScan).not.toHaveBeenCalled();
-
-    addGrant(db, {
-      subject_type: "user",
-      subject: agent.id,
-      resource_type: "project",
-      resource: project.id,
-      permission: "read",
-    });
-    expect((await invoke(`/api/ledger/issues/${issue.id}`)).status).toBe(200);
-    expect((await invoke(`/api/artifacts/${encodeURIComponent(artifact.id)}/content`)).status).toBe(200);
-    expect((await invoke(`/api/work/repos/${repo.id}/audit`)).status).toBe(200);
-    expect(workScanner.getRepoScan).toHaveBeenCalledOnce();
-  });
-
-  it("authorizes artifact content against the original pinned version ref", async () => {
-    const project = addProject(db, { project_key: "version-project", display_name: "Version Project" });
-    setProjectRestricted(db, project.id, true);
-    const recorded = recordArtifactVersion(db, {
-      source_kind: "managed", provider_id: "permission-route-test", content: "pinned bytes\n",
-      media_type: "text/plain", logical_name: "pinned-document",
-    }, 1_000, tempDir);
-    associateProjectArtifact(db, { project_ref: project.id, target_type: "artifact_version",
-      target_id: recorded.version.id, source: "system" });
-    registerProviderRoutes(router, inlineLedgerReader());
-    const agent = createUser(db, { slug: "version-reader", kind: "agent", display_name: "Version Reader" });
-    const { token } = authenticator.mintApiToken(agent.id);
-    const invoke = () => router.invoke({
-      method: "GET",
-      url: `/api/artifacts/${encodeURIComponent(recorded.version.id)}/content`,
-      credential: token,
-      transport: "http",
-    });
-    expect((await invoke()).status).toBe(403);
-    addGrant(db, {
-      subject_type: "user", subject: agent.id, resource_type: "project",
-      resource: project.id, permission: "read",
-    });
-    expect((await invoke()).status).toBe(200);
-  });
-
-  // Before the legacy artifact model was retired this gate read the deprecated
-  // compatibility `version`/`artifact` records off the resolve result. For a
-  // logical or series ref `version` was null and `artifact.id` was a
-  // content-addressed compatibility id that `resolveArtifactProject` cannot
-  // match, so the gate resolved `unassociated` and allowed every request. It
-  // now reads the canonical logical artifact, which is the only id that reaches
-  // artifact-level `project_artifact_associations` rows.
-  it("denies logical and series refs whose artifact is associated to a restricted project", async () => {
-    const project = addProject(db, { project_key: "ref-guard", display_name: "Ref Guard" });
-    setProjectRestricted(db, project.id, true);
-    const recorded = recordArtifactVersion(db, {
-      source_kind: "managed", provider_id: "permission-route-test", content: "restricted bytes\n",
-      media_type: "text/plain", logical_name: "restricted-document",
-    }, 1_000, tempDir);
-    const logicalId = recorded.series.id.replace(/^artifact-series:/, "artifact:");
-    associateProjectArtifact(db, {
-      project_ref: project.id,
-      target_type: "artifact",
-      target_id: logicalId,
-      source: "system",
-    });
-    registerProviderRoutes(router, inlineLedgerReader());
-    const agent = createUser(db, { slug: "ref-reader", kind: "agent", display_name: "Ref Reader" });
-    const { token } = authenticator.mintApiToken(agent.id);
-    const resolve = (ref: string) => router.invoke({
-      method: "GET",
-      url: `/api/artifacts/resolve?ref=${encodeURIComponent(ref)}`,
-      credential: token,
-      transport: "http",
-    });
-
-    expect((await resolve(logicalId)).status).toBe(403);
-    expect((await resolve(recorded.series.id)).status).toBe(403);
-    expect((await resolve(recorded.version.id)).status).toBe(403);
-    expect((await resolve(`artifact-blob:${recorded.artifact.content_hash}`)).status).toBe(403);
-    expect((await resolve(`artifact:sha256:${recorded.artifact.content_hash}`)).status).toBe(403);
-
-    addGrant(db, {
-      subject_type: "user", subject: agent.id, resource_type: "project",
-      resource: project.id, permission: "read",
-    });
-    const granted = await resolve(logicalId);
-    expect(granted.status).toBe(200);
-    const { resolution } = (granted.body as { resolution: ArtifactResolveResult });
-    expect(resolution.logical_artifact?.id).toBe(logicalId);
-    expect(resolution.artifact_version?.id).toBe(recorded.version.id);
-    expect(resolution.series?.id).toBe(recorded.series.id);
-    expect(resolution.version?.id).toBe(recorded.version.id);
-    expect((await resolve(`artifact-blob:${recorded.artifact.content_hash}`)).status).toBe(200);
-  });
 });
 
 async function runFileRpc(
   transport: FileRpcTransport,
   request: Record<string, unknown>,
 ): Promise<{ status: number; body: unknown }> {
-  fs.mkdirSync(transport.dir, { recursive: true });
+  fs.mkdirSync(transport.dir, { recursive: true, mode: 0o700 });
   const id = `permission-${Math.random().toString(36).slice(2)}`;
   fs.writeFileSync(path.join(transport.dir, `${id}.request.json`), JSON.stringify({ id, ...request }));
   await transport.processOnce();

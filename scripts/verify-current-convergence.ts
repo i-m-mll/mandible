@@ -4,7 +4,6 @@ import { getDbPath, type Db } from '../src/db.js';
 import { AuthQueue } from '../src/auth-queue.js';
 import { ClientAuthenticator } from '../src/client-auth/authenticator.js';
 import { inManagedSessionContext, resolveAmbientProviderIdentity } from '../src/ambient-provider-identity.js';
-import { requireProjectAccess } from '../src/permissions/store.js';
 import { resolveProjectRef } from '../src/ledger/project-registry.js';
 import { getMandibleHome } from '../src/platform-paths.js';
 
@@ -25,7 +24,6 @@ try {
   if (!request?.repo) throw new Error('An exact project-bound request is required.');
   const project = resolveProjectRef(db, request.repo);
   if (!project.ok) throw new Error('Request project is unavailable or ambiguous.');
-  requireProjectAccess(db, { client_identity: identity }, project.project.id, 'write');
   const { verification, ...convergence } = await queue.retryHookConvergence(request.id, undefined, { mode: 'verify-current',
     actor: { user_id: identity.user_id, credential_id: null, session_id: identity.session_id ?? null,
       evidence_method: ambient || localManaged ? 'session_claim' : 'local_default', authority_path: 'custodian' } });

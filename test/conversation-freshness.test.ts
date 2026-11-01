@@ -232,7 +232,7 @@ describe("exact conversation freshness", () => {
 
     const rpcDir = path.join(tempDir, "file-rpc");
     const transport = new FileRpcTransport({ router, dir: rpcDir, responseTtlMs: 60_000 });
-    fs.mkdirSync(rpcDir, { recursive: true });
+    fs.mkdirSync(rpcDir, { recursive: true, mode: 0o700 });
     fs.writeFileSync(path.join(rpcDir, "export.request.json"), JSON.stringify({
       id: "export",
       method: "POST",

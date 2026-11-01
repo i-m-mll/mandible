@@ -94,6 +94,7 @@ source "$GIT_ENV_HELPER"
 
 API_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/api.sh"
 source "$API_HELPER"
+source "${MANDIBLE_CLI_DIR:-$MANDIBLE_COMMAND_SYNTAX_DIR}/auth-status.sh"
 
 MANDIBLE_CLI_DIR="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}"
 
@@ -532,32 +533,12 @@ while IFS= read -r line; do
 
     case "$evt_type" in
       auth:resolved)
-        status=$(printf '%s' "$json" | jq -r '.data.status // "unknown"' 2>/dev/null)
-        exit_code_val=$(printf '%s' "$json" | jq -r '.data.exit_code // "null"' 2>/dev/null)
-        case "$status" in
-          completed)
-            echo "Auth request $(api_short_id "$request_id"): completed (exit ${exit_code_val})"
-            printf 'ok' > "$tmp_sse_result"
-            break
-            ;;
-          failed)
-            reason=$(printf '%s' "$json" | jq -r '.data.failure_reason // "no reason recorded"' 2>/dev/null)
-            echo "Auth request $(api_short_id "$request_id"): failed (exit ${exit_code_val}) -- ${reason}"
-            printf 'fail' > "$tmp_sse_result"
-            break
-            ;;
-          rejected|withdrawn|superseded|expired|dismissed)
-            error=$(printf '%s' "$json" | jq -r '.data.error // "none"' 2>/dev/null)
-            echo "Auth request $(api_short_id "$request_id"): ${status} -- ${error}"
-            printf 'fail' > "$tmp_sse_result"
-            break
-            ;;
-          *)
-            echo "Auth request $(api_short_id "$request_id"): resolved with status '${status}'"
-            printf 'ok' > "$tmp_sse_result"
-            break
-            ;;
-        esac
+        resolved=$(printf '%s' "$json" | jq -c '.data') || continue
+        result=0
+        mandible_auth_report "$(api_short_id "$request_id")" "$resolved" || result=$?
+        [[ "$result" == 2 ]] && continue
+        printf '%s' "$result" > "$tmp_sse_result"
+        break
         ;;
     esac
   fi
@@ -567,35 +548,22 @@ set -o pipefail
 
 sse_result=$(cat "$tmp_sse_result" 2>/dev/null || echo "")
 
-if [[ "$sse_result" == "ok" ]]; then
-  exit 0
-elif [[ "$sse_result" == "fail" ]]; then
+if [[ -n "$sse_result" ]]; then
+  [[ "$sse_result" == 0 ]] && exit 0
   exit 1
 fi
 
-# If we reach here, curl exited (timeout or connection lost) without resolving.
-# Do a single fallback poll to check final status.
+# Reconcile once after SSE disconnects, using the same delivery classification.
 final=$(api_get "/api/auth/request/${request_id}" 2>/dev/null || true)
 if [[ -n "$final" ]]; then
-  status=$(printf '%s' "$final" | jq -r '.status // "unknown"')
-  case "$status" in
-    completed)
-      exit_code_val=$(printf '%s' "$final" | jq -r '.exit_code // "null"')
-      echo "Auth request $(api_short_id "$request_id"): completed (exit ${exit_code_val})"
-      exit 0
-      ;;
-    failed)
-      exit_code_val=$(printf '%s' "$final" | jq -r '.exit_code // "null"')
-      reason=$(printf '%s' "$final" | jq -r '.failure_reason // "no reason recorded"')
-      echo "Auth request $(api_short_id "$request_id"): failed (exit ${exit_code_val}) -- ${reason}"
-      exit 1
-      ;;
-    rejected|withdrawn|superseded|expired|dismissed)
-      error=$(printf '%s' "$final" | jq -r '.error // "none"')
-      echo "Auth request $(api_short_id "$request_id"): ${status} -- ${error}"
-      exit 1
-      ;;
-  esac
+  result=0
+  mandible_auth_report "$(api_short_id "$request_id")" "$final" || result=$?
+  [[ "$result" == 0 ]] && exit 0
+  if [[ "$result" == 2 ]]; then
+    request_status=$(printf '%s' "$final" | jq -r '.status')
+    echo "Auth request $(api_short_id "$request_id"): still in progress ($request_status) after SSE ended; check dashboard." >&2
+  fi
+  exit 1
 fi
 
 echo "Auth request $(api_short_id "$request_id"): SSE connection lost, status unknown. Check dashboard." >&2

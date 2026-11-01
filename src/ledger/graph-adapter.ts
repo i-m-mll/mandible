@@ -1,3 +1,4 @@
+import { displayIssueId, listIssueHierarchyEdges } from "./issue-graph.js";
 import path from "node:path";
 import type { Db } from "../db.js";
 import { columnExists, tableExists } from "../db-introspection.js";
@@ -60,6 +61,7 @@ interface RelationshipRow {
   relationship_type: string;
   provenance: string;
   confidence: string;
+  storage: "ledger_issue_relationships" | "ledger_relationship_edges";
   metadata_json: string;
   created_at: number | string;
 }
@@ -242,10 +244,6 @@ function getAliasRows(db: Db, issueIds: Set<string>): Map<string, AliasRow[]> {
   ).all(idList(issueIds)) as AliasRow[]);
 }
 
-function displayIssueId(issue: IssueRow): string {
-  return issue.short_id || issue.id.slice(0, 7);
-}
-
 function getLabelsByIssue(db: Db, issueIds: Set<string>): Map<string, string[]> {
   if (!tableExists(db, "ledger_labels")) return new Map();
   const grouped = rowsByIssue(db.prepare(
@@ -342,15 +340,20 @@ function getSessionSummaries(db: Db, issueIds: Set<string>): Map<string, {
   return summaries;
 }
 
-function getRelationships(db: Db): RelationshipRow[] {
-  if (!tableExists(db, "ledger_issue_relationships")) return [];
-  return db.prepare(
+function getRelationships(db: Db, issueIds: Set<string>): RelationshipRow[] {
+  const semantic = db.prepare(
     `SELECT id, source_issue_id, target_issue_id, relationship_type,
-            provenance, confidence, metadata_json, created_at
+            provenance, confidence, metadata_json, created_at,
+            'ledger_issue_relationships' AS storage
        FROM ledger_issue_relationships
-      WHERE deleted_at IS NULL
+      WHERE deleted_at IS NULL AND relationship_type != 'parent_child'
+        AND source_issue_id IN (SELECT value FROM json_each(?))
+        AND target_issue_id IN (SELECT value FROM json_each(?))
       ORDER BY relationship_type, created_at`,
-  ).all() as RelationshipRow[];
+  ).all(idList(issueIds), idList(issueIds)) as RelationshipRow[];
+  return [...semantic, ...listIssueHierarchyEdges(db, { sourceIds: [...issueIds], targetIds: [...issueIds] })
+    .map(edge => ({ ...edge, relationship_type: "parent_child", confidence: "observed",
+      storage: "ledger_relationship_edges" as const }))];
 }
 
 function relationshipEdgeType(type: string): string {
@@ -592,9 +595,7 @@ export function buildLedgerIssueProjection(
   }
 
   const visibleIssueIds = new Set(visibleIssues.map((issue) => issue.id));
-  const relationships = getRelationships(db).filter((rel) =>
-    visibleIssueIds.has(rel.source_issue_id) && visibleIssueIds.has(rel.target_issue_id)
-  );
+  const relationships = getRelationships(db, visibleIssueIds);
 
   const issueNodeIdByLedgerId = new Map<string, string>();
   const issueNodeIds = new Set<string>();
@@ -632,7 +633,7 @@ export function buildLedgerIssueProjection(
       target,
       type: relationshipEdgeType(rel.relationship_type),
       edge_class: "semantic",
-      provenance: "ledger_issue_relationships",
+      provenance: rel.storage,
       confidence: rel.confidence,
       metadata: {
         ...metadata,

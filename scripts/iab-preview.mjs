@@ -89,6 +89,7 @@ async function runCli() {
 }
 
 export async function main(options) {
+  if (options.maxIntermediateBytes != null) validatePreviewBudget(options.maxIntermediateBytes);
   assertOrdinaryPreviewLifecycleAllowed();
   const selected = selectPreviewBranch(git(["rev-parse", "--show-toplevel"]).stdout.trim(), options).branch;
   const root = previewPaths(selected).root;
@@ -274,7 +275,7 @@ async function createOrReusePreview(options) {
   const preStartCleanup = { entries: [], reason: 'Other preview runs retain their own custody' };
 
   const dbCopy = path.join(preview.root, `mandible-${formatDateTimeForFile(new Date())}.db`);
-  const allocation = assertPreviewAllocation(preview.root, sourceDb);
+  const allocation = assertPreviewAllocation(preview.root, sourceDb, { maxIntermediateBytes: options.maxIntermediateBytes });
   const ownership = createOwnedRun({ root: preview.root, instanceId: `preview-${createHash("sha256").update(preview.root).digest("hex").slice(0, 16)}`, ...owner,
     disposable: options.disposableFixture, outputs: previewOwnedOutputs(path.basename(dbCopy)).map(output => ({ ...output, kind: "generated" })) });
   ownership.allocation = allocation;
@@ -734,6 +735,7 @@ function parseArgs(argv, commandName) {
     noBuild: false,
     pairBrowser: false,
     port: null,
+    maxIntermediateBytes: null,
     artifactVersion: null,
     disposableFixture: false,
     ownerProject: null,
@@ -776,6 +778,11 @@ function parseArgs(argv, commandName) {
         break;
       case "--pair-browser":
         options.pairBrowser = true;
+        break;
+      case "--max-intermediate-bytes":
+        if (commandName !== "preview") throw new Error("--max-intermediate-bytes applies only to preview creation");
+        options.maxIntermediateBytes = Number(requireValue(argv, ++index, arg));
+        validatePreviewBudget(options.maxIntermediateBytes);
         break;
       case "--port":
         options.port = Number.parseInt(requireValue(argv, ++index, arg), 10);
@@ -989,8 +996,14 @@ function previewOwnedOutputs(dbName, keepSegments = 5) {
   return [...interactive.map(path => ({ path, kind: "interactive" })), ...generated.map(path => ({ path, kind: "generated" }))];
 }
 
+function validatePreviewBudget(value) {
+  if (!Number.isSafeInteger(value) || value <= 0) throw new Error("--max-intermediate-bytes must be a positive safe integer byte count");
+  return value;
+}
+
 export function assertPreviewAllocation(root, sourceDb, options = {}) {
-  const policy = { schema: "mandible-preview-budget@1", reserveBytes: 512 * 1024 * 1024, maxIntermediateBytes: 2 * 1024 * 1024 * 1024 };
+  const policy = { schema: "mandible-preview-budget@1", reserveBytes: 512 * 1024 * 1024,
+    maxIntermediateBytes: validatePreviewBudget(options.maxIntermediateBytes ?? 2 * 1024 * 1024 * 1024) };
   if (!fs.statSync(sourceDb).isFile()) throw new Error("Preview source database must be a file");
   const estimate = 128 * 1024 * 1024;
   const volume = options.volume ?? fs.statfsSync(root);
@@ -1113,6 +1126,7 @@ Options:
   --branch NAME    Preview a separate integration branch with this name.
   --db PATH        Source database to copy. Defaults to MANDIBLE_DB or ~/.mandible/mandible.db.
   --port PORT      Use an explicit preview port.
+  --max-intermediate-bytes BYTES  Set this launch’s shared-cache allocation ceiling (default 2 GiB); the free-volume reserve remains 512 MiB.
   --force-new      Do not preview the current worktree; create a new default integration branch/instance.
   --no-build       Skip frozen dependency installation and Bun build.
   --native         Build and open the matching isolated native application.
