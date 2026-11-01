@@ -15,6 +15,7 @@ import { checkArtifactMaterialization, diffArtifacts, getArtifactContentAsync } 
 import { openArtifactExternally } from "../artifact-open.js";
 import { globalCapabilityRoute } from "../permissions/routes.js";
 import {
+  ArtifactLinkTargetError,
   addArtifactBundleMembersAsync,
   associateProjectArtifact,
   createArtifactBundleAsync,
@@ -68,7 +69,7 @@ import { bodyRecord, sendJson } from "./http.js";
 import { resolveProjectRef } from "../ledger/project-registry.js";
 
 function handleError(res: ResponseLike, error: unknown): void {
-  if (error instanceof ClientAuthzError) {
+  if (error instanceof ClientAuthzError || error instanceof ArtifactLinkTargetError) {
     sendJson(res, error.status, { error: error.message, code: error.code });
     return;
   }
@@ -475,22 +476,6 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
     try {
       const body = bodyRecord(req);
 
-      // Evidence links on issues must pin a concrete artifact version. Reject a
-      // living evidence link at the route boundary (issue 10960ea) so the
-      // contract is enforced at the HTTP edge, not only later in the CLI; the
-      // backend (resolveAndLinkArtifact) enforces the same rule as defense in
-      // depth for every other caller.
-      const linkKind = typeof body.link_kind === "string" ? body.link_kind.trim() : undefined;
-      const linkType = typeof body.link_type === "string" && body.link_type.trim()
-        ? body.link_type.trim()
-        : "references";
-      const entityType = typeof body.entity_type === "string" && body.entity_type.trim()
-        ? body.entity_type.trim()
-        : (typeof body.issue === "string" && body.issue.trim() ? "issue" : undefined);
-      if (linkKind === "living" && entityType === "issue" && linkType === "evidence") {
-        sendJson(res, 400, { error: "evidence_links_must_be_pinned" });
-        return;
-      }
       const result = resolveAndLinkArtifact(getDb(), body);
       sendJson(res, 200, projectArtifactPublicValue(getDb(), { ...result, resolution: projectArtifactResolution(getDb(), result.resolution) }));
     } catch (error) {

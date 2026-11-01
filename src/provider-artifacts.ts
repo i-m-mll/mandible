@@ -15,6 +15,7 @@ import {
   readCommittedArtifactFiles, retainArtifactCommit, type CommittedArtifactFile,
 } from "./artifact-commit-source.js";
 import { resolveProjectRef } from "./ledger/project-registry.js";
+import { LedgerStore } from "./ledger/store.js";
 import { resolveId, resolveIds, shortRefs, type RefResolution } from "./entity-refs.js";
 import { nullableNumber, nullableString, parseJsonOr } from "./row-coerce.js";
 import {
@@ -1470,7 +1471,7 @@ export function registerArtifactLink(
   // AUTHORITATIVE typed-link invariants, enforced at this low-level chokepoint so
   // EVERY write path is covered — including /api/artifacts/ingest, which forwards
   // caller-supplied `link`/`links` straight here and would otherwise bypass the
-  // route and resolveAndLinkArtifact guards (which remain as defense in depth).
+  // resolveAndLinkArtifact guard.
   if (linkKind === "living") {
     // Evidence on an issue must pin one immutable version, never track a head.
     if (entityType === "issue" && linkType === "evidence") {
@@ -2111,28 +2112,61 @@ export async function registerLocalArtifactPathAsync(
   return ingestFromLocalPlan(db, input, core, materialized.hash, materialized.size, now, artifactRoot, delivery);
 }
 
-function resolveIssueEntity(
-  db: Db,
-  rawIssueRef: string,
-  projectRef?: string,
-): { entity_id: string; metadata: JsonRecord } {
-  const split = splitProviderIssueRef(rawIssueRef);
-  const projectId = projectIdForRef(db, projectRef ?? split.projectRef);
-  const issue = resolveProviderIssueRef(db, split.issueRef, projectId);
-  if (!issue.ok) {
-    throw new Error(issue.error === "ambiguous"
-      ? `ambiguous issue ref ${rawIssueRef}: ${issue.matches.join(", ")}`
-      : `issue ref not found: ${rawIssueRef}`);
+type ArtifactLinkTargetErrorCode = "ambiguous_link_entity_target" | "issue_not_found" | "ambiguous_issue_ref"
+  | "invalid_issue_project" | "missing_link_entity_target";
+
+export class ArtifactLinkTargetError extends Error {
+  readonly status = 400;
+  constructor(readonly code: ArtifactLinkTargetErrorCode) {
+    super(code);
+    this.name = "ArtifactLinkTargetError";
   }
-  return {
+}
+
+type ArtifactLinkEntity = {
+  entity_type: string;
+  entity_id: string;
+  metadata: JsonRecord;
+};
+
+type ArtifactLinkEntityResult = { ok: true; value: ArtifactLinkEntity }
+  | { ok: false; error: ArtifactLinkTargetErrorCode };
+
+function resolveArtifactLinkEntity(db: Db, input: ArtifactResolveAndLinkInput): ArtifactLinkEntityResult {
+  const issueRef = asString(input.issue);
+  const entityType = asString(input.entity_type) ?? (issueRef ? "issue" : undefined);
+  const entityRef = asString(input.entity_id);
+  if (issueRef && entityType !== "issue") {
+    return { ok: false, error: "ambiguous_link_entity_target" };
+  }
+  if (!entityType || (!entityRef && !issueRef)) {
+    return { ok: false, error: "missing_link_entity_target" };
+  }
+  if (entityType !== "issue") {
+    return { ok: true, value: { entity_type: entityType, entity_id: entityRef!, metadata: {} } };
+  }
+  const projectRef = asString(input.issue_project) ?? asString(input.repo_id);
+  const project = projectRef ? resolveProjectRef(db, projectRef) : undefined;
+  if (project && !project.ok) return { ok: false, error: "invalid_issue_project" };
+  const store = new LedgerStore(db);
+  const resolve = (ref: string) => store.resolveIssueRef(ref, project?.ok ? { project_id: project.project.id } : {});
+  const issue = resolve(issueRef ?? entityRef!);
+  if (!issue.ok) return { ok: false, error: issue.error === "ambiguous" ? "ambiguous_issue_ref" : "issue_not_found" };
+  if (issueRef && entityRef) {
+    const entity = resolve(entityRef);
+    if (!entity.ok) return { ok: false, error: entity.error === "ambiguous" ? "ambiguous_issue_ref" : "issue_not_found" };
+    if (entity.id !== issue.id) return { ok: false, error: "ambiguous_link_entity_target" };
+  }
+  return { ok: true, value: {
+    entity_type: "issue",
     entity_id: issue.id,
     metadata: {
-      issue_ref: rawIssueRef,
-      issue_project: projectRef ?? split.projectRef ?? null,
+      issue_ref: issueRef ?? entityRef!,
+      issue_project: projectRef ?? splitProviderIssueRef(issueRef ?? entityRef!).projectRef ?? null,
       ledger_issue_id: issue.id,
       resolution_status: "resolved",
     },
-  };
+  } };
 }
 
 // Series candidates for a LIVING link. A series/version ref resolves to exactly
@@ -2162,6 +2196,9 @@ export function resolveAndLinkArtifact(
   input: ArtifactResolveAndLinkInput,
   now = Date.now(),
 ): ArtifactResolveAndLinkResult {
+  const destination = resolveArtifactLinkEntity(db, input);
+  if (!destination.ok) throw new ArtifactLinkTargetError(destination.error);
+  const entity = destination.value;
   const ref = asString(input.ref) ?? asString(input.artifact_ref) ?? asString(input.artifact_id);
   if (!ref) throw new Error("artifact ref is required");
   const resolution = resolveArtifactIdentity(db, ref, "link", now);
@@ -2172,17 +2209,12 @@ export function resolveAndLinkArtifact(
     throw new Error(`artifact ref did not resolve: ${ref}`);
   }
 
-  const entityType = asString(input.entity_type) ?? (asString(input.issue) ? "issue" : undefined);
-  const rawEntityId = asString(input.entity_id) ?? asString(input.issue);
-  if (!entityType || !rawEntityId) {
-    throw new Error("entity_type and entity_id are required");
-  }
   const linkType = asString(input.link_type) ?? "references";
   const linkKind: "pinned" | "living" = asString(input.link_kind) === "living" ? "living" : "pinned";
 
   // LIVING link gating. Resolve the target series and enforce the evidence rule
   // in the BACKEND so every write path (route, CLI, in-process) rejects the same
-  // way — the route also pre-validates this for a clean HTTP-edge contract.
+  // way; the route delegates to this same operation.
   let seriesId: string | undefined;
   let seriesRef: string | undefined;
   const canonicalArtifact = resolution.logical_artifact;
@@ -2191,7 +2223,7 @@ export function resolveAndLinkArtifact(
     canonicalVersion = getCanonicalArtifactVersion(db, canonicalArtifact.latest_version_id);
   }
   if (linkKind === "living") {
-    if (entityType === "issue" && linkType === "evidence") {
+    if (entity.entity_type === "issue" && linkType === "evidence") {
       throw new Error("evidence_links_must_be_pinned");
     }
     if (canonicalArtifact) {
@@ -2206,12 +2238,9 @@ export function resolveAndLinkArtifact(
     seriesRef = ref;
   }
 
-  const issueResolution = entityType === "issue"
-    ? resolveIssueEntity(db, rawEntityId, asString(input.issue_project) ?? asString(input.repo_id))
-    : null;
   const link = registerArtifactLink(db, resolvedArtifactRecord(resolution)!.id, {
-    entity_type: entityType,
-    entity_id: issueResolution?.entity_id ?? rawEntityId,
+    entity_type: entity.entity_type,
+    entity_id: entity.entity_id,
     link_type: linkType,
     role: asString(input.role),
     repo_id: asString(input.repo_id),
@@ -2229,7 +2258,7 @@ export function resolveAndLinkArtifact(
     canonical_artifact_id: canonicalArtifact?.id,
     canonical_version_id: canonicalVersion?.id,
     canonical_blob_id: resolution.artifact_blob?.id ?? canonicalVersion?.blob_id,
-    metadata: mergeJsonRecords(input.metadata, issueResolution?.metadata, {
+    metadata: mergeJsonRecords(input.metadata, entity.metadata, {
       artifact_ref: ref,
       normalized_ref: resolution.normalized_ref,
     }),
