@@ -22,6 +22,29 @@ function git(cwd: string, args: string[]): void {
 }
 
 describe("instructions CLI", () => {
+  it("refuses inaccessible settings ancestors instead of treating standalone targets as unconfigured", async () => {
+    const home = scratchDir("instructions-inaccessible-settings");
+    const settingsDir = path.join(home, "settings");
+    const target = path.join(home, "standalone.md");
+    const env = { HOME: home, MANDIBLE_DB: path.join(settingsDir, "fixture.db") };
+    expect((await run(["instructions", "targets", "add", target, "--mode", "standalone"], env)).status).toBe(0);
+    expect((await run(["instructions", "install", "--target", target], env)).status).toBe(0);
+    const before = fs.readFileSync(target);
+    fs.chmodSync(settingsDir, 0o000);
+    try {
+      for (const command of ["diff", "install"]) {
+        // The test-only production DB guard also stats this private path and would mask the exporter defect.
+        const result = await runCli([path.join(process.cwd(), "cli/instructions.sh"), command, "--target", target],
+          { command: "bash", cwd: process.cwd(), env: { ...env, VITEST: undefined, VITEST_WORKER_ID: undefined, NODE_ENV: "production" } });
+        expect(result.status, `${command}: ${result.stderr}`).not.toBe(0);
+        expect(result.stderr).toMatch(/EACCES|EPERM|permission denied/i);
+        expect(fs.readFileSync(target)).toEqual(before);
+      }
+    } finally {
+      fs.chmodSync(settingsDir, 0o700);
+    }
+  });
+
   it("uses configured output modes consistently for explicit diff, install, and refresh", async () => {
     const home = scratchDir("instructions-modes");
     const env = { HOME: home, MANDIBLE_DB: path.join(home, "fixture.db") };
