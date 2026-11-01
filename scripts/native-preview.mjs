@@ -264,6 +264,7 @@ export async function launchNativePreview({ branch, bundle, project, workUnit, a
 export async function failNativePreviewAttempt({ receiptFile, resumed, reservation, attemptId, error }) {
   if (resumed && !reservation) throw error;
   const failureOptions = { parentLockHeld: !reservation, attemptId };
+  let failureReceipt = receiptFile;
   try {
     await nativeOperation(receiptFile, failureOptions, current => {
       current.status = 'failed'; current.error = String(error); saveOwnedMetadata(receiptFile, current);
@@ -274,6 +275,7 @@ export async function failNativePreviewAttempt({ receiptFile, resumed, reservati
       if (cleanup.action === 'skip' || cleanup.action === 'cleanup-pending' || cleanup.remaining?.length) {
         throw new Error(cleanup.reason ?? 'Native generated output cleanup is pending');
       }
+      failureReceipt = cleanup.receipt;
     } else {
       await nativeOperation(receiptFile, failureOptions, current => {
         current.status = 'failed';
@@ -284,7 +286,7 @@ export async function failNativePreviewAttempt({ receiptFile, resumed, reservati
   } catch (cleanupError) {
     throw new Error(`${error.message}; cleanup pending: ${cleanupError.message}; native receipt: ${receiptFile}`);
   }
-  throw new Error(`${error.message}; native receipt: ${receiptFile}`);
+  throw new Error(`${error.message}; native receipt: ${failureReceipt}`);
 }
 
 export async function cleanupNativePreview(file, options = {}) {

@@ -78,6 +78,36 @@ test('failed build has exact owned residue, retry succeeds, and repeated cleanup
   } finally { f.dispose(); }
 });
 
+test('failed build diagnostics survive normal cleanup with bounded output and a usable retained receipt', async () => {
+  const f = fixture();
+  try {
+    let failure;
+    try {
+      await runNativeBuildPhase({ command: process.execPath,
+        args: ['-e', 'process.stdout.write("discarded prefix\\n" + "x".repeat(20000)); process.stderr.write("\\nerror[E0308]: mismatched types\\n  --> src/main.rs:42:7\\n"); process.exit(7)'],
+        cwd: f.root, env: process.env, log: path.join(f.root, 'build.log'), budgetMs: 5000,
+        receipt: f.receipt, save: f.save, identity: processIdentity });
+    } catch (error) { failure = error; }
+    assert.ok(failure);
+    const retainedFile = path.join(f.base, '.receipts', `${f.receipt.ownership.runId}.json`);
+    await assert.rejects(failNativePreviewAttempt({ receiptFile: f.file, resumed: false,
+      attemptId: f.receipt.attemptId, error: failure }), error => {
+      assert.match(error.message, /error\[E0308\]: mismatched types/);
+      assert.ok(error.message.endsWith(`native receipt: ${retainedFile}`));
+      return true;
+    });
+    assert.equal(fs.existsSync(f.root), false);
+    const retained = JSON.parse(fs.readFileSync(retainedFile, 'utf8'));
+    assert.equal(retained.cleanup, 'completed');
+    const diagnostics = retained.nativePreview.buildProcess.failure;
+    assert.equal(diagnostics.truncated, true);
+    assert.ok(Buffer.byteLength(diagnostics.output) <= 16 * 1024);
+    assert.match(diagnostics.output, /error\[E0308\]: mismatched types\n  --> src\/main.rs:42:7/);
+    assert.doesNotMatch(diagnostics.output, /discarded prefix/);
+    assert.match(retained.summary, /error\[E0308\]: mismatched types/);
+  } finally { f.dispose(); }
+});
+
 test('build deadline stops its real child group and leaves a reclaimable failure receipt', async () => {
   const f = fixture();
   try {
