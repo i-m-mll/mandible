@@ -150,8 +150,7 @@ display **without any destructive data move**.
 ### `mandible project repair` — explicit, guarded, dry-run by default
 
 Registry repair requires the configured local operator, including dry runs. Local
-human socket access retains its existing owner authority. Agent identities and
-project-admin grants do not grant registry administration. File-RPC denies this
+human socket access retains its existing owner authority. Agent identities do not grant registry administration. File-RPC denies this
 administrative route. The route preserves 401/403 authorization responses, uses
 one strict request schema, and declares ledger-read for reports and ledger-write
 for apply. Preview effect ceilings continue to apply.

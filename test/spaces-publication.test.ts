@@ -160,3 +160,16 @@ it('rechecks the destination after a committed submission failure without changi
   expect(getPublication(db,space,prepared.id)).toEqual(committed);
   expect(git(repo,'show',`${committed.commit_sha}:doc.md`)+'\n').toBe(prepared.content);
 });
+
+it('exports saved document bytes and returns the result when repo_id is omitted', async () => {
+  setDb(db);
+  const user=createUser(db,{slug:'document-exporter',kind:'agent',display_name:'Document exporter'});
+  const {authenticatedTestRouter}=await import('./helpers/authenticated-router.js');
+  const router=authenticatedTestRouter(user);registerSpacesRoutes(router);
+  const destination=path.join(root,'repo','exported.md');
+  const expected=serializeSpaceDocument(db,space);
+  const response=await router.invoke({method:'POST',url:`/api/spaces/${space}/document/export`,
+    body:{dest_path:destination},transport:'http'});
+  expect(response).toMatchObject({status:200,body:{path:destination,bytes:Buffer.byteLength(expected),content_sha256:expect.any(String)}});
+  expect(fs.readFileSync(destination,'utf8')).toBe(expected);
+});

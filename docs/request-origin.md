@@ -108,7 +108,7 @@ Registry and access mutation coverage:
 | Project add/update, checkout add/update/reassignment, discovery reconciliation, key backfill, repair merge | Common project/checkout events; merge records identify both projects |
 | User create/update/retire, explicit operator selection, agent enrollment | Common user/operator/membership events |
 | Credential add/revoke, delegated signing lease creation/expiry shortening, binding add/remove/reactivation | Common credential/lease/binding events with owner IDs and changed field names; no material or values |
-| Group create/delete, membership add/remove, grant add/remove, project restriction | Common group/membership/grant/project events, including deletion cascades |
+| Group create/delete, membership add/remove, global grant add/remove | Common group/membership/grant events, including deletion cascades |
 | Reminder create/cancel/complete | Existing managed task events; the created event captures the initiating origin for later system execution |
 | Reminder occurrence acknowledgement | Common occurrence event |
 

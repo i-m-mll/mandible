@@ -91,8 +91,9 @@ immutable round, advances Current, and retains prior rounds; an exact retry
 returns the prior receipt. This path does not submit a reviewed-document
 proposal or require an interactive agent to impersonate a scheduler task.
 
-Plan and apply require a durable agent or operator token with write access to
-every route Artifact's canonical project. Plan performs
+Plan and apply require an active agent or configured operator identity and
+one canonical logical project for every route Artifact. Ordinary logical or
+version associations and historical source projects do not change that owner. Plan performs
 the same ref, Base-document, ownership, composer, and template checks as apply
 but makes no database changes. Output is ordered by `route_key`, so an installed
 manifest has deterministic review output.

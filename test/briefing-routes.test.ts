@@ -113,7 +113,7 @@ describe("plural Briefing routes", () => {
   it("places and moves a report with canonical project ownership, then advances Current directly without disturbing review", async () => {
     setSetting(db, "user.operator_id", humanId);
     const project = addProject(db, { project_key: "reports", display_name: "Reports" });
-      const reviewed = recordArtifactVersion(db, { source_kind: "managed", content: "# Reviewed\n",
+    const reviewed = recordArtifactVersion(db, { source_kind: "managed", content: "# Reviewed\n",
       series_key: "test:reviewed", logical_name: "Reviewed.md", role: "briefing-document",
       media_type: "text/markdown" });
     const report = recordArtifactVersion(db, { source_kind: "managed",
@@ -151,6 +151,13 @@ describe("plural Briefing routes", () => {
       (id, project_id, target_type, target_id, association_kind, role, created_at, updated_at)
       VALUES ('report-association', ?, 'artifact', ?, 'canonical', '', 1, 1)`)
       .run(project.id, logical.artifact_id);
+    db.prepare("UPDATE artifact SET source_project_id = ? WHERE id = ?").run(project.id, logical.artifact_id);
+    const associationProject = addProject(db, { project_key: "historical-report", display_name: "Historical report" });
+    const association = db.prepare(`INSERT INTO project_artifact_associations
+      (id, project_id, target_type, target_id, association_kind, role, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 'organizing', 1, 1)`);
+    association.run('ordinary-report-association', associationProject.id, 'artifact', logical.artifact_id, 'associated');
+    association.run('historical-report-association', associationProject.id, 'artifact_version', report.version.id, 'canonical');
 
     expect(await router.invoke({ method: "POST", url: endpoint, credential: "agent-schedule",
       body: { ...placement, operation_key: "failed-route", route: { ...route, composer_kind: "deterministic" } } }))
@@ -237,10 +244,10 @@ describe("plural Briefing routes", () => {
         routes: [{ ...updatedRoute, limits: { ...route.limits, max_contributions: 13 } }] } }))
       .toMatchObject({ status: 409, body: { code: "briefing_destination_route_revision_drift" } });
 
-    const conflictingProject = addProject(db, { project_key: "other-reports", display_name: "Other reports" });
+    const conflictingProject = associationProject;
     db.prepare(`INSERT INTO project_artifact_associations
       (id, project_id, target_type, target_id, association_kind, role, created_at, updated_at)
-      VALUES ('other-report-association', ?, 'artifact', ?, 'associated', '', 1, 1)`)
+      VALUES ('other-report-association', ?, 'artifact', ?, 'canonical', '', 1, 1)`)
       .run(conflictingProject.id, logical.artifact_id);
     expect(await router.invoke({ method: "POST", url: "/api/briefing-destination-routes/plan",
       credential: "agent-schedule", body: { schema: "mandible-briefing-destination-routes@3", routes: [route] } }))
