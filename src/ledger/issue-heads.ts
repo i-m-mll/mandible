@@ -91,6 +91,7 @@ export function batchLedgerIssueHeads(
   ).all(bindings) as Array<{ id: string; short_id: string }>;
 
   // UNION makes each (root, descendant) pair unique, including cycles and diamonds.
+  // CROSS JOIN keeps the recursive frontier before the indexed adjacency lookup.
   const descendantsByRoot = new Map<string, string[]>();
   const allIds = new Set<string>(issueIds);
   const closureRows = db.prepare(
@@ -100,7 +101,7 @@ export function batchLedgerIssueHeads(
        UNION
        SELECT s.root_id, edge.target_issue_id
          FROM subtree s
-         JOIN hierarchy edge ON edge.source_issue_id = s.issue_id
+         CROSS JOIN hierarchy edge ON edge.source_issue_id = s.issue_id
      )
      SELECT root_id, issue_id FROM subtree`,
   ).all(bindings) as Array<{ root_id: string; issue_id: string }>;
