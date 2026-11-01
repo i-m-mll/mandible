@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { describe, expect, it } from 'vitest';
 import { AuthQueue } from '../src/auth-queue.js';
-import { DOMAIN_EVENTS, parseDomainEvent } from '../src/contracts.js';
+import { AUTH_REQUEST_STATUSES, computeAuthRequestOutcome, DOMAIN_EVENTS, parseDomainEvent } from '../src/contracts.js';
 import { Router } from '../src/server.js';
 import { registerChannelRoutes } from '../src/routes/channel.js';
 import { broadcast, SseManager, setSseManager } from '../src/sse.js';
@@ -55,13 +55,35 @@ describe('auth channel event boundary', () => {
       expect(unidentified.delivered).toEqual([]);
       expect(unidentified.notifications).toMatchObject([{ method: 'notifications/message' }]);
 
+      for (const status of AUTH_REQUEST_STATUSES) {
+        const outcome = computeAuthRequestOutcome(status);
+        if (outcome === null) continue;
+        const terminal = { ...event, data: { ...event.data, status, outcome,
+          exit_code: status === 'completed' ? 0 : status === 'failed' ? 1 : null } };
+        expect(parseDomainEvent(terminal).ok).toBe(true);
+        expect((await render(terminal)).status).toBe(200);
+      }
+      const retained = { ...event, data: { ...event.data, status: 'completed', outcome: 'succeeded', exit_code: null, resolved_at: null } };
+      expect(parseDomainEvent(retained).ok).toBe(true);
+      expect((await render(retained)).status).toBe(200);
+      const frameCount = frames.length;
       for (const data of [null, {}, { ...event.data, request_id: '' }, { ...event.data, status: 'invented' },
+        ...AUTH_REQUEST_STATUSES.filter(status => computeAuthRequestOutcome(status) === null)
+          .map(status => ({ ...event.data, status, outcome: null })),
+        { ...event.data, status: 'failed', outcome: 'succeeded', exit_code: 42 },
+        { ...event.data, status: 'rejected', outcome: null },
+        { ...event.data, status: 'completed', outcome: 'succeeded', exit_code: 42 },
+        { ...event.data, status: 'failed', outcome: 'failed', exit_code: 0 },
         { ...event.data, target_session_id: 42 }, { ...event.data, exit_code: 'failed' }, { ...event.data, error_output: [] }]) {
         const malformed = { type: DOMAIN_EVENTS.AUTH_RESOLVED, data };
         expect(parseDomainEvent(malformed).ok).toBe(false);
         expect(() => manager.broadcast({ ...malformed, timestamp: '' } as never)).toThrow('event payload');
-        expect((await render(malformed)).status).toBe(400);
+        const rejected = await render(malformed);
+        expect(rejected.status).toBe(400);
+        expect(rejected.body).not.toHaveProperty('notifications');
+        expect(rejected.body).not.toHaveProperty('delivered');
       }
+      expect(frames).toHaveLength(frameCount);
       for (const type of ['auth:completed', 'inbox:updated', 'work_unit:assigned', 'work_unit:updated', 'console:inbox:badge']) {
         expect((await render({ ...event, type })).status).toBe(400);
       }
