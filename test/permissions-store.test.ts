@@ -42,6 +42,7 @@ describe("permission evaluator", () => {
     expect(allowed(agent)).toBe(false);
     const direct = addGrant(db, { subject_type: "user", subject: agent.id, permission: "backup" });
     expect(allowed(agent)).toBe(true);
+    expect(evaluateGlobalCapability(db, { identity: identity(agent), capability: "spawn_console" }).allowed).toBe(false);
     expect(allowed(unrelated)).toBe(false);
     removeGrant(db, direct.id);
     expect(allowed(agent)).toBe(false);
