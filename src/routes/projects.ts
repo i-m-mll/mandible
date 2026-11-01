@@ -16,8 +16,6 @@ import type { LedgerNamespacePolicy } from "../ledger/types.js";
 import type { ResponseLike, RouteRegistrar } from "../server.js";
 import { bodyRecord, sendJson } from "./http.js";
 import { ClientAuthzError, requireOperator } from "../client-auth/authz.js";
-import { projectAccessSettings, setProjectRestricted } from "../permissions/store.js";
-
 
 function optionalString(body: Record<string, unknown>, key: string): string | undefined {
   const value = body[key];
@@ -46,6 +44,7 @@ function handleError(res: ResponseLike, error: unknown): void {
 }
 
 function projectUpdateInput(body: Record<string, unknown>): AddOrUpdateProjectInput {
+  if ("restricted" in body) throw new ProjectRegistryError("Project restrictions have been retired.", "retired_project_restriction");
   const input: AddOrUpdateProjectInput = {};
   if ("project_key" in body || "key" in body) {
     input.project_key = optionalString(body, "project_key") ?? optionalString(body, "key");
@@ -121,29 +120,6 @@ export function registerProjectRoutes(router: RouteRegistrar): void {
       handleError(res, error);
     }
   }, { operation: { id: "post:/api/projects/checkouts", effects: ["ledger:write"], requestSchema: null, reportingCategory: "projects" }, fileRpc: "allow" });
-
-  router.get("/api/projects/:ref/access", (req, res) => {
-    try {
-      sendJson(res, 200, projectAccessSettings(getDb(), req.params.ref));
-    } catch (error) {
-      handleError(res, error);
-    }
-  }, { operation: { id: "get:/api/projects/:ref/access", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
-
-  router.patch("/api/projects/:ref/access", (req, res) => {
-    try {
-      const db = getDb();
-      requireOperator(db, req);
-      const body = bodyRecord(req);
-      if (typeof body.restricted !== "boolean") {
-        throw new ProjectRegistryError("restricted must be a boolean", "invalid_restricted");
-      }
-      setProjectRestricted(db, req.params.ref, body.restricted);
-      sendJson(res, 200, projectAccessSettings(db, req.params.ref));
-    } catch (error) {
-      handleError(res, error);
-    }
-  }, { operation: { id: "patch:/api/projects/:ref/access", effects: ["ledger:write"], requestSchema: null, reportingCategory: "projects" }, fileRpc: "allow" });
 
   router.get("/api/projects", (_req, res) => {
     try {

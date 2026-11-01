@@ -14,7 +14,6 @@ import { setDb, type Db } from "../src/db.js";
 import { setSetting } from "../src/client-auth/settings-kv.js";
 import { registerBriefingRoutes } from "../src/routes/briefing.js";
 import { addOrUpdateCheckout, addProject } from "../src/ledger/project-registry.js";
-import { addGrant, setProjectRestricted } from "../src/permissions/store.js";
 import { saveArtifactDraft, getArtifactDraft } from "../src/provider-artifacts.js";
 import { recordArtifactVersion } from "./helpers/artifact-http-write-fixtures.js";
 import { getArtifactCurrentSource } from "../src/artifact-source.js";
@@ -44,9 +43,7 @@ function snapshot(database: Db = db, cas = path.join(root, "cas")) {
 function invoke(method: "GET" | "POST", url: string, body?: unknown) {
   return router.invoke({ method, url, body, transport: "http" });
 }
-function grant(project: string) {
-  addGrant(db, { subject_type: "user", subject: agent.id, resource_type: "project", resource: project, permission: "write" });
-}
+
 beforeEach(() => {
   previewDb = null;
   restoreArtifactDir = false;
@@ -160,33 +157,7 @@ describe("artifact write authorization", () => {
     expect(snapshot(previewDb, previewCas)).not.toEqual(sourceState);
   });
 
-  it("denies path, explicit identity, upload and legacy-key updates before any mutation", async () => {
-    const project = addProject(db, { project_key: "owner", display_name: "Owner" });
-    setProjectRestricted(db, project.id, true);
-    const filename = path.join(root, "report.md"); fs.writeFileSync(filename, "original\n");
-    const recorded = recordArtifactVersion(db, { source_kind: "local_only", path: filename });
-    const id = recorded.series.id.replace(/^artifact-series:/, "artifact:");
-    db.prepare("UPDATE artifact SET source_project_id=? WHERE id=?").run(project.id, id);
-    fs.writeFileSync(filename, "changed\n");
-    const before = snapshot();
-    for (const [url, body] of [
-      ["/api/artifacts/ingest", { path: filename, allow_local_only: true }],
-      ["/api/artifacts/versions", { source_kind: "local_only", path: filename }],
-      ["/api/artifacts/versions", { source_kind: "managed", artifact_id: id, content: "new bytes" }],
-      ["/api/artifacts/versions", { source_kind: "managed", source: getArtifactCurrentSource(db, id)!.source, content: "uploaded" }],
-      ["/api/artifacts/versions", { source_kind: "local_only", path: filename, series_key: recorded.series.series_key }],
-    ] as const) {
-      const response = await invoke("POST", url, body);
-      expect(response.status, JSON.stringify(response.body)).toBe(403);
-      expect(snapshot()).toEqual(before);
-    }
-    grant(project.id);
-    expect((await invoke("POST", "/api/artifacts/versions", {
-      source_kind: "managed", artifact_id: id, content: "authorized\n",
-    })).status).toBe(200);
-  });
-
-  it("cannot bypass a registered repository's rights or identity by changing custody labels", async () => {
+  it("cannot bypass a registered repository's identity by changing custody labels", async () => {
     const repo = path.join(root, "restricted-repo"); fs.mkdirSync(repo);
     const git = (...args: string[]) => execFileSync("git", ["--no-optional-locks", ...args], { cwd: repo, stdio: "pipe" });
     artifactRepo(repo);
@@ -194,19 +165,13 @@ describe("artifact write authorization", () => {
     git("add", "report.md"); git("commit", "-m", "fixture");
     const project = addProject(db, { project_key: "restricted-repo", display_name: "Restricted repo" });
     addOrUpdateCheckout(db, project.id, { root: fs.realpathSync(repo), work_repo_id: "restricted-repo" });
-    setProjectRestricted(db, project.id, true);
+
     const inputs = [
       { source_kind: "tracked_repo", path: filename },
       { source_kind: "local_only", path: filename },
       { source_kind: "managed", path: filename, series_key: "attempted-custody-fork" },
     ];
-    const before = snapshot();
-    for (const body of inputs) {
-      const response = await invoke("POST", "/api/artifacts/versions", body);
-      expect(response.status, JSON.stringify(response.body)).toBe(403);
-      expect(snapshot()).toEqual(before);
-    }
-    grant(project.id);
+
     const identities: string[] = [];
     for (const body of inputs) {
       const response = await invoke("POST", "/api/artifacts/versions", body);
@@ -216,14 +181,11 @@ describe("artifact write authorization", () => {
     expect(new Set(identities).size).toBe(1);
   });
 
-  it("assigns a new uploaded repository source to its project and keeps reads restricted", async () => {
+  it("assigns a new uploaded repository source to its project and allows shared reads", async () => {
     const project = addProject(db, { project_key: "upload-owner", display_name: "Upload owner" });
-    setProjectRestricted(db, project.id, true);
+
     const body = { source_kind: "managed", source: { kind: "repo", project_id: project.id, path: "uploaded.md" }, content: "private upload" };
-    const before = snapshot();
-    expect((await invoke("POST", "/api/artifacts/versions", body)).status).toBe(403);
-    expect(snapshot()).toEqual(before);
-    grant(project.id);
+
     const response = await invoke("POST", "/api/artifacts/versions", body);
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     const id = (response.body as any).result.series.id.replace(/^artifact-series:/, "artifact:");
@@ -231,12 +193,11 @@ describe("artifact write authorization", () => {
     const reader = createUser(db, { slug: "upload-reader", kind: "agent", display_name: "Upload reader" });
     const readerRouter = authenticatedTestRouter(reader); registerProviderRoutes(readerRouter, inlineLedgerReader());
     const read = await readerRouter.invoke({ method: "GET", url: `/api/artifacts/${encodeURIComponent(id)}/content`, transport: "http" });
-    expect(read.status).toBe(403);
+    expect(read.status).toBe(200);
   });
 
-  it("requires owner, previous source and destination rights; preserves ownership and rejects stale moves", async () => {
+  it("preserves ownership and rejects stale moves", async () => {
     const projects = ["owner", "origin", "destination"].map(project_key => addProject(db, { project_key, display_name: project_key }));
-    for (const project of projects) setProjectRestricted(db, project.id, true);
     const recorded = recordArtifactVersion(db, { source_kind: "managed", series_key: "move-test", content: "old\n" });
     const id = recorded.series.id.replace(/^artifact-series:/, "artifact:");
     db.prepare("UPDATE artifact SET source_project_id=? WHERE id=?").run(projects[0].id, id);
@@ -247,11 +208,6 @@ describe("artifact write authorization", () => {
     expect(origin.status, JSON.stringify(origin.body)).toBe(200);
     const body = { artifact_id: id, expected_revision: getArtifactCurrentSource(db, id)!.revision,
       project: "destination", path: "new.md" };
-    for (const project of projects) {
-      const before = snapshot();
-      expect((await invoke("POST", "/api/artifacts/source/move", body)).status).toBe(403);
-      expect(snapshot()).toEqual(before); grant(project.id);
-    }
     expect((await invoke("POST", "/api/artifacts/source/move", body)).status).toBe(200);
     const moved = snapshot();
     expect((await invoke("POST", "/api/artifacts/source/move", body)).status).toBe(409);
@@ -262,25 +218,10 @@ describe("artifact write authorization", () => {
     expect(bytes.ok && bytes.bytes.toString()).toBe("old\n");
   });
 
-  it("fails closed on resolution storage errors and invalid supplied projects", async () => {
-    const recorded = recordArtifactVersion(db, { source_kind: "managed", series_key: "failure", content: "old\n" });
-    const before = snapshot();
-    expect((await invoke("POST", "/api/artifacts/versions", {
-      source_kind: "managed", artifact_id: recorded.series.id.replace(/^artifact-series:/, "artifact:"), content: "new", project: "missing-project",
-    })).status).toBe(404);
-    expect(snapshot()).toEqual(before);
-    db.exec("DROP TABLE project_artifact_associations");
-    expect((await invoke("GET", `/api/artifacts/resolve?ref=${encodeURIComponent(recorded.series.id.replace(/^artifact-series:/, "artifact:"))}`)).status).toBe(500);
-    expect((await invoke("POST", "/api/artifacts/versions", {
-      source_kind: "managed", artifact_id: recorded.series.id.replace(/^artifact-series:/, "artifact:"), content: "new",
-    })).status).toBe(500);
-    expect(snapshot()).toEqual(before);
-  });
-
-  it("requires the moved source project before publishing a managed draft", async () => {
+  it("publishes a managed draft after a source project move", async () => {
     const owner = addProject(db, { project_key: "draft-owner", display_name: "Draft owner" });
     const destination = addProject(db, { project_key: "draft-source", display_name: "Draft source" });
-    setProjectRestricted(db, owner.id, true); setProjectRestricted(db, destination.id, true);
+
     const recorded = recordArtifactVersion(db, { source_kind: "managed", series_key: "draft-test", content: "old" });
     const id = recorded.series.id.replace(/^artifact-series:/, "artifact:");
     db.prepare("UPDATE artifact SET source_project_id=? WHERE id=?").run(owner.id, id);
@@ -290,11 +231,7 @@ describe("artifact write authorization", () => {
       source: { kind: "repo", project_id: destination.id, path: "draft.md" },
     } })).status).toBe(200);
     saveArtifactDraft(db, { ref: id, base_version_id: recorded.version.id, content: "draft", media_type: "text/plain" });
-    grant(owner.id);
-    const before = snapshot(); const draft = getArtifactDraft(db, id);
-    expect((await invoke("POST", "/api/artifacts/drafts/publish", { ref: id })).status).toBe(403);
-    expect(snapshot()).toEqual(before); expect(getArtifactDraft(db, id)).toEqual(draft);
-    grant(destination.id);
+
     const published = await invoke("POST", "/api/artifacts/drafts/publish", { ref: id });
     expect(published.status, JSON.stringify(published.body)).toBe(200);
     expect(getArtifactDraft(db, id)).toBeNull();
@@ -326,7 +263,7 @@ describe("artifact write authorization", () => {
     expect(after.artifact_blob).toHaveLength(1);
   });
 
-  it("denies recurring publication before artifact, source, run or round mutation", async () => {
+  it("publishes recurring report rounds across project associations", async () => {
     const publisher = createUser(db, { slug: "agent-schedule", kind: "agent", display_name: "Scheduler" });
     router = authenticatedTestRouter(publisher); registerBriefingRoutes(router, db, inlineLedgerReader(() => db));
     const body = {
@@ -342,30 +279,22 @@ describe("artifact write authorization", () => {
     const initial = await invoke("POST", "/api/briefings/runs", body);
     expect(initial.status, JSON.stringify(initial.body)).toBe(200);
     const project = addProject(db, { project_key: "private-report", display_name: "Private report" });
-    setProjectRestricted(db, project.id, true);
+
     db.prepare("UPDATE artifact SET source_project_id=?").run(project.id);
-    const before = snapshot();
-    const briefingBefore = ["briefings", "briefing_runs", "briefing_rounds"].map(table => db.prepare(`SELECT * FROM ${table}`).all());
     const changed = { ...body, run_id: "second", run_key: "second", document: { markdown: body.document.markdown.replace("Keep?", "Changed?") } };
-    expect((await invoke("POST", "/api/briefings/runs", changed)).status).toBe(403);
-    expect(snapshot()).toEqual(before);
-    expect(["briefings", "briefing_runs", "briefing_rounds"].map(table => db.prepare(`SELECT * FROM ${table}`).all())).toEqual(briefingBefore);
-    addGrant(db, { subject_type: "user", subject: publisher.id, resource_type: "project", resource: project.id, permission: "write" });
     expect((await invoke("POST", "/api/briefings/runs", changed)).status).toBe(200);
   });
 
-  it("validates and authorizes every batch member before custody or metadata mutations", async () => {
+  it("validates every batch member before custody or metadata mutations", async () => {
     const first = path.join(root, 'first.md'), second = path.join(root, 'second.md');
     fs.writeFileSync(first, 'first'); fs.writeFileSync(second, 'second');
     const owned = recordArtifactVersion(db, { source_kind: 'local_only', path: second });
     const project = addProject(db, { project_key: 'batch-owner', display_name: 'Batch owner' });
-    setProjectRestricted(db, project.id, true);
+
     db.prepare('UPDATE artifact SET source_project_id=? WHERE id=?').run(project.id, owned.series.id.replace('artifact-series:', 'artifact:'));
     fs.writeFileSync(second, 'changed');
     const before = snapshot();
-    expect((await invoke('POST', '/api/artifacts/ingest', { paths: [first, second], custody_mode: 'managed' })).status).toBe(403);
-    expect(snapshot()).toEqual(before);
-    grant(project.id);
+
     for (const paths of [[first, path.join(root, 'missing.md')], [first, first]]) {
       expect((await invoke('POST', '/api/artifacts/ingest', { paths, custody_mode: 'managed' })).status).toBe(400);
       expect(snapshot()).toEqual(before);
@@ -482,11 +411,7 @@ describe("artifact write authorization", () => {
       const other = addProject(db, { project_key: 'other', display_name: 'Other project' });
       const projectOnly = await api('/api/artifacts/source/move', { artifact_id: trackedId, project: 'Other project' });
       expect(projectOnly.source.source).toEqual({ kind: 'repo', project_id: other.id, path: 'renamed.md' });
-      setProjectRestricted(db, other.id, true);
-      const deniedHistory = snapshot();
-      await expect(ingest(['tracked.md'], { project: 'tracked-repo', commit, artifact_id: trackedId, custody_mode: 'managed' })).rejects.toThrow(/403/);
-      expect(snapshot()).toEqual(deniedHistory);
-      grant(other.id);
+
       const both = await api('/api/artifacts/source/move', { artifact_id: trackedId, project: 'tracked-repo', path: 'final.md' });
       expect(both.source.source).toEqual({ kind: 'repo', project_id: project.id, path: 'final.md' });
       expect(db.prepare('SELECT source_project_id FROM artifact WHERE id=?').get(trackedId)).toEqual({ source_project_id: project.id });

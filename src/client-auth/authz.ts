@@ -1,6 +1,5 @@
-import { requireProjectAccess, PermissionError } from "../permissions/store.js";
 import { operatorPresenceIdentity } from "./operator-presence.js";
-import { getDb, type Db } from "../db.js";
+import { type Db } from "../db.js";
 import {
   resolveProviderSessionAttributionResult,
   type AttributionContext,
@@ -163,20 +162,13 @@ export function authorizeOperatorSetup(db: Db, req: RequestLike): void {
   }
 }
 
-/** Managed Chat access follows identity, instance effects, and target project permission. */
+/** Managed Chat access follows identity and instance effects. */
 export function managedSessionRoute(handler: RouteHandler): RouteHandler {
   return (req, res) => {
     try {
       requireIdentity(req);
-      const db = getDb();
-      const target = req.params.issueId ? db.prepare("SELECT project_id FROM ledger_issues WHERE id = ?").get(req.params.issueId)
-        : req.params.id && req.url.startsWith("/api/conversations/") ? db.prepare(`SELECT s.project_id FROM conversation_spawn_requests s
-          WHERE s.id = ? OR s.id IN (SELECT alias_id FROM conversation_identity_aliases WHERE canonical_id = ?)
-          LIMIT 1`).get(req.params.id, req.params.id) : null;
-      const projectId = (target as { project_id?: string } | null)?.project_id;
-      if (projectId) requireProjectAccess(db, req, projectId, ["GET", "HEAD", "OPTIONS"].includes(req.method) ? "read" : "write");
     } catch (error) {
-      if (error instanceof ClientAuthzError || error instanceof PermissionError) {
+      if (error instanceof ClientAuthzError) {
         res.status(error.status).json({ error: error.message, code: error.code });
         return;
       }

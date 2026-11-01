@@ -1,10 +1,7 @@
 import type { Db } from "../db.js";
 import type { IssueRepoSummary } from "../types.js";
 import type { RepoInfo } from "../work-scanner.js";
-import type { ResolvedClientIdentity } from "../server.js";
 import { listLedgerIssueSummaries } from "../ledger/issue-projection.js";
-import { resolveProjectRef } from "../ledger/project-registry.js";
-import { evaluateProjectAccess } from "../permissions/store.js";
 
 function filterIssueSummaries(
   summaries: IssueRepoSummary[],
@@ -53,14 +50,7 @@ function filterIssueSummaries(
 
 export function issueSummaries(db: Db, params: {
   repos: RepoInfo[];
-  identity: ResolvedClientIdentity | null;
   filters: Parameters<typeof filterIssueSummaries>[1];
 }) {
-  return filterIssueSummaries(listLedgerIssueSummaries(db, { getRepos: () => params.repos }), params.filters)
-    .filter(summary => {
-      const project = resolveProjectRef(db, summary.project_key ?? summary.repo_id);
-      if (!project.ok && project.reason === "ambiguous") return false;
-      if (!project.ok) return true;
-      return evaluateProjectAccess(db, { identity: params.identity, project_id: project.project.id, required_role: "read" }).allowed;
-    });
+  return filterIssueSummaries(listLedgerIssueSummaries(db, { getRepos: () => params.repos }), params.filters);
 }

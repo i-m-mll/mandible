@@ -1,4 +1,3 @@
-import { evaluateProjectAccess } from "./permissions/store.js";
 import { mapRow } from "./auth-request-row.js";
 import { createHash, randomUUID } from "node:crypto";
 
@@ -401,8 +400,7 @@ export class AuthClearanceManager {
     if (!operator || operator.status !== "active") return [];
     const project = this.resolveRequestProject(request);
     const grantee = resolveUser(this.db, granteeUserId);
-    if (!grantee || !evaluateProjectAccess(this.db, { identity: { user_id: grantee.id, slug: grantee.slug },
-      project_id: project.id, required_role: "write" }).allowed) return [];
+    if (!grantee || grantee.status !== "active" || grantee.kind !== "agent") return [];
     const issueIds = this.requestIssueIds(request, project.id);
     const rows = this.db.prepare(
       `SELECT c.* FROM auth_clearances c
@@ -548,7 +546,6 @@ function requestSnapshot(request: AuthRequest): Record<string, unknown> {
     execution_mode: request.execution_mode,
   };
 }
-
 
 function boundedInteger(value: number | undefined, fallback: number, min: number, max: number): number {
   const resolved = value ?? fallback;

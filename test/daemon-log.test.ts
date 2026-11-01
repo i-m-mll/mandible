@@ -293,7 +293,7 @@ describe("request logging", () => {
       logger,
       responseTtlMs: 60_000,
     });
-    fs.mkdirSync(transport.dir, { recursive: true });
+    fs.mkdirSync(transport.dir, { recursive: true, mode: 0o700 });
     fs.writeFileSync(
       path.join(transport.dir, "rpc-1.request.json"),
       JSON.stringify({ id: "rpc-1", method: "GET", path: "/api/ledger/issues/abc123" }),

@@ -169,7 +169,7 @@ The app's views, in rail order:
 - **Graph**: the ledger through perspectives (activity, issues, work, lineage, provenance).
 - **Tasks**: the inventory a recurring-task executor publishes.
 - **Logs**: the daemon's operational log.
-- **Settings**: notifications, local connections, agent hooks, instruction delivery, project permissions, approvals and their hooks, signing keys, protected branches, backups.
+- **Settings**: notifications, local connections, agent hooks, instruction delivery, approvals and their hooks, signing keys, protected branches, backups.
 
 The app preserves view state across refreshes and daemon syncs; resets happen only on explicit user action. See [First run](docs/getting-started/first-run.mdx) and the [feature pages](docs/features/).
 

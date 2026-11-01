@@ -38,7 +38,6 @@ import path from "node:path";
 import { readBody } from "./http.js";
 import { globalCapabilityRoute } from "../permissions/routes.js";
 import { resolveProjectRef } from "../ledger/project-registry.js";
-import { PermissionError, requireProjectAccess } from "../permissions/store.js";
 import {
   isPersistentIabPreviewBranch,
   PERSISTENT_IAB_PREVIEW_DELIVERY_ERROR,
@@ -247,7 +246,7 @@ export function registerAuthRoutes(
           ? path.basename(payload.cwd)
           : payload.repo;
     }
-    if (isAuthMerge && !enforceAuthProjectWrite(db, req, res, payload.repo)) return;
+    if (isAuthMerge && !validateAuthProject(db, res, payload.repo)) return;
 
     // Bug: 16985e8 — detect duplicate submissions. Return 409 with the existing
     // request_id so the agent can PUT to update it rather than creating a new one.
@@ -491,7 +490,7 @@ export function registerAuthRoutes(
     try {
       const request = await authQueue.getRequest(req.params.id);
       if (!request) { res.status(404).json({ error: "Auth request not found." }); return; }
-      if (request.repo && !enforceAuthProjectWrite(db, req, res, request.repo)) return;
+      if (request.repo && !validateAuthProject(db, res, request.repo)) return;
       if (typeof body.reason !== "string" || !body.reason.trim() || !Number.isInteger(body.expected_revision) || !Number.isInteger(body.expected_custody_generation)) {
         res.status(400).json({ error: "reason, expected_revision and expected_custody_generation required" }); return;
       }
@@ -522,7 +521,7 @@ export function registerAuthRoutes(
         res.status(404).json({ error: "Auth request not found." });
         return;
       }
-      if (current.repo && !enforceAuthProjectWrite(db, req, res, current.repo)) return;
+      if (current.repo && !validateAuthProject(db, res, current.repo)) return;
       const request = (await authQueue.withdraw(req.params.id, body.reason, {
         user_id: requester.userId,
         evidence_method: requester.evidenceMethod,
@@ -614,7 +613,7 @@ export function registerAuthRoutes(
       if (!request) { res.status(404).json({ error: "Auth request not found." }); return; }
       const requester = resolveAuthRequester(db, req, { command: "candidate-acceptance", title: "candidate-acceptance" });
       if (!requester.ok) { res.status(requester.status).json({ error: requester.error, code: requester.code }); return; }
-      if (!enforceAuthProjectWrite(db, req, res, request.repo)) return;
+      if (!validateAuthProject(db, res, request.repo)) return;
       res.status(202).json({ request_id: request.id, acceptance: await authQueue.runCandidateAcceptance(request) });
     } catch (error) {
       handleQueueError(error, res);
@@ -903,7 +902,7 @@ export function registerAuthRoutes(
       if (!request || !owner || !holdsResponsibility(db, owner, responsibilityActor(req))) {
         res.status(403).json({ error: "Current request responsibility is required." }); return;
       }
-      if (!enforceAuthProjectWrite(db, req, res, request.repo)) return;
+      if (!validateAuthProject(db, res, request.repo)) return;
       const executing = (await authQueue.approveWithClearance(request.id, { ...responsibilityActor(req),
         evidence_method: attributionForRequest(db, req)?.evidence_method ?? req.client_identity!.method,
         credential_id: req.client_identity!.credential_id }));
@@ -1064,22 +1063,13 @@ function numberField(value: unknown): number | undefined {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
 }
 
-function enforceAuthProjectWrite(db: Db, req: RequestLike, res: ResponseLike, repo: string | undefined): boolean {
+function validateAuthProject(db: Db, res: ResponseLike, repo: string | undefined): boolean {
   const resolved = repo ? resolveProjectRef(db, repo) : { ok: false as const };
   if (!resolved.ok) {
     res.status(409).json({ error: "Auth request project identity is missing or ambiguous." });
     return false;
   }
-  try {
-    requireProjectAccess(db, req, resolved.project.id, "write");
-    return true;
-  } catch (error) {
-    if (error instanceof PermissionError) {
-      res.status(error.status).json({ error: error.message, code: error.code });
-      return false;
-    }
-    throw error;
-  }
+  return true;
 }
 
 function authMutationControl(
@@ -1098,7 +1088,7 @@ function authMutationControl(
   }
   void body;
   if (request.repo) {
-    if (!enforceAuthProjectWrite(db, req, res, request.repo)) return null;
+    if (!validateAuthProject(db, res, request.repo)) return null;
   }
   return { actor: {
     user_id: requester.userId,
@@ -1114,7 +1104,6 @@ function authActionPayload(body: Record<string, unknown>): Record<string, unknow
     operator_recovery: _recovery, ...payload } = body;
   return payload;
 }
-
 
 function parseAuthCheckPayload(body: Record<string, unknown>): AuthMergeCheckInput | null {
   return {

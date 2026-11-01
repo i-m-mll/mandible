@@ -4,7 +4,7 @@ The artifact contract permits only verified Git versions and Mandible-stored ver
 
 ## Maintained evidence
 
-- `artifact-source` protects source moves, ownership and source-project access, stale-source rejection, immutable versions, exact Git reads, retained abandoned commits after Git GC, equal-byte cross-custody isolation, and corruption rejection.
+- `artifact-source` protects source moves, ownership, stale-source rejection, immutable versions, exact Git reads, retained abandoned commits after Git GC, equal-byte cross-custody isolation, and corruption rejection.
 - `artifact-write-routes` and `artifact-cli` protect canonical planning, atomic multi-path ingestion, access enforcement, upload boundaries, and single-path parity.
 - `artifact-identity`, `artifact-link-typed`, `artifact-versions`, and `artifact-content-address` protect aliases, prefix ambiguity, version history, pinned versus living links, and exact content identity.
 - `provider-artifacts` protects media previews, bounded/off-thread previews, provider lineage, verified repository scanning, and managed input survival after symlink and original-path deletion.
@@ -44,7 +44,7 @@ The preserved rehearsal directory is `~/.cache/mandible/rehearsals/38aa695-bw8Xn
 
 ## Integration repair verification
 
-The five files identified by the parent default-suite run pass together: 222 tests in backup, schema convergence, permissions routes, Spaces routes, and UI. Fresh-schema table quoting now matches the SQLite rename result. Fixtures use version custody and canonical resolver fields; logical identity title assertions and restricted-project denial assertions remain enforced. The synthetic Briefing lineage fixture tests its declared v161 transition without claiming recoverable v185 bytes. No broad default-suite repeat was run in the worker.
+The five files identified by the parent default-suite run pass together: 222 tests in backup, schema convergence, permissions routes, Spaces routes, and UI. Fresh-schema table quoting now matches the SQLite rename result. Fixtures use version custody and canonical resolver fields; logical identity title assertions remain enforced. Project-denial coverage is retired with project ACLs. The synthetic Briefing lineage fixture tests its declared v161 transition without claiming recoverable v185 bytes. No broad default-suite repeat was run in the worker.
 
 ## Delivery boundary
 

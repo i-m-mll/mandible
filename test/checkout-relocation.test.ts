@@ -11,7 +11,6 @@ import type { Db } from "../src/db.js";
 import { checkoutPathCoverage } from "../src/checkout-relocation.js";
 import { getArtifactCurrentSource } from "../src/artifact-source.js";
 import { addOrUpdateCheckout, addProject } from "../src/ledger/project-registry.js";
-import { addGrant, setProjectRestricted } from "../src/permissions/store.js";
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { registerWorkRoutes } from "../src/routes/work.js";
 import { Router } from "../src/server.js";
@@ -155,23 +154,6 @@ it("refuses an occupied destination and nested roots, and reports unknown roots,
   expect(uncovered.body).toMatchObject({ code: "schema_coverage", unclassified: ["unclassified path column: future_checkouts.mirror_root"] });
   db.exec("DROP TABLE future_checkouts");
 
-  expect(snapshot()).toEqual(before);
-  expect(fs.readFileSync(f.configPath, "utf8")).toBe(config);
-});
-
-it("requires write access to every project whose paths move", async () => {
-  const f = fixture();
-  setProjectRestricted(db, f.project.id, true);
-  const agent = createUser(db, { slug: "mover", kind: "agent", display_name: "Mover" });
-  addGrant(db, { subject_type: "user", subject: agent.id, resource_type: "project", resource: f.project.id, permission: "read" });
-  const router = authenticatedTestRouter(agent);
-  registerWorkRoutes(router, f.scanner);
-  const before = snapshot();
-  const config = fs.readFileSync(f.configPath, "utf8");
-  const response = await router.invoke({
-    method: "POST", url: "/api/projects/checkouts/relocate", body: { old_root: f.old, new_root: path.join(dir, "dev", "repo") },
-  });
-  expect(response.status).toBe(403);
   expect(snapshot()).toEqual(before);
   expect(fs.readFileSync(f.configPath, "utf8")).toBe(config);
 });
