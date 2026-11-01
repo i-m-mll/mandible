@@ -215,18 +215,11 @@ export type SidebarOrderPreference = {
   revision: number;
 };
 
-export type AuthRequestStatus =
-  | "pending"
-  | "executing"
-  | "approved"
-  | "needs_rebase"
-  | "rejected"
-  | "withdrawn"
-  | "superseded"
-  | "expired"
-  | "completed"
-  | "failed"
-  | "dismissed";
+export const AUTH_REQUEST_STATUSES = [
+  "pending", "executing", "approved", "needs_rebase", "rejected", "withdrawn",
+  "superseded", "expired", "completed", "failed", "dismissed",
+] as const;
+export type AuthRequestStatus = (typeof AUTH_REQUEST_STATUSES)[number];
 
 export type AuthRequestOutcome =
   | "succeeded"

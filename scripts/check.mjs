@@ -10,6 +10,7 @@ import ts from 'typescript';
 
 import { computeReachability } from './ui-reachability.mjs';
 import { stderrInheritanceSites } from './stderr-inheritance.mjs';
+import { authStatusDrift } from './generate-auth-status.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -34,6 +35,21 @@ const TEXT_EXTENSIONS = new Set([
 ]);
 
 const checks = {
+  'shell auth outcomes derive from the current auth contract': authStatusDrift,
+
+  'shared bash/zsh helpers avoid zsh special parameters'() {
+    const shared = ['api', 'ledger-client', 'command-syntax', 'git-env', 'canonical-origin', 'auth-status', 'auth-status.generated'];
+    const special = new Set(['status', 'path', 'argv', 'options', 'signals', 'commands', 'functions', 'history', 'pipestatus', 'fpath', 'cdpath']);
+    return shared.flatMap(name => {
+      const file = `cli/${name}.sh`;
+      return read(file).split('\n').flatMap((line, index) => {
+        const declaration = line.match(/^\s*(?:local|typeset|declare)\s+(.+)/)?.[1];
+        if (!declaration) return [];
+        const names = [...declaration.matchAll(/(?:^|\s)([A-Za-z_]\w*)(?==|\s|$)/g)].map(match => match[1]);
+        return names.filter(name => special.has(name)).map(name => `${file}:${index + 1}: ${name} is a zsh special parameter; use a scoped name`);
+      });
+    });
+  },
   // grep treats a file with a NUL byte as binary and reports no match, so one
   // pasted separator silently blinds every grep-based audit (issue ee0055a).
   'source files contain no NUL bytes'() {
