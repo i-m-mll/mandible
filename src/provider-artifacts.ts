@@ -35,7 +35,8 @@ import {
 import {
   readArtifactMaterial
 } from "./artifact-materialization.js";
-import { materializeArtifactFileIntoCas, readAndHashArtifactFile } from "./artifact-ingest-pool.js";
+import { isOpenedArtifactAttachment, type OpenedArtifactAttachment } from "./artifact-attachment.js";
+import { materializeArtifactFileIntoCas, readAndHashArtifactFile, isVerifiedArtifactCasResult, type MaterializedArtifactFile } from "./artifact-ingest-pool.js";
 import type {
   ArtifactAliasRecord,
   ArtifactBlobRecord,
@@ -125,8 +126,10 @@ interface ProviderInput {
 }
 
 const VERIFIED_GIT_DESCRIPTOR = Symbol("verified-git-descriptor");
+const VERIFIED_CAS_RESULT = Symbol("verified-cas-result");
 
 interface ArtifactInput {
+  [VERIFIED_CAS_RESULT]?: MaterializedArtifactFile;
   [VERIFIED_GIT_DESCRIPTOR]?: true;
   artifact_id?: string;
   provider_id?: string;
@@ -151,11 +154,9 @@ interface ArtifactInput {
   pinned?: boolean;
   content?: string;
   content_base64?: string;
-  // Daemon-visible filesystem path to read bytes from. Lets large artifacts be
-  // ingested without routing base64 through shell argv / JSON request bodies
-  // (issue 833e972). Over the file transport this is set only by the transport
-  // from a validated spool attachment, never honored from client request bodies.
-  content_path?: string;
+  // In-process callers may supply a filesystem path. File RPC substitutes an
+  // opaque opened source whose descriptor stays owned by the transport.
+  content_path?: string | OpenedArtifactAttachment;
   // In-process Buffer handoff (e.g. snapshotArtifactBytes -> ingestArtifact)
   // that avoids the base64 encode/decode amplification round-trip. Not
   // JSON-serializable; only used within the same process.
@@ -226,10 +227,9 @@ export interface ArtifactSnapshotInput {
   path?: string;
   content?: string;
   content_base64?: string;
-  // Daemon-visible path (e.g. a validated file-RPC spool attachment) read in
-  // place of inline base64 so multi-MiB snapshots never travel through argv
-  // (issue 833e972).
-  content_path?: string;
+  // A daemon-visible path or transport-owned descriptor, avoiding base64/argv
+  // amplification for large snapshots.
+  content_path?: string | OpenedArtifactAttachment;
   // In-process Buffer handoff (e.g. recordArtifactVersion managed-ref -> snapshot)
   // that avoids the base64 encode/decode amplification round-trip. Not
   // JSON-serializable; only used within the same process.
@@ -1991,7 +1991,7 @@ export async function planLocalArtifactPathAsync(db: Db, input: LocalArtifactPat
 // managed custody), or nothing at all (Git custody keeps the exact committed locator).
 type LocalArtifactBytesDelivery =
   | { kind: "buffer"; buffer: Buffer }
-  | { kind: "cas" }
+  | { kind: "cas"; materialized: MaterializedArtifactFile }
   | { kind: "none" };
 
 function ingestFromLocalPlan(
@@ -2041,7 +2041,7 @@ function ingestFromLocalPlan(
     metadata,
     pinned: input.pinned,
     ...(delivery.kind === "buffer" ? { content_buffer: delivery.buffer } : {}),
-    ...(delivery.kind === "cas" ? { cas_materialized: true } : {}),
+    ...(delivery.kind === "cas" ? { cas_materialized: true, [VERIFIED_CAS_RESULT]: delivery.materialized } : {}),
   }, now, artifactRoot);
 
   if (input.issue) {
@@ -2108,7 +2108,7 @@ export async function registerLocalArtifactPathAsync(
   const materialized = needsBytes
     ? await materializeArtifactFileIntoCas(core.resolvedPath, artifactRoot)
     : await readAndHashArtifactFile(core.resolvedPath);
-  const delivery: LocalArtifactBytesDelivery = needsBytes ? { kind: "cas" } : { kind: "none" };
+  const delivery: LocalArtifactBytesDelivery = needsBytes ? { kind: "cas", materialized } : { kind: "none" };
   return ingestFromLocalPlan(db, input, core, materialized.hash, materialized.size, now, artifactRoot, delivery);
 }
 
@@ -2345,6 +2345,7 @@ export async function snapshotArtifactBytesAsync(
   now = Date.now(),
   artifactRoot = getArtifactRoot(db),
 ): Promise<ArtifactRecord> {
+  const attachment = isOpenedArtifactAttachment(input.content_path) ? input.content_path : null;
   const pathInput = !Buffer.isBuffer(input.content_buffer)
     && typeof input.content !== "string"
     && typeof input.content_base64 !== "string"
@@ -2353,15 +2354,15 @@ export async function snapshotArtifactBytesAsync(
       : typeof input.content_path === "string" && input.content_path.trim() ? input.content_path
       : null)
     : null;
-  if (!pathInput) {
+  if (!pathInput && !attachment) {
     return snapshotArtifactBytes(db, input, now, artifactRoot);
   }
   const custodyMode = asCustodyMode(input.custody_mode, "managed");
   if (custodyMode !== "managed") {
     throw new Error("snapshot custody_mode must be managed");
   }
-  const resolved = path.resolve(expandHomePath(pathInput));
-  const materialized = await materializeArtifactFileIntoCas(resolved, artifactRoot);
+  const resolved = attachment ? attachment.name : path.resolve(expandHomePath(pathInput as string));
+  const materialized = await materializeArtifactFileIntoCas(attachment ?? resolved, artifactRoot);
   const hash = materialized.hash;
   const ref = asString(input.ref) ?? asString(input.artifact_ref);
   if (ref) {
@@ -2375,6 +2376,7 @@ export async function snapshotArtifactBytesAsync(
     sha256: hash,
     precomputed_sha256: hash,
     cas_materialized: true,
+    [VERIFIED_CAS_RESULT]: materialized,
     size_bytes: materialized.size,
     custody_mode: custodyMode,
     availability: "present",
@@ -2803,7 +2805,8 @@ export function ingestArtifact(
     retainArtifactCommit(db,{project:locator.repo_id,commit:locator.commit,path:locator.path,sha256:hash});
   } else {
     if (!hasBytes && !fs.existsSync(filePath)) throw new Error('Managed custody requires stored bytes');
-    if (hashBuffer(fs.readFileSync(filePath)) !== hash) throw new Error('Stored bytes do not match sha256');
+    if (!isVerifiedArtifactCasResult(input[VERIFIED_CAS_RESULT], artifactRoot, hash)
+      && hashBuffer(fs.readFileSync(filePath)) !== hash) throw new Error('Stored bytes do not match sha256');
     uri = `file://${filePath}`;
   }
   const availability = "present" as const;
@@ -2927,22 +2930,24 @@ export async function ingestArtifactAsync(
   now = Date.now(),
   artifactRoot = getArtifactRoot(db),
 ): Promise<ArtifactRecord> {
+  const attachment = isOpenedArtifactAttachment(input.content_path) ? input.content_path : null;
   const pathOnly = typeof input.content_path === "string"
     && input.content_path.trim().length > 0
     && !Buffer.isBuffer(input.content_buffer)
     && typeof input.content !== "string"
     && typeof input.content_base64 !== "string"
     && !("json" in input);
-  if (!pathOnly) {
+  if (!pathOnly && !attachment) {
     return ingestArtifact(db, input, now, artifactRoot);
   }
-  const resolved = path.resolve(expandHomePath(input.content_path as string));
+  const resolved = attachment ?? path.resolve(expandHomePath(input.content_path as string));
   const materialized = await materializeArtifactFileIntoCas(resolved, artifactRoot);
   const { content_path: _contentPath, ...rest } = input;
   return ingestArtifact(db, {
     ...rest,
     precomputed_sha256: materialized.hash,
     cas_materialized: true,
+    [VERIFIED_CAS_RESULT]: materialized,
     size_bytes: input.size_bytes ?? materialized.size,
   }, now, artifactRoot);
 }

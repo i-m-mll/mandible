@@ -323,7 +323,7 @@ async function runFileRpc(
   transport: FileRpcTransport,
   request: Record<string, unknown>,
 ): Promise<{ status: number; body: unknown }> {
-  fs.mkdirSync(transport.dir, { recursive: true });
+  fs.mkdirSync(transport.dir, { recursive: true, mode: 0o700 });
   const id = `permission-${Math.random().toString(36).slice(2)}`;
   fs.writeFileSync(path.join(transport.dir, `${id}.request.json`), JSON.stringify({ id, ...request }));
   await transport.processOnce();
