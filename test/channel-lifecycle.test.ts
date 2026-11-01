@@ -158,11 +158,11 @@ describe('live MCP bridge lifecycle', () => {
     fs.writeFileSync(active, JSON.stringify({ generation: 'one' }));
     let calls = 0;
     const handler: http.RequestListener = (req, res) => {
-      if (req.url?.startsWith('/api/events')) { res.writeHead(200, { 'Content-Type': 'text/event-stream' }); res.write(': connected\n\n'); return; }
+      if (req.url?.startsWith('/api/events')) { expect(new URL(req.url, 'http://localhost').searchParams.get('topic')).toBe('auth:resolved'); res.writeHead(200, { 'Content-Type': 'text/event-stream' }); res.write(': connected\n\n'); return; }
       req.resume();
       req.on('end', () => {
         res.setHeader('Content-Type', 'application/json');
-        if (req.url === '/api/channel/catalog') res.end(JSON.stringify({ protocol: 1, tools: [{ name: 'probe', inputSchema: { type: 'object' } }] }));
+        if (req.url === '/api/channel/catalog') res.end(JSON.stringify({ protocol: 1, event_topics: ['auth:resolved'], tools: [{ name: 'probe', inputSchema: { type: 'object' } }] }));
         else if (req.url === '/api/channel/connect') res.end('{"session_id":null}');
         else if (req.url === '/api/channel/render') res.end('{"notifications":[],"delivered":[]}');
         else if (req.url === '/api/channel/call') { calls++; res.end('{"content":[{"type":"text","text":"done"}]}'); }
