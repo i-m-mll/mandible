@@ -1,3 +1,4 @@
+import { GLOBAL_GRANT_SCHEMA_SQL, GLOBAL_GRANT_INDEX_SQL } from "./permissions/schema.js";
 import { RESPONSIBILITY_SCHEMA_SQL } from "./responsibility-schema.js";
 import { migrateLocalAuthorizationEvidence } from "./local-authorization-migration.js";
 import { WORK_UNIT_ASSIGNMENT_SCHEMA_SQL, seedLegacyAssignmentTargets } from "./work-unit-assignment-schema.js";
@@ -2242,6 +2243,14 @@ export const MIGRATIONS: readonly Migration[] = [
     "DROP TABLE IF EXISTS daemon_log",
   ] },
   { version: 229, name: "local_authorization_evidence", statements: [], requires_foreign_keys_off: true },
+  { version: 230, name: "retire_project_acl", statements: [
+    "ALTER TABLE permission_grants RENAME TO retired_permission_grants",
+    GLOBAL_GRANT_SCHEMA_SQL,
+    "INSERT INTO permission_grants (id, subject_type, subject_id, permission, created_at) SELECT id, subject_type, subject_id, permission, created_at FROM retired_permission_grants WHERE resource_type = 'global'",
+    "DROP TABLE retired_permission_grants",
+    ...GLOBAL_GRANT_INDEX_SQL,
+    "ALTER TABLE ledger_projects DROP COLUMN restricted",
+  ] },
 ];
 
 /**

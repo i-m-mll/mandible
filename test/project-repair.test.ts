@@ -10,7 +10,7 @@ import { LedgerStore } from "../src/ledger/store.js";
 import { systemAction } from "../src/identity/resolver.js";
 import { withLedgerMutationActor } from "../src/ledger/mutation-history.js";
 import { onProtectionInputsChanged } from "../src/protection-inputs.js";
-import { addGrant, removeGrant, addGroup, addGroupMember, setProjectRestricted, evaluateProjectAccess, evaluateGlobalCapability } from "../src/permissions/store.js";
+import { addGrant, removeGrant, addGroup, addGroupMember, evaluateGlobalCapability } from "../src/permissions/store.js";
 import { addCredential, addDelegatedSigningLease, createUser, setupOperator } from "../src/users/store.js";
 import type { ResolvedClientIdentity } from "../src/server.js";
 import { ConversationSpawnService } from "../src/conversation-spawn/service.js";
@@ -48,49 +48,13 @@ function snapshot() {
 it.each(["CASCADE", "SET NULL"])("blocks even an empty unclassified differently named %s FK", async action => {
   const { merge } = pair();
   expect(projectReferenceCoverage(db)).toEqual([]);
-  expect(discoverProjectReferences(db)).toContainEqual({ table: "permission_grants", column: "resource_id" });
+  expect(discoverProjectReferences(db)).toContainEqual({ table: "spaces", column: "project_id" });
   db.exec(`CREATE TABLE future_scope(id TEXT PRIMARY KEY, owner_namespace TEXT REFERENCES ledger_projects(id) ON DELETE ${action})`);
   const before = snapshot();
   const plan = ok(await repairRegistry(db, { merge }));
   expect(plan.merge!.conflicts).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "schema_coverage", value: expect.stringContaining("future_scope.owner_namespace") })]));
   expect(await repairRegistry(db, { merge, apply: true })).toMatchObject({ ok: false, error: { code: "merge_conflict" } });
   expect(snapshot()).toEqual(before);
-});
-
-it("unions explicit grants without changing revocation or approval authority", async () => {
-  const { source, target, merge } = pair();
-  const user = createUser(db, { slug: "grantee", kind: "agent", display_name: "Agent" });
-  const group = addGroup(db, { slug: "team" });
-  const owner = setupOperator(db, { slug: "owner" });
-  addGroupMember(db, group.id, user.id);
-  setProjectRestricted(db, source.id, true); setProjectRestricted(db, target.id, true);
-  const grant = (project: string, permission: string, subject_type: "user" | "group" = "user") => addGrant(db, {
-    subject_type, subject: subject_type === "user" ? user.id : group.id, resource_type: "project", resource: project, permission,
-  }, 100);
-  const duplicate = grant(source.id, "read");
-  const survivor = grant(target.id, "read");
-  const stronger = grant(source.id, "admin");
-  const groupGrant = grant(source.id, "write", "group");
-  const global = addGrant(db, { subject_type: "user", subject: user.id, resource_type: "global", permission: "spawn_console" });
-  const before = snapshot();
-  const plan = ok(await repairRegistry(db, { merge }));
-  expect(plan.merge!.grant_coalescences).toEqual([{ source_id: duplicate.id, survivor_id: survivor.id }]);
-  expect(plan.merge!.moves).toContainEqual(expect.objectContaining({ key: "permission_grants.resource_id", rows: 3 }));
-  expect(snapshot()).toEqual(before);
-  ok(await withLedgerMutationActor({ attribution: { user_id: user.id, evidence_method: "api_token" } }, () => repairRegistry(db, { merge, apply: true })));
-  expect(db.prepare("SELECT * FROM permission_grants ORDER BY id").all()).toEqual([
-    survivor, { ...stronger, resource_id: target.id }, { ...groupGrant, resource_id: target.id }, global,
-  ].sort((a, b) => a.id.localeCompare(b.id)));
-  expect(evaluateProjectAccess(db, { identity: identity(user), project_id: target.id, required_role: "admin" })).toMatchObject({ allowed: true, effective_role: "admin" });
-  removeGrant(db, stronger.id);
-  expect(evaluateProjectAccess(db, { identity: identity(user), project_id: target.id, required_role: "admin" })).toMatchObject({ allowed: false, effective_role: "write" });
-  removeGrant(db, groupGrant.id);
-  expect(evaluateProjectAccess(db, { identity: identity(user), project_id: target.id, required_role: "read" })).toMatchObject({ allowed: true, effective_role: "read" });
-  expect(evaluateGlobalCapability(db, { identity: identity(user), capability: "approve_auth" }).allowed).toBe(false);
-  expect(evaluateProjectAccess(db, { identity: identity(owner), project_id: target.id, required_role: "admin" })).toMatchObject({ allowed: true, operator: true });
-  const event = db.prepare("SELECT * FROM ledger_events WHERE entity_id=? AND event_type='grant.deleted'").get(duplicate.id) as Record<string, unknown>;
-  expect(event).toMatchObject({ actor_user_id: user.id, evidence_method: "api_token" });
-  expect(JSON.parse(event.payload_json as string)).toMatchObject({ survivor_id: survivor.id });
 });
 
 it("ignores an unrelated existing orphan while keeping enforcement enabled", async () => {
@@ -107,12 +71,12 @@ it("ignores an unrelated existing orphan while keeping enforcement enabled", asy
   expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
 });
 
-it("rolls back keys, grants, checkout history, both feeds, and notifications after a late invalid FK write", async () => {
+it("rolls back keys, checkout history, both feeds, and notifications after a late invalid FK write", async () => {
   const { source, target, merge } = pair();
   const checkout = addOrUpdateCheckout(db, source.id, { root: path.join(root, "source"), work_repo_id: "repair-source", default_branch: "main" });
   issue(source.id, "Source"); issue(target.id, "Destination");
   const user = createUser(db, { slug: "rollback", kind: "agent", display_name: "Rollback" });
-  addGrant(db, { subject_type: "user", subject: user.id, resource_type: "project", resource: source.id, permission: "read" });
+
   db.prepare("UPDATE ledger_projects SET project_key='' WHERE id=?").run(source.id);
   db.exec("CREATE TRIGGER fail_project_delete AFTER DELETE ON ledger_projects BEGIN INSERT INTO spaces(id,title,project_id,created_at,updated_at) VALUES ('invalid','Invalid','missing',1,1); END");
   const before = snapshot();
@@ -148,7 +112,7 @@ it("refuses disabled FK enforcement and malformed/same/unknown project reference
   expect(snapshot()).toEqual(before);
 });
 
-it.each(["alias", "association", "singleton", "restricted_policy"] as const)("reports %s collisions with no row loss", async kind => {
+it.each(["alias", "association", "singleton"] as const)("reports %s collisions with no row loss", async kind => {
   const { source, target, merge } = pair();
   if (kind === "alias") {
     const sameIssue = issue(source.id, "Shared issue");
@@ -156,7 +120,6 @@ it.each(["alias", "association", "singleton", "restricted_policy"] as const)("re
   } else if (kind === "association") {
     db.prepare("INSERT INTO project_artifact_associations(id,project_id,target_type,target_id,role,title,created_at,updated_at) VALUES ('a',?,'artifact','logical','report','First',1,1),('b',?,'artifact','logical','report','Second',1,1)").run(source.id, target.id);
   } else if (kind === "singleton") { issue(source.id, "Source maintenance", "maintenance"); issue(target.id, "Target maintenance", "maintenance"); }
-  else setProjectRestricted(db, source.id, true);
   const before = snapshot();
   expect(ok(await repairRegistry(db, { merge })).merge!.conflicts).toContainEqual(expect.objectContaining({ kind }));
   expect(await repairRegistry(db, { merge, apply: true })).toMatchObject({ ok: false, error: { code: "merge_conflict" } });

@@ -14,11 +14,11 @@ Logical IDs and version IDs survive source moves and recovery of the exact same 
 
 Authored logical, version, blob, and series references retain their identity meaning. Alias records preserve authored links and discovery evidence; they are not byte-read fallbacks. Display projections provide the chosen canonical version and shared content descriptor. The database has no legacy artifact/series/version tables and no blob custody mode.
 
-## Ownership and access
+## Project ownership
 
-The canonical owning project belongs to the logical document. Current source project, historical Git source project, and project associations are distinct facts. Reading and writing continue through canonical access checks. A source move cannot transfer ownership, and changing custody labels cannot bypass project rights.
+The canonical owning project belongs to the logical document. Current source project, historical Git source project, and project associations are distinct facts. Projects organize the local OS owner’s ledger and do not restrict local agents. A source move cannot transfer ownership; transport authentication, active identity, global effect capabilities, browser-origin checks and preview limits remain enforced.
 
-Project associations target a logical artifact or an exact version, with explicit role, status, and association kind. Blob deduplication cannot widen access to a protected logical document. Briefings bind exact version IDs and frozen reviewed bytes; they do not resolve through the current source or latest version.
+Project associations target a logical artifact or an exact version, with explicit role, status, and association kind. Associations organize documents and do not impose project access restrictions. Briefings bind exact version IDs and frozen reviewed bytes; they do not resolve through the current source or latest version.
 
 ## Cutover
 

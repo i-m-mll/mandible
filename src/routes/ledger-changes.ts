@@ -4,7 +4,6 @@ import {
   readLedgerChangeFeed,
 } from "../ledger/change-feed.js";
 import { resolveProjectRef, suggestProjectRefs } from "../ledger/project-registry.js";
-import { PermissionError, requireProjectAccess, sendPermissionError } from "../permissions/store.js";
 import type { RouteRegistrar } from "../server.js";
 import { sendJson } from "./http.js";
 
@@ -25,7 +24,7 @@ export function registerLedgerChangeRoutes(server: RouteRegistrar, db: Db = getD
       return;
     }
     try {
-      requireProjectAccess(db, req, resolution.project.id, "read");
+
       const rawLimit = req.query?.limit;
       const limit = rawLimit === undefined ? undefined : Number(rawLimit);
       sendJson(res, 200, readLedgerChangeFeed(db, {
@@ -36,10 +35,6 @@ export function registerLedgerChangeRoutes(server: RouteRegistrar, db: Db = getD
         schema: req.query?.schema,
       }));
     } catch (error) {
-      if (error instanceof PermissionError) {
-        sendPermissionError(res, error);
-        return;
-      }
       if (error instanceof LedgerChangeFeedError) {
         sendJson(res, error.status, {
           error: error.message,

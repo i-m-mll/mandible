@@ -2,7 +2,7 @@ import { mutateArtifactRecord } from "./artifact-mutation-history.js";
 import { withRequestOriginMetadata } from "./request-origin.js";
 import { artifactDescriptiveMetadata as descriptiveArtifactMetadata } from './artifact-metadata.js';
 import { fileURLToPath } from "node:url";
-import { artifactFailure, artifactSourceLineage, artifactRequiredProjects, getArtifactCurrentSource, lookupArtifactCurrentSource, sourceKey, validateArtifactSource, type ArtifactSource, type ArtifactLifecycleResult } from './artifact-source.js';
+import { artifactFailure, artifactSourceLineage, getArtifactCurrentSource, lookupArtifactCurrentSource, sourceKey, validateArtifactSource, type ArtifactSource, type ArtifactLifecycleResult } from './artifact-source.js';
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -421,7 +421,6 @@ function asCustodyMode(value: unknown, fallback: ArtifactCustodyMode): ArtifactC
   if (value === "git" || value === "managed") return value;
   throw new Error("custody_mode must be git or managed");
 }
-
 
 function jsonStringify(value: unknown): string {
   return JSON.stringify(value ?? {});
@@ -1599,7 +1598,6 @@ function asRecoverability(value: unknown, fallback: ArtifactRecoverability): Art
     ? value as ArtifactRecoverability
     : fallback;
 }
-
 
 function mergeJsonRecords(...records: Array<JsonRecord | undefined>): JsonRecord {
   return Object.assign({}, ...records.filter(Boolean));
@@ -4617,7 +4615,6 @@ export function listProjectArtifactAssociations(
   return rows.map(projectArtifactAssociationFromRow);
 }
 
-
 function versionIdFor(seriesId: string, sourceKind: string, naturalKey: string): string {
   return artifactRegistryId("artifact-version", [seriesId, sourceKind, naturalKey]);
 }
@@ -4995,7 +4992,6 @@ export interface ArtifactVersionPlan {
   artifact_id: string | null;
   source: ArtifactSource;
   expected_source_revision: number | null;
-  required_project_ids: string[];
   content_hash: string;
   custody_mode: "git" | "managed";
   source_kind: ArtifactVersionSourceKind;
@@ -5177,12 +5173,10 @@ function prepareArtifactVersion(db: Db, input: RecordArtifactVersionInput, commi
     if (input.project && source.kind !== 'repo' && target && target.source_project_id !== ownerProject) return artifactFailure('source_mismatch', 'Selected project differs from the existing artifact\'s project; omit --project, or use mandible artifact associate');
     if (target) ownerProject = target.source_project_id;
     else ownerProject ??= projectId ?? (source.kind === 'repo' ? source.project_id : null);
-    const required = artifactRequiredProjects(db, target?.id ?? null, state?.source ?? null, source);
-    if (ownerProject && !required.includes(ownerProject)) required.push(ownerProject);
     if (input.custody_mode === 'managed' || kind === 'local_only') kind = 'managed';
     const plan: ArtifactVersionPlan = {
       artifact_id: target?.id ?? null, source, expected_source_revision: state?.revision ?? null,
-      required_project_ids: required.sort(), content_hash: hashBuffer(bytes), source_kind: kind,
+      content_hash: hashBuffer(bytes), source_kind: kind,
       custody_mode: input.custody_mode === 'managed' ? input.custody_mode
         : kind === 'tracked_repo' ? 'git' : 'managed',
       commit_sha: commit, repo_path: repoPath, source_project_id: projectId, source_repo_id: repoId,
