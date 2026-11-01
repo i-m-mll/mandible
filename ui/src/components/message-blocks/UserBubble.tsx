@@ -47,6 +47,16 @@ export function getInstructionMessageMeta(content: string): InstructionMessageMe
   return { filename, scope, path };
 }
 
+export function userMessageVisibleText(text: string, provider?: string): string {
+  const instruction = getInstructionMessageMeta(text);
+  if (instruction) return `${instruction.scope} ${instruction.filename} ${instruction.path}`;
+  const replies = provider === 'codex' ? codexQuestionReplies(text) : null;
+  if (replies) return replies.map(({ question, answer }) => `${question}\n${answer}`).join('\n');
+  const parts = provider === 'codex' ? codexUserMessageParts(text) : null;
+  return parts ? parts.map((part) => part.kind === 'text' ? part.text
+    : ['Browser comments', ...part.comments.map(({ number, comment }) => `User Comment ${number}\n${comment}\nBrowser evidence`)].join('\n')).join('\n') : text;
+}
+
 export function UserBubble({ text, provider }: UserBubbleProps): JSX.Element {
   const instruction = getInstructionMessageMeta(text);
   const replies = useMemo(() => provider === 'codex' ? codexQuestionReplies(text) : null, [provider, text]);

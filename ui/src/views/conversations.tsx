@@ -149,6 +149,7 @@ import { useAppRightSidebarState } from '../right-sidebar-state';
 import type { ChatEntityClickAction } from '../../../src/contracts';
 import { subscribeClientAccessState } from '../client-auth-token';
 import { parseRouteFromHash, replaceRouteHash, routeHashWithParams } from '../routing';
+import { conversationAnchorFromHash, messageLinkUrl, type ConversationAnchor } from '../chat/messageLinks';
 import {
   flattenConversationTranscript,
   reconcileConversationWindow,
@@ -848,32 +849,8 @@ function reconcileControlSnapshot(
   return incoming;
 }
 
-export type ConversationAnchor = { block: string } | { turn: string } | { position: number };
-
-export function conversationAnchorFromHash(hash: string): ConversationAnchor | null {
-  const query = hash.includes('?') ? hash.slice(hash.indexOf('?') + 1) : '';
-  const params = new URLSearchParams(query);
-  const block = params.get('block');
-  const turn = params.get('turn');
-  const position = params.get('position');
-  if (block) return { block };
-  if (turn) return { turn };
-  if (position !== null && Number.isSafeInteger(Number(position)) && Number(position) >= 0) {
-    return { position: Number(position) };
-  }
-  return null;
-}
-
-export function conversationAnchorHref(
-  conversationId: string,
-  anchor: ConversationAnchor,
-): string {
-  const params = new URLSearchParams({ conversation: conversationId });
-  if ('block' in anchor) params.set('block', anchor.block);
-  else if ('turn' in anchor) params.set('turn', anchor.turn);
-  else params.set('position', String(anchor.position));
-  return `#/console?${params.toString()}`;
-}
+export { conversationAnchorFromHash, conversationAnchorHref } from '../chat/messageLinks';
+export type { ConversationAnchor } from '../chat/messageLinks';
 
 export function conversationLatestHref(currentHash: string, conversationId: string): string {
   return routeHashWithParams(currentHash, 'console', { conversation: conversationId },
@@ -2820,6 +2797,11 @@ export function ConversationDetail({
             onFork={handleFork}
             onCreatedTaskNavigate={navigateToCreatedTask}
             onExpandDetails={handleExpandConversationDetails}
+            onCopyMessageLink={(blockId) => {
+              void navigator.clipboard.writeText(messageLinkUrl(window.location.href, conversationId, blockId))
+                .then(() => setToast({ type: 'info', message: 'Message link copied.' }),
+                  () => setToast({ type: 'error', message: 'Could not copy the message link.' }));
+            }}
             sessionInfo={{
               sessionId: conversation.session_id,
               backend: conversation.source,

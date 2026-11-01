@@ -119,6 +119,7 @@ export function MessageGroup({
       >
         {inner}
         <MessageActions
+          blockId={source?.blockId}
           onSelect={source && onToggleBlockSelect ? (shiftKey) => onToggleBlockSelect(source.blockId, shiftKey) : undefined}
           isSelected={source ? selectedBlockIds?.has(source.blockId) : false}
           selectMode={selectMode}
@@ -152,7 +153,7 @@ export function MessageGroup({
       const groupId = `tool-group:${run[0].id}`;
       const expanded = getDisclosureExpanded?.(groupId, false);
       const memberRefs = run
-        .map((block) => block.source?.blockId)
+        .flatMap((block) => [block.source?.blockId, toolResults.get(block.id)?.source?.blockId])
         .filter((blockId): blockId is string => Boolean(blockId))
         .join(' ');
       rendered.push(

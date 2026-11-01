@@ -18,11 +18,11 @@ import type {
   StreamRendererProps,
 } from '../components/stream-renderer/types';
 import { MessageGroup } from '../components/stream-renderer/MessageGroup';
-import { MessageActions } from '../components/shared/MessageActions';
+import { MessageActions, MessageLinkContext } from '../components/shared/MessageActions';
 import { DetailPaneOverlayContext } from '../components/shared/DetailPaneShell';
 import { TurnGroup } from '../components/message-blocks/TurnGroup';
 import { GroupFooter } from '../components/message-blocks/GroupFooter';
-import { UserBubble } from '../components/message-blocks/UserBubble';
+import { UserBubble, userMessageVisibleText } from '../components/message-blocks/UserBubble';
 import { SemanticEventBlock, UnmatchedToolResultBlock } from '../components/message-blocks/SemanticEventBlock';
 import { ActivityGroup, ActivityRow } from '../components/message-blocks/ActivityBlock';
 import { ThinkingBlock } from '../components/message-blocks/ThinkingBlock';
@@ -60,6 +60,7 @@ export type ChatSurfaceProps = StreamRendererProps & {
   onResume?: (dagUuid: string) => void;
   onCreatedTaskNavigate?: (providerSessionId: string) => void | Promise<void>;
   onExpandDetails?: (sources: readonly PersistedBlockSource[]) => void | Promise<void>;
+  onCopyMessageLink?: (blockId: string) => void;
 };
 
 const ESTIMATED_ROW_HEIGHT = 168;
@@ -72,6 +73,13 @@ const FOLLOW_THRESHOLD_PX = 1;
 const JUMP_RETURN_SECONDS = 2;
 const MANUAL_RETURN_PX_PER_SECOND = 600;
 const INITIAL_VIRTUAL_RECT = { width: 600, height: 720 };
+
+export function estimateUserMessageHeight(text: string, width: number, provider?: string): number {
+  const columns = Math.max(12, Math.floor((width - 24) / 8));
+  const lines = userMessageVisibleText(text, provider).split('\n')
+    .reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / columns)), 0);
+  return 40 + lines * 26;
+}
 
 function estimateVirtualRow(
   index: number,
@@ -211,20 +219,26 @@ function requestedScrollBehavior(smooth: boolean): ScrollBehavior {
 }
 
 function renderNodeContainsBlock(node: RenderNode, targetBlockId: string): boolean {
-  if (node.kind === 'transcript_boundary') return false;
-  if (node.key === targetBlockId) return true;
-  if (node.kind === 'user_message') return node.persisted?.blockId === targetBlockId;
-  if (node.kind === 'semantic_event') return node.event.source.blockId === targetBlockId;
-  if (node.kind === 'unmatched_tool_result') return node.result.source?.blockId === targetBlockId;
-  if (node.kind !== 'assistant_turn') return node.source?.blockId === targetBlockId;
-  return node.turn.assistantEvent.message.content.some((block) => block.source?.blockId === targetBlockId)
-    || Array.from(node.turn.toolResults.values()).some((result) => result.source?.blockId === targetBlockId);
+  return node.kind !== 'transcript_boundary' && (node.key === targetBlockId
+    || renderNodeSources(node).some((source) => source?.blockId === targetBlockId));
+}
+
+function renderNodeSources(node: RenderNode): Array<PersistedBlockSource | undefined> {
+  switch (node.kind) {
+    case 'transcript_boundary': return [];
+    case 'user_message': return [node.persisted];
+    case 'semantic_event': return [node.event.source];
+    case 'unmatched_tool_result': return [node.result.source];
+    case 'activity': return [node.source, node.item.type === 'tool-call-activity' ? node.item.result?.source : undefined];
+    case 'assistant_turn': return [...node.turn.assistantEvent.message.content.map((block) => block.source),
+      ...Array.from(node.turn.toolResults.values(), (result) => result.source)];
+  }
 }
 
 function renderNodePosition(node: RenderNode, targetBlockId: string | null): number | null {
   if (node.kind === 'transcript_boundary') return null;
   if (node.kind === 'user_message') return node.persisted?.position ?? null;
-  if (node.kind === 'semantic_event') return node.event.source.position ?? null;
+  if (node.kind === 'semantic_event') return node.event.source?.position ?? null;
   if (node.kind === 'unmatched_tool_result') return node.result.source?.position ?? null;
   if (node.kind === 'activity') return node.source?.position ?? null;
   if (targetBlockId) {
@@ -260,7 +274,7 @@ function renderNodeBlockIdAtPosition(node: RenderNode, position: number): string
     return node.persisted?.position === position ? node.persisted.blockId : null;
   }
   if (node.kind === 'semantic_event') {
-    return node.event.source.position === position ? node.event.source.blockId : null;
+    return node.event.source?.position === position ? node.event.source.blockId : null;
   }
   if (node.kind === 'unmatched_tool_result') {
     const source = node.result.source;
@@ -305,6 +319,7 @@ export function ChatSurface({
   onResume,
   onCreatedTaskNavigate,
   onExpandDetails,
+  onCopyMessageLink,
 }: ChatSurfaceProps): JSX.Element {
   const { nodes } = useStreamState(events);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -315,6 +330,7 @@ export function ChatSurface({
   const scrollElementId = `chat-scroll-${storageScope.replace(/[^A-Za-z0-9_-]/g, '-')}`;
 
   const [viewportHeight, setViewportHeight] = useState(720);
+  const [viewportWidth, setViewportWidth] = useState(INITIAL_VIRTUAL_RECT.width);
   const [distanceFromBottom, setDistanceFromBottom] = useState(0);
   const [followingTail, setFollowingTail] = useState(false);
   const [historyFailure, setHistoryFailure] = useState<{ position: number; message: string } | null>(null);
@@ -450,8 +466,13 @@ export function ChatSurface({
       const estimatedSize = interval
         ? Math.max(1, estimatedRangeHeight(spanStart, Math.max(spanStart, nextPosition) - 1))
         : ESTIMATED_ROW_HEIGHT;
+      const userNodes = group.nodes.filter((node) => node.kind === 'user_message');
+      const userWidth = Math.max(120, viewportWidth - 48)
+        * (typeof window !== 'undefined' && window.innerWidth <= 720 ? 1 : 2 / 3);
+      const visibleUserEstimate = userNodes.reduce((sum, node) => sum
+        + estimateUserMessageHeight(node.text, userWidth, sessionInfo?.backend), 0);
       return {
-        item: { kind: 'group', id: group.id, group, estimatedSize },
+        item: { kind: 'group', id: group.id, group, estimatedSize: Math.max(estimatedSize, visibleUserEstimate) },
         position,
       };
     });
@@ -497,17 +518,15 @@ export function ChatSurface({
     onPermissionRespond,
     streaming,
     transcript,
+    viewportWidth,
+    sessionInfo?.backend,
   ]);
 
   const getItemKey = useCallback((index: number) => items[index]?.id ?? index, [items]);
   const extractVirtualRows = useCallback((range: Range): number[] => defaultRangeExtractor(range), []);
   const getScrollElement = useCallback(() => scrollRef.current, []);
-  const initialEstimatedExtent = items.reduce((sum, item) => (
-    sum + (item.kind === 'history'
-      ? item.state.extentHeight
-      : item.kind === 'group' && measuredGroupSizes[item.id]
-        ? measuredGroupSizes[item.id]
-        : item.kind === 'group' ? item.estimatedSize : ESTIMATED_ROW_HEIGHT)
+  const initialEstimatedExtent = items.reduce((sum, _item, index) => (
+    sum + estimateVirtualRow(index, items, measuredGroupSizes)
   ), 0);
   const recordMeasuredGroupSize = useCallback((key: string, size: number) => {
     setMeasuredGroupSizesByScope((current) => {
@@ -578,16 +597,7 @@ export function ChatSurface({
     scrollEndThreshold: followingTail && !scrollbarDragging ? FOLLOW_THRESHOLD_PX : -1,
     onChange: syncScrollbar,
   });
-  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => {
-    if (scrollbarDragRef.current !== null) return false;
-    const readingPoint = (instance.scrollElement?.scrollTop ?? instance.scrollOffset ?? 0)
-      + instance.scrollAdjustments;
-    // First measurements replace an estimate; later growth only moves the
-    // reading point when the entire old row is above it, even while moving up.
-    return instance.itemSizeCache.has(item.key)
-      ? item.end <= readingPoint
-      : item.start < readingPoint;
-  };
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = scrollbarDragging ? () => false : undefined;
   const virtualItems = virtualizer.getVirtualItems();
   const estimatedUnmaterializedDistance = transcript
     ? 0
@@ -760,7 +770,10 @@ export function ChatSurface({
   const setScrollNode = useCallback((node: HTMLDivElement | null) => {
     scrollRef.current = node;
     registerScrollOwner?.(node);
-    if (node) setViewportHeight(node.clientHeight || 720);
+    if (node) {
+      setViewportHeight(node.clientHeight || 720);
+      setViewportWidth(node.clientWidth || INITIAL_VIRTUAL_RECT.width);
+    }
   }, [registerScrollOwner]);
 
   useLayoutEffect(() => {
@@ -853,10 +866,20 @@ export function ChatSurface({
     const row = Array.from(el.querySelectorAll<HTMLElement>('[data-virtual-key]'))
       .find((candidate) => candidate.dataset.virtualKey === pending.itemId);
     if (!row) return;
+    const disclosure = pending.blockId
+      ? Array.from(row.querySelectorAll<HTMLButtonElement>('button[data-member-refs][aria-expanded="false"]'))
+        .find((candidate) => hasMemberRef(candidate, pending.blockId!))
+      : undefined;
+    if (disclosure) {
+      disclosure.click();
+      return;
+    }
     const target = pending.blockId
       ? Array.from(row.querySelectorAll<HTMLElement>('[data-block-id]'))
         .find((candidate) => candidate.dataset.blockId === pending.blockId)
       : row;
+    if (!target && pending.blockId && onExpandDetails && nodes.flatMap(renderNodeSources)
+      .some((source) => source?.blockId === pending.blockId && source.detailsLoaded === false)) return;
     if (!target) {
       pendingFocusRef.current = null;
       onNavigationResult?.({ key: pending.key, status: 'not-renderable' });
@@ -870,7 +893,7 @@ export function ChatSurface({
     pendingFocusRef.current = null;
     onNavigationResult?.({ key: pending.key, status: 'revealed' });
     captureReadingAnchor(false);
-  }, [captureReadingAnchor, onNavigationResult, virtualItems]);
+  }, [captureReadingAnchor, expandedBlocks, nodes, onExpandDetails, onNavigationResult, virtualItems]);
 
   useLayoutEffect(() => {
     const pending = pendingReadingAnchorRef.current;
@@ -895,6 +918,7 @@ export function ChatSurface({
     const measurementsChanged = lastMeasuredSizesRef.current !== measuredGroupSizesByScope;
     lastMeasuredSizesRef.current = measuredGroupSizesByScope;
     if (!measurementsChanged) return;
+    if (virtualizer.isScrolling && virtualizer.scrollDirection === 'backward') return;
     if (tailIntentRef.current || navigationTarget || scrollbarDragRef.current || userScrollIntentRef.current) return;
     const anchor = currentReadingAnchorRef.current;
     if (anchor?.followingTail === false) restoreReadingAnchor(anchor, 'mounted');
@@ -1089,6 +1113,7 @@ export function ChatSurface({
       // changing any rows. Preserve deliberate tail intent at that boundary.
       pinTailToViewport();
       if (scroll.clientHeight > 0) setViewportHeight(scroll.clientHeight);
+      if (scroll.clientWidth > 0) setViewportWidth(scroll.clientWidth);
       syncScrollbar();
     });
     observer.observe(scroll);
@@ -1269,6 +1294,7 @@ export function ChatSurface({
           >
             <UserBubble text={node.text} provider={sessionInfo?.backend} />
             <MessageActions
+              blockId={source?.blockId}
               onSelect={source && onToggleBlockSelect ? (shiftKey) => onToggleBlockSelect(source.blockId, shiftKey) : undefined}
               isSelected={source ? selectedBlockIds?.has(source.blockId) : false}
               selectMode={selectMode}
@@ -1284,7 +1310,7 @@ export function ChatSurface({
        case 'semantic_event': {
         const source = node.event.source;
         return (
-          <div key={node.key} className="message-block-wrapper" data-block-id={source.blockId}>
+          <div key={node.key} className="message-block-wrapper" data-block-id={source?.blockId}>
             <SemanticEventBlock
               kind={node.event.semantic_kind}
               content={node.event.content}
@@ -1292,10 +1318,11 @@ export function ChatSurface({
               isError={node.event.is_error}
             />
             <MessageActions
-              onSelect={onToggleBlockSelect ? (shiftKey) => onToggleBlockSelect(source.blockId, shiftKey) : undefined}
-              isSelected={selectedBlockIds?.has(source.blockId)}
+              blockId={source?.blockId}
+              onSelect={source && onToggleBlockSelect ? (shiftKey) => onToggleBlockSelect(source.blockId, shiftKey) : undefined}
+              isSelected={source ? selectedBlockIds?.has(source.blockId) : false}
               selectMode={selectMode}
-              metadata={{ timestamp: source.timestamp }}
+              metadata={{ timestamp: source?.timestamp }}
             />
           </div>
         );
@@ -1312,6 +1339,7 @@ export function ChatSurface({
               onExpandedChange={(next) => setBlockExpanded(disclosureKey, next, [source])}
             />
             <MessageActions
+              blockId={source?.blockId}
               onSelect={source && onToggleBlockSelect ? (shiftKey) => onToggleBlockSelect(source.blockId, shiftKey) : undefined}
               isSelected={source ? selectedBlockIds?.has(source.blockId) : false}
               selectMode={selectMode}
@@ -1379,6 +1407,7 @@ export function ChatSurface({
           <div key={node.key} className="message-block-wrapper" data-block-id={sourceBlockId} data-member-refs={memberRef}>
             {activity}
             <MessageActions
+              blockId={source?.blockId}
               onSelect={source && onToggleBlockSelect ? (shiftKey) => onToggleBlockSelect(source.blockId, shiftKey) : undefined}
               isSelected={source ? selectedBlockIds?.has(source.blockId) : false}
               selectMode={selectMode}
@@ -1453,9 +1482,10 @@ export function ChatSurface({
       >
         {(displayEntriesByGroup.get(group.id) ?? []).map((entry) => {
           if (entry.kind === 'node') return renderNodeBody(entry.node);
-          const memberRefs = entry.nodes.map((node) => node.source?.blockId
+          const memberRefs = entry.nodes.map((node) => [node.source?.blockId
             ?? (node.item.type === 'provider-directive' ? node.item.blockId : null)
-            ?? node.key);
+            ?? node.key, node.item.type === 'tool-call-activity' ? node.item.result?.source?.blockId : null]
+            .filter(Boolean).join(' '));
           const groupDisclosureKey = `activity-group:${entry.key}`;
           const defaultGroupExpanded = expandedBlocks[entry.key] ?? (streaming && entry.nodes.some((node) => (
             node.item.type === 'thinking-block-activity' && node.item.turnId === lastAssistantTurnId
@@ -1503,6 +1533,7 @@ export function ChatSurface({
   }
 
   return (
+    <MessageLinkContext.Provider value={onCopyMessageLink ?? null}>
     <div className="stream-renderer">
       <div
         ref={setScrollNode}
@@ -1595,5 +1626,6 @@ export function ChatSurface({
         </>
       )}
     </div>
+    </MessageLinkContext.Provider>
   );
 }

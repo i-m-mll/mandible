@@ -4,7 +4,9 @@ import { cleanup, fireEvent, render, screen, waitFor } from './helpers/dom.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { boundToolResultBlock, buildStreamState, conversationBlocksToStreamEvents, groupMessagesForDisplay } from '../ui/src/chat';
-import { ChatSurface } from '../ui/src/chat/ChatSurface';
+import { ChatSurface, estimateUserMessageHeight } from '../ui/src/chat/ChatSurface';
+import { conversationAnchorFromHash, messageLinkUrl } from '../ui/src/chat/messageLinks';
+import { __resetAgentPageBindingForTests, adoptAgentSessionBinding } from '../ui/src/agent-page-binding';
 import type { ConversationTranscriptConsumer } from '../ui/src/query/conversationData';
 import type { StreamEvent } from '../ui/src/components/stream-renderer/types';
 import type { ChatItem } from '../src/parsers/types';
@@ -117,8 +119,65 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  __resetAgentPageBindingForTests();
   vi.restoreAllMocks();
   delete (HTMLElement.prototype as { scrollTo?: unknown }).scrollTo;
+});
+
+it.each(['user', 'assistant', 'system'] as const)('copies an exact %s message link after live content gains durable identity', async (role) => {
+  window.history.replaceState(null, '', '/preview?instance=copy-test#/console?session=old-session&turn=old-turn&sidebar=hidden');
+  adoptAgentSessionBinding('copy-agent');
+  const item = canonicalItem({ type: 'message', role, parts: [{ type: 'text', text: 'Live message' }], ordinal: 0 });
+  const transcript: ConversationTranscriptConsumer = {
+    conversationId: 'copy-conversation', sourceVersionId: 'copy-source', historyLoading: false,
+    total: 1, loadedIntervals: [{ start: 0, end: 0 }], hasOlder: false, hasNewer: false,
+    loadOlder: () => ({ status: 'loaded' }), loadNewer: () => ({ status: 'loaded' }),
+    loadAround: () => ({ status: 'loaded' }),
+  };
+  const copyMessageLink = (blockId: string) => { void navigator.clipboard.writeText(messageLinkUrl(window.location.href, transcript.conversationId, blockId)); };
+  const view = render(<ChatSurface events={[{ type: 'chat:item', item }]} streaming={true} transcript={transcript} onCopyMessageLink={copyMessageLink} />);
+  fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+  expect((screen.getByRole('menuitem', { name: 'Copy link' }) as HTMLButtonElement).disabled).toBe(true);
+
+  view.rerender(<ChatSurface events={[canonicalEvent(item, 'cblk:copy-conversation:42')]} streaming={false} transcript={transcript} onCopyMessageLink={copyMessageLink} />);
+  const overflow = screen.getByRole('button', { name: 'More actions' });
+  if (overflow.getAttribute('aria-expanded') !== 'true') fireEvent.click(overflow);
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Copy link' }));
+  await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledOnce());
+  const url = new URL(vi.mocked(navigator.clipboard.writeText).mock.calls[0][0]);
+  expect(url.origin).toBe(window.location.origin);
+  expect(url.pathname).toBe('/preview');
+  expect(url.searchParams.get('instance')).toBe('copy-test');
+  const params = new URLSearchParams(url.hash.split('?')[1]);
+  expect(Object.fromEntries(params)).toEqual({ sidebar: 'hidden', conversation: 'copy-conversation', block: 'cblk:copy-conversation:42', agent_session: 'copy-agent' });
+  expect(conversationAnchorFromHash(url.hash)).toEqual({ block: 'cblk:copy-conversation:42' });
+});
+
+it('estimates tall visible user content by width without charging folded instruction bodies', () => {
+  const text = 'A long wrapped paragraph. '.repeat(400);
+  expect(estimateUserMessageHeight(text, 400, 'codex')).toBeGreaterThan(1000);
+  expect(estimateUserMessageHeight(text, 400, 'codex')).toBeGreaterThan(estimateUserMessageHeight(text, 800, 'codex'));
+  const instruction = '# AGENTS.md instructions for /project\n';
+  expect(estimateUserMessageHeight(instruction + text, 400, 'codex'))
+    .toBe(estimateUserMessageHeight(instruction + 'Short body', 400, 'codex'));
+});
+
+it('opens only the containing disclosure path for an exact grouped tool-result link', async () => {
+  const events = ['one', 'two'].flatMap((id, index): StreamEvent[] => [
+    canonicalEvent(canonicalItem({ type: 'tool-call', role: 'assistant', phase: 'call',
+      tool_id: id, tool_name: 'Shell', parts: [], input: { command: `command-${id}` }, ordinal: index * 2, turn: 'grouped-turn' }), `call-${id}`),
+    canonicalEvent(canonicalItem({ type: 'tool-call', role: 'tool', phase: 'result',
+      tool_id: id, parts: [], output: `output-${id}`, ordinal: index * 2 + 1, turn: 'grouped-turn' }), `result-${id}`),
+  ]);
+  const onNavigationResult = vi.fn();
+  render(<ChatSurface events={events} streaming={false}
+    sessionInfo={{ sessionId: 'grouped-result-link' }}
+    navigationTarget={{ key: 'grouped-result', kind: 'block', blockId: 'result-one', turnId: null, smooth: false }}
+    onNavigationResult={onNavigationResult} />);
+  await waitFor(() => expect(onNavigationResult).toHaveBeenCalledWith({ key: 'grouped-result', status: 'revealed' }));
+  expect(document.activeElement).toBe(document.querySelector('[data-block-id="result-one"]'));
+  expect(screen.getByText('output-one')).toBeTruthy();
+  expect(screen.queryByText('output-two')).toBeNull();
 });
 
 describe('chat message stream render model', () => {
