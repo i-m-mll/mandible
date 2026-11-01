@@ -28,11 +28,12 @@ function descriptorFactory(prepared: PreparedOperationRouter): DescriptorFactory
 }
 
 /** Evaluate authored descriptors and register their effects against this instance. */
-export function preparedOperationRouter(prepared: PreparedOperationRouter, instance?: InstanceInfo): Router {
+export function preparedOperationRouter(prepared: PreparedOperationRouter, instance?: InstanceInfo, files?: readonly string[]): Router {
   const router = new Router(instance ? { instance } : {});
   const discoverModels = instance?.role !== 'preview' && (instance?.allowed_effects.includes('provider:send') ?? true);
   const descriptors = descriptorFactory(prepared)(discoverModels);
   for (const [index, entry] of prepared.entries.entries()) {
+    if (files && !files.includes(entry.file)) continue;
     router[entry.method](entry.path, () => {}, { operation: descriptors[index], fileRpc: "deny" });
   }
   return router;

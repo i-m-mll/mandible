@@ -1,6 +1,6 @@
 import { resolveInstanceInfo } from '../../src/instance-policy.js';
-import { bindOperationCatalog, type InstanceInfo } from '../../ui/src/api';
-import { registeredOperationRouter } from './registered-operation-router';
+import type { InstanceInfo } from '../../ui/src/api';
+import { bindTestInstanceCatalog } from './instance-operation-fixtures';
 
 export const authMainInstance: InstanceInfo = {
   ...resolveInstanceInfo({ env: {} }),
@@ -10,8 +10,5 @@ export const authMainInstance: InstanceInfo = {
 
 /** Use the daemon's authored route effects, including the approval boundary. */
 export function bindAuthUiOperations(instance: InstanceInfo = authMainInstance): void {
-  const router = registeredOperationRouter(instance, ['src/routes/auth.ts', 'src/routes/auth-hooks.ts']);
-  if (!bindOperationCatalog(instance, router.operationCatalog('ui-test'))) {
-    throw new Error('Fixture operation catalog is incompatible with its instance');
-  }
+  bindTestInstanceCatalog(instance, ['src/routes/auth.ts', 'src/routes/auth-hooks.ts']);
 }
