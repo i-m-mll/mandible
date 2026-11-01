@@ -1,10 +1,25 @@
 import { Icon } from '../icons/Icon';
+import type { IconName } from '../icons/Icon';
 // Bug: a0963df — Unified hover-revealed action bar for messages
 // Bug: 02d701a — P3: overflow menu and onInfo callback
 
-import { useRef, useState } from 'preact/hooks';
+import { createContext } from 'preact';
+import { createPortal } from 'preact/compat';
+import { useContext, useRef, useState } from 'preact/hooks';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 import { ContextualAction } from './ContextualAction';
+
+export const MessageLinkContext = createContext<((blockId: string) => void) | null>(null);
+
+export type MessagePrimaryAction = {
+  id: string;
+  title: string;
+  label: string;
+  icon: IconName;
+  onAction: () => void;
+};
+
+export const MessagePrimaryActionsContext = createContext<readonly MessagePrimaryAction[]>([]);
 
 export type MessageActionsMeta = {
   tokenCount?: number;
@@ -14,6 +29,7 @@ export type MessageActionsMeta = {
 };
 
 export type MessageActionsProps = {
+  blockId?: string;
   onCopy?: () => void;
   onResume?: () => void;
   onFork?: () => void;
@@ -28,6 +44,7 @@ export type MessageActionsProps = {
 };
 
 export function MessageActions({
+  blockId,
   onCopy,
   onResume,
   onFork,
@@ -39,6 +56,8 @@ export function MessageActions({
   isSelected = false,
   selectMode = false,
 }: MessageActionsProps): JSX.Element {
+  const onCopyLink = useContext(MessageLinkContext);
+  const primaryActions = useContext(MessagePrimaryActionsContext);
   const [copiedFeedback, setCopiedFeedback] = useState(false);
   const [overflowOpen, setOverflowOpen] = useState(false);
   const overflowTriggerRef = useRef<HTMLButtonElement>(null);
@@ -54,7 +73,7 @@ export function MessageActions({
   const shouldShowFork = showFork ?? !!dagUuid;
 
   // Are there any overflow items to show?
-  const hasOverflow = shouldShowResume || shouldShowFork || !!onInfo;
+  const hasOverflow = shouldShowResume || shouldShowFork || !!onInfo || !!onCopyLink;
 
   const handleCopy = (e: MouseEvent) => {
     e.stopPropagation();
@@ -78,7 +97,7 @@ export function MessageActions({
 
   return (
     <div
-      className={`message-actions contextual-action-group${selectMode || isSelected ? ' message-actions--selecting' : ''}`}
+      className={`message-actions contextual-action-group${overflowOpen ? ' contextual-action-group--persistent' : ''}${selectMode || isSelected ? ' message-actions--selecting' : ''}`}
       data-dag-uuid={dagUuid}
     >
       {/* Primary actions — buttons on right */}
@@ -108,6 +127,17 @@ export function MessageActions({
           )}
         </ContextualAction>
       )}
+      {primaryActions.map((action) => (
+        <ContextualAction
+          key={action.id}
+          className="message-actions__btn"
+          title={action.title}
+          aria-label={action.label}
+          onClick={(event) => { event.stopPropagation(); action.onAction(); }}
+        >
+          <Icon name={action.icon} size={14} />
+        </ContextualAction>
+      ))}
 
       {/* Overflow menu — secondary actions behind ellipsis */}
       {hasOverflow && (
@@ -122,7 +152,7 @@ export function MessageActions({
             aria-expanded={overflowOpen}
           >
             <Icon name="menu" /></ContextualAction>
-          {overflowOpen && (
+          {overflowOpen && createPortal(
             <div
               ref={overflowMenuRef}
               className="message-actions__overflow-menu app-anchored-menu"
@@ -130,6 +160,18 @@ export function MessageActions({
               popover="manual"
               style={overflowMenuStyle}
             >
+              {onCopyLink && (
+                <button
+                  type="button"
+                  className="message-actions__overflow-item"
+                  role="menuitem"
+                  disabled={!blockId}
+                  title={blockId ? undefined : 'Available when this message is saved'}
+                  onClick={(e) => handleOverflowItem(e, blockId ? () => onCopyLink(blockId) : undefined)}
+                >
+                  <Icon name="copyLink" /> Copy link
+                </button>
+              )}
               {shouldShowFork && (
                 <button
                   type="button"
@@ -160,7 +202,7 @@ export function MessageActions({
                   <Icon name="information" /> Info
                 </button>
               )}
-            </div>
+            </div>, document.body,
           )}
         </div>
       )}

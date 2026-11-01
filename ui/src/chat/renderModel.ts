@@ -199,7 +199,7 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
             content: chatItemText(item),
             label: item.provenance.source_event_type,
             is_error: item.execution_outcome === 'failed',
-            source: source ?? { blockId: key },
+            source,
           },
         });
       } else if (item.type === 'message' || item.type === 'plan') {

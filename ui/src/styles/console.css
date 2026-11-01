@@ -1181,49 +1181,52 @@
 }
 
 .message-actions__overflow-menu {
-  background: var(--bg-inset, var(--bg-secondary));
+  margin: 0;
+  background: var(--bg-card);
   border: 1px solid var(--neutral-alpha-10);
-  border-radius: 6px;
-  padding: 4px 0;
-  min-width: 120px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  border-radius: var(--radius-chat-surface);
+  padding: 5px;
+  min-width: 160px;
+  box-shadow: var(--shadow-soft);
+  pointer-events: auto;
+  font-family: var(--font-ui);
+  font-size: var(--font-ui-size);
 }
 
 .message-actions__overflow-item {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   width: 100%;
-  padding: 6px 12px;
-  background: none;
-  border: none;
-  font-family: var(--font-sans);
-  font-size: 12px;
-  color: var(--text-muted);
+  padding: 7px 8px;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  font: inherit;
+  color: var(--text-primary);
   cursor: pointer;
   text-align: left;
   white-space: nowrap;
   transition: color 0.1s ease, background-color 0.1s ease;
 }
 
-.message-actions__overflow-item:hover {
-  color: var(--text-primary);
-  background: var(--neutral-alpha-06);
+.message-actions__overflow-item:is(:hover, :focus):not(:disabled) {
+  background: var(--neutral-alpha-05);
+  outline: none;
 }
 
-/* LIGHT-THEME OVERRIDE — candidate for token remap */
-:root[data-theme='light'] .message-actions__overflow-menu {
-  background: var(--surface-popover);
-  border-color: var(--neutral-alpha-12);
-  box-shadow: var(--shadow-header);
+.message-actions__overflow-item:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: -2px;
 }
 
-:root[data-theme='light'] .message-actions__overflow-item {
-  color: var(--text-muted);
+.message-actions__overflow-item:disabled {
+  opacity: .45;
+  cursor: not-allowed;
 }
 
-:root[data-theme='light'] .message-actions__overflow-item:hover,
-:root[data-theme='light'] .message-actions__overflow-item:focus-visible {
-  color: var(--text-primary);
-  background: var(--bg-hover);
+.message-actions__overflow-item > .app-icon {
+  flex: 0 0 auto;
 }
 
 /* Bug: 02d701a — Selected message highlight */
@@ -1233,39 +1236,11 @@
   background: transparent;
 }
 
-/* GroupFooter — overlay aggregate actions inside their owning turn. */
-.group-footer {
-  height: 24px;
-  inset-block-end: 0;
-  inset-inline-end: 0;
-  position: absolute;
-  z-index: 5;
-}
-
-.group-footer__row {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: var(--space-2);
-}
-
-.group-footer__btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-}
-
-/* Bug: 0a1ad82 — Selected state for select button */
-.group-footer__btn--selected {
-  color: var(--text-muted);
-}
-
-.group-footer__stat {
+.turn-group__stats {
   font-size: var(--text-xs);
   color: var(--text-muted);
   opacity: 0.5;
+  align-self: flex-end;
 }
 
 /* Chat composer redesign */
