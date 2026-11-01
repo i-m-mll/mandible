@@ -1,3 +1,4 @@
+import { migratedFileDb } from './helpers/ledger-fixtures.js';
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -5,7 +6,7 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { openDb, type Db } from "../src/db.js";
+import { type Db } from "../src/db.js";
 import { addOrUpdateCheckout, addProject } from "../src/ledger/project-registry.js";
 import { registerTrashRoutes } from "../src/routes/trash.js";
 import { Router } from "../src/server.js";
@@ -432,7 +433,7 @@ function listenForCleanup(options: {
   requests: Array<{ method: string | undefined; url: string | undefined; body: unknown }>;
 }> {
   const requests: Array<{ method: string | undefined; url: string | undefined; body: unknown }> = [];
-  cleanupDb = openDb(path.join(homeDir, "mandible.db"));
+  cleanupDb = migratedFileDb(path.join(homeDir, "mandible.db"));
   addProject(cleanupDb, { project_key: "canonical-mandible", display_name: "Cleanup Test" }, 1);
   addOrUpdateCheckout(cleanupDb, "canonical-mandible", {
     root: fs.realpathSync(tempDir),

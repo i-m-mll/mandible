@@ -1,9 +1,10 @@
 // @vitest-environment node
+import { migratedFileDb } from './helpers/ledger-fixtures.js';
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { openDb, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { attributionForRequest } from "../src/client-auth/authz.js";
 import { signOperatorChallenge } from "../src/auth-operator-proof.js";
@@ -18,7 +19,7 @@ let agentId: string; let credentialId: string;
 beforeEach(() => {
   vi.mocked(signOperatorChallenge).mockReset().mockResolvedValue({ ok: false, reason: "cancelled", detail: "No operator presence" });
   root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-protected-"));
-  db = openDb(path.join(root, "db")); setDb(db);
+  db = migratedFileDb(path.join(root, "db")); setDb(db);
   const operator = setupOperator(db, { display_name: "Operator" });
   const agent = createUser(db, { slug: "agent", kind: "agent", display_name: "Agent" }); agentId = agent.id;
   addBinding(db, agent.id, { binding_type: "provider_session_env", value: "CODEX_THREAD_ID" });

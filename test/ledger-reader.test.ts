@@ -1,8 +1,8 @@
+import { migratedFileDb } from './helpers/ledger-fixtures.js';
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { expect, it, vi } from "vitest";
-import { openDb } from "../src/db.js";
 import { workerLedgerReaderPool } from "../src/ledger-reads/index.js";
 import { workUnitLivenessFromSnapshot } from "../src/work-unit-utils.js";
 import { getChannelRegistry } from "../src/channel-registry.js";
@@ -11,7 +11,7 @@ import type { SessionManager } from "../src/session-manager.js";
 it("keeps a one-second ledger read off the main loop and transports worker errors", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-ledger-reader-"));
   const dbPath = path.join(root, "ledger.db");
-  const db = openDb(dbPath);
+  const db = migratedFileDb(dbPath);
   const reader = workerLedgerReaderPool(dbPath, { size: 2 });
   let longestTurnMs = 0;
   let last = performance.now();
@@ -40,7 +40,7 @@ it("keeps a one-second ledger read off the main loop and transports worker error
 it("reads current Inbox and lineage ledger snapshots on workers while retaining daemon-local activity", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-inbox-reader-"));
   const dbPath = path.join(root, "ledger.db");
-  const db = openDb(dbPath);
+  const db = migratedFileDb(dbPath);
   const reader = workerLedgerReaderPool(dbPath, { size: 1 });
   const channels = getChannelRegistry();
   const channelConnected = vi.spyOn(channels, "isChannelConnected").mockReturnValue(false);

@@ -1,13 +1,13 @@
-import SqliteDatabase from "../src/sqlite.ts";
+import { migratedMemoryDb } from './helpers/ledger-fixtures.js';
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { attributionForRequest, authorizeOperatorSetup, isLocalHumanRequest, requireIdentity, requireOperator,
   requireProtectedOperator } from "../src/client-auth/authz.js";
-import { migrate, type Db } from "../src/db.js";
+import { type Db } from "../src/db.js";
 import type { RequestLike, ResolvedClientIdentity } from "../src/server.js";
 import { addBinding, createUser, setupOperator } from "../src/users/store.js";
 
 let db: Db;
-beforeEach(() => { db = new SqliteDatabase(":memory:"); migrate(db); });
+beforeEach(() => { db = migratedMemoryDb(); });
 afterEach(() => db.close());
 
 function socketRequest(user: { id: string; slug: string }, managed = false): RequestLike {

@@ -1,9 +1,9 @@
+import { migratedMemoryDb, createLedgerIssue, insertRawLedgerIssue } from './helpers/ledger-fixtures.js';
 import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { execFileSync } from "node:child_process";
-import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { migrate, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { entityRefs, resolveId, shortRef, type IdKind } from "../src/entity-refs.js";
 import { systemAction } from "../src/identity/resolver.js";
 import { addProject } from "../src/ledger/project-registry.js";
@@ -13,7 +13,6 @@ import type { Router } from "../src/server.js";
 import { resolveBriefingId } from "../src/feedback/briefings.js";
 import { createUser, setupOperator } from "../src/users/store.js";
 import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
-import { createLedgerIssue, insertRawLedgerIssue } from "./helpers/ledger-fixtures.js";
 
 const fakeScanner = { getRepos: () => [], getRepoById: () => undefined, getBranches: () => [] } as never;
 
@@ -31,8 +30,7 @@ let issueId: string;
 let issueProject: string;
 
 beforeEach(() => {
-  db = new SqliteDatabase(":memory:");
-  migrate(db);
+  db = migratedMemoryDb();
   setDb(db);
   const project = addProject(db, { project_key: "refs", display_name: "Refs" });
   issueProject = project.id;
