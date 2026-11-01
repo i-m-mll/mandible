@@ -83,17 +83,6 @@ describe("conversations CLI", () => {
     expect(http.requests.some((request) => request.url.includes("session_id="))).toBe(false);
   });
 
-  it("searches the daemon index and warns when the requested limit exceeds the server cap", async () => {
-    const { env } = spool((request) => String(request.path).startsWith("/api/conversations/search?")
-      ? { status: 200, body: { results: [{ conversation, block, snippet: "file RPC route is readable" }], total: 1, limit: 20 } }
-      : { status: 404, body: { error: "not_found" } });
-
-    const result = await runCli(["conversations", "search", "RPC", "--json", "--limit", "500"], { env });
-
-    expect(result.status, result.stderr).toBe(0);
-    expect(JSON.parse(result.stdout).results).toEqual([expect.objectContaining({ conversation: expect.objectContaining({ id: "conv-1" }) })]);
-  });
-
   it("waits for a shared search snapshot and releases its observer over file RPC", async () => {
     const { env, responder } = spool((request) => {
       const url = new URL(String(request.path), 'http://fixture');

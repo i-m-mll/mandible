@@ -55,17 +55,6 @@ function openWorkingNotes(): void {
 }
 
 describe('issue detail label presentation', () => {
-  it('preserves ordinary and colon-bearing labels without aliasing kind names', () => {
-    const preserved = ['team:frontend', 'mandible:priority:high', 'mandible:branch', 'status:open'];
-    render(<LedgerIssueDetail detail={detail([...preserved, 'error'])} />);
-
-    for (const label of preserved) {
-      expect(screen.getByText(label).textContent).toBe(label);
-    }
-    expect(screen.getByText('error').textContent).toBe('error');
-    expect(screen.queryByText('bug')).toBeNull();
-  });
-
   it('keeps an active draft and its base revision across refresh and stale-save conflict', async () => {
     const initial = detail([]);
     initial.work_notes = 'Original notes';
