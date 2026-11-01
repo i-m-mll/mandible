@@ -1591,7 +1591,7 @@ async function mainLocked() {
   const launchMode = launchModeArg ?? (directHandoff ? journal.binding.priorBackend.launchMode : installedLaunchMode());
   if (args.includes('--service-config') && !['install', 'configure-launch-mode'].includes(command)) throw new Error('--service-config is accepted only by install and configure-launch-mode.');
   const configuration = explicitServiceConfiguration(args);
-  if (command === "status") {
+  if (command === "status" || command === "reconcile-channel") {
     const { status } = await inspectRuntime({ launchMode });
     process.stdout.write(`${JSON.stringify(status)}\n`);
     return;

@@ -345,7 +345,7 @@ it("drains a held finite observation and ignores an executor released after data
   await f.queue.approveWithOperatorProof(f.request.id, f.signing.operatorId);
   await f.ready;
   const running = [...(f.queue as any).inFlight.values()];
-  const held = holdChild((kind, _program, args) => kind === "execFile" && args.includes("--git-dir"));
+  const held = holdChild((kind, program, args) => kind === "execFile" && program === "git" && args[0] === "status");
   const check = f.queue.checkMergeIndependence({ cwd: f.repo, repo: path.basename(f.repo), base_branch: "main", head_branch: "feature/target" });
   try {
     await reached(held, check);

@@ -296,6 +296,7 @@ export function ToolCard({
       <div className="message-block-wrapper tool-card__payload-box tool-card__result-wrapper" data-block-id={source?.blockId}>
         {content}
         <MessageActions
+          blockId={source?.blockId}
           onCopy={() => { navigator.clipboard.writeText(result.fullText ?? extractResultText(result.content)).catch(() => {}); }}
           onSelect={onToggleResultSelect}
           isSelected={resultSelected}
@@ -328,13 +329,12 @@ export function ToolCard({
       data-tool={toolName}
       data-tool-kind={visual.kind}
       data-id={toolUseId}
-      data-block-id={result?.source?.blockId}
       data-member-refs={memberRefs}
     >
       <CompactActivityRow
         icon={<Icon name={visual.icon} />}
         summary={summary}
-        memberRefs={memberRefs}
+        memberRefs={[memberRefs, result?.source?.blockId].filter(Boolean).join(' ')}
         disclosure={{
           content: details,
           regionLabel: `${visual.verb} details`,

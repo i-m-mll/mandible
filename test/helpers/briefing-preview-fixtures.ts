@@ -1,7 +1,8 @@
+import { createMigratedDb } from './ledger-fixtures.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import SqliteDatabase from '../../src/sqlite';
-import { migrate, type Db } from '../../src/db';
+import { type Db } from '../../src/db';
 import type { ClientAuthGate, ResolvedClientIdentity } from '../../src/server';
 import { PRODUCTION_EFFECTS, STANDARD_PREVIEW_EFFECTS } from '../../src/security/effect-policy';
 
@@ -32,12 +33,7 @@ export function createCopiedPreviewDatabase(root: string): {
   fs.mkdirSync(path.join(previewRoot, 'settings', 'users'), { recursive: true });
   const sourceDbPath = path.join(sourceRoot, 'source.db');
   const dbPath = path.join(previewRoot, 'copy.db');
-  const sourceDb = new SqliteDatabase(sourceDbPath);
-  try {
-    migrate(sourceDb);
-  } finally {
-    sourceDb.close();
-  }
+  createMigratedDb({ path: sourceDbPath }).close();
   fs.copyFileSync(sourceDbPath, dbPath);
   return { db: new SqliteDatabase(dbPath), dbPath, sourceDbPath, previewRoot, sourceRoot };
 }

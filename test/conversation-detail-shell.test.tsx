@@ -20,6 +20,7 @@ import { conversationKeys } from '../ui/src/query/conversationKeys.js';
 import type { ConversationTranscriptData } from '../ui/src/query/conversationData.js';
 import { applyConversationSse } from '../ui/src/query/conversationSse.js';
 import { addDraftAttachments, clearAcceptedDraft } from '../ui/src/chat/attachmentDrafts.js';
+import { messageLinkUrl } from '../ui/src/chat/messageLinks.js';
 
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
@@ -593,6 +594,25 @@ describe('compact detail pane shell', () => {
     await Promise.resolve();
     expect(screen.queryByText('Late initial loses')).toBeNull();
     expect(screen.getByText('Exact anchor wins')).toBeTruthy();
+  });
+
+  it('cold-opens a copied message link instead of a saved tail selection and reports clipboard failure visibly', async () => {
+    const exactBlock = makeTranscriptBlock({ id: 'cold-message', content: 'Exact cold message', position: 50 });
+    const scopedConversation = mockConversationDetail(defaultControl, [exactBlock]);
+    vi.mocked(api.getConversationWindow).mockResolvedValue(positionPayload(scopedConversation, [exactBlock], { kind: 'block', hasAfter: true }));
+    window.localStorage.setItem(`mandible:chat-scroll:${scopedConversation.session_id}`, JSON.stringify({
+      version: 1, itemId: 'saved-tail', blockId: null, position: 999, viewportOffset: 0, followingTail: true,
+    }));
+    window.history.replaceState(null, '', messageLinkUrl(window.location.href, scopedConversation.id, exactBlock.id));
+    Object.defineProperty(navigator, 'clipboard', { configurable: true,
+      value: { writeText: vi.fn().mockRejectedValue(new Error('Clipboard denied')) } });
+    renderConversationDetail(scopedConversation);
+    expect(await screen.findByText('Exact cold message')).toBeTruthy();
+    expect(api.getConversationWindow).toHaveBeenCalledWith(scopedConversation.id, expect.objectContaining({ block: exactBlock.id }));
+    await waitFor(() => expect(document.activeElement?.getAttribute('data-block-id')).toBe(exactBlock.id));
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy link' }));
+    expect(await screen.findByText('Could not copy the message link.')).toBeTruthy();
   });
 
   it('keeps the live transcript mounted while a same-conversation reconciliation is pending', async () => {

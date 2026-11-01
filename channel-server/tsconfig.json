@@ -12,5 +12,10 @@
     "declaration": true,
     "skipLibCheck": true
   },
-  "include": ["."]
+  "include": [
+    "index.ts",
+    "transport.ts",
+    "base-url.ts",
+    "canonical-origin.ts"
+  ]
 }

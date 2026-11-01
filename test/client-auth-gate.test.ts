@@ -1,11 +1,12 @@
 // @vitest-environment node
+import { migratedFileDb } from './helpers/ledger-fixtures.js';
 import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
-import { openDb, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { FileRpcTransport } from "../src/file-rpc-transport.js";
 import { systemAction } from "../src/identity/resolver.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
@@ -18,7 +19,7 @@ import { createUser, SYSTEM_USER_ID } from "../src/users/store.js";
 let root = ""; let db: Db; let auth: ClientAuthenticator; let router: Router;
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-gate-"));
-  db = openDb(path.join(root, "mandible.db")); setDb(db);
+  db = migratedFileDb(path.join(root, "mandible.db")); setDb(db);
   auth = new ClientAuthenticator(db, { secretsDir: path.join(root, "auth") });
   router = new Router({ clientAuth: auth });
   router.post("/api/issues/test-write", (req, res) => res.json({ identity: req.client_identity ?? null }), { operation: { id: "fixture:post:/api/issues/test-write", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: "allow" });

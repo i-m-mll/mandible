@@ -26,6 +26,7 @@ import { IconTabList, type IconTab } from '../components/shared/IconTabList';
 
 import { linkifyResourceRefs as linkifyArtifactRefs } from '../resource-refs';
 import { formatRelativeTime } from '../lib/format';
+import { createCoalescedRefresh } from '../lib/coalesced-refresh';
 import { renderInlineMarkdown, renderMarkdown } from '../lib/markdown';
 import { usePersistedScrollPosition } from '../hooks/usePersistedScrollPosition';
 import { readPersistedViewState, writePersistedViewState, usePersistedViewState } from '../hooks/usePersistedViewState';
@@ -183,6 +184,18 @@ function requestPrerequisites(request: AuthRequest) {
   });
 }
 
+function publicationBlockerTitle(blocker: AuthPublicationBlocker): string {
+  switch (blocker.code) {
+    case 'runtime_handoff_lock': return 'Runtime handoff blocks approval';
+    case 'checkout_not_ready': return 'Checkout state blocks approval';
+    case 'ownership_conflict': return 'Service ownership blocks approval';
+    case 'unreadable_state': return 'Service state blocks approval';
+    case 'missing_definition': return 'Service definition blocks approval';
+    case 'starting': return 'Service startup blocks approval';
+    default: return exhausted(blocker.code, 'Approval is blocked');
+  }
+}
+
 function AuthPrerequisites({ request, onSelect }: { request: AuthRequest; onSelect: (id: string) => void }): JSX.Element | null {
   const prerequisites = requestPrerequisites(request);
   if (prerequisites.length === 0) return null;
@@ -234,6 +247,7 @@ export type AuthQueueViewProps = {
   onApprove: (requestId: string) => void | Promise<void>;
   onReject: (requestId: string) => void | Promise<void>;
   onRetry: (requestId: string) => void | Promise<void>;
+  onRefreshAuthProjection?: (signal: AbortSignal) => Promise<void>;
   autoShowConsoleOnApproval?: boolean;
   autoReturnToAbstractOnSuccess?: boolean;
   retainFinalizedSelection?: boolean;
@@ -1337,7 +1351,7 @@ function AuthRequestDetail({
 
         {publicationBlocker && (
           <div className="auth-failure" role="status">
-            <strong>{publicationBlocker.code === 'runtime_handoff_lock' ? 'Runtime handoff blocks approval' : 'Service ownership blocks approval'}</strong>
+            <strong>{publicationBlockerTitle(publicationBlocker)}</strong>
             <p className="auth-failure__summary">{publicationBlocker.message}</p>
           </div>
         )}
@@ -2048,6 +2062,7 @@ export function AuthQueueView({
   onApprove,
   onReject,
   onRetry,
+  onRefreshAuthProjection,
   sidebarHidden = false,
   daemonReady = true,
   instance = null,
@@ -2852,6 +2867,29 @@ export function AuthQueueView({
     const hydration = hydratedBodies[getAuthId(selectedRequestRaw)];
     return retainKnownAuthBody(selectedRequestRaw, hydration);
   }, [selectedRequestRaw, hydratedBodies]);
+
+  const observesTransientBlocker = reviewRouteActive && Boolean(
+    (selectedRequest && getAuthStatus(selectedRequest) === 'pending' && selectedRequest.publication_blocker)
+      || queue.some(request => getAuthStatus(request) === 'pending' && request.publication_blocker),
+  );
+  useEffect(() => {
+    if (!observesTransientBlocker || !onRefreshAuthProjection) return;
+    const refresh = createCoalescedRefresh(onRefreshAuthProjection);
+    const request = () => refresh.request();
+    request();
+    const interval = window.setInterval(request, 1_000);
+    const whenVisible = () => {
+      if (document.visibilityState === 'visible') request();
+    };
+    document.addEventListener('visibilitychange', whenVisible);
+    window.addEventListener('focus', request);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', whenVisible);
+      window.removeEventListener('focus', request);
+      refresh.stop();
+    };
+  }, [observesTransientBlocker, onRefreshAuthProjection]);
 
   useEffect(() => {
     if (!selectedRequest) return;

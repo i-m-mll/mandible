@@ -1,10 +1,11 @@
+import { migratedFileDb } from './helpers/ledger-fixtures.js';
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, expect, it } from "vitest";
 import { ChatAttachmentStore } from "../src/conversation-control/attachment-store.js";
 import { attachmentProviderContext, claudeAttachmentContent, codexAttachmentInput } from "../src/conversation-control/attachment-delivery.js";
-import { migrate, openDb } from "../src/db.js";
+import { migrate } from "../src/db.js";
 import { setDb } from "../src/db.js";
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { setClientAuthMode } from "../src/client-auth/mode.js";
@@ -14,7 +15,7 @@ import { registerConversationControlRoutes } from "../src/routes/conversation-co
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-attachments-"));
 const dbPath = path.join(root, "mandible.db");
-const db = openDb(dbPath);
+const db = migratedFileDb(dbPath);
 migrate(db);
 
 afterEach(() => {

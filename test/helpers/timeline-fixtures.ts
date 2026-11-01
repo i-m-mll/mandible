@@ -1,6 +1,7 @@
+import { migratedFileDb } from './ledger-fixtures.js';
 import fs from "node:fs";
 import path from "node:path";
-import { openDb, type Db } from "../../src/db.js";
+import { type Db } from "../../src/db.js";
 import { systemAction } from "../../src/identity/resolver.js";
 import { resolveProjectForCheckout } from "../../src/ledger/projects.js";
 import { LedgerStore } from "../../src/ledger/store.js";
@@ -36,7 +37,7 @@ const SYSTEM_ACTOR = { attribution: systemAction() };
 
 export function createTimelineFixture(tempDir: string): TimelineFixture {
   fs.mkdirSync(tempDir, { recursive: true });
-  const db = openDb(path.join(tempDir, "mandible.db"));
+  const db = migratedFileDb(path.join(tempDir, "mandible.db"));
   const checkout = resolveProjectForCheckout(db, {
     root: path.join(tempDir, "repo"),
     name: "timeline-fixture",

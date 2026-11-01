@@ -1,11 +1,12 @@
 // @vitest-environment node
+import { migratedFileDb, createLedgerProject, createLedgerIssue } from './helpers/ledger-fixtures.js';
 import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { openDb, setDb, type Db } from '../src/db.js';
+import { setDb, type Db } from '../src/db.js';
 import { ClientAuthenticator } from '../src/client-auth/authenticator.js';
 import { createLocalSocketServer, createServer, Router } from '../src/server.js';
 import { localApiSocketPath, startLocalApiSocket } from '../src/local-api-socket.js';
@@ -20,7 +21,6 @@ import { SessionRegistry } from '../src/registry.js';
 import { currentRequestOrigin } from '../src/request-origin.js';
 import { attributionForRequest } from '../src/client-auth/authz.js';
 import { LedgerStore } from '../src/ledger/store.js';
-import { createLedgerProject, createLedgerIssue } from './helpers/ledger-fixtures.js';
 import type { InstanceInfo } from '../src/types.js';
 
 let root: string; let db: Db; let auth: ClientAuthenticator; let router: Router;
@@ -45,7 +45,7 @@ function request(method: string, route: string, headers: Record<string, string> 
 }
 beforeEach(async () => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-socket-'));
-  db = openDb(path.join(root, 'db')); setDb(db);
+  db = migratedFileDb(path.join(root, 'db')); setDb(db);
   setupOperator(db, { display_name: 'Operator', email: 'operator@example.invalid' });
   auth = new ClientAuthenticator(db, { instance: instance(), secretsDir: path.join(root, 'auth'), sessionAuthorityDir: path.join(root, 'sessions') });
   router = new Router({ clientAuth: auth, instance: instance() });
@@ -147,7 +147,7 @@ describe('owner-only local API socket', () => {
       vi.stubEnv(key, value);
     }
     try {
-      const channel = await import('../channel-server/client.js');
+      const channel = await import('./helpers/channel-client.js');
       await channel.registerSession({ id, status: 'active', cwd: root, branch: null });
     } finally {
       vi.unstubAllEnvs();

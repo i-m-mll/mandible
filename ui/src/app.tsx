@@ -21,7 +21,7 @@ import {
   approveAuthRequest,
   startProviderChat,
   getAuthHistory,
-  getAuthQueue,
+  refreshAuthQueue,
   getConsoleSessions,
   getDashboardBadges,
   getAppThemePreference,
@@ -135,6 +135,7 @@ import {
   parseAuthResolvedId,
 } from './state';
 import { createAuthOutputCoalescer } from './auth-output-coalescer';
+import { createAuthProjectionRefresh } from './auth-projection-refresh';
 import type { BugRef, ConsoleSessionPayload } from './state';
 import {
   normalizeAppThemeMode,
@@ -735,6 +736,13 @@ function App(): JSX.Element {
   };
   const routeWarmupSettingsLoadRef = useRef<Promise<void>>(Promise.resolve());
   const activeRouteDataLoadRef = useRef<Promise<void>>(Promise.resolve());
+  const authProjectionRefreshRef = useRef<ReturnType<typeof createAuthProjectionRefresh<AuthRequest>> | null>(null);
+  if (!authProjectionRefreshRef.current) {
+    authProjectionRefreshRef.current = createAuthProjectionRefresh<AuthRequest>(
+      refreshAuthQueue,
+      (queue) => dispatch({ type: 'setAuthQueue', queue }),
+    );
+  }
   const activeRouteInitialLoadsRef = useRef(new Set<Promise<unknown>>());
   // The startup warmup is one pass per page load; an interrupted pass resumes at this tab.
   const startupRouteWarmupNextIndexRef = useRef(0);
@@ -1087,6 +1095,11 @@ function App(): JSX.Element {
     if (selectedRepo) await loadRepoBranches(selectedRepo);
   }, []);
 
+  const refreshAuthProjection = useCallback(async (signal?: AbortSignal): Promise<void> => {
+    if (!accessReady) return;
+    await authProjectionRefreshRef.current!.refresh(signal);
+  }, [accessReady]);
+
   const loadVisibleRouteData = useCallback(async (
     tab: Route['tab'],
     options: RouteDataLoadOptions = {},
@@ -1096,7 +1109,7 @@ function App(): JSX.Element {
       switch (tab) {
         case 'auth':
           await Promise.all([
-            getAuthQueue<AuthRequest>().then((queue) => dispatch({ type: 'setAuthQueue', queue })),
+            refreshAuthProjection(),
             getAuthHistory<AuthRequest>(200).then((history) => dispatch({ type: 'setAuthHistory', history })),
             loadWorkData(!options.background, options),
           ]);
@@ -1142,7 +1155,7 @@ function App(): JSX.Element {
       if (tab === 'settings') dispatch({ type: 'setSettingsLoadError', error: message });
       if (options.background) throw error;
     }
-  }, [accessReady, loadWorkData]);
+  }, [accessReady, loadWorkData, refreshAuthProjection]);
   loadVisibleRouteDataRef.current = loadVisibleRouteData;
 
   const refreshRailOrder = useCallback(async (): Promise<void> => {
@@ -1377,6 +1390,7 @@ function App(): JSX.Element {
     };
     const handler = (payload: SSEPayload) => {
       lastDashboardSseAtRef.current = Date.now();
+      if (authEventRequiresProjectionRefresh(payload.type)) authProjectionRefreshRef.current!.notePush();
       dispatch({ type: 'sse', payload });
       if (authEventRequiresProjectionRefresh(payload.type)) {
         scheduleAuthProjectionRefresh();
@@ -1897,6 +1911,7 @@ function App(): JSX.Element {
       await approveAuthRequest(requestId);
       // Set to 'approved' locally for immediate feedback; the SSE auth:resolved
       // event will update to 'completed' when the command finishes.
+      authProjectionRefreshRef.current!.notePush();
       dispatch({ type: 'authResolved', requestId, status: 'approved' });
     } catch (err) {
       // Bug: f690657 — do NOT dispatch a local status change on failure.
@@ -1913,6 +1928,7 @@ function App(): JSX.Element {
   const handleReject = async (requestId: string) => {
     try {
       await rejectAuthRequest(requestId);
+      authProjectionRefreshRef.current!.notePush();
       dispatch({ type: 'authResolved', requestId, status: 'rejected' });
     } catch {
       // Do not set a local error status — the server state is unchanged.
@@ -1923,6 +1939,7 @@ function App(): JSX.Element {
   const handleRetry = async (requestId: string) => {
     try {
       await retryAuthRequest(requestId);
+      authProjectionRefreshRef.current!.notePush();
       dispatch({ type: 'authResolved', requestId, status: 'pending' });
     } catch {
       return;
@@ -2777,6 +2794,7 @@ function App(): JSX.Element {
               autoShowConsoleOnApproval={enabledSetting(state.settings, AUTH_AUTO_SHOW_CONSOLE_SETTING)}
               autoReturnToAbstractOnSuccess={enabledSetting(state.settings, AUTH_AUTO_RETURN_TO_OVERVIEW_SETTING)}
               retainFinalizedSelection={enabledSetting(state.settings, AUTH_RETAIN_FINALIZED_SELECTION_SETTING)}
+              onRefreshAuthProjection={refreshAuthProjection}
             />
           );
         })())}

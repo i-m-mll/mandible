@@ -253,7 +253,7 @@ interface ChannelEventCapture {
 
 describe("channel-server auth:resolved filter (Bug: 4e32923)", () => {
   async function getDispatch() {
-    return (await import("../channel-server/notifications.js")).dispatchEvent;
+    return (await import("../src/channel/events.js")).dispatchEvent;
   }
 
   it("delivers auth events via the channel-event sender when target_session_id matches", async () => {
@@ -448,7 +448,7 @@ describe("GET /api/inbox/undelivered (Bug: 4e32923)", () => {
 
 describe("channel-server startup catch-up (Bug: 4e32923)", () => {
   it("fetches undelivered rows, sends channel events, and marks each delivered", async () => {
-    const mod = await import("../channel-server/index.js");
+    const mod = await import("../src/channel/catchup.js");
     const sent: Array<{ method?: string; params?: unknown }> = [];
     const delivered: string[] = [];
     const mockServer = {
@@ -503,7 +503,7 @@ describe("channel-server startup catch-up (Bug: 4e32923)", () => {
   // Bug: 6d7411b — startup catch-up passes conversation_id to fetchUndelivered
 
   it("continues replaying when a single markDelivered call fails", async () => {
-    const mod = await import("../channel-server/index.js");
+    const mod = await import("../src/channel/catchup.js");
     const sent: unknown[] = [];
     const delivered: string[] = [];
     const logs: string[] = [];

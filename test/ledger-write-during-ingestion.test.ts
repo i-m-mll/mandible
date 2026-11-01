@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { migratedFileDb } from './helpers/ledger-fixtures.js';
 import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -19,7 +20,7 @@ it("commits comments and references and serves health while real ingestion prepa
   const root = path.join(testRuntimeRoot, "ledger-ingestion");
   fs.mkdirSync(root);
   const dbPath = path.join(root, "ledger.db");
-  const db = openDb(dbPath);
+  const db = migratedFileDb(dbPath);
   const observer = openDb(dbPath);
   const store = new LedgerStore(db);
   const { project } = resolveProjectForCheckout(db, { root, name: "fixture", defaultBranch: "main" });

@@ -1,3 +1,4 @@
+import { migratedFileDb } from './helpers/ledger-fixtures.js';
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -5,7 +6,7 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { openDb, type Db } from "../src/db.js";
+import { type Db } from "../src/db.js";
 import { addOrUpdateCheckout, addProject } from "../src/ledger/project-registry.js";
 import { registerTrashRoutes } from "../src/routes/trash.js";
 import { Router } from "../src/server.js";
@@ -228,7 +229,7 @@ describe("auth merge Mandible preflight", () => {
     expect(result.stderr).toContain("checking signing configuration");
   });
 
-  it("blocks staged changes through Mandible auth check", async () => {
+  it("preserves staged changes by refusing before daemon preflight", async () => {
     const authCheck = await listenForAuthCheck({
       status: "error",
       repo: "repo",
@@ -241,6 +242,9 @@ describe("auth merge Mandible preflight", () => {
     fs.writeFileSync(path.join(tempDir, "staged.txt"), "staged\n", "utf8");
     git(["add", "staged.txt"]);
 
+    const before = git(["rev-parse", "main"]);
+    const index = fs.readFileSync(path.join(tempDir, ".git", "index"));
+
     const result = await runAsync(["auth", "merge", "feature/demo"], tempDir, {
       MANDIBLE_AUTH_ATOMIC: "1",
       MANDIBLE_PORT: String(authCheck.port),
@@ -248,10 +252,11 @@ describe("auth merge Mandible preflight", () => {
     });
 
     expect(result.status).toBe(1);
-    expect(authCheck.bodies).toHaveLength(1);
-    expect(result.stderr).toContain("tracked worktree changes are present: staged.txt");
-    expect(result.stderr).toContain("Mandible merge preflight failed");
-    expect(result.stderr).toContain("staged.txt");
+    expect(authCheck.bodies).toHaveLength(0);
+    expect(result.stdout).toContain("Checkout blocked: staged [A ]: staged.txt");
+    expect(git(["rev-parse", "main"])).toBe(before);
+    expect(fs.readFileSync(path.join(tempDir, ".git", "index"))).toEqual(index);
+    expect(fs.readFileSync(path.join(tempDir, "staged.txt"), "utf8")).toBe("staged\n");
     expect(result.stderr).not.toContain("commit.gpgsign is set to false");
   });
 
@@ -428,7 +433,7 @@ function listenForCleanup(options: {
   requests: Array<{ method: string | undefined; url: string | undefined; body: unknown }>;
 }> {
   const requests: Array<{ method: string | undefined; url: string | undefined; body: unknown }> = [];
-  cleanupDb = openDb(path.join(homeDir, "mandible.db"));
+  cleanupDb = migratedFileDb(path.join(homeDir, "mandible.db"));
   addProject(cleanupDb, { project_key: "canonical-mandible", display_name: "Cleanup Test" }, 1);
   addOrUpdateCheckout(cleanupDb, "canonical-mandible", {
     root: fs.realpathSync(tempDir),

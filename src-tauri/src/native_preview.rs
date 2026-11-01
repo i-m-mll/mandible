@@ -334,6 +334,7 @@ mod tests {
             "plugin:event|emit",
             "plugin:event|emit_to",
             "daemon_status",
+            "daemon_reconcile_channel",
             "daemon_start",
             "daemon_restart",
             "daemon_set_launch_mode",

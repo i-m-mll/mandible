@@ -1,10 +1,10 @@
 // @vitest-environment node
+import { migratedFileDb } from './helpers/ledger-fixtures.js';
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { openDb } from "../src/db.js";
 import SqliteDatabase from "../src/sqlite.js";
 import { describe, expect, it } from "vitest";
 
@@ -95,7 +95,7 @@ describe("ingestion worker actor", () => {
 it("opens the same pinned SQLite database in the actual ingestion Worker", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-real-ingestion-worker-"));
   const dbPath = path.join(root, "ledger.db");
-  const db = openDb(dbPath);
+  const db = migratedFileDb(dbPath);
   const warnings: string[] = [];
   const actor = new IngestionActor({
     dbPath,
@@ -119,7 +119,7 @@ it("opens the same pinned SQLite database in the actual ingestion Worker", async
 it("T4: the ingestion worker checkpoints outstanding WAL frames", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-worker-checkpoint-"));
   const dbPath = path.join(root, "ledger.db");
-  const db = openDb(dbPath);
+  const db = migratedFileDb(dbPath);
   const originalAutocheckpoint = db.pragma("wal_autocheckpoint", { simple: true });
   db.exec("CREATE TABLE checkpoint_payload (body BLOB)");
   const reader = new SqliteDatabase(dbPath, { readonly: true });

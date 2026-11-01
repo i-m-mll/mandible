@@ -1004,6 +1004,12 @@ export async function getAuthQueue<T>(): Promise<T[]> {
   return normalizeList(payload);
 }
 
+export async function refreshAuthQueue<T>(signal?: AbortSignal): Promise<T[]> {
+  invalidateApiGetCache((key) => key === cacheKeyForGet('/api/auth/queue'));
+  const payload = await cachedApiGetJson<ApiList<T>>('/api/auth/queue', { ...WARMED_ROUTE_GET_OPTIONS, signal });
+  return normalizeList(payload);
+}
+
 export async function getAuthHistory<T>(limit?: number): Promise<T[]> {
   const query = limit != null ? `?limit=${limit}` : '';
   const payload = await cachedApiGetJson<ApiList<T>>(`/api/auth/history${query}`, WARMED_ROUTE_GET_OPTIONS);

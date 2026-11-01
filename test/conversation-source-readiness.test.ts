@@ -1,9 +1,10 @@
+import { migratedFileDb } from './helpers/ledger-fixtures.js';
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { openDb, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { IngestionActor } from "../src/ingestion-actor.js";
 import { repairConversationSourceReadiness, startIngestion, stopIngestionGracefully } from "../src/ingestion.js";
 import { readConversationSourceReadiness } from "../src/conversations/source-readiness.js";
@@ -31,7 +32,7 @@ const row = (value: unknown) => `${JSON.stringify(value)}\n`;
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-source-readiness-"));
-  db = openDb(path.join(root, "ledger.db"));
+  db = migratedFileDb(path.join(root, "ledger.db"));
   setDb(db);
   observations.length = 0;
   startIngestion((_level, message, details) => observations.push({ message, details }),
@@ -117,7 +118,7 @@ describe("source metadata readiness and canonical ingestion repair", () => {
     const { id } = await seed();
     const version = readConversationSourceReadiness(db, id).sourceVersionId!;
     const rows = getConversationStructureCache(db).readPage(id, version, { offset: 0, limit: 10 })!.rows;
-    const otherDb = openDb(path.join(root, "other-ledger.db"));
+    const otherDb = migratedFileDb(path.join(root, "other-ledger.db"));
     const environment = { VITEST: process.env.VITEST, NODE_ENV: process.env.NODE_ENV };
     process.env.VITEST = "false"; process.env.NODE_ENV = "production";
     const first = new ConversationStructureCache(db);

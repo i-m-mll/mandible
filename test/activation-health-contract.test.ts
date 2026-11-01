@@ -1,6 +1,6 @@
+import { migratedMemoryDb } from './helpers/ledger-fixtures.js';
 import fs from "node:fs";
 
-import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
@@ -9,7 +9,7 @@ import {
   type TaskActivationHealthFacts,
   type TaskInventoryGeneration,
 } from "../src/contracts.js";
-import { migrate, type Db } from "../src/db.js";
+import { type Db } from "../src/db.js";
 import {
   ingestOperationalIncidentEnvelope,
   parseOperationalIncidentEnvelope,
@@ -45,8 +45,7 @@ describe("dotfiles cba4353 activation-health contract", () => {
   let operatorId: string;
 
   beforeEach(() => {
-    db = new SqliteDatabase(":memory:");
-    migrate(db);
+    db = migratedMemoryDb();
     executorId = createUser(db, {
       slug: "agent-schedule",
       kind: "agent",
