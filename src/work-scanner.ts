@@ -1484,7 +1484,7 @@ export class WorkScanner {
    */
   async relocateCheckout(
     relocation: CheckoutRelocation,
-    options: Pick<RelocateCheckoutRowsInput, "actor" | "authorize">,
+    options: Pick<RelocateCheckoutRowsInput, "actor">,
   ): Promise<RelocationResult<RelocationReport>> {
     if (this.stopped) throw new Error("Work scanner is stopped");
     for (;;) {

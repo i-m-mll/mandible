@@ -52,7 +52,7 @@ import {
   type BlockType,
 } from "../ledger/space-blocks.js";
 import { SPACE_EVENTS, type SpaceEvent } from "../spaces/events.js";
-import { exportUntrackedCopy, serializeSpaceDocument, ExportError, resolveCheckoutForSpace, getProjectCheckout } from "../spaces/export.js";
+import { exportUntrackedCopy, serializeSpaceDocument, ExportError } from "../spaces/export.js";
 import { preparePublication, executePublication, getPublication, listPublications, importManagedDocument, importHistoryDocument, importGitDocument, type PublicationResult, publicationDestinations } from "../spaces/publication.js";
 import { documentHistoryEntry, listDocumentHistory } from "../spaces/history.js";
 import { broadcastSpaceEvent } from "../sse.js";
@@ -71,8 +71,6 @@ import {
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import type { TimelineIssuePredicate } from "../types.js";
 import { bodyRecord, sendJson } from "./http.js";
-import { requireProjectAccess, PermissionError, sendPermissionError, type ProjectRole } from "../permissions/store.js";
-import { artifactAccessProjectIds, resolveArtifactProject, resolveWorkProject } from "../permissions/resources.js";
 import { BriefingStoreError, resolveBriefingId, shortBriefingRef } from "../feedback/briefings.js";
 import { ClientAuthzError } from "../client-auth/authz.js";
 import { briefingReadViewer } from "./briefing.js";
@@ -80,34 +78,12 @@ import { resolveProjectRef } from "../ledger/project-registry.js";
 import { effectiveWorkerStatus } from "../ledger/issue-work-state.js";
 import { candidateProjectIds, resolveOperationalIssueRef } from "../ledger/operational-links.js";
 import { projectRouteRef } from "../ledger/issue-detail.js";
-
-function documentProjectAccess(db: Db, req: RequestLike, project: string | null | undefined, role: ProjectRole): void {
-  if (project) requireProjectAccess(db, req, project, role);
-}
-function documentArtifactAccess(db: Db, req: RequestLike, ref: string): string {
+function pinnedDocumentArtifact(db: Db, ref: string): string {
   const resolution = resolveArtifactIdentity(db, ref, "strict-read");
   if (resolution.status !== "resolved") throw new HttpError(400, `Artifact reference is ${resolution.status}`);
   const pinned = resolution.artifact_version?.id ?? resolution.artifact_blob?.id ?? resolution.logical_artifact?.id;
   if (!pinned) throw new HttpError(400, "Artifact identity is unavailable");
-  const projects = new Set(artifactAccessProjectIds(db, pinned));
-  const version = resolution.artifact_version;
-  if (version?.custody_mode === "git" && version.source_project_id) projects.add(version.source_project_id);
-  for (const project of projects) requireProjectAccess(db, req, project, "read");
   return pinned;
-}
-function documentCheckoutAccess(db: Db, req: RequestLike, id: string, role: ProjectRole): void {
-  const checkout = getProjectCheckout(db, id);
-  if (!checkout) throw new HttpError(404, "Destination checkout unavailable");
-  requireProjectAccess(db, req, checkout.project_id, role);
-}
-function documentHistoryAccess(db: Db, req: RequestLike, entry: Record<string, unknown>): void {
-  const provenance = JSON.parse(String(entry.provenance_json)) as { repo_id?: string };
-  if (provenance.repo_id) documentCheckoutAccess(db, req, provenance.repo_id, "read");
-  if (typeof entry.artifact_ref === "string") documentArtifactAccess(db, req, entry.artifact_ref);
-}
-function visibleDocument<T>(check: () => void, value: T): T[] {
-  try { check(); return [value]; }
-  catch (error) { if (error instanceof PermissionError) return []; throw error; }
 }
 function queryString(req: RequestLike, key: string): string | undefined {
   const value = req.query?.[key];
@@ -121,7 +97,6 @@ class HttpError extends Error {
 }
 
 function handleError(res: ResponseLike, error: unknown): void {
-  if (error instanceof PermissionError) { sendPermissionError(res, error); return; }
   if (error instanceof ClientAuthzError) {
     sendJson(res, error.status, { error: error.message, code: error.code });
     return;
@@ -284,7 +259,7 @@ function resolveUnifiedRef(db: Db, req: RequestLike, rawRef: string, context?: s
   // mandible:// app-route refs (e.g. mandible:///issues?issue=...) — parse the
   // embedded entity ref where present, otherwise report as an app route.
   if (ref.startsWith("mandible://")) {
-    return resolveMandibleRef(db, req, store, ref);
+    return resolveMandibleRef(db, store, ref);
   }
 
   // repo:// refs are repo-relative artifact/file refs — defer to the artifact
@@ -307,7 +282,7 @@ function resolveUnifiedRef(db: Db, req: RequestLike, rawRef: string, context?: s
     const rest = ref.slice(colon + 1);
     if (prefix === "issue") return resolveIssueRef(db, store, rest, ref, context);
     if (prefix === "comment") return resolveCommentResult(db, rest, ref);
-    if (prefix === "auth") return resolveAuthRef(db, req, rest, ref);
+    if (prefix === "auth") return resolveAuthRef(db, rest, ref);
     if (prefix === "briefing") return resolveBriefingRef(db, req, ref);
     if (prefix === "artifact") return resolveArtifactResult(db, ref);
     if (prefix === "uri" && rest) return resolveArtifactResult(db, rest);
@@ -325,7 +300,7 @@ function resolveUnifiedRef(db: Db, req: RequestLike, rawRef: string, context?: s
   return resolveArtifactResult(db, ref);
 }
 
-function resolveMandibleRef(db: Db, req: RequestLike, store: LedgerStore, ref: string): ResolverResult {
+function resolveMandibleRef(db: Db, store: LedgerStore, ref: string): ResolverResult {
   let url: URL;
   try {
     url = new URL(ref);
@@ -336,7 +311,7 @@ function resolveMandibleRef(db: Db, req: RequestLike, store: LedgerStore, ref: s
   const requestParam = url.searchParams.get("request");
   const artifactParam = url.searchParams.get("ref");
   const route = url.pathname.replace(/^\/+/, "");
-  if (requestParam && route === "auth") return resolveAuthRef(db, req, requestParam, ref);
+  if (requestParam && route === "auth") return resolveAuthRef(db, requestParam, ref);
   if (issueParam) return resolveIssueRef(db, store, issueParam, ref, url.searchParams.get("repo") ?? undefined);
   if (artifactParam) return resolveArtifactResult(db, artifactParam, "mandible", ref);
   return {
@@ -409,7 +384,7 @@ function resolveCommentOrdinal(store: LedgerStore, issueId: string, selector: st
     : { ref, kind: "comment", resolved: false, entity: null, error: "comment not found" };
 }
 
-function resolveAuthRef(db: Db, req: RequestLike, refValue: string, ref: string): ResolverResult {
+function resolveAuthRef(db: Db, refValue: string, ref: string): ResolverResult {
   const resolved = resolveId(db, "auth_request", refValue.trim());
   if (!resolved.ok) {
     return { ref, kind: "auth", resolved: false, entity: null, error: resolved.error };
@@ -419,19 +394,6 @@ function resolveAuthRef(db: Db, req: RequestLike, refValue: string, ref: string)
             created_at, approved_at, resolved_at, exit_code
        FROM auth_requests WHERE id = ?`,
   ).get(resolved.id) as Record<string, unknown>;
-  const projects = new Set<string>();
-  for (const projectRef of [request.target_repo_root, request.repo]) {
-    if (typeof projectRef !== "string" || !projectRef.trim()) continue;
-    const project = resolveWorkProject(db, projectRef);
-    if (!project.ok && project.reason === "ambiguous") {
-      return { ref, kind: "auth", resolved: false, entity: null, error: "project_unresolved" };
-    }
-    if (project.ok) projects.add(project.project_id);
-  }
-  if (projects.size !== 1) {
-    return { ref, kind: "auth", resolved: false, entity: null, error: "project_unresolved" };
-  }
-  requireProjectAccess(db, req, [...projects][0], "read");
   const id = shortRef(db, "auth_request", request.id as string);
   const { target_repo_root: _root, ...entity } = request;
   return { ref, kind: "auth", resolved: true, entity: { ...entity, id } };
@@ -439,7 +401,7 @@ function resolveAuthRef(db: Db, req: RequestLike, refValue: string, ref: string)
 
 // `briefing:<id-or-prefix>` resolves through the shared Briefing resolver, which
 // also matches legacy ids stored with a `briefing:` prefix. Agents read
-// Briefings as the configured operator, scoped by the Briefing's artifact project.
+// Briefings as the configured operator, using the retained human responder identity.
 function resolveBriefingRef(db: Db, req: RequestLike, ref: string): ResolverResult {
   const viewer = briefingReadViewer(db, req);
   let briefingId: string;
@@ -454,11 +416,6 @@ function resolveBriefingRef(db: Db, req: RequestLike, ref: string): ResolverResu
     `SELECT id, title, description, logical_artifact_id, archived_at, created_at, updated_at
        FROM briefings WHERE id = ?`,
   ).get(briefingId) as Record<string, unknown> & { logical_artifact_id: string | null };
-  if (viewer.projectScoped) {
-    const scope = briefing.logical_artifact_id ? resolveArtifactProject(db, briefing.logical_artifact_id) : null;
-    if (!scope?.ok) return { ref, kind: "briefing", resolved: false, entity: null, error: "project_unresolved" };
-    requireProjectAccess(db, req, scope.project_id, "read");
-  }
   const short = shortBriefingRef(db, briefingId);
   return { ref, kind: "briefing", resolved: true, entity: { ...briefing, id: short.slice("briefing:".length), ref: short } };
 }
@@ -922,22 +879,17 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
 
   router.get("/api/spaces/:id/publications", (req,res)=> {
     try { const db=getDb(), space=loadSpaceOr404(db,req.params.id);
-      documentProjectAccess(db,req,space.project_id,"read");
+
       sendJson(res,200,{
-        publications:listPublications(db,space.id).flatMap(value=>visibleDocument(()=>{
-          documentCheckoutAccess(db,req,value.repo_id,"read"); documentArtifactAccess(db,req,value.snapshot_ref);
-          if(value.version_ref) documentArtifactAccess(db,req,value.version_ref);
-        },value)),
-        history:listDocumentHistory(db,space.id).flatMap(value=>visibleDocument(()=>documentHistoryAccess(db,req,value),value)),
-        destinations:publicationDestinations(db,space.id).flatMap(value=>visibleDocument(()=>requireProjectAccess(db,req,value.project_id,"write"),value)),
+        publications:listPublications(db,space.id),
+        history:listDocumentHistory(db,space.id),
+        destinations:publicationDestinations(db,space.id),
       });
     } catch(error) { handleExportError(res,error); }
   }, { operation: { id: "get:/api/spaces/:id/publications", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
   router.post("/api/spaces/:id/publications", (req,res)=> {
     try { const db=getDb(), space=loadSpaceOr404(db,req.params.id), body=bodyRecord(req);
-      documentProjectAccess(db,req,space.project_id,"write");
-      const checkout=resolveCheckoutForSpace(db,space,optionalString(body,"repo_id"));
-      requireProjectAccess(db,req,checkout.project_id,"write");
+
       const publication=publicationValue(preparePublication(db,{ spaceId:space.id,repoId:optionalString(body,"repo_id"),
         path:requireString(body,"path"),issue:requireString(body,"issue"),message:optionalString(body,"message") ?? undefined }));
       emit(SPACE_EVENTS.SPACE_BLOCK_CHANGED,space.id);
@@ -946,11 +898,11 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
   }, { operation: { id: "post:/api/spaces/:id/publications", effects: ["ledger:write", "files:production"], requestSchema: z.object({ repo_id: z.string().trim().min(1).nullish(), path: z.string().trim().min(1), issue: z.string().trim().min(1), message: z.string().optional() }).strict(), reportingCategory: "spaces" }, fileRpc: "allow" });
   router.post("/api/spaces/:id/publications/:publication_id/submit", async (req,res)=> {
     try { const db=getDb(), space=loadSpaceOr404(db,req.params.id);
-      documentProjectAccess(db,req,space.project_id,"write");
+
       const selected=getPublication(db,space.id,req.params.publication_id);
-      documentCheckoutAccess(db,req,selected.repo_id,"write");
-      documentArtifactAccess(db,req,selected.snapshot_ref);
-      if(selected.version_ref) documentArtifactAccess(db,req,selected.version_ref);
+
+      pinnedDocumentArtifact(db,selected.snapshot_ref);
+      if(selected.version_ref) pinnedDocumentArtifact(db,selected.version_ref);
       const publication=publicationValue(await executePublication(db,space.id,req.params.publication_id));
       emit(SPACE_EVENTS.SPACE_BLOCK_CHANGED,space.id);
       sendJson(res,200,publication);
@@ -959,13 +911,13 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
   router.post("/api/spaces/documents/import", (req,res)=> {
     try { const db=getDb(),body=bodyRecord(req);
       const destination=optionalString(body,"project_id");
-      documentProjectAccess(db,req,destination,"write");
+
       let pinnedRef: string | undefined;
-      if (body.ref) pinnedRef=documentArtifactAccess(db,req,requireString(body,"ref"));
+      if (body.ref) pinnedRef=pinnedDocumentArtifact(db,requireString(body,"ref"));
       else {
         const project=resolveProjectRef(db,requireString(body,"project"));
         if(!project.ok) throw new HttpError(400,"Source project is unavailable or ambiguous");
-        requireProjectAccess(db,req,project.project.id,"read");
+
       }
       const space = publicationValue(body.ref ? importManagedDocument(db,{ ref:pinnedRef!,title:requireString(body,"title"),projectId:destination })
         : importGitDocument(db,{project:requireString(body,"project"),commit:requireString(body,"commit"),path:requireString(body,"path"),title:requireString(body,"title"),projectId:optionalString(body,"project_id")}));
@@ -975,17 +927,17 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
   }, { operation: { id: "post:/api/spaces/documents/import", effects: ({ body }) => (body as { ref?: string }).ref ? documentArtifactImportEffects(getDb(), (body as { ref: string }).ref) : ["ledger:read", "ledger:write", "files:production"], requestSchema: z.union([z.object({ ref: z.string().trim().min(1), title: z.string().trim().min(1), project_id: z.string().trim().min(1).nullish() }).strict(), z.object({ project: z.string().trim().min(1), commit: z.string().trim().min(1), path: z.string().trim().min(1), title: z.string().trim().min(1), project_id: z.string().trim().min(1).nullish() }).strict()]), reportingCategory: "spaces" }, fileRpc: "allow" });
   router.post("/api/spaces/:id/history/:history_id/import",(req,res)=> {
     try {const db=getDb(),source=loadSpaceOr404(db,req.params.id),body=bodyRecord(req);
-      documentProjectAccess(db,req,source.project_id,"write");
+
       const entry=documentHistoryEntry(db,source.id,req.params.history_id);
       if(!entry) throw new HttpError(404,"Historical document not found");
-      documentHistoryAccess(db,req,entry);
+
       const space=publicationValue(importHistoryDocument(db,source.id,req.params.history_id,requireString(body,"title")));
       emit(SPACE_EVENTS.SPACE_CREATED,space.id);sendJson(res,201,space);
     } catch(error){handleExportError(res,error);}
   }, { operation: { id: "post:/api/spaces/:id/history/:history_id/import", effects: ({ params }) => documentHistoryImportEffects(getDb(), params.id, params.history_id), requestSchema: z.object({ title: z.string().trim().min(1) }).strict(), reportingCategory: "spaces" }, fileRpc: "allow" });
   router.get("/api/spaces/:id/document/download", (req,res)=> {
     try { const db=getDb(),space=loadSpaceOr404(db,req.params.id);
-      documentProjectAccess(db,req,space.project_id,"read");
+
       const result=serializeSpaceDocument(db,space.id);
       res.header?.("Content-Type","text/markdown; charset=utf-8");
       res.header?.("Content-Disposition",`attachment; filename="space-${space.id}.md"`);
@@ -995,9 +947,9 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
   }, { operation: { id: "get:/api/spaces/:id/document/download", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
   router.post("/api/spaces/:id/document/export", (req,res)=> {
     try { const db=getDb(),space=loadSpaceOr404(db,req.params.id),body=bodyRecord(req);
-      documentProjectAccess(db,req,space.project_id,"read");
+
       const checkoutId=optionalString(body,"repo_id");
-      if(checkoutId) documentCheckoutAccess(db,req,checkoutId,"read");
+      if(checkoutId)
       sendJson(res,200,exportUntrackedCopy(db,{spaceId:space.id,destPath:requireString(body,"dest_path"),repoId:optionalString(body,"repo_id")}));
     } catch(error) { handleExportError(res,error); }
   }, { operation: { id: "post:/api/spaces/:id/document/export", effects: ["ledger:read", "files:production"], requestSchema: z.object({ dest_path: z.string().trim().min(1), repo_id: z.string().trim().min(1).nullish() }).strict(), reportingCategory: "spaces" }, fileRpc: "allow" });
