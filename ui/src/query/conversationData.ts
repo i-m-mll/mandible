@@ -7,6 +7,7 @@ import type {
   ConversationSidebarResponse,
 } from '../api';
 export { ReadingWindowRequests } from './readingWindowRequests';
+import { emptyDisplayContext, mergeDisplayContext } from './conversationDisplayContext';
 
 export type ConversationWithDetails = Conversation & {
   blocks: ConversationBlock[];
@@ -136,6 +137,7 @@ export function retainReadingWindow(
 }
 
 export type ConversationTranscriptData = {
+  displayContext: import('../../../src/conversations/display-context').ConversationDisplayContext;
   active_window: ConversationLoadedInterval | null;
   reading_command: ConversationNavigationCommand | null;
   conversation: Conversation;
@@ -159,6 +161,7 @@ export type ConversationTranscriptData = {
 type PersistedReadingSource = { blockId: string; position?: number; detailsLoaded?: boolean };
 
 export type ConversationTranscriptConsumer = {
+  displayContext: import('../../../src/conversations/display-context').ConversationDisplayContext;
   conversationId: string;
   positionSpaceId: string | null;
   command: ConversationNavigationCommand | null;
@@ -241,6 +244,7 @@ export function conversationTranscriptFromWindow(payload: ConversationPositionWi
     blocks,
     block_source_versions: new Map(blocks.map(block => [block.id, payload.source_version_id])),
     readingContext: mergeReadingContext(new Map(), payload.reading_context, blocks),
+    displayContext: mergeDisplayContext(emptyDisplayContext(), payload, blocks, true),
   };
 }
 
@@ -362,6 +366,7 @@ export function reconcileConversationWindow(
       incomingIds.has(block.id) ? incoming.source_version_id
         : current.block_source_versions.get(block.id) ?? null])),
     readingContext: mergeReadingContext(current.readingContext, incoming.reading_context, blocks),
+    displayContext: mergeDisplayContext(current.displayContext, incoming, blocks, current.source_version_id === incoming.source_version_id),
     loaded_intervals: loadedIntervals,
   });
 }
