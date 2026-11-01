@@ -106,7 +106,9 @@ describe("artifact CLI", () => {
     expect(record.body).toMatchObject({ source_kind: "managed", custody_mode: "managed" });
     expect(record.body).not.toHaveProperty("content_base64");
     expect(record.body).not.toHaveProperty("path");
-    expect(attached).toEqual([Buffer.from("# Report\n\nReady.\n"), bytes]);
+    expect(attached).toHaveLength(2);
+    expect(attached[0].equals(Buffer.from("# Report\n\nReady.\n"))).toBe(true);
+    expect(attached[1].equals(bytes)).toBe(true);
   });
 
   it.concurrent("plans file RPC ingest as managed custody without in-band bytes and refuses git custody there", async () => {
