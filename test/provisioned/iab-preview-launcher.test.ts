@@ -1637,3 +1637,30 @@ describe("iab-preview launcher", () => {
     expect(log).not.toContain("com.mll.mandible");
   });
 });
+
+it("admits an explicit preview allocation ceiling while retaining shared accounting and physical reserve", () => {
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mandible-preview-explicit-budget-"))); tempRoots.push(base);
+  const root = path.join(base, "new-preview"), sibling = path.join(base, "existing-preview");
+  fs.mkdirSync(root); fs.mkdirSync(sibling);
+  const db = path.join(base, "source.db"); fs.writeFileSync(db, "source bytes");
+  const retained = path.join(sibling, "retained.db");
+  fs.closeSync(fs.openSync(retained, "w")); fs.truncateSync(retained, 2 * 1024 ** 3);
+  const volume = { bavail: 8 * 1024 ** 3, bsize: 1 };
+  expect(() => assertPreviewAllocation(root, db, { volume })).toThrow(/allocation refused/);
+  const allocation = assertPreviewAllocation(root, db, { volume, maxIntermediateBytes: 4 * 1024 ** 3 });
+  expect(allocation).toMatchObject({ currentBytes: 2 * 1024 ** 3, maxIntermediateBytes: 4 * 1024 ** 3, reserveBytes: 512 * 1024 ** 2 });
+  expect(() => assertPreviewAllocation(root, db, { volume: { bavail: allocation.reserveBytes, bsize: 1 }, maxIntermediateBytes: 4 * 1024 ** 3 })).toThrow(/allocation refused/);
+  for (const maxIntermediateBytes of [0, -1, 1.5, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1]) {
+    expect(() => assertPreviewAllocation(root, db, { volume, maxIntermediateBytes })).toThrow(/positive safe integer/);
+  }
+  expect(fs.statSync(retained).size).toBe(2 * 1024 ** 3);
+  expect(fs.readdirSync(root)).toEqual([]);
+});
+
+ it("rejects an invalid explicit preview ceiling before acquiring any preview output", async () => {
+  const base=fs.mkdtempSync(path.join(os.tmpdir(),"preview-invalid-budget-"));tempRoots.push(base);
+  const result=await execFileAsync(process.execPath,[SCRIPT,"--max-intermediate-bytes","1.5","--json"],{env:{...process.env,MANDIBLE_PREVIEW_BASE_DIR:base}}).then(()=>null,error=>error);
+  expect(result).not.toBeNull();
+  expect(result.stderr).toContain("positive safe integer");
+  expect(fs.readdirSync(base)).toEqual([]);
+});

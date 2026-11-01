@@ -17,7 +17,7 @@ import {
 } from "./helpers/artifact-http-write-fixtures.js";
 import { getArtifactCurrentSource, planArtifactSourceMove, commitArtifactSourceMove, type ArtifactLifecycleResult } from '../src/artifact-source.js';
 import { readArtifactBytesFull, checkArtifactMaterialization } from '../src/artifact-content.js';
-import { resolveArtifactProject, artifactProjectIds } from '../src/ledger/resource-projects.js';
+import { resolveArtifactProject } from '../src/ledger/resource-projects.js';
 import { setClientAuthMode } from '../src/client-auth/mode.js';
 import { ARTIFACT_SOURCE_SCHEMA_SQL, ARTIFACT_SOURCE_BACKFILL_SQL } from '../src/artifact-source-schema.js';
 import { insertRawLedgerProject, insertRawLedgerCheckout, migratedMemoryDb } from './helpers/ledger-fixtures.js';
@@ -57,8 +57,8 @@ it('moves across projects without transferring owner; old-path reuse and equal b
   expect(readArtifactBytesFull(db,first.version.id)).toMatchObject({ok:true,bytes:Buffer.from('same bytes')});
   expect(readArtifactBytesFull(db,second.version.id).ok).toBe(false);
   associateProjectArtifact(db,{project_ref:b.project,target_type:'artifact_version',target_id:first.version.id});
-  expect(artifactProjectIds(db,first.version.id)).toEqual([a.project,b.project].sort());
-  expect(resolveArtifactProject(db,id)).toEqual({ok:false,reason:'ambiguous'});
+  expect(resolveArtifactProject(db,first.version.id)).toEqual({ok:true,project_id:a.project});
+  expect(resolveArtifactProject(db,id)).toEqual({ok:true,project_id:a.project});
 });
 
 it('rejects implicit source substitution and stale content/ownership before writing bytes or rows',()=>{

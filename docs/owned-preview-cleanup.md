@@ -21,7 +21,14 @@ uses frozen `bun.lock` installation with clonefile storage, and builds and launc
 with that runtime. Shared/symlinked `node_modules` is refused. The source extractor
 estimates the selected snapshot, including its existing 128 MiB safety margin.
 The preview policy `mandible-preview-budget@1` reserves 512 MiB of free volume
-space and limits prospective preview intermediates to 2 GiB across this cache.
+space and defaults to a 2 GiB ceiling for prospective preview intermediates across
+this cache. An explicit `--max-intermediate-bytes <positive-integer-bytes>` changes
+the ceiling for that launch without changing persistent configuration. The
+launcher still counts existing material across the same cache, retains the
+512 MiB physical reserve, and passes only the remaining allocation to the
+snapshot extractor. The effective limit is recorded in the run’s allocation
+metadata. For example, `bun run iab-preview -- --json --max-intermediate-bytes
+4294967296` explicitly allows a 4 GiB shared-cache ceiling.
 These are allocation limits, never deletion permission. Existing protected or
 unowned material causes an actionable refusal when it prevents new allocation.
 

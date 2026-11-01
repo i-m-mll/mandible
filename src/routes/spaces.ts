@@ -948,8 +948,6 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
   router.post("/api/spaces/:id/document/export", (req,res)=> {
     try { const db=getDb(),space=loadSpaceOr404(db,req.params.id),body=bodyRecord(req);
 
-      const checkoutId=optionalString(body,"repo_id");
-      if(checkoutId)
       sendJson(res,200,exportUntrackedCopy(db,{spaceId:space.id,destPath:requireString(body,"dest_path"),repoId:optionalString(body,"repo_id")}));
     } catch(error) { handleExportError(res,error); }
   }, { operation: { id: "post:/api/spaces/:id/document/export", effects: ["ledger:read", "files:production"], requestSchema: z.object({ dest_path: z.string().trim().min(1), repo_id: z.string().trim().min(1).nullish() }).strict(), reportingCategory: "spaces" }, fileRpc: "allow" });
