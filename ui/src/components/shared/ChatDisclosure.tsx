@@ -16,6 +16,7 @@ export type CompactActivityRowProps = {
   disclosure?: CompactActivityDisclosure;
   className?: string;
   memberRefs?: string;
+  actions?: ComponentChildren;
 };
 
 /** The sole compact row geometry for tool and provider activity. */
@@ -25,6 +26,7 @@ export function CompactActivityRow({
   disclosure,
   className = '',
   memberRefs,
+  actions,
 }: CompactActivityRowProps): JSX.Element {
   const [localExpanded, setLocalExpanded] = useState(disclosure?.defaultExpanded ?? false);
   const isExpanded = disclosure?.expanded ?? localExpanded;
@@ -56,9 +58,11 @@ export function CompactActivityRow({
       ) : null}
     </>
   );
+  const heading = (row: JSX.Element) => actions
+    ? <div className="compact-activity__heading contextual-action-owner">{row}{actions}</div> : row;
 
   if (!disclosure) {
-    return <div className={rootClass}><div className={rowClass} data-member-refs={memberRefs}>{rowContent}</div></div>;
+    return <div className={rootClass}>{heading(<div className={rowClass} data-member-refs={memberRefs}>{rowContent}</div>)}</div>;
   }
 
   const toggle = (): void => {
@@ -69,7 +73,7 @@ export function CompactActivityRow({
 
   return (
     <div className={rootClass}>
-      <button
+      {heading(<button
         ref={buttonRef}
         type="button"
         className={rowClass}
@@ -79,7 +83,7 @@ export function CompactActivityRow({
         onClick={toggle}
       >
         {rowContent}
-      </button>
+      </button>)}
       {isExpanded ? (
         <div ref={bodyRef} id={bodyId} role="region" aria-label={disclosure.regionLabel} className="compact-activity__details">
           {disclosure.content}

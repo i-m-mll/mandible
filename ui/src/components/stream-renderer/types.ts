@@ -122,7 +122,7 @@ export type TranscriptSemanticEvent = {
   content: string;
   label?: string;
   is_error?: boolean;
-  source: PersistedBlockSource;
+  source?: PersistedBlockSource;
 };
 
 /** Provider-neutral item emitted by durable normalization and live adapters. */
