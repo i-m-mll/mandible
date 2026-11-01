@@ -26,7 +26,7 @@ export function useReadingViewport(input: {
   membership: ReadonlyMap<string, ReadingMembership>;
   rows: readonly ReadingRow[];
   endReached: boolean;
-  disclosures: readonly string[];
+  disclosures: Readonly<Record<string, boolean>>;
   prepare: (target: ConversationSourceCoordinate, signal: AbortSignal, token: string) => Promise<
     { status: 'prepared'; rowKey: string } | { status: 'source-unavailable' | 'position-space-changed' | 'not-renderable' }>;
   onRange: (start: number, end: number) => void;
@@ -58,9 +58,9 @@ export function useReadingViewport(input: {
     });
     if (visibleRow) anchor.current = { rowKey: visibleRow[0], offset: visibleRow[1].getBoundingClientRect().top - rect.top, following: snapshot.endReached && engine.isAtEnd(1) };
     const state: ReadingState = {
-      version: 2, positionSpaceId: snapshot.positionSpaceId, following: snapshot.endReached && engine.isAtEnd(1),
+      version: 3, positionSpaceId: snapshot.positionSpaceId, following: snapshot.endReached && engine.isAtEnd(1),
       anchor: first ? { ...first.coordinate, offset: first.element!.getBoundingClientRect().top - rect.top } : null,
-      disclosures: snapshot.disclosures.slice(-100),
+      disclosures: Object.fromEntries(Object.entries(snapshot.disclosures).slice(-100)),
     };
     lifecycleState.current = { scope: snapshot.scope, value: state };
     writeReadingState(snapshot.scope, state);

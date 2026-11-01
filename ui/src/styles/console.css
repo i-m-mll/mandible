@@ -894,8 +894,16 @@
   right: 0;
   contain: layout style;
   display: flow-root;
-  padding-block: var(--space-2);
+  padding-block: 0;
 }
+
+.stream-renderer__virtual-row--turn-start { padding-block-start: var(--space-2); }
+.stream-renderer__virtual-row--turn-end { padding-block-end: var(--space-2); }
+.stream-renderer__virtual-row--activity-open .turn-group { padding-block-end: 0; }
+.stream-renderer__virtual-row--activity-open .turn-group__body > .message-block-wrapper { padding-block-end: 0; }
+.stream-renderer__virtual-row--activity-end { padding-block-end: calc(var(--space-2) + 3px); }
+.stream-renderer__virtual-row--activity-end.stream-renderer__virtual-row--turn-end { padding-block-end: calc(2 * var(--space-2) + 3px); }
+.stream-renderer__virtual-row--activity-member .turn-group__stats { display: block; margin-block-start: var(--space-2); text-align: right; }
 
 
 

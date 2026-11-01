@@ -6,10 +6,10 @@ import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, u
 import type { ConsoleBackendType, ConsolePermissionDecision, ConsolePermissionRequest } from '../api';
 import { exportConversationBlocks } from '../api';
 import type { CanonicalChatItemEvent, PersistedBlockSource, StreamRendererProps } from '../components/stream-renderer/types';
-import { MessageActions, MessageLinkContext, MessagePrimaryActionsContext, type MessagePrimaryAction } from '../components/shared/MessageActions';
+import { MessageLinkContext, type MessagePrimaryAction } from '../components/shared/MessageActions';
 import { DetailPaneOverlayContext } from '../components/shared/DetailPaneShell';
-import { CompactActivityRow } from '../components/shared/ChatDisclosure';
 import { PermissionApprovalCard } from '../components/console/PermissionApprovalCard';
+import { TurnGroup } from '../components/message-blocks/TurnGroup';
 import type { ConversationNavigationCommand, ConversationNavigationResult, ConversationTranscriptConsumer, ConversationSourceCoordinate } from '../query/conversationData';
 import { projectReadingRows, type ReadingRow, type ReadingTargetRegistration } from './readingProjection';
 import { ReadingContent } from './ReadingContent';
@@ -54,13 +54,13 @@ function MeasuredReadingBox({ row, index, measure, register, registerRow, scope,
       const exact = row.kind === 'activity-summary' ? box : [...box.querySelectorAll<HTMLElement>('[data-block-id]')].find(node => node.dataset.blockId === source.blockId) ?? null;
       if (exact) exact.tabIndex = -1;
       const coordinate = { conversationId: scope, positionSpaceId: space, position: source.position };
-      const clearDefault = register({ rowKey: row.key, coordinate, element: exact });
+      const clearDefault = row.activityGroup?.expanded ? () => {} : register({ rowKey: row.key, coordinate, element: exact });
       const clearSubtarget = register({ rowKey: row.key, coordinate: { ...coordinate, subtarget: row.kind === 'activity-summary' ? 'summary' : `source:${source.position}` }, element: exact });
       return () => { clearDefault(); clearSubtarget(); };
     });
     return () => { disposeRow(); dispose.forEach(dispose => dispose()); };
   }, [row, scope, space, register, registerRow, children]);
-  return <div ref={setNode} data-index={index} data-reading-key={row.key} className="stream-renderer__virtual-row">{children}</div>;
+  return <div ref={setNode} data-index={index} data-reading-key={row.key} className={`stream-renderer__virtual-row${row.turnStart ? ' stream-renderer__virtual-row--turn-start' : ''}${row.turnEnd ? ' stream-renderer__virtual-row--turn-end' : ''}${row.activityMember ? ' stream-renderer__virtual-row--activity-member' : ''}${row.activityEnd ? ' stream-renderer__virtual-row--activity-end' : ''}${row.activityGroup?.expanded ? ' stream-renderer__virtual-row--activity-open' : ''}`}>{children}</div>;
 }
 const StableReadingContent = memo(ReadingContent);
 const boundDisclosures = (value: Record<string, boolean>): Record<string, boolean> => Object.fromEntries(Object.entries(value).slice(-100));
@@ -72,12 +72,13 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
   const space = transcript?.positionSpaceId ?? '';
   const overlay = useContext(DetailPaneOverlayContext);
   const initialState = useMemo(() => readReadingState(scope), [scope]);
-  const [expandedBlocks, setExpandedBlocks] = useState<Record<string, boolean>>(() => Object.fromEntries((initialState?.positionSpaceId === space ? initialState.disclosures : []).map(key => [key, true])));
+  const [expandedBlocks, setExpandedBlocks] = useState<Record<string, boolean>>(() => initialState?.positionSpaceId === space ? initialState.disclosures : {});
   const [notice, setNotice] = useState<string | null>(null);
-  const expanded = useMemo(() => new Set(Object.entries(expandedBlocks).filter(([, value]) => value).map(([key]) => key.startsWith('owner:') ? Number(key.slice(6)) : NaN)), [expandedBlocks]);
-  const projection = useMemo(() => projectReadingRows({ events, conversationId: scope, positionSpaceId: space, readingContext: transcript?.readingContext ?? new Map(), expanded }), [events, scope, space, transcript?.readingContext, expanded]);
+  const projection = useMemo(() => projectReadingRows({ events, conversationId: scope, positionSpaceId: space,
+    readingContext: transcript?.readingContext ?? new Map(), displayContext: transcript?.displayContext,
+    expanded: expandedBlocks, streaming: props.streaming }), [events, scope, space, transcript?.readingContext, transcript?.displayContext, expandedBlocks, props.streaming]);
   const readingRows = useMemo<ReadingRow[]>(() => props.activePermissionRequest && props.onPermissionRespond
-    ? [...projection.rows, { key: `permission:${props.activePermissionRequest.id}`, kind: 'permission', protectedPositions: [], items: [], sources: [], actionGroup: { key: 'permission', start: null, end: null }, disclosureOwner: null }] : projection.rows, [projection.rows, props.activePermissionRequest, props.onPermissionRespond]);
+    ? [...projection.rows, { key: `permission:${props.activePermissionRequest.id}`, kind: 'permission', protectedPositions: [], items: [], nodes: [], sources: [], actionGroup: { key: 'permission', start: null, end: null }, disclosureOwner: null, turnStart: true, turnEnd: true }] : projection.rows, [projection.rows, props.activePermissionRequest, props.onPermissionRespond]);
   const latest = useRef({ projection, transcript, props }); latest.current = { projection, transcript, props };
   const waiting = useRef(new Set<() => void>());
   const protectedRegions = useRef<Array<{ start: number; end: number }>>([]);
@@ -103,12 +104,8 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
     if (signal.aborted) return { status: 'source-unavailable' as const };
     const member = latest.current.projection.membership.get(target.position);
     if (!member) return { status: 'not-renderable' as const };
-    if (target.subtarget === 'summary') {
-      await waitFor(() => Boolean(latest.current.projection.membership.get(target.position)?.disclosurePath.length), signal);
-      const summary = latest.current.projection.membership.get(target.position);
-      return summary ? { status: 'prepared' as const, rowKey: summary.rowKey } : { status: 'not-renderable' as const };
-    }
-    setExpandedBlocks(current => boundDisclosures({ ...current, ...Object.fromEntries(member.disclosurePath.map(owner => [`owner:${owner}`, true])), [`reveal:${target.position}`]: true }));
+    if (target.subtarget === 'summary') return { status: 'prepared' as const, rowKey: member.summaryRowKey ?? member.rowKey };
+    setExpandedBlocks(current => boundDisclosures({ ...current, ...Object.fromEntries(member.disclosurePath.map(owner => [`group:${owner}`, true])), [`reveal:${target.position}`]: true }));
     const row = latest.current.projection.rows.find(row => row.key === member.rowKey);
     if (row) await latest.current.transcript?.prepareDetails(row.sources.filter(source => source.position === target.position && source.detailsLoaded === false), signal);
     await waitFor(() => {
@@ -138,8 +135,12 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
       const position = Number(blockId.slice(blockId.lastIndexOf(':') + 1));
       if (Number.isSafeInteger(position) && projection.membership.has(position)) regions.push({ start: position, end: position });
     }
-    protectedRegions.current = regions;
-    transcript.protect(regions);
+    const active = transcript.activeWindow;
+    // Lazy owner shells have source identities outside the retained history span.
+    // Their bodies are protected by display context, independently of history retention.
+    const retainedRegions = active ? regions.filter(region => region.start >= active.start && region.end <= active.end) : [];
+    protectedRegions.current = retainedRegions;
+    transcript.protect(retainedRegions);
     const direction = start === 0 && transcript.hasOlder ? 'older' : end >= projection.rows.length - 1 && transcript.hasNewer ? 'newer' : null;
     if (!direction || transcript.historyLoading || (transcript.command && projection.rows.length > 0)) return;
     const key = `${transcript.activeWindow?.start}:${transcript.activeWindow?.end}:${direction}`;
@@ -152,7 +153,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
       });
     });
   }, []);
-  const disclosures = useMemo(() => Object.keys(expandedBlocks).filter(key => expandedBlocks[key]).slice(-100), [expandedBlocks]);
+  const disclosures = expandedBlocks;
   const viewport = useReadingViewport({ scope, positionSpaceId: space, onInput: () => latest.current.transcript?.cancelNavigation(), commandToken: navigationTarget?.key, initializing: transcript?.navigationPending, clearance: Math.max(16, overlay?.scrollClearance ?? 0), membership: projection.viewMembership, rows: readingRows, endReached: !transcript?.hasNewer, disclosures, prepare, onRange });
   useLayoutEffect(() => {
     for (const check of [...waiting.current]) check();
@@ -171,7 +172,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
     return () => { document.removeEventListener('selectionchange', protect); scroller?.removeEventListener('focusin', protect); };
   }, [onRange, viewport.engine]);
   const handled = useRef<string | null>(null);
-  useEffect(() => { handled.current = null; demand.current = null; setNotice(null); const saved = readReadingState(scope); setExpandedBlocks(Object.fromEntries((saved?.positionSpaceId === space ? saved.disclosures : []).map(key => [key, true]))); }, [scope, space]);
+  useEffect(() => { handled.current = null; demand.current = null; setNotice(null); const saved = readReadingState(scope); setExpandedBlocks(saved?.positionSpaceId === space ? saved.disclosures : {}); }, [scope, space]);
   useEffect(() => {
     if (!navigationTarget || handled.current === navigationTarget.key) return;
     if (!projection.rows.length) {
@@ -215,7 +216,11 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
       event.intentId ?? (event.displayKey?.startsWith('intent:') ? event.displayKey.slice(7) : undefined)).some(key => covered.has(key)));
     return [result.content, serialize(pending)].filter(Boolean).join('\n\n');
   }, [scope]);
-  const actions = useMemo(() => new Map(projection.rows.map(row => [row.key, [
+  const actions = useMemo(() => new Map(projection.rows.map(row => {
+    const turnId = projection.actionRuns.get(row.actionGroup.key)?.events.find(event => event.item.role === 'assistant' && event.item.identity.native_turn_id)?.item.identity.native_turn_id
+      ?? [...row.nodes, ...(row.activityGroup?.items ?? [])].flatMap(node => node.kind === 'assistant_turn' ? [node.turn.id]
+        : node.kind === 'activity' && node.item.type !== 'activity' ? [node.item.turnId] : []).find((id): id is string => id !== undefined);
+    return [row.key, [
     { id: 'copy-group', title: 'Copy all', label: 'Copy all messages', icon: 'copyMessage' as const, onAction: () => {
       const content = exportRow(row);
       const copy = typeof ClipboardItem !== 'undefined' && navigator.clipboard.write
@@ -225,17 +230,20 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
     } },
     { id: 'open-group-markdown', title: 'Open markdown', label: 'Open turn as markdown', icon: 'openMarkdown' as const,
       onAction: () => { void openMarkdownSource(exportRow(row)).catch(() => setNotice('Could not open turn.')); } },
-    ...(props.onSelectMessageInfo && row.items[0]?.item.identity.native_turn_id ? [{
-      id: 'select-group', title: 'Select', label: 'Select turn', icon: 'selectMessage' as const,
-      onAction: () => props.onSelectMessageInfo!(row.items[0].item.identity.native_turn_id!),
+    ...(props.onSelectMessageInfo && turnId ? [{
+      id: 'select-group', title: props.selectedMessageId === turnId ? 'Deselect' : 'Select',
+      label: props.selectedMessageId === turnId ? 'Deselect turn' : 'Select turn',
+      icon: props.selectedMessageId === turnId ? 'messageSelected' as const : 'selectMessage' as const,
+      onAction: () => props.onSelectMessageInfo!(turnId!),
     }] : []),
-  ] as MessagePrimaryAction[]])), [projection.rows, exportRow, props.onSelectMessageInfo]);
-  const revealDisclosure = (row: ReadingRow, collapsed: boolean) => {
+  ] as MessagePrimaryAction[]] as const;
+  })), [projection.rows, projection.actionRuns, exportRow, props.onSelectMessageInfo, props.selectedMessageId]);
+  const revealDisclosure = (row: ReadingRow, next: boolean) => {
     const position = row.sources[0]?.position;
     const offset = viewport.rowOffset(row.key) ?? 0;
-    setExpandedBlocks(current => boundDisclosures({ ...current, [`owner:${row.disclosureOwner}`]: !collapsed }));
+    setExpandedBlocks(current => boundDisclosures({ ...current, [`group:${row.disclosureOwner}`]: next }));
     if (position !== undefined) void viewport.reveal({ token: `disclosure:${crypto.randomUUID()}`, target: { conversationId: scope, positionSpaceId: space, position, offset,
-      ...(collapsed ? { subtarget: 'summary' } : {}) } }).then(result => { if (result.status !== 'revealed' && result.status !== 'cancelled') setNotice(`Reading target: ${result.status}.`); });
+      subtarget: 'summary' } }).then(result => { if (result.status !== 'revealed' && result.status !== 'cancelled') setNotice(`Reading target: ${result.status}.`); });
   };
   const jump = () => { viewport.cancel(); if (props.onJumpToLatest) void props.onJumpToLatest(); else void viewport.reveal({ token: `latest:${crypto.randomUUID()}`, end: true }); };
   return <MessageLinkContext.Provider value={props.onCopyMessageLink ?? null}>
@@ -247,15 +255,12 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
             if (!row) return null;
             return <MeasuredReadingBox key={row.key} row={row} index={item.index} measure={viewport.engine.measureElement} register={viewport.register} registerRow={viewport.registerRow} scope={scope} space={space}>
               <>
-                {row.kind === 'permission' && props.activePermissionRequest && props.onPermissionRespond ? <PermissionApprovalCard request={props.activePermissionRequest} backendType={props.permissionBackendType ?? 'sdk'} onRespond={props.onPermissionRespond} /> : row.kind === 'activity-summary' ? <MessagePrimaryActionsContext.Provider value={actions.get(row.key) ?? []}><MessageLinkContext.Provider value={null}>
-                  <CompactActivityRow summary="Activity" icon={<Icon name="history" />} actions={<MessageActions />} disclosure={{ expanded: false, content: null, regionLabel: 'Activity', onExpandedChange: () => revealDisclosure(row, false) }} />
-                  {row.totalTokens !== undefined && <span className="turn-group__stats">{row.totalTokens.toLocaleString()} tokens</span>}
-                </MessageLinkContext.Provider></MessagePrimaryActionsContext.Provider>
-                  : <>
-                    {row.disclosureOwner !== null && projection.rows.find(candidate => candidate.disclosureOwner === row.disclosureOwner)?.key === row.key
-                      && <button type="button" className="btn btn--ghost btn--sm" aria-expanded="true" onClick={() => revealDisclosure(row, true)}>Collapse activity</button>}
-                    <StableReadingContent {...props} row={row} expandedBlocks={expandedBlocks} setBlockExpanded={setBlockExpanded} preparing={row.sources.some(source => expandedBlocks[`reveal:${source.position}`])} primaryActions={actions.get(row.key) ?? []} />
-                  </>}
+                {row.kind === 'permission' && props.activePermissionRequest && props.onPermissionRespond ? <TurnGroup speaker="system"><PermissionApprovalCard request={props.activePermissionRequest} backendType={props.permissionBackendType ?? 'sdk'} onRespond={props.onPermissionRespond} /></TurnGroup>
+                  : <StableReadingContent {...props} row={row} expandedBlocks={expandedBlocks} setBlockExpanded={setBlockExpanded}
+                    preparing={row.sources.some(source => expandedBlocks[`reveal:${source.position}`])}
+                    primaryActions={actions.get(row.key) ?? []} lastAssistantTurnId={projection.lastAssistantTurnId}
+                    onActivityGroupExpandedChange={next => revealDisclosure(row, next)} />}
+
               </>
             </MeasuredReadingBox>;
           })}

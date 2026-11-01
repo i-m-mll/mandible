@@ -232,6 +232,6 @@ it('marks each concurrent tool independently and clears only the completed call'
   const first = reconciliationItem('first-tool', 'tool'), second = reconciliationItem('second-tool', 'tool');
   const completed = { ...first, phase: 'result', role: 'tool', output: 'done', content_completion: 'complete' } as ChatItem;
   const events = reconcileProviderProjection([], projection([live(first, 1), live(second, 2), live(completed, 3)]), new Map(), snapshot());
-  const rows = projectReadingRows({ events, conversationId: 'conv', positionSpaceId: 'space', readingContext: new Map(), expanded: new Set() }).rows;
+  const rows = projectReadingRows({ events, conversationId: 'conv', positionSpaceId: 'space', readingContext: new Map(), expanded: {} }).rows;
   expect(rows.flatMap(row => row.items).filter(event => event.item.type === 'tool-call' && event.item.phase === 'call').map(event => event.executionActive)).toEqual([false, true]);
 });
