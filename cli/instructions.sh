@@ -56,8 +56,16 @@ const dbPath = process.env.MANDIBLE_DB
 // an instructions-CLI test invoked under vitest cannot mutate live settings.
 require(path.join(root, "cli", "production-db-guard.cjs")).assertNotProductionDbUnderTest(dbPath);
 const readOnly = ["targets-list", "targets-resolve", "post-export-get"].includes(op);
+function openReadOnlySettings() {
+  try { fs.statSync(dbPath); }
+  catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+  return new SqliteDatabase(dbPath, { readonly: true, fileMustExist: true });
+}
 const db = readOnly
-  ? (fs.existsSync(dbPath) ? new SqliteDatabase(dbPath, { readonly: true, fileMustExist: true }) : null)
+  ? openReadOnlySettings()
   : (() => {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     const writable = new SqliteDatabase(dbPath);
