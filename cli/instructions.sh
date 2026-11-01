@@ -41,6 +41,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const [root, op, ...args] = process.argv.slice(2);
+const { targetIdentity } = require(path.join(root, "cli", "integration-files.cjs"));
 const SqliteDatabase = require(process.env.MANDIBLE_RELEASE_ROOT
   ? path.join(process.env.MANDIBLE_RELEASE_ROOT, "dist", "sqlite.js")
   : path.join(root, "src", "sqlite.ts")).default;
@@ -95,16 +96,20 @@ function readTargets() {
   const raw = getSetting(TARGETS_KEY, "[]");
   const parsed = JSON.parse(raw);
   if (!Array.isArray(parsed)) throw new Error("Invalid instructions target registry: expected an array");
-  const seen = new Set();
-  return parsed.map(target => {
+  const seen = new Map();
+  return parsed.flatMap(target => {
     if (!target || typeof target.path !== "string" || !path.isAbsolute(target.path)
       || /[\t\r\n\0]/.test(target.path) || !["standalone", "managed-block"].includes(target.mode)) {
       throw new Error("Invalid instructions target registry entry");
     }
     const normalized = requirePath(target.path);
-    if (seen.has(normalized)) throw new Error(`Duplicate instruction target: ${normalized}`);
-    seen.add(normalized);
-    return { path: normalized, mode: target.mode };
+    const identity = targetIdentity(normalized);
+    if (seen.has(identity)) {
+      if (seen.get(identity) !== target.mode) throw new Error(`Conflicting instruction target modes: ${normalized}`);
+      return [];
+    }
+    seen.set(identity, target.mode);
+    return [{ path: normalized, mode: target.mode }];
   });
 }
 
@@ -123,7 +128,8 @@ function requirePath(value) {
 switch (op) {
   case "targets-resolve": {
     const targetPath = requirePath(args[0]);
-    const mode = readTargets().find(target => target.path === targetPath)?.mode || "managed-block";
+    const identity = targetIdentity(targetPath);
+    const mode = readTargets().find(target => targetIdentity(target.path) === identity)?.mode || "managed-block";
     console.log(`${mode}\t${targetPath}`);
     break;
   }
@@ -140,7 +146,8 @@ switch (op) {
       console.error(`Invalid mode: ${mode}`);
       process.exit(2);
     }
-    const targets = readTargets().filter((target) => target.path !== targetPath);
+    const identity = targetIdentity(targetPath);
+    const targets = readTargets().filter((target) => targetIdentity(target.path) !== identity);
     targets.push({ path: targetPath, mode });
     writeTargets(targets);
     console.log(`Added instruction target: ${mode}\t${targetPath}`);
@@ -149,7 +156,8 @@ switch (op) {
   case "targets-rm": {
     const targetPath = requirePath(args[0]);
     const before = readTargets();
-    const after = before.filter((target) => target.path !== targetPath);
+    const identity = targetIdentity(targetPath);
+    const after = before.filter((target) => targetIdentity(target.path) !== identity);
     writeTargets(after);
     if (after.length === before.length) {
       console.log(`Instruction target not configured: ${targetPath}`);

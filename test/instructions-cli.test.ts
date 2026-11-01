@@ -137,6 +137,53 @@ describe("instructions CLI", () => {
     db.close();
   });
 
+  it("matches physical aliases through missing ancestors without bypassing destination symlink guards", async () => {
+    const home = scratchDir("instructions-physical-identity");
+    const real = path.join(home, "real");
+    const alias = path.join(home, "alias");
+    fs.mkdirSync(real);
+    fs.symlinkSync(real, alias);
+    const target = path.join(real, "missing", "nested", "instructions.md");
+    const aliasTarget = path.join(alias, "missing", "nested", "instructions.md");
+    const env = { HOME: home, MANDIBLE_DB: path.join(home, "fixture.db") };
+    expect((await run(["instructions", "targets", "add", target, "--mode", "standalone"], env)).status).toBe(0);
+    const diff = await run(["instructions", "diff", "--target", aliasTarget], env);
+    expect(diff.status, diff.stderr).toBe(0);
+    expect(diff.stdout).not.toContain("BEGIN MANDIBLE MANAGED");
+    expect((await run(["instructions", "install", "--target", aliasTarget, "--force"], env)).status).toBe(3);
+    expect(fs.existsSync(path.dirname(target))).toBe(false);
+    expect((await run(["instructions", "install"], env)).status).toBe(0);
+    expect(fs.readFileSync(target, "utf8")).not.toContain("BEGIN MANDIBLE MANAGED");
+    expect((await run(["instructions", "targets", "add", aliasTarget, "--mode", "managed-block"], env)).status).toBe(0);
+    expect((await run(["instructions", "targets", "list"], env)).stdout.trim().split("\n")).toHaveLength(1);
+    expect((await run(["instructions", "targets", "rm", target], env)).status).toBe(0);
+    expect((await run(["instructions", "targets", "list"], env)).stdout).toBe("");
+    const db = new Database(env.MANDIBLE_DB);
+    db.prepare("UPDATE settings SET value = ? WHERE key = 'instructions.targets'").run(JSON.stringify([
+      { path: target, mode: "standalone" }, { path: aliasTarget, mode: "managed-block" },
+    ]));
+    const before = fs.readFileSync(target, "utf8");
+    expect((await run(["instructions", "install", "--target", target], env)).status).not.toBe(0);
+    expect(fs.readFileSync(target, "utf8")).toBe(before);
+    db.prepare("UPDATE settings SET value = ? WHERE key = 'instructions.targets'").run(JSON.stringify([
+      { path: target, mode: "standalone" }, { path: aliasTarget, mode: "standalone" },
+    ]));
+    expect((await run(["instructions", "targets", "list"], env)).stdout.trim().split("\n")).toHaveLength(1);
+    expect((await run(["instructions", "install"], env)).status).toBe(0);
+    expect(fs.readFileSync(target, "utf8")).toBe(before);
+    db.close();
+    const invalidDb = path.join(home, "invalid.db");
+    fs.writeFileSync(invalidDb, "not a SQLite database");
+    expect((await run(["instructions", "install", "--target", target], { ...env, MANDIBLE_DB: invalidDb })).status).not.toBe(0);
+    expect(fs.readFileSync(target, "utf8")).toBe(before);
+    expect(fs.readFileSync(invalidDb, "utf8")).toBe("not a SQLite database");
+    const outsideRepo = await run(["instructions", "install", "--target", target, "--worktree", scratchDir("instructions-unrelated-destination")],
+      { ...env, MANDIBLE_DB: path.join(home, "absent.db") });
+    expect(outsideRepo.status).toBe(2);
+    expect(outsideRepo.stderr).toContain("Cannot map target outside a git worktree");
+    expect(fs.readFileSync(target, "utf8")).toBe(before);
+  });
+
   it("uses the pinned Bun runtime when Bun is not on PATH", async () => {
     const home = scratchDir("instructions-bun-runtime");
 
