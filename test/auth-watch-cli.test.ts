@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import { testRuntimeRoot } from './helpers/runtime-isolation.js';
 import { MAIN_CLI_INSTANCE_RESPONSE } from './helpers/cli-instance-response.js';
@@ -52,12 +52,50 @@ async function watch(mode: 'sse' | 'poll' | 'inbox', statuses: string[]) {
   }
 }
 
-it.each(['sse', 'poll', 'inbox'] as const)('%s reports only completed as successful delivery', async mode => {
-  for (const status of ['completed', 'needs_rebase', 'failed', 'rejected', 'withdrawn', 'superseded', 'expired', 'dismissed', 'future_status']) {
+it.each(['bash', 'zsh'])('%s reports delivery outcomes through the shared shell function', shell => {
+  const cases = [
+    { status: 'completed', code: 0 },
+    { status: 'needs_rebase', code: 1 },
+    { status: 'failed', code: 1 },
+    { status: 'rejected', code: 1 },
+    { status: 'pending', code: 2 },
+    { status: 'future_status', code: 3 },
+  ];
+  const result = spawnSync(shell, ['-c', `
+    source "$MANDIBLE_CLI_DIR/auth-status.sh" || exit 10
+    for response in "$@"; do
+      result=0
+      output=$(mandible_auth_report watch123 "$response" 2>&1) || result=$?
+      printf '%s\\t%s\\n' "$result" "$output"
+    done
+  `, 'auth-report-fixture', ...cases.map(({ status }) => JSON.stringify({
+    status, exit_code: status === 'failed' ? 42 : 0, failure_reason: 'reviewed head changed',
+  }))], { cwd: root, env: { ...process.env, MANDIBLE_CLI_DIR: path.join(process.cwd(), 'cli') }, encoding: 'utf8', timeout: 15_000 });
+  expect(result.status, result.stdout + result.stderr).toBe(0);
+  const reports = result.stdout.trimEnd().split('\n');
+  expect(reports).toHaveLength(cases.length);
+  cases.forEach(({ status, code }, index) => {
+    const [classification, ...detail] = reports[index].split('\t');
+    const output = detail.join('\t');
+    expect(Number(classification), output).toBe(code);
+    if (code === 2) {
+      expect(output).toBe('');
+      return;
+    }
+    expect(output).toContain('watch123');
+    expect(output).toContain(status);
+    if (code === 1) expect(output).toContain('reviewed head changed');
+    if (status === 'needs_rebase') expect(output).toMatch(/\brebase\b/);
+    if (status === 'failed') expect(output).toMatch(/\b42\b/);
+    if (code === 3) expect(output).toMatch(/unknown/i);
+  });
+});
+
+it.each(['sse', 'poll', 'inbox'] as const)('%s propagates successful delivery, failure and unknown termination', async mode => {
+  for (const status of ['completed', 'failed', 'future_status']) {
     const result = await watch(mode, [status]);
     expect(result.code, result.output).toBe(status === 'completed' ? 0 : 1);
     expect(result.output).toContain(status === 'future_status' ? "unknown status 'future_status'" : status);
-    if (status === 'needs_rebase') expect(result.output).toContain('rebase the source branch');
     if (status === 'failed') expect(result.output).toContain('failed (exit 42) -- reviewed head changed');
   }
 });
