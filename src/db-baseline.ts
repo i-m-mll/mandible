@@ -30,7 +30,7 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-migration-convergence.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 229;
+export const BASELINE_SCHEMA_VERSION = 230;
 
 export const AUTH_REQUEST_HISTORY_INDEX_SQL =
   `CREATE INDEX idx_auth_requests_history ON auth_requests(resolved_at DESC)
@@ -269,6 +269,8 @@ const CONVERSATION_SOURCE_SCHEMA_SQL: readonly string[] = [
     availability TEXT NOT NULL DEFAULT 'unchecked' CHECK(availability IN ('available','missing','stale','unsupported','unchecked')),
     custody_state TEXT NOT NULL DEFAULT 'provider' CHECK(custody_state IN ('provider','requested','capturing','verified','mirroring','sealed','error')),
     current_version_id TEXT, unavailable_reason TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    position_space_id TEXT, position_count INTEGER, position_fingerprint TEXT, position_fingerprint_version INTEGER,
+    publication_revision INTEGER NOT NULL DEFAULT 0,
     UNIQUE(conversation_id, provider)
   )`,
   `CREATE INDEX idx_conversation_sources_native_session ON conversation_sources(provider, native_session_id)`,

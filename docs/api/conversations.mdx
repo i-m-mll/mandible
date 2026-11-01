@@ -54,13 +54,25 @@ curl "http://localhost:19420/api/conversations?source=claude_code&starred=true&l
 
 ### GET /api/conversations/:id
 
-Get a full conversation with blocks and children.
+Read a bounded canonical-position window with source-backed blocks and children.
 
 **Query params:**
 
 | Param | Type | Description |
 |---|---|---|
-| `leaf` | string | DAG UUID of a leaf node for path resolution (returns only blocks on the path from root to leaf) |
+| `target` | string | `initial` or `latest`; opens the actual tail |
+| `position` | number | Canonical normalized source position |
+| `block` / `turn` | string | Canonical `cblk:<conversation>:<position>` target; turn requires its start coordinate |
+| `limit` | number | Window size, at most 500 |
+| `view` | string | `display` omits lazy detail bodies; omit for full detail |
+| `expected_position_space_id` | string | Reject a position from another space with HTTP 409 `position_space_changed` |
+
+Responses include `position_space_id`, `source_version_id`, and monotonic
+`publication_revision` captured with the source bytes, plus canonical window
+boundaries and availability. Append changes freshness while preserving proven
+position continuity. A full detail read uses `position` and `limit=1` without
+`view`. `/api/conversations/:id/structure` returns the same snapshot fields and
+accepts the same expected-space guard. See [reading-window contracts](../chat-reading-window.md).
 
 **Response:** `200 OK`
 

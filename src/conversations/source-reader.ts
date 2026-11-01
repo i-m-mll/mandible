@@ -85,6 +85,7 @@ interface StructuralRow {
   sub_block_ordinal: number;
   normalization_checkpoint_id: string | null;
   normalization_model?: string | null;
+  client_intent_id?: string | null;
   parser_format: string;
   parser_version: string;
   normalization_version: string;
@@ -295,7 +296,7 @@ export class ConversationSourceReader {
 
   private sourceState(source: ConversationSourceDescriptor | null): string {
     return JSON.stringify(source?.parserFormat === CURRENT_CONVERSATION_SOURCE_EPOCHS.parserFormat
-      ? { ...source, currentVersionId: undefined } : source);
+      ? { ...source, currentVersionId: undefined, publicationRevision: undefined } : source);
   }
 
   private checkSession(session: ReadSession, expectedGeneration?: string): void {
@@ -517,7 +518,19 @@ export class ConversationSourceReader {
           metadata: { ...withBoundedLinkage.metadata, model: row.normalization_model },
         }
         : withBoundedLinkage;
-      blocks.push(this.sourceBlock(row, withCodexModel));
+      const item = withCodexModel.metadata.chat_item;
+      const receipt = item?.type === 'message' && item.role === 'user'
+        ? this.db.prepare(`SELECT idempotency_key FROM conversation_control_outbox
+            WHERE conversation_id = ? AND state = 'delivered'
+              AND provider_receipt_id IN (?, ?) ORDER BY created_at DESC LIMIT 1`)
+          .get(row.conversation_id, item.identity.native_item_id ?? null, item.identity.native_turn_id ?? null) as { idempotency_key: string } | undefined
+        : undefined;
+      const intentId = row.client_intent_id ?? receipt?.idempotency_key;
+      const withIntent = intentId && item?.type === 'message' && item.role === 'user'
+        ? { ...withCodexModel, metadata: { ...withCodexModel.metadata, client_intent_id: intentId,
+            chat_item: { ...item, identity: { ...item.identity, ...(row.client_intent_id ? { native_item_id: row.client_intent_id } : {}) } } } }
+        : withCodexModel;
+      blocks.push(this.sourceBlock(row, withIntent));
     }
     return {
       status: "source",
@@ -547,6 +560,7 @@ export class ConversationSourceReader {
       sub_block_ordinal: row.subBlockOrdinal,
       normalization_checkpoint_id: null,
       normalization_model: row.model,
+      client_intent_id: row.clientIntentId,
       parser_format: row.parserFormat,
       parser_version: row.parserVersion,
       normalization_version: row.normalizationVersion,

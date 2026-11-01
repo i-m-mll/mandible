@@ -477,11 +477,13 @@ async function warmSelectedConversationWindow(
     }),
     readConversationStructureWhenReady(conversationId),
   ]);
-  if (window.source_version_id !== structure.source_version_id || window.total !== structure.total) return;
+  if (window.source_version_id !== structure.source_version_id || window.total !== structure.total
+      || window.position_space_id !== structure.position_space_id || window.publication_revision !== structure.publication_revision) return;
   const current = appQueryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
+  if (current && current.publication_revision > window.publication_revision) return;
   const aggregateAdvanced = current !== undefined
-    && (aggregateAtStart === undefined || current.source_version_id !== aggregateAtStart.source_version_id);
-  if (aggregateAdvanced && current.source_version_id !== window.source_version_id) return;
+    && (aggregateAtStart === undefined || current.publication_revision !== aggregateAtStart.publication_revision);
+  if (aggregateAdvanced && (current.position_space_id !== window.position_space_id || current.publication_revision > window.publication_revision)) return;
   appQueryClient.setQueryData(aggregateKey, {
     ...reconcileConversationWindow(current, window), structure,
   });
@@ -692,6 +694,8 @@ function conversationShell(conversation: Conversation): ConversationWithDetails 
     position_window: {
       revision: conversation.block_count,
       source_version_id: null,
+      position_space_id: null,
+      publication_revision: 0,
       total: conversation.block_count,
       loaded_intervals: [],
       has_before: false,
@@ -1370,12 +1374,13 @@ export function ConversationDetail({
     const incoming = await read();
     if (selectionRef.current.generation !== selectionGeneration) throw new CancelledError();
     const current = queryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
+    if (current && current.publication_revision > incoming.publication_revision) throw new CancelledError();
     const aggregateAdvanced = current !== undefined
-      && (aggregateAtStart === undefined || current.source_version_id !== aggregateAtStart.source_version_id);
-    if (aggregateAdvanced && current.source_version_id !== incoming.source_version_id) {
+      && (aggregateAtStart === undefined || current.publication_revision !== aggregateAtStart.publication_revision);
+    if (aggregateAdvanced && (current.position_space_id !== incoming.position_space_id || current.publication_revision > incoming.publication_revision)) {
       throw new CancelledError();
     }
-    if (current && current.source_version_id !== incoming.source_version_id) {
+    if (current && current.position_space_id !== incoming.position_space_id) {
       const currentWindowKey = conversationKeys.window(conversationId, target);
       const currentWindowHash = queryClient.getQueryCache().find({
         queryKey: currentWindowKey,
@@ -1402,6 +1407,8 @@ export function ConversationDetail({
           readConversationStructureWhenReady(conversationId, signal),
         ]);
         if (selectedStructure.source_version_id !== window.source_version_id
+            || selectedStructure.position_space_id !== window.position_space_id
+            || selectedStructure.publication_revision !== window.publication_revision
             || selectedStructure.total !== window.total) {
           throw new ApiError('Conversation changed while opening; retry the reading position.', 409, 'freshness_pending');
         }
@@ -1451,14 +1458,14 @@ export function ConversationDetail({
         queryKey: conversationKeys.window(conversationId, target),
         queryFn: ({ signal }) => readConversationWindowWhenReady(
           conversationId,
-          windowRequest(target, signal),
+          windowRequest({ ...target, expected_position_space_id: aggregateAtStart.position_space_id ?? undefined }, signal),
         ),
         staleTime: 0,
       });
       queryClient.removeQueries({ queryKey: conversationKeys.window(conversationId, target), exact: true, type: 'inactive' });
       const current = queryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
       if (!current) return;
-      if (incoming.source_version_id !== current.source_version_id) {
+      if (incoming.position_space_id !== current.position_space_id || incoming.publication_revision < current.publication_revision) {
         // Keep the old projection intact until a complete display projection
         // for the new source version has arrived.
         void queryClient.invalidateQueries({ queryKey: conversationRequestKey, exact: true });
@@ -2799,7 +2806,7 @@ export function ConversationDetail({
             onExpandDetails={handleExpandConversationDetails}
             onCopyMessageLink={async (blockId) => {
               try {
-                await navigator.clipboard.writeText(messageLinkUrl(window.location.href, conversationId, blockId));
+                await navigator.clipboard.writeText(messageLinkUrl(window.location.href, conversationId, blockId, conversation.position_window.position_space_id ?? undefined));
                 setToast({ type: 'info', message: 'Message link copied.' });
               } catch {
                 setToast({ type: 'error', message: 'Could not copy the message link.' });

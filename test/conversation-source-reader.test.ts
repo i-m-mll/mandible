@@ -80,6 +80,54 @@ async function record(db: SqliteDatabase, id: string, filePath: string): Promise
 }
 
 describe("versioned conversation source reader", () => {
+  it("persists position continuity through identical rebuild and prefix extension, and rotates on invalidation", async () => {
+    const db = migratedMemoryDb();
+    try {
+      const file = rolloutPath();
+      writeRecords(file, records());
+      insertConversation(db, 'continuity', file, await parse(file));
+      const store = new ConversationSourceStore(db);
+      await record(db, 'continuity', file);
+      const initial = store.resolveConversation('continuity')!;
+      await record(db, 'continuity', file);
+      expect(new ConversationSourceStore(db).resolveConversation('continuity')).toMatchObject({
+        positionSpaceId: initial.positionSpaceId, publicationRevision: initial.publicationRevision + 1,
+      });
+      const tail = { type: 'response_item', timestamp: '2026-08-17T00:00:04Z',
+        payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'extension' }] } };
+      writeRecords(file, records([tail]));
+      await record(db, 'continuity', file);
+      expect(store.resolveConversation('continuity')?.positionSpaceId).toBe(initial.positionSpaceId);
+      expect(store.resolveConversation('continuity')?.currentVersionId).not.toBe(initial.currentVersionId);
+      writeRecords(file, records().slice(0, 2));
+      await record(db, 'continuity', file);
+      const truncated = store.resolveConversation('continuity')!;
+      expect(truncated.positionSpaceId).not.toBe(initial.positionSpaceId);
+      await store.recordConversation({ conversationId: 'continuity', provider: 'codex', nativeSessionId: 'duplicate-session',
+        filePath: file, blocks: (await parse(file)).blocks, ...CURRENT_CONVERSATION_SOURCE_EPOCHS, redactionEpoch: 1 });
+      expect(store.resolveConversation('continuity')?.positionSpaceId).not.toBe(truncated.positionSpaceId);
+    } finally { db.close(); }
+  });
+
+  it('retains an echoed intent identity when a bounded read parses only the earlier prompt record', async () => {
+    const db = migratedMemoryDb();
+    try {
+      const file = rolloutPath();
+      writeRecords(file, [records()[0],
+        { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'prompt' }] } }]);
+      insertConversation(db, 'intent', file, await parse(file));
+      await record(db, 'intent', file);
+      const beforeEcho = new ConversationSourceStore(db).resolveConversation('intent')!.positionSpaceId;
+      fs.appendFileSync(file, `${JSON.stringify({ type: 'event_msg', payload: { type: 'user_message', message: 'prompt', client_id: 'intent-exact' } })}\n`);
+      await record(db, 'intent', file);
+      expect(new ConversationSourceStore(db).resolveConversation('intent')!.positionSpaceId).toBe(beforeEcho);
+      const page = await new ConversationSourceReader(db).readPage('intent', { offset: 0, limit: 1 });
+      expect(page.status).toBe('source');
+      if (page.status !== 'source') throw new Error('fixture source unavailable');
+      expect(JSON.parse(page.value.blocks[0].metadata_json)).toMatchObject({ client_intent_id: 'intent-exact',
+        chat_item: { identity: { native_item_id: 'intent-exact' } } });
+    } finally { db.close(); }
+  });
   it("preserves source versions, locators and block identities across raw/zstd transitions", async () => {
     const db = migratedMemoryDb();
     const filePath = rolloutPath();

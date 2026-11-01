@@ -2489,16 +2489,17 @@ export async function getConversationSidebar(params: {
   return readConversationSearch(`/api/conversations/sidebar?${query.toString()}`, params);
 }
 
-export type ConversationWindowRequest =
+export type ConversationWindowRequest = { expected_position_space_id?: string } & (
   | { target?: 'initial' | 'latest'; limit?: number; view?: 'display'; signal?: AbortSignal }
   | { block: string; limit?: number; view?: 'display'; signal?: AbortSignal }
   | { turn: string; limit?: number; view?: 'display'; signal?: AbortSignal }
-  | { position: number; limit?: number; view?: 'display'; signal?: AbortSignal };
+  | { position: number; limit?: number; view?: 'display'; signal?: AbortSignal });
 
 export type ConversationStructure = import('../../src/contracts').ConversationStructure;
 
-export async function getConversationStructure(id: string, signal?: AbortSignal): Promise<ConversationStructure> {
-  const resp = await apiGet(`/api/conversations/${encodeURIComponent(id)}/structure`, { signal });
+export async function getConversationStructure(id: string, signal?: AbortSignal, expectedPositionSpaceId?: string): Promise<ConversationStructure> {
+  const query = expectedPositionSpaceId ? `?expected_position_space_id=${encodeURIComponent(expectedPositionSpaceId)}` : '';
+  const resp = await apiGet(`/api/conversations/${encodeURIComponent(id)}/structure${query}`, { signal });
   return (await parseMaybeJson(resp)) as ConversationStructure;
 }
 
@@ -2513,6 +2514,7 @@ export async function getConversationWindow(
   if ('position' in request) query.set('position', String(request.position));
   if (request.limit) query.set('limit', String(request.limit));
   if (request.view) query.set('view', request.view);
+  if (request.expected_position_space_id) query.set('expected_position_space_id', request.expected_position_space_id);
   const suffix = query.size > 0 ? `?${query.toString()}` : '';
   const resp = await apiGet(`/api/conversations/${encodeURIComponent(id)}${suffix}`, {
     signal: request.signal,

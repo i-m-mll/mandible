@@ -7,6 +7,7 @@ import type {
   ConversationSidebarGroup,
   ConversationSidebarResponse,
 } from '../api';
+export { ReadingWindowRequests } from './readingWindowRequests';
 
 export type ConversationWithDetails = Conversation & {
   blocks: ConversationBlock[];
@@ -15,6 +16,8 @@ export type ConversationWithDetails = Conversation & {
   position_window: {
     revision: number;
     source_version_id: string | null;
+    position_space_id: string | null;
+    publication_revision: number;
     total: number;
     loaded_intervals: ConversationLoadedInterval[];
     has_before: boolean;
@@ -28,10 +31,118 @@ export type ConversationLoadedInterval = {
   end: number;
 };
 
+function mergeActiveInterval(current: ConversationLoadedInterval | null, incoming?: ConversationLoadedInterval): ConversationLoadedInterval | null {
+  if (!current) return incoming ?? null;
+  if (!incoming || incoming.start > current.end + 1 || incoming.end < current.start - 1) return current;
+  return { start: Math.min(current.start, incoming.start), end: Math.max(current.end, incoming.end) };
+}
+
+export type ConversationSourceCoordinate = {
+  conversationId: string;
+  positionSpaceId: string;
+  position: number;
+  subtarget?: string;
+  offset?: number;
+};
+
+export type ReadingWindowOperation =
+  | { kind: 'extend-start' | 'extend-end'; window: ConversationPositionWindow; protected: readonly ConversationLoadedInterval[] }
+  | { kind: 'replace'; window: ConversationPositionWindow; command: { token: string; target: ConversationSourceCoordinate } }
+  | { kind: 'trim-start' | 'trim-end'; position: number; protected: readonly ConversationLoadedInterval[] };
+
+export type ReadingWindowResult =
+  | { status: 'committed'; data: ConversationTranscriptData; command?: Extract<ReadingWindowOperation, { kind: 'replace' }>['command'] }
+  | { status: 'position-space-changed' | 'obsolete' | 'noncontiguous' | 'protected' | 'capacity-exceeded' };
+
+/** The active list is a contiguous span; the Query aggregate may also retain distant cached ranges. */
+export function activeConversationBlocks(data: ConversationTranscriptData): ConversationBlock[] {
+  const span = data.active_window;
+  return span ? data.blocks.filter(block => block.position >= span.start && block.position <= span.end) : [];
+}
+
+function activeAvailability(data: ConversationTranscriptData): ConversationTranscriptData {
+  const span = data.active_window;
+  return { ...data,
+    start_reached: data.total === 0 || span?.start === 0,
+    end_reached: data.total === 0 || span?.end === data.total - 1,
+    after_count: span ? Math.max(0, data.total - span.end - 1) : data.total };
+}
+
+export function applyReadingWindowOperation(current: ConversationTranscriptData, operation: ReadingWindowOperation): ReadingWindowResult {
+  if (!('window' in operation)) {
+    const active = current.active_window;
+    if (!active) return { status: 'committed', data: current };
+    const span = operation.kind === 'trim-start'
+      ? { start: Math.max(active.start, operation.position), end: active.end }
+      : { start: active.start, end: Math.min(active.end, operation.position) };
+    if (span.start > span.end || operation.protected.some(region =>
+      region.start < span.start || region.end > span.end)) return { status: 'protected' };
+    return { status: 'committed', data: activeAvailability({ ...current, active_window: span }) };
+  }
+  const incoming = operation.window;
+  if (current.conversation.id !== incoming.conversation.id) return { status: 'obsolete' };
+  if (incoming.publication_revision < current.publication_revision) return { status: 'obsolete' };
+  if (operation.kind === 'replace') {
+    const target = operation.command.target;
+    if (target.conversationId !== incoming.conversation.id || target.positionSpaceId !== incoming.position_space_id) {
+      return { status: 'position-space-changed' };
+    }
+    if (!incoming.blocks.some(block => block.position === target.position)) return { status: 'noncontiguous' };
+    const next = conversationTranscriptFromWindow(incoming);
+    return { status: 'committed', data: next, command: operation.command };
+  }
+  if (current.position_space_id !== incoming.position_space_id) return { status: 'position-space-changed' };
+  const span = intervalForWindow(incoming)[0];
+  const active = current.active_window;
+  if (active && span && (span.start > active.end + 1 || span.end < active.start - 1
+      || (operation.kind === 'extend-start' ? span.start > active.start : span.end < active.end))) return { status: 'noncontiguous' };
+  const merged = mergeBlocks(current.blocks, incoming.blocks, incoming.source_version_id, current.block_source_versions);
+  const activeSpan = mergeActiveInterval(active, span);
+  const retained = retainReadingWindow(merged, activeSpan, operation.protected);
+  if (!retained) return { status: 'capacity-exceeded' };
+  const data = reconcileConversationWindow({ ...current, blocks: retained.blocks }, { ...incoming,
+    blocks: incoming.blocks.filter(block => retained.blocks.includes(block)) });
+  return { status: 'committed', data: activeAvailability({ ...data, blocks: retained.blocks,
+    loaded_intervals: intervalsForBlocks(retained.blocks), active_window: retained.span }) };
+}
+
+/** Edge-only retention keeps the visible/focused region intact and bounds both rows and fetched bytes. */
+export function retainReadingWindow(
+  blocks: ConversationBlock[], span: ConversationLoadedInterval | null,
+  protectedRegions: readonly ConversationLoadedInterval[],
+  limits = { bytes: 16 * 1024 * 1024, positions: 2000 },
+): { blocks: ConversationBlock[]; span: ConversationLoadedInterval | null } | null {
+  if (!span) return { blocks: [], span: null };
+  if (protectedRegions.some(region => region.start < span.start || region.end > span.end)) return null;
+  let start = span.start;
+  let end = span.end;
+  const protectedStart = Math.min(...protectedRegions.map(region => region.start), end);
+  const protectedEnd = Math.max(...protectedRegions.map(region => region.end), start);
+  const byPosition = new Map(blocks.map(block => [block.position, block]));
+  let bytes = 0;
+  for (let position = start; position <= end; position += 1) {
+    const block = byPosition.get(position);
+    if (!block) return null;
+    bytes += measuredBlockBytes(block);
+  }
+  while (bytes > limits.bytes || end - start + 1 > limits.positions) {
+    const canStart = start < protectedStart;
+    const canEnd = end > protectedEnd;
+    if (!canStart && !canEnd) return null;
+    if (canStart && (!canEnd || protectedStart - start >= end - protectedEnd)) {
+      bytes -= measuredBlockBytes(byPosition.get(start++)!);
+    } else bytes -= measuredBlockBytes(byPosition.get(end--)!);
+  }
+  return { blocks: blocks.filter(block => block.position >= start && block.position <= end), span: { start, end } };
+}
+
 export type ConversationTranscriptData = {
+  active_window: ConversationLoadedInterval | null;
   conversation: Conversation;
   body_source: ConversationPositionWindow['body_source'];
   source_version_id: string | null;
+  position_space_id: string | null;
+  publication_revision: number;
   children: ConversationChild[];
   parent: ConversationPositionWindow['parent'];
   revision: number;
@@ -41,6 +152,7 @@ export type ConversationTranscriptData = {
   end_reached: boolean;
   after_count: number;
   blocks: ConversationBlock[];
+  block_source_versions: ReadonlyMap<string, string | null>;
   structure: ConversationStructure | null;
 };
 
@@ -100,9 +212,12 @@ export function conversationTranscriptFromWindow(payload: ConversationPositionWi
     payload.target.position ?? payload.window.end_position ?? 0);
   const intervals = intervalsForBlocks(blocks);
   return {
+    active_window: intervals.length === 1 ? intervals[0] : null,
     conversation: payload.conversation,
     body_source: payload.body_source,
     source_version_id: payload.source_version_id,
+    position_space_id: payload.position_space_id,
+    publication_revision: payload.publication_revision,
     children: payload.children,
     parent: payload.parent,
     revision: payload.revision,
@@ -112,6 +227,7 @@ export function conversationTranscriptFromWindow(payload: ConversationPositionWi
     end_reached: payload.total === 0 || (intervals.at(-1)?.end === payload.total - 1 && !payload.window.has_after),
     after_count: payload.window.after_count,
     blocks,
+    block_source_versions: new Map(blocks.map(block => [block.id, payload.source_version_id])),
     structure: null,
   };
 }
@@ -125,6 +241,8 @@ export function flattenConversationTranscript(payload: ConversationTranscriptDat
     position_window: {
       revision: payload.revision,
       source_version_id: payload.source_version_id,
+      position_space_id: payload.position_space_id,
+      publication_revision: payload.publication_revision,
       total: payload.total,
       loaded_intervals: payload.loaded_intervals,
       has_before: !payload.start_reached,
@@ -134,17 +252,23 @@ export function flattenConversationTranscript(payload: ConversationTranscriptDat
   };
 }
 
-function mergeBlocks(current: readonly ConversationBlock[], incoming: readonly ConversationBlock[]): ConversationBlock[] {
+function mergeBlocks(current: readonly ConversationBlock[], incoming: readonly ConversationBlock[],
+  sourceVersionId: string | null, versions: ReadonlyMap<string, string | null>): ConversationBlock[] {
   const byId = new Map<string, ConversationBlock>();
   for (const block of current) byId.set(block.id, block);
   for (const block of incoming) {
     const existing = byId.get(block.id);
     // A same-version display refresh may be compact while the user has already
     // expanded this block. Keep the fetched payload until the source changes.
-    if (block.details_loaded === false && existing && existing.details_loaded !== false) continue;
+    if (block.details_loaded === false && existing && existing.details_loaded !== false
+        && versions.get(block.id) === sourceVersionId) continue;
     byId.set(block.id, block);
   }
   return [...byId.values()].sort((left, right) => left.position - right.position || left.id.localeCompare(right.id));
+}
+
+export function conversationBlockDetailsCurrent(data: ConversationTranscriptData, block: ConversationBlock): boolean {
+  return block.details_loaded !== false && data.block_source_versions.get(block.id) === data.source_version_id;
 }
 
 const MAX_TRANSCRIPT_CACHE_BYTES = 16 * 1024 * 1024;
@@ -206,35 +330,26 @@ export function reconcileConversationWindow(
   current: ConversationTranscriptData | undefined,
   incoming: ConversationPositionWindow,
 ): ConversationTranscriptData {
+  if (current?.conversation.id === incoming.conversation.id
+      && incoming.publication_revision < current.publication_revision) return current;
   if (!current || current.conversation.id !== incoming.conversation.id
-      || current.source_version_id !== incoming.source_version_id) {
+      || current.position_space_id !== incoming.position_space_id) {
     return conversationTranscriptFromWindow(incoming);
   }
   const blocks = boundedBlocks(
-    mergeBlocks(current.blocks, incoming.blocks),
+    mergeBlocks(current.blocks, incoming.blocks, incoming.source_version_id, current.block_source_versions),
     incoming.target.position ?? incoming.window.end_position ?? 0,
   );
   const total = Math.max(current.total, incoming.total);
   const incomingIntervals = intervalForWindow(incoming);
+  const incomingIds = new Set(incoming.blocks.map(block => block.id));
   const loadedIntervals = intervalsForBlocks(blocks);
-  const first = loadedIntervals[0];
-  const last = loadedIntervals.at(-1);
-  const currentFirst = current.loaded_intervals[0];
-  const currentLast = current.loaded_intervals.at(-1);
-  const incomingFirst = incomingIntervals[0];
-  const incomingLast = incomingIntervals.at(-1);
-  const startReached = Boolean(first) && (
-    (current.start_reached && currentFirst?.start === first.start)
-    || (!incoming.window.has_before && incomingFirst?.start === first.start)
-  );
-  const incomingReachesCurrentEnd = incomingLast?.end === last?.end;
-  const currentReachesMergedEnd = currentLast?.end === last?.end;
-  const endReached = Boolean(last) && (
-    (current.end_reached && currentReachesMergedEnd)
-    || (!incoming.window.has_after && incomingReachesCurrentEnd)
-  );
-  return {
+  return activeAvailability({
     ...current,
+    source_version_id: incoming.source_version_id,
+    position_space_id: incoming.position_space_id,
+    publication_revision: incoming.publication_revision,
+    active_window: mergeActiveInterval(current.active_window, incomingIntervals[0]),
     conversation: { ...current.conversation, ...incoming.conversation },
     children: incoming.revision >= current.revision ? incoming.children : current.children,
     parent: incoming.revision >= current.revision ? incoming.parent : current.parent,
@@ -242,12 +357,12 @@ export function reconcileConversationWindow(
     revision: Math.max(current.revision, incoming.revision),
     total,
     blocks,
+    block_source_versions: new Map(blocks.map(block => [block.id,
+      incomingIds.has(block.id) ? incoming.source_version_id
+        : current.block_source_versions.get(block.id) ?? null])),
     structure: current.structure,
     loaded_intervals: loadedIntervals,
-    start_reached: startReached,
-    end_reached: endReached,
-    after_count: last ? Math.max(0, total - last.end - 1) : total,
-  };
+  });
 }
 
 function mergeGroup(current: ConversationSidebarGroup, incoming: ConversationSidebarGroup): ConversationSidebarGroup {

@@ -808,7 +808,15 @@ export type ConversationPositionTarget = {
   turn_id: string | null;
 };
 
-export type ConversationPositionWindow = {
+export type ConversationSourceSnapshot = {
+  position_space_id: string | null;
+  publication_revision: number;
+  source_version_id: string | null;
+};
+
+export type PositionSpaceChanged = { code: 'position_space_changed'; position_space_id: string | null };
+
+export type ConversationPositionWindow = ConversationSourceSnapshot & {
   conversation: Conversation;
   body_source: "source";
   source_version_id: string | null;
@@ -828,7 +836,7 @@ export type ConversationPositionWindow = {
   blocks: StoredConversationBlock[];
 };
 
-export type ConversationStructure = {
+export type ConversationStructure = ConversationSourceSnapshot & {
   conversation_id: string;
   source_version_id: string | null;
   total: number;

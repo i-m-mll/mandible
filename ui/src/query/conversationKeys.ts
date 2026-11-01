@@ -28,26 +28,27 @@ export function normalizeSidebarFilters(filters: ConversationSidebarFilters): Co
   };
 }
 
-export type ConversationWindowTarget =
+export type ConversationWindowTarget = { expected_position_space_id?: string } & (
   | { kind: 'initial' | 'latest'; value: null; limit: number | null; view?: 'display' }
   | { kind: 'block' | 'turn'; value: string; limit: number | null; view?: 'display' }
-  | { kind: 'position'; value: number; limit: number | null; view?: 'display' };
+  | { kind: 'position'; value: number; limit: number | null; view?: 'display' });
 
 export function normalizeWindowTarget(request: ConversationWindowRequest = {}): ConversationWindowTarget {
   const limit = request.limit ?? null;
   const view = request.view;
-  if ('block' in request) return { kind: 'block', value: request.block, limit, view };
-  if ('turn' in request) return { kind: 'turn', value: request.turn, limit, view };
-  if ('position' in request) return { kind: 'position', value: request.position, limit, view };
-  return { kind: request.target ?? 'initial', value: null, limit, view };
+  const expected_position_space_id = request.expected_position_space_id;
+  if ('block' in request) return { kind: 'block', value: request.block, limit, view, expected_position_space_id };
+  if ('turn' in request) return { kind: 'turn', value: request.turn, limit, view, expected_position_space_id };
+  if ('position' in request) return { kind: 'position', value: request.position, limit, view, expected_position_space_id };
+  return { kind: request.target ?? 'initial', value: null, limit, view, expected_position_space_id };
 }
 
 export function windowRequest(target: ConversationWindowTarget, signal?: AbortSignal): ConversationWindowRequest {
   const limit = target.limit ?? undefined;
-  if (target.kind === 'block') return { block: target.value, limit, view: target.view, signal };
-  if (target.kind === 'turn') return { turn: target.value, limit, view: target.view, signal };
-  if (target.kind === 'position') return { position: target.value, limit, view: target.view, signal };
-  return { target: target.kind, limit, view: target.view, signal };
+  if (target.kind === 'block') return { block: target.value, limit, view: target.view, expected_position_space_id: target.expected_position_space_id, signal };
+  if (target.kind === 'turn') return { turn: target.value, limit, view: target.view, expected_position_space_id: target.expected_position_space_id, signal };
+  if (target.kind === 'position') return { position: target.value, limit, view: target.view, expected_position_space_id: target.expected_position_space_id, signal };
+  return { target: target.kind, limit, view: target.view, expected_position_space_id: target.expected_position_space_id, signal };
 }
 
 export const conversationKeys = {

@@ -38,6 +38,7 @@ export interface SparseConversationBlockRow {
   recordOrdinal: number;
   subBlockOrdinal: number;
   model?: string | null;
+  clientIntentId?: string | null;
   parserFormat: string;
   parserVersion: string;
   normalizationVersion: string;
@@ -72,6 +73,7 @@ interface CacheBlockRow {
   record_ordinal: number;
   sub_block_ordinal: number;
   model: string | null;
+  client_intent_id: string | null;
 }
 
 export interface SourceManifestRow {
@@ -215,6 +217,7 @@ export class ConversationStructureCache {
         record_ordinal         INTEGER NOT NULL,
         sub_block_ordinal      INTEGER NOT NULL,
         model                  TEXT,
+        client_intent_id       TEXT,
         PRIMARY KEY (cache_conversation_id, position)
       ) WITHOUT ROWID;
       CREATE TABLE IF NOT EXISTS cache_tool_links (
@@ -287,8 +290,8 @@ export class ConversationStructureCache {
       const insert = this.cache.prepare(`
         INSERT INTO cache_blocks (
           cache_conversation_id, position, type_code, role_code, parent_position,
-          record_offset, record_length, record_ordinal, sub_block_ordinal, model
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          record_offset, record_length, record_ordinal, sub_block_ordinal, model, client_intent_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       if (priorVersionId) {
         const prior = this.cachedConversation(manifest.conversation_id, priorVersionId, {
@@ -297,7 +300,7 @@ export class ConversationStructureCache {
         });
         if (!prior) throw new Error("append structure generation is missing");
         this.cache.prepare(`INSERT INTO cache_blocks SELECT ?, position, type_code, role_code, parent_position,
-          record_offset, record_length, record_ordinal, sub_block_ordinal, model FROM cache_blocks WHERE cache_conversation_id = ?`)
+          record_offset, record_length, record_ordinal, sub_block_ordinal, model, client_intent_id FROM cache_blocks WHERE cache_conversation_id = ?`)
           .run(cacheId, prior.cache_id);
         this.cache.prepare("INSERT INTO cache_tool_links SELECT ?, tool_key, position FROM cache_tool_links WHERE cache_conversation_id = ?")
           .run(cacheId, prior.cache_id);
@@ -305,7 +308,7 @@ export class ConversationStructureCache {
       for (const row of rows) {
         insert.run(
           cacheId, row.position, blockTypeCode(row.type), roleCode(row.role), row.parentPosition,
-          row.recordOffset, row.recordLength, row.recordOrdinal, row.subBlockOrdinal, row.model ?? null,
+          row.recordOffset, row.recordLength, row.recordOrdinal, row.subBlockOrdinal, row.model ?? null, row.clientIntentId ?? null,
         );
       }
       const count = this.cache.prepare("SELECT COUNT(*) AS count, MIN(position) AS first, MAX(position) AS last FROM cache_blocks WHERE cache_conversation_id = ?")
@@ -394,7 +397,7 @@ export class ConversationStructureCache {
       : options.prefix?.blockCount ?? conversation.block_count;
     const rows = this.cache.prepare(`
       SELECT position, type_code, role_code, parent_position, record_offset,
-             record_length, record_ordinal, sub_block_ordinal, model
+             record_length, record_ordinal, sub_block_ordinal, model, client_intent_id
         FROM cache_blocks WHERE ${where}
        ORDER BY position LIMIT ? OFFSET ?
     `).all(...params, options.limit, options.offset) as CacheBlockRow[];
@@ -411,6 +414,7 @@ export class ConversationStructureCache {
         recordOrdinal: row.record_ordinal,
         subBlockOrdinal: row.sub_block_ordinal,
         model: row.model,
+        clientIntentId: row.client_intent_id,
         parserFormat: conversation.parser_format,
         parserVersion: conversation.parser_version,
         normalizationVersion: conversation.normalization_version,
@@ -458,7 +462,7 @@ export class ConversationStructureCache {
     if (!conversation) return null;
     const row = this.cache.prepare(`
       SELECT position, type_code, role_code, parent_position, record_offset,
-             record_length, record_ordinal, sub_block_ordinal, model
+             record_length, record_ordinal, sub_block_ordinal, model, client_intent_id
         FROM cache_blocks WHERE cache_conversation_id = ? AND position = ?
     `).get(conversation.cache_id, position) as CacheBlockRow | undefined;
     if (!row) return null;
@@ -474,6 +478,7 @@ export class ConversationStructureCache {
       recordOrdinal: row.record_ordinal,
       subBlockOrdinal: row.sub_block_ordinal,
         model: row.model,
+        clientIntentId: row.client_intent_id,
       parserFormat: conversation.parser_format,
       parserVersion: conversation.parser_version,
       normalizationVersion: conversation.normalization_version,

@@ -593,11 +593,14 @@ export function registerConversationRoutes(
       return sendJson(res, 503, { error: "freshness_error", message: error instanceof Error ? error.message : String(error) });
     }
     const source = db.prepare(`
-      SELECT current_version_id, parser_format AS parserFormat, parser_version AS parserVersion,
+      SELECT current_version_id, position_space_id, publication_revision, parser_format AS parserFormat, parser_version AS parserVersion,
              normalization_version AS normalizationVersion, redaction_epoch AS redactionEpoch FROM conversation_sources
        WHERE conversation_id = ? AND current_version_id IS NOT NULL
        ORDER BY CASE availability WHEN 'available' THEN 0 ELSE 1 END, updated_at DESC LIMIT 1
-    `).get(id) as ({ current_version_id: string } & ConversationSourceEpochs) | undefined;
+    `).get(id) as ({ current_version_id: string; position_space_id: string | null; publication_revision: number } & ConversationSourceEpochs) | undefined;
+    if (req.query?.expected_position_space_id && req.query.expected_position_space_id !== source?.position_space_id) {
+      return sendJson(res, 409, { error: 'position_space_changed', code: 'position_space_changed', position_space_id: source?.position_space_id ?? null });
+    }
     const version = source?.current_version_id ?? null;
     const cached = version === null ? null : getConversationStructureCache(db).readStructure(id, version, source);
     const rows = cached ?? [];
@@ -608,16 +611,19 @@ export function registerConversationRoutes(
       return sendJson(res, 409, { error: "freshness_pending", code: "freshness_pending",
         message: "conversation structure is incomplete; retry after indexing" });
     }
-    const current = db.prepare(`SELECT current_version_id, parser_format AS parserFormat, parser_version AS parserVersion,
+    const current = db.prepare(`SELECT current_version_id, position_space_id, publication_revision, parser_format AS parserFormat, parser_version AS parserVersion,
              normalization_version AS normalizationVersion, redaction_epoch AS redactionEpoch FROM conversation_sources
       WHERE conversation_id = ? AND current_version_id IS NOT NULL
       ORDER BY CASE availability WHEN 'available' THEN 0 ELSE 1 END, updated_at DESC LIMIT 1`
-    ).get(id) as ({ current_version_id: string } & ConversationSourceEpochs) | undefined;
-    if ((current?.current_version_id ?? null) !== version) {
+    ).get(id) as ({ current_version_id: string; position_space_id: string | null; publication_revision: number } & ConversationSourceEpochs) | undefined;
+    if ((current?.current_version_id ?? null) !== version
+        || current?.publication_revision !== source?.publication_revision
+        || current?.position_space_id !== source?.position_space_id) {
       return sendJson(res, 409, { error: "freshness_pending", code: "freshness_pending",
         message: "conversation source changed during structure read" });
     }
-    sendJson(res, 200, { conversation_id: id, source_version_id: version, total: rows.length,
+    sendJson(res, 200, { conversation_id: id, source_version_id: version,
+      position_space_id: source?.position_space_id ?? null, publication_revision: source?.publication_revision ?? 0, total: rows.length,
       rows: rows.map((row) => ({
         id: sparseConversationBlockId(id, row.position),
         position: row.position, type: row.type, role: row.role,
@@ -698,15 +704,22 @@ export function registerConversationRoutes(
     let resolvedBlock: SourceBackedConversationBlock | null = null;
     let resolvedTurnId: string | null = null;
     let sourceVersionId: string | null = null;
+    let positionSpaceId: string | null = null;
+    let publicationRevision = 0;
     {
       const source = db.prepare(`
-        SELECT current_version_id, parser_format AS parserFormat, parser_version AS parserVersion,
+        SELECT current_version_id, position_space_id, publication_revision, parser_format AS parserFormat, parser_version AS parserVersion,
              normalization_version AS normalizationVersion, redaction_epoch AS redactionEpoch FROM conversation_sources
          WHERE conversation_id = ? AND current_version_id IS NOT NULL
          ORDER BY CASE availability WHEN 'available' THEN 0 ELSE 1 END, updated_at DESC
          LIMIT 1
-      `).get(id) as ({ current_version_id: string } & ConversationSourceEpochs) | undefined;
+      `).get(id) as ({ current_version_id: string; position_space_id: string | null; publication_revision: number } & ConversationSourceEpochs) | undefined;
       sourceVersionId = source?.current_version_id ?? null;
+      positionSpaceId = source?.position_space_id ?? null;
+      publicationRevision = source?.publication_revision ?? 0;
+      if (query.expected_position_space_id && query.expected_position_space_id !== positionSpaceId) {
+        return sendJson(res, 409, { error: 'position_space_changed', code: 'position_space_changed', position_space_id: positionSpaceId });
+      }
       const structureCache = getConversationStructureCache(db);
       const cachedTotal = source
         ? structureCache.blockCount(id, source.current_version_id, source)
@@ -744,7 +757,7 @@ export function registerConversationRoutes(
         ? Math.max(0, retainedTotal - limit)
         : Math.max(0, anchorPosition! - Math.floor((limit - 1) / 2));
       const sourcePage = await (displayView && source ? displaySourceReader : sourceReader)
-        .readPage(id, { offset: windowOffset, limit });
+        .readPage(id, { offset: windowOffset, limit, expectedSourceVersionId: sourceVersionId ?? undefined });
       if (sourcePage.status !== "source") {
         if (sourcePage.status === "stale") {
           // The source can append after the pre-read extent check. Reconcile
@@ -770,6 +783,13 @@ export function registerConversationRoutes(
           status: sourcePage.status,
         });
         return;
+      }
+      const currentPublication = db.prepare(`SELECT current_version_id, position_space_id, publication_revision FROM conversation_sources WHERE conversation_id = ? ORDER BY CASE availability WHEN 'available' THEN 0 ELSE 1 END, updated_at DESC LIMIT 1`).get(id) as { current_version_id: string; position_space_id: string; publication_revision: number } | undefined;
+      if (sourcePage.sourceVersionId !== sourceVersionId || currentPublication?.publication_revision !== publicationRevision
+          || currentPublication?.position_space_id !== positionSpaceId) {
+        const changed = currentPublication?.position_space_id !== positionSpaceId;
+        return sendJson(res, 409, { error: changed ? 'position_space_changed' : 'freshness_pending',
+          code: changed ? 'position_space_changed' : 'freshness_pending', position_space_id: currentPublication?.position_space_id ?? null });
       }
       readableBlocks = sourcePage.value.blocks;
       bodySource = sourcePage.status;
@@ -875,6 +895,8 @@ export function registerConversationRoutes(
       conversation: mapped,
       body_source: bodySource,
       source_version_id: sourceVersionId,
+      position_space_id: positionSpaceId,
+      publication_revision: publicationRevision,
       children: childrenWithDuration,
       parent: parent ?? null,
       revision: conv.block_count,

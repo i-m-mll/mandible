@@ -356,7 +356,7 @@ describe('compact detail pane shell', () => {
     vi.mocked(api.getConversationWindow).mockImplementation(async (_id, request) => {
       if ('position' in request && request.position === 0) return newSourceEdge.promise;
       if (++initialReads === 1) {
-        return { ...positionPayload(pinned, [recent], { revision: 2, hasBefore: true }), source_version_id: 'source-v1' };
+        return { ...positionPayload(pinned, [recent], { revision: 2, hasBefore: true }), source_version_id: 'source-v1', position_space_id: 'space-v1', publication_revision: 1 };
       }
       return staleRefresh.promise;
     });
@@ -373,12 +373,16 @@ describe('compact detail pane shell', () => {
     await act(async () => newSourceEdge.resolve({
       ...positionPayload(pinned, [newSourceBlock], { kind: 'block', revision: 2, hasAfter: true }),
       source_version_id: 'source-v2',
+      position_space_id: 'space-v2',
+      publication_revision: 2,
     }));
     expect(await screen.findByText('Older source v2')).toBeTruthy();
 
     await act(async () => staleRefresh.resolve({
       ...positionPayload(pinned, [oldReply], { revision: 2, hasBefore: true }),
       source_version_id: 'source-v1',
+      position_space_id: 'space-v1',
+      publication_revision: 1,
     }));
     await waitFor(() => {
       const aggregate = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(pinned.id));

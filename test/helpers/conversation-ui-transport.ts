@@ -13,7 +13,8 @@ export function mockConversationStructureFromWindow(): void {
     if (!result || result.type !== 'return') throw new Error(`No transcript fixture for ${id}`);
     const window = await result.value;
     return {
-      conversation_id: id, source_version_id: window.source_version_id, total: window.total,
+      conversation_id: id, source_version_id: window.source_version_id, position_space_id: window.position_space_id,
+      publication_revision: window.publication_revision, total: window.total,
       rows: Array.from({ length: Math.max(window.total, ...window.blocks.map(block => block.position + 1)) }, (_, position) => {
         const block = window.blocks.find(block => block.position === position);
         return { id: block?.id ?? `fixture-${id}-${position}`, position, type: block?.type ?? 'user_message',

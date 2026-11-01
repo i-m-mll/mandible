@@ -2242,6 +2242,13 @@ export const MIGRATIONS: readonly Migration[] = [
     "DROP TABLE IF EXISTS daemon_log",
   ] },
   { version: 229, name: "local_authorization_evidence", statements: [], requires_foreign_keys_off: true },
+  { version: 230, name: "conversation_position_spaces", statements: [
+    "ALTER TABLE conversation_sources ADD COLUMN position_space_id TEXT",
+    "ALTER TABLE conversation_sources ADD COLUMN position_count INTEGER",
+    "ALTER TABLE conversation_sources ADD COLUMN position_fingerprint TEXT",
+    "ALTER TABLE conversation_sources ADD COLUMN position_fingerprint_version INTEGER",
+    "ALTER TABLE conversation_sources ADD COLUMN publication_revision INTEGER NOT NULL DEFAULT 0",
+  ] },
 ];
 
 /**
