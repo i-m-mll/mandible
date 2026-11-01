@@ -16,7 +16,7 @@ import { ConversationDetail, ConversationsView, conversationLoadFailure, scopeCo
 import { chatItemIdentityKey } from '../src/conversation-control/provider-live.js';
 import type { ChatItem } from '../src/parsers/types.js';
 import { queryClient } from '../ui/src/query/client.js';
-import { conversationKeys } from '../ui/src/query/conversationKeys.js';
+import { conversationKeys, normalizeWindowTarget } from '../ui/src/query/conversationKeys.js';
 import type { ConversationTranscriptData } from '../ui/src/query/conversationData.js';
 import { applyConversationSse } from '../ui/src/query/conversationSse.js';
 import { addDraftAttachments, clearAcceptedDraft } from '../ui/src/chat/attachmentDrafts.js';
@@ -607,6 +607,35 @@ describe('compact detail pane shell', () => {
     await Promise.resolve();
     expect(screen.queryByText('Late initial loses')).toBeNull();
     expect(screen.getByText('Exact anchor wins')).toBeTruthy();
+  });
+
+  it('replaces a loaded same-chat window when a scoped hash target changes', async () => {
+    const scopedConversation = mockConversationDetail(defaultControl, []);
+    const tail = makeTranscriptBlock({ id: `cblk:${conversation.id}:99`, dag_uuid: 'tail-item', content: 'Previously loaded tail', position: 99 });
+    const exactBlock = makeTranscriptBlock({ id: `cblk:${conversation.id}:1`, dag_uuid: 'exact-item', content: 'New same-chat exact target', position: 1 });
+    const exact = deferred<ConversationPositionWindow>();
+    vi.mocked(api.getConversationWindow).mockImplementation(async (_id, request) => {
+      if ('block' in request && request.block === exactBlock.id) return exact.promise;
+      if ('position' in request) return new Promise(() => {});
+      return positionPayload(scopedConversation, [tail], { kind: 'block', revision: 100, hasBefore: true });
+    });
+    const props = { consoleSessions: [], initialConversationId: scopedConversation.id, initialSessionId: null,
+      onSelectSession: () => undefined, onNewConversation: () => undefined };
+    const params = (block: string) => ({ conversation: scopedConversation.id, block, position_space: 'fixture-space' });
+    window.history.replaceState(null, '', `#/console?${new URLSearchParams(params(tail.id))}`);
+    const view = render(<ConversationsView {...props} routeParams={params(tail.id)} />);
+    expect(await screen.findByText('Previously loaded tail')).toBeTruthy();
+
+    window.history.replaceState(null, '', `#/console?${new URLSearchParams(params(exactBlock.id))}`);
+    view.rerender(<ConversationsView {...props} routeParams={params(exactBlock.id)} />);
+    await waitFor(() => expect(api.getConversationWindow).toHaveBeenCalledWith(scopedConversation.id,
+      expect.objectContaining({ block: exactBlock.id, expected_position_space_id: 'fixture-space' })));
+    expect(screen.getByText('Previously loaded tail')).toBeTruthy();
+    await act(async () => exact.resolve(positionPayload(scopedConversation, [exactBlock], { kind: 'block', revision: 100, hasBefore: true, hasAfter: true })));
+    const targetKey = conversationKeys.window(scopedConversation.id, normalizeWindowTarget({ block: exactBlock.id, expected_position_space_id: 'fixture-space', view: 'display' }));
+    await waitFor(() => expect(queryClient.getQueryData<ConversationPositionWindow>(targetKey)?.target.block_id).toBe(exactBlock.id));
+    expect(queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(scopedConversation.id))?.active_window).toEqual({ start: 1, end: 1 });
+    expect(screen.getByText('New same-chat exact target')).toBeTruthy();
   });
 
   it('cold-opens a copied message link instead of a saved tail selection and reports clipboard failure visibly', async () => {

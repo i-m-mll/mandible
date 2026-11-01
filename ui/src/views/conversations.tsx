@@ -1332,7 +1332,16 @@ export function ConversationDetail({
   const incomingAnchorKey = anchor ? JSON.stringify(anchor) : 'initial';
   const savedReading = useMemo(() => readReadingState(conversationId), [conversationId]);
   const restoredAnchor = !anchor && !savedReading?.following ? savedReading?.anchor : null;
-  const [effectiveAnchor, setEffectiveAnchor] = useState(anchor ?? (restoredAnchor ? { position: restoredAnchor.position, expected_position_space_id: restoredAnchor.positionSpaceId } : null));
+  const restoredScope = useRef<string | null>(null);
+  const routeIdentity = JSON.stringify([conversationId, incomingAnchorKey]);
+  const routeGeneration = useRef({ identity: routeIdentity, generation: 0 });
+  if (routeGeneration.current.identity !== routeIdentity) routeGeneration.current = { identity: routeIdentity, generation: routeGeneration.current.generation + 1 };
+  const requestGeneration = routeGeneration.current.generation;
+  const initialAnchor = anchor ?? (restoredScope.current !== conversationId && restoredAnchor
+    ? { position: restoredAnchor.position, expected_position_space_id: restoredAnchor.positionSpaceId } : null);
+  const [anchorState, setAnchorState] = useState<{ identity: string; anchor: ConversationAnchor | null }>(() => ({ identity: routeIdentity, anchor: initialAnchor }));
+  const effectiveAnchor = anchorState.identity === routeIdentity ? anchorState.anchor : initialAnchor;
+  const setEffectiveAnchor = useCallback((next: ConversationAnchor | null) => setAnchorState({ identity: routeIdentity, anchor: next }), [routeIdentity]);
   const navigationRead = useRef<AbortController | null>(null);
   const protectedReading = useRef<readonly ConversationLoadedInterval[]>([]);
   const readingRequests = useRef(new ReadingWindowRequests());
@@ -1361,7 +1370,7 @@ export function ConversationDetail({
     const aggregateKey = conversationKeys.aggregate(conversationId);
     const aggregateAtStart = queryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
     const incoming = await read();
-    if (signal?.aborted || selectionRef.current.generation !== selectionGeneration) throw new CancelledError();
+    if (signal?.aborted || selectionRef.current.generation !== selectionGeneration || routeGeneration.current.generation !== requestGeneration) throw new CancelledError();
     const current = queryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
     if (current && current.publication_revision > incoming.publication_revision) throw new CancelledError();
     const aggregateAdvanced = current !== undefined
@@ -1411,7 +1420,7 @@ export function ConversationDetail({
     }
     queryClient.setQueryData(aggregateKey, finalize ? finalize(reconciled) : reconciled);
     return incoming;
-  }, [conversationId, queryClient, selectionGeneration, restoredAnchor]);
+  }, [conversationId, queryClient, selectionGeneration, restoredAnchor, requestGeneration]);
   const registerInitialRouteLoad = useRegisterInitialRouteLoad();
   const fetchConversationDetail = useCallback(
     ({ signal }: { signal: AbortSignal }) => {
@@ -1711,7 +1720,6 @@ export function ConversationDetail({
     updateRightSidebarState({ open: true });
   }, [conversationId, updateRightSidebarState]);
 
-  const restoredScope = useRef<string | null>(null);
   useEffect(() => {
     const initialSelection = restoredScope.current !== conversationId;
     restoredScope.current = conversationId;
@@ -1767,17 +1775,20 @@ export function ConversationDetail({
       ));
     }
     if (handledAnchorKeyRef.current !== incomingAnchorKey) {
-      handledAnchorKeyRef.current = incomingAnchorKey;
       const current = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversationId));
-      if (!current?.reading_command) {
-        if (current && (current.position_space_id !== payload.position_space_id || current.publication_revision !== payload.publication_revision)) {
-          void windowQuery.refetch();
-        } else {
-          void readAndReconcileWindow(windowTarget, () => Promise.resolve(payload), undefined, 'replace').catch(cause => {
-            const failure = conversationLoadFailure(cause, true, 'target');
-            if (failure && selectionRef.current.generation === selectionGeneration) setNavigationError(failure);
-          });
-        }
+      if (current && (current.position_space_id !== payload.position_space_id || current.publication_revision !== payload.publication_revision)) {
+        if (!windowQuery.isFetching) void windowQuery.refetch();
+        return;
+      }
+      handledAnchorKeyRef.current = incomingAnchorKey;
+      const command = current?.reading_command;
+      const commandMatchesRequest = command?.kind === windowTarget.kind
+        && command.target?.position === payload.target.position && command.target?.positionSpaceId === payload.position_space_id;
+      if (!commandMatchesRequest) {
+        void readAndReconcileWindow(windowTarget, () => Promise.resolve(payload), undefined, 'replace').catch(cause => {
+          const failure = conversationLoadFailure(cause, true, 'target');
+          if (failure && selectionRef.current.generation === selectionGeneration && routeGeneration.current.generation === requestGeneration) setNavigationError(failure);
+        });
       }
     }
     setNavigationError((current) => {
