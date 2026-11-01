@@ -282,7 +282,7 @@ bun run iab-preview -- --json   # an isolated preview daemon on a copied databas
 
 The gate and its admission policy are described in [test/README.md](test/README.md). Schema changes are numbered migrations in `src/db-migrations.ts`, never edits to existing ones. Do not commit `dist/` or `ui/dist/`; the post-merge hook rebuilds them. Every capability change ships with its interface-contract text in the same change, and `cli/command-syntax.json` is the one source for command synopses.
 
-The repository's own agent instructions are in [AGENTS.md](AGENTS.md) and [CLAUDE.md](CLAUDE.md).
+The repository's own agent instructions are in [AGENTS.md](AGENTS.md).
 
 ## Documentation
 
