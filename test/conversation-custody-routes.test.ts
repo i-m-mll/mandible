@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { ConversationCustodyStore } from "../src/conversations/custody-store.js";
 import { ConversationSourceStore } from "../src/conversations/source-store.js";
+import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../src/conversations/source-types.js";
+import { ClaudeParser } from "../src/parsers/claude.js";
 import { setDb, type Db } from "../src/db.js";
 import { registerConversationCustodyRoutes } from "../src/routes/conversation-custody.js";
 import { Router } from "../src/server.js";
@@ -34,15 +36,18 @@ describe("conversation custody routes", () => {
     ) VALUES (?, 'claude_code', ?, 'hash', 1, 'Title', '2026-08-17', 'session', 1, '["keep"]', 'note', '2026-08-17', '2026-08-17')`)
       .run("conv-route", sourcePath);
     sourceStore = new ConversationSourceStore(db);
+    const parsed = await new ClaudeParser().parse(sourcePath);
+    if (!parsed) throw new Error('custody fixture did not parse');
+    db.prepare('UPDATE conversations SET block_count = ?, source_hash = ?, source_mtime = ? WHERE id = ?')
+      .run(parsed.blocks.length, parsed.conversation.source_hash, parsed.conversation.source_mtime, 'conv-route');
     await sourceStore.recordConversation({
       conversationId: "conv-route",
       provider: "claude_code",
       nativeSessionId: "session",
       filePath: sourcePath,
-      parserFormat: "provider-jsonl",
-      parserVersion: "1",
-      normalizationVersion: "1",
-      redactionEpoch: 0,
+      blocks: parsed.blocks,
+      sourceSnapshot: parsed.sourceSnapshot,
+      ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
     });
     router = new Router({ clientAuth: auth });
     registerConversationCustodyRoutes(router, db, new ConversationCustodyStore(path.join(root, "custody")));
