@@ -28,13 +28,14 @@ beforeEach(() => {
 afterEach(() => { db.close(); fs.rmSync(root, { recursive: true, force: true }); });
 
 async function fileRpc(token?: string) {
+  const id = token ? "authenticated" : "anonymous";
   const transport = new FileRpcTransport({ router, dir: path.join(root, "rpc") });
   fs.mkdirSync(transport.dir, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(path.join(transport.dir, "one.request.json"), JSON.stringify({
-    id: "one", method: "POST", path: "/api/issues/test-write", body: {}, ...(token ? { capability_token: token } : {}),
+  fs.writeFileSync(path.join(transport.dir, `${id}.request.json`), JSON.stringify({
+    id, method: "POST", path: "/api/issues/test-write", body: {}, ...(token ? { capability_token: token } : {}),
   }));
   await transport.processOnce();
-  return JSON.parse(fs.readFileSync(path.join(transport.dir, "one.response.json"), "utf8")) as { status: number; body: unknown };
+  return JSON.parse(fs.readFileSync(path.join(transport.dir, `${id}.response.json`), "utf8")) as { status: number; body: unknown };
 }
 
 describe("strict client-auth boundary", () => {

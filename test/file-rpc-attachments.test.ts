@@ -287,6 +287,54 @@ describe("descriptor-bound file RPC ingestion", () => {
     expect(await processRequest("forged", new FileRpcTransport({ router: observer, dir: spool }))).toMatchObject({ status: 200, body: { content: "actual input" } });
   });
 
+  it.each(["ingest", "snapshot"])("rejects a corrupt existing CAS entry during off-thread %s integrity verification", async (endpoint) => {
+    const bytes = Buffer.from("intended immutable bytes");
+    const stored = casFile(hash(bytes)); fs.mkdirSync(path.dirname(stored), { recursive: true });
+    fs.writeFileSync(stored, "corrupt stored bytes");
+    const { id, file } = request({ endpoint: `/api/artifacts/${endpoint}` }); fs.writeFileSync(file, bytes);
+    expect(await processRequest(id)).toMatchObject({ status: 500, body: { code: "file_rpc_attachment_io_error" } });
+    expectNoArtifact(); expect(fs.readFileSync(stored, "utf8")).toBe("corrupt stored bytes");
+  });
+
+  it("does not trust client JSON materialization claims to skip CAS integrity", async () => {
+    const digest = hash("expected bytes"); const stored = casFile(digest);
+    fs.mkdirSync(path.dirname(stored), { recursive: true }); fs.writeFileSync(stored, "corrupt");
+    const response = await router.invoke({ method: "POST", url: "/api/artifacts/ingest", transport: "http", body: {
+      sha256: digest, precomputed_sha256: digest, cas_materialized: true,
+      verified_cas_result: { hash: digest, root: cas, verified: true },
+    } });
+    expect(response.status).toBe(400); expectNoArtifact();
+  });
+
+  it.each([false, true])("does not redispatch a non-idempotent request after response consumption (restart=%s)", async (restart) => {
+    let mutations = 0; const nonIdempotent = new Router();
+    nonIdempotent.post("/api/mutate", (_req, res) => res.json({ mutations: ++mutations }), {
+      fileRpc: "allow", operation: { id: "mutate", effects: ["ledger:write"], requestSchema: null, reportingCategory: null },
+    });
+    const id = "once"; const requestFile = path.join(spool, `${id}.request.json`); const responseFile = path.join(spool, `${id}.response.json`);
+    fs.writeFileSync(requestFile, JSON.stringify({ id, method: "POST", path: "/api/mutate", body: {} }));
+    const unlink = fs.unlinkSync;
+    vi.spyOn(fs, "unlinkSync").mockImplementation((p) => {
+      if (p === requestFile) throw Object.assign(new Error("request cleanup denied"), { code: "EACCES" });
+      return unlink(p);
+    });
+    let transport = new FileRpcTransport({ router: nonIdempotent, dir: spool, responseTtlMs: 1 });
+    await transport.processOnce();
+    const terminal = JSON.parse(fs.readFileSync(responseFile, "utf8")); expect(terminal.status).toBe(200);
+    fs.utimesSync(responseFile, 0, 0);
+    if (restart) transport = new FileRpcTransport({ router: nonIdempotent, dir: spool, responseTtlMs: 1 });
+    await transport.processOnce();
+    expect(JSON.parse(fs.readFileSync(responseFile, "utf8"))).toEqual(terminal);
+    unlink(responseFile);
+    if (restart) transport = new FileRpcTransport({ router: nonIdempotent, dir: spool });
+    await transport.processOnce();
+    expect(JSON.parse(fs.readFileSync(responseFile, "utf8"))).toEqual(terminal);
+    expect(mutations).toBe(1);
+    vi.mocked(fs.unlinkSync).mockRestore(); await transport.processOnce();
+    expect(fs.existsSync(requestFile)).toBe(false); expect(fs.existsSync(requestFile + ".terminal")).toBe(false);
+    expect(mutations).toBe(1);
+  });
+
   it("borrows without transferring ownership of a descriptor to Bun workers", async () => {
     const { id, file } = request(); fs.writeFileSync(file, "worker lifetime");
     const invoke = router.invoke.bind(router);
@@ -301,4 +349,35 @@ describe("descriptor-bound file RPC ingestion", () => {
     });
     expect((await processRequest(id)).status).toBe(200);
   });
+});
+
+it.each(["ingest", "snapshot"])("review: %s attachment is never reread on the daemon thread", async (endpoint) => {
+  const { id, file } = request({ endpoint: `/api/artifacts/${endpoint}` });
+  fs.writeFileSync(file, Buffer.alloc(12 * 1024 * 1024, 73));
+  const read = fs.readFileSync;
+  const mainThreadReads: string[] = [];
+  vi.spyOn(fs, "readFileSync").mockImplementation(((p, ...args) => {
+    if (typeof p === "string" && p.startsWith(cas + path.sep)) mainThreadReads.push(p);
+    return read(p, ...args);
+  }) as typeof fs.readFileSync);
+  expect((await processRequest(id)).status).toBe(200);
+  expect(mainThreadReads).toEqual([]);
+});
+
+it("review: request cleanup failure does not overwrite a successful terminal response on the next poll", async () => {
+  const { id, file } = request(); fs.writeFileSync(file, "committed once");
+  const requestFile = path.join(spool, `${id}.request.json`);
+  const responseFile = path.join(spool, `${id}.response.json`);
+  const unlink = fs.unlinkSync;
+  vi.spyOn(fs, "unlinkSync").mockImplementation((p) => {
+    if (p === requestFile) throw Object.assign(new Error("transient request cleanup failure"), { code: "EACCES" });
+    return unlink(p);
+  });
+  const transport = new FileRpcTransport({ router, dir: spool, logger: vi.fn() });
+  await transport.processOnce();
+  const committed = JSON.parse(fs.readFileSync(responseFile, "utf8"));
+  expect(committed.status).toBe(200);
+  vi.mocked(fs.unlinkSync).mockRestore();
+  await transport.processOnce();
+  expect(JSON.parse(fs.readFileSync(responseFile, "utf8"))).toEqual(committed);
 });

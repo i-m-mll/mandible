@@ -18,6 +18,14 @@ export interface MaterializedArtifactFile {
   wrote: boolean;
 }
 
+const verifiedCasResults = new WeakMap<MaterializedArtifactFile, { root: string; hash: string }>();
+
+export function isVerifiedArtifactCasResult(value: unknown, root: string, hash: string): boolean {
+  if (!value || typeof value !== "object") return false;
+  const verified = verifiedCasResults.get(value as MaterializedArtifactFile);
+  return verified?.root === root && verified.hash === hash;
+}
+
 interface PoolJobRequest {
   id: number;
   source: { kind: "path"; path: string } | { kind: "attachment"; fd: number; identity: AttachmentIdentity; name: string };
@@ -78,6 +86,13 @@ function handle(request) {
         try { fs.unlinkSync(tmp); } catch { /* best effort */ }
         if (!fs.existsSync(target)) throw error;
       }
+    }
+    const storedBefore = fs.statSync(target);
+    const stored = fs.readFileSync(target);
+    const storedAfter = fs.statSync(target);
+    if (!storedBefore.isFile() || !same(storedBefore, storedAfter) || stored.length !== storedAfter.size
+      || crypto.createHash("sha256").update(stored).digest("hex") !== hash) {
+      throw new Error("Stored bytes do not match sha256");
     }
   }
   return { hash, size: after.size, mtimeMs: after.mtimeMs, ino: after.ino, wrote };
@@ -140,7 +155,13 @@ class ArtifactIngestPool {
     const job = this.pending.get(message.id);
     if (job) {
       this.pending.delete(message.id);
-      if (message.ok) job.resolve(message.value);
+      if (message.ok) {
+        Object.freeze(message.value);
+        if (job.request.write && job.request.artifactRoot) {
+          verifiedCasResults.set(message.value, { root: job.request.artifactRoot, hash: message.value.hash });
+        }
+        job.resolve(message.value);
+      }
       else job.reject(job.request.source.kind === "attachment"
         ? new ArtifactAttachmentError(message.changed ? "file_rpc_attachment_changed" : "file_rpc_attachment_io_error", message.changed ? 409 : 500, job.request.source.name)
         : new Error(message.error));

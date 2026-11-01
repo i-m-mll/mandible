@@ -35,7 +35,7 @@ import {
   readArtifactMaterial
 } from "./artifact-materialization.js";
 import { isOpenedArtifactAttachment, type OpenedArtifactAttachment } from "./artifact-attachment.js";
-import { materializeArtifactFileIntoCas, readAndHashArtifactFile } from "./artifact-ingest-pool.js";
+import { materializeArtifactFileIntoCas, readAndHashArtifactFile, isVerifiedArtifactCasResult, type MaterializedArtifactFile } from "./artifact-ingest-pool.js";
 import type {
   ArtifactAliasRecord,
   ArtifactBlobRecord,
@@ -125,8 +125,10 @@ interface ProviderInput {
 }
 
 const VERIFIED_GIT_DESCRIPTOR = Symbol("verified-git-descriptor");
+const VERIFIED_CAS_RESULT = Symbol("verified-cas-result");
 
 interface ArtifactInput {
+  [VERIFIED_CAS_RESULT]?: MaterializedArtifactFile;
   [VERIFIED_GIT_DESCRIPTOR]?: true;
   artifact_id?: string;
   provider_id?: string;
@@ -1990,7 +1992,7 @@ export async function planLocalArtifactPathAsync(db: Db, input: LocalArtifactPat
 // managed custody), or nothing at all (Git custody keeps the exact committed locator).
 type LocalArtifactBytesDelivery =
   | { kind: "buffer"; buffer: Buffer }
-  | { kind: "cas" }
+  | { kind: "cas"; materialized: MaterializedArtifactFile }
   | { kind: "none" };
 
 function ingestFromLocalPlan(
@@ -2040,7 +2042,7 @@ function ingestFromLocalPlan(
     metadata,
     pinned: input.pinned,
     ...(delivery.kind === "buffer" ? { content_buffer: delivery.buffer } : {}),
-    ...(delivery.kind === "cas" ? { cas_materialized: true } : {}),
+    ...(delivery.kind === "cas" ? { cas_materialized: true, [VERIFIED_CAS_RESULT]: delivery.materialized } : {}),
   }, now, artifactRoot);
 
   if (input.issue) {
@@ -2107,7 +2109,7 @@ export async function registerLocalArtifactPathAsync(
   const materialized = needsBytes
     ? await materializeArtifactFileIntoCas(core.resolvedPath, artifactRoot)
     : await readAndHashArtifactFile(core.resolvedPath);
-  const delivery: LocalArtifactBytesDelivery = needsBytes ? { kind: "cas" } : { kind: "none" };
+  const delivery: LocalArtifactBytesDelivery = needsBytes ? { kind: "cas", materialized } : { kind: "none" };
   return ingestFromLocalPlan(db, input, core, materialized.hash, materialized.size, now, artifactRoot, delivery);
 }
 
@@ -2347,6 +2349,7 @@ export async function snapshotArtifactBytesAsync(
     sha256: hash,
     precomputed_sha256: hash,
     cas_materialized: true,
+    [VERIFIED_CAS_RESULT]: materialized,
     size_bytes: materialized.size,
     custody_mode: custodyMode,
     availability: "present",
@@ -2775,7 +2778,8 @@ export function ingestArtifact(
     retainArtifactCommit(db,{project:locator.repo_id,commit:locator.commit,path:locator.path,sha256:hash});
   } else {
     if (!hasBytes && !fs.existsSync(filePath)) throw new Error('Managed custody requires stored bytes');
-    if (hashBuffer(fs.readFileSync(filePath)) !== hash) throw new Error('Stored bytes do not match sha256');
+    if (!isVerifiedArtifactCasResult(input[VERIFIED_CAS_RESULT], artifactRoot, hash)
+      && hashBuffer(fs.readFileSync(filePath)) !== hash) throw new Error('Stored bytes do not match sha256');
     uri = `file://${filePath}`;
   }
   const availability = "present" as const;
@@ -2916,6 +2920,7 @@ export async function ingestArtifactAsync(
     ...rest,
     precomputed_sha256: materialized.hash,
     cas_materialized: true,
+    [VERIFIED_CAS_RESULT]: materialized,
     size_bytes: input.size_bytes ?? materialized.size,
   }, now, artifactRoot);
 }

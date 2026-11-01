@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { acquireArtifactAttachment, closeArtifactAttachment, ArtifactAttachmentError, type OpenedArtifactAttachment } from "./artifact-attachment.js";
+import { acquireArtifactAttachment, borrowArtifactAttachment, closeArtifactAttachment, ArtifactAttachmentError, type OpenedArtifactAttachment } from "./artifact-attachment.js";
 import os from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
@@ -62,6 +62,7 @@ export class FileRpcTransport {
   private timer: NodeJS.Timeout | null = null;
   private processing = false;
   private readonly activeFiles = new Set<string>();
+  private readonly retainedResponses = new Set<string>();
 
   constructor(options: FileRpcTransportOptions) {
     this.router = options.router;
@@ -97,13 +98,14 @@ export class FileRpcTransport {
     this.processing = true;
     try {
       ensurePrivateDir(this.dir);
-      this.cleanupExpiredResponses();
+      this.retainedResponses.clear();
       const files = fs.readdirSync(this.dir)
         .filter((file) => file.endsWith(".request.json"))
         .sort();
       for (const file of files) {
         await this.processFile(path.join(this.dir, file));
       }
+      this.cleanupExpiredResponses();
     } finally {
       this.processing = false;
     }
@@ -120,17 +122,35 @@ export class FileRpcTransport {
     let responded = false;
     const startedAt = performance.now();
     try {
+      const terminalPath = `${requestPath}.terminal`;
+      if (fs.existsSync(terminalPath)) {
+        const terminal = this.readSpoolJson(terminalPath) as { id: string } & RouterInvokeResponse;
+        requestId = safeRequestId(typeof terminal.id === "string" ? terminal.id : undefined, requestPath);
+        responded = true;
+        this.publishResponse(requestId, terminal);
+        try {
+          const request = JSON.parse(fs.readFileSync(requestPath, "utf8")) as FileRpcRequest;
+          this.collectAttachmentCleanup(request, attachmentPaths);
+        } catch (error) {
+          if (!(error instanceof SyntaxError)) throw error;
+        }
+        this.retireRequest(requestPath, requestId);
+        return;
+      }
       const request = JSON.parse(fs.readFileSync(requestPath, "utf8")) as FileRpcRequest;
       requestId = safeRequestId(request.id, requestPath);
+      if (fs.existsSync(path.join(this.dir, `${requestId}.response.json`))) {
+        const response = this.readSpoolJson(path.join(this.dir, `${requestId}.response.json`)) as RouterInvokeResponse;
+        this.writeResponse(requestPath, requestId, response);
+        this.collectAttachmentCleanup(request, attachmentPaths);
+        this.retireRequest(requestPath, requestId);
+        return;
+      }
       const method = typeof request.method === "string" ? request.method.toUpperCase() : "GET";
       const requestUrl = buildRequestUrl(request);
       const pathname = new URL(requestUrl, "http://localhost").pathname;
       const allowed = this.router.resolveFileRpcPolicy(method, requestUrl);
-      if (!allowed && request.attachments && typeof request.attachments === "object") {
-        for (const [field, name] of Object.entries(request.attachments)) {
-          if (ATTACHMENT_TARGET_FIELDS.has(field) && typeof name === "string" && isSafeAttachmentName(name)) attachmentPaths.push(path.join(this.dir, name));
-        }
-      }
+      if (!allowed) this.collectAttachmentCleanup(request, attachmentPaths);
       const body = allowed ? this.resolveRequestBody(request, attachmentPaths, attachments) : undefined;
       const response = await this.dispatch(
         method,
@@ -140,9 +160,9 @@ export class FileRpcTransport {
         request.capability_token,
         Object.hasOwn(request, "request_origin") ? { request_origin: request.request_origin } : {},
       );
-      this.writeResponse(requestId, response);
+      this.writeResponse(requestPath, requestId, response);
       responded = true;
-      this.cleanupEntry(requestPath);
+      this.retireRequest(requestPath, requestId);
       this.logger?.("info", "file_rpc_request", {
         subsystem: "file-rpc",
         request_id: requestId,
@@ -155,12 +175,14 @@ export class FileRpcTransport {
         duration_ms: Math.round(performance.now() - startedAt),
       });
     } catch (error) {
-      if (!responded) {
+      if (!responded && !fs.existsSync(`${requestPath}.terminal`)) {
         const status = error instanceof ArtifactAttachmentError ? error.status : error instanceof SyntaxError ? 400 : 500;
         const code = error instanceof ArtifactAttachmentError ? error.code : status === 400 ? "bad_file_rpc_request" : "file_rpc_internal_error";
-        this.writeResponse(requestId, { status, body: { error: code, code, ...(error instanceof ArtifactAttachmentError && error.attachment ? { attachment: error.attachment } : {}) } });
-        this.cleanupEntry(requestPath);
+        this.writeResponse(requestPath, requestId, { status, body: { error: code, code, ...(error instanceof ArtifactAttachmentError && error.attachment ? { attachment: error.attachment } : {}) } });
+        this.retireRequest(requestPath, requestId);
         this.logger?.("warn", "file_rpc_request", { request_id: requestId, file: path.basename(requestPath), status, code });
+      } else if (!responded) {
+        this.logger?.("warn", "file_rpc_response_publish_failed", { request_id: requestId, file: path.basename(requestPath) });
       }
     } finally {
       for (const attachment of attachments) {
@@ -173,12 +195,28 @@ export class FileRpcTransport {
     }
   }
 
-  private cleanupEntry(entry: string): void {
+  private collectAttachmentCleanup(request: FileRpcRequest, paths: string[]): void {
+    if (!request.attachments || typeof request.attachments !== "object") return;
+    for (const [field, name] of Object.entries(request.attachments)) {
+      if (ATTACHMENT_TARGET_FIELDS.has(field) && typeof name === "string" && isSafeAttachmentName(name)) paths.push(path.join(this.dir, name));
+    }
+  }
+
+  private retireRequest(requestPath: string, requestId: string): void {
+    if (this.cleanupEntry(requestPath)) {
+      this.cleanupEntry(`${requestPath}.terminal`);
+      this.retainedResponses.delete(requestId);
+    } else this.retainedResponses.add(requestId);
+  }
+
+  private cleanupEntry(entry: string): boolean {
     try { fs.unlinkSync(entry); } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         this.logger?.("warn", "file_rpc_cleanup_failed", { file: path.basename(entry), operation: "unlink" });
+        return false;
       }
     }
+    return true;
   }
 
   private resolveRequestBody(request: FileRpcRequest, paths: string[], opened: OpenedArtifactAttachment[]): unknown {
@@ -240,19 +278,53 @@ export class FileRpcTransport {
     }
   }
 
-  private writeResponse(id: string, response: RouterInvokeResponse): void {
+  private writeResponse(requestPath: string, id: string, response: RouterInvokeResponse): void {
+    const terminalPath = `${requestPath}.terminal`;
+    this.writeSpoolJson(terminalPath, { id, ...response });
+    this.publishResponse(id, response);
+  }
+
+  private readSpoolJson(entry: string): unknown {
+    const source = acquireArtifactAttachment(this.dir, path.basename(entry));
+    try { return JSON.parse(fs.readFileSync(borrowArtifactAttachment(source).fd, "utf8")); }
+    finally { closeArtifactAttachment(source); }
+  }
+
+  private writeSpoolJson(entry: string, value: unknown): void {
+    const tempPath = `${entry}.tmp-${crypto.randomUUID()}`;
+    let fd: number | undefined;
+    let owned = false;
+    try {
+      fd = fs.openSync(tempPath, "wx", 0o600);
+      owned = true;
+      fs.writeFileSync(fd, JSON.stringify(value));
+      fs.closeSync(fd);
+      fd = undefined;
+      fs.renameSync(tempPath, entry);
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd);
+      if (owned) this.cleanupEntry(tempPath);
+    }
+  }
+
+  private publishResponse(id: string, response: RouterInvokeResponse): void {
     const finalPath = path.join(this.dir, `${id}.response.json`);
-    const tempPath = `${finalPath}.tmp-${process.pid}`;
-    fs.writeFileSync(tempPath, JSON.stringify({ id, ...response }), { mode: 0o600 });
-    fs.renameSync(tempPath, finalPath);
+    if (fs.existsSync(finalPath)) return;
+    this.writeSpoolJson(finalPath, { id, ...response });
   }
 
   private cleanupExpiredResponses(): void {
     const cutoff = Date.now() - this.responseTtlMs;
     for (const file of fs.readdirSync(this.dir)) {
+      if (file.endsWith(".request.json.terminal")) {
+        const requestPath = path.join(this.dir, file.slice(0, -".terminal".length));
+        if (!fs.existsSync(requestPath)) this.cleanupEntry(path.join(this.dir, file));
+        continue;
+      }
       if (!file.endsWith(".response.json")) {
         continue;
       }
+      if (this.retainedResponses.has(file.slice(0, -".response.json".length))) continue;
       const candidate = path.join(this.dir, file);
       try {
         const stat = fs.statSync(candidate);

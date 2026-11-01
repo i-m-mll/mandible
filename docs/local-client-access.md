@@ -36,7 +36,11 @@ On supported POSIX runtimes, acquisition requires
 `O_RDONLY | O_NOFOLLOW | O_NONBLOCK`, then `fstat` verifies a regular file owned
 by the current OS user with one link. The bounded artifact worker borrows that
 exact descriptor for reads, hashing and CAS materialization. It never reopens
-the published name or a descriptor filesystem path. The transport closes the
+the published name or a descriptor filesystem path. Stored CAS integrity is
+verified in that worker, including when the destination already exists. Only
+an in-process result bound to the CAS root and hash authorizes registration
+without rereading or hashing full bytes on the daemon thread; JSON flags do not
+provide that authority. The transport closes the
 descriptor after consumption finishes or the worker terminates. Identity,
 length, size and timestamps are checked around reading; publication must remain
 immutable after the request becomes visible. A replaced name can yield original
@@ -61,7 +65,12 @@ basename. Cleanup unlinks the owned entry and never recursively removes a
 substituted directory or follows a symlink. Cleanup failure is logged as
 `file_rpc_cleanup_failed` without replacing the terminal response. Denied routes
 never acquire or materialize attachments. Stable request IDs, response retention,
-timeouts and replay behavior are unchanged. Attachments add no byte ceiling;
+timeouts and replay behavior are unchanged. A request-bound terminal receipt is
+published before its response and retained until request retirement succeeds.
+Later polls and daemon restarts use that exact result without redispatch, even
+if the client consumed the response. Response expiry waits for the retained
+request to retire; orphan receipts are removed when their request is absent.
+Attachments add no byte ceiling;
 current consumer limits and bounded worker concurrency continue to apply.
 
 Co-Authored-By: Codex (GPT) <codex@openai.com>
