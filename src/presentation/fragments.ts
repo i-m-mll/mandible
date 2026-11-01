@@ -12,7 +12,7 @@ export type DisplayFragment = {
 };
 
 /** Exact semantic pairing/expansion followed by source-boundary splitting for measured members. */
-export function projectDisplayFragments(events: readonly StreamEvent[]): DisplayFragment[] {
+export function projectDisplayFragments(events: readonly StreamEvent[], standaloneItems = false): DisplayFragment[] {
   const sources = new Map<string, PersistedBlockSource>();
   for (const event of events) {
     if (event.type !== 'chat:item') continue;
@@ -24,7 +24,7 @@ export function projectDisplayFragments(events: readonly StreamEvent[]): Display
       sources.set(canonical.source.blockId, canonical.source);
     }
   }
-  const nodes = expandInlineActivities(buildStreamState([...events]).nodes);
+  const nodes = expandInlineActivities(buildStreamState([...events], standaloneItems).nodes);
   const fragments: DisplayFragment[] = [];
   const ordinals = new Map<string, number>();
   const emit = (node: RenderNode, source: PersistedBlockSource | undefined, kind: string, paired: number[] = [], memberKey = node.key): void => {

@@ -1,3 +1,4 @@
+import { indexDisplayFragments } from './display-context.js';
 import { preparePositionSpace, type PositionSpacePublication } from './position-space.js';
 import { openLogicalSource, canonicalSourcePath, type LogicalSourceHandle } from "./logical-source.js";
 import { createHash } from "node:crypto";
@@ -569,13 +570,15 @@ export class ConversationSourceStore {
         };
       });
       const priorCount = priorId ? cache.blockCount(input.conversationId, priorId, input) : 0;
+      const displayParents = new Map(rows.map(row => [row.position, row.parentPosition]));
       if (priorId && priorCount === null) throw new ConversationSourceChangedError("append structure generation is missing");
       cache.replaceRows({
         conversation_id: input.conversationId, source_version_id: versionId,
         parser_format: input.parserFormat, parser_version: input.parserVersion,
         normalization_version: input.normalizationVersion, redaction_epoch: input.redactionEpoch,
         block_count: input.blockCount ?? (priorCount ?? 0) + rows.length,
-      }, rows, tools, priorId);
+      }, rows, tools, priorId, indexDisplayFragments(input.blocks, input.conversationId,
+        position => displayParents.get(position) ?? null));
       cache.prune(input.conversationId, existingSource?.current_version_id ?? null);
     }
     let proof: LogicalSourceHandle | undefined;

@@ -1689,6 +1689,7 @@ export function ConversationDetail({
       historyLoading: edgeLoading !== null,
       total: aggregate.total,
       readingContext: aggregate.readingContext,
+      displayContext: aggregate.displayContext,
       loadedIntervals: aggregate.loaded_intervals,
       hasOlder: !aggregate.start_reached,
       hasNewer: !aggregate.end_reached,

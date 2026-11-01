@@ -178,6 +178,20 @@ export class ConversationSourceReader {
     return this.withSession(conversationId, session => this.readPageInSession(conversationId, options, session), options);
   }
 
+  async readPositions(conversationId: string, positions: readonly number[], options: SourceScanOptions = {}): Promise<SourceReadResult<SourceBackedConversationBlock[]>> {
+    return this.withSession(conversationId, async session => {
+      const blocks: SourceBackedConversationBlock[] = [];
+      for (const position of [...new Set(positions)].sort((a, b) => a - b)) {
+        const page = await this.readPageInSession(conversationId, { offset: position, limit: 1 }, session);
+        if (page.status !== 'source') return page;
+        const block = page.value.blocks[0];
+        if (block?.position !== position) return { status: 'not_found', reason: 'Display summary source is outside the captured snapshot.' };
+        blocks.push(block);
+      }
+      return { status: 'source', sourceVersionId: session.pinnedVersion!.id, value: blocks };
+    }, options);
+  }
+
   private async readPageInSession(
     conversationId: string,
     options: { offset?: number; limit?: number; types?: readonly string[]; maxBatchBytes?: number },
