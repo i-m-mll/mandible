@@ -1,3 +1,4 @@
+import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { resolveAmbientProviderIdentity } from "../src/ambient-provider-identity.js";
@@ -159,10 +160,10 @@ describe("session and work-unit ownership", () => {
     }
   });
 
-  it("pins work-unit ownership independently of mutable provider metadata", async () => {
+  it("refuses an implicit responsibility change through activation", async () => {
     setupAgentUsers(db);
     const codex = getUserBySlug(db, "codex")!;
-    const router = new Router();
+    const router = authenticatedTestRouter(codex);
     registerWorkUnitRoutes(router, {} as never, vi.fn());
 
     const claim = await router.invoke({
@@ -171,20 +172,22 @@ describe("session and work-unit ownership", () => {
       ambient_identity: { provider: "codex", provider_session_id: "codex-thread-1" },
       body: { issue_id: "ownership-issue", repo_id: "mandible", branch: "feature/owner" },
     });
+    expect(claim.status).toBe(201);
     const id = (claim.body as { id: string }).id;
     expect(owner("work_units", id)).toBe(codex.id);
 
-    await router.invoke({
+    const activation = await router.invoke({
       method: "POST",
       url: "/api/work-units/activate",
       ambient_identity: { provider: "claude", provider_session_id: "replacement-thread" },
       body: { issue_id: "ownership-issue", repo_id: "mandible", branch: "feature/owner" },
     });
+    expect(activation.status).toBe(409);
     expect(db.prepare(
       "SELECT owner_user_id, provider_session_id FROM work_units WHERE id = ?",
     ).get(id)).toEqual({
       owner_user_id: codex.id,
-      provider_session_id: "replacement-thread",
+      provider_session_id: "codex-thread-1",
     });
   });
 
@@ -201,7 +204,7 @@ describe("session and work-unit ownership", () => {
       provider: "gemini",
       provider_session_id: "gemini-1",
     });
-    expect(resolveAmbientProviderIdentity({ CODEX_THREAD_ID: "codex-1", CODEX_SESSION_ID: "codex-2" })).toBeNull();
+    expect(resolveAmbientProviderIdentity({ CODEX_THREAD_ID: "codex-1", CODEX_SESSION_ID: "inherited-parent" })).toEqual({ provider: "codex", provider_session_id: "codex-1" });
     expect(resolveAmbientProviderIdentity({ CODEX_THREAD_ID: "codex-1", CLAUDE_SESSION_ID: "claude-1" })).toBeNull();
   });
 });

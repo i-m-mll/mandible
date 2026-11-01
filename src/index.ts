@@ -17,7 +17,6 @@ import {
 } from "./daemon-log.js";
 import {
   openOperationalLogStore,
-  startOperationalLogCopyForward,
   type OperationalLogStore,
 } from "./operational-log-db.js";
 import { allowsOperationalMutations, resolveInstanceInfo } from "./instance-policy.js";
@@ -724,9 +723,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
 
   // Issue: a8d8a31 — prune persisted daemon logs after readiness in bounded,
   // paced passes. Disk-reclaiming VACUUM remains an explicit maintenance task.
-  const daemonLogCopyForward = operationalLogStore
-    ? startOperationalLogCopyForward(operationalLogStore, logger)
-    : { stop: () => undefined };
   const daemonLogRetention = operationalLogStore
     ? startDaemonLogRetention(operationalLogStore.db, logger, { settingsDb: db })
     : { stop: () => undefined };
@@ -756,7 +752,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     await stopIngestionGracefully();
     stopTrashGcScheduler();
     stopManagedReminderScheduler();
-    daemonLogCopyForward.stop();
     await daemonLogRetention.stop();
     await workUnitReconciler.stop();
     detachChildRetention();

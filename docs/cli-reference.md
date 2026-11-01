@@ -11,8 +11,8 @@ mandible umbrella status <id> [--deep] [--json]
 mandible umbrella adopt <umbrella> <children...> [--json]
 mandible umbrella manifest refresh <umbrella> [--json]
 mandible issue parent-role status <umbrella> [--json]
-mandible issue parent-role assume <umbrella> [--session S] [--mechanism M] [--override] [--json]
-mandible issue parent-role release <umbrella> [--override] [--json]
+mandible issue parent-role assume <umbrella> --reason T --expected-checkpoint ID|none [--session S] [--json]
+mandible issue parent-role release <umbrella> --reason T --expected-checkpoint ID|none [--json]
 mandible issue triage [--status open|closed|all] [--resolution R] [--kind K] [--priority P] [--label L] [--repo R] [--stale-days N] [--limit N] [--json]
 mandible issue search <words>... [--repo R] [--status open|closed|all] [--limit N] [--json]  # titles, bodies, comments; all projects
 mandible issue heads <id>... [--json]
@@ -65,9 +65,10 @@ mandible work-unit claim --issue I --repo R [--branch B] [--parent-branch B] [--
 mandible work-unit activate --issue I --repo R [--branch B] [--session S] [--worker] [--graceful]
 mandible work-unit find --repo R (--issue I | --branch B) [--state open|committed|resolved|abandoned] [--graceful]
 mandible work-unit resolve --id WU --expected-generation N [--auth-request-id AR] [--graceful]
-mandible work-unit release --repo R --branch B --expected-generation N [--graceful]
-mandible work-unit custody-assume --id WU --expected-generation N --reason T [--parent-role-checkpoint C] [--request-approval]
-mandible work-unit custody-check --repo R --branch B [--issue I] [--json]   # exit 0 clear, 3 held, 4 takeover available
+mandible work-unit abandon --id WU --expected-generation N --reason T [--graceful]
+mandible work-unit release --repo R --branch B --expected-generation N --reason T [--graceful]
+mandible work-unit custody-assume --id WU --expected-generation N --reason T [--session S]
+mandible work-unit custody-check --repo R --branch B [--issue I] [--json]   # exit 0 held or initially claimable, 4 explicit assumption required
 mandible issue title <id> [--json] [--graceful]
 mandible issue-file path [cwd]
 mandible issue-file read [cwd]
@@ -82,7 +83,7 @@ mandible logs missing  [--provider ...] [--json]
 mandible logs orphans  [--provider ...] [--json]
 mandible logs capabilities [--provider codex|claude_code|gemini] [--json]
 
-## CONVERSATIONS  (DB-backed)
+## CONVERSATIONS  (ledger metadata and provider-native content)
 mandible conversations list [--provider claude|codex|gemini|all] [--since Nd] [--limit N] [--json]
 mandible conversations show <id|session-id> [--json] [--blocks]
 mandible conversations blocks <id|session-id> [--role R] [--type T] [--content TEXT] [--limit N] [--offset N] [--json]

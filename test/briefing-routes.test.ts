@@ -6,6 +6,10 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../src/sse.js", () => ({ broadcast: vi.fn() }));
+vi.mock("../src/client-auth/operator-presence.js", () => ({
+  operatorPresenceIdentity: (req: { client_identity?: ResolvedClientIdentity }) =>
+    req.client_identity?.credential_id === "operator-presence-fixture" ? { ...req.client_identity, credential_id: null } : null,
+}));
 
 import { setSetting } from "../src/client-auth/settings-kv.js";
 import { type Db } from "../src/db.js";
@@ -32,11 +36,12 @@ class SlugGate implements ClientAuthGate {
   authenticate(credential: string | null | undefined): ResolvedClientIdentity | null {
     if (!credential) return null;
     const ephemeral = credential.startsWith("session:");
-    const slug = ephemeral ? credential.slice(8) : credential;
+    const presence = credential.startsWith("presence:");
+    const slug = ephemeral ? credential.slice(8) : presence ? credential.slice(9) : credential;
     const user = this.db().prepare("SELECT id, slug FROM users WHERE slug = ?")
       .get(slug) as { id: string; slug: string } | undefined;
     return user ? { user_id: user.id, slug: user.slug, method: ephemeral ? "ephemeral" : "api_token",
-      credential_id: null, source: "in_process", effect_ceiling: PRODUCTION_EFFECTS } : null;
+      credential_id: presence ? "operator-presence-fixture" : null, source: "in_process", effect_ceiling: PRODUCTION_EFFECTS } : null;
   }
   mode() { return "compat" as const; }
   recordUnattributedWrite() {}
@@ -253,7 +258,7 @@ describe("plural Briefing routes", () => {
     expect(db.prepare("SELECT COUNT(*) AS n FROM briefing_destination_mutations WHERE actor_user_id = ?")
       .get(db.prepare("SELECT id FROM users WHERE slug = 'agent-schedule'").get()?.id)).toEqual({ n: 5 });
   });
-  it("guards deterministic destination-route plan, apply, replay, and inspect behind the operator token", async () => {
+  it("authorizes destination-route plan, apply, replay, and inspection by publisher and project", async () => {
     setSetting(db, "user.operator_id", humanId);
     const source = path.join(root, "destination.md");
     fs.writeFileSync(source, "# Digest\n\n## Since last review\n");
@@ -291,7 +296,7 @@ describe("plural Briefing routes", () => {
       body: manifest })).toMatchObject({ status: 401, body: { code: "authentication_required" } });
     expect(await router.invoke({ method: "POST", url: "/api/briefing-destination-routes/plan",
       credential: "session:human", body: manifest })).toMatchObject({ status: 403,
-      body: { code: "briefing_destination_route_credential_required" } });
+      body: { code: "briefing_destination_actor_required" } });
     expect(await router.invoke({ method: "POST", url: "/api/briefing-destination-routes/plan",
       credential: "agent-schedule", body: manifest })).toMatchObject({ status: 200,
       body: { changed: true } });
@@ -321,7 +326,7 @@ describe("plural Briefing routes", () => {
     }] } });
   });
 
-  it("archives and restores a group through durable authorization without cascading member lifecycle", async () => {
+  it("archives and restores a group through publisher authorization without cascading member lifecycle", async () => {
     setSetting(db, "user.operator_id", humanId);
     const source = path.join(root, "group.md");
     fs.writeFileSync(source, "# Group\n");
@@ -335,8 +340,6 @@ describe("plural Briefing routes", () => {
     const bundle = createBriefingBundle(db, { name: "Base", briefingRefs: [published.briefing_id], viewer }, 110);
     const group = createBriefingGroup(db, { key: "archive-me", name: "Archive me", currentBundleRef: bundle.id,
       bundleRefs: [], viewer }, 120);
-    expect(await router.invoke({ method: "POST", url: `/api/briefing-groups/${group.id}/archive`,
-      credential: "session:agent-schedule", body: {} })).toMatchObject({ status: 403 });
     expect(await router.invoke({ method: "POST", url: `/api/briefing-groups/${group.id}/archive`,
       credential: "agent-schedule", body: {} })).toMatchObject({ status: 200, body: {
       changed: true, group: { id: group.id, archived_at: expect.any(Number), current: { id: bundle.id } },
@@ -371,10 +374,6 @@ describe("plural Briefing routes", () => {
     expect(await router.invoke({ method: "PATCH", url: `/api/briefings/${briefingId}`, credential: "reviewer",
       body: { title: "Updated policy" } })).toMatchObject({
       status: 403, body: { code: "briefing_title_operator_required" },
-    });
-    expect(await router.invoke({ method: "PATCH", url: `/api/briefings/${briefingId}`,
-      credential: "session:agent-schedule", body: { title: "Updated policy" } })).toMatchObject({
-      status: 403, body: { code: "briefing_title_publisher_credential_required" },
     });
     setSetting(db, "user.operator_id", "");
     expect(await router.invoke({ method: "PATCH", url: `/api/briefings/${briefingId}`,
@@ -463,7 +462,7 @@ describe("plural Briefing routes", () => {
     });
   });
 
-  it("publishes an exact-version Briefing from a durable agent for the configured human operator", async () => {
+  it("publishes an exact-version Briefing from an admitted agent for the configured human operator", async () => {
     const source = path.join(root, "AGENTS.review.md");
     fs.writeFileSync(source, "# Version one\n");
     const firstVersion = recordArtifactVersion(db, { source_kind: "local_only", path: source,
@@ -478,7 +477,7 @@ describe("plural Briefing routes", () => {
       .toMatchObject({ status: 401 });
     expect(await router.invoke({ method: "POST", url: "/api/briefings", body: request,
       credential: "session:agent-schedule" })).toMatchObject({
-      status: 403, body: { code: "briefing_publisher_credential_required" },
+      status: 403, body: { code: "briefing_publication_operator_required" },
     });
     expect(await router.invoke({ method: "POST", url: "/api/briefings", body: request,
       credential: "agent-schedule" })).toMatchObject({
@@ -616,7 +615,7 @@ describe("plural Briefing routes", () => {
   });
   it("authenticates publishers, returns stable run identity, and rejects old compatibility routes", async () => {
     expect((await router.invoke({ method: "POST", url: "/api/briefings/runs", body: payload() })).status).toBe(401);
-    expect((await router.invoke({ method: "POST", url: "/api/briefings/runs", body: payload(), credential: "session:agent-schedule" })).status).toBe(403);
+    expect((await router.invoke({ method: "POST", url: "/api/briefings/runs", body: payload(), credential: "session:agent-schedule" })).status).toBe(200);
     const first = await router.invoke({ method: "POST", url: "/api/briefings/runs", body: payload(), credential: "agent-schedule" });
     expect(first.status).toBe(200);
     expect(first.body).toMatchObject({ quiet: false, run_id: "run-1" });
@@ -675,18 +674,18 @@ describe("plural Briefing routes", () => {
       expect(await router.invoke({ method: "POST", url, credential, body: dispositionBody }))
         .toMatchObject({ status: 403 });
     }
-    expect(await router.invoke({ method: "POST", url, credential: "human",
+    expect(await router.invoke({ method: "POST", url, credential: "presence:human",
       body: { ...dispositionBody, destination_changes: [] } }))
       .toMatchObject({ status: 409, body: { code: "briefing_review_binding_drift" } });
-    expect(await router.invoke({ method: "POST", url, credential: "human", body: dispositionBody }))
+    expect(await router.invoke({ method: "POST", url, credential: "presence:human", body: dispositionBody }))
       .toMatchObject({ status: 200, body: { changed: true, group: {
         current: { id: decision === "accepted" ? proposal.id : base.id }, updates: [],
       }, disposition: { composition_run_id: null, kind: decision } } });
     expect(db.prepare("SELECT group_id FROM briefing_destination_owners WHERE logical_artifact_id = ?")
       .get(logical.artifact_id)).toEqual(decision === "accepted" ? { group_id: group.id } : undefined);
-    expect(await router.invoke({ method: "POST", url, credential: "human", body: dispositionBody }))
+    expect(await router.invoke({ method: "POST", url, credential: "presence:human", body: dispositionBody }))
       .toMatchObject({ status: 200, body: { changed: false } });
-    expect(await router.invoke({ method: "POST", url, credential: "human",
+    expect(await router.invoke({ method: "POST", url, credential: "presence:human",
       body: { ...dispositionBody, destination_changes: [] } }))
       .toMatchObject({ status: 409, body: { code: "briefing_review_replay_drift" } });
   });
@@ -759,21 +758,21 @@ describe("plural Briefing routes", () => {
     };
     expect(await router.invoke({ method: "POST", url: `/api/briefing-groups/${group.id}/review-dispositions`,
       credential: "session:human", body: dispositionBody })).toMatchObject({
-      status: 403, body: { code: "briefing_group_review_credential_required" },
+      status: 403, body: { code: "operator_presence_required" },
     });
     expect(await router.invoke({ method: "POST", url: `/api/briefing-groups/${group.id}/review-dispositions`,
       credential: "agent-schedule", body: dispositionBody })).toMatchObject({
-      status: 403, body: { code: "briefing_group_review_operator_required" },
+      status: 403, body: { code: "operator_presence_required" },
     });
     const accepted = await router.invoke({ method: "POST",
-      url: `/api/briefing-groups/${group.id}/review-dispositions`, credential: "human", body: dispositionBody });
+      url: `/api/briefing-groups/${group.id}/review-dispositions`, credential: "presence:human", body: dispositionBody });
     expect(accepted).toMatchObject({ status: 200, body: {
       changed: true,
       group: { current: { id: proposalBundleId }, updates: [] },
       disposition: { kind: "accepted", review_items: [{ submission_id: "route-review-submission" }] },
     } });
     expect(await router.invoke({ method: "POST", url: `/api/briefing-groups/${group.id}/review-dispositions`,
-      credential: "human", body: dispositionBody })).toMatchObject({ status: 200, body: { changed: false } });
+      credential: "presence:human", body: dispositionBody })).toMatchObject({ status: 200, body: { changed: false } });
     expect(vi.mocked(broadcast)).toHaveBeenCalledWith("briefing:group-proposal-accepted", {
       group_id: group.id,
       proposal_bundle_id: proposalBundleId,

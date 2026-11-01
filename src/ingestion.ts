@@ -2,7 +2,7 @@ import { canonicalSourcePath, inspectSourceRepresentation, logicalSourceStat, lo
 import { DOMAIN_EVENTS, type MandibleEventType } from "./contracts.js";
 import { isSqliteBusy } from "./sqlite.js";
 // Ingestion service: watches filesystem for conversation files and maintains
-// the conversations/conversation_blocks tables in sync.
+// conversation metadata and disposable native-source navigation in sync.
 
 import chokidar from "chokidar";
 import * as crypto from "node:crypto";
@@ -1705,8 +1705,6 @@ function foldRelocatedDuplicate(
       schema: "mandible-relocation-identity-repair@1",
       aliasKey: "duplicate",
       retainedTables: [
-        "conversation_blocks",
-        "conversation_structural_blocks",
         "conversation_sources",
         "conversation_provider_usage",
       ],
@@ -2247,16 +2245,6 @@ function resolveIncrementalToolParents(
 ): void {
   const structureCache = getConversationStructureCache(db);
   const source = new ConversationSourceStore(db).resolveConversation(conversationId);
-  const priorToolCall = db.prepare(`
-    SELECT position
-      FROM conversation_structural_blocks
-     WHERE conversation_id = ?
-       AND status = 'current'
-       AND type = 'tool_use'
-       AND provider_key LIKE ? ESCAPE '\\'
-     ORDER BY position DESC
-     LIMIT 1
-  `);
   for (const block of result.blocks) {
     const toolId = block.metadata.tool_id;
     if (block.type !== "tool_result" || block.parent_id != null || !toolId?.trim()) continue;
@@ -2265,12 +2253,6 @@ function resolveIncrementalToolParents(
       block.parent_id = String(cachedPosition);
       continue;
     }
-    const escapedToolId = toolId.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
-    const parent = priorToolCall.get(
-      conversationId,
-      `tool:${escapedToolId}:tool_use:%`,
-    ) as { position: number } | undefined;
-    if (parent) block.parent_id = String(parent.position);
   }
 }
 
@@ -2538,9 +2520,7 @@ function selectConversationsAtPath(db: ReturnType<typeof getDb>, filePath: strin
               WHERE alias.source_id = source.id
            )
       ) AS distinct_identity_projection_detached,
-      COALESCE((
-        SELECT COUNT(*) FROM conversation_blocks b WHERE b.conversation_id = c.id
-      ), 0) AS actual_count
+      c.block_count AS actual_count
     FROM conversations c
     WHERE c.source_path = ?
     ORDER BY CASE WHEN c.id = (
@@ -3157,7 +3137,7 @@ async function ingestFilePass(
       sourceSnapshot: result.sourceSnapshot,
       structuralMode: isDeltaAppend ? "append" : "replace",
       blockCount: result.conversation.block_count,
-      blocks: newBlocks.map(block => ({ ...block, legacyId: sparseConversationBlockId(conversationId, block.position) })),
+      blocks: newBlocks,
       ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
     });
     const publish = db.transaction(() => {
@@ -3381,7 +3361,6 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
   const ingestChanged = options.ingestChanged ?? ((filePath: string) => debouncedIngest(filePath));
 
   if (options.startupPasses) {
-    repairLegacyOrphanConversations(db);
   }
 
   await syncCodexIndexedTitlesForKnownRows(db, options.cooperate);
@@ -3822,35 +3801,6 @@ function logDuplicateConversationRows(
  * relationships, annotations, or source history, so ingestion records the
  * observation but never treats absence of normalized blocks as deletion proof.
  */
-function repairLegacyOrphanConversations(db: ReturnType<typeof getDb>): void {
-  const marker = db.prepare("SELECT value FROM meta WHERE key = ?")
-    .get("ingestion_orphan_repair_v1") as { value: string } | undefined;
-  if (marker) return;
-
-  const repair = db.transaction(() => {
-    const orphanRows = db.prepare(`
-      SELECT c.id
-      FROM conversations c
-      WHERE c.starred = 0 AND c.tags = '[]' AND c.notes IS NULL
-        AND (c.block_count = 0 OR NOT EXISTS (
-          SELECT 1 FROM conversation_blocks b
-          WHERE b.conversation_id = c.id
-          LIMIT 1
-        ))
-        AND NOT EXISTS (
-          SELECT 1 FROM conversation_sources source
-           WHERE source.conversation_id = c.id
-        )
-    `).all() as Array<{ id: string }>;
-    db.prepare("INSERT INTO meta (key, value) VALUES (?, ?)")
-      .run("ingestion_orphan_repair_v1", String(Date.now()));
-    return orphanRows.length;
-  });
-  const observed = repair();
-  if (observed > 0) {
-    logger("info", "ingestion_legacy_orphan_audit", { observed, removed: 0 });
-  }
-}
 
 /** Walk files matching a glob pattern using an async generator.
  *  Yields event-loop turns every 50 directory entries so the HTTP server

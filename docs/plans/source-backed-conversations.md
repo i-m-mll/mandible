@@ -1,14 +1,9 @@
 # Source-backed conversation storage
 
-Status: historical migration plan; sparse cutover decision updated 2026-08-21
-
-> The original dual-read retention gates below describe the migration that led
-> to source-backed reads. The current operator decision supersedes its legacy
-> body/alias retention requirement: provider-native files and Mandible ledger
-> metadata are authoritative, and dense normalized conversation projections are
-> intentionally reclaimed. A disposable sparse cache now holds only bounded
-> native-record navigation coordinates. Missing cache entries are reparsed from
-> native files; old block aliases and dense replay history are not preserved.
+> Historical migration plan. The proposals and gates below record the design at
+> the time; they are not current operating instructions. For the implemented
+> storage and recovery contract, see [Architecture](../concepts/architecture.mdx)
+> and [Conversation recovery](../conversation-recovery.md).
 
 ## Decision
 

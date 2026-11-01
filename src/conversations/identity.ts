@@ -151,7 +151,6 @@ export function reconcileConversationIdentities(db: Db): number {
       AND shell.session_id IS NOT NULL AND shell.session_id != ''
       AND shell.is_sidechain = 0 AND shell.parent_conversation_id IS NULL AND shell.agent_id IS NULL
       AND shell.block_count = 0
-      AND NOT EXISTS (SELECT 1 FROM conversation_blocks WHERE conversation_id = shell.id)
       AND NOT EXISTS (SELECT 1 FROM conversation_sources WHERE conversation_id = shell.id)
       AND NOT EXISTS (SELECT 1 FROM conversation_identity_aliases WHERE alias_id = shell.id)`)
     .all() as Row[];

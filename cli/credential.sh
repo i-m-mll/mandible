@@ -50,28 +50,11 @@ cmd_redact() {
 
   printf '%s\n' "$response" | jq -r '
     "Credential \(.credential_id) [\(.credential_status)]"
-    + "\n  scanned blocks:    \(.scanned_blocks)"
-    + "\n  redacted blocks:   \(.redacted_blocks)"
     + "\n  redacted titles:   \(.redacted_metadata_fields)"
     + "\n  redacted spans:    \(.redacted_spans)"
     + "\n  conversations:     \(.redacted_conversations)"
     + (if (.unverified_spans // 0) > 0 then
          "\n  unverified spans:  \(.unverified_spans) (masked without verification)"
-       else "" end)
-    + (if (.renumbered_blocks // 0) > 0 then
-         "\n  renumbered blocks: \(.renumbered_blocks)"
-         + (if (.id_conflicts // 0) > 0 then
-              ", \(.id_conflicts) contested id\(if .id_conflicts == 1 then "" else "s" end)"
-              + " re-derived across the conversation"
-            else "" end)
-         + (if (.remapped_leak_alerts // 0) > 0 then
-              "\n  repointed alerts:  \(.remapped_leak_alerts)"
-            else "" end)
-       else "" end)
-    + (if (.unresolved_id_conflicts // 0) > 0 then
-         "\n  WARNING:           \(.unresolved_id_conflicts) block(s) were left on an id no"
-         + "\n                     re-ingest can derive; see the daemon log for"
-         + "\n                     credential_redaction_block_id_convergence_failed"
        else "" end)
     + (if .truncated then
          "\n  warning: a scanned text exceeded the per-text candidate budget; the"

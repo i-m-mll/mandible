@@ -51,11 +51,6 @@ function insertLegacyPathDuplicate(
     ) VALUES (?, 'codex', ?, ?, 0, 'preserved legacy row', datetime('now'), 1, ?)
   `).run(id, sourcePath, `legacy-hash-${id}`, nativeSessionId);
   db.prepare(`
-    INSERT INTO conversation_blocks (
-      id, conversation_id, type, role, content, compressed, position, metadata_json
-    ) VALUES (?, ?, 'user_message', 'user', 'preserved legacy body', 0, 0, '{}')
-  `).run(`block-${id}`, id);
-  db.prepare(`
     INSERT INTO conversation_sources (
       id, conversation_id, provider, native_session_id, parser_format,
       parser_version, normalization_version, availability, custody_state,
@@ -114,9 +109,6 @@ describe("empty conversation ingest state", () => {
     ).get()).toEqual({
       source_path: "mandible-preserved://conversation/legacy-same-identity",
     });
-    expect(db.prepare(
-      "SELECT content FROM conversation_blocks WHERE conversation_id = 'legacy-same-identity'",
-    ).get()).toEqual({ content: "preserved legacy body" });
     expect(db.prepare(`
       SELECT availability, unavailable_reason FROM conversation_sources
        WHERE conversation_id = 'legacy-same-identity'

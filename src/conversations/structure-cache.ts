@@ -237,19 +237,6 @@ export class ConversationStructureCache {
     this.cache.exec("DELETE FROM cache_tool_links; DELETE FROM cache_blocks; DELETE FROM cache_conversations");
   }
 
-  private manifest(mainDb: Db, conversationId: string): SourceManifestRow | null {
-    return (mainDb.prepare(`
-      SELECT c.id AS conversation_id, source.current_version_id AS source_version_id,
-             source.parser_format, source.parser_version, source.normalization_version,
-             source.redaction_epoch, c.block_count
-        FROM conversations c
-        JOIN conversation_sources source ON source.conversation_id = c.id
-       WHERE c.id = ? AND source.current_version_id IS NOT NULL
-       ORDER BY CASE source.availability WHEN 'available' THEN 0 ELSE 1 END, source.updated_at DESC
-       LIMIT 1
-    `).get(conversationId) as SourceManifestRow | undefined) ?? null;
-  }
-
   private cacheConversation(manifest: SourceManifestRow, mode: "replace" | "append"): number {
     const existing = this.cachedConversation(manifest.conversation_id, manifest.source_version_id, {
       parserFormat: manifest.parser_format, parserVersion: manifest.parser_version,
@@ -285,91 +272,6 @@ export class ConversationStructureCache {
       now, now, existing.cache_id,
     );
     return existing.cache_id;
-  }
-
-  captureDenseRows(
-    mainDb: Db,
-    conversationId: string,
-    mode: "replace" | "append",
-    parentPositions?: ReadonlyMap<number, number | null>,
-    toolPositions?: ReadonlyMap<string, number>,
-  ): { captured: number; cached: number; sourceVersionId: string | null } {
-    const manifest = this.manifest(mainDb, conversationId);
-    if (!manifest) return { captured: 0, cached: 0, sourceVersionId: null };
-    const dense = mainDb.prepare(`
-      SELECT block.position, block.type, block.role,
-             parent.position AS parent_position,
-             block.record_offset, block.record_length, block.record_ordinal,
-             block.sub_block_ordinal
-        FROM conversation_structural_blocks block
-        LEFT JOIN conversation_structural_blocks parent ON parent.id = block.parent_block_id
-       WHERE block.conversation_id = ? AND block.status = 'current'
-         AND block.record_offset IS NOT NULL AND block.record_length IS NOT NULL
-         AND block.record_ordinal IS NOT NULL
-       ORDER BY block.position
-    `).iterate(conversationId) as IterableIterator<{
-      position: number;
-      type: string;
-      role: string;
-      parent_position: number | null;
-      record_offset: number;
-      record_length: number;
-      record_ordinal: number;
-      sub_block_ordinal: number;
-    }>;
-    let captured = 0;
-    let cached = 0;
-    const write = this.cache.transaction(() => {
-      const prior = mode === "append" ? this.cache.prepare(`SELECT cache_id FROM cache_conversations
-        WHERE conversation_id = ? AND source_version_id <> ? AND parser_format = ? AND parser_version = ?
-          AND normalization_version = ? AND redaction_epoch = ? ORDER BY cache_id DESC LIMIT 1`)
-        .get(conversationId, manifest.source_version_id, manifest.parser_format, manifest.parser_version,
-          manifest.normalization_version, manifest.redaction_epoch) as { cache_id: number } | undefined : undefined;
-      const cacheId = this.cacheConversation(manifest, mode);
-      if (prior) {
-        this.cache.prepare(`INSERT OR IGNORE INTO cache_blocks SELECT ?, position, type_code, role_code, parent_position,
-          record_offset, record_length, record_ordinal, sub_block_ordinal, model FROM cache_blocks WHERE cache_conversation_id = ?`)
-          .run(cacheId, prior.cache_id);
-        this.cache.prepare("INSERT OR IGNORE INTO cache_tool_links SELECT ?, tool_key, position FROM cache_tool_links WHERE cache_conversation_id = ?")
-          .run(cacheId, prior.cache_id);
-      }
-      const insert = this.cache.prepare(`
-        INSERT INTO cache_blocks (
-          cache_conversation_id, position, type_code, role_code, parent_position,
-          record_offset, record_length, record_ordinal, sub_block_ordinal
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(cache_conversation_id, position) DO UPDATE SET
-          type_code = excluded.type_code, role_code = excluded.role_code,
-          parent_position = excluded.parent_position, record_offset = excluded.record_offset,
-          record_length = excluded.record_length, record_ordinal = excluded.record_ordinal,
-          sub_block_ordinal = excluded.sub_block_ordinal
-      `);
-      const insertTool = this.cache.prepare(`
-        INSERT INTO cache_tool_links (cache_conversation_id, tool_key, position)
-        VALUES (?, ?, ?)
-        ON CONFLICT(cache_conversation_id, tool_key) DO UPDATE SET position = excluded.position
-      `);
-      for (const row of dense) {
-        const parentPosition = parentPositions?.has(row.position)
-          ? parentPositions.get(row.position) ?? null
-          : row.parent_position;
-        insert.run(
-          cacheId, row.position, blockTypeCode(row.type), roleCode(row.role), parentPosition,
-          row.record_offset, row.record_length, row.record_ordinal, row.sub_block_ordinal,
-        );
-        captured += 1;
-      }
-      for (const [toolId, position] of toolPositions ?? []) {
-        insertTool.run(cacheId, toolKey(toolId), position);
-      }
-      cached = (this.cache.prepare(
-        "SELECT COUNT(*) AS count FROM cache_blocks WHERE cache_conversation_id = ?",
-      ).get(cacheId) as { count: number }).count;
-      this.cache.prepare("UPDATE cache_conversations SET block_count = ? WHERE cache_id = ?")
-        .run(cached, cacheId);
-    });
-    write();
-    return { captured, cached, sourceVersionId: manifest.source_version_id };
   }
 
   replaceRows(

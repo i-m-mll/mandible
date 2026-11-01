@@ -1,257 +1,43 @@
 # Work units
 
-Work units are Mandible's reconciliation layer. They join three trees that are naturally separate --- issues (tracked in the Mandible ledger), branches (tracked in git), and sessions (tracked in Mandible) --- into a single entity with a lifecycle.
+A work unit joins an issue, repository and branch with the sessions performing
+work. Its lifecycle (`open`, `committed`, `resolved`, or `abandoned`) is separate
+from the issue's lifecycle and from its current responsibility. A unit may have
+assignment and executor bindings as well as a responsible user and session;
+those bindings do not themselves confer responsibility.
 
-## The problem they solve
+## Responsibility and handoff
 
-Without work units, these questions require manual cross-referencing:
+Ordinary mutations preserve responsibility. An authorized agent may explicitly
+assume it from a live, stopped, archived, or unknown holder, providing a reason
+and the observed `custody_generation`. A holder may hand off to a successor, or
+relinquish responsibility. These operations advance the generation and preserve
+the work and its historical authorship; stale writers are rejected. A transfer
+neither stops an existing process nor grants approval for protected effects.
+Liveness is informational for responsibility, while process and controller
+fences still protect execution.
 
-- "Is anyone currently working on issue #abc123?" --- check sessions, check branches, hope they match
-- "What happened to the work on `feature/refactor-auth`?" --- check git log, check session history, check if anyone left notes
-- "This session ended mid-work. How does the next agent pick up where it left off?" --- read the conversation, figure it out
+Umbrella parent roles follow the same principle using an observed role checkpoint.
+A merge request follows its delivery work unit's responsibility; an unbound
+request has its own responsibility. See [Architecture](/docs/concepts/architecture)
+and [Approvals](/docs/features/auth-queue).
 
-Work units make these queries trivial. Each work unit represents one unit of implementation work: one issue, one branch, zero or more sessions, with a clear state at all times.
+## Creating and completing work
 
-## Anatomy of a work unit
+A worktree policy tool can register a unit when creating a branch, for example:
 
-A work unit has:
-
-| Field | Description |
-|---|---|
-| `id` | Unique identifier (UUID) |
-| `issue_id` | The Mandible issue this work unit tracks |
-| `repo_id` | The repository the issue belongs to |
-| `branch` | The git branch where work happens |
-| `parent_branch` | The branch this feature branch was created from |
-| `kind` | `solo` (standalone) or `partition` (part of a larger effort) |
-| `state` | Current lifecycle state (see below) |
-| `assigned_session_id` | Active session assignment; ordinary stopped-holder cleanup can clear it |
-| `assignment_target` | Durable native provider/session identity or explicit unresolved alias responsible for completion |
-| `provider`, `provider_session_id` | Latest available ambient mutation actor, independently of assignment |
-| `worker_provider`, `worker_provider_session_id` | Positive child-worker binding derived from the current target and indexed lineage |
-| `continuation` | Handoff notes for the next session |
-| `continuation_by` | Who wrote the continuation |
-| `continuation_at` | When the continuation was written |
-| `auth_request_id` | The auth request for merging this branch |
-| `created_at` | When the work unit was registered |
-| `activated_at` | When work first started |
-| `last_commit_at` | Timestamp of the last commit on the branch |
-| `resolved_at` | When the work unit was resolved |
-
-## Assignment and custody
-
-A claim or auto-claim captures an explicit session target, or the caller's unambiguous ambient provider identity, before conversation ingestion is required. Explicit assignment or custody transfer replaces the target and invalidates the prior worker binding. An omitted assignment preserves it. Ordinary activation, continuation, resolution, and coordinator mutations preserve the target; activation can fill a missing target only for the established holder. Metadata-only request-origin overrides do not grant assignment authority.
-
-Stopped-holder cleanup clears active assignment without clearing the durable target or recreating active assignment when lineage arrives. Explicit clear or release ends responsibility. Resolution preserves the target for completion. Conversation archive and restore preserve unresolved responsibility.
-
-Worker binding requires one canonical non-sidechain indexed conversation, a valid first-line child-worker marker, and its matching resolved parent. The latest mutation actor and the inert worker flag do not establish worker ownership. Every unresolved target assignment blocks completion, including assignments awaiting evidence or whose active holder was cleared. Historical migration observes retained explicit assignment and positive binding today; actor-only rows and conflicting retained evidence remain unknown.
-
-Reusing a branch preserves omitted parent ancestry, fills a missing parent, and accepts an equal parent idempotently. A conflicting existing parent or an auth-bound ancestry change is refused. Holder and custody checks apply to parent changes.
-
-## Lifecycle states
-
-```
-         +-------+
-         | open  |
-         +---+---+
-             |
-     (agent commits)
-             |
-         +---v-------+
-         | committed |
-         +---+-------+
-             |
-     (auth merge completes)
-             |
-         +---v-------+
-         | resolved  |
-         +-----------+
-
-    At any point:
-         +---+-------+
-         | abandoned |
-         +-----------+
-    (branch deleted, issue closed
-     without merge, or manual)
+```sh
+wt new feature/my-feature --issue abc1234
 ```
 
-### open
+The `.issue` file connects subsequent `commit-linked` commits to the issue.
+`mandible work-unit find` reports the unit and generation;
+`mandible work-unit custody-check` reports responsibility and the appropriate
+assumption command when needed. The `claim`, `activate`, `custody-assume`,
+`release`, and `resolve` commands expose the underlying operations.
 
-The work unit exists and has a branch, but no commits have landed yet. An agent may or may not be assigned.
-
-### committed
-
-At least one commit exists on the branch. The work is in progress or ready for review. This state is detected automatically by the reconciler.
-
-### resolved
-
-The auth merge completed successfully. The branch has been merged into the protected branch. Explicit auth closure targets are closed. A positively identified child worker becomes eligible for the shared child cleanup policy once all its current assigned units resolve; this applies to every resolution path, not only merges. A later Codex resume dispatch unarchives the thread first.
-
-### abandoned
-
-The branch was deleted, the issue was closed without a merge, or the work was explicitly abandoned. This is a terminal state.
-
-## How work units are created
-
-Work units are registered by the worktree policy tool through the Mandible
-ledger mechanism client. In the reference dotfiles profile, `wt` calls
-`mandible work-unit claim` when an issue ID is provided:
-
-```bash
-wt feature/my-feature --issue abc1234
-```
-
-This:
-
-1. Creates a git worktree for the feature branch
-2. Calls `mandible work-unit claim` with explicit issue, repo, branch, parent
-   branch, kind, and session inputs
-3. Writes an `.issue` file through `mandible issue-file write` for
-   auto-discovery
-
-The `.issue` file allows `commit-linked` (and its compatibility shim
-`agent-commit`) to automatically find the issue ID without requiring `--issue`
-on every commit. The file format is a Mandible interface: newline-delimited
-issue refs at the git root, with blank lines and `#` comments ignored on read.
-The command that creates worktrees, the branch naming scheme, and whether to
-require issue-linked commits are policy.
-
-## Ledger mechanism client
-
-Mandible exposes policy-free commands for callers that manage branches,
-commits, or sessions:
-
-```bash
-mandible work-unit claim --issue I --repo R [--branch B] [--parent-branch B] [--kind solo|partition|integration] [--expected-generation N] [--parent-role-checkpoint C] [--session S] [--graceful]
-mandible work-unit activate --issue I --repo R [--branch B] [--session S] [--worker] [--graceful]
-mandible work-unit find --repo R (--issue I | --branch B) [--state open|committed|resolved|abandoned] [--graceful]
-mandible work-unit resolve --id WU --expected-generation N [--auth-request-id AR] [--graceful]
-mandible work-unit release --repo R --branch B --expected-generation N [--graceful]
-mandible work-unit release-issue --issue I --repo R --units-file snapshot.json
-mandible issue-file path [cwd]
-mandible issue-file read [cwd]
-mandible issue-file write [--cwd P] I...
-mandible session link-issue SESSION --issue I --repo R [--repo-name N] [--graceful]
-```
-
-These commands take mechanism inputs and do not encode worktree layout, signing,
-attribution, provider/model profile, or local command naming. Callers that
-should continue when Mandible is unavailable can use `--graceful` or set
-`MANDIBLE_LEDGER_GRACEFUL=1`.
-
-An explicit `claim --kind` on an existing unit must match its current kind or
-perform an authorized correction. A correction requires `--expected-generation`
-from `find` and the exact durable custodian; it keeps the unit ID and custody
-unchanged and records an audit checkpoint. Promotion to `integration` also
-requires `--parent-role-checkpoint` naming the latest audited parent role on its
-umbrella, authenticated by that custodian. Integration downgrades and kind
-changes on auth-bound units are refused.
-
-`release` abandons exactly one unit, by ID or repository and branch. Read its
-`custody_generation` from `find` and pass that number as `--expected-generation`.
-Only its exact durable credential owner can release or resolve it. Release
-refuses a unit bound to an auth request. An ID retry on the same abandoned unit
-is unchanged; stale custody or ambiguous branch matches fail without mutation.
-
-`release-issue` is deliberate issue-wide abandonment. Its snapshot file is an
-array of `{ "id": "...", "expected_generation": 1 }` entries for every active
-unit of that issue and repository. All entries must match current custody and
-the complete active set; any conflict leaves all units unchanged.
-
-Claim, activation and structured assignment automatically bind an indexed child
-worker's exact provider and native session ID in `worker_provider` and
-`worker_provider_session_id`. A coordinator creating or updating a unit remains
-mutation attribution; it does not become the assigned worker. Missing or ambiguous
-identity stays unknown. No worker flag or separate completion declaration is needed.
-All current assigned units must resolve before worker completion is eligible;
-the issue itself may remain open.
-
-Visibility archive and restore preserve an unresolved holder's assignment and
-credential custody after the provider unloads. The holder may correctly read as
-stopped while retaining responsibility. An explicit reassignment, custody transfer,
-release or resolution changes that responsibility; ordinary dead holders retain
-the existing cleanup and takeover behavior.
-
-## Liveness
-
-A key design decision: liveness is derived at query time, never stored as a state field.
-
-When the dashboard or API needs to know "is someone actively working on this?", it joins the work unit to the sessions table and checks:
-
-- Is `assigned_session_id` set?
-- Is that session's status `active`?
-- For channel sessions: is `channel_last_tool_call` recent?
-- For console sessions: is the backend currently processing?
-
-This avoids stale-state problems. If an agent crashes, the session eventually transitions to `dead` (via the reaper), and the next liveness query correctly reports no active agent --- without any explicit state update on the work unit.
-
-## The reconciler
-
-The reconciler runs periodically and performs three passes:
-
-### Pass 1: Dead session cleanup
-
-When a session dies (PID vanishes) or ends normally, the reconciler clears `assigned_session_id` on its work units. The work unit remains in its current state (`open` or `committed`) but shows as unassigned in liveness queries. A new session can pick it up.
-
-### Pass 2: Abandoned branch detection
-
-If a work unit is in the `committed` state and Git confirms its branch is gone from every registered checkout of its repository, the reconciler moves it to `abandoned`. This catches cases where a branch was cleaned up without going through the normal merge flow. The scanner's branch cache is never evidence of deletion, and a repository Mandible cannot resolve or read leaves the unit unchanged.
-
-### Pass 3: Auto-commit detection
-
-If a work unit is `open` but its branch has new commits (detected by comparing the branch HEAD to what was recorded), the reconciler transitions it to `committed`. This handles the common case where an agent starts committing before explicitly updating the work unit state.
-
-## Continuations
-
-When a session ends with work still in progress, it can write a continuation --- a handoff note for the next session on the same branch:
-
-```bash
-curl -s -X PATCH http://localhost:19420/api/sessions/$MANDIBLE_SESSION_ID \
-  -H 'Content-Type: application/json' \
-  -d '{"continuation": "Refactored auth module. Tests pass. Still need to update the CLI wrapper and add integration tests for the new token refresh flow."}'
-```
-
-The continuation is stored on the work unit (not the session), so it persists across session lifetimes. When a new session starts on the same branch, the continuation appears in its inbox.
-
-Continuations are acknowledged by the receiving session:
-
-```bash
-mandible inbox ack continuation <session-id>
-```
-
-## Work units and the auth queue
-
-When an agent submits an auth request for a branch that has a work unit, the work unit's `auth_request_id` field is set. This links the work lifecycle to the merge lifecycle:
-
-- When the auth merge completes, the work unit transitions to `resolved`
-
-The daemon's merge finalizer is the only post-merge owner of work-unit state. It
-resolves the units bound to the request or on its head branch, the units of every
-issue the request closes, and any other unit whose branch the merge contains,
-judged by Git ancestry of the branch or its last scanned tip. Post-merge branch
-cleanup removes branches and worktrees and never changes a work unit.
-- Issues linked as explicit auth closure targets are auto-closed
-- The auth result (success/failure) is delivered to the next session's inbox
-
-## Kind: solo vs. partition
-
-Work units have a `kind` field:
-
-- **`solo`**: A standalone unit of work. One issue, one branch, one merge.
-- **`partition`**: Part of a larger coordinated effort (like a bigbuild). Multiple partition work units share a parent issue and merge into an integration branch before the final merge to the protected branch.
-
-For partitioned work, the orchestrating agent creates an umbrella issue and partition work units for each sub-task. Agents work on their partitions independently, merge into the integration branch, and a single auth request covers the final merge.
-
-## Querying work units
-
-The API exposes work units at `/api/work-units`:
-
-```bash
-# List all work units (with optional state/repo filters)
-curl http://localhost:19420/api/work-units?state=open&repo_id=abc
-
-# Get a specific work unit with liveness data
-curl http://localhost:19420/api/work-units/unit-id-here
-```
-
-An `open` or `committed` unit carries a `liveness` overlay with `state`, `agent_session_id`, `agent_status`, `is_processing`, and `last_activity` --- all derived at query time. A `resolved` or `abandoned` unit has no work in progress, so it carries none. `state` is `live`, `stopped`, or `unknown`; `unknown` means a liveness check could not complete (for example, the Codex thread-writer lock scan failed), and Mandible never clears, archives, or takes over behind it.
+A successful merge resolves associated work units and closes the issues named
+as closure targets on the approval request. A positively identified child worker
+may become eligible for archive after its assigned units resolve; unknown
+liveness defers that cleanup. Reconciliation also detects commits and confirms
+branch deletion before abandoning work.

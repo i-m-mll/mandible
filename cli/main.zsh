@@ -26,7 +26,6 @@
 #   auth merge <branch> [opts]       Execute authenticated merge
 #   logs <subcommand>                Inspect source logs and retained daemon telemetry
 #   conversations <subcommand>       Inspect DB-backed conversations
-#   conversation-cutover <command>   Build and audit source-backed cutover proof
 #   db <subcommand>                  Read-only SQL over the live ledger database
 #   artifact <subcommand>            Register, resolve, link, and check artifacts
 #   briefing create <version-ref>    Create a Briefing from one exact artifact version
@@ -112,6 +111,7 @@ case "${1:-}" in
       check)   shift; exec "$MANDIBLE_CLI_DIR/auth-check.sh" "$@" ;;
       clearance) shift; exec "$MANDIBLE_CLI_DIR/auth-clearance.sh" "$@" ;;
       request) shift; exec "$MANDIBLE_CLI_DIR/auth-request.sh" "$@" ;;
+      responsibility) shift; exec "$MANDIBLE_CLI_DIR/auth-responsibility.sh" "$@" ;;
       withdraw) shift; exec "$MANDIBLE_CLI_DIR/auth-withdraw.sh" "$@" ;;
       candidate-repair) shift; exec "$MANDIBLE_CLI_DIR/auth-candidate-repair.sh" "$@" ;;
       replay-archives) shift; exec "$MANDIBLE_CLI_DIR/auth-replay-archives.sh" "$@" ;;
@@ -124,8 +124,8 @@ case "${1:-}" in
     esac
     ;;
   logs)    shift; exec "$MANDIBLE_CLI_DIR/logs.sh" "$@" ;;
+  conversation-recovery) shift; source "$MANDIBLE_CLI_DIR/command-syntax.sh"; exec "$(mandible_bun_runtime)" --no-install "$(mandible_cli_module cli/conversation-recovery)" "$@" ;;
   conversations) shift; exec "$MANDIBLE_CLI_DIR/conversations.sh" "$@" ;;
-  conversation-cutover) shift; exec "$MANDIBLE_CLI_DIR/conversation-cutover.sh" "$@" ;;
   db)      shift; exec "$MANDIBLE_CLI_DIR/db.sh" "$@" ;;
   artifact) shift; exec "$MANDIBLE_CLI_DIR/artifact.sh" "$@" ;;
   briefing) shift; exec "$MANDIBLE_CLI_DIR/briefing.sh" "$@" ;;

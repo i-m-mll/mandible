@@ -40,8 +40,8 @@ beforeEach(() => {
   db.prepare(`INSERT INTO space_publications (id,space_id,source_revision,snapshot_ref,content,repo_id,path,expected_destination_sha256,expected_destination_mode,issue_id,message,branch,worktree,commit_sha,version_ref,state,created_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'committed',?)`).run(publication,space.id,hash(source),snapshot.artifact_version.id,source,registered.checkout.id,"doc.md",hash(original),"100644",issue,"Publish document","feature/publication",repo,head,version.artifact_version.id,Date.now());
   credentialId = addCredential(db,operatorId,{ type:"api_token",fingerprint:`publication-${randomUUID()}` }).id;
-  db.prepare(`INSERT INTO work_units(id,issue_id,ledger_issue_id,repo_id,branch,kind,state,created_at,activated_at,owner_user_id,owner_credential_id,custody_generation)
-    VALUES (?,?,?,?,?,'solo','committed',1,1,?,?,1)`).run(randomUUID(),issue,issue,registered.project.project_key,"feature/publication",operatorId,credentialId);
+  db.prepare(`INSERT INTO work_units(id,issue_id,ledger_issue_id,repo_id,branch,kind,state,created_at,activated_at,owner_user_id,responsibility_session_id,custody_generation)
+    VALUES (?,?,?,?,?,'solo','committed',1,1,?,?,1)`).run(randomUUID(),issue,issue,registered.project.project_key,"feature/publication",operatorId,null);
   queue = makeQueue();
 });
 afterEach(async () => { (await queue.dispose()); db.close(); delete process.env.MANDIBLE_ARTIFACT_DIR; fs.rmSync(repo,{ recursive:true,force:true }); });

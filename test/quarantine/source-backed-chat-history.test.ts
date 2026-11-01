@@ -12,7 +12,7 @@ import WebSocket from 'ws';
 
 import { ConversationSourceStore } from '../../src/conversations/source-store.js';
 import { observeStableSourceAliasExtent } from '../../src/conversations/source-observer.js';
-import { getConversationStructureCache } from '../../src/conversations/structure-cache.js';
+import { sparseConversationBlockId } from '../../src/conversations/structure-cache.js';
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from '../../src/conversations/source-types.js';
 import { migrate, setDb } from '../../src/db.js';
 import { resolveInstanceInfo } from '../../src/instance-policy.js';
@@ -70,8 +70,8 @@ let toolResultBlockId = '';
 let toolResultPosition = -1;
 let fixtureBundle = '';
 
-function legacyBlockId(position: number): string {
-  return `legacy-${position}`;
+function currentBlockId(position: number): string {
+  return sparseConversationBlockId('source-backed-history', position);
 }
 
 function bundleFixture(): string {
@@ -117,20 +117,6 @@ async function seedSourceBackedConversation(): Promise<void> {
     parsed.conversation.started_at, parsed.blocks.length, SOURCE_BACKED_HISTORY_SESSION_ID,
     parsed.conversation.model,
   );
-  const insert = db.prepare(`
-    INSERT INTO conversation_blocks (
-      id, conversation_id, type, role, content, compressed, position, timestamp,
-      parent_id, metadata_json, dag_uuid, dag_parent_uuid
-    ) VALUES (?, 'source-backed-history', ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
-  `);
-  const sourceBlocks = parsed.blocks.map((block) => ({ ...block, legacyId: `legacy-${block.position}` }));
-  for (const block of sourceBlocks) {
-    insert.run(
-      block.legacyId, block.type, block.role, block.content, block.position,
-      block.timestamp, block.parent_id, JSON.stringify(block.metadata),
-      block.dag_uuid ?? null, block.dag_parent_uuid ?? null,
-    );
-  }
   const sourceStore = new ConversationSourceStore(db);
   await sourceStore.recordConversation({
     conversationId: 'source-backed-history',
@@ -138,8 +124,7 @@ async function seedSourceBackedConversation(): Promise<void> {
     nativeSessionId: SOURCE_BACKED_HISTORY_SESSION_ID,
     filePath: sourcePath,
     expectedContentHash: parsed.conversation.source_hash,
-    blocks: sourceBlocks,
-    structuralMode: 'replace',
+    blocks: parsed.blocks,
     ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
   });
   const source = db.prepare(`
@@ -155,23 +140,17 @@ async function seedSourceBackedConversation(): Promise<void> {
     VALUES (?, ?, ?, ?, '', ?)
   `).run(sourcePath, observed.byteLength, sourceBackedHistoryJsonl().trimEnd().split('\n').length,
     observed.tailHash, Date.now());
-  const captured = getConversationStructureCache(db).captureDenseRows(db, 'source-backed-history', 'replace');
-  expect(captured.cached).toBe(SOURCE_BACKED_HISTORY_BLOCK_COUNT);
-  const rows = db.prepare(`
-    SELECT id, position FROM conversation_structural_blocks
-     WHERE conversation_id = 'source-backed-history' AND status = 'current'
-     ORDER BY position
-  `).all() as Array<{ id: string; position: number }>;
+  const rows = parsed.blocks;
   expect(rows).toHaveLength(SOURCE_BACKED_HISTORY_BLOCK_COUNT);
-  expectedBlockIds = rows.map((row) => legacyBlockId(row.position));
+  expectedBlockIds = rows.map((row) => currentBlockId(row.position));
   const hiddenPositions = new Set(parsed.blocks
     .filter((block) => block.metadata.usage_telemetry !== undefined)
     .map((block) => block.position));
   expectedReadableBlockIds = rows
     .filter((row) => !hiddenPositions.has(row.position))
-    .map((row) => legacyBlockId(row.position));
+    .map((row) => currentBlockId(row.position));
   targetBlockId = rows.find((row) => row.position === 123)
-    ? legacyBlockId(123)
+    ? currentBlockId(123)
     : '';
   const toolCall = parsed.blocks.find((block) => {
     const item = block.metadata.chat_item as { type?: unknown; phase?: unknown } | undefined;
@@ -182,9 +161,9 @@ async function seedSourceBackedConversation(): Promise<void> {
     return item?.type === 'tool-call' && item.phase === 'result';
   });
   toolCallPosition = toolCall?.position ?? -1;
-  toolCallBlockId = toolCallPosition >= 0 ? legacyBlockId(toolCallPosition) : '';
+  toolCallBlockId = toolCallPosition >= 0 ? currentBlockId(toolCallPosition) : '';
   toolResultPosition = toolResult?.position ?? -1;
-  toolResultBlockId = toolResultPosition >= 0 ? legacyBlockId(toolResultPosition) : '';
+  toolResultBlockId = toolResultPosition >= 0 ? currentBlockId(toolResultPosition) : '';
   expect(targetBlockId).not.toBe('');
   expect(toolCallBlockId).not.toBe('');
   expect(toolResultBlockId).not.toBe('');
@@ -213,8 +192,7 @@ async function listen(): Promise<void> {
   const instance = resolveInstanceInfo({ env: {}, dbPath: join(directory, 'mandible.db') });
   const router = new Router({ instance });
   registerConversationRoutes(router, inlineLedgerReader());
-  router.get('/source-backed-history', (_req, res) => res.html?.(fixtureHtml()), { localCliCredential: {"mode":"omit"},
-    operation: { id: 'fixture:get:/source-backed-history', effects: [], requestSchema: null, reportingCategory: null },
+  router.get('/source-backed-history', (_req, res) => res.html?.(fixtureHtml()), { operation: { id: 'fixture:get:/source-backed-history', effects: [], requestSchema: null, reportingCategory: null },
     fileRpc: 'deny',
   });
   server = createServer({
@@ -488,7 +466,7 @@ async function runBrowserJourney(): Promise<Record<string, unknown>> {
       return window.__chatContinuity.frames;
     })()`);
     const visiblePositions = gestureFrames.flatMap((frame) => frame.id
-      ? [Number(frame.id.replace(/^legacy-/, ''))] : []);
+      ? [Number(frame.id.split(':').at(-1))] : []);
     expect(visiblePositions.length).toBeGreaterThan(10);
     expect(visiblePositions.at(-1)).toBeLessThan(visiblePositions[0]);
     expect(gestureFrames.filter((frame) => frame.id === null)).toHaveLength(0);

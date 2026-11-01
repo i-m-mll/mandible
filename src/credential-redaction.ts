@@ -29,12 +29,9 @@ import {
   credentialScanPepper,
   extractTokenCandidatesWithStatus,
   maskUnverifiedCandidates,
-  remapCredentialLeakAlertBlockIds,
   replaceAllCounted,
 } from "./credential-leak-scan.js";
 import { API_TOKEN_PREFIX, fingerprintForToken } from "./client-auth/tokens.js";
-import { compressContent, decompressContent } from "./compression.js";
-import { assignConversationBlockIds, conversationBlockId } from "./conversation-block-id.js";
 import { getDaemonLogger } from "./daemon-log.js";
 import type { Db } from "./db.js";
 import { UserRegistryError } from "./users/store.js";
@@ -42,7 +39,6 @@ import { resolveId } from "./entity-refs.js";
 
 const redactionLog = getDaemonLogger();
 
-const DEFAULT_BATCH_SIZE = 500;
 const SOURCE_DISCOVERY_CHUNK_BYTES = 4 * 1024 * 1024;
 const MAX_SOURCE_PATCH_BYTES = 256 * 1024 * 1024;
 const SOURCE_DISCOVERY_OVERLAP = API_TOKEN_PREFIX.length + 43 - 1;
@@ -65,8 +61,6 @@ const TOKEN_PREFIX_PATTERN = API_TOKEN_PREFIX;
 export interface CredentialRedactionOptions {
   /** Also rewrite the verified spans in the local source transcripts. */
   patchSources?: boolean;
-  /** Rows fetched per batch. */
-  batchSize?: number;
   pepper?: string;
 }
 
@@ -134,11 +128,9 @@ export interface CredentialRedactionSourceReport {
 export interface CredentialRedactionReport {
   credential_id: string;
   credential_status: string;
-  scanned_blocks: number;
-  redacted_blocks: number;
   /** Derived conversation fields (title, summary) rewritten. */
   redacted_metadata_fields: number;
-  /** Total occurrences replaced in the index, across blocks and metadata. */
+  /** Total verified occurrences replaced in conversation metadata. */
   redacted_spans: number;
   /**
    * Spans masked without verification because a text exhausted the candidate
@@ -146,22 +138,6 @@ export interface CredentialRedactionReport {
    */
   unverified_spans: number;
   redacted_conversations: number;
-  /** Blocks whose id was recomputed from the masked content (see below). */
-  renumbered_blocks: number;
-  /**
-   * Blocks whose recomputed id was already taken. The affected conversation's
-   * ids are then re-derived as a whole, the way the next full ingest derives
-   * them, so a conflict is a resolved event rather than a kept-stale id.
-   */
-  id_conflicts: number;
-  /**
-   * Blocks a conflict left on an id no ingest can re-derive, because the
-   * conversation-wide re-derivation could not be applied. Non-zero means the
-   * index and a future re-ingest will disagree about those ids.
-   */
-  unresolved_id_conflicts: number;
-  /** Leak alerts repointed from a renumbered block id to its new id. */
-  remapped_leak_alerts: number;
   truncated: boolean;
   sources: CredentialRedactionSourceReport | null;
 }
@@ -1090,167 +1066,7 @@ function patchThroughDescriptor(
   return outcome;
 }
 
-interface BlockRow {
-  id: string;
-  conversation_id: string;
-  content: Buffer | string;
-  metadata_json: string | null;
-  compressed: number;
-  type: string;
-  timestamp: string | null;
-  position: number;
-}
-
-/**
- * Prefix for the intermediate ids a convergence pass parks rows on.
- *
- * Ids are 16 hex characters, so nothing derived can ever equal one of these.
- */
-const CONVERGENCE_TEMP_PREFIX = "mandible-redact-tmp:";
-
-interface BlockIdConvergence {
-  /** Current id → converged id, for every row this pass moved. */
-  renames: Map<string, string>;
-  /** Rows left on a non-reproducible id because the pass could not apply. */
-  unresolved: number;
-}
-
-/**
- * Re-derive one conversation's block ids the way the next full ingest will.
- *
- * Called only when a per-row recomputation found its target id already taken.
- * Row-at-a-time recomputation cannot settle that case: which of two blocks that
- * derive the same id keeps it is a property of the conversation, not of either
- * row, so the answer has to be computed over the whole conversation in position
- * order — exactly what `assignConversationBlockIds` does for ingestion's
- * recovery insert. Running the same function over the same blocks in the same
- * order is what makes redact-then-re-ingest land on identical ids.
- *
- * Content is read back from the rows rather than from the redaction's in-memory
- * batch so the derivation sees precisely the bytes stored, including blocks this
- * run never touched. A row whose content cannot be decompressed makes the fixed
- * point unknowable, so the pass declines rather than guessing.
- *
- * Ids are the primary key, so the moves are applied in two phases through
- * unused placeholder ids: a direct update would collide with the very row it is
- * trying to displace. A target held by some *other* conversation — a real
- * truncated-hash collision — makes the transaction fail, and the conversation is
- * reported as unresolved rather than having another conversation's row taken
- * from it.
- */
-function convergeConversationBlockIds(db: Db, conversationId: string): BlockIdConvergence {
-  const rows = db
-    .prepare(
-      `SELECT id, type, timestamp, content, compressed, position
-       FROM conversation_blocks WHERE conversation_id = ? ORDER BY position`,
-    )
-    .all(conversationId) as Array<{
-      id: string;
-      type: string;
-      timestamp: string | null;
-      content: Buffer | string;
-      compressed: number;
-      position: number;
-    }>;
-  const inputs = [];
-  for (const row of rows) {
-    let text: string;
-    try {
-      text = decompressContent(row.content, row.compressed === 1);
-    } catch {
-      redactionLog("error", "credential_redaction_block_id_convergence_failed", {
-        conversation_id: conversationId,
-        reason: "unreadable_block_content",
-        position: row.position,
-      });
-      return { renames: new Map(), unresolved: 1 };
-    }
-    inputs.push({
-      conversation_id: conversationId,
-      type: row.type,
-      timestamp: row.timestamp,
-      content: text,
-      position: row.position,
-    });
-  }
-
-  const targets = assignConversationBlockIds(inputs);
-  const moves = rows
-    .map((row, index) => ({
-      from: row.id,
-      to: targets[index],
-      temp: `${CONVERGENCE_TEMP_PREFIX}${conversationId}:${index}`,
-    }))
-    .filter((move) => move.from !== move.to);
-  if (moves.length === 0) return { renames: new Map(), unresolved: 0 };
-
-  try {
-    const update = db.prepare("UPDATE conversation_blocks SET id = ? WHERE id = ?");
-    db.transaction(() => {
-      for (const move of moves) update.run(move.temp, move.from);
-      for (const move of moves) update.run(move.to, move.temp);
-    })();
-  } catch (error) {
-    redactionLog("error", "credential_redaction_block_id_convergence_failed", {
-      conversation_id: conversationId,
-      reason: "id_held_by_another_conversation",
-      moves: moves.length,
-      error: String(error),
-    });
-    return { renames: new Map(), unresolved: moves.length };
-  }
-  return { renames: new Map(moves.map((move) => [move.from, move.to])), unresolved: 0 };
-}
-
-/**
- * Sweep the normalized index for one credential's plaintext and mask it.
- *
- * Search covers every stored block, in `content` and in `metadata_json`: the
- * credential id says nothing about where the token was pasted, the parsers copy
- * tool arguments and short tool results into metadata, and a hash-verified
- * sweep is the only way to find every copy. Rows keep their rowid, so
- * conversation structure, positions, and stable-offset pagination are
- * unaffected — and conversation search, which reads block content directly
- * rather than a separate index, immediately reflects the masked text.
- *
- * Block ids are recomputed (issue b3e4a09, review finding 7). A block id is a
- * hash of the first 100 characters of its content, so a redaction inside that
- * window changes what the next ingest of the patched source will derive.
- * Keeping the plaintext-derived id would leave a link that works now and breaks
- * silently at the next full re-ingest; recomputing moves that change to the
- * moment the operator ran the redaction and makes every link captured
- * afterwards survive re-ingest. Leak alerts that pointed at the old id are
- * repointed in the same pass, so the deep link on the record an operator opens
- * *because* of the leak keeps resolving (re-review finding 2).
- *
- * The recomputed id CAN already belong to another well-formed row, and an
- * earlier round of this file argued otherwise from `UNIQUE(conversation_id,
- * position)` — that argument was wrong (issue b3e4a09, third-pass finding 3).
- * `conversationBlockId` concatenates its inputs with no delimiters and no
- * length framing, so two rows that differ in a hashed input can still hash
- * identical bytes: for one conversation, type, and timestamp, content
- * "payload1" at position 2 and content "payload" at position 12 both serialize
- * to `…payload12`. Positions stay unique and no SHA-256 collision occurs; the
- * ambiguity is in the serialization. Redaction reaches it the moment a mask
- * rewrites a content prefix into the other row's prefix-plus-digits.
- *
- * Keeping the old id in that case was the remaining defect: it left a row on an
- * id nothing can re-derive, so the next full ingest could not reproduce the
- * index. The conflict branch now converges instead — it re-derives the whole
- * conversation's ids with `assignConversationBlockIds`, the same function and
- * the same position order ingestion's unique-conflict recovery uses, so a
- * redact-then-force-re-ingest round trip lands on identical ids. Blocks that
- * are not part of an ambiguous set keep exactly the id the plain derivation
- * gives them, so nothing else is renumbered.
- *
- * Delimiter framing would remove the ambiguity at the root and is deliberately
- * left for a dedicated migration-bearing change: it would alter the id of every
- * block in every existing database at once.
- *
- * Redacting a source that cannot be patched (`--patch-sources` refused or
- * omitted) still diverges at the next re-ingest, because that ingest sees the
- * unredacted bytes again — patching the source is what makes redaction durable.
- */
+/** Mask authored metadata and optionally patch authoritative native transcripts. */
 export function redactCredential(
   db: Db,
   ref: string,
@@ -1259,23 +1075,6 @@ export function redactCredential(
   const credential = resolveCredentialForRedaction(db, ref);
   const pepper = options.pepper ?? credentialScanPepper(db);
   const mask = credentialMaskFor(credential.id);
-  const batchSize = Math.max(1, options.batchSize ?? DEFAULT_BATCH_SIZE);
-
-  const select = db.prepare(
-    `SELECT id, conversation_id, content, metadata_json, compressed,
-            type, timestamp, position
-     FROM conversation_blocks
-     WHERE payload_state = 'legacy'
-     ORDER BY rowid
-     LIMIT ? OFFSET ?`,
-  );
-  const update = db.prepare(
-    `UPDATE conversation_blocks
-     SET content = ?, compressed = 1, metadata_json = COALESCE(?, metadata_json), id = ?
-     WHERE id = ?`,
-  );
-  const idTaken = db.prepare("SELECT 1 AS present FROM conversation_blocks WHERE id = ?");
-
   const conversations = new Set<string>();
   // Conversations whose source transcript is worth patching. Wider than the set
   // above on purpose: a conversation ingested after ingest-time masking shipped
@@ -1301,147 +1100,9 @@ export function redactCredential(
       credential.fingerprint,
     )) sourceCandidates.add(conversationId);
   }
-  let scanned = 0;
-  let redactedBlocks = 0;
   let redactedSpans = 0;
   let unverifiedSpans = 0;
-  let idConflicts = 0;
-  let unresolvedIdConflicts = 0;
-  let offset = 0;
   let truncated = false;
-  /** Old id → new id, for every block whose id this run recomputed. */
-  const renamedBlockIds = new Map<string, string>();
-  /** Conversations whose ids need re-deriving over the whole conversation. */
-  const conflictedConversations = new Set<string>();
-
-  for (;;) {
-    const rows = select.all(batchSize, offset) as BlockRow[];
-    if (rows.length === 0) break;
-    offset += rows.length;
-
-    const pending: Array<{
-      id: string;
-      newId: string;
-      conversationId: string;
-      position: number;
-      content: Buffer;
-      metadataJson: string | null;
-    }> = [];
-    for (const row of rows) {
-      scanned += 1;
-      let text: string;
-      try {
-        text = decompressContent(row.content, row.compressed === 1);
-      } catch {
-        continue;
-      }
-      const maskedContent = maskCredentialInText(
-        text,
-        pepper,
-        credential.fingerprint,
-        mask,
-        { conservative: true },
-      );
-      const maskedMetadata = row.metadata_json === null
-        ? null
-        : maskCredentialInText(
-          row.metadata_json,
-          pepper,
-          credential.fingerprint,
-          mask,
-          { conservative: true },
-        );
-      truncated ||= maskedContent.truncated || (maskedMetadata?.truncated ?? false);
-      const spans = maskedContent.replacements + (maskedMetadata?.replacements ?? 0);
-      const unverified = maskedContent.unverified + (maskedMetadata?.unverified ?? 0);
-      if (spans + unverified === 0) {
-        if (text.includes(mask) || (row.metadata_json ?? "").includes(mask)) {
-          sourceCandidates.add(row.conversation_id);
-        }
-        continue;
-      }
-      // The id is derived from the first 100 characters of content only, so
-      // metadata-only edits and edits past that window cannot change what the
-      // next ingest derives and must not churn the id.
-      const newId = maskedContent.text.slice(0, 100) === text.slice(0, 100)
-        ? row.id
-        : conversationBlockId({
-          conversation_id: row.conversation_id,
-          type: row.type,
-          timestamp: row.timestamp,
-          content: maskedContent.text,
-          position: row.position,
-        });
-      pending.push({
-        id: row.id,
-        newId,
-        conversationId: row.conversation_id,
-        position: row.position,
-        content: compressContent(maskedContent.text),
-        metadataJson: maskedMetadata && maskedMetadata.text !== row.metadata_json
-          ? maskedMetadata.text
-          : null,
-      });
-      redactedBlocks += 1;
-      redactedSpans += spans;
-      unverifiedSpans += unverified;
-      conversations.add(row.conversation_id);
-      sourceCandidates.add(row.conversation_id);
-    }
-
-    if (pending.length > 0) {
-      db.transaction(() => {
-        for (const entry of pending) {
-          let targetId = entry.id;
-          if (entry.newId !== entry.id) {
-            if (idTaken.get(entry.newId)) {
-              // Reachable through the unframed id serialization (see above).
-              // The row keeps its old id here and the conversation is re-derived
-              // as a whole once the content edits are in, because which row wins
-              // the contested id is not a per-row fact.
-              idConflicts += 1;
-              conflictedConversations.add(entry.conversationId);
-              redactionLog("warn", "credential_redaction_block_id_conflict", {
-                conversation_id: entry.conversationId,
-                position: entry.position,
-                deferred_block_id: entry.id,
-              });
-            } else {
-              targetId = entry.newId;
-              renamedBlockIds.set(entry.id, entry.newId);
-            }
-          }
-          update.run(entry.content, entry.metadataJson, targetId, entry.id);
-        }
-      })();
-    }
-    if (rows.length < batchSize) break;
-  }
-
-  // Contested ids are settled over the whole conversation, from the content now
-  // stored, so the result is the id assignment the next full ingest derives.
-  for (const conversationId of conflictedConversations) {
-    const converged = convergeConversationBlockIds(db, conversationId);
-    unresolvedIdConflicts += converged.unresolved;
-    // Compose with this run's earlier renames so a block moved twice is still
-    // followed from the id its leak alert recorded.
-    for (const [from, to] of renamedBlockIds) {
-      const final = converged.renames.get(to);
-      if (final === undefined) continue;
-      renamedBlockIds.set(from, final);
-      converged.renames.delete(to);
-    }
-    for (const [from, to] of converged.renames) renamedBlockIds.set(from, to);
-  }
-  for (const [from, to] of renamedBlockIds) {
-    if (from === to) renamedBlockIds.delete(from);
-  }
-  const renumberedBlocks = renamedBlockIds.size;
-
-  // Leak alerts deep-link the block a credential was found in, so renumbering
-  // without following them leaves the alert pointing at a deleted id.
-  const remappedAlerts = remapCredentialLeakAlertBlockIds(db, renamedBlockIds);
-
   const metadata = redactConversationMetadata(
     db,
     pepper,
@@ -1461,16 +1122,10 @@ export function redactCredential(
   redactionLog("warn", "credential_redaction_completed", {
     credential_id: credential.id,
     credential_status: credential.status,
-    scanned_blocks: scanned,
-    redacted_blocks: redactedBlocks,
     redacted_metadata_fields: metadata.fields,
     redacted_spans: redactedSpans,
     unverified_spans: unverifiedSpans,
     redacted_conversations: conversations.size,
-    renumbered_blocks: renumberedBlocks,
-    id_conflicts: idConflicts,
-    unresolved_id_conflicts: unresolvedIdConflicts,
-    remapped_leak_alerts: remappedAlerts,
     truncated,
     patched_files: sources?.patched_files ?? null,
     missing_files: sources?.missing_files ?? null,
@@ -1486,16 +1141,10 @@ export function redactCredential(
   return {
     credential_id: credential.id,
     credential_status: credential.status,
-    scanned_blocks: scanned,
-    redacted_blocks: redactedBlocks,
     redacted_metadata_fields: metadata.fields,
     redacted_spans: redactedSpans,
     unverified_spans: unverifiedSpans,
     redacted_conversations: conversations.size,
-    renumbered_blocks: renumberedBlocks,
-    id_conflicts: idConflicts,
-    unresolved_id_conflicts: unresolvedIdConflicts,
-    remapped_leak_alerts: remappedAlerts,
     truncated,
     sources,
   };

@@ -17,7 +17,8 @@ import { systemAction } from "../src/identity/resolver.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import { Router } from "../src/server.js";
-import { addBinding, addCredential, getOperator } from "../src/users/store.js";
+import { PRODUCTION_EFFECTS } from "../src/security/effect-policy.js";
+import { addCredential, getOperator } from "../src/users/store.js";
 import {
   SYSTEM_ACTOR,
   createLedgerIssue as createSharedLedgerIssue,
@@ -38,12 +39,15 @@ function createMigratedDb(): Db {
     // Route handlers in this file resolve state through the getDb() singleton.
     setGlobal: true,
     operator: { slug: "auth-action-test", display_name: "Auth Action Test" },
-    // Issue a64d2de: provider-session bindings resolve to session_claim attribution
-    // only for agent principals. The auth-request requester is an agent session, so
-    // bind the route session env to an agent rather than the human operator.
-    agent: { slug: "auth-action-agent", display_name: "Auth Action Agent" },
     now: 1,
   });
+}
+
+function actionRouter(db: Db): Router {
+  const user = getOperator(db)!;
+  return new Router({ clientAuth: { authenticate: () => ({ user_id: user.id, slug: user.slug,
+    method: "local_socket", source: "local_socket", credential_id: null, effect_ceiling: PRODUCTION_EFFECTS }),
+    mode: () => "strict", recordUnattributedWrite: () => undefined } });
 }
 
 function createLedgerIssue(db: Db, alias = "act123", branch?: string) {
@@ -509,13 +513,9 @@ describe("auth request action routes", () => {
     const db = createMigratedDb();
     try {
       const refs = seedBriefingPromotion(db);
-      const router = new Router();
+      const router = actionRouter(db);
       const queue = new AuthQueue({ db });
       registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
-      addBinding(db, "auth-action-agent", {
-        binding_type: "provider_session_env",
-        value: "auth-action-promotion-session",
-      });
       const response = await router.invoke({
         method: "POST",
         url: "/api/auth/v2/request",
@@ -523,7 +523,6 @@ describe("auth request action routes", () => {
           command: "echo merge",
           title: "Promote reviewed policy",
           type: "merge",
-          session_id: "auth-action-promotion-session",
           actions: [{
             kind: "briefing_group_promote",
             target_issue_ref: "policy123",
@@ -561,13 +560,9 @@ describe("auth request action routes", () => {
     const db = createMigratedDb();
     try {
       const refs = seedBriefingPromotion(db);
-      const router = new Router();
+      const router = actionRouter(db);
       const queue = new AuthQueue({ db });
       registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
-      addBinding(db, "auth-action-agent", {
-        binding_type: "provider_session_env",
-        value: "auth-action-promotion-drift-session",
-      });
       const response = await router.invoke({
         method: "POST",
         url: "/api/auth/v2/request",
@@ -575,7 +570,6 @@ describe("auth request action routes", () => {
           command: "echo merge",
           title: "Stale policy promotion",
           type: "merge",
-          session_id: "auth-action-promotion-drift-session",
           actions: [{
             kind: "briefing_group_promote",
             target_issue_ref: "policy123",
@@ -598,68 +592,10 @@ describe("auth request action routes", () => {
     }
   });
 
-  it("supports per-action CRUD on pending requests", async () => {
-    const db = createMigratedDb();
-    try {
-      const router = new Router();
-      const queue = new AuthQueue({ db });
-      registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
-      addBinding(db, "auth-action-agent", {
-        binding_type: "provider_session_env",
-        value: "auth-action-route-session",
-      });
-
-      const submit = await router.invoke({
-        method: "POST",
-        url: "/api/auth/v2/request",
-        body: { ...AUTH_MERGE_REVIEW,
-          command: "echo route",
-          title: "Route staged actions",
-          session_id: "auth-action-route-session",
-          actions: [{ kind: "comment_add", target_issue_ref: "abc123", payload: { body: "One" } }],
-        },
-      });
-      expect(submit.status).toBe(201);
-      const requestId = (submit.body as { request_id: string }).request_id;
-
-      const add = await router.invoke({
-        method: "POST",
-        url: `/api/auth/request/${requestId}/actions`,
-        body: { kind: "label_add", target_issue_ref: "abc123", payload: { label: "ready" } },
-      });
-      expect(add.status).toBe(201);
-      const actionId = (add.body as { action: { id: string } }).action.id;
-
-      const edit = await router.invoke({
-        method: "PUT",
-        url: `/api/auth/request/${requestId}/actions/${actionId}`,
-        body: { kind: "label_rm", target_issue_ref: "abc123", payload: { label: "ready" } },
-      });
-      expect(edit.status).toBe(200);
-      expect((edit.body as { action: { kind: string } }).action.kind).toBe("label_rm");
-
-      const list = await router.invoke({
-        method: "GET",
-        url: `/api/auth/request/${requestId}/actions`,
-      });
-      expect(list.status).toBe(200);
-      expect((list.body as { actions: unknown[] }).actions).toHaveLength(2);
-
-      const rm = await router.invoke({
-        method: "DELETE",
-        url: `/api/auth/request/${requestId}/actions/${actionId}`,
-        body: {},
-      });
-      expect(rm.status).toBe(200);
-    } finally {
-      db.close();
-    }
-  });
-
   it("allows pending user veto toggles and denies them after completion", async () => {
     const db = createMigratedDb();
     try {
-      const router = new Router();
+      const router = actionRouter(db);
       const queue = new AuthQueue({ db });
       registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
       const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
@@ -672,7 +608,7 @@ describe("auth request action routes", () => {
       const veto = await router.invoke({
         method: "POST",
         url: `/api/auth/request/${request.id}/actions/${action.id}/veto`,
-        body: { vetoed: true },
+        body: { vetoed: true, expected_revision: queue.listLifecycleEvents(request.id).at(-1)!.revision, expected_custody_generation: 0 },
       });
       expect(veto.status).toBe(200);
       expect((veto.body as { action: { state: string } }).action.state).toBe("vetoed");
@@ -680,7 +616,7 @@ describe("auth request action routes", () => {
       const restore = await router.invoke({
         method: "POST",
         url: `/api/auth/request/${request.id}/actions/${action.id}/veto`,
-        body: { vetoed: false },
+        body: { vetoed: false, expected_revision: queue.listLifecycleEvents(request.id).at(-1)!.revision, expected_custody_generation: 0 },
       });
       expect(restore.status).toBe(200);
       expect((restore.body as { action: { state: string } }).action.state).toBe("staged");
@@ -689,7 +625,7 @@ describe("auth request action routes", () => {
       const denied = await router.invoke({
         method: "POST",
         url: `/api/auth/request/${request.id}/actions/${action.id}/veto`,
-        body: { vetoed: true },
+        body: { vetoed: true, expected_revision: queue.listLifecycleEvents(request.id).at(-1)!.revision, expected_custody_generation: 0 },
       });
       expect(denied.status).toBe(409);
       expect(denied.body).toMatchObject({ status: "completed" });
@@ -701,13 +637,9 @@ describe("auth request action routes", () => {
   it("rejects invalid action payloads with a clear client error", async () => {
     const db = createMigratedDb();
     try {
-      const router = new Router();
+      const router = actionRouter(db);
       const queue = new AuthQueue({ db });
       registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
-      addBinding(db, "auth-action-agent", {
-        binding_type: "provider_session_env",
-        value: "auth-action-invalid-session",
-      });
 
       const response = await router.invoke({
         method: "POST",
@@ -715,7 +647,6 @@ describe("auth request action routes", () => {
         body: { ...AUTH_MERGE_REVIEW,
           command: "echo bad",
           title: "Bad staged action",
-          session_id: "auth-action-invalid-session",
           actions: [{ kind: "label_add", target_issue_ref: "abc123", payload: {} }],
         },
       });

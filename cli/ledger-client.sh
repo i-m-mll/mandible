@@ -154,24 +154,41 @@ mandible_work_unit_find() {
   mandible_ledger_request GET "/api/work-units?${query}" "" "$graceful"
 }
 
-mandible_work_unit_resolve() {
-  local id="" auth_request_id="" expected_generation="" graceful="${MANDIBLE_LEDGER_GRACEFUL:-0}"
+mandible_work_unit_resolve() { mandible_work_unit_transition resolved "$@"; }
+mandible_work_unit_abandon() { mandible_work_unit_transition abandoned "$@"; }
+
+mandible_work_unit_transition() {
+  local state="$1"
+  shift
+  local action="resolve" id="" auth_request_id="" expected_generation="" reason="" graceful="${MANDIBLE_LEDGER_GRACEFUL:-0}"
+  local spec
+  if [[ "$state" == abandoned ]]; then
+    action="abandon"
+    spec='{"id":{"option":"id"},"expected_generation":{"option":"expected-generation"},"reason":{"option":"reason"},"graceful":{"option":"graceful","constant":"1"}}'
+  else
+    spec='{"id":{"option":"id"},"expected_generation":{"option":"expected-generation"},"auth_request_id":{"option":"auth-request-id"},"graceful":{"option":"graceful","constant":"1"}}'
+  fi
   local binding
-  binding=$(mandible_bind_arguments "work-unit.resolve" '{"id":{"option":"id"},"auth_request_id":{"option":"auth-request-id"},"expected_generation":{"option":"expected-generation"},"graceful":{"option":"graceful","constant":"1"}}' "$@") || return $?
+  binding=$(mandible_bind_arguments "work-unit.$action" "$spec" "$@") || return $?
   eval "$binding"
   [[ -n "$id" ]] || mandible_ledger_die "Missing --id" 2 || return $?
   [[ "$expected_generation" =~ ^[0-9]+$ ]] || mandible_ledger_die "Missing or invalid --expected-generation" 2 || return $?
+  if [[ "$state" == abandoned && -z "${reason//[[:space:]]/}" ]]; then
+    mandible_ledger_die "Missing --reason" 2 || return $?
+  fi
   mandible_ledger_require_tools || return $?
   local payload
-  payload=$(jq -n --arg auth_request_id "$auth_request_id" --argjson expected_generation "$expected_generation" \
-    '{state:"resolved",expected_generation:$expected_generation} + (if $auth_request_id != "" then {auth_request_id:$auth_request_id} else {} end)')
+  payload=$(jq -n --arg state "$state" --arg reason "$reason" --arg auth_request_id "$auth_request_id" --argjson expected_generation "$expected_generation" \
+    '{state:$state,expected_generation:$expected_generation}
+      + (if $reason != "" then {reason:$reason} else {} end)
+      + (if $auth_request_id != "" then {auth_request_id:$auth_request_id} else {} end)')
   mandible_ledger_request PATCH "/api/work-units/$(mandible_ledger_urlencode "$id")" "$payload" "$graceful"
 }
 
 mandible_work_unit_release() {
-  local id="" issue_id="" repo_id="" branch="" expected_generation="" graceful="${MANDIBLE_LEDGER_GRACEFUL:-0}"
+  local reason="" id="" issue_id="" repo_id="" branch="" expected_generation="" graceful="${MANDIBLE_LEDGER_GRACEFUL:-0}"
   local binding
-  binding=$(mandible_bind_arguments "work-unit.release" '{"id":{"option":"id"},"issue_id":{"option":["issue","issue-id"]},"repo_id":{"option":["repo","repo-id"]},"branch":{"option":"branch"},"expected_generation":{"option":"expected-generation"},"graceful":{"option":"graceful","constant":"1"}}' "$@") || return $?
+  binding=$(mandible_bind_arguments "work-unit.release" '{"reason":{"option":"reason"},"id":{"option":"id"},"issue_id":{"option":["issue","issue-id"]},"repo_id":{"option":["repo","repo-id"]},"branch":{"option":"branch"},"expected_generation":{"option":"expected-generation"},"graceful":{"option":"graceful","constant":"1"}}' "$@") || return $?
   eval "$binding"
   if [[ -n "$id" ]]; then
     [[ -z "$issue_id$repo_id$branch" ]] || mandible_ledger_die "--id cannot be combined with issue, repository or branch" 2 || return $?
@@ -179,41 +196,38 @@ mandible_work_unit_release() {
     [[ -n "$repo_id" && -n "$branch" ]] || mandible_ledger_die "Select --id or --repo and --branch" 2 || return $?
   fi
   [[ "$expected_generation" =~ ^[0-9]+$ ]] || mandible_ledger_die "Missing or invalid --expected-generation" 2 || return $?
+  [[ -n "${reason//[[:space:]]/}" ]] || mandible_ledger_die "Missing --reason" 2 || return $?
   mandible_ledger_require_tools || return $?
   local payload
-  payload=$(jq -n --arg id "$id" --arg issue_id "$issue_id" --arg repo_id "$repo_id" --arg branch "$branch" --argjson expected_generation "$expected_generation" \
-    '{expected_generation:$expected_generation} + (if $id != "" then {id:$id} else {repo_id:$repo_id,branch:$branch} + (if $issue_id != "" then {issue_id:$issue_id} else {} end) end)')
+  payload=$(jq -n --arg reason "$reason" --arg id "$id" --arg issue_id "$issue_id" --arg repo_id "$repo_id" --arg branch "$branch" --argjson expected_generation "$expected_generation" \
+    '{reason:$reason,expected_generation:$expected_generation} + (if $id != "" then {id:$id} else {repo_id:$repo_id,branch:$branch} + (if $issue_id != "" then {issue_id:$issue_id} else {} end) end)')
   mandible_ledger_request POST "/api/work-units/release" "$payload" "$graceful"
 }
 
 mandible_work_unit_release_issue() {
-  local issue_id="" repo_id="" units_file="" graceful="${MANDIBLE_LEDGER_GRACEFUL:-0}"
+  local reason="" issue_id="" repo_id="" units_file="" graceful="${MANDIBLE_LEDGER_GRACEFUL:-0}"
   local binding
-  binding=$(mandible_bind_arguments "work-unit.release-issue" '{"issue_id":{"option":["issue","issue-id"]},"repo_id":{"option":["repo","repo-id"]},"units_file":{"option":"units-file"},"graceful":{"option":"graceful","constant":"1"}}' "$@") || return $?
+  binding=$(mandible_bind_arguments "work-unit.release-issue" '{"reason":{"option":"reason"},"issue_id":{"option":["issue","issue-id"]},"repo_id":{"option":["repo","repo-id"]},"units_file":{"option":"units-file"},"graceful":{"option":"graceful","constant":"1"}}' "$@") || return $?
   eval "$binding"
   [[ -n "$issue_id" && -n "$repo_id" && -f "$units_file" ]] || mandible_ledger_die "Explicit --issue, --repo and --units-file snapshot required" 2 || return $?
+  [[ -n "${reason//[[:space:]]/}" ]] || mandible_ledger_die "Missing --reason" 2 || return $?
   mandible_ledger_require_tools || return $?
   local payload
-  payload=$(jq -n --arg issue_id "$issue_id" --arg repo_id "$repo_id" --slurpfile units "$units_file" \
-    '{issue_id:$issue_id,repo_id:$repo_id,work_units:$units[0]}') || return $?
+  payload=$(jq -n --arg reason "$reason" --arg issue_id "$issue_id" --arg repo_id "$repo_id" --slurpfile units "$units_file" \
+    '{reason:$reason,issue_id:$issue_id,repo_id:$repo_id,work_units:$units[0]}') || return $?
   mandible_ledger_request POST "/api/work-units/release-issue" "$payload" "$graceful"
 }
 
 mandible_work_unit_custody_assume() {
-  local id="" expected_generation="" reason="" checkpoint="" request_approval=0 graceful="${MANDIBLE_LEDGER_GRACEFUL:-0}"
+  local id="" expected_generation="" reason="" session="" graceful="${MANDIBLE_LEDGER_GRACEFUL:-0}"
   local binding
-  binding=$(mandible_bind_arguments "work-unit.custody-assume" '{"id":{"option":"id"},"expected_generation":{"option":"expected-generation"},"reason":{"option":"reason"},"checkpoint":{"option":"parent-role-checkpoint"},"request_approval":{"option":"request-approval","constant":"1"},"graceful":{"option":"graceful","constant":"1"}}' "$@") || return $?
+  binding=$(mandible_bind_arguments "work-unit.custody-assume" '{"id":{"option":"id"},"expected_generation":{"option":"expected-generation"},"reason":{"option":"reason"},"session":{"option":"session"},"graceful":{"option":"graceful","constant":"1"}}' "$@") || return $?
   eval "$binding"
-  [[ -n "$id" ]] || mandible_ledger_die "Missing --id" 2 || return $?
-  [[ "$expected_generation" =~ ^[0-9]+$ ]] || mandible_ledger_die "Missing or invalid --expected-generation" 2 || return $?
-  [[ -n "$reason" ]] || mandible_ledger_die "Missing --reason" 2 || return $?
+  [[ -n "$id" && "$expected_generation" =~ ^[0-9]+$ && -n "${reason//[[:space:]]/}" ]] || mandible_ledger_die "id, expected-generation and reason are required" 2 || return $?
   mandible_ledger_require_tools || return $?
   local payload
-  payload=$(jq -n --argjson expected_generation "$expected_generation" --arg reason "$reason" --arg checkpoint "$checkpoint" \
-    --argjson request_approval "$request_approval" --arg target_session_id "${MANDIBLE_SESSION_ID:-}" \
-    '{expected_generation:$expected_generation,reason:$reason}
-    + (if $checkpoint != "" then {parent_role_checkpoint_id:$checkpoint} else {} end)
-    + (if $request_approval == 1 then {request_approval:true} + (if $target_session_id != "" then {target_session_id:$target_session_id} else {} end) else {} end)')
+  payload=$(jq -n --argjson expected_generation "$expected_generation" --arg reason "$reason" --arg session "$session" \
+    '{expected_generation:$expected_generation,reason:$reason} + (if $session == "" then {} else {target_session_id:$session} end)')
   mandible_ledger_request POST "/api/work-units/$(mandible_ledger_urlencode "$id")/custody/assume" "$payload" "$graceful"
 }
 

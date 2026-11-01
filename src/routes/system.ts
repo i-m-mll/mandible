@@ -6,7 +6,6 @@ import type { Db } from "../db.js";
 import { globalCapabilityRoute } from "../permissions/routes.js";
 import { tableExists } from "../db-introspection.js";
 import { daemonStderrLogPath } from "../daemon-log.js";
-import { visibleDaemonLogSource } from "../operational-log-db.js";
 import { broadcast } from "../sse.js";
 import type { RequestLike, RouteRegistrar } from "../server.js";
 import type { WorkScanner } from "../work-scanner.js";
@@ -233,7 +232,7 @@ export function registerSystemRoutes(server: RouteRegistrar, workScanner: WorkSc
       exists: true,
       source: "stderr_file",
     });
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/system/logs", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/system/logs", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   // POST /api/admin/rebuilding — broadcast a mandible:rebuilding SSE event to all
   // connected clients, then return 200. Called by the post-merge hook immediately
@@ -242,7 +241,7 @@ export function registerSystemRoutes(server: RouteRegistrar, workScanner: WorkSc
   server.post("/api/admin/rebuilding", (_req, res) => {
     broadcast(DOMAIN_EVENTS.MANDIBLE_REBUILDING, {});
     sendJson(res, 200, { ok: true });
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/admin/rebuilding", effects: ["auth:protected","maintenance:shared"], requestSchema: null, reportingCategory: "system" }, fileRpc: "deny" });
+  }, { operation: { id: "post:/api/admin/rebuilding", effects: ["auth:protected","maintenance:shared"], requestSchema: null, reportingCategory: "system" }, fileRpc: "deny" });
 
   server.post("/api/system/open-path", globalCapabilityRoute("open_path", (req, res) => {
     const body = readBody<{ path?: string }>(req);
@@ -291,7 +290,7 @@ export function registerSystemRoutes(server: RouteRegistrar, workScanner: WorkSc
       }
       sendJson(res, 200, { ok: true });
     });
-  }), { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/system/open-path", effects: ["process:external"], requestSchema: null, reportingCategory: "system" }, fileRpc: "deny" });
+  }), { operation: { id: "post:/api/system/open-path", effects: ["process:external"], requestSchema: null, reportingCategory: "system" }, fileRpc: "deny" });
 }
 
 /**
@@ -311,12 +310,11 @@ function queryDaemonLog(db: Db, filters: LogFilters): {
   older_cursor: string | null;
   has_older: boolean;
 } {
-  const source = visibleDaemonLogSource(db);
   const { access, residual } = buildDaemonLogQuery(filters);
   const candidates = db
     .prepare(
-      `${source.cte} SELECT id, ts, subsystem, event, ${ENTITY_COLUMN_NAMES.join(", ")}, ${residual.sql} AS hit
-       FROM ${source.table}
+      `SELECT id, ts, subsystem, event, ${ENTITY_COLUMN_NAMES.join(", ")}, ${residual.sql} AS hit
+       FROM daemon_log
        WHERE ${access.sql}
        ORDER BY ts DESC, id DESC
        LIMIT ?`,
@@ -330,7 +328,7 @@ function queryDaemonLog(db: Db, filters: LogFilters): {
     : candidates.length === LOG_WINDOW_ROWS ? candidates.at(-1) : undefined;
   const rows = page.length === 0 ? [] : db
     .prepare(
-      `${source.cte} SELECT * FROM ${source.table}
+      `SELECT * FROM daemon_log
        WHERE id IN (${page.map(() => "?").join(", ")})
        ORDER BY ts ASC, id ASC`,
     )

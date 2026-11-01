@@ -1,102 +1,70 @@
-# Architecture
+# Architecture and system concepts
 
-Mandible is three things: a Bun daemon, a browser-based SPA, and optionally a Tauri native wrapper. They communicate over HTTP, Server-Sent Events, and WebSocket, all on a single port.
+Mandible is a local agent operations manager for one operating-system user. It
+organizes issues, work, reviews, approvals, artifacts, and conversations across
+projects and agent sessions. The daemon serves a browser application and local
+clients; the desktop application presents the same system. Opening Mandible
+always gives the local user access, without login, pairing, or an expiring
+session.
 
-## System overview
+## Authorship, responsibility, and permission
 
-```
-+---------------------------------------------------+
-|              Tauri Shell (optional)                |
-|  +---------------------------------------------+  |
-|  |       Preact SPA (esbuild, xterm.js)        |  |
-|  |  Sessions | Auth | Console | Issues | ...   |  |
-|  +--------------------+------------------------+  |
-|                       | HTTP / SSE / WebSocket    |
-|  +--------------------+------------------------+  |
-|  |        Bun Daemon     (TypeScript)           |  |
-|  |                                              |  |
-|  |  Router -> Routes (auth, sessions, work, ...) |
-|  |  SSE Manager -> Real-time event broadcast    |  |
-|  |  PTY Manager -> node-pty terminal sessions   |  |
-|  |  Session Registry -> lifecycle tracking      |  |
-|  |  Auth Queue -> merge request state machine   |  |
-|  |  Work Scanner -> git repo/branch scanning    |  |
-|  |  Issue Ledger -> local issue storage         |  |
-|  |  Ingestion -> conversation file watching     |  |
-|  |  Push Manager -> SSH batch push              |  |
-|  |  Reaper Timer -> dead session cleanup        |  |
-|  |  Nav Enricher -> terminal metadata           |  |
-|  |  Work Unit Reconciler -> state consistency   |  |
-|  |  Channel Registry -> MCP session tracking    |  |
-|  |                                              |  |
-|  |  SQLite (node:sqlite, WAL mode)              |  |
-|  +----------------------------------------------+  |
-+-----------------------------------------------------+
-```
+These are independent questions, not levels in a hierarchy:
 
-## The daemon
+- **Authorship and provenance** record who created or changed a record and what
+  evidence identifies the actor. They remain part of its history when work is
+  handed off. Local agent calls carry a provider/session or managed app/session
+  claim; this identifies an actor but is not human approval.
+- **Responsibility** identifies the user and session currently accountable for a
+  work unit, umbrella parent role, or request. Assignment and process bindings
+  describe execution separately. Ordinary writes do not silently take over:
+  an authorized agent explicitly assumes responsibility with a reason and the
+  observed generation or checkpoint. This may happen even if the holder is live
+  or its liveness is unknown. Handoff and relinquishment preserve work state;
+  stale writers fail. A transfer does not stop a running process or grant human
+  approval.
+- **Permission for protected effects** comes from the configured operator's
+  fresh key proof, bound to the action, installation, and relevant context.
+  Merge approval binds the exact candidate and reviewed request. Ordinary project
+  work such as sharing, review text, and annotations remains attributed without
+  treating that attribution as operator proof. Proposal disposition requires
+  human proof; promotion staged on an approved merge uses that approval's exact
+  binding.
 
-The daemon is a Bun process that serves the HTTP API, the SSE event stream, the WebSocket terminal connections, and the static SPA files from one `http.Server`. Its default loopback backend port is 29420 (`MANDIBLE_PORT`); the desktop and browser use the trusted HTTPS gateway at `https://app.mandible.localhost:19420`.
+The local CLI uses an owner-only Unix socket. Local bearer tokens do not confer
+responsibility or operator authority; unknown or conflicting managed identities
+are refused. Remote and scoped transports retain their credential boundaries.
+See [Local client access](/docs/local-client-access),
+[Work units](/docs/concepts/work-units), and
+[Approvals](/docs/features/auth-queue).
 
-### No framework
+## Where information lives
 
-The HTTP server uses a lightweight custom router rather than Express or similar frameworks. Each feature module registers its routes at startup, and the router handles parameter extraction, body parsing, and JSON responses.
+Provider-native files own conversation transcript bytes. Mandible's canonical
+ledger stores conversation and session identities, annotations, relationships,
+source bindings, and Mandible-authored operational records. These include issue
+and comment text, approval requests, and durable chat-control outbox messages;
+the ledger is not a mirror of provider conversation history. Navigation and
+masked search indexes are disposable. Sparse position anchors identify places in
+conversations; provider-native anchors support native resume.
 
-### Startup and shutdown
+A metadata backup can be restored into a new database. Normal discovery,
+ingestion, and reconciliation reconnect available native sources and rebuild
+derived indexes. A metadata backup does not promise to contain transcripts or
+reconstruct a missing provider session: unavailable content stays unavailable.
+See [Conversations](/docs/features/conversations) and
+[Conversation recovery](/docs/conversation-recovery).
 
-On startup, the daemon opens the database, starts the HTTP server, and initializes all background services: conversation ingestion, issue scanning, the dead-session reaper, the work-unit reconciler, and the backup scheduler. Each service starts in the background without blocking the server.
+Operational logs live separately in `operational-logs.db`. Artifacts have their
+own custody: a version points either to tracked Git content or bytes retained by
+Mandible. The SQLite ledger uses migrations applied at startup.
 
-The daemon shuts down gracefully on `SIGINT` or `SIGTERM`, closing connections, stopping background services, and cleaning up the PID file. A hard deadline prevents the process from hanging if graceful shutdown stalls.
+## Interfaces
 
-## SQLite
-
-Mandible uses Bun’s built-in `node:sqlite` through the canonical `src/sqlite.ts` boundary for synchronous database access. The database runs in WAL (Write-Ahead Logging) mode, which allows concurrent reads from the dashboard while the daemon writes.
-
-### Schema migrations
-
-The schema is maintained through numbered migrations applied automatically on startup. You never need to run migrations manually --- the daemon detects the current version and applies any outstanding changes.
-
-### Data storage
-
-- **Sessions** --- status, working directory, branch, and liveness metadata
-- **Conversations** --- compressed transcripts with individually stored blocks, keeping the database compact as history grows
-- **Auth requests** --- the full request lifecycle with diffs, specs, and execution output
-- **Work units** --- the join between issues, branches, and sessions with lifecycle state tracking
-
-## The SPA
-
-The dashboard is a Preact single-page application bundled with esbuild. It uses hash-based routing and communicates with the daemon through the HTTP API and SSE event stream.
-
-Key libraries: **xterm.js** for terminal emulation, **D3** for the knowledge graph, **diff2html** for diff rendering, and **marked** for Markdown. The SPA rebuilds in milliseconds during development via esbuild's watch mode.
-
-The UI is fully reactive --- SSE events from the daemon trigger immediate re-renders without polling.
-
-## Communication protocols
-
-### HTTP API
-
-The daemon exposes a REST-ish JSON API under `/api/`. All routes return JSON responses. The API is the primary interface for both the SPA and external tools (the `mandible` CLI, curl, agent hooks).
-
-### Server-Sent Events (SSE)
-
-The SSE endpoint at `/api/events` pushes every state mutation as a typed event. Clients can subscribe to specific topic prefixes (e.g., `topic=auth:` to receive only auth-related events, or `topic=session:` for session changes). Without a topic filter, clients receive everything.
-
-Events include a `type` field (like `session:created`, `auth:approved`, `console:output`), a `data` payload, and an ISO 8601 timestamp. A 15-second heartbeat comment keeps connections alive through proxies and load balancers.
-
-See [Real-time events](/docs/concepts/real-time-events) for the full topic list and subscription patterns.
-
-### WebSocket
-
-WebSocket connections carry terminal I/O for console sessions. Terminal output streams to the dashboard in real-time, and keyboard input flows back. A per-session ring buffer provides scroll-back history for clients that connect mid-session.
-
-## Tauri wrapper
-
-The optional Tauri shell provides a native macOS window via WebView. Currently it's a thin launcher (Level 1) --- it opens a window pointed at the running daemon. The daemon must be started separately.
-
-A planned Level 2 integration would bundle the daemon as a Tauri sidecar, starting and stopping it with the application lifecycle. This is tracked as an open issue but is not yet implemented.
-
-## Process model
-
-Mandible runs as a single Bun process. Background services (issue scanning, conversation ingestion, the session reaper, etc.) run on periodic timers within the same process.
-
-The exception is the Console: PTY and SDK sessions are child processes managed by the daemon and cleaned up on shutdown.
+The daemon serves the application and API over the local HTTPS front door, with
+Server-Sent Events for updates and WebSockets for terminal I/O. The CLI uses the
+local socket by default. Agent sessions may be managed or external; provider
+integration determines available process controls and event data, not a rank
+or a different authorship or approval model. See
+[Agent integration](/docs/concepts/agent-tiers) and
+[Real-time events](/docs/concepts/real-time-events).

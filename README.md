@@ -177,7 +177,7 @@ The app preserves view state across refreshes and daemon syncs; resets happen on
 
 Mandible has a contract and a policy layer. The contract (`cli/instructions-contract.md`) is the same for every install: command grammar, reference forms, approval rules, coordination facts, and transports. Policy, such as signing identities, branch names, and worktree tooling, belongs to the user. Mandible renders the contract into an instruction fragment and writes it to the targets configured with `mandible instructions targets`, either as a managed block inside an existing instruction file or as a standalone file, then runs the optional post-export command (`mandible instructions post-export`), for example a compiler that assembles the user's instruction files. `mandible instructions diff` shows where a target has drifted from the rendered fragment. See [Contract vs. policy](docs/contract-vs-policy.md) and [Instruction sources](docs/instruction-sources.md).
 
-`cli/api.sh` attaches the ambient provider identity (`CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`) to mutating calls as claimed attribution; it is never a credential. Protected lifecycle and credential routes use the durable Keychain credential. `mandible user whoami` reports what the daemon resolves for the caller.
+`cli/api.sh` attaches the ambient provider identity (`CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`) to mutating calls as claimed attribution; it is never a credential. Local socket calls ignore bearer tokens; protected effects require operator proof. `mandible user whoami` reports what the daemon resolves for the caller.
 
 ### Claude Code
 
@@ -195,7 +195,7 @@ Codex threads are sessions by their thread id; nothing registers them. Liveness 
 
 Gemini sessions are known from their ingested transcripts.
 
-See [Agent integration](docs/getting-started/agent-integration.mdx) and [Agent tiers](docs/concepts/agent-tiers.mdx) for the capability matrix.
+See [Agent integration setup](docs/getting-started/agent-integration.mdx) and [connection methods](docs/concepts/agent-tiers.mdx).
 
 ## Install and run
 
@@ -288,7 +288,7 @@ The repository's own agent instructions are in [AGENTS.md](AGENTS.md) and [CLAUD
 
 - [docs/index.mdx](docs/index.mdx): the documentation site index.
 - Getting started: [installation](docs/getting-started/installation.mdx), [first run](docs/getting-started/first-run.mdx), [agent integration](docs/getting-started/agent-integration.mdx).
-- Concepts: [architecture](docs/concepts/architecture.mdx), [agent tiers](docs/concepts/agent-tiers.mdx), [work units](docs/concepts/work-units.mdx), [real-time events](docs/concepts/real-time-events.mdx).
+- Concepts: [architecture](docs/concepts/architecture.mdx), [agent integration](docs/concepts/agent-tiers.mdx), [work units](docs/concepts/work-units.mdx), [real-time events](docs/concepts/real-time-events.mdx).
 - Features and API: [docs/features/](docs/features/), [docs/api/](docs/api/).
 - CLI: [docs/cli/mandible.mdx](docs/cli/mandible.mdx), the [cheatsheet](docs/cli-reference.md), and `mandible help <command>`.
 - Contracts: the [interface contract](cli/instructions-contract.md), [contract vs. policy](docs/contract-vs-policy.md), [operation and command contracts](docs/operation-and-command-contract.md), [local client access](docs/local-client-access.md).

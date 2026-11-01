@@ -77,5 +77,5 @@ it("allows managed app/session agents to create, rename and read ordinary Briefi
   const protectedReview = await invoke("POST", "/api/briefing-groups/:groupId/review-candidates", agent,
     {}, { groupId: "missing" });
   expect(protectedReview).toMatchObject({ status: 403,
-    body: { code: "briefing_group_review_credential_required" } });
+    body: { code: "operator_required" } });
 });

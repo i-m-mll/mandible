@@ -253,17 +253,19 @@ Cancel the configured operator's in-flight signing challenge. Requires `approve_
 
 `GET /api/auth/clearances`, `GET /api/auth/clearances/:id`,
 `POST /api/auth/clearances`, and `POST /api/auth/clearances/:id/revoke` are
-operator-only. `POST /api/auth/request/:id/clearance/execute` is available only
-to the exact active API-token credential recorded when that request was
-submitted. Clearance execution is merge-only, daemon-only, runtime-bound, and
-atomically consumes one use while freezing the reviewed request and recording
-the clearance, signer lease, requester credential, and snapshot digest.
+operator-only and require operator proof. A signed clearance grants a bounded
+scope to an agent user. `POST /api/auth/request/:id/clearance/execute` uses
+the current responsible actor and an applicable clearance for that actor, not a
+prior requester's grant. Execution is merge-only, daemon-only, runtime-bound,
+and requires project and effect authority, exact candidate acceptance, and
+existing process and signer fences. Responsibility is rechecked before one use
+is atomically consumed. Old credential-bound scopes are retired and must be
+reissued, rather than widened.
 
 ```json
 {
   "request_id": "optional-auth-request-id",
   "grantee": "agent-user-or-slug",
-  "grantee_credential_id": "credential-id",
   "project": "canonical-project-key",
   "base": "main",
   "action": "merge",
@@ -322,9 +324,9 @@ Requeue an auth request.
 
 ### POST /api/auth/request/:id/withdraw
 
-Withdraw a pending request. The caller must be the recorded requester with the exact original API-token credential or session identity.
+Withdraw a pending request as its current responsible actor. Bound requests follow their delivery work unit; unbound requests have their own responsibility.
 
-**Request body:** `{ "reason": "required explanation", "session_id": "required for session-origin requests" }`
+**Request body:** `{ "reason": "required explanation", "expected_revision": 1, "expected_custody_generation": 1 }`
 
 **Response:** `200 OK`
 
@@ -542,3 +544,5 @@ A required hook that exhausts its attempts raises exactly one inbox alert per
 `GET /api/inbox/global`. Acknowledge one with
 `POST /api/inbox/hook_alert/:id/ack`. Acknowledging dismisses the notice only —
 the durable hook row still reads `failed` until a retry actually succeeds.
+
+Before requesting the operator signature, approval readiness rechecks the current protected checkout independently of the retained merge candidate. Tracked edits or an unfinished merge block approval while leaving the request pending. The existing `publication_blocker` projection reports `checkout_not_ready` with the checkout, affected paths and staged/unstaged state. Preserve those edits in their intended worktree, restore a clean protected checkout and refresh the request. Execution repeats the same check to catch later edits before publication.

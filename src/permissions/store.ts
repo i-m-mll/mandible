@@ -1,3 +1,4 @@
+import { operatorPresenceIdentity } from "../client-auth/operator-presence.js";
 import { mutateLedgerRecord } from "../ledger/mutation-history.js";
 import type { Db } from "../db.js";
 import { getClientAuthMode } from "../client-auth/mode.js";
@@ -311,7 +312,7 @@ export function projectAccessSettings(db: Db, projectRef: string): {
   };
 }
 
-function identityIsValid(db: Db, identity: ResolvedClientIdentity): boolean {
+function identityIsValid(db: Db, identity: Pick<ResolvedClientIdentity, "user_id" | "slug">): boolean {
   const user = getUserById(db, identity.user_id);
   return Boolean(user && user.status === "active" && user.slug === identity.slug);
 }
@@ -325,7 +326,7 @@ function subjectPredicateSql(): string {
 }
 
 export function evaluateProjectAccess(db: Db, input: {
-  identity: ResolvedClientIdentity | null;
+  identity: Pick<ResolvedClientIdentity, "user_id" | "slug"> | null;
   project_id: string;
   required_role: ProjectRole;
 }): AccessDecision {
@@ -429,7 +430,7 @@ export function requireGlobalCapability(
   capability: GlobalCapability,
 ): AccessDecision {
   const decision = evaluateGlobalCapability(db, {
-    identity: req.client_identity ?? null,
+    identity: operatorPresenceIdentity(req) ?? req.client_identity ?? null,
     capability,
   });
   if (!decision.allowed) {

@@ -22,7 +22,6 @@ type ConversationBoundary = {
   source: string;
   session_id: string | null;
   parent_conversation_id: string | null;
-  has_message_anchor: number;
   local_draft: number;
 };
 
@@ -146,12 +145,7 @@ export class ConversationControlStore {
   getBoundary(conversationId: string): Result<ConversationBoundary, ConversationControlError> {
     const row = this.db.prepare(`
       SELECT c.id, c.source, NULLIF(c.session_id, '') AS session_id, c.parent_conversation_id,
-        EXISTS(SELECT 1 FROM conversation_spawn_requests s WHERE s.id = c.id AND s.schema_version = 'mandible-conversation-spawn-request@3' AND s.state = 'ready' AND s.provider_session_id IS NULL) AS local_draft,
-        EXISTS(
-          SELECT 1 FROM conversation_structural_blocks b
-          WHERE b.conversation_id = c.id AND b.status = 'current'
-            AND b.dag_uuid IS NOT NULL AND b.dag_uuid != ''
-        ) AS has_message_anchor
+        EXISTS(SELECT 1 FROM conversation_spawn_requests s WHERE s.id = c.id AND s.schema_version = 'mandible-conversation-spawn-request@3' AND s.state = 'ready' AND s.provider_session_id IS NULL) AS local_draft
       FROM conversations c WHERE c.id = ?
     `).get(conversationId) as ConversationBoundary | undefined;
     return row
@@ -708,7 +702,7 @@ export class ConversationControlStore {
     else if (owner.kind === "none" && boundary.local_draft && !boundary.session_id) {
       capability = capabilities.send ? { kind: "live-send", revision, generation: owner.generation } : unavailable(revision, "unsupported-provider");
     } else if (owner.kind === "none") {
-      capability = capabilities.resume_message_anchor && boundary.has_message_anchor === 1
+      capability = capabilities.resume_message_anchor
         ? { kind: "message-anchor-resume", revision, generation: owner.generation, adapter_id: adapterId, provider_session_id: boundary.session_id! }
         : capabilities.resume_provider_session
           ? { kind: "provider-session-resume", revision, generation: owner.generation, adapter_id: adapterId, provider_session_id: boundary.session_id! }

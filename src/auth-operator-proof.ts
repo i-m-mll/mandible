@@ -36,7 +36,7 @@ export async function signOperatorChallenge(
   signal?: AbortSignal,
 ): Promise<OperatorProofResult> {
   const gitEnv = operatorGitEnv();
-  const config = await observeChild("git", ["config", "--get", "user.signingkey"], {
+  const config = await observeChild("git", ["config", ...(cwd === null ? ["--global"] : []), "--get", "user.signingkey"], {
     cwd: cwd ?? undefined, encoding: "utf8", timeout: 5_000,
     env: gitEnv,
   });

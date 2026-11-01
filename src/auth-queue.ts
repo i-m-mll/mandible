@@ -137,7 +137,7 @@ import {
   type LedgerStoredWorkerStatus,
 } from "./ledger/types.js";
 import { broadcast as defaultBroadcast } from "./sse.js";
-import { applyApprovedCustodyTransfer } from "./work-unit-custody.js";
+import { holdsResponsibility, recordResponsibilityTransfer, type ResponsibilityActor } from "./responsibility.js";
 import { raiseDaemonIncident, resolveDaemonIncident } from "./operational-incidents.js";
 import { promoteBriefingGroupProposal } from "./feedback/briefing-groups.js";
 import { appendAuthLifecycleEvent, listAuthLifecycleEvents, authRequestInitiatingOrigin } from "./auth-lifecycle.js";
@@ -187,7 +187,7 @@ type WorkUnitCustody = {
   kind: "solo" | "partition" | "integration";
   state: string;
   owner_user_id: string;
-  owner_credential_id: string;
+  responsibility_session_id: string | null;
   custody_generation: number;
   auth_request_id: string | null;
 };
@@ -835,8 +835,20 @@ export class AuthQueue {
     const applicableIds = new Set(applicable.map(request => request.id));
     const ownershipIds = new Set(applicable.filter(request => this.candidateAcceptanceApplies(request)).map(request => request.id));
     const blocker = applicable.length ? await this.publicationObservation(ownershipIds.size > 0) : null;
-    return new Map(requests.map(request => [request.id,
-      publicationBlockerFor({ selfUpdates: applicableIds.has(request.id), changesBuildInputs: ownershipIds.has(request.id) }, blocker)]));
+    const checkoutReads = new Map<string, Promise<{ status: "clean" } | { status: "error"; message: string }>>();
+    return new Map(await Promise.all(requests.map(async request => {
+      const runtime = publicationBlockerFor({ selfUpdates: applicableIds.has(request.id), changesBuildInputs: ownershipIds.has(request.id) }, blocker);
+      if (runtime || request.status !== "pending" || !isAuthMergeCommand(request)) return [request.id, runtime] as const;
+      const cwd = request.target_repo_root ?? request.cwd;
+      if (!cwd) return [request.id, null] as const;
+      const candidate = request.base_branch && request.merge_preflight_base_sha && request.merge_candidate_tree_sha
+        ? { baseBranch: request.base_branch, base: request.merge_preflight_base_sha, target: request.merge_candidate_tree_sha } : undefined;
+      const key = JSON.stringify([cwd, candidate]);
+      let read = checkoutReads.get(key);
+      if (!read) { read = this.checkMergeWorktreeReady(cwd, candidate); checkoutReads.set(key, read); }
+      const readiness = await read;
+      return [request.id, readiness.status === "error" ? { code: "checkout_not_ready" as const, message: readiness.message } : null] as const;
+    })));
   }
 
   /**
@@ -1019,11 +1031,15 @@ export class AuthQueue {
     } finally { finishObservation(); }
   }
 
-  /** Operator retirement of a failed runtime handoff lock (issue a09b4d2). */
+  /** Retire a failed handoff under its current request responsibility. */
   async retireRuntimeHandoff(input: { bindingDigest: string; reason: string }, actor: AuthLifecycleActor): Promise<unknown> {
     const finishObservation = this.beginObservation();
     try {
       this.requireExternalEffects("Runtime handoff retirement");
+      const lock = this.runtimeHandoffLock();
+      if (!lock?.requestId || lock.bindingDigest !== input.bindingDigest) throw new AuthQueueError("lifecycle_conflict", "Runtime handoff identity changed; refresh and retry.");
+      this.requestCustodyForActor(this.requireRequest(lock.requestId), actor);
+
       let retirement: unknown;
       try {
         retirement = await this.hookManager.retireFailedRuntimeHandoff(input, actor);
@@ -1056,7 +1072,7 @@ export class AuthQueue {
         const latest = this.db.prepare('SELECT revision, snapshot_json, snapshot_sha256 FROM auth_request_lifecycle_events WHERE auth_request_id = ? ORDER BY revision DESC LIMIT 1')
           .get(request.id) as { revision: number; snapshot_json: string; snapshot_sha256: string } | undefined;
         if (!latest || latest.revision !== expectedRevision || authSnapshotDigest(latest.snapshot_json) !== latest.snapshot_sha256
-            || (custody?.custody_generation ?? 0) !== expectedGeneration || custody && custody.auth_request_id !== current.id) {
+            || (custody?.custody_generation ?? this.requestResponsibility(current).custody_generation) !== expectedGeneration || custody && custody.auth_request_id !== current.id) {
           throw new AuthQueueError('lifecycle_conflict', 'Request lifecycle or work-unit custody changed; refresh and retry.');
         }
         this.assertObservation(request.id, observed);
@@ -1857,6 +1873,7 @@ export class AuthQueue {
           "Auth change reports belong only to merge requests.",
         );
       }
+      if (payload.type === "custody-transfer") throw new AuthQueueError("invalid_command", "Custody-transfer approval is retired; explicitly assume responsibility instead.");
       const requesterUserId = this.resolveRequesterUserId(payload, requestedByUserId);
       const actor: AuthLifecycleActor = {
         user_id: requesterUserId,
@@ -2183,7 +2200,6 @@ export class AuthQueue {
           const pending = insertionQueue!.requests;
           if (this.mergeQueueFingerprint(pending) !== mergeCheck.queue_fingerprint) throw new AuthQueueError("merge_check_failed", "Pending merge queue changed during submission; retry its preflight.");
         }
-        if (actor.evidence_method === "api_token" || actor.evidence_method === "credential_signature") this.assertActiveCredential(actor);
         if (predecessor) {
           this.assertLifecycleCas(predecessor, custody!, payload.expected_revision, payload.expected_custody_generation);
           const current = this.readRequestByExactId(predecessor.id);
@@ -2220,6 +2236,7 @@ export class AuthQueue {
           issue_ids: request.issue_ids ? JSON.stringify(request.issue_ids) : null,
           issues: request.issues ? JSON.stringify(request.issues) : null
         });
+        this.db.prepare("INSERT INTO auth_request_responsibility (auth_request_id, owner_user_id, responsibility_session_id) VALUES (?, ?, ?)").run(request.id, actor.user_id, actor.session_id ?? null);
         insertAuthRequestActions(this.db, request, actions, now);
         if (payload.space_publication_id) withLedgerMutationActor({ actor_type: "mandible_user",
           attribution: { user_id: actor.user_id, evidence_method: actor.evidence_method, evidence_id: actor.evidence_id } },
@@ -2228,9 +2245,9 @@ export class AuthQueue {
           const bound = mutateWorkUnit(this.db, custody.id, () => this.db.prepare(
             `UPDATE work_units SET auth_request_id = ?
            WHERE id = ? AND state = 'committed' AND resolved_at IS NULL
-             AND owner_user_id = ? AND owner_credential_id = ? AND custody_generation = ?
+             AND owner_user_id = ? AND responsibility_session_id IS ? AND custody_generation = ?
              AND (auth_request_id IS NULL OR auth_request_id = ?)`,
-          ).run(request.id, custody.id, actor.user_id, actor.credential_id, custody.custody_generation, predecessor?.id ?? null));
+          ).run(request.id, custody.id, actor.user_id, actor.session_id ?? null, custody.custody_generation, predecessor?.id ?? null));
           if (bound.changes !== 1) {
             throw new AuthQueueError("custody_conflict", "Work-unit custody changed before submission completed.");
           }
@@ -2334,10 +2351,6 @@ export class AuthQueue {
   private resolveSubmissionCustody(payload: AuthRequestInput, actor: AuthLifecycleActor): WorkUnitCustody | null {
     if ((payload.type ?? "merge") !== "merge") return null;
     if (payload.require_delivery_custody !== true) return null;
-    if (actor.evidence_method !== "api_token" || !actor.credential_id) {
-      throw new AuthQueueError("custody_required", "Merge submission requires an active durable client credential.");
-    }
-    this.assertActiveCredential(actor);
     if (!payload.repo || !payload.head_branch) {
       throw new AuthQueueError("custody_required", "Merge submission requires canonical project and head branch identity.");
     }
@@ -2357,7 +2370,7 @@ export class AuthQueue {
       const wuProject = resolveProjectRef(this.db, row.repo_id);
       return wuProject.ok && wuProject.project.id === project.project!.id;
     });
-    const owned = onBranch.filter((row) => row.owner_user_id === actor.user_id && row.owner_credential_id === actor.credential_id);
+    const owned = onBranch.filter((row) => holdsResponsibility(this.db, row, { user_id: actor.user_id, session_id: actor.session_id ?? null }));
     const matches = owned.filter((row) => Boolean(row.ledger_issue_id && issueIds.has(row.ledger_issue_id)));
     if (matches.length !== 1) {
       const where = `branch ${payload.head_branch} of ${payload.repo}`;
@@ -2367,7 +2380,7 @@ export class AuthQueue {
         : onBranch.length === 0
           ? `No committed, unbound delivery work unit exists on ${where}. Run \`mandible work-unit activate --issue <id> --repo ${payload.repo} --branch ${payload.head_branch}\` first.`
           : owned.length === 0
-            ? `The committed work units on ${where} are held by another user or credential: ${units(onBranch)}. Submit with that credential, or transfer custody with \`mandible work-unit custody-assume\`.`
+            ? `The committed work units on ${where} are held by another responsible user or session: ${units(onBranch)}. Explicitly transfer responsibility with \`mandible work-unit custody-assume\`.`
             : `The request names no issue linked to a committed work unit on ${where}; the branch's units are ${units(owned)}. Pass that issue with --issue or --closes-issue.`;
       throw new AuthQueueError("custody_required", `Merge request has no single delivery work unit. ${reason}`);
     }
@@ -2386,45 +2399,40 @@ export class AuthQueue {
   }
 
   private requestCustodyForActor(request: AuthRequest, actor: AuthLifecycleActor): WorkUnitCustody | null {
-    if (!request.custody_work_unit_id && actor.authority_path === "operator_recovery") {
-      const operator = getOperator(this.db);
-      if (!operator || actor.user_id !== operator.id) {
-        throw new AuthQueueError("operator_recovery_required", "Only the configured operator may use recovery authority.");
-      }
-      this.assertActiveCredential(actor);
-      return null;
+    const custody = request.custody_work_unit_id ? this.db.prepare("SELECT * FROM work_units WHERE id = ?")
+      .get(request.custody_work_unit_id) as WorkUnitCustody | undefined : null;
+    if (request.custody_work_unit_id && !custody) throw new AuthQueueError("custody_required", "The bound delivery work unit is missing.");
+    const owner = custody ?? this.requestResponsibility(request);
+    if (!owner || !holdsResponsibility(this.db, owner, { user_id: actor.user_id, session_id: actor.session_id ?? null })) {
+      throw new AuthQueueError("custody_required", "Explicitly assume current request responsibility before changing it.");
     }
-    if (!request.custody_work_unit_id) {
-      throw new AuthQueueError("operator_recovery_required", "This request has no provable delivery-work-unit custody.");
-    }
-    const custody = this.db.prepare("SELECT * FROM work_units WHERE id = ?")
-      .get(request.custody_work_unit_id) as WorkUnitCustody | undefined;
-    if (!custody) throw new AuthQueueError("operator_recovery_required", "The bound delivery work unit is missing.");
-    if (actor.authority_path === "operator_recovery") {
-      const operator = getOperator(this.db);
-      if (!operator || actor.user_id !== operator.id) {
-        throw new AuthQueueError("operator_recovery_required", "Only the configured operator may use recovery authority.");
-      }
-      this.assertActiveCredential(actor);
-      return custody;
-    }
-    this.assertActiveCredential(actor);
-    if (custody.owner_user_id !== actor.user_id || custody.owner_credential_id !== actor.credential_id) {
-      throw new AuthQueueError("custody_required", "The current delivery-work-unit credential is required.");
-    }
-    return custody;
+    return custody ?? null;
   }
 
-  private assertActiveCredential(actor: AuthLifecycleActor): void {
-    if (actor.evidence_method !== "api_token" || !actor.credential_id) {
-      throw new AuthQueueError("custody_required", "An active durable client credential is required.");
-    }
-    const row = this.db.prepare(
-      "SELECT user_id, status FROM user_credentials WHERE id = ?",
-    ).get(actor.credential_id) as { user_id: string; status: string } | undefined;
-    if (!row || row.status !== "active" || row.user_id !== actor.user_id) {
-      throw new AuthQueueError("custody_required", "The durable client credential is inactive or belongs to another user.");
-    }
+  requestResponsibility(request: AuthRequest): { owner_user_id: string | null; responsibility_session_id: string | null; custody_generation: number } {
+    if (request.custody_work_unit_id) return this.db.prepare("SELECT owner_user_id, responsibility_session_id, custody_generation FROM work_units WHERE id = ?")
+      .get(request.custody_work_unit_id) as ReturnType<AuthQueue["requestResponsibility"]>;
+    return (this.db.prepare("SELECT * FROM auth_request_responsibility WHERE auth_request_id = ?").get(request.id) as ReturnType<AuthQueue["requestResponsibility"]> | undefined)
+      ?? { owner_user_id: null, responsibility_session_id: null, custody_generation: 0 };
+  }
+
+  assumeRequestResponsibility(id: string, actor: ResponsibilityActor, reason: string, expectedRevision: number, expectedGeneration: number, successor?: ResponsibilityActor | null): void {
+    const request = this.requireRequest(id);
+    if (request.custody_work_unit_id) throw new AuthQueueError("custody_required", "Transfer the request's bound work-unit responsibility instead.");
+    if (!reason.trim()) throw new AuthQueueError("lifecycle_precondition_required", "A transfer reason is required.");
+    this.db.transaction(() => {
+      this.assertLifecycleCas(request, null, expectedRevision, expectedGeneration);
+      const prior = this.requestResponsibility(request);
+      if (successor !== undefined) this.requestCustodyForActor(request, { ...actor, evidence_method: "session_claim" });
+      const next = successor === undefined ? actor : successor;
+      this.db.prepare(`INSERT INTO auth_request_responsibility (auth_request_id, owner_user_id, responsibility_session_id, custody_generation)
+        VALUES (?, ?, ?, ?) ON CONFLICT(auth_request_id) DO UPDATE SET owner_user_id=excluded.owner_user_id,
+        responsibility_session_id=excluded.responsibility_session_id, custody_generation=excluded.custody_generation`)
+        .run(id, next?.user_id ?? null, next?.session_id ?? null, expectedGeneration + 1);
+      recordResponsibilityTransfer(this.db, { kind: "auth_request", id,
+        prior: prior.owner_user_id ? { user_id: prior.owner_user_id, session_id: prior.responsibility_session_id } : null,
+        next, generation: expectedGeneration + 1, reason });
+    })();
   }
 
   private assertLifecycleCas(
@@ -2442,7 +2450,7 @@ export class AuthQueue {
     ).get(request.id) as { revision: number; snapshot_sha256: string } | undefined;
     const currentDigest = authSnapshotDigest(authRequestSnapshot(this.db, request.id));
     if (!latest || latest.revision !== expectedRevision || latest.snapshot_sha256 !== currentDigest ||
-        (custody?.custody_generation ?? 0) !== expectedGeneration ||
+        (custody?.custody_generation ?? this.requestResponsibility(request).custody_generation) !== expectedGeneration ||
         (custody !== null && custody.auth_request_id !== request.id)) {
       throw new AuthQueueError("lifecycle_conflict", "Request lifecycle or work-unit custody changed; refresh and retry.");
     }
@@ -3482,8 +3490,8 @@ export class AuthQueue {
           const released = mutateWorkUnit(this.db, custody.id, () => this.db.prepare(
             `UPDATE work_units SET auth_request_id = NULL
              WHERE id = ? AND auth_request_id = ?
-               AND owner_user_id IS ? AND owner_credential_id IS ? AND custody_generation = ?`,
-          ).run(custody.id, request.id, custody.owner_user_id, custody.owner_credential_id, custody.custody_generation));
+               AND owner_user_id IS ? AND responsibility_session_id IS ? AND custody_generation = ?`,
+          ).run(custody.id, request.id, custody.owner_user_id, custody.responsibility_session_id, custody.custody_generation));
           if (released.changes !== 1) {
             throw new AuthQueueError("custody_conflict", "Work-unit custody changed before withdrawal completed.");
           }
@@ -3551,7 +3559,7 @@ export class AuthQueue {
 
   private custodyAuthority(request: Pick<AuthRequest, "custody_work_unit_id">): unknown {
     return request.custody_work_unit_id ? this.db.prepare(
-      "SELECT id, issue_id, ledger_issue_id, auth_request_id, repo_id, branch, kind, state, owner_user_id, owner_credential_id, custody_generation, resolved_at FROM work_units WHERE id = ?",
+      "SELECT id, issue_id, ledger_issue_id, auth_request_id, repo_id, branch, kind, state, owner_user_id, responsibility_session_id, custody_generation, resolved_at FROM work_units WHERE id = ?",
     ).get(request.custody_work_unit_id) : null;
   }
 
@@ -3672,6 +3680,7 @@ export class AuthQueue {
     try {
       this.requireExternalEffects("Operator approval proof");
       let request = this.requireRequest(id);
+      if (request.type === "custody-transfer") throw new AuthQueueError("invalid_command", "Custody-transfer approval is retired; explicitly assume responsibility instead.");
       if (request.status !== "pending") throw new AuthQueueError("invalid_status", "Only pending requests can be approved.");
       if (this.operatorProofInFlight.has(request.id)) throw new AuthQueueError("invalid_status", "Operator signing is already in progress.");
       const controller = new AbortController();
@@ -3719,6 +3728,7 @@ export class AuthQueue {
       await this.expireStale();
       this.requireExternalEffects("Auth approval and execution");
       let request = this.requireRequest(id);
+      if (request.type === "custody-transfer") throw new AuthQueueError("invalid_command", "Custody-transfer approval is retired; explicitly assume responsibility instead.");
       if (request.status !== "pending") {
         throw new AuthQueueError(
           "invalid_status",
@@ -3845,7 +3855,7 @@ export class AuthQueue {
       this.broadcast({ event: DOMAIN_EVENTS.AUTH_LIFECYCLE, data: {
         request_id: executing.id, lifecycle: "executing", approved_by_user_id: approverUserId,
       } });
-      if (executing.type === "custody-transfer") return this.completeCustodyTransfer(executing);
+      if (executing.type === "custody-transfer") throw new AuthQueueError("invalid_command", "Custody-transfer approval is retired; explicitly assume responsibility instead.");
       if (Object.keys(executionEnv).length > 0) {
         this.executionEnvs.set(executing.id, executionEnv);
       }
@@ -3855,35 +3865,8 @@ export class AuthQueue {
     } finally { finishObservation(); }
   }
 
-  /**
-   * Issue 72b00f8 — an approved custody-transfer request runs in process, never
-   * through a shell, hooks, or the merge finalizers: the transfer is applied (or
-   * refused with nothing changed) and the request completes in the same call.
-   */
-  private completeCustodyTransfer(request: AuthRequest): AuthRequest {
-    const result = applyApprovedCustodyTransfer(this.db, request);
-    const now = this.now();
-    const output = result.ok
-      ? `Work-unit custody transferred to credential ${result.work_unit.owner_credential_id} at generation ${result.work_unit.custody_generation}.\n`
-      : `${result.error}\n`;
-    const error = result.ok ? null : result.error;
-    const status = authExecutionStatus(result.ok ? 0 : 1);
-    this.db.transaction(() => {
-      this.db.prepare(
-        "UPDATE auth_requests SET status = ?, resolved_at = ?, updated_at = ?, last_executed_at = ?, exit_code = ?, output = ?, error = ? WHERE id = ?",
-      ).run(status, now, now, now, result.ok ? 0 : 1, output, error, request.id);
-      appendAuthLifecycleEvent(this.db, {
-        requestId: request.id, eventType: status, priorStatus: request.status,
-        nextStatus: status, actor: systemAction(), reason: error, occurredAt: now,
-      });
-    })();
-    const completed = this.requireRequest(request.id);
-    this.broadcast({ event: DOMAIN_EVENTS.AUTH_RESOLVED, data: this.buildResolvedPayload(completed) });
-    return completed;
-  }
-
   /** Consume one exact scoped clearance and begin the protected merge. */
-  async approveWithClearance(id: string): Promise<AuthRequest> {
+  async approveWithClearance(id: string, actor: AuthLifecycleActor): Promise<AuthRequest> {
     const finishObservation = this.beginObservation();
     try {
       await this.expireStale();
@@ -3895,6 +3878,15 @@ export class AuthQueue {
       if (request.status !== "pending") {
         throw new AuthQueueError("invalid_status", `Request is ${request.status}, cannot use clearance.`, request.status);
       }
+      this.requestCustodyForActor(request, actor);
+      const responsibility = this.requestResponsibility(request);
+      const assertResponsibility = () => {
+        const current = this.requireRequest(request.id);
+        this.requestCustodyForActor(current, actor);
+        if (this.requestResponsibility(current).custody_generation !== responsibility.custody_generation) {
+          throw new AuthQueueError("custody_required", "Request responsibility changed during clearance observation.");
+        }
+      };
       const admission = this.observationToken(request.id, request);
       await this.assertRequestRepoExecutionCertain(request);
       this.assertObservation(request.id, admission);
@@ -3907,8 +3899,9 @@ export class AuthQueue {
       const requestId = request.id;
       let consumed: ClearanceConsumption;
       try {
-        consumed = (await this.clearanceManager.consume(requestId, (authorization) => {
+        consumed = (await this.clearanceManager.consume(requestId, actor, (authorization) => {
           this.assertObservation(requestId, observed);
+          assertResponsibility();
           const now = this.now();
           const lease = getDelegatedSigningLease(this.db, authorization.approval.leaseId);
           if (!lease || lease.owner_user_id !== authorization.clearance.issuer_user_id) {
@@ -6995,71 +6988,20 @@ export class AuthQueue {
     }
   }
 
-  private async checkMergeWorktreeReady(cwd: string): Promise<{ status: "clean" } | { status: "error"; message: string }> {
+  private async checkMergeWorktreeReady(cwd: string, candidate?: { baseBranch: string; base: string; target: string }): Promise<{ status: "clean" } | { status: "error"; message: string }> {
+    const script = join(process.env.MANDIBLE_CLI_DIR ?? join(process.cwd(), "cli"), "checkout-readiness.sh");
     try {
-      const gitDir = (await childOutput("git", ["rev-parse", "--path-format=absolute", "--git-dir"], {
-        cwd,
-        encoding: "utf8",
-        timeout: 5_000,
-        env: authGitEnv(),
-      })).trim();
-      if (gitDir && existsSync(join(gitDir, "MERGE_HEAD"))) {
-        return {
-          status: "error",
-          message: "merge already in progress; resume or abort it before running merge preflight"
-        };
-      }
-
-      const status = (await childOutput("git", ["status", "--porcelain", "--untracked-files=no"], {
-        cwd,
-        encoding: "utf8",
-        maxBuffer: 1024 * 1024,
-        timeout: 10_000,
-        env: authGitEnv(),
-      })).replace(/\r?\n$/, "");
-      if (!status.trim()) {
-        return { status: "clean" };
-      }
-      const files = status
-        .split(/\r?\n/)
-        .filter((line) => line.trim())
-        .slice(0, 20)
-        .map((line) => line.length > 3 ? line.slice(3) : line.trim());
-      return {
-        status: "error",
-        message: `tracked worktree changes are present: ${files.join(", ")}`
-      };
+      await childOutput("bash", [script, cwd, ...(candidate ? [candidate.baseBranch, candidate.base, candidate.target] : [])],
+        { cwd, encoding: "utf8", timeout: 5_000, maxBuffer: 1024 * 1024, env: authGitEnv() });
+      return { status: "clean" };
     } catch (error) {
-      return {
-        status: "error",
-        message: errorMessage(error) || "could not inspect worktree status"
-      };
+      const report = String((error as { stdout?: Buffer | string }).stdout ?? "").trim();
+      return { status: "error", message: report || `Checkout readiness inspection failed for ${cwd}: ${errorMessage(error)}` };
     }
   }
 
-  /**
-   * Whether the protected checkout at `cwd` could follow the target branch
-   * from `base` to `target`, judged by `cli/checkout-sync-check.sh` — the
-   * same dry run the merge executor repeats just before advancing the ref.
-   * A checkout that is not on the target branch has no sync to predict.
-   */
-  private async checkCheckoutSync(cwd: string, baseBranch: string, base: string, target: string): Promise<{ status: "clean" } | { status: "error"; message: string }> {
-    const gitOptions = { cwd, encoding: "utf8" as const, timeout: 5_000, env: authGitEnv() };
-    try {
-      const branch = (await childOutput("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], gitOptions).catch(() => "")).trim();
-      if (branch !== baseBranch) return { status: "clean" };
-      const root = (await childOutput("git", ["rev-parse", "--show-toplevel"], gitOptions)).trim();
-      const script = join(process.env.MANDIBLE_CLI_DIR ?? join(process.cwd(), "cli"), "checkout-sync-check.sh");
-      await childOutput("bash", [script, root, base, target], { ...gitOptions, timeout: 30_000, maxBuffer: 1024 * 1024 });
-      return { status: "clean" };
-    } catch (error) {
-      const failure = classifyGitFailure(error);
-      if (failure.kind === "exit" && failure.status === 1) {
-        const report = String((error as { stdout?: Buffer | string }).stdout ?? "").trim();
-        if (report) return { status: "error", message: report };
-      }
-      return { status: "error", message: `checkout sync check failed: ${describeGitFailure(failure, "merge check")}` };
-    }
+  private checkCheckoutSync(cwd: string, baseBranch: string, base: string, target: string): Promise<{ status: "clean" } | { status: "error"; message: string }> {
+    return this.checkMergeWorktreeReady(cwd, { baseBranch, base, target });
   }
 
   private async createSyntheticMergeCommit(
@@ -7762,7 +7704,7 @@ export class AuthQueue {
    */
   private async resolveDirectWorkUnitsOnMerge(completed: AuthRequest): Promise<{ resolvedIds: string[]; observation: string }> {
     const observed = this.observationToken(completed.id, completed);
-    const read = () => (this.db.prepare("SELECT * FROM work_units WHERE branch = ? AND state IN ('open', 'committed', 'abandoned') ORDER BY id").all(completed.head_branch) as Record<string, unknown>[]).map(row => Object.fromEntries(["id", "repo_id", "branch", "state", "auth_request_id", "assigned_session_id", "owner_user_id", "owner_credential_id", "custody_generation"].map(key => [key, row[key] ?? null]))) as Array<{ repo_id: string }>;
+    const read = () => (completed.head_branch ? this.db.prepare("SELECT * FROM work_units WHERE branch = ? AND state IN ('open', 'committed', 'abandoned') ORDER BY id").all(completed.head_branch) as Record<string, unknown>[] : []).map(row => Object.fromEntries(["id", "repo_id", "branch", "state", "auth_request_id", "assigned_session_id", "owner_user_id", "responsibility_session_id", "custody_generation"].map(key => [key, row[key] ?? null]))) as Array<{ repo_id: string }>;
     for (let attempt = 0; ; attempt++) {
       const rows = read();
       const identity = await observeRepoIdentities(this.db, [completed.repo, ...rows.map(row => row.repo_id)], [completed.target_repo_root, completed.cwd, ...rows.map(row => row.repo_id)], this.phaseAbort.signal);
@@ -7932,7 +7874,7 @@ export class AuthQueue {
     const batch = new AncestryBatch();
     const retirementBefore = now - this.workUnitAbandonedScanRetentionMs;
     const readRetirement = () => this.workUnitsHaveRetirementColumn()
-      ? (this.db.prepare("SELECT * FROM work_units WHERE state = 'abandoned' AND merge_scan_retired_at IS NULL AND COALESCE(last_commit_at, continuation_at, activated_at, created_at) < ? ORDER BY id").all(retirementBefore) as Record<string, unknown>[]).map(row => ["id", "repo_id", "branch", "state", "last_commit_at", "continuation_at", "activated_at", "created_at", "auth_request_id", "owner_user_id", "owner_credential_id", "custody_generation", "resolved_at"].map(key => row[key] ?? null))
+      ? (this.db.prepare("SELECT * FROM work_units WHERE state = 'abandoned' AND merge_scan_retired_at IS NULL AND COALESCE(last_commit_at, continuation_at, activated_at, created_at) < ? ORDER BY id").all(retirementBefore) as Record<string, unknown>[]).map(row => ["id", "repo_id", "branch", "state", "last_commit_at", "continuation_at", "activated_at", "created_at", "auth_request_id", "owner_user_id", "responsibility_session_id", "custody_generation", "resolved_at"].map(key => row[key] ?? null))
       : [];
     const retirementState = JSON.stringify(readRetirement());
     const scan = await this.workUnitsMergedByRequest(completed, batch);
@@ -8070,7 +8012,7 @@ export class AuthQueue {
     const observed = this.observationToken(completed.id, completed);
     const readAuthority = (id: string) => {
       const row = this.db.prepare("SELECT * FROM work_units WHERE id = ?").get(id) as Record<string, unknown> | undefined;
-      return JSON.stringify(row ? ["id", "state", "repo_id", "branch", "issue_id", "ledger_issue_id", "auth_request_id", "assigned_session_id", "owner_user_id", "owner_credential_id", "custody_generation", "merge_scan_retired_at"].map(key => row[key] ?? null) : null);
+      return JSON.stringify(row ? ["id", "state", "repo_id", "branch", "issue_id", "ledger_issue_id", "auth_request_id", "assigned_session_id", "owner_user_id", "responsibility_session_id", "custody_generation", "merge_scan_retired_at"].map(key => row[key] ?? null) : null);
     };
     const authorities = new Map(candidates.map(row => [row.id, readAuthority(row.id)]));
     const readBranch = (branch: string) => JSON.stringify(this.db.prepare("SELECT repo_root, last_commit_hash FROM branches WHERE branch = ? ORDER BY repo_root").all(branch));

@@ -76,8 +76,8 @@ interface AcceptanceRun { input: CandidateAcceptanceInput; settle: (outcome: Can
 /** Submit a self-update with durable custody of its delivery work unit, which names the acceptance owner. */
 async function submit(branch = "feature/self-update", patch: Partial<AuthRequestInput> = {}) {
   if (!patch.supersedes_request_id) {
-    db.prepare(`INSERT INTO work_units (id, issue_id, ledger_issue_id, repo_id, branch, kind, state, created_at, owner_user_id, owner_credential_id, custody_generation)
-      VALUES (?, ?, ?, ?, ?, 'solo', 'committed', 1, ?, ?, 1)`).run(`wu-${branch}`, issue.id, issue.id, path.basename(repo), branch, operatorId, credentialId);
+    db.prepare(`INSERT INTO work_units (id, issue_id, ledger_issue_id, repo_id, branch, kind, state, created_at, owner_user_id, responsibility_session_id, custody_generation)
+      VALUES (?, ?, ?, ?, ?, 'solo', 'committed', 1, ?, ?, 1)`).run(`wu-${branch}`, issue.id, issue.id, path.basename(repo), branch, operatorId, null);
   }
   return (await queue.submit({ ...AUTH_MERGE_REVIEW,  type: "merge", title: "Self-update", command: `mandible auth merge ${branch} --into main`,
     repo: path.basename(repo), cwd: repo, base_branch: "main", head_branch: branch,
@@ -659,29 +659,28 @@ describe("failed handoff retirement", () => {
     expect(JSON.parse(fs.readFileSync(path.join(held.dir, "retirement.json"), "utf8"))).toMatchObject({ bindingDigest: held.digest, actor: { user_id: "operator" } });
   });
 
-  it("requires the operator at the retirement route", async () => {
-    setDb(db);
-    const held = holdHandoffLock('failed', true);
-    const request = await submit();
-    await waitUntilPasses(() => expect(runs).toHaveLength(1));
-    const agent = createUser(db, { slug: "retire-agent", display_name: "Retire agent", kind: "agent" });
-    const agentRouter = authenticatedTestRouter(agent);
-    registerAuthRoutes(agentRouter, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
-    const refused = await agentRouter.invoke({ method: "POST", url: "/api/runtime-handoff/retire", body: { binding_digest: held.digest, reason: "stale" } });
-    expect(refused.status).toBe(403);
-    expect(fs.existsSync(held.lockPath)).toBe(true);
 
-    const operatorRouter = authenticatedTestRouter(getOperator(db)!);
-    registerAuthRoutes(operatorRouter, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
-    const detail = await operatorRouter.invoke({ method: "GET", url: `/api/auth/request/${request.id}` });
-    expect(detail.body).toMatchObject({ publication_blocker: { code: "runtime_handoff_lock", message: expect.stringContaining("Candidate runtime readiness failed") } });
-    const status = await operatorRouter.invoke({ method: "GET", url: "/api/runtime-handoff/lock" });
-    expect(status.body).toMatchObject({ lock: { phase: "failed", bindingDigest: held.digest } });
-    const retired = await operatorRouter.invoke({ method: "POST", url: "/api/runtime-handoff/retire", body: { binding_digest: held.digest, reason: "stale" } });
-    expect(retired.status).toBe(200);
-    expect(retired.body).toMatchObject({ retirement: { actor: { user_id: operatorId } } });
-    expect(fs.existsSync(held.lockPath)).toBe(false);
-    await waitUntilPasses(() => expect(runs).toHaveLength(1));
-    expect(runs[0]!.input.pinSha).toBe((await queue.getRequest(request.id))!.merge_candidate_pin_sha);
+});
+
+it("retires a failed handoff under current request responsibility without granting publication approval", async () => {
+  const held = holdHandoffLock('failed', true);
+  const journalBytes = fs.readFileSync(held.journalPath);
+  const requestId = JSON.parse(journalBytes.toString()).binding.requestId;
+  const now = Date.now();
+  db.prepare(`INSERT INTO auth_requests (id, command, title, type, status, created_at, updated_at, expires_at,
+    requested_by_user_id, session_id) VALUES (?, 'reviewed command', 'Failed handoff', 'command', 'failed', ?, ?, ?, ?, 'author')`)
+    .run(requestId, now, now, now + 60_000, operatorId);
+  db.prepare("INSERT INTO auth_request_responsibility (auth_request_id, owner_user_id, responsibility_session_id, custody_generation) VALUES (?, ?, 'successor', 1)")
+    .run(requestId, operatorId);
+  await expect(queue.retireRuntimeHandoff({ bindingDigest: held.digest, reason: "Retire failed attempt" }, {
+    user_id: operatorId, session_id: 'author', evidence_method: 'session_claim',
+  })).rejects.toMatchObject({ code: 'custody_required' });
+  expect(fs.existsSync(held.lockPath)).toBe(true);
+  await queue.retireRuntimeHandoff({ bindingDigest: held.digest, reason: "Retire failed attempt" }, {
+    user_id: operatorId, session_id: 'successor', evidence_method: 'session_claim',
   });
+  expect(readRuntimeHandoffLock(home)).toBeNull();
+  expect(fs.readFileSync(held.journalPath)).toEqual(journalBytes);
+  expect(db.prepare("SELECT approved_by_user_id, execution_evidence_id FROM auth_requests WHERE id = ?").get(requestId))
+    .toEqual({ approved_by_user_id: null, execution_evidence_id: null });
 });

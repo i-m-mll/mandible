@@ -1,3 +1,5 @@
+import { RESPONSIBILITY_SCHEMA_SQL } from "./responsibility-schema.js";
+import { migrateLocalAuthorizationEvidence } from "./local-authorization-migration.js";
 import { WORK_UNIT_ASSIGNMENT_SCHEMA_SQL, seedLegacyAssignmentTargets } from "./work-unit-assignment-schema.js";
 import { CHILD_RETENTION_SCHEMA_SQL } from "./conversations/retention-schema.js";
 import { AUTH_HOOK_EXECUTIONS_TABLE_SQL, AUTH_HOOK_EXECUTIONS_INDEX_SQL } from './auth-hook-schema.js';
@@ -2221,6 +2223,25 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 225, name: "conversation_navigation_publication", statements: [
     "ALTER TABLE conversation_sources ADD COLUMN navigation_kind TEXT NOT NULL DEFAULT 'legacy' CHECK(navigation_kind IN ('legacy','sparse'))",
   ] },
+  { version: 226, name: "native_conversation_content", statements: [
+    "DROP TABLE IF EXISTS conversation_block_aliases",
+    "DROP TABLE IF EXISTS conversation_structural_blocks",
+    "DROP TABLE IF EXISTS conversation_normalization_checkpoints",
+    "DROP TABLE IF EXISTS conversation_blocks",
+    "ALTER TABLE conversation_sources DROP COLUMN navigation_kind",
+    "UPDATE conversation_sources SET availability = 'unsupported', unavailable_reason = 'normalized body source retired' WHERE parser_format = 'mandible-normalized-jsonl'",
+  ] },
+  { version: 227, name: "explicit_agent_responsibility", statements: [
+    "ALTER TABLE work_units ADD COLUMN responsibility_session_id TEXT",
+    "UPDATE work_units SET responsibility_session_id = COALESCE(worker_provider_session_id, provider_session_id, assigned_session_id)",
+    "ALTER TABLE work_units DROP COLUMN owner_credential_id",
+    ...RESPONSIBILITY_SCHEMA_SQL,
+    "INSERT INTO auth_request_responsibility (auth_request_id, owner_user_id, responsibility_session_id) SELECT id, requested_by_user_id, session_id FROM auth_requests",
+  ] },
+  { version: 228, name: "retire_ledger_operational_logs", statements: [
+    "DROP TABLE IF EXISTS daemon_log",
+  ] },
+  { version: 229, name: "local_authorization_evidence", statements: [], requires_foreign_keys_off: true },
 ];
 
 /**
@@ -2421,6 +2442,7 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
     try {
       db.transaction(() => {
         for (const statement of migration.statements) db.exec(statement);
+        if (migration.version === 229) migrateLocalAuthorizationEvidence(db);
         const remainingViolations = db.pragma("foreign_key_check") as Array<Record<string, unknown>>;
         const baselineCounts = new Map<string, number>();
         for (const violation of baselineForeignKeyViolations) {

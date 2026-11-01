@@ -2,11 +2,9 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import * as ts from 'typescript';
-import { isLocalCliCredential, type LocalCliCredential } from '../src/local-cli-credential.js';
 
 export type RegisteredOperationMetadata = {
   file: string;
-  localCliCredential: LocalCliCredential;
   method: 'get' | 'post' | 'put' | 'patch' | 'delete';
   path: string;
   effects: string[] | null;
@@ -47,7 +45,7 @@ export function registeredOperationMetadata(files = fs.readdirSync('src/routes')
     const options = checker.getResolvedSignature(call)?.parameters[2];
     if (!options) return false;
     const type = checker.getTypeOfSymbolAtLocation(options, call);
-    return Boolean(type.getProperty('localCliCredential') && type.getProperty('operation') && type.getProperty('fileRpc'));
+    return Boolean(type.getProperty('operation') && type.getProperty('fileRpc'));
   };
   const entries: RegisteredOperationMetadata[] = [];
   for (const { file, source } of sources) {
@@ -64,7 +62,7 @@ export function registeredOperationMetadata(files = fs.readdirSync('src/routes')
         && ts.isStringLiteral(node.arguments[0]) && node.arguments[0].text.startsWith('/');
       const options = ts.isCallExpression(node) ? node.arguments[2] : undefined;
       const authoredOptions = options && ts.isObjectLiteralExpression(options)
-        && (property(options, 'localCliCredential') || property(options, 'operation'));
+        && property(options, 'operation');
       const typedRegistration = ts.isCallExpression(node) && node.arguments.length >= 3
         && !(routeMethod && literalPath) && !authoredOptions && hasRegistrarSignature(file, node);
       if (ts.isCallExpression(node) && (authoredOptions || typedRegistration)
@@ -73,20 +71,6 @@ export function registeredOperationMetadata(files = fs.readdirSync('src/routes')
       }
       if (ts.isCallExpression(node) && routeMethod && literalPath && ts.isStringLiteral(node.arguments[0])) {
         if (options && ts.isObjectLiteralExpression(options)) {
-          const credential = property(options, 'localCliCredential');
-          const localCliCredential: Record<string, unknown> = {};
-          if (!credential || !ts.isObjectLiteralExpression(credential)) {
-            throw new Error(`Missing literal CLI credential policy: ${file} ${node.arguments[0].text}`);
-          }
-          for (const field of credential.properties) {
-            if (!ts.isPropertyAssignment(field) || !ts.isStringLiteral(field.initializer)
-                || !(ts.isIdentifier(field.name) || ts.isStringLiteral(field.name))
-                || Object.hasOwn(localCliCredential, field.name.text)) {
-              throw new Error(`Nonserializable CLI credential policy: ${file} ${node.arguments[0].text}`);
-            }
-            localCliCredential[field.name.text] = field.initializer.text;
-          }
-          if (!isLocalCliCredential(localCliCredential)) throw new Error(`Invalid CLI credential policy: ${file} ${node.arguments[0].text}`);
           const operation = property(options, 'operation');
           const effects = operation && ts.isObjectLiteralExpression(operation) ? property(operation, 'effects') : undefined;
           if (!operation || !effects) throw new Error(`Missing authored operation descriptor: ${file} ${node.arguments[0].text}`);
@@ -105,7 +89,7 @@ export function registeredOperationMetadata(files = fs.readdirSync('src/routes')
             if (!ts.isStringLiteral(value)) throw new Error(`Nonliteral static route effect: ${file}`);
             return value.text;
           }) : null;
-          entries.push({ file, localCliCredential, method: method as RegisteredOperationMetadata['method'],
+          entries.push({ file, method: method as RegisteredOperationMetadata['method'],
             path: node.arguments[0].text, effects: staticEffects, expression: operation.getText(tree),
             operationId: id.text, operationalMutationCategory: ts.isStringLiteral(category) ? category.text : null,
             requestSchema: schema.kind === ts.SyntaxKind.NullKeyword ? 'handler' : 'zod' });

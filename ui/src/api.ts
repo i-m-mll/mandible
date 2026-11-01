@@ -1026,6 +1026,23 @@ export async function getAuthRequestDetail(requestId: string): Promise<Record<st
   return payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : null;
 }
 
+export type RequestResponsibilitySnapshot = {
+  owner_user_id: string | null; responsibility_session_id: string | null; custody_generation: number;
+};
+export async function changeAuthResponsibility(requestId: string, action: 'assume' | 'release' | 'withdraw',
+  detail: Record<string, unknown>, reason: string): Promise<void> {
+  const owner = detail.responsibility as RequestResponsibilitySnapshot;
+  const events = detail.lifecycle_events as Array<{ revision: number }>;
+  const workUnitId = detail.custody_work_unit_id as string | null;
+  const body = { reason, expected_generation: owner.custody_generation,
+    expected_revision: events.at(-1)?.revision, expected_custody_generation: owner.custody_generation };
+  const url = action === 'withdraw' ? `/api/auth/request/${encodeURIComponent(requestId)}/withdraw`
+    : workUnitId ? action === 'assume' ? `/api/work-units/${encodeURIComponent(workUnitId)}/custody/assume` : '/api/work-units/release'
+    : `/api/auth/request/${encodeURIComponent(requestId)}/responsibility/${action}`;
+  const response = await apiPost(url, { ...body, ...(workUnitId && action === 'release' ? { id: workUnitId } : {}) });
+  if (!response.ok) throw new Error((await response.json()).error ?? 'Responsibility changed; refresh and retry.');
+}
+
 export async function getAuthRequestActions(requestId: string): Promise<AuthRequestAction[]> {
   const response = await apiGet(`/api/auth/request/${encodeURIComponent(requestId)}/actions`);
   const payload = await parseMaybeJson(response);
@@ -1171,7 +1188,9 @@ export type AuthClearance = {
   id: string;
   issuer_user_id: string;
   grantee_user_id: string;
-  grantee_credential_id: string;
+  grantee_credential_id: string | null;
+  retired_at: number | null;
+  retirement_reason: string | null;
   project_id: string;
   base_branch: string;
   issue_id: string | null;
@@ -1194,7 +1213,6 @@ export async function getAuthClearances(): Promise<AuthClearance[]> {
 export async function createAuthClearance(input: {
   request_id?: string;
   grantee: string;
-  grantee_credential_id?: string;
   project?: string;
   base?: string;
   issue?: string;
@@ -2524,9 +2542,9 @@ export async function updateConversationArchive(id: string, archived: boolean): 
 export async function exportConversationBlocks(id: string, data: {
   block_ids?: string[];
   format: 'mdx' | 'markdown' | 'json';
-}): Promise<{ content: string; block_count: number; body_source: 'source' | 'legacy' }> {
+}): Promise<{ content: string; block_count: number; body_source: 'source' }> {
   const resp = await apiPost(`/api/conversations/${encodeURIComponent(id)}/export`, data);
-  return (await parseMaybeJson(resp)) as { content: string; block_count: number; body_source: 'source' | 'legacy' };
+  return (await parseMaybeJson(resp)) as { content: string; block_count: number; body_source: 'source' };
 }
 
 export async function transformExport(data: {

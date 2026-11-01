@@ -51,8 +51,8 @@ beforeEach(async () => {
   router = new Router({ clientAuth: auth, instance: instance() });
   registerUserRoutes(router);
   router.get('/api/read', (req, res) => res.json({ identity: req.client_identity, ambient: req.ambient_identity,
-    localManaged: req.local_managed_identity, managed: req.managed_client, request_origin: currentRequestOrigin() }), { localCliCredential: {"mode":"omit"}, fileRpc: 'allow', operation: { id: 'socket.read', effects: ['ledger:read'], reportingCategory: null, requestSchema: null } });
-  router.post('/api/write', (req, res) => res.json({ identity: req.client_identity }), { localCliCredential: {"mode":"omit"}, fileRpc: 'allow', operation: { id: 'socket.write', effects: ['ledger:write'], reportingCategory: 'ledger', requestSchema: null } });
+    localManaged: req.local_managed_identity, managed: req.managed_client, request_origin: currentRequestOrigin() }), { fileRpc: 'allow', operation: { id: 'socket.read', effects: ['ledger:read'], reportingCategory: null, requestSchema: null } });
+  router.post('/api/write', (req, res) => res.json({ identity: req.client_identity }), { fileRpc: 'allow', operation: { id: 'socket.write', effects: ['ledger:write'], reportingCategory: 'ledger', requestSchema: null } });
   const serverOptions: Parameters<typeof createServer>[0] = { db, sse: new SseManager(), logger: () => undefined, version: 'test', router,
     getStartupInfo: () => null, instance: instance(), clientAuth: auth };
   tcpServer = createServer(serverOptions);
@@ -76,7 +76,7 @@ describe('owner-only local API socket', () => {
     const store = new LedgerStore(db);
     router.post('/api/child-origin', (req, res) => {
       res.json(store.addComment(issue.id, { body: 'Child transport', attribution: attributionForRequest(db, req) }));
-    }, { localCliCredential: {"mode":"omit"}, fileRpc: 'allow', operation: { id: 'fixture.child-origin', effects: ['ledger:write'], reportingCategory: 'ledger', requestSchema: null } });
+    }, { fileRpc: 'allow', operation: { id: 'fixture.child-origin', effects: ['ledger:write'], reportingCategory: 'ledger', requestSchema: null } });
     const origin = { provider: 'claude', provider_session_id: 'initiating-native-session' };
     const env: NodeJS.ProcessEnv = { ...process.env, MANDIBLE_BASE: `http://127.0.0.1:${port}`, MANDIBLE_TRANSPORT: 'http',
       MANDIBLE_TOKEN: credential, MANDIBLE_REQUEST_ORIGIN: JSON.stringify(origin), MANDIBLE_MANAGED_CLIENT: '1',
@@ -162,7 +162,7 @@ describe('owner-only local API socket', () => {
     const agent = createUser(db, { slug: 'claude-hooks', kind: 'agent', display_name: 'Claude Hooks' });
     addBinding(db, agent.id, { binding_type: 'provider_session_env', value: 'CLAUDE_CODE_SESSION_ID' });
     const seen: Array<{ identity: unknown; body: Record<string, unknown> }> = [];
-    const operation = (id: string, effects: string[]) => ({ localCliCredential: {"mode":"omit"}, fileRpc: 'allow' as const,
+    const operation = (id: string, effects: string[]) => ({ fileRpc: 'allow' as const,
       operation: { id, effects, reportingCategory: null, requestSchema: null } });
     router.post('/api/sessions/register', (req, res) => { seen.push({ identity: req.client_identity, body: req.body as Record<string, unknown> }); res.json({}); },
       operation('hook.register', ['process:external']));
@@ -187,7 +187,7 @@ describe('owner-only local API socket', () => {
     const registry = new SessionRegistry(db, () => undefined);
     registerSessionRoutes(router, registry);
     router.get('/api/inbox/global', (_req, res) => res.json({}),
-      { localCliCredential: {"mode":"omit"}, fileRpc: 'allow', operation: { id: 'hook.inbox', effects: ['ledger:read'], reportingCategory: null, requestSchema: null } });
+      { fileRpc: 'allow', operation: { id: 'hook.inbox', effects: ['ledger:read'], reportingCategory: null, requestSchema: null } });
     const wrapped = 'wrapped-coordinator';
     // Ownership follows the process tree: the hook's parent stands in for the
     // nested agent, and its grandparent for the wrapped one.
@@ -224,15 +224,10 @@ describe('owner-only local API socket', () => {
       const comment = new LedgerStore(db).addComment(issue.id, { body: 'After native hook', actor_type: 'mandible_user',
         author_display: 'Agent', attribution: attributionForRequest(db, req) });
       res.json({ id: comment.id });
-    }, { localCliCredential: {"mode":"omit"}, fileRpc: 'allow', operation: { id: 'fixture.origin-write', effects: ['ledger:write'], reportingCategory: 'ledger', requestSchema: null } });
-    const fixtureRoutes = path.join(root, 'local-routes.json');
-    fs.writeFileSync(fixtureRoutes, JSON.stringify({ version: 1, routes: router.listRoutePolicies().map(
-      ({ method, path, localCliCredential }) => ({ method, path, localCliCredential }),
-    ) }));
+    }, { fileRpc: 'allow', operation: { id: 'fixture.origin-write', effects: ['ledger:write'], reportingCategory: 'ledger', requestSchema: null } });
     const shell = spawn('bash', ['-c', 'source "$1"; source "$2"; api_send POST /api/origin-write "{}"', 'origin-cli', envFile, path.resolve('cli/api.sh')],
       { env: { ...process.env, MANDIBLE_SOCKET: socketPath, MANDIBLE_BASE: '', MANDIBLE_SESSION_ID: wrapped,
         CLAUDE_SESSION_ID: 'parent-native', CODEX_THREAD_ID: 'parent-codex', MANDIBLE_MANAGED_APP: '',
-        MANDIBLE_LOCAL_CREDENTIAL_ROUTES_FILE: fixtureRoutes,
         MANDIBLE_REQUEST_ORIGIN: '{"provider":"codex","provider_session_id":"inherited-initiator"}' } });
     let writeOutput = ''; let writeError = '';
     shell.stdout.on('data', chunk => { writeOutput += chunk; }); shell.stderr.on('data', chunk => { writeError += chunk; });
@@ -258,20 +253,6 @@ describe('owner-only local API socket', () => {
     await new Promise((resolve) => nestedCodex.once('close', resolve));
     expect(identity).toBe('|codex|codex-thread');
   });
-  it('names the Codex sandbox when a nested sandboxed Codex cannot reach its credential', async () => {
-    // Issue 9a6ac22: the seatbelt denies `ps` and hides the Keychain. The CLI
-    // must still run, and refuse a credentialed call with the cause.
-    const bin = path.join(root, 'sandbox-bin');
-    fs.mkdirSync(bin);
-    fs.writeFileSync(path.join(bin, 'ps'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
-    const child = spawn(path.resolve('bin/mandible'), ['work-unit', 'custody-check', '--repo', 'mandible', '--branch', 'feature/x'], {
-      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, MANDIBLE_SOCKET: socketPath, MANDIBLE_SESSION_ID: 'wrapped',
-        CLAUDE_CODE_SESSION_ID: 'coordinator', CODEX_THREAD_ID: 'codex-thread', CODEX_SANDBOX: 'seatbelt' } });
-    let stderr = ''; child.stderr.on('data', (chunk) => { stderr += chunk; });
-    const code = await new Promise((resolve) => child.once('close', resolve));
-    expect(code, stderr).not.toBe(127);
-    expect(stderr).toContain('nothing was sent. This command runs inside the Codex sandbox (CODEX_SANDBOX=seatbelt)');
-  });
   it('rejects unknown, malformed, human-bound, and conflicting managed app claims', async () => {
     const codex = createUser(db, { slug: 'codex-agent', kind: 'agent', display_name: 'Codex Agent' });
     const claude = createUser(db, { slug: 'claude-agent', kind: 'agent', display_name: 'Claude Agent' });
@@ -285,18 +266,17 @@ describe('owner-only local API socket', () => {
     expect((await request('GET', '/api/read', { ...base, 'X-Mandible-Ambient-Provider': 'codex',
       'X-Mandible-Ambient-Provider-Session-Id': 'provider-1' })).status).toBe(401);
     const token = auth.mintApiToken(codex.id);
-    expect((await request('GET', '/api/read', { ...base, Authorization: `Bearer ${token.token}` })).status).toBe(401);
+    expect((await request('GET', '/api/read', { ...base, Authorization: `Bearer ${token.token}` })).body.identity.user_id).toBe(claude.id);
     const human = setupOperator(db, { display_name: 'Operator', email: 'operator@example.invalid' });
     addBinding(db, human.id, { binding_type: 'app_name', value: 'human-app' });
     expect((await request('GET', '/api/read', { ...base, 'X-Mandible-Managed-App': 'human-app' })).status).toBe(401);
   });
-  it('bootstraps the first operator only from an unmanaged bearer-free production socket', async () => {
+  it('bootstraps the first operator only from an unmanaged production socket', async () => {
     db.prepare('DELETE FROM settings WHERE key = ?').run(OPERATOR_SETTING_KEY);
     expect((await request('GET', '/api/read')).status).toBe(401);
     const setup = { slug: 'fresh-operator', display_name: 'Fresh Operator', email: 'fresh@example.invalid' };
     expect((await request('POST', '/api/users/setup', { 'X-Mandible-Managed-Client': '1' }, true, setup)).status).toBe(401);
-    expect((await request('POST', '/api/users/setup', { Authorization: 'Bearer invalid' }, true, setup)).status).toBe(401);
-    const first = await request('POST', '/api/users/setup', {}, true, setup);
+    const first = await request('POST', '/api/users/setup', { Authorization: 'Bearer obsolete' }, true, setup);
     expect(first).toMatchObject({ status: 200, body: { user: { slug: 'fresh-operator' } } });
     expect(auth.localSocketBootstrapAllowed()).toBe(false);
     expect((await request('GET', '/api/read')).body.identity.user_id).toBe(first.body.user.id);
@@ -319,14 +299,14 @@ describe('owner-only local API socket', () => {
     expect(response).toMatchObject({ status: 200, body: { identity: { user_id: agent.id, method: 'local_socket' }, managed: true } });
     expect(response.body.ambient).toEqual({ provider: 'codex', provider_session_id: 'task-1' });
   });
-  it('preserves explicit durable bearer identity and refuses an invalid bearer', async () => {
+  it('ignores bearer authority on the same-user socket', async () => {
     const agent = createUser(db, { slug: 'agent-test', kind: 'agent', display_name: 'Agent Test' });
     const token = auth.mintApiToken(agent.id);
-    expect(await request('GET', '/api/read', { Authorization: `Bearer ${token.token}` })).toMatchObject({
-      status: 200, body: { identity: { user_id: agent.id, method: 'api_token', credential_id: token.credential.id } },
-    });
-    expect((await request('GET', '/api/read', { Authorization: 'Bearer wrong' })).status).toBe(401);
-    expect((await request('GET', '/api/read', { Authorization: '' })).status).toBe(401);
+    for (const presented of [token.token, 'wrong', '']) {
+      expect(await request('GET', '/api/read', { Authorization: `Bearer ${presented}` })).toMatchObject({
+        status: 200, body: { identity: { user_id: getOperator(db)!.id, method: 'local_socket', credential_id: null } },
+      });
+    }
   });
   it('keeps preview on a separate socket path and the preview effect ceiling', () => {
     const production = localApiSocketPath(instance(), { HOME: root });

@@ -40,10 +40,7 @@ export function conversationSourceEpochsMatch(
     && actual.redactionEpoch === expected.redactionEpoch;
 }
 
-export type ConversationNavigationKind = "legacy" | "sparse";
-
 export interface ConversationSourceDescriptor extends ConversationSourceEpochs {
-  navigationKind: ConversationNavigationKind;
   sourceId: string;
   conversationId: string;
   provider: ConversationSource;
@@ -110,7 +107,6 @@ export type SourceReadFailureKind = "stale" | "unavailable" | "unsupported" | "n
 
 export type SourceReadResult<T> =
   | { status: "source"; value: T; sourceVersionId: string }
-  | { status: "legacy"; value: T; reason: SourceReadFailureKind }
   | { status: SourceReadFailureKind; reason: string };
 
 export interface SourceBlockPage {
@@ -130,10 +126,9 @@ export interface RecordConversationSourceInput extends ConversationSourceEpochs 
   /** Parser-captured full extent or incremental append range for JSONL sources. */
   sourceSnapshot?: ParserSourceSnapshot;
   /**
-   * Parser output supplied by ingestion so source indexing does not depend on
-   * retaining a second body copy in conversation_blocks.
+   * Parser output used to prepare disposable native-source navigation.
    */
-  blocks?: ReadonlyArray<Omit<ConversationBlock, "id" | "conversation_id"> & { legacyId: string }>;
+  blocks: ReadonlyArray<Omit<ConversationBlock, "id" | "conversation_id">>;
   structuralMode?: "replace" | "append";
   blockCount?: number;
 }
@@ -145,36 +140,6 @@ export interface RecordConversationSourceAliasInput {
   relativePath: string;
   aliasKind: "active" | "archive" | "provider" | "managed";
   availability?: ConversationSourceAvailability;
-}
-
-export interface RecordManagedNormalizedSourceInput extends ConversationSourceEpochs {
-  conversationId: string;
-  provider: ConversationSource;
-  nativeSessionId: string;
-  rootPath: string;
-  filePath: string;
-  expectedContentHash: string;
-  blocks: ReadonlyArray<{
-    id: string;
-    type: BlockType;
-    role: Role;
-    position: number;
-    timestamp: string | null;
-    parentId: string | null;
-    dagUuid: string | null;
-    dagParentUuid: string | null;
-    recordOffset: number;
-    recordLength: number;
-    recordHash: string;
-    recordOrdinal: number;
-  }>;
-}
-
-export interface RecordNormalizationCheckpointInput extends ConversationSourceEpochs {
-  sourceVersionId: string;
-  recordOrdinal: number;
-  prefixOffset: number;
-  state: Record<string, unknown>;
 }
 
 export interface UpdateConversationSourceCustodyInput {

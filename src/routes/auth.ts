@@ -1,3 +1,5 @@
+import { attributionForRequest } from "../client-auth/authz.js";
+import { responsibilityActor, holdsResponsibility, sessionResponsibilityActor } from "../responsibility.js";
 import type { LedgerReader } from "../ledger-reads/index.js";
 import { parseProtectedRootDirtyAction } from "../auth-protected-root-dirty-action.js";
 import { AUTH_REQUEST_TYPES } from "../contracts.js";
@@ -29,7 +31,7 @@ import {
   AttributionReadResolver,
   authAttributionReadFields,
 } from "../identity/read-projection.js";
-import { ClientAuthzError, requireProtectedOperator as requireOperator } from "../client-auth/authz.js";
+import { ClientAuthzError, requireIdentity, requireProtectedOperator as requireOperator } from "../client-auth/authz.js";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -43,15 +45,6 @@ import {
 } from "../auth-preview-policy.js";
 
 const authRouteLog = getDaemonLogger();
-
-function rejectTokenlessSocketExecution(req: RequestLike, res: ResponseLike): boolean {
-  if (req.client_identity?.method !== "local_socket") return false;
-  res.status(401).json({
-    error: "Auth execution updates require an authenticated durable client credential.",
-    code: "durable_credential_required",
-  });
-  return true;
-}
 
 /**
  * Every handler reads and writes the queue's database. Registration never
@@ -88,17 +81,16 @@ export function registerAuthRoutes(
     }
     const report = (await authQueue.checkMergeIndependence(resolveAuthCheckPayload(db, payload)));
     res.status(200).json({ check: report });
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/auth/check", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/auth/check", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   app.post("/api/auth/request", (_req, res) => {
     res.status(410).json({ error: "Auth request writes require /api/auth/v2/request and depends_on_ids; update your client." });
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/auth/request", effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/auth/request", effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
   app.put("/api/auth/request/:id", (_req, res) => {
     res.status(410).json({ error: "Auth request writes require /api/auth/v2/request/:id and depends_on_ids; update your client." });
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "put:/api/auth/request/:id", effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "put:/api/auth/request/:id", effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   app.post("/api/auth/v2/request", async (req, res) => {
-    if (rejectTokenlessSocketExecution(req, res)) return;
     const body = readBody<Record<string, unknown>>(req);
     if (Object.hasOwn(body, "spec_content")) {
       res.status(400).json({ error: SPEC_CONTENT_REFUSAL });
@@ -290,6 +282,7 @@ export function registerAuthRoutes(
 
       payload.requester_evidence_method = requester.evidenceMethod;
       payload.requester_credential_id = requester.credentialId;
+      payload.session_id = responsibilityActor(req).session_id;
       payload.require_delivery_custody = isAuthMerge;
       const request = (await authQueue.submit(payload, requester.userId));
       res.status(201).json({
@@ -302,7 +295,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: "post:/api/auth/v2/request", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/auth/v2/request", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
 
   app.get("/api/auth/request/:id", async (req, res) => {
     // Issue f59b5bd — getRequest already resolves unambiguous short prefixes
@@ -350,9 +343,10 @@ export function registerAuthRoutes(
       action_count: authQueue.countActions(request.id),
       actions: authQueue.listActions(request.id),
       lifecycle_events: authQueue.listLifecycleEvents(request.id),
+      responsibility: authQueue.requestResponsibility(request),
       execution_attempts: listAuthExecutionAttempts(db, request.id),
     });
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/auth/request/:id", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/auth/request/:id", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   app.get("/api/auth/request/:id/actions", (req, res) => {
     try {
@@ -360,7 +354,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/auth/request/:id/actions", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/auth/request/:id/actions", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   app.post("/api/auth/request/:id/actions", async (req, res) => {
     const body = readBody<Record<string, unknown>>(req);
@@ -375,7 +369,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: "post:/api/auth/request/:id/actions", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/auth/request/:id/actions", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
 
   app.put("/api/auth/request/:id/actions/:actionId", async (req, res) => {
     const body = readBody<Record<string, unknown>>(req);
@@ -396,7 +390,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: "put:/api/auth/request/:id/actions/:actionId", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
+  }, { operation: { id: "put:/api/auth/request/:id/actions/:actionId", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
 
   app.delete("/api/auth/request/:id/actions/:actionId", async (req, res) => {
     const body = readBody<Record<string, unknown>>(req);
@@ -411,7 +405,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: "delete:/api/auth/request/:id/actions/:actionId", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
+  }, { operation: { id: "delete:/api/auth/request/:id/actions/:actionId", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
 
   app.post("/api/auth/request/:id/actions/:actionId/veto", async (req, res) => {
     const body = readBody<Record<string, unknown>>(req);
@@ -430,7 +424,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: "post:/api/auth/request/:id/actions/:actionId/veto", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/auth/request/:id/actions/:actionId/veto", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
 
   app.put("/api/auth/v2/request/:id", async (req, res) => {
     const body = readBody<Record<string, unknown>>(req);
@@ -483,14 +477,33 @@ export function registerAuthRoutes(
       }
       handleQueueError(error, res);
     }
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: "put:/api/auth/v2/request/:id", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
+  }, { operation: { id: "put:/api/auth/v2/request/:id", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
 
   app.delete("/api/auth/request/:id", (_req, res) => {
     res.status(410).json({
       code: "auth_request_delete_removed",
       error: "Auth requests are immutable records. Pending requesters must use withdrawal.",
     });
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "delete:/api/auth/request/:id", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+  }, { operation: { id: "delete:/api/auth/request/:id", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+
+  const modifyRequestResponsibility = (action: "assume" | "release") => async (req: RequestLike, res: ResponseLike) => {
+    const body = readBody<Record<string, unknown>>(req);
+    try {
+      const request = await authQueue.getRequest(req.params.id);
+      if (!request) { res.status(404).json({ error: "Auth request not found." }); return; }
+      if (request.repo && !enforceAuthProjectWrite(db, req, res, request.repo)) return;
+      if (typeof body.reason !== "string" || !body.reason.trim() || !Number.isInteger(body.expected_revision) || !Number.isInteger(body.expected_custody_generation)) {
+        res.status(400).json({ error: "reason, expected_revision and expected_custody_generation required" }); return;
+      }
+      const successor = typeof body.target_session_id === "string" ? sessionResponsibilityActor(db, body.target_session_id) : undefined;
+      if (body.target_session_id && !successor) { res.status(400).json({ error: "Unknown successor identity." }); return; }
+      authQueue.assumeRequestResponsibility(request.id, responsibilityActor(req), body.reason,
+        Number(body.expected_revision), Number(body.expected_custody_generation), action === "release" ? null : successor);
+      res.json({ responsibility: authQueue.requestResponsibility(request) });
+    } catch (error) { handleQueueError(error, res); }
+  };
+  app.post("/api/auth/request/:id/responsibility/assume", modifyRequestResponsibility("assume"), { operation: { id: "post:/api/auth/request/:id/responsibility/assume", effects: ["ledger:write"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
+  app.post("/api/auth/request/:id/responsibility/release", modifyRequestResponsibility("release"), { operation: { id: "post:/api/auth/request/:id/responsibility/release", effects: ["ledger:write"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
 
   app.post("/api/auth/request/:id/withdraw", async (req, res) => {
     const body = readBody<Record<string, unknown>>(req);
@@ -504,25 +517,24 @@ export function registerAuthRoutes(
       return;
     }
     try {
-      const recovery = body.operator_recovery === true;
-      if (recovery) requireOperator(db, req);
       const current = (await authQueue.getRequest(req.params.id));
       if (!current) {
         res.status(404).json({ error: "Auth request not found." });
         return;
       }
-      if (!enforceAuthProjectWrite(db, req, res, current.repo)) return;
+      if (current.repo && !enforceAuthProjectWrite(db, req, res, current.repo)) return;
       const request = (await authQueue.withdraw(req.params.id, body.reason, {
         user_id: requester.userId,
         evidence_method: requester.evidenceMethod,
         credential_id: requester.credentialId,
-        authority_path: recovery ? "operator_recovery" : "custodian",
+        session_id: responsibilityActor(req).session_id,
+        authority_path: "custodian",
       }, numberField(body.expected_revision), numberField(body.expected_custody_generation)));
       res.json({ request_id: request.id, status: request.status });
     } catch (error) {
       handleQueueError(error, res);
     }
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: "post:/api/auth/request/:id/withdraw", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/auth/request/:id/withdraw", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
 
   app.post("/api/auth/request/:id/candidate-snapshot-repair/inspect", async (req, res) => {
     const body = readBody<Record<string, unknown>>(req);
@@ -535,7 +547,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: "post:/api/auth/request/:id/candidate-snapshot-repair/inspect", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/auth/request/:id/candidate-snapshot-repair/inspect", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
 
   app.post("/api/auth/request/:id/candidate-snapshot-repair/apply", async (req, res) => {
     const body = readBody<Record<string, unknown>>(req);
@@ -557,7 +569,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: "post:/api/auth/request/:id/candidate-snapshot-repair/apply", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/auth/request/:id/candidate-snapshot-repair/apply", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
 
   app.post('/api/auth/request/:id/retire-delivery', async (req, res) => {
     try {
@@ -570,15 +582,14 @@ export function registerAuthRoutes(
         Number(body.expected_revision), Number(body.expected_custody_generation));
       res.json({ request_id: request.id, retirement });
     } catch (error) { handleQueueError(error, res); }
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: 'post:/api/auth/request/:id/retire-delivery', effects: ['auth:protected'], requestSchema: null, reportingCategory: 'auth' }, fileRpc: 'allow' });
+  }, { operation: { id: 'post:/api/auth/request/:id/retire-delivery', effects: ['auth:protected'], requestSchema: null, reportingCategory: 'auth' }, fileRpc: 'allow' });
 
   // Issue 27241e6 — convergence retry. This reruns the snapshotted hook
   // command for a merged request; it never reruns the merge, which is why it
   // does not need (and must not imply) a fresh merge authorization.
   app.post("/api/auth/request/:id/retry-convergence", async (req, res) => {
     try {
-      if (rejectTokenlessSocketExecution(req, res)) return;
-      const body = readBody<Record<string, unknown>>(req);
+        const body = readBody<Record<string, unknown>>(req);
       const hookId = typeof body.hook_id === "string" && body.hook_id.trim()
         ? body.hook_id.trim()
         : undefined;
@@ -593,7 +604,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: "post:/api/auth/request/:id/retry-convergence", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/auth/request/:id/retry-convergence", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
 
   // Issue a09b4d2 — daemon-run candidate acceptance of the exact retained
   // candidate. Approval of a runtime self-update requires a passing record.
@@ -608,7 +619,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: "post:/api/auth/request/:id/candidate-acceptance", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/auth/request/:id/candidate-acceptance", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
 
   app.get("/api/auth/request/:id/candidate-acceptance", (req, res) => {
     try {
@@ -618,7 +629,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/auth/request/:id/candidate-acceptance", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/auth/request/:id/candidate-acceptance", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   // Issue a09b4d2 — the installation runtime handoff lock, and operator
   // retirement of a failed one. Retirement preserves the journal as evidence.
@@ -629,35 +640,34 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/runtime-handoff/lock", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/runtime-handoff/lock", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   app.post("/api/runtime-handoff/retire", async (req, res) => {
     try {
-      const operator = requireOperator(db, req);
+      const identity = requireIdentity(req);
       const body = readBody<Record<string, unknown>>(req);
       if (typeof body.binding_digest !== "string" || typeof body.reason !== "string" || !body.reason.trim()) {
         res.status(400).json({ error: "binding_digest and reason are required." });
         return;
       }
       const retirement = await authQueue.retireRuntimeHandoff({ bindingDigest: body.binding_digest, reason: body.reason }, {
-        user_id: operator.user_id, evidence_method: operator.method, credential_id: operator.credential_id ?? null, authority_path: "operator_recovery",
+        user_id: identity.user_id, evidence_method: identity.method, credential_id: identity.credential_id ?? null, session_id: responsibilityActor(req).session_id, authority_path: "custodian",
       });
       res.json({ retirement });
     } catch (error) {
       handleQueueError(error, res);
     }
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: "post:/api/runtime-handoff/retire", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+  }, { operation: { id: "post:/api/runtime-handoff/retire", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/replay-codex-archives", async (req, res) => {
     try {
-      if (rejectTokenlessSocketExecution(req, res)) return;
-      // Issue 75f52ac — archiving is now async (off-loop codex CLI spawn).
+        // Issue 75f52ac — archiving is now async (off-loop codex CLI spawn).
       const result = await authQueue.replayCodexThreadArchives(req.params.id);
       res.status(200).json(result);
     } catch (error) {
       handleQueueError(error, res);
     }
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: "post:/api/auth/request/:id/replay-codex-archives", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/auth/request/:id/replay-codex-archives", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
 
   app.get("/api/auth/queue", async (req, res) => {
     const query = req.query ?? {};
@@ -686,7 +696,7 @@ export function registerAuthRoutes(
       };
     });
     res.json({ requests: enriched });
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/auth/queue", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/auth/queue", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   app.get("/api/auth/history", async (req, res) => {
     const query = req.query ?? {};
@@ -709,7 +719,7 @@ export function registerAuthRoutes(
         candidate_acceptance: authQueue.candidateAcceptanceForRequest(request, acceptance),
       })),
     });
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "get:/api/auth/history", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { operation: { id: "get:/api/auth/history", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/approve", globalCapabilityRoute("approve_auth", async (req, res) => {
     try {
@@ -719,14 +729,14 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  }, { authenticated: true }), { localCliCredential: {"mode":"durable"}, operation: { id: "post:/api/auth/request/:id/approve", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+  }, { authenticated: true }), { operation: { id: "post:/api/auth/request/:id/approve", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/cancel-proof", globalCapabilityRoute("approve_auth", (req, res) => {
     try {
       authQueue.cancelOperatorProof(req.params.id, req.client_identity!.user_id);
       res.status(200).json({ cancelled: true });
     } catch (error) { handleQueueError(error, res); }
-  }, { authenticated: true }), { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/auth/request/:id/cancel-proof", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+  }, { authenticated: true }), { operation: { id: "post:/api/auth/request/:id/cancel-proof", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/reject", globalCapabilityRoute("approve_auth", async (req, res) => {
     try {
@@ -735,7 +745,7 @@ export function registerAuthRoutes(
         typeof body.reason === "string" && body.reason.trim().length > 0
           ? body.reason
           : undefined;
-      const identity = req.client_identity!;
+      const identity = requireOperator(db, req);
       const request = (await authQueue.reject(req.params.id, reason, {
         user_id: identity.user_id,
         evidence_method: identity.method,
@@ -745,47 +755,43 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  }, { authenticated: true }), { localCliCredential: {"mode":"durable"}, operation: { id: "post:/api/auth/request/:id/reject", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+  }, { authenticated: true }), { operation: { id: "post:/api/auth/request/:id/reject", operatorPresence: true, effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/skip", async (req, res) => {
     try {
-      if (rejectTokenlessSocketExecution(req, res)) return;
-      const request = (await authQueue.skip(req.params.id));
+        const request = (await authQueue.skip(req.params.id));
       res.json({ request_id: request.id, status: request.status });
     } catch (error) {
       handleQueueError(error, res);
     }
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: "post:/api/auth/request/:id/skip", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+  }, { operation: { id: "post:/api/auth/request/:id/skip", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/retry", async (req, res) => {
     try {
-      if (rejectTokenlessSocketExecution(req, res)) return;
-      const request = (await authQueue.retry(req.params.id));
+        const request = (await authQueue.retry(req.params.id));
       res.status(200).json({ request_id: request.id, status: request.status });
     } catch (error) {
       handleQueueError(error, res);
     }
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: "post:/api/auth/request/:id/retry", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+  }, { operation: { id: "post:/api/auth/request/:id/retry", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/requeue", async (req, res) => {
     try {
-      if (rejectTokenlessSocketExecution(req, res)) return;
-      const request = (await authQueue.requeue(req.params.id));
+        const request = (await authQueue.requeue(req.params.id));
       res.status(200).json({ request_id: request.id, status: request.status });
     } catch (error) {
       handleQueueError(error, res);
     }
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: "post:/api/auth/request/:id/requeue", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+  }, { operation: { id: "post:/api/auth/request/:id/requeue", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/dismiss", (_req, res) => {
     res.status(410).json({
       code: "auth_request_dismiss_removed",
       error: "Dismiss is not an auth lifecycle outcome. Pending requesters may withdraw; operators may reject.",
     });
-  }, { localCliCredential: {"mode":"omit"}, operation: { id: "post:/api/auth/request/:id/dismiss", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+  }, { operation: { id: "post:/api/auth/request/:id/dismiss", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/output", async (req, res) => {
-    if (rejectTokenlessSocketExecution(req, res)) return;
     const body = readBody<Record<string, unknown>>(req);
     if (typeof body.chunk !== "string") {
       res.status(400).json({ error: "Invalid output payload." });
@@ -798,10 +804,9 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: "post:/api/auth/request/:id/output", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+  }, { operation: { id: "post:/api/auth/request/:id/output", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/result", async (req, res) => {
-    if (rejectTokenlessSocketExecution(req, res)) return;
     const body = readBody<Record<string, unknown>>(req);
     if (typeof body.exit_code !== "number" || typeof body.output !== "string") {
       res.status(400).json({ error: "Invalid result payload." });
@@ -819,7 +824,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: "post:/api/auth/request/:id/result", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+  }, { operation: { id: "post:/api/auth/request/:id/result", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
   app.get("/api/auth/clearances", (req, res) => {
     try {
@@ -829,7 +834,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleClearanceError(error, res);
     }
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: "get:/api/auth/clearances", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "deny",
+  }, { operation: { id: "get:/api/auth/clearances", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "deny",
     refs: { query: { request_id: (ref) => resolveId(db, "auth_request", ref) } } });
 
   // Keep this static path ahead of /:id so "signing" is never interpreted as
@@ -841,7 +846,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleClearanceError(error, res);
     }
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: "get:/api/auth/clearances/signing", effects: ["auth:credentials"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { operation: { id: "get:/api/auth/clearances/signing", effects: ["auth:credentials"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   app.get("/api/auth/clearances/:id", (req, res) => {
     try {
@@ -851,11 +856,16 @@ export function registerAuthRoutes(
     } catch (error) {
       handleClearanceError(error, res);
     }
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: "get:/api/auth/clearances/:id", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { operation: { id: "get:/api/auth/clearances/:id", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   app.post("/api/auth/clearances", async (req, res) => {
     const body = readBody<Record<string, unknown>>(req);
     try {
+      const allowed = ["request_id", "grantee", "project", "base", "issue", "head", "action", "duration_minutes", "max_uses"];
+      if (Object.keys(body).some(key => !allowed.includes(key))) {
+        res.status(400).json({ error: "Unsupported clearance field." });
+        return;
+      }
       if (body.action !== undefined && body.action !== "merge") {
         throw new AuthClearanceError("unsupported_action", "Clearance action is fixed to merge.");
       }
@@ -863,7 +873,6 @@ export function registerAuthRoutes(
       const clearance = await clearanceManager.issue({
         requestId: typeof body.request_id === "string" ? body.request_id : null,
         grantee: String(body.grantee ?? ""),
-        granteeCredentialId: typeof body.grantee_credential_id === "string" ? body.grantee_credential_id : null,
         project: typeof body.project === "string" ? body.project : null,
         baseBranch: typeof body.base === "string" ? body.base : null,
         issueRef: typeof body.issue === "string" ? body.issue : null,
@@ -876,7 +885,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleClearanceError(error, res);
     }
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: "post:/api/auth/clearances", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+  }, { operation: { id: "post:/api/auth/clearances", operatorPresence: true, effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
   app.post("/api/auth/clearances/:id/revoke", async (req, res) => {
     try {
@@ -885,38 +894,25 @@ export function registerAuthRoutes(
     } catch (error) {
       handleClearanceError(error, res);
     }
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: "post:/api/auth/clearances/:id/revoke", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+  }, { operation: { id: "post:/api/auth/clearances/:id/revoke", operatorPresence: true, effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/clearance/execute", async (req, res) => {
     try {
-      const identity = req.client_identity;
-      const request = (await authQueue.getRequest(req.params.id));
-      const custody = request?.custody_work_unit_id
-        ? db.prepare(`
-            SELECT wu.owner_user_id, wu.owner_credential_id, uc.status AS credential_status
-            FROM work_units wu
-            LEFT JOIN user_credentials uc ON uc.id = wu.owner_credential_id
-            WHERE wu.id = ? AND wu.auth_request_id = ?
-          `).get(request.custody_work_unit_id, request.id) as {
-            owner_user_id: string | null;
-            owner_credential_id: string | null;
-            credential_status: string | null;
-          } | undefined
-        : undefined;
-      if (!identity || identity.method !== "api_token" || !identity.credential_id || !request
-          || custody?.owner_user_id !== identity.user_id
-          || custody.owner_credential_id !== identity.credential_id
-          || custody.credential_status !== "active") {
-        res.status(403).json({ error: "Verified delivery-work-unit custodian does not match this auth request." });
-        return;
+      const request = await authQueue.getRequest(req.params.id);
+      const owner = request ? authQueue.requestResponsibility(request) : null;
+      if (!request || !owner || !holdsResponsibility(db, owner, responsibilityActor(req))) {
+        res.status(403).json({ error: "Current request responsibility is required." }); return;
       }
-      const executing = (await authQueue.approveWithClearance(request.id));
+      if (!enforceAuthProjectWrite(db, req, res, request.repo)) return;
+      const executing = (await authQueue.approveWithClearance(request.id, { ...responsibilityActor(req),
+        evidence_method: attributionForRequest(db, req)?.evidence_method ?? req.client_identity!.method,
+        credential_id: req.client_identity!.credential_id }));
       res.status(202).json({ request_id: executing.id, status: executing.status, clearance_use_id: executing.clearance_use_id });
     } catch (error) {
       if (error instanceof AuthClearanceError) handleClearanceError(error, res);
       else handleQueueError(error, res);
     }
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: "post:/api/auth/request/:id/clearance/execute", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+  }, { operation: { id: "post:/api/auth/request/:id/clearance/execute", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
   app.post("/api/auth/clearances/signing/setup", async (req, res) => {
     const body = readBody<Record<string, unknown>>(req);
@@ -932,7 +928,7 @@ export function registerAuthRoutes(
     } catch (error) {
       res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
     }
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: "post:/api/auth/clearances/signing/setup", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+  }, { operation: { id: "post:/api/auth/clearances/signing/setup", operatorPresence: true, effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
   app.delete("/api/auth/clearances/signing", async (req, res) => {
     try {
@@ -941,7 +937,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleClearanceError(error, res);
     }
-  }, { localCliCredential: {"mode":"durable"}, operation: { id: "delete:/api/auth/clearances/signing", effects: ["auth:credentials"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+  }, { operation: { id: "delete:/api/auth/clearances/signing", operatorPresence: true, effects: ["auth:credentials"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
   return authQueue;
 }
@@ -954,17 +950,8 @@ function resolveAuthRequester(
 ): { ok: true; userId: string; evidenceMethod: string; credentialId: string | null }
   | { ok: false; status: number; code: string; error: string } {
   const identity = req.client_identity;
-  if (identity?.method === "api_token" && identity.credential_id) {
-    return { ok: true, userId: identity.user_id, evidenceMethod: "api_token", credentialId: identity.credential_id };
-  }
-  if (requireDurable) {
-    return {
-      ok: false,
-      status: 401,
-      code: "durable_credential_required",
-      error: "Auth request lifecycle mutations require an authenticated durable client credential.",
-    };
-  }
+  if (identity) return { ok: true, userId: identity.user_id, evidenceMethod: identity.method, credentialId: identity.credential_id ?? null };
+  if (requireDurable) return { ok: false, status: 401, code: "authentication_required", error: "Resolved local identity required." };
   const ambientIdentity = req.ambient_identity ?? null;
   const sessionResolution = payload.session_id
     ? ambientIdentity
@@ -991,11 +978,9 @@ function resolveAuthRequester(
 // Issue 8ae6b5f — requests no longer carry a spec. The canonical change
 // message states intent, and a substantial design is a tracked artifact linked
 // to the request's issue. Stored specs on older requests stay readable.
-// Issue 72b00f8 — a custody-transfer request is created only by
-// `work-unit custody-assume --request-approval`, which binds its exact unit,
-// generation, and requesting credential. Its reviewed bytes are never revised.
+// Historical custody-transfer requests are readable but cannot be submitted or revised.
 const CUSTODY_TRANSFER_SUBMISSION_REFUSAL =
-  "Custody-transfer requests come only from `mandible work-unit custody-assume --request-approval` and cannot be revised.";
+  "Custody-transfer approvals are retired; explicitly assume responsibility instead.";
 
 const SPEC_CONTENT_REFUSAL =
   "'spec_content' is no longer accepted. Put intent in the change message (post-merge steps under Caveats) and link a substantial design to the issue as an artifact.";
@@ -1105,37 +1090,22 @@ function authMutationControl(
   body: Record<string, unknown>,
   requireGoverned = false,
 ): { actor: AuthLifecycleActor | undefined } | null {
-  if (rejectTokenlessSocketExecution(req, res)) return null;
-  const governed = requireGoverned || Boolean(request.custody_work_unit_id) || isAuthMergeCommand(request);
-  if (!governed) return { actor: undefined };
+  void requireGoverned;
   const requester = resolveAuthRequester(db, req, { command: "mutate", title: "mutate" }, true);
   if (!requester.ok) {
     res.status(requester.status).json({ error: requester.error, code: requester.code });
     return null;
   }
-  const recovery = body.operator_recovery === true;
-  if (recovery) {
-    try {
-      requireOperator(db, req);
-    } catch (error) {
-      if (error instanceof ClientAuthzError) {
-        res.status(error.status).json({ error: error.message, code: error.code });
-        return null;
-      }
-      throw error;
-    }
-  }
+  void body;
   if (request.repo) {
     if (!enforceAuthProjectWrite(db, req, res, request.repo)) return null;
-  } else if (!recovery) {
-    res.status(409).json({ error: "Unbound legacy auth requests require operator recovery." });
-    return null;
   }
   return { actor: {
     user_id: requester.userId,
     evidence_method: requester.evidenceMethod,
     credential_id: requester.credentialId,
-    authority_path: recovery ? "operator_recovery" : "custodian",
+    session_id: responsibilityActor(req).session_id,
+    authority_path: "custodian",
   } };
 }
 

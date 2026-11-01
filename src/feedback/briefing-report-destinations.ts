@@ -21,7 +21,7 @@ export type ReportPlacementInput = {
   routeManifest?: BriefingDestinationRouteManifest;
 };
 
-export type DestinationActor = { userId: string; credentialId: string | null; projectId: string };
+export type DestinationActor = { userId: string; credentialId: string | null; evidenceMethod: "api_token" | "session_claim" | "local_default"; projectId: string };
 
 type LayoutMember = {
   briefing_id: string;
@@ -160,11 +160,11 @@ export function placeBriefingReport(
     }
     if (!owner) db.prepare(`INSERT INTO briefing_destination_owners
       (logical_artifact_id, group_id, bound_by_user_id, evidence_method, credential_id, created_at, updated_at)
-      VALUES (?, ?, ?, 'api_token', ?, ?, ?)`).run(logicalArtifactId, targetId, actor.userId,
-        actor.credentialId, now, now);
+      VALUES (?, ?, ?, ?, ?, ?, ?)`).run(logicalArtifactId, targetId, actor.userId,
+        actor.evidenceMethod, actor.credentialId, now, now);
     else if (owner.group_id !== targetId) db.prepare(`UPDATE briefing_destination_owners SET group_id = ?,
-      bound_by_user_id = ?, evidence_method = 'api_token', credential_id = ?, updated_at = ?
-      WHERE logical_artifact_id = ? AND group_id = ?`).run(targetId, actor.userId, actor.credentialId,
+      bound_by_user_id = ?, evidence_method = ?, credential_id = ?, updated_at = ?
+      WHERE logical_artifact_id = ? AND group_id = ?`).run(targetId, actor.userId, actor.evidenceMethod, actor.credentialId,
         now, logicalArtifactId, expectedOwnerId);
     let sourceBaseId: string | null = null;
     if (source) {

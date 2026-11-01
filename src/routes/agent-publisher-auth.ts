@@ -4,35 +4,19 @@ import type { RequestLike } from "../server.js";
 import { publisherMayPostInventory } from "../task-inventory.js";
 import { getUserById } from "../users/store.js";
 
-export interface DurableAgentPublisherOptions {
-  credentialCode: string;
-  credentialMessage: string;
+export interface AgentPublisherOptions {
   agentCode: string;
   agentMessage: string;
   allowOperator?: boolean;
 }
 
-/**
- * Shared write-boundary authentication for unattended publishers.
- *
- * Route-specific registration checks remain with their owning contract, but
- * credential durability, active-user lookup, agent-kind enforcement, and
- * authenticated-principal attribution must not drift between inventory and
- * Briefing or between HTTP and file-RPC transports.
- */
-export function requireDurableAgentPublisher(
+/** Local claims and authenticated boundary transports resolve to one active publisher. */
+export function requireAgentPublisher(
   db: Db,
   req: RequestLike,
-  options: DurableAgentPublisherOptions,
+  options: AgentPublisherOptions,
 ): { userId: string; slug: string; administrative: boolean } {
   const identity = requireIdentity(req);
-  if (identity.method !== "api_token") {
-    throw new ClientAuthzError(
-      403,
-      options.credentialCode,
-      options.credentialMessage,
-    );
-  }
   const user = getUserById(db, identity.user_id);
   if (!user || user.status !== "active") {
     throw new ClientAuthzError(403, "forbidden", "The authenticated user is not active.");
@@ -53,7 +37,7 @@ export interface MappedTaskExecutorOptions {
 /**
  * Inventory and command receipts share one exact executor boundary.
  *
- * A durable token must resolve to an active agent and that agent's slug must be
+ * The admitted identity must resolve to an active agent and that agent's slug must be
  * explicitly mapped to the exact executor name. Inventory retains its existing
  * operator administrative exception; command fetch/events do not enable it.
  */
@@ -63,10 +47,7 @@ export function requireMappedTaskExecutor(
   executorName: string,
   options: MappedTaskExecutorOptions = {},
 ): { userId: string; slug: string; administrative: boolean } {
-  const publisher = requireDurableAgentPublisher(db, req, {
-    credentialCode: "executor_credential_required",
-    credentialMessage:
-      "Executor access requires a durable API token, not a session credential.",
+  const publisher = requireAgentPublisher(db, req, {
     agentCode: "executor_agent_required",
     agentMessage: "Executor access requires an agent identity.",
     allowOperator: options.allowOperator === true,

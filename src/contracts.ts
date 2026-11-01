@@ -490,7 +490,7 @@ export type AuthRequestAction = AuthRequestActionInput & {
 };
 
 export type AuthPublicationBlocker = {
-  code: "runtime_handoff_lock" | "ownership_conflict" | "unreadable_state" | "missing_definition" | "starting";
+  code: "runtime_handoff_lock" | "ownership_conflict" | "unreadable_state" | "missing_definition" | "starting" | "checkout_not_ready";
   message: string;
 };
 
@@ -585,7 +585,7 @@ export type WorkUnit = {
   resolved_at: number | null;
   auth_request_id: string | null;
   owner_user_id: string | null;
-  owner_credential_id: string | null;
+  responsibility_session_id: string | null;
   custody_generation: number;
 };
 
@@ -810,7 +810,7 @@ export type ConversationPositionTarget = {
 
 export type ConversationPositionWindow = {
   conversation: Conversation;
-  body_source: "source" | "legacy";
+  body_source: "source";
   source_version_id: string | null;
   children: ConversationChild[];
   parent: ConversationParent | null;

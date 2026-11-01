@@ -24,7 +24,7 @@ import type { ParseResult } from "../src/parsers/types.js";
 import { registerConversationRoutes } from "../src/routes/conversations.js";
 import { Router } from "../src/server.js";
 import { revokeCredential, setupOperator } from "../src/users/store.js";
-import { managedSearchSource } from "./helpers/search-managed-source.js";
+import { nativeSearchSource } from "./helpers/search-native-source.js";
 import { getFullTextSearchJobs } from "../src/conversations/full-text-search-jobs.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
@@ -74,6 +74,7 @@ function upsertCodexThreadMetadata(input: {
 beforeEach(async () => {
   resetCredentialLeakScanCache();
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-conversation-search-route-"));
+  process.env.MANDIBLE_CONVERSATION_STRUCTURE_DB = path.join(tempDir, "structure.db");
   process.env.MANDIBLE_CONVERSATION_CACHE_DB = path.join(tempDir, "cache", "search.db");
   db = migratedMemoryDb();
   setDb(db);
@@ -84,21 +85,9 @@ beforeEach(async () => {
   insertConversation.run("title-only", "/tmp/title", "hash-title", "Needle in title", "session-title");
   insertConversation.run("body-only", "/tmp/body", "hash-body", "Unrelated title", "session-body");
   insertConversation.run("revoked-canary", "/tmp/canary", "hash-canary", "Canary title", "session-canary");
-  db.prepare(`INSERT INTO conversation_blocks
-    (id, conversation_id, type, role, content, compressed, position, metadata_json)
-    VALUES (?, ?, 'assistant_message', 'assistant', ?, 0, 0, '{}')`)
-    .run("block-title", "title-only", "no body match");
-  db.prepare(`INSERT INTO conversation_blocks
-    (id, conversation_id, type, role, content, compressed, position, metadata_json)
-    VALUES (?, ?, 'assistant_message', 'assistant', ?, 0, 0, '{}')`)
-    .run("block-body", "body-only", "A Needle across the body");
-  db.prepare(`INSERT INTO conversation_blocks
-    (id, conversation_id, type, role, content, compressed, position, metadata_json)
-    VALUES (?, ?, 'assistant_message', 'assistant', ?, 0, 0, '{}')`)
-    .run("block-canary", "revoked-canary", `before ${revokedCanary} after`);
-  await managedSearchSource(db,path.join(tempDir,"managed"),"title-only","no body match","block-title");
-  await managedSearchSource(db,path.join(tempDir,"managed"),"body-only","A Needle across the body","block-body");
-  await managedSearchSource(db,path.join(tempDir,"managed"),"revoked-canary",`before ${revokedCanary} after`,"block-canary");
+  await nativeSearchSource(db,path.join(tempDir,"managed"),"title-only","no body match");
+  await nativeSearchSource(db,path.join(tempDir,"managed"),"body-only","A Needle across the body");
+  await nativeSearchSource(db,path.join(tempDir,"managed"),"revoked-canary",`before ${revokedCanary} after`);
 });
 
 async function settled(router:Router,input:Parameters<Router["invoke"]>[0]) {
@@ -120,6 +109,7 @@ afterEach(() => {
   getConversationSearchCache(db).close();
   db.close();
   delete process.env.MANDIBLE_CONVERSATION_CACHE_DB;
+  delete process.env.MANDIBLE_CONVERSATION_STRUCTURE_DB;
   resetCredentialLeakScanCache();
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
@@ -155,25 +145,6 @@ async function insertSourceBackedConversation(
       parsed.blocks.length,
       `notes ${unverifiedCanary}`,
     );
-  const insertBlock = db.prepare(`INSERT INTO conversation_blocks
-    (id, conversation_id, type, role, content, compressed, position, timestamp,
-     parent_id, metadata_json, dag_uuid, dag_parent_uuid)
-    VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`);
-  for (const block of parsed.blocks) {
-    insertBlock.run(
-      `legacy-${conversationId}-${block.position}`,
-      conversationId,
-      block.type,
-      block.role,
-      block.content,
-      block.position,
-      block.timestamp,
-      block.parent_id,
-      JSON.stringify(block.metadata),
-      block.dag_uuid ?? null,
-      block.dag_parent_uuid ?? null,
-    );
-  }
   const bytes = fs.readFileSync(sourcePath);
   if (compressed) {
     fs.writeFileSync(`${sourcePath}.zst`, zstdCompressSync(bytes));
@@ -184,6 +155,7 @@ async function insertSourceBackedConversation(
     provider: "codex",
     nativeSessionId: parsed.conversation.session_id,
     filePath: sourcePath,
+    blocks: parsed.blocks,
     ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
   });
   const tail = bytes.subarray(Math.max(0, bytes.length - 4096));
@@ -376,7 +348,7 @@ describe("conversation full-text API parity", () => {
     }
   });
 
-  it("keeps valid compressed matches and recovers unavailable sources without caching stripped bodies", async () => {
+  it("keeps valid compressed matches and recovers unavailable sources without caching unavailable content", async () => {
     const originals = new Map<string, Buffer>();
     for (const id of ["missing", "corrupt", "healthy"]) {
       const sourcePath = path.join(tempDir, `.codex/sessions/2026/08/17/${id}.jsonl`);
@@ -388,7 +360,6 @@ describe("conversation full-text API parity", () => {
       if (id === "missing") fs.unlinkSync(`${sourcePath}.zst`);
       else if (id === "corrupt") fs.writeFileSync(`${sourcePath}.zst`, "corrupt zstd");
     }
-    db.prepare("UPDATE conversation_blocks SET content = '', payload_state = 'source' WHERE conversation_id IN ('missing', 'corrupt')").run();
     const router = new Router();
     registerConversationRoutes(router, inlineLedgerReader());
     for (const url of ["/api/conversations/search?q=Unavailable%20Needle", "/api/conversations?search=Unavailable%20Needle&full_text=true"]) {
@@ -420,7 +391,7 @@ describe("conversation full-text API parity", () => {
 
     const dedicated = await settled(router,{ method: "GET", url: "/api/conversations/search?q=Needle" });
     expect(dedicated.body).toMatchObject({
-      results: [{ conversation: { id: "body-only" }, block: { id: "block-body", content: "" } }],
+      results: [{ conversation: { id: "body-only" }, block: { id: sparseConversationBlockId("body-only", 0), content: "" } }],
       total: 1,
     });
 
@@ -436,7 +407,7 @@ describe("conversation full-text API parity", () => {
   });
 
   it("keeps cold search and sidebar source work off the daemon loop", async () => {
-    await managedSearchSource(db,path.join(tempDir,"managed"),"body-only","x".repeat(512 * 1024)+" Needle","block-body");
+    await nativeSearchSource(db,path.join(tempDir,"managed"),"body-only","x".repeat(512 * 1024)+" Needle");
     const ledgerPath = path.join(tempDir, "ledger.db");
     fs.writeFileSync(ledgerPath, db.serialize());
     const reader = workerLedgerReaderPool(ledgerPath, { size: 2 });
@@ -455,13 +426,13 @@ describe("conversation full-text API parity", () => {
       const dedicated = await settled(router,{ method: "GET", url: "/api/conversations/search?q=Needle" });
       expect(dedicated.status).toBe(200);
       expect(dedicated.body).toMatchObject({
-        results: [{ conversation: { id: "body-only" }, block: { id: "block-body", content: "" } }],
+        results: [{ conversation: { id: "body-only" }, block: { id: sparseConversationBlockId("body-only", 0), content: "" } }],
         total: 1,
       });
       const sidebar = await settled(router,{ method: "GET", url: "/api/conversations/sidebar?search=Needle&full_text=true" });
       expect(sidebar.status).toBe(200);
       expect(sidebar.body).toMatchObject({
-        groups: [{ conversations: [{ id: "body-only", search_target: { block: "block-body" } }] }],
+        groups: [{ conversations: [{ id: "body-only", search_target: { block: sparseConversationBlockId("body-only", 0) } }] }],
       });
       const title = await settled(router,{ method: "GET", url: "/api/conversations/search?q=Needle&title=true" });
       expect(title.status).toBe(200);
@@ -477,7 +448,7 @@ describe("conversation full-text API parity", () => {
     }
   });
 
-  it("returns source-verified dedicated-route matches with durable structural block ids", async () => {
+  it("returns source-verified dedicated-route matches with sparse position anchors", async () => {
     const sourcePath = path.join(
       tempDir,
       ".codex/sessions/2026/08/17/rollout-2026-08-17T00-00-00-source-route.jsonl",
@@ -504,10 +475,9 @@ describe("conversation full-text API parity", () => {
       }],
       total: 1,
     });
-    expect(structural.id).not.toBe("legacy-source-route-0");
   });
 
-  it("forces verified source reads when stripped compatibility rows opt out of source-backed responses", async () => {
+  it("masks credentials consistently in native detail, blocks and export responses", async () => {
     const authenticator = new ClientAuthenticator(db, { secretsDir: path.join(tempDir, "auth") });
     const operator = setupOperator(db, { display_name: "Operator" });
     const revoked = authenticator.mintApiToken(operator.id, { label: "revoked source canary" });
@@ -522,27 +492,21 @@ describe("conversation full-text API parity", () => {
       { type: "response_item", timestamp: "2026-08-17T00:00:01Z", payload: { type: "function_call", call_id: "call-mask", name: "shell", arguments: JSON.stringify({ revoked: revoked.token, unverified: unverifiedCanary }) } },
       { type: "response_item", timestamp: "2026-08-17T00:00:02Z", payload: { type: "function_call_output", call_id: "call-mask", output: `revoked ${revoked.token}; unverified ${unverifiedCanary}` } },
     ]);
-    db.prepare(`
-      UPDATE conversation_blocks
-         SET content = '', metadata_json = '{}', compressed = 0, payload_state = 'source'
-       WHERE conversation_id = 'source-mask'
-    `).run();
-
     const router = new Router({ clientAuth: authenticator });
     registerConversationRoutes(router, inlineLedgerReader());
     const detail = await settled(router,{
       method: "GET",
-      url: "/api/conversations/source-mask?source_backed=false",
+      url: "/api/conversations/source-mask",
     });
     const blocks = await settled(router,{
       method: "GET",
-      url: "/api/conversations/source-mask/blocks?source_backed=false",
+      url: "/api/conversations/source-mask/blocks",
     });
     const exported = await settled(router,{
       method: "POST",
       url: "/api/conversations/source-mask/export",
       credential: requestToken,
-      body: { format: "json", source_backed: false },
+      body: { format: "json" },
     });
 
     const responses = [["detail", detail], ["blocks", blocks], ["export", exported]] as const;
@@ -571,17 +535,17 @@ describe("conversation full-text API parity", () => {
     registerConversationRoutes(failingRouter, inlineLedgerReader());
     const failedDetail = await failingRouter.invoke({
       method: "GET",
-      url: "/api/conversations/source-mask?source_backed=false",
+      url: "/api/conversations/source-mask",
     });
     const failedBlocks = await failingRouter.invoke({
       method: "GET",
-      url: "/api/conversations/source-mask/blocks?source_backed=false",
+      url: "/api/conversations/source-mask/blocks",
     });
     const failedExport = await failingRouter.invoke({
       method: "POST",
       url: "/api/conversations/source-mask/export",
       credential: requestToken,
-      body: { format: "json", source_backed: false },
+      body: { format: "json" },
     });
     for (const response of [failedDetail, failedBlocks]) {
       expect(response.status).toBe(409);

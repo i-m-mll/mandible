@@ -400,6 +400,190 @@
         ]
       }
     },
+    "auth.responsibility.assume": {
+      "route": [
+        "auth",
+        "responsibility",
+        "assume"
+      ],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {
+            "kind": "argument",
+            "name": "request",
+            "value": {
+              "type": "string"
+            }
+          },
+          {
+            "kind": "option",
+            "names": [
+              "--reason"
+            ],
+            "values": [
+              {
+                "kind": "argument",
+                "name": "value",
+                "value": {
+                  "type": "string"
+                }
+              }
+            ]
+          },
+          {
+            "kind": "option",
+            "names": [
+              "--expected-revision"
+            ],
+            "values": [
+              {
+                "kind": "argument",
+                "name": "value",
+                "value": {
+                  "type": "integer"
+                }
+              }
+            ]
+          },
+          {
+            "kind": "option",
+            "names": [
+              "--expected-custody-generation"
+            ],
+            "values": [
+              {
+                "kind": "argument",
+                "name": "value",
+                "value": {
+                  "type": "integer"
+                }
+              }
+            ]
+          },
+          {
+            "kind": "optional",
+            "item": {
+              "kind": "option",
+              "names": [
+                "--session"
+              ],
+              "values": [
+                {
+                  "kind": "argument",
+                  "name": "value",
+                  "value": {
+                    "type": "string"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "kind": "optional",
+            "item": {
+              "kind": "option",
+              "names": [
+                "--json"
+              ],
+              "values": []
+            }
+          }
+        ]
+      }
+    },
+    "auth.responsibility.release": {
+      "route": [
+        "auth",
+        "responsibility",
+        "release"
+      ],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {
+            "kind": "argument",
+            "name": "request",
+            "value": {
+              "type": "string"
+            }
+          },
+          {
+            "kind": "option",
+            "names": [
+              "--reason"
+            ],
+            "values": [
+              {
+                "kind": "argument",
+                "name": "value",
+                "value": {
+                  "type": "string"
+                }
+              }
+            ]
+          },
+          {
+            "kind": "option",
+            "names": [
+              "--expected-revision"
+            ],
+            "values": [
+              {
+                "kind": "argument",
+                "name": "value",
+                "value": {
+                  "type": "integer"
+                }
+              }
+            ]
+          },
+          {
+            "kind": "option",
+            "names": [
+              "--expected-custody-generation"
+            ],
+            "values": [
+              {
+                "kind": "argument",
+                "name": "value",
+                "value": {
+                  "type": "integer"
+                }
+              }
+            ]
+          },
+          {
+            "kind": "optional",
+            "item": {
+              "kind": "option",
+              "names": [
+                "--session"
+              ],
+              "values": [
+                {
+                  "kind": "argument",
+                  "name": "value",
+                  "value": {
+                    "type": "string"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "kind": "optional",
+            "item": {
+              "kind": "option",
+              "names": [
+                "--json"
+              ],
+              "values": []
+            }
+          }
+        ]
+      }
+    },
     "work-unit.claim": {
       "route": ["work-unit", "claim"],
       "grammar": {
@@ -455,28 +639,247 @@
         ]
       }
     },
-    "work-unit.release": {
-      "route": ["work-unit", "release"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-          {"kind": "choice","items": [{"kind": "sequence","items": [{"kind": "option","names": ["--id"],"values": [{"kind": "argument","name": "work-unit-id","value": {"type": "string"}}]}]},{"kind": "sequence","items": [{"kind": "option","names": ["--repo","--repo-id"],"values": [{"kind": "argument","name": "repo","value": {"type": "string"}}]},{"kind": "option","names": ["--branch"],"values": [{"kind": "argument","name": "branch","value": {"type": "string"}}]},{"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--issue","--issue-id"],"values": [{"kind": "argument","name": "id","value": {"type": "string"}}]}]}}]}]},
-          {"kind": "option","names": ["--expected-generation"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 0}}]},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--graceful"],"values": []}]}}
-        ]
-      }
-    },
-    "work-unit.custody-assume": {
-      "route": ["work-unit", "custody-assume"],
+    "work-unit.abandon": {
+      "route": ["work-unit", "abandon"],
       "grammar": {
         "kind": "sequence",
         "items": [
           {"kind": "option","names": ["--id"],"values": [{"kind": "argument","name": "work-unit-id","value": {"type": "string"}}]},
           {"kind": "option","names": ["--expected-generation"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 0}}]},
           {"kind": "option","names": ["--reason"],"values": [{"kind": "argument","name": "text","value": {"type": "string"}}]},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--parent-role-checkpoint"],"values": [{"kind": "argument","name": "id","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--request-approval"],"values": []}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--graceful"],"values": []}]}}
+        ]
+      }
+    },
+    "work-unit.release": {
+      "route": [
+        "work-unit",
+        "release"
+      ],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {
+            "kind": "choice",
+            "items": [
+              {
+                "kind": "sequence",
+                "items": [
+                  {
+                    "kind": "option",
+                    "names": [
+                      "--id"
+                    ],
+                    "values": [
+                      {
+                        "kind": "argument",
+                        "name": "work-unit-id",
+                        "value": {
+                          "type": "string"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "kind": "sequence",
+                "items": [
+                  {
+                    "kind": "option",
+                    "names": [
+                      "--repo",
+                      "--repo-id"
+                    ],
+                    "values": [
+                      {
+                        "kind": "argument",
+                        "name": "repo",
+                        "value": {
+                          "type": "string"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "kind": "option",
+                    "names": [
+                      "--branch"
+                    ],
+                    "values": [
+                      {
+                        "kind": "argument",
+                        "name": "branch",
+                        "value": {
+                          "type": "string"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "kind": "optional",
+                    "item": {
+                      "kind": "sequence",
+                      "items": [
+                        {
+                          "kind": "option",
+                          "names": [
+                            "--issue",
+                            "--issue-id"
+                          ],
+                          "values": [
+                            {
+                              "kind": "argument",
+                              "name": "id",
+                              "value": {
+                                "type": "string"
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "kind": "option",
+            "names": [
+              "--expected-generation"
+            ],
+            "values": [
+              {
+                "kind": "argument",
+                "name": "n",
+                "value": {
+                  "type": "integer",
+                  "min": 0
+                }
+              }
+            ]
+          },
+          {
+            "kind": "optional",
+            "item": {
+              "kind": "sequence",
+              "items": [
+                {
+                  "kind": "option",
+                  "names": [
+                    "--graceful"
+                  ],
+                  "values": []
+                }
+              ]
+            }
+          },
+          {
+            "kind": "option",
+            "names": [
+              "--reason"
+            ],
+            "values": [
+              {
+                "kind": "argument",
+                "name": "value",
+                "value": {
+                  "type": "string"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "work-unit.custody-assume": {
+      "route": [
+        "work-unit",
+        "custody-assume"
+      ],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {
+            "kind": "option",
+            "names": [
+              "--id"
+            ],
+            "values": [
+              {
+                "kind": "argument",
+                "name": "work-unit-id",
+                "value": {
+                  "type": "string"
+                }
+              }
+            ]
+          },
+          {
+            "kind": "option",
+            "names": [
+              "--expected-generation"
+            ],
+            "values": [
+              {
+                "kind": "argument",
+                "name": "n",
+                "value": {
+                  "type": "integer",
+                  "min": 0
+                }
+              }
+            ]
+          },
+          {
+            "kind": "option",
+            "names": [
+              "--reason"
+            ],
+            "values": [
+              {
+                "kind": "argument",
+                "name": "text",
+                "value": {
+                  "type": "string"
+                }
+              }
+            ]
+          },
+          {
+            "kind": "optional",
+            "item": {
+              "kind": "sequence",
+              "items": [
+                {
+                  "kind": "option",
+                  "names": [
+                    "--graceful"
+                  ],
+                  "values": []
+                }
+              ]
+            }
+          },
+          {
+            "kind": "optional",
+            "item": {
+              "kind": "option",
+              "names": [
+                "--session"
+              ],
+              "values": [
+                {
+                  "kind": "argument",
+                  "name": "value",
+                  "value": {
+                    "type": "string"
+                  }
+                }
+              ]
+            }
+          }
         ]
       }
     },
@@ -1474,7 +1877,6 @@
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--project"],"values": [{"kind": "argument","name": "project","value": {"type": "string"}}]},{"kind": "option","names": ["--base"],"values": [{"kind": "argument","name": "branch","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--issue"],"values": [{"kind": "argument","name": "ref","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--head"],"values": [{"kind": "argument","name": "branch","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--credential"],"values": [{"kind": "argument","name": "id","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--duration-minutes"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 0}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--max-uses"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 0}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
@@ -1574,14 +1976,90 @@
       }
     },
     "work-unit.release-issue": {
-      "route": ["work-unit", "release-issue"],
+      "route": [
+        "work-unit",
+        "release-issue"
+      ],
       "grammar": {
         "kind": "sequence",
         "items": [
-          {"kind": "option","names": ["--issue","--issue-id"],"values": [{"kind": "argument","name": "id","value": {"type": "string"}}]},
-          {"kind": "option","names": ["--repo","--repo-id"],"values": [{"kind": "argument","name": "repo","value": {"type": "string"}}]},
-          {"kind": "option","names": ["--units-file"],"values": [{"kind": "argument","name": "snapshot.json","value": {"type": "string"}}]},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--graceful"],"values": []}]}}
+          {
+            "kind": "option",
+            "names": [
+              "--issue",
+              "--issue-id"
+            ],
+            "values": [
+              {
+                "kind": "argument",
+                "name": "id",
+                "value": {
+                  "type": "string"
+                }
+              }
+            ]
+          },
+          {
+            "kind": "option",
+            "names": [
+              "--repo",
+              "--repo-id"
+            ],
+            "values": [
+              {
+                "kind": "argument",
+                "name": "repo",
+                "value": {
+                  "type": "string"
+                }
+              }
+            ]
+          },
+          {
+            "kind": "option",
+            "names": [
+              "--units-file"
+            ],
+            "values": [
+              {
+                "kind": "argument",
+                "name": "snapshot.json",
+                "value": {
+                  "type": "string"
+                }
+              }
+            ]
+          },
+          {
+            "kind": "optional",
+            "item": {
+              "kind": "sequence",
+              "items": [
+                {
+                  "kind": "option",
+                  "names": [
+                    "--graceful"
+                  ],
+                  "values": []
+                }
+              ]
+            }
+          },
+          {
+            "kind": "option",
+            "names": [
+              "--reason"
+            ],
+            "values": [
+              {
+                "kind": "argument",
+                "name": "value",
+                "value": {
+                  "type": "string"
+                }
+              }
+            ]
+          }
         ]
       }
     },
@@ -1749,26 +2227,176 @@
       }
     },
     "issue.parent-role.assume": {
-      "route": ["issue", "parent-role", "assume"],
+      "route": [
+        "issue",
+        "parent-role",
+        "assume"
+      ],
       "grammar": {
         "kind": "sequence",
         "items": [
-          {"kind": "argument","name": "umbrella","value": {"type": "string"}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--session"],"values": [{"kind": "argument","name": "id","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--mechanism"],"values": [{"kind": "argument","name": "name","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--override"],"values": []}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
+          {
+            "kind": "argument",
+            "name": "umbrella",
+            "value": {
+              "type": "string"
+            }
+          },
+          {
+            "kind": "optional",
+            "item": {
+              "kind": "sequence",
+              "items": [
+                {
+                  "kind": "option",
+                  "names": [
+                    "--session"
+                  ],
+                  "values": [
+                    {
+                      "kind": "argument",
+                      "name": "id",
+                      "value": {
+                        "type": "string"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "kind": "optional",
+            "item": {
+              "kind": "sequence",
+              "items": [
+                {
+                  "kind": "option",
+                  "names": [
+                    "--mechanism"
+                  ],
+                  "values": [
+                    {
+                      "kind": "argument",
+                      "name": "name",
+                      "value": {
+                        "type": "string"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "kind": "optional",
+            "item": {
+              "kind": "sequence",
+              "items": [
+                {
+                  "kind": "option",
+                  "names": [
+                    "--json"
+                  ],
+                  "values": []
+                }
+              ]
+            }
+          },
+          {
+            "kind": "option",
+            "names": [
+              "--reason"
+            ],
+            "values": [
+              {
+                "kind": "argument",
+                "name": "value",
+                "value": {
+                  "type": "string"
+                }
+              }
+            ]
+          },
+          {
+            "kind": "option",
+            "names": [
+              "--expected-checkpoint"
+            ],
+            "values": [
+              {
+                "kind": "argument",
+                "name": "value",
+                "value": {
+                  "type": "string"
+                }
+              }
+            ]
+          }
         ]
       }
     },
     "issue.parent-role.release": {
-      "route": ["issue", "parent-role", "release"],
+      "route": [
+        "issue",
+        "parent-role",
+        "release"
+      ],
       "grammar": {
         "kind": "sequence",
         "items": [
-          {"kind": "argument","name": "umbrella","value": {"type": "string"}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--override"],"values": []}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
+          {
+            "kind": "argument",
+            "name": "umbrella",
+            "value": {
+              "type": "string"
+            }
+          },
+          {
+            "kind": "optional",
+            "item": {
+              "kind": "sequence",
+              "items": [
+                {
+                  "kind": "option",
+                  "names": [
+                    "--json"
+                  ],
+                  "values": []
+                }
+              ]
+            }
+          },
+          {
+            "kind": "option",
+            "names": [
+              "--reason"
+            ],
+            "values": [
+              {
+                "kind": "argument",
+                "name": "value",
+                "value": {
+                  "type": "string"
+                }
+              }
+            ]
+          },
+          {
+            "kind": "option",
+            "names": [
+              "--expected-checkpoint"
+            ],
+            "values": [
+              {
+                "kind": "argument",
+                "name": "value",
+                "value": {
+                  "type": "string"
+                }
+              }
+            ]
+          }
         ]
       }
     },
@@ -2047,17 +2675,6 @@
         "items": [
           {"kind": "argument","name": "id|session-id","value": {"type": "string"}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--format"],"values": [{"kind": "argument","name": "json|markdown","value": {"type": "enum","values": ["json","markdown"]}}]}]}}
-        ]
-      }
-    },
-    "conversations.storage.prepare": {
-      "route": ["conversations", "storage", "prepare"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--apply"],"values": []}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--limit"],"values": [{"kind": "argument","name": "N","value": {"type": "integer","min": 1}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
         ]
       }
     },
@@ -2620,51 +3237,6 @@
         ]
       }
     },
-    "logs.daemon.copy": {
-      "route": ["logs", "daemon", "copy"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--batch-size"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 1}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--max-batches"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 1}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--canonical-db"],"values": [{"kind": "argument","name": "path","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--log-db"],"values": [{"kind": "argument","name": "path","value": {"type": "string"}}]}]}}
-        ]
-      }
-    },
-    "logs.daemon.reconcile": {
-      "route": ["logs", "daemon", "reconcile"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--batch-size"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 1}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--max-batches"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 1}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--canonical-db"],"values": [{"kind": "argument","name": "path","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--log-db"],"values": [{"kind": "argument","name": "path","value": {"type": "string"}}]}]}}
-        ]
-      }
-    },
-    "logs.daemon.verify": {
-      "route": ["logs", "daemon", "verify"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--no-record"],"values": []}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--canonical-db"],"values": [{"kind": "argument","name": "path","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--log-db"],"values": [{"kind": "argument","name": "path","value": {"type": "string"}}]}]}}
-        ]
-      }
-    },
-    "logs.daemon.reclaim-plan": {
-      "route": ["logs", "daemon", "reclaim-plan"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--canonical-db"],"values": [{"kind": "argument","name": "path","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--log-db"],"values": [{"kind": "argument","name": "path","value": {"type": "string"}}]}]}}
-        ]
-      }
-    },
     "logs.daemon.export": {
       "route": ["logs", "daemon", "export"],
       "grammar": {
@@ -2725,18 +3297,8 @@
         ]
       }
     },
-    "conversation-storage.prepare": {
-      "route": ["conversation-storage", "prepare"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-          {"kind": "option","names": ["--db"],"values": [{"kind": "argument","name": "path","value": {"type": "string"}}]},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--apply"],"values": []}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--limit"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 1}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
-        ]
-      }
-    },
+    "conversation-recovery.inspect": {"route": ["conversation-recovery", "inspect"], "grammar": {"kind": "sequence", "items": [{"kind": "option", "names": ["--db"], "values": [{"kind": "argument", "name": "db", "value": {"type": "string"}}]}, {"kind": "optional", "item": {"kind": "option", "names": ["--limit"], "values": [{"kind": "argument", "name": "limit", "value": {"type": "integer"}}]}}, {"kind": "optional", "item": {"kind": "option", "names": ["--offset"], "values": [{"kind": "argument", "name": "offset", "value": {"type": "integer"}}]}}]}},
+    "conversation-recovery.restore": {"route": ["conversation-recovery", "restore"], "grammar": {"kind": "sequence", "items": [{"kind": "option", "names": ["--metadata-sql"], "values": [{"kind": "argument", "name": "metadata-sql", "value": {"type": "string"}}]}, {"kind": "option", "names": ["--destination"], "values": [{"kind": "argument", "name": "destination", "value": {"type": "string"}}]}, {"kind": "optional", "item": {"kind": "option", "names": ["--limit"], "values": [{"kind": "argument", "name": "limit", "value": {"type": "integer"}}]}}]}},
     "conversation-blocks.logs": {
       "route": ["conversation-blocks", "logs"],
       "grammar": {
@@ -2876,67 +3438,6 @@
         "kind": "sequence",
         "items": [
           {"kind": "optional","item": {"kind": "option","names": ["--settings"],"values": [{"kind": "argument","name": "settings","value": {"type": "string"}}]}},
-          {"kind": "optional","item": {"kind": "option","names": ["--json"],"values": []}}
-        ]
-      }
-    },
-    "conversation-cutover.binding": {
-      "route": ["conversation-cutover", "binding"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-          {"kind": "option","names": ["--source"],"values": [{"kind": "argument","name": "source","value": {"type": "string"}}]},
-          {"kind": "optional","item": {"kind": "option","names": ["--json"],"values": []}}
-        ]
-      }
-    },
-    "conversation-cutover.rebuild": {
-      "route": ["conversation-cutover", "rebuild"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-          {"kind": "option","names": ["--source"],"values": [{"kind": "argument","name": "source","value": {"type": "string"}}]},
-          {"kind": "option","names": ["--destination"],"values": [{"kind": "argument","name": "destination","value": {"type": "string"}}]},
-          {"kind": "repeat","min": 0,"item": {"kind": "option","names": ["--exclude-table"],"values": [{"kind": "argument","name": "exclude-table","value": {"type": "string"}}]}},
-          {"kind": "optional","item": {"kind": "option","names": ["--json"],"values": []}}
-        ]
-      }
-    },
-    "conversation-cutover.reclaim": {
-      "route": ["conversation-cutover", "reclaim"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-          {"kind": "option","names": ["--source"],"values": [{"kind": "argument","name": "source","value": {"type": "string"}}]},
-          {"kind": "option","names": ["--destination"],"values": [{"kind": "argument","name": "destination","value": {"type": "string"}}]},
-          {"kind": "optional","item": {"kind": "option","names": ["--log-db"],"values": [{"kind": "argument","name": "log-db","value": {"type": "string"}}]}},
-          {"kind": "optional","item": {"kind": "option","names": ["--structure-cache"],"values": [{"kind": "argument","name": "structure-cache","value": {"type": "string"}}]}},
-          {"kind": "optional","item": {"kind": "option","names": ["--json"],"values": []}}
-        ]
-      }
-    },
-    "conversation-cutover.restore-drill": {
-      "route": ["conversation-cutover", "restore-drill"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-          {"kind": "option","names": ["--source"],"values": [{"kind": "argument","name": "source","value": {"type": "string"}}]},
-          {"kind": "option","names": ["--metadata-sql"],"values": [{"kind": "argument","name": "metadata-sql","value": {"type": "string"}}]},
-          {"kind": "option","names": ["--custody-root"],"values": [{"kind": "argument","name": "custody-root","value": {"type": "string"}}]},
-          {"kind": "option","names": ["--destination-root"],"values": [{"kind": "argument","name": "destination-root","value": {"type": "string"}}]},
-          {"kind": "optional","item": {"kind": "option","names": ["--json"],"values": []}}
-        ]
-      }
-    },
-    "conversation-cutover.audit": {
-      "route": ["conversation-cutover", "audit"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-          {"kind": "option","names": ["--source"],"values": [{"kind": "argument","name": "source","value": {"type": "string"}}]},
-          {"kind": "option","names": ["--evidence"],"values": [{"kind": "argument","name": "evidence","value": {"type": "string"}}]},
-          {"kind": "optional","item": {"kind": "option","names": ["--rebuild-report"],"values": [{"kind": "argument","name": "rebuild-report","value": {"type": "string"}}]}},
-          {"kind": "repeat","min": 0,"item": {"kind": "option","names": ["--restore-report"],"values": [{"kind": "argument","name": "restore-report","value": {"type": "string"}}]}},
           {"kind": "optional","item": {"kind": "option","names": ["--json"],"values": []}}
         ]
       }

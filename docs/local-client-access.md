@@ -1,96 +1,25 @@
 # Local client access
 
-Mandible is a single-human-user application. Ordinary local access belongs to
-the owning operating-system account and does not expire. Provider names and
-task IDs describe the actor; they do not prove which executable or model is
-running.
+Mandible belongs to the logged-in operating-system user. Opening it gives that
+user access without login, pairing, renewal, or expiry.
 
-## Local tools
+The CLI uses an owner-only Unix socket at
+`~/.cache/mandible/local-api/production.sock`; `MANDIBLE_SOCKET` selects an
+absolute alternative. Connection failure does not fall back to HTTP. Preview
+instances have separate sockets and effect limits.
 
-The daemon serves its existing router over a Unix socket inside an owner-only
-directory. The directory is mode `0700` and the socket is mode `0600`. Startup
-refuses unsafe ownership, symbolic links, and an already active listener. A
-stale socket may be removed only after verifying its type, ownership, and lack
-of a live listener. Shutdown removes only the socket owned by that launch.
+Local agent calls identify the actor by provider and session, or by a managed
+app and session before a provider ID is available. Mandible records this as
+`session_claim` attribution. Missing or conflicting managed identities are
+refused, never treated as the human operator. For Codex, `CODEX_THREAD_ID`
+takes precedence over an inherited same-provider `CODEX_SESSION_ID`.
 
-The production socket is `~/.cache/mandible/local-api/production.sock`.
-`MANDIBLE_SOCKET` selects an explicit absolute socket path. Preview instances
-use distinct paths and retain their existing restrictions on effects.
+Local socket calls ignore bearer tokens, including inherited `MANDIBLE_TOKEN`.
+A session claim is not human proof. Responsibility changes require an explicit
+operation with a reason and observed generation or checkpoint; protected
+effects require the configured operator's action-bound key proof. Browser
+requests retain host, origin, and CSRF checks. Explicit remote or scoped
+transports retain their credential boundaries. See
+[Architecture](/docs/concepts/architecture).
 
-Local CLI calls use this transport automatically. Failure to reach it is a
-connection failure, never a reason to silently retry against HTTP. Explicit
-HTTP and file-RPC clients retain their existing credential boundaries.
-
-Ordinary socket requests do not read Keychain, inherit bearer authority, or
-exchange a durable credential for an expiring session token. An obsolete
-`MANDIBLE_TOKEN` in an agent environment does not prevent ordinary local work.
-
-## Attribution and permission
-
-Provider integrations supply the current provider and task ID deterministically.
-Clients attach them to requests without asking the model to discover or remember
-them. Claimed provider identity resolves only to an active agent account;
-ambiguous or missing managed-client identity never becomes the human operator.
-The provider task and any Mandible session alias remain distinct identifiers.
-Before a provider assigns its task ID, a managed launcher supplies its explicit
-app name and Mandible session alias. The socket resolves this pair only to an
-active agent binding and refuses conflicting claims. A fresh Claude SDK launch
-reserves the actual provider UUID through the SDK and gives that same UUID to
-its channel; a resumed launch retains its recorded provider UUID.
-
-The server records local socket access separately from verified credential
-evidence. Local access still passes through the existing project permissions,
-resource ownership checks, and instance effect limits. A task ID is never an
-approval or a transferable credential.
-
-Protected request lifecycle, durable work-unit custody, clearances, credential
-administration, and mapped external execution retain their explicit credential
-requirements. The client selects the durable credential deliberately for these
-routes, before sending the request. It does not retry rejected mutations with
-stronger credentials. Existing request and work-unit credential ownership stays
-unchanged. This contract does not introduce a new request-signature protocol.
-
-Every route registration declares `localCliCredential` independently of its
-effects, file-RPC admission and handler authorization. The versioned
-`cli/local-credential-routes.json` is generated offline from all registrations,
-including explicit `omit` entries, with `bun run generate:local-credential-routes`.
-Build and static checks reject stale or incomplete projections and unresolved
-overlaps between route modules. Clients resolve the first registered matching
-route before applying its credential policy; unknown or malformed routes fail
-before credential lookup or network delivery.
-Local clients also reject URL dot segments, backslashes, raw non-URL characters
-and invalid UTF-8 parameter escapes before credential lookup, so the server
-cannot normalize a credentialed request into a different route.
-
-Policies select omission, durable credentials, optional bootstrap credentials,
-durable credentials for managed clients, or durable credentials when a named
-body field is a nonempty string. The body predicate preserves whitespace as
-nonempty; handlers retain their own validation. Managed-only Briefing destination
-policies keep unmanaged human access tokenless. These policies select client
-presentation only and confer no server authority.
-
-## Browser and preview access
-
-The browser keeps the existing HTTP front door, exact host and origin checks,
-and CSRF protection. Both human and agent clicks use the same application
-request helper. CSRF checks distinguish permitted browser origins; they do not
-distinguish a person from browser automation and are not disabled in previews.
-
-A preview may change its isolated ledger and files. Local transport does not
-grant it production writes, protected execution, credential administration, or
-other effects excluded by its registered policy.
-
-## Verification
-
-Acceptance covers tokenless local reads and ordinary writes, restart with the
-same task identity, stale inherited tokens, unsafe socket paths, active listener
-conflicts, and TCP attempts to claim socket access. Protected actions must reject
-unverified claims and preserve exact durable credential ownership. Browser
-writes must work with CSRF enabled while cross-origin writes remain refused.
-
-The final candidate must pass the repository's default checks and a production
-daemon plus packaged desktop launch from that exact revision. Runtime acceptance
-includes startup readiness, a representative interaction, and inspection of that
-launch's logs for unexplained failures or event-loop stalls.
-
-Co-Authored-By: Codex (GPT-5) <codex@openai.com>
+Co-Authored-By: Codex (GPT) <codex@openai.com>

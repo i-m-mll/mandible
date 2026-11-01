@@ -2,7 +2,7 @@
 //
 // A Mandible PAT is a bearer secret that must never appear in a transcript. The
 // `mandible_pat_` prefix exists precisely so a leak is machine-detectable, so
-// the normalized conversation index scans ingested text for candidates and
+// the shared scanner checks normalized native transcript text for candidates and
 // verifies each one against the live credential table.
 //
 // Verification reuses the client-auth hashing path: a candidate is peppered-
@@ -14,15 +14,13 @@
 // event, not logged, and not returned by any API. Only the credential id, its
 // owner, its label, and the location it was found in are persisted.
 //
-// Detection is deliberately in the normalized-index path rather than in the
-// provider parsers: parsers stay format-only, and one hook covers every
-// provider plus the on-demand backfill over already-indexed content.
+// Detection runs after native parsing: parsers stay format-only, and the same
+// scanner handles ingestion and operator-requested native source scans.
 
 import { createHash } from "node:crypto";
 
 import { loadOrCreatePepper } from "./client-auth/secret-store.js";
 import { API_TOKEN_PREFIX, fingerprintForToken } from "./client-auth/tokens.js";
-import { decompressContent } from "./compression.js";
 import { getDaemonLogger } from "./daemon-log.js";
 import type { Db } from "./db.js";
 import { revokeCredential } from "./users/store.js";
@@ -464,60 +462,6 @@ export function recordCredentialLeak(
   };
 }
 
-/**
- * Follow renumbered blocks in the leak alerts that point at them.
- *
- * The alert payload carries `block_id` so the dashboard can deep-link the
- * exact block a credential leaked in. Retroactive redaction recomputes that id
- * (the id is a content hash, so masking inside the hashed prefix changes it),
- * which left every existing alert pointing at a row that no longer exists —
- * the link 404s, and it does so on the one record an operator opens *because*
- * a credential leaked (issue b3e4a09, re-review finding 2).
- *
- * Only `credential_leak` events are touched, and only their `block_id`: the
- * rest of the payload, including the credential id and the detection time, is
- * historical fact and stays as recorded. Payloads that fail to parse are left
- * alone rather than rewritten from a guess.
- */
-export function remapCredentialLeakAlertBlockIds(
-  db: Db,
-  renames: ReadonlyMap<string, string>,
-): number {
-  if (renames.size === 0) return 0;
-  const rows = db
-    .prepare(
-      `SELECT id, data_json FROM webhook_events
-       WHERE source = ? AND event_type = ?`,
-    )
-    .all(CREDENTIAL_LEAK_EVENT_SOURCE, CREDENTIAL_LEAK_EVENT_TYPE) as Array<{
-      id: string;
-      data_json: string | null;
-    }>;
-  if (rows.length === 0) return 0;
-
-  const update = db.prepare("UPDATE webhook_events SET data_json = ? WHERE id = ?");
-  let updated = 0;
-  for (const row of rows) {
-    if (!row.data_json) continue;
-    let payload: unknown;
-    try {
-      payload = JSON.parse(row.data_json);
-    } catch {
-      continue;
-    }
-    if (!payload || typeof payload !== "object" || Array.isArray(payload)) continue;
-    const record = payload as Record<string, unknown>;
-    const blockId = record.block_id;
-    if (typeof blockId !== "string") continue;
-    const next = renames.get(blockId);
-    if (next === undefined || next === blockId) continue;
-    record.block_id = next;
-    update.run(JSON.stringify(record), row.id);
-    updated += 1;
-  }
-  return updated;
-}
-
 // --- Pepper access -----------------------------------------------------------
 
 let cachedPepper: string | null = null;
@@ -568,7 +512,7 @@ export interface ScannableBlock {
  *
  * Metadata is in scope because the parsers duplicate tool arguments and short
  * tool results into it (`tool_input`, `tool_output`), and ingestion serializes
- * that object into `conversation_blocks.metadata_json` and into the append SSE
+ * that object into normalized block metadata and into the append SSE
  * payload. Masking only `content` left a working token in both (issue b3e4a09,
  * review finding 1).
  */
@@ -1009,162 +953,4 @@ export function redactCredentialLeaksInBlocks(
   options: ScanTextOptions = {},
 ): CredentialLeakRedactionResult {
   return walkBlocksForCredentials(db, blocks, location, options, true);
-}
-
-// --- On-demand backfill over the existing index ------------------------------
-
-export interface CredentialLeakBackfillOptions {
-  /** Restrict the sweep to one conversation id. */
-  conversationId?: string | null;
-  /** Cap on blocks scanned (0 or undefined = the whole index). */
-  limit?: number;
-  /** Rows fetched per batch. */
-  batchSize?: number;
-  /** When false, report detections without persisting alerts or revoking. */
-  record?: boolean;
-  pepper?: string;
-  now?: number;
-}
-
-export interface CredentialLeakBackfillResult {
-  scanned_blocks: number;
-  scanned_conversations: number;
-  detections: CredentialLeakDetection[];
-  truncated: boolean;
-  skipped?: "no_active_api_tokens";
-}
-
-interface BackfillRow {
-  id: string;
-  conversation_id: string;
-  content: Buffer | string;
-  metadata_json: string | null;
-  compressed: number;
-  position: number;
-  session_id: string | null;
-  source: string | null;
-  branch: string | null;
-  title: string | null;
-}
-
-const DEFAULT_BACKFILL_BATCH = 500;
-
-/**
- * Sweep the already-indexed conversation blocks. This is the acceptance path
- * for credentials that leaked before detection existed: an active PAT sitting
- * in an old transcript is found, alerted on, and (for session-scoped tokens
- * only) revoked.
- */
-export function backfillCredentialLeakScan(
-  db: Db,
-  options: CredentialLeakBackfillOptions = {},
-): CredentialLeakBackfillResult {
-  if (!hasActiveApiTokenCredentials(db)) {
-    return {
-      scanned_blocks: 0,
-      scanned_conversations: 0,
-      detections: [],
-      truncated: false,
-      skipped: "no_active_api_tokens",
-    };
-  }
-
-  const pepper = options.pepper ?? scanPepper(db);
-  const now = options.now ?? Date.now();
-  const record = options.record !== false;
-  const conversationId = options.conversationId ?? null;
-  const batchSize = Math.max(1, options.batchSize ?? DEFAULT_BACKFILL_BATCH);
-  const limit = options.limit && options.limit > 0 ? options.limit : Number.POSITIVE_INFINITY;
-
-  const select = db.prepare(
-    `SELECT b.id AS id, b.conversation_id AS conversation_id, b.content AS content,
-            b.metadata_json AS metadata_json,
-            b.compressed AS compressed, b.position AS position,
-            c.session_id AS session_id, c.source AS source, c.branch AS branch,
-            c.title AS title
-     FROM conversation_blocks b
-     JOIN conversations c ON c.id = b.conversation_id
-     WHERE b.payload_state = 'legacy'
-       AND (? IS NULL OR b.conversation_id = ?)
-     ORDER BY b.rowid
-     LIMIT ? OFFSET ?`,
-  );
-
-  const detections: CredentialLeakDetection[] = [];
-  // One alert per (credential, conversation) across the whole sweep.
-  const seen = new Set<string>();
-  const conversations = new Set<string>();
-  let scanned = 0;
-  let offset = 0;
-  let truncated = false;
-
-  for (;;) {
-    const take = Math.min(batchSize, limit - scanned);
-    if (take <= 0) break;
-    const rows = select.all(conversationId, conversationId, take, offset) as BackfillRow[];
-    if (rows.length === 0) break;
-    offset += rows.length;
-
-    for (const row of rows) {
-      scanned += 1;
-      conversations.add(row.conversation_id);
-      let text: string;
-      try {
-        text = decompressContent(row.content, row.compressed === 1);
-      } catch {
-        continue;
-      }
-      // Tool arguments and short tool results are duplicated into metadata_json
-      // by the parsers, so a sweep that only reads `content` under-reports.
-      const extractedContent = extractTokenCandidatesWithStatus(text);
-      const extractedMetadata = extractTokenCandidatesWithStatus(row.metadata_json);
-      truncated ||= extractedContent.truncated || extractedMetadata.truncated;
-      const candidates = extractedMetadata.candidates.length === 0
-        ? extractedContent.candidates
-        : [...new Set([...extractedContent.candidates, ...extractedMetadata.candidates])];
-      for (const candidate of candidates) {
-        const leak = matchActiveCredential(db, pepper, candidate);
-        if (!leak) continue;
-        const key = `${leak.credential_id}\u0000${row.conversation_id}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        const location: CredentialLeakLocation = {
-          conversation_id: row.conversation_id,
-          conversation_title: row.title,
-          session_id: row.session_id,
-          source: row.source,
-          branch: row.branch,
-          block_id: row.id,
-          block_position: row.position,
-        };
-        detections.push(
-          record
-            ? recordCredentialLeak(db, leak, location, now)
-            : {
-              event_id: leakEventId(leak.credential_id, row.conversation_id),
-              detected_at: now,
-              credential: leak,
-              location,
-              revoked: false,
-              new_event: false,
-            },
-        );
-      }
-    }
-
-    if (rows.length < take) break;
-  }
-
-  if (truncated) {
-    credentialLeakLog("warn", "credential_leak_backfill_candidates_truncated", {
-      scanned_blocks: scanned,
-      max_candidates_per_text: MAX_CANDIDATES_PER_TEXT,
-    });
-  }
-  return {
-    scanned_blocks: scanned,
-    scanned_conversations: conversations.size,
-    detections,
-    truncated,
-  };
 }

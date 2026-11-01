@@ -23,7 +23,7 @@ type AuthPipelineMatch =
 
 function workUnitDecisionState(db: Db, id: string): string {
   const row = db.prepare("SELECT * FROM work_units WHERE id = ?").get(id) as Record<string, unknown> | undefined;
-  return JSON.stringify(row ? ["id", "state", "branch", "repo_id", "created_at", "assigned_session_id", "assignment_target_json", "worker_provider_session_id", "provider_session_id", "auth_request_id", "owner_user_id", "owner_credential_id", "custody_generation", "resolved_at"].map(key => row[key] ?? null) : null);
+  return JSON.stringify(row ? ["id", "state", "branch", "repo_id", "created_at", "assigned_session_id", "assignment_target_json", "worker_provider_session_id", "provider_session_id", "auth_request_id", "owner_user_id", "responsibility_session_id", "custody_generation", "resolved_at"].map(key => row[key] ?? null) : null);
 }
 
 // Bug: 8a281b3 — periodic reconciler for work unit state consistency.

@@ -1,3 +1,7 @@
+import { MAIN_CLI_INSTANCE_RESPONSE } from "./helpers/cli-instance-response.js";
+import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
+import { setupOperator } from "../src/users/store.js";
+import { registerWorkUnitRoutes } from "../src/routes/work-units.js";
 import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import fs from "node:fs";
 import os from "node:os";
@@ -61,7 +65,7 @@ it("persists file-RPC native origin with its authoritative comment revision", as
     const router = new Router();
     router.post('/api/ledger/issues/:issueId/comments', (_req, res) => {
       res.json(store.addComment(issue.id, { body: 'From file RPC', actor_type: 'system', author_display: 'System', attribution: systemAction() }));
-    }, { localCliCredential: {"mode":"omit"}, fileRpc: 'allow', operation: { id: 'fixture.origin-comment', effects: ['ledger:write'], reportingCategory: 'ledger', requestSchema: null } });
+    }, { fileRpc: 'allow', operation: { id: 'fixture.origin-comment', effects: ['ledger:write'], reportingCategory: 'ledger', requestSchema: null } });
     const origin = { provider: 'claude', provider_session_id: 'exact-file-native' };
     fs.writeFileSync(path.join(tempDir, 'origin.request.json'), JSON.stringify({ id: 'origin', method: 'POST',
       path: `/api/ledger/issues/${issue.id}/comments`, request_origin: origin }));
@@ -174,13 +178,13 @@ function buildPolicyRouter(): Router {
     router[method.toLowerCase() as "get" | "post" | "patch" | "put" | "delete"](
       routePath,
       noop,
-      { localCliCredential: {"mode":"omit"}, operation: { id: `fixture:${method}:${routePath}`, effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "allow" },
+      { operation: { id: `fixture:${method}:${routePath}`, effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "allow" },
     );
   }
   router.post(
     "/api/issues/:repoId",
     noop,
-    { localCliCredential: {"mode":"omit"}, operation: { id: "fixture:post:/api/issues/:repoId", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: "allow" },
+    { operation: { id: "fixture:post:/api/issues/:repoId", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: "allow" },
   );
   return router;
 }
@@ -193,6 +197,7 @@ function allowsFileRpcRoute(method: string, pathname: string): boolean {
 async function runCliWithTransport(
   args: string[],
   transport: FileRpcTransport,
+  extraEnv: Record<string, string> = {},
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
   let stopped = false;
   const pump = async () => {
@@ -210,6 +215,8 @@ async function runCliWithTransport(
         ...process.env,
         MANDIBLE_BASE: `file://${transport.dir}`,
         MANDIBLE_FILE_RPC_TIMEOUT: "5",
+        CODEX_SESSION_ID: "", CODEX_THREAD_ID: "", CLAUDE_CODE_SESSION_ID: "", CLAUDE_SESSION_ID: "", GEMINI_SESSION_ID: "", MANDIBLE_SESSION_ID: "",
+        ...extraEnv,
       },
     });
     let stdout = "";
@@ -256,7 +263,7 @@ describe("file RPC transport", () => {
         issue_id: req.params.issueId,
         include: req.query.include,
       });
-    }, { localCliCredential: {"mode":"omit"}, operation: { id: "fixture:get:/api/ledger/issues/:issueId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+    }, { operation: { id: "fixture:get:/api/ledger/issues/:issueId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
     const transport = new FileRpcTransport({ router, dir: tempDir, responseTtlMs: 60_000 });
 
     fs.writeFileSync(
@@ -283,52 +290,55 @@ describe("file RPC transport", () => {
     });
   });
 
-  it("passes explicit ambient identity through allowed file-RPC work-unit mutations", async () => {
-    const router = new Router();
-    router.post("/api/work-units/claim", (req, res) => {
-      res.json({ ambient_identity: req.ambient_identity });
-    }, { localCliCredential: {"mode":"durable"}, operation: { id: "fixture:post:/api/work-units/claim", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: "allow" });
-    router.post("/api/work-units/release", (req, res) => {
-      res.json({ ambient_identity: req.ambient_identity, body: req.body });
-    }, { localCliCredential: {"mode":"durable"}, operation: { id: "fixture:post:/api/work-units/release", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: "allow" });
-    const transport = new FileRpcTransport({ router, dir: tempDir, responseTtlMs: 60_000 });
+  it("carries real CLI responsibility transitions, stale-write refusals and native attribution over file RPC", async () => {
+    const db = migratedMemoryDb(); setDb(db);
+    try {
+      const user = setupOperator(db, { slug: "file-rpc-owner" });
+      const project = addProject(db, { project_key: "rpc-responsibility", display_name: "RPC responsibility" });
+      const issue = createLedgerIssue(db, { project_id: project.id });
+      const router = authenticatedTestRouter(user);
+      router.get("/api/instance", (_req, res) => res.json(MAIN_CLI_INSTANCE_RESPONSE), { operation: { id: "fixture:get:/api/instance", effects: [], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+      registerWorkUnitRoutes(router, {} as never);
+      const transport = new FileRpcTransport({ router, dir: tempDir });
+      const invoke = (session: string, args: string[]) => runCliWithTransport(args, transport, {
+        CODEX_THREAD_ID: session, MANDIBLE_TEST_ONLY_ALLOW_NON_MAIN_OPERATIONAL_MUTATIONS: "1",
+      });
+      const created = await invoke("old-holder", ["work-unit", "activate", "--issue", issue.id,
+        "--repo", project.project_key, "--branch", "feature/rpc"]);
+      expect(created.status, created.stderr).toBe(0);
+      const read = () => db.prepare("SELECT * FROM work_units WHERE ledger_issue_id = ?").get(issue.id) as Record<string, unknown>;
+      const id = String(read().id);
+      const take = (generation: string) => invoke("successor", ["work-unit", "custody-assume", "--id", id,
+        "--expected-generation", generation, "--reason", "Continue implementation"]);
+      expect((await take("0")).status).not.toBe(0);
+      const transferred = await take("1");
+      expect(transferred.status, transferred.stderr).toBe(0);
+      expect(read()).toMatchObject({ responsibility_session_id: "successor", custody_generation: 2, state: "committed" });
+      const stale = await invoke("old-holder", ["work-unit", "resolve", "--id", id, "--expected-generation", "1"]);
+      expect(stale.status).not.toBe(0);
+      const released = await invoke("successor", ["work-unit", "release", "--id", id,
+        "--expected-generation", "2", "--reason", "Ready for another session"]);
+      expect(released.status, released.stderr).toBe(0);
+      expect(read()).toMatchObject({ owner_user_id: null, responsibility_session_id: null, custody_generation: 3, state: "committed" });
+      const receipts = db.prepare("SELECT request_origin_json FROM responsibility_events WHERE entity_id = ? ORDER BY generation").all(id) as Array<{ request_origin_json: string }>;
+      expect(receipts).toHaveLength(2);
+      expect(JSON.parse(receipts[0].request_origin_json)).toMatchObject({ provider: "codex", provider_session_id: "successor" });
+      expect((await take("3")).status).toBe(0);
+      db.prepare("UPDATE work_units SET continuation = ? WHERE id = ?").run("Retain existing handoff notes", id);
+      const abandon = (generation: string) => invoke("successor", ["work-unit", "abandon", "--id", id,
+        "--expected-generation", generation, "--reason", "Removed branch with no unique work"]);
+      expect((await abandon("3")).status).not.toBe(0);
+      const abandoned = await abandon("4");
+      expect(abandoned.status, abandoned.stderr).toBe(0);
+      expect(read()).toMatchObject({ state: "abandoned", continuation: "Retain existing handoff notes" });
+      expect(db.prepare("SELECT count(*) AS count FROM work_units WHERE ledger_issue_id = ? AND state IN ('open', 'committed')").get(issue.id)).toEqual({ count: 0 });
+      expect(db.prepare("SELECT status FROM ledger_issues WHERE id = ?").get(issue.id)).toEqual({ status: "open" });
+      const history = db.prepare("SELECT payload_json FROM ledger_events WHERE entity_type = 'work_unit' AND entity_id = ?").all(id) as Array<{ payload_json: string }>;
+      expect(history.map(event => JSON.parse(event.payload_json))).toContainEqual(expect.objectContaining({
+        reason: "Removed branch with no unique work", changed_fields: expect.arrayContaining(["state"]),
+      }));
 
-    fs.writeFileSync(
-      path.join(tempDir, "req-work.request.json"),
-      JSON.stringify({
-        id: "req-work",
-        method: "POST",
-        path: "/api/work-units/claim",
-        ambient_identity: { provider: "codex", provider_session_id: "thread-file-rpc" },
-        body: { issue_id: "abc123", repo_id: "mandible" },
-      }),
-      "utf8",
-    );
-    fs.writeFileSync(
-      path.join(tempDir, "req-release.request.json"),
-      JSON.stringify({
-        id: "req-release",
-        method: "POST",
-        path: "/api/work-units/release",
-        ambient_identity: { provider: "codex", provider_session_id: "thread-release-rpc" },
-        body: { issue_id: "abc123", repo_id: "mandible" },
-      }),
-      "utf8",
-    );
-
-    await transport.processOnce();
-
-    const response = JSON.parse(fs.readFileSync(path.join(tempDir, "req-work.response.json"), "utf8"));
-    expect(response.status).toBe(200);
-    expect(response.body).toEqual({
-      ambient_identity: { provider: "codex", provider_session_id: "thread-file-rpc" },
-    });
-    const release = JSON.parse(fs.readFileSync(path.join(tempDir, "req-release.response.json"), "utf8"));
-    expect(release.status).toBe(200);
-    expect(release.body).toEqual({
-      ambient_identity: { provider: "codex", provider_session_id: "thread-release-rpc" },
-      body: { issue_id: "abc123", repo_id: "mandible" },
-    });
+    } finally { db.close(); }
   });
 
   it("injects a spool attachment as a daemon-visible content_path and cleans it up (issue 833e972)", async () => {
@@ -340,7 +350,7 @@ describe("file RPC transport", () => {
       const contentPath = (req.body as Record<string, unknown>).content_path as string;
       attachmentBytes = fs.readFileSync(contentPath, "utf8");
       res.json({ artifact: { id: "artifact:abc123def456", availability: "present", custody_mode: "copy" } });
-    }, { localCliCredential: {"mode":"omit"}, operation: { id: "fixture:post:/api/artifacts/ingest", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: "allow" });
+    }, { operation: { id: "fixture:post:/api/artifacts/ingest", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: "allow" });
     const transport = new FileRpcTransport({ router, dir: tempDir, responseTtlMs: 60_000 });
 
     fs.writeFileSync(path.join(tempDir, "req-art.attach-content_path"), "PK big zip bytes", "utf8");
@@ -376,7 +386,7 @@ describe("file RPC transport", () => {
     router.post("/api/artifacts/ingest", (req, res) => {
       seenBody = req.body as Record<string, unknown>;
       res.json({ ok: true });
-    }, { localCliCredential: {"mode":"omit"}, operation: { id: "fixture:post:/api/artifacts/ingest", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: "allow" });
+    }, { operation: { id: "fixture:post:/api/artifacts/ingest", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: "allow" });
     const transport = new FileRpcTransport({ router, dir: tempDir, responseTtlMs: 60_000 });
 
     fs.writeFileSync(
@@ -399,7 +409,7 @@ describe("file RPC transport", () => {
 
   it("rejects attachment names that escape the spool dir or target non-allowlisted fields (issue 833e972)", async () => {
     const router = new Router();
-    router.post("/api/artifacts/ingest", (_req, res) => res.json({ ok: true }), { localCliCredential: {"mode":"omit"}, operation: { id: "fixture:post:/api/artifacts/ingest", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: "allow" });
+    router.post("/api/artifacts/ingest", (_req, res) => res.json({ ok: true }), { operation: { id: "fixture:post:/api/artifacts/ingest", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: "allow" });
     const transport = new FileRpcTransport({ router, dir: tempDir, responseTtlMs: 60_000 });
 
     fs.writeFileSync(
@@ -441,7 +451,7 @@ describe("file RPC transport", () => {
     registerProjectRoutes(router);
     router.post("/api/auth/request/:id/approve", (_req, res) => {
       res.json({ ok: true });
-    }, { localCliCredential: {"mode":"durable"}, operation: { id: "fixture:post:/api/auth/request/:id/approve", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: "deny" });
+    }, { operation: { id: "fixture:post:/api/auth/request/:id/approve", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: "deny" });
     const transport = new FileRpcTransport({ router, dir: tempDir, responseTtlMs: 60_000 });
 
     fs.writeFileSync(
@@ -630,7 +640,7 @@ describe("file RPC transport", () => {
     const router = new Router();
     router.put("/api/knowledge-backrefs", (_req, res) => {
       res.json({ ok: true });
-    }, { localCliCredential: {"mode":"omit"}, operation: { id: "fixture:put:/api/knowledge-backrefs", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: "deny" });
+    }, { operation: { id: "fixture:put:/api/knowledge-backrefs", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: "deny" });
     const transport = new FileRpcTransport({ router, dir: tempDir, responseTtlMs: 60_000 });
     fs.writeFileSync(
       path.join(tempDir, "req-kb.request.json"),
@@ -649,7 +659,7 @@ describe("file RPC per-route allowlist convention", () => {
     // A space route that nobody has enumerated must be rejected — proves there
     // is no catch-all prefix match.
     const router = new Router();
-    router.get("/api/spaces/:id", noop, { localCliCredential: {"mode":"omit"}, operation: { id: "fixture:get:/api/spaces/:id", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+    router.get("/api/spaces/:id", noop, { operation: { id: "fixture:get:/api/spaces/:id", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
     expect(router.resolveFileRpcPolicy("GET", "/api/spaces/spc-1")).toBe(true);
     expect(router.resolveFileRpcPolicy("GET", "/api/spaces/spc-1/not-a-real-route")).toBe(false);
     expect(router.resolveFileRpcPolicy("POST", "/api/spaces/spc-1/unknown")).toBe(false);
@@ -658,8 +668,8 @@ describe("file RPC per-route allowlist convention", () => {
 
   it("exposes per-route policy metadata from the router", () => {
     const router = new Router();
-    router.get("/api/spaces/:id", noop, { localCliCredential: {"mode":"omit"}, operation: { id: "fixture:get:/api/spaces/:id", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
-    router.get("/api/spaces/:id/items", noop, { localCliCredential: {"mode":"omit"}, operation: { id: "fixture:get:/api/spaces/:id/items", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+    router.get("/api/spaces/:id", noop, { operation: { id: "fixture:get:/api/spaces/:id", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+    router.get("/api/spaces/:id/items", noop, { operation: { id: "fixture:get:/api/spaces/:id/items", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
     expect(router.listRoutePolicies()).toMatchObject([
       { method: "GET", path: "/api/spaces/:id", fileRpc: "allow" },
       { method: "GET", path: "/api/spaces/:id/items", fileRpc: "deny" },

@@ -257,7 +257,7 @@ describe("executor authority, receipts, and conflicts", () => {
     expect((await router.invoke({ method: "GET", url: pendingUrl })).body)
       .toMatchObject({ code: "authentication_required" });
     expect((await router.invoke({ method: "GET", url: pendingUrl, credential: "session:agent-schedule" })).body)
-      .toMatchObject({ code: "executor_credential_required" });
+      .toMatchObject({ commands: [expect.objectContaining({ id })] });
     expect((await router.invoke({ method: "GET", url: pendingUrl, credential: "other-agent" })).body)
       .toMatchObject({ code: "executor_identity_forbidden" });
     expect((await router.invoke({ method: "GET", url: pendingUrl, credential: "operator" })).body)

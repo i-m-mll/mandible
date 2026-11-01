@@ -50,9 +50,9 @@ describe("preview database sanitization", () => {
       label: "attribution-only",
     }, 1_001);
     db.prepare(`INSERT INTO work_units
-      (id, issue_id, repo_id, branch, kind, state, created_at, owner_user_id, owner_credential_id, custody_generation)
+      (id, issue_id, repo_id, branch, kind, state, created_at, owner_user_id, responsibility_session_id, custody_generation)
       VALUES ('work-unit-preview-history', 'issue-preview-history', 'mandible', 'feature/history', 'solo', 'committed', 1002, ?, ?, 1)`)
-      .run(operator.id, credential.id);
+      .run(operator.id, null);
     setSetting(db, "provider.secret.credential", "must-not-survive");
     db.close();
 
@@ -60,8 +60,8 @@ describe("preview database sanitization", () => {
 
     const sanitized = new SqliteDatabase(databasePath);
     expect(sanitized.prepare("SELECT id FROM user_credentials WHERE id = ?").get(credential.id)).toEqual({ id: credential.id });
-    expect(sanitized.prepare("SELECT owner_credential_id FROM work_units WHERE id = 'work-unit-preview-history'").get())
-      .toEqual({ owner_credential_id: credential.id });
+    expect(sanitized.prepare("SELECT responsibility_session_id FROM work_units WHERE id = 'work-unit-preview-history'").get())
+      .toEqual({ responsibility_session_id: null });
     expect(sanitized.prepare("SELECT value FROM settings WHERE key = 'provider.secret.credential'").get()).toBeUndefined();
     expect(sanitized.pragma("foreign_key_check")).toEqual([]);
     sanitized.close();

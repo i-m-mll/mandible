@@ -14,6 +14,7 @@ import { registerAuthRoutes } from "../src/routes/auth.js";
 import { createServer, Router } from "../src/server.js";
 import { SseManager } from "../src/sse.js";
 import { setupOperator } from "../src/users/store.js";
+import { describeAuthExecutionFailure } from "../src/contracts.js";
 import { createAuthCheckRepo, commitOnBranch } from "./helpers/auth-queue-fixtures.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 import { preparedGitFixture } from "./helpers/prepared-git-fixture.js";
@@ -209,6 +210,29 @@ describe("atomic auth merge", () => {
     expect(result.stderr).toContain("MANDIBLE_MERGE_RESULT");
   });
 
+  it("reuses the candidate but names a tracked edit arriving after cached preflight without changing refs or index", () => {
+    const base = git(["rev-parse", "main"]);
+    const head = git(["rev-parse", "feature/atomic"]);
+    const cached = candidate(base, head);
+    const index = fs.readFileSync(path.join(repo, ".git", "index"));
+    const invocation = atomicInvocation(base, head, cached, {
+      MANDIBLE_AUTH_PREFLIGHT_BASE_SHA: base, MANDIBLE_AUTH_SKIP_MERGE_PREFLIGHT: "1",
+    }, true);
+    invocation.args[1] = invocation.args[1]!.replace("run_merge_preflight() { :; }\n", "")
+      .replace("prompt_confirm() { printf 'y'; }", "prompt_confirm() { printf 'Edit during confirmation\\n' > shared.txt; printf 'y'; }");
+    const result = spawnSync("bash", invocation.args, { ...invocation.options, encoding: "utf8", timeout: 10_000 });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(fs.realpathSync(repo));
+    expect(result.stderr).toContain("unstaged [ M]: shared.txt");
+    expect(result.stderr).toContain("This readiness check changed no checkout files");
+    const reason = describeAuthExecutionFailure(result.stderr, result.status);
+    expect(reason).toContain("Checkout blocked: unstaged [ M]: shared.txt");
+    expect(git(["rev-parse", "main"])).toBe(base);
+    expect(fs.readFileSync(path.join(repo, ".git", "index"))).toEqual(index);
+    expect(fs.readFileSync(path.join(repo, "shared.txt"), "utf8")).toBe("Edit during confirmation\n");
+    expect(result.stderr).not.toContain("MANDIBLE_MERGE_PREPARED");
+  });
+
   it("preserves protected ref, index, files, and merge state when signing fails or is cancelled", () => {
     const base = git(["rev-parse", "main"]);
     const head = git(["rev-parse", "feature/atomic"]);
@@ -246,7 +270,7 @@ describe("atomic auth merge", () => {
     const server = createServer({
       db,
       sse: new SseManager(),
-      logger: configureDaemonLogger(db),
+      logger: configureDaemonLogger(db, { persist: false }),
       version: "test",
       router,
       getStartupInfo: () => null,

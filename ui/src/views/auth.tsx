@@ -37,6 +37,7 @@ import {
   canPerformOperation,
   getAuthRequestActions,
   getAuthRequestDetail,
+  changeAuthResponsibility,
   isApiErrorStatus,
   createAuthHook,
   setAuthRequestActionVeto,
@@ -897,6 +898,25 @@ function AuthRequestDetail({
   const [metadataOpen, setMetadataOpen] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
   const consoleEndRef = useRef<HTMLDivElement>(null);
+  const [responsibilityDialog, setResponsibilityDialog] = useState<Record<string, unknown> | null>(null);
+  const [responsibilityReason, setResponsibilityReason] = useState('');
+  const [responsibilityError, setResponsibilityError] = useState<string | null>(null);
+  const [responsibilityBusy, setResponsibilityBusy] = useState(false);
+  const openResponsibility = async () => {
+    setResponsibilityError(null);
+    try { setResponsibilityDialog(await getAuthRequestDetail(getAuthId(request))); }
+    catch (error) { setResponsibilityError(error instanceof Error ? error.message : String(error)); }
+  };
+  const changeResponsibility = async (action: 'assume' | 'release' | 'withdraw') => {
+    if (!responsibilityDialog) return;
+    setResponsibilityBusy(true); setResponsibilityError(null);
+    try {
+      await changeAuthResponsibility(getAuthId(request), action, responsibilityDialog, responsibilityReason);
+      setResponsibilityDialog(await getAuthRequestDetail(getAuthId(request)));
+      setResponsibilityReason('');
+    } catch (error) { setResponsibilityError(error instanceof Error ? error.message : String(error)); }
+    finally { setResponsibilityBusy(false); }
+  };
   const headerRef = useRef<HTMLElement>(null);
   const actionsTriggerRef = useRef<HTMLButtonElement>(null);
   const actionsMenuRef = useRef<HTMLDivElement>(null);
@@ -1211,6 +1231,8 @@ function AuthRequestDetail({
                   >
                     Show metadata
                   </button>
+                  <button type="button" className="auth-detail__actions-item" role="menuitem"
+                    onClick={() => closeActionsAfter(() => { void openResponsibility(); })}>Responsibility</button>
                 </div>
               )}
             </div>
@@ -1487,6 +1509,17 @@ function AuthRequestDetail({
           </div>
           </div>
         )}
+      <DetailPaneModal open={responsibilityDialog !== null} onClose={() => setResponsibilityDialog(null)}
+        titleId="auth-responsibility-title" title="Request responsibility" closeLabel="Close responsibility">
+        <p>Taking responsibility preserves authorship and existing execution. Protected effects still require human approval.</p>
+        <label>Reason<textarea value={responsibilityReason} onInput={event => setResponsibilityReason(event.currentTarget.value)} /></label>
+        {responsibilityError && <p role="alert">{responsibilityError}</p>}
+        <div className="auth-detail__header-actions">
+          {(['assume', 'release', 'withdraw'] as const).map(action => <button type="button"
+            disabled={responsibilityBusy || !responsibilityReason.trim()}
+            onClick={() => { void changeResponsibility(action); }}>{action === 'assume' ? 'Assume responsibility' : action === 'release' ? 'Relinquish responsibility' : 'Withdraw request'}</button>)}
+        </div>
+      </DetailPaneModal>
     </DetailPaneShell>
   );
 }

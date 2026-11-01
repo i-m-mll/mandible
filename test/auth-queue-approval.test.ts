@@ -9,7 +9,8 @@ import { publishFixtureExecution, approveFixtureRequest } from "./helpers/auth-q
  */
 import fs from "node:fs";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import * as operatorProof from "../src/auth-operator-proof.js";
 import { waitUntil } from "./helpers/wait-until.js";
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
 import type { SseEvent } from "../src/types.js";
@@ -31,6 +32,44 @@ function createMigratedDbWithAgent() {
 }
 
 describe("auth queue", () => {
+
+  it("blocks post-submission checkout edits before operator proof and exposes the preserved paths while reviewing", async () => {
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    let queue: AuthQueue | undefined;
+    const proof = vi.spyOn(operatorProof, "signOperatorChallenge");
+    try {
+      writeFile(repo, "notes.txt", "original notes\n");
+      git(repo, ["add", "notes.txt"]); git(repo, ["commit", "-m", "Tracked review notes"]);
+      commitOnBranch(repo, "feature/readiness", { "feature.txt": "reviewed feature\n" });
+      registerWorkRepo(db, repo);
+      const signing = configureSigningCredential(db, repo, "ssh_key");
+      queue = new AuthQueue({ db, hookManager: createNoopHookManager(), backgroundMaintenance: false });
+      const request = await queue.submit({ ...AUTH_MERGE_REVIEW, type: "merge", command: "mandible auth merge feature/readiness --into main",
+        title: "Review retained candidate", cwd: repo, repo: path.basename(repo), base_branch: "main", head_branch: "feature/readiness",
+        merge_head_sha: git(repo, ["rev-parse", "feature/readiness"]) });
+      const base = git(repo, ["rev-parse", "main"]);
+      const pin = request.merge_candidate_pin_sha;
+      writeFile(repo, "shared.txt", "Unstaged edit added during review\n");
+      writeFile(repo, "notes.txt", "Staged edit added during review\n"); git(repo, ["add", "notes.txt"]);
+      const index = fs.readFileSync(path.join(repo, ".git", "index"));
+      const blocker = await queue.publicationBlockerForRequest(request);
+      expect(blocker).toMatchObject({ code: "checkout_not_ready" });
+      expect(blocker!.message).toContain(fs.realpathSync(repo));
+      expect(blocker!.message).toContain("unstaged [ M]: shared.txt");
+      expect(blocker!.message).toContain("staged [M ]: notes.txt");
+      await expect(queue.approveWithOperatorProof(request.id, signing.operatorId)).rejects.toMatchObject({
+        code: "merge_check_failed", message: expect.stringContaining("shared.txt"),
+      });
+      expect(proof).not.toHaveBeenCalled();
+      expect(await queue.getRequest(request.id)).toMatchObject({ status: "pending", approved_by_user_id: null,
+        execution_evidence_id: null, merge_candidate_pin_sha: pin, merge_preflight_base_sha: base });
+      expect(git(repo, ["rev-parse", "main"])).toBe(base);
+      expect(fs.readFileSync(path.join(repo, ".git", "index"))).toEqual(index);
+      expect(fs.readFileSync(path.join(repo, "shared.txt"), "utf8")).toBe("Unstaged edit added during review\n");
+      expect(fs.readFileSync(path.join(repo, "notes.txt"), "utf8")).toBe("Staged edit added during review\n");
+    } finally { proof.mockRestore(); await queue?.dispose(); db.close(); fs.rmSync(repo, { recursive: true, force: true }); }
+  });
 
   it("executes from the re-resolved target root with verified credential-signature evidence", async () => {
     const repo = createAuthCheckRepo();
@@ -740,9 +779,9 @@ describe("auth queue", () => {
       db.prepare(
         `INSERT INTO work_units
           (id, issue_id, repo_id, branch, kind, state, created_at, activated_at, last_commit_at,
-           ledger_issue_id, owner_user_id, owner_credential_id, custody_generation)
+           ledger_issue_id, owner_user_id, responsibility_session_id, custody_generation)
          VALUES (?, 'abc1234', ?, ?, 'solo', 'committed', 1, 1, 1, ?, ?, ?, 1)`,
-      ).run(`wu-${branch}`, project.project.id, branch, issue.id, agent.id, credential.id);
+      ).run(`wu-${branch}`, project.project.id, branch, issue.id, agent.id, null);
     }
     const router = authenticatedTestRouter(agent, { credentialId: credential.id });
     const queue = new AuthQueue({

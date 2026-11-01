@@ -18,7 +18,7 @@ import type { SessionManager } from '../src/session-manager';
 
 afterEach(() => { cleanup(); queryClient.clear(); setSseManager(null); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
-it('moves a real Board card through claim, resolution, and release from the emitted work-unit envelopes', async () => {
+it('moves a Board card on delivery changes and preserves its column when responsibility is relinquished', async () => {
   const db = migratedMemoryDb();
   setDb(db);
   try {
@@ -69,10 +69,12 @@ it('moves a real Board card through claim, resolution, and release from the emit
     const second = await claim('feature/second');
     await settle();
     expect(location()).toBe('worker_status:in_progress');
-    const released = await call({ method: 'POST', url: '/api/work-units/release', body: { id: second.id, expected_generation: second.custody_generation } });
+    const released = await call({ method: 'POST', url: '/api/work-units/release', body: { id: second.id, expected_generation: second.custody_generation, reason: "Hand over unfinished work" } });
     expect(released.status, JSON.stringify(released.body)).toBe(200);
     await settle();
-    expect(location()).toBe('worker_status:none');
+    expect(location()).toBe('worker_status:in_progress');
+    expect(db.prepare('SELECT state, owner_user_id FROM work_units WHERE id = ?').get(second.id))
+      .toEqual({ state: 'open', owner_user_id: null });
     const envelopes = events.filter((event) => event.type === 'ledger:event:created' && (event.data as { entity_type?: string }).entity_type === 'work_unit');
     expect(envelopes.length).toBeGreaterThanOrEqual(4);
     expect(envelopes.every((event) => !('issue_id' in (event.data as object)))).toBe(true);

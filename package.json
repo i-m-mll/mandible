@@ -23,7 +23,6 @@
     "iab-preview-cleanup": "scripts/bun-runtime.sh --exec --no-install scripts/iab-preview.mjs cleanup",
     "demo:briefing": "scripts/bun-runtime.sh --exec --no-install scripts/demo-briefing.mjs",
     "preview-db-snapshot": "scripts/bun-runtime.sh --exec --no-install scripts/project-db-snapshot.mjs",
-    "conversation-cutover": "scripts/bun-runtime.sh --exec --no-install scripts/conversation-cutover-proof.mjs",
     "generate:codex-app-server": "scripts/bun-runtime.sh --exec --no-install scripts/generate-codex-app-server-bindings.mjs",
     "scan:duplication": "scripts/bun-runtime.sh --exec --no-install scripts/ncd-scan.mjs",
     "test:iab-preview-cleanup": "scripts/bun-runtime.sh --exec --no-install scripts/test-iab-preview-cleanup.mjs",
@@ -42,8 +41,7 @@
     "native-preview": "scripts/bun-runtime.sh --exec scripts/native-preview.mjs",
     "fleet": "scripts/bun-runtime.sh --exec --no-install scripts/mandible-fleet.mjs",
     "candidate-acceptance": "scripts/bun-runtime.sh --exec --no-install scripts/candidate-acceptance.mjs",
-    "test:app-payload": "scripts/bun-runtime.sh --exec --no-install scripts/prove-app-payload.mjs",
-    "generate:local-credential-routes": "scripts/bun-runtime.sh --exec --no-install scripts/generate-local-credential-routes.ts"
+    "test:app-payload": "scripts/bun-runtime.sh --exec --no-install scripts/prove-app-payload.mjs"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.259",

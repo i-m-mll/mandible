@@ -8,7 +8,7 @@ export type PlacementTarget = { kind: "group" | "bundle"; id: string };
 export type PlacementOverride = {
   reason?: string;
   actorUserId: string;
-  evidenceMethod: "api_token";
+  evidenceMethod: "api_token" | "local_default" | "session_claim";
   credentialId: string | null;
 };
 export type PlacementCandidate = {

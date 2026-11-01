@@ -1,16 +1,5 @@
-// Credential-leak redaction (issue b3e4a09).
-//
-// Two halves, both verified end to end here:
-//   1. Ingest-time masking — a transcript carrying a live Mandible PAT is
-//      indexed with the token already replaced, deterministically, while the
-//      leak alert is still raised and the source file is left alone.
-//   2. `mandible credential redact <id>` — a hash-verified sweep that masks a
-//      credential that leaked before (1) existed, optionally patching the source
-//      transcript so a later full re-ingest cannot resurrect the plaintext.
-//
-// The property that matters most is negative: after either path, the token must
-// not survive anywhere in the database or in any reported output. Several tests
-// assert that directly rather than only checking the block that was edited.
+import * as operatorProof from "../src/auth-operator-proof.js";
+// Native transcript credential masking, source-file race handling and operator controls.
 
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -19,13 +8,15 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { setDb, type Db } from "../src/db.js";
-import { compressContent, decompressContent } from "../src/compression.js";
 import {
   configureIngestionWorker,
   ingestBatchForWorker,
   triggerTargetedIngest,
 } from "../src/ingestion.js";
 import { Router } from "../src/server.js";
+import { registerConversationRoutes } from "../src/routes/conversations.js";
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
+import { nativeSearchSource } from "./helpers/search-native-source.js";
 import { registerUserRoutes } from "../src/routes/users.js";
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { loadOrCreatePepper } from "../src/client-auth/secret-store.js";
@@ -75,6 +66,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   db.close();
   fs.rmSync(tempDir, { recursive: true, force: true });
   if (previousHome === undefined) delete process.env.HOME;
@@ -106,30 +98,6 @@ interface StoredBlock {
   content: string;
 }
 
-function storedBlocks(): StoredBlock[] {
-  return (db
-    .prepare(
-      `SELECT id, conversation_id, position, type, timestamp, content, compressed
-       FROM conversation_blocks ORDER BY conversation_id, position`,
-    )
-    .all() as Array<{
-      id: string;
-      conversation_id: string;
-      position: number;
-      type: string;
-      timestamp: string | null;
-      content: Buffer | string;
-      compressed: number;
-    }>).map((row) => ({
-      id: row.id,
-      conversation_id: row.conversation_id,
-      position: row.position,
-      type: row.type,
-      timestamp: row.timestamp,
-      content: decompressContent(row.content, row.compressed === 1),
-    }));
-}
-
 async function indexedBlocks(maskCredentials = true): Promise<StoredBlock[]> {
   const reader = new ConversationSourceReader(db, { maskCredentials });
   const conversations = db
@@ -138,7 +106,7 @@ async function indexedBlocks(maskCredentials = true): Promise<StoredBlock[]> {
   const blocks: StoredBlock[] = [];
   for (const conversation of conversations) {
     const result = await reader.readAll(conversation.id);
-    if (result.status !== "source" && result.status !== "legacy") continue;
+    if (result.status !== "source") continue;
     blocks.push(...result.value.map((block) => ({
       id: block.id,
       conversation_id: block.conversation_id,
@@ -152,25 +120,12 @@ async function indexedBlocks(maskCredentials = true): Promise<StoredBlock[]> {
     left.conversation_id.localeCompare(right.conversation_id) || left.position - right.position);
 }
 
-/**
- * Every place the token could survive: decompressed block text plus the raw
- * contents of every other table. A redaction that only fixes the block it was
- * looking at is not a redaction.
- */
+/** Verify that no durable database row contains the token. */
 function databaseMentionsToken(token: string): boolean {
-  if (storedBlocks().some((block) => block.content.includes(token))) return true;
-  // metadata_json is the other half of a block: the parsers duplicate tool
-  // arguments and short tool results into it, so it is checked explicitly
-  // rather than skipped along with the compressed content blob.
-  const metadata = db
-    .prepare("SELECT metadata_json FROM conversation_blocks")
-    .all() as Array<{ metadata_json: string | null }>;
-  if (metadata.some((row) => (row.metadata_json ?? "").includes(token))) return true;
   const tables = db
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
     .all() as Array<{ name: string }>;
   for (const table of tables) {
-    if (table.name === "conversation_blocks") continue;
     const rows = db.prepare(`SELECT * FROM "${table.name}"`).all();
     if (JSON.stringify(rows).includes(token)) return true;
   }
@@ -372,48 +327,12 @@ function seedConversation(conversationId: string, options: SeedOptions): void {
     options.blocks.length,
     `session-${conversationId}`,
   );
-  options.blocks.forEach((content, position) => {
-    db.prepare(
-      `INSERT INTO conversation_blocks
-         (id, conversation_id, type, role, content, position, timestamp,
-          parent_id, metadata_json, compressed)
-       VALUES (?, ?, 'text', 'assistant', ?, ?, NULL, NULL, '{}', 1)`,
-    ).run(`${conversationId}-b${position}`, conversationId, compressContent(content), position);
-  });
+  db.prepare("UPDATE conversations SET title = ? WHERE id = ?").run(options.blocks.join("\n"), conversationId);
 }
 
 describe("mandible credential redact", () => {
-  it("masks every occurrence across conversations and reports counts only", () => {
-    makeAgent();
-    const credential = registerToken("mandible-agent-codex", LEAKED_TOKEN);
-    seedConversation("conv-a", {
-      blocks: [`here: ${LEAKED_TOKEN}`, `and again ${LEAKED_TOKEN} plus ${LEAKED_TOKEN}`, "clean"],
-    });
-    seedConversation("conv-b", { blocks: [`elsewhere ${LEAKED_TOKEN}`] });
 
-    const report = redactCredential(db, credential.id);
-
-    expect(report).toMatchObject({
-      credential_id: credential.id,
-      credential_status: "active",
-      scanned_blocks: 4,
-      redacted_blocks: 3,
-      redacted_spans: 4,
-      redacted_conversations: 2,
-      sources: null,
-    });
-    const mask = credentialMaskFor(credential.id);
-    expect(storedBlocks().map((block) => block.content)).toEqual([
-      `here: ${mask}`,
-      `and again ${mask} plus ${mask}`,
-      "clean",
-      `elsewhere ${mask}`,
-    ]);
-    expect(databaseMentionsToken(LEAKED_TOKEN)).toBe(false);
-    expect(JSON.stringify(report)).not.toContain(LEAKED_TOKEN);
-  });
-
-  it("masks conversation titles and summaries as well as block text", () => {
+  it("masks conversation titles and summaries", () => {
     makeAgent();
     const credential = registerToken("mandible-agent-codex", LEAKED_TOKEN);
     seedConversation("conv-a", { blocks: [`here: ${LEAKED_TOKEN}`] });
@@ -423,30 +342,12 @@ describe("mandible credential redact", () => {
     const report = redactCredential(db, credential.id);
 
     const mask = credentialMaskFor(credential.id);
-    expect(report).toMatchObject({ redacted_metadata_fields: 2, redacted_spans: 3 });
+    expect(report).toMatchObject({ redacted_metadata_fields: 2, redacted_spans: 2 });
     expect(db.prepare("SELECT title, summary FROM conversations WHERE id = 'conv-a'").get())
       .toEqual({ title: `title with ${mask}`, summary: `summary with ${mask}` });
     expect(databaseMentionsToken(LEAKED_TOKEN)).toBe(false);
   });
 
-  it("touches only the requested credential", () => {
-    makeAgent();
-    const other = makeAgent("mandible-agent-claude");
-    const target = registerToken("mandible-agent-codex", LEAKED_TOKEN);
-    registerToken(other.slug, OTHER_TOKEN, "other pat");
-    seedConversation("conv-a", {
-      blocks: [`mine ${LEAKED_TOKEN}`, `theirs ${OTHER_TOKEN}`, `fake ${LOOKALIKE_TOKEN}`],
-    });
-
-    const report = redactCredential(db, target.id);
-
-    expect(report).toMatchObject({ redacted_blocks: 1, redacted_spans: 1 });
-    expect(storedBlocks().map((block) => block.content)).toEqual([
-      `mine ${credentialMaskFor(target.id)}`,
-      `theirs ${OTHER_TOKEN}`,
-      `fake ${LOOKALIKE_TOKEN}`,
-    ]);
-  });
 
   it("accepts an unambiguous id prefix and refuses an ambiguous or unknown one", () => {
     makeAgent();
@@ -468,8 +369,7 @@ describe("mandible credential redact", () => {
     const transcript = await writeCodexTranscript(
       codexTranscript(`token: ${LEAKED_TOKEN}`, "acknowledged"),
     );
-    // Ingested before the credential is known, so ingest-time masking has
-    // nothing to match and the plaintext lands in the index.
+    // Register the credential after ingestion to exercise native source discovery.
     await triggerTargetedIngest({ transcriptPath: transcript, now: 1_000 });
     const before = await indexedBlocks(false);
     expect(before[0].content).toBe(`token: ${LEAKED_TOKEN}`);
@@ -478,8 +378,6 @@ describe("mandible credential redact", () => {
     const report = redactCredential(db, credential.id, { patchSources: true });
 
     expect(report).toMatchObject({
-      renumbered_blocks: 0,
-      id_conflicts: 0,
       sources: { patched_files: 1 },
     });
 
@@ -488,8 +386,6 @@ describe("mandible credential redact", () => {
     await ingestBatchForWorker([transcript], true);
     const after = await indexedBlocks();
     expect(after[0].id).toBe(before[0].id);
-    expect(db.prepare("SELECT COUNT(*) AS count FROM conversation_structural_blocks").get())
-      .toEqual({ count: 0 });
     expect(after[0].content).toBe(`token: ${credentialMaskFor(credential.id)}`);
     expect(databaseMentionsToken(LEAKED_TOKEN)).toBe(false);
   });
@@ -1198,7 +1094,7 @@ describe("POST /api/users/credentials/:id/redact", () => {
     return { router, authenticator };
   }
 
-  it("rejects anonymous and non-operator callers", async () => {
+  it("rejects anonymous callers and credential possession without presence", async () => {
     makeAgent();
     const credential = registerToken("mandible-agent-codex", LEAKED_TOKEN);
     seedConversation("conv-a", { blocks: [`here: ${LEAKED_TOKEN}`] });
@@ -1221,19 +1117,22 @@ describe("POST /api/users/credentials/:id/redact", () => {
       transport: "http",
     });
     expect(asAgent.status).toBe(403);
-    expect(asAgent.body).toMatchObject({ code: "operator_required" });
+    expect(asAgent.body).toMatchObject({ code: "operator_presence_required" });
 
     // Nothing was redacted by a rejected call.
-    expect(storedBlocks()[0].content).toBe(`here: ${LEAKED_TOKEN}`);
+    expect(db.prepare("SELECT title FROM conversations WHERE id = 'conv-a'").get()).toEqual({ title: `here: ${LEAKED_TOKEN}` });
   });
 
-  it("redacts for the operator and returns counts without any token material", async () => {
+  it("redacts with fresh operator proof and returns counts without any token material", async () => {
     makeAgent();
     const credential = registerToken("mandible-agent-codex", LEAKED_TOKEN);
     seedConversation("conv-a", { blocks: [`here: ${LEAKED_TOKEN}`, "clean"] });
     const { router, authenticator } = makeRouter();
     const operator = setupOperator(db, { display_name: "Op", email: "op@example.com" });
     const operatorToken = authenticator.mintApiToken(operator.id, { label: "op" }).token;
+    const signingCredential = addCredential(db, operator.id, { type: "ssh_key", fingerprint: `SHA256:${"R".repeat(43)}`,
+      public_material: `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI${"R".repeat(20)}` });
+    vi.spyOn(operatorProof, "signOperatorChallenge").mockResolvedValueOnce({ ok: true, credentialId: signingCredential.id, signature: "verified-operator-proof" });
 
     const response = await router.invoke({
       method: "POST",
@@ -1246,12 +1145,29 @@ describe("POST /api/users/credentials/:id/redact", () => {
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({
       credential_id: credential.id,
-      scanned_blocks: 2,
-      redacted_blocks: 1,
       redacted_spans: 1,
       sources: null,
     });
     expect(JSON.stringify(response.body)).not.toContain(LEAKED_TOKEN);
     expect(databaseMentionsToken(LEAKED_TOKEN)).toBe(false);
   });
+  it("scans native transcript plaintext and records the current position without exposing the token", async () => {
+    makeAgent();
+    const credential = registerToken("mandible-agent-codex", LEAKED_TOKEN);
+    seedConversation("native-scan", { blocks: ["clean"] });
+    await nativeSearchSource(db, tempDir, "native-scan", `leaked ${LEAKED_TOKEN}`);
+    const { router, authenticator } = makeRouter();
+    registerConversationRoutes(router, inlineLedgerReader());
+    const operator = setupOperator(db, { display_name: "Op", email: "op@example.com" });
+    const operatorToken = authenticator.mintApiToken(operator.id, { label: "op" }).token;
+    const response = await router.invoke({ method: "POST", url: "/api/conversations/scan-credentials",
+      body: { conversation_id: "native-scan" }, credential: operatorToken, transport: "http" });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body).toMatchObject({ scanned_blocks: 1, scanned_conversations: 1,
+      detections: [{ credential_id: credential.id, conversation_id: "native-scan", block_position: 0 }] });
+    expect(JSON.stringify(response.body)).not.toContain(LEAKED_TOKEN);
+    expect(leakAlerts()).toHaveLength(1);
+    expect(JSON.parse(leakAlerts()[0].data_json)).toMatchObject({ block_position: 0 });
+  });
+
 });

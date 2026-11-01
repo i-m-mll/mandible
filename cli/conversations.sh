@@ -445,10 +445,6 @@ if api_is_file_rpc; then
 fi
 
 case "${1:-}" in
-  storage)
-    shift
-    exec "$(mandible_bun_runtime)" --no-install "$(mandible_cli_module cli/conversation-storage)" "$@" --db "$MANDIBLE_DB"
-    ;;
   star|unstar|tag|comment) command="$1"; shift; conversation_metadata_command "$command" "$@"; exit $? ;;
   custody) shift; conversation_custody_command "$@"; exit $? ;;
   lineage-gaps) shift; lineage_gaps_command "$@"; exit $? ;;

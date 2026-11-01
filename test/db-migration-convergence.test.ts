@@ -51,7 +51,7 @@ import { createSpace } from "../src/ledger/spaces.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import { serializeSpaceDocument } from "../src/spaces/export.js";
 import { listDocumentHistory } from "../src/spaces/history.js";
-import { setupOperator } from "../src/users/store.js";
+import { createUser, setupOperator } from "../src/users/store.js";
 import { insertRawLedgerIssue, insertRawLedgerProject, SYSTEM_ACTOR } from "./helpers/ledger-fixtures.js";
 import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
 import {
@@ -1171,5 +1171,49 @@ it("preserves pending review bytes and lifecycle history when prerequisite sets 
     expect(authRequestSnapshot(db, "pending-preserved")).toBe(snapshot);
     expect(authSnapshotDigest(authRequestSnapshot(db, "pending-preserved"))).toBe(digest);
     expect(db.prepare("SELECT * FROM auth_request_lifecycle_events WHERE auth_request_id = 'pending-preserved'").all()).toEqual(history);
+  } finally { db.close(); }
+});
+
+it("migrates responsibility without changing reviewed candidates, approval evidence or lifecycle digests", () => {
+  const db = migrateFixtureThrough(225);
+  try {
+    const operator = setupOperator(db, { slug: "responsibility-migration-operator" });
+    db.prepare("INSERT INTO work_units (id, issue_id, repo_id, state, created_at, owner_user_id, provider, provider_session_id, custody_generation) VALUES ('reviewed-unit', 'issue', 'repo', 'committed', 1, ?, 'codex', 'responsible-session', 7)").run(operator.id);
+    db.prepare(`INSERT INTO auth_requests (id, type, command, title, status, created_at, updated_at, expires_at,
+      requested_by_user_id, approved_by_user_id, session_id, custody_work_unit_id,
+      merge_preflight_base_sha, merge_head_sha, merge_candidate_tree_sha, merge_candidate_pin_sha)
+      VALUES ('reviewed-request', 'merge', 'reviewed command', 'Reviewed candidate', 'executing', 1, 2, 9999999999999,
+        ?, ?, 'responsible-session', 'reviewed-unit', ?, ?, ?, ?)`)
+      .run(operator.id, operator.id, 'a'.repeat(40), 'b'.repeat(40), 'c'.repeat(40), 'd'.repeat(40));
+    appendAuthLifecycleEvent(db, { requestId: "reviewed-request", eventType: "executing", priorStatus: "approved", nextStatus: "executing", occurredAt: 2 });
+    const request = db.prepare("SELECT * FROM auth_requests WHERE id = 'reviewed-request'").get();
+    const history = listAuthLifecycleEvents(db, "reviewed-request");
+    const reviewed = authRequestSnapshot(db, "reviewed-request");
+    migrate(db);
+    expect(db.prepare("SELECT * FROM auth_requests WHERE id = 'reviewed-request'").get()).toEqual(request);
+    expect(authRequestSnapshot(db, "reviewed-request")).toBe(reviewed);
+    expect(listAuthLifecycleEvents(db, "reviewed-request")).toEqual(history);
+    expect(history.at(-1)!.snapshot_sha256).toBe(authSnapshotDigest(reviewed));
+    expect(db.prepare("SELECT owner_user_id, responsibility_session_id, custody_generation FROM work_units WHERE id = 'reviewed-unit'").get())
+      .toEqual({ owner_user_id: operator.id, responsibility_session_id: 'responsible-session', custody_generation: 7 });
+  } finally { db.close(); }
+});
+
+it("preserves historical token receipts while admitting truthful local attribution in the one-time migration", () => {
+  const db = migrateFixtureThrough(228);
+  try {
+    const user = createUser(db, { slug: "publisher", kind: "agent", display_name: "Publisher" });
+    const insert = () => db.prepare(`INSERT INTO briefing_collection_sharing_receipts
+      (id, operation, target_kind, target_id, subject_kind, subject_id, owner_kind, owner_id,
+        reason, actor_user_id, evidence_method, credential_id, created_at)
+      VALUES (?, 'share', 'group', 'group', 'briefing', 'briefing', 'group', 'owner', 'share report', ?, ?, NULL, 1)`);
+    insert().run("historical", user.id, "api_token");
+    const before = db.prepare("SELECT * FROM briefing_collection_sharing_receipts WHERE id = 'historical'").get();
+    migrate(db);
+    expect(db.prepare("SELECT * FROM briefing_collection_sharing_receipts WHERE id = 'historical'").get()).toEqual(before);
+    insert().run("local", user.id, "session_claim");
+    expect(db.prepare("SELECT evidence_method FROM briefing_collection_sharing_receipts WHERE id = 'local'").get()).toEqual({ evidence_method: "session_claim" });
+    expect(db.pragma("foreign_key_check")).toEqual([]);
+    expect(() => db.prepare("UPDATE briefing_collection_sharing_receipts SET reason = 'changed'").run()).toThrow();
   } finally { db.close(); }
 });

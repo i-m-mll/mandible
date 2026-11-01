@@ -9,9 +9,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ConversationSourceReader } from "../src/conversations/source-reader.js";
 import { ConversationSourceStore } from "../src/conversations/source-store.js";
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../src/conversations/source-types.js";
-import {
-  getConversationStructureCache,
-} from "../src/conversations/structure-cache.js";
 import { CodexParser } from "../src/parsers/codex.js";
 import type { ParseResult } from "../src/parsers/types.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
@@ -67,20 +64,6 @@ function insertConversation(db: SqliteDatabase, id: string, filePath: string, re
 }
 
 function replaceBlocks(db: SqliteDatabase, conversationId: string, result: ParseResult): void {
-  db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?").run(conversationId);
-  const insert = db.prepare(`
-    INSERT INTO conversation_blocks (
-      id, conversation_id, type, role, content, compressed, position, timestamp,
-      parent_id, metadata_json, dag_uuid, dag_parent_uuid
-    ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
-  `);
-  for (const block of result.blocks) {
-    insert.run(
-      `legacy-${conversationId}-${block.position}`, conversationId, block.type, block.role,
-      block.content, block.position, block.timestamp, block.parent_id,
-      JSON.stringify(block.metadata), block.dag_uuid ?? null, block.dag_parent_uuid ?? null,
-    );
-  }
   db.prepare("UPDATE conversations SET block_count = ?, source_hash = ?, source_mtime = ? WHERE id = ?")
     .run(result.blocks.length, result.conversation.source_hash, result.conversation.source_mtime, conversationId);
 }
@@ -91,6 +74,7 @@ async function record(db: SqliteDatabase, id: string, filePath: string): Promise
     provider: "codex",
     nativeSessionId: "duplicate-session",
     filePath,
+    blocks: (await parse(filePath)).blocks,
     ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
   });
 }
@@ -104,7 +88,7 @@ describe("versioned conversation source reader", () => {
       const parsed = await parse(filePath);
       insertConversation(db, "compressed", filePath, parsed);
       const version = await record(db, "compressed", filePath);
-      const reader = new ConversationSourceReader(db, { legacyFallback: false });
+      const reader = new ConversationSourceReader(db);
       const original = await reader.readAll("compressed");
       expect(original.status).toBe("source");
       const raw = fs.readFileSync(filePath);
@@ -123,43 +107,6 @@ describe("versioned conversation source reader", () => {
       fs.unlinkSync(`${filePath}.zst`);
       expect((await reader.readAll("compressed")).status).not.toBe("source");
     } finally { db.close(); }
-  });
-
-  it("repairs shared historical aliases without merging distinct provider records", async () => {
-    const db = migratedMemoryDb();
-    try {
-      const filePath = rolloutPath();
-      writeRecords(filePath, records());
-      const parsed = await parse(filePath);
-      insertConversation(db, "conversation-a", filePath, parsed);
-      await record(db, "conversation-a", filePath);
-      const prior = db.prepare(`SELECT id, position, provider_key FROM conversation_structural_blocks
-        WHERE conversation_id = 'conversation-a' ORDER BY position`).all() as Array<{ id: string; position: number; provider_key: string }>;
-      const first = prior[0];
-      const last = prior.at(-1)!;
-      db.prepare("UPDATE conversation_block_aliases SET block_id = ? WHERE alias = ?")
-        .run(first.id, `legacy-conversation-a-${last.position}`);
-      db.prepare("DELETE FROM conversation_structural_blocks WHERE id = ?").run(last.id);
-      db.prepare("UPDATE conversation_structural_blocks SET provider_key = ?, position = ? WHERE id = ?")
-        .run(last.provider_key, last.position, first.id);
-
-      const snapshots: string[][] = [];
-      for (let pass = 0; pass < 2; pass += 1) {
-        await record(db, "conversation-a", filePath);
-        const read = await new ConversationSourceReader(db, { legacyFallback: false }).readAll("conversation-a");
-        expect(read.status).toBe("source");
-        if (read.status !== "source") throw new Error("expected exact provider records");
-        expect(read.value.map((block) => block.content)).toEqual(parsed.blocks.map((block) => block.content));
-        expect(read.value.at(-1)?.id).toBe(first.id);
-        expect(new Set(read.value.map((block) => block.id)).size).toBe(parsed.blocks.length);
-        snapshots.push(read.value.map((block) => block.id));
-        expect(getConversationStructureCache(db).captureDenseRows(db, "conversation-a", "replace").cached)
-          .toBe(parsed.blocks.length);
-      }
-      expect(snapshots[1]).toEqual(snapshots[0]);
-    } finally {
-      db.close();
-    }
   });
 
   it("rebuilds identical source block identities from the same transcript", async () => {
@@ -237,17 +184,7 @@ describe("versioned conversation source reader", () => {
     const parsed = await parse(filePath);
     insertConversation(db, "conversation-a", filePath, parsed);
     const versionId = await record(db, "conversation-a", filePath);
-    const cache = getConversationStructureCache(db);
-    expect(cache.captureDenseRows(db, "conversation-a", "replace")).toMatchObject({
-      cached: parsed.blocks.length,
-      sourceVersionId: versionId,
-    });
-    db.exec(`
-      DELETE FROM conversation_block_aliases;
-      DELETE FROM conversation_structural_blocks;
-      DELETE FROM conversation_blocks;
-      DELETE FROM conversation_normalization_checkpoints;
-    `);
+
 
     fs.appendFileSync(filePath, `${JSON.stringify({
       type: "response_item",
@@ -266,98 +203,6 @@ describe("versioned conversation source reader", () => {
     fs.writeFileSync(filePath, grownBytes.replace("hello result", "jello result"));
     const rewritten = await reader.readPage("conversation-a", { offset: 1, limit: 1 });
     expect(rewritten.status).toBe("stale");
-    db.close();
-  });
-
-  it("keeps byte-identical appended records structurally distinct", async () => {
-    const db = migratedMemoryDb();
-    const filePath = rolloutPath();
-    const repeated = {
-      type: "response_item",
-      timestamp: "2026-08-17T00:00:01Z",
-      payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "same" }] },
-    };
-    const initialRows = [records()[0], repeated];
-    writeRecords(filePath, initialRows);
-    let parsed = await parse(filePath);
-    insertConversation(db, "conversation-a", filePath, parsed);
-    const store = new ConversationSourceStore(db);
-    await record(db, "conversation-a", filePath);
-    await expect(store.verifyAndPromoteConversationPayload("conversation-a")).resolves.toMatchObject({ promoted: true });
-
-    writeRecords(filePath, [...initialRows, repeated]);
-    parsed = await parse(filePath);
-    const tail = parsed.blocks[1];
-    db.prepare(`
-      INSERT INTO conversation_blocks (
-        id, conversation_id, type, role, content, compressed, position, timestamp,
-        parent_id, metadata_json, dag_uuid, dag_parent_uuid
-      ) VALUES (?, 'conversation-a', ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
-    `).run(
-      "legacy-conversation-a-1", tail.type, tail.role, tail.content, tail.position,
-      tail.timestamp, tail.parent_id, JSON.stringify(tail.metadata),
-      tail.dag_uuid ?? null, tail.dag_parent_uuid ?? null,
-    );
-    db.prepare("UPDATE conversations SET block_count = ?, source_hash = ?, source_mtime = ? WHERE id = 'conversation-a'")
-      .run(parsed.blocks.length, parsed.conversation.source_hash, parsed.conversation.source_mtime);
-    await store.recordConversation({
-      conversationId: "conversation-a",
-      provider: "codex",
-      nativeSessionId: "duplicate-session",
-      filePath,
-      expectedContentHash: parsed.conversation.source_hash,
-      structuralMode: "append",
-      blocks: [{ ...parsed.blocks[1], legacyId: "legacy-conversation-a-1" }],
-      ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
-    });
-
-    const rows = db.prepare(`SELECT provider_key, record_ordinal FROM conversation_structural_blocks
-      WHERE conversation_id = 'conversation-a' AND status = 'current' ORDER BY position`).all() as Array<{
-        provider_key: string; record_ordinal: number;
-      }>;
-    expect(rows).toHaveLength(2);
-    expect(new Set(rows.map((row) => row.provider_key)).size).toBe(2);
-    expect(rows.map((row) => row.record_ordinal)).toEqual([1, 2]);
-    const read = await new ConversationSourceReader(db, { maskCredentials: false }).readAll("conversation-a");
-    expect(read.status).toBe("source");
-    if (read.status === "source") expect(read.value.map((block) => block.content)).toEqual(["same", "same"]);
-    await expect(store.verifyAndPromoteConversationPayload("conversation-a")).resolves.toMatchObject({ promoted: true });
-    expect(db.prepare(`SELECT COUNT(*) AS count FROM conversation_blocks
-      WHERE conversation_id = 'conversation-a' AND payload_state = 'source'`).get()).toEqual({ count: 2 });
-    db.close();
-  });
-
-  it("keeps structural ids across append, and fails closed to legacy on same-size rewrite", async () => {
-    const db = migratedMemoryDb();
-    const filePath = rolloutPath();
-    writeRecords(filePath, records());
-    let parsed = await parse(filePath);
-    insertConversation(db, "conversation-a", filePath, parsed);
-    const firstVersion = await record(db, "conversation-a", filePath);
-    const firstIds = (await new ConversationSourceReader(db).readPage("conversation-a", { limit: 20 }));
-    if (firstIds.status !== "source") throw new Error("expected source read");
-
-    writeRecords(filePath, records([
-      { type: "response_item", timestamp: "2026-08-17T00:00:04Z", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "appended" }] } },
-    ]));
-    parsed = await parse(filePath);
-    replaceBlocks(db, "conversation-a", parsed);
-    const secondVersion = await record(db, "conversation-a", filePath);
-    const appended = await new ConversationSourceReader(db).readPage("conversation-a", { limit: 20 });
-    expect(secondVersion).not.toBe(firstVersion);
-    expect(appended.status).toBe("source");
-    if (appended.status !== "source") throw new Error("expected source read");
-    expect(appended.value.blocks.slice(0, firstIds.value.blocks.length).map((block) => block.id))
-      .toEqual(firstIds.value.blocks.map((block) => block.id));
-
-    const bytes = fs.readFileSync(filePath, "utf8");
-    fs.writeFileSync(filePath, bytes.replace("appended", "xppended"));
-    const stale = await new ConversationSourceReader(db).readPage("conversation-a", { limit: 20 });
-    expect(stale.status).toBe("legacy");
-    if (stale.status === "legacy") {
-      expect(stale.reason).toBe("stale");
-      expect(stale.value.blocks.at(-1)?.content).toBe("appended");
-    }
     db.close();
   });
 
@@ -380,44 +225,10 @@ describe("versioned conversation source reader", () => {
     for (const [name, bytes] of mutations) {
       fs.writeFileSync(filePath, bytes);
       const result = await reader.readPage("conversation-a", { limit: 20 });
-      expect(result.status, name).toBe("legacy");
-      if (result.status === "legacy") expect(result.reason, name).toBe("stale");
+      expect(result.status, name).toBe("stale");
       fs.writeFileSync(filePath, original);
       expect((await reader.readPage("conversation-a", { limit: 20 })).status, `${name} restore`).toBe("source");
     }
-    db.close();
-  });
-
-  it("rejects a symlink escape and preserves metadata plus fallback bodies on missing source", async () => {
-    const db = migratedMemoryDb();
-    const filePath = rolloutPath();
-    writeRecords(filePath, records());
-    const parsed = await parse(filePath);
-    insertConversation(db, "conversation-a", filePath, parsed);
-    await record(db, "conversation-a", filePath);
-
-    const outside = path.join(tempDir, "outside.jsonl");
-    fs.copyFileSync(filePath, outside);
-    const escaped = path.join(tempDir, ".codex", "sessions", "escaped.jsonl");
-    fs.symlinkSync(outside, escaped);
-    db.prepare(`
-      UPDATE conversation_source_aliases
-         SET root_path = ?, relative_path = 'escaped.jsonl', path = ?
-       WHERE source_id = (SELECT id FROM conversation_sources WHERE conversation_id = ?)
-    `).run(path.join(tempDir, ".codex", "sessions"), escaped, "conversation-a");
-    const escapedRead = await new ConversationSourceReader(db).readPage("conversation-a", { limit: 20 });
-    expect(escapedRead.status).toBe("legacy");
-    if (escapedRead.status === "legacy") expect(escapedRead.reason).toBe("stale");
-
-    new ConversationSourceStore(db).recordUnavailable(escaped);
-    expect(db.prepare("SELECT availability FROM conversation_sources WHERE conversation_id = ?")
-      .get("conversation-a")).toEqual({ availability: "missing" });
-    expect(db.prepare("SELECT COUNT(*) AS count FROM conversations WHERE id = ?")
-      .get("conversation-a")).toEqual({ count: 1 });
-    expect(db.prepare("SELECT COUNT(*) AS count FROM conversation_blocks WHERE conversation_id = ?")
-      .get("conversation-a")).toEqual({ count: parsed.blocks.length });
-    expect(db.prepare("SELECT COUNT(*) AS count FROM conversation_block_aliases")
-      .get()).toEqual({ count: parsed.blocks.length });
     db.close();
   });
 
