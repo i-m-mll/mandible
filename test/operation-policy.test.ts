@@ -4,11 +4,22 @@ import { registeredOperationRouter } from "./helpers/registered-operation-router
 import { resolveInstanceInfo } from "../src/instance-policy.js";
 import { MAIN_CLI_INSTANCE } from "./helpers/main-cli-instance.js";
 import { readOperationCatalogSeed } from "./helpers/operation-catalog-seed.js";
+import { bindTestInstanceCatalog } from "./helpers/instance-operation-fixtures.js";
 
 const preview: InstanceInfo = { ...resolveInstanceInfo({ env: {} }), role: "preview", instance_id: "preview-copy",
   allowed_effects: ["ledger:read", "ledger:write", "files:preview", "preferences:instance"] };
 
 describe("daemon-bound operation affordances", () => {
+  it("keeps model options readable across main and copied instances with different provider access", () => {
+    const localOnly = { ...MAIN_CLI_INSTANCE, allowed_effects: ['ledger:read'] };
+    for (const instance of [MAIN_CLI_INSTANCE, preview, localOnly]) {
+      bindTestInstanceCatalog(instance);
+      expect(canPerformOperation(instance, 'GET', '/api/conversations/one/control/options')).toBe(true);
+    }
+    expect(canPerformOperation(preview, 'POST', '/api/auth/check')).toBe(false);
+    expect(canPerformOperation(MAIN_CLI_INSTANCE, 'POST', '/api/auth/check')).toBe(true);
+  });
+
   it("shares the canonical run catalog while keeping each reader's values private", () => {
     const first = readOperationCatalogSeed();
     const second = readOperationCatalogSeed();
