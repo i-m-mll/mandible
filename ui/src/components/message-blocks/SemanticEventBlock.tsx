@@ -27,7 +27,7 @@ export function SemanticEventBlock({
     ? (isError ? 'Unmatched tool error' : 'Unmatched tool result')
     : kind === 'system'
       ? 'System'
-      : (isError ? 'Error event' : 'Event');
+      : kind === 'tool_result' ? (isError ? 'Tool error' : 'Tool result') : (isError ? 'Error event' : 'Event');
   const canCollapse = content.length > 500 || detailsAvailable;
   const visible = isExpanded || !canCollapse ? content : `${content.slice(0, 500).trimEnd()}…`;
 
@@ -53,8 +53,9 @@ export function SemanticEventBlock({
   );
 }
 
-export function UnmatchedToolResultBlock({ result, expanded, onExpandedChange }: {
+export function UnmatchedToolResultBlock({ result, expanded, onExpandedChange, unmatched = true }: {
   result: ToolResultContentBlock;
+  unmatched?: boolean;
   expanded?: boolean;
   onExpandedChange?: (expanded: boolean) => void;
 }): JSX.Element {
@@ -63,7 +64,7 @@ export function UnmatchedToolResultBlock({ result, expanded, onExpandedChange }:
       kind="tool_result"
       content={result.fullText ?? extractResultText(result.content)}
       isError={result.is_error}
-      unmatched
+      unmatched={unmatched}
       detailsAvailable={result.source?.detailsLoaded === false}
       expanded={expanded}
       onExpandedChange={onExpandedChange}

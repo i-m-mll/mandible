@@ -38,8 +38,6 @@ export {
   deriveTokenCount,
   extractTurns,
   formatElapsed,
-  groupActivityItemsForDisplay,
-  groupMessagesForDisplay,
   isRoutineActivityStatus,
   chatItemStableKey,
   serializeConversationToMarkdown,

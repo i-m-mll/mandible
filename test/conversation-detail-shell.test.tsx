@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { mockConversationStructureFromWindow, mockManagedSettings } from './helpers/conversation-ui-transport';
+import { mockChatViewport, mockManagedSettings } from './helpers/conversation-ui-transport';
 import { establishTestClientAccess } from './helpers/local-client-access';
 import { act, cleanup, fireEvent, screen, waitFor } from './helpers/dom.js';
 import { render } from './helpers/notice-test-render';
@@ -44,7 +44,7 @@ beforeEach(async () => {
   await establishTestClientAccess();
   window.localStorage.clear();
   vi.spyOn(api, 'resolveChatRouteTarget').mockImplementation(async (target) => ({ status: 'resolved', selection: target }));
-  mockConversationStructureFromWindow();
+  mockChatViewport();
   mockManagedSettings({ model: conversation.model!, effort: 'medium', permission_mode: 'agent' });
   vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(600);
   vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(2400);
@@ -184,8 +184,11 @@ function mockConversationDetail(
   vi.spyOn(api, 'getConversationControl').mockResolvedValue(control);
   vi.spyOn(api, 'getConversationWindow').mockResolvedValue({
     conversation: scopedConversation,
-    body_source: 'legacy',
-    source_version_id: null,
+    body_source: 'source',
+    source_version_id: 'fixture-source',
+    position_space_id: 'fixture-space',
+    publication_revision: 1,
+    reading_context: { positions: blocks.map(block => ({ position: block.position, activity_owner_position: null, speaker_run_start: block.position })), speaker_runs: blocks.map(block => ({ start: block.position, end: block.position })) },
     blocks,
     children: [],
     parent: null,
@@ -238,15 +241,19 @@ function positionPayload(
 ): ConversationPositionWindow {
   const target = blocks.at(-1) ?? null;
   const revision = options.revision ?? blocks.length;
+  const total = Math.max(revision, (target?.position ?? -1) + 1 + (options.hasAfter ? options.afterCount ?? 1 : 0));
   return {
     conversation: { ...scopedConversation, block_count: revision },
-    body_source: 'legacy',
-    source_version_id: null,
+    body_source: 'source',
+    source_version_id: 'fixture-source',
+    position_space_id: 'fixture-space',
+    publication_revision: 1,
+    reading_context: { positions: blocks.map(block => ({ position: block.position, activity_owner_position: null, speaker_run_start: block.position })), speaker_runs: blocks.map(block => ({ start: block.position, end: block.position })) },
     blocks,
     children: [],
     parent: null,
     revision,
-    total: revision,
+    total,
     target: {
       kind: options.kind ?? 'initial',
       requested_value: options.kind === 'block' ? target?.id ?? null : null,
@@ -373,7 +380,7 @@ describe('compact detail pane shell', () => {
     await act(async () => newSourceEdge.resolve({
       ...positionPayload(pinned, [newSourceBlock], { kind: 'block', revision: 2, hasAfter: true }),
       source_version_id: 'source-v2',
-      position_space_id: 'space-v2',
+      position_space_id: 'space-v1',
       publication_revision: 2,
     }));
     expect(await screen.findByText('Older source v2')).toBeTruthy();
@@ -387,7 +394,7 @@ describe('compact detail pane shell', () => {
     await waitFor(() => {
       const aggregate = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(pinned.id));
       expect(aggregate?.source_version_id).toBe('source-v2');
-      expect(aggregate?.blocks.map((block) => block.id)).toEqual(['older-v2']);
+      expect(aggregate?.blocks.map((block) => block.id)).toEqual(['older-v2', 'recent-v1']);
     });
   });
 
@@ -452,9 +459,11 @@ describe('compact detail pane shell', () => {
     expect(await screen.findByText('Middle A')).toBeTruthy();
     fireEvent.click(await screen.findByRole('button', { name: /jump to latest/i }));
     mounted.rerender(view(second.id));
+    await waitFor(() => expect(api.getConversationWindow).toHaveBeenCalledWith(second.id, expect.anything()));
     mounted.rerender(view(first.id));
+    await waitFor(() => expect((screen.getByRole('button', { name: /jump to latest/i }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(await screen.findByRole('button', { name: /jump to latest/i }));
-    expect(jumpCount).toBe(2);
+    await waitFor(() => expect(jumpCount).toBe(2));
     expect(screen.getByRole('button', { name: /jump to latest/i }).getAttribute('aria-busy')).toBe('true');
     await act(async () => oldJump.reject(new CancelledError()));
     expect(screen.getByRole('button', { name: /jump to latest/i }).getAttribute('aria-busy')).toBe('true');
@@ -619,7 +628,7 @@ describe('compact detail pane shell', () => {
     expect(await screen.findByText('Could not copy the message link.')).toBeTruthy();
   });
 
-  it('keeps the live transcript mounted while a same-conversation reconciliation is pending', async () => {
+  it('keeps loaded source content mounted while a same-conversation reconciliation is pending', async () => {
     const scopedConversation = mockConversationDetail(defaultControl, [transcriptBlock]);
     const refresh = deferred<ConversationPositionWindow>();
     const appendedBlock = makeTranscriptBlock({
@@ -642,25 +651,15 @@ describe('compact detail pane shell', () => {
         append: { from_position: 1, blocks: [appendedBlock] },
       });
     });
-    expect(await screen.findByText('Live content stays visible')).toBeTruthy();
-
-    act(() => {
-      applyConversationSse(queryClient, 'conversation:updated', {
-        id: conversation.id,
-        block_count: 4,
-        append: {
-          from_position: 3,
-          blocks: [makeTranscriptBlock({ id: 'gap-block', dag_uuid: 'gap-block', position: 3, content: appendedBlock.content })],
-        },
-      });
-    });
+    expect(screen.getByText(transcriptBlock.content)).toBeTruthy();
+    expect(screen.queryByText('Live content stays visible')).toBeNull();
 
     await waitFor(() => expect(api.getConversationWindow).toHaveBeenCalledTimes(2));
-    expect(screen.getByText('Live content stays visible')).toBeTruthy();
+    expect(screen.getByText(transcriptBlock.content)).toBeTruthy();
     expect(screen.getByPlaceholderText('Message...')).toBeTruthy();
 
     await act(async () => refresh.resolve(positionPayload(scopedConversation, [transcriptBlock, appendedBlock])));
-    expect(screen.getByText('Live content stays visible')).toBeTruthy();
+    expect(await screen.findByText('Live content stays visible')).toBeTruthy();
   });
 
   it('keeps Codex provisional assistant content until its durable replacement arrives', async () => {

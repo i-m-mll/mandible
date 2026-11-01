@@ -63,6 +63,7 @@ function window(target: ConversationPositionWindow['target'], blocks: Conversati
   return {
     conversation: conversation('conv-1', total),
     body_source: 'source',
+    reading_context: { positions: blocks.map(block => ({ position: block.position, activity_owner_position: null, speaker_run_start: 0 })), speaker_runs: [{ start: 0, end: total - 1 }] },
     source_version_id: 'source-v1',
     position_space_id: 'space-1',
     publication_revision: 1,
@@ -124,7 +125,7 @@ describe('Chat Query authority', () => {
     expect(retainReadingWindow(extended.data.blocks, extended.data.active_window, [{ start: 1, end: 2 }],
       { bytes: 100000, positions: 2 })?.span).toEqual({ start: 1, end: 2 });
     expect(applyReadingWindowOperation(extended.data, { kind: 'extend-end', window: window(target, [block('b5', 5)], 6), protected: [] }).status).toBe('obsolete');
-    const distant = { ...window(target, [block('b5', 5)], 6), publication_revision: 2 };
+    const distant = { ...window({ ...target, position: 5, requested_value: 5, block_id: 'b5' }, [block('b5', 5)], 6), publication_revision: 2 };
     expect(applyReadingWindowOperation(extended.data, { kind: 'extend-end', window: distant, protected: [] }).status).toBe('noncontiguous');
     const replaced = applyReadingWindowOperation(extended.data, { kind: 'replace', window: distant,
       command: { token: 'jump', target: { conversationId: 'conv-1', positionSpaceId: 'space-1', position: 5 } } });
@@ -179,7 +180,7 @@ describe('Chat Query authority', () => {
     });
   });
 
-  it('preserves explicit gaps and replaces the aggregate when position space changes at the same count', () => {
+  it('keeps distant cache reads outside the active window and replaces the aggregate when position space changes at the same count', () => {
     const head = window(
       { kind: 'position', requested_value: 1, position: 1, block_id: 'b1', turn_id: null },
       [block('b0', 0), block('b1', 1)],
@@ -191,8 +192,8 @@ describe('Chat Query authority', () => {
       6,
     );
     const gapped = reconcileConversationWindow(conversationTranscriptFromWindow(head), tail);
-    expect(gapped.loaded_intervals).toEqual([{ start: 0, end: 1 }, { start: 4, end: 5 }]);
-    expect(gapped.blocks.map((item) => item.id)).toEqual(['b0', 'b1', 'b4', 'b5']);
+    expect(gapped.loaded_intervals).toEqual([{ start: 0, end: 1 }]);
+    expect(gapped.blocks.map((item) => item.id)).toEqual(['b0', 'b1']);
 
     const replacement = {
       ...tail,
@@ -206,7 +207,7 @@ describe('Chat Query authority', () => {
     expect(replaced.blocks.map((item) => item.id)).toEqual(['replacement', 'b5']);
   });
 
-  it('patches complete append payloads and refetches only a gapped window', async () => {
+  it('retains captured source bytes and context until an indexed append refresh', async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const initialTarget = normalizeWindowTarget({ target: 'initial' });
     const exactTarget = normalizeWindowTarget({ block: 'b1' });
@@ -231,14 +232,15 @@ describe('Chat Query authority', () => {
       block_count: 2,
       append: { from_position: 1, blocks: [block('b1', 1)] },
     });
-    expect(client.getQueryData<ConversationPositionWindow>(initialKey)?.blocks.map((item) => item.id)).toEqual(['b0', 'b1']);
+    expect(client.getQueryData<ConversationPositionWindow>(initialKey)?.blocks.map((item) => item.id)).toEqual(['b0']);
+    await waitUntilPasses(() => expect(refetch).toHaveBeenCalledTimes(2));
 
     applyConversationSse(client, 'conversation:updated', {
       id: 'conv-1',
       block_count: 4,
       append: { from_position: 3, blocks: [block('b3', 3)] },
     });
-    await waitUntilPasses(() => expect(refetch).toHaveBeenCalledTimes(2));
+    await waitUntilPasses(() => expect(refetch).toHaveBeenCalledTimes(3));
     unsubscribe();
   });
 });

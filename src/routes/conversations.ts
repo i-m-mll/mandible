@@ -1,3 +1,4 @@
+import { packReadingContext, readingMemberKeys } from '../conversations/reading-context.js';
 import type { ConversationSourceEpochs } from "../conversations/source-types.js";
 import { updateConversationMetadata } from "../conversations/metadata.js";
 import { mapConversation, maskSourceBackedConversationRow } from "../conversations/response-mapping.js";
@@ -706,6 +707,7 @@ export function registerConversationRoutes(
     let sourceVersionId: string | null = null;
     let positionSpaceId: string | null = null;
     let publicationRevision = 0;
+    let readingContext: import("../conversations/reading-context.js").ReadingContextEntry[] = [];
     {
       const source = db.prepare(`
         SELECT current_version_id, position_space_id, publication_revision, parser_format AS parserFormat, parser_version AS parserVersion,
@@ -792,6 +794,11 @@ export function registerConversationRoutes(
           code: changed ? 'position_space_changed' : 'freshness_pending', position_space_id: currentPublication?.position_space_id ?? null });
       }
       readableBlocks = sourcePage.value.blocks;
+      if (source && readableBlocks.length) {
+        const context = structureCache.readReadingContext(id, source.current_version_id, readableBlocks[0].position, readableBlocks[readableBlocks.length - 1].position, source);
+        if (!context || context.length !== readableBlocks.length) return sendJson(res, 409, { error: 'freshness_pending', code: 'freshness_pending', message: 'Source reading context is incomplete.' });
+        readingContext = context;
+      }
       bodySource = sourcePage.status;
       if (sourcePage.status === "source" && sourcePage.sourceVersionId) {
         sourceVersionId = sourcePage.sourceVersionId;
@@ -897,6 +904,7 @@ export function registerConversationRoutes(
       source_version_id: sourceVersionId,
       position_space_id: positionSpaceId,
       publication_revision: publicationRevision,
+      reading_context: packReadingContext(readingContext),
       children: childrenWithDuration,
       parent: parent ?? null,
       revision: conv.block_count,
@@ -1130,6 +1138,9 @@ export function registerConversationRoutes(
     const body = readBody<{
       format?: "markdown" | "mdx" | "json";
       block_types?: string[];
+      block_ids?: string[];
+      speaker_run_start?: number;
+      expected_position_space_id?: string;
     }>(req);
 
     const format = body.format || "markdown";
@@ -1149,17 +1160,38 @@ export function registerConversationRoutes(
       return;
     }
 
-    let readable: Awaited<ReturnType<typeof readAllBlocks>> | null = null;
-    {
-      try {
-        readable = await readAllBlocks(sourceReader, id);
-      } catch (error) {
-        if (sendFreshnessError(res, error)) return;
-        sendJson(res, 503, { error: "freshness_error", message: error instanceof Error ? error.message : String(error) });
-        return;
-      }
+    const publication = db.prepare(`SELECT current_version_id, position_space_id, parser_format AS parserFormat, parser_version AS parserVersion, normalization_version AS normalizationVersion, redaction_epoch AS redactionEpoch FROM conversation_sources WHERE conversation_id = ?
+      ORDER BY CASE availability WHEN 'available' THEN 0 ELSE 1 END, updated_at DESC LIMIT 1`).get(id) as ({ current_version_id: string; position_space_id: string } & ConversationSourceEpochs) | undefined;
+    if (body.expected_position_space_id && body.expected_position_space_id !== publication?.position_space_id) {
+      return sendJson(res, 409, { code: 'position_space_changed', error: 'position_space_changed', position_space_id: publication?.position_space_id ?? null });
     }
-    const blocks = readable!.blocks;
+    let range: { start: number; end: number } | undefined;
+    if (body.speaker_run_start !== undefined) {
+      if (!Number.isSafeInteger(body.speaker_run_start) || body.speaker_run_start < 0 || !body.expected_position_space_id) return sendJson(res, 400, { error: 'A speaker run requires a canonical start and expected position space.' });
+      const context = publication ? getConversationStructureCache(db).readReadingContext(id, publication.current_version_id, body.speaker_run_start, body.speaker_run_start, publication)?.[0] : null;
+      if (!context || context.action_scope.start !== body.speaker_run_start) return sendJson(res, 409, { error: 'scope_unavailable', code: 'scope_unavailable' });
+      range = context.action_scope;
+    }
+    const selected = body.block_ids ? new Set(body.block_ids) : null;
+    if (selected) {
+      const positions = [...selected].map(ref => sparseConversationBlockPosition(id, ref));
+      if (positions.some(position => position === null) || positions.length === 0) return sendJson(res, 400, { error: 'Invalid block selection' });
+      range = { start: Math.min(...positions as number[]), end: Math.max(...positions as number[]) };
+    }
+    let readable: Awaited<ReturnType<typeof readAllBlocks>>;
+    try {
+      if (range) {
+        const result = await sourceReader.readRange(id, range.start, range.end, { expectedSourceVersionId: publication?.current_version_id });
+        if (result.status !== 'source') return sendJson(res, 409, { error: 'source_unavailable', message: result.reason });
+        readable = { blocks: result.value, bodySource: 'source' };
+      } else readable = await readAllBlocks(sourceReader, id);
+    } catch (error) {
+      if (sendFreshnessError(res, error)) return;
+      return sendJson(res, 503, { error: 'freshness_error', message: error instanceof Error ? error.message : String(error) });
+    }
+    const currentSpace = db.prepare('SELECT position_space_id FROM conversation_sources WHERE conversation_id = ? ORDER BY updated_at DESC LIMIT 1').get(id) as { position_space_id: string } | undefined;
+    if (currentSpace?.position_space_id !== publication?.position_space_id) return sendJson(res, 409, { error: 'position_space_changed', code: 'position_space_changed', position_space_id: currentSpace?.position_space_id ?? null });
+    const blocks = selected ? readable.blocks.filter(block => selected.has(block.id)) : readable.blocks;
 
     const blockTypes = body.block_types ? new Set(body.block_types) : undefined;
 
@@ -1187,6 +1219,10 @@ export function registerConversationRoutes(
         ? blocks.filter((b) => blockTypes.has(b.type)).length
         : blocks.length,
       body_source: readable!.bodySource,
+      covered_member_keys: [...new Set(blocks.flatMap(block => {
+        const metadata = JSON.parse(block.metadata_json) as { chat_item?: import('../parsers/types.js').ChatItem; client_intent_id?: string };
+        return metadata.chat_item ? readingMemberKeys(metadata.chat_item, metadata.client_intent_id) : [];
+      }))],
     });
   }, { operation: { id: "post:/api/conversations/:id/export", effects: ["files:production"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "allow", refs: { params: { id: entityRefs.conversation } } });
 

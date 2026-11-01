@@ -220,6 +220,21 @@ export class ConversationSourceReader {
       ? "conversation navigation is unavailable; reconcile the native source" : "conversation native source is unavailable" };
   }
 
+  async readRange(conversationId: string, start: number, end: number, options: SourceScanOptions = {}): Promise<SourceReadResult<SourceBackedConversationBlock[]>> {
+    return this.withSession(conversationId, async session => {
+      const blocks: SourceBackedConversationBlock[] = [];
+      let offset = start;
+      while (offset <= end) {
+        const page = await this.readPageInSession(conversationId, { offset, limit: Math.min(100, end - offset + 1), maxBatchBytes: 512 * 1024 }, session);
+        if (page.status !== 'source') return page;
+        if (!page.value.blocks.length || end >= page.value.total) return { status: 'not_found', reason: 'Action scope is outside the source.' };
+        blocks.push(...page.value.blocks);
+        offset += page.value.blocks.length;
+      }
+      return { status: 'source', sourceVersionId: session.pinnedVersion!.id, value: blocks };
+    }, options);
+  }
+
   async readAll(conversationId: string): Promise<SourceReadResult<SourceBackedConversationBlock[]>> {
     const blocks: SourceBackedConversationBlock[] = [];
     const scanned = await this.scanBlocks(conversationId, block => { blocks.push(block); });

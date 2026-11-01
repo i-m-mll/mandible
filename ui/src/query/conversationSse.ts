@@ -1,7 +1,6 @@
 import type { QueryClient, QueryKey } from '@tanstack/preact-query';
 import type { ConversationSidebarResponse, ConversationPositionWindow } from '../api';
 import {
-  applyConversationAppendPayload,
   mergeConversationSummaryIntoList,
   type ConversationAppendPayload,
   type ConversationTranscriptData,
@@ -83,75 +82,17 @@ export function applyConversationSse(
   const aggregateKey = conversationKeys.aggregate(data.id);
   const aggregate = client.getQueryData<ConversationTranscriptData>(aggregateKey);
   if (aggregate) {
-    const total = Math.max(aggregate.total, data.block_count ?? aggregate.total);
-    const flattened = {
-      ...aggregate.conversation,
-      blocks: aggregate.blocks,
-      children: aggregate.children,
-    };
-    const lastInterval = aggregate.loaded_intervals.at(-1);
-    const includesTail = aggregate.end_reached;
-    const next = includesTail ? applyConversationAppendPayload(flattened, data) : null;
-    const blocks = next?.blocks ?? aggregate.blocks;
-    const endPosition = blocks.at(-1)?.position ?? lastInterval?.end ?? null;
-    const nextIntervals = next && endPosition !== null
-      ? aggregate.loaded_intervals.map((interval, index) => index === aggregate.loaded_intervals.length - 1
-        ? { ...interval, end: Math.max(interval.end, endPosition) }
-        : interval)
-      : aggregate.loaded_intervals;
     client.setQueryData(aggregateKey, {
       ...aggregate,
-      conversation: {
-        ...aggregate.conversation,
-        ...data,
-        block_count: Math.max(aggregate.conversation.block_count, data.block_count ?? next?.block_count ?? 0),
-      },
-      blocks,
-      revision: Math.max(aggregate.revision, data.block_count ?? next?.block_count ?? 0),
-      total,
-      loaded_intervals: nextIntervals,
-      end_reached: next ? true : aggregate.end_reached,
-      after_count: next ? 0 : Math.max(aggregate.after_count, total - aggregate.total),
+      conversation: { ...aggregate.conversation, ...data,
+        block_count: Math.max(aggregate.conversation.block_count, data.block_count ?? 0) },
     });
   }
 
   for (const [key, cached] of client.getQueriesData<ConversationPositionWindow>({ queryKey: conversationKeys.windows(data.id) })) {
     if (!cached || queryConversationId(key) !== data.id) continue;
-    const flattened = {
-      ...cached.conversation,
-      blocks: cached.blocks,
-      children: cached.children,
-    };
-    if (cached.window.has_after) {
-      const total = Math.max(cached.total, data.block_count ?? cached.total);
-      client.setQueryData(key, {
-        ...cached,
-        conversation: { ...cached.conversation, ...data, block_count: Math.max(cached.conversation.block_count, data.block_count ?? 0) },
-        revision: Math.max(cached.revision, data.block_count ?? 0),
-        total,
-        window: { ...cached.window, after_count: Math.max(0, total - (cached.window.end_position ?? -1) - 1) },
-      });
-      continue;
-    }
-    const next = applyConversationAppendPayload(flattened, data);
-    if (!next) {
-      void client.invalidateQueries({ queryKey: key, exact: true });
-      continue;
-    }
-    const endPosition = next.blocks.at(-1)?.position ?? cached.window.end_position;
-    const total = Math.max(cached.total, data.block_count ?? next.block_count);
-    client.setQueryData(key, {
-      ...cached,
-      conversation: { ...cached.conversation, ...data, block_count: next.block_count },
-      blocks: next.blocks,
-      revision: Math.max(cached.revision, data.block_count ?? next.block_count),
-      total,
-      window: {
-        ...cached.window,
-        end_position: endPosition,
-        has_after: endPosition !== null && endPosition < total - 1,
-        after_count: endPosition === null ? total : Math.max(0, total - endPosition - 1),
-      },
-    });
+    client.setQueryData(key, { ...cached, conversation: { ...cached.conversation, ...data,
+      block_count: Math.max(cached.conversation.block_count, data.block_count ?? 0) } });
+    void client.invalidateQueries({ queryKey: key, exact: true });
   }
 }

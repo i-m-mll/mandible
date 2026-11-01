@@ -645,7 +645,7 @@
  * changing the scroll element's containing block. */
 .conv-transcript .stream-renderer__scroll {
   padding-inline: 18px;
-  padding-bottom: var(--detail-pane-overlay-control-scroll-space, var(--space-4));
+  padding-bottom: 0;
 }
 
 .chat-detail-frame.detail-pane-shell--overlay-control .stream-renderer__scroll-btn {

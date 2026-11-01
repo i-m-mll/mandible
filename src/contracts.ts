@@ -817,6 +817,7 @@ export type ConversationSourceSnapshot = {
 export type PositionSpaceChanged = { code: 'position_space_changed'; position_space_id: string | null };
 
 export type ConversationPositionWindow = ConversationSourceSnapshot & {
+  reading_context: import("./conversations/reading-context.js").ConversationReadingContext;
   conversation: Conversation;
   body_source: "source";
   source_version_id: string | null;

@@ -874,53 +874,13 @@
   overflow-anchor: none;
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
-  padding: 0 var(--space-5) var(--space-4);
+  padding: 0 var(--space-5);
   min-height: 0;
 }
 
 .stream-renderer__scroll:hover,
 .stream-renderer__scroll:focus-within {
   scrollbar-color: var(--text-chrome-faint) transparent;
-}
-
-.stream-renderer__scroll--overlay-bar {
-  scrollbar-width: none;
-  padding-right: calc(var(--space-5) + 12px);
-}
-
-.stream-renderer__scroll--overlay-bar::-webkit-scrollbar {
-  display: none;
-}
-
-.stream-renderer__scrollbar-track {
-  position: absolute;
-  z-index: 2;
-  right: 0;
-  width: 12px;
-  touch-action: none;
-  cursor: default;
-}
-
-.stream-renderer__scrollbar-thumb {
-  width: 6px;
-  margin-left: 3px;
-  border-radius: 6px;
-  background: var(--text-chrome-faint);
-  opacity: 0;
-  cursor: grab;
-  outline-offset: 1px;
-}
-
-.stream-renderer__scroll--overlay-bar:hover + .stream-renderer__scrollbar-track .stream-renderer__scrollbar-thumb,
-.stream-renderer__scroll--overlay-bar:focus-within + .stream-renderer__scrollbar-track .stream-renderer__scrollbar-thumb,
-.stream-renderer__scrollbar-track:hover .stream-renderer__scrollbar-thumb,
-.stream-renderer__scrollbar-track--dragging .stream-renderer__scrollbar-thumb,
-.stream-renderer__scrollbar-thumb:focus-visible {
-  opacity: 1;
-}
-
-.stream-renderer__scrollbar-track--dragging .stream-renderer__scrollbar-thumb {
-  cursor: grabbing;
 }
 
 .stream-renderer__virtual-canvas {
@@ -933,15 +893,11 @@
   left: 0;
   right: 0;
   contain: layout style;
+  display: flow-root;
+  padding-block: var(--space-2);
 }
 
-.stream-renderer__history-state {
-  display: flex;
-  justify-content: center;
-  padding: var(--space-2) 0;
-  color: var(--text-muted);
-  font-size: var(--text-xs);
-}
+
 
 /* Bug: a654b69 — P4: individual nodes within a grouped turn */
 .stream-turn-node {

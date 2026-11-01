@@ -85,11 +85,30 @@ backward from a window edge. Provider-native and intent keys are view identity;
 id-less durable rows use conversation/space/position. Canonical source links are
 separate from those view keys. Provisional output has no invented source link.
 
-`activityOwners` computes canonical summary ownership from the complete source
-structure, including tool parent relationships. Closed owners have one summary;
-expansion exposes individually keyed members. `sourceActionGroups` records the
-complete canonical speaker-run extent so Copy all/Open turn does not silently
-export only the clipped loaded range. Export is performed on invocation.
+The disposable source index assigns activity ownership and complete canonical
+speaker runs during publication. Append generations extend the trailing run.
+Each position window carries bounded `reading_context.positions` entries
+`{position, activity_owner_position, speaker_run_start}` and deduplicated
+`reading_context.speaker_runs` entries `{start, end}`, captured with the same
+source version, position space and publication revision as its blocks. Range
+reads join indexed scopes; they neither parse bodies nor scan the full history.
+Chat never fetches the complete structure. Query retains context only for its
+cached blocks and updates scopes by stable `(position space, start)` identity.
+Closed owners have one summary; expansion exposes individually keyed members.
+Closed summaries retain their view identity when members at a window edge are
+trimmed, without pinning every hidden member.
+
+Copy all/Open turn supplies `speaker_run_start` and the expected position space
+to source export on invocation. The server resolves the current complete scope
+from the index and reads just that range in one pinned source session. A newly
+appended member of that speaker run is included even if the client window has
+not refreshed. An obsolete position space is rejected. The same pinned export returns exact
+`covered_member_keys` from provider-native identities and durable intent receipts.
+On invocation, Chat captures the provisional members of that contiguous semantic
+run and appends only members not covered by the export. A wholly provisional
+run serializes only its own contiguous members. Shared speaker semantics bind a
+provisional suffix to canonical aggregate actions without assigning it a source
+link.
 
 Membership maps each canonical position to its row key, disclosure path and
 stable source subtarget. `viewMembership` also maps native/intent member keys to
@@ -103,16 +122,50 @@ content and registers the exact focusable target inside the measured row box.
 source, non-renderable content and unsuccessful alignment. This layer issues no
 scroll commands and defines no geometry.
 
-## Viewport cutover
+## Measured viewport
 
-The viewport adapter consumes the active list and commits replacement commands
-with it. It supplies protected regions to retention, loads adjacent canonical
-ranges through Query, prepares disclosures/details and registers measured rows
-and source targets. It derives true-end availability from the active span and
-the captured total, rather than distant cache membership. The complete cutover
-also installs the pinned engine, removes the displaced scrolling machinery,
-implements the reveal/restore transaction and bounded view persistence, and
-preserves the shared rail/action semantics. Browser and packaged-product
-acceptance follow that cutover.
+`useReadingViewport` is the sole scroll owner. TanStack React Virtual 3.14.25
+and core 3.19.10 measure normally ordered semantic boxes in one native scroller.
+The engine uses end anchoring, its default resize compensation, direct DOM
+updates, native scrollend support and cached offscreen size hints. It never
+receives a content-type height table, a global history spacer or a cache reset
+on reflow. The shared shell publishes its measured composer clearance as
+`scrollClearance`; the adapter accounts for it in `paddingEnd`.
+
+Query commits a replacement window and `reading_command` together. The adapter
+supervises one cancellable preparation, materialization, alignment and terminal
+result. Renderers prepare their disclosures and full details, then register
+exact focus targets within the measured box. The adapter materializes by public
+`scrollToIndex`, calls public `cancelScroll`, and performs one final
+`scrollToOffset` from current measured geometry. Visibility at attainable
+alignment and scrolling settlement determine success; a safety deadline is a
+failure. Jump to latest replaces with the actual tail and uses `scrollToEnd`.
+Ordinary refreshes carry the expected position space. A changed space preserves
+the useful current window and exposes an explicit Open current source action;
+that action performs a commanded replacement. Wheel, touch, scrolling keys and native scrollbar input cancel source navigation
+and engine reconciliation. Editable keyboard behavior is retained.
+
+`viewMembership` supplies an explicit reveal when a settled provisional anchor
+becomes a canonical closed summary. Explicit collapse uses the same protocol to
+reveal the summary. Routine prepend, trim, append and reflow compensation belong
+to the engine. Following is enabled only when the active source span reaches
+the captured true end; an older window's bottom cannot enable it.
+
+Local version 2 state is scoped to the canonical conversation. It contains a
+position-space anchor and measured local offset, or the following flag, and at
+most 100 open disclosure keys. Writes happen at settlement, explicit disclosure
+changes and lifecycle exits. An explicit URL wins over stored state. Restoration
+loads the anchor window before revealing it; changed or unavailable spaces
+produce an explicit outcome. Obsolete group/pixel coordinates are discarded.
+
+The native scrollbar describes only the materialized reading window. Engine
+range transitions load adjacent canonical ranges through Query, including
+windows consisting entirely of hidden telemetry. Retention protects viewport,
+overscan, focus and native text selection and bounds fetched positions and
+bytes. Source actions, Markdown serialization and clipboard work occur only on
+invocation. The shared hover rail, exact Copy link and turn action meanings are
+independent of virtual row boundaries.
+
+Browser and packaged-product acceptance follow the source and protocol checks.
 
 Co-Authored-By: Codex (GPT) <codex@openai.com>

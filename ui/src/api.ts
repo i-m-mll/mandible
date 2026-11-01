@@ -2519,7 +2519,11 @@ export async function getConversationWindow(
   const resp = await apiGet(`/api/conversations/${encodeURIComponent(id)}${suffix}`, {
     signal: request.signal,
   });
-  return (await parseMaybeJson(resp)) as ConversationPositionWindow;
+  const payload = (await parseMaybeJson(resp)) as ConversationPositionWindow;
+  if (!payload.reading_context || payload.reading_context.positions.length !== payload.blocks.length) {
+    throw new ApiError('Source reading context is incomplete.', 409, 'freshness_pending');
+  }
+  return payload;
 }
 
 export async function updateConversation(id: string, data: {
@@ -2543,10 +2547,12 @@ export async function updateConversationArchive(id: string, archived: boolean): 
 
 export async function exportConversationBlocks(id: string, data: {
   block_ids?: string[];
+  speaker_run_start?: number;
+  expected_position_space_id?: string;
   format: 'mdx' | 'markdown' | 'json';
-}): Promise<{ content: string; block_count: number; body_source: 'source' }> {
+}): Promise<{ content: string; block_count: number; body_source: 'source'; covered_member_keys: string[] }> {
   const resp = await apiPost(`/api/conversations/${encodeURIComponent(id)}/export`, data);
-  return (await parseMaybeJson(resp)) as { content: string; block_count: number; body_source: 'source' };
+  return (await parseMaybeJson(resp)) as { content: string; block_count: number; body_source: 'source'; covered_member_keys: string[] };
 }
 
 export async function transformExport(data: {

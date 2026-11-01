@@ -15,12 +15,8 @@ import type {
   SystemInitEvent,
   ToolResultContentBlock,
   TranscriptSemanticEvent,
-  ToolCallActivity,
-  ThinkingBlockActivity,
   UserEvent,
 } from '../components/stream-renderer/types';
-import type { ProviderDirectiveActivity } from '../components/stream-renderer/types';
-import { splitProviderDirectives } from '../components/message-blocks/providerDirectives';
 import type { ActivityItem, ChatItem, MessageItem, PlanItem, ToolCallItem } from '../../../src/parsers/types';
 
 export type StreamState = {
@@ -48,7 +44,7 @@ export function chatItemStableKey(item: ChatItem): string {
   return chatItemIdentityKey(item, { allowTranscriptCoordinates: true })!;
 }
 
-function toolValueText(value: unknown, fallback: string): string {
+export function toolValueText(value: unknown, fallback: string): string {
   if (value === undefined) return fallback;
   if (typeof value === 'string') return value;
   try {
@@ -102,7 +98,7 @@ export function boundToolResultBlock(
   };
 }
 
-export function buildStreamState(events: StreamEvent[]): StreamState {
+export function buildStreamState(events: StreamEvent[], standaloneItems = false): StreamState {
   turnIndexCounter = 0;
 
   const nodes: RenderNode[] = [];
@@ -273,7 +269,7 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
           else if (attachResultToPriorTurn(toolId, result, source?.parentBlockId)) {
             // Exact tool identity repairs results separated from their call by
             // an intervening activity item without changing transcript order.
-          } else if (source?.parentBlockId) {
+          } else if (source?.parentBlockId && !standaloneItems) {
             // The verified parent is outside this bounded retained window.
             // Loading the preceding window materializes the complete pair.
           } else {
@@ -365,261 +361,14 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
   return { nodes, initEvent, resultEvent };
 }
 
-export function useStreamState(events: StreamEvent[]): StreamState {
-  return useMemo(() => buildStreamState(events), [events]);
+export function useStreamState(events: StreamEvent[], standaloneItems = false): StreamState {
+  return useMemo(() => buildStreamState(events, standaloneItems), [events, standaloneItems]);
 }
 
 export function extractTurns(nodes: RenderNode[]): RenderedTurn[] {
   return nodes
     .filter((n): n is RenderNodeAssistantTurn => n.kind === 'assistant_turn')
     .map((n) => n.turn);
-}
-
-export const MAX_DISPLAY_GROUP_NODES = 12;
-
-function activityEdges(node: RenderNode): { starts: boolean; ends: boolean } {
-  const parts = expandInlineActivities([node]);
-  return { starts: parts[0]?.kind === 'activity', ends: parts.at(-1)?.kind === 'activity' };
-}
-
-export function groupMessagesForDisplay(nodes: RenderNode[]): DisplayGroup[] {
-  const runs: Array<{ speaker: DisplayGroup['speaker']; nodes: RenderNode[] }> = [];
-
-  for (const node of nodes) {
-    if (node.kind === 'transcript_boundary') {
-      runs.push({ speaker: 'system', nodes: [] });
-      continue;
-    }
-    const previous = runs[runs.length - 1];
-    if (previous && previous.speaker === node.entity) {
-      previous.nodes.push(node);
-    } else {
-      runs.push({ speaker: node.entity, nodes: [node] });
-    }
-  }
-
-  const groups = runs.flatMap((run): DisplayGroup[] => {
-    const units: RenderNode[][] = [];
-    let previousEndsInActivity = false;
-    for (const node of run.nodes) {
-      const edges = activityEdges(node);
-      const previous = units.at(-1);
-      if (edges.starts && previousEndsInActivity && previous) {
-        previous.push(node);
-      } else {
-        units.push([node]);
-      }
-      previousEndsInActivity = edges.ends;
-    }
-    const reversedChunks: RenderNode[][] = [];
-    let chunk: RenderNode[] = [];
-    for (let index = units.length - 1; index >= 0; index -= 1) {
-      const unit = units[index];
-      if (chunk.length > 0 && chunk.length + unit.length > MAX_DISPLAY_GROUP_NODES) {
-        reversedChunks.push(chunk);
-        chunk = [];
-      }
-      chunk = [...unit, ...chunk];
-    }
-    if (chunk.length > 0) reversedChunks.push(chunk);
-    const chunks = reversedChunks.reverse();
-    return chunks.map((chunk) => ({
-      id: `${run.speaker}-${chunk.at(-1)!.key}`,
-      speaker: run.speaker,
-      nodes: chunk,
-      meta: {},
-    }));
-  });
-
-  return groups.map((group) => {
-    let tokenSum = 0;
-    let foundTokens = false;
-    let model: string | undefined;
-
-    for (const node of group.nodes) {
-      if (node.kind !== 'assistant_turn') {
-        continue;
-      }
-      const message = node.turn.assistantEvent.message;
-      const total = computeTotalTokens(message.usage);
-      if (total !== undefined) {
-        tokenSum += total;
-        foundTokens = true;
-      }
-      model = model ?? message.model;
-    }
-
-    return {
-      ...group,
-      meta: {
-        totalTokens: foundTokens ? tokenSum : undefined,
-        model,
-      },
-    };
-  });
-}
-
-export type ActivityDisplayEntry =
-  | { kind: 'node'; node: RenderNode }
-  | { kind: 'activity-group'; key: string; nodes: Array<Extract<RenderNode, { kind: 'activity' }>> };
-
-function expandInlineActivities(nodes: readonly RenderNode[]): RenderNode[] {
-  const expanded: RenderNode[] = [];
-  for (const node of nodes) {
-    if (node.kind !== 'assistant_turn') {
-      expanded.push(node);
-      continue;
-    }
-
-    const blocks = node.turn.assistantEvent.message.content;
-    const hasInlineActivity = blocks.some((block) => block.type === 'tool_use'
-      || block.type === 'thinking'
-      || (block.type === 'text' && splitProviderDirectives(block.text).some((segment) => segment.kind === 'activity')));
-    if (!hasInlineActivity) {
-      expanded.push(node);
-      continue;
-    }
-
-    let fragmentBlocks: ContentBlock[] = [];
-    let fragmentIndex = 0;
-    let directiveIndex = 0;
-    const flushFragment = (): void => {
-      if (fragmentBlocks.length === 0) return;
-      const fragment = fragmentBlocks;
-      fragmentBlocks = [];
-      expanded.push({
-        ...node,
-        key: fragment[0].contentKey ?? `${node.key}:fragment:${fragmentIndex++}`,
-        turn: {
-          ...node.turn,
-          assistantEvent: {
-            ...node.turn.assistantEvent,
-            message: { ...node.turn.assistantEvent.message, content: fragment },
-          },
-        },
-      });
-    };
-
-    blocks.forEach((block, blockIndex) => {
-      if (block.type === 'tool_use') {
-        flushFragment();
-        const item: ToolCallActivity = {
-          type: 'tool-call-activity',
-          id: block.id,
-          name: block.name,
-          toolKind: block.toolKind,
-          input: block.input,
-          result: node.turn.toolResults.get(block.id) ?? null,
-          turnId: block.sourceIdentity
-            ? block.sourceIdentity.turnId
-            : node.turn.assistantEvent.message.id ?? node.turn.assistantEvent.uuid,
-          sessionId: node.turn.assistantEvent.session_id,
-          sourceIdentity: block.sourceIdentity,
-          executionActive: block.executionActive && !node.turn.toolResults.has(block.id),
-        };
-        expanded.push({
-          kind: 'activity',
-          key: block.contentKey ?? `tool-call:${block.id}`,
-          entity: 'assistant',
-          item,
-          source: block.source,
-        });
-        return;
-      }
-
-      if (block.type === 'thinking') {
-        if (!block.thinking.trim() && block.source?.detailsLoaded !== false) return;
-        flushFragment();
-        const item: ThinkingBlockActivity = {
-          type: 'thinking-block-activity',
-          content: block.thinking,
-          turnId: node.turn.assistantEvent.message.id ?? node.turn.assistantEvent.uuid,
-          sessionId: node.turn.assistantEvent.session_id,
-        };
-        expanded.push({
-          kind: 'activity',
-          key: `thinking:${node.turn.id}:${block.source?.blockId ?? blockIndex}`,
-          entity: 'assistant',
-          item,
-          source: block.source,
-        });
-        return;
-      }
-
-      if (block.type !== 'text') {
-        fragmentBlocks.push(block);
-        return;
-      }
-      const segments = splitProviderDirectives(block.text);
-      if (!segments.some((segment) => segment.kind === 'activity')) {
-        fragmentBlocks.push(block);
-        return;
-      }
-
-      let ownsSource = true;
-      for (const segment of segments) {
-        if (segment.kind === 'text') {
-          if (!segment.content.trim()) continue;
-          fragmentBlocks.push({
-            ...block,
-            text: segment.content,
-            source: ownsSource ? block.source : undefined,
-          });
-          ownsSource = false;
-          continue;
-        }
-        flushFragment();
-        const item: ProviderDirectiveActivity = {
-          type: 'provider-directive',
-          directive: segment.directive,
-          turnId: block.sourceIdentity
-            ? block.sourceIdentity.turnId
-            : node.turn.assistantEvent.message.id ?? node.turn.assistantEvent.uuid,
-          sessionId: node.turn.assistantEvent.session_id,
-          provider: block.sourceIdentity?.provider,
-          blockId: block.source?.blockId ?? null,
-          sequence: directiveIndex,
-        };
-        const source = ownsSource ? block.source : undefined;
-        ownsSource = false;
-        expanded.push({
-          kind: 'activity',
-          key: `provider-directive:${node.turn.id}:${block.source?.blockId ?? blockIndex}:${directiveIndex++}`,
-          entity: 'assistant',
-          item,
-          source,
-        });
-      }
-    });
-    flushFragment();
-  }
-  return expanded;
-}
-
-/** Groups every consecutive activity run without crossing visible prose or speaker boundaries. */
-export function groupActivityItemsForDisplay(nodes: RenderNode[]): ActivityDisplayEntry[] {
-  nodes = expandInlineActivities(nodes);
-  const entries: ActivityDisplayEntry[] = [];
-  let index = 0;
-  while (index < nodes.length) {
-    const node = nodes[index];
-    if (node.kind !== 'activity') {
-      entries.push({ kind: 'node', node });
-      index += 1;
-      continue;
-    }
-    let end = index + 1;
-    while (end < nodes.length) {
-      const next = nodes[end];
-      if (next.kind !== 'activity') break;
-      end += 1;
-    }
-    const run = nodes.slice(index, end) as Array<Extract<RenderNode, { kind: 'activity' }>>;
-    if (run.length < 2) entries.push({ kind: 'node', node });
-    else entries.push({ kind: 'activity-group', key: `activity:${node.key}`, nodes: run });
-    index = end;
-  }
-  return entries;
 }
 
 export function computeTotalTokens(

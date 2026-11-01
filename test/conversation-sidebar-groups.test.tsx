@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { mockConversationStructureFromWindow, mockManagedSettings } from './helpers/conversation-ui-transport';
+import { mockChatViewport, mockManagedSettings } from './helpers/conversation-ui-transport';
 import { establishTestClientAccess } from './helpers/local-client-access';
 import { cleanup, fireEvent, render, renderHook, act, screen, waitFor, within } from './helpers/dom.js';
 import { QueryClientProvider } from '@tanstack/preact-query';
@@ -45,7 +45,7 @@ vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} dispose():
 
 beforeEach(async () => {
   await establishTestClientAccess();
-  mockConversationStructureFromWindow();
+  mockChatViewport();
   mockManagedSettings();
   Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, writable: true, value: () => {} });
   vi.spyOn(HTMLElement.prototype, 'scrollTo').mockImplementation(() => {});

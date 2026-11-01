@@ -132,6 +132,7 @@ export type CanonicalChatItemEvent = {
   source?: PersistedBlockSource;
   displayKey?: string;
   intentId?: string;
+  usage?: { key: string; input: number; output: number };
   executionActive?: boolean;
   persistencePending?: boolean;
 };

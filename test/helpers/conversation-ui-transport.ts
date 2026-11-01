@@ -4,24 +4,12 @@ import { vi } from 'vitest';
 import { conversationRunOptions } from '../../src/conversation-control/runtime-options';
 import * as api from '../../ui/src/api';
 
-/** Supply the structure half of the same explicit transcript fixture, without a second window read. */
-export function mockConversationStructureFromWindow(): void {
-  vi.spyOn(api, 'getConversationStructure').mockImplementation(async (id) => {
-    const windows = vi.mocked(api.getConversationWindow);
-    const index = windows.mock.calls.findLastIndex(([conversationId]) => conversationId === id);
-    const result = windows.mock.results[index];
-    if (!result || result.type !== 'return') throw new Error(`No transcript fixture for ${id}`);
-    const window = await result.value;
-    return {
-      conversation_id: id, source_version_id: window.source_version_id, position_space_id: window.position_space_id,
-      publication_revision: window.publication_revision, total: window.total,
-      rows: Array.from({ length: Math.max(window.total, ...window.blocks.map(block => block.position + 1)) }, (_, position) => {
-        const block = window.blocks.find(block => block.position === position);
-        return { id: block?.id ?? `fixture-${id}-${position}`, position, type: block?.type ?? 'user_message',
-          role: block?.role ?? 'user', parent_position: block?.parent_position ?? null, record_offset: null, record_length: 0 };
-      }),
-    };
-  });
+/** jsdom has no layout; the engine needs a visible measured viewport. */
+export function mockChatViewport(): void {
+  vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(600);
+  vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(800);
+  vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(600);
+  vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(800);
 }
 
 /** Managed settings are fetched separately from transcript and terminal metadata. */

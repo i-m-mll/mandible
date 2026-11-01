@@ -1,4 +1,4 @@
-import type { ConversationStructure } from '../api';
+import { readingSpeaker } from '../../../src/conversations/reading-context';
 import type { CanonicalChatItemEvent, PersistedBlockSource, StreamEvent } from '../components/stream-renderer/types';
 import { chatItemIdentityKey } from '../../../src/conversation-control/provider-live';
 import { isRoutineActivityStatus } from './renderModel';
@@ -6,11 +6,13 @@ import type { ConversationSourceCoordinate } from '../query/conversationData';
 
 export type ReadingRow = {
   key: string;
-  kind: 'content' | 'activity-summary';
+  kind: 'content' | 'activity-summary' | 'permission';
+  protectedPositions: readonly number[];
   items: readonly CanonicalChatItemEvent[];
   sources: readonly PersistedBlockSource[];
   actionGroup: ReadingActionGroup;
   disclosureOwner: number | null;
+  totalTokens?: number;
 };
 
 export type ReadingMembership = {
@@ -20,63 +22,64 @@ export type ReadingMembership = {
   disclosurePath: readonly number[];
   subtarget: string | null;
 };
+export type ReadingActionRun = { group: ReadingActionGroup; events: readonly CanonicalChatItemEvent[] };
 export type ReadingProjection = {
+  actionRuns: ReadonlyMap<string, ReadingActionRun>;
   rows: ReadingRow[];
   membership: ReadonlyMap<number, ReadingMembership>;
   viewMembership: ReadonlyMap<string, ReadingMembership>;
 };
 export type ReadingActionGroup = { key: string; start: number | null; end: number | null };
 
-/** Complete action scope comes from source structure, even when the active window clips the speaker run. */
-export function sourceActionGroups(structure: ConversationStructure): ReadonlyMap<number, ReadingActionGroup> {
-  const groups = new Map<number, ReadingActionGroup>();
-  let group: ReadingActionGroup | null = null;
-  let speaker: string | null = null;
-  for (const row of structure.rows) {
-    const nextSpeaker = row.role === 'tool' ? 'assistant' : row.role;
-    if (!group || speaker !== nextSpeaker) {
-      group = { key: `group:${structure.conversation_id}:${structure.position_space_id}:${row.position}`, start: row.position, end: row.position };
-      speaker = nextSpeaker;
-    }
-    group.end = row.position;
-    groups.set(row.position, group);
-  }
-  return groups;
-}
-
-/** Global source relationships, rather than the currently loaded members, choose summary owners. */
-export function activityOwners(structure: ConversationStructure): ReadonlyMap<number, number> {
-  const owners = new Map<number, number>();
-  let runOwner: number | null = null;
-  for (const row of structure.rows) {
-    const activity = ['thinking', 'tool_use', 'tool_result', 'event'].includes(row.type);
-    if (!activity) { runOwner = null; continue; }
-    const related = row.parent_position === null ? null : owners.get(row.parent_position) ?? row.parent_position;
-    if (related !== null) runOwner = related;
-    else if (runOwner === null || row.type === 'tool_use') runOwner = row.position;
-    owners.set(row.position, runOwner);
-  }
-  return owners;
-}
-
 export function sourceSubtarget(position: number): string { return `source:${position}`; }
+
+function toolExecutionKey(event: CanonicalChatItemEvent): string | null {
+  const item = event.item;
+  if (item.type !== 'tool-call') return null;
+  const id = item.tool_id ?? item.identity.native_tool_id;
+  return id ? JSON.stringify([item.identity.provider, item.identity.session_id, id]) : null;
+}
 
 /** View identity is provider/intent identity; canonical links remain position-space coordinates. */
 export function projectReadingRows(input: {
   events: readonly StreamEvent[];
   conversationId: string;
   positionSpaceId: string;
-  activityOwners: ReadonlyMap<number, number>;
-  actionGroups: ReadonlyMap<number, ReadingActionGroup>;
+  readingContext: ReadonlyMap<number, import('../../../src/conversations/reading-context').ReadingContextEntry>;
   expanded: ReadonlySet<number>;
 }): ReadingProjection {
   const rows: ReadingRow[] = [];
   const membership = new Map<number, ReadingMembership>();
   const viewMembership = new Map<string, ReadingMembership>();
   const summaries = new Map<string, number>();
-  for (const event of input.events) {
+  const canonicalEvents = input.events.filter((event): event is CanonicalChatItemEvent => event.type === 'chat:item');
+  const runs: Array<{ speaker: ReturnType<typeof readingSpeaker>; events: CanonicalChatItemEvent[]; scope: ReadingActionGroup | null }> = [];
+  for (const event of canonicalEvents) {
+    const speaker = readingSpeaker(event.item.role);
+    const position = event.source?.position;
+    const sourceScope = position === undefined ? null : input.readingContext.get(position)?.action_scope;
+    const group = sourceScope ? { key: `group:${input.conversationId}:${input.positionSpaceId}:${sourceScope.start}`, ...sourceScope } : null;
+    let run = runs[runs.length - 1];
+    if (!run || run.speaker !== speaker || (group && run.scope && group.key !== run.scope.key)) {
+      run = { speaker, events: [], scope: group }; runs.push(run);
+    }
+    run.events.push(event);
+    if (group) run.scope = group;
+  }
+  const actionRuns = new Map<string, ReadingActionRun>();
+  const eventGroups = new Map<CanonicalChatItemEvent, ReadingActionGroup>();
+  for (const run of runs) {
+    const first = run.events[0];
+    const group = run.scope ?? { key: `local-run:${first.intentId ?? first.displayKey ?? chatItemIdentityKey(first.item)}`, start: null, end: null };
+    actionRuns.set(group.key, { group, events: run.events });
+    for (const event of run.events) eventGroups.set(event, group);
+  }
+  const completed = new Set(canonicalEvents.flatMap(event => event.type === 'chat:item' && event.item.type === 'tool-call' && event.item.phase === 'result'
+    ? [toolExecutionKey(event)].filter((key): key is string => key !== null) : []));
+  for (const event of canonicalEvents) {
     if (event.type !== 'chat:item') continue;
-    const canonical = event as CanonicalChatItemEvent;
+    const execution = toolExecutionKey(event);
+    const canonical = event.executionActive && execution && completed.has(execution) ? { ...event, executionActive: false } : event as CanonicalChatItemEvent;
     const item = canonical.item;
     if (item.type === 'activity' && isRoutineActivityStatus(item)
         && canonical.source?.detailsLoaded !== false) continue;
@@ -87,9 +90,8 @@ export function projectReadingRows(input: {
       : `position:${input.conversationId}:${input.positionSpaceId}:${position}`);
     if (!identity) continue;
     const key = canonical.intentId ? `intent:${canonical.intentId}` : canonical.displayKey ?? identity;
-    const owner = position === undefined ? null : input.activityOwners.get(position) ?? null;
-    const actionGroup = position === undefined ? { key, start: null, end: null }
-      : input.actionGroups.get(position) ?? { key, start: position, end: position };
+    const owner = position === undefined ? null : input.readingContext.get(position)?.activity_owner ?? null;
+    const actionGroup = eventGroups.get(event)!;
     const collapsed = owner !== null && !input.expanded.has(owner);
     const rowKey = collapsed ? `activity:${input.conversationId}:${input.positionSpaceId}:${owner}` : key;
     const summaryIndex = summaries.get(rowKey);
@@ -99,7 +101,7 @@ export function projectReadingRows(input: {
     } else {
       if (collapsed) summaries.set(rowKey, rows.length);
       rows.push({ key: rowKey, kind: collapsed ? 'activity-summary' : 'content',
-        items: collapsed ? [] : [canonical], sources: source ? [source] : [], actionGroup, disclosureOwner: owner });
+        protectedPositions: collapsed || position === undefined ? [] : [position], items: collapsed ? [] : [canonical], sources: source ? [source] : [], actionGroup, disclosureOwner: owner });
     }
     const member: ReadingMembership = { rowKey, memberKey: key, position: position ?? null,
       disclosurePath: collapsed ? [owner!] : [], subtarget: position === undefined ? null : sourceSubtarget(position) };
@@ -107,10 +109,15 @@ export function projectReadingRows(input: {
     if (native) viewMembership.set(native, member);
     if (position !== undefined) membership.set(position, member);
   }
-  return { rows, membership, viewMembership };
+  for (const [key, run] of actionRuns) {
+    const usages = new Map(run.events.flatMap(event => event.usage ? [[event.usage.key, event.usage.input + event.usage.output] as const] : []));
+    const last = [...rows].reverse().find(row => row.actionGroup.key === key);
+    if (last && usages.size) last.totalTokens = [...usages.values()].reduce((sum, value) => sum + value, 0);
+  }
+  return { rows, membership, viewMembership, actionRuns };
 }
 
-export type ReadingRevealCommand = { token: string; target: ConversationSourceCoordinate };
+export type ReadingRevealCommand = { token: string; target: ConversationSourceCoordinate; end?: false } | { token: string; target?: ConversationSourceCoordinate; end: true };
 export type ReadingRevealResult = { token: string; status:
   'revealed' | 'cancelled' | 'source-unavailable' | 'position-space-changed' | 'not-renderable' | 'unsuccessful' };
 
@@ -118,7 +125,7 @@ export type ReadingRevealResult = { token: string; status:
 export type ReadingTargetRegistration = {
   coordinate: ConversationSourceCoordinate;
   rowKey: string;
-  element: HTMLElement;
+  element: HTMLElement | null;
 };
 export type ReadingRendererPreparation = (target: ConversationSourceCoordinate, signal: AbortSignal) => Promise<
   { status: 'prepared'; membership: ReadingMembership } | { status: 'source-unavailable' | 'position-space-changed' | 'not-renderable' }

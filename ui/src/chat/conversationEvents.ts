@@ -184,8 +184,10 @@ export function conversationBlocksToStreamEvents(
       const identity = item && item.provenance.source === 'verified-provider-transcript'
         ? chatItemIdentityKey(item, { allowTranscriptCoordinates: true })
         : null;
+      const usage = metadata.token_usage as { input?: number; output?: number } | undefined;
       if (item && identity) events.push({ type: 'chat:item', item, source,
         ...(typeof metadata.client_intent_id === 'string' ? { intentId: metadata.client_intent_id } : {}),
+        ...(usage && Number.isFinite(usage.input) && Number.isFinite(usage.output) ? { usage: { key: typeof metadata.provider_message_id === 'string' ? metadata.provider_message_id : `record:${item.identity.source_record_ordinal}`, input: usage.input!, output: usage.output! } } : {}),
       });
     }
   }

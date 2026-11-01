@@ -85,6 +85,8 @@ export function MessageGroup({
             toolKind={block.toolKind}
             toolUseId={block.id}
             input={block.input}
+            active={Boolean(block.executionActive && !result)}
+            detailsAvailable={block.source?.detailsLoaded === false}
             result={result as import('../message-blocks/ToolUseBlock').ToolResultContentBlock | null}
             defaultExpanded={defaultExpanded}
             expanded={expanded}

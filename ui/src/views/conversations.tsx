@@ -29,7 +29,6 @@ import type {
   ConversationChild,
   InstanceInfo,
   ConversationPositionWindow,
-  ConversationStructure,
   ConversationSource,
   ConversationSidebarGroup,
   ConversationSidebarConversation,
@@ -40,7 +39,6 @@ import {
   forkConversation,
   getConsoleSessionUsage,
   getConversationWindow,
-  getConversationStructure,
   exportConversationBlocks,
   getConversationControl,
   getConversationLiveProjection,
@@ -134,6 +132,7 @@ import { readPersistedViewState } from '../hooks/usePersistedViewState';
 import { compareConversationSidebarRows } from '../../../src/conversations/sidebar-order';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { useIntrinsicOverflowGroup } from '../hooks/useIntrinsicOverflowGroup';
+import { readReadingState } from '../chat/readingState';
 import { openMarkdownDocument } from '../chat/markdownActions';
 import { conversationExecutionState, conversationControlPresentation } from '../chat/conversationControl';
 import { chatItemIdentityKey, mergeProviderLiveProjection } from '../../../src/conversation-control/provider-live';
@@ -156,6 +155,11 @@ import {
   mergeSidebarPages,
   type ConversationHistoryLoadResult,
   type ConversationTranscriptConsumer,
+  type ConversationNavigationCommand,
+  type ConversationNavigationResult,
+  type ConversationLoadedInterval,
+  applyReadingWindowOperation,
+  ReadingWindowRequests,
   type ConversationTranscriptData,
   type ConversationWithDetails,
 } from '../query/conversationData';
@@ -228,6 +232,7 @@ export function conversationLoadFailure(
       && operation !== 'source-unavailable'
     ? operation
     : undefined;
+  if (code === 'position_space_changed') return { operation: resolvedOperation, code, message: 'The source changed. The current reading window is preserved. Open the current source to reset this position.', retryable: false };
   if (code === 'provider_metadata_missing') {
     return {
       operation: resolvedOperation,
@@ -467,25 +472,18 @@ async function warmSelectedConversationWindow(
   const target = normalizeWindowTarget({ target: 'initial', limit: 500, view: 'display' });
   const aggregateKey = conversationKeys.aggregate(conversationId);
   const aggregateAtStart = appQueryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
-  const [window, structure] = await Promise.all([
-    appQueryClient.fetchQuery({
-      queryKey: conversationKeys.window(conversationId, target),
-      queryFn: ({ signal }) => readConversationWindowWhenReady(
-        conversationId, windowRequest(target, signal)),
-      staleTime: ROUTE_DATA_FRESH_MS,
-      gcTime: WARMED_QUERY_GC_TIME_MS,
-    }),
-    readConversationStructureWhenReady(conversationId),
-  ]);
-  if (window.source_version_id !== structure.source_version_id || window.total !== structure.total
-      || window.position_space_id !== structure.position_space_id || window.publication_revision !== structure.publication_revision) return;
+  const window = await appQueryClient.fetchQuery({
+    queryKey: conversationKeys.window(conversationId, target),
+    queryFn: ({ signal }) => readConversationWindowWhenReady(conversationId, windowRequest(target, signal)),
+    staleTime: ROUTE_DATA_FRESH_MS, gcTime: WARMED_QUERY_GC_TIME_MS,
+  });
   const current = appQueryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
   if (current && current.publication_revision > window.publication_revision) return;
   const aggregateAdvanced = current !== undefined
     && (aggregateAtStart === undefined || current.publication_revision !== aggregateAtStart.publication_revision);
   if (aggregateAdvanced && (current.position_space_id !== window.position_space_id || current.publication_revision > window.publication_revision)) return;
   appQueryClient.setQueryData(aggregateKey, {
-    ...reconcileConversationWindow(current, window), structure,
+    ...reconcileConversationWindow(current, window),
   });
 }
 
@@ -826,19 +824,7 @@ async function readConversationWindowWhenReady(
   }
 }
 
-async function readConversationStructureWhenReady(id: string, signal?: AbortSignal): Promise<ConversationStructure> {
-  const deadline = Date.now() + CONVERSATION_WINDOW_PENDING_LIMIT_MS;
-  for (;;) {
-    try {
-      return await getConversationStructure(id, signal);
-    } catch (error) {
-      if (!(error instanceof ApiError) || error.code !== 'freshness_pending') throw error;
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) throw error;
-      await waitForConversationSourceUpdate(id, signal, remaining);
-    }
-  }
-}
+
 
 function reconcileControlSnapshot(
   current: ConversationControlSnapshot | null,
@@ -1283,13 +1269,7 @@ export function ConversationDetail({
   const [exportLoading, setExportLoading] = useState(false);
   const [exportIntent, setExportIntent] = useState<'copy' | 'open' | null>(null);
   const [navigationError, setNavigationError] = useState<ConversationLoadFailure | null>(null);
-  const [navigationTarget, setNavigationTarget] = useState<{
-    key: string;
-    kind: 'initial' | 'latest' | 'block' | 'turn' | 'position';
-    turnId: string | null;
-    blockId: string | null;
-    smooth: boolean;
-  } | null>(null);
+  const [navigationTarget, setNavigationTarget] = useState<ConversationNavigationCommand | null>(null);
 
   const [actionsOpen, setActionsOpen] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
@@ -1350,7 +1330,13 @@ export function ConversationDetail({
   const [submitIntent, setSubmitIntent] = useState<DraftSubmitIntent | null>(() => getPendingSubmitIntent(conversationId));
   const submittingIntentRef = useRef<string | null>(null);
   const incomingAnchorKey = anchor ? JSON.stringify(anchor) : 'initial';
-  const [effectiveAnchor, setEffectiveAnchor] = useState(anchor);
+  const savedReading = useMemo(() => readReadingState(conversationId), [conversationId]);
+  const restoredAnchor = !anchor && !savedReading?.following ? savedReading?.anchor : null;
+  const [effectiveAnchor, setEffectiveAnchor] = useState(anchor ?? (restoredAnchor ? { position: restoredAnchor.position, expected_position_space_id: restoredAnchor.positionSpaceId } : null));
+  const navigationRead = useRef<AbortController | null>(null);
+  const protectedReading = useRef<readonly ConversationLoadedInterval[]>([]);
+  const readingRequests = useRef(new ReadingWindowRequests());
+  useEffect(() => () => { readingRequests.current.cancel(); navigationRead.current?.abort(); }, [conversationId]);
   const handledAnchorKeyRef = useRef<string | null>(null);
   const windowTargetJson = JSON.stringify({
     ...normalizeWindowTarget(effectiveAnchor ?? { target: 'initial', limit: 500 }),
@@ -1368,17 +1354,23 @@ export function ConversationDetail({
     target: ReturnType<typeof normalizeWindowTarget>,
     read: () => Promise<ConversationPositionWindow>,
     finalize?: (data: ConversationTranscriptData) => ConversationTranscriptData,
+    operation?: 'extend-start' | 'extend-end' | 'replace',
+    signal?: AbortSignal,
+    replacementCommand?: ConversationNavigationCommand,
   ): Promise<ConversationPositionWindow> => {
     const aggregateKey = conversationKeys.aggregate(conversationId);
     const aggregateAtStart = queryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
     const incoming = await read();
-    if (selectionRef.current.generation !== selectionGeneration) throw new CancelledError();
+    if (signal?.aborted || selectionRef.current.generation !== selectionGeneration) throw new CancelledError();
     const current = queryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
     if (current && current.publication_revision > incoming.publication_revision) throw new CancelledError();
     const aggregateAdvanced = current !== undefined
       && (aggregateAtStart === undefined || current.publication_revision !== aggregateAtStart.publication_revision);
     if (aggregateAdvanced && (current.position_space_id !== incoming.position_space_id || current.publication_revision > incoming.publication_revision)) {
       throw new CancelledError();
+    }
+    if (current && current.position_space_id !== incoming.position_space_id && operation !== 'replace') {
+      throw new ApiError('The source position space changed.', 409, 'position_space_changed');
     }
     if (current && current.position_space_id !== incoming.position_space_id) {
       const currentWindowKey = conversationKeys.window(conversationId, target);
@@ -1393,32 +1385,43 @@ export function ConversationDetail({
         predicate: (query) => currentWindowHash !== undefined && query.queryHash !== currentWindowHash,
       });
     }
-    const reconciled = reconcileConversationWindow(current, incoming);
+    let reconciled = reconcileConversationWindow(current, incoming, protectedReading.current);
+    if (current && operation) {
+      const position = incoming.target.position;
+      const result = operation === 'replace' && position !== null && incoming.position_space_id
+        ? applyReadingWindowOperation(current, { kind: 'replace', window: incoming, command: {
+          token: `${conversationId}:${target.kind}:${incoming.publication_revision}`,
+          target: { conversationId, positionSpaceId: incoming.position_space_id, position },
+        } })
+        : operation !== 'replace' ? applyReadingWindowOperation(current, { kind: operation, window: incoming, protected: [...protectedReading.current, ...(incoming.target.position === null ? [] : [{ start: incoming.target.position, end: incoming.target.position }])] }) : null;
+      if (result && result.status !== 'committed') throw new ApiError(`Reading window: ${result.status}`, 409, result.status);
+      if (result?.status === 'committed') reconciled = result.data;
+    }
+    if (operation === 'replace' || !current) {
+      reconciled = { ...reconciled, reading_command: replacementCommand ?? {
+        key: `${conversationId}:${target.kind}:${String(target.value)}:${incoming.publication_revision}:${crypto.randomUUID()}`,
+        kind: target.kind, turnId: incoming.target.turn_id, blockId: incoming.target.block_id, smooth: false,
+        target: incoming.target.position !== null && incoming.position_space_id ? { conversationId, positionSpaceId: incoming.position_space_id, position: incoming.target.position,
+          ...(restoredAnchor && target.kind === 'position' && target.value === restoredAnchor.position ? { offset: restoredAnchor.offset, subtarget: restoredAnchor.subtarget } : {}) } : undefined,
+      } };
+    }
     queryClient.setQueryData(aggregateKey, finalize ? finalize(reconciled) : reconciled);
     return incoming;
-  }, [conversationId, queryClient, selectionGeneration]);
+  }, [conversationId, queryClient, selectionGeneration, restoredAnchor]);
   const registerInitialRouteLoad = useRegisterInitialRouteLoad();
   const fetchConversationDetail = useCallback(
     ({ signal }: { signal: AbortSignal }) => {
-      let structure: ConversationStructure;
-      const initialLoad = readAndReconcileWindow(windowTarget, async () => {
-        const [window, selectedStructure] = await Promise.all([
-          readConversationWindowWhenReady(conversationId, windowRequest(windowTarget, signal)),
-          readConversationStructureWhenReady(conversationId, signal),
-        ]);
-        if (selectedStructure.source_version_id !== window.source_version_id
-            || selectedStructure.position_space_id !== window.position_space_id
-            || selectedStructure.publication_revision !== window.publication_revision
-            || selectedStructure.total !== window.total) {
-          throw new ApiError('Conversation changed while opening; retry the reading position.', 409, 'freshness_pending');
-        }
-        structure = selectedStructure;
-        return window;
-      }, (data) => ({ ...data, structure }));
+      const replace = handledAnchorKeyRef.current !== incomingAnchorKey;
+      const current = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversationId));
+      const request = { ...windowTarget, expected_position_space_id: windowTarget.expected_position_space_id
+        ?? (!replace ? current?.position_space_id ?? undefined : undefined) };
+      const initialLoad = readAndReconcileWindow(windowTarget,
+        () => readConversationWindowWhenReady(conversationId, windowRequest(request, signal)),
+        undefined, replace ? 'replace' : undefined, signal);
       registerInitialRouteLoad(initialLoad);
       return initialLoad;
     },
-    [conversationId, readAndReconcileWindow, registerInitialRouteLoad, windowTarget],
+    [conversationId, readAndReconcileWindow, registerInitialRouteLoad, windowTarget, incomingAnchorKey, queryClient],
   );
   const transcriptLive = useViewActive();
   const windowQuery = useQuery({
@@ -1436,15 +1439,36 @@ export function ConversationDetail({
   const fetchAndReconcileWindow = useCallback(async (
     target: ReturnType<typeof normalizeWindowTarget>,
     signal?: AbortSignal,
+    operation?: 'extend-start' | 'extend-end' | 'replace',
+    replacementCommand?: ConversationNavigationCommand,
   ): Promise<ConversationPositionWindow> => {
     const displayTarget = { ...target, view: 'display' as const };
-    return readAndReconcileWindow(displayTarget, () => readConversationWindowWhenReady(
-      conversationId, windowRequest(displayTarget, signal),
-    ));
-  }, [conversationId, readAndReconcileWindow]);
+    const aggregate = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversationId));
+    if (aggregate?.position_space_id) readingRequests.current.select(conversationId, aggregate.position_space_id);
+    return readAndReconcileWindow(displayTarget, async () => {
+      if (!aggregate?.position_space_id || (operation === 'replace' && target.kind === 'latest' && !target.expected_position_space_id)) {
+        readingRequests.current.cancel();
+        return queryClient.fetchQuery({ queryKey: conversationKeys.window(conversationId, displayTarget),
+          queryFn: ({ signal: querySignal }) => readConversationWindowWhenReady(conversationId, windowRequest(displayTarget,
+            signal ? AbortSignal.any([signal, querySignal]) : querySignal)), staleTime: 0 });
+      }
+      const result = await readingRequests.current.read(windowRequest(displayTarget, signal), (id, request) => queryClient.fetchQuery({
+        queryKey: conversationKeys.window(id, normalizeWindowTarget(request)),
+        queryFn: () => readConversationWindowWhenReady(id, request), staleTime: 0,
+      }));
+      if (result.status !== 'readable') {
+        if (result.status === 'failed') throw result.error;
+        if (result.status === 'position-space-changed') throw new ApiError('Source position space changed.', 409, 'position_space_changed');
+        throw new CancelledError();
+      }
+      queryClient.removeQueries({ queryKey: conversationKeys.window(conversationId, displayTarget), exact: true, type: 'inactive' });
+      return result.window;
+    }, undefined, operation, signal, replacementCommand);
+  }, [conversationId, readAndReconcileWindow, queryClient]);
 
   const hydrateConversationDetails = useCallback(async (
     sources: readonly { blockId: string; position?: number; detailsLoaded?: boolean }[],
+    signal?: AbortSignal,
   ): Promise<void> => {
     const aggregateKey = conversationKeys.aggregate(conversationId);
     const aggregateAtStart = queryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
@@ -1452,16 +1476,19 @@ export function ConversationDetail({
     const requested = [...new Map(sources
       .filter((source) => source.detailsLoaded === false && Number.isSafeInteger(source.position))
       .map((source) => [source.position!, source])).values()];
-    await Promise.all(requested.map(async (source) => {
-      const target = normalizeWindowTarget({ position: source.position!, limit: 1 });
-      const incoming = await queryClient.fetchQuery({
-        queryKey: conversationKeys.window(conversationId, target),
-        queryFn: ({ signal }) => readConversationWindowWhenReady(
-          conversationId,
-          windowRequest({ ...target, expected_position_space_id: aggregateAtStart.position_space_id ?? undefined }, signal),
-        ),
-        staleTime: 0,
-      });
+    for (const source of requested) {
+      if (signal?.aborted || selectionRef.current.generation !== selectionGeneration) throw new CancelledError();
+      const target = normalizeWindowTarget({ position: source.position!, limit: 1, expected_position_space_id: aggregateAtStart.position_space_id ?? undefined });
+      if (!aggregateAtStart.position_space_id) throw new ApiError('Source position space unavailable', 409, 'source_unavailable');
+      readingRequests.current.select(conversationId, aggregateAtStart.position_space_id);
+      const result = await readingRequests.current.read(windowRequest(target, signal), (id, request) => queryClient.fetchQuery({
+        queryKey: conversationKeys.window(id, normalizeWindowTarget(request)),
+        queryFn: () => readConversationWindowWhenReady(id, request), staleTime: 0,
+      }));
+      if (result.status === 'failed') throw result.error;
+      if (result.status !== 'readable') throw new ApiError(`Detail read: ${result.status}`, 409, result.status);
+      if (signal?.aborted || selectionRef.current.generation !== selectionGeneration) throw new CancelledError();
+      const incoming = result.window;
       queryClient.removeQueries({ queryKey: conversationKeys.window(conversationId, target), exact: true, type: 'inactive' });
       const current = queryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
       if (!current) return;
@@ -1478,8 +1505,8 @@ export function ConversationDetail({
         ...incoming,
         blocks: incoming.blocks.map((block) => ({ ...block, details_loaded: true })),
       }));
-    }));
-  }, [conversationId, conversationRequestKey, queryClient]);
+    }
+  }, [conversationId, conversationRequestKey, queryClient, selectionGeneration]);
   const handleExpandConversationDetails = useCallback(async (
     sources: readonly { blockId: string; position?: number; detailsLoaded?: boolean }[],
   ) => {
@@ -1545,7 +1572,7 @@ export function ConversationDetail({
   const loadTranscriptEdge = useCallback(async (direction: 'older' | 'newer'): Promise<ConversationHistoryLoadResult> => {
     const aggregate = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversationId));
     if (!aggregate || edgeLoading || !transcriptLive) return 'busy';
-    const interval = direction === 'older' ? aggregate.loaded_intervals[0] : aggregate.loaded_intervals.at(-1);
+    const interval = aggregate.active_window;
     if (!interval) {
       const failure = conversationLoadFailure(
         new Error('Chat cannot find a loaded history interval to continue from.'),
@@ -1571,9 +1598,9 @@ export function ConversationDetail({
     setNavigationError(null);
     historyRetryRef.current = { kind: 'edge', direction };
     try {
-      await fetchAndReconcileWindow(normalizeWindowTarget({ position }));
+      await fetchAndReconcileWindow(normalizeWindowTarget({ position, expected_position_space_id: aggregate.position_space_id ?? undefined }), undefined, direction === 'older' ? 'extend-start' : 'extend-end');
       const updated = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversationId));
-      const nextInterval = direction === 'older' ? updated?.loaded_intervals[0] : updated?.loaded_intervals.at(-1);
+      const nextInterval = updated?.active_window;
       const advanced = direction === 'older'
         ? Boolean(nextInterval && nextInterval.start < interval.start)
         : Boolean(nextInterval && nextInterval.end > interval.end);
@@ -1593,6 +1620,7 @@ export function ConversationDetail({
     position: number,
     limit = 500,
     signal?: AbortSignal,
+    replacementCommand?: ConversationNavigationCommand,
   ): Promise<ConversationHistoryLoadResult> => {
     const aggregate = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversationId));
     if (!aggregate || !transcriptLive || windowRefreshing) return 'busy';
@@ -1601,14 +1629,14 @@ export function ConversationDetail({
       if (failure && selectionRef.current.generation === selectionGeneration) setNavigationError(failure);
       return 'failed';
     }
-    if (aggregate.loaded_intervals.some((interval) => position >= interval.start && position <= interval.end)) {
+    if (aggregate.active_window && position >= aggregate.active_window.start && position <= aggregate.active_window.end) {
       historyRetryRef.current = null;
       return 'covered';
     }
     setNavigationError(null);
     historyRetryRef.current = { kind: 'around', position };
     try {
-      await fetchAndReconcileWindow(normalizeWindowTarget({ position, limit }), signal);
+      await fetchAndReconcileWindow(normalizeWindowTarget({ position, limit, expected_position_space_id: aggregate.position_space_id ?? undefined }), signal, 'replace', replacementCommand);
       const updated = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversationId));
       if (!updated?.loaded_intervals.some((interval) => position >= interval.start && position <= interval.end)) {
         throw new Error(`Conversation history did not include requested position ${position}.`);
@@ -1629,10 +1657,25 @@ export function ConversationDetail({
     if (!aggregate) return undefined;
     return {
       conversationId: aggregate.conversation.id,
+      positionSpaceId: aggregate.position_space_id,
+      command: aggregate.reading_command,
+      navigationPending: handledAnchorKeyRef.current !== incomingAnchorKey,
+      prepareDetails: hydrateConversationDetails,
+      activeWindow: aggregate.active_window,
+      protect: regions => { protectedReading.current = regions; },
+      cancelNavigation: () => {
+        handledAnchorKeyRef.current = incomingAnchorKey;
+        navigationRead.current?.abort();
+        if (windowQuery.isFetching) void queryClient.cancelQueries({ queryKey: conversationRequestKey, exact: true });
+      },
+      replaceAround: async (target, signal, token) => {
+        if (target.positionSpaceId !== aggregate.position_space_id) return 'position-space-changed';
+        return loadTranscriptAround(target.position, 500, signal, token ? { key: token, target, kind: 'position', blockId: null, turnId: null, smooth: false } : undefined);
+      },
       sourceVersionId: aggregate.source_version_id,
       historyLoading: edgeLoading !== null,
       total: aggregate.total,
-      structure: aggregate.structure,
+      readingContext: aggregate.readingContext,
       loadedIntervals: aggregate.loaded_intervals,
       hasOlder: !aggregate.start_reached,
       hasNewer: !aggregate.end_reached,
@@ -1641,7 +1684,7 @@ export function ConversationDetail({
       loadNewer: () => loadTranscriptEdge('newer'),
       loadAround: loadTranscriptAround,
     };
-  }, [aggregateQuery.data, loadTranscriptAround, loadTranscriptEdge]);
+  }, [aggregateQuery.data, loadTranscriptAround, loadTranscriptEdge, hydrateConversationDetails, conversationRequestKey, windowQuery.isFetching, queryClient, incomingAnchorKey]);
 
   useEffect(() => {
     if (notFound) onUnavailable?.(conversationId);
@@ -1664,8 +1707,11 @@ export function ConversationDetail({
     updateRightSidebarState({ open: true });
   }, [conversationId, updateRightSidebarState]);
 
+  const restoredScope = useRef<string | null>(null);
   useEffect(() => {
-    setEffectiveAnchor(anchor);
+    const initialSelection = restoredScope.current !== conversationId;
+    restoredScope.current = conversationId;
+    setEffectiveAnchor(anchor ?? (initialSelection && restoredAnchor ? { position: restoredAnchor.position, expected_position_space_id: restoredAnchor.positionSpaceId } : null));
     handledAnchorKeyRef.current = null;
     setNavigationTarget(null);
     setNavigationError(null);
@@ -1716,15 +1762,19 @@ export function ConversationDetail({
         current,
       ));
     }
-    if (effectiveAnchor && handledAnchorKeyRef.current !== incomingAnchorKey) {
+    if (handledAnchorKeyRef.current !== incomingAnchorKey) {
       handledAnchorKeyRef.current = incomingAnchorKey;
-      setNavigationTarget({
-        key: `${conversationId}:target:${incomingAnchorKey}`,
-        kind: payload.target.kind,
-        turnId: payload.target.turn_id,
-        blockId: payload.target.block_id,
-        smooth: false,
-      });
+      const current = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversationId));
+      if (!current?.reading_command) {
+        if (current && (current.position_space_id !== payload.position_space_id || current.publication_revision !== payload.publication_revision)) {
+          void windowQuery.refetch();
+        } else {
+          void readAndReconcileWindow(windowTarget, () => Promise.resolve(payload), undefined, 'replace').catch(cause => {
+            const failure = conversationLoadFailure(cause, true, 'target');
+            if (failure && selectionRef.current.generation === selectionGeneration) setNavigationError(failure);
+          });
+        }
+      }
     }
     setNavigationError((current) => {
       const operation = current?.operation === 'source-unavailable' ? current.retryOperation : current?.operation;
@@ -1874,36 +1924,35 @@ export function ConversationDetail({
   const handleJumpToLatest = useCallback(async () => {
     setJumpingToLatest(true);
     setNavigationError(null);
+    navigationRead.current?.abort();
+    const controller = new AbortController();
+    navigationRead.current = controller;
     const latestTarget = normalizeWindowTarget({ target: 'latest' });
     try {
-      let latest = await fetchAndReconcileWindow(latestTarget);
+      let latest = await fetchAndReconcileWindow(latestTarget, controller.signal, 'replace');
       let observedRevision = queryClient.getQueryData<ConversationTranscriptData>(
         conversationKeys.aggregate(conversationId),
       )?.revision ?? latest.revision;
       while (latest.revision < observedRevision) {
         if (selectionRef.current.generation !== selectionGeneration) return;
-        latest = await fetchAndReconcileWindow(latestTarget);
+        latest = await fetchAndReconcileWindow(latestTarget, controller.signal, 'replace');
         observedRevision = queryClient.getQueryData<ConversationTranscriptData>(
           conversationKeys.aggregate(conversationId),
         )?.revision ?? latest.revision;
       }
       if (selectionRef.current.generation !== selectionGeneration) return;
       setEffectiveAnchor(null);
+      if (windowTarget.kind === 'initial') queryClient.setQueryData(conversationRequestKey, latest);
       replaceRouteHash(conversationLatestHref(window.location.hash, conversationId));
-      setNavigationTarget({
-        key: `${conversationId}:latest:${latest.source_version_id ?? 'legacy'}:${latest.revision}`,
-        kind: 'latest',
-        turnId: latest.target.turn_id,
-        blockId: latest.target.block_id,
-        smooth: true,
-      });
+
     } catch (err) {
+      if (controller.signal.aborted) return;
       const failure = conversationLoadFailure(err, true, 'target');
       if (failure && selectionRef.current.generation === selectionGeneration) setNavigationError(failure);
     } finally {
       if (selectionRef.current.generation === selectionGeneration) setJumpingToLatest(false);
     }
-  }, [conversationId, fetchAndReconcileWindow, queryClient, selectionGeneration]);
+  }, [conversationId, fetchAndReconcileWindow, queryClient, selectionGeneration, windowTarget.kind, conversationRequestKey]);
 
   // Toast auto-dismiss
   useEffect(() => {
@@ -2387,7 +2436,7 @@ export function ConversationDetail({
     <DetailPaneNotice
       severity="error"
       density="compact"
-      actions={error.retryable ? (
+      actions={error.code === 'position_space_changed' ? <button type="button" className="btn btn--ghost btn--sm" onClick={() => { historyRetryRef.current = null; void handleJumpToLatest(); }}>Open current source</button> : error.retryable ? (
         <>
           {error.retryable ? (
             <button type="button" className="btn btn--ghost btn--sm" disabled={loading || edgeLoading !== null || exportLoading} onClick={retryLoad}>Retry</button>
@@ -2399,9 +2448,12 @@ export function ConversationDetail({
     </DetailPaneNotice>
   ) : undefined;
 
-  const handleNavigationResult = useCallback((result: { key: string; status: 'revealed' | 'not-renderable' }) => {
-    if (result.key !== navigationTarget?.key) return;
-    if (result.status === 'revealed') {
+  const handleNavigationResult = useCallback((result: ConversationNavigationResult) => {
+    const aggregateKey = conversationKeys.aggregate(conversationId);
+    const aggregate = queryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
+    if (result.key !== navigationTarget?.key && result.key !== aggregate?.reading_command?.key) return;
+    if (aggregate?.reading_command?.key === result.key) queryClient.setQueryData(aggregateKey, { ...aggregate, reading_command: null });
+    if (result.status === 'revealed' || result.status === 'cancelled') {
       setNavigationError((current) => current?.operation === 'target' ? null : current);
       setNavigationTarget((current) => current?.key === result.key ? null : current);
       return;
@@ -2409,10 +2461,10 @@ export function ConversationDetail({
     setNavigationError({
       operation: 'target',
       code: 'target_not_renderable',
-      message: 'The requested transcript target was loaded but has no readable rendered content.',
+      message: `Reading target: ${result.status}.`,
       retryable: false,
     });
-  }, [navigationTarget?.key]);
+  }, [navigationTarget?.key, conversationId, queryClient]);
 
   if (loading && !conversation && !error) {
     return (

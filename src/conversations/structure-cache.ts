@@ -1,3 +1,4 @@
+import { nextReadingContext, type ReadingContextEntry, type ReadingContextState } from './reading-context.js';
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -218,7 +219,15 @@ export class ConversationStructureCache {
         sub_block_ordinal      INTEGER NOT NULL,
         model                  TEXT,
         client_intent_id       TEXT,
+        activity_owner         INTEGER,
+        action_start           INTEGER NOT NULL,
         PRIMARY KEY (cache_conversation_id, position)
+      ) WITHOUT ROWID;
+      CREATE TABLE IF NOT EXISTS cache_reading_scopes (
+        cache_conversation_id INTEGER NOT NULL REFERENCES cache_conversations(cache_id) ON DELETE CASCADE,
+        start INTEGER NOT NULL,
+        end INTEGER NOT NULL,
+        PRIMARY KEY (cache_conversation_id, start)
       ) WITHOUT ROWID;
       CREATE TABLE IF NOT EXISTS cache_tool_links (
         cache_conversation_id INTEGER NOT NULL
@@ -237,7 +246,7 @@ export class ConversationStructureCache {
   }
 
   clear(): void {
-    this.cache.exec("DELETE FROM cache_tool_links; DELETE FROM cache_blocks; DELETE FROM cache_conversations");
+    this.cache.exec("DELETE FROM cache_reading_scopes; DELETE FROM cache_tool_links; DELETE FROM cache_blocks; DELETE FROM cache_conversations");
   }
 
   private cacheConversation(manifest: SourceManifestRow, mode: "replace" | "append"): number {
@@ -262,6 +271,7 @@ export class ConversationStructureCache {
     if (mode === "replace") {
       this.cache.prepare("DELETE FROM cache_tool_links WHERE cache_conversation_id = ?").run(existing.cache_id);
       this.cache.prepare("DELETE FROM cache_blocks WHERE cache_conversation_id = ?").run(existing.cache_id);
+      this.cache.prepare("DELETE FROM cache_reading_scopes WHERE cache_conversation_id = ?").run(existing.cache_id);
     }
     this.cache.prepare(`
       UPDATE cache_conversations
@@ -290,8 +300,8 @@ export class ConversationStructureCache {
       const insert = this.cache.prepare(`
         INSERT INTO cache_blocks (
           cache_conversation_id, position, type_code, role_code, parent_position,
-          record_offset, record_length, record_ordinal, sub_block_ordinal, model, client_intent_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          record_offset, record_length, record_ordinal, sub_block_ordinal, model, client_intent_id, activity_owner, action_start
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       if (priorVersionId) {
         const prior = this.cachedConversation(manifest.conversation_id, priorVersionId, {
@@ -300,15 +310,28 @@ export class ConversationStructureCache {
         });
         if (!prior) throw new Error("append structure generation is missing");
         this.cache.prepare(`INSERT INTO cache_blocks SELECT ?, position, type_code, role_code, parent_position,
-          record_offset, record_length, record_ordinal, sub_block_ordinal, model, client_intent_id FROM cache_blocks WHERE cache_conversation_id = ?`)
+          record_offset, record_length, record_ordinal, sub_block_ordinal, model, client_intent_id, activity_owner, action_start FROM cache_blocks WHERE cache_conversation_id = ?`)
           .run(cacheId, prior.cache_id);
+        this.cache.prepare("INSERT INTO cache_reading_scopes SELECT ?, start, end FROM cache_reading_scopes WHERE cache_conversation_id = ?").run(cacheId, prior.cache_id);
         this.cache.prepare("INSERT INTO cache_tool_links SELECT ?, tool_key, position FROM cache_tool_links WHERE cache_conversation_id = ?")
           .run(cacheId, prior.cache_id);
       }
+      const previousRow = this.cache.prepare(`SELECT position, type_code, role_code, activity_owner, action_start
+        FROM cache_blocks WHERE cache_conversation_id = ? ORDER BY position DESC LIMIT 1`).get(cacheId) as
+        { position: number; type_code: number; role_code: number; activity_owner: number | null; action_start: number } | undefined;
+      let previous: ReadingContextState | null = previousRow ? { position: previousRow.position,
+        type: decodeType(previousRow.type_code), role: decodeRole(previousRow.role_code), activity_owner: previousRow.activity_owner,
+        action_scope: { start: previousRow.action_start, end: previousRow.position } } : null;
+      const parent = this.cache.prepare('SELECT activity_owner FROM cache_blocks WHERE cache_conversation_id = ? AND position = ?');
+      const scope = this.cache.prepare(`INSERT INTO cache_reading_scopes VALUES (?, ?, ?)
+        ON CONFLICT(cache_conversation_id, start) DO UPDATE SET end = excluded.end`);
       for (const row of rows) {
+        const parentRow = row.parentPosition === null ? null : parent.get(cacheId, row.parentPosition) as { activity_owner: number | null } | undefined;
+        previous = nextReadingContext(row, previous, parentRow?.activity_owner ?? null);
+        scope.run(cacheId, previous.action_scope.start, row.position);
         insert.run(
           cacheId, row.position, blockTypeCode(row.type), roleCode(row.role), row.parentPosition,
-          row.recordOffset, row.recordLength, row.recordOrdinal, row.subBlockOrdinal, row.model ?? null, row.clientIntentId ?? null,
+          row.recordOffset, row.recordLength, row.recordOrdinal, row.subBlockOrdinal, row.model ?? null, row.clientIntentId ?? null, previous.activity_owner, previous.action_scope.start,
         );
       }
       const count = this.cache.prepare("SELECT COUNT(*) AS count, MIN(position) AS first, MAX(position) AS last FROM cache_blocks WHERE cache_conversation_id = ?")
@@ -424,6 +447,17 @@ export class ConversationStructureCache {
       offset: options.offset,
       limit: options.limit,
     };
+  }
+
+  readReadingContext(conversationId: string, sourceVersionId: string, start: number, end: number, epochs?: ConversationSourceEpochs): ReadingContextEntry[] | null {
+    const conversation = this.cachedConversation(conversationId, sourceVersionId, epochs);
+    if (!conversation) return null;
+    const rows = this.cache.prepare(`SELECT b.position, b.activity_owner, s.start, s.end
+      FROM cache_blocks b JOIN cache_reading_scopes s
+        ON s.cache_conversation_id = b.cache_conversation_id AND s.start = b.action_start
+      WHERE b.cache_conversation_id = ? AND b.position >= ? AND b.position <= ? ORDER BY b.position`)
+      .all(conversation.cache_id, start, end) as Array<{ position: number; activity_owner: number | null; start: number; end: number }>;
+    return rows.map(row => ({ position: row.position, activity_owner: row.activity_owner, action_scope: { start: row.start, end: row.end } }));
   }
 
   readStructure(conversationId: string, sourceVersionId: string, epochs?: ConversationSourceEpochs): Array<{
