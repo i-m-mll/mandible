@@ -3,15 +3,17 @@
 // Each tool is a thin wrapper around a Mandible HTTP API call via client.ts.
 // The MCP server registers these as tools that Claude Code can invoke.
 
-import { execSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import * as z from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import * as client from "./client.js";
+import type { ChannelClient } from "./client.js";
 import type {
   InboxResponse,
   InboxWorkUnit,
   IssueRepoSummary,
 } from "./types.js";
+const execute = promisify(execFile);
 
 /**
  * Register all Mandible tools on the given MCP server.
@@ -20,51 +22,17 @@ import type {
  * connection, discovered at startup from the environment or passed by
  * the spawning process.
  *
- * Bug: 0b454df — on first tool invocation, register the session with
- * Mandible (if not already registered at startup). Subsequent invocations
+ * Session registration belongs to channel connection and reconnection; calls
  * record tool usage for liveness tracking.
  */
 export function registerTools(
   server: McpServer,
   sessionId: string | null,
+  client: ChannelClient,
+  cwd = process.cwd(),
 ): void {
-  // Bug: 0b454df — track whether we've registered with Mandible
-  let channelRegistered = false;
-
-  /** Ensure channel session is registered and record a tool call. */
   async function ensureChannelRegistered(toolName: string): Promise<void> {
     if (!sessionId) return;
-    if (!channelRegistered) {
-      try {
-        const cwd = process.env.CLAUDE_CWD ?? process.cwd();
-        // Bug: 73e0adf — detect branch so channel registration includes it
-        let branch: string | null = null;
-        try {
-          branch = execSync("git rev-parse --abbrev-ref HEAD", {
-            cwd,
-            encoding: "utf8",
-            stdio: ["ignore", "pipe", "ignore"],
-          }).trim() || null;
-        } catch {
-          // Not in a git repo — branch stays null
-        }
-        const registration = await client.registerSession({
-          id: sessionId,
-          status: "active",
-          cwd,
-          branch,
-        });
-        // Issue 499c148 — surface a client-token / session-binding mismatch as
-        // soon as the session touches the daemon.
-        const warning = registration?.identity_warning as { message?: string } | null | undefined;
-        if (warning?.message) {
-          process.stderr.write(`Mandible identity warning: ${warning.message}\n`);
-        }
-        channelRegistered = true;
-      } catch {
-        // Best effort — Mandible may not be running
-      }
-    }
     // Record tool call for liveness tracking
     try {
       await client.recordChannelToolCall(sessionId, toolName);
@@ -203,8 +171,8 @@ export function registerTools(
         // `mandible auth merge <head> --into <base>`, so emit the canonical
         // form whenever the protected base can be resolved here. The daemon
         // re-validates the base (protected, existing, ancestry) regardless.
-        const cwd = args.cwd ?? process.env.CLAUDE_CWD ?? process.cwd();
-        const base = detectProtectedBranch(cwd);
+        const authCwd = args.cwd ?? cwd;
+        const base = await detectProtectedBranch(authCwd);
         const canonical =
           base !== null && SAFE_BRANCH_RE.test(args.branch) && SAFE_BRANCH_RE.test(base);
         // When the base cannot be resolved pre-submission, fall back to the
@@ -222,7 +190,7 @@ export function registerTools(
           issue_references: args.issue_ids ?? null,
           issue_closures: args.closes_issue_ids ?? null,
           issues: args.closes_issue_ids ?? null,
-          cwd,
+          cwd: authCwd,
           // Issue 4720024 — the daemon refuses merge requests without a
           // canonical change message and its verification text.
           canonical_message: true,
@@ -373,12 +341,12 @@ const SAFE_BRANCH_RE = /^[A-Za-z0-9._/-]+$/;
  * Returns null when the cwd is not a usable git repo, letting the caller fall
  * back to the legacy command shape (normalized server-side at submission).
  */
-function detectProtectedBranch(cwd: string): string | null {
-  const hasLocalBranch = (branch: string): boolean => {
+async function detectProtectedBranch(cwd: string): Promise<string | null> {
+  const hasLocalBranch = async (branch: string): Promise<boolean> => {
     try {
-      execSync(`git show-ref --verify --quiet refs/heads/${branch}`, {
+      await execute("git", ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], {
         cwd,
-        stdio: ["ignore", "ignore", "ignore"],
+        timeout: 1_500,
       });
       return true;
     } catch {
@@ -386,8 +354,8 @@ function detectProtectedBranch(cwd: string): string | null {
     }
   };
   try {
-    if (hasLocalBranch("develop")) return "develop";
-    if (hasLocalBranch("main")) return "main";
+    if (await hasLocalBranch("develop")) return "develop";
+    if (await hasLocalBranch("main")) return "main";
     return null;
   } catch {
     return null;
