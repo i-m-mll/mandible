@@ -1,3 +1,4 @@
+import { displayIssueId } from "./issue-graph.js";
 import type { Db } from "../db.js";
 import { tableExists } from "../db-introspection.js";
 import {
@@ -203,7 +204,7 @@ export function buildLedgerIssueDetailProjectionWithProfile(
 
   const projection: LedgerIssueDetailProjection = {
     id: issue.id,
-    display_id: displayIssueId(issue, aliases),
+    display_id: displayIssueId(issue),
     project: measure("project", () => getProjectInfo(db, issue.project_id)),
     title: issue.title,
     body: issue.body,
@@ -1097,12 +1098,9 @@ function getIssueSummary(db: Db, issueId: string): LedgerIssueSummaryRef | null 
   const labels = activeLabels(db.prepare(
     "SELECT * FROM ledger_labels WHERE issue_id = ? ORDER BY label",
   ).all(issueId) as LedgerLabel[]);
-  const aliases = db.prepare(
-    "SELECT * FROM ledger_issue_aliases WHERE issue_id = ? ORDER BY is_primary DESC, alias_kind, alias",
-  ).all(issueId) as LedgerIssueAlias[];
   return {
     id: row.id,
-    display_id: displayIssueId(row, aliases),
+    display_id: displayIssueId(row),
     project_id: row.project_id,
     project_ref: projectRouteRef(db, row.project_id),
     title: row.title,
@@ -1174,10 +1172,6 @@ function mapAlias(alias: LedgerIssueAlias): LedgerIssueDetailAlias {
     source: alias.source,
     primary: alias.is_primary === 1,
   };
-}
-
-function displayIssueId(issue: Pick<LedgerIssue, "id" | "short_id">, _aliases: LedgerIssueAlias[]): string {
-  return issue.short_id || issue.id.slice(0, 7);
 }
 
 const DIRECT_NAV_SCHEMES = new Set(["http", "https", "mailto"]);

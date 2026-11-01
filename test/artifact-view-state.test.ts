@@ -491,10 +491,10 @@ describe('ArtifactsView', () => {
     await waitFor(() => expect(selectedTitle()?.textContent).toBe('hash-self-v1.md'));
     fireEvent.click(screen.getByRole('button', { name: /hash-self-v2\.md/ }));
     await waitFor(() => expect(selectedTitle()?.textContent).toBe('hash-self-v2.md'));
+    expect(new URLSearchParams(window.location.hash.split('?')[1]).get('series')).toBe(secondSeries.summary.ref);
 
-    rerender(h(ArtifactsView, { initialSeriesRef: secondSeries.summary.ref }));
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      rerender(h(ArtifactsView, { initialSeriesRef: secondSeries.summary.ref }));
     });
 
     expect(selectedTitle()?.textContent).toBe('hash-self-v2.md');
