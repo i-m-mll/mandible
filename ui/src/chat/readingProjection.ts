@@ -28,6 +28,7 @@ export type ReadingMembership = {
   memberKey: string;
   position: number | null;
   disclosurePath: readonly string[];
+  detailSources: readonly PersistedBlockSource[];
   summaryRowKey?: string;
   subtarget: string | null;
 };
@@ -141,7 +142,7 @@ export function projectReadingRows(input: {
   const register = (entry: typeof prepared[number], row: ReadingRow, disclosurePath: string[], summaryRowKey?: string) => {
     const positions = [entry.fragment.position, ...entry.fragment.pairedSourcePositions].filter((value): value is number => value !== undefined);
     const member: ReadingMembership = { rowKey: row.key, memberKey: entry.key, position: entry.fragment.position ?? null,
-      disclosurePath, summaryRowKey, subtarget: entry.fragment.position === undefined ? null : sourceSubtarget(entry.fragment.position) };
+      disclosurePath, detailSources: entry.sources, summaryRowKey, subtarget: entry.fragment.position === undefined ? null : sourceSubtarget(entry.fragment.position) };
     viewMembership.set(entry.key, member);
     // The first fragment owns the default source/native reveal; later fragments have their own view identity.
     if (!viewMembership.has(entry.identity)) viewMembership.set(entry.identity, member);
@@ -162,6 +163,7 @@ export function projectReadingRows(input: {
     let canonicalRun = first.canonicalRun;
     let next = index + 1;
     while (next < prepared.length && prepared[next].node.kind === 'activity'
+      && prepared[next].node.entity === first.node.entity
       && (!canonicalRun || !prepared[next].canonicalRun || prepared[next].canonicalRun?.id === canonicalRun.id)) {
       canonicalRun ??= prepared[next].canonicalRun;
       entries.push(prepared[next++]);
