@@ -9,6 +9,7 @@ import { setupOperator } from "../src/users/store.js";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 import { nativeSearchSource } from "./helpers/search-native-source.js";
+import { settleConversationSearch, type SearchObserver } from "./helpers/settle-conversation-search.js";
 import { setDb, type Db } from "../src/db.js";
 import { Router } from "../src/server.js";
 import { registerConversationRoutes } from "../src/routes/conversations.js";
@@ -23,28 +24,8 @@ async function conversation(id: string, content = "needle"): Promise<string> {
   db.prepare(`INSERT INTO conversations(id,source,source_path,source_hash,source_mtime,title,started_at,session_id,block_count,tags,created_at,updated_at) VALUES (?,'codex',?,'hash',1,?,'2026-10-01',?,1,'[]','2026-10-01','2026-10-01')`).run(id, path.join(root, id), id, id);
   return nativeSearchSource(db, root, id, content);
 }
-async function finish(router: Router, url: string, observer?: {
-  search_id: string;
-  observer_token: string;
-}) {
-  const target = new URL(url, "http://localhost");
-  if (observer) {
-    target.searchParams.set("search_id", observer.search_id);
-    target.searchParams.set("observer_token", observer.observer_token);
-  }
-  let result = await router.invoke({ method: "GET", url: target.pathname + target.search });
-  const end = Date.now() + 10000;
-  while (result.status === 202 && Date.now() < end) {
-    const body = result.body as {
-      search_id: string;
-      observer_token: string;
-    };
-    target.searchParams.set("search_id", body.search_id);
-    target.searchParams.set("observer_token", body.observer_token);
-    await new Promise<void>(resolve => setImmediate(resolve));
-    result = await router.invoke({ method: "GET", url: target.pathname + target.search });
-  }
-  return result;
+function finish(router: Router, url: string, observer?: SearchObserver) {
+  return settleConversationSearch(router, { method: "GET", url }, observer);
 }
 it("admits through real HTTP promptly before worker startup and returns exact immutable cursor partitions", async () => {
   for (const id of ["a", "b", "c"])
