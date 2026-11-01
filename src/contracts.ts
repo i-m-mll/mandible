@@ -245,7 +245,18 @@ export const AUTH_RESOLVED_PAYLOAD = z.object({
   head_branch: z.string().nullable(),
   target_session_id: z.string().min(1).nullable(),
   conversation_id: z.string().min(1).nullable(),
-}).passthrough();
+}).passthrough().superRefine((payload, ctx) => {
+  const outcome = computeAuthRequestOutcome(payload.status);
+  if (outcome === null) {
+    ctx.addIssue({ code: "custom", path: ["status"], message: "Auth resolution requires a terminal status" });
+  } else if (payload.outcome !== outcome) {
+    ctx.addIssue({ code: "custom", path: ["outcome"], message: "Auth outcome must match its status" });
+  }
+  if ((payload.status === "completed" || payload.status === "failed") && payload.exit_code !== null
+    && authExecutionStatus(payload.exit_code) !== payload.status) {
+    ctx.addIssue({ code: "custom", path: ["exit_code"], message: "Auth execution status must match its exit code" });
+  }
+});
 export type AuthResolvedPayload = z.infer<typeof AUTH_RESOLVED_PAYLOAD>;
 
 export const CHANNEL_EVENT_SCHEMA = z.object({
