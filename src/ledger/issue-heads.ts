@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Db } from "../db.js";
+import { ACTIVE_ISSUE_HIERARCHY_SQL } from "./issue-graph.js";
 
 export interface LedgerIssueHead {
   issue_id: string;
@@ -89,31 +90,17 @@ export function batchLedgerIssueHeads(
     `SELECT id, short_id FROM ledger_issues WHERE id IN (${sql}) AND deleted_at IS NULL`,
   ).all(bindings) as Array<{ id: string; short_id: string }>;
 
-  // One recursive closure query for every requested root at once: map each root
-  // to its transitive parent_child descendant set (including itself), following
-  // both the structured edge graph and the legacy relationship table. `UNION`
-  // makes the traversal cycle-safe and each (root, descendant) pair unique.
+  // UNION makes each (root, descendant) pair unique, including cycles and diamonds.
   const descendantsByRoot = new Map<string, string[]>();
   const allIds = new Set<string>(issueIds);
   const closureRows = db.prepare(
-    `WITH RECURSIVE subtree(root_id, issue_id) AS (
-       SELECT id, id FROM ledger_issues WHERE id IN (${sql})
+    `WITH RECURSIVE hierarchy AS (${ACTIVE_ISSUE_HIERARCHY_SQL}),
+     subtree(root_id, issue_id) AS (
+       SELECT id, id FROM ledger_issues WHERE id IN (${sql}) AND deleted_at IS NULL
        UNION
        SELECT s.root_id, edge.target_issue_id
          FROM subtree s
-         CROSS JOIN ledger_relationship_edges edge
-           ON edge.source_issue_id = s.issue_id
-          AND edge.deleted_at IS NULL
-        WHERE +edge.link_type = 'parent_child'
-          AND +edge.target_entity_type = 'issue'
-          AND edge.target_issue_id IS NOT NULL
-       UNION
-       SELECT s.root_id, rel.target_issue_id
-         FROM subtree s
-         CROSS JOIN ledger_issue_relationships rel
-           ON rel.source_issue_id = s.issue_id
-        WHERE +rel.relationship_type = 'parent_child'
-          AND rel.deleted_at IS NULL
+         JOIN hierarchy edge ON edge.source_issue_id = s.issue_id
      )
      SELECT root_id, issue_id FROM subtree`,
   ).all(bindings) as Array<{ root_id: string; issue_id: string }>;

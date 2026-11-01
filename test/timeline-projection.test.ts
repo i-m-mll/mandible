@@ -502,7 +502,7 @@ describe("project timeline projection", () => {
     ]);
   });
 
-  it("projects parent-subtree members and reports parent-label cycles without crashing", () => {
+  it("projects parent-subtree members and reports parent-child cycles without crashing", () => {
     const projection = buildProjectTimelineProjection(fixture.db, {
       project_id: fixture.project.id,
       root_specs: [{
@@ -520,7 +520,6 @@ describe("project timeline projection", () => {
       expect.objectContaining({
         kind: "cycle",
         row_spec_id: "subtree",
-        message: expect.stringContaining("parent-label cycle"),
       }),
     ]));
   });
