@@ -44,7 +44,6 @@ export type ApiList<T> = T[] | ApiListEnvelope<T> | LegacyListEnvelope<T>;
 export const DOMAIN_EVENTS = Object.freeze({
   ARTIFACT_CHANGED: "artifact:changed",
   AUTH_AUTO_APPROVE: "auth:auto-approve",
-  AUTH_COMPLETED: "auth:completed",
   AUTH_CONVERGENCE: "auth:convergence",
   AUTH_FINALIZED: "auth:finalized",
   AUTH_LIFECYCLE: "auth:lifecycle",
@@ -58,7 +57,6 @@ export const DOMAIN_EVENTS = Object.freeze({
   CHANNEL_SESSION_DISCONNECTED: "channel:session:disconnected",
   CONSOLE_ATTENTION: "console:attention",
   CONSOLE_STATUS: "console:status",
-  CONSOLE_INBOX_BADGE: "console:inbox:badge",
   CONSOLE_PERMISSION_CLEARED: "console:permission:cleared",
   CONSOLE_PERMISSION_REQUEST: "console:permission:request",
   CONSOLE_SESSION_CREATED: "console:session:created",
@@ -148,7 +146,8 @@ export const INBOX_ACKNOWLEDGED_PAYLOAD = z.object({
 export type InboxAcknowledged = z.infer<typeof INBOX_ACKNOWLEDGED_PAYLOAD>;
 
 export type EventPayload<E extends MandibleEventType> =
-  E extends typeof DOMAIN_EVENTS.SESSION_EXECUTION_UPDATED ? { provider: SessionExecutionProvider; provider_session_id: string; observation: SessionExecutionObservation }
+  E extends typeof DOMAIN_EVENTS.AUTH_RESOLVED ? AuthResolvedPayload
+  : E extends typeof DOMAIN_EVENTS.SESSION_EXECUTION_UPDATED ? { provider: SessionExecutionProvider; provider_session_id: string; observation: SessionExecutionObservation }
   : E extends typeof DOMAIN_EVENTS.SESSION_REGISTERED | typeof DOMAIN_EVENTS.SESSION_UPDATED
     | typeof DOMAIN_EVENTS.SESSION_ENDED ? import("./types.js").Session
   : E extends typeof DOMAIN_EVENTS.SESSION_CHILD_ADDED | typeof DOMAIN_EVENTS.SESSION_CHILD_ENDED
@@ -231,6 +230,30 @@ export type AuthRequestOutcome =
   | "dismissed"
   | "expired"
   | null;
+
+/** Fields consumed by the channel; other resolution evidence remains on the event. */
+export const AUTH_RESOLVED_PAYLOAD = z.object({
+  request_id: z.string().min(1),
+  status: z.enum(AUTH_REQUEST_STATUSES),
+  outcome: z.custom<AuthRequestOutcome>(value => AUTH_REQUEST_STATUSES.some(status => computeAuthRequestOutcome(status) === value)),
+  exit_code: z.number().int().nullable(),
+  failure_reason: z.string().nullable(),
+  error: z.string().nullable(),
+  error_output: z.string().nullable(),
+  resolved_at: z.number().nullable(),
+  title: z.string().nullable(),
+  head_branch: z.string().nullable(),
+  target_session_id: z.string().min(1).nullable(),
+  conversation_id: z.string().min(1).nullable(),
+}).passthrough();
+export type AuthResolvedPayload = z.infer<typeof AUTH_RESOLVED_PAYLOAD>;
+
+export const CHANNEL_EVENT_SCHEMA = z.object({
+  type: z.literal(DOMAIN_EVENTS.AUTH_RESOLVED),
+  data: AUTH_RESOLVED_PAYLOAD,
+  timestamp: z.string().optional(),
+});
+export type ChannelEvent = z.infer<typeof CHANNEL_EVENT_SCHEMA>;
 
 export type AuthDependencyReadiness =
   | "ready"
@@ -2473,6 +2496,7 @@ export function isDomainEventType(value: unknown): value is MandibleEventType {
 
 const scopedChange = (key: string) => z.object({ [key]: z.string().min(1) }).passthrough();
 const eventPayloadSchemas = new Map<MandibleEventType, z.ZodType>([
+  [DOMAIN_EVENTS.AUTH_RESOLVED, AUTH_RESOLVED_PAYLOAD],
   [DOMAIN_EVENTS.HEARTBEAT, z.object({ timestamp: z.number() })],
   [DOMAIN_EVENTS.SESSION_EXECUTION_UPDATED, z.object({ provider: z.enum(["claude", "codex"]), provider_session_id: z.string().min(1), observation: SESSION_EXECUTION_OBSERVATION_SCHEMA })],
   [DOMAIN_EVENTS.CONSOLE_STATUS, z.object({ console_session_id: z.string().min(1), kind: z.enum(["started", "stopped", "exit"]), status: z.enum(["running", "stopped", "crashed"]), exitCode: z.number().optional(), signal: z.union([z.string(), z.number()]).nullable().optional(), started_at: z.number().nullable().optional(), stopped_at: z.number().nullable().optional() })],

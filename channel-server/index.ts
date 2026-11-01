@@ -9,7 +9,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from "@model
 import { channelTransportHeaders, request } from "./transport.js";
 import { resolveBaseUrl, resolveTransport } from "./base-url.js";
 
-type Catalog = { protocol: number; instructions: string; tools: Tool[] };
+type Catalog = { protocol: number; event_topics: string[]; instructions: string; tools: Tool[] };
 type Rendered = { notifications: Array<{ method: string; params: Record<string, unknown> }>; delivered: string[] };
 
 export async function main(): Promise<void> {
@@ -30,7 +30,8 @@ export async function main(): Promise<void> {
   const log = (message: string) => process.stderr.write(`Mandible channel: ${message}\n`);
   const catalog = async () => {
     const value = await request<Catalog>("POST", "/api/channel/catalog", ctx);
-    if (value.protocol !== 1) throw new Error("Incompatible daemon channel protocol; update Mandible and reconnect /mcp.");
+    if (value.protocol !== 1 || !Array.isArray(value.event_topics) || value.event_topics.length === 0
+      || !value.event_topics.every(topic => typeof topic === "string" && topic.length > 0)) throw new Error("Incompatible daemon channel protocol; update Mandible and reconnect /mcp.");
     return value;
   };
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: (await catalog()).tools }));
@@ -53,10 +54,15 @@ export async function main(): Promise<void> {
   const enqueue = (event?: unknown) => {
     delivery = delivery.then(() => render(event)).catch(error => { log(`notification delivery deferred: ${String(error)}`); });
   };
-  function connectEvents() {
+  async function connectEvents() {
+    if (stopped) return;
+    let topics: string[];
+    try { topics = (await catalog()).event_topics; }
+    catch (error) { log(`event subscription deferred: ${String(error)}`); schedule(); return; }
     if (stopped) return;
     const transport = resolveTransport();
-    const url = new URL("/api/events?topic=auth:,inbox:,console:inbox:,work_unit:", resolveBaseUrl());
+    const url = new URL("/api/events", resolveBaseUrl());
+    url.searchParams.set("topic", topics.join(","));
     connection = (transport.kind === "http" && url.protocol === "https:" ? https : http).get({
       hostname: url.hostname, port: url.port, path: url.pathname + url.search,
       ...(transport.kind === "socket" ? { socketPath: transport.socketPath } : {}), headers: channelTransportHeaders(transport.kind),

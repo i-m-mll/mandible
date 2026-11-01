@@ -1,4 +1,5 @@
 import * as z from "zod";
+import { CHANNEL_EVENT_SCHEMA, type ChannelEvent } from "../contracts.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -32,7 +33,7 @@ export function registerChannelRoutes(router: Router): void {
   }
   router.post("/api/channel/catalog", (req, res) => {
     const ctx = req.body as Context;
-    res.json({ protocol: 1, instructions: INSTRUCTIONS,
+    res.json({ protocol: 1, instructions: INSTRUCTIONS, event_topics: [CHANNEL_EVENT_SCHEMA.shape.type.value],
       tools: tools(req, ctx).map(tool => ({ name: tool.name, description: tool.description,
         inputSchema: z.toJSONSchema(tool.schema, { unrepresentable: "any" }) })) });
   }, { operation: { id: "post:/api/channel/catalog", effects: ["ledger:read"], requestSchema: CHANNEL_CONTEXT_SCHEMA, reportingCategory: null }, fileRpc: "deny" });
@@ -62,7 +63,7 @@ export function registerChannelRoutes(router: Router): void {
     res.json(await tool.run(parsed.data));
   }, { operation: { id: "post:/api/channel/call", effects: ["ledger:read"], requestSchema: CHANNEL_CONTEXT_SCHEMA.extend({ name: z.string(), arguments: z.record(z.string(), z.unknown()) }), reportingCategory: null }, fileRpc: "deny" });
   router.post("/api/channel/render", async (req, res) => {
-    const body = req.body as Context & { event?: { type: string; data: unknown } };
+    const body = req.body as Context & { event?: ChannelEvent };
     const notifications: Notification[] = [];
     const delivered: string[] = [];
     const channel = (payload: { content: string; meta?: Record<string, string> }) => {
@@ -80,5 +81,5 @@ export function registerChannelRoutes(router: Router): void {
         async markDelivered(id) { delivered.push(id); }, log: message => process.stderr.write(message) });
     }
     res.json({ notifications, delivered });
-  }, { operation: { id: "post:/api/channel/render", effects: ["ledger:read"], requestSchema: CHANNEL_CONTEXT_SCHEMA.extend({ event: z.object({ type: z.string(), data: z.unknown() }).optional() }), reportingCategory: null }, fileRpc: "deny" });
+  }, { operation: { id: "post:/api/channel/render", effects: ["ledger:read"], requestSchema: CHANNEL_CONTEXT_SCHEMA.extend({ event: CHANNEL_EVENT_SCHEMA.optional() }), reportingCategory: null }, fileRpc: "deny" });
 }
