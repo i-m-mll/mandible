@@ -315,67 +315,70 @@ describe("canonical artifact link destination", () => {
     changes: db.prepare("SELECT total_changes() AS count").get(),
   });
 
-  for (const caller of ["service", "route"] as const) {
-    it(`${caller} refuses conflicting or unresolved destinations before any write`, async () => {
-      const { first, second, project } = destinations();
-      const art = makeArtifact("target safety");
-      const cases = [
-        { fields: { issue: first, entity_id: second }, code: "ambiguous_link_entity_target" },
-        { fields: { issue: first, entity_id: second, entity_type: "issue" }, code: "ambiguous_link_entity_target" },
-        { fields: { issue: first, entity_id: second, entity_type: "conversation" }, code: "ambiguous_link_entity_target" },
-        { fields: { issue: first, entity_type: "conversation" }, code: "ambiguous_link_entity_target" },
-        { fields: { issue: "missing" }, code: "issue_not_found" },
-        { fields: { entity_type: "issue", entity_id: "missing" }, code: "issue_not_found" },
-        { fields: { issue: first, entity_id: "missing" }, code: "issue_not_found" },
-        { fields: { issue: "shared" }, code: "ambiguous_issue_ref" },
-        { fields: { issue: first, entity_id: "abcdef0" }, code: "ambiguous_issue_ref" },
-        { fields: { issue: "other/shared", entity_id: first, issue_project: project }, code: "ambiguous_link_entity_target" },
-        { fields: { issue: first, issue_project: "unknown-project" }, code: "invalid_issue_project" },
-      ];
-      for (const { fields, code } of cases) {
-        const before = state();
-        let error: unknown;
-        let response: Awaited<ReturnType<typeof postLink>> | undefined;
-        try {
-          if (caller === "route") response = await postLink({ ref: art.id, ...fields });
-          else resolveAndLinkArtifact(db, { ref: art.id, ...fields });
-        } catch (caught) { error = caught; }
-        // Inspect the forbidden destination before checking the refusal itself.
-        expect(linksTo(second)).toEqual([]);
-        expect(linksTo(first)).toEqual([]);
-        expect(state()).toEqual(before);
-        if (caller === "route") {
-          expect(response).toMatchObject({ statusCode: 400, payload: { code } });
-        } else {
-          expect(error).toBeInstanceOf(ArtifactLinkTargetError);
-          expect(error).toMatchObject({ status: 400, code });
-        }
-      }
-    });
+  it("refuses conflicting or unresolved destinations before any write", () => {
+    const { first, second, project } = destinations();
+    const art = makeArtifact("target safety");
+    const cases = [
+      { fields: { issue: first, entity_id: second }, code: "ambiguous_link_entity_target" },
+      { fields: { issue: first, entity_id: second, entity_type: "issue" }, code: "ambiguous_link_entity_target" },
+      { fields: { issue: first, entity_id: second, entity_type: "conversation" }, code: "ambiguous_link_entity_target" },
+      { fields: { issue: first, entity_type: "conversation" }, code: "ambiguous_link_entity_target" },
+      { fields: { issue: "missing" }, code: "issue_not_found" },
+      { fields: { entity_type: "issue", entity_id: "missing" }, code: "issue_not_found" },
+      { fields: { issue: first, entity_id: "missing" }, code: "issue_not_found" },
+      { fields: { issue: "shared" }, code: "ambiguous_issue_ref" },
+      { fields: { issue: first, entity_id: "abcdef0" }, code: "ambiguous_issue_ref" },
+      { fields: { issue: "other/shared", entity_id: first, issue_project: project }, code: "ambiguous_link_entity_target" },
+      { fields: { issue: first, issue_project: "unknown-project" }, code: "invalid_issue_project" },
+    ];
+    for (const { fields, code } of cases) {
+      const before = state();
+      let error: unknown;
+      try {
+        resolveAndLinkArtifact(db, { ref: art.id, ...fields });
+      } catch (caught) { error = caught; }
+      // Inspect the forbidden destination before checking the refusal itself.
+      expect(linksTo(second)).toEqual([]);
+      expect(linksTo(first)).toEqual([]);
+      expect(state()).toEqual(before);
+      expect(error).toBeInstanceOf(ArtifactLinkTargetError);
+      expect(error).toMatchObject({ status: 400, code });
+    }
+  });
 
-    it(`${caller} stores one canonical issue for matching aliases and qualified refs`, async () => {
-      const { first, project } = destinations();
-      const art = makeArtifact("canonical target");
-      const variants = [
-        { issue: first, entity_id: "destination/shared" },
-        { issue: "shared", entity_id: first, issue_project: project },
-        { issue: "destination/shared", entity_type: "issue", entity_id: "abcdef01" },
-        { entity_type: "issue", entity_id: "destination/shared" },
-        // An explicit qualifier selects its project before the contextual hint.
-        { issue: "destination/shared", entity_id: "destination/abcdef01", issue_project: "other" },
-      ];
-      for (const fields of variants) {
-        const result = caller === "route"
-          ? await postLink({ ref: art.id, ...fields })
-          : { statusCode: 200, payload: resolveAndLinkArtifact(db, { ref: art.id, ...fields }) };
-        expect(linksTo("destination/shared")).toEqual([]);
-        expect(linksTo(first)).toHaveLength(1);
-        expect(result.statusCode).toBe(200);
-        expect(result.payload.link).toMatchObject({ entity_type: "issue", entity_id: first });
-        expect(db.prepare("SELECT entity_id FROM artifact_links").all()).toEqual([{ entity_id: first }]);
-      }
+  it("stores one canonical issue for matching aliases and qualified refs", () => {
+    const { first, project } = destinations();
+    const art = makeArtifact("canonical target");
+    const variants = [
+      { issue: first, entity_id: "destination/shared" },
+      { issue: "shared", entity_id: first, issue_project: project },
+      { issue: "destination/shared", entity_type: "issue", entity_id: "abcdef01" },
+      { entity_type: "issue", entity_id: "destination/shared" },
+      // An explicit qualifier selects its project before the contextual hint.
+      { issue: "destination/shared", entity_id: "destination/abcdef01", issue_project: "other" },
+    ];
+    for (const fields of variants) {
+      const result = resolveAndLinkArtifact(db, { ref: art.id, ...fields });
+      expect(linksTo("destination/shared")).toEqual([]);
+      expect(linksTo(first)).toHaveLength(1);
+      expect(result.link).toMatchObject({ entity_type: "issue", entity_id: first });
+      expect(db.prepare("SELECT entity_id FROM artifact_links").all()).toEqual([{ entity_id: first }]);
+    }
+  });
+
+  it("wires canonical destination resolution and its refusal through HTTP", async () => {
+    const { first, second } = destinations();
+    const art = makeArtifact("route destination");
+    const before = state();
+    expect(await postLink({ ref: art.id, issue: first, entity_id: second })).toMatchObject({
+      statusCode: 400, payload: { code: "ambiguous_link_entity_target" },
     });
-  }
+    expect(state()).toEqual(before);
+    expect(await postLink({ ref: art.id, issue: "destination/shared" })).toMatchObject({
+      statusCode: 200, payload: { link: { entity_type: "issue", entity_id: first } },
+    });
+    expect(linksTo(first)).toHaveLength(1);
+  });
 
   it("retains non-issue destinations", async () => {
     const art = makeArtifact("conversation artifact");

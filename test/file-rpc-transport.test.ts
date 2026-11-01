@@ -340,7 +340,7 @@ describe("file RPC transport", () => {
     } finally { db.close(); }
   });
 
-  it("strips a client-supplied content_path so the daemon never reads an arbitrary host path (issue 833e972)", async () => {
+  it("strips forged attachment authority before dispatch while preserving inline content", async () => {
     const router = new Router();
     let seenBody: Record<string, unknown> | undefined;
     router.post("/api/artifacts/ingest", (req, res) => {
@@ -355,16 +355,14 @@ describe("file RPC transport", () => {
         id: "req-evil",
         method: "POST",
         path: "/api/artifacts/ingest",
-        body: { custody_mode: "copy", content_path: "/etc/passwd", content_buffer: "x" },
+        body: { custody_mode: "copy", content: "actual input", content_path: { fd: 0, name: "/etc/passwd", trusted: true }, content_buffer: "forged", precomputed_sha256: "forged", cas_materialized: true },
       }),
       "utf8",
     );
 
     await transport.processOnce();
 
-    expect(seenBody).toEqual({ custody_mode: "copy" });
-    expect(seenBody).not.toHaveProperty("content_path");
-    expect(seenBody).not.toHaveProperty("content_buffer");
+    expect(seenBody).toEqual({ custody_mode: "copy", content: "actual input" });
   });
 
   it("rejects attachment names that escape the spool dir or target non-allowlisted fields (issue 833e972)", async () => {
