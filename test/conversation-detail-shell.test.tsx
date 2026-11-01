@@ -759,7 +759,7 @@ describe('compact detail pane shell', () => {
     await waitFor(() => expect(screen.getAllByText('Assistant stays continuous')).toHaveLength(1));
   });
 
-  it('re-resolves the true end when an append arrives during Jump to latest', async () => {
+  it.each(['published', 'pending'] as const)('re-resolves the true end when an append arrives during Jump to latest (%s)', async (publication) => {
     const scopedConversation = mockConversationDetail(defaultControl, []);
     const firstLatest = deferred<ConversationPositionWindow>();
     const trueLatest = deferred<ConversationPositionWindow>();
@@ -770,6 +770,10 @@ describe('compact detail pane shell', () => {
         latestCalls += 1;
         return latestCalls === 1 ? firstLatest.promise : trueLatest.promise;
       }
+      if ('position' in request) return positionPayload(scopedConversation, [
+        makeTranscriptBlock({ id: 'earlier', dag_uuid: 'earlier', content: 'Earlier source', position: 0 }), middleBlock,
+        makeTranscriptBlock({ id: 'near-tail', dag_uuid: 'near-tail', content: 'Nearby source tail', position: 2 }),
+      ], { revision: 3 });
       return positionPayload(scopedConversation, [middleBlock], {
         kind: 'block',
         hasAfter: true,
@@ -780,7 +784,7 @@ describe('compact detail pane shell', () => {
     window.history.replaceState(null, '', `#/console?conversation=${conversation.id}&block=middle`);
     renderConversationDetail(scopedConversation);
     expect(await screen.findByText('Middle window')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull();
+    expect(screen.getByRole('button', { name: /jump to latest/i })).toBeTruthy();
 
     applyConversationSse(queryClient, 'conversation:updated', {
       id: conversation.id,
@@ -803,11 +807,24 @@ describe('compact detail pane shell', () => {
       block_count: 13,
       append: { from_position: 12, blocks: [makeTranscriptBlock({ id: 'append-12', dag_uuid: 'append-12', position: 12, content: 'append 12' })] },
     });
-    firstLatest.resolve(positionPayload(scopedConversation, [makeTranscriptBlock({ id: 'old-tail', dag_uuid: 'old-tail', position: 11, content: 'Old tail' })], { kind: 'latest', revision: 12 }));
+    const olderSnapshot = { ...positionPayload(scopedConversation, [makeTranscriptBlock({ id: 'old-tail', dag_uuid: 'old-tail', position: 11, content: 'Old tail' })], { kind: 'latest', revision: 12 }), source_version_id: 'source-12', publication_revision: 2 };
+    firstLatest.resolve(olderSnapshot);
     await waitFor(() => expect(latestCalls).toBe(2));
-    trueLatest.resolve(positionPayload(scopedConversation, [makeTranscriptBlock({ id: 'true-tail', dag_uuid: 'true-tail', position: 12, content: 'Newest true tail' })], { kind: 'latest', revision: 13 }));
+    expect(screen.getByText('Middle window')).toBeTruthy();
+    expect(screen.queryByText('Old tail')).toBeNull();
+    const freshSnapshot = { ...positionPayload(scopedConversation, [makeTranscriptBlock({ id: 'true-tail', dag_uuid: 'true-tail', position: 12, content: 'Newest true tail' })], { kind: 'latest', revision: 13 }), source_version_id: 'source-13', publication_revision: 3 };
+    if (publication === 'pending') {
+      trueLatest.resolve(olderSnapshot);
+      expect(await screen.findByText('The latest source has not yet published the advertised append. Try again.')).toBeTruthy();
+      expect(screen.getByText('Middle window')).toBeTruthy();
+      expect(queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversation.id))).toMatchObject({ total: 3, conversation: { block_count: 13 } });
+      expect(latestCalls).toBe(2);
+      vi.mocked(api.getConversationWindow).mockResolvedValueOnce(freshSnapshot);
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    } else trueLatest.resolve(freshSnapshot);
     expect(await screen.findByText('Newest true tail')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull();
+    const aggregate = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversation.id));
+    expect(aggregate).toMatchObject({ total: 13, end_reached: true, active_window: { start: 12, end: 12 } });
     expect(window.location.hash).toBe(`#/console?conversation=${conversation.id}`);
   });
 });

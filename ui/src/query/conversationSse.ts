@@ -73,12 +73,6 @@ export function applyConversationSse(
     }
   }
 
-  const appendBlocks = data.append?.blocks ?? [];
-  if (typeof data.block_count === 'number' && appendBlocks.length === 0) {
-    void client.invalidateQueries({ queryKey: conversationKeys.windows(data.id) });
-    return;
-  }
-
   const aggregateKey = conversationKeys.aggregate(data.id);
   const aggregate = client.getQueryData<ConversationTranscriptData>(aggregateKey);
   if (aggregate) {
@@ -87,6 +81,12 @@ export function applyConversationSse(
       conversation: { ...aggregate.conversation, ...data,
         block_count: Math.max(aggregate.conversation.block_count, data.block_count ?? 0) },
     });
+  }
+
+  const appendBlocks = data.append?.blocks ?? [];
+  if (typeof data.block_count === 'number' && appendBlocks.length === 0) {
+    void client.invalidateQueries({ queryKey: conversationKeys.windows(data.id) });
+    return;
   }
 
   for (const [key, cached] of client.getQueriesData<ConversationPositionWindow>({ queryKey: conversationKeys.windows(data.id) })) {

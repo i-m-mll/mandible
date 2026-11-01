@@ -149,7 +149,12 @@ and engine reconciliation. Editable keyboard behavior is retained.
 becomes a canonical closed summary. Explicit collapse uses the same protocol to
 reveal the summary. Routine prepend, trim, append and reflow compensation belong
 to the engine. Following is enabled only when the active source span reaches
-the captured true end; an older window's bottom cannot enable it.
+the captured true end; an older window's bottom cannot enable it. Advertised
+append counts remain same-space freshness hints and never extend positional
+availability. Jump to latest retains the useful current window while a captured
+tail trails that hint, and rereads the source. An unchanged still-behind source
+snapshot terminates with `freshness_pending` instead of retrying indefinitely.
+A changed position space resets the advertised-count bound.
 
 Local version 2 state is scoped to the canonical conversation. It contains a
 position-space anchor and measured local offset, or the following flag, and at

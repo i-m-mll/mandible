@@ -184,8 +184,8 @@ type ToastState = { message: string; type: 'info' | 'error' } | null;
 type ChatDetailState = 'loading' | 'error' | 'not-found' | 'conversation' | 'live-session' | 'draft' | 'no-selection';
 
 export type ConversationLoadFailure = {
-  operation: 'initial' | 'edge-older' | 'edge-newer' | 'target' | 'source-unavailable' | 'refresh' | 'export';
-  retryOperation?: 'initial' | 'edge-older' | 'edge-newer' | 'target' | 'refresh' | 'export';
+  operation: 'initial' | 'edge-older' | 'edge-newer' | 'target' | 'latest' | 'source-unavailable' | 'refresh' | 'export';
+  retryOperation?: 'initial' | 'edge-older' | 'edge-newer' | 'target' | 'latest' | 'refresh' | 'export';
   code: string | null;
   message: string;
   retryable: boolean;
@@ -1385,6 +1385,9 @@ export function ConversationDetail({
         predicate: (query) => currentWindowHash !== undefined && query.queryHash !== currentWindowHash,
       });
     }
+    const advertisedCount = current?.position_space_id === incoming.position_space_id
+      ? Math.max(current.conversation.block_count, incoming.conversation.block_count) : incoming.conversation.block_count;
+    if (operation === 'replace' && target.kind === 'latest' && incoming.total < advertisedCount) return incoming;
     let reconciled = reconcileConversationWindow(current, incoming, protectedReading.current);
     if (current && operation) {
       const position = incoming.target.position;
@@ -1397,6 +1400,7 @@ export function ConversationDetail({
       if (result && result.status !== 'committed') throw new ApiError(`Reading window: ${result.status}`, 409, result.status);
       if (result?.status === 'committed') reconciled = result.data;
     }
+    reconciled = { ...reconciled, conversation: { ...reconciled.conversation, block_count: advertisedCount } };
     if (operation === 'replace' || !current) {
       reconciled = { ...reconciled, reading_command: replacementCommand ?? {
         key: `${conversationId}:${target.kind}:${String(target.value)}:${incoming.publication_revision}:${crypto.randomUUID()}`,
@@ -1778,7 +1782,7 @@ export function ConversationDetail({
     }
     setNavigationError((current) => {
       const operation = current?.operation === 'source-unavailable' ? current.retryOperation : current?.operation;
-      return current && operation && ['edge-older', 'edge-newer', 'export'].includes(operation) ? current : null;
+      return current && operation && ['edge-older', 'edge-newer', 'export', 'latest'].includes(operation) ? current : null;
     });
   }, [conversationId, effectiveAnchor, incomingAnchorKey, windowQuery.data]);
 
@@ -1930,15 +1934,21 @@ export function ConversationDetail({
     const latestTarget = normalizeWindowTarget({ target: 'latest' });
     try {
       let latest = await fetchAndReconcileWindow(latestTarget, controller.signal, 'replace');
-      let observedRevision = queryClient.getQueryData<ConversationTranscriptData>(
+      let advertisedCount = queryClient.getQueryData<ConversationTranscriptData>(
         conversationKeys.aggregate(conversationId),
-      )?.revision ?? latest.revision;
-      while (latest.revision < observedRevision) {
+      )?.conversation.block_count ?? latest.total;
+      while (latest.total < advertisedCount) {
         if (selectionRef.current.generation !== selectionGeneration) return;
+        const previous = latest;
         latest = await fetchAndReconcileWindow(latestTarget, controller.signal, 'replace');
-        observedRevision = queryClient.getQueryData<ConversationTranscriptData>(
+        advertisedCount = queryClient.getQueryData<ConversationTranscriptData>(
           conversationKeys.aggregate(conversationId),
-        )?.revision ?? latest.revision;
+        )?.conversation.block_count ?? latest.total;
+        if (latest.total < advertisedCount && latest.position_space_id === previous.position_space_id
+            && latest.publication_revision === previous.publication_revision && latest.source_version_id === previous.source_version_id
+            && latest.total === previous.total) {
+          throw new ApiError('The latest source has not yet published the advertised append. Try again.', 409, 'freshness_pending');
+        }
       }
       if (selectionRef.current.generation !== selectionGeneration) return;
       setEffectiveAnchor(null);
@@ -1947,7 +1957,7 @@ export function ConversationDetail({
 
     } catch (err) {
       if (controller.signal.aborted) return;
-      const failure = conversationLoadFailure(err, true, 'target');
+      const failure = conversationLoadFailure(err, true, 'latest');
       if (failure && selectionRef.current.generation === selectionGeneration) setNavigationError(failure);
     } finally {
       if (selectionRef.current.generation === selectionGeneration) setJumpingToLatest(false);
@@ -2407,6 +2417,8 @@ export function ConversationDetail({
 
   const retryLoad = useCallback(() => {
     if (error) setNavigationError(error);
+    const operation = error?.operation === 'source-unavailable' ? error.retryOperation : error?.operation;
+    if (operation === 'latest') { void handleJumpToLatest(); return; }
     const historyRetry = historyRetryRef.current;
     if (historyRetry?.kind === 'edge') {
       void loadTranscriptEdge(historyRetry.direction);
@@ -2416,7 +2428,6 @@ export function ConversationDetail({
       void loadTranscriptAround(historyRetry.position);
       return;
     }
-    const operation = error?.operation === 'source-unavailable' ? error.retryOperation : error?.operation;
     if (operation === 'edge-older') {
       void loadTranscriptEdge('older');
       return;
@@ -2430,7 +2441,7 @@ export function ConversationDetail({
       return;
     }
     void windowQuery.refetch();
-  }, [error, exportIntent, loadTranscriptAround, loadTranscriptEdge, runMarkdownAction, windowQuery]);
+  }, [error, exportIntent, loadTranscriptAround, loadTranscriptEdge, runMarkdownAction, windowQuery, handleJumpToLatest]);
 
   const loadErrorNotice = error ? (
     <DetailPaneNotice
