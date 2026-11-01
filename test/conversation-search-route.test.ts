@@ -27,6 +27,7 @@ import { revokeCredential, setupOperator } from "../src/users/store.js";
 import { nativeSearchSource } from "./helpers/search-native-source.js";
 import { getFullTextSearchJobs } from "../src/conversations/full-text-search-jobs.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
+import { settleConversationSearch as settled } from "./helpers/settle-conversation-search.js";
 
 let tempDir: string;
 let db: Db;
@@ -89,20 +90,6 @@ beforeEach(async () => {
   await nativeSearchSource(db,path.join(tempDir,"managed"),"body-only","A Needle across the body");
   await nativeSearchSource(db,path.join(tempDir,"managed"),"revoked-canary",`before ${revokedCanary} after`);
 });
-
-async function settled(router:Router,input:Parameters<Router["invoke"]>[0]) {
-  let result=await router.invoke(input);
-  const deadline=Date.now()+10_000;
-  while(result.status===202 && Date.now()<deadline) {
-    const pending=result.body as {search_id:string;observer_token:string};
-    await new Promise<void>(resolve=>setImmediate(resolve));
-    const url=new URL(input.url,"http://localhost");
-    url.searchParams.set("search_id",pending.search_id);
-    url.searchParams.set("observer_token",pending.observer_token);
-    result=await router.invoke({...input,url:`${url.pathname}${url.search}`});
-  }
-  return result;
-}
 
 afterEach(() => {
   getFullTextSearchJobs(db).close();
