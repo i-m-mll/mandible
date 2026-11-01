@@ -29,6 +29,28 @@ async function submitPausedSibling(queue: AuthQueue, db: Parameters<typeof regis
 }
 
 describe("auth queue", () => {
+  it("checks concurrent candidates through private split-index snapshots while exposing a real index lock", async () => {
+    const repo = createAuthCheckRepo();
+    try {
+      commitOnBranch(repo, "feature/readiness", { "readiness.txt": "candidate\n" });
+      git(repo, ["update-index", "--split-index"]);
+      const base = git(repo, ["rev-parse", "main"]);
+      const target = git(repo, ["merge-tree", "--write-tree", "main", "feature/readiness"]).split("\n")[0];
+      const candidate = { baseBranch: "main", base, target };
+      const observations = await Promise.all(Array.from({ length: 8 }, () => checkCheckoutReadiness(repo, candidate)));
+      expect(observations).toEqual(Array.from({ length: 8 }, () => ({ status: "clean" })));
+
+      const indexPath = git(repo, ["rev-parse", "--path-format=absolute", "--git-path", "index"]);
+      fs.writeFileSync(`${indexPath}.lock`, "");
+      const locked = await checkCheckoutReadiness(repo, candidate);
+      expect(locked).toMatchObject({ status: "error", exitCode: 1, message: expect.stringContaining("Git index is locked") });
+      fs.rmSync(`${indexPath}.lock`);
+      expect(await checkCheckoutReadiness(repo, candidate)).toEqual({ status: "clean" });
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   it("preserves renamed NUL-delimited paths and malformed merge markers in linked checkouts", async () => {
     const repo = createAuthCheckRepo();
     const linked = uniqueMissingPath("mandible-readiness-linked");
