@@ -2547,3 +2547,5 @@ export function parseDomainEvent(value: unknown): { ok: true; value: MandibleEve
   }
   return { ok: true, value: envelope.data as MandibleEvent };
 }
+
+export const DOMAIN_EVENT_SCHEMA = z.custom<MandibleEvent>(value => parseDomainEvent(value).ok);
