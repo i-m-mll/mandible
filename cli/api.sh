@@ -129,17 +129,8 @@ MANDIBLE_API_TEMP_ROOT=""
 
 api_ensure_temp_root() {
   if [[ -z "$MANDIBLE_API_TEMP_ROOT" ]]; then
-    MANDIBLE_API_TEMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/mandible-api.XXXXXX")"
-    # Asserted, not assumed: token-bearing bodies live under this root, so a
-    # failure to secure it is fatal rather than silently downgraded.
-    if ! chmod 700 "$MANDIBLE_API_TEMP_ROOT"; then
-      printf 'mandible: could not restrict permissions on %s; refusing to stage request data there\n' \
-        "$MANDIBLE_API_TEMP_ROOT" >&2
-      rm -rf -- "$MANDIBLE_API_TEMP_ROOT" 2>/dev/null || true
-      MANDIBLE_API_TEMP_ROOT=""
-      return 1
-    fi
-    : > "$MANDIBLE_API_TEMP_ROOT/cleanup-manifest"
+    MANDIBLE_API_TEMP_ROOT="$(umask 077; mktemp -d "${TMPDIR:-/tmp}/mandible-api.XXXXXX")" || return 1
+    (umask 077; : > "$MANDIBLE_API_TEMP_ROOT/cleanup-manifest") || return 1
   fi
 }
 
@@ -159,21 +150,12 @@ api_untrack_temp() {
 }
 
 # Response and request bodies pass through these files, and some of them carry
-# bearer tokens (issue e2cb93f: the `token mint` response holds a raw token until
-# api_request cats and removes it). mktemp already creates 0600 files inside the
-# 0700 root, but the permission is asserted rather than assumed, because the
-# guarantee is what keeps another local account from reading a token out of the
-# window between write and unlink.
+# bearer tokens (issue e2cb93f). Native mktemp exclusively creates 0600 files and
+# 0700 directories; a local umask preserves those exact modes without changing
+# the caller's mask, even when its inherited mask denies owner permissions.
 api_temp_file() {
   api_ensure_temp_root || return 1
-  local temp_path
-  temp_path="$(mktemp "$MANDIBLE_API_TEMP_ROOT/file.XXXXXX")" || return 1
-  if ! chmod 600 "$temp_path"; then
-    printf 'mandible: could not restrict permissions on %s; refusing to use it\n' "$temp_path" >&2
-    rm -f -- "$temp_path" 2>/dev/null || true
-    return 1
-  fi
-  printf '%s' "$temp_path"
+  (umask 077; mktemp "$MANDIBLE_API_TEMP_ROOT/file.XXXXXX")
 }
 
 api_cleanup_temp_files() {
@@ -189,7 +171,9 @@ api_cleanup_temp_files() {
   MANDIBLE_API_TEMP_ROOT=""
 }
 
-api_ensure_temp_root
+if [[ "${1:-}" != --mandible-api-definitions-only ]]; then
+  api_ensure_temp_root || { return 1 2>/dev/null || exit 1; }
+fi
 trap 'api_cleanup_temp_files' EXIT
 trap 'api_cleanup_temp_files; exit 130' INT
 trap 'api_cleanup_temp_files; exit 143' TERM
@@ -968,6 +952,7 @@ api_scope_inherited_identity() {
     esac
   fi
   [[ -n "${MANDIBLE_SESSION_ID:-}" ]] || return 0
+  api_ensure_temp_root || return 1
 
   # The row is read as the caller's provider alone: the managed identity is the
   # one in question.
