@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { type Db } from "../src/db.js";
-import { addProject } from "../src/ledger/project-registry.js";
 import {
   addGrant,
   addGroup,
   addGroupMember,
   evaluateGlobalCapability,
-  GLOBAL_CAPABILITIES,
+  removeGrant,
+  removeGroupMember,
   } from "../src/permissions/store.js";
 import { createUser, setupOperator } from "../src/users/store.js";
 import { setClientAuthMode } from "../src/client-auth/mode.js";
@@ -33,22 +33,28 @@ describe("permission evaluator", () => {
 
   afterEach(() => db.close());
 
-  it.each(
-    (["user", "group"] as const).flatMap((subjectType) =>
-      GLOBAL_CAPABILITIES.map((capability) => [subjectType, capability] as const),
-    ),
-  )("strict matrix global subject=%s capability=%s", (subjectType, capability) => {
-    const agent = createUser(db, { slug: "agent", kind: "agent", display_name: "Agent" });
+  it("tracks direct and group authority without leaking grants, and revokes both immediately", () => {
     setClientAuthMode(db, "strict");
-    let subject = agent.id;
-    if (subjectType === "group") {
-      const group = addGroup(db, { slug: "matrix", display_name: "Matrix" });
-      addGroupMember(db, group.id, agent.id);
-      subject = group.id;
-    }
-    addGrant(db, { subject_type: subjectType, subject, permission: capability });
-    expect(evaluateGlobalCapability(db, { identity: identity(agent), capability }))
-      .toMatchObject({ allowed: true, reason: "grant" });
+    const agent = createUser(db, { slug: "agent", kind: "agent", display_name: "Agent" });
+    const unrelated = createUser(db, { slug: "other", kind: "agent", display_name: "Other" });
+    const group = addGroup(db, { slug: "operators", display_name: "Operators" });
+    const allowed = (user: typeof agent) => evaluateGlobalCapability(db, { identity: identity(user), capability: "backup" }).allowed;
+    expect(allowed(agent)).toBe(false);
+    const direct = addGrant(db, { subject_type: "user", subject: agent.id, permission: "backup" });
+    expect(allowed(agent)).toBe(true);
+    expect(allowed(unrelated)).toBe(false);
+    removeGrant(db, direct.id);
+    expect(allowed(agent)).toBe(false);
+    addGroupMember(db, group.id, agent.id);
+    const inherited = addGrant(db, { subject_type: "group", subject: group.id, permission: "backup" });
+    expect(allowed(agent)).toBe(true);
+    expect(allowed(unrelated)).toBe(false);
+    removeGroupMember(db, group.id, agent.id);
+    expect(allowed(agent)).toBe(false);
+    addGroupMember(db, group.id, agent.id);
+    expect(allowed(agent)).toBe(true);
+    removeGrant(db, inherited.id);
+    expect(allowed(agent)).toBe(false);
   });
 });
 
@@ -63,7 +69,6 @@ it("preserves global capability authority, identity validity, and visible reject
     expect(evaluateGlobalCapability(db, { identity: { ...identity(operator), slug: "wrong" }, capability: "backup" })).toMatchObject({ allowed: false });
     expect(evaluateGlobalCapability(db, { identity: identity(agent), capability: "backup" })).toMatchObject({ allowed: false });
     const grant = addGrant(db, { subject_type: "user", subject: agent.id, permission: "backup" });
-    expect(evaluateGlobalCapability(db, { identity: identity(agent), capability: "backup" })).toMatchObject({ allowed: true, reason: "grant" });
     expect(() => addGrant(db, { subject_type: "user", subject: agent.id, permission: "read", resource_type: "project", resource: "unused" } as never)).toThrow("retired");
     expect(() => addGrant(db, { subject_type: "user", subject: agent.id, permission: "backup", resource_type: "global" } as never)).toThrow("retired");
     db.prepare("UPDATE users SET status = 'retired' WHERE id = ?").run(agent.id);

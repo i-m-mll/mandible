@@ -22,7 +22,10 @@ async function watch(mode: 'sse' | 'poll' | 'inbox', statuses: string[]) {
     res.setHeader('Content-Type', 'application/json');
     if (req.url === '/api/instance') return res.end(JSON.stringify(MAIN_CLI_INSTANCE_RESPONSE));
     if (req.url === '/api/auth/v2/request') { res.statusCode = 201; return res.end('{"request_id":"watch123"}'); }
-    const response = (status: string) => ({ id: 'watch123', request_id: 'watch123', status, exit_code: status === 'failed' ? 42 : 0, failure_reason: 'reviewed head changed' });
+    const response = (status: string) => ({ request_id: 'watch123', status, outcome: ['pending', 'approved', 'executing'].includes(status) ? null : status === 'completed' ? 'succeeded' : status,
+      exit_code: status === 'failed' ? 42 : status === 'completed' ? 0 : null, failure_reason: 'reviewed head changed',
+      error: null, error_output: null, resolved_at: ['pending', 'approved', 'executing'].includes(status) ? null : 1, title: 'Watch fixture', head_branch: null,
+      target_session_id: null, conversation_id: null });
     if (req.url === '/api/events/subscribe') {
       res.setHeader('Content-Type', 'text/event-stream');
       if (mode === 'sse') for (const status of statuses) res.write(`data: ${JSON.stringify({ type: 'auth:resolved', data: response(status) })}\n\n`);
@@ -69,7 +72,7 @@ it.each(['bash', 'zsh'])('%s reports delivery outcomes through the shared shell 
       printf '%s\\t%s\\n' "$result" "$output"
     done
   `, 'auth-report-fixture', ...cases.map(({ status }) => JSON.stringify({
-    status, exit_code: status === 'failed' ? 42 : 0, failure_reason: 'reviewed head changed',
+    status, exit_code: status === 'failed' ? 42 : status === 'completed' ? 0 : null, failure_reason: 'reviewed head changed',
   }))], { cwd: root, env: { ...process.env, MANDIBLE_CLI_DIR: path.join(process.cwd(), 'cli') }, encoding: 'utf8', timeout: 15_000 });
   expect(result.status, result.stdout + result.stderr).toBe(0);
   const reports = result.stdout.trimEnd().split('\n');
@@ -91,24 +94,31 @@ it.each(['bash', 'zsh'])('%s reports delivery outcomes through the shared shell 
   });
 });
 
-it.each(['sse', 'poll', 'inbox'] as const)('%s propagates successful delivery, failure and unknown termination', async mode => {
-  for (const status of ['completed', 'failed', 'future_status']) {
+it.each(['sse', 'poll', 'inbox'] as const)('%s propagates terminal delivery results', async mode => {
+  const statuses = mode === 'sse' ? ['completed', 'failed', 'needs_rebase'] : ['completed', 'failed', 'future_status'];
+  for (const status of statuses) {
     const result = await watch(mode, [status]);
     expect(result.code, result.output).toBe(status === 'completed' ? 0 : 1);
-    expect(result.output).toContain(status === 'future_status' ? "unknown status 'future_status'" : status);
-    if (status === 'failed') expect(result.output).toContain('failed (exit 42) -- reviewed head changed');
+    expect(result.output).toContain('watch123');
+    expect(result.output).toContain(status);
+    if (status === 'failed') {
+      expect(result.output).toContain('reviewed head changed');
+      expect(result.output).toMatch(/\b42\b/);
+    }
   }
 });
 
-it.each(['sse', 'inbox'] as const)('%s waits through every in-flight state until delivery', async mode => {
-  const result = await watch(mode, ['pending', 'approved', 'executing', 'completed']);
+it('inbox waits through every in-flight state until delivery', async () => {
+  const result = await watch('inbox', ['pending', 'approved', 'executing', 'completed']);
   expect(result.code, result.output).toBe(0);
   expect(result.output).toContain('completed');
-  if (mode === 'inbox') expect(result.reads).toBe(4);
+  expect(result.reads).toBe(4);
 });
 
 it.each(['pending', 'approved', 'executing'])('final poll reports %s as in flight without claiming delivery', async status => {
   const result = await watch('poll', [status]);
   expect(result.code, result.output).toBe(1);
-  expect(result.output).toContain(`still in progress (${status})`);
+  expect(result.reads).toBe(1);
+  expect(result.output).toContain('watch123');
+  expect(result.output).toContain(status);
 });

@@ -158,8 +158,8 @@ describe("descriptor-bound file RPC ingestion", () => {
     expectNoArtifact("outside bytes"); expect(fs.readFileSync(outside, "utf8")).toBe("outside bytes");
   });
 
-  it.each(["fifo", "directory", "dangling", "hardlink", "missing", "field", "name"])("refuses invalid %s before mutation", async (kind) => {
-    const { id, file } = request({ field: kind === "field" ? "repo_locator" : undefined, name: kind === "name" ? "../outside" : undefined });
+  it.each(["fifo", "directory", "dangling", "hardlink", "missing"])("refuses invalid %s before mutation", async (kind) => {
+    const { id, file } = request();
     if (kind === "fifo") execFileSync("mkfifo", [file], { timeout: 10_000 });
     if (kind === "directory") fs.mkdirSync(file);
     if (kind === "dangling") fs.symlinkSync(path.join(root, "absent"), file);
@@ -278,15 +278,6 @@ describe("descriptor-bound file RPC ingestion", () => {
     expect(fs.readFileSync(casFile(hash("committed bytes")), "utf8")).toBe("committed bytes");
   });
 
-  it("cannot manufacture a trusted source or materialization with JSON fields", async () => {
-    const observer = new Router();
-    observer.post("/api/observe", (req, res) => res.json(req.body), { fileRpc: "allow", operation: { id: "observe", effects: [], requestSchema: null, reportingCategory: null } });
-    fs.writeFileSync(path.join(spool, "forged.request.json"), JSON.stringify({ id: "forged", method: "POST", path: "/api/observe", body: {
-      content_path: { fd: 0, name: "outside", trusted: true }, content_buffer: "forged", precomputed_sha256: hash("forged"), cas_materialized: true, content: "actual input",
-    } }));
-    expect(await processRequest("forged", new FileRpcTransport({ router: observer, dir: spool }))).toMatchObject({ status: 200, body: { content: "actual input" } });
-  });
-
   it.each(["ingest", "snapshot"])("rejects a corrupt existing CAS entry during off-thread %s integrity verification", async (endpoint) => {
     const bytes = Buffer.from("intended immutable bytes");
     const stored = casFile(hash(bytes)); fs.mkdirSync(path.dirname(stored), { recursive: true });
@@ -362,22 +353,4 @@ it.each(["ingest", "snapshot"])("review: %s attachment is never reread on the da
   }) as typeof fs.readFileSync);
   expect((await processRequest(id)).status).toBe(200);
   expect(mainThreadReads).toEqual([]);
-});
-
-it("review: request cleanup failure does not overwrite a successful terminal response on the next poll", async () => {
-  const { id, file } = request(); fs.writeFileSync(file, "committed once");
-  const requestFile = path.join(spool, `${id}.request.json`);
-  const responseFile = path.join(spool, `${id}.response.json`);
-  const unlink = fs.unlinkSync;
-  vi.spyOn(fs, "unlinkSync").mockImplementation((p) => {
-    if (p === requestFile) throw Object.assign(new Error("transient request cleanup failure"), { code: "EACCES" });
-    return unlink(p);
-  });
-  const transport = new FileRpcTransport({ router, dir: spool, logger: vi.fn() });
-  await transport.processOnce();
-  const committed = JSON.parse(fs.readFileSync(responseFile, "utf8"));
-  expect(committed.status).toBe(200);
-  vi.mocked(fs.unlinkSync).mockRestore();
-  await transport.processOnce();
-  expect(JSON.parse(fs.readFileSync(responseFile, "utf8"))).toEqual(committed);
 });

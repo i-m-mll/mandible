@@ -125,6 +125,8 @@ it('owns uploaded repository-source artifacts without a separate repo argument a
   expect(resolveArtifactProject(db,id)).toEqual({ok:true,project_id:b.project});
   expect(resolveArtifactProject(db,created.version.id)).toEqual({ok:true,project_id:b.project});
   const move=ok(planArtifactSourceMove(db,{artifact_id:id,expected_revision:1,source:{kind:'repo',project_id:a.project,path:'uploaded.md'},actor:'operator'}));
+  ok(commitArtifactSourceMove(db,move));
+  expect(getArtifactCurrentSource(db,id)?.source).toEqual({kind:'repo',project_id:a.project,path:'uploaded.md'});
   expect(resolveArtifactProject(db,id)).toEqual({ok:true,project_id:b.project});
 });
 

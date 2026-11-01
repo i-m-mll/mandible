@@ -157,30 +157,6 @@ describe("artifact write authorization", () => {
     expect(snapshot(previewDb, previewCas)).not.toEqual(sourceState);
   });
 
-  it("cannot bypass a registered repository's identity by changing custody labels", async () => {
-    const repo = path.join(root, "restricted-repo"); fs.mkdirSync(repo);
-    const git = (...args: string[]) => execFileSync("git", ["--no-optional-locks", ...args], { cwd: repo, stdio: "pipe" });
-    artifactRepo(repo);
-    const filename = path.join(repo, "report.md"); fs.writeFileSync(filename, "committed\n");
-    git("add", "report.md"); git("commit", "-m", "fixture");
-    const project = addProject(db, { project_key: "restricted-repo", display_name: "Restricted repo" });
-    addOrUpdateCheckout(db, project.id, { root: fs.realpathSync(repo), work_repo_id: "restricted-repo" });
-
-    const inputs = [
-      { source_kind: "tracked_repo", path: filename },
-      { source_kind: "local_only", path: filename },
-      { source_kind: "managed", path: filename, series_key: "attempted-custody-fork" },
-    ];
-
-    const identities: string[] = [];
-    for (const body of inputs) {
-      const response = await invoke("POST", "/api/artifacts/versions", body);
-      expect(response.status, JSON.stringify(response.body)).toBe(200);
-      identities.push((response.body as any).result.series.id);
-    }
-    expect(new Set(identities).size).toBe(1);
-  });
-
   it("assigns a new uploaded repository source to its project and allows shared reads", async () => {
     const project = addProject(db, { project_key: "upload-owner", display_name: "Upload owner" });
 

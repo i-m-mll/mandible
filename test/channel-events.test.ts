@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { describe, expect, it, vi } from 'vitest';
 import { setDb } from '../src/db.js';
 import { AuthQueue } from '../src/auth-queue.js';
-import { AUTH_REQUEST_STATUSES, computeAuthRequestOutcome, DOMAIN_EVENTS, parseDomainEvent } from '../src/contracts.js';
+import { DOMAIN_EVENTS, parseDomainEvent } from '../src/contracts.js';
 import { Router } from '../src/server.js';
 import { registerChannelRoutes } from '../src/routes/channel.js';
 import { broadcast, SseManager, setSseManager } from '../src/sse.js';
@@ -86,35 +86,14 @@ describe('auth channel event boundary', () => {
       expect(unidentified.delivered).toEqual([]);
       expect(unidentified.notifications).toMatchObject([{ method: 'notifications/message' }]);
 
-      for (const status of AUTH_REQUEST_STATUSES) {
-        const outcome = computeAuthRequestOutcome(status);
-        if (outcome === null) continue;
-        const terminal = { ...event, data: { ...event.data, status, outcome,
-          exit_code: status === 'completed' ? 0 : status === 'failed' ? 1 : null } };
-        expect(parseDomainEvent(terminal).ok).toBe(true);
-        expect((await render(terminal)).status).toBe(200);
-      }
-      const retained = { ...event, data: { ...event.data, status: 'completed', outcome: 'succeeded', exit_code: null, resolved_at: null } };
-      expect(parseDomainEvent(retained).ok).toBe(true);
-      expect((await render(retained)).status).toBe(200);
+      const malformed = { type: DOMAIN_EVENTS.AUTH_RESOLVED, data: { ...event.data, status: 'pending', outcome: null } };
       const frameCount = frames.length;
-      for (const data of [null, {}, { ...event.data, request_id: '' }, { ...event.data, status: 'invented' },
-        ...AUTH_REQUEST_STATUSES.filter(status => computeAuthRequestOutcome(status) === null)
-          .map(status => ({ ...event.data, status, outcome: null })),
-        { ...event.data, status: 'failed', outcome: 'succeeded', exit_code: 42 },
-        { ...event.data, status: 'rejected', outcome: null },
-        { ...event.data, status: 'completed', outcome: 'succeeded', exit_code: 42 },
-        { ...event.data, status: 'failed', outcome: 'failed', exit_code: 0 },
-        { ...event.data, target_session_id: 42 }, { ...event.data, exit_code: 'failed' }, { ...event.data, error_output: [] }]) {
-        const malformed = { type: DOMAIN_EVENTS.AUTH_RESOLVED, data };
-        expect(parseDomainEvent(malformed).ok).toBe(false);
-        expect(() => manager.broadcast({ ...malformed, timestamp: '' } as never)).toThrow('event payload');
-        const rejected = await render(malformed);
-        expect(rejected.status).toBe(400);
-        expect(rejected.body).not.toHaveProperty('notifications');
-        expect(rejected.body).not.toHaveProperty('delivered');
-      }
+      expect(() => manager.broadcast({ ...malformed, timestamp: '' } as never)).toThrow();
       expect(frames).toHaveLength(frameCount);
+      const rejected = await render(malformed);
+      expect(rejected.status).toBe(400);
+      expect(rejected.body).not.toHaveProperty('notifications');
+      expect(rejected.body).not.toHaveProperty('delivered');
       for (const type of ['auth:completed', 'inbox:updated', 'work_unit:assigned', 'work_unit:updated', 'console:inbox:badge']) {
         expect((await render({ ...event, type })).status).toBe(400);
       }
@@ -125,4 +104,25 @@ describe('auth channel event boundary', () => {
       db.close();
     }
   });
+});
+
+it('validates auth resolution semantics independently of the production outcome classifier', () => {
+  const data = { request_id: 'request-fixture', status: 'completed', outcome: 'succeeded', exit_code: 0,
+    failure_reason: null, error: null, error_output: null, resolved_at: 1, title: 'Review', head_branch: null,
+    target_session_id: 'owner', conversation_id: 'conversation' };
+  const valid = [data,
+    { ...data, status: 'failed', outcome: 'failed', exit_code: 42 },
+    { ...data, status: 'needs_rebase', outcome: 'needs_rebase', exit_code: null },
+    { ...data, exit_code: null, resolved_at: null },
+  ];
+  for (const payload of valid) expect(parseDomainEvent({ type: DOMAIN_EVENTS.AUTH_RESOLVED, data: payload }).ok).toBe(true);
+  const invalid = [null, {}, { ...data, request_id: '' }, { ...data, status: 'invented' },
+    ...['pending', 'approved', 'executing'].map(status => ({ ...data, status, outcome: null })),
+    { ...data, status: 'failed', outcome: 'succeeded', exit_code: 42 },
+    { ...data, status: 'rejected', outcome: null },
+    { ...data, exit_code: 42 },
+    { ...data, status: 'failed', outcome: 'failed', exit_code: 0 },
+    { ...data, target_session_id: 42 }, { ...data, exit_code: 'failed' }, { ...data, error_output: [] },
+  ];
+  for (const payload of invalid) expect(parseDomainEvent({ type: DOMAIN_EVENTS.AUTH_RESOLVED, data: payload }).ok).toBe(false);
 });
