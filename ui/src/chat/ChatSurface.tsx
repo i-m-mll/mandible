@@ -106,12 +106,10 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
     if (!member) return { status: 'not-renderable' as const };
     if (target.subtarget === 'summary') return { status: 'prepared' as const, rowKey: member.summaryRowKey ?? member.rowKey };
     setExpandedBlocks(current => boundDisclosures({ ...current, ...Object.fromEntries(member.disclosurePath.map(owner => [`group:${owner}`, true])), [`reveal:${target.position}`]: true }));
-    const row = latest.current.projection.rows.find(row => row.key === member.rowKey);
-    if (row) await latest.current.transcript?.prepareDetails(row.sources.filter(source => source.position === target.position && source.detailsLoaded === false), signal);
+    await latest.current.transcript?.prepareDetails(member.detailSources.filter(source => source.detailsLoaded === false), signal);
     await waitFor(() => {
       const member = latest.current.projection.membership.get(target.position);
-      const row = latest.current.projection.rows.find(row => row.key === member?.rowKey);
-      return Boolean(member && member.disclosurePath.length === 0 && row?.sources.every(source => source.position !== target.position || source.detailsLoaded !== false));
+      return Boolean(member && member.disclosurePath.length === 0 && member.detailSources.every(source => source.detailsLoaded !== false));
     }, signal);
     const prepared = latest.current.projection.membership.get(target.position);
     return prepared ? { status: 'prepared' as const, rowKey: prepared.rowKey } : { status: 'not-renderable' as const };

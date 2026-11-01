@@ -71,6 +71,23 @@ it('keeps canonical run and exact member identity through window edges and discl
   expect(project([optimistic]).rows[0].key).toBe(project([durable]).rows[0].key);
 });
 
+it.each([false, true])('keeps a live system diagnostic outside assistant activity (saved prefix: %s)', saved => {
+  const prefix = [item('first', saved ? 0 : undefined), item('second', saved ? 1 : undefined)];
+  const facts = activityRunFacts(prefix.map(event => event.item) as import('../src/presentation/types').DisplayActivityItem[]);
+  const displayContext: ConversationDisplayContext | undefined = saved ? { version: 1, aliases: [], owners: [],
+    fragments: [0, 1].map(position => ({ id: `${position}:activity:0`, coordinate: { position, part: 'activity:0' }, kind: 'activity',
+      activity_run_id: '0:activity:0', paired_source_positions: [] })),
+    activity_runs: [{ id: '0:activity:0', first: { position: 0, part: 'activity:0' }, last: { position: 1, part: 'activity:0' }, member_count: 2,
+      presentation: { ...presentActivityRunFacts(facts), facts } }] } : undefined;
+  const diagnostic = item('failure');
+  diagnostic.item = { ...diagnostic.item, type: 'activity', role: 'system', activity_kind: 'diagnostic', severity: 'error' } as ChatItem;
+  const projected = projectReadingRows({ events: [...prefix, item('live-assistant'), diagnostic], conversationId: 'conv',
+    positionSpaceId: 'space', readingContext: new Map(), displayContext, expanded: {} });
+  expect(projected.rows).toHaveLength(2);
+  expect(projected.rows[0].activityGroup?.items.map(node => node.entity)).toEqual(['assistant', 'assistant', 'assistant']);
+  expect(projected.rows[1].nodes[0]).toMatchObject({ kind: 'activity', entity: 'system', item: { severity: 'error' } });
+});
+
 it('keeps an off-window call and its inline result under the full call identity without extending history', () => {
   const call = { ...item('call', 0), item: { ...item('call').item, type: 'tool-call', role: 'assistant', phase: 'call',
     tool_id: 'tool', tool_name: 'read', input: { file_path: '/tmp/exact-file' }, parts: [] } } as CanonicalChatItemEvent;
