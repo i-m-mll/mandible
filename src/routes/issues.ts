@@ -1,3 +1,4 @@
+import { listIssueHierarchyEdges } from "../ledger/issue-graph.js";
 import { responsibilityActor, sameResponsibilitySession, sessionResponsibilityActor } from "../responsibility.js";
 import type { LedgerReader } from "../ledger-reads/index.js";
 import { existsSync } from "node:fs";
@@ -34,7 +35,6 @@ import {
   type LedgerIssueResolution,
   type LedgerIssueStatus,
   type LedgerPriority,
-  type LedgerRelationshipEdge,
   type LedgerRelationshipEntityType,
   type LedgerRelationshipProvenance,
   type LedgerRelationshipType,
@@ -448,32 +448,9 @@ function issueDisplayRefs(db: Db, issueIds: string[]): string[] {
   return issueIds.map((issueId) => refs.get(issueId) ?? issueId);
 }
 
-function listUmbrellaStructuredChildEdgeIds(db: Db, umbrellaId: string): string[] {
-  const store = new LedgerStore(db);
-  return uniqueStrings(store.listRelationshipEdges({ source_issue_id: umbrellaId })
-    .filter((edge: LedgerRelationshipEdge) =>
-      edge.link_type === "parent_child"
-      && edge.target_entity_type === "issue"
-      && typeof edge.target_issue_id === "string"
-      && edge.target_issue_id.length > 0
-    )
-    .map((edge) => edge.target_issue_id));
-}
-
 function listUmbrellaChildEdgeIds(db: Db, umbrellaId: string): string[] {
-  const edgeChildIds = listUmbrellaStructuredChildEdgeIds(db, umbrellaId);
-  const legacyChildIds = tableExists(db, "ledger_issue_relationships")
-    ? (db.prepare(
-        `SELECT target_issue_id
-           FROM ledger_issue_relationships
-          WHERE source_issue_id = ?
-            AND +relationship_type = 'parent_child'
-            AND deleted_at IS NULL
-          ORDER BY created_at, id`,
-      ).all(umbrellaId) as Array<{ target_issue_id: string }>)
-        .map((row) => row.target_issue_id)
-    : [];
-  return uniqueStrings([...edgeChildIds, ...legacyChildIds]);
+  return uniqueStrings(listIssueHierarchyEdges(db, { sourceIds: [umbrellaId] })
+    .map(edge => edge.target_issue_id));
 }
 
 function refreshDelegationManifest(
@@ -664,36 +641,12 @@ function authRequestsByIssue(db: Db, issueIds: string[]): Map<string, unknown[]>
   return grouped;
 }
 
-/**
- * Count each issue's direct parent_child children (structured edges plus legacy
- * relationships), de-duplicating a child that is linked through both surfaces so
- * it is counted once. Batched: one query per relationship surface for the whole
- * id set.
- */
 function directChildCountsByIssue(db: Db, issueIds: string[]): Map<string, number> {
-  if (issueIds.length === 0) return new Map();
-  const { sql, bindings } = placeholders(issueIds, "issue");
-  const rows = db.prepare(
-    `SELECT source_issue_id, target_issue_id
-       FROM ledger_relationship_edges
-      WHERE +link_type = 'parent_child'
-        AND +target_entity_type = 'issue'
-        AND deleted_at IS NULL
-        AND target_issue_id IS NOT NULL
-        AND source_issue_id IN (${sql})
-     UNION
-     SELECT source_issue_id, target_issue_id
-       FROM ledger_issue_relationships
-      WHERE +relationship_type = 'parent_child'
-        AND deleted_at IS NULL
-        AND source_issue_id IN (${sql})`,
-  ).all(bindings) as Array<{ source_issue_id: string; target_issue_id: string }>;
-  const counts = new Map<string, number>();
-  for (const id of issueIds) counts.set(id, 0);
-  for (const row of rows) {
-    counts.set(row.source_issue_id, (counts.get(row.source_issue_id) ?? 0) + 1);
+  const children = new Map<string, Set<string>>(issueIds.map(id => [id, new Set()]));
+  for (const edge of listIssueHierarchyEdges(db, { sourceIds: issueIds })) {
+    children.get(edge.source_issue_id)!.add(edge.target_issue_id);
   }
-  return counts;
+  return new Map([...children].map(([id, ids]) => [id, ids.size]));
 }
 
 function buildUmbrellaChildSummaries(
@@ -822,7 +775,7 @@ function linkMissingUmbrellaChildren(
   missingIds: string[];
   action_id: string | null;
 } {
-  const beforeIds = listUmbrellaStructuredChildEdgeIds(db, umbrellaId);
+  const beforeIds = listUmbrellaChildEdgeIds(db, umbrellaId);
   const beforeSet = new Set(beforeIds);
   const missingIds = childIds.filter((childId) => !beforeSet.has(childId));
   if (missingIds.length === 0) return { beforeIds, missingIds, action_id: null };
