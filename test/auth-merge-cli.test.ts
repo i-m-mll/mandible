@@ -228,7 +228,7 @@ describe("auth merge Mandible preflight", () => {
     expect(result.stderr).toContain("checking signing configuration");
   });
 
-  it("blocks staged changes through Mandible auth check", async () => {
+  it("preserves staged changes by refusing before daemon preflight", async () => {
     const authCheck = await listenForAuthCheck({
       status: "error",
       repo: "repo",
@@ -241,6 +241,9 @@ describe("auth merge Mandible preflight", () => {
     fs.writeFileSync(path.join(tempDir, "staged.txt"), "staged\n", "utf8");
     git(["add", "staged.txt"]);
 
+    const before = git(["rev-parse", "main"]);
+    const index = fs.readFileSync(path.join(tempDir, ".git", "index"));
+
     const result = await runAsync(["auth", "merge", "feature/demo"], tempDir, {
       MANDIBLE_AUTH_ATOMIC: "1",
       MANDIBLE_PORT: String(authCheck.port),
@@ -248,10 +251,11 @@ describe("auth merge Mandible preflight", () => {
     });
 
     expect(result.status).toBe(1);
-    expect(authCheck.bodies).toHaveLength(1);
-    expect(result.stderr).toContain("tracked worktree changes are present: staged.txt");
-    expect(result.stderr).toContain("Mandible merge preflight failed");
-    expect(result.stderr).toContain("staged.txt");
+    expect(authCheck.bodies).toHaveLength(0);
+    expect(result.stdout).toContain("Checkout blocked: staged [A ]: staged.txt");
+    expect(git(["rev-parse", "main"])).toBe(before);
+    expect(fs.readFileSync(path.join(tempDir, ".git", "index"))).toEqual(index);
+    expect(fs.readFileSync(path.join(tempDir, "staged.txt"), "utf8")).toBe("staged\n");
     expect(result.stderr).not.toContain("commit.gpgsign is set to false");
   });
 

@@ -13,6 +13,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
+import { checkCheckoutReadiness } from "../cli/checkout-readiness.mjs";
 import { authRequestSnapshot, authSnapshotDigest } from "../src/auth-request-snapshot.js";
 import type { SseEvent } from "../src/types.js";
 import { addCredential, getOperator } from "../src/users/store.js";
@@ -28,6 +29,39 @@ async function submitPausedSibling(queue: AuthQueue, db: Parameters<typeof regis
 }
 
 describe("auth queue", () => {
+  it("preserves renamed NUL-delimited paths and malformed merge markers in linked checkouts", async () => {
+    const repo = createAuthCheckRepo();
+    const linked = uniqueMissingPath("mandible-readiness-linked");
+    try {
+      git(repo, ["worktree", "add", "-b", "feature/linked", linked]);
+      writeFile(linked, "later.txt", "original\n");
+      git(linked, ["add", "later.txt"]);
+      git(linked, ["commit", "-m", "Track another path"]);
+      const nested = path.join(linked, "nested\nfolder");
+      fs.mkdirSync(nested);
+      expect(await checkCheckoutReadiness(nested)).toEqual({ status: "clean" });
+      git(linked, ["mv", "shared.txt", "renamed\nnotes.txt"]);
+      writeFile(linked, "later.txt", "local\n");
+      const indexPath = git(linked, ["rev-parse", "--path-format=absolute", "--git-path", "index"]);
+      const index = fs.readFileSync(indexPath);
+      const dirty = await checkCheckoutReadiness(nested);
+      expect(dirty.status).toBe("error");
+      if (dirty.status !== "error") throw new Error("Expected dirty checkout refusal");
+      expect(dirty.message).toContain("staged [R ]: $'renamed\\nnotes.txt'");
+      expect(dirty.message).toContain("unstaged [ M]: later.txt");
+      const mergeHead = git(linked, ["rev-parse", "--path-format=absolute", "--git-path", "MERGE_HEAD"]);
+      fs.symlinkSync(path.join(linked, "missing-merge-object"), mergeHead);
+      const interrupted = await checkCheckoutReadiness(nested);
+      expect(interrupted).toMatchObject({ status: "error", exitCode: 1, message: expect.stringContaining("has a merge in progress") });
+      expect(fs.lstatSync(mergeHead).isSymbolicLink()).toBe(true);
+      expect(fs.readFileSync(indexPath)).toEqual(index);
+      expect(fs.readFileSync(path.join(linked, "later.txt"), "utf8")).toBe("local\n");
+    } finally {
+      fs.rmSync(linked, { recursive: true, force: true });
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   it("repairs only historical candidate drift after branch and main advance", async () => {
     const repo = createAuthCheckRepo();
     const db = createMigratedDb();

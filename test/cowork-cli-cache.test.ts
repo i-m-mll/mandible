@@ -61,6 +61,13 @@ describe("Cowork CLI cache materializer", () => {
     expect(result.status, result.stderr).toBe(2);
     expect(result.stderr).toContain("Arguments do not match: mandible issue report");
     expect(result.stderr).not.toContain("Cannot find module");
+    const checkout = path.join(tempDir, "checkout");
+    const init = spawnSync("git", ["init", "-q", "-b", "main", checkout], { encoding: "utf8", timeout: 5_000 });
+    expect(init.status, init.stderr).toBe(0);
+    const readiness = spawnSync("bash", [path.join(targetDir, "checkout-readiness.sh"), checkout], {
+      encoding: "utf8", env: { ...process.env, MANDIBLE_CLI_DIR: targetDir }, timeout: 15_000,
+    });
+    expect(readiness.status, readiness.stderr).toBe(0);
     const rendered = spawnSync(process.execPath, [path.join(targetDir, "command-syntax.cjs"),
       "render", path.join(targetDir, "instructions-contract.md")], { encoding: "utf8" });
     expect(rendered.status).toBe(0);
