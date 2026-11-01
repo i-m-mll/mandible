@@ -2797,10 +2797,13 @@ export function ConversationDetail({
             onFork={handleFork}
             onCreatedTaskNavigate={navigateToCreatedTask}
             onExpandDetails={handleExpandConversationDetails}
-            onCopyMessageLink={(blockId) => {
-              void navigator.clipboard.writeText(messageLinkUrl(window.location.href, conversationId, blockId))
-                .then(() => setToast({ type: 'info', message: 'Message link copied.' }),
-                  () => setToast({ type: 'error', message: 'Could not copy the message link.' }));
+            onCopyMessageLink={async (blockId) => {
+              try {
+                await navigator.clipboard.writeText(messageLinkUrl(window.location.href, conversationId, blockId));
+                setToast({ type: 'info', message: 'Message link copied.' });
+              } catch {
+                setToast({ type: 'error', message: 'Could not copy the message link.' });
+              }
             }}
             sessionInfo={{
               sessionId: conversation.session_id,

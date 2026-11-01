@@ -107,9 +107,6 @@ export function MessageGroup({
 
     if (!inner) return null;
 
-    // Keep selection and provenance controls attached to their exact block.
-    // Copy lives in the shared group footer, so a second top-right copy action
-    // would duplicate the same operation and obscure message text on hover.
     const source = block.source;
     return (
       <div

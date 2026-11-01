@@ -18,10 +18,9 @@ import type {
   StreamRendererProps,
 } from '../components/stream-renderer/types';
 import { MessageGroup } from '../components/stream-renderer/MessageGroup';
-import { MessageActions, MessageLinkContext } from '../components/shared/MessageActions';
+import { MessageActions, MessageLinkContext, MessagePrimaryActionsContext, type MessagePrimaryAction } from '../components/shared/MessageActions';
 import { DetailPaneOverlayContext } from '../components/shared/DetailPaneShell';
 import { TurnGroup } from '../components/message-blocks/TurnGroup';
-import { GroupFooter } from '../components/message-blocks/GroupFooter';
 import { UserBubble, userMessageVisibleText } from '../components/message-blocks/UserBubble';
 import { SemanticEventBlock, UnmatchedToolResultBlock } from '../components/message-blocks/SemanticEventBlock';
 import { ActivityGroup, ActivityRow } from '../components/message-blocks/ActivityBlock';
@@ -597,7 +596,14 @@ export function ChatSurface({
     scrollEndThreshold: followingTail && !scrollbarDragging ? FOLLOW_THRESHOLD_PX : -1,
     onChange: syncScrollbar,
   });
-  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = scrollbarDragging ? () => false : undefined;
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => {
+    if (scrollbarDragRef.current !== null) return false;
+    const readingPoint = (instance.scrollElement?.scrollTop ?? instance.scrollOffset ?? 0)
+      + instance.scrollAdjustments;
+    return instance.itemSizeCache.has(item.key)
+      ? item.end <= readingPoint
+      : item.start < readingPoint;
+  };
   const virtualItems = virtualizer.getVirtualItems();
   const estimatedUnmaterializedDistance = transcript
     ? 0
@@ -918,7 +924,6 @@ export function ChatSurface({
     const measurementsChanged = lastMeasuredSizesRef.current !== measuredGroupSizesByScope;
     lastMeasuredSizesRef.current = measuredGroupSizesByScope;
     if (!measurementsChanged) return;
-    if (virtualizer.isScrolling && virtualizer.scrollDirection === 'backward') return;
     if (tailIntentRef.current || navigationTarget || scrollbarDragRef.current || userScrollIntentRef.current) return;
     const anchor = currentReadingAnchorRef.current;
     if (anchor?.followingTail === false) restoreReadingAnchor(anchor, 'mounted');
@@ -1464,17 +1469,23 @@ export function ChatSurface({
     const firstAssistant = group.nodes.find((node): node is Extract<RenderNode, { kind: 'assistant_turn' }> => (
       node.kind === 'assistant_turn'
     ));
-    const footer = markdown ? (
-      <GroupFooter
-        totalTokens={group.meta.totalTokens}
-        onCopyAll={() => copyText(markdown)}
-        onOpenMarkdown={() => openMarkdownDocument(markdown)}
-        onSelect={firstAssistant && onSelectMessageInfo ? () => onSelectMessageInfo(firstAssistant.turn.id) : undefined}
-        isSelected={firstAssistant ? selectedMessageId === firstAssistant.turn.id : false}
-      />
-    ) : undefined;
+    const primaryActions: MessagePrimaryAction[] = markdown ? [{
+      id: 'copy-group', title: 'Copy all', label: 'Copy all messages', icon: 'copyMessage', onAction: () => copyText(markdown),
+    }, {
+      id: 'open-group-markdown', title: 'Open markdown', label: 'Open turn as markdown', icon: 'openMarkdown',
+      onAction: () => openMarkdownDocument(markdown),
+    }] : [];
+    if (firstAssistant && onSelectMessageInfo) primaryActions.splice(1, 0, {
+      id: 'select-group', title: selectedMessageId === firstAssistant.turn.id ? 'Deselect' : 'Select',
+      label: selectedMessageId === firstAssistant.turn.id ? 'Deselect turn' : 'Select turn',
+      icon: selectedMessageId === firstAssistant.turn.id ? 'messageSelected' : 'selectMessage',
+      onAction: () => onSelectMessageInfo(firstAssistant.turn.id),
+    });
+    const footer = group.meta.totalTokens != null
+      ? <span className="turn-group__stats">{group.meta.totalTokens.toLocaleString()} tokens</span> : undefined;
 
     return (
+      <MessagePrimaryActionsContext.Provider value={primaryActions}>
       <TurnGroup
         key={group.id}
         speaker={group.speaker}
@@ -1497,6 +1508,7 @@ export function ChatSurface({
               data-member-refs={[...new Set(memberRefs)].join(' ')}
             >
               <ActivityGroup
+                actions={<MessageLinkContext.Provider value={null}><MessageActions /></MessageLinkContext.Provider>}
                 active={streaming && entry.nodes.some((node) => node.item.type === 'tool-call-activity' && node.item.executionActive)}
                 items={entry.nodes.map((node) => node.item)}
                 memberRefs={memberRefs}
@@ -1508,6 +1520,7 @@ export function ChatSurface({
           );
         })}
       </TurnGroup>
+      </MessagePrimaryActionsContext.Provider>
     );
   }
 

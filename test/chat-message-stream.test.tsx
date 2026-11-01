@@ -7,6 +7,7 @@ import { boundToolResultBlock, buildStreamState, conversationBlocksToStreamEvent
 import { ChatSurface, estimateUserMessageHeight } from '../ui/src/chat/ChatSurface';
 import { conversationAnchorFromHash, messageLinkUrl } from '../ui/src/chat/messageLinks';
 import { __resetAgentPageBindingForTests, adoptAgentSessionBinding } from '../ui/src/agent-page-binding';
+import { MessageActions, MessageLinkContext } from '../ui/src/components/shared/MessageActions';
 import type { ConversationTranscriptConsumer } from '../ui/src/query/conversationData';
 import type { StreamEvent } from '../ui/src/components/stream-renderer/types';
 import type { ChatItem } from '../src/parsers/types';
@@ -151,6 +152,44 @@ it.each(['user', 'assistant', 'system'] as const)('copies an exact %s message li
   const params = new URLSearchParams(url.hash.split('?')[1]);
   expect(Object.fromEntries(params)).toEqual({ sidebar: 'hidden', conversation: 'copy-conversation', block: 'cblk:copy-conversation:42', agent_session: 'copy-agent' });
   expect(conversationAnchorFromHash(url.hash)).toEqual({ block: 'cblk:copy-conversation:42' });
+});
+
+it.each(['Copy link', 'Fork', 'Resume', 'Info'])('executes %s and closes a menu outside the hover rail', (label) => {
+  const callbacks = { 'Copy link': vi.fn(), Fork: vi.fn(), Resume: vi.fn(), Info: vi.fn() };
+  const view = render(<MessageLinkContext.Provider value={callbacks['Copy link']}>
+    <MessageActions blockId="exact-block" dagUuid="exact-dag" onFork={callbacks.Fork} onResume={callbacks.Resume} onInfo={callbacks.Info} />
+  </MessageLinkContext.Provider>);
+  fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+  const menu = screen.getByRole('menu');
+  expect(view.container.contains(menu)).toBe(false);
+  expect(document.body.contains(menu)).toBe(true);
+  const item = screen.getByRole('menuitem', { name: label });
+  fireEvent.pointerDown(item, { button: 0 });
+  fireEvent.mouseDown(item, { button: 0 });
+  fireEvent.mouseUp(item, { button: 0 });
+  fireEvent.click(item, { button: 0 });
+  expect(callbacks[label as keyof typeof callbacks]).toHaveBeenCalledOnce();
+  if (label === 'Copy link') expect(callbacks['Copy link']).toHaveBeenCalledWith('exact-block');
+  expect(screen.queryByRole('menu')).toBeNull();
+  expect(screen.getByRole('button', { name: 'More actions' }).getAttribute('aria-expanded')).toBe('false');
+});
+
+it('composes group-scoped primary actions and exact-source overflow in one rail', () => {
+  const copyLink = vi.fn();
+  const events = ['first', 'second'].map((text, index) => canonicalEvent(canonicalItem({
+    type: 'message', role: 'assistant', parts: [{ type: 'text', text }], ordinal: index, turn: 'shared-turn',
+  }), `message-${text}`));
+  const view = render(<ChatSurface events={events} streaming={false} onCopyMessageLink={copyLink} />);
+  const rail = view.container.querySelector('[data-block-id="message-second"] .message-actions')!;
+  const buttons = Array.from(rail.querySelectorAll('button'));
+  expect(buttons.map((button) => button.getAttribute('aria-label'))).toEqual(['Copy all messages', 'Open turn as markdown', 'More actions']);
+  fireEvent.click(buttons[0]);
+  const copied = vi.mocked(navigator.clipboard.writeText).mock.calls[0][0];
+  expect(copied).toContain('first');
+  expect(copied).toContain('second');
+  fireEvent.click(buttons[2]);
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Copy link' }));
+  expect(copyLink).toHaveBeenCalledWith('message-second');
 });
 
 it('estimates tall visible user content by width without charging folded instruction bodies', () => {

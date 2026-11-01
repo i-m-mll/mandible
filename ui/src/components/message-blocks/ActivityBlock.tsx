@@ -266,9 +266,11 @@ export function ActivityGroup({
   memberRefs,
   renderMember,
   active = false,
+  actions,
 }: {
   items: readonly DisplayActivityItem[];
   active?: boolean;
+  actions?: import('preact').ComponentChildren;
   expanded?: boolean;
   onExpandedChange?: (expanded: boolean) => void;
   memberRefs?: readonly (string | undefined)[];
@@ -285,6 +287,7 @@ export function ActivityGroup({
       className={`activity-group${active ? ' activity-group--active' : ''}`}
       icon={activityIcon((active && items.find((item) => item.type === 'tool-call-activity' && item.executionActive)) || items[0])}
       summary={summary}
+      actions={actions}
       memberRefs={memberRefs?.filter(Boolean).join(' ')}
       disclosure={hasMemberDisclosure ? {
         content: (
