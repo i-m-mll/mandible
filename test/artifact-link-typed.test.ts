@@ -1,4 +1,7 @@
 import crypto from "node:crypto";
+import { artifactRepo } from "./helpers/artifact-repo-fixtures.js";
+import { readArtifactBytesFull } from "../src/artifact-content.js";
+import { planArtifactSourceMove, commitArtifactSourceMove } from "../src/artifact-source.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -14,6 +17,9 @@ import { registerProviderRoutes } from "../src/routes/providers.js";
 import { registerGraphRoutes } from "../src/routes/graph.js";
 import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import {
+  ArtifactLinkTargetError,
+  recordArtifactVersion,
+  associateProjectArtifact,
   ensureArtifactSeries,
   registerArtifactLink,
   resolveAndLinkArtifact,
@@ -23,6 +29,7 @@ import { appendArtifactVersion } from "./helpers/artifact-http-write-fixtures.js
 import type { ArtifactRecord } from "../src/types.js";
 import {
   insertRawLedgerIssue,
+  insertRawLedgerCheckout,
   insertRawLedgerProject,
   migratedMemoryDb,
 } from "./helpers/ledger-fixtures.js";
@@ -291,6 +298,92 @@ describe("NO SILENT RETARGET: artifact_id is never rewritten on conflict", () =>
   });
 });
 
+describe("canonical artifact link destination", () => {
+  function destinations() {
+    const project = insertRawLedgerProject(db, { name: "destination", projectKey: "destination" });
+    const otherProject = insertRawLedgerProject(db, { name: "other", projectKey: "other" });
+    const first = insertRawLedgerIssue(db, { id: "abcdef0100000001", projectId: project, alias: { alias: "shared" } });
+    const second = insertRawLedgerIssue(db, { id: "abcdef0200000002", projectId: otherProject, alias: { alias: "shared" } });
+    return { first, second, project };
+  }
+  const linksTo = (id: string) => db.prepare("SELECT entity_id FROM artifact_links WHERE entity_id = ?").all(id);
+  const state = () => ({
+    links: db.prepare("SELECT * FROM artifact_links ORDER BY id").all(),
+    edges: db.prepare("SELECT * FROM graph_edges ORDER BY id").all(),
+    references: db.prepare("SELECT * FROM ledger_relationship_edges ORDER BY id").all(),
+    events: db.prepare("SELECT * FROM ledger_events ORDER BY id").all(),
+    changes: db.prepare("SELECT total_changes() AS count").get(),
+  });
+
+  for (const caller of ["service", "route"] as const) {
+    it(`${caller} refuses conflicting or unresolved destinations before any write`, async () => {
+      const { first, second, project } = destinations();
+      const art = makeArtifact("target safety");
+      const cases = [
+        { fields: { issue: first, entity_id: second }, code: "ambiguous_link_entity_target" },
+        { fields: { issue: first, entity_id: second, entity_type: "issue" }, code: "ambiguous_link_entity_target" },
+        { fields: { issue: first, entity_id: second, entity_type: "conversation" }, code: "ambiguous_link_entity_target" },
+        { fields: { issue: first, entity_type: "conversation" }, code: "ambiguous_link_entity_target" },
+        { fields: { issue: "missing" }, code: "issue_not_found" },
+        { fields: { entity_type: "issue", entity_id: "missing" }, code: "issue_not_found" },
+        { fields: { issue: first, entity_id: "missing" }, code: "issue_not_found" },
+        { fields: { issue: "shared" }, code: "ambiguous_issue_ref" },
+        { fields: { issue: first, entity_id: "abcdef0" }, code: "ambiguous_issue_ref" },
+        { fields: { issue: "other/shared", entity_id: first, issue_project: project }, code: "ambiguous_link_entity_target" },
+        { fields: { issue: first, issue_project: "unknown-project" }, code: "invalid_issue_project" },
+      ];
+      for (const { fields, code } of cases) {
+        const before = state();
+        let error: unknown;
+        let response: Awaited<ReturnType<typeof postLink>> | undefined;
+        try {
+          if (caller === "route") response = await postLink({ ref: art.id, ...fields });
+          else resolveAndLinkArtifact(db, { ref: art.id, ...fields });
+        } catch (caught) { error = caught; }
+        // Inspect the forbidden destination before checking the refusal itself.
+        expect(linksTo(second)).toEqual([]);
+        expect(linksTo(first)).toEqual([]);
+        expect(state()).toEqual(before);
+        if (caller === "route") {
+          expect(response).toMatchObject({ statusCode: 400, payload: { code } });
+        } else {
+          expect(error).toBeInstanceOf(ArtifactLinkTargetError);
+          expect(error).toMatchObject({ status: 400, code });
+        }
+      }
+    });
+
+    it(`${caller} stores one canonical issue for matching aliases and qualified refs`, async () => {
+      const { first, project } = destinations();
+      const art = makeArtifact("canonical target");
+      const variants = [
+        { issue: first, entity_id: "destination/shared" },
+        { issue: "shared", entity_id: first, issue_project: project },
+        { issue: "destination/shared", entity_type: "issue", entity_id: "abcdef01" },
+        { entity_type: "issue", entity_id: "destination/shared" },
+        // An explicit qualifier selects its project before the contextual hint.
+        { issue: "destination/shared", entity_id: "destination/abcdef01", issue_project: "other" },
+      ];
+      for (const fields of variants) {
+        const result = caller === "route"
+          ? await postLink({ ref: art.id, ...fields })
+          : { statusCode: 200, payload: resolveAndLinkArtifact(db, { ref: art.id, ...fields }) };
+        expect(linksTo("destination/shared")).toEqual([]);
+        expect(linksTo(first)).toHaveLength(1);
+        expect(result.statusCode).toBe(200);
+        expect(result.payload.link).toMatchObject({ entity_type: "issue", entity_id: first });
+        expect(db.prepare("SELECT entity_id FROM artifact_links").all()).toEqual([{ entity_id: first }]);
+      }
+    });
+  }
+
+  it("retains non-issue destinations", async () => {
+    const art = makeArtifact("conversation artifact");
+    const result = await postLink({ ref: art.id, entity_type: "conversation", entity_id: "provider-session" });
+    expect(result).toMatchObject({ statusCode: 200, payload: { link: { entity_type: "conversation", entity_id: "provider-session", link_kind: "pinned" } } });
+  });
+});
+
 describe("resolveAndLinkArtifact: pinned vs living", () => {
   it("pinned (default) on a series ref pins to the latest artifact and surfaces series_latest_not_pinned", () => {
     const issueId = createLedgerIssue("issuepin");
@@ -362,6 +455,57 @@ describe("living write requires a single resolvable series", () => {
       }),
     ).toThrow(/living_link_requires_series/);
   });
+});
+
+it("keeps exact v1 bytes and pinning through a cross-project source move and sibling associations", async () => {
+  const issueId = createLedgerIssue("historical-evidence");
+  const repositories = ["original", "moved"].map((name, index) => {
+    const root = path.join(tempDir, name);
+    artifactRepo(root, { "report.md": `version ${index + 1}\n` });
+    const project = insertRawLedgerProject(db, { name, projectKey: name });
+    insertRawLedgerCheckout(db, { name, projectId: project, root });
+    return { root, project, file: path.join(root, "report.md") };
+  });
+  const [original, moved] = repositories;
+  const first = recordArtifactVersion(db, { source_kind: "tracked_repo", path: original.file });
+  const logical = first.logical_artifact.id;
+  const series = logical.replace(/^artifact:/, "artifact-series:");
+  const pinned = await postLink({ ref: first.artifact_version.id, issue: issueId, link_type: "evidence" });
+  const living = resolveAndLinkArtifact(db, { ref: logical, issue: issueId, link_kind: "living" });
+  expect(pinned.statusCode).toBe(200);
+  const move = planArtifactSourceMove(db, { artifact_id: logical, expected_revision: 1,
+    source: { kind: "repo", project_id: moved.project, path: "report.md" }, actor: "test-agent" });
+  if (!move.ok) throw new Error(move.error.message);
+  expect(commitArtifactSourceMove(db, move.value).ok).toBe(true);
+  const second = recordArtifactVersion(db, { source_kind: "tracked_repo", path: moved.file, artifact_id: logical });
+  expect(second.artifact_version.source_project_id).toBe(moved.project);
+  associateProjectArtifact(db, { project_ref: moved.project, target_type: "artifact_version", target_id: second.artifact_version.id });
+  const unrelated = insertRawLedgerProject(db, { name: "unrelated", projectKey: "unrelated" });
+  associateProjectArtifact(db, { project_ref: unrelated, target_type: "artifact_version", target_id: second.artifact_version.id });
+  fs.writeFileSync(original.file, "changed original checkout");
+  fs.writeFileSync(moved.file, "changed moved checkout");
+  for (const ref of [first.artifact_version.id, `${series}@1`]) {
+    const resolved = getRoute("/api/artifacts/resolve", {}, { ref });
+    expect(resolved).toMatchObject({ statusCode: 200, payload: { resolution: { artifact_version: { id: first.artifact_version.id } } } });
+    expect(readArtifactBytesFull(db, ref)).toMatchObject({ ok: true, bytes: Buffer.from("version 1\n") });
+    const again = await postLink({ ref, issue: issueId, link_type: "evidence" });
+    expect(again.payload.link).toMatchObject({ id: pinned.payload.link.id, link_kind: "pinned" });
+    expect(db.prepare("SELECT target_type, target_id FROM artifact_links WHERE id = ?").get(again.payload.link.id))
+      .toEqual({ target_type: "artifact_version", target_id: first.artifact_version.id });
+  }
+  for (const ref of [logical, series]) {
+    expect(getRoute("/api/artifacts/resolve", {}, { ref })).toMatchObject({ statusCode: 200,
+      payload: { resolution: { artifact_version: { id: second.artifact_version.id } } } });
+    expect(readArtifactBytesFull(db, ref)).toMatchObject({ ok: true, bytes: Buffer.from("version 2\n") });
+  }
+  const follow = resolveAndLinkArtifact(db, { ref: logical, issue: issueId, link_kind: "living" });
+  expect(follow.link).toMatchObject({ id: living.link!.id, link_kind: "living", series_id: series });
+  expect(db.prepare("SELECT target_id FROM artifact_links WHERE id = ?").get(follow.link!.id)).toEqual({ target_id: logical });
+  expect(db.prepare("SELECT target_id, link_kind FROM artifact_links WHERE id = ?").get(pinned.payload.link.id))
+    .toEqual({ target_id: first.artifact_version.id, link_kind: "pinned" });
+  for (const version of [first.artifact_version, second.artifact_version]) {
+    expect(version).toMatchObject({ custody_mode: "git", source_project_id: expect.any(String), commit_sha: expect.any(String) });
+  }
 });
 
 describe("evidence links must be pinned", () => {
