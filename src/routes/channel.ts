@@ -1,5 +1,5 @@
 import * as z from "zod";
-import { CHANNEL_EVENT_SCHEMA, type ChannelEvent } from "../contracts.js";
+import { CHANNEL_EVENT_SCHEMA, DOMAIN_EVENT_SCHEMA, DOMAIN_EVENTS, type MandibleEvent } from "../contracts.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -63,14 +63,14 @@ export function registerChannelRoutes(router: Router): void {
     res.json(await tool.run(parsed.data));
   }, { operation: { id: "post:/api/channel/call", effects: ["ledger:read"], requestSchema: CHANNEL_CONTEXT_SCHEMA.extend({ name: z.string(), arguments: z.record(z.string(), z.unknown()) }), reportingCategory: null }, fileRpc: "deny" });
   router.post("/api/channel/render", async (req, res) => {
-    const body = req.body as Context & { event?: ChannelEvent };
+    const body = req.body as Context & { event?: MandibleEvent };
     const notifications: Notification[] = [];
     const delivered: string[] = [];
     const channel = (payload: { content: string; meta?: Record<string, string> }) => {
       notifications.push({ method: "notifications/claude/channel", params: { ...payload } });
     };
     if (body.event) {
-      dispatchEvent(body.event, body.session_id, (category, message) => {
+      if (body.event.type === DOMAIN_EVENTS.AUTH_RESOLVED) dispatchEvent(body.event, body.session_id, (category, message) => {
         notifications.push({ method: "notifications/message", params: { level: "info", logger: `mandible/${category}`, data: message } });
       }, channel, id => delivered.push(id), body.conversation_id);
     } else if (body.session_id) {
@@ -81,5 +81,5 @@ export function registerChannelRoutes(router: Router): void {
         async markDelivered(id) { delivered.push(id); }, log: message => process.stderr.write(message) });
     }
     res.json({ notifications, delivered });
-  }, { operation: { id: "post:/api/channel/render", effects: ["ledger:read"], requestSchema: CHANNEL_CONTEXT_SCHEMA.extend({ event: CHANNEL_EVENT_SCHEMA.optional() }), reportingCategory: null }, fileRpc: "deny" });
+  }, { operation: { id: "post:/api/channel/render", effects: ["ledger:read"], requestSchema: CHANNEL_CONTEXT_SCHEMA.extend({ event: DOMAIN_EVENT_SCHEMA.optional() }), reportingCategory: null }, fileRpc: "deny" });
 }

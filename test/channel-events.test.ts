@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { setDb } from '../src/db.js';
 import { AuthQueue } from '../src/auth-queue.js';
 import { AUTH_REQUEST_STATUSES, computeAuthRequestOutcome, DOMAIN_EVENTS, parseDomainEvent } from '../src/contracts.js';
 import { Router } from '../src/server.js';
@@ -12,6 +13,36 @@ const context = { session_id: 'owner', conversation_id: 'conversation', cwd: '/t
 type Rendered = { notifications: Array<{ method: string; params: { content?: string; data?: string; meta?: Record<string, string> } }>; delivered: string[] };
 
 describe('auth channel event boundary', () => {
+  it('ignores the real startup reload frame delivered to an auth-only subscriber', async () => {
+    const db = createMigratedDb();
+    setDb(db);
+    const startup = vi.spyOn(process, 'uptime').mockReturnValue(1);
+    const manager = new SseManager();
+    const frames: string[] = [];
+    const req = new EventEmitter();
+    const res = Object.assign(new EventEmitter(), { writableLength: 0, writeHead() {}, write(frame: string) { frames.push(frame); return true; }, destroy() {} });
+    const router = new Router();
+    registerChannelRoutes(router);
+    try {
+      manager.setStartupCommit({ hash: 'startup-commit', summary: 'Startup', date: '2026-11-01' });
+      manager.addClient(req as IncomingMessage, res as unknown as ServerResponse, ['auth:resolved']);
+      const emitted = frames.filter(frame => frame.startsWith('data:')).map(frame => JSON.parse(frame.slice(5)));
+      expect(emitted).toHaveLength(1);
+      expect(emitted[0].type).toBe(DOMAIN_EVENTS.DAEMON_RELOADED);
+      const response = await router.invoke({ method: 'POST', url: '/api/channel/render', body: { ...context, event: emitted[0] } });
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ notifications: [], delivered: [] });
+      const malformed = await router.invoke({ method: 'POST', url: '/api/channel/render', body: {
+        ...context, event: { type: DOMAIN_EVENTS.HEARTBEAT, data: { timestamp: 'invalid' } },
+      } });
+      expect(malformed.status).toBe(400);
+    } finally {
+      manager.closeAll();
+      startup.mockRestore();
+      db.close();
+    }
+  });
+
   it('renders a real queue resolution over SSE only for its owner and rejects malformed notification input', async () => {
     const db = createMigratedDb();
     const manager = new SseManager();
