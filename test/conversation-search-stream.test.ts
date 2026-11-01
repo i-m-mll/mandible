@@ -160,7 +160,7 @@ describe("verified conversation scans", () => {
     const reader = new ConversationSourceReader(db);
     const result = await reader.scanBlocks(source.id, async block => {
       seen.push(block.content);
-      if (!published) { published = true; await publishAppend(source, texts.length, nativeMessage("new snapshot only") + "\n"); }
+      if (!published) { published = true; await publishAppend(source, nativeMessage("new snapshot only") + "\n"); }
     }, { expectedSourceVersionId: version });
     expect(store.resolveConversation(source.id)!.currentVersionId).not.toBe(version);
     expect(result).toMatchObject({ status: "source", sourceVersionId: version, value: { count: texts.length, complete: true } });
@@ -195,7 +195,7 @@ describe("verified conversation scans", () => {
       if (mutation === "alias") db.prepare("UPDATE conversation_source_aliases SET availability = 'missing'").run();
       else {
         fs.writeFileSync(source.filePath, source.bytes.toString().replace("original", "modified"));
-        publication = publishAppend(source, 1, nativeMessage("new snapshot only") + "\n", true);
+        publication = publishAppend(source, nativeMessage("new snapshot only") + "\n");
       }
     } });
     const result = await reader.scanBlocks(source.id, () => { finalProof = true; return "stop"; }, { expectedSourceVersionId: version });
@@ -215,7 +215,7 @@ describe("verified conversation scans", () => {
     caches.push(hot);
     await hot.search({ conversationIds: [source.id], needle: "new snapshot only", limit: 1, ...pins });
     await hot.whenIdle();
-    await publishAppend(source, texts.length, tail.slice(partial.length) + "\n");
+    await publishAppend(source, tail.slice(partial.length) + "\n");
     const oldHot = await hot.search({ conversationIds: [source.id], needle: "new snapshot only", limit: 1, ...pins });
     expect(oldHot).toMatchObject({ matches: [], failures: [], metrics: { hot_conversations: 1 } });
     const cold = new ConversationSearchCache(adapter, { cachePath: ":memory:" });
@@ -238,7 +238,7 @@ describe("verified conversation scans", () => {
     await cache.whenIdle();
     if (mutation === "rewrite") fs.writeFileSync(source.filePath, source.bytes.toString().replace("original", "modified"));
     else { fs.renameSync(source.filePath, `${source.filePath}.old`); fs.writeFileSync(source.filePath, source.bytes); }
-    await publishAppend(source, 1, nativeMessage("new snapshot only") + "\n", mutation === "rewrite");
+    await publishAppend(source, nativeMessage("new snapshot only") + "\n");
     const result = await cache.search({ conversationIds: [source.id], needle: "absent", limit: 1, ...pins });
     expect(result.matches).toEqual([]);
     expect(result.failures).toMatchObject([{ conversation_id: source.id, status: "stale" }]);
@@ -319,13 +319,13 @@ function nativeMessage(text: string): string {
   return JSON.stringify({ type: "response_item", timestamp: "2026-10-29T00:00:02Z", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text }] } });
 }
 
-async function publishAppend(source: { id: string; filePath: string }, oldCount: number, tail: string, replace = false): Promise<void> {
+async function publishAppend(source: { id: string; filePath: string }, tail: string): Promise<void> {
   fs.appendFileSync(source.filePath, tail);
   const parsed = await new CodexParser().parse(source.filePath);
   if (!parsed) throw new Error("appended fixture did not parse");
   db.prepare("UPDATE conversations SET block_count = ?, source_hash = ?, source_mtime = ? WHERE id = ?")
     .run(parsed.blocks.length, parsed.conversation.source_hash, parsed.conversation.source_mtime, source.id);
   await new ConversationSourceStore(db).recordConversation({ conversationId: source.id, provider: "codex", nativeSessionId: source.id,
-    filePath: source.filePath, structuralMode: replace ? "replace" : "append", ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
-    blocks: parsed.blocks.slice(replace ? 0 : oldCount).map(block => ({ ...block, legacyId: `${source.id}-${block.position}` })) });
+    filePath: source.filePath, sourceSnapshot: parsed.sourceSnapshot, ...CURRENT_CONVERSATION_SOURCE_EPOCHS,
+    blocks: parsed.blocks });
 }
