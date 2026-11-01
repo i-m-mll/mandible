@@ -1,11 +1,11 @@
 // @vitest-environment node
+import { migratedFileDb } from './helpers/ledger-fixtures.js';
 
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import SqliteDatabase from "../src/sqlite.ts";
-import { openDb } from "../src/db.js";
 import { setSetting } from "../src/client-auth/settings-kv.js";
 import { addCredential, setupOperator } from "../src/users/store.js";
 import { reloadLocalFrontDoor, sanitizePreviewDatabase } from "../scripts/iab-preview.mjs";
@@ -42,7 +42,7 @@ describe("preview database sanitization", () => {
   it("removes capability-bearing state without deleting referenced provenance", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-preview-sanitize-")); roots.add(root);
     const databasePath = path.join(root, "preview.db");
-    const db = openDb(databasePath);
+    const db = migratedFileDb(databasePath);
     const operator = setupOperator(db, { slug: "operator", display_name: "Operator" }, 1_000);
     const credential = addCredential(db, operator.id, {
       type: "api_token",

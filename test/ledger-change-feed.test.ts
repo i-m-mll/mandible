@@ -1,6 +1,6 @@
-import SqliteDatabase from "../src/sqlite.ts";
+import { migratedMemoryDb } from './helpers/ledger-fixtures.js';
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { migrate, type Db } from "../src/db.js";
+import { type Db } from "../src/db.js";
 import { systemAction } from "../src/identity/resolver.js";
 import {
   LEDGER_CHANGE_FEED_SCHEMA,
@@ -16,8 +16,7 @@ import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
 let db: Db;
 
 beforeEach(() => {
-  db = new SqliteDatabase(":memory:");
-  migrate(db);
+  db = migratedMemoryDb();
 });
 
 afterEach(() => db.close());

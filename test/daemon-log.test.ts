@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { migratedFileDb } from './helpers/ledger-fixtures.js';
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
@@ -6,7 +7,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { openDb, type Db } from "../src/db.js";
+import { type Db } from "../src/db.js";
 import {
   configureDaemonLogger,
   startDaemonLogRetention,
@@ -34,7 +35,7 @@ const originalStderrLogPath = process.env.MANDIBLE_STDERR_LOG_PATH;
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(testRuntimeRoot, "daemon-log-"));
   process.env.MANDIBLE_STDERR_LOG_PATH = path.join(tempDir, "launchd-stderr.log");
-  ledgerDb = openDb(path.join(tempDir, "mandible.db"));
+  ledgerDb = migratedFileDb(path.join(tempDir, "mandible.db"));
   db = openOperationalLogStore(path.join(tempDir, "mandible.db"))!.db;
   stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 });

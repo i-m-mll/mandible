@@ -1,3 +1,4 @@
+import { migratedFileDb, migratedMemoryDb } from './helpers/ledger-fixtures.js';
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -10,7 +11,7 @@ import {
   verifyMergeCommitSignature,
   verifySuccessfulMergeCommitSignature,
 } from "../src/auth-signature-verification.js";
-import { openDb, type Db } from "../src/db.js";
+import { type Db } from "../src/db.js";
 import { AttributionReadResolver } from "../src/identity/read-projection.js";
 import {
   addAttributionEvidence,
@@ -19,7 +20,6 @@ import {
   revokeCredential,
   setupOperator,
 } from "../src/users/store.js";
-import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 import { preparedGitFixture } from "./helpers/prepared-git-fixture.js";
 
 function git(cwd: string, args: string[]): string {
@@ -77,7 +77,7 @@ describe("merge signature verification", () => {
     repo = path.join(tempDir, "repo");
     keyPath = path.join(tempDir, "signing_key");
     git(repo, ["config", "user.signingkey", keyPath]);
-    db = openDb(path.join(tempDir, "mandible.db"));
+    db = migratedFileDb(path.join(tempDir, "mandible.db"));
   });
 
   afterEach(() => {

@@ -7,9 +7,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { migrate, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { AuthQueue } from "../src/auth-queue.js";
 import { FileRpcTransport, defaultFileRpcDirForInstance } from "../src/file-rpc-transport.js";
 import { addProject } from "../src/ledger/project-registry.js";
@@ -478,9 +477,8 @@ describe("file RPC transport", () => {
   });
 
   it("serves the real mandible CLI through file RPC and registered project routes", async () => {
-    const db: Db = new SqliteDatabase(":memory:");
+    const db: Db = migratedMemoryDb();
     try {
-      migrate(db);
       setDb(db);
       addProject(db, {
         project_key: "feedbax",

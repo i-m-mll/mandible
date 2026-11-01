@@ -1,7 +1,8 @@
+import { migratedMemoryDb } from './helpers/ledger-fixtures.js';
 import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Options } from "@anthropic-ai/claude-agent-sdk";
-import { migrate, setDb } from "../src/db.js";
+import { setDb } from "../src/db.js";
 import { resolveSessionClientIdentity, SessionManager } from "../src/session-manager.js";
 import { ClaudeSdkTransport } from "../src/conversation-control/claude-sdk-transport.js";
 import { projectManagedProviderIdentity } from "../src/backends/mandible-transport.js";
@@ -12,7 +13,7 @@ import { addBinding, createUser, setupOperator } from "../src/users/store.js";
 // persisting bearer tokens on Console rows. Test the maintained boundaries.
 describe("agent client-auth provisioning", () => {
   let db: InstanceType<typeof SqliteDatabase>;
-  beforeEach(() => { db = new SqliteDatabase(":memory:"); migrate(db); setDb(db); });
+  beforeEach(() => { db = migratedMemoryDb(); setDb(db); });
   afterEach(() => { db.close(); vi.unstubAllEnvs(); });
 
   it("strips explicit bearer credentials from terminal metadata and rejects managed Console creation", () => {

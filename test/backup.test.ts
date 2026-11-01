@@ -1,3 +1,4 @@
+import { migratedFileDb, migratedMemoryDb, SYSTEM_ACTOR } from './helpers/ledger-fixtures.js';
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -19,7 +20,6 @@ import { LedgerStore } from "../src/ledger/store.js";
 import { resolveConversationId } from "../src/conversations/identity.js";
 import { createUser, setupOperator } from "../src/users/store.js";
 import { authenticatedTestIdentity } from "./helpers/authenticated-router.js";
-import { migratedMemoryDb, SYSTEM_ACTOR } from "./helpers/ledger-fixtures.js";
 
 class TestRoutes implements RouteRegistrar {
   private readonly handlers = new Map<string, RouteHandler>();
@@ -106,7 +106,7 @@ describe("backup routes", () => {
     vi.resetModules();
 
     const { openDb, setDb } = await import("../src/db.js");
-    db = openDb(path.join(tempHome, "mandible.db"));
+    db = migratedFileDb(path.join(tempHome, "mandible.db"));
     setDb(db);
     operator = setupOperator(db, { display_name: "Backup route test operator" });
 

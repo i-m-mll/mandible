@@ -1,11 +1,12 @@
 // @vitest-environment node
+import { migratedFileDb } from './helpers/ledger-fixtures.js';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ClientAuthenticator } from '../src/client-auth/authenticator.js';
-import { openDb, setDb, type Db } from '../src/db.js';
+import { setDb, type Db } from '../src/db.js';
 import { PRODUCTION_EFFECTS, STANDARD_PREVIEW_EFFECTS } from '../src/security/effect-policy.js';
 import { createServer, Router } from '../src/server.js';
 import { registerClientAuthRoutes } from '../src/routes/client-auth.js';
@@ -47,7 +48,7 @@ async function request(method: string, url: string, headers: Record<string, stri
 
 beforeEach(async () => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-os-access-'));
-  db = openDb(path.join(root, 'mandible.db'));
+  db = migratedFileDb(path.join(root, 'mandible.db'));
   setDb(db);
   const policy = instance();
   auth = new ClientAuthenticator(db, {

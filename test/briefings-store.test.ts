@@ -1,11 +1,12 @@
 // @vitest-environment node
+import { createMigratedDb, migratedMemoryDb } from './helpers/ledger-fixtures.js';
 import fs from "node:fs";
 import path from "node:path";
 
 import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { migrate, type Db } from "../src/db.js";
+import { type Db } from "../src/db.js";
 import { setSetting } from "../src/client-auth/settings-kv.js";
 import {
   applyBriefingAnnotations,
@@ -42,7 +43,6 @@ import {
 } from "../src/feedback/briefing-groups.js";
 import { createUser } from "../src/users/store.js";
 import { recordArtifactVersion } from "./helpers/artifact-http-write-fixtures.js";
-import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
 import {
   inspectBriefingDestinationRoutes,
@@ -1242,8 +1242,7 @@ Review note prompt.
 
   it("serializes competing default creators across independent database connections", async () => {
     const dbPath = path.join(root, "concurrent.db");
-    const firstConnection = new SqliteDatabase(dbPath);
-    migrate(firstConnection);
+    const firstConnection = createMigratedDb({ path: dbPath });
     setSetting(firstConnection, "artifact_root", root);
     const responder = createUser(firstConnection, {
       slug: "concurrent-human", kind: "human", display_name: "Concurrent human",

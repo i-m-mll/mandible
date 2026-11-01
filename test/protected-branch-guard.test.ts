@@ -1,3 +1,4 @@
+import { migratedFileDb } from './helpers/ledger-fixtures.js';
 /**
  * @vitest-environment node
  */
@@ -8,7 +9,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { openDb, type Db } from "../src/db.js";
+import { type Db } from "../src/db.js";
 import { addOrUpdateCheckout, addProject } from "../src/ledger/project-registry.js";
 import {
   ALLOWED_SIGNERS_FILE,
@@ -102,7 +103,7 @@ beforeEach(() => {
   delegatedKey = makeKey("delegated");
   agentKey = makeKey("agent");
 
-  db = openDb(path.join(tempDir, "mandible.db"));
+  db = migratedFileDb(path.join(tempDir, "mandible.db"));
   const operator = setupOperator(db, { slug: "operator", display_name: "Operator" });
   const operatorCredential = addCredential(db, operator.id, {
     type: "ssh_key",

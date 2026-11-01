@@ -1,3 +1,4 @@
+import { migratedFileDb } from './helpers/ledger-fixtures.js';
 import fs from "node:fs";
 import path from "node:path";
 import { expect, it } from "vitest";
@@ -20,7 +21,7 @@ it("restores authored metadata and discovers native content, with honest missing
     { type: "session_meta", timestamp: "2026-10-01T00:00:00Z", payload: { id: "recovery-session", cwd: root } },
     { type: "response_item", timestamp: "2026-10-01T00:00:01Z", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "restorable native needle" }] } },
   ].map(value => JSON.stringify(value)).join("\n") + "\n");
-  const original = openDb(path.join(root, "original.db"));
+  const original = migratedFileDb(path.join(root, "original.db"));
   let restored: ReturnType<typeof openDb> | undefined;
   let actor: IngestionActor | undefined;
   let search: ConversationSearchCache | undefined;
