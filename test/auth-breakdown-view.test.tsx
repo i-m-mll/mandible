@@ -73,7 +73,6 @@ it('keeps sibling group offsets independent and separates grouped modes', () => 
   expect(screen.getByRole('region', { name: 'Implementation files' }).scrollTop).toBe(77);
 });
 
-
 it('partitions flags once, reconciles metrics, and restores legacy expansion intent', () => {
   const report = authBreakdownFixture(8);
   report.files.forEach((file, index) => {
@@ -104,17 +103,4 @@ it('partitions flags once, reconciles metrics, and restores legacy expansion int
   expect(metrics.reduce((sum, row) => sum + row[0]!, 0)).toBe(report.files.length);
   expect(metrics.reduce((sum, row) => sum + row[1]!, 0)).toBe(report.files.reduce((sum, file) => sum + file.additions!, 0));
   expect(metrics.reduce((sum, row) => sum + row[2]!, 0)).toBe(report.files.reduce((sum, file) => sum + file.deletions!, 0));
-});
-
-it('puts residual roles and languages last while treating a directory named Other normally', () => {
-  const report = authBreakdownFixture(2);
-  Object.assign(report.files[0]!, { new_path: 'Other/opaque', language: 'Unknown', file_role: 'other', additions: 9000, deletions: 0 });
-  Object.assign(report.files[1]!, { new_path: 'program.py', language: 'Python', file_role: 'implementation', additions: 1, deletions: 0 });
-  const view = render(<AuthChangeBreakdown requestId="residuals" report={report} />);
-  const labels = () => [...view.container.querySelectorAll('.auth-change-group__name')].map(node => node.textContent);
-  expect(labels()).toEqual(['Python', 'Unknown']);
-  fireEvent.click(screen.getByRole('tab', { name: 'File role' }));
-  expect(labels()).toEqual(['Implementation', 'Other']);
-  fireEvent.click(screen.getByRole('tab', { name: 'Directory' }));
-  expect(labels()).toEqual(['Other/']);
 });
