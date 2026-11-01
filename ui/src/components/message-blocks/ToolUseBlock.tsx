@@ -6,7 +6,7 @@ import { MessageActions } from '../shared/MessageActions';
 import { OverflowFade } from '../shared/OverflowFade';
 import type { PersistedBlockSource } from '../stream-renderer/types';
 import { CompactActivityRow } from '../shared/ChatDisclosure';
-import { presentTool, toolInputObject, toolTarget, type ToolCategory } from './toolPresentation';
+import { presentTool, toolInputObject, toolTarget, type ToolCategory, type ToolPresentation } from './toolPresentation';
 
 export type ToolResultContent =
   | string
@@ -28,7 +28,8 @@ export type ToolUseBlockProps = {
   toolName: string;
   toolKind?: string;
   toolUseId?: string;
-  input: Record<string, unknown> | string;
+  input?: Record<string, unknown> | string;
+  header?: ToolPresentation;
   result?: ToolResultContentBlock | null;
   defaultExpanded?: boolean;
   expanded?: boolean;
@@ -232,6 +233,7 @@ export function ToolCard({
   toolKind,
   toolUseId,
   input,
+  header,
   result,
   defaultExpanded,
   expanded,
@@ -247,11 +249,11 @@ export function ToolCard({
   onResumeResult,
   memberRefs,
 }: ToolUseBlockProps): JSX.Element {
-  const inputObj = useMemo(() => toolInputObject(input), [input]);
+  const inputObj = useMemo(() => input === undefined ? {} : toolInputObject(input), [input]);
   const visual = useMemo(() => {
-    const presentation = presentTool(toolName, input, toolKind);
+    const presentation = header ?? presentTool(toolName, input, toolKind);
     return { kind: presentation.category, icon: presentation.icon, verb: presentation.phrase, target: presentation.target };
-  }, [toolName, input, toolKind]);
+  }, [toolName, input, toolKind, header]);
   const displayTarget = useMemo(() => leftTruncateTarget(visual.target), [visual.target]);
   const status = statusFor(result, statusEmoji);
   const commandLike = visual.kind === 'execute';
@@ -266,7 +268,7 @@ export function ToolCard({
   }, [editLike, inputObj]);
 
   function renderInputPanel(): JSX.Element {
-    if (detailsAvailable && (input === '' || (typeof input === 'object' && Object.keys(input).length === 0))) {
+    if (input === undefined || (detailsAvailable && (input === '' || (typeof input === 'object' && Object.keys(input).length === 0)))) {
       return <div className="tool-card__input" aria-busy="true">Loading tool input…</div>;
     }
     if (editLike) {

@@ -3,6 +3,7 @@ import { act, cleanup, render } from './helpers/dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { useReadingViewport } from '../ui/src/chat/useReadingViewport';
 import type { ReadingRow, ReadingRevealResult } from '../ui/src/chat/readingProjection';
+import { readReadingState, writeReadingState } from '../ui/src/chat/readingState';
 
 const boundary = vi.hoisted(() => ({ options: null as any, engine: null as any, calls: [] as string[] }));
 vi.mock('@tanstack/react-virtual', () => ({ useVirtualizer: (options: any) => {
@@ -13,11 +14,11 @@ let viewport: ReturnType<typeof useReadingViewport>;
 let frames = new Map<number, FrameRequestCallback>();
 let nextFrame = 0;
 const coordinate = { conversationId: 'conv', positionSpaceId: 'space', position: 42 };
-const rows: ReadingRow[] = [{ key: 'exact-row', kind: 'content', protectedPositions: [42], items: [], sources: [{ blockId: 'cblk:conv:42', position: 42 }], actionGroup: { key: 'scope', start: 0, end: 99 }, disclosureOwner: null }];
+const rows: ReadingRow[] = [{ key: 'exact-row', kind: 'content', protectedPositions: [42], items: [], nodes: [], sources: [{ blockId: 'cblk:conv:42', position: 42 }], actionGroup: { key: 'scope', start: 0, end: 99 }, disclosureOwner: null }];
 const rect = (top: number, height: number) => ({ top, bottom: top + height, height, left: 0, right: 600, width: 600, x: 0, y: top, toJSON: () => ({}) } as DOMRect);
 function Harness({ prepare, space = 'space', scope = 'conv', initializing = false, endReached = false }: { scope?: string; initializing?: boolean; prepare: Parameters<typeof useReadingViewport>[0]['prepare']; space?: string; endReached?: boolean }) {
   viewport = useReadingViewport({ scope, initializing, positionSpaceId: space, rows, membership: new Map(), endReached,
-    disclosures: [], clearance: 123, onInput: () => {}, onRange: () => {}, prepare });
+    disclosures: {}, clearance: 123, onInput: () => {}, onRange: () => {}, prepare });
   return <div ref={viewport.scrollRef} {...viewport.inputHandlers}><div data-target tabIndex={-1}>Exact target</div><input /></div>;
 }
 async function frame(): Promise<void> {
@@ -54,6 +55,15 @@ beforeEach(() => {
   localStorage.clear();
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+it('restores an explicit collapse and preserves saved positive disclosure intent', () => {
+  writeReadingState('conv', { version: 3, positionSpaceId: 'space', following: false, anchor: coordinate,
+    disclosures: { 'group:thought': false, 'activity:tool': true } });
+  expect(readReadingState('conv')?.disclosures).toEqual({ 'group:thought': false, 'activity:tool': true });
+  localStorage.setItem('mandible:chat-reading:conv', JSON.stringify({ version: 2, positionSpaceId: 'space', following: false,
+    anchor: coordinate, disclosures: ['activity:tool'] }));
+  expect(readReadingState('conv')?.disclosures).toEqual({ 'activity:tool': true });
+});
 
 it('prepares, materializes and aligns once, then requires measured visibility and settlement', async () => {
   const prepare = vi.fn(async () => ({ status: 'prepared' as const, rowKey: 'exact-row' }));
@@ -108,7 +118,7 @@ it('persists only settled logical state and disables following at an older windo
   boundary.engine.isScrolling = false;
   act(() => boundary.options.onChange(boundary.engine));
   expect(write).toHaveBeenCalledOnce();
-  expect(JSON.parse(write.mock.calls[0][1])).toMatchObject({ version: 2, following: false, anchor: { ...coordinate, offset: 50 } });
+  expect(JSON.parse(write.mock.calls[0][1])).toMatchObject({ version: 3, following: false, anchor: { ...coordinate, offset: 50 } });
 });
 
 it('terminates a prepared but non-renderable target without aligning nearby content', async () => {

@@ -100,6 +100,8 @@ export function ActivityGroup({
   renderMember,
   active = false,
   actions,
+  presentation,
+  externalMembers = false,
 }: {
   items: readonly DisplayActivityItem[];
   active?: boolean;
@@ -108,22 +110,26 @@ export function ActivityGroup({
   onExpandedChange?: (expanded: boolean) => void;
   memberRefs?: readonly (string | undefined)[];
   renderMember: (item: DisplayActivityItem, index: number) => JSX.Element | null;
+  /** Complete canonical run facts when member bodies are loaded independently. */
+  presentation?: ReturnType<typeof import('../../../../src/presentation/activity-presentation').presentActivityRunFacts>;
+  externalMembers?: boolean;
 }): JSX.Element {
   const presentations = presentActivityItems(items);
-  const summary = summarizeActivityRun(items, presentations);
-  const hasMemberDisclosure = items.some((item) => item.type !== 'activity'
+  const summary = presentation?.summary ?? summarizeActivityRun(items, presentations);
+  const hasMemberDisclosure = presentation?.hasDisclosure ?? (items.some((item) => item.type !== 'activity'
     || item.activity_kind === 'thinking'
     || item.activity_kind === 'reasoning-summary')
-    || activityDetailLines(presentations).length > 0;
+    || activityDetailLines(presentations).length > 0);
+  const activeTool = active && items.find((item) => item.type === 'tool-call-activity' && item.executionActive);
   return (
     <CompactActivityRow
       className={`activity-group${active ? ' activity-group--active' : ''}`}
-      icon={activityIcon((active && items.find((item) => item.type === 'tool-call-activity' && item.executionActive)) || items[0])}
+      icon={activeTool ? activityIcon(activeTool) : presentation ? <Icon name={presentation.icon} /> : activityIcon(items[0])}
       summary={summary}
       actions={actions}
       memberRefs={memberRefs?.filter(Boolean).join(' ')}
       disclosure={hasMemberDisclosure ? {
-        content: (
+        content: externalMembers ? null : (
           <ActivityGroupDetails
             items={items}
             renderMember={renderMember}
@@ -131,6 +137,7 @@ export function ActivityGroup({
         ),
         regionLabel: `${summary} details`,
         expanded,
+        defaultExpanded: presentation?.defaultExpanded,
         onExpandedChange,
       } : undefined}
     />

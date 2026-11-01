@@ -158,6 +158,23 @@ it('composes group-scoped primary actions and exact-source overflow in one rail'
   expect(copyLink).toHaveBeenCalledWith('message-second');
 });
 
+it('keeps a paired result inline and copies the result source independently of its call', () => {
+  const copyLink = vi.fn();
+  const call = canonicalItem({ type: 'tool-call', role: 'assistant', phase: 'call', tool_id: 'paired-tool',
+    tool_name: 'read', input: { file_path: '/tmp/example' }, parts: [], ordinal: 0, turn: 'tool-turn' });
+  const result = canonicalItem({ type: 'tool-call', role: 'tool', phase: 'result', tool_id: 'paired-tool',
+    output: 'exact result body', parts: [], ordinal: 1, turn: 'tool-turn' });
+  const view = render(<ChatSurface events={[canonicalEvent(call, 'call-source'), canonicalEvent(result, 'result-source')]}
+    streaming={false} onCopyMessageLink={copyLink} />);
+  fireEvent.click(view.container.querySelector<HTMLButtonElement>('[data-block-id="call-source"] .compact-activity__row')!);
+  const resultBox = view.container.querySelector<HTMLElement>('[data-block-id="result-source"]')!;
+  expect(resultBox.closest('[data-block-id="call-source"]')).not.toBeNull();
+  expect(resultBox.textContent).toContain('exact result body');
+  fireEvent.click(resultBox.querySelector<HTMLButtonElement>('[aria-label="More actions"]')!);
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Copy link' }));
+  expect(copyLink).toHaveBeenCalledWith('result-source');
+});
+
 describe('chat message stream render model', () => {
 
   it('preserves the stable logical turn id when a bounded window starts mid-turn', () => {

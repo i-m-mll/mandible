@@ -1,14 +1,13 @@
 import type { JSX } from 'preact/jsx-runtime';
-import type { ContentBlock, PersistedBlockSource, RenderNode, StreamRendererProps } from '../components/stream-renderer/types';
+import type { ContentBlock, PersistedBlockSource, RenderNode } from '../components/stream-renderer/types';
 import { MessageGroup } from '../components/stream-renderer/MessageGroup';
-import { MessageActions, MessagePrimaryActionsContext, type MessagePrimaryAction } from '../components/shared/MessageActions';
+import { MessageActions, MessageLinkContext, MessagePrimaryActionsContext, type MessagePrimaryAction } from '../components/shared/MessageActions';
 import { TurnGroup } from '../components/message-blocks/TurnGroup';
 import { UserBubble } from '../components/message-blocks/UserBubble';
 import { SemanticEventBlock, UnmatchedToolResultBlock } from '../components/message-blocks/SemanticEventBlock';
-import { ActivityRow } from '../components/message-blocks/ActivityBlock';
+import { ActivityGroup, ActivityRow } from '../components/message-blocks/ActivityBlock';
 import { ThinkingBlock } from '../components/message-blocks/ThinkingBlock';
 import { ToolUseBlock } from '../components/message-blocks/ToolUseBlock';
-import { useStreamState } from './renderModel';
 import type { ReadingRow } from './readingProjection';
 import type { ChatSurfaceProps } from './ChatSurface';
 function blockId(turnId: string, block: ContentBlock, index: number): string {
@@ -25,12 +24,15 @@ type ReadingContentProps = ChatSurfaceProps & {
   setBlockExpanded: (id: string, expanded: boolean, sources?: readonly (PersistedBlockSource | undefined)[]) => void;
   preparing: boolean;
   primaryActions: MessagePrimaryAction[];
+  lastAssistantTurnId?: string;
+  onActivityGroupExpandedChange: (expanded: boolean) => void;
 };
 export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparing, primaryActions,
+  lastAssistantTurnId,
+  onActivityGroupExpandedChange,
   streaming, selectedMessageId, sessionInfo, onToggleBlockSelect, selectedBlockIds, selectMode,
   onFork, onResume, onCreatedTaskNavigate }: ReadingContentProps): JSX.Element {
-  const { nodes } = useStreamState(row.items as StreamRendererProps['events'], true);
-  const lastAssistantTurnId = [...nodes].reverse().find(node => node.kind === 'assistant_turn')?.key;
+  const nodes = row.nodes;
   function renderNodeBody(node: RenderNode, memberRef?: string): JSX.Element | null {
     switch (node.kind) {
       case 'transcript_boundary': return null;
@@ -123,6 +125,7 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
               active={Boolean(node.item.executionActive && streaming)}
               detailsAvailable={source?.detailsLoaded === false}
               input={node.item.input}
+              header={node.item.header}
               result={node.item.result}
               defaultExpanded={false}
               expanded={expanded}
@@ -213,8 +216,20 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
     }
   }
 
-  const speaker = nodes.find(node => node.kind !== 'transcript_boundary')?.entity ?? 'assistant';
+  const speaker = row.activityGroup?.items[0]?.entity ?? nodes.find(node => node.kind !== 'transcript_boundary')?.entity ?? 'assistant';
+  const footer = row.totalTokens === undefined ? undefined : <span className="turn-group__stats">{row.totalTokens.toLocaleString()} tokens</span>;
+  const body = row.activityGroup ? <div className="message-block-wrapper"><ActivityGroup
+        items={row.activityGroup.items.map(node => node.item)}
+        presentation={row.activityGroup.presentation}
+        active={streaming && row.activityGroup.items.some(node => node.item.type === 'tool-call-activity' && node.item.executionActive)}
+        expanded={row.activityGroup.expanded}
+        onExpandedChange={onActivityGroupExpandedChange}
+        actions={<MessageLinkContext.Provider value={null}><MessageActions /></MessageLinkContext.Provider>}
+        renderMember={() => null}
+        externalMembers
+      /></div> : nodes.map(node => renderNodeBody(node));
   return <MessagePrimaryActionsContext.Provider value={primaryActions}>
-    <TurnGroup speaker={speaker} footer={row.totalTokens === undefined ? undefined : <span className="turn-group__stats">{row.totalTokens.toLocaleString()} tokens</span>}>{nodes.map(node => renderNodeBody(node))}</TurnGroup>
+    {row.activityMember ? <div className="activity-details activity-group__members">{body}{footer}</div>
+      : <TurnGroup speaker={speaker} footer={footer}>{body}</TurnGroup>}
   </MessagePrimaryActionsContext.Provider>;
 }
