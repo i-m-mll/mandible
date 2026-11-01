@@ -1,10 +1,9 @@
 import { ArtifactAttachmentError } from "../artifact-attachment.js";
 import type { LedgerReader } from "../ledger-reads/index.js";
-import { readableArtifactEntries } from "../ledger-reads/artifacts.js";
 import { broadcast } from "../sse.js";
 import { DOMAIN_EVENTS } from "../contracts.js";
 import {
-  artifactMaterializationTarget
+  artifactMaterializationTarget,
 } from "../artifact-identity.js";
 import { getDb } from "../db.js";
 import {
@@ -17,6 +16,7 @@ import { checkArtifactMaterialization, diffArtifacts, getArtifactContentAsync } 
 import { openArtifactExternally } from "../artifact-open.js";
 import { globalCapabilityRoute } from "../permissions/routes.js";
 import {
+  ArtifactLinkTargetError,
   addArtifactBundleMembersAsync,
   associateProjectArtifact,
   createArtifactBundleAsync,
@@ -56,24 +56,21 @@ import {
 } from "../provider-artifacts.js";
 import { ClientAuthzError, requireIdentity } from "../client-auth/authz.js";
 import {
-  artifactRequiredProjects, artifactVersionCustody, getArtifactCurrentSource, planArtifactSourceMove, commitArtifactSourceMove,
-  type ArtifactSource, type ArtifactLifecycleResult,
+  artifactVersionCustody,
+  getArtifactCurrentSource,
+  planArtifactSourceMove,
+  commitArtifactSourceMove,
+  type ArtifactSource,
+  type ArtifactLifecycleResult,
 } from "../artifact-source.js";
 import type { RecordArtifactVersionInput } from "../provider-artifacts.js";
 import type { ArtifactVersionSourceKind } from "../types.js";
 import { isInlineManagedArtifactByteRequest } from "../security/operation-policy.js";
 import { bodyRecord, sendJson } from "./http.js";
 import { resolveProjectRef } from "../ledger/project-registry.js";
-import { resolveArtifactProject, resolveIssueProject } from "../permissions/resources.js";
-import {
-  PermissionError,
-  requireProjectAccess,
-  sendPermissionError,
-} from "../permissions/store.js";
-
 
 function handleError(res: ResponseLike, error: unknown): void {
-  if (error instanceof PermissionError || error instanceof ClientAuthzError || error instanceof ArtifactAttachmentError) {
+  if (error instanceof ClientAuthzError || error instanceof ArtifactLinkTargetError || error instanceof ArtifactAttachmentError) {
     sendJson(res, error.status, { error: error.message, code: error.code });
     return;
   }
@@ -106,91 +103,6 @@ function resolveArtifactRouteRecord(id: string) {
   return getArtifact(db, id) ?? resolvedArtifactRecord(resolveArtifactIdentity(db, id, "surface"));
 }
 
-function enforceProjectRefWrite(req: RequestLike, res: ResponseLike, projectRef: string): boolean {
-  const db = getDb();
-  const resolved = resolveProjectRef(db, projectRef);
-  if ((!resolved.ok && resolved.reason === "ambiguous")) {
-    sendJson(res, 403, { error: "ambiguous project", code: "ambiguous_project" });
-    return false;
-  }
-  if (!resolved.ok) {
-    sendJson(res, 404, { error: "project not found", code: "unknown_project" });
-    return false;
-  }
-  try {
-    requireProjectAccess(db, req, resolved.project.id, "write");
-    return true;
-  } catch (error) {
-    if (error instanceof PermissionError) {
-      sendPermissionError(res, error);
-      return false;
-    }
-    throw error;
-  }
-}
-
-function enforceArtifactAccess(
-  req: RequestLike,
-  res: ResponseLike,
-  artifactId: string,
-  role: "read" | "write",
-): boolean {
-  const db = getDb();
-  const resolved = resolveArtifactProject(db, artifactId);
-  // A successfully resolved artifact without a project is deliberately unscoped.
-  if (!resolved.ok && resolved.reason === "unassociated") return true;
-  if (!resolved.ok) {
-    sendJson(res, 403, { error: "ambiguous artifact project", code: "ambiguous_project" });
-    return false;
-  }
-  try {
-    requireProjectAccess(db, req, resolved.project_id, role);
-    return true;
-  } catch (error) {
-    if (error instanceof PermissionError) {
-      sendPermissionError(res, error);
-      return false;
-    }
-    throw error;
-  }
-}
-
-/**
- * The project-bearing resource behind an artifact ref is the logical artifact
- * whenever the ref resolves to one, and only otherwise the version.
- *
- * `resolveArtifactProject` reaches a version's project through the version id
- * and the parent artifact it joins, but it reaches artifact-level
- * `project_artifact_associations` rows only through the logical artifact id.
- * Gating a logical or series ref on its selected version would therefore miss
- * exactly those associations and allow the request.
- *
- * Blob refs are gated on the canonical blob identity. Historical authored
- * spelling is input provenance and cannot select another access identity.
- */
-function enforceArtifactRefAccess(
-  req: RequestLike,
-  res: ResponseLike,
-  ref: string,
-  role: "read" | "write",
-): boolean {
-  try {
-    const resolved = resolveArtifactIdentity(getDb(), ref, "surface");
-    const id = resolved.logical_artifact?.id
-      ?? resolved.artifact_version?.id
-      ?? resolved.artifact_blob?.id
-      ?? null;
-    if (!id && resolved.status === "ambiguous") {
-      sendJson(res, 403, { error: "ambiguous artifact project", code: "ambiguous_project" });
-      return false;
-    }
-    return id ? enforceArtifactAccess(req, res, id, role) : true;
-  } catch {
-    sendJson(res, 500, { error: "Artifact access check failed", code: "artifact_access_check_failed" });
-    return false;
-  }
-}
-
 function lifecycleValue<T>(res: ResponseLike, result: ArtifactLifecycleResult<T>): T | undefined {
   if (result.ok) return result.value;
   const status = result.error.code === "unknown_artifact" ? 404
@@ -213,14 +125,7 @@ function canonicalArtifactId(res: ResponseLike, ref: unknown): string | undefine
   return resolved.logical_artifact.id;
 }
 
-function authorizeArtifactPlan(req: RequestLike, res: ResponseLike,
-  plan: { artifact_id: string | null; required_project_ids: string[] }): boolean {
-  if (plan.artifact_id && !enforceArtifactAccess(req, res, plan.artifact_id, "write")) return false;
-  for (const projectId of plan.required_project_ids) requireProjectAccess(getDb(), req, projectId, "write");
-  return true;
-}
-
-function recordAuthorizedVersion(req: RequestLike, res: ResponseLike, input: RecordArtifactVersionInput) {
+function recordVersionLifecycle(res: ResponseLike, input: RecordArtifactVersionInput) {
   if (input.artifact_id !== undefined) {
     const id = canonicalArtifactId(res, input.artifact_id);
     if (!id) return;
@@ -239,7 +144,7 @@ function recordAuthorizedVersion(req: RequestLike, res: ResponseLike, input: Rec
     input = { ...input, source };
   }
   const plan = lifecycleValue(res, planArtifactVersion(getDb(), input));
-  if (!plan || !authorizeArtifactPlan(req, res, plan)) return;
+  if (!plan) return;
   const result = lifecycleValue(res, commitArtifactVersion(getDb(), plan));
   return result ? projectArtifactVersionWriteResult(getDb(), result) : undefined;
 }
@@ -253,55 +158,6 @@ function sourceInput(value: unknown): ArtifactSource | null {
   if (source.kind === "local" && typeof source.path === "string") return { kind: "local", path: source.path };
   if (source.kind === "managed" && typeof source.key === "string") return { kind: "managed", key: source.key };
   return null;
-}
-
-function enforceBodyArtifactRefs(
-  req: RequestLike,
-  res: ResponseLike,
-  body: Record<string, unknown>,
-  role: "read" | "write",
-): boolean {
-  const keys = [
-    "ref", "artifact", "artifact_ref", "artifact_id", "source_ref",
-    "series", "series_id", "version", "version_id", "base_version_id",
-  ];
-  const refs = new Set(keys
-    .map((key) => body[key])
-    .filter((value): value is string => typeof value === "string" && Boolean(value.trim())));
-  return [...refs].every((ref) => enforceArtifactRefAccess(req, res, ref, role));
-}
-
-function enforceArtifactMembers(
-  req: RequestLike,
-  res: ResponseLike,
-  value: unknown,
-  role: "read" | "write",
-): boolean {
-  if (!Array.isArray(value)) return true;
-  return value.every((member) => {
-    if (!member || typeof member !== "object" || Array.isArray(member)) return true;
-    return enforceBodyArtifactRefs(req, res, member as Record<string, unknown>, role);
-  });
-}
-
-function enforceIssueRefWrite(req: RequestLike, res: ResponseLike, issueRef: string): boolean {
-  const db = getDb();
-  const resolved = resolveIssueProject(db, issueRef);
-  if (!resolved.ok) {
-    if (resolved.reason === "not_found") return true;
-    sendJson(res, 403, { error: "ambiguous issue project", code: "ambiguous_project" });
-    return false;
-  }
-  try {
-    requireProjectAccess(db, req, resolved.project_id, "write");
-    return true;
-  } catch (error) {
-    if (error instanceof PermissionError) {
-      sendPermissionError(res, error);
-      return false;
-    }
-    throw error;
-  }
 }
 
 function bodyStringArray(value: unknown): string[] | undefined {
@@ -409,7 +265,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
         }
         const artifactId = body.artifact_id === undefined ? undefined : canonicalArtifactId(res, body.artifact_id);
         if (body.artifact_id !== undefined && !artifactId) return;
-        if (typeof body.issue === 'string' && !enforceIssueRefWrite(req, res, body.issue)) return;
+
         const inputs: RecordArtifactVersionInput[] = [];
         for (const path of paths as string[]) {
           const local = body.commit ? null : await planLocalArtifactPathAsync(getDb(), { ...body, path });
@@ -418,7 +274,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
         }
         const batch = getDb().transaction(() => {
           const plans = lifecycleValue(res, planArtifactVersionBatch(getDb(), inputs));
-          if (!plans || !plans.every(plan => authorizeArtifactPlan(req, res, plan))) return;
+          if (!plans) return;
           if (body.dry_run === true) { sendJson(res, 200, { command: 'ingest', dry_run: true, plans, registered: [], failed: [] }); return; }
           const committed = lifecycleValue(res, commitArtifactVersionBatch(getDb(), plans));
           if (!committed) return;
@@ -429,9 +285,6 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
         if (batch) sendJson(res, 200, batch);
         return;
       }
-      const projectRef = [body.source_project_id, body.project_id, body.project]
-        .find((value): value is string => typeof value === "string" && Boolean(value.trim()));
-      if (projectRef && !enforceProjectRefWrite(req, res, projectRef)) return;
       const localPath = typeof body.path === "string" && body.path.trim()
         ? body.path
         : typeof body.local_path === "string" && body.local_path.trim()
@@ -445,12 +298,12 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
             sendJson(res, 400, { error: "blob-only ingest cannot target a logical artifact", code: "invalid_input" }); return;
           }
           const plan = lifecycleValue(res, planArtifactVersion(getDb(), { source_kind, path: localPath }));
-          if (!plan || !authorizeArtifactPlan(req, res, plan)) return;
+          if (!plan) return;
           const result = await registerLocalArtifactPathAsync(getDb(), { ...body, path: localPath });
           sendJson(res, 200, projectArtifactPublicValue(getDb(), { ...result, blob_only: true }));
           return;
         }
-        const result = recordAuthorizedVersion(req, res, { ...body, source_kind, path: localPath });
+        const result = recordVersionLifecycle(res, { ...body, source_kind, path: localPath });
         if (result) sendJson(res, 200, projectArtifactPublicValue(getDb(), { ...result,
           git_state: local.git_state, recoverability: local.recoverability, warnings: local.warnings }));
         return;
@@ -460,17 +313,10 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
         sendJson(res, 400, { error: "logical updates require /api/artifacts/versions", code: "invalid_input" });
         return;
       }
-      if (!enforceBodyArtifactRefs(req, res, body, "write")) return;
-      const metadata = body.metadata as { git?: { repo_id?: string } } | undefined;
-      const repoRef = typeof body.repo_id === "string" ? body.repo_id : metadata?.git?.repo_id;
-      if (repoRef && !enforceProjectRefWrite(req, res, repoRef)) return;
       const artifact = await ingestArtifactAsync(getDb(), isInlineManagedArtifactByteRequest("ingest", body)
-        ? { ...body, custody_mode: "managed" }
-        : body);
+        ? { ...body, custody_mode: "managed" } : body);
       sendJson(res, 200, projectArtifactPublicValue(getDb(), { artifact }));
-    } catch (error) {
-      handleError(res, error);
-    }
+    } catch (error) { handleError(res, error); }
   }, { operation: { id: "post:/api/artifacts/ingest", effects: ({ instanceRole, body }) => instanceRole === "preview" && isInlineManagedArtifactByteRequest("ingest", body) ? ["ledger:write", "files:preview"] : ["files:production"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
 
   app.post("/api/artifacts/plan", async (req, res) => {
@@ -535,8 +381,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
       offset: queryNumber(req, "offset"),
       summary: queryBoolean(req, "summary"),
     });
-    const readable = readableArtifactEntries(getDb(), req.client_identity ?? null, artifacts, (artifact) => artifact.id);
-    sendJson(res, 200, projectArtifactPublicValue(getDb(), { artifacts: readable }));
+    sendJson(res, 200, projectArtifactPublicValue(getDb(), { artifacts }));
   }, { operation: { id: "get:/api/artifacts", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   app.get("/api/artifacts/resolve", (req, res) => {
@@ -546,7 +391,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
         sendJson(res, 400, { error: "ref query parameter required" });
         return;
       }
-      if (!enforceArtifactRefAccess(req, res, ref, "read")) return;
+
       sendJson(res, 200, projectArtifactPublicValue(getDb(), {
         resolution: projectArtifactResolution(getDb(), resolveArtifactIdentity(getDb(), ref, "surface")),
       }));
@@ -564,8 +409,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
       limit: queryNumber(req, "limit"),
       offset: queryNumber(req, "offset"),
     });
-    const readable = readableArtifactEntries(getDb(), req.client_identity ?? null, artifacts, (artifact) => artifact.id);
-    sendJson(res, 200, projectArtifactPublicValue(getDb(), { artifacts: readable }));
+    sendJson(res, 200, projectArtifactPublicValue(getDb(), { artifacts }));
   }, { operation: { id: "get:/api/artifacts/logical", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   app.get("/api/artifacts/blobs", (req, res) => {
@@ -592,13 +436,6 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
       status: status === "active" || status === "superseded" || status === "archived" ? status : undefined,
       limit: queryNumber(req, "limit"),
       offset: queryNumber(req, "offset"),
-    }).filter((association) => {
-      try {
-        requireProjectAccess(getDb(), req, association.project_id, "read");
-        return true;
-      } catch {
-        return false;
-      }
     });
     sendJson(res, 200, projectArtifactPublicValue(getDb(), { associations }));
   }, { operation: { id: "get:/api/artifacts/associations", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
@@ -606,9 +443,6 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
   app.post("/api/artifacts/associations", (req, res) => {
     try {
       const body = bodyRecord(req);
-      const projectRef = [body.project_ref, body.project, body.project_id]
-        .find((value): value is string => typeof value === "string" && Boolean(value.trim()));
-      if (projectRef && !enforceProjectRefWrite(req, res, projectRef)) return;
       const result = associateProjectArtifact(
         getDb(),
         body as unknown as Parameters<typeof associateProjectArtifact>[1],
@@ -621,7 +455,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
 
   app.get("/api/artifacts/series", async (req, res) => {
     const linked = linkedEntityQuery(req);
-    const result = await reader.run("artifact_series", { identity: req.client_identity ?? null, options: {
+    const result = await reader.run("artifact_series", { options: {
       q: queryString(req, "q"),
       hashPrefix: queryString(req, "hash") ?? queryString(req, "hash_prefix"),
       repo: queryString(req, "repo"),
@@ -642,29 +476,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
   app.post("/api/artifacts/link", (req, res) => {
     try {
       const body = bodyRecord(req);
-      if (!enforceBodyArtifactRefs(req, res, body, "write")) return;
-      const issueRef = typeof body.issue === "string"
-        ? body.issue
-        : body.entity_type === "issue" && typeof body.entity_id === "string"
-          ? body.entity_id
-          : null;
-      if (issueRef && !enforceIssueRefWrite(req, res, issueRef)) return;
-      // Evidence links on issues must pin a concrete artifact version. Reject a
-      // living evidence link at the route boundary (issue 10960ea) so the
-      // contract is enforced at the HTTP edge, not only later in the CLI; the
-      // backend (resolveAndLinkArtifact) enforces the same rule as defense in
-      // depth for every other caller.
-      const linkKind = typeof body.link_kind === "string" ? body.link_kind.trim() : undefined;
-      const linkType = typeof body.link_type === "string" && body.link_type.trim()
-        ? body.link_type.trim()
-        : "references";
-      const entityType = typeof body.entity_type === "string" && body.entity_type.trim()
-        ? body.entity_type.trim()
-        : (typeof body.issue === "string" && body.issue.trim() ? "issue" : undefined);
-      if (linkKind === "living" && entityType === "issue" && linkType === "evidence") {
-        sendJson(res, 400, { error: "evidence_links_must_be_pinned" });
-        return;
-      }
+
       const result = resolveAndLinkArtifact(getDb(), body);
       sendJson(res, 200, projectArtifactPublicValue(getDb(), { ...result, resolution: projectArtifactResolution(getDb(), result.resolution) }));
     } catch (error) {
@@ -682,9 +494,6 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
         sendJson(res, 400, { error: "ref or refs is required" });
         return;
       }
-      for (const ref of refs) {
-        if (!enforceArtifactRefAccess(req, res, ref, "read")) return;
-      }
       const checks = [];
       for (const ref of refs) {
         const resolution = resolveArtifactIdentity(getDb(), ref, "strict-read");
@@ -701,7 +510,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
   app.post("/api/artifacts/snapshot", async (req, res) => {
     try {
       const body = bodyRecord(req);
-      if (!enforceBodyArtifactRefs(req, res, body, "write")) return;
+
       const artifact = await snapshotArtifactBytesAsync(getDb(), isInlineManagedArtifactByteRequest("snapshot", body)
         ? { ...body, custody_mode: "managed" }
         : body);
@@ -721,7 +530,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
         sendJson(res, 400, { error: "ref query parameter required" });
         return;
       }
-      if (!enforceArtifactRefAccess(req, res, ref, "read")) return;
+
       const history = resolveArtifactVersionHistory(getDb(), ref);
       if (!history) {
         sendJson(res, 404, { error: "no artifact version series found for ref" });
@@ -743,8 +552,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
         sendJson(res, 400, { error: "a and b query parameters required" });
         return;
       }
-      if (!enforceArtifactRefAccess(req, res, refA, "read")) return;
-      if (!enforceArtifactRefAccess(req, res, refB, "read")) return;
+
       sendJson(res, 200, projectArtifactPublicValue(getDb(), { diff: await diffArtifacts(getDb(), refA, refB) }));
     } catch (error) {
       handleError(res, error);
@@ -758,7 +566,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
         sendJson(res, 400, { error: "ref query parameter required" });
         return;
       }
-      if (!enforceArtifactRefAccess(req, res, ref, "read")) return;
+
       sendJson(res, 200, projectArtifactPublicValue(getDb(), { draft: getArtifactDraft(getDb(), ref) }));
     } catch (error) {
       handleError(res, error);
@@ -768,7 +576,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
   app.post("/api/artifacts/drafts", (req, res) => {
     try {
       const body = bodyRecord(req);
-      if (!enforceBodyArtifactRefs(req, res, body, "write")) return;
+
       const content = typeof body.content === "string" ? body.content : undefined;
       if (content === undefined) {
         sendJson(res, 400, { error: "content is required" });
@@ -800,7 +608,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
         sendJson(res, 400, { error: "ref is required" });
         return;
       }
-      if (!enforceArtifactRefAccess(req, res, ref, "write")) return;
+
       sendJson(res, 200, projectArtifactPublicValue(getDb(), { draft: rebaseArtifactDraft(getDb(), ref) }));
     } catch (error) {
       handleError(res, error);
@@ -815,15 +623,12 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
         sendJson(res, 400, { error: "ref is required" });
         return;
       }
-      if (!enforceArtifactRefAccess(req, res, ref, "write")) return;
+
       const resolved = resolveArtifactIdentity(getDb(), ref, "surface");
       if (!resolved.logical_artifact) {
         sendJson(res, 404, { error: "draft artifact not found", code: "unknown_artifact" }); return;
       }
-      const current = getArtifactCurrentSource(getDb(), resolved.logical_artifact.id);
-      for (const projectId of artifactRequiredProjects(getDb(), resolved.logical_artifact.id, current?.source ?? null)) {
-        requireProjectAccess(getDb(), req, projectId, "write");
-      }
+
       const published = publishArtifactDraft(getDb(), {
         ref,
         label: typeof body.label === "string" ? body.label : null,
@@ -843,7 +648,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
         sendJson(res, 400, { error: "ref query parameter required" });
         return;
       }
-      if (!enforceArtifactRefAccess(req, res, ref, "write")) return;
+
       sendJson(res, 200, projectArtifactPublicValue(getDb(), deleteArtifactDraft(getDb(), ref)));
     } catch (error) {
       handleError(res, error);
@@ -853,17 +658,14 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
   app.post("/api/artifacts/versions", (req, res) => {
     try {
       const body = bodyRecord(req);
-      if (!enforceBodyArtifactRefs(req, res, body, "write")) return;
-      const projectRef = [body.source_project_id, body.project_id, body.project]
-        .find((value): value is string => typeof value === "string" && Boolean(value.trim()));
-      if (projectRef && !enforceProjectRefWrite(req, res, projectRef)) return;
+
       const sourceKind = typeof body.source_kind === "string" ? body.source_kind : undefined;
       if (!sourceKind) {
         sendJson(res, 400, { error: "source_kind is required (tracked_repo, local_only, or managed)" });
         return;
       }
       const input: RecordArtifactVersionInput = { ...body, source_kind: sourceKind as ArtifactVersionSourceKind };
-      const result = recordAuthorizedVersion(req, res, input);
+      const result = recordVersionLifecycle(res, input);
       if (result) sendJson(res, 200, projectArtifactPublicValue(getDb(), { result }));
     } catch (error) {
       handleError(res, error);
@@ -873,7 +675,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
   app.get("/api/artifacts/source", (req, res) => {
     try {
       const id = canonicalArtifactId(res, queryString(req, "ref"));
-      if (!id || !enforceArtifactAccess(req, res, id, "read")) return;
+      if (!id) return;
       const source = getArtifactCurrentSource(getDb(), id);
       if (!source) { sendJson(res, 404, { error: "source state not found", code: "unknown_artifact" }); return; }
       sendJson(res, 200, { source, version_custody: artifactVersionCustody(getDb(), id) });
@@ -886,7 +688,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
         const actor = requireIdentity(req).user_id;
         const body = bodyRecord(req);
         const id = canonicalArtifactId(res, body.artifact_id);
-        if (!id || !enforceArtifactAccess(req, res, id, "write")) return;
+        if (!id) return;
         const current = getArtifactCurrentSource(getDb(), id);
         if (!current) { sendJson(res, 404, { error: 'source state not found', code: 'unknown_artifact' }); return; }
         let source = sourceInput(body.source);
@@ -920,7 +722,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
         const plan = lifecycleValue(res, planArtifactSourceMove(getDb(), {
           artifact_id: id, expected_revision: Number(revision), source, actor, reconcile: body.reconcile === true,
         }));
-        if (!plan || !authorizeArtifactPlan(req, res, plan)) return;
+        if (!plan) return;
         const state = lifecycleValue(res, commitArtifactSourceMove(getDb(), plan));
         if (state) sendJson(res, 200, { source: state, version_custody: artifactVersionCustody(getDb(), id), status: state.revision === current.revision ? 'unchanged' : 'updated' });
       }).immediate();
@@ -930,8 +732,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
   app.post("/api/artifacts/bundles", async (req, res) => {
     try {
       const body = bodyRecord(req);
-      if (!enforceArtifactMembers(req, res, body.members, "write")) return;
-      if (typeof body.issue === "string" && !enforceIssueRefWrite(req, res, body.issue)) return;
+
       const result = await createArtifactBundleAsync(getDb(), body as unknown as Parameters<typeof createArtifactBundleAsync>[1]);
       sendJson(res, 200, projectArtifactPublicValue(getDb(), result));
     } catch (error) {
@@ -943,8 +744,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
     try {
       const body = bodyRecord(req);
       const members = Array.isArray(body.members) ? body.members : [];
-      if (!enforceArtifactRefAccess(req, res, req.params.id, "write")) return;
-      if (!enforceArtifactMembers(req, res, members, "write")) return;
+
       const result = await addArtifactBundleMembersAsync(getDb(), req.params.id, members as Parameters<typeof addArtifactBundleMembersAsync>[2]);
       sendJson(res, 200, projectArtifactPublicValue(getDb(), result));
     } catch (error) {
@@ -953,7 +753,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
   }, { operation: { id: "post:/api/artifacts/bundles/:id/members", effects: ["ledger:write","files:preview"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
 
   app.get("/api/artifacts/bundles/:id", (req, res) => {
-    if (!enforceArtifactRefAccess(req, res, req.params.id, "read")) return;
+
     const bundle = getArtifactBundle(getDb(), req.params.id);
     if (!bundle) {
       sendJson(res, 404, { error: "bundle not found" });
@@ -986,7 +786,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
   }, { operation: { id: "post:/api/knowledge-backrefs", effects: ["ledger:write"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
 
   app.get("/api/artifacts/:id/content", async (req, res) => {
-    if (!enforceArtifactRefAccess(req, res, req.params.id, "read")) return;
+
     const resolution = resolveArtifactIdentity(getDb(), req.params.id, "surface");
     const target = artifactMaterializationTarget(resolution);
     const content = target.ok ? await getArtifactContentAsync(getDb(), target.value) : await getArtifactContentAsync(getDb(), req.params.id);
@@ -999,7 +799,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
 
   app.post("/api/artifacts/:id/open-externally", globalCapabilityRoute("open_path", async (req, res) => {
     const artifact = resolveArtifactRouteRecord(req.params.id);
-    if (artifact && !enforceArtifactAccess(req, res, artifact.id, "read")) return;
+
     const result = await openArtifactExternally(getDb(), artifact?.id ?? req.params.id);
     if (!result.ok) {
       sendJson(res, result.status, { error: result.reason });
@@ -1010,7 +810,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
 
   app.get("/api/artifacts/:id/check", async (req, res) => {
     const artifact = resolveArtifactRouteRecord(req.params.id);
-    if (artifact && !enforceArtifactAccess(req, res, artifact.id, "read")) return;
+
     const check = artifact ? await checkArtifactMaterialization(getDb(), artifact.id) : null;
     if (!check) {
       sendJson(res, 404, { error: "artifact not found" });
@@ -1021,7 +821,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
 
   app.get("/api/artifacts/:id/knowledge-backrefs", (req, res) => {
     const artifact = resolveArtifactRouteRecord(req.params.id);
-    if (artifact && !enforceArtifactAccess(req, res, artifact.id, "read")) return;
+
     const backrefs = listKnowledgeBackrefs(getDb(), {
       sourceType: "artifact",
       sourceId: artifact?.id ?? req.params.id,
@@ -1035,7 +835,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
 
   app.post("/api/artifacts/:id/knowledge-backrefs", (req, res) => {
     try {
-      if (!enforceArtifactAccess(req, res, req.params.id, "write")) return;
+
       const artifact = resolveArtifactRouteRecord(req.params.id);
       const backref = createKnowledgeBackref(getDb(), {
         ...bodyRecord(req),
@@ -1055,7 +855,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
       sendJson(res, 404, { error: "artifact not found" });
       return;
     }
-    if (!enforceArtifactAccess(req, res, artifact.id, "read")) return;
+
     sendJson(res, 200, projectArtifactPublicValue(getDb(), { artifact }));
   }, { operation: { id: "get:/api/artifacts/:id", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 

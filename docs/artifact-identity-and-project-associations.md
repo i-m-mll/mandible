@@ -14,11 +14,15 @@ Logical IDs and version IDs survive source moves and recovery of the exact same 
 
 Authored logical, version, blob, and series references retain their identity meaning. Alias records preserve authored links and discovery evidence; they are not byte-read fallbacks. Display projections provide the chosen canonical version and shared content descriptor. The database has no legacy artifact/series/version tables and no blob custody mode.
 
-## Ownership and access
+Artifact link destinations use the canonical issue resolver, including project-qualified refs and aliases. The `issue` shorthand and `entity_id` may coexist when both resolve to the same issue. Different issues, or `issue` with a non-issue `entity_type`, return HTTP 400 `ambiguous_link_entity_target`. Unknown or ambiguous issue refs fail before link, reference, or authored mutation writes. Persistence receives the resolved canonical destination; non-issue destinations retain their supplied identity.
 
-The canonical owning project belongs to the logical document. Current source project, historical Git source project, and project associations are distinct facts. Reading and writing continue through canonical access checks. A source move cannot transfer ownership, and changing custody labels cannot bypass project rights.
+Pinned links retain the exact version and bytes even when its source moves or sibling versions acquire different project associations. Living links follow their logical document's current version. Issue evidence requires a pinned link.
 
-Project associations target a logical artifact or an exact version, with explicit role, status, and association kind. Blob deduplication cannot widen access to a protected logical document. Briefings bind exact version IDs and frozen reviewed bytes; they do not resolve through the current source or latest version.
+## Project ownership
+
+The canonical owning project belongs to the logical document. Current source project, historical Git source project, and project associations are distinct facts. Projects organize the local OS owner’s ledger and do not restrict local agents. A source move cannot transfer ownership; transport authentication, active identity, global effect capabilities, browser-origin checks and preview limits remain enforced.
+
+Project associations target a logical artifact or an exact version, with explicit role, status, and association kind. Associations organize documents and do not impose project access restrictions. Briefings bind exact version IDs and frozen reviewed bytes; they do not resolve through the current source or latest version.
 
 ## Cutover
 
@@ -27,3 +31,4 @@ The v185 schema removes blob custody/availability/retention/reference envelopes 
 Historical source ambiguity is reconciled separately from version custody. A sole verified Git project/path can become the current source; a managed document without a trustworthy single input uses its stable logical source key. If preserved identities compete for a previously unowned path, each receives a managed logical source rather than selecting an owner by age or merging identities. Exact Git version authority remains intact. Collision dispositions are recorded externally and in source-move history; future path-following updates require an explicit source move.
 
 Co-Authored-By: Codex (GPT-5) <codex@openai.com>
+Co-Authored-By: Codex (GPT) <codex@openai.com>

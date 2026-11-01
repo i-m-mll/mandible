@@ -12,7 +12,6 @@ import {
   listManagedReminderOccurrences,
   reconcileManagedReminders,
 } from "../src/managed-reminders.js";
-import { addGrant, setProjectRestricted } from "../src/permissions/store.js";
 import { countGlobalInboxBadge, registerInboxRoutes } from "../src/routes/inbox.js";
 import { registerManagedReminderRoutes } from "../src/routes/reminders.js";
 import { PRODUCTION_EFFECTS } from "../src/security/effect-policy.js";
@@ -236,8 +235,8 @@ describe("managed reminder routes", () => {
     recordUnattributedWrite(): void {}
   }
 
-  it("requires an attributable active user with project write access", async () => {
-    setProjectRestricted(db, "reminder-project", true);
+  it("requires an attributable active user", async () => {
+
     const router = new Router({
       clientAuth: new SlugGate(),
       instance: resolveInstanceInfo({ env: { MANDIBLE_OPERATIONAL_MUTATIONS: "allow" } as NodeJS.ProcessEnv }),
@@ -257,10 +256,6 @@ describe("managed reminder routes", () => {
     });
 
     expect(await create("anon")).toMatchObject({ status: 401, body: { code: "authentication_required" } });
-    expect(await create("denied", "reminder-agent"))
-      .toMatchObject({ status: 403, body: { code: "project_permission_required" } });
-    addGrant(db, { subject_type: "user", subject: "reminder-agent", resource_type: "project",
-      resource: "reminder-project", permission: "write" }, NOW);
     expect(await create("accepted", "reminder-agent"))
       .toMatchObject({ status: 201, body: { stored: true, fired_immediately: false } });
   });

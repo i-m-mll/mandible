@@ -3,6 +3,11 @@
 Mandible belongs to the logged-in operating-system user. Opening it gives that
 user access without login, pairing, renewal, or expiry.
 
+Projects organize this ledger and do not isolate local agents. Project roles,
+restriction settings and project grants are retired. Global capability grants
+continue to govern concrete effects; canonical project and source identities
+remain part of domain operations and approval scope.
+
 The CLI uses an owner-only Unix socket at
 `~/.cache/mandible/local-api/production.sock`; `MANDIBLE_SOCKET` selects an
 absolute alternative. Connection failure does not fall back to HTTP. Preview

@@ -160,11 +160,7 @@ export const METADATA_BACKUP_TABLES = [
   // not reproducible runtime state — so it is backed up, matching the `users`
   // block above. Parent-before-child order: `user_groups` first, then
   // `user_group_members` (FK to both `user_groups` and the `users` above), then
-  // `permission_grants` (FK to `ledger_projects`, already emitted via
-  // LEDGER_BACKUP_TABLES). The metadata backup emits each table's inline
-  // UNIQUE/FK/CHECK as part of its own DDL, so slug uniqueness, the group-member
-  // primary key, and the grant subject/resource/permission CHECK constraints
-  // survive a backup round-trip.
+  // Global capability grants retain their subject identity and permission constraints.
   "user_groups",
   "user_group_members",
   "permission_grants",

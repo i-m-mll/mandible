@@ -1,14 +1,12 @@
 import path from "node:path";
 import type { Db } from "./db.js";
 import {
-  artifactRequiredProjects,
   commitArtifactSourceMove,
   planArtifactSourceMove,
   type ArtifactSource,
 } from "./artifact-source.js";
 import { mutateLedgerRecord } from "./ledger/mutation-history.js";
 import { quoteIdentifier } from "./ledger/project-reference-policy.js";
-import { resolveWorkProject } from "./permissions/resources.js";
 import { notifyProtectionInputsChanged } from "./protection-inputs.js";
 
 type Locator =
@@ -154,8 +152,6 @@ export interface RelocateCheckoutRowsInput {
   /** `repos.json` entries the caller rewrites in the same transaction. */
   config_entries: number;
   actor: string;
-  /** Throws to refuse; runs inside the transaction before any write. */
-  authorize: (projectIds: string[]) => void;
 }
 
 /**
@@ -188,22 +184,7 @@ export function relocateCheckoutRows(db: Db, input: RelocateCheckoutRowsInput): 
   const checkouts = db.prepare(
     `SELECT id, project_id, root FROM ledger_project_checkouts WHERE ${SUBTREE("root")}`,
   ).all(...subtreeArgs(relocation.old_root)) as { id: string; project_id: string; root: string }[];
-  const trashProjects = db.prepare(
-    `SELECT DISTINCT project_id FROM trash_entries WHERE ${SUBTREE("repo_root")}`,
-  ).all(...subtreeArgs(relocation.old_root)) as { project_id: string }[];
-  const workRepos = db.prepare(`SELECT id, root FROM work_repos WHERE ${SUBTREE("root")}`)
-    .all(...subtreeArgs(relocation.old_root)) as { id: string; root: string }[];
   const sources = localSources(db, relocation.old_root);
-  input.authorize([...new Set([
-    ...checkouts.map(row => row.project_id),
-    ...trashProjects.map(row => row.project_id),
-    ...workRepos.flatMap(row => {
-      const project = resolveWorkProject(db, row.id);
-      const resolved = project.ok ? project : resolveWorkProject(db, row.root);
-      return resolved.ok ? [resolved.project_id] : [];
-    }),
-    ...sources.flatMap(row => artifactRequiredProjects(db, row.artifact_id, row.source)),
-  ])].sort());
 
   const now = Date.now();
   for (const checkout of checkouts) {

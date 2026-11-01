@@ -69,7 +69,7 @@ describe("operator bootstrap ledger boundary", () => {
       attribution: systemAction(),
     }).id;
     const logger = vi.fn();
-    const bootstrap = new Router({ logger });
+    const bootstrap = new Router({ clientAuth: auth, logger });
     registerUserRoutes(bootstrap);
     registerIssueRoutes(bootstrap, { getRepos: () => [], getRepoById: () => undefined, getBranches: () => [] } as never, undefined, inlineLedgerReader());
 

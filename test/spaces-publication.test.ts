@@ -17,7 +17,6 @@ import { documentArtifactImportEffects } from '../src/security/document-import-e
 import { ClientAuthenticator } from '../src/client-auth/authenticator.js';
 import { setClientAuthMode } from '../src/client-auth/mode.js';
 import { createUser, setupOperator } from '../src/users/store.js';
-import { addGrant, setProjectRestricted } from '../src/permissions/store.js';
 import { registerSpacesRoutes } from '../src/routes/spaces.js';
 import { Router } from '../src/server.js';
 import { migratedMemoryDb } from './helpers/ledger-fixtures.js';
@@ -160,42 +159,4 @@ it('rechecks the destination after a committed submission failure without changi
   await expect(executePublication(db,space,prepared.id,runner)).rejects.toThrow('did not atomically bind');
   expect(getPublication(db,space,prepared.id)).toEqual(committed);
   expect(git(repo,'show',`${committed.commit_sha}:doc.md`)+'\n').toBe(prepared.content);
-});
-
-it('blocks inaccessible document sources and publication destinations before copying bytes or mutating state',async()=> {
-  setDb(db);setupOperator(db,{slug:'operator',display_name:'Operator'});
-  const auth=new ClientAuthenticator(db,{secretsDir:path.join(root,'auth')});
-  const user=createUser(db,{slug:'fixture-agent',kind:'agent',display_name:'Fixture agent'});
-  const {token}=auth.mintApiToken(user.id);
-  const router=new Router({clientAuth:auth});registerSpacesRoutes(router);setClientAuthMode(db,'strict');
-  setProjectRestricted(db,'p',true);
-  const global=createSpace(db,{title:'Accessible draft',default_renderer:'document'});
-  createSpaceBlock(db,global.id,{block_type:'paragraph',markdown:'accessible'});
-  const snapshot=recordArtifactVersion(db,{source_kind:'managed',custody_mode:'managed',repo_id:'p',series_key:'restricted-document',content:serializeSpaceDocument(db,space)});
-  const prepared=preparePublication(db,{spaceId:global.id,repoId:'c',path:'doc.md',issue:'abc1234'});
-  db.prepare(`INSERT INTO space_document_history (id,space_id,kind,content,artifact_ref,provenance_json,created_at) VALUES (?,?,?,NULL,?,?,?)`).run('restricted-history',global.id,'last_export',snapshot.artifact_version.id,JSON.stringify({repo_id:'c'}),1);
-  const request=(method:string,url:string,body?:unknown)=>router.invoke({method,url,body,credential:token,transport:'http'});
-  const spaceCount=()=>Number((db.prepare('SELECT count(*) n FROM spaces').get() as {n:number}).n);
-  const before=spaceCount();
-  for(const [method,url,body] of [
-    ['GET',`/api/spaces/${space}/publications`,undefined],
-    ['GET',`/api/spaces/${space}/document/download`,undefined],
-    ['POST',`/api/spaces/${space}/document/export`,{dest_path:path.join(root,'denied.md')}],
-    ['POST',`/api/spaces/${global.id}/publications`,{repo_id:'c',path:'other.md',issue:'abc1234'}],
-    ['POST',`/api/spaces/${global.id}/publications/${prepared.id}/submit`,{}],
-    ['POST','/api/spaces/documents/import',{ref:snapshot.artifact_version.id,title:'Denied source'}],
-    ['POST','/api/spaces/documents/import',{project:'p',commit:'HEAD',path:'doc.md',title:'Denied Git source'}],
-    ['POST',`/api/spaces/${global.id}/history/restricted-history/import`,{title:'Denied history'}],
-  ] as const)expect((await request(method,url,body)).status,`${method} ${url}`).toBe(403);
-  expect(spaceCount()).toBe(before);expect(fs.existsSync(path.join(root,'denied.md'))).toBe(false);
-  const listing=await request('GET',`/api/spaces/${global.id}/publications`);
-  expect(listing.status).toBe(200);expect(listing.body).toMatchObject({publications:[],history:[],destinations:[]});
-  const publicSnapshot=recordArtifactVersion(db,{source_kind:'managed',custody_mode:'managed',series_key:'public-document',content:serializeSpaceDocument(db,global.id)});
-  expect((await request('POST','/api/spaces/documents/import',{ref:publicSnapshot.artifact_version.id,title:'Denied target',project_id:'p'})).status).toBe(403);
-  addGrant(db,{subject_type:'user',subject:user.id,resource_type:'project',resource:'p',permission:'read'});
-  expect((await request('GET',`/api/spaces/${space}/document/download`)).status).toBe(200);
-  expect((await request('POST','/api/spaces/documents/import',{ref:snapshot.artifact_version.id,title:'Allowed read copy'})).status).toBe(201);
-  expect((await request('POST',`/api/spaces/${global.id}/publications`,{repo_id:'c',path:'other.md',issue:'abc1234'})).status).toBe(403);
-  addGrant(db,{subject_type:'user',subject:user.id,resource_type:'project',resource:'p',permission:'write'});
-  expect((await request('POST',`/api/spaces/${global.id}/publications`,{repo_id:'c',path:'other.md',issue:'abc1234'})).status).toBe(201);
 });

@@ -1,7 +1,7 @@
 # Briefing destination route manifests
 
 Mandible owns recurring Briefing destination identity. An installed scheduler
-declares stable destination routes through authenticated project writes. A
+declares stable destination routes through authenticated writes to canonical project destinations. A
 route names a logical Artifact and section, never a layout. Mandible derives
 the active group from the Artifact's single destination-owner record.
 
@@ -54,7 +54,7 @@ mean that a human endorsed the report. Quiet runs record health without a round.
 2. Associate the exact logical Artifact with its canonical project using
    `mandible artifact associate <artifact-ref> --project <project> --canonical`.
    An ambiguous or unassociated Artifact cannot be routed or placed. The
-   authenticated agent needs write access to that project.
+   authenticated agent or configured operator must retain active identity.
 3. Publish the exact initial version as a Briefing. Create the target group
    and Base if needed; existing mixed groups can be used directly.
 4. Place the report and bind its owner, optionally installing its single route
@@ -158,5 +158,5 @@ Changes to Base, proposal, submissions, or expected ownership require a new
 review. Exact retries return the original receipt without reapplying the change;
 a retry with different destination changes fails. The immutable receipt records
 manual provenance as a null composition run and retains all custody anchors.
-For reviewed documents, route installation remains a separate project-authorized
+For reviewed documents, route installation remains a separate authenticated
 action after acceptance.
