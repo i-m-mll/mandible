@@ -1,3 +1,4 @@
+import { ArtifactAttachmentError } from "../artifact-attachment.js";
 import type { LedgerReader } from "../ledger-reads/index.js";
 import { readableArtifactEntries } from "../ledger-reads/artifacts.js";
 import { broadcast } from "../sse.js";
@@ -72,7 +73,7 @@ import {
 
 
 function handleError(res: ResponseLike, error: unknown): void {
-  if (error instanceof PermissionError || error instanceof ClientAuthzError) {
+  if (error instanceof PermissionError || error instanceof ClientAuthzError || error instanceof ArtifactAttachmentError) {
     sendJson(res, error.status, { error: error.message, code: error.code });
     return;
   }

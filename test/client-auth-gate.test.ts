@@ -29,7 +29,7 @@ afterEach(() => { db.close(); fs.rmSync(root, { recursive: true, force: true });
 
 async function fileRpc(token?: string) {
   const transport = new FileRpcTransport({ router, dir: path.join(root, "rpc") });
-  fs.mkdirSync(transport.dir, { recursive: true });
+  fs.mkdirSync(transport.dir, { recursive: true, mode: 0o700 });
   fs.writeFileSync(path.join(transport.dir, "one.request.json"), JSON.stringify({
     id: "one", method: "POST", path: "/api/issues/test-write", body: {}, ...(token ? { capability_token: token } : {}),
   }));

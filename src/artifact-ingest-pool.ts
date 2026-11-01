@@ -1,5 +1,6 @@
 import os from "node:os";
 import { Worker } from "node:worker_threads";
+import { ArtifactAttachmentError, borrowArtifactAttachment, isOpenedArtifactAttachment, type AttachmentIdentity, type OpenedArtifactAttachment } from "./artifact-attachment.js";
 
 // Bounded worker pool that moves artifact-ingest file reads AND hashing off the
 // main thread. The audit (perf umbrella c16807e, issue aadf45e) traced repeated
@@ -19,14 +20,14 @@ export interface MaterializedArtifactFile {
 
 interface PoolJobRequest {
   id: number;
-  filePath: string;
+  source: { kind: "path"; path: string } | { kind: "attachment"; fd: number; identity: AttachmentIdentity; name: string };
   artifactRoot: string | null;
   write: boolean;
 }
 
 type PoolJobResponse =
   | { id: number; ok: true; value: MaterializedArtifactFile }
-  | { id: number; ok: false; error: string };
+  | { id: number; ok: false; error: string; changed: boolean };
 
 interface PendingJob {
   request: PoolJobRequest;
@@ -49,20 +50,20 @@ function casPathForHash(root, hash) {
 }
 
 function handle(request) {
-  const before = fs.statSync(request.filePath);
+  const source = request.source;
+  const attachment = source.kind === "attachment";
+  const stat = () => attachment ? fs.fstatSync(source.fd) : fs.statSync(source.path);
+  const changed = () => { const error = new Error("artifact source changed during read"); error.changed = true; throw error; };
+  const same = (a, b) => ["dev", "ino", "size", "mtimeMs", "ctimeMs"].every(key => a[key] === b[key]);
+  const before = stat();
   if (!before.isFile()) {
-    throw new Error("artifact source path is not a regular file: " + request.filePath);
+    throw new Error("artifact source path is not a regular file");
   }
-  const buffer = fs.readFileSync(request.filePath);
+  if (attachment && !["dev", "ino", "size", "mtimeMs"].every(key => before[key] === source.identity[key])) changed();
+  const buffer = fs.readFileSync(attachment ? source.fd : source.path);
   const hash = crypto.createHash("sha256").update(buffer).digest("hex");
-  const after = fs.statSync(request.filePath);
-  if (
-    before.size !== after.size ||
-    before.mtimeMs !== after.mtimeMs ||
-    before.ino !== after.ino
-  ) {
-    throw new Error("artifact source changed during read: " + request.filePath);
-  }
+  const after = stat();
+  if (!same(before, after) || buffer.length !== after.size) changed();
   let wrote = false;
   if (request.write && request.artifactRoot) {
     const target = casPathForHash(request.artifactRoot, hash);
@@ -86,7 +87,7 @@ parentPort.on("message", (request) => {
   try {
     parentPort.postMessage({ id: request.id, ok: true, value: handle(request) });
   } catch (error) {
-    parentPort.postMessage({ id: request.id, ok: false, error: error instanceof Error ? error.message : String(error) });
+    parentPort.postMessage({ id: request.id, ok: false, error: error instanceof Error ? error.message : String(error), changed: error.changed === true });
   }
 });
 `;
@@ -140,22 +141,16 @@ class ArtifactIngestPool {
     if (job) {
       this.pending.delete(message.id);
       if (message.ok) job.resolve(message.value);
-      else job.reject(new Error(message.error));
+      else job.reject(job.request.source.kind === "attachment"
+        ? new ArtifactAttachmentError(message.changed ? "file_rpc_attachment_changed" : "file_rpc_attachment_io_error", message.changed ? 409 : 500, job.request.source.name)
+        : new Error(message.error));
     }
     this.releaseWorker(worker);
   }
 
-  private onWorkerError(worker: Worker, error: Error): void {
-    const jobId = this.assigned.get(worker);
-    if (jobId !== undefined) {
-      this.assigned.delete(worker);
-      const job = this.pending.get(jobId);
-      if (job) {
-        this.pending.delete(jobId);
-        job.reject(error);
-      }
-    }
-    this.replaceWorker(worker);
+  private onWorkerError(worker: Worker, _error: Error): void {
+    // A borrowed descriptor cannot be released until termination has completed.
+    void worker.terminate().then(() => this.onWorkerExit(worker, 1));
   }
 
   private onWorkerExit(worker: Worker, code: number): void {
@@ -166,7 +161,9 @@ class ArtifactIngestPool {
       const job = this.pending.get(jobId);
       if (job) {
         this.pending.delete(jobId);
-        job.reject(new Error(`artifact ingest worker exited with code ${code}`));
+        job.reject(job.request.source.kind === "attachment"
+          ? new ArtifactAttachmentError("file_rpc_attachment_io_error", 500, job.request.source.name)
+          : new Error(`artifact ingest worker exited with code ${code}`));
       }
     }
     // Only respawn when we are still running and did not intentionally retire it.
@@ -180,7 +177,6 @@ class ArtifactIngestPool {
     if (index >= 0) this.workers.splice(index, 1);
     const idleIndex = this.idle.indexOf(worker);
     if (idleIndex >= 0) this.idle.splice(idleIndex, 1);
-    worker.terminate().catch(() => { /* best effort */ });
     if (this.started) this.spawnWorker();
     this.drainQueue();
   }
@@ -205,11 +201,14 @@ class ArtifactIngestPool {
     }
   }
 
-  run(filePath: string, artifactRoot: string | null, write: boolean): Promise<MaterializedArtifactFile> {
+  run(filePath: string | OpenedArtifactAttachment, artifactRoot: string | null, write: boolean): Promise<MaterializedArtifactFile> {
     this.ensureStarted();
     return new Promise<MaterializedArtifactFile>((resolve, reject) => {
       const id = this.nextId++;
-      const request: PoolJobRequest = { id, filePath, artifactRoot, write };
+      const source: PoolJobRequest["source"] = isOpenedArtifactAttachment(filePath)
+        ? { kind: "attachment", ...borrowArtifactAttachment(filePath), name: filePath.name }
+        : { kind: "path", path: filePath as string };
+      const request: PoolJobRequest = { id, source, artifactRoot, write };
       const job: PendingJob = { request, resolve, reject };
       this.pending.set(id, job);
       this.queue.push(job);
@@ -223,12 +222,15 @@ class ArtifactIngestPool {
     this.workers.length = 0;
     this.idle.length = 0;
     this.queue.length = 0;
+    const jobs = [...this.pending.values()];
     this.assigned.clear();
-    for (const job of this.pending.values()) {
-      job.reject(new Error("artifact ingest pool shut down"));
-    }
     this.pending.clear();
-    await Promise.all(workers.map((worker) => worker.terminate().catch(() => undefined)));
+    await Promise.all(workers.map((worker) => worker.terminate()));
+    for (const job of jobs) {
+      job.reject(job.request.source.kind === "attachment"
+        ? new ArtifactAttachmentError("file_rpc_attachment_io_error", 500, job.request.source.name)
+        : new Error("artifact ingest pool shut down"));
+    }
   }
 }
 
@@ -242,16 +244,23 @@ function pool(): ArtifactIngestPool {
 // Read + hash a file off the main thread AND write its content-addressed copy
 // into the artifact store, guarding against a mid-read mutation. Returns the
 // sha256, size, and whether a fresh CAS blob was written.
-export function materializeArtifactFileIntoCas(
-  filePath: string,
+export async function materializeArtifactFileIntoCas(
+  filePath: string | OpenedArtifactAttachment,
   artifactRoot: string,
 ): Promise<MaterializedArtifactFile> {
-  return pool().run(filePath, artifactRoot, true);
+  try {
+    return await pool().run(filePath, artifactRoot, true);
+  } catch (error) {
+    if (isOpenedArtifactAttachment(filePath) && !(error instanceof ArtifactAttachmentError)) {
+      throw new ArtifactAttachmentError("file_rpc_attachment_io_error", 500, filePath.name);
+    }
+    throw error;
+  }
 }
 
 // Read + hash a file off the main thread without writing to the store. Used by
 // dry-run planners that must not materialize bytes.
-export function readAndHashArtifactFile(filePath: string): Promise<MaterializedArtifactFile> {
+export function readAndHashArtifactFile(filePath: string | OpenedArtifactAttachment): Promise<MaterializedArtifactFile> {
   return pool().run(filePath, null, false);
 }
 
