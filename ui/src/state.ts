@@ -697,11 +697,6 @@ function applySSEEvent(state: AppState, payload: SSEPayload): AppState {
       }
       return state;
     }
-    case 'console:inbox:badge': {
-      const data = unwrapSseData(payload);
-      const count = typeof data?.count === 'number' ? data.count : 0;
-      return appReducer(state, { type: 'setConsoleUnreadBadge', count });
-    }
     default:
       return state;
   }

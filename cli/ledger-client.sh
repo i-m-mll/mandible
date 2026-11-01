@@ -35,11 +35,11 @@ mandible_ledger_request() {
   local request_path="$2"
   local data="${3:-}"
   local graceful="${4:-${MANDIBLE_LEDGER_GRACEFUL:-0}}"
-  local tmp_response status
+  local tmp_response http_status
 
   tmp_response=$(mktemp) || return 1
-  status=$(api_send_capture "$method" "$request_path" "$data" "$tmp_response")
-  if [[ "$status" =~ ^2 ]]; then
+  http_status=$(api_send_capture "$method" "$request_path" "$data" "$tmp_response")
+  if [[ "$http_status" =~ ^2 ]]; then
     cat "$tmp_response"
     rm -f "$tmp_response"
     return 0
@@ -51,13 +51,13 @@ mandible_ledger_request() {
 
   # --graceful covers only an unreachable or unavailable daemon. A refusal the
   # daemon actually returned (a custody conflict, a validation error) still fails.
-  if [[ ( "$graceful" == "1" || "$graceful" == "true" ) && ( -z "$status" || "$status" == "000" || "$status" == "503" ) ]]; then
-    mandible_ledger_err "Mandible ledger request skipped (${method} ${request_path}, status ${status:-unreachable})"
+  if [[ ( "$graceful" == "1" || "$graceful" == "true" ) && ( -z "$http_status" || "$http_status" == "000" || "$http_status" == "503" ) ]]; then
+    mandible_ledger_err "Mandible ledger request skipped (${method} ${request_path}, status ${http_status:-unreachable})"
     rm -f "$tmp_response"
     return 0
   fi
 
-  mandible_ledger_err "Mandible ledger request failed (${method} ${request_path}, status ${status:-unreachable})"
+  mandible_ledger_err "Mandible ledger request failed (${method} ${request_path}, status ${http_status:-unreachable})"
   if [[ -s "$tmp_response" ]]; then
     cat "$tmp_response" >&2
     mandible_ledger_err ""
@@ -412,10 +412,10 @@ mandible_issue_file_read() {
   local start="$PWD" binding
   binding=$(mandible_bind_arguments "issue-file.read" '{"start":{"position":0}}' "$@") || return $?
   eval "$binding"
-  local path
-  path=$(mandible_issue_file_path "$start") || return 1
-  [[ -f "$path" ]] || return 1
-  sed -e 's/[[:space:]]*#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$path" \
+  local issue_file
+  issue_file=$(mandible_issue_file_path "$start") || return 1
+  [[ -f "$issue_file" ]] || return 1
+  sed -e 's/[[:space:]]*#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$issue_file" \
     | awk 'NF > 0'
 }
 
@@ -425,11 +425,11 @@ mandible_issue_file_write() {
   local -a issue_refs=()
   binding=$(mandible_bind_arguments "issue-file.write" '{"target":{"option":"cwd"},"issue_refs":{"rest":0}}' "$@") || return $?
   eval "$binding"
-  local path
-  path=$(mandible_issue_file_path "$target") || mandible_ledger_die "Not inside a git worktree: $target" 2 || return $?
+  local issue_file
+  issue_file=$(mandible_issue_file_path "$target") || mandible_ledger_die "Not inside a git worktree: $target" 2 || return $?
   {
     for issue in "${issue_refs[@]}"; do
       printf '%s\n' "$issue"
     done
-  } > "$path"
+  } > "$issue_file"
 }

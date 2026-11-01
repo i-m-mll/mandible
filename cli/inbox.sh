@@ -15,6 +15,7 @@ GIT_ENV_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/git-env.sh"
 source "$GIT_ENV_HELPER"
 API_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/api.sh"
 source "$API_HELPER"
+source "${MANDIBLE_CLI_DIR:-$MANDIBLE_COMMAND_SYNTAX_DIR}/auth-status.sh"
 mandible_prepare_syntax_runtime || exit $?
 
 # Derive branch and repo from git
@@ -195,36 +196,12 @@ cmd_watch() {
       continue
     }
 
-    local request_status
-    request_status=$(printf '%s' "$response" | jq -r '.status // "unknown"')
-
-    case "$request_status" in
-      pending|approved)
-        # Still in progress, keep polling
-        ;;
-      completed)
-        local exit_code
-        exit_code=$(printf '%s' "$response" | jq -r '.exit_code // "null"')
-        print "Auth request ${request_id}: completed (exit ${exit_code})"
-        exit 0
-        ;;
-      failed)
-        local exit_code reason
-        exit_code=$(printf '%s' "$response" | jq -r '.exit_code // "null"')
-        reason=$(printf '%s' "$response" | jq -r '.failure_reason // "no reason recorded"')
-        print "Auth request ${request_id}: failed (exit ${exit_code}) — ${reason}"
-        exit 1
-        ;;
-      rejected|withdrawn|superseded|expired|dismissed)
-        local error
-        error=$(printf '%s' "$response" | jq -r '.error // "none"')
-        print "Auth request ${request_id}: ${request_status} — ${error}"
-        exit 1
-        ;;
-      *)
-        print -u2 "Auth request ${request_id}: unexpected status '${request_status}'"
-        exit 1
-        ;;
+    local result=0
+    mandible_auth_report "$(api_short_id "$request_id")" "$response" || result=$?
+    case "$result" in
+      0) exit 0 ;;
+      2) ;;
+      *) exit 1 ;;
     esac
 
     sleep "$interval"

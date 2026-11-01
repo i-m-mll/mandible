@@ -20,7 +20,7 @@ export async function runStartupCatchUp(args: {
 
   log(`channel-server startup catch-up: replaying ${rows.length} undelivered auth result(s)\n`);
   for (const row of rows) {
-    const payload = buildAuthChannelEvent("auth:resolved", {
+    const payload = buildAuthChannelEvent({
       request_id: row.id,
       status: row.status,
       head_branch: row.head_branch,
