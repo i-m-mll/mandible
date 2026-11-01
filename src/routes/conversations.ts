@@ -1,4 +1,6 @@
 import { packReadingContext, readingMemberKeys } from '../conversations/reading-context.js';
+import { DISPLAY_CONTEXT_VERSION, type ConversationDisplayContext } from '../conversations/display-context.js';
+import { readDisplayContext } from '../conversations/display-context-read.js';
 import type { ConversationSourceEpochs } from "../conversations/source-types.js";
 import { updateConversationMetadata } from "../conversations/metadata.js";
 import { mapConversation, maskSourceBackedConversationRow } from "../conversations/response-mapping.js";
@@ -708,6 +710,7 @@ export function registerConversationRoutes(
     let positionSpaceId: string | null = null;
     let publicationRevision = 0;
     let readingContext: import("../conversations/reading-context.js").ReadingContextEntry[] = [];
+    let displayContext: ConversationDisplayContext = { version: DISPLAY_CONTEXT_VERSION, fragments: [], activity_runs: [], aliases: [], owners: [] };
     {
       const source = db.prepare(`
         SELECT current_version_id, position_space_id, publication_revision, parser_format AS parserFormat, parser_version AS parserVersion,
@@ -798,6 +801,27 @@ export function registerConversationRoutes(
         const context = structureCache.readReadingContext(id, source.current_version_id, readableBlocks[0].position, readableBlocks[readableBlocks.length - 1].position, source);
         if (!context || context.length !== readableBlocks.length) return sendJson(res, 409, { error: 'freshness_pending', code: 'freshness_pending', message: 'Source reading context is incomplete.' });
         readingContext = context;
+        const plan = structureCache.readDisplayContext(id, source.current_version_id, readableBlocks.map(block => block.position), source);
+        if (!plan) return sendJson(res, 409, { error: 'freshness_pending', code: 'freshness_pending', message: 'Source display context is incomplete.' });
+        const display = await readDisplayContext({ plan, conversationId: id, sourceVersionId: source.current_version_id,
+          blockCount: sourcePage.value.total, reader: sourceReader,
+          actionScope: position => {
+            const scope = structureCache.readReadingContext(id, source.current_version_id, position, position, source)?.[0]?.action_scope;
+            if (!scope) throw new Error('Display owner omitted its canonical action scope.');
+            return scope;
+          } });
+        if (display.status !== 'source') return sendJson(res, 409, { error: display.reason, code: 'freshness_pending' });
+        const finalPublication = db.prepare(`SELECT current_version_id,position_space_id,publication_revision FROM conversation_sources
+          WHERE conversation_id = ? ORDER BY CASE availability WHEN 'available' THEN 0 ELSE 1 END,updated_at DESC LIMIT 1`)
+          .get(id) as { current_version_id: string; position_space_id: string; publication_revision: number } | undefined;
+        if (!finalPublication || finalPublication.current_version_id !== source.current_version_id
+            || finalPublication.position_space_id !== positionSpaceId || finalPublication.publication_revision !== publicationRevision) {
+          const changed = finalPublication?.position_space_id !== positionSpaceId;
+          return sendJson(res, 409, { error: changed ? 'position_space_changed' : 'freshness_pending',
+            code: changed ? 'position_space_changed' : 'freshness_pending', position_space_id: finalPublication?.position_space_id ?? null,
+            message: 'Source changed during display context read.' });
+        }
+        displayContext = display.value;
       }
       bodySource = sourcePage.status;
       if (sourcePage.status === "source" && sourcePage.sourceVersionId) {
@@ -905,6 +929,7 @@ export function registerConversationRoutes(
       position_space_id: positionSpaceId,
       publication_revision: publicationRevision,
       reading_context: packReadingContext(readingContext),
+      display_context: displayContext,
       children: childrenWithDuration,
       parent: parent ?? null,
       revision: conv.block_count,

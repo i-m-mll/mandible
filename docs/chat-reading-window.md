@@ -1,5 +1,33 @@
 # Chat source and reading-window contracts
 
+## Source display context
+
+`src/presentation/` owns the existing DOM-free semantic pairing, inline
+directive expansion, tool classification and activity summary rules. Source
+publication and live projection both use `projectDisplayFragments`; each part
+is scoped to its native/intent member and has a canonical `{position, part}`
+coordinate when persisted. Prose separates activity runs even when the prose
+and directive share one source message. The disposable index records maximal
+consecutive activity runs and verified result-to-call aliases using those rules.
+
+Window `display_context` version 1 returns only fragments for requested positions
+and their referenced runs/owners. Runs have stable first/last fragment coordinates,
+complete member counts and the exact existing summary, icon and disclosure facts.
+Their identity is the first canonical fragment, independent of loaded edges.
+Mergeable summary facts preserve consecutive canonical/live nesting and wording.
+The index stores structural facts and contributor references; body-derived labels
+and exact tool headers are hydrated ephemerally from contributing source records.
+No summary text cap changes the existing presentation. Context is validated
+against the same source version, position space and publication as the window.
+
+A result-only window can reference a verified off-window call shell, including
+its stable member identity, source action scope and exact source-derived header.
+It retains both source memberships without extending the active history span.
+Unknown parents retain the existing unmatched-result presentation. Query retains
+explicitly hydrated owner details only while their owning fragments/results are
+retained, under the same source freshness and byte limits. This context describes
+presentation and adds no global history manifest, geometry, or loading policy.
+
 ## Source publication
 
 `conversation_sources` persists `position_space_id`, `position_count`,

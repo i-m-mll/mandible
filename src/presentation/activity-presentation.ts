@@ -66,7 +66,7 @@ function activitySummary(item: DisplayActivityItem, parts: readonly string[], st
   if (item.type === 'provider-directive') {
     return item.directive.kind === 'memory-citation' ? 'Used memory' : 'Created task';
   }
-  if (item.type === 'tool-call-activity') return presentTool(item.name, item.input, item.toolKind).phrase;
+  if (item.type === 'tool-call-activity') return (item.header ?? presentTool(item.name, item.input, item.toolKind)).phrase;
   if (item.type === 'thinking-block-activity') return 'Thought';
   const base = parts[0] ?? ACTIVITY_LABELS[item.activity_kind];
   return [...new Set([base, ...state])].join(' · ');
@@ -150,7 +150,7 @@ export function summarizeActivityRun(items:readonly DisplayActivityItem[],_prese
 
 export function activityIconName(item: DisplayActivityItem): PresentationIcon {
   if (item.type === 'provider-directive') return item.directive.kind === 'memory-citation' ? 'history' : 'chat';
-  if (item.type === 'tool-call-activity') return presentTool(item.name, item.input, item.toolKind).icon;
+  if (item.type === 'tool-call-activity') return (item.header ?? presentTool(item.name, item.input, item.toolKind)).icon;
   if (item.type === 'thinking-block-activity') return 'thought';
   if (item.activity_kind === 'thinking' || item.activity_kind === 'reasoning-summary') return 'thought';
   if (item.activity_kind === 'tool-progress' || item.activity_kind === 'tool-summary') return 'terminal';
