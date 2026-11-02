@@ -1,4 +1,5 @@
 import { render } from 'preact';
+import { MessageLinkContext } from '../components/shared/MessageActions';
 import { ReadingRowView } from './ReadingRowView';
 import type { ReadingContentProps } from './ReadingContent';
 import type { ReadingRow } from './readingProjection';
@@ -10,7 +11,10 @@ export function createReadingRowBatchRenderer(
 ): MeasurementRequest<ReadingRow>['renderBatch'] {
   return (host, rows) => {
     try {
-      render(<>{rows.map(row => <ReadingRowView key={row.key} {...props(row)} row={row} />)}</>, host);
+      render(<>{rows.map(row => {
+        const rowProps = props(row);
+        return <MessageLinkContext.Provider key={row.key} value={rowProps.onCopyMessageLink ?? null}><ReadingRowView {...rowProps} row={row} /></MessageLinkContext.Provider>;
+      })}</>, host);
     } catch (error) {
       render(null, host);
       throw error;
@@ -24,3 +28,5 @@ export function createReadingRowBatchRenderer(
     return { elements, dispose: () => render(null, host) };
   };
 }
+
+export { readingRowPrimaryActions, readingRowTurnId } from './readingRowActions';

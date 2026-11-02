@@ -24,13 +24,14 @@ export type MeasurementRequest<Body> = {
   prepareLayout?: (layout: MeasurementLayout, signal: AbortSignal) => Promise<void>;
   reuse?: readonly RowMeasurement[];
   batchSize?: number;
+  maxSynchronousMs?: number;
   signal?: AbortSignal;
 };
 export type MeasurementResult = { measurements: readonly RowMeasurement[] } & (
   | { status: 'complete'; vectors: readonly { layoutIdentity: string; heights: readonly number[]; totalHeight: number; maxRowHeight: number }[] }
   | { status: 'cancelled' }
   | { status: 'unsupported'; reason: string }
-  | { status: 'error'; reason: 'invalid-request' | 'layout' | 'materialize' | 'render' | 'readiness' | 'geometry'; detail: string }
+  | { status: 'error'; reason: 'invalid-request' | 'layout' | 'materialize' | 'render' | 'readiness' | 'geometry'; detail: string; cause?: unknown }
 );
 
 export function measurementLayoutIdentity(layout: MeasurementLayout): string {
@@ -113,7 +114,8 @@ export class ReadingMeasurementService {
       const view = doc.defaultView;
       if (!view || !doc.fonts || !this.parent.isConnected) return { status: 'unsupported', reason: 'Connected browser layout and FontFaceSet are required.', measurements: [] };
       const batchSize = request.batchSize ?? 32;
-      if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 256 || !request.layouts.length
+      let activeBatchSize = request.maxSynchronousMs ? 1 : batchSize;
+      if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 256 || (request.maxSynchronousMs !== undefined && (!Number.isFinite(request.maxSynchronousMs) || request.maxSynchronousMs <= 0)) || !request.layouts.length
         || request.layouts.some(layout => !Number.isFinite(layout.width) || layout.width <= 0)
         || new Set(request.rows.map(row => row.key)).size !== request.rows.length
         || new Set(request.layouts.map(measurementLayoutIdentity)).size !== request.layouts.length) {
@@ -130,9 +132,12 @@ export class ReadingMeasurementService {
       host.dataset.readingMeasurementHost = '';
       Object.assign(host.style, { position: 'fixed', left: '0', top: '0', visibility: 'hidden', pointerEvents: 'none', zIndex: '-1' });
       this.parent.append(host);
-      for (let offset = 0; offset < request.rows.length; offset += batchSize) {
-        const rows = request.rows.slice(offset, offset + batchSize).filter(row => request.layouts.some(layout => !measurements.has(measurementKey(row, measurementLayoutIdentity(layout)))));
+      for (let offset = 0; offset < request.rows.length;) {
+        const end = Math.min(request.rows.length, offset + activeBatchSize);
+        const rows = request.rows.slice(offset, end).filter(row => request.layouts.some(layout => !measurements.has(measurementKey(row, measurementLayoutIdentity(layout)))));
+        offset = end;
         if (!rows.length) continue;
+        let synchronousMs = 0;
         phase = 'materialize';
         const bodies = await untilAbort(request.materialize(rows, signal), signal);
         if (!bodies.ready) return cancelled();
@@ -148,15 +153,18 @@ export class ReadingMeasurementService {
           }
           host.style.width = `${layout.width}px`;
           phase = 'render';
+          const renderStarted = view.performance.now();
           rendered ??= request.renderBatch(host, bodies.value, layout, rows);
           phase = 'readiness';
-          host.getBoundingClientRect();
+          for (const row of rows) rendered.elements.get(row.key)?.getBoundingClientRect();
+          synchronousMs += view.performance.now() - renderStarted;
           const ready = await untilAbort(Promise.all([
             ...layout.fonts.map(({ font, text }) => doc.fonts.load(font, text).then(() => { if (!doc.fonts.check(font, text)) throw new Error(`Requested font unavailable: ${font}`); })),
             ...[...host.querySelectorAll('img')].map(image => imageReady(image, signal)),
           ]).then(() => doc.fonts.ready), signal);
           if (!ready.ready) return cancelled();
           phase = 'geometry';
+          const geometryStarted = view.performance.now();
           const boxes = rows.map(row => {
             const element = rendered!.elements.get(row.key);
             if (!element || !host!.contains(element)) throw new Error(`Missing mounted row: ${row.key}`);
@@ -164,11 +172,14 @@ export class ReadingMeasurementService {
             if (!Number.isFinite(box.height) || box.height <= 0 || Math.abs(box.width - layout.width) > 0.05) throw new Error(`Invalid row box: ${row.key}`);
             return { row, layoutIdentity: identity, height: box.height };
           });
+          synchronousMs += view.performance.now() - geometryStarted;
           if (signal.aborted) return cancelled();
           for (const box of boxes) measurements.set(measurementKey(box.row, identity), box);
           await yieldToBrowser(view, signal);
         }
         release();
+        if (request.maxSynchronousMs) activeBatchSize = Math.max(1, Math.min(batchSize,
+          synchronousMs > request.maxSynchronousMs ? Math.floor(activeBatchSize * request.maxSynchronousMs / synchronousMs) : activeBatchSize * 2));
       }
       if (signal.aborted) return cancelled();
       const vectors = request.layouts.map(layout => {
@@ -178,7 +189,7 @@ export class ReadingMeasurementService {
       });
       return { status: 'complete', measurements: partial(), vectors };
     } catch (error) {
-      return signal.aborted ? cancelled() : { status: 'error', reason: phase, detail: error instanceof Error ? error.message : String(error), measurements: partial() };
+      return signal.aborted ? cancelled() : { status: 'error', reason: phase, detail: error instanceof Error ? error.message : String(error), cause: error, measurements: partial() };
     } finally {
       cleanup();
       signal.removeEventListener('abort', cleanup);
