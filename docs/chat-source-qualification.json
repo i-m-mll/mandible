@@ -1,0 +1,70 @@
+{
+  "contract": "complete-chat-source-cache-v10",
+  "qualified_at": "2026-11-02",
+  "corpus_lock_sha256": "5023a67d43dc005c3e5c502029c8ed6b18a62ed28d3958c5ec8580941ff6f64b",
+  "cohort_preserved": true,
+  "chats": 100,
+  "prior_default_rows": 24074,
+  "qualified_default_rows": 24074,
+  "missing_prior_source_positions": 0,
+  "row_shape_fields": [
+    "order",
+    "kind",
+    "speaker/action scope",
+    "turnStart",
+    "turnEnd",
+    "activityMember",
+    "activityEnd",
+    "totalTokens"
+  ],
+  "row_shape_changes": 0,
+  "source_membership_correction": "Coordinate-based pairing restores result coordinates lost by duplicate provider-native tool keys; no prior membership is removed.",
+  "source_membership_corrections": [
+    {
+      "conversation_id": "e9252878-5e7c-405e-8a6f-ca5d33aa9a29",
+      "restored_tool_result_memberships": 35,
+      "removed_memberships": 0
+    },
+    {
+      "conversation_id": "5a011de3-49b1-4c20-ba82-3726991ffaff",
+      "restored_tool_result_memberships": 9,
+      "removed_memberships": 0
+    },
+    {
+      "conversation_id": "10be4bd5-12e0-4938-ae1a-8d110d074a47",
+      "restored_tool_result_memberships": 1,
+      "removed_memberships": 0
+    },
+    {
+      "conversation_id": "9b10d8a4-448f-4a51-b934-caa53f07e344",
+      "restored_tool_result_memberships": 2,
+      "removed_memberships": 0
+    },
+    {
+      "conversation_id": "7af28def-9fb0-4104-b996-5120fff987a2",
+      "restored_tool_result_memberships": 2,
+      "removed_memberships": 0
+    },
+    {
+      "conversation_id": "5b24a4af-6b85-40d3-99e1-afcfe27fc075",
+      "restored_tool_result_memberships": 18,
+      "removed_memberships": 0
+    }
+  ],
+  "bounded_hydration": {
+    "rows": 24074,
+    "requests": 793,
+    "splits": 0,
+    "max_response_bytes": 476518,
+    "failures": 0,
+    "activity_summary_presentation_changes": 0,
+    "compared_presentation_fields": [
+      "summary",
+      "icon",
+      "hasDisclosure",
+      "defaultExpanded"
+    ]
+  },
+  "local_evidence_directory": "/Users/mll/.cache/mandible/experiments/chat-height-v1/calibration100-20261101/source-followup-parity",
+  "baseline": "Preserved source-qualified c2263d81 default ReadingContent projection; exact same pinned native sources and original selected100."
+}

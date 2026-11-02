@@ -47,6 +47,8 @@ export type PersistedBlockSource = {
   position?: number;
   /** False when a display projection omitted expandable block payload. */
   detailsLoaded?: boolean;
+  /** Preserve default visible source evidence while its real detail body is hydrated. */
+  defaultVisible?: boolean;
   /** Whether a compact thinking summary has body lines beyond its title. */
   hasBody?: boolean;
   /** Exact persisted parent link; a present value proves a result is not orphaned. */

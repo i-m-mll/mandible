@@ -54,17 +54,50 @@ only the requested existing `ReadingRow` payloads, with their revisions and the
 captured source metadata. A newer publication can satisfy a prior descriptor
 when its position space and dependencies remain unchanged. Appending unrelated
 content preserves completed prefix revisions. Changed call results, summaries,
-boundaries and token footers invalidate the affected rows. Publication races
+boundaries and token footers invalidate the affected rows. A publication advance during hydration is admitted when the current manifest
+proves the requested dependencies unchanged; the response keeps the captured
+source provenance. Changed requested dependencies
 return `changed`; obsolete spaces return `position-space-changed`; missing or
 unsupported source returns `unavailable`.
 
-A batch admits at most 128 rows and 512 source positions per source-read stage,
+A batch admits at most 128 rows and 512 source positions in one captured read,
 and at most 4 MiB of rendered payload. A row that cannot fit reports
 `resource-limit`, without truncation or an exact-geometry claim. Source bodies
 are ephemeral. The server retains at most one complete metadata manifest and
 two disclosure plans per ledger connection; it retains no hydrated row cache.
 The client continues to own fetched-data retention through Query. These APIs
 contain no pixel coordinates or scrolling policy.
+
+`prepareReadingMembers` and `materializePreparedReadingRows` expose the existing
+fragment preparation and renderer-payload phases. `composeConversationReading`
+in `src/presentation/reading-composition.ts` merges complete canonical metadata
+with provisional events through the same planner. Sourced active-window events
+cannot replace manifest authority. Unambiguous native/intent handoffs remove
+durable echoes; a unique unfinished canonical call can receive a live result
+without inventing a canonical result coordinate or a second presentation member.
+The composition supplies action runs containing every local export contributor.
+
+`readingCompositionRequests` resolves mixed row refs to canonical-only source
+refs. `materializeConversationReading` validates those payload revisions and
+combines their prepared members with local nodes. Descriptor `memberKeys` retain
+complete logical membership; bounded payload `materializedMemberKeys` map the
+actually hydrated nodes. `activityRun` supplies exact canonical aggregate facts,
+including singleton context needed when a live suffix grows a group. No live
+text is sent to the source index or stored in the manifest.
+
+Shared `reading-disclosures.ts` supplies renderer disclosure keys and prefix
+relations. Effective content-row revisions include only their own disclosure
+state. Opening or revealing a native-backed call hydrates its exact call and
+paired result through the normal row request; `detailsLoaded: true` is emitted
+only for bodies read from that captured source. Call and result memberships and
+focus subtargets remain distinct. Default-visible transport status evidence
+remains visible after detail hydration. Such evidence contributes to complete
+membership while preserving the established substantive aggregate summary
+wording and icon; an all-status run retains its own existing summary.
+
+The [same-source qualification](chat-source-qualification.json) records the preserved
+100-chat corpus, default row and summary parity, restored exact result memberships,
+and bounded public-source hydration outcomes. Native inputs remain local.
 
 ## Source publication
 

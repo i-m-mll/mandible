@@ -1,3 +1,4 @@
+import {displaySummaryMembers} from '../conversations/display-context.js';
 import type { IndexedDisplayFragment, DisplayPositionFacts } from '../conversations/display-context.js';
 import type { ReadingContextEntry } from '../conversations/reading-context.js';
 import { activityRunFacts, presentActivityRunFacts } from './activity-presentation.js';
@@ -32,12 +33,13 @@ export function buildReadingManifest(input: {
   }
   const summarySources: Record<string, number[]> = {};
   const runPlans = new Map([...runs].map(([id, members]) => {
-    const unified = members.some(member => member.activity && (member.activity.type !== 'activity'
+    const contributors = displaySummaryMembers(members);
+    const unified = contributors.some(member => member.activity && (member.activity.type !== 'activity'
       || ['thinking', 'reasoning-summary'].includes(member.activity.activity_kind)));
-    summarySources[id] = members.filter((member, index) => member.summary_from_source && (members.length === 1 || (!unified && index === 0)
+    summarySources[id] = contributors.filter((member, index) => member.summary_from_source && (contributors.length === 1 || (!unified && index === 0)
       || (unified && member.activity?.type === 'activity' && !['thinking', 'reasoning-summary'].includes(member.activity.activity_kind))))
       .map(member => member.coordinate.position);
-    const facts = activityRunFacts(members.flatMap(member => member.activity ? [member.activity] : []));
+    const facts = activityRunFacts(contributors.flatMap(member => member.activity ? [member.activity] : []));
     facts.hasDetails ||= members.some(member => member.has_details);
     return [id, { id, revision: input.revisions.runs[id], member_count: members.length, presentation: { ...presentActivityRunFacts(facts), facts } }] as const;
   }));

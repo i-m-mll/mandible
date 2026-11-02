@@ -41,6 +41,11 @@ it('retains default status evidence and materializes exact disclosed call/result
   try {
     const status = f.parsed.blocks.find(block => block.metadata.source_event_type === 'task_started')!;
     expect(planConversationReading(f.manifest, {}).membership.has(status.position)).toBe(true);
+    const statusMember = f.manifest.members.find(member => member.position === status.position)!;
+    const statusExpanded = {[statusMember.disclosures!.keys[0]]: true};
+    const statusRow = planConversationReading(f.manifest, statusExpanded).rows.find(row => row.memberKeys.includes(statusMember.key))!;
+    expect(await readReadingRowBatch({db: f.db, reader: f.reader, conversationId: 'composition',
+      request: {positionSpaceId: f.manifest.positionSpaceId, rows: [statusRow], expanded: statusExpanded}})).toMatchObject({status: 'source'});
     const call = f.manifest.members.find(member => member.activity?.type === 'tool-call-activity')!;
     const closed = planConversationReading(f.manifest, {});
     const expanded = {[call.disclosures!.keys[0]]: true};
@@ -104,5 +109,30 @@ it('accepts a captured row snapshot when publication freshness advances without 
         request: {positionSpaceId: f.manifest.positionSpaceId, rows: [descriptor], expanded: {}}});
       expect(result).toMatchObject({status: 'source', publicationRevision: f.manifest.publicationRevision});
     } finally {race.mockRestore();}
+  } finally {f.close();}
+});
+
+it('keeps transport statuses in complete membership without changing substantive aggregate wording', async () => {
+  const f = await fixture(false);
+  try {
+    const call = f.manifest.members.find(member => member.activity?.type === 'tool-call-activity')!;
+    const first = planConversationReading(f.manifest, {}).rows.find(row => row.key === call.key)!;
+    const before = await readReadingRowBatch({db: f.db, reader: f.reader, conversationId: 'composition',
+      request: {positionSpaceId: f.manifest.positionSpaceId, rows: [first], expanded: {}}});
+    if (before.status !== 'source') throw new Error(before.status);
+    const file = path.join(f.root, '.codex/sessions/composition.jsonl');
+    fs.appendFileSync(file, JSON.stringify({type: 'event_msg', payload: {type: 'task_complete', turn_id: 'turn'}}) + '\n');
+    const parsed = await new CodexParser().parse(file);
+    if (!parsed) throw new Error('Appended native source did not parse.');
+    await new ConversationSourceStore(f.db).recordConversation({conversationId: 'composition', provider: 'codex', nativeSessionId: 'composition',
+      filePath: file, blocks: parsed.blocks, sourceSnapshot: parsed.sourceSnapshot, ...CURRENT_CONVERSATION_SOURCE_EPOCHS});
+    const manifest = readConversationReadingManifest(f.db, 'composition', captureReadingPublication(f.db, 'composition')!)!;
+    const summary = planConversationReading(manifest, {}).rows.find(row => row.kind === 'activity-summary')!;
+    expect(summary.memberKeys).toHaveLength(2);
+    const after = await readReadingRowBatch({db: f.db, reader: f.reader, conversationId: 'composition',
+      request: {positionSpaceId: manifest.positionSpaceId, rows: [summary], expanded: {}}});
+    if (after.status !== 'source') throw new Error(after.status);
+    const original = before.rows[0].activityRun!.presentation;
+    expect(after.rows[0].activityGroup!.presentation).toMatchObject({summary: original.summary, icon: original.icon});
   } finally {f.close();}
 });

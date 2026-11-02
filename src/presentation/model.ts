@@ -279,7 +279,7 @@ export function buildStreamState(events: StreamEvent[], standaloneItems = false)
           }
         }
       } else if (item.type === 'activity') {
-        if (isRoutineActivityStatus(item) && source?.detailsLoaded !== false) continue;
+        if (isRoutineActivityStatus(item) && source?.detailsLoaded !== false && !source?.defaultVisible) continue;
         if (isRoutineActivityStatus(item) && source?.hasBody === false) continue;
         flushPendingTurn();
         nodes.push({ kind: 'activity', key, entity: item.activity_kind === 'diagnostic' || item.severity === 'error' || item.execution_outcome === 'failed' ? item.role : 'assistant', item, source });
