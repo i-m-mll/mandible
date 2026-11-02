@@ -395,7 +395,7 @@ export function useReadingViewport(input: {
     const snapshot = current.current;
     const vector = snapshot.applied;
     const scroller = scrollRef.current;
-    if (!vector || vector.scope !== snapshot.scope || vector !== snapshot.indexed || readback.current || !scroller || !instance.range) return;
+    if (!vector || vector.scope !== snapshot.geometry?.scope || vector !== snapshot.indexed || readback.current || !scroller || !instance.range) return;
     const height = scroller.clientHeight;
     if (height <= 0) return;
     const start = Math.max(0, scroller.scrollTop - height);
