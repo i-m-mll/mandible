@@ -8,24 +8,11 @@ import { ChatSurface } from '../ui/src/chat/ChatSurface';
 import { conversationAnchorFromHash, messageLinkUrl } from '../ui/src/chat/messageLinks';
 import { __resetAgentPageBindingForTests, adoptAgentSessionBinding } from '../ui/src/agent-page-binding';
 import { MessageActions, MessageLinkContext } from '../ui/src/components/shared/MessageActions';
-import type { ConversationTranscriptConsumer } from '../ui/src/query/conversationData';
+import { installReadingBrowserFixture } from './helpers/reading-browser-fixture';
 import type { StreamEvent } from '../ui/src/components/stream-renderer/types';
 import type { ChatItem } from '../src/parsers/types';
 
 function installBrowserStubs(): void {
-  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(600);
-  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(800);
-  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(600);
-  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(800);
-  if (!HTMLElement.prototype.scrollTo) {
-    Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
-      configurable: true,
-      value: function scrollTo(this: HTMLElement, options: ScrollToOptions) {
-        this.scrollTop = Number(options.top ?? 0);
-        this.dispatchEvent(new Event('scroll'));
-      },
-    });
-  }
   const store = new Map<string, string>();
   const mem: Storage = {
     get length() {
@@ -65,8 +52,8 @@ function canonicalItem<T extends ChatItem>(item: Omit<T, 'identity' | 'provenanc
   } as T;
 }
 
-function canonicalEvent(item: ChatItem, blockId: string): StreamEvent {
-  return { type: 'chat:item', item, source: { blockId } };
+function canonicalEvent(item: ChatItem, blockId: string, source: { parentBlockId?: string; position?: number } = {}): StreamEvent {
+  return { type: 'chat:item', item, source: { blockId, position: item.identity.source_record_ordinal, ...source } };
 }
 
 function persistedBlock(id: string, item: ChatItem, timestamp?: string) {
@@ -79,35 +66,33 @@ function persistedBlock(id: string, item: ChatItem, timestamp?: string) {
   };
 }
 
+let disposeBrowser: () => void;
 beforeEach(() => {
+  disposeBrowser = installReadingBrowserFixture();
   installBrowserStubs();
 });
 
 afterEach(() => {
   cleanup();
+  disposeBrowser();
   __resetAgentPageBindingForTests();
   vi.restoreAllMocks();
-  delete (HTMLElement.prototype as { scrollTo?: unknown }).scrollTo;
+  vi.unstubAllGlobals();
 });
 
 it.each(['user', 'assistant', 'system'] as const)('copies an exact %s message link after live content gains durable identity', async (role) => {
   window.history.replaceState(null, '', '/preview?instance=copy-test#/console?session=old-session&turn=old-turn&sidebar=hidden');
   adoptAgentSessionBinding('copy-agent');
   const item = canonicalItem({ type: 'message', role, parts: [{ type: 'text', text: 'Live message' }], ordinal: 0 });
-  const transcript: ConversationTranscriptConsumer = {
-    conversationId: 'copy-conversation', positionSpaceId: 'space', readingContext: new Map(), activeWindow: { start: 0, end: 0 }, protect: () => {}, cancelNavigation: () => {}, command: null, prepareDetails: async () => {}, replaceAround: async () => 'loaded', sourceVersionId: 'copy-source', historyLoading: false,
-    total: 1, loadedIntervals: [{ start: 0, end: 0 }], hasOlder: false, hasNewer: false,
-    loadOlder: () => 'loaded', loadNewer: () => 'loaded',
-    loadAround: () => 'loaded',
-  };
-  const copyMessageLink = (blockId: string) => { void navigator.clipboard.writeText(messageLinkUrl(window.location.href, transcript.conversationId, blockId)); };
-  const view = render(<ChatSurface events={[{ type: 'chat:item', item }]} streaming={true} transcript={transcript} onCopyMessageLink={copyMessageLink} />);
-  fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+  const copyMessageLink = (blockId: string) => { void navigator.clipboard.writeText(messageLinkUrl(window.location.href, 'copy-conversation', blockId)); };
+  const view = render(<ChatSurface events={[{ type: 'chat:item', item }]} streaming={true} onCopyMessageLink={copyMessageLink} />);
+  fireEvent.contextMenu(await screen.findByText('Live message'));
   expect((screen.getByRole('menuitem', { name: 'Copy link' }) as HTMLButtonElement).disabled).toBe(true);
 
-  view.rerender(<ChatSurface events={[canonicalEvent(item, 'cblk:copy-conversation:42')]} streaming={false} transcript={transcript} onCopyMessageLink={copyMessageLink} />);
-  const overflow = screen.getByRole('button', { name: 'More actions' });
-  if (overflow.getAttribute('aria-expanded') !== 'true') fireEvent.click(overflow);
+  fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
+  view.rerender(<ChatSurface events={[canonicalEvent(item, 'cblk:copy-conversation:42', { position: 42 })]} streaming={false} onCopyMessageLink={copyMessageLink} />);
+  await waitFor(() => expect(view.container.querySelector('[data-block-id="cblk:copy-conversation:42"]')).not.toBeNull());
+  fireEvent.contextMenu(screen.getByText('Live message'));
   fireEvent.click(screen.getByRole('menuitem', { name: 'Copy link' }));
   await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledOnce());
   const url = new URL(vi.mocked(navigator.clipboard.writeText).mock.calls[0][0]);
@@ -119,12 +104,13 @@ it.each(['user', 'assistant', 'system'] as const)('copies an exact %s message li
   expect(conversationAnchorFromHash(url.hash)).toEqual({ block: 'cblk:copy-conversation:42' });
 });
 
-it.each(['Copy link', 'Fork', 'Resume', 'Info'])('executes %s and closes a menu outside the hover rail', (label) => {
+it.each(['Copy link', 'Fork', 'Resume', 'Info'])('executes %s from the event context menu and restores focus', (label) => {
   const callbacks = { 'Copy link': vi.fn(), Fork: vi.fn(), Resume: vi.fn(), Info: vi.fn() };
   const view = render(<MessageLinkContext.Provider value={callbacks['Copy link']}>
-    <MessageActions blockId="exact-block" dagUuid="exact-dag" onFork={callbacks.Fork} onResume={callbacks.Resume} onInfo={callbacks.Info} />
+    <div><MessageActions blockId="exact-block" dagUuid="exact-dag" onFork={callbacks.Fork} onResume={callbacks.Resume} onInfo={callbacks.Info} /></div>
   </MessageLinkContext.Provider>);
-  fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+  const owner = view.container.querySelector<HTMLElement>('[data-event-menu-owner]')!;
+  fireEvent.contextMenu(owner);
   const menu = screen.getByRole('menu');
   expect(view.container.contains(menu)).toBe(false);
   expect(document.body.contains(menu)).toBe(true);
@@ -136,15 +122,20 @@ it.each(['Copy link', 'Fork', 'Resume', 'Info'])('executes %s and closes a menu 
   expect(callbacks[label as keyof typeof callbacks]).toHaveBeenCalledOnce();
   if (label === 'Copy link') expect(callbacks['Copy link']).toHaveBeenCalledWith('exact-block');
   expect(screen.queryByRole('menu')).toBeNull();
-  expect(screen.getByRole('button', { name: 'More actions' }).getAttribute('aria-expanded')).toBe('false');
+  expect(document.activeElement).toBe(owner);
 });
 
-it('composes group-scoped primary actions and exact-source overflow in one rail', async () => {
+it('keeps complete-run actions on the confirmed final footer and exact links on each event', async () => {
   const copyLink = vi.fn();
   const events = ['first', 'second'].map((text, index) => canonicalEvent(canonicalItem({
-    type: 'message', role: 'assistant', parts: [{ type: 'text', text }], ordinal: index, turn: 'shared-turn',
+    type: 'message', role: 'assistant', assistant_response: index === 1 ? 'final' : 'interim', parts: [{ type: 'text', text }], ordinal: index, turn: 'shared-turn',
   }), `message-${text}`));
   const view = render(<ChatSurface events={events} streaming={false} onCopyMessageLink={copyLink} />);
+  await screen.findByRole('button', { name: 'Copy all messages' });
+  expect(screen.getAllByRole('button', { name: 'Copy all messages' })).toHaveLength(1);
+  fireEvent.contextMenu(screen.getByText('first'));
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Copy link' }));
+  expect(copyLink).toHaveBeenLastCalledWith('message-first');
   const rail = view.container.querySelector('[data-block-id="message-second"] .message-actions')!;
   const buttons = Array.from(rail.querySelectorAll('button'));
   expect(buttons.map((button) => button.getAttribute('aria-label'))).toEqual(['Copy all messages', 'Open turn as markdown', 'More actions']);
@@ -158,19 +149,21 @@ it('composes group-scoped primary actions and exact-source overflow in one rail'
   expect(copyLink).toHaveBeenCalledWith('message-second');
 });
 
-it('keeps a paired result inline and copies the result source independently of its call', () => {
+it('keeps a paired result inline and copies the result source independently of its call', async () => {
   const copyLink = vi.fn();
   const call = canonicalItem({ type: 'tool-call', role: 'assistant', phase: 'call', tool_id: 'paired-tool',
     tool_name: 'read', input: { file_path: '/tmp/example' }, parts: [], ordinal: 0, turn: 'tool-turn' });
   const result = canonicalItem({ type: 'tool-call', role: 'tool', phase: 'result', tool_id: 'paired-tool',
     output: 'exact result body', parts: [], ordinal: 1, turn: 'tool-turn' });
-  const view = render(<ChatSurface events={[canonicalEvent(call, 'call-source'), canonicalEvent(result, 'result-source')]}
+  const view = render(<ChatSurface events={[canonicalEvent(call, 'call-source'), canonicalEvent(result, 'result-source', { parentBlockId: 'call-source' })]}
     streaming={false} onCopyMessageLink={copyLink} />);
-  fireEvent.click(view.container.querySelector<HTMLButtonElement>('[data-block-id="call-source"] .compact-activity__row')!);
+  const disclosure = await screen.findByRole('button', { name: /read/i });
+  fireEvent.click(disclosure);
+  await screen.findByText('exact result body');
   const resultBox = view.container.querySelector<HTMLElement>('[data-block-id="result-source"]')!;
   expect(resultBox.closest('[data-block-id="call-source"]')).not.toBeNull();
   expect(resultBox.textContent).toContain('exact result body');
-  fireEvent.click(resultBox.querySelector<HTMLButtonElement>('[aria-label="More actions"]')!);
+  fireEvent.contextMenu(screen.getByText('exact result body'));
   fireEvent.click(screen.getByRole('menuitem', { name: 'Copy link' }));
   expect(copyLink).toHaveBeenCalledWith('result-source');
 });
