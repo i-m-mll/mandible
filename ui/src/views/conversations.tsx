@@ -133,6 +133,7 @@ import { compareConversationSidebarRows } from '../../../src/conversations/sideb
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { useIntrinsicOverflowGroup } from '../hooks/useIntrinsicOverflowGroup';
 import { readReadingState } from '../chat/readingState';
+import { readingNavigationFailureMessage } from '../chat/readingNavigationMessage';
 import { openMarkdownDocument } from '../chat/markdownActions';
 import { conversationExecutionState, conversationControlPresentation } from '../chat/conversationControl';
 import { chatItemIdentityKey, mergeProviderLiveProjection } from '../../../src/conversation-control/provider-live';
@@ -2467,7 +2468,7 @@ export function ConversationDetail({
     setNavigationError({
       operation: 'target',
       code: 'target_not_renderable',
-      message: `Reading target: ${result.status}.`,
+      message: readingNavigationFailureMessage(result.status),
       retryable: false,
     });
   }, [navigationTarget?.key, conversationId, queryClient]);

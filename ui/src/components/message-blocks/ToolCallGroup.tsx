@@ -16,12 +16,13 @@ export function ToolCallGroup({ summary, icon, expanded, onExpandedChange, child
   return (
     <CompactActivityRow
       className={`tool-call-group${className ? ` ${className}` : ''}`}
+      collection
       icon={<Icon name={icon} />}
       summary={summary}
       metadata={headerMetadata}
       memberRefs={memberRefs}
       disclosure={{
-        content: <div className="tool-call-group__body">{children}</div>,
+        content: <div className="tool-call-group__body activity-nested-headers">{children}</div>,
         regionLabel: `${summary} details`,
         expanded,
         onExpandedChange,
