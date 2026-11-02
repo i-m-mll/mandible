@@ -86,8 +86,10 @@ lines.on("line", (line) => {
       } } });
       send({ method: "item/commandExecution/outputDelta", params: { threadId: request.params.threadId, turnId: activeTurnId, itemId: "command-rich", delta: "ok" } });
       send({ method: "item/completed", params: { threadId: request.params.threadId, turnId: activeTurnId, completedAtMs: Date.now(), item: {
-        id: "command-rich", type: "commandExecution", command: "true", status: "completed", aggregatedOutput: "ok",
+        id: "command-rich", type: "commandExecution", command: "true", status: "completed", aggregatedOutput: "ok", durationMs:125,exitCode:0,processId:"process-rich",
       } } });
+      send({method:"item/completed",params:{threadId:request.params.threadId,turnId:activeTurnId,item:{id:"mcp-rich",type:"mcpToolCall",tool:"unrelated_name",arguments:{},status:"completed",durationMs:75,result:{content:[{type:"text",text:'{"output":"application JSON"}'}],structuredContent:null,_meta:null}}}});
+      send({method:"item/completed",params:{threadId:request.params.threadId,turnId:activeTurnId,item:{id:"dynamic-rich",type:"dynamicToolCall",tool:"custom_dynamic",arguments:{},status:"failed",success:false,contentItems:[{type:"inputText",text:"native dynamic failure"}]}}});
     }
     if (request.params.input[0]?.text === "permission") {
       approvalThread=request.params.threadId;

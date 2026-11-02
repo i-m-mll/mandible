@@ -1,3 +1,4 @@
+import { projectNativeToolResult } from './tool-transport.js';
 import { splitProviderDirectives } from './provider-directives.js';
 import type { ToolCallActivity, ThinkingBlockActivity, ProviderDirectiveActivity } from './types.js';
 import { chatItemIdentityKey } from '../conversation-control/provider-live.js';
@@ -33,7 +34,8 @@ function chatItemText(item: MessageItem | PlanItem | ToolCallItem | ActivityItem
   return item.parts.map((part) => part.text).join('\n');
 }
 
-export function displayChatItem(item: ChatItem, metadata: Pick<BlockMetadata, 'display_completion_parts'>): ChatItem {
+export function displayChatItem(item: ChatItem, metadata: Pick<BlockMetadata, 'display_completion_parts' | 'display_tool_content' | 'display_tool_error'>): ChatItem {
+  if(item.type==='tool-call' && item.phase==='result' && ('display_tool_content' in metadata || 'display_tool_error' in metadata)) return {...item,...(metadata.display_tool_content!==undefined ? {output:metadata.display_tool_content} : {}),...(metadata.display_tool_error ? {execution_outcome:'failed' as const} : {})};
   return item.type === 'activity' && item.provenance.source_event_type === 'task_complete' && metadata.display_completion_parts
     ? {...item, parts: metadata.display_completion_parts} : item;
 }
@@ -65,6 +67,14 @@ export function toolValueText(value: unknown, fallback: string): string {
   } catch {
     return fallback;
   }
+}
+
+function toolResultPresentation(item: ToolCallItem, fallback: string) {
+  const result=projectNativeToolResult(item.output,fallback,item.tool_kind,item.tool_name,item.tool_id);
+  return {...result, failed:result.failed || item.execution_outcome==='failed' || (item.exit_code!==undefined && item.exit_code!==0),
+    running:item.content_completion==='streaming',
+    ...(item.elapsed_ms!==undefined && Number.isFinite(item.elapsed_ms) && item.elapsed_ms>=0 ? {wallTimeSeconds:item.elapsed_ms/1000,timingScope:'operation' as const,decoded:true} : {}),
+    metadata:[...result.metadata,...(item.exit_code!==undefined ? [{label:'exit_code',value:String(item.exit_code)}] : []),...(item.process_id ? [{label:'process_id',value:item.process_id}] : [])]};
 }
 
 function buildTurn(
@@ -268,7 +278,7 @@ export function buildStreamState(events: StreamEvent[], standaloneItems = false)
             executionActive: canonical.executionActive,
           });
           if (toolItem.output !== undefined) pendingResults.set(toolId, boundToolResultBlock({
-            type: 'tool_result', tool_use_id: toolId, content: toolValueText(toolItem.output, ''),
+            type: 'tool_result', tool_use_id: toolId, content: toolValueText(toolItem.output,''), presentation: toolResultPresentation(toolItem,''),
             is_error: toolItem.execution_outcome === 'failed',
           }));
         } else {
@@ -276,6 +286,7 @@ export function buildStreamState(events: StreamEvent[], standaloneItems = false)
             type: 'tool_result',
             tool_use_id: toolId,
             content: toolValueText(toolItem.output, chatItemText(toolItem)),
+            presentation: toolResultPresentation(toolItem,chatItemText(toolItem)),
             is_error: toolItem.execution_outcome === 'failed',
             source,
           });

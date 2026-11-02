@@ -26,6 +26,7 @@ export function projectDisplayBlock(row: SourceBackedConversationBlock): SourceB
     metadata.display_has_body = !isEmptyCompletionMetadata(displayChatItem(item as ActivityItem, metadata) as ActivityItem, false, metadata.token_usage ?? metadata.usage_telemetry);
   }
   delete metadata.display_completion_parts;
+  delete metadata.display_tool_content;
   delete metadata.tool_input;
   delete metadata.tool_output;
   if (item && typeof item === "object" && !Array.isArray(item)) {

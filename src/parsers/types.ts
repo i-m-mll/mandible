@@ -88,6 +88,10 @@ export interface ToolCallItem extends ChatItemBase {
   tool_id?: string;
   input?: unknown;
   output?: unknown;
+  /** Explicit provider execution facts; absent when the source does not report them. */
+  elapsed_ms?: number;
+  exit_code?: number;
+  process_id?: string;
 }
 
 export interface ActivityItem extends ChatItemBase {
@@ -116,6 +120,10 @@ export interface BlockMetadata {
   usage_telemetry?: NormalizedUsageTelemetry;
   /** Additive completion evidence for Chat, excluding provider answer echoes/timing bookkeeping; identity-bearing content and parts remain unchanged. */
   display_completion_parts?: ChatContentPart[];
+  /** Presentation-only proof of a native ordered output framing block; normalized content remains intact. */
+  display_tool_frame?: import('../presentation/tool-transport.js').NativeResultFrame;
+  display_tool_content?: unknown;
+  display_tool_error?: boolean;
   source_event_type?: string;
   visibility?: "default_hidden" | "default_visible";
   truncated?: boolean;

@@ -22,7 +22,7 @@ export type ActivityDetail = string
 export function activityState(item: DisplayActivityItem): string[] {
   if (item.type === 'provider-directive') return [];
   if (item.type === 'tool-call-activity') {
-    return item.result?.is_error ? ['Failed'] : [];
+    return [item.result?.is_error || item.result?.presentation?.failed ? 'Failed' : undefined,item.result?.running || item.result?.presentation?.running ? 'Running' : undefined].filter((value):value is string=>Boolean(value));
   }
   if (item.type === 'thinking-block-activity') return [];
   return [
@@ -67,6 +67,7 @@ function activitySummary(item: DisplayActivityItem, parts: readonly string[], st
     return item.directive.kind === 'memory-citation' ? 'Used memory' : 'Created task';
   }
   if (item.type === 'tool-call-activity') {
+    if (item.operations) {const label=summarizeToolRunFacts(item.operations).join('; ');return label.charAt(0).toUpperCase()+label.slice(1);}
     const presentation = item.header ?? presentTool(item.name, item.input, item.toolKind);
     const execution = item.execution ?? presentation.execution;
     return execution?.kind === 'command' ? execution.count === 1 ? 'Ran command' : 'Ran several commands' : presentation.phrase;
@@ -124,7 +125,7 @@ export function activityRunFacts(items: readonly DisplayActivityItem[]): Activit
   });
   return {memberCount:items.length, unified:items.some(item=>item.type!=='activity'||['thinking','reasoning-summary'].includes(item.activity_kind)),
     firstSummary:presentations[0]?.summary??'',firstIcon:items[0]?activityIconName(items[0]):'monitor',
-    states:[...new Set(items.flatMap(activityState))], toolStates:[...new Set(tools.flatMap(activityState))],tools:toolRunFacts(tools.map(item=>({name:item.name,toolKind:item.toolKind,input:item.input,execution:item.execution}))),
+    states:[...new Set(items.flatMap(activityState))], toolStates:[...new Set(tools.flatMap(activityState))],tools:toolRunFacts(tools.map(item=>({name:item.name,toolKind:item.toolKind,input:item.input,execution:item.execution,operations:item.operations}))),
     hasThinkingTool:tools.some(item=>classifyTool(item.name)==='think'),labels:[...labels.values()],
     hasDetails:items.some(item=>item.type!=='activity'||['thinking','reasoning-summary'].includes(item.activity_kind))||activityDetailLines(presentations).length>0};
 }
@@ -154,6 +155,7 @@ export function summarizeActivityRun(items:readonly DisplayActivityItem[],_prese
 
 export function activityIconName(item: DisplayActivityItem): PresentationIcon {
   if (item.type === 'provider-directive') return item.directive.kind === 'memory-citation' ? 'history' : 'chat';
+  if (item.type === 'tool-call-activity' && item.operations?.length) return item.operations[0].presentation.icon;
   if (item.type === 'tool-call-activity') return item.execution?.kind === 'command' ? 'toolExecute' : (item.header ?? presentTool(item.name, item.input, item.toolKind)).icon;
   if (item.type === 'thinking-block-activity') return 'thought';
   if (item.activity_kind === 'thinking' || item.activity_kind === 'reasoning-summary') return 'thought';

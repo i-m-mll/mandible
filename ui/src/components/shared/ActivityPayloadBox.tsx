@@ -1,8 +1,5 @@
-import type { ComponentChildren } from 'preact';
+import type { JSX } from 'preact';
 
-export function ActivityPayloadBox({ children, className = '' }: {
-  children: ComponentChildren;
-  className?: string;
-}): JSX.Element {
-  return <div className={`activity-payload-box${className ? ` ${className}` : ''}`}>{children}</div>;
+export function ActivityPayloadBox({ children, className = '', ...attributes }: JSX.HTMLAttributes<HTMLDivElement>): JSX.Element {
+  return <div {...attributes} className={`activity-payload-box${className ? ` ${className}` : ''}`}>{children}</div>;
 }

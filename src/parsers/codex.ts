@@ -1,3 +1,4 @@
+import { codexResultFrame } from '../presentation/tool-transport.js';
 import { codexAssistantResponse } from "./assistant-response.js";
 import { canonicalSourcePath, logicalSourceStat } from "../conversations/logical-source.js";
 // Parser for Codex (OpenAI) JSONL conversation files.
@@ -801,6 +802,7 @@ export class CodexParser implements ConversationParser {
                 tool_id: payload.call_id || undefined,
                 tool_name: payload.call_id ? callNameMap.get(payload.call_id) : undefined,
                 tool_kind: "function_call_output",
+                display_tool_frame: codexResultFrame(payload.output),
                 tool_output: output.length > 1000 ? undefined : output,
                 visibility: "default_hidden",
                 source_event_type: "function_call_output",
@@ -841,6 +843,7 @@ export class CodexParser implements ConversationParser {
               tool_id: payload.call_id || undefined,
               tool_name: payload.call_id ? callNameMap.get(payload.call_id) : undefined,
               tool_kind: "custom_tool_call_output",
+              display_tool_frame: codexResultFrame(payload.output),
               tool_output: output.length > 1000 ? undefined : output,
               visibility: "default_hidden",
               source_event_type: "custom_tool_call_output",

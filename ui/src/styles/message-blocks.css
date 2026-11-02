@@ -337,8 +337,7 @@
   color: var(--tool-activity-box-text);
 }
 
-.activity-payload-box,
-.tool-card__payload-box {
+.activity-payload-box {
   box-sizing: border-box;
   width: 100%;
   border: 1px solid var(--tool-activity-border);

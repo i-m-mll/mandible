@@ -13,6 +13,7 @@ export type CompactActivityDisclosure = {
 export type CompactActivityRowProps = {
   icon?: JSX.Element;
   summary: string;
+  expandedSummary?: string;
   disclosure?: CompactActivityDisclosure;
   className?: string;
   memberRefs?: string;
@@ -24,6 +25,7 @@ export type CompactActivityRowProps = {
 export function CompactActivityRow({
   icon,
   summary,
+  expandedSummary,
   disclosure,
   className = '',
   memberRefs,
@@ -32,6 +34,7 @@ export function CompactActivityRow({
 }: CompactActivityRowProps): JSX.Element {
   const [localExpanded, setLocalExpanded] = useState(disclosure?.defaultExpanded ?? false);
   const isExpanded = disclosure?.expanded ?? localExpanded;
+  const displaySummary = isExpanded ? expandedSummary ?? summary : summary;
   const bodyId = useId();
   const buttonRef = useRef<HTMLButtonElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -52,7 +55,7 @@ export function CompactActivityRow({
   const rowContent = (
     <>
       {icon ? <span className="compact-activity__icon" aria-hidden="true">{icon}</span> : null}
-      <span className="compact-activity__summary" title={summary}>{summary}</span>
+      <span className="compact-activity__summary" title={displaySummary}>{displaySummary}</span>
       {metadata ? <span className="compact-activity__metadata">{metadata}</span> : null}
       {disclosure ? (
         <span className="compact-activity__chevron" aria-hidden="true">
