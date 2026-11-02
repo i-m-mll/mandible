@@ -16,6 +16,14 @@ export type RenderedMeasurementBatch = {
   dispose: () => void;
 };
 export type MaterializedMeasurementBatch<Body> = { bodies: readonly Body[]; release: () => void };
+export type MeasurementPhase = 'materialize' | 'prepare-layout' | 'render' | 'layout' | 'fonts' | 'images' | 'readiness' | 'geometry' | 'release' | 'yield';
+export type MeasurementPhaseEvent = {
+  phase: MeasurementPhase;
+  durationMs: number;
+  rowCount: number;
+  completedMeasurements: number;
+  layoutIdentity?: string;
+};
 export type MeasurementRequest<Body> = {
   rows: readonly MeasurementRow[];
   layouts: readonly MeasurementLayout[];
@@ -28,6 +36,8 @@ export type MeasurementRequest<Body> = {
   materializeBatchSize?: number;
   maxSynchronousMs?: number;
   signal?: AbortSignal;
+  /** Font/image durations overlap; readiness covers their join and the final document font barrier. */
+  onPhase?: (event: MeasurementPhaseEvent) => void;
 };
 export type MeasurementResult = { measurements: readonly RowMeasurement[] } & (
   | { status: 'complete'; vectors: readonly { layoutIdentity: string; heights: readonly number[]; totalHeight: number; maxRowHeight: number }[] }
@@ -71,11 +81,19 @@ function imageReady(image: HTMLImageElement, signal: AbortSignal): Promise<void>
     try { await image.decode(); } catch (error) { if (!image.complete || image.naturalWidth) throw error; }
   });
 }
-function yieldToBrowser(view: Window, signal: AbortSignal): Promise<unknown> {
+function yieldToBrowser(signal: AbortSignal): Promise<void> {
   return new Promise(resolve => {
-    const timer = view.setTimeout(done, 0);
-    function done() { view.clearTimeout(timer); signal.removeEventListener('abort', done); resolve(undefined); }
+    const channel = new MessageChannel();
+    const done = () => {
+      channel.port1.onmessage = null;
+      channel.port1.close(); channel.port2.close();
+      signal.removeEventListener('abort', done);
+      resolve();
+    };
+    channel.port1.onmessage = done;
     signal.addEventListener('abort', done, { once: true });
+    if (signal.aborted) done();
+    else channel.port2.postMessage(undefined);
   });
 }
 
@@ -100,6 +118,11 @@ export class ReadingMeasurementService {
     if (this.disposed || request.signal?.aborted) abort();
     const measurements = new Map<string, RowMeasurement>();
     const partial = () => [...measurements.values()];
+    const clock = () => this.parent.ownerDocument.defaultView!.performance.now();
+    const observe = (phase: MeasurementPhase, started: number, rowCount: number, layoutIdentity?: string) => {
+      if (signal.aborted) return;
+      request.onPhase?.({ phase, durationMs: clock() - started, rowCount, completedMeasurements: measurements.size, layoutIdentity });
+    };
     const cancelled = (): MeasurementResult => ({ status: 'cancelled', measurements: partial() });
     let host: HTMLDivElement | undefined;
     let rendered: RenderedMeasurementBatch | undefined;
@@ -148,9 +171,11 @@ export class ReadingMeasurementService {
         offset = end;
         if (!bufferRows.length) continue;
         phase = 'materialize';
+        const materializeStarted = clock();
         const bodies = await untilAbort(request.materialize(bufferRows, signal), signal, value => {
           if (!Array.isArray(value)) (value as MaterializedMeasurementBatch<Body>).release();
         });
+        observe('materialize', materializeStarted, bufferRows.length);
         if (!bodies.ready) return cancelled();
         const buffer = Array.isArray(bodies.value) ? bodies.value as readonly Body[] : (materialized = bodies.value as MaterializedMeasurementBatch<Body>).bodies;
         if (buffer.length !== bufferRows.length) throw new Error('Materializer must return one body per requested row in order.');
@@ -166,20 +191,30 @@ export class ReadingMeasurementService {
             if (signal.aborted) return cancelled();
             phase = 'layout';
             if (request.prepareLayout) {
+              const prepareStarted = clock();
               const prepared = await untilAbort(request.prepareLayout(layout, signal), signal);
+              observe('prepare-layout', prepareStarted, rows.length, identity);
               if (!prepared.ready) return cancelled();
             }
             host.style.width = `${layout.width}px`;
             phase = 'render';
             const renderStarted = view.performance.now();
             rendered ??= request.renderBatch(host, sliceBodies, layout, rows);
+            observe('render', renderStarted, rows.length, identity);
             phase = 'readiness';
+            const layoutStarted = clock();
             for (const row of rows) rendered.elements.get(row.key)?.getBoundingClientRect();
+            observe('layout', layoutStarted, rows.length, identity);
             synchronousMs += view.performance.now() - renderStarted;
-            const ready = await untilAbort(Promise.all([
-              ...layout.fonts.map(({ font, text }) => doc.fonts.load(font, text).then(() => { if (!doc.fonts.check(font, text)) throw new Error(`Requested font unavailable: ${font}`); })),
-              ...[...host.querySelectorAll('img')].map(image => imageReady(image, signal)),
-            ]).then(() => doc.fonts.ready), signal);
+            const readinessStarted = clock();
+            const fontsStarted = clock();
+            const fonts = Promise.all(layout.fonts.map(({ font, text }) => doc.fonts.load(font, text).then(() => { if (!doc.fonts.check(font, text)) throw new Error(`Requested font unavailable: ${font}`); })))
+              .finally(() => { if (!signal.aborted) observe('fonts', fontsStarted, rows.length, identity); });
+            const imagesStarted = clock();
+            const images = Promise.all([...host.querySelectorAll('img')].map(image => imageReady(image, signal)))
+              .finally(() => { if (!signal.aborted) observe('images', imagesStarted, rows.length, identity); });
+            const ready = await untilAbort(Promise.all([fonts, images]).then(() => doc.fonts.ready), signal);
+            observe('readiness', readinessStarted, rows.length, identity);
             if (!ready.ready) return cancelled();
             phase = 'geometry';
             const geometryStarted = view.performance.now();
@@ -190,12 +225,17 @@ export class ReadingMeasurementService {
               if (!Number.isFinite(box.height) || box.height <= 0 || Math.abs(box.width - layout.width) > 0.05) throw new Error(`Invalid row box: ${row.key}`);
               return { row, layoutIdentity: identity, height: box.height };
             });
+            observe('geometry', geometryStarted, rows.length, identity);
             synchronousMs += view.performance.now() - geometryStarted;
             if (signal.aborted) return cancelled();
             for (const box of boxes) measurements.set(measurementKey(box.row, identity), box);
-            await yieldToBrowser(view, signal);
+            const yieldStarted = clock();
+            await yieldToBrowser(signal);
+            observe('yield', yieldStarted, rows.length, identity);
           }
+          const releaseStarted = clock();
           release();
+          observe('release', releaseStarted, rows.length);
           if (request.maxSynchronousMs) activeBatchSize = Math.max(1, Math.min(batchSize,
             synchronousMs > request.maxSynchronousMs ? Math.floor(activeBatchSize * request.maxSynchronousMs / synchronousMs) : activeBatchSize * 2));
         }
