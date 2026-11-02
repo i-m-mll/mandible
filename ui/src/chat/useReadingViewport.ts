@@ -8,6 +8,7 @@ import { writeReadingState, type ReadingState, type ReadingRestore } from './rea
 
 const attainableRowOffset = (offset: number, size: number, viewport: number) => Math.max(1 - size, Math.min(offset, Math.max(0, viewport - 1)));
 type Engine = Virtualizer<HTMLDivElement, HTMLDivElement>;
+let diagnosticInstance = 0;
 type Command = {
   token: string;
   target?: ConversationSourceCoordinate;
@@ -65,6 +66,20 @@ export function useReadingViewport(input: {
   const settled = useRef(false);
   const frame = useRef<number | null>(null);
   const persistFrame = useRef<number | null>(null);
+  const diagnostic = useRef({ instance: 0, sequence: 0, observed: '', active: false });
+  const diagnosticEngine = useRef<Engine | null>(null);
+  if (!diagnostic.current.instance) diagnostic.current.instance = ++diagnosticInstance;
+  const trace = (event: string, detail: Record<string, unknown> = {}) => {
+    if (!diagnostic.current.active || diagnostic.current.sequence >= 200) return;
+    const scroller = scrollRef.current;
+    const geometry = (value: ReadingGeometry | null) => value && ({ serial: value.serial, width: value.layout.width, exact: value.exact });
+    console.debug('[reading-ownership]', JSON.stringify({ instance: diagnostic.current.instance, sequence: ++diagnostic.current.sequence,
+      event, scope: current.current.scope, token: command.current?.token, phase: command.current?.phase,
+      following: following.current, userScroll: userScroll.current, drag: drag.current, scrolling: diagnosticEngine.current?.isScrolling,
+      top: scroller?.scrollTop, height: scroller?.scrollHeight, client: scroller?.clientHeight, engineOffset: diagnosticEngine.current?.scrollOffset,
+      pending: geometry(pending.current), applied: geometry(current.current.applied), indexed: geometry(current.current.indexed),
+      acknowledged: geometry(acknowledged), readback: geometry(readback.current), ...detail }));
+  };
   const persist = useCallback((engine: Engine) => {
     const snapshot = current.current;
     if (!snapshot.applied || snapshot.applied !== snapshot.indexed || snapshot.initializing || readback.current || command.current || !scrollRef.current || !snapshot.scope || (snapshot.commandToken && completed.current !== snapshot.commandToken)) return;
@@ -110,7 +125,9 @@ export function useReadingViewport(input: {
       const latest = current.current;
       const height = instance.scrollRect?.height;
       if (height !== undefined) { if (viewportHeight.current !== null && viewportHeight.current !== height) chromePending.current = true; viewportHeight.current = height; }
-      if (userScroll.current) { following.current = instance.isAtEnd(1); if (!instance.isScrolling && !drag.current) { userScroll.current = false; capturePin.current(); } }
+      if (userScroll.current) { const previous = following.current; following.current = instance.isAtEnd(1); if (previous !== following.current) trace('following', { reason: 'native-observer' }); if (!instance.isScrolling && !drag.current) { userScroll.current = false; capturePin.current(); } }
+      const observed = JSON.stringify([following.current, userScroll.current, drag.current, instance.isScrolling, readback.current?.serial, command.current?.phase]);
+      if (observed !== diagnostic.current.observed) { diagnostic.current.observed = observed; trace('observe'); }
       setShowLatest(previous => {
         const next = !following.current;
         return previous === next ? previous : next;
@@ -128,9 +145,11 @@ export function useReadingViewport(input: {
       notify.current();
     },
   });
+  diagnosticEngine.current = engine;
   const finish = useCallback((status: ReadingRevealResult['status']) => {
     const active = command.current;
     if (!active) return;
+    trace('finish', { status });
     command.current = null;
     completed.current = active.token;
     active.controller.abort();
@@ -138,7 +157,7 @@ export function useReadingViewport(input: {
     active.finish({ token: active.token, status });
     requestAnimationFrame(() => capturePin.current());
   }, [engine]);
-  const cancel = useCallback(() => { finish('cancelled'); engine.cancelScroll(); }, [finish, engine]);
+  const cancel = useCallback(() => { trace('cancel'); finish('cancelled'); engine.cancelScroll(); }, [finish, engine]);
   notify.current = () => {
     if (!command.current || frame.current !== null) return;
     frame.current = requestAnimationFrame(() => {
@@ -184,6 +203,8 @@ export function useReadingViewport(input: {
     });
   };
   const reveal = useCallback(async (request: ReadingRevealCommand | ({ token: string; restore: ReadingRestore })): Promise<ReadingRevealResult> => {
+    if (!('restore' in request) && request.end) diagnostic.current.active = true;
+    trace('reveal', { requestToken: request.token, kind: 'restore' in request ? 'restore' : request.end ? 'end' : 'source' });
     cancel(); readerPin.current = null; setPinKeys(new Set());
     return new Promise(resolve => {
       const active: Command = { ...request, controller: new AbortController(), phase: 'prepare', finish: resolve };
@@ -192,6 +213,7 @@ export function useReadingViewport(input: {
       active.controller.signal.addEventListener('abort', () => clearTimeout(deadline), { once: true });
       if ('restore' in request) {
         following.current = false; userScroll.current = false;
+        trace('following', { reason: 'restore' });
         const snapshot = current.current;
         if (request.restore.positionSpaceId !== snapshot.positionSpaceId) { finish('position-space-changed'); return; }
         const saved = request.restore.anchor;
@@ -205,8 +227,10 @@ export function useReadingViewport(input: {
       }
       following.current = Boolean(request.end);
       userScroll.current = false;
+      trace('following', { reason: 'reveal' });
       if (request.end) {
         active.phase = 'end';
+        trace('write-end', { reason: 'reveal' });
         engine.scrollToEnd({ behavior: 'auto' });
         notify.current();
         return;
@@ -251,7 +275,7 @@ export function useReadingViewport(input: {
   }, []);
   applyPending.current = () => {
     const next = pending.current;
-    if (engine.isScrolling || drag.current || readback.current || (applied && applied !== indexed)) return;
+    if (engine.isScrolling || drag.current || readback.current || (applied && applied !== indexed)) { if (next) trace('apply-skip'); return; }
     if (!next || next === applied) {
       if (chromePending.current && !command.current) { chromePending.current = false; if (following.current) engine.scrollToEnd({ behavior: 'auto' }); }
       return;
@@ -261,12 +285,14 @@ export function useReadingViewport(input: {
     capturePin.current();
     const first = engine.getVirtualItems().find(item => item.end > (scroller?.scrollTop ?? 0));
     restore.current = applied && applied.scope === next.scope && first && scroller ? { key: String(first.key), members: applied.rowMembers.get(String(first.key)) ?? [String(first.key)], offset: first.start - scroller.scrollTop, following: following.current } : null;
+    trace('geometry-capture', { nextSerial: next.serial, savedFollowing: restore.current?.following, hasFirst: Boolean(first) });
     pending.current = null;
     setApplied(next);
   };
   useLayoutEffect(() => {
     if (previousClearance.current !== input.clearance) { previousClearance.current = input.clearance; chromePending.current = true; }
     pending.current = input.geometry;
+    trace('geometry-arrival', { serial: input.geometry?.serial });
     if (!input.geometry) { setApplied(null); return; }
     applyPending.current();
   }, [input.geometry, input.clearance]);
@@ -281,6 +307,7 @@ export function useReadingViewport(input: {
     if (!applied || indexed !== applied) return;
     const saved = restore.current; restore.current = null;
     readback.current = applied;
+    trace('geometry-restore', { savedFollowing: saved?.following, branch: command.current?.phase === 'end' && following.current ? 'active-end' : saved && !command.current ? saved.following ? 'saved-end' : 'saved-reader' : 'none' });
     if (command.current?.phase === 'end' && following.current) engine.scrollToEnd({ behavior: 'auto' });
     else if (saved && !command.current) {
       if (saved.following) engine.scrollToEnd({ behavior: 'auto' });
@@ -310,6 +337,7 @@ export function useReadingViewport(input: {
       || (engine.scrollOffset !== null && Math.abs(engine.scrollOffset - scroller.scrollTop) > 1)) return;
     // The native offset has been observed: only now may custody follow the new range.
     readback.current = null;
+    trace('acknowledge');
     engine.getVirtualItems();
     snapshot.onApplied(ready.rows); setAcknowledged(ready);
     lastRange.current = '';
@@ -334,17 +362,17 @@ export function useReadingViewport(input: {
   }, [input.scope, engine, persist, cancel]);
   useEffect(() => { if (!engine.isScrolling) persist(engine); }, [input.disclosures, engine, persist]);
   useEffect(() => () => { if (frame.current !== null) cancelAnimationFrame(frame.current); if (persistFrame.current !== null) cancelAnimationFrame(persistFrame.current); }, []);
-  const inputCancel = useCallback(() => { current.current.onInput(); userScroll.current = true; restore.current = null; readerPin.current = null; setPinKeys(new Set()); cancel(); }, [cancel]);
+  const inputCancel = useCallback((event?: { type: string }) => { trace('input', { type: event?.type }); current.current.onInput(); userScroll.current = true; restore.current = null; readerPin.current = null; setPinKeys(new Set()); cancel(); }, [cancel]);
   const onKeyDown = useCallback((event: KeyboardEvent) => {
     const target = event.target as HTMLElement;
     if (target.closest('input,textarea,select,[contenteditable]:not([contenteditable="false"])')) return;
-    if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) { drag.current = true; inputCancel(); }
+    if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) { drag.current = true; inputCancel(event); }
   }, [inputCancel]);
   const onPointerDown = useCallback((event: PointerEvent) => {
     const el = scrollRef.current;
-    if (el && (event.target === el || event.clientX >= el.getBoundingClientRect().left + el.clientWidth)) { drag.current = true; inputCancel(); }
+    if (el && (event.target === el || event.clientX >= el.getBoundingClientRect().left + el.clientWidth)) { drag.current = true; inputCancel(event); }
   }, [inputCancel]);
-  useEffect(() => { readerPin.current = null; readback.current = null; setPinKeys(new Set()); following.current = true; userScroll.current = false; return () => cancel(); }, [input.positionSpaceId, input.scope, cancel]);
+  useEffect(() => { readerPin.current = null; readback.current = null; setPinKeys(new Set()); following.current = true; userScroll.current = false; trace('following', { reason: 'scope-effect' }); return () => cancel(); }, [input.positionSpaceId, input.scope, cancel]);
   useEffect(() => {
     const release = () => { drag.current = false; applyPending.current(); };
     window.addEventListener('pointerup', release); window.addEventListener('pointercancel', release); window.addEventListener('keyup', release); window.addEventListener('blur', release);
