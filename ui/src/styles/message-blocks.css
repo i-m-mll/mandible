@@ -236,6 +236,7 @@
   font: 400 var(--text-lg)/1.15 var(--font-sans);
   text-align: left;
   cursor: pointer;
+  text-decoration: none;
 }
 
 .compact-activity__row:hover,

@@ -26,7 +26,7 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
   lastAssistantTurnId,
   onActivityGroupExpandedChange,
   streaming, selectedMessageId, sessionInfo, onToggleBlockSelect, selectedBlockIds, selectMode,
-  onFork, onResume, onCreatedTaskNavigate }: ReadingContentProps): JSX.Element {
+  onFork, onResume }: ReadingContentProps): JSX.Element {
   const nodes = row.nodes;
   const compact = isCompactReadingRow(row);
   function renderNodeBody(node: RenderNode, memberRef?: string): JSX.Element | null {
@@ -155,7 +155,6 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
               expanded={expanded}
               detailsAvailable={source?.detailsLoaded === false && source.hasBody !== false}
               onExpandedChange={(next, trigger) => setBlockExpanded(disclosureKey, next, [source], trigger)}
-              onCreatedTaskNavigate={onCreatedTaskNavigate}
             />
           );
         }

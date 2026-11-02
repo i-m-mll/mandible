@@ -2,6 +2,7 @@ import { Icon } from '../icons/Icon';
 import type { ComponentChildren } from 'preact';
 import { CompactActivityRow } from '../shared/ChatDisclosure';
 import { ReasoningDetails } from '../shared/ReasoningDetails';
+import { chatRouteHref } from '../../chat/messageLinks';
 import type { DisplayActivityItem } from '../stream-renderer/types';
 
 import { plainActivityHeader } from './activityText';
@@ -15,9 +16,8 @@ function activityIcon(item: DisplayActivityItem): JSX.Element {
   return <Icon name={activityIconName(item)} />;
 }
 
-function ActivityDetails({ lines, onCreatedTaskNavigate }: {
+function ActivityDetails({ lines }: {
   lines: readonly ActivityDetail[];
-  onCreatedTaskNavigate?: (providerSessionId: string) => void | Promise<void>;
 }): JSX.Element {
   return (
     <div className="activity-details">
@@ -32,18 +32,7 @@ function ActivityDetails({ lines, onCreatedTaskNavigate }: {
         }
         return (
           <div key={index} className="activity-details__part">
-            {onCreatedTaskNavigate ? (
-              <button
-                type="button"
-                className="activity-details__task-link"
-                aria-label={`Open created task (${line.identity})`}
-                data-provider-session-id={line.providerSessionId}
-                data-provider-session-identity={line.identity}
-                onClick={() => { void onCreatedTaskNavigate(line.providerSessionId); }}
-              >
-                Open task
-              </button>
-            ) : <code>{line.providerSessionId}</code>}
+            <a href={chatRouteHref({ type: 'session', id: line.providerSessionId }, window.location.hash)}>Chat</a>
           </div>
         );
       })}
@@ -51,11 +40,10 @@ function ActivityDetails({ lines, onCreatedTaskNavigate }: {
   );
 }
 
-export function ActivityRow({ item, expanded, onExpandedChange, onCreatedTaskNavigate, memberRefs, detailsAvailable = false, headerMetadata }: {
+export function ActivityRow({ item, expanded, onExpandedChange, memberRefs, detailsAvailable = false, headerMetadata }: {
   item: DisplayActivityItem;
   expanded?: boolean;
   onExpandedChange?: (expanded: boolean, trigger?: HTMLElement) => void;
-  onCreatedTaskNavigate?: (providerSessionId: string) => void | Promise<void>;
   memberRefs?: string;
   detailsAvailable?: boolean;
   headerMetadata?: ComponentChildren;
@@ -64,9 +52,11 @@ export function ActivityRow({ item, expanded, onExpandedChange, onCreatedTaskNav
   const lines = activityDetailLines([presentation]);
   const reasoning = item.type === 'activity' && (item.activity_kind === 'thinking' || item.activity_kind === 'reasoning-summary')
     ? presentReasoning(item.parts.map(part => part.text)) : undefined;
-  const disclosure = lines.length > 0 || detailsAvailable
+  const chatTarget = item.type === 'provider-directive' && item.directive.kind === 'created-thread'
+    ? { type: 'session' as const, id: item.directive.providerSessionId } : null;
+  const disclosure = !chatTarget && (lines.length > 0 || detailsAvailable)
     ? {
-        content: reasoning ? <ReasoningDetails parts={reasoning.details} /> : <ActivityDetails lines={lines} onCreatedTaskNavigate={onCreatedTaskNavigate} />,
+        content: reasoning ? <ReasoningDetails parts={reasoning.details} /> : <ActivityDetails lines={lines} />,
         regionLabel: `${presentation.summary} details`,
         expanded,
         onExpandedChange,
@@ -77,6 +67,7 @@ export function ActivityRow({ item, expanded, onExpandedChange, onCreatedTaskNav
       className={`activity-block${item.type === 'activity' && item.severity ? ` activity-block--${item.severity}` : ''}`}
       icon={activityIcon(item)}
       summary={presentation.summary}
+      href={chatTarget ? chatRouteHref(chatTarget, window.location.hash) : undefined}
       metadata={headerMetadata}
       disclosure={disclosure}
       memberRefs={memberRefs}
