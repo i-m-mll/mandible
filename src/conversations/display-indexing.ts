@@ -1,3 +1,4 @@
+import { projectExecution } from '../presentation/execution-presentation.js';
 import { assistantResponseMembership } from "../parsers/assistant-response.js";
 import {isRoutineActivityStatus} from '../presentation/model.js';
 import { readingNodeDisclosures } from '../presentation/reading-disclosures.js';
@@ -20,7 +21,7 @@ export function indexDisplayFragments(blocks: readonly Omit<ConversationBlock, '
     const activity = node.kind === 'activity' ? node.item : null;
     const presentations = activity ? presentActivityItems([activity]) : [];
     let compact = activity;
-    if (activity?.type === 'tool-call-activity') compact = { ...activity, input: '', result: activity.result
+    if (activity?.type === 'tool-call-activity') compact = { ...activity, execution: projectExecution(activity.name, activity.input, activity.toolKind)?.facts, input: '', result: activity.result
       ? { ...activity.result, content: '', fullText: undefined } : null };
     else if (activity?.type === 'thinking-block-activity') compact = { ...activity, content: '' };
     else if (activity?.type === 'provider-directive') compact = { ...activity, directive: activity.directive.kind === 'memory-citation'

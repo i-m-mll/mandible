@@ -161,9 +161,9 @@ export function MessageGroup({
       rendered.push(
         <ToolCallGroup
           key={groupId}
-          summary={summarizeToolRun(run.map((block) => ({ name: block.name, toolKind: block.toolKind })))}
+          summary={summarizeToolRun(run.map((block) => ({ name: block.name, toolKind: block.toolKind, input: block.input })))}
           headerMetadata={end === blocks.length ? headerMetadata : undefined}
-          icon={toolRunIcon(run.map((block) => ({ name: block.name, toolKind: block.toolKind })))}
+          icon={toolRunIcon(run.map((block) => ({ name: block.name, toolKind: block.toolKind, input: block.input })))}
           expanded={expanded}
           onExpandedChange={(next, trigger) => onDisclosureExpandedChange?.(groupId, next, trigger)}
           memberRefs={memberRefs}

@@ -1,3 +1,4 @@
+import { projectExecution, type ExecutionFacts } from './execution-presentation.js';
 export type PresentationIcon = 'toolRead' | 'toolEdit' | 'toolWrite' | 'toolDelete' | 'toolMove' | 'toolSearch' | 'toolExecute' | 'toolJavascript' | 'history' | 'thought' | 'toolFetch' | 'toolBrowser' | 'toolSwitchMode' | 'monitor' | 'chat' | 'terminal' | 'info' | 'issues';
 type IconName = PresentationIcon;
 
@@ -10,6 +11,7 @@ export type ToolPresentation = {
   icon: IconName;
   phrase: string;
   target: string;
+  execution?: ExecutionFacts;
 };
 
 const DEFINITIONS: Record<ToolCategory, { icon: IconName; phrase: string; plural: string }> = {
@@ -19,7 +21,7 @@ const DEFINITIONS: Record<ToolCategory, { icon: IconName; phrase: string; plural
   delete: { icon: 'toolDelete', phrase: 'Removed a file', plural: 'Removed some files' },
   move: { icon: 'toolMove', phrase: 'Moved a file', plural: 'Moved some files' },
   search: { icon: 'toolSearch', phrase: 'Searched', plural: 'Searched several times' },
-  execute: { icon: 'toolExecute', phrase: 'Ran a command', plural: 'Ran some commands' },
+  execute: { icon: 'toolExecute', phrase: 'Ran command', plural: 'Ran several commands' },
   javascript: { icon: 'toolJavascript', phrase: 'Ran JavaScript', plural: 'Ran JavaScript several times' },
   wait: { icon: 'history', phrase: 'Waited', plural: 'Waited several times' },
   think: { icon: 'thought', phrase: 'Thought', plural: 'Thought several times' },
@@ -75,6 +77,13 @@ export function presentTool(
   inputValue: Record<string, unknown> | string = {},
   toolKind?: string,
 ): ToolPresentation {
+  const execution = projectExecution(toolName, inputValue, toolKind);
+  if (execution) {
+    const command = execution.facts.kind === 'command';
+    return {category: command ? 'execute' : 'javascript', icon: command ? 'toolExecute' : 'toolJavascript',
+      phrase: command ? execution.operations.length === 1 ? 'Ran' : 'Ran several commands' : 'Ran JavaScript',
+      target: command && execution.operations.length === 1 ? execution.operations[0].command : '', execution: execution.facts};
+  }
   const normalizedToolName = normalizedName(toolName);
   const normalizedToolKind = normalizedName(toolKind);
   const category = Object.hasOwn(TOOL_NAME_CATEGORIES, normalizedToolName)
@@ -149,7 +158,7 @@ export function toolTarget(toolName: string, inputValue: Record<string, unknown>
     return to ? (from ? from + ' → ' : '') + to : from;
   }
   if (category === 'execute') {
-    return firstString(input, ['description', 'cmd', 'command'])
+    return firstString(input, ['cmd', 'command'])
       || (typeof inputValue === 'string' ? inputValue.trim() : '');
   }
   if (category === 'read' || category === 'edit' || category === 'write' || category === 'delete') {
@@ -161,9 +170,16 @@ export function toolTarget(toolName: string, inputValue: Record<string, unknown>
   return '';
 }
 
+export type ToolOperationInput = {name: string; toolKind?: string; input?: Record<string, unknown> | string; execution?: ExecutionFacts};
 export type ToolRunFact = { category: ToolCategory; presentation: ToolPresentation; count: number; names: string[] };
-export function toolRunFacts(tools: ReadonlyArray<{name:string;toolKind?:string}>): ToolRunFact[] {
-  return mergeToolRunFacts([], tools.map(tool => ({ category: classifyTool(tool.name), presentation: presentTool(tool.name, {}, tool.toolKind), count: 1, names: [normalizedName(tool.name)] })));
+export function toolRunFacts(tools: readonly ToolOperationInput[]): ToolRunFact[] {
+  return mergeToolRunFacts([], tools.map(tool => {
+    const projected = presentTool(tool.name, tool.input, tool.toolKind);
+    const execution = tool.execution ?? projected.execution;
+    const category = execution ? execution.kind === 'command' ? 'execute' : 'javascript' : projected.category;
+    const presentation = {category, icon: DEFINITIONS[category].icon, phrase: category === 'other' ? projected.phrase : DEFINITIONS[category].phrase, target: '', ...(execution ? {execution} : {})};
+    return {category, presentation, count: execution?.kind === 'command' ? execution.count : 1, names: [normalizedName(tool.name)]};
+  }));
 }
 export function mergeToolRunFacts(left: readonly ToolRunFact[], right: readonly ToolRunFact[]): ToolRunFact[] {
   const counts = new Map(left.map(fact => [fact.category, { ...fact, names: [...fact.names] }]));
@@ -182,12 +198,12 @@ export function summarizeToolRunFacts(facts: readonly ToolRunFact[]): string[] {
     return phrase.charAt(0).toLowerCase() + phrase.slice(1);
   });
 }
-export function summarizeToolRunParts(tools: ReadonlyArray<{name:string;toolKind?:string}>): string[] {
+export function summarizeToolRunParts(tools: readonly ToolOperationInput[]): string[] {
   return summarizeToolRunFacts(toolRunFacts(tools));
 }
 
 export function summarizeToolRun(
-  tools: ReadonlyArray<{ name: string; toolKind?: string }>,
+  tools: readonly ToolOperationInput[],
 ): string {
   const labels = summarizeToolRunParts(tools);
   const summary = labels.join(', ');
@@ -195,7 +211,7 @@ export function summarizeToolRun(
 }
 
 export function toolRunIcon(
-  tools: ReadonlyArray<{ name: string; toolKind?: string }>,
+  tools: readonly ToolOperationInput[],
 ): IconName {
-  return presentTool(tools[0]?.name ?? '', {}, tools[0]?.toolKind).icon;
+  return tools[0]?.execution?.kind === 'command' ? 'toolExecute' : presentTool(tools[0]?.name ?? '', tools[0]?.input, tools[0]?.toolKind).icon;
 }
