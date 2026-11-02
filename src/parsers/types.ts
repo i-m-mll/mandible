@@ -114,7 +114,7 @@ export interface BlockMetadata {
   model?: string;
   token_usage?: { input: number; output: number; cache_read?: number };
   usage_telemetry?: NormalizedUsageTelemetry;
-  /** Additive completion evidence for Chat; identity-bearing content and parts remain unchanged. */
+  /** Additive completion evidence for Chat, excluding provider answer echoes/timing bookkeeping; identity-bearing content and parts remain unchanged. */
   display_completion_parts?: ChatContentPart[];
   source_event_type?: string;
   visibility?: "default_hidden" | "default_visible";
