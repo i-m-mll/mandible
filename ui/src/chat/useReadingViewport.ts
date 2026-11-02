@@ -6,6 +6,10 @@ import type { ReadingGeometry } from './useReadingGeometry';
 import { captureReadingDomAnchor, readingDomAnchorOffset, type ReadingDomAnchor } from './readingDomAnchor';
 import { writeReadingState, type ReadingState, type ReadingRestore } from './readingState';
 
+const targetCoordinateKey = (target: ConversationSourceCoordinate): string => JSON.stringify([
+  target.conversationId, target.positionSpaceId, target.position, target.subtarget ?? null,
+]);
+const targetRegistrationKey = (target: ConversationSourceCoordinate, rowKey: string): string => JSON.stringify([rowKey, targetCoordinateKey(target)]);
 const attainableRowOffset = (offset: number, size: number, viewport: number) => Math.max(1 - size, Math.min(offset, Math.max(0, viewport - 1)));
 type Engine = Virtualizer<HTMLDivElement, HTMLDivElement>;
 type Command = {
@@ -58,6 +62,7 @@ export function useReadingViewport(input: {
   const targets = useRef(new Map<string, ReadingTargetRegistration>());
   const command = useRef<Command | null>(null);
   const completed = useRef<string | undefined>();
+  const completedTarget = useRef<{ coordinate: ConversationSourceCoordinate; rowKey: string; token: string } | null>(null);
   const rowBoxes = useRef(new Map<string, HTMLElement>());
   const correctLocal = useRef<() => void>(() => {});
   const localObserver = useRef<ResizeObserver | null>(null);
@@ -148,12 +153,14 @@ export function useReadingViewport(input: {
     if (!active) return;
     command.current = null;
     completed.current = active.token;
+    completedTarget.current = status === 'revealed' && active.target && active.rowKey
+      ? { coordinate: active.target, rowKey: active.rowKey, token: active.token } : null;
     active.controller.abort();
     engine.cancelScroll();
     active.finish({ token: active.token, status });
     requestAnimationFrame(() => capturePin.current());
   }, [engine]);
-  const cancel = useCallback(() => { finish('cancelled'); engine.cancelScroll(); }, [finish, engine]);
+  const cancel = useCallback(() => { completedTarget.current = null; finish('cancelled'); engine.cancelScroll(); }, [finish, engine]);
   const alignRegistered = useCallback((active: Command, element: HTMLElement, scroller: HTMLElement) => {
     engine.cancelScroll();
     const pin = readerPin.current;
@@ -184,7 +191,7 @@ export function useReadingViewport(input: {
       if (!active.target) { finish('not-renderable'); return; }
       const rowIndex = current.current.rows.findIndex(row => row.key === active.rowKey);
       if (rowIndex < 0) return;
-      const registration = targets.current.get(`${active.target.positionSpaceId}:${active.target.position}:${active.target.subtarget ?? ''}`);
+      const registration = targets.current.get(targetRegistrationKey(active.target, active.rowKey!));
       if (registration && registration.element === null) { finish('not-renderable'); return; }
       if (!registration?.element?.isConnected) return;
       const measurement = engine.getVirtualItems().find(item => item.key === active.rowKey);
@@ -238,7 +245,7 @@ export function useReadingViewport(input: {
         active.phase = 'materialize';
         const index = current.current.rows.findIndex(row => row.key === result.rowKey);
         if (index < 0) { finish('not-renderable'); return; }
-        const registration = targets.current.get(`${request.target.positionSpaceId}:${request.target.position}:${request.target.subtarget ?? ''}`);
+        const registration = targets.current.get(targetRegistrationKey(request.target, result.rowKey));
         if (registration?.element === null) { finish('not-renderable'); return; }
         if (registration?.element?.isConnected && scrollRef.current) alignRegistered(active, registration.element, scrollRef.current);
         else engine.scrollToIndex(index, { align: 'start', behavior: 'auto' });
@@ -251,7 +258,7 @@ export function useReadingViewport(input: {
     persistFrame.current = requestAnimationFrame(() => { persistFrame.current = null; if (!engine.isScrolling) persist(engine); });
   }, [engine, persist]);
   const register = useCallback((registration: ReadingTargetRegistration) => {
-    const key = `${registration.coordinate.positionSpaceId}:${registration.coordinate.position}:${registration.coordinate.subtarget ?? ''}`;
+    const key = targetRegistrationKey(registration.coordinate, registration.rowKey);
     targets.current.set(key, registration);
     notify.current(); schedulePersist();
     return () => { if (targets.current.get(key) === registration) targets.current.delete(key); };
@@ -400,6 +407,12 @@ export function useReadingViewport(input: {
   const mounted = engine.getVirtualItems();
   const last = mounted[mounted.length - 1];
   const endOffset = last?.index === rows.length - 1 ? engine.getTotalSize() - last.end : undefined;
-  return { captureReaderAnchor: () => capturePin.current(), beginLayout: () => capturePin.current(), pinDisclosure, engine, rows, endOffset, appliedGeometry: acknowledged === applied ? applied : null, focusTarget: (target: ConversationSourceCoordinate) => targets.current.get(`${target.positionSpaceId}:${target.position}:${target.subtarget ?? ''}`)?.element?.focus({ preventScroll: true }), renderProps: applied?.renderProps, scrollRef, register, registerRow, rowOffset, reveal, cancel, showLatest,
+  return { captureReaderAnchor: () => capturePin.current(), beginLayout: () => capturePin.current(), pinDisclosure, engine, rows, endOffset, appliedGeometry: acknowledged === applied ? applied : null, focusTarget: (target: ConversationSourceCoordinate) => {
+    const owner = completedTarget.current;
+    if (!owner || owner.coordinate.conversationId !== current.current.scope || owner.coordinate.positionSpaceId !== current.current.positionSpaceId
+      || (current.current.commandToken !== undefined && owner.token !== current.current.commandToken)
+      || targetCoordinateKey(owner.coordinate) !== targetCoordinateKey(target)) return;
+    targets.current.get(targetRegistrationKey(target, owner.rowKey))?.element?.focus({ preventScroll: true });
+  }, renderProps: applied?.renderProps, scrollRef, register, registerRow, rowOffset, reveal, cancel, showLatest,
     inputHandlers: { onWheel: inputCancel, onTouchStart: () => { drag.current = true; inputCancel(); }, onTouchEnd: () => { drag.current = false; applyPending.current(); }, onTouchCancel: () => { drag.current = false; applyPending.current(); }, onKeyDown, onPointerDown } };
 }

@@ -20,7 +20,11 @@ import { conversationKeys, normalizeWindowTarget } from '../ui/src/query/convers
 import type { ConversationTranscriptData } from '../ui/src/query/conversationData.js';
 import { applyConversationSse } from '../ui/src/query/conversationSse.js';
 import { addDraftAttachments, clearAcceptedDraft } from '../ui/src/chat/attachmentDrafts.js';
-import { messageLinkUrl } from '../ui/src/chat/messageLinks.js';
+import { indexDisplayFragments } from '../src/conversations/display-indexing';
+import { displayEventsFromBlocks } from '../src/conversations/display-context';
+import { buildReadingManifest, planConversationReading } from '../src/presentation/reading-manifest';
+import { prepareReadingMembers, materializePreparedReadingRows } from '../src/presentation/reading';
+import { conversationAnchorFromHash, messageLinkUrl } from '../ui/src/chat/messageLinks.js';
 
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
@@ -213,6 +217,33 @@ function mockConversationDetail(
   vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
   vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
   return scopedConversation;
+}
+
+function serveReadingPresentation(payload: ConversationPositionWindow): void {
+  const conversationId = payload.conversation.id;
+  const blocks = payload.blocks.map(block => ({...block, metadata: JSON.parse(block.metadata_json)}));
+  const index = indexDisplayFragments(blocks, conversationId, () => null);
+  const contexts = payload.reading_context!.positions.map(position => ({position: position.position,
+    activity_owner: position.activity_owner_position,
+    action_scope: payload.reading_context!.speaker_runs.find(run => run.start === position.speaker_run_start)!}));
+  const manifest = buildReadingManifest({conversationId, positionSpaceId: payload.position_space_id!, sourceVersionId: payload.source_version_id!,
+    publicationRevision: payload.publication_revision, blockCount: payload.total, ...index, readingContext: contexts,
+    revisions: {members: Object.fromEntries(index.fragments.map(fragment => [fragment.id, index.positions.find(position => position.position === fragment.coordinate.position)!.revision])), runs: {}}});
+  const events = displayEventsFromBlocks(blocks.map(block => ({...block, parentPosition: null})), conversationId);
+  const transport = globalThis.fetch;
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input), window.location.href);
+    if (url.pathname === `/api/conversations/${conversationId}/reading-manifest`) return new Response(JSON.stringify({status: 'source', manifest}));
+    if (url.pathname === `/api/conversations/${conversationId}/reading-rows`) {
+      const request = JSON.parse(String(init?.body));
+      const plan = planConversationReading(manifest, request.expanded, request.streaming);
+      const prepared = prepareReadingMembers({events, conversationId, positionSpaceId: payload.position_space_id!,
+        readingContext: new Map(contexts.map(context => [context.position, context])), expanded: request.expanded, streaming: request.streaming});
+      const keys = new Set(request.rows.map((row: {key: string}) => row.key));
+      return new Response(JSON.stringify({status: 'source', rows: materializePreparedReadingRows(plan.rows.filter(row => keys.has(row.key)), prepared.members)}));
+    }
+    return transport(input, init);
+  }));
 }
 
 function renderConversationDetail(scopedConversation: Conversation, consoleSessions: ConsoleSession[] = []): void {
@@ -639,22 +670,41 @@ describe('compact detail pane shell', () => {
   });
 
   it('cold-opens a copied message link instead of a saved tail selection and reports clipboard failure visibly', async () => {
-    const exactBlock = makeTranscriptBlock({ id: 'cold-message', content: 'Exact cold message', position: 50 });
+    const exactBlock = makeTranscriptBlock({id: `cblk:${conversation.id}:0`, type: 'assistant_message', role: 'assistant', position: 0,
+      content: 'Exact cold message\n\n<oai-mem-citation>\n<citation_entries>\nfixture-memory:L1|note=[fixture]\n</citation_entries>\n<rollout_ids>\nfixture-rollout\n</rollout_ids>\n</oai-mem-citation>'});
     const scopedConversation = mockConversationDetail(defaultControl, [exactBlock]);
-    vi.mocked(api.getConversationWindow).mockResolvedValue(positionPayload(scopedConversation, [exactBlock], { kind: 'block', hasAfter: true }));
-    window.localStorage.setItem(`mandible:chat-scroll:${scopedConversation.session_id}`, JSON.stringify({
-      version: 1, itemId: 'saved-tail', blockId: null, position: 999, viewportOffset: 0, followingTail: true,
-    }));
-    window.history.replaceState(null, '', messageLinkUrl(window.location.href, scopedConversation.id, exactBlock.id));
-    Object.defineProperty(navigator, 'clipboard', { configurable: true,
-      value: { writeText: vi.fn().mockRejectedValue(new Error('Clipboard denied')) } });
-    renderConversationDetail(scopedConversation);
-    expect(await screen.findByText('Exact cold message')).toBeTruthy();
-    expect(api.getConversationWindow).toHaveBeenCalledWith(scopedConversation.id, expect.objectContaining({ block: exactBlock.id }));
-    await waitFor(() => expect(document.activeElement?.getAttribute('data-block-id')).toBe(exactBlock.id));
-    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy link' }));
-    expect(await screen.findByText('Could not copy the message link.')).toBeTruthy();
+    const payload = positionPayload(scopedConversation, [exactBlock], {kind: 'block'});
+    vi.mocked(api.getConversationWindow).mockResolvedValue(payload);
+    serveReadingPresentation(payload);
+    const fonts = Object.assign(new EventTarget(), {ready: Promise.resolve(), check: () => true, load: async () => []});
+    const previousFonts = Object.getOwnPropertyDescriptor(document, 'fonts');
+    Object.defineProperty(document, 'fonts', {configurable: true, value: fonts});
+    try {
+      vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({width: 800, height: 24, left: 0, top: 0, right: 800, bottom: 24, x: 0, y: 0, toJSON: () => ({})});
+      window.localStorage.setItem(`mandible:chat-reading:${scopedConversation.id}`, JSON.stringify({
+        version: 4, positionSpaceId: 'fixture-space', following: false,
+        anchor: {kind: 'row', rowKey: 'saved-tail', memberKey: 'saved-tail', position: 999, offset: 0}, disclosures: {},
+      }));
+      window.history.replaceState(null, '', messageLinkUrl(window.location.href, scopedConversation.id, exactBlock.id));
+      Object.defineProperty(navigator, 'clipboard', { configurable: true,
+        value: { writeText: vi.fn().mockRejectedValue(new Error('Clipboard denied')) } });
+      renderConversationDetail(scopedConversation);
+      expect(await screen.findByText('Exact cold message')).toBeTruthy();
+      expect(api.getConversationWindow).toHaveBeenCalledWith(scopedConversation.id, expect.objectContaining({ block: exactBlock.id }));
+      await waitFor(() => expect(document.activeElement?.getAttribute('data-block-id')).toBe(exactBlock.id));
+      expect(screen.getByText('Used memory')).toBeTruthy();
+      expect(document.activeElement?.textContent).toContain('Exact cold message');
+      expect(document.activeElement?.textContent).not.toContain('Used memory');
+      fireEvent.contextMenu(screen.getByText('Exact cold message'));
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Copy link' }));
+      expect(await screen.findByText('Could not copy the message link.')).toBeTruthy();
+      const copied = new URL(vi.mocked(navigator.clipboard.writeText).mock.calls[0][0]);
+      expect(conversationAnchorFromHash(copied.hash)).toEqual({block: exactBlock.id, expected_position_space_id: 'fixture-space'});
+      expect(new URLSearchParams(copied.hash.split('?')[1]).get('conversation')).toBe(scopedConversation.id);
+    } finally {
+      if (previousFonts) Object.defineProperty(document, 'fonts', previousFonts);
+      else Reflect.deleteProperty(document, 'fonts');
+    }
   });
 
   it('keeps loaded source content mounted while a same-conversation reconciliation is pending', async () => {
