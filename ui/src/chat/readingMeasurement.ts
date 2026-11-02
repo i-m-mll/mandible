@@ -19,6 +19,8 @@ export type MeasurementRequest<Body> = {
   layouts: readonly MeasurementLayout[];
   materialize: (rows: readonly MeasurementRow[], signal: AbortSignal) => Promise<readonly Body[]>;
   renderBatch: (host: HTMLElement, bodies: readonly Body[], layout: MeasurementLayout, rows: readonly MeasurementRow[]) => RenderedMeasurementBatch;
+  /** Select the real responsive/font context; honor signal before applying asynchronous changes. */
+  prepareLayout?: (layout: MeasurementLayout, signal: AbortSignal) => Promise<void>;
   reuse?: readonly RowMeasurement[];
   batchSize?: number;
   signal?: AbortSignal;
@@ -27,7 +29,7 @@ export type MeasurementResult = { measurements: readonly RowMeasurement[] } & (
   | { status: 'complete'; vectors: readonly { layoutIdentity: string; heights: readonly number[]; totalHeight: number; maxRowHeight: number }[] }
   | { status: 'cancelled' }
   | { status: 'unsupported'; reason: string }
-  | { status: 'error'; reason: 'invalid-request' | 'materialize' | 'render' | 'readiness' | 'geometry'; detail: string }
+  | { status: 'error'; reason: 'invalid-request' | 'layout' | 'materialize' | 'render' | 'readiness' | 'geometry'; detail: string }
 );
 
 export function measurementLayoutIdentity(layout: MeasurementLayout): string {
@@ -103,7 +105,7 @@ export class ReadingMeasurementService {
     let cleanupError: unknown;
     const cleanup = () => { try { release(); } catch (error) { cleanupError = error; } finally { host?.remove(); } };
     signal.addEventListener('abort', cleanup, { once: true });
-    let phase: 'materialize' | 'render' | 'readiness' | 'geometry' = 'materialize';
+    let phase: 'layout' | 'materialize' | 'render' | 'readiness' | 'geometry' = 'materialize';
     try {
       if (signal.aborted) return cancelled();
       const doc = this.parent.ownerDocument;
@@ -138,6 +140,11 @@ export class ReadingMeasurementService {
           const identity = measurementLayoutIdentity(layout);
           if (rows.every(row => measurements.has(measurementKey(row, identity)))) continue;
           if (signal.aborted) return cancelled();
+          phase = 'layout';
+          if (request.prepareLayout) {
+            const prepared = await untilAbort(request.prepareLayout(layout, signal), signal);
+            if (!prepared.ready) return cancelled();
+          }
           host.style.width = `${layout.width}px`;
           phase = 'render';
           rendered = request.renderBatch(host, bodies.value, layout, rows);
