@@ -7,7 +7,7 @@ import type { ReadingRow } from './readingProjection';
 import { isCompactReadingRow } from './readingRowPresentation';
 
 export type ReadingRowFrameProps = {
-  row: Pick<ReadingRow, 'key' | 'turnStart' | 'turnEnd' | 'activityMember' | 'activityEnd' | 'activitySibling' | 'activityGroup'> & Partial<Pick<ReadingRow, 'kind' | 'nodes'>>;
+  row: Pick<ReadingRow, 'key' | 'turnStart' | 'turnEnd' | 'activityMember' | 'activityEnd' | 'activityGroup'> & Partial<Pick<ReadingRow, 'kind' | 'nodes'>>;
   busy?: boolean;
   index?: number;
   elementRef?: Ref<HTMLDivElement>;
@@ -19,7 +19,7 @@ export function ReadingRowFrame({ row, index, busy, elementRef, children, style 
   const compact = isCompactReadingRow(row);
   const leading = compact && !row.activityMember;
   const trailing = compact && (row.activityMember ? row.activityEnd : !row.activityGroup?.expanded);
-  return <div style={style} ref={elementRef} aria-busy={busy || undefined} data-index={index} data-reading-key={row.key} className={`stream-renderer__virtual-row${compact ? ' stream-renderer__virtual-row--compact' : ''}${leading ? ' stream-renderer__virtual-row--activity-leading' : ''}${trailing ? ' stream-renderer__virtual-row--activity-trailing' : ''}${row.turnStart && !compact ? ' stream-renderer__virtual-row--turn-start' : ''}${row.turnEnd && !compact ? ' stream-renderer__virtual-row--turn-end' : ''}${row.activitySibling ? ' activity-member-boundary--after-sibling' : ''}${row.activityMember ? ' stream-renderer__virtual-row--activity-member' : ''}${row.activityGroup?.expanded ? ' stream-renderer__virtual-row--activity-open' : ''}`}>{children}</div>;
+  return <div style={style} ref={elementRef} aria-busy={busy || undefined} data-index={index} data-reading-key={row.key} className={`stream-renderer__virtual-row${compact ? ' stream-renderer__virtual-row--compact' : ''}${leading ? ' stream-renderer__virtual-row--activity-leading' : ''}${trailing ? ' stream-renderer__virtual-row--activity-trailing' : ''}${row.turnStart && !compact ? ' stream-renderer__virtual-row--turn-start' : ''}${row.turnEnd && !compact ? ' stream-renderer__virtual-row--turn-end' : ''}${row.activityMember ? ' stream-renderer__virtual-row--activity-member activity-nested-headers' : ''}${row.activityGroup?.expanded ? ' stream-renderer__virtual-row--activity-open' : ''}`}>{children}</div>;
 }
 
 const StableReadingContent = memo(ReadingContent);

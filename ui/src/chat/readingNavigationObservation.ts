@@ -1,5 +1,6 @@
 import type { ConversationSourceCoordinate } from '../query/conversationData';
 import type { ReadingRevealResult } from './readingProjection';
+import type { ReadingSummaryTarget } from './useReadingViewport';
 
 export type ReadingNavigationOrigin = 'source-navigation' | 'disclosure-pin' | 'initial' | 'latest';
 export type ReadingNavigationObservation = {
@@ -9,6 +10,7 @@ export type ReadingNavigationObservation = {
   scope: string;
   positionSpaceId: string;
   target?: ConversationSourceCoordinate;
+  summary?: ReadingSummaryTarget;
   status?: ReadingRevealResult['status'];
   currentScope: string;
   currentPositionSpaceId: string;

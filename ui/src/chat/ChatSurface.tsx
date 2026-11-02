@@ -18,7 +18,7 @@ import { readingRowPrimaryActions, readingRowTurnId } from './readingRowActions'
 import { useCompleteReading, readingPayloadKey } from './useCompleteReading';
 import { useReadingGeometry } from './useReadingGeometry';
 import { getReadingResizeScale } from './readingResizeProfile';
-import { useReadingViewport } from './useReadingViewport';
+import { useReadingViewport, type ReadingSummaryTarget } from './useReadingViewport';
 import { readingNavigationObserver, type ReadingNavigationOrigin } from './readingNavigationObservation';
 import { readReadingState, type ReadingRestore } from './readingState';
 import { openMarkdownSource } from './markdownActions';
@@ -59,7 +59,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
   const clearance = Math.max(16, overlay?.scrollClearance ?? 0);
   const handled = useRef<string | null>(null);
   const restoredRow = useRef(false);
-  const pendingDisclosure = useRef<{ position: number; offset: number; owner: string | null; next: boolean; token: string } | null>(null);
+  const pendingDisclosure = useRef<{ position: number; offset: number; summary: ReadingSummaryTarget; next: boolean; token: string } | null>(null);
   const appliedRows = useRef<readonly import('./readingMeasurement').MeasurementRow[]>([]);
   const focusAfterInitial = useRef<ConversationSourceCoordinate | null>(null);
   const initialState = useMemo(() => readReadingState(scope), [scope]);
@@ -109,25 +109,38 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
       waiting.current.add(check); signal.addEventListener('abort', abort, { once: true });
     });
   }, []);
-  const prepare = useCallback(async (target: ConversationSourceCoordinate, signal: AbortSignal) => {
+  const prepare = useCallback(async (target: ConversationSourceCoordinate, signal: AbortSignal, _token: string, summary?: ReadingSummaryTarget) => {
     const current = latest.current;
+    if (current.scope !== target.conversationId) return { status: 'not-renderable' as const };
     if (current.transcript?.positionSpaceId !== target.positionSpaceId) return { status: 'position-space-changed' as const };
     if (signal.aborted) return { status: 'source-unavailable' as const };
-    const member = (latest.current.complete.plan ? latest.current.complete.plan.membership.get(target.position) : latest.current.projection.membership.get(target.position));
-    if (!member) return { status: 'not-renderable' as const };
+    const resolve = () => {
+      const current = latest.current;
+      const member = current.complete.plan ? current.complete.plan.membership.get(target.position) : current.projection.membership.get(target.position);
+      if (!member) return null;
+      if (!summary) return { member, rowKey: target.subtarget === 'summary' ? member.summaryRowKey ?? member.rowKey : member.rowKey };
+      const row = (current.complete.plan?.rows ?? current.projection.rows).find(row => row.key === summary.rowKey);
+      const positions = row && ('sourcePositions' in row ? row.sourcePositions : row.sources.map(source => source.position));
+      return target.subtarget === 'summary' && row?.kind === 'activity-summary' && row.disclosureOwner === summary.disclosureOwner && positions?.includes(target.position)
+        ? { member, rowKey: row.key } : null;
+    };
+    const resolved = resolve();
+    if (!resolved) return { status: 'not-renderable' as const };
+    const { member } = resolved;
     if (target.subtarget !== 'summary') setExpandedBlocks(current => current[`reveal:${target.position}`] && member.disclosurePath.length === 0 && (!('detailKeys' in member) || member.detailKeys?.every(key => current[key])) ? current
       : boundDisclosures({ ...current, ...Object.fromEntries(member.disclosurePath.map(owner => [`group:${owner}`, true])), ...Object.fromEntries(('detailKeys' in member ? member.detailKeys ?? [] : []).map(key => [key, true])), [`reveal:${target.position}`]: true }));
     await waitFor(() => {
-      if (latest.current.transcript?.positionSpaceId !== target.positionSpaceId) return true;
-      const member = (latest.current.complete.plan ? latest.current.complete.plan.membership.get(target.position) : latest.current.projection.membership.get(target.position));
-      const rowKey = target.subtarget === 'summary' ? member?.summaryRowKey ?? member?.rowKey : member?.rowKey;
-      const expected = latest.current.complete.rows.find(row => row.key === rowKey);
-      return Boolean(member && (target.subtarget === 'summary' || member.disclosurePath.length === 0) && expected && latest.current.geometry.geometry?.exact && appliedRows.current.some(row => row.key === expected.key && row.revision === expected.revision && row.disclosureIdentity === expected.disclosureIdentity));
+      if (latest.current.scope !== target.conversationId || latest.current.transcript?.positionSpaceId !== target.positionSpaceId) return true;
+      const resolved = resolve();
+      if (summary && !resolved) return true;
+      const expected = latest.current.complete.rows.find(row => row.key === resolved?.rowKey);
+      return Boolean(resolved && (target.subtarget === 'summary' || resolved.member.disclosurePath.length === 0) && expected && latest.current.geometry.geometry?.exact && appliedRows.current.some(row => row.key === expected.key && row.revision === expected.revision && row.disclosureIdentity === expected.disclosureIdentity));
     }, signal);
     if (signal.aborted) return { status: 'source-unavailable' as const };
+    if (latest.current.scope !== target.conversationId) return { status: 'not-renderable' as const };
     if (latest.current.transcript?.positionSpaceId !== target.positionSpaceId) return { status: 'position-space-changed' as const };
-    const prepared = (latest.current.complete.plan ? latest.current.complete.plan.membership.get(target.position) : latest.current.projection.membership.get(target.position));
-    return prepared ? { status: 'prepared' as const, rowKey: target.subtarget === 'summary' ? prepared.summaryRowKey ?? prepared.rowKey : prepared.rowKey } : { status: 'not-renderable' as const };
+    const prepared = resolve();
+    return prepared ? { status: 'prepared' as const, rowKey: prepared.rowKey } : { status: 'not-renderable' as const };
   }, [waitFor]);
   const onRange = useCallback((start: number, end: number, refs: readonly import('./readingMeasurement').MeasurementRow[]) => latest.current.complete.onRange(start, end, refs), []);
   const disclosures = expandedBlocks;
@@ -256,17 +269,17 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
     viewport.pinDisclosure(row.key, trigger);
     const position = row.sources[0]?.position;
     const offset = trigger && viewport.scrollRef.current ? trigger.getBoundingClientRect().top - viewport.scrollRef.current.getBoundingClientRect().top : viewport.rowOffset(row.key) ?? 0;
-    if (position !== undefined) pendingDisclosure.current = { position, offset, owner: row.disclosureOwner, next, token: `disclosure:${crypto.randomUUID()}` };
+    if (position !== undefined && row.disclosureOwner !== null) pendingDisclosure.current = { position, offset, summary: { rowKey: row.key, disclosureOwner: row.disclosureOwner }, next, token: `disclosure:${crypto.randomUUID()}` };
     setExpandedBlocks(current => boundDisclosures({ ...current, [`group:${row.disclosureOwner}`]: next }));
   };
   useEffect(() => {
     const pending = pendingDisclosure.current;
-    if (!pending || expandedBlocks[`group:${pending.owner}`] !== pending.next) return;
-    const summary = (complete.plan?.rows ?? projection.rows).find(row => row.kind === 'activity-summary' && row.disclosureOwner === pending.owner);
+    if (!pending || expandedBlocks[`group:${pending.summary.disclosureOwner}`] !== pending.next) return;
+    const summary = (complete.plan?.rows ?? projection.rows).find(row => row.key === pending.summary.rowKey && row.kind === 'activity-summary' && row.disclosureOwner === pending.summary.disclosureOwner);
     if (summary?.activityGroup?.expanded !== pending.next) return;
     pendingDisclosure.current = null;
     const target: ConversationSourceCoordinate = { conversationId: scope, positionSpaceId: space, position: pending.position, offset: pending.offset, subtarget: 'summary' };
-    void viewport.reveal({ token: pending.token, origin: 'disclosure-pin', preserveReaderPin: true, target }).then(result => {
+    void viewport.reveal({ token: pending.token, origin: 'disclosure-pin', preserveReaderPin: true, target, summary: pending.summary }).then(result => {
       if (result.status !== 'revealed' && result.status !== 'cancelled') { observeNotice('disclosure-pin', result, target); setNotice(`Reading target: ${result.status}.`); }
     });
   }, [expandedBlocks, complete.plan, projection, viewport.reveal, scope, space]);

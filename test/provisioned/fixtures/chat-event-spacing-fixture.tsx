@@ -116,29 +116,40 @@ async function measureChildBoundaries() {
   const planned = planReadingLayout({ members, conversationId: 'siblings', positionSpaceId: 'fixture', expanded: { 'group:live:sibling:0': true } });
   const rows = materializePreparedReadingRows(planned.rows, members);
   const results = [];
-  for (const expanded of [false, true]) {
+  for (const fontSize of [14, 20]) for (const expanded of [false, true]) {
     const expandedBlocks = { [readingNodeDisclosures(members[0].node).keys[0]]: expanded };
     const props = (row: ReadingRow) => ({ row, events: [], streaming: false, expandedBlocks, setBlockExpanded: () => {}, preparing: false, primaryActions: [], onActivityGroupExpandedChange: () => {} });
-    const normal = document.createElement('section'); normal.style.width = '452.203125px'; document.body.append(normal);
+    const normal = document.createElement('section'); normal.style.width = '452.203125px'; normal.style.setProperty('--text-lg', `${fontSize}px`); document.body.append(normal);
     render(<>{rows.map(row => <ReadingRowView key={row.key} {...props(row)} />)}</>, normal);
-    const internal = document.createElement('section'); internal.style.width = normal.style.width; document.body.append(internal);
+    const internal = document.createElement('section'); internal.style.cssText = normal.style.cssText; document.body.append(internal);
     render(<ActivityGroup items={members.map(member => member.activity!)} expanded renderMember={(_, index) => <ReadingRowBody {...props(rows[index + 1])} />} />, internal);
-    const offscreen = document.createElement('div'); offscreen.dataset.readingMeasurementHost = ''; Object.assign(offscreen.style, { width: normal.style.width, position: 'fixed', visibility: 'hidden' }); document.body.append(offscreen);
+    const offscreen = document.createElement('div'); offscreen.dataset.readingMeasurementHost = ''; offscreen.style.cssText = normal.style.cssText; Object.assign(offscreen.style, { position: 'fixed', visibility: 'hidden' }); document.body.append(offscreen);
     const batch = createReadingRowBatchRenderer(props)(offscreen, rows);
+    const standalone = document.createElement('section'); standalone.style.cssText = normal.style.cssText; document.body.append(standalone);
+    render(<ReadingRowView {...props({ ...rows[1], activityMember: false, activityEnd: false })} />, standalone);
     await task();
     const frames = [...normal.querySelectorAll<HTMLElement>('[data-reading-key]')];
     const headers = frames.map(frame => box(frame.querySelector('.compact-activity__row')!));
     const internalHeaders = [...internal.querySelectorAll('.compact-activity__row')].map(box);
     const firstBody = frames[1].querySelector('.compact-activity__details');
     const internalFirst = internal.querySelector('.activity-group__members')!.firstElementChild!;
-    results.push({ expanded, parentToFirst: headers[1].top - headers[0].bottom, firstToSecond: headers[2].top - headers[1].top,
+    const contentInsets = (header: Element) => {
+      const frame = box(header); const text = box(header.querySelector('.compact-activity__summary')!);
+      return { above: text.top - frame.top, below: frame.bottom - text.bottom };
+    };
+    const bodyTypography = (details: Element | null) => details ? { height: box(details).height, font: getComputedStyle(details).font, lineHeight: getComputedStyle(details).lineHeight } : null;
+    results.push({ fontSize, expanded, parentToFirst: headers[1].top - headers[0].bottom, firstToSecond: headers[2].top - headers[1].top,
       lastPitch: headers[3].top - headers[2].top, outerLeading: headers[0].top - box(frames[0]).top,
       outerTrailing: box(frames[3]).bottom - headers[3].bottom, bodyGap: firstBody ? headers[2].top - box(firstBody).bottom : null,
       headerHeights: headers.map(header => header.height), internalParentToFirst: internalHeaders[1].top - internalHeaders[0].bottom,
       internalFirstToSecond: internalHeaders[2].top - internalHeaders[1].top, internalLastPitch: internalHeaders[3].top - internalHeaders[2].top,
       internalBodyGap: expanded ? internalHeaders[2].top - box(internalFirst).bottom : null,
+      standaloneHeight: box(standalone.querySelector('.compact-activity__row')!).height,
+      standaloneInset: contentInsets(standalone.querySelector('.compact-activity__row')!),
+      nestedInset: contentInsets(frames[1].querySelector('.compact-activity__row')!),
+      nestedBody: bodyTypography(firstBody), standaloneBody: bodyTypography(standalone.querySelector('.compact-activity__details')),
       normalHeights: frames.map(frame => box(frame).height), measuredHeights: rows.map(row => box(batch.elements.get(row.key)!).height) });
-    batch.dispose(); render(null, normal); render(null, internal); normal.remove(); internal.remove(); offscreen.remove();
+    batch.dispose(); render(null, normal); render(null, internal); render(null, standalone); normal.remove(); internal.remove(); offscreen.remove(); standalone.remove();
   }
   return results;
 }
