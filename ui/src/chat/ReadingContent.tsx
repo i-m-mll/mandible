@@ -1,4 +1,4 @@
-import { readingContentBlockDisclosureKey, readingNodeDisclosures } from '../../../src/presentation/reading-disclosures';
+import { readingContentBlockDisclosureKey, readingNodeDisclosures, readingThinkingDefaultExpanded, readingToolExecutionActive } from '../../../src/presentation/reading-disclosures';
 import type { JSX } from 'preact/jsx-runtime';
 import type { PersistedBlockSource, RenderNode } from '../components/stream-renderer/types';
 import { MessageGroup } from '../components/stream-renderer/MessageGroup';
@@ -104,9 +104,7 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
         const sourceBlockId = source?.blockId
           ?? (node.item.type === 'provider-directive' ? node.item.blockId ?? undefined : undefined);
         const disclosureKey = readingNodeDisclosures(node).keys[0];
-        const defaultExpanded = node.item.type === 'thinking-block-activity'
-          && streaming
-          && node.item.turnId === lastAssistantTurnId;
+        const defaultExpanded = node.item.type === 'thinking-block-activity' && readingThinkingDefaultExpanded(node.item.turnId, { streaming, lastAssistantTurnId });
         const expanded = preparing || (expandedBlocks[disclosureKey] ?? defaultExpanded);
         let activity: JSX.Element;
         if (node.item.type === 'tool-call-activity') {
@@ -116,7 +114,7 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
               toolName={node.item.name}
               toolKind={node.item.toolKind}
               toolUseId={node.item.id}
-              active={Boolean(node.item.executionActive && streaming)}
+              active={readingToolExecutionActive(node.item.executionActive, { streaming, lastAssistantTurnId })}
               detailsAvailable={source?.detailsLoaded === false}
               input={node.item.input}
               header={node.item.header}
@@ -173,10 +171,7 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
 
       case 'assistant_turn': {
         const { turn } = node;
-        const isLastStreamingTurn = streaming && node.turn.id === lastAssistantTurnId;
-        const isThinking =
-          isLastStreamingTurn &&
-          turn.assistantEvent.message.content.some((b) => b.type === 'thinking');
+        const defaultThinkingExpanded = readingThinkingDefaultExpanded(turn.id, { streaming, lastAssistantTurnId });
         const isSelected = selectedMessageId === turn.id;
         return (
           <div
@@ -185,8 +180,7 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
           >
             <MessageGroup
               turn={turn}
-              isStreaming={isLastStreamingTurn}
-              isThinking={isThinking}
+              defaultThinkingExpanded={defaultThinkingExpanded}
               getBlockExpanded={(contentBlock, index, defaultExpanded) => (
                 preparing || (expandedBlocks[readingContentBlockDisclosureKey(turn.id, contentBlock, index)] ?? defaultExpanded)
               )}

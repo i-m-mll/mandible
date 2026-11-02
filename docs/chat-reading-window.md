@@ -87,7 +87,7 @@ text is sent to the source index or stored in the manifest.
 
 Shared `reading-disclosures.ts` supplies renderer disclosure keys and prefix
 relations. Effective content-row revisions include only their own disclosure
-state. Opening or revealing a native-backed call hydrates its exact call and
+state. Row-local effective thinking defaults and active tool state also participate: ending a stream or changing its active turn invalidates the affected boxes while explicit overrides and unrelated history remain reusable. The renderer consumes the same shared default rule. Disposable index version 11 carries the body-free default dependencies. Opening or revealing a native-backed call hydrates its exact call and
 paired result through the normal row request; `detailsLoaded: true` is emitted
 only for bodies read from that captured source. Call and result memberships and
 focus subtargets remain distinct. Default-visible transport status evidence

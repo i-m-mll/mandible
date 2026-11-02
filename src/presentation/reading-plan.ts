@@ -1,4 +1,4 @@
-import { readingDisclosureState, type ReadingDisclosures } from './reading-disclosures.js';
+import { readingDisclosureState, readingToolExecutionActive, type ReadingDisclosures } from './reading-disclosures.js';
 import type { ActivityRunFacts } from './activity-presentation.js';
 import { activityRunFacts, mergeActivityRunFacts, presentActivityRunFacts } from './activity-presentation.js';
 import type { DisplayActivityItem } from './types.js';
@@ -133,7 +133,7 @@ export function planReadingLayout(input: {
       : contributors.map(member => member.dependencyRevision);
     current.revision = JSON.stringify([dependencyRevision, current.kind, contributors[0].speaker, current.actionGroup.key,
       current.disclosureOwner, current.activityMember, current.turnStart, current.turnEnd, current.activityEnd,
-      current.totalTokens, current.activityGroup, current.kind === 'content' ? contributors.map(member => readingDisclosureState(member.disclosures, input.expanded)) : []]);
+      current.totalTokens, current.activityGroup, current.kind === 'content' ? contributors.map(member => [readingDisclosureState(member.disclosures, input.expanded, input), member.activity?.type === 'tool-call-activity' ? readingToolExecutionActive(member.activity.executionActive, input) : null]) : []]);
   }
   return { rows, membership, viewMembership };
 }

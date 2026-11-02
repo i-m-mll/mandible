@@ -304,10 +304,7 @@ export type DisplayGroup = {
 
 export interface MessageGroupProps {
   turn: RenderedTurn;
-  /** True if this is the last turn and the stream is still open. */
-  isStreaming: boolean;
-  /** True if this turn contains a thinking block and is still streaming — shows "thinking…" indicator. */
-  isThinking?: boolean;
+  defaultThinkingExpanded: boolean;
   getBlockExpanded?: (block: ContentBlock, index: number, defaultExpanded: boolean) => boolean;
   onBlockExpandedChange?: (block: ContentBlock, index: number, expanded: boolean, relatedSources?: PersistedBlockSource[]) => void;
   getDisclosureExpanded?: (id: string, defaultExpanded: boolean) => boolean;

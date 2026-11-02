@@ -109,7 +109,7 @@ export async function readReadingRowBatch(input: {
   }
   const details = new Set(requested.filter(row => row.kind === 'content').flatMap(row => row.memberKeys.flatMap(key => {
     const member = manifest.members.find(member => member.key === key);
-    return member && readingDisclosureState(member.disclosures, request.expanded).some(([, expanded]) => expanded) ? [...member.sourcePositions] : [];
+    return member && readingDisclosureState(member.disclosures, request.expanded, { streaming: request.streaming, lastAssistantTurnId: manifest.lastAssistantTurnId }).some(([, expanded]) => expanded) ? [...member.sourcePositions] : [];
   })));
   const events = displayEventsFromBlocks(blocks.value.map(block => {
     const projected = details.has(block.position) ? { ...block, details_loaded: true as const } : projectDisplayBlock(block);

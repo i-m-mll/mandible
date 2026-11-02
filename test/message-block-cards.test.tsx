@@ -37,7 +37,7 @@ describe('message action cards', () => {
       ]),
     };
 
-    render(<MessageGroup turn={turn} isStreaming={false} />);
+    render(<MessageGroup turn={turn} defaultThinkingExpanded={false} />);
     const disclosures = () => screen.getAllByRole('button').filter((button) => button.hasAttribute('aria-expanded'));
     expect(disclosures()).toHaveLength(2);
     const [group, standalone] = disclosures();
@@ -68,10 +68,10 @@ describe('message action cards', () => {
       return false;
     };
     const view = render(
-      <MessageGroup turn={turn([block('one'), block('two')])} isStreaming getDisclosureExpanded={getDisclosureExpanded} />,
+      <MessageGroup turn={turn([block('one'), block('two')])} defaultThinkingExpanded={false} getDisclosureExpanded={getDisclosureExpanded} />,
     );
     view.rerender(
-      <MessageGroup turn={turn([block('one'), block('two'), block('three')])} isStreaming getDisclosureExpanded={getDisclosureExpanded} />,
+      <MessageGroup turn={turn([block('one'), block('two'), block('three')])} defaultThinkingExpanded={false} getDisclosureExpanded={getDisclosureExpanded} />,
     );
     expect(seen).toEqual(['tool-group:one', 'tool-group:one']);
   });
@@ -144,7 +144,7 @@ describe('message action cards', () => {
       toolResults: new Map(),
     };
 
-    render(<MessageGroup turn={turn} isStreaming={false} />);
+    render(<MessageGroup turn={turn} defaultThinkingExpanded={false} />);
     expect(screen.queryByText('Old item')).toBeNull();
     expect(screen.getByText('New item')).toBeTruthy();
     expect(screen.getByText('Active item')).toBeTruthy();
