@@ -30,6 +30,13 @@ it.each([chromium, webkit].map(engine => ({ name: engine.name(), engine })))('ke
     expect(await parent.boundingBox()).toEqual(baseBox);
     expect(await page.evaluate(() => document.getSelection()!.toString())).toBe(await page.locator('body').getAttribute('data-context-selection'));
     const bounds = await menu.boundingBox(); expect(bounds!.x).toBeCloseTo(plain!.x + 10, 1); expect(bounds!.y).toBeCloseTo(plain!.y + 10, 1);
+    const copyItem = menu.getByRole('menuitem', { name: 'Copy all', exact: true });
+    const infoItem = menu.getByRole('menuitem', { name: 'Info', exact: true });
+    const infoBox = await infoItem.boundingBox(); await infoItem.hover();
+    expect(await infoItem.evaluate(node => document.activeElement === node)).toBe(true);
+    await page.waitForFunction(() => { const active = document.activeElement; const copy = document.querySelector('[role="menu"] [aria-label="Copy all"]'); return active && copy && getComputedStyle(active).backgroundColor !== getComputedStyle(copy).backgroundColor; });
+    expect(await copyItem.evaluate(node => getComputedStyle(node).backgroundColor)).not.toBe(await infoItem.evaluate(node => getComputedStyle(node).backgroundColor));
+    expect(await infoItem.boundingBox()).toEqual(infoBox);
     await page.locator('#specific').click(); await menu.waitFor({ state: 'detached' });
     expect(await paint('#parent')).toEqual(basePaint);
     await page.evaluate(() => document.getSelection()!.removeAllRanges());
@@ -56,6 +63,7 @@ it.each([chromium, webkit].map(engine => ({ name: engine.name(), engine })))('ke
     await page.evaluate(() => document.getSelection()!.removeAllRanges());
     for (const key of ['Shift+F10', 'ContextMenu']) {
       await parent.focus(); await page.keyboard.press(key); await menu.waitFor({ state: 'visible' });
+      expect(await copyItem.evaluate(node => document.activeElement === node)).toBe(true);
       await page.keyboard.press('Escape'); await menu.waitFor({ state: 'detached' });
     }
     expect(await page.locator('#parent > .message-actions button').count()).toBe(0);
