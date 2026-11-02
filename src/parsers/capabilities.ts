@@ -38,6 +38,7 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
       "Additional completion evidence is presentation metadata; existing normalized content, parts and source identity proofs remain unchanged. Completion-only last_agent_message echoes and started_at/completed_at/duration_ms/time_to_first_token_ms bookkeeping contribute no Chat content.",
       "Tool uses come from function_call/custom_tool_call response items.",
       "Chat retains ordered native result framing as presentation-only evidence; canonical output text is unchanged.",
+      "Isolated result hydration admits framing only from the matching verified parent call presentation context.",
       "Live app-server tools retain explicit duration, exit/process facts, MCP content and dynamic content items when supplied.",
       "Echoed user_message client_id binds the preceding native user Chat item to its exact submission intent.",
       "Subagent threads are sidechain conversations whose parent is the thread named in the rollout header's session_meta.source.subagent spawn record.",

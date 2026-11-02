@@ -5,7 +5,7 @@ import {
 } from "../credential-leak-scan.js";
 import type { Db } from "../db.js";
 import { getAllParsers } from "../parsers/index.js";
-import type { ConversationBlock, ConversationSource } from "../parsers/types.js";
+import type { ConversationBlock, ConversationSource, ToolCallPresentationContext } from "../parsers/types.js";
 import { ConversationSourceStore } from "./source-store.js";
 import { readConversationSourceGeneration } from "./source-generation.js";
 import {
@@ -46,7 +46,7 @@ interface ReadSession {
   navigationProof?: string;
   canHydrateHistorical?: boolean;
   onVerification?: (milliseconds: number) => void;
-  parsedRecord?: { key: string; hash: string; blocks: Array<Omit<ConversationBlock, "id" | "conversation_id">> };
+  parsedRecord?: { key: string; presentationParents:string; hash: string; blocks: Array<Omit<ConversationBlock, "id" | "conversation_id">> };
   signal?: AbortSignal;
   snapshot?: { version: VersionRow; provider: ConversationSource; nativeSessionId: string; aliasPath: string; lease: VerifiedSourceLease };
 }
@@ -457,6 +457,7 @@ export class ConversationSourceReader {
       return ({ status: "unsupported", reason: "source locator has not been indexed" });
     }
     const contextRows = [...new Map([...rows, ...(sparseParentRows ?? [])].map((row) => [row.id, row])).values()];
+    const rowById = new Map(contextRows.map(row=>[row.id,row]));
     const rowsByRecord = new Map<string, StructuralRow[]>();
     for (const row of contextRows) {
       const key = recordKey(row);
@@ -468,7 +469,12 @@ export class ConversationSourceReader {
     const parsedByPosition = new Map<number, Omit<ConversationBlock, 'id' | 'conversation_id'>>();
     let snapshot: Extract<SnapshotResult, {ok: true}> | null = null;
     let turnStarted = performance.now();
-    const groups = [...rowsByRecord];
+    const groups = [...rowsByRecord].sort((left,right)=>left[1][0].record_ordinal-right[1][0].record_ordinal);
+    const parentProofKey=(recordRows: readonly StructuralRow[]) => JSON.stringify([...new Set(recordRows.filter(row=>row.type==='tool_result' && row.parent_block_id).map(row=>row.parent_block_id))].sort());
+    if(session.parsedRecord) {
+      const cachedRows=rowsByRecord.get(session.parsedRecord.key);
+      if(cachedRows && parentProofKey(cachedRows)!==session.parsedRecord.presentationParents) session.parsedRecord=undefined;
+    }
     for (let offset = 0; offset < groups.length;) {
       const chunk = boundedRecordRows(groups.slice(offset), ([, rows]) => ({offset: rows[0].record_offset, length: rows[0].record_length}),
         Math.min(maxBatchBytes, this.maxSourceBytes));
@@ -519,12 +525,24 @@ export class ConversationSourceReader {
         const record = observed.records.get(key);
         if (!record) continue;
         const baseBlockCount = recordRows[0].position - recordRows[0].sub_block_ordinal;
+        const displayToolCalls:ToolCallPresentationContext[]=[];
+        const presentationParents:string[]=[];
+        for(const row of recordRows) {
+          if(row.type!=='tool_result' || !row.parent_block_id) continue;
+          const parentRow=rowById.get(row.parent_block_id);
+          const parent=parentRow ? parsedByPosition.get(parentRow.position) : undefined;
+          const item=parent?.metadata.chat_item;
+          if(parent?.type!=='tool_use' || item?.type!=='tool-call' || item.phase!=='call' || !item.tool_id || !item.tool_name || !item.tool_kind) continue;
+          displayToolCalls.push({id:item.tool_id,name:item.tool_name,kind:item.tool_kind});
+          presentationParents.push(row.parent_block_id);
+        }
         const parsed = await parser.parseIncremental({
           filePath: observed.provider === "gemini" && observed.aliasPath.endsWith(".json")
             ? "source-record.json"
             : "source-record.jsonl",
           raw: `${record.toString("utf8")}\n`,
           nativeSessionId: observed.nativeSessionId,
+          displayToolCalls,
           baseBlockCount,
           baseRecordCount: recordRows[0].record_ordinal,
           sourceHash: observed.version.content_sha256,
@@ -533,7 +551,7 @@ export class ConversationSourceReader {
         if (!parsed) {
           return ({ status: "stale", reason: "verified source record produced no blocks" });
         }
-        session.parsedRecord = { key, hash: createHash("sha256").update(record).digest("hex"), blocks: parsed.blocks };
+        session.parsedRecord = { key, presentationParents:JSON.stringify([...new Set(presentationParents)].sort()), hash: createHash("sha256").update(record).digest("hex"), blocks: parsed.blocks };
         for (const block of parsed.blocks) if (needed.has(block.position)) parsedByPosition.set(block.position, block);
       }
     }
@@ -544,7 +562,6 @@ export class ConversationSourceReader {
     // proving the full parser attached model metadata.
     const conversation = session.context;
     const blocks: SourceBackedConversationBlock[] = [];
-    const rowById = new Map(contextRows.map((row) => [row.id, row]));
     for (const row of rows) {
       const block = parsedByPosition.get(row.position);
       if (!block || block.type !== row.type || block.role !== row.role) {
