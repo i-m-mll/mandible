@@ -1077,25 +1077,26 @@
 
 /* Keep contextual actions beside each block's visible content. */
 .message-block-wrapper:has(> .message-actions) {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  justify-content: flex-start;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  align-items: start;
+  justify-content: start;
   gap: 6px;
 }
 
 .message-block-wrapper:has(> .message-actions) > :not(.message-actions) {
-  flex: 0 1 auto;
+  grid-column: 1;
+  grid-row: 1;
   min-width: 0;
   width: max-content;
-  max-width: calc(100% - 32px);
+  max-width: 100%;
 }
 
 .message-block-wrapper:has(> .message-actions) > .message-actions {
   position: static;
-  order: 1;
-  flex: 0 0 auto;
-  align-self: flex-start;
+  grid-column: 2;
+  grid-row: 1;
+  align-self: start;
   width: max-content;
   padding: 0;
 }
@@ -1107,14 +1108,15 @@
 }
 
 .message-block-wrapper:has(> .message-actions) .compact-activity__details {
-  order: 2;
-  flex: 1 0 100%;
+  grid-column: 1 / -1;
+  grid-row: 2;
   width: 100%;
   max-width: 100%;
 }
 
 .message-block-wrapper:has(> .message-actions) .compact-activity__row {
-  max-width: calc(100% - 32px);
+  min-width: 0;
+  max-width: 100%;
 }
 
 /* Reveal only from the message that owns this action bar. */

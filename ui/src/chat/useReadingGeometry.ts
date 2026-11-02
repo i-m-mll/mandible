@@ -98,18 +98,20 @@ export function useReadingGeometry(input: {
   useLayoutEffect(() => {
     const parent = input.parent;
     if (!parent) return;
+    const canvas = parent.querySelector<HTMLElement>(':scope > .stream-renderer__virtual-canvas');
+    if (!canvas) return;
     const update = () => {
       const style = getComputedStyle(parent);
-      const width = parent.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      const width = canvas.getBoundingClientRect().width;
       if (width <= 0) return;
-      const profileIdentity = JSON.stringify([style.fontFamily, style.fontSize, style.fontWeight, style.fontStyle, style.lineHeight, style.letterSpacing, document.documentElement.dataset.theme]);
+      const profileIdentity = JSON.stringify([style.getPropertyValue('--reading-renderer-version').trim(), style.fontFamily, style.fontSize, style.fontWeight, style.fontStyle, style.lineHeight, style.letterSpacing, document.documentElement.dataset.theme]);
       const next: MeasurementLayout = { width, profileIdentity, responsiveVariant: style.getPropertyValue('--reading-responsive-variant').trim(), styleIdentity: JSON.stringify([fontGeneration.current, profileIdentity]), fonts: [{ font: `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}` }] };
       if (!layoutRef.current || measurementLayoutIdentity(layoutRef.current) !== measurementLayoutIdentity(next)) {
         activeMeasurement.current?.abort();
         latest.current.onLayoutChange?.(next); layoutRef.current = next; setLayout(next);
       }
     };
-    const observer = new ResizeObserver(update); observer.observe(parent);
+    const observer = new ResizeObserver(update); observer.observe(canvas); observer.observe(parent);
     const fontsChanged = () => { fontGeneration.current++; update(); };
     const themeObserver = new MutationObserver(update); themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] });
     window.addEventListener('resize', update); document.fonts?.addEventListener('loadingdone', fontsChanged); update();
