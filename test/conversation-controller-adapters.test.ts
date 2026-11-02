@@ -264,3 +264,14 @@ it("persists authoritative Codex terminal errors through retries, duplicates and
     expect(execution.read("codex", "codex-new-thread")?.state).toEqual({ kind: "ended", reason: "mandible:controller-released" });
   } finally { await service.close(); unregister(); db.close(); fs.rmSync(nativeState, { recursive: true, force: true }); }
 });
+
+
+it("preserves explicit live Codex final phases while complete unknown messages and running tails remain nonfinal", async () => {
+  const adapter = new CodexAppServerControllerAdapter({ spawnProcess: spawner('codex', []), codexExecutable: 'codex' }); adapters.push(adapter);
+  const events = providerEvents(adapter);
+  expect((await adapter.acquire(acquisition('codex-thread'))).ok).toBe(true);
+  expect((await adapter.deliver(delivery('send', 'final-turn', 'final-response'))).ok).toBe(true);
+  await waitUntil(() => events.some(event => event.kind === 'provisional-content' && event.item.identity.native_item_id === 'running-tail'));
+  const messages = events.flatMap(event => event.kind === 'provisional-content' && event.item.type === 'message' && event.item.role === 'assistant' ? [event.item] : []);
+  expect(messages.map(item => item.assistant_response ?? 'unknown')).toEqual(['unknown', 'interim', 'final', 'unknown']);
+});

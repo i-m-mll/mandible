@@ -32,7 +32,7 @@ export function normalizedPositionIdentity(block: Omit<ConversationBlock, 'id' |
     item.identity.native_content_index === undefined ? item.identity.source_sub_block_ordinal : null]);
   const metadata = Object.fromEntries(Object.entries(block.metadata).filter(([key]) =>
     !key.startsWith('source_') && !key.startsWith('display_') && key !== 'chat_item' && key !== 'client_intent_id'));
-  const semanticItem = item && { ...item, identity: { provider: item.identity.provider, session_id: item.identity.session_id } };
+  const semanticItem = item && { ...item, ...(item.type === "message" ? { assistant_response: undefined } : {}), identity: { provider: item.identity.provider, session_id: item.identity.session_id } };
   return canonical(['semantic', block.type, block.role, block.content, metadata, semanticItem ?? null]);
 }
 

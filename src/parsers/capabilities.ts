@@ -34,6 +34,7 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
       tool_output: true,
     },
     notes: [
+      "Assistant response channels preserve explicit final/commentary intent; absent channels remain unknown.",
       "Tool uses come from function_call/custom_tool_call response items.",
       "Echoed user_message client_id binds the preceding native user Chat item to its exact submission intent.",
       "Subagent threads are sidechain conversations whose parent is the thread named in the rollout header's session_meta.source.subagent spawn record.",
@@ -62,6 +63,7 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
       tool_output: true,
     },
     notes: [
+      "Only stop_reason end_turn proves a final assistant response; tool_use, max_tokens and stop_sequence are nonfinal, and absent evidence remains unknown.",
       "Provider stop_reason end_turn, max_tokens, and stop_sequence mark normalized assistant execution as settled; tool_use remains active and absent stop evidence remains unknown.",
       "Tool uses come from assistant content blocks with type tool_use.",
       "Tool results come from user content blocks with type tool_result.",
@@ -93,6 +95,7 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
     notes: [
       "Line 1 of the first user message is read for the lineage marker.",
       "Messages, plans, tools, and thinking expose metadata.chat_item using the shared provider-neutral contract.",
+      "No supported native final-response signal is available; assistant response classification remains unknown.",
       "Tool-use support depends on Gemini logs containing toolCalls.",
       "Some Gemini logs only contain user and assistant messages.",
       "Gemini currently normalizes no system/event records; plans and thoughts remain typed assistant blocks.",

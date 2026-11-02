@@ -1,3 +1,4 @@
+import { assistantResponseMembership } from "../parsers/assistant-response.js";
 import { readingNodeDisclosures } from './reading-disclosures.js';
 import type { ReadingPlan, ReadingPlanMember, ReadingRowDescriptor } from './reading-plan.js';
 import { planReadingLayout, readingSourceKey } from './reading-plan.js';
@@ -16,6 +17,7 @@ export type ReadingRow = {
   materializedMemberKeys?: readonly string[];
   activityRun?: NonNullable<ReadingPlanMember['run']>;
   kind: 'content' | 'activity-summary' | 'permission';
+  isFinalResponse: boolean;
   protectedPositions: readonly number[];
   items: readonly CanonicalChatItemEvent[];
   nodes: readonly RenderNode[];
@@ -159,6 +161,8 @@ export function prepareReadingMembers(input: ReadingPreparationInput): ReadingPr
     key: entry.key, position: entry.fragment.position, part: entry.fragment.part,
     kind: entry.node.kind === 'activity' ? 'activity' : 'content', speaker: entry.node.entity,
     actionGroup: entry.actionGroup, activity: entry.node.kind === 'activity' ? entry.node.item : null,
+    ...(entry.node.kind === 'assistant_turn' && entry.node.turn.assistantEvent.message.content[0]?.type === 'text' && entry.event
+      ? { assistantResponse: assistantResponseMembership(entry.event.item) } : {}),
     run: entry.canonicalRun, dependencyRevision: JSON.stringify([entry.node, entry.event?.executionActive]),
     sourcePositions: [entry.fragment.position, ...entry.fragment.pairedSourcePositions].filter((position): position is number => position !== undefined),
     handoffKeys: [entry.identity, entry.native].filter((key): key is string => Boolean(key)), usage: entry.event?.usage,
