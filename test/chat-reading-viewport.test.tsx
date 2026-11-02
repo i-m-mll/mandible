@@ -129,7 +129,7 @@ it('aligns an already-mounted prepared target without an intermediate index seek
   const focus = vi.spyOn(target, 'focus');
   let result: ReadingRevealResult | undefined;
   await act(async () => { void viewport.reveal({ token: 'exact', target: coordinate }).then(value => { result = value; }); });
-  expect(prepare).toHaveBeenCalledWith(coordinate, expect.any(AbortSignal), 'exact');
+  expect(prepare).toHaveBeenCalledWith(coordinate, expect.any(AbortSignal), 'exact', undefined);
   expect(boundary.calls).toEqual(['cancel', 'cancel', 'offset']);
   await frame();
   expect(boundary.calls).toEqual(['cancel', 'cancel', 'offset']);
@@ -286,7 +286,8 @@ it('keeps a follower at the end when composer clearance changes without moving a
 it.each([false, true])('reveals and focuses the prepared message owner when an inline activity shares its source (activity first: %s)', async activityFirst => {
   const vector = {...geometry, rows: [...geometry.rows, {key: 'memory-row', revision: '1'}], sizes: [100, 100],
     rowMembers: new Map([...geometry.rowMembers, ['memory-row', ['memory-member']]])};
-  render(<Harness vector={vector} prepare={async () => ({status: 'prepared', rowKey: 'exact-row'})} />);
+  const prepare = vi.fn<Parameters<typeof useReadingViewport>[0]['prepare']>(async (_target, _signal, _token, summary) => ({status: 'prepared', rowKey: summary?.rowKey ?? 'exact-row'}));
+  render(<Harness vector={vector} prepare={prepare} />);
   const {scroller, target} = connect();
   const memory = document.createElement('div'); memory.tabIndex = -1; memory.textContent = 'Used memory'; scroller.append(memory);
   memory.getBoundingClientRect = () => rect(600 - scroller.scrollTop, 100);
@@ -312,4 +313,15 @@ it.each([false, true])('reveals and focuses the prepared message owner when an i
   expect(focusedMessage).toHaveBeenCalledTimes(beforeCleanup + 1);
   viewport.cancel(); viewport.focusTarget(coordinate);
   expect(focusedMessage).toHaveBeenCalledTimes(beforeCleanup + 1);
+
+  const summary = { rowKey: 'memory-row', disclosureOwner: 'footer' };
+  const summaryCoordinate = { ...coordinate, subtarget: 'summary' };
+  viewport.register({ coordinate: summaryCoordinate, rowKey: summary.rowKey, element: memory });
+  let disclosed!: Promise<ReadingRevealResult>;
+  await act(async () => { disclosed = viewport.reveal({ token: 'disclosure', target: summaryCoordinate, summary, preserveReaderPin: true }); });
+  expect(prepare).toHaveBeenLastCalledWith(summaryCoordinate, expect.any(AbortSignal), 'disclosure', summary);
+  expect(scroller.scrollTop).toBe(600);
+  boundary.engine.isScrolling = false; act(() => boundary.options.onChange(boundary.engine)); await frame();
+  expect(await disclosed).toEqual({ token: 'disclosure', status: 'revealed' });
+  expect(focusedMemory).not.toHaveBeenCalled();
 });
