@@ -6,6 +6,9 @@ import type { ReadingRow } from './readingProjection';
 import type { ReadingContentProps } from './ReadingContent';
 import { createReadingRowBatchRenderer } from './renderReadingMeasurementBatch';
 
+let diagnosticInstance = 0;
+let diagnosticParent = 0;
+const diagnosticParents = new WeakMap<HTMLElement, number>();
 type GeometryMembership = ReadonlyMap<string, { rowKey: string; position?: number | null }>;
 export type ReadingGeometry = { membership: GeometryMembership; rowMembers: ReadonlyMap<string, readonly string[]>; scope: string; rows: readonly MeasurementRow[]; sizes: readonly number[]; layout: MeasurementLayout; exact: boolean; serial: number; renderProps: (row: ReadingRow) => ReadingContentProps };
 /** One current width, one compatible complete basis, and reusable current-width facts. */
@@ -18,6 +21,8 @@ export function useReadingGeometry(input: {
   onPrepared: (rows: readonly MeasurementRow[]) => void;
   scale: (from: MeasurementLayout, to: MeasurementLayout) => number;
 }) {
+  const instance = useMemo(() => ++diagnosticInstance, []);
+  const diagnosticCount = useRef(0);
   const latest = useRef(input); latest.current = input;
   const [layout, setLayout] = useState<MeasurementLayout | null>(null);
   const [geometry, setGeometry] = useState<ReadingGeometry | null>(null);
@@ -65,6 +70,14 @@ export function useReadingGeometry(input: {
   }, []);
   useEffect(() => () => { if (reportFrame.current !== null) cancelAnimationFrame(reportFrame.current); }, []);
   const wake = useRef<() => void>(() => {});
+  const diagnose = (reason: string, detail?: unknown) => {
+    const parent = latest.current.parent;
+    if (parent && !diagnosticParents.has(parent)) diagnosticParents.set(parent, ++diagnosticParent);
+    if (diagnosticCount.current++ < 32) console.debug('[reading-geometry-diagnostic]', JSON.stringify({ reason, instance, scope: latest.current.scope,
+      parent: parent ? diagnosticParents.get(parent) : null, fontGeneration: fontGeneration.current, rows: published.current.geometry?.rows.length ?? null,
+      layout: published.current.geometry ? measurementLayoutIdentity(published.current.geometry.layout) : null, detail }));
+  };
+  useEffect(() => { diagnose('mount'); return () => diagnose('unmount'); }, []);
   useLayoutEffect(() => {
     const parent = input.parent;
     if (!parent) return;
@@ -73,16 +86,16 @@ export function useReadingGeometry(input: {
       const width = parent.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
       if (width <= 0) return;
       const next: MeasurementLayout = { width, responsiveVariant: style.getPropertyValue('--reading-responsive-variant').trim(), styleIdentity: JSON.stringify([fontGeneration.current, style.fontFamily, style.fontSize, style.fontWeight, style.fontStyle, style.lineHeight, style.letterSpacing, document.documentElement.dataset.theme]), fonts: [{ font: `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}` }] };
-      setLayout(previous => previous && measurementLayoutIdentity(previous) === measurementLayoutIdentity(next) ? previous : next);
+      setLayout(previous => { if (!previous || measurementLayoutIdentity(previous) !== measurementLayoutIdentity(next)) diagnose('layout', { previous, next }); return previous && measurementLayoutIdentity(previous) === measurementLayoutIdentity(next) ? previous : next; });
     };
     const observer = new ResizeObserver(update); observer.observe(parent);
-    const fontsChanged = () => { fontGeneration.current++; update(); };
+    const fontsChanged = () => { fontGeneration.current++; diagnose('fonts-loadingdone'); update(); };
     const themeObserver = new MutationObserver(update); themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] });
     window.addEventListener('resize', update); document.fonts?.addEventListener('loadingdone', fontsChanged); update();
     return () => { observer.disconnect(); themeObserver.disconnect(); window.removeEventListener('resize', update); document.fonts?.removeEventListener('loadingdone', fontsChanged); };
   }, [input.parent]);
   useEffect(() => {
-    facts.current = []; basis.current = null; setGeometry(null); setError(null);
+    diagnose('clear-scope'); facts.current = []; basis.current = null; setGeometry(null); setError(null);
   }, [input.scope]);
   useEffect(() => {
     if (!layout || !input.parent) return;
@@ -96,7 +109,7 @@ export function useReadingGeometry(input: {
       const ratio = latest.current.scale(compatible.layout, layout);
       latest.current.onPrepared(compatible.rows);
       setGeometry({ ...compatible, sizes: compatible.sizes.map(size => size * ratio), layout, exact: false, serial: ++serial.current });
-    } else if (compatible && compatible.layout.styleIdentity !== layout.styleIdentity) setGeometry(null);
+    } else if (compatible && compatible.layout.styleIdentity !== layout.styleIdentity) { diagnose('clear-style', { before: compatible.layout, after: layout }); setGeometry(null); }
     let running = false;
     let completedPlan: readonly MeasurementRow[] | undefined;
     const run = async () => {
