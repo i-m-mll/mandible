@@ -25,8 +25,46 @@ its stable member identity, source action scope and exact source-derived header.
 It retains both source memberships without extending the active history span.
 Unknown parents retain the existing unmatched-result presentation. Query retains
 explicitly hydrated owner details only while their owning fragments/results are
-retained, under the same source freshness and byte limits. This context describes
-presentation and adds no global history manifest, geometry, or loading policy.
+retained, under the same source freshness and byte limits. This bounded context continues to support source windows. The complete manifest
+below supplies presentation authority independently of the active window.
+
+## Complete presentation manifest and bounded row reads
+
+`GET /api/conversations/:id/reading-manifest` returns a body-free complete
+`ConversationReadingManifest`, captured under one position space, source version
+and publication revision. `expected_position_space_id` rejects an obsolete space.
+The disposable index supplies complete fragment order, maximal activity runs,
+verified result-to-call memberships, action scopes, token usage and opaque
+rendering-dependency fingerprints. Summary contributors remain exact source
+references; the manifest contains no source text or body-derived summary text.
+
+`planConversationReading(manifest, expanded, streaming)` in
+`src/presentation/reading-manifest.ts` uses the same `planReadingLayout` as
+`projectReadingRows` in `src/presentation/reading.ts`. It supplies all visible
+row descriptors and cold/folded memberships without loading their bodies.
+Descriptors include source references, disclosure ownership, turn/activity
+boundaries, token footer placement, unique keys and opaque dependency revisions.
+Manifest summary labels are structural facts only; rendering uses hydrated
+presentation. Group disclosure state participates in the descriptor revision;
+local body disclosure state extends it at the renderer boundary.
+
+`POST /api/conversations/:id/reading-rows` accepts
+`{positionSpaceId, rows: [{key, revision}], expanded, streaming?}`. It returns
+only the requested existing `ReadingRow` payloads, with their revisions and the
+captured source metadata. A newer publication can satisfy a prior descriptor
+when its position space and dependencies remain unchanged. Appending unrelated
+content preserves completed prefix revisions. Changed call results, summaries,
+boundaries and token footers invalidate the affected rows. Publication races
+return `changed`; obsolete spaces return `position-space-changed`; missing or
+unsupported source returns `unavailable`.
+
+A batch admits at most 128 rows and 512 source positions per source-read stage,
+and at most 4 MiB of rendered payload. A row that cannot fit reports
+`resource-limit`, without truncation or an exact-geometry claim. Source bodies
+are ephemeral. The server retains at most one complete metadata manifest and
+two disclosure plans per ledger connection; it retains no hydrated row cache.
+The client continues to own fetched-data retention through Query. These APIs
+contain no pixel coordinates or scrolling policy.
 
 ## Source publication
 
@@ -109,9 +147,10 @@ late completions have no selected-data result. It stores no fetched blocks.
 ## Projection and renderer integration
 
 `projectReadingRows` projects canonical semantic items without grouping them
-backward from a window edge. Provider-native and intent keys are view identity;
-id-less durable rows use conversation/space/position. Canonical source links are
-separate from those view keys. Provisional output has no invented source link.
+backward from a window edge. Every durable fragment uses conversation/position-space/position/part identity.
+Provider-native and intent keys authorize a handoff only when their source
+membership is unambiguous; duplicate native keys never identify a canonical row.
+Canonical source links retain their exact call/result coordinates. Provisional output has no invented source link.
 
 The disposable source index assigns activity ownership and complete canonical
 speaker runs during publication. Append generations extend the trailing run.

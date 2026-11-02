@@ -120,9 +120,14 @@ export function planReadingLayout(input: {
     current.activityEnd = current.activityMember && rows[index + 1]?.disclosureOwner !== current.disclosureOwner;
     const usage = usages.get(current.actionGroup.key);
     if (current.turnEnd && usage?.size) current.totalTokens = [...usage.values()].reduce((sum, value) => sum + value, 0);
-    current.revision = JSON.stringify([current.kind === 'activity-summary' && membersByKey.get(current.memberKeys[0])?.run?.revision
-      ? membersByKey.get(current.memberKeys[0])!.run!.revision : current.memberKeys.map(key => membersByKey.get(key)!.dependencyRevision), current.actionGroup.key,
-      current.turnStart, current.turnEnd, current.activityEnd, current.totalTokens, current.activityGroup?.expanded]);
+    const contributors = current.memberKeys.map(key => membersByKey.get(key)!);
+    const canonicalRunRevision = current.kind === 'activity-summary' ? contributors[0].run?.revision : undefined;
+    const dependencyRevision = canonicalRunRevision
+      ? [canonicalRunRevision, contributors.filter(member => member.position === undefined).map(member => member.dependencyRevision)]
+      : contributors.map(member => member.dependencyRevision);
+    current.revision = JSON.stringify([dependencyRevision, current.kind, contributors[0].speaker, current.actionGroup.key,
+      current.disclosureOwner, current.activityMember, current.turnStart, current.turnEnd, current.activityEnd,
+      current.totalTokens, current.activityGroup]);
   }
   return { rows, membership, viewMembership };
 }

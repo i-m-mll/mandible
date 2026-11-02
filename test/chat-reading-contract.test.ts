@@ -1,3 +1,4 @@
+import { planReadingLayout, type ReadingPlanMember } from '../src/presentation/reading-plan';
 import { chatItemIdentityKey } from '../src/conversation-control/provider-live';
 import { ConversationStructureCache } from '../src/conversations/structure-cache';
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from '../src/conversations/source-types';
@@ -194,4 +195,25 @@ it('keeps repeated native tool IDs distinct and pairs results by exact call coor
   expect(open.membership.get(1)?.memberKey).not.toBe(open.membership.get(3)?.memberKey);
   expect(open.membership.get(1)?.subtarget).not.toBe(open.membership.get(3)?.subtarget);
   expect(open.viewMembership.has(chatItemIdentityKey(first.item)!)).toBe(false);
+});
+
+it('invalidates geometry when ownership or provisional summary contributors change', () => {
+  const group = {key: 'group', start: 0, end: 8};
+  const activity = item('activity').item as import('../src/parsers/types').ActivityItem;
+  const member = (key: string, kind: 'activity' | 'content', position?: number): ReadingPlanMember => ({
+    key, kind, position, part: 'part', speaker: 'assistant', actionGroup: group, activity: kind === 'activity' ? activity : null,
+    dependencyRevision: key, sourcePositions: position === undefined ? [] : [position], handoffKeys: [],
+  });
+  const before = member('before', 'content', 0), first = member('first', 'activity', 1), second = member('second', 'activity', 2), after = member('after', 'content', 3);
+  const layout = (members: ReadingPlanMember[]) => planReadingLayout({ members, conversationId: 'conv', positionSpaceId: 'space', expanded: {'group:run': true} });
+  const singleton = layout([before, first, after]).rows.find(row => row.key === first.key)!;
+  const facts = activityRunFacts([activity, activity]);
+  const run = {id: 'run', revision: 'canonical', member_count: 2, presentation: {...presentActivityRunFacts(facts), facts}};
+  const grouped = layout([before, {...first, run}, {...second, run}, after]).rows.find(row => row.key === first.key)!;
+  expect(grouped.revision).not.toBe(singleton.revision);
+  const provisional = member('live', 'activity');
+  const canonical = [{...first, run}, {...second, run}];
+  const initial = layout([...canonical, provisional]).rows[0];
+  const updated = layout([...canonical, {...provisional, dependencyRevision: 'updated'}]).rows[0];
+  expect(updated.revision).not.toBe(initial.revision);
 });
