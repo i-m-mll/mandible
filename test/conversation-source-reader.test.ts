@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ConversationSourceReader } from "../src/conversations/source-reader.js";
 import { ConversationSourceStore } from "../src/conversations/source-store.js";
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../src/conversations/source-types.js";
+import { ClaudeParser } from "../src/parsers/claude.js";
 import { CodexParser } from "../src/parsers/codex.js";
 import type { ParseResult } from "../src/parsers/types.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
@@ -80,6 +81,43 @@ async function record(db: SqliteDatabase, id: string, filePath: string): Promise
 }
 
 describe("versioned conversation source reader", () => {
+  it('hydrates overlapping subitems and unrequested tool parents once, returning only ordered unique requested positions', async () => {
+    const db = migratedMemoryDb();
+    const nativeSessionId = '11111111-1111-4111-8111-111111111111';
+    const filePath = path.join(tempDir, '.claude/projects/vector', `${nativeSessionId}.jsonl`);
+    fs.mkdirSync(path.dirname(filePath), {recursive: true});
+    const native = [
+      {type: 'assistant', uuid: 'calls', sessionId: nativeSessionId, timestamp: '2026-11-02T00:00:00Z',
+        message: {id: 'calls', model: 'claude', role: 'assistant', content: [
+          {type: 'text', text: 'prepare'}, {type: 'tool_use', id: 'a', name: 'Read', input: {file_path: '/a'}},
+          {type: 'tool_use', id: 'b', name: 'Edit', input: {file_path: '/b'}},
+        ]}},
+      {type: 'user', uuid: 'results', parentUuid: 'calls', sessionId: nativeSessionId, timestamp: '2026-11-02T00:00:01Z',
+        message: {role: 'user', content: [
+          {type: 'tool_result', tool_use_id: 'a', content: 'read result'}, {type: 'tool_result', tool_use_id: 'b', content: 'edit result'},
+        ]}},
+    ];
+    fs.writeFileSync(filePath, native.map(record => JSON.stringify(record)).join('\n') + '\n');
+    try {
+      const parsed = await new ClaudeParser().parse(filePath);
+      if (!parsed) throw new Error('Native multi-item fixture did not parse.');
+      insertConversation(db, 'vector', filePath, parsed);
+      db.prepare("UPDATE conversations SET source='claude_code' WHERE id='vector'").run();
+      await new ConversationSourceStore(db).recordConversation({conversationId: 'vector', provider: 'claude_code', nativeSessionId,
+        filePath, blocks: parsed.blocks, sourceSnapshot: parsed.sourceSnapshot, ...CURRENT_CONVERSATION_SOURCE_EPOCHS});
+      const reads: Array<{position: number; length: number}> = [];
+      const result = await new ConversationSourceReader(db, {instrumentation: read => reads.push(read)})
+        .readPositions('vector', [4, 1, 3, 4], {maxBatchBytes: 1});
+      expect(result.status).toBe('source');
+      if (result.status !== 'source') throw new Error(result.reason);
+      expect(result.value.map(block => [block.position, block.type, block.content])).toEqual([
+        [1, 'tool_use', parsed.blocks[1].content], [3, 'tool_result', 'read result'], [4, 'tool_result', 'edit result'],
+      ]);
+      expect(result.value.slice(1).map(block => JSON.parse(block.metadata_json).chat_item.tool_name)).toEqual(['Read', 'Edit']);
+      expect(reads).toHaveLength(2);
+    } finally {db.close();}
+  });
+
   it("persists position continuity through identical rebuild and prefix extension, and rotates on invalidation", async () => {
     const db = migratedMemoryDb();
     try {

@@ -532,21 +532,22 @@ export class ConversationStructureCache {
     }));
   }
 
-  readPosition(
-    conversationId: string,
-    sourceVersionId: string,
-    position: number,
-    epochs?: ConversationSourceEpochs,
-  ): SparseConversationBlockRow | null {
+  readPosition(conversationId: string, sourceVersionId: string, position: number, epochs?: ConversationSourceEpochs): SparseConversationBlockRow | null {
+    return this.readPositions(conversationId, sourceVersionId, [position], epochs)?.[0] ?? null;
+  }
+
+  /** Exact requested coordinates and their verified direct parents, from the admitted navigation snapshot. */
+  readPositions(conversationId: string, sourceVersionId: string, positions: readonly number[], epochs?: ConversationSourceEpochs,
+    includeParents = false): SparseConversationBlockRow[] | null {
     const conversation = this.cachedConversation(conversationId, sourceVersionId, epochs);
     if (!conversation) return null;
-    const row = this.cache.prepare(`
-      SELECT position, type_code, role_code, parent_position, record_offset,
-             record_length, record_ordinal, sub_block_ordinal, model, client_intent_id
-        FROM cache_blocks WHERE cache_conversation_id = ? AND position = ?
-    `).get(conversation.cache_id, position) as CacheBlockRow | undefined;
-    if (!row) return null;
-    return {
+    const rows = this.cache.prepare(`WITH requested AS (
+      SELECT * FROM cache_blocks WHERE position IN (SELECT value FROM json_each(?)) AND cache_conversation_id = ?
+    ) SELECT * FROM requested
+      UNION SELECT * FROM cache_blocks WHERE cache_conversation_id = ? AND ?
+        AND position IN (SELECT parent_position FROM requested WHERE parent_position IS NOT NULL)
+      ORDER BY position`).all(JSON.stringify([...new Set(positions)]), conversation.cache_id, conversation.cache_id, includeParents ? 1 : 0) as CacheBlockRow[];
+    return rows.map(row => ({
       conversationId,
       sourceVersionId,
       position: row.position,
@@ -557,13 +558,13 @@ export class ConversationStructureCache {
       recordLength: row.record_length,
       recordOrdinal: row.record_ordinal,
       subBlockOrdinal: row.sub_block_ordinal,
-        model: row.model,
-        clientIntentId: row.client_intent_id,
+      model: row.model,
+      clientIntentId: row.client_intent_id,
       parserFormat: conversation.parser_format,
       parserVersion: conversation.parser_version,
       normalizationVersion: conversation.normalization_version,
       redactionEpoch: conversation.redaction_epoch,
-    };
+    }));
   }
 
   hasCompleteConversation(
