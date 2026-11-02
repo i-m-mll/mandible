@@ -884,14 +884,15 @@ export class CodexParser implements ConversationParser {
           blocks.push({
             type: "event",
             role: "system",
-            content: evt.type === "task_complete" ? completionText.join('\n\n')
-              : typeof evt.message === "string" ? evt.message : typeof evt.reason === "string" ? evt.reason : "",
+            content: typeof evt.message === "string" ? evt.message : typeof evt.reason === "string" ? evt.reason : "",
             position: position++,
             timestamp: ts,
             parent_id: null,
             metadata: {
               source_event_type: evt.type,
               provider_turn_id: evt.turn_id,
+              ...(evt.type === "task_complete" && completionText.length
+                ? { display_completion_parts: completionText.map(text => ({type: 'text' as const, text})) } : {}),
             },
           });
         } else if (!["agent_message", "agent_reasoning", "item_started", "item_completed", "thread_settings_applied"].includes(evt.type)) {

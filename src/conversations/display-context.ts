@@ -7,7 +7,7 @@ import type { ActivityRunFacts } from '../presentation/activity-presentation.js'
 import type { PersistedBlockSource } from '../presentation/types.js';
 import type { ConversationBlock } from '../parsers/types.js';
 import type { CanonicalChatItemEvent } from '../presentation/types.js';
-import { isEmptyCompletionMetadata } from '../presentation/model.js';
+import { displayChatItem, isEmptyCompletionMetadata } from '../presentation/model.js';
 
 export const DISPLAY_CONTEXT_VERSION = 1;
 export type { DisplayFragmentCoordinate };
@@ -71,8 +71,9 @@ export function displayEventsFromBlocks(blocks: readonly {
   position: number; content: string; timestamp?: string | null; details_loaded?: boolean; dag_uuid?: string | null; metadata: ConversationBlock['metadata'] & { display_has_body?: boolean }; parentPosition: number | null;
 }[], conversationId: string): CanonicalChatItemEvent[] {
   return blocks.flatMap(block => {
-    const item = block.metadata.chat_item;
-    if (!item) return [];
+    const canonicalItem = block.metadata.chat_item;
+    if (!canonicalItem) return [];
+    const item = displayChatItem(canonicalItem, block.metadata);
     const intentId = block.metadata.client_intent_id;
     const usage = block.metadata.token_usage;
     const hasBody = block.metadata.display_has_body ?? (item.type === 'activity' && item.provenance.source_event_type === 'task_complete'

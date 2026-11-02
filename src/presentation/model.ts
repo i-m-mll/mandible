@@ -18,7 +18,7 @@ import type {
   TranscriptSemanticEvent,
   UserEvent,
 } from './types.js';
-import type { ActivityItem, ChatItem, MessageItem, PlanItem, ToolCallItem } from '../parsers/types.js';
+import type { ActivityItem, BlockMetadata, ChatItem, MessageItem, PlanItem, ToolCallItem } from '../parsers/types.js';
 
 export type StreamState = {
   nodes: RenderNode[];
@@ -31,6 +31,11 @@ export const TOOL_RESULT_EXCERPT_CHARS = 12000;
 
 function chatItemText(item: MessageItem | PlanItem | ToolCallItem | ActivityItem): string {
   return item.parts.map((part) => part.text).join('\n');
+}
+
+export function displayChatItem(item: ChatItem, metadata: Pick<BlockMetadata, 'display_completion_parts'>): ChatItem {
+  return item.type === 'activity' && item.provenance.source_event_type === 'task_complete' && metadata.display_completion_parts
+    ? {...item, parts: metadata.display_completion_parts} : item;
 }
 
 /** Empty status and thought transport records are hidden only in Chat. */

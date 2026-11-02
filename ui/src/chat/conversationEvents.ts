@@ -3,6 +3,7 @@ import { conversationExecutionState } from './conversationControl';
 import type { ConversationBlock, ProviderLiveProjection } from '../api';
 import type { ChatItem } from '../../../src/parsers/types';
 import { chatItemIdentityKey } from '../../../src/conversation-control/provider-live';
+import { displayChatItem } from '../../../src/presentation/model';
 import type { AssistantEvent, CanonicalChatItemEvent, StreamEvent } from '../components/stream-renderer/types';
 
 export function deriveStreamingState(events: StreamEvent[]): boolean {
@@ -181,7 +182,8 @@ export function conversationBlocksToStreamEvents(
     // Missing or malformed items fail closed instead of being guessed from a
     // provider-shaped block.
     if (Object.prototype.hasOwnProperty.call(metadata, 'chat_item')) {
-      const item = canonicalChatItem(metadata.chat_item);
+      const canonicalItem = canonicalChatItem(metadata.chat_item);
+      const item = canonicalItem ? displayChatItem(canonicalItem, metadata) : null;
       const identity = item && item.provenance.source === 'verified-provider-transcript'
         ? chatItemIdentityKey(item, { allowTranscriptCoordinates: true })
         : null;
