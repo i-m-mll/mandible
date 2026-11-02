@@ -125,7 +125,7 @@ export async function readReadingRowBatch(input: {
     const row = hydratedByKey.get(descriptor.key);
     if (!row) return { status: 'unavailable', reason: 'Requested source fragment could not be materialized.' };
     rows.push({ ...row, memberKeys: descriptor.memberKeys, revision: descriptor.revision, actionGroup: descriptor.actionGroup, turnStart: descriptor.turnStart, turnEnd: descriptor.turnEnd,
-      activityMember: descriptor.activityMember, activityEnd: descriptor.activityEnd, activitySibling: descriptor.activitySibling, totalTokens: descriptor.totalTokens });
+      activityMember: descriptor.activityMember, activityEnd: descriptor.activityEnd, totalTokens: descriptor.totalTokens });
   }
   if (Buffer.byteLength(JSON.stringify(rows)) > 4 * 1024 * 1024) return { status: 'resource-limit', reason: 'This row batch exceeds the bounded presentation payload.' };
   return { status: 'source', sourceVersionId: source.current_version_id, publicationRevision: source.publication_revision,
