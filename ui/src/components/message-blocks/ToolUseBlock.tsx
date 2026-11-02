@@ -179,9 +179,6 @@ function ResultBody({ result, commandLike, projected }: {
           alt="Tool output"
         />
       ))}
-      {projected.decoded && <div className="tool-card__execution-state" style={{display: 'flex', flexWrap: 'wrap', gap: '0.75em'}}>
-        {projected.metadata.map(item => <span key={item.label}>{item.label}: {item.value}</span>)}
-      </div>}
       {projected.wallTimeSeconds !== undefined && <small style={{display: 'block', textAlign: 'right'}}>{projected.wallTimeSeconds} s</small>}
       {result.truncated && result.omittedCharacters != null && (
         <span className="tool-card__result-note">

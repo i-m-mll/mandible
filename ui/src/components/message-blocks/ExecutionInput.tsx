@@ -10,7 +10,7 @@ hljs.registerLanguage('javascript', javascript);
 hljs.registerLanguage('powershell', powershell);
 
 function shellPresentation(shell?: string): {label: string; language?: string} {
-  if (!shell) return {label: 'Shell'};
+  if (!shell) return {label: 'Shell', language: 'bash'};
   const name = shell.split('/').pop()!.toLowerCase();
   if (['bash', 'sh', 'zsh', 'ksh'].includes(name)) return {label: shell, language: 'bash'};
   if (['pwsh', 'powershell', 'powershell.exe', 'pwsh.exe'].includes(name)) return {label: shell, language: 'powershell'};

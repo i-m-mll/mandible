@@ -100,3 +100,17 @@ it('derives compact command facts from saved native wrappers without retaining b
     expect(presentActivityRunFacts(live).summary).toBe(presentActivityRunFacts(facts).summary);
   } finally {rmSync(root,{recursive:true,force:true});}
 });
+
+it('colors generic shell commands without changing text or guessing an unsupported explicit shell', () => {
+  const input={cmd:command};
+  const generic=render(<ToolUseBlock toolName="exec_command" input={input} expanded />);
+  const genericCode=generic.container.querySelector('code')!;
+  expect(genericCode.textContent).toBe(command);
+  expect(genericCode.querySelector('span')).not.toBeNull();
+  generic.unmount();
+  const explicit=render(<ToolUseBlock toolName="exec_command" input={{...input,shell:'/custom/interpreter'}} expanded />);
+  const explicitCode=explicit.container.querySelector('code')!;
+  expect(explicitCode.textContent).toBe(command);
+  expect(explicitCode.querySelector('span')).toBeNull();
+  expect(explicit.container.textContent).toContain('/custom/interpreter');
+});
