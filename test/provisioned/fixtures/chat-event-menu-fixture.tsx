@@ -20,4 +20,10 @@ render(<MessagePrimaryActionsContext.Provider value={[{ id: 'copy', title: 'Copy
   </div>
   <div className="message-block-wrapper" id="tool"><CompactActivityRow summary="Shared disclosure header" disclosure={{ content: 'Expanded details', regionLabel: 'Tool details' }} /><MessageActions onInfo={() => call('tool')} /></div>
   <div className="message-block-wrapper" id="footer"><div className="msg-text-block"><p>Final reply</p></div><MessageActions variant="reply-footer" onInfo={() => call('footer')} /></div>
+<section id="paint-cases">
+    <div className="message-block-wrapper" id="short-message"><div className="msg-text-block"><div className="msg-text-block__prose"><p>Short reply.</p></div></div><MessageActions onInfo={() => call('short')} /></div>
+    <div className="message-block-wrapper" id="paragraph-message"><div className="msg-text-block"><div className="msg-text-block__prose"><p>{'Multiple paragraphs keep their existing line wrapping and content width. '.repeat(8)}</p><p>A shorter second paragraph.</p></div></div><MessageActions onInfo={() => call('paragraph')} /></div>
+    <div className="message-block-wrapper" id="code-message"><div className="msg-text-block"><div className="msg-text-block__prose"><pre style={{ overflowX: 'auto' }}><code>{'ordinary_unwrapped_code_line_'.repeat(100)}</code></pre></div></div><MessageActions onInfo={() => call('code')} /></div>
+    <div id="paint-neighbor">Following event stays in place.</div>
+  </section>
 </MessagePrimaryActionsContext.Provider>, document.getElementById('root')!);
