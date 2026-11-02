@@ -34,6 +34,7 @@ export function useReadingViewport(input: {
   onRange: (start: number, end: number, refs: readonly import('./readingMeasurement').MeasurementRow[]) => void;
 }) {
   const [applied, setApplied] = useState<ReadingGeometry | null>(null);
+  const [indexed, setIndexed] = useState<ReadingGeometry | null>(null);
   const rows = input.geometry && applied?.scope === input.geometry.scope ? applied.rows : [];
   const indices = useMemo(() => new Map(rows.map((row, index) => [row.key, index])), [rows]);
   const pending = useRef<ReadingGeometry | null>(null);
@@ -45,7 +46,7 @@ export function useReadingViewport(input: {
   const viewportHeight = useRef<number | null>(null);
   const userScroll = useRef(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const current = useRef({ ...input, rows, applied }); current.current = { ...input, rows, applied };
+  const current = useRef({ ...input, rows, applied, indexed }); current.current = { ...input, rows, applied, indexed };
   const targets = useRef(new Map<string, ReadingTargetRegistration>());
   const command = useRef<Command | null>(null);
   const completed = useRef<string | undefined>();
@@ -59,7 +60,7 @@ export function useReadingViewport(input: {
   const persistFrame = useRef<number | null>(null);
   const persist = useCallback((engine: Engine) => {
     const snapshot = current.current;
-    if (snapshot.initializing || command.current || !scrollRef.current || !snapshot.scope || (snapshot.commandToken && completed.current !== snapshot.commandToken)) return;
+    if (!snapshot.applied || snapshot.applied !== snapshot.indexed || snapshot.initializing || command.current || !scrollRef.current || !snapshot.scope || (snapshot.commandToken && completed.current !== snapshot.commandToken)) return;
     const first = engine.getVirtualItems().find(item => item.end > scrollRef.current!.scrollTop);
     const memberKey = first ? snapshot.applied?.rowMembers.get(String(first.key))?.[0] ?? String(first.key) : null;
     const membership = memberKey ? snapshot.applied?.membership.get(memberKey) : undefined;
@@ -102,7 +103,7 @@ export function useReadingViewport(input: {
       });
       const range = instance.range;
       const rangeKey = `${range?.startIndex}:${range?.endIndex}`;
-      if (range && lastRange.current !== rangeKey) {
+      if (latest.applied === latest.indexed && range && lastRange.current !== rangeKey) {
         lastRange.current = rangeKey;
         latest.onRange(Math.max(0, range.startIndex - 6), Math.min(latest.rows.length - 1, range.endIndex + 6), instance.getVirtualItems().map(item => latest.rows[item.index]).filter(Boolean));
       }
@@ -225,7 +226,7 @@ export function useReadingViewport(input: {
   }, []);
   applyPending.current = () => {
     const next = pending.current;
-    if (engine.isScrolling || drag.current) return;
+    if (engine.isScrolling || drag.current || (applied && applied !== indexed)) return;
     if (!next || next === applied) {
       if (chromePending.current && !command.current) { chromePending.current = false; if (following.current) engine.scrollToEnd({ behavior: 'auto' }); }
       return;
@@ -244,8 +245,14 @@ export function useReadingViewport(input: {
     applyPending.current();
   }, [input.geometry, input.clearance]);
   useLayoutEffect(() => {
-    if (!applied) return;
+    if (!applied) { setIndexed(null); return; }
     engine.measure();
+    // Offset lookup reads the built index; measure() only invalidates it.
+    engine.getTotalSize();
+    setIndexed(applied);
+  }, [applied, engine]);
+  useLayoutEffect(() => {
+    if (!applied || indexed !== applied) return;
     const saved = restore.current; restore.current = null;
     if (saved && !command.current) {
       if (saved.following) engine.scrollToEnd({ behavior: 'auto' });
@@ -261,11 +268,13 @@ export function useReadingViewport(input: {
     const range = engine.range;
     if (range) current.current.onRange(Math.max(0, range.startIndex - 6), Math.min(rows.length - 1, range.endIndex + 6), engine.getVirtualItems().map(item => rows[item.index]).filter(Boolean));
     notify.current();
-  }, [applied, engine]);
+    applyPending.current();
+  }, [indexed, applied, engine]);
   useLayoutEffect(() => {
+    if (!applied || indexed !== applied) return;
     const range = engine.range;
     if (range) current.current.onRange(Math.max(0, range.startIndex - 6), Math.min(rows.length - 1, range.endIndex + 6), engine.getVirtualItems().map(item => rows[item.index]).filter(Boolean));
-  }, [input.protectedKeys, engine]);
+  }, [input.protectedKeys, indexed, applied, engine]);
   useEffect(() => {
     const scope = input.scope;
     const save = () => {
@@ -294,6 +303,6 @@ export function useReadingViewport(input: {
     window.addEventListener('pointerup', release); window.addEventListener('pointercancel', release); window.addEventListener('keyup', release); window.addEventListener('blur', release);
     return () => { window.removeEventListener('pointerup', release); window.removeEventListener('pointercancel', release); window.removeEventListener('keyup', release); window.removeEventListener('blur', release); };
   }, []);
-  return { engine, rows, appliedGeometry: applied, focusTarget: (target: ConversationSourceCoordinate) => targets.current.get(`${target.positionSpaceId}:${target.position}:${target.subtarget ?? ''}`)?.element?.focus({ preventScroll: true }), renderProps: applied?.renderProps, scrollRef, register, registerRow, rowOffset, reveal, cancel, showLatest,
+  return { engine, rows, appliedGeometry: indexed === applied ? applied : null, focusTarget: (target: ConversationSourceCoordinate) => targets.current.get(`${target.positionSpaceId}:${target.position}:${target.subtarget ?? ''}`)?.element?.focus({ preventScroll: true }), renderProps: applied?.renderProps, scrollRef, register, registerRow, rowOffset, reveal, cancel, showLatest,
     inputHandlers: { onWheel: inputCancel, onTouchStart: () => { drag.current = true; inputCancel(); }, onTouchEnd: () => { drag.current = false; applyPending.current(); }, onTouchCancel: () => { drag.current = false; applyPending.current(); }, onKeyDown, onPointerDown } };
 }
