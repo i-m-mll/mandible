@@ -8,13 +8,30 @@ export class ReadingPresentationError extends Error {
 }
 export const isReadingPublicationChanged = (error: unknown): boolean => error instanceof ReadingPresentationError && error.status === 'changed';
 
+class ReadingResponseDecodeError extends Error {
+  constructor(readonly operation: string, readonly status: number, readonly contentType: string | null, readonly observedBytes: number) {
+    super(`Invalid JSON from ${operation} (HTTP ${status}; ${contentType ?? 'content type missing'}; ${observedBytes} bytes).`);
+    this.name = 'ReadingResponseDecodeError';
+  }
+}
+
+async function decodeReadingResponse<T>(response: Response, operation: string, signal: AbortSignal): Promise<T> {
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  try { return JSON.parse(new TextDecoder().decode(bytes)) as T; }
+  catch (error) {
+    if (signal.aborted) throw error;
+    throw new ReadingResponseDecodeError(operation, response.status, response.headers.get('content-type'), bytes.byteLength);
+  }
+}
+
 let batchRequestId = 0;
 
 export const readingManifestKey = (id: string, space: string) => ['chat', 'conversation', id, 'reading-manifest', space] as const;
 export function readingManifestOptions(id: string, space: string) {
   return { queryKey: readingManifestKey(id, space), queryFn: async ({ signal }: { signal: AbortSignal }) => {
-    const response = await browserSessionFetch(`/api/conversations/${encodeURIComponent(id)}/reading-manifest?expected_position_space_id=${encodeURIComponent(space)}`, { signal });
-    const result = await response.json() as { status: string; manifest?: ConversationReadingManifest; reason?: string };
+    const endpoint = `/api/conversations/${encodeURIComponent(id)}/reading-manifest?expected_position_space_id=${encodeURIComponent(space)}`;
+    const response = await browserSessionFetch(endpoint, { signal });
+    const result = await decodeReadingResponse<{ status: string; manifest?: ConversationReadingManifest; reason?: string }>(response, `GET ${endpoint}`, signal);
     if (result.status !== 'source' || !result.manifest) throw new Error(result.reason ?? result.status);
     return result.manifest;
   } };
@@ -37,10 +54,11 @@ export async function acquirePresentationRows(id: string, request: ReadingRowBat
   try {
     if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
     const result = await queryClient.fetchQuery({ queryKey, gcTime: Infinity, staleTime: 0, queryFn: async ({ signal: querySignal }) => {
-      const response = await browserSessionFetch(`/api/conversations/${encodeURIComponent(id)}/reading-rows`, {
+      const endpoint = `/api/conversations/${encodeURIComponent(id)}/reading-rows`;
+      const response = await browserSessionFetch(endpoint, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request), signal: querySignal,
       });
-      return await response.json() as ReadingRowBatchResult;
+      return await decodeReadingResponse<ReadingRowBatchResult>(response, `POST ${endpoint}`, querySignal);
     } });
     if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
     if (result.status === 'source') return { rows: result.rows, release };
