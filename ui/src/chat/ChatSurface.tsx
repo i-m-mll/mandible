@@ -20,6 +20,7 @@ import { useReadingGeometry } from './useReadingGeometry';
 import { getReadingResizeScale } from './readingResizeProfile';
 import { useReadingViewport, type ReadingSummaryTarget } from './useReadingViewport';
 import { readingNavigationObserver, type ReadingNavigationOrigin } from './readingNavigationObservation';
+import { readingNavigationFailureMessage } from './readingNavigationMessage';
 import { readReadingState, type ReadingRestore } from './readingState';
 import { openMarkdownSource } from './markdownActions';
 import { buildStreamState, serializeDisplayGroupToMarkdown } from './renderModel';
@@ -206,7 +207,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
     const end = navigationTarget.kind === 'latest' || navigationTarget.kind === 'initial';
     if (!restore && !target && !end) { onNavigationResult?.({ key: navigationTarget.key, status: 'not-renderable' }); return; }
     void viewport.reveal(restore ? { token: navigationTarget.key, restore, origin: 'source-navigation' } : end ? { token: navigationTarget.key, end: true, origin: 'source-navigation' } : { token: navigationTarget.key, target: target!, origin: 'source-navigation' }).then(result => {
-      if (result.status !== 'revealed' && result.status !== 'cancelled') { observeNotice('source-navigation', result, target); setNotice(`Reading target: ${result.status}.`); }
+      if (result.status !== 'revealed' && result.status !== 'cancelled') { observeNotice('source-navigation', result, target); setNotice(readingNavigationFailureMessage(result.status)); }
       focusAfterInitial.current = result.status === 'revealed' && !restore && !end ? target ?? null : null;
       setInitialNavigationDone(true);
       onNavigationResult?.({ key: result.token, status: result.status });
@@ -280,7 +281,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
     pendingDisclosure.current = null;
     const target: ConversationSourceCoordinate = { conversationId: scope, positionSpaceId: space, position: pending.position, offset: pending.offset, subtarget: 'summary' };
     void viewport.reveal({ token: pending.token, origin: 'disclosure-pin', preserveReaderPin: true, target, summary: pending.summary }).then(result => {
-      if (result.status !== 'revealed' && result.status !== 'cancelled') { observeNotice('disclosure-pin', result, target); setNotice(`Reading target: ${result.status}.`); }
+      if (result.status !== 'revealed' && result.status !== 'cancelled') { observeNotice('disclosure-pin', result, target); setNotice(readingNavigationFailureMessage(result.status)); }
     });
   }, [expandedBlocks, complete.plan, projection, viewport.reveal, scope, space]);
   const jump = () => {
