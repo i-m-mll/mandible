@@ -1,3 +1,4 @@
+import { planConversationReading, type ConversationReadingManifest } from '../src/presentation/reading-manifest';
 import { expect, it, vi } from 'vitest';
 import { projectDisplayFragments } from '../src/presentation/fragments';
 import { activityRunFacts, mergeActivityRunFacts, presentActivityRunFacts } from '../src/presentation/activity-presentation';
@@ -82,6 +83,20 @@ it('returns exact clipped run/directive context and a source-backed lazy owner w
       expect(response.status, JSON.stringify(response.body)).toBe(200);
       return response.body as ConversationPositionWindow;
     };
+    const fullManifestResponse = await router.invoke({ method: 'GET', url: '/api/conversations/display/reading-manifest' });
+    expect(fullManifestResponse.status).toBe(200);
+    const manifest = (fullManifestResponse.body as {manifest: ConversationReadingManifest}).manifest;
+    expect(JSON.stringify(manifest)).not.toContain('PRIVATE');
+    const completePlan = planConversationReading(manifest, {});
+    const unchangedRow = completePlan.rows.find(row => row.kind === 'content')!;
+    const changedSummary = completePlan.rows.at(-1)!;
+    const batch = async (rows: typeof completePlan.rows) => router.invoke({ method: 'POST', url: '/api/conversations/display/reading-rows',
+      body: { positionSpaceId: manifest.positionSpaceId, rows: rows.map(({key, revision}) => ({key, revision})), expanded: {} } });
+    const summary = await batch([changedSummary]);
+    expect(summary.status, JSON.stringify(summary.body)).toBe(200);
+    expect(JSON.stringify(summary.body)).toContain('PRIVATE SUMMARY FIRST');
+    expect(JSON.stringify(summary.body)).not.toContain('PRIVATE SUMMARY SECOND');
+    expect((summary.body as {rows: unknown[]}).rows).toHaveLength(1);
     const clipped = await read(2);
     expect(clipped.display_context.activity_runs).toMatchObject([{ id: '0:tool:0', first: { position: 0 }, last: { position: 2 },
       member_count: 2, presentation: { summary: 'Read a file; edited a file', hasDisclosure: true } }]);
@@ -124,6 +139,10 @@ it('returns exact clipped run/directive context and a source-backed lazy owner w
       structuralMode: 'append', blocks: delta.blocks, sourceSnapshot: appendSnapshot, blockCount: parsed.blocks.length + delta.blocks.length, ...CURRENT_CONVERSATION_SOURCE_EPOCHS });
     db.prepare('UPDATE conversation_ingest_state SET byte_offset = ?,line_count = ?,tail_hash = ? WHERE file_path = ?')
       .run(appendSnapshot.byteLength, appendSnapshot.completeLineCount, appendSnapshot.tailHash, file);
+    const compatible = await batch([unchangedRow]);
+    expect(compatible.status, JSON.stringify(compatible.body)).toBe(200);
+    expect(compatible.body).toMatchObject({ status: 'source', positionSpaceId: manifest.positionSpaceId });
+    expect(await batch([changedSummary])).toMatchObject({ status: 409, body: { status: 'changed' } });
     const extended = await read(6);
     expect(extended.position_space_id).toBe(generic.position_space_id);
     expect(extended.display_context.activity_runs).toMatchObject([{ id: '5:activity:0', member_count: 3 }]);

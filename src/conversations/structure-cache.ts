@@ -1,4 +1,4 @@
-import { writeDisplayIndex, readDisplayContextPlan, type DisplayIndexInput, type DisplayContextPlan } from './display-index.js';
+import { writeDisplayIndex, readCompleteDisplayIndex, readDisplayContextPlan, type DisplayIndexInput, type DisplayContextPlan } from './display-index.js';
 import { nextReadingContext, type ReadingContextEntry, type ReadingContextState } from './reading-context.js';
 import fs from "node:fs";
 import path from "node:path";
@@ -242,6 +242,12 @@ export class ConversationStructureCache {
         position INTEGER NOT NULL, owner_position INTEGER NOT NULL, owner_part TEXT NOT NULL,
         PRIMARY KEY(cache_conversation_id,position)
       ) WITHOUT ROWID;
+      CREATE TABLE cache_display_positions (
+        cache_conversation_id INTEGER NOT NULL REFERENCES cache_conversations(cache_id) ON DELETE CASCADE,
+        position INTEGER NOT NULL,
+        facts_json TEXT NOT NULL,
+        PRIMARY KEY (cache_conversation_id, position)
+      ) WITHOUT ROWID;
       CREATE TABLE IF NOT EXISTS cache_tool_links (
         cache_conversation_id INTEGER NOT NULL
           REFERENCES cache_conversations(cache_id) ON DELETE CASCADE,
@@ -282,6 +288,7 @@ export class ConversationStructureCache {
       return Number(inserted.lastInsertRowid);
     }
     if (mode === "replace") {
+      this.cache.prepare("DELETE FROM cache_display_positions WHERE cache_conversation_id = ?").run(existing.cache_id);
       this.cache.prepare("DELETE FROM cache_tool_links WHERE cache_conversation_id = ?").run(existing.cache_id);
       this.cache.prepare("DELETE FROM cache_blocks WHERE cache_conversation_id = ?").run(existing.cache_id);
       this.cache.prepare("DELETE FROM cache_reading_scopes WHERE cache_conversation_id = ?").run(existing.cache_id);
@@ -466,6 +473,11 @@ export class ConversationStructureCache {
       offset: options.offset,
       limit: options.limit,
     };
+  }
+
+  readPresentationIndex(conversationId: string, sourceVersionId: string, epochs?: ConversationSourceEpochs) {
+    const conversation = this.cachedConversation(conversationId, sourceVersionId, epochs);
+    return conversation ? readCompleteDisplayIndex(this.cache, conversation.cache_id) : null;
   }
 
   readDisplayContext(conversationId: string, sourceVersionId: string, positions: readonly number[], epochs?: ConversationSourceEpochs): DisplayContextPlan | null {

@@ -1,3 +1,4 @@
+import { chatItemIdentityKey } from '../src/conversation-control/provider-live';
 import { ConversationStructureCache } from '../src/conversations/structure-cache';
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from '../src/conversations/source-types';
 import { expect, it } from 'vitest';
@@ -59,16 +60,16 @@ it('keeps canonical run and exact member identity through window edges and discl
   expect(open.membership.get(2)?.disclosurePath).toEqual([]);
   expect(open.membership.get(2)?.summaryRowKey).toBe(tail.rows[0].key);
   const live = project([item('one')]);
-  expect(live.rows[0].key).toBe(open.rows[1].key);
+  expect(open.viewMembership.get(live.rows[0].key)?.memberKey).toBe(open.rows[1].key);
   const closed = project([item('one', 1)]);
   expect(closed.rows).toHaveLength(1);
   expect(closed.rows[0].kind).toBe('activity-summary');
   expect(closed.viewMembership.get(live.rows[0].key)).toMatchObject({
-    rowKey: closed.rows[0].key, memberKey: live.rows[0].key, position: 1, disclosurePath: ['0:activity:0'], subtarget: 'source:1',
+    rowKey: closed.rows[0].key, memberKey: open.rows[1].key, position: 1, disclosurePath: ['0:activity:0'], subtarget: 'source:1',
   });
   const optimistic = { ...item('prompt'), displayKey: 'intent:exact' };
   const durable = { ...item('prompt', 3), intentId: 'exact' };
-  expect(project([optimistic]).rows[0].key).toBe(project([durable]).rows[0].key);
+  expect(project([durable]).viewMembership.get(project([optimistic]).rows[0].key)?.memberKey).toBe(project([durable]).rows[0].key);
 });
 
 it.each([false, true])('keeps a live system diagnostic outside assistant activity (saved prefix: %s)', saved => {
@@ -170,4 +171,27 @@ it('keeps provisional actions within their contiguous run and binds only an adja
   expect(pending.totalTokens).toBe(10);
   const local = projected.rows.find(row => row.items[0]?.item.identity.native_item_id === 'unrelated')!;
   expect(projected.actionRuns.get(local.actionGroup.key)?.events).toHaveLength(1);
+});
+
+it('keeps repeated native tool IDs distinct and pairs results by exact call coordinates', () => {
+  const call = (position: number): CanonicalChatItemEvent => ({ ...item('duplicate', position), item: {
+    ...item('duplicate', position).item, type: 'tool-call', phase: 'call', role: 'assistant', tool_id: 'repeated',
+    tool_name: 'read', input: { file_path: `/file/${position}` }, parts: [],
+  } });
+  const result = (position: number, owner: CanonicalChatItemEvent): CanonicalChatItemEvent => ({ ...item('result', position), item: {
+    ...item('result', position).item, type: 'tool-call', phase: 'result', role: 'tool', tool_id: 'repeated', output: `result ${position}`, parts: [],
+  }, source: { ...item('result', position).source!, parentBlockId: owner.source!.blockId } });
+  const first = call(0), second = call(2);
+  const events = [first, result(1, first), second, result(3, second)];
+  const fragments = projectDisplayFragments(events, true);
+  expect(fragments.map(fragment => [fragment.position, fragment.pairedSourcePositions])).toEqual([[0, [1]], [2, [3]]]);
+  const context = new Map([0,1,2,3].map(position => [position, {position, activity_owner: 0, action_scope: {start: 0, end: 3}}]));
+  const project = (expanded: Record<string, boolean>) => projectReadingRows({ events, readingContext: context,
+    conversationId: 'conv', positionSpaceId: 'space', expanded });
+  const closed = project({});
+  const open = project({ [`group:${closed.rows[0].disclosureOwner}`]: true });
+  expect(new Set(open.rows.map(row => row.key)).size).toBe(open.rows.length);
+  expect(open.membership.get(1)?.memberKey).not.toBe(open.membership.get(3)?.memberKey);
+  expect(open.membership.get(1)?.subtarget).not.toBe(open.membership.get(3)?.subtarget);
+  expect(open.viewMembership.has(chatItemIdentityKey(first.item)!)).toBe(false);
 });

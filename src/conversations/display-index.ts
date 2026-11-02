@@ -1,7 +1,9 @@
+import { createHash } from 'node:crypto';
 import type SqliteDatabase from '../sqlite.js';
-import { displayFragmentId, type IndexedDisplayFragment, type DisplayFragmentDescriptor } from './display-context.js';
+import { displayFragmentId, type IndexedDisplayFragment, type DisplayFragmentDescriptor, type DisplayPositionFacts } from './display-context.js';
 
 export type DisplayIndexInput = {
+  positions: DisplayPositionFacts[];
   fragments: IndexedDisplayFragment[];
   aliases: Array<{ position: number; owner_position: number; failed: boolean }>;
 };
@@ -13,9 +15,12 @@ function decode(row: FragmentRow): IndexedDisplayFragment {
 
 export function writeDisplayIndex(db: SqliteDatabase, cacheId: number, input: DisplayIndexInput, priorCacheId?: number): void {
   if (priorCacheId !== undefined) {
+    db.prepare('INSERT INTO cache_display_positions SELECT ?, position, facts_json FROM cache_display_positions WHERE cache_conversation_id = ?').run(cacheId, priorCacheId);
     db.prepare('INSERT INTO cache_display_fragments SELECT ?, position, part, ordinal, kind, speaker, run_id, facts_json FROM cache_display_fragments WHERE cache_conversation_id = ?').run(cacheId, priorCacheId);
     db.prepare('INSERT INTO cache_display_aliases SELECT ?, position, owner_position, owner_part FROM cache_display_aliases WHERE cache_conversation_id = ?').run(cacheId, priorCacheId);
   }
+  const positionInsert = db.prepare('INSERT OR REPLACE INTO cache_display_positions VALUES (?, ?, ?)');
+  for (const position of input.positions) positionInsert.run(cacheId, position.position, JSON.stringify(position));
   let previous = db.prepare('SELECT * FROM cache_display_fragments WHERE cache_conversation_id = ? ORDER BY position DESC, ordinal DESC LIMIT 1').get(cacheId) as FragmentRow | undefined;
   const toolOwners = new Set(input.fragments.filter(fragment => fragment.activity?.type === 'tool-call-activity').map(fragment => fragment.coordinate.position));
   const verifiedAliases = input.aliases.filter(alias => toolOwners.has(alias.owner_position)
@@ -94,4 +99,34 @@ export function readDisplayContextPlan(db: SqliteDatabase, cacheId: number, posi
   });
   return { fragments, aliases: aliasRows.map(alias => ({ position: alias.position, fragment_id: displayFragmentId({ position: alias.owner_position, part: alias.owner_part }) })),
     runs, ownerFragments, sourcePositions: [...sourcePositions].sort((a,b)=>a-b) };
+}
+
+export function readCompleteDisplayIndex(db: SqliteDatabase, cacheId: number): {
+  fragments: IndexedDisplayFragment[]; positions: DisplayPositionFacts[]; aliases: DisplayContextPlan['aliases'];
+  revisions: { members: Record<string, string>; runs: Record<string, string> };
+} {
+  const fragments = (db.prepare('SELECT * FROM cache_display_fragments WHERE cache_conversation_id = ? ORDER BY position,ordinal')
+    .all(cacheId) as FragmentRow[]).map(decode);
+  const aliases = (db.prepare('SELECT position,owner_position,owner_part FROM cache_display_aliases WHERE cache_conversation_id = ? ORDER BY position')
+    .all(cacheId) as Array<{position: number; owner_position: number; owner_part: string}>).map(alias => ({
+      position: alias.position, fragment_id: displayFragmentId({position: alias.owner_position, part: alias.owner_part}),
+    }));
+  const byId = new Map(fragments.map(fragment => [fragment.id, fragment]));
+  for (const alias of aliases) byId.get(alias.fragment_id)?.paired_source_positions.push(alias.position);
+  const positions = (db.prepare('SELECT facts_json FROM cache_display_positions WHERE cache_conversation_id = ? ORDER BY position')
+    .all(cacheId) as Array<{facts_json: string}>).map(row => JSON.parse(row.facts_json) as DisplayPositionFacts);
+  const byPosition = new Map(positions.map(position => [position.position, position]));
+  const hash = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  const memberRevisions = Object.fromEntries(fragments.map(fragment => [fragment.id, hash([
+    fragment.coordinate, fragment.kind, fragment.speaker,
+    [fragment.coordinate.position, ...fragment.paired_source_positions].map(position => [position, byPosition.get(position)?.revision]),
+  ])]));
+  const runs = new Map<string, string[]>();
+  for (const fragment of fragments) if (fragment.activity_run_id) {
+    let members = runs.get(fragment.activity_run_id);
+    if (!members) runs.set(fragment.activity_run_id, members = []);
+    members.push(memberRevisions[fragment.id]);
+  }
+  return { fragments, positions, aliases, revisions: { members: memberRevisions,
+    runs: Object.fromEntries([...runs].map(([id, members]) => [id, hash(members)])) } };
 }

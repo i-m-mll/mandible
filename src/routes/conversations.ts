@@ -1,3 +1,5 @@
+import { captureReadingPublication, readConversationReadingManifest, readReadingRowBatch, type ReadingRowBatchRequest } from '../conversations/reading-materialization.js';
+import { projectDisplayBlock } from '../conversations/display-block.js';
 import { packReadingContext, readingMemberKeys } from '../conversations/reading-context.js';
 import { DISPLAY_CONTEXT_VERSION, type ConversationDisplayContext } from '../conversations/display-context.js';
 import { readDisplayContext } from '../conversations/display-context-read.js';
@@ -55,65 +57,6 @@ import {
 
 // --- Row mapping helpers ---
 
-function projectDisplayBlock(row: SourceBackedConversationBlock): SourceBackedConversationBlock & { details_loaded?: false } {
-  let metadata: Record<string, unknown> = {};
-  try {
-    const parsed: unknown = JSON.parse(row.metadata_json);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      metadata = { ...(parsed as Record<string, unknown>) };
-    }
-  } catch {
-    throw new Error(`block ${row.id} has invalid metadata and cannot be safely projected`);
-  }
-  const item = metadata.chat_item;
-  const activity = item && typeof item === "object" && !Array.isArray(item)
-    && (item as Record<string, unknown>).type === "activity";
-  const targeted = row.type === "tool_use" || row.type === "tool_result" || row.type === "thinking" || activity;
-  if (!targeted) return row;
-  const reasoningSummary = row.type === "thinking" && metadata.source_event_type === "reasoning_summary";
-  const reasoningLines = reasoningSummary
-    ? row.content.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
-    : [];
-  if (reasoningSummary) metadata.display_has_body = reasoningLines.length > 1;
-  delete metadata.tool_input;
-  delete metadata.tool_output;
-  if (item && typeof item === "object" && !Array.isArray(item)) {
-    const compactItem = { ...(item as Record<string, unknown>) };
-    delete compactItem.input;
-    delete compactItem.output;
-    if (reasoningSummary) {
-      compactItem.parts = reasoningLines.length > 0 ? [{ type: "text", text: reasoningLines[0] }] : [];
-    } else if (row.type === "thinking") {
-      compactItem.parts = [];
-    } else if (row.type === "tool_use" || row.type === "tool_result" || activity) {
-      compactItem.parts = [];
-    }
-    metadata.chat_item = compactItem;
-  }
-
-  const content = reasoningSummary
-    ? (reasoningLines[0] ?? "")
-    : row.type === "tool_use"
-      ? (typeof metadata.tool_name === "string" ? metadata.tool_name : "Tool call")
-      : row.type === "tool_result"
-        ? ""
-        : row.type === "thinking" ? "Thought" : "";
-  return {
-    id: row.id,
-    conversation_id: row.conversation_id,
-    type: row.type,
-    role: row.role,
-    content,
-    position: row.position,
-    timestamp: row.timestamp,
-    parent_id: row.parent_id,
-    metadata_json: JSON.stringify(metadata),
-    dag_uuid: row.dag_uuid,
-    dag_parent_uuid: row.dag_parent_uuid,
-    locator: row.locator,
-    details_loaded: false,
-  };
-}
 
 type PositionTargetKind = "initial" | "latest" | "position" | "block" | "turn";
 
@@ -635,6 +578,44 @@ export function registerConversationRoutes(
         record_length: row.recordLength,
       })) });
   }, { operation: { id: "get:/api/conversations/:id/structure", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow", refs: { params: { id: entityRefs.conversation } } });
+
+  server.get('/api/conversations/:id/reading-manifest', async (req, res) => {
+    let id: string;
+    try { id = (await ensureFresh(req.params.id, false)).conversationId; }
+    catch (error) {
+      if (sendFreshnessError(res, error)) return;
+      return sendJson(res, 503, { status: 'unavailable', reason: error instanceof Error ? error.message : String(error) });
+    }
+    const source = captureReadingPublication(db, id);
+    if (!source) return sendJson(res, 409, { status: 'unavailable', reason: 'Source presentation is not published.' });
+    if (req.query.expected_position_space_id && req.query.expected_position_space_id !== source.position_space_id) {
+      return sendJson(res, 409, { status: 'position-space-changed', positionSpaceId: source.position_space_id });
+    }
+    const manifest = readConversationReadingManifest(db, id, source);
+    if (!manifest) return sendJson(res, 409, { status: 'unavailable', reason: 'Complete presentation index is not available.' });
+    return sendJson(res, 200, { status: 'source', manifest });
+  }, { operation: { id: 'get:/api/conversations/:id/reading-manifest', effects: ['ledger:read'], requestSchema: null, reportingCategory: null },
+    fileRpc: 'allow', refs: { params: { id: entityRefs.conversation } } });
+
+  server.post('/api/conversations/:id/reading-rows', async (req, res) => {
+    const request = readBody<ReadingRowBatchRequest>(req);
+    if (!request || typeof request.positionSpaceId !== 'string' || !Array.isArray(request.rows)
+        || !request.rows.every(row => row && typeof row.key === 'string' && typeof row.revision === 'string')
+        || !request.expanded || typeof request.expanded !== 'object' || Array.isArray(request.expanded)
+        || !Object.values(request.expanded).every(value => typeof value === 'boolean')
+        || (request.streaming !== undefined && typeof request.streaming !== 'boolean')) {
+      return sendJson(res, 400, { error: 'Expected a position space, row descriptor identities and disclosure state.' });
+    }
+    let id: string;
+    try { id = (await ensureFresh(req.params.id, false)).conversationId; }
+    catch (error) {
+      if (sendFreshnessError(res, error)) return;
+      return sendJson(res, 503, { status: 'unavailable', reason: error instanceof Error ? error.message : String(error) });
+    }
+    const result = await readReadingRowBatch({ db, conversationId: id, reader: sourceReader, request });
+    return sendJson(res, result.status === 'source' ? 200 : result.status === 'resource-limit' ? 413 : 409, result);
+  }, { operation: { id: 'post:/api/conversations/:id/reading-rows', effects: ['ledger:read'], requestSchema: null, reportingCategory: null },
+    fileRpc: 'allow', refs: { params: { id: entityRefs.conversation } } });
 
   // GET /api/conversations/:id — bounded, indexed conversation-position window.
   server.get("/api/conversations/:id", async (req, res) => {
