@@ -68,7 +68,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
     readingContext: new Map(),
     expanded: expandedBlocks, streaming: props.streaming }), [events, scope, space, Boolean(transcript), expandedBlocks, props.streaming]);
   const extraRows = useMemo<Array<ReadingRow & { revision: string }>>(() => props.activePermissionRequest && props.onPermissionRespond
-    ? [{ key: `permission:${props.activePermissionRequest.id}`, revision: JSON.stringify(props.activePermissionRequest), kind: 'permission', protectedPositions: [], items: [], nodes: [], sources: [], actionGroup: { key: 'permission', start: null, end: null }, disclosureOwner: null, turnStart: true, turnEnd: true }] : [], [props.activePermissionRequest, props.onPermissionRespond]);
+    ? [{ key: `permission:${props.activePermissionRequest.id}`, revision: JSON.stringify(props.activePermissionRequest), kind: 'permission', isFinalResponse: false, protectedPositions: [], items: [], nodes: [], sources: [], actionGroup: { key: 'permission', start: null, end: null }, disclosureOwner: null, turnStart: true, turnEnd: true }] : [], [props.activePermissionRequest, props.onPermissionRespond]);
   const localRestore = !restoredRow.current ? props.readingRestore : undefined;
   const complete = useCompleteReading({ scope, space, events, initial: !initialVisible, targetPosition: localRestore?.anchor.position ?? navigationTarget?.target?.position, targetRowKey: localRestore?.anchor.rowKey, targetMemberKey: localRestore?.anchor.memberKey, targetSummary: navigationTarget?.target?.subtarget === 'summary', sourceVersion: transcript?.sourceVersionId, total: transcript?.total,
     actionIdentity: JSON.stringify([Boolean(props.onSelectMessageInfo), Boolean(props.onCopyMessageLink)]), selectMode: props.selectMode, selectedBlockIds: props.selectedBlockIds, extraRows, expanded: expandedBlocks, disclosureRevisions, streaming: props.streaming, local: projection, enabled: Boolean(transcript) });
@@ -259,7 +259,10 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
       if (result.status !== 'revealed' && result.status !== 'cancelled') setNotice(`Reading target: ${result.status}.`);
     });
   }, [expandedBlocks, complete.plan, projection, viewport.reveal, scope, space]);
-  const jump = () => { void viewport.reveal({ token: `latest:${crypto.randomUUID()}`, end: true }).then(result => { if (result.status === 'revealed') void latest.current.props.onJumpToLatest?.(); }); };
+  const jump = () => {
+    restoredRow.current = true; pendingDisclosure.current = null; focusAfterInitial.current = null;
+    void viewport.reveal({ token: `latest:${crypto.randomUUID()}`, end: true }).then(result => { if (result.status === 'revealed') void latest.current.props.onJumpToLatest?.(); });
+  };
   return <MessageLinkContext.Provider value={props.onCopyMessageLink ?? null}>
     <div className="stream-renderer">
       <div ref={setScrollNode} className="stream-renderer__scroll" tabIndex={0} aria-label="Conversation" {...viewport.inputHandlers}>
