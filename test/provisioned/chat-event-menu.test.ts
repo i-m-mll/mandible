@@ -27,6 +27,13 @@ it.each([chromium, webkit].map(engine => ({ name: engine.name(), engine })))('ke
     await menu.waitFor({ state: 'visible' });
     expect((await paint('#parent')).background).not.toBe(basePaint.background);
     expect((await paint('#parent')).radius).not.toBe(basePaint.radius);
+    for (const theme of ['codex', 'light']) {
+      await page.evaluate(value => { document.documentElement.dataset.theme = value; }, theme);
+      const colors = await parent.evaluate(node => ({ paint: getComputedStyle(node, '::before').backgroundColor, previous: getComputedStyle(node).getPropertyValue('--neutral-alpha-05').trim() }));
+      const alpha = (color: string) => Number(color.match(/,\s*([\d.]+)\)$/)![1]);
+      expect(Math.abs(alpha(colors.paint) - alpha(colors.previous) / 2)).toBeLessThan(1 / 255);
+    }
+    await page.evaluate(() => { document.documentElement.dataset.theme = 'codex'; });
     expect(await parent.boundingBox()).toEqual(baseBox);
     expect(await page.evaluate(() => document.getSelection()!.toString())).toBe(await page.locator('body').getAttribute('data-context-selection'));
     const bounds = await menu.boundingBox(); expect(bounds!.x).toBeCloseTo(plain!.x + 10, 1); expect(bounds!.y).toBeCloseTo(plain!.y + 10, 1);
@@ -94,10 +101,15 @@ it.each([chromium, webkit].map(engine => ({ name: engine.name(), engine })))('ke
               for (const r of range.getClientRects()) glyphs.push([r.x, r.y, r.width, r.height]);
             }
           }
-          return { scroll: [document.documentElement.scrollWidth, document.documentElement.scrollHeight], boxes: Array.from(document.querySelectorAll('#paint-cases, #paint-cases *')).map(box), glyphs };
+          return { scroll: [document.documentElement.scrollWidth, document.documentElement.scrollHeight], boxes: Array.from(document.querySelectorAll('#paint-cases, #paint-cases *')).filter(node => !node.closest('.message-focus-paint')).map(box), glyphs };
         });
         const before = await snapshot();
-        await message.focus(); await page.keyboard.press('Shift+F10'); await menu.waitFor({ state: 'visible' });
+        await message.focus();
+        await message.locator('.message-focus-paint').waitFor({ state: 'attached' });
+        expect(await snapshot()).toEqual(before);
+        expect(await message.evaluate(node => document.activeElement === node && getComputedStyle(node).outlineStyle === 'none')).toBe(true);
+        const focusBounds = await message.locator('.message-focus-paint rect').boundingBox();
+        await page.keyboard.press('Shift+F10'); await menu.waitFor({ state: 'visible' });
         expect(await snapshot()).toEqual(before);
         const painted = await message.evaluate(node => {
           const style = getComputedStyle(node, '::before'); const bounds = node.getBoundingClientRect();
@@ -110,12 +122,24 @@ it.each([chromium, webkit].map(engine => ({ name: engine.name(), engine })))('ke
         expect(Math.abs(painted.left - (painted.inkLeft - painted.padding))).toBeLessThan(1 / 32);
         expect(Math.abs(painted.right - (painted.inkRight + painted.padding))).toBeLessThan(1 / 32);
         expect(painted.radius).toBeGreaterThan(0);
+        expect(Math.abs(focusBounds!.x + 1 - painted.left)).toBeLessThan(1 / 32);
+        expect(Math.abs(focusBounds!.x + focusBounds!.width - 1 - painted.right)).toBeLessThan(1 / 32);
         if (width === 1000) expect(painted.right).toBeLessThan(painted.ownerRight - 20);
         await page.keyboard.press('Escape'); await menu.waitFor({ state: 'detached' });
         expect(await message.getAttribute('data-message-menu-paint')).toBeNull();
         expect(await snapshot()).toEqual(before);
       }
     }
+    const finalMessage = page.locator('#footer'); await finalMessage.scrollIntoViewIfNeeded();
+    const finalBoxes = () => finalMessage.evaluate(node => Array.from(node.querySelectorAll('*')).filter(child => !child.closest('.message-focus-paint')).map(child => { const r = child.getBoundingClientRect(); return [r.x, r.y, r.width, r.height, child.scrollWidth, child.scrollHeight]; }));
+    const finalBefore = await finalBoxes(); await finalMessage.focus();
+    await finalMessage.locator('.message-focus-paint').waitFor({ state: 'attached' });
+    expect(await finalMessage.getAttribute('data-message-menu-paint')).toBeNull();
+    expect(await finalBoxes()).toEqual(finalBefore);
+    await page.locator('#link').focus();
+    expect(await finalMessage.getAttribute('data-message-focus-paint')).toBeNull();
+    expect(await parent.getAttribute('data-message-focus-paint')).toBeNull();
+    expect(await page.locator('#link').evaluate(node => document.activeElement === node)).toBe(true);
     await page.close();
     for (const selector of ['#prevented', '#stopped', '#link', '#input', '#textarea', '#editable', '#specific', '#media']) {
       const nativePage = await browser.newPage(); nativePage.setDefaultTimeout(5000);
