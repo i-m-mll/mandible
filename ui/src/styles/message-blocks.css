@@ -1,3 +1,4 @@
+:root { --reading-responsive-variant: wide; }
 /* Shared chat message block components */
 
 /* ── Shared message-block components — Bug: bce7370 ── */
@@ -833,6 +834,7 @@
 
 /* User turns use the full stream width when the viewport is narrow. */
 @media (max-width: 720px) {
+  :root { --reading-responsive-variant: narrow; }
   .turn-group--user .turn-group__body {
     width: 100%;
   }
