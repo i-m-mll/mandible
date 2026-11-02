@@ -397,7 +397,8 @@
  * strictly inside tool boxes. This stylesheet loads after shared.css, and the
  * extra class also keeps the later rendered-Markdown code rules from winning
  * when a tool surface appears inside a prose owner. */
-:root :is(.tool-card__input, .tool-card__terminal, .tool-card__result) :is(pre, code) {
+:root :is(.tool-card__input, .tool-card__terminal, .tool-card__result) :is(pre, code),
+:root .activity-payload-box .reasoning-details {
   background: transparent;
 }
 
