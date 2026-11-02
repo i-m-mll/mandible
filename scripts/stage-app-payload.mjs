@@ -8,7 +8,7 @@ import { stageCoworkRuntime } from './stage-cowork-runtime.mjs';
 import { installPinnedCaddy } from './pinned-caddy.mjs';
 import { RELEASE_SCHEMA, installedFileIdentity } from './installed-release.mjs';
 import { trackedSourceDigest } from './build-revision.mjs';
-import { stageBundleServices } from './prepare-bundle-services.mjs';
+import { buildBundleService, stageBundleServices } from './prepare-bundle-services.mjs';
 import { bundleServiceLabel } from './bundle-service-roles.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -94,10 +94,7 @@ export async function stageAppPayload(contents) {
     fs.writeFileSync(target, compiled);
   }
   copy(path.join(root, 'scripts/bundle-services.json'), path.join(resources, 'scripts/bundle-services.json'));
-  execFileSync('cargo', ['build', '--locked', '--release', '--manifest-path', path.join(root, 'src-tauri/service-helper/Cargo.toml')], {
-    cwd: root, env: { ...process.env, MACOSX_DEPLOYMENT_TARGET: '13.0' }, timeout: 60_000, stdio: 'inherit',
-  });
-  stageBundleServices(contents, path.join(root, 'src-tauri/service-helper/target/release/mandible-service'));
+  stageBundleServices(contents, buildBundleService(root));
   const runtime = run('/bin/sh', [path.join(root, 'scripts/bun-runtime.sh')]);
   fs.mkdirSync(path.join(resources, 'handoff'), { recursive: true });
   for (const [source, name] of [['scripts/runtime-handoff.mjs', 'helper.mjs']]) {
