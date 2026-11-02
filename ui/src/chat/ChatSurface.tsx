@@ -1,18 +1,15 @@
 import { readingMemberKeys, readingSpeaker } from '../../../src/conversations/reading-context';
 import { Icon } from '../components/icons/Icon';
 import type { JSX } from 'preact/jsx-runtime';
-import { memo } from 'preact/compat';
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { ConsoleBackendType, ConsolePermissionDecision, ConsolePermissionRequest } from '../api';
 import { exportConversationBlocks } from '../api';
 import type { CanonicalChatItemEvent, PersistedBlockSource, StreamRendererProps } from '../components/stream-renderer/types';
 import { MessageLinkContext, type MessagePrimaryAction } from '../components/shared/MessageActions';
 import { DetailPaneOverlayContext } from '../components/shared/DetailPaneShell';
-import { PermissionApprovalCard } from '../components/console/PermissionApprovalCard';
-import { TurnGroup } from '../components/message-blocks/TurnGroup';
 import type { ConversationNavigationCommand, ConversationNavigationResult, ConversationTranscriptConsumer, ConversationSourceCoordinate } from '../query/conversationData';
 import { projectReadingRows, type ReadingRow, type ReadingTargetRegistration } from './readingProjection';
-import { ReadingContent } from './ReadingContent';
+import { ReadingRowBody, ReadingRowFrame } from './ReadingRowView';
 import { useReadingViewport } from './useReadingViewport';
 import { readReadingState } from './readingState';
 import { openMarkdownSource } from './markdownActions';
@@ -60,9 +57,8 @@ function MeasuredReadingBox({ row, index, measure, register, registerRow, scope,
     });
     return () => { disposeRow(); dispose.forEach(dispose => dispose()); };
   }, [row, scope, space, register, registerRow, children]);
-  return <div ref={setNode} data-index={index} data-reading-key={row.key} className={`stream-renderer__virtual-row${row.turnStart ? ' stream-renderer__virtual-row--turn-start' : ''}${row.turnEnd ? ' stream-renderer__virtual-row--turn-end' : ''}${row.activityMember ? ' stream-renderer__virtual-row--activity-member' : ''}${row.activityEnd ? ' stream-renderer__virtual-row--activity-end' : ''}${row.activityGroup?.expanded ? ' stream-renderer__virtual-row--activity-open' : ''}`}>{children}</div>;
+  return <ReadingRowFrame row={row} index={index} elementRef={setNode}>{children}</ReadingRowFrame>;
 }
-const StableReadingContent = memo(ReadingContent);
 const boundDisclosures = (value: Record<string, boolean>): Record<string, boolean> => Object.fromEntries(Object.entries(value).slice(-100));
 
 export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
@@ -252,14 +248,10 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
             const row = readingRows[item.index];
             if (!row) return null;
             return <MeasuredReadingBox key={row.key} row={row} index={item.index} measure={viewport.engine.measureElement} register={viewport.register} registerRow={viewport.registerRow} scope={scope} space={space}>
-              <>
-                {row.kind === 'permission' && props.activePermissionRequest && props.onPermissionRespond ? <TurnGroup speaker="system"><PermissionApprovalCard request={props.activePermissionRequest} backendType={props.permissionBackendType ?? 'sdk'} onRespond={props.onPermissionRespond} /></TurnGroup>
-                  : <StableReadingContent {...props} row={row} expandedBlocks={expandedBlocks} setBlockExpanded={setBlockExpanded}
-                    preparing={row.sources.some(source => expandedBlocks[`reveal:${source.position}`])}
-                    primaryActions={actions.get(row.key) ?? []} lastAssistantTurnId={projection.lastAssistantTurnId}
-                    onActivityGroupExpandedChange={next => revealDisclosure(row, next)} />}
-
-              </>
+              <ReadingRowBody {...props} row={row} expandedBlocks={expandedBlocks} setBlockExpanded={setBlockExpanded}
+                preparing={row.sources.some(source => expandedBlocks[`reveal:${source.position}`])}
+                primaryActions={actions.get(row.key) ?? []} lastAssistantTurnId={projection.lastAssistantTurnId}
+                onActivityGroupExpandedChange={next => revealDisclosure(row, next)} />
             </MeasuredReadingBox>;
           })}
         </div>

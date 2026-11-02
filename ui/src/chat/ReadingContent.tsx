@@ -18,7 +18,7 @@ function blockId(turnId: string, block: ContentBlock, index: number): string {
   return `${turnId}:${block.type}:${index}`;
 }
 
-type ReadingContentProps = ChatSurfaceProps & {
+export type ReadingContentProps = ChatSurfaceProps & {
   row: ReadingRow;
   expandedBlocks: Readonly<Record<string, boolean>>;
   setBlockExpanded: (id: string, expanded: boolean, sources?: readonly (PersistedBlockSource | undefined)[]) => void;
