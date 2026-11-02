@@ -166,6 +166,9 @@ describe("verified conversation scans", () => {
     expect(result).toMatchObject({ status: "source", sourceVersionId: version, value: { count: texts.length, complete: true } });
     expect(seen).toEqual(texts);
     const options = { expectedSourceVersionId: version, expectedBlockCount: texts.length, expectedModel: null };
+    const oldVector = await reader.readPositions(source.id, [69, 0, 69], {...options, maxBatchBytes: 1});
+    expect(oldVector).toMatchObject({status: 'source', sourceVersionId: version,
+      value: [{position: 0, content: texts[0]}, {position: 69, content: texts[69]}]});
     const oldPage = await reader.readBlock(`cblk:${source.id}:0`, options);
     expect(oldPage).toMatchObject({ status: "source", sourceVersionId: version, value: { content: texts[0] } });
     expect((await reader.scanBlocks(source.id, () => {}, options))).toMatchObject({ status: "source", value: { count: texts.length, complete: true } });
@@ -299,6 +302,30 @@ describe("verified conversation scans", () => {
       fs.writeFileSync(source.filePath, source.bytes);
       expect((await reader.scanBlocks(source.id, () => "stop")).status, `${mutation} restoration`).toBe("source");
     }
+  });
+
+  it.each(['rewrite', 'redaction', 'cancel'] as const)('rejects a vector result changed at its native chunk boundary (%s) and closes its descriptor', async mutation => {
+    const operator = setupOperator(db, {display_name: 'Operator'});
+    const credential = new ClientAuthenticator(db, {secretsDir: path.join(root, 'auth')}).mintApiToken(operator.id, {label: 'vector proof'}).credential;
+    const source = await fixture(['first', 'second', 'third']);
+    const handles: Awaited<ReturnType<typeof logicalSource.openLogicalSource>>[] = [];
+    const original = logicalSource.openLogicalSource;
+    vi.spyOn(logicalSource, 'openLogicalSource').mockImplementation(async (...args) => {
+      const handle = await original(...args); handles.push(handle); return handle;
+    });
+    const controller = new AbortController();
+    let changed = false;
+    const reader = new ConversationSourceReader(db, {instrumentation() {
+      if (changed) return;
+      changed = true;
+      if (mutation === 'rewrite') fs.writeFileSync(source.filePath, source.bytes.toString().replace('first', 'other'));
+      if (mutation === 'redaction') revokeCredential(db, credential.id);
+      if (mutation === 'cancel') controller.abort();
+    }});
+    const result = await reader.readPositions(source.id, [2, 0, 1], {maxBatchBytes: 1, signal: controller.signal});
+    expect(result.status).toBe(mutation === 'cancel' ? 'cancelled' : 'stale');
+    expect(handles).toHaveLength(1);
+    expect(handles[0].fd).toBe(-1);
   });
 
   it("verifies physically empty navigation and bounds one large native record as an indivisible parse", async () => {

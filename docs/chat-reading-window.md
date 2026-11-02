@@ -95,6 +95,16 @@ remains visible after detail hydration. Such evidence contributes to complete
 membership while preserving the established substantive aggregate summary
 wording and icon; an all-status run retains its own existing summary.
 
+`ConversationSourceReader.readPositions` admits one navigation snapshot and
+looks up requested coordinates and required direct parents together. Native
+record ranges and parsing are deduplicated across the request. Reads proceed in
+byte-bounded chunks under one verified lease; a native record remains an
+indivisible parse bounded by the existing record and batch limits. Only requested
+normalized positions are returned, once each in canonical order. Source,
+redaction and cancellation proofs still bracket the admitted read and its chunks.
+No body cache outlives that source session. The [same-source acquisition comparison](chat-source-acquisition.json)
+records a focused public-batch measurement and its exact payload proof.
+
 The [same-source qualification](chat-source-qualification.json) records the preserved
 100-chat corpus, default row and summary parity, restored exact result memberships,
 and bounded public-source hydration outcomes. Native inputs remain local.
