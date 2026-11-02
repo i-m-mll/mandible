@@ -305,7 +305,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
             </MeasuredReadingBox>;
           })}
         </div>
-        {(!initialVisible || !viewport.rows.length) && <div className="stream-renderer__empty">{complete.ready && viewport.appliedGeometry && !complete.rows.length ? props.emptyLabel ?? 'No messages yet' : 'Loading conversation…'}</div>}
+        {(!initialVisible || !viewport.rows.length) && <div className="stream-renderer__empty">{props.showEmpty && complete.ready && viewport.appliedGeometry && !complete.rows.length ? props.emptyLabel ?? 'No messages yet' : 'Loading conversation…'}</div>}
       </div>
       {events.some(event => event.type === 'chat:item' && event.persistencePending) && <div role="status">Some content is awaiting confirmation from saved history.</div>}
       {(notice || complete.error || geometry.error) && <div className="stream-renderer__history-error" role="alert">{notice ?? complete.error ?? geometry.error}<button type="button" onClick={() => { setNotice(null); geometry.retry(); void complete.refresh(); }}>Retry</button></div>}
