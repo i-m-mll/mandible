@@ -1,3 +1,4 @@
+import { readingDisclosureState } from '../presentation/reading-disclosures.js';
 import { buildReadingManifest, planConversationReading, type ConversationReadingManifest } from '../presentation/reading-manifest.js';
 import { projectReadingRows, type ReadingRow } from '../presentation/reading.js';
 import type { ReadingPlan, ReadingRowDescriptor } from '../presentation/reading-plan.js';
@@ -61,7 +62,7 @@ export async function readReadingRowBatch(input: {
   if (request.rows.length > 128) return { status: 'resource-limit', reason: 'Split this presentation request into smaller batches.' };
   const retained = presentationCache.get(db)!;
   const disclosureKey = JSON.stringify([Boolean(request.streaming), Object.entries(request.expanded)
-    .filter(([key]) => key.startsWith('group:') && manifest.runs[key.slice(6)]).sort(([left], [right]) => left.localeCompare(right))]);
+    .sort(([left], [right]) => left.localeCompare(right))]);
   let planned = retained.plans.get(disclosureKey);
   if (!planned) {
     const plan = planConversationReading(manifest, request.expanded, request.streaming);
@@ -78,18 +79,19 @@ export async function readReadingRowBatch(input: {
   }
   const positions = [...new Set(requested.flatMap(row => [...row.sourcePositions]))];
   if (positions.length > 512) return { status: 'resource-limit', reason: 'Split this presentation request into smaller batches.' };
-  const blocks = await reader.readPositions(conversationId, positions,
-    { expectedSourceVersionId: source.current_version_id, expectedBlockCount: manifest.blockCount });
-  if (blocks.status !== 'source') return { status: blocks.status === 'stale' ? 'changed' : 'unavailable', reason: blocks.reason };
   const cache = getConversationStructureCache(db);
   const displayPlan = cache.readDisplayContext(conversationId, source.current_version_id, positions, source);
-  const context = displayPlan ? cache.readReadingContextPositions(conversationId, source.current_version_id,
-    [...new Set([...positions, ...displayPlan.sourcePositions])], source) : null;
-  if (!context || !displayPlan) return { status: 'changed', reason: 'Presentation publication changed during the source read.' };
-  if (displayPlan.sourcePositions.length > 512) return { status: 'resource-limit', reason: 'This row has too many source contributors for one bounded materialization.' };
+  if (!displayPlan) return {status: 'changed', reason: 'Presentation publication changed before the source read.'};
+  const allPositions = [...new Set([...positions, ...displayPlan.sourcePositions])];
+  if (allPositions.length > 512) return { status: 'resource-limit', reason: 'This row has too many source contributors for one bounded materialization.' };
+  const context = cache.readReadingContextPositions(conversationId, source.current_version_id, allPositions, source);
+  if (!context) return {status: 'changed', reason: 'Presentation publication changed before the source read.'};
+  const blocks = await reader.readPositions(conversationId, allPositions,
+    { expectedSourceVersionId: source.current_version_id, expectedBlockCount: manifest.blockCount });
+  if (blocks.status !== 'source') return { status: blocks.status === 'stale' ? 'changed' : 'unavailable', reason: blocks.reason };
   const byPosition = new Map(context.map(entry => [entry.position, entry]));
   const display = await readDisplayContext({ plan: displayPlan, conversationId, sourceVersionId: source.current_version_id,
-    blockCount: manifest.blockCount, reader, actionScope: position => {
+    blockCount: manifest.blockCount, reader, sourceBlocks: blocks.value, actionScope: position => {
       const scope = byPosition.get(position)?.action_scope;
       if (!scope) throw new Error('Display owner omitted its source action scope.');
       return scope;
@@ -98,10 +100,19 @@ export async function readReadingRowBatch(input: {
   const current = captureReadingPublication(db, conversationId);
   if (current?.position_space_id !== source.position_space_id) return { status: 'position-space-changed', positionSpaceId: current?.position_space_id ?? null };
   if (current.current_version_id !== source.current_version_id || current.publication_revision !== source.publication_revision) {
-    return { status: 'changed', reason: 'Source publication changed during row materialization.' };
+    const latest = readConversationReadingManifest(db, conversationId, current);
+    if (!latest) return {status: 'changed', reason: 'Source publication changed during row materialization.'};
+    const latestRows = new Map(planConversationReading(latest, request.expanded, request.streaming).rows.map(row => [row.key, row]));
+    if (request.rows.some(row => latestRows.get(row.key)?.revision !== row.revision)) {
+      return {status: 'changed', reason: 'Requested presentation dependencies changed during materialization.'};
+    }
   }
+  const details = new Set(requested.filter(row => row.kind === 'content').flatMap(row => row.memberKeys.flatMap(key => {
+    const member = manifest.members.find(member => member.key === key);
+    return member && readingDisclosureState(member.disclosures, request.expanded).some(([, expanded]) => expanded) ? [...member.sourcePositions] : [];
+  })));
   const events = displayEventsFromBlocks(blocks.value.map(block => {
-    const projected = projectDisplayBlock(block);
+    const projected = details.has(block.position) ? { ...block, details_loaded: true as const } : projectDisplayBlock(block);
     return { ...projected, metadata: JSON.parse(projected.metadata_json),
       parentPosition: block.parent_id ? Number(block.parent_id.slice(block.parent_id.lastIndexOf(':') + 1)) : null };
   }), conversationId);
@@ -113,7 +124,7 @@ export async function readReadingRowBatch(input: {
   for (const descriptor of requested) {
     const row = hydratedByKey.get(descriptor.key);
     if (!row) return { status: 'unavailable', reason: 'Requested source fragment could not be materialized.' };
-    rows.push({ ...row, revision: descriptor.revision, actionGroup: descriptor.actionGroup, turnStart: descriptor.turnStart, turnEnd: descriptor.turnEnd,
+    rows.push({ ...row, memberKeys: descriptor.memberKeys, revision: descriptor.revision, actionGroup: descriptor.actionGroup, turnStart: descriptor.turnStart, turnEnd: descriptor.turnEnd,
       activityEnd: descriptor.activityEnd, totalTokens: descriptor.totalTokens });
   }
   if (Buffer.byteLength(JSON.stringify(rows)) > 4 * 1024 * 1024) return { status: 'resource-limit', reason: 'This row batch exceeds the bounded presentation payload.' };

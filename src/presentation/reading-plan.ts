@@ -1,3 +1,4 @@
+import { readingDisclosureState, type ReadingDisclosures } from './reading-disclosures.js';
 import type { ActivityRunFacts } from './activity-presentation.js';
 import { activityRunFacts, mergeActivityRunFacts, presentActivityRunFacts } from './activity-presentation.js';
 import type { DisplayActivityItem } from './types.js';
@@ -15,6 +16,8 @@ export type ReadingPlanMember = {
   dependencyRevision: string;
   sourcePositions: readonly number[];
   handoffKeys: readonly string[];
+  handoffCoordinates?: readonly {key: string; position: number}[];
+  disclosures?: ReadingDisclosures;
   usage?: { key: string; input: number; output: number };
 };
 export type ReadingRowDescriptor = {
@@ -34,7 +37,7 @@ export type ReadingRowDescriptor = {
 };
 export type ReadingPlanMembership = {
   rowKey: string; memberKey: string; position: number | null;
-  disclosurePath: readonly string[]; summaryRowKey?: string; subtarget: string | null;
+  disclosurePath: readonly string[]; summaryRowKey?: string; detailKeys?: readonly string[]; subtarget: string | null;
 };
 export type ReadingPlan = {
   rows: ReadingRowDescriptor[];
@@ -65,11 +68,14 @@ export function planReadingLayout(input: {
   });
   const register = (member: ReadingPlanMember, target: ReadingRowDescriptor, disclosurePath: string[], summaryRowKey?: string) => {
     const value: ReadingPlanMembership = { rowKey: target.key, memberKey: member.key, position: member.position ?? null,
-      disclosurePath, summaryRowKey, subtarget: member.position === undefined ? null : `source:${member.position}` };
+      disclosurePath, summaryRowKey, detailKeys: member.disclosures?.keys, subtarget: member.position === undefined ? null : `source:${member.position}` };
     viewMembership.set(member.key, value);
     for (const key of member.handoffKeys) if (keyOwners.get(key)?.size === 1) {
       if (!viewMembership.has(key)) viewMembership.set(key, value);
       viewMembership.set(`${key}:${member.part}`, value);
+    }
+    for (const alias of member.handoffCoordinates ?? []) if (keyOwners.get(alias.key)?.size === 1) {
+      viewMembership.set(alias.key, {...value, position: alias.position, subtarget: `source:${alias.position}`});
     }
     for (const position of member.sourcePositions) if (!membership.has(position)) membership.set(position, { ...value, position, subtarget: `source:${position}` });
   };
@@ -127,7 +133,7 @@ export function planReadingLayout(input: {
       : contributors.map(member => member.dependencyRevision);
     current.revision = JSON.stringify([dependencyRevision, current.kind, contributors[0].speaker, current.actionGroup.key,
       current.disclosureOwner, current.activityMember, current.turnStart, current.turnEnd, current.activityEnd,
-      current.totalTokens, current.activityGroup]);
+      current.totalTokens, current.activityGroup, current.kind === 'content' ? contributors.map(member => readingDisclosureState(member.disclosures, input.expanded)) : []]);
   }
   return { rows, membership, viewMembership };
 }

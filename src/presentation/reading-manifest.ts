@@ -9,10 +9,10 @@ export type ConversationReadingManifest = {
   sourceVersionId: string;
   publicationRevision: number;
   blockCount: number;
-  members: Array<Omit<ReadingPlanMember, 'run'> & { activityRunId: string | null }>;
+  members: Array<Omit<ReadingPlanMember, 'run'> & { activityRunId: string | null; executionKey?: string }>;
   runs: Record<string, NonNullable<ReadingPlanMember['run']>>;
   summarySources: Record<string, number[]>;
-  scopes: Array<{ start: number; end: number; totalTokens?: number }>;
+  scopes: Array<{ start: number; end: number; speaker: 'user' | 'assistant' | 'system'; usage?: Array<[string, number]>; totalTokens?: number }>;
   lastAssistantTurnId?: string;
 };
 
@@ -50,7 +50,7 @@ export function buildReadingManifest(input: {
     usage.set(position.usage.key, position.usage.input + position.usage.output);
   }
   const scopes = [...new Map(input.readingContext.map(context => [context.action_scope.start, context.action_scope])).values()]
-    .map(scope => ({ ...scope, ...(scopeUsages.get(scope.start)?.size ? { totalTokens: [...scopeUsages.get(scope.start)!.values()].reduce((sum, value) => sum + value, 0) } : {}) }));
+    .map(scope => ({ ...scope, speaker: positions.get(scope.start)?.speaker ?? 'assistant', usage: [...(scopeUsages.get(scope.start) ?? new Map())], ...(scopeUsages.get(scope.start)?.size ? { totalTokens: [...scopeUsages.get(scope.start)!.values()].reduce((sum, value) => sum + value, 0) } : {}) }));
   const handoffOwners = new Map<string, number[]>();
   for (const position of input.positions) for (const key of position.handoffKeys) {
     let owners = handoffOwners.get(key);
@@ -68,8 +68,10 @@ export function buildReadingManifest(input: {
     return { key: readingSourceKey(input.conversationId, input.positionSpaceId, position, fragment.coordinate.part),
       position, part: fragment.coordinate.part, kind: fragment.kind, speaker: fragment.speaker,
       actionGroup: { key: `group:${input.conversationId}:${input.positionSpaceId}:${context.action_scope.start}`, ...context.action_scope },
-      activity: fragment.activity, activityRunId: fragment.activity_run_id,
-      dependencyRevision, sourcePositions, handoffKeys: facts.handoffKeys.filter(key => handoffOwners.get(key)?.length === 1),
+      activity: fragment.activity, disclosures: fragment.disclosures, executionKey: facts.executionKey, activityRunId: fragment.activity_run_id,
+      dependencyRevision, sourcePositions,
+      handoffKeys: sourcePositions.flatMap(position => positions.get(position)?.handoffKeys ?? []).filter(key => handoffOwners.get(key)?.length === 1),
+      handoffCoordinates: sourcePositions.flatMap(position => (positions.get(position)?.handoffKeys ?? []).filter(key => handoffOwners.get(key)?.length === 1).map(key => ({key, position}))),
     };
   });
   return { conversationId: input.conversationId, positionSpaceId: input.positionSpaceId, sourceVersionId: input.sourceVersionId,

@@ -1,3 +1,4 @@
+import type { ReadingDisclosures } from '../presentation/reading-disclosures.js';
 import type { DisplayActivityItem, ToolCallActivity } from '../presentation/types.js';
 import type { DisplayFragmentCoordinate } from '../presentation/fragments.js';
 import type { PresentationIcon } from '../presentation/tool-presentation.js';
@@ -43,11 +44,14 @@ export type ConversationDisplayContext = {
 export type DisplayPositionFacts = {
   position: number;
   revision: string;
+  speaker: 'user' | 'assistant' | 'system';
   handoffKeys: string[];
+  executionKey?: string;
   turnId?: string;
   usage?: { key: string; input: number; output: number };
 };
 export type IndexedDisplayFragment = DisplayFragmentDescriptor & {
+  disclosures?: ReadingDisclosures;
   speaker: 'user' | 'assistant' | 'system';
   activity: DisplayActivityItem | null;
   summary_from_source: boolean;
@@ -73,4 +77,9 @@ export function displayEventsFromBlocks(blocks: readonly {
       source: { ...(block.details_loaded === undefined ? {} : { detailsLoaded: block.details_loaded }), ...(typeof block.metadata.display_has_body === 'boolean' ? { hasBody: block.metadata.display_has_body } : {}), ...(block.timestamp ? { timestamp: block.timestamp } : {}), ...(block.dag_uuid ? { dagUuid: block.dag_uuid } : {}), blockId: `cblk:${conversationId}:${block.position}`, position: block.position,
         ...(block.parentPosition === null ? {} : { parentBlockId: `cblk:${conversationId}:${block.parentPosition}` }) } }];
   });
+}
+
+/** Source indexing and summary hydration preserve the default lazy renderer's visible status evidence. */
+export function defaultDisplayEventsFromBlocks(blocks: Parameters<typeof displayEventsFromBlocks>[0], conversationId: string): CanonicalChatItemEvent[] {
+  return displayEventsFromBlocks(blocks.map(block => ({ ...block, details_loaded: false })), conversationId);
 }
