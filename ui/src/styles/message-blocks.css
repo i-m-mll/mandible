@@ -337,6 +337,7 @@
   color: var(--tool-activity-box-text);
 }
 
+.activity-payload-box,
 .tool-card__payload-box {
   box-sizing: border-box;
   width: 100%;
@@ -431,9 +432,10 @@
   color: var(--text-primary);
 }
 
-.thinking-block__body pre {
+.reasoning-details {
   margin: 0;
   color: inherit;
+  background: transparent;
   white-space: pre-wrap;
   word-break: break-word;
   font: 400 var(--text-lg)/1.5 var(--font-sans);
