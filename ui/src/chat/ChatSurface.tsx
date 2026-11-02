@@ -1,4 +1,5 @@
 import { readingMemberKeys, readingSpeaker } from '../../../src/conversations/reading-context';
+import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { OverflowTopFade } from '../components/shared/OverflowFade';
 import { AppearanceSettingsContext } from '../appearance-settings';
 import { Icon } from '../components/icons/Icon';
@@ -294,7 +295,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
         {(!initialVisible || !viewport.rows.length) && <div className="stream-renderer__empty">{props.showEmpty && complete.ready && viewport.appliedGeometry && !complete.rows.length ? props.emptyLabel ?? 'No messages yet' : 'Loading conversation…'}</div>}
       </div>
       <OverflowTopFade scroller={scrollNode} enabled={initialVisible && viewport.rows.length > 0} contentStart={viewport.engine.options.paddingStart ?? 0} className="stream-renderer__top-fade" />
-      {appearance.error && !appearance.ready && <div className="stream-renderer__history-error" role="alert">{appearance.error}<button type="button" onClick={appearance.retry}>Retry</button></div>}
+      {appearance.error && !appearance.ready && <DetailPaneNotice severity="error" density="compact" title="Appearance preferences unavailable" source="chat-appearance" actions={<button type="button" className="btn btn--ghost btn--sm" onClick={appearance.retry}>Retry</button>}>{appearance.error}</DetailPaneNotice>}
       {events.some(event => event.type === 'chat:item' && event.persistencePending) && <div role="status">Some content is awaiting confirmation from saved history.</div>}
       {(notice || complete.error || geometry.error) && <div className="stream-renderer__history-error" role="alert">{notice ?? complete.error ?? geometry.error}<button type="button" onClick={() => { setNotice(null); geometry.retry(); void complete.refresh(); }}>Retry</button></div>}
       {viewport.showLatest && <button type="button" className="chat-circle-action stream-renderer__scroll-btn" aria-label="Jump to latest" title="Jump to latest" disabled={props.jumpingToLatest} aria-busy={props.jumpingToLatest ? "true" : "false"} onClick={jump}><Icon name="jumpToLatest" /></button>}

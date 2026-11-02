@@ -5,6 +5,7 @@ import { Icon } from '../components/icons/Icon';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { ComponentChildren, VNode } from 'preact';
 import { AppOperationalNoticeOutlet } from '../app-shell';
+import { appTip } from '../components/shared/AppHoverTips';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { ManagedChatDefaults } from '../components/settings/ManagedChatDefaults';
 import { ChildRetentionSettings } from '../components/settings/ChildRetentionSettings';
@@ -1998,13 +1999,14 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             <div className="settings-view__text-row" data-settings-searchable key={key}>
               <div className="settings-view__text-info">
                 <label className="settings-view__text-label" for={`settings-${key}`}>{label}</label>
-                <span className="settings-view__text-desc" id={`settings-${key}-description`}>{desc}</span>
+                <span className={key === 'chat_stream_max_width_px' ? 'sr-only' : 'settings-view__text-desc'} id={`settings-${key}-description`}>{desc}</span>
               </div>
               <div className="settings-view__number-controls">
                 <input
                   id={`settings-${key}`}
                   className="settings-view__number-input"
                   type="number"
+                  {...appTip(key === 'chat_stream_max_width_px' ? desc : undefined)}
                   min={key === 'chat_stream_max_width_px' ? 0 : 10}
                   max={key === 'chat_stream_max_width_px' ? undefined : 20}
                   step="1"
