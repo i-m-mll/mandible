@@ -36,6 +36,7 @@ export type MeasurementRequest<Body> = {
   materializeBatchSize?: number;
   maxSynchronousMs?: number;
   signal?: AbortSignal;
+  /** Font/image durations overlap; readiness covers their join and the final document font barrier. */
   onPhase?: (event: MeasurementPhaseEvent) => void;
 };
 export type MeasurementResult = { measurements: readonly RowMeasurement[] } & (
@@ -80,11 +81,19 @@ function imageReady(image: HTMLImageElement, signal: AbortSignal): Promise<void>
     try { await image.decode(); } catch (error) { if (!image.complete || image.naturalWidth) throw error; }
   });
 }
-function yieldToBrowser(view: Window, signal: AbortSignal): Promise<unknown> {
+function yieldToBrowser(signal: AbortSignal): Promise<void> {
   return new Promise(resolve => {
-    const timer = view.setTimeout(done, 0);
-    function done() { view.clearTimeout(timer); signal.removeEventListener('abort', done); resolve(undefined); }
+    const channel = new MessageChannel();
+    const done = () => {
+      channel.port1.onmessage = null;
+      channel.port1.close(); channel.port2.close();
+      signal.removeEventListener('abort', done);
+      resolve();
+    };
+    channel.port1.onmessage = done;
     signal.addEventListener('abort', done, { once: true });
+    if (signal.aborted) done();
+    else channel.port2.postMessage(undefined);
   });
 }
 
@@ -200,11 +209,11 @@ export class ReadingMeasurementService {
             const readinessStarted = clock();
             const fontsStarted = clock();
             const fonts = Promise.all(layout.fonts.map(({ font, text }) => doc.fonts.load(font, text).then(() => { if (!doc.fonts.check(font, text)) throw new Error(`Requested font unavailable: ${font}`); })))
-              .then(() => doc.fonts.ready).finally(() => { if (!signal.aborted) observe('fonts', fontsStarted, rows.length, identity); });
+              .finally(() => { if (!signal.aborted) observe('fonts', fontsStarted, rows.length, identity); });
             const imagesStarted = clock();
             const images = Promise.all([...host.querySelectorAll('img')].map(image => imageReady(image, signal)))
               .finally(() => { if (!signal.aborted) observe('images', imagesStarted, rows.length, identity); });
-            const ready = await untilAbort(Promise.all([fonts, images]), signal);
+            const ready = await untilAbort(Promise.all([fonts, images]).then(() => doc.fonts.ready), signal);
             observe('readiness', readinessStarted, rows.length, identity);
             if (!ready.ready) return cancelled();
             phase = 'geometry';
@@ -221,7 +230,7 @@ export class ReadingMeasurementService {
             if (signal.aborted) return cancelled();
             for (const box of boxes) measurements.set(measurementKey(box.row, identity), box);
             const yieldStarted = clock();
-            await yieldToBrowser(view, signal);
+            await yieldToBrowser(signal);
             observe('yield', yieldStarted, rows.length, identity);
           }
           const releaseStarted = clock();

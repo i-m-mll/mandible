@@ -19,7 +19,7 @@ export function captureReadingPublication(db: Db, conversationId: string): Readi
     FROM conversation_sources WHERE conversation_id = ? AND current_version_id IS NOT NULL AND position_space_id IS NOT NULL
     ORDER BY CASE availability WHEN 'available' THEN 0 ELSE 1 END, updated_at DESC LIMIT 1`).get(conversationId) as ReadingPublication | null;
 }
-type PresentationCache = { publicationKey: string; manifest: ConversationReadingManifest; plans: Map<string, { plan: ReadingPlan; byKey: Map<string, ReadingRowDescriptor> }> };
+type PresentationCache = { publicationKey: string; manifest: ConversationReadingManifest; membersByKey: ReadonlyMap<string, ConversationReadingManifest['members'][number]>; plans: Map<string, { plan: ReadingPlan; byKey: Map<string, ReadingRowDescriptor> }> };
 const presentationCache = new WeakMap<Db, PresentationCache>();
 
 export function readConversationReadingManifest(db: Db, conversationId: string, source: ReadingPublication): ConversationReadingManifest | null {
@@ -34,7 +34,7 @@ export function readConversationReadingManifest(db: Db, conversationId: string, 
   if (!context || context.length !== count) return null;
   const manifest = buildReadingManifest({ ...index, conversationId, positionSpaceId: source.position_space_id,
     sourceVersionId: source.current_version_id, publicationRevision: source.publication_revision, blockCount: count, readingContext: context });
-  presentationCache.set(db, { publicationKey, manifest, plans: new Map() });
+  presentationCache.set(db, { publicationKey, manifest, membersByKey: new Map(manifest.members.map(member => [member.key, member])), plans: new Map() });
   return manifest;
 }
 export type ReadingRowRequest = { key: string; revision: string };
@@ -108,7 +108,7 @@ export async function readReadingRowBatch(input: {
     }
   }
   const details = new Set(requested.filter(row => row.kind === 'content').flatMap(row => row.memberKeys.flatMap(key => {
-    const member = manifest.members.find(member => member.key === key);
+    const member = retained.membersByKey.get(key);
     return member && readingDisclosureState(member.disclosures, request.expanded, { streaming: request.streaming, lastAssistantTurnId: manifest.lastAssistantTurnId }).some(([, expanded]) => expanded) ? [...member.sourcePositions] : [];
   })));
   const events = displayEventsFromBlocks(blocks.value.map(block => {
