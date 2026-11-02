@@ -66,9 +66,16 @@ function loadHistoricalMigrations(): HistoricalMigrations {
   return historicalMigrations;
 }
 
-// Historical migration 170 admitted one user-scoped Chat view preference. Keep
-// its exact intermediate schema here: migrations are a byte-for-byte history,
-// while v172 removes that preference and v208 adds managed Chat defaults.
+// Retain historical preference shapes for forward migration and collision recognition.
+const USER_SETTINGS_V208_SCHEMA_SQL = `CREATE TABLE user_settings (
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        key TEXT NOT NULL CHECK(key IN ('app_rail_order', 'ui_font_face', 'ui_font_size', 'detail_font_face', 'detail_font_size', 'managed_chat_defaults')),
+        value TEXT NOT NULL,
+        revision INTEGER NOT NULL CHECK(revision >= 1),
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(user_id, key)
+      )`;
+
 const USER_SETTINGS_V170_SCHEMA_SQL = `CREATE TABLE user_settings (
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         key TEXT NOT NULL CHECK(key IN ('app_rail_order', 'ui_font_face', 'ui_font_size', 'detail_font_face', 'detail_font_size', 'chat_bottom_shelf')),
@@ -2148,7 +2155,7 @@ export const MIGRATIONS: readonly Migration[] = [
   },
   { version: 208, name: "managed_chat_user_defaults", statements: [
     "ALTER TABLE user_settings RENAME TO user_settings_v207",
-    USER_SETTINGS_SCHEMA_SQL,
+    USER_SETTINGS_V208_SCHEMA_SQL,
     "INSERT INTO user_settings SELECT user_id, key, value, revision, updated_at FROM user_settings_v207",
     "DROP TABLE user_settings_v207",
   ] },
@@ -2248,6 +2255,12 @@ export const MIGRATIONS: readonly Migration[] = [
     "ALTER TABLE conversation_sources ADD COLUMN position_fingerprint TEXT",
     "ALTER TABLE conversation_sources ADD COLUMN position_fingerprint_version INTEGER",
     "ALTER TABLE conversation_sources ADD COLUMN publication_revision INTEGER NOT NULL DEFAULT 0",
+  ] },
+  { version: 231, name: "chat_stream_width_preference", statements: [
+    "ALTER TABLE user_settings RENAME TO user_settings_v230",
+    USER_SETTINGS_SCHEMA_SQL,
+    "INSERT INTO user_settings SELECT user_id, key, value, revision, updated_at FROM user_settings_v230",
+    "DROP TABLE user_settings_v230",
   ] },
 ];
 
@@ -2357,7 +2370,7 @@ function reconcileCollidedChatPreviewSchema(db: Db, found: number): number {
     const aliases = validateConversationIdentitySchema(db);
     if (defaults || aliases) {
       const normalize = (sql: string) => sql.replace(/\s+/g, ' ').trim();
-      if (!defaults || !aliases || normalize(preference!.sql) !== normalize(USER_SETTINGS_SCHEMA_SQL)) {
+      if (!defaults || !aliases || normalize(preference!.sql) !== normalize(USER_SETTINGS_V208_SCHEMA_SQL)) {
         throw new Error('Unrecognized October Chat v194 migration collision');
       }
       db.transaction(() => {

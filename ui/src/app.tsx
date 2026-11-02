@@ -33,7 +33,7 @@ import {
   getRepoBranches,
   getSettings,
   getUserAppRailOrderSetting,
-  getUserTypographySetting,
+  getUserAppearanceSetting,
   getWorkRepos,
   invalidateApiGetCache,
   invalidateDashboardCaches,
@@ -47,21 +47,22 @@ import {
   updateAppThemePreference,
   updateSetting,
   updateUserAppRailOrderSetting,
-  updateUserTypographySetting,
+  updateUserAppearanceSetting,
   canEditUserPreferences,
   canPerformOperation,
-  type UserTypographySettingKey,
+  type UserAppearanceSettingKey,
   type InstanceInfo,
   type DashboardBadgeCounts,
 } from './api';
 import {
-  DEFAULT_TYPOGRAPHY_SETTINGS,
-  TYPOGRAPHY_SETTING_KEYS,
-  typographyCssVariables,
-  typographySettingValue,
-  reconcileTypographySettings,
-  withTypographySetting,
-} from './typography-settings';
+  AppearanceSettingsContext,
+  DEFAULT_APPEARANCE_SETTINGS,
+  APPEARANCE_SETTING_KEYS,
+  appearanceCssVariables,
+  appearanceSettingValue,
+  reconcileAppearanceSettings,
+  withAppearanceSetting,
+} from './appearance-settings';
 import type { SSEPayload, SseConnectionState } from './sse-client';
 import { acquireSharedSse, shouldSkipFallbackPoll } from './sse-shared';
 import {
@@ -616,8 +617,11 @@ function App(): JSX.Element {
   const previewOrderMigrationRef = useRef(false);
   const railRequestRef = useRef(0);
   const railRevisionRef = useRef(0);
-  const [typography, setTypography] = useState(DEFAULT_TYPOGRAPHY_SETTINGS);
-  const typographyRevisionRef = useRef<Record<UserTypographySettingKey, number>>({
+  const [appearance, setAppearance] = useState(DEFAULT_APPEARANCE_SETTINGS);
+  const [appearanceReady, setAppearanceReady] = useState(false);
+  const [appearanceError, setAppearanceError] = useState<string | null>(null);
+  const appearanceRevisionRef = useRef<Record<UserAppearanceSettingKey, number>>({
+    chat_stream_max_width_px: 0,
     ui_font_face: 0,
     ui_font_size: 0,
     detail_font_face: 0,
@@ -1185,50 +1189,53 @@ function App(): JSX.Element {
     }
   }, [instanceInfo?.allowed_effects, instanceInfo?.role]);
 
-  const refreshTypography = useCallback(async (): Promise<void> => {
+  const refreshAppearance = useCallback(async (): Promise<void> => {
     if (!instanceInfo || !canEditUserPreferences(instanceInfo)) return;
     try {
-      const snapshots = await Promise.all(TYPOGRAPHY_SETTING_KEYS.map(getUserTypographySetting));
-      setTypography((current) => {
-        const reconciled = reconcileTypographySettings(current, typographyRevisionRef.current, snapshots);
-        typographyRevisionRef.current = reconciled.revisions;
+      const snapshots = await Promise.all(APPEARANCE_SETTING_KEYS.map(getUserAppearanceSetting));
+      setAppearance((current) => {
+        const reconciled = reconcileAppearanceSettings(current, appearanceRevisionRef.current, snapshots);
+        appearanceRevisionRef.current = reconciled.revisions;
         return reconciled.settings;
       });
+      setAppearanceReady(true);
+      setAppearanceError(null);
     } catch {
-      // Keep the current/default typography when authenticated settings are unavailable.
+      setAppearanceError('Appearance preferences could not be loaded.');
     }
   }, [instanceInfo?.allowed_effects]);
 
   useEffect(() => {
-    if (instanceInfo && canEditUserPreferences(instanceInfo)) void refreshTypography();
+    if (instanceInfo && canEditUserPreferences(instanceInfo)) void refreshAppearance();
     if (instanceInfo && !canEditUserPreferences(instanceInfo)) {
-      setTypography(DEFAULT_TYPOGRAPHY_SETTINGS);
+      setAppearance(DEFAULT_APPEARANCE_SETTINGS);
+      setAppearanceReady(true);
     }
-  }, [instanceInfo?.allowed_effects, refreshTypography]);
+  }, [instanceInfo?.allowed_effects, refreshAppearance]);
 
-  const handleTypographySave = useCallback(async (
-    key: UserTypographySettingKey,
+  const handleAppearanceSave = useCallback(async (
+    key: UserAppearanceSettingKey,
     value: string,
   ): Promise<void> => {
     if (!canEditUserPreferences(instanceInfo)) {
-      throw new Error('Typography settings are unavailable in this instance');
+      throw new Error('Appearance settings are unavailable in this instance');
     }
-    const previousValue = typographySettingValue(typography, key);
-    const revisionAtStart = typographyRevisionRef.current[key];
-    setTypography((current) => withTypographySetting(current, key, value));
+    const previousValue = appearanceSettingValue(appearance, key);
+    const revisionAtStart = appearanceRevisionRef.current[key];
+    setAppearance((current) => withAppearanceSetting(current, key, value));
     try {
-      const snapshot = await updateUserTypographySetting(key, value);
-      if (snapshot.revision >= typographyRevisionRef.current[key]) {
-        typographyRevisionRef.current[key] = snapshot.revision;
-        setTypography((current) => withTypographySetting(current, key, snapshot.value));
+      const snapshot = await updateUserAppearanceSetting(key, value);
+      if (snapshot.revision >= appearanceRevisionRef.current[key]) {
+        appearanceRevisionRef.current[key] = snapshot.revision;
+        setAppearance((current) => withAppearanceSetting(current, key, snapshot.value));
       }
     } catch (error) {
-      if (typographyRevisionRef.current[key] === revisionAtStart) {
-        setTypography((current) => withTypographySetting(current, key, previousValue));
+      if (appearanceRevisionRef.current[key] === revisionAtStart) {
+        setAppearance((current) => withAppearanceSetting(current, key, previousValue));
       }
       throw error;
     }
-  }, [instanceInfo?.allowed_effects, typography]);
+  }, [instanceInfo?.allowed_effects, appearance]);
 
   useEffect(() => {
     if (!accessReady) return;
@@ -1256,11 +1263,11 @@ function App(): JSX.Element {
 
   useEffect(() => {
     const reconcileVisibleRailOrder = () => {
-      if (document.visibilityState === 'visible') void refreshRailOrder();
+      if (document.visibilityState === 'visible') { void refreshRailOrder(); void refreshAppearance(); }
     };
     document.addEventListener('visibilitychange', reconcileVisibleRailOrder);
     return () => document.removeEventListener('visibilitychange', reconcileVisibleRailOrder);
-  }, [refreshRailOrder]);
+  }, [refreshRailOrder, refreshAppearance]);
 
   useEffect(() => {
     if (!accessReady) return;
@@ -1464,9 +1471,9 @@ function App(): JSX.Element {
         return;
       }
       if (
-        TYPOGRAPHY_SETTING_KEYS.includes(data.key as UserTypographySettingKey)
-        && (data.revision as number) > typographyRevisionRef.current[data.key as UserTypographySettingKey]
-      ) void refreshTypography();
+        APPEARANCE_SETTING_KEYS.includes(data.key as UserAppearanceSettingKey)
+        && (data.revision as number) > appearanceRevisionRef.current[data.key as UserAppearanceSettingKey]
+      ) void refreshAppearance();
     };
     const daemonHandler = (payload: SSEPayload) => {
       const data = payload.data && typeof payload.data === 'object' ? payload.data : null;
@@ -1636,6 +1643,7 @@ function App(): JSX.Element {
       void loadVisibleRouteDataRef.current(routeTabRef.current);
       void loadDashboardBadges();
       void refreshRailOrder();
+      void refreshAppearance();
       void refreshBrowserResources(queryClient, [browserResourceKeys.briefings]);
     });
 
@@ -1650,7 +1658,7 @@ function App(): JSX.Element {
       outputCoalescer.dispose();
       client.close();
     };
-  }, [accessReady, loadDashboardBadges, refreshRailOrder, refreshTypography]);
+  }, [accessReady, loadDashboardBadges, refreshRailOrder, refreshAppearance]);
 
   // Fallback polling: periodically fetch fresh data so the UI stays current
   // even if the SSE connection drops events or disconnects silently.
@@ -1670,10 +1678,11 @@ function App(): JSX.Element {
       invalidateDashboardCaches();
       void loadVisibleRouteData(route.tab);
       void refreshRailOrder();
+      void refreshAppearance();
     }, POLL_INTERVAL);
 
     return () => window.clearInterval(timer);
-  }, [accessReady, route.tab, loadVisibleRouteData, refreshRailOrder]);
+  }, [accessReady, route.tab, loadVisibleRouteData, refreshRailOrder, refreshAppearance]);
 
   // Bug: 645f8a8 — splash is active for either a self-merge rebuild (SSE-driven)
   // or a mid-startup / not-ready daemon (probe-driven). Mutations are gated off
@@ -2565,10 +2574,10 @@ function App(): JSX.Element {
         '--app-rail-width': `${frameRailWidth}px`,
         '--app-view-sidebar-persisted-width': `${viewSidebarWidth ?? 0}px`,
         '--app-right-sidebar-width': `${rightSidebarOpen ? rightSidebarLayout.effectiveWidth : 0}px`,
-        ...typographyCssVariables(typography),
+        ...appearanceCssVariables(appearance),
       } as JSX.CSSProperties}
     >
-      <div className="app-shell__workspace">{children}</div>
+      <AppearanceSettingsContext.Provider value={{ ready: appearanceReady, error: appearanceError, retry: refreshAppearance }}><div className="app-shell__workspace">{children}</div></AppearanceSettingsContext.Provider>
       <AppHoverTips />
       <PreviewAppearanceTools instance={instanceInfo} controller={chromeAppearancePreview.controller} />
     </div>
@@ -2864,8 +2873,8 @@ function App(): JSX.Element {
             onSave={handleSettingsSave}
             loadError={state.settingsLoadError}
             onRefresh={() => void loadVisibleRouteData('settings')}
-            typography={typography}
-            onTypographySave={handleTypographySave}
+            appearance={appearance}
+            onAppearanceSave={handleAppearanceSave}
             onClose={handleSettingsClose}
             instance={instanceInfo}
           />

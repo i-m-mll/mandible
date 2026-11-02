@@ -81,6 +81,8 @@ export function useReadingGeometry(input: {
       const candidate = queued.current; queued.current = null;
       if (!candidate || candidate.scope !== latest.current.scope || !layoutRef.current
         || measurementLayoutIdentity(candidate.layout) !== measurementLayoutIdentity(layoutRef.current)) return;
+      const canvas = latest.current.parent?.querySelector<HTMLElement>(':scope > .stream-renderer__virtual-canvas');
+      if (!canvas || Math.abs(canvas.getBoundingClientRect().width - candidate.layout.width) > 0.05) return;
       const sizes = [...candidate.sizes];
       const wanted = new Map(candidate.rows.map((row, index) => [row.key, { row, index }]));
       for (const element of latest.current.parent?.querySelectorAll<HTMLElement>('[data-reading-key]') ?? []) {

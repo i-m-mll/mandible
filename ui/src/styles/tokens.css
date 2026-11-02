@@ -187,7 +187,6 @@
   --diff-modified-bg: var(--status-warning-bg);
 
   /* Tier 3: component tokens */
-  --chat-max-width: 76ch;
   --inbox-continuation: #60a5fa;
   --inbox-continuation-bg: #60a5fa22;
   --inbox-handoff: #f59e0b;

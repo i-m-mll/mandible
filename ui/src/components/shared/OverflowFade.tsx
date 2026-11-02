@@ -1,5 +1,5 @@
 import type { ComponentChildren } from 'preact';
-import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 
 export function OverflowFade({ children, className = '', lines = 10, direction = 'vertical' }: {
   children: ComponentChildren;
@@ -36,4 +36,20 @@ export function OverflowFade({ children, className = '', lines = 10, direction =
       <div ref={scrollRef} className="overflow-fade__scroll" onScroll={refresh}>{children}</div>
     </div>
   );
+}
+
+/** Paints only; the caller retains its native scroll box and content geometry. */
+export function OverflowTopFade({ scroller, enabled = true, contentStart = 0, className = '' }: {
+  scroller: HTMLElement | null;
+  enabled?: boolean;
+  contentStart?: number;
+  className?: string;
+}): JSX.Element {
+  const [above, setAbove] = useState(false);
+  useLayoutEffect(() => {
+    const refresh = () => setAbove(Boolean(enabled && scroller && scroller.scrollTop > contentStart));
+    refresh(); scroller?.addEventListener('scroll', refresh, { passive: true });
+    return () => scroller?.removeEventListener('scroll', refresh);
+  }, [scroller, enabled, contentStart]);
+  return <div aria-hidden="true" className={`overflow-fade-top${above ? ' overflow-fade-top--visible' : ''}${className ? ` ${className}` : ''}`} />;
 }

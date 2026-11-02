@@ -43,8 +43,8 @@ it('keeps consecutive mounted events adjacent in every resize frame and preserve
     const target = await send('Target.createTarget', { url: 'about:blank' });
     sessionId = (await send('Target.attachToTarget', { targetId: target.targetId, flatten: true })).sessionId;
     await send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 900, deviceScaleFactor: 1, mobile: false });
-    const run = async (absolute: boolean) => {
-      await send('Page.navigate', { url: pathToFileURL(file).href + (absolute ? '?absolute' : '') });
+    const run = async (mode: boolean | 'cap') => {
+      await send('Page.navigate', { url: pathToFileURL(file).href + (mode === 'cap' ? '?cap' : mode ? '?absolute' : '') });
       const result = await send('Runtime.evaluate', { expression: `new Promise((resolve,reject)=>{
         const timer=setTimeout(()=>reject(new Error('Fixture stalled at '+document.body?.dataset.framePhase)),15000);
         const check=()=>{const title=document.title;if(title&&title!=='frame-start'&&title!=='about:blank'){clearTimeout(timer);observer.disconnect();resolve(title)}};
@@ -55,26 +55,41 @@ it('keeps consecutive mounted events adjacent in every resize frame and preserve
       if (encoded.startsWith('fixture-error:')) throw new Error(Buffer.from(encoded.slice(14), 'base64').toString());
       return JSON.parse(Buffer.from(encoded, 'base64').toString());
     };
-    const result = await run(false);
-    const gaps = result.samples.flatMap((sample: any) => sample.adjacency.map((pair: any) => Math.abs(pair.gap)));
-    expect(Math.max(...gaps), 'a previously painted frame separated or overlapped consecutive mounted events').toBeLessThanOrEqual(0.05);
-    const readers = result.samples.filter((sample: any) => sample.phase === 'reader');
-    expect(new Set(readers.map((sample: any) => sample.rowHeight)).size, 'one-pixel widths never reflowed the prose').toBeGreaterThan(1);
-    const disclosure = result.samples.filter((sample: any) => sample.phase === 'disclosure');
-    expect(disclosure.some((sample: any) => sample.count === 77)).toBe(true); expect(disclosure.some((sample: any) => sample.count === 80)).toBe(true);
-    expect(Math.max(...disclosure.map((sample: any) => Math.abs(sample.header - sample.desiredHeader - ((sample.write?.wanted ?? 0) - (sample.write?.actual ?? 0)))))).toBeLessThanOrEqual(0.05);
-    expect(readers.some((sample: any) => sample.protected)).toBe(true);
-    expect(readers.some((sample: any) => sample.pending)).toBe(true);
-    expect(readers.at(-1).pending).toBe(false);
-    const drift = readers.map((sample: any) => sample.glyph - sample.desired);
-    const residual = readers.map((sample: any) => (sample.glyph - sample.desired) - ((sample.write?.wanted ?? 0) - (sample.write?.actual ?? 0)));
-    expect(Math.max(...residual.map(Math.abs)), `glyph drift=${JSON.stringify(drift)}`).toBeLessThanOrEqual(0.05);
-    expect(result.afterNative).toBe(result.nativeTop);
-    expect(result.tailNativeAfter).toBe(result.tailNativeTop);
-    expect(Math.abs(result.tailIntentDrift), 'wheel-away intent alone repositioned the provisional tail strip').toBeLessThanOrEqual(0.05);
-    expect(Math.max(...result.samples.filter((sample: any) => sample.phase === 'tail').map((sample: any) => Math.abs(sample.endGap)))).toBeLessThanOrEqual(0.5);
-    expect(Math.max(...result.samples.filter((sample: any) => sample.phase === 'tail').map((sample: any) => Math.abs(sample.tailGap)))).toBeLessThanOrEqual(0.5);
-    if (process.env.MANDIBLE_CHAT_FRAME_PROOF) console.info(JSON.stringify({ frames: result.samples.length, maxAdjacencyError: Math.max(...gaps), maxGlyphDrift: Math.max(...drift.map(Math.abs)), maxNativeRoundingResidual: Math.max(...residual.map(Math.abs)), maxTailContentGap: Math.max(...result.samples.filter((sample: any) => sample.phase === 'tail').map((sample: any) => Math.abs(sample.tailGap))) }));
+    for (const mode of [false, 'cap'] as const) {
+      const result = await run(mode);
+      expect(result.fadeGeometry).toMatchObject({ fadeAtStart: false, fadeOverPadding: false, fadeWithContent: true, rangeUnchanged: true, top: 0, pointerEvents: 'none' });
+      expect(result.fadeGeometry.width).toBe(result.fadeGeometry.scrollerWidth);
+      expect(result.fadeGeometry.background).toContain('linear-gradient');
+      expect(result.unrestricted.width).toBe(result.unrestricted.measuredWidth);
+      expect(Number.isInteger(result.unrestricted.width)).toBe(false);
+      expect(result.unrestricted.left).toBe(result.unrestricted.right);
+      expect(result.unrestricted.left - result.unrestricted.padding).toBe(8);
+      if (mode === 'cap') {
+        expect(result.limited.width).toBe(400);
+        expect(result.limited.measuredWidth).toBe(400);
+        expect(Math.abs(result.limited.left - result.limited.right), 'automatic margins differ by at most one browser layout unit').toBeLessThanOrEqual(1 / 64);
+        expect(result.oversized.width).toBe(result.unrestricted.width);
+      }
+      const gaps = result.samples.flatMap((sample: any) => sample.adjacency.map((pair: any) => Math.abs(pair.gap)));
+      expect(Math.max(...gaps), 'a previously painted frame separated or overlapped consecutive mounted events').toBeLessThanOrEqual(0.05);
+      const readers = result.samples.filter((sample: any) => sample.phase === 'reader');
+      expect(new Set(readers.map((sample: any) => sample.rowHeight)).size, 'one-pixel widths never reflowed the prose').toBeGreaterThan(1);
+      const disclosure = result.samples.filter((sample: any) => sample.phase === 'disclosure');
+      expect(disclosure.some((sample: any) => sample.count === 77)).toBe(true); expect(disclosure.some((sample: any) => sample.count === 80)).toBe(true);
+      expect(Math.max(...disclosure.map((sample: any) => Math.abs(sample.header - sample.desiredHeader - ((sample.write?.wanted ?? 0) - (sample.write?.actual ?? 0)))))).toBeLessThanOrEqual(0.05);
+      expect(readers.some((sample: any) => sample.protected)).toBe(true);
+      expect(readers.some((sample: any) => sample.pending)).toBe(true);
+      expect(readers.at(-1).pending).toBe(false);
+      const drift = readers.map((sample: any) => sample.glyph - sample.desired);
+      const residual = readers.map((sample: any) => (sample.glyph - sample.desired) - ((sample.write?.wanted ?? 0) - (sample.write?.actual ?? 0)));
+      expect(Math.max(...residual.map(Math.abs)), `mode=${mode}; bad frames=${JSON.stringify(readers.filter((sample: any, index: number) => Math.abs(residual[index]) > 1).map(({ adjacency, ...sample }: any) => sample))}`).toBeLessThanOrEqual(0.05);
+      expect(result.afterNative).toBe(result.nativeTop);
+      expect(result.tailNativeAfter).toBe(result.tailNativeTop);
+      expect(Math.abs(result.tailIntentDrift), 'wheel-away intent alone repositioned the provisional tail strip').toBeLessThanOrEqual(0.05);
+      expect(Math.max(...result.samples.filter((sample: any) => sample.phase === 'tail').map((sample: any) => Math.abs(sample.endGap)))).toBeLessThanOrEqual(0.5);
+      expect(Math.max(...result.samples.filter((sample: any) => sample.phase === 'tail').map((sample: any) => Math.abs(sample.tailGap)))).toBeLessThanOrEqual(0.5);
+      if (process.env.MANDIBLE_CHAT_FRAME_PROOF) console.info(JSON.stringify({ mode, unrestricted: result.unrestricted, limited: result.limited, oversized: result.oversized, fade: result.fadeGeometry, frames: result.samples.length, maxAdjacencyError: Math.max(...gaps), maxGlyphDrift: Math.max(...drift.map(Math.abs)), maxNativeRoundingResidual: Math.max(...residual.map(Math.abs)), maxTailContentGap: Math.max(...result.samples.filter((sample: any) => sample.phase === 'tail').map((sample: any) => Math.abs(sample.tailGap))) }));
+    }
     const baseline = await run(true);
     expect(Math.max(...baseline.samples.filter((sample: any) => sample.phase !== 'disclosure').flatMap((sample: any) => sample.adjacency.map((pair: any) => Math.abs(pair.gap))))).toBeGreaterThan(1);
   } finally {

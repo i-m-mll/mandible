@@ -185,12 +185,17 @@ export type SseEvent<E extends MandibleEventType = MandibleEventType> = E extend
 export const USER_SETTING_KEYS = Object.freeze({
   appRailOrder: "app_rail_order",
   managedChatDefaults: "managed_chat_defaults",
+  chatStreamMaxWidthPx: "chat_stream_max_width_px",
   uiFontFace: "ui_font_face",
   uiFontSize: "ui_font_size",
   detailFontFace: "detail_font_face",
   detailFontSize: "detail_font_size",
 } as const);
 export type UserSettingKey = (typeof USER_SETTING_KEYS)[keyof typeof USER_SETTING_KEYS];
+
+export function parseChatStreamMaxWidthPx(value: string): number | null {
+  return /^\d+$/.test(value) && Number.isSafeInteger(Number(value)) ? Number(value) : null;
+}
 
 export type ChatEntityClickAction = "preview" | "open";
 

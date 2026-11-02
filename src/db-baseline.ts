@@ -30,7 +30,7 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-migration-convergence.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 230;
+export const BASELINE_SCHEMA_VERSION = 231;
 
 export const AUTH_REQUEST_HISTORY_INDEX_SQL =
   `CREATE INDEX idx_auth_requests_history ON auth_requests(resolved_at DESC)
@@ -253,7 +253,7 @@ export const LEDGER_SESSION_ISSUE_LINKS_SCHEMA_SQL = `CREATE TABLE ledger_sessio
 
 export const USER_SETTINGS_SCHEMA_SQL = `CREATE TABLE user_settings (
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        key TEXT NOT NULL CHECK(key IN ('app_rail_order', 'ui_font_face', 'ui_font_size', 'detail_font_face', 'detail_font_size', 'managed_chat_defaults')),
+        key TEXT NOT NULL CHECK(key IN ('app_rail_order', 'ui_font_face', 'ui_font_size', 'detail_font_face', 'detail_font_size', 'managed_chat_defaults', 'chat_stream_max_width_px')),
         value TEXT NOT NULL,
         revision INTEGER NOT NULL CHECK(revision >= 1),
         updated_at INTEGER NOT NULL,

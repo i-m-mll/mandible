@@ -105,12 +105,12 @@ describe('SettingsView', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
     const onSave = vi.fn(async () => undefined);
-    const onTypographySave = vi.fn(async () => undefined);
+    const onAppearanceSave = vi.fn(async () => undefined);
 
     render(h(SettingsView, {
       settings: { app_theme: 'system' },
       onSave,
-      onTypographySave,
+      onAppearanceSave,
       instance: preferenceWritablePreviewInstance,
     }));
 
@@ -130,7 +130,16 @@ describe('SettingsView', () => {
     changeSelect(theme, 'dark');
     await waitFor(() => expect(onSave).toHaveBeenCalledWith('app_theme', 'dark'));
     changeSelect(font, 'space-grotesk');
-    await waitFor(() => expect(onTypographySave).toHaveBeenCalledWith('ui_font_face', 'space-grotesk'));
+    await waitFor(() => expect(onAppearanceSave).toHaveBeenCalledWith('ui_font_face', 'space-grotesk'));
+
+    const streamWidth = screen.getByRole('spinbutton', { name: 'Chat stream maximum width (px)' });
+    fireEvent.change(streamWidth, { target: { value: '840' } });
+    await waitFor(() => expect(onAppearanceSave).toHaveBeenCalledWith('chat_stream_max_width_px', '840'));
+    const saved = onAppearanceSave.mock.calls.length;
+    for (const value of ['', '-1', '1.5']) fireEvent.change(streamWidth, { target: { value } });
+    expect(onAppearanceSave).toHaveBeenCalledTimes(saved);
+    fireEvent.change(streamWidth, { target: { value: '0' } });
+    await waitFor(() => expect(onAppearanceSave).toHaveBeenCalledWith('chat_stream_max_width_px', '0'));
 
     const chatLimit = screen.getByRole('spinbutton', { name: 'Chats per group' }) as HTMLInputElement;
     expect(chatLimit.value).toBe('5');
