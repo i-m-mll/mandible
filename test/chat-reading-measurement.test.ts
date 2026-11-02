@@ -98,3 +98,30 @@ it('acquires one bounded buffer independently of small DOM slices', async () => 
   expect(release).toHaveBeenCalledOnce();
   service.dispose();
 });
+
+it('does not start another acquisition after cancellation during the final layout yield', async () => {
+  Object.defineProperty(document, 'fonts', { configurable: true, value: { ready: Promise.resolve() } });
+  const parent = document.createElement('div'); document.body.append(parent);
+  const service = new ReadingMeasurementService(parent); const controller = new AbortController();
+  const rows = [{ key: 'first', revision: '1' }, { key: 'second', revision: '1' }];
+  const release = vi.fn();
+  const materialize = vi.fn(async (batch: readonly MeasurementRow[], signal: AbortSignal) => {
+    if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
+    return { bodies: batch, release };
+  });
+  const result = await service.measure({ rows, layouts: [layout], batchSize: 1, materialize, signal: controller.signal,
+    renderBatch: (host, batch) => {
+      const element = document.createElement('div'); host.append(element); let reads = 0;
+      element.getBoundingClientRect = () => {
+        if (++reads === 2) queueMicrotask(() => controller.abort());
+        return { width: 480, height: 80 } as DOMRect;
+      };
+      return { elements: new Map([[batch[0].key, element]]), dispose: () => host.replaceChildren() };
+    } });
+  expect(result.status).toBe('cancelled');
+  expect(result.measurements).toHaveLength(1);
+  expect(materialize).toHaveBeenCalledOnce();
+  expect(release).toHaveBeenCalledOnce();
+  expect(parent.childElementCount).toBe(0);
+  service.dispose();
+});

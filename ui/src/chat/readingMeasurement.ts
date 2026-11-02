@@ -43,10 +43,10 @@ function measurementKey(row: MeasurementRow, layoutIdentity: string): string {
   return JSON.stringify([row.key, row.revision, row.disclosureIdentity ?? '', layoutIdentity]);
 }
 function untilAbort<T>(promise: Promise<T>, signal: AbortSignal, discard?: (value: T) => void): Promise<{ ready: true; value: T } | { ready: false }> {
-  if (signal.aborted) return Promise.resolve({ ready: false });
   return new Promise((resolve, reject) => {
-    const abort = () => resolve({ ready: false });
+    const abort = () => { signal.removeEventListener('abort', abort); resolve({ ready: false }); };
     signal.addEventListener('abort', abort, { once: true });
+    if (signal.aborted) abort();
     promise.then(value => {
       signal.removeEventListener('abort', abort);
       if (signal.aborted) { discard?.(value); resolve({ ready: false }); }
@@ -142,6 +142,7 @@ export class ReadingMeasurementService {
       Object.assign(host.style, { position: 'fixed', left: '0', top: '0', visibility: 'hidden', pointerEvents: 'none', zIndex: '-1' });
       this.parent.append(host);
       for (let offset = 0; offset < request.rows.length;) {
+        if (signal.aborted) return cancelled();
         const end = Math.min(request.rows.length, offset + materializeBatchSize);
         const bufferRows = request.rows.slice(offset, end).filter(row => request.layouts.some(layout => !measurements.has(measurementKey(row, measurementLayoutIdentity(layout)))));
         offset = end;
@@ -159,44 +160,44 @@ export class ReadingMeasurementService {
           const sliceBodies = buffer.slice(sliceOffset, sliceEnd);
           sliceOffset = sliceEnd;
           let synchronousMs = 0;
-        for (const layout of request.layouts) {
-          const identity = measurementLayoutIdentity(layout);
-          if (rows.every(row => measurements.has(measurementKey(row, identity)))) continue;
-          if (signal.aborted) return cancelled();
-          phase = 'layout';
-          if (request.prepareLayout) {
-            const prepared = await untilAbort(request.prepareLayout(layout, signal), signal);
-            if (!prepared.ready) return cancelled();
+          for (const layout of request.layouts) {
+            const identity = measurementLayoutIdentity(layout);
+            if (rows.every(row => measurements.has(measurementKey(row, identity)))) continue;
+            if (signal.aborted) return cancelled();
+            phase = 'layout';
+            if (request.prepareLayout) {
+              const prepared = await untilAbort(request.prepareLayout(layout, signal), signal);
+              if (!prepared.ready) return cancelled();
+            }
+            host.style.width = `${layout.width}px`;
+            phase = 'render';
+            const renderStarted = view.performance.now();
+            rendered ??= request.renderBatch(host, sliceBodies, layout, rows);
+            phase = 'readiness';
+            for (const row of rows) rendered.elements.get(row.key)?.getBoundingClientRect();
+            synchronousMs += view.performance.now() - renderStarted;
+            const ready = await untilAbort(Promise.all([
+              ...layout.fonts.map(({ font, text }) => doc.fonts.load(font, text).then(() => { if (!doc.fonts.check(font, text)) throw new Error(`Requested font unavailable: ${font}`); })),
+              ...[...host.querySelectorAll('img')].map(image => imageReady(image, signal)),
+            ]).then(() => doc.fonts.ready), signal);
+            if (!ready.ready) return cancelled();
+            phase = 'geometry';
+            const geometryStarted = view.performance.now();
+            const boxes = rows.map(row => {
+              const element = rendered!.elements.get(row.key);
+              if (!element || !host!.contains(element)) throw new Error(`Missing mounted row: ${row.key}`);
+              const box = element.getBoundingClientRect();
+              if (!Number.isFinite(box.height) || box.height <= 0 || Math.abs(box.width - layout.width) > 0.05) throw new Error(`Invalid row box: ${row.key}`);
+              return { row, layoutIdentity: identity, height: box.height };
+            });
+            synchronousMs += view.performance.now() - geometryStarted;
+            if (signal.aborted) return cancelled();
+            for (const box of boxes) measurements.set(measurementKey(box.row, identity), box);
+            await yieldToBrowser(view, signal);
           }
-          host.style.width = `${layout.width}px`;
-          phase = 'render';
-          const renderStarted = view.performance.now();
-          rendered ??= request.renderBatch(host, sliceBodies, layout, rows);
-          phase = 'readiness';
-          for (const row of rows) rendered.elements.get(row.key)?.getBoundingClientRect();
-          synchronousMs += view.performance.now() - renderStarted;
-          const ready = await untilAbort(Promise.all([
-            ...layout.fonts.map(({ font, text }) => doc.fonts.load(font, text).then(() => { if (!doc.fonts.check(font, text)) throw new Error(`Requested font unavailable: ${font}`); })),
-            ...[...host.querySelectorAll('img')].map(image => imageReady(image, signal)),
-          ]).then(() => doc.fonts.ready), signal);
-          if (!ready.ready) return cancelled();
-          phase = 'geometry';
-          const geometryStarted = view.performance.now();
-          const boxes = rows.map(row => {
-            const element = rendered!.elements.get(row.key);
-            if (!element || !host!.contains(element)) throw new Error(`Missing mounted row: ${row.key}`);
-            const box = element.getBoundingClientRect();
-            if (!Number.isFinite(box.height) || box.height <= 0 || Math.abs(box.width - layout.width) > 0.05) throw new Error(`Invalid row box: ${row.key}`);
-            return { row, layoutIdentity: identity, height: box.height };
-          });
-          synchronousMs += view.performance.now() - geometryStarted;
-          if (signal.aborted) return cancelled();
-          for (const box of boxes) measurements.set(measurementKey(box.row, identity), box);
-          await yieldToBrowser(view, signal);
-        }
-        release();
-        if (request.maxSynchronousMs) activeBatchSize = Math.max(1, Math.min(batchSize,
-          synchronousMs > request.maxSynchronousMs ? Math.floor(activeBatchSize * request.maxSynchronousMs / synchronousMs) : activeBatchSize * 2));
+          release();
+          if (request.maxSynchronousMs) activeBatchSize = Math.max(1, Math.min(batchSize,
+            synchronousMs > request.maxSynchronousMs ? Math.floor(activeBatchSize * request.maxSynchronousMs / synchronousMs) : activeBatchSize * 2));
         }
         releaseMaterialized();
       }
