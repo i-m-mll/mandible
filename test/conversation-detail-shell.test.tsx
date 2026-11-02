@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { mockChatViewport, mockManagedSettings } from './helpers/conversation-ui-transport';
+import { installReadingBrowserFixture } from './helpers/reading-browser-fixture';
 import { establishTestClientAccess } from './helpers/local-client-access';
 import { act, cleanup, fireEvent, screen, waitFor } from './helpers/dom.js';
 import { render } from './helpers/notice-test-render';
@@ -44,6 +45,7 @@ vi.mock('@xterm/xterm', () => ({
 
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} dispose(): void {} } }));
 
+let disposeReadingBrowser: (() => void) | undefined;
 beforeEach(async () => {
   await establishTestClientAccess();
   window.localStorage.clear();
@@ -84,6 +86,8 @@ beforeEach(async () => {
 
 afterEach(() => {
   cleanup();
+  disposeReadingBrowser?.();
+  disposeReadingBrowser = undefined;
   queryClient.clear();
   __resetSharedSseForTests();
   vi.restoreAllMocks();
@@ -676,35 +680,27 @@ describe('compact detail pane shell', () => {
     const payload = positionPayload(scopedConversation, [exactBlock], {kind: 'block'});
     vi.mocked(api.getConversationWindow).mockResolvedValue(payload);
     serveReadingPresentation(payload);
-    const fonts = Object.assign(new EventTarget(), {ready: Promise.resolve(), check: () => true, load: async () => []});
-    const previousFonts = Object.getOwnPropertyDescriptor(document, 'fonts');
-    Object.defineProperty(document, 'fonts', {configurable: true, value: fonts});
-    try {
-      vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({width: 800, height: 24, left: 0, top: 0, right: 800, bottom: 24, x: 0, y: 0, toJSON: () => ({})});
-      window.localStorage.setItem(`mandible:chat-reading:${scopedConversation.id}`, JSON.stringify({
-        version: 4, positionSpaceId: 'fixture-space', following: false,
-        anchor: {kind: 'row', rowKey: 'saved-tail', memberKey: 'saved-tail', position: 999, offset: 0}, disclosures: {},
-      }));
-      window.history.replaceState(null, '', messageLinkUrl(window.location.href, scopedConversation.id, exactBlock.id));
-      Object.defineProperty(navigator, 'clipboard', { configurable: true,
-        value: { writeText: vi.fn().mockRejectedValue(new Error('Clipboard denied')) } });
-      renderConversationDetail(scopedConversation);
-      expect(await screen.findByText('Exact cold message')).toBeTruthy();
-      expect(api.getConversationWindow).toHaveBeenCalledWith(scopedConversation.id, expect.objectContaining({ block: exactBlock.id }));
-      await waitFor(() => expect(document.activeElement?.getAttribute('data-block-id')).toBe(exactBlock.id));
-      expect(screen.getByText('Used memory')).toBeTruthy();
-      expect(document.activeElement?.textContent).toContain('Exact cold message');
-      expect(document.activeElement?.textContent).not.toContain('Used memory');
-      fireEvent.contextMenu(screen.getByText('Exact cold message'));
-      fireEvent.click(screen.getByRole('menuitem', { name: 'Copy link' }));
-      expect(await screen.findByText('Could not copy the message link.')).toBeTruthy();
-      const copied = new URL(vi.mocked(navigator.clipboard.writeText).mock.calls[0][0]);
-      expect(conversationAnchorFromHash(copied.hash)).toEqual({block: exactBlock.id, expected_position_space_id: 'fixture-space'});
-      expect(new URLSearchParams(copied.hash.split('?')[1]).get('conversation')).toBe(scopedConversation.id);
-    } finally {
-      if (previousFonts) Object.defineProperty(document, 'fonts', previousFonts);
-      else Reflect.deleteProperty(document, 'fonts');
-    }
+    disposeReadingBrowser = installReadingBrowserFixture();
+    window.localStorage.setItem(`mandible:chat-reading:${scopedConversation.id}`, JSON.stringify({
+      version: 4, positionSpaceId: 'fixture-space', following: false,
+      anchor: {kind: 'row', rowKey: 'saved-tail', memberKey: 'saved-tail', position: 999, offset: 0}, disclosures: {},
+    }));
+    window.history.replaceState(null, '', messageLinkUrl(window.location.href, scopedConversation.id, exactBlock.id));
+    Object.defineProperty(navigator, 'clipboard', { configurable: true,
+      value: { writeText: vi.fn().mockRejectedValue(new Error('Clipboard denied')) } });
+    renderConversationDetail(scopedConversation);
+    expect(await screen.findByText('Exact cold message')).toBeTruthy();
+    expect(api.getConversationWindow).toHaveBeenCalledWith(scopedConversation.id, expect.objectContaining({ block: exactBlock.id }));
+    await waitFor(() => expect(document.activeElement?.getAttribute('data-block-id')).toBe(exactBlock.id));
+    expect(screen.getByText('Used memory')).toBeTruthy();
+    expect(document.activeElement?.textContent).toContain('Exact cold message');
+    expect(document.activeElement?.textContent).not.toContain('Used memory');
+    fireEvent.contextMenu(screen.getByText('Exact cold message'));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy link' }));
+    expect(await screen.findByText('Could not copy the message link.')).toBeTruthy();
+    const copied = new URL(vi.mocked(navigator.clipboard.writeText).mock.calls[0][0]);
+    expect(conversationAnchorFromHash(copied.hash)).toEqual({block: exactBlock.id, expected_position_space_id: 'fixture-space'});
+    expect(new URLSearchParams(copied.hash.split('?')[1]).get('conversation')).toBe(scopedConversation.id);
   });
 
   it('keeps loaded source content mounted while a same-conversation reconciliation is pending', async () => {
@@ -910,11 +906,16 @@ describe('compact detail pane shell', () => {
 
 describe('Chat route intent', () => {
   function setupRouteHistory() {
+    disposeReadingBrowser = installReadingBrowserFixture();
     mockConversationDetail(defaultControl);
-    vi.mocked(api.getConversationWindow).mockImplementation(async (id) => positionPayload(
-      { ...conversation, id, title: `Chat ${id}` },
-      [makeTranscriptBlock({ id: `${id}-block`, conversation_id: id, content: `Transcript ${id}` })],
-    ));
+    vi.mocked(api.getConversationWindow).mockImplementation(async (id) => {
+      const payload = positionPayload(
+        { ...conversation, id, title: `Chat ${id}` },
+        [makeTranscriptBlock({ id: `${id}-block`, conversation_id: id, content: `Transcript ${id}` })],
+      );
+      serveReadingPresentation(payload);
+      return payload;
+    });
     const view = (conversationRef: string | null, sessionRef: string | null = null, routeParams?: Record<string, string>) => (
       <ConversationsView consoleSessions={[]} initialConversationId={conversationRef} initialSessionId={sessionRef} routeParams={routeParams}
         onSelectSession={() => undefined} onNewConversation={async () => { throw new Error('unused'); }} />
