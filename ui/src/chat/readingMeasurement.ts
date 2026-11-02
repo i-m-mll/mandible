@@ -3,6 +3,7 @@ export type MeasurementRow = { key: string; revision: string; disclosureIdentity
 export type MeasurementLayout = {
   width: number;
   styleIdentity: string;
+  responsiveVariant?: string;
   fonts: readonly { font: string; text?: string }[];
 };
 export type RowMeasurement = {
@@ -33,7 +34,7 @@ export type MeasurementResult = { measurements: readonly RowMeasurement[] } & (
 );
 
 export function measurementLayoutIdentity(layout: MeasurementLayout): string {
-  return JSON.stringify([layout.width, layout.styleIdentity, layout.fonts]);
+  return JSON.stringify([layout.width, layout.styleIdentity, layout.fonts, layout.responsiveVariant]);
 }
 function measurementKey(row: MeasurementRow, layoutIdentity: string): string {
   return JSON.stringify([row.key, row.revision, row.disclosureIdentity ?? '', layoutIdentity]);
@@ -51,10 +52,10 @@ function untilAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<{ read
 }
 function imageReady(image: HTMLImageElement, signal: AbortSignal): Promise<void> {
   image.loading = 'eager';
-  const loaded = image.complete ? Promise.resolve() : new Promise<void>((resolve, reject) => {
+  const loaded = image.complete ? Promise.resolve() : new Promise<void>((resolve) => {
     const clear = () => { image.removeEventListener('load', load); image.removeEventListener('error', error); signal.removeEventListener('abort', abort); };
     const load = () => { clear(); resolve(); };
-    const error = () => { clear(); reject(new Error('Image could not load.')); };
+    const error = () => { clear(); resolve(); };
     const abort = () => { clear(); resolve(); };
     image.addEventListener('load', load, { once: true });
     image.addEventListener('error', error, { once: true });
@@ -62,8 +63,8 @@ function imageReady(image: HTMLImageElement, signal: AbortSignal): Promise<void>
   });
   return loaded.then(async () => {
     if (signal.aborted) return;
-    if (!image.naturalWidth) throw new Error('Image has no intrinsic size.');
-    await image.decode();
+    if (!image.naturalWidth) return;
+    try { await image.decode(); } catch (error) { if (!image.complete || image.naturalWidth) throw error; }
   });
 }
 function yieldToBrowser(view: Window, signal: AbortSignal): Promise<unknown> {
@@ -147,8 +148,9 @@ export class ReadingMeasurementService {
           }
           host.style.width = `${layout.width}px`;
           phase = 'render';
-          rendered = request.renderBatch(host, bodies.value, layout, rows);
+          rendered ??= request.renderBatch(host, bodies.value, layout, rows);
           phase = 'readiness';
+          host.getBoundingClientRect();
           const ready = await untilAbort(Promise.all([
             ...layout.fonts.map(({ font, text }) => doc.fonts.load(font, text).then(() => { if (!doc.fonts.check(font, text)) throw new Error(`Requested font unavailable: ${font}`); })),
             ...[...host.querySelectorAll('img')].map(image => imageReady(image, signal)),
@@ -164,9 +166,9 @@ export class ReadingMeasurementService {
           });
           if (signal.aborted) return cancelled();
           for (const box of boxes) measurements.set(measurementKey(box.row, identity), box);
-          release();
           await yieldToBrowser(view, signal);
         }
+        release();
       }
       if (signal.aborted) return cancelled();
       const vectors = request.layouts.map(layout => {
