@@ -1,4 +1,4 @@
-import { indexDisplayFragments } from './display-context.js';
+import { indexDisplayFragments } from './display-indexing.js';
 import { preparePositionSpace, type PositionSpacePublication } from './position-space.js';
 import { openLogicalSource, canonicalSourcePath, type LogicalSourceHandle } from "./logical-source.js";
 import { createHash } from "node:crypto";
