@@ -18,7 +18,7 @@ it('keeps real content and hidden action rails beside one another while disclosu
       '--loader:.css=empty', '--minify', '--log-level=silent',
     ], { encoding: 'utf8', timeout: 10000 });
     expect(bundled.status, bundled.stderr).toBe(0);
-    const styles = ['tokens', 'base', 'console', 'message-blocks', 'contextual-action']
+    const styles = ['tokens', 'base', 'contextual-action', 'message-blocks', 'console']
       .map(name => readFileSync(resolve(`ui/src/styles/${name}.css`), 'utf8')).join('\n');
     const file = join(directory, 'fixture.html');
     writeFileSync(file, `<!doctype html><html data-theme="codex"><head><style>${styles}</style></head><body><div id="root"></div><script>${readFileSync(output, 'utf8')}</script></body></html>`);
