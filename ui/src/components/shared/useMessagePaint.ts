@@ -49,7 +49,8 @@ export function useMessagePaint(actionRoot: { current: HTMLElement | null }, men
       const text = content.matches('.msg-text-block');
       owner.dataset.messagePaint = text ? 'text' : 'surface';
       if (menuOpen) owner.dataset.messageMenuPaint = text ? 'text' : 'surface';
-      if (focusPaint) {
+      if (svg && focusPaint) {
+        svg.setAttribute('width', String(right - left)); svg.setAttribute('height', String(bottom - top));
         const style = getComputedStyle(owner);
         const inline = text ? parseFloat(style.getPropertyValue('--space-3')) : 0;
         const block = text ? parseFloat(style.getPropertyValue('--space-2')) : 0;
@@ -57,14 +58,14 @@ export function useMessagePaint(actionRoot: { current: HTMLElement | null }, men
         focusPaint.setAttribute('width', String(right - left + 2 * inline));
         focusPaint.setAttribute('height', String(bottom - top + 2 * block));
         focusPaint.setAttribute('rx', String(parseFloat(style.getPropertyValue('--radius-chat-surface'))));
+        owner.dataset.messageFocusPaint = '';
       }
     };
     const svg = focused ? owner.ownerDocument.createElementNS('http://www.w3.org/2000/svg', 'svg') : null;
     const focusPaint = svg ? owner.ownerDocument.createElementNS('http://www.w3.org/2000/svg', 'rect') : null;
     if (svg && focusPaint) {
       svg.classList.add('message-focus-paint'); svg.setAttribute('aria-hidden', 'true');
-      svg.setAttribute('width', '0'); svg.setAttribute('height', '0'); svg.append(focusPaint); owner.append(svg);
-      owner.dataset.messageFocusPaint = '';
+      svg.append(focusPaint); owner.append(svg);
     }
     paint();
     const observer = new ResizeObserver(paint); observer.observe(content);

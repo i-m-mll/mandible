@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { buildSync } from 'esbuild';
-import { chromium, webkit } from 'playwright-core';
+import { chromium, webkit, type Locator } from 'playwright-core';
 import { expect, it } from 'vitest';
 import { launchTestBrowser } from '../helpers/chromium';
 import { testRuntimeRoot } from '../helpers/runtime-isolation';
@@ -19,6 +19,27 @@ it.each([chromium, webkit].map(engine => ({ name: engine.name(), engine })))('ke
     const page = await browser.newPage(); page.setDefaultTimeout(5000); await page.goto(pathToFileURL(file).href);
     const menu = page.getByRole('menu'); const parent = page.locator('#parent');
     await parent.waitFor({ state: 'visible' });
+    const assertRingPainted = async (message: Locator) => {
+      const svg = message.locator('.message-focus-paint');
+      const rect = (await svg.locator('rect').boundingBox())!;
+      const clip = { x: Math.floor(rect.x - 2), y: Math.floor(rect.y - 2), width: Math.ceil(rect.width + 4), height: Math.ceil(rect.height + 4) };
+      const visible = await page.screenshot({ clip });
+      await svg.evaluate(node => { (node as SVGElement).style.opacity = '0'; });
+      const hidden = await page.screenshot({ clip });
+      await svg.evaluate(node => { (node as SVGElement).style.removeProperty('opacity'); });
+      const bluePixels = await page.evaluate(async ({ visible, hidden }) => {
+        const pixels = async (data: string) => {
+          const image = new Image(); image.src = `data:image/png;base64,${data}`; await image.decode();
+          const canvas = document.createElement('canvas'); canvas.width = image.width; canvas.height = image.height;
+          const context = canvas.getContext('2d')!; context.drawImage(image, 0, 0); return context.getImageData(0, 0, image.width, image.height).data;
+        };
+        const shown = await pixels(visible); const baseline = await pixels(hidden);
+        let count = 0;
+        for (let i = 0; i < shown.length; i += 4) if ((shown[i + 2] - shown[i]) - (baseline[i + 2] - baseline[i]) > 20) count++;
+        return count;
+      }, { visible: visible.toString('base64'), hidden: hidden.toString('base64') });
+      expect(bluePixels, `${engine.name()} must actually paint the blue message ring`).toBeGreaterThan(20);
+    };
     const paint = (selector: string) => page.locator(selector).evaluate(node => { const style = getComputedStyle(node, '::before'); return { background: style.backgroundColor, radius: style.borderRadius }; });
     const basePaint = await paint('#parent'); const baseBox = await parent.boundingBox();
     const plain = await page.locator('#plain').boundingBox();
@@ -109,6 +130,7 @@ it.each([chromium, webkit].map(engine => ({ name: engine.name(), engine })))('ke
         expect(await snapshot()).toEqual(before);
         expect(await message.evaluate(node => document.activeElement === node && getComputedStyle(node).outlineStyle === 'none')).toBe(true);
         const focusBounds = await message.locator('.message-focus-paint rect').boundingBox();
+        if (width === 1000 && id === 'short-message') await assertRingPainted(message);
         await page.keyboard.press('Shift+F10'); await menu.waitFor({ state: 'visible' });
         expect(await snapshot()).toEqual(before);
         const painted = await message.evaluate(node => {
@@ -136,6 +158,7 @@ it.each([chromium, webkit].map(engine => ({ name: engine.name(), engine })))('ke
     await finalMessage.locator('.message-focus-paint').waitFor({ state: 'attached' });
     expect(await finalMessage.getAttribute('data-message-menu-paint')).toBeNull();
     expect(await finalBoxes()).toEqual(finalBefore);
+    await assertRingPainted(finalMessage);
     await page.locator('#link').focus();
     expect(await finalMessage.getAttribute('data-message-focus-paint')).toBeNull();
     expect(await parent.getAttribute('data-message-focus-paint')).toBeNull();
