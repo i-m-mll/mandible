@@ -264,11 +264,15 @@ export function firstUserMessageOpening(
   return first ? { line: readOpeningLine(first.content), creator: null, atStart } : null;
 }
 
+export type ToolCallPresentationContext = { id:string; name:string; kind:string };
+
 export interface IncrementalParseInput {
   filePath: string;
   raw: string;
   /** Verified native session identity when parsing an isolated durable record. */
   nativeSessionId?: string;
+  /** Exact verified parent calls for presentation admission while reading isolated result records. */
+  displayToolCalls?: readonly ToolCallPresentationContext[];
   baseBlockCount: number;
   baseRecordCount?: number;
   sourceHash: string;

@@ -8,7 +8,7 @@ activity summaries use the same presentation functions.
 | Boundary | Projection and representative coverage |
 | --- | --- |
 | Codex saved function/custom calls | Exact call identity and native input determine the presenter. `execution-presentation.test.tsx` parses saved custom call/output blocks, checks compact command facts and source hydration. |
-| Codex `functions.exec` results | A paired exec/functions.exec custom call and a separate native first content block prove wrapper framing and its UTF-16 payload span. `text(r)` consumes the known command result object once; `text(r.output)` remains literal stdout. Wrapper timing retains its scope. The native `total=46 codex=14 named=32` case is represented in the regression. |
+| Codex `functions.exec` results | A paired exec/functions.exec custom call and a separate native first content block prove wrapper framing and its UTF-16 payload span. `text(r)` consumes the known command result object once; `text(r.output)` remains literal stdout. Wrapper timing retains its scope. The native `total=46 codex=14 named=32` case is represented in the regression. Closed command labels and titles retain the full literal command; the shared row applies visual one-line ellipsis. |
 | Static wrapper batches | Acorn accounts for every statement, immutable binding, call and forwarding expression. Sequential calls, `Promise.all`, `Promise.allSettled`, direct result arrays and indexed `forEach` spread/result/stdout forms reuse existing tool cards. Tests cover command/edit mixtures, exact index correspondence, rejected results and malformed/truncated output. |
 | Codex live `commandExecution` | Explicit command, aggregated output, duration, exit code and process identity drive the shared command presenter. The controller adapter regression exercises actual protocol notifications through display projection. |
 | Codex live MCP/dynamic calls | Native item type proves the boundary independently of tool name. MCP content, structured content, error messages and dynamic text/image/audio items remain available; text payloads are never recursively parsed. Controller coverage includes an arbitrary MCP tool name and explicit dynamic failure. |
@@ -20,7 +20,7 @@ file read/edit/write/delete/move, search, browser, fetch, JavaScript, wait,
 thinking, mode switch and generic tools. Transparent wrappers dispatch through
 that table rather than adding category-specific rendering paths.
 
-The program records literal, explicit JSON and native object emission rules. Literal stdout is never JSON-decoded or stripped by prefix. Several literal emissions without proven boundaries remain together as original output. JSON emissions are decoded once. Native framing is consumed once from its source-proven span.
+The program records literal, explicit JSON and native object emission rules. Literal stdout is never JSON-decoded or stripped by prefix. Several literal emissions without proven boundaries remain together as original output. JSON emissions are decoded once. Native framing is consumed once from its source-proven span. Isolated source-record hydration supplies only the matching verified structural parent call facts for that result record; its normalized text, parts and canonical linkage are unchanged. Parsed-record reuse retains that parent-admission proof.
 
 Indexed outputs are accepted atomically. Duplicate, missing, out-of-range,
 truncated or otherwise unaccountable emissions never receive guessed child
@@ -31,7 +31,7 @@ remains complete JavaScript.
 Native call/result wrappers own source navigation, selection and disclosure.
 Children use local operation indices and have no invented source positions.
 Complete export retains original source content. The disposable structure cache
-is version16; source parser/normalization epochs remain unchanged. Compact facts
+is version17; source parser/normalization epochs remain unchanged. Compact facts
 contain categories, counts, language/binding facts and state, without commands,
 script bodies, file contents, output or media.
 

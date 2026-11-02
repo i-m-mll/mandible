@@ -225,7 +225,7 @@ export function ToolCard({
   const projectedResult = useMemo(() => resultPresentation ?? projectToolResult(execution,originalResultText,result?.source?.toolFrame,result?.presentation,program),[execution,originalResultText,result?.source?.toolFrame,result?.presentation,resultPresentation,program]);
   const operationResults = useMemo(() => program ? programResults(program,resultText) : null,[program,resultText]);
   const nestedProgram = program && (program.operations.length > 1 || !execution || execution.facts.kind !== 'command');
-  const displayTarget = leftTruncateTarget(visual.target);
+  const displayTarget = visual.kind==='execute' ? visual.target : leftTruncateTarget(visual.target);
   const status = result?.is_error || projectedResult.failed ? 'failed' : projectedResult.running ? 'running' : statusFor(result, statusEmoji);
   const commandLike = visual.kind === 'execute';
   const editLike = visual.kind === 'edit' && typeof inputObj.file_path === 'string';
