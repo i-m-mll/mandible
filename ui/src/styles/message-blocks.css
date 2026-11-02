@@ -1,10 +1,11 @@
-:root { --reading-responsive-variant: wide; --reading-renderer-version: event-rail-grid-v1; }
+:root { --reading-responsive-variant: wide; --reading-renderer-version: event-rail-grid-v2; }
 /* Shared chat message block components */
 
 /* ── Shared message-block components — Bug: bce7370 ── */
 
 /* TurnGroup — shared turn layout (used by both Chat and History) */
 .turn-group {
+  container: chat-turn / inline-size;
   --chat-event-gap: var(--space-2);
   box-sizing: border-box;
   display: flex;

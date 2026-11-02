@@ -1077,6 +1077,7 @@
 
 /* Keep contextual actions beside each block's visible content. */
 .message-block-wrapper:has(> .message-actions) {
+  container: message-block / inline-size;
   display: grid;
   grid-template-columns: minmax(0, 1fr) max-content;
   align-items: start;
@@ -1138,6 +1139,20 @@
 
 .message-actions__overflow-wrap {
   position: relative;
+}
+
+.message-actions__overflow-wrap--compact-only { display: none; }
+
+@container message-block (max-width: 12rem) {
+  .message-actions { --message-actions-compact: 1; }
+  .message-actions > .message-actions__primary { display: none; }
+  .message-actions > .message-actions__overflow-wrap--compact-only { display: block; }
+  .compact-activity__row > .compact-activity__icon { display: none; }
+  .user-bubble__text { padding-inline: var(--space-1); }
+}
+
+@container chat-turn (max-width: 12rem) {
+  .turn-group--user > .turn-group__body { width: 100%; }
 }
 
 .message-actions__overflow {
