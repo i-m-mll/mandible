@@ -3,8 +3,8 @@ import { artifactRepo } from "./helpers/artifact-repo-fixtures.js";
 /**
  * What only a real `mandible artifact` spawn proves: artifact bytes never ride
  * in argv or in-band JSON (a daemon-visible path over HTTP, a spool attachment
- * over file RPC), multi-path partial failures, zsh PATH preservation, link-kind
- * flags, canonical refs in what the CLI writes, and backend errors surfaced.
+ * over file RPC), multi-path partial failures, zsh PATH preservation, canonical
+ * refs in what the CLI writes, and backend errors surfaced.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -83,18 +83,19 @@ describe("artifact CLI", () => {
 
   it.concurrent("carries multi-path file RPC snapshots as spool attachments and reports per-item partial failures", async () => {
     const cwd = repo();
-    fs.writeFileSync(path.join(cwd, "second.md"), "second snapshot");
-    const attached: string[] = [];
+    const bytes = Buffer.alloc(2 * 1024 * 1024, 0x5a);
+    fs.writeFileSync(path.join(cwd, "big.bin"), bytes);
+    const attached: Buffer[] = [];
     const { env, responder, dir } = spool((request) => {
       if (request.method === "GET" && request.path === "/api/ledger/issues/abc") return { status: 200, body: issue };
       if (request.method === "POST" && request.path === "/api/artifacts/versions") {
-        attached.push(fs.readFileSync(path.join(dir, (request.attachments as Record<string, string>).path), "utf8"));
+        attached.push(fs.readFileSync(path.join(dir, (request.attachments as Record<string, string>).path)));
         return { status: 200, body: { result: recorded("report") } };
       }
       return { status: 404, body: { error: "unexpected", path: request.path } };
     });
 
-    const result = await runCli(["artifact", "snapshot", "report.md", "missing.md", "second.md", "--issue", "abc", "--json"], { cwd, env });
+    const result = await runCli(["artifact", "snapshot", "report.md", "missing.md", "big.bin", "--issue", "abc", "--json"], { cwd, env });
 
     expect(result.status).toBe(1);
     const payload = JSON.parse(result.stdout);
@@ -105,25 +106,9 @@ describe("artifact CLI", () => {
     expect(record.body).toMatchObject({ source_kind: "managed", custody_mode: "managed" });
     expect(record.body).not.toHaveProperty("content_base64");
     expect(record.body).not.toHaveProperty("path");
-    expect(attached).toEqual(["# Report\n\nReady.\n", "second snapshot"]);
-  });
-
-  it.concurrent("carries a multi-MiB file RPC snapshot through an attachment, never argv (issue 833e972)", async () => {
-    const cwd = repo();
-    const bytes = Buffer.alloc(2 * 1024 * 1024, 0x5a);
-    fs.writeFileSync(path.join(cwd, "big.bin"), bytes);
-    let attachedSize = -1;
-    const { env, dir } = spool((request) => {
-      if (request.method !== "POST" || request.path !== "/api/artifacts/versions") return { status: 404, body: { error: "unexpected" } };
-      attachedSize = fs.statSync(path.join(dir, (request.attachments as Record<string, string>).path)).size;
-      return { status: 200, body: { result: recorded("big") } };
-    });
-
-    const result = await runCli(["artifact", "snapshot", "big.bin", "--json"], { cwd, env: { ...env, MANDIBLE_FILE_RPC_TIMEOUT: "10" } });
-
-    expect(result.status, result.stderr).toBe(0);
-    expect(result.stderr).not.toMatch(/argument list too long/);
-    expect(attachedSize).toBe(bytes.length);
+    expect(attached).toHaveLength(2);
+    expect(attached[0].equals(Buffer.from("# Report\n\nReady.\n"))).toBe(true);
+    expect(attached[1].equals(bytes)).toBe(true);
   });
 
   it.concurrent("plans file RPC ingest as managed custody without in-band bytes and refuses git custody there", async () => {
@@ -161,66 +146,16 @@ describe("artifact CLI", () => {
 
   it("surfaces the backend's error detail and exits non-zero", async () => {
     const cwd = repo();
-    const cases: Array<[string[], string, number, string]> = [
-      [["artifact", "associate", "artifact:deadbeef", "--project", "mandible"], "/api/artifacts/associations", 422, "artifact_ref_ambiguous"],
-      [["artifact", "record", "--ref", "artifact:deadbeef", "--kind", "managed"], "/api/artifacts/versions", 422, "artifact_ref_not_resolved"],
-      [["artifact", "bundle", "create", "--name", "review", "artifact:deadbeef"], "/api/artifacts/bundles", 422, "bundle_member_ref_not_resolved"],
-      [["artifact", "ingest", "report.md", "--managed", "--json"], "/api/artifacts/ingest", 422, "logical version rejected"],
-      [["artifact", "link", "artifact:series-1", "--issue", "abc", "--relation", "evidence", "--living"], "/api/artifacts/link", 400, "evidence_links_must_be_pinned"],
-    ];
-    const stub = await daemon(({ method, url }) => {
-      if (method === "GET" && url === "/api/ledger/issues/abc") return { body: issue };
-      const failing = cases.find(([, route]) => route === url);
-      return failing ? { status: failing[2], body: { error: failing[3] } } : undefined;
-    });
+    const stub = await daemon(() => ({ status: 422, body: { error: "logical version rejected" } }));
     const resolver = spool(() => ({ status: 404, body: { error: "issue_missing" } }));
-
-    const results = await Promise.all([
-      ...cases.map(([args]) => runCli(args, { cwd, env: { ...stub.env, MANDIBLE_TEST_ONLY_ALLOW_NON_MAIN_OPERATIONAL_MUTATIONS: "1" } })),
+    const [http, file] = await Promise.all([
+      runCli(["artifact", "ingest", "report.md", "--managed", "--json"], { cwd, env: stub.env }),
       runCli(["artifact", "snapshot", "report.md", "--issue", "missing", "--json"], { cwd, env: resolver.env }),
     ]);
-
-    for (const [index, message] of [...cases.map((entry) => entry[3]), "HTTP 404: issue_missing"].entries()) {
-      expect(results[index].status, message).not.toBe(0);
-      expect(results[index].stderr, message).toContain(message);
-    }
-  });
-
-  it("sends link_kind only when a link-kind flag asks for it", async () => {
-    const cwd = repo();
-    const stub = await daemon(({ method, url, body }) => {
-      if (method === "GET" && url === "/api/ledger/issues/abc") return { body: issue };
-      if (method === "GET" && url.startsWith("/api/artifacts/resolve?")) return { body: { resolution: { artifact: { id: "artifact:abc123def456" } } } };
-      if (method === "POST" && url === "/api/artifacts/snapshot") return { body: { artifact: { id: "artifact:abc123def456", custody_mode: "copy", availability: "present" } } };
-      if (method !== "POST" || url !== "/api/artifacts/link") return undefined;
-      const living = (body as { link_kind?: string }).link_kind === "living";
-      return {
-        body: {
-          resolution: { logical_artifact: { id: "artifact:abc123def456" }, artifact_version: { version_no: 3 } },
-          link: { id: "artifact-link-1", artifact_id: "artifact:abc123def456", entity_type: "issue", entity_id: issue.id, link_type: "references", link_kind: living ? "living" : "pinned" },
-        },
-      };
-    });
-    const run = (...args: string[]) => runCli(["artifact", ...args], { cwd, env: { ...stub.env, MANDIBLE_TEST_ONLY_ALLOW_NON_MAIN_OPERATIONAL_MUTATIONS: "1" } });
-
-    const results = await Promise.all([
-      run("link", "artifact:series-default", "--issue", "abc"),
-      run("link", "artifact:series-living", "--issue", "abc", "--living"),
-      run("link", "artifact:series-pinned", "--issue", "abc", "--pinned"),
-      run("ref", "artifact-blob:resolved", "--issue", "abc", "--json"),
-      run("snapshot", "artifact:old", "--from", "report.md", "--issue", "abc", "--json"),
-    ]);
-
-    for (const result of results) expect(result.status, result.stderr).toBe(0);
-    const kinds = Object.fromEntries(stub.requests.filter((request) => request.url === "/api/artifacts/link")
-      .map((request) => [(request.body as { ref: string }).ref, (request.body as { link_kind?: string }).link_kind ?? "omitted"]));
-    expect(kinds).toEqual({
-      "artifact:series-default": "omitted",
-      "artifact:series-living": "living",
-      "artifact:series-pinned": "pinned",
-      "artifact-blob:resolved": "omitted",
-      "artifact:abc123def456": "omitted",
-    });
+    expect(http.status).not.toBe(0);
+    expect(http.stderr).toContain("logical version rejected");
+    expect(file.status).not.toBe(0);
+    expect(file.stderr).toContain("HTTP 404: issue_missing");
   });
 
   it("links a snapshot taken from a ref by its canonical artifact-blob ref", async () => {

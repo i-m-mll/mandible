@@ -13,17 +13,12 @@ import {
   ManagedReminderValidationError,
   parseManagedReminderCreateRequest,
 } from "../managed-reminder-parser.js";
-import { PermissionError, requireProjectAccess, sendPermissionError } from "../permissions/store.js";
 import type { RequestLike, ResponseLike, RouteRegistrar, ResolvedClientIdentity } from "../server.js";
 import { broadcast } from "../sse.js";
 import { getUserById } from "../users/store.js";
 import { sendJson } from "./http.js";
 
 function handleError(res: ResponseLike, error: unknown): void {
-  if (error instanceof PermissionError) {
-    sendPermissionError(res, error);
-    return;
-  }
   if (error instanceof ClientAuthzError) {
     sendJson(res, error.status, { error: error.message, code: error.code });
     return;
@@ -45,12 +40,6 @@ function requireReminderPrincipal(db: Db, req: RequestLike): ResolvedClientIdent
       "Managed reminder mutations require an active human or agent identity.",
     );
   }
-  return identity;
-}
-
-function admitProjectWrite(db: Db, req: RequestLike, projectId: string): ResolvedClientIdentity {
-  const identity = requireReminderPrincipal(db, req);
-  requireProjectAccess(db, req, projectId, "write");
   return identity;
 }
 
@@ -77,10 +66,9 @@ export function registerManagedReminderRoutes(server: RouteRegistrar, db: Db = g
     try {
       // Attribution is mandatory even in compat mode. Resolve it before payload
       // parsing so anonymous callers cannot probe this delayed-authority surface.
-      requireReminderPrincipal(db, req);
+      const identity = requireReminderPrincipal(db, req);
       const request = parseManagedReminderCreateRequest(req.body);
       const project = resolveManagedReminderProject(db, request.project);
-      const identity = admitProjectWrite(db, req, project.id);
       const result = createManagedReminder(
         db,
         request,
@@ -132,7 +120,7 @@ export function registerManagedReminderRoutes(server: RouteRegistrar, db: Db = g
   server.post("/api/reminders/:id/cancel", (req, res) => {
     try {
       const current = getManagedReminder(db, req.params.id);
-      const identity = admitProjectWrite(db, req, current.project_id);
+      const identity = requireReminderPrincipal(db, req);
       const reminder = cancelManagedReminder(db, current.id, {
         userId: identity.user_id,
         evidenceMethod: reminderEvidence(db, req, identity),

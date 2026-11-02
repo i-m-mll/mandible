@@ -1,11 +1,11 @@
-import SqliteDatabase from '../src/sqlite.js';
+import { migratedMemoryDb } from './helpers/ledger-fixtures.js';
 import { describe, expect, it } from 'vitest';
-import { migrate, setDb } from '../src/db.js';
+import { setDb } from '../src/db.js';
 import { SessionManager } from '../src/session-manager.js';
 
 describe('terminal and historical provider separation', () => {
   it('preserves historical managed sessions but refuses terminal control or new legacy providers', () => {
-    const db = new SqliteDatabase(':memory:'); migrate(db); setDb(db);
+    const db = migratedMemoryDb(); setDb(db);
     const seed = new SessionManager(db, () => {});
     const terminal = seed.create({ label:'History', command:'/bin/sh', backend_type:'pty' });
     db.prepare("UPDATE console_sessions SET command = 'claude', backend_type = 'sdk', transport_lane = 'sdk', provider_session_id = 'exact-native', run_options_json = ? WHERE id = ?")

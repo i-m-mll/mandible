@@ -31,17 +31,17 @@ render_fragment() {
 
 render_block() {
   printf '%s\n' "$BEGIN_MARKER"
-  render_fragment
+  render_fragment || return $?
   printf '\n%s\n' "$END_MARKER"
 }
 
 settings_helper() {
   "$BUN_RUNTIME" --no-install - "$MANDIBLE_ROOT" "$@" <<'NODE'
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 
 const [root, op, ...args] = process.argv.slice(2);
+const { targetIdentity } = require(path.join(root, "cli", "integration-files.cjs"));
 const SqliteDatabase = require(process.env.MANDIBLE_RELEASE_ROOT
   ? path.join(process.env.MANDIBLE_RELEASE_ROOT, "dist", "sqlite.js")
   : path.join(root, "src", "sqlite.ts")).default;
@@ -55,16 +55,30 @@ const dbPath = process.env.MANDIBLE_DB
 // the settings table), bypassing openDb()'s guard. Apply the shared refusal so
 // an instructions-CLI test invoked under vitest cannot mutate live settings.
 require(path.join(root, "cli", "production-db-guard.cjs")).assertNotProductionDbUnderTest(dbPath);
-fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-const db = new SqliteDatabase(dbPath);
-db.pragma("journal_mode = WAL");
-db.prepare(`
+const readOnly = ["targets-list", "targets-resolve", "post-export-get"].includes(op);
+function openReadOnlySettings() {
+  try { fs.statSync(dbPath); }
+  catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+  return new SqliteDatabase(dbPath, { readonly: true, fileMustExist: true });
+}
+const db = readOnly
+  ? openReadOnlySettings()
+  : (() => {
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    const writable = new SqliteDatabase(dbPath);
+    writable.pragma("journal_mode = WAL");
+    writable.prepare(`
   CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,
     updated_at INTEGER NOT NULL
   )
-`).run();
+    `).run();
+    return writable;
+  })();
 
 const TARGETS_KEY = "instructions.targets";
 const POST_EXPORT_KEY = "instructions.post_export";
@@ -74,6 +88,7 @@ function now() {
 }
 
 function getSetting(key, fallback = "") {
+  if (!db || !db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'settings'").get()) return fallback;
   const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(key);
   return row ? String(row.value) : fallback;
 }
@@ -87,18 +102,23 @@ function setSetting(key, value) {
 
 function readTargets() {
   const raw = getSetting(TARGETS_KEY, "[]");
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .map((target) => ({
-        path: typeof target.path === "string" ? target.path : "",
-        mode: target.mode === "standalone" ? "standalone" : "managed-block",
-      }))
-      .filter((target) => target.path.trim().length > 0);
-  } catch {
-    return [];
-  }
+  const parsed = JSON.parse(raw);
+  if (!Array.isArray(parsed)) throw new Error("Invalid instructions target registry: expected an array");
+  const seen = new Map();
+  return parsed.flatMap(target => {
+    if (!target || typeof target.path !== "string" || !path.isAbsolute(target.path)
+      || /[\t\r\n\0]/.test(target.path) || !["standalone", "managed-block"].includes(target.mode)) {
+      throw new Error("Invalid instructions target registry entry");
+    }
+    const normalized = requirePath(target.path);
+    const identity = targetIdentity(normalized);
+    if (seen.has(identity)) {
+      if (seen.get(identity) !== target.mode) throw new Error(`Conflicting instruction target modes: ${normalized}`);
+      return [];
+    }
+    seen.set(identity, target.mode);
+    return [{ path: normalized, mode: target.mode }];
+  });
 }
 
 function writeTargets(targets) {
@@ -106,7 +126,7 @@ function writeTargets(targets) {
 }
 
 function requirePath(value) {
-  if (!value) {
+  if (!value || !value.trim() || /[\t\r\n\0]/.test(value)) {
     console.error("Target path is required");
     process.exit(2);
   }
@@ -114,6 +134,13 @@ function requirePath(value) {
 }
 
 switch (op) {
+  case "targets-resolve": {
+    const targetPath = requirePath(args[0]);
+    const identity = targetIdentity(targetPath);
+    const mode = readTargets().find(target => targetIdentity(target.path) === identity)?.mode || "managed-block";
+    console.log(`${mode}\t${targetPath}`);
+    break;
+  }
   case "targets-list": {
     for (const target of readTargets()) {
       console.log(`${target.mode}\t${target.path}`);
@@ -127,7 +154,8 @@ switch (op) {
       console.error(`Invalid mode: ${mode}`);
       process.exit(2);
     }
-    const targets = readTargets().filter((target) => target.path !== targetPath);
+    const identity = targetIdentity(targetPath);
+    const targets = readTargets().filter((target) => targetIdentity(target.path) !== identity);
     targets.push({ path: targetPath, mode });
     writeTargets(targets);
     console.log(`Added instruction target: ${mode}\t${targetPath}`);
@@ -136,7 +164,8 @@ switch (op) {
   case "targets-rm": {
     const targetPath = requirePath(args[0]);
     const before = readTargets();
-    const after = before.filter((target) => target.path !== targetPath);
+    const identity = targetIdentity(targetPath);
+    const after = before.filter((target) => targetIdentity(target.path) !== identity);
     writeTargets(after);
     if (after.length === before.length) {
       console.log(`Instruction target not configured: ${targetPath}`);
@@ -291,13 +320,17 @@ EOF
   fi
 }
 
-write_desired_file() {
+write_desired_block() {
   local target="$1"
   local output="$2"
   local block_file
   block_file=$(mktemp)
-  render_block > "$block_file"
+  if ! render_block > "$block_file"; then
+    rm -f "$block_file"
+    return 2
+  fi
 
+  local result=0
   BEGIN_MARKER="$BEGIN_MARKER" END_MARKER="$END_MARKER" \
     "$BUN_RUNTIME" --no-install - "$target" "$block_file" <<'NODE' > "$output"
 const fs = require("node:fs");
@@ -321,43 +354,60 @@ if (start < 0) {
   process.stdout.write(`${current.slice(0, start)}${block}${current.slice(endIndex)}`);
 }
 NODE
+  result=$?
   rm -f "$block_file"
+  return "$result"
 }
 
-install_block() {
+write_desired_file() {
+  local target="$1" mode="$2" output="$3"
+  case "$mode" in
+    managed-block) write_desired_block "$target" "$output" ;;
+    standalone)
+      local fragment
+      fragment="$(mktemp)"
+      if ! render_fragment > "$fragment"; then
+        rm -f "$fragment"
+        return 2
+      fi
+      printf '\n' >> "$fragment"
+      local result=0
+      "$BUN_RUNTIME" --no-install - "$fragment" "$CLI_DIR" <<'NODE' > "$output"
+const fs = require("node:fs");
+const path = require("node:path");
+const { stampStandalone } = require(path.join(process.argv[3], "integration-files.cjs"));
+process.stdout.write(stampStandalone(fs.readFileSync(process.argv[2], "utf8")));
+NODE
+      result=$?
+      rm -f "$fragment"
+      return "$result"
+      ;;
+    *) printf 'Invalid instructions target mode: %s\n' "$mode" >&2; return 2 ;;
+  esac
+}
+
+install_file() {
   local target="$1"
+  local mode="$2"
   local write_target tmp
   write_target="$(write_target_path "$target")"
   tmp="$(temp_for_target "$write_target")"
-  write_desired_file "$target" "$tmp"
-  if [[ -f "$write_target" ]] && cmp -s "$write_target" "$tmp"; then
+  if ! write_desired_file "$target" "$mode" "$tmp"; then
     rm -f "$tmp"
-    printf 'Mandible instructions already current: %s\n' "$target"
-    return 0
+    return 2
   fi
-  mv "$tmp" "$write_target"
-  printf 'Installed Mandible instructions: %s\n' "$target"
-}
-
-install_standalone() {
-  local target="$1"
-  local write_target tmp
-  write_target="$(write_target_path "$target")"
-  tmp="$(temp_for_target "$write_target")"
-  render_fragment > "$tmp"
-  printf '\n' >> "$tmp"
-  if ! "$BUN_RUNTIME" --no-install - "$write_target" "$tmp" "$CLI_DIR" <<'NODE'
+  if [[ "$mode" == "standalone" ]] && ! "$BUN_RUNTIME" --no-install - "$write_target" "$tmp" "$CLI_DIR" <<'NODE'
 const fs = require("node:fs");
 const path = require("node:path");
 const [target, temporary, cli] = process.argv.slice(2);
-const { standaloneOwned, stampStandalone } = require(path.join(cli, "integration-files.cjs"));
+const { standaloneOwned } = require(path.join(cli, "integration-files.cjs"));
 const desired = fs.readFileSync(temporary, "utf8");
 const current = fs.existsSync(target) ? fs.readFileSync(target, "utf8") : null;
-if (current !== null && current !== desired && !standaloneOwned(current)) {
+const unstamped = desired.slice(0, desired.lastIndexOf("\n<!-- MANDIBLE GENERATED sha256:"));
+if (current !== null && current !== desired && current !== unstamped && !standaloneOwned(current)) {
   console.error(`Refusing to replace user-owned standalone file: ${target}`);
   process.exit(3);
 }
-fs.writeFileSync(temporary, stampStandalone(desired));
 NODE
   then
     rm -f "$tmp"
@@ -369,7 +419,7 @@ NODE
     return 0
   fi
   mv "$tmp" "$write_target"
-  printf 'Installed standalone Mandible instructions: %s\n' "$target"
+  printf 'Installed Mandible instructions (%s): %s\n' "$mode" "$target"
 }
 
 cleanup_block() {
@@ -459,14 +509,7 @@ install_target() {
   local mode="$2"
   local force="$3"
   guard_install_target "$target" "$force"
-  case "$mode" in
-    managed-block) install_block "$target" ;;
-    standalone) install_standalone "$target" ;;
-    *)
-      printf 'Invalid instructions target mode: %s\n' "$mode" >&2
-      return 2
-      ;;
-  esac
+  install_file "$target" "$mode"
 }
 
 hook_cwd_for_target() {
@@ -524,8 +567,9 @@ install_configured_targets() {
   fi
 }
 
-diff_block() {
+diff_target() {
   local target="$1"
+  local mode="$2"
   local desired current
   desired="$(mktemp)"
   if [[ -f "$target" ]]; then
@@ -533,7 +577,10 @@ diff_block() {
   else
     current="/dev/null"
   fi
-  write_desired_file "$target" "$desired"
+  if ! write_desired_file "$target" "$mode" "$desired"; then
+    rm -f "$desired"
+    return 2
+  fi
   if [[ -f "$target" ]] && cmp -s "$target" "$desired"; then
     rm -f "$desired"
     printf 'Mandible instructions already current: %s\n' "$target"
@@ -633,15 +680,21 @@ esac
 binding=$(mandible_bind_main_arguments "@instructions ${subcommand}" '{"target":{"option":"target"},"explicit_target":{"option":"target","constant":"1"},"worktree":{"option":"worktree"},"force":{"option":"force","constant":"1"}}' "$@") || exit $?
 eval "$binding"
 
+mode="managed-block"
+if [[ "$subcommand" == "diff" || ( "$subcommand" == "install" && "$explicit_target" == "1" ) ]]; then
+  resolved_target="$(settings_helper targets-resolve "$target")"
+  IFS=$'\t' read -r mode target <<< "$resolved_target"
+fi
+
 if [[ -n "$worktree" ]]; then
   target="$(map_target_to_worktree "$target" "$worktree")"
 fi
 
 case "$subcommand" in
-  diff) diff_block "$target" ;;
+  diff) diff_target "$target" "$mode" ;;
   install)
     if [[ "$explicit_target" == "1" ]]; then
-      install_target "$target" managed-block "$force"
+      install_target "$target" "$mode" "$force"
     else
       install_configured_targets "$force"
     fi

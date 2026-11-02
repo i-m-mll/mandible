@@ -394,6 +394,7 @@ class CapturedResponse implements ResponseLike {
 
 export class Router implements RouteRegistrar {
   private routes: CompiledRoute[] = [];
+  private readonly ingress = new WeakSet<RequestLike>();
   private readonly instance: InstanceInfo;
 
   constructor(private options: RouterOptions = {}) {
@@ -511,6 +512,16 @@ export class Router implements RouteRegistrar {
     };
   }
 
+  /** Compose operations with the actual ingress caller, never process-local authority. */
+  async invokeFrom(caller: RequestLike, input: Pick<RouterInvokeRequest, "method" | "url" | "body">): Promise<RouterInvokeResponse> {
+    if (!this.ingress.has(caller)) throw new Error("Composition requires a live router request.");
+    const response = new CapturedResponse();
+    const handled = await this.dispatch(input.method, input.url, input.body, response,
+      caller.ambient_identity, null, "composed", caller.signal, undefined,
+      Object.hasOwn(caller, "request_origin") ? { request_origin: caller.request_origin } : {}, caller);
+    return { status: handled ? response.statusCode : 404, body: response.sent ? response.body : { error: "not_found" } };
+  }
+
   async handle(req: http.IncomingMessage, res: http.ServerResponse, transport: "http" | "local-socket" = "http"): Promise<boolean> {
     const abortController = new AbortController();
     const abort = () => abortController.abort();
@@ -580,7 +591,7 @@ export class Router implements RouteRegistrar {
     response: ResponseLike,
     ambientIdentity?: unknown,
     credential?: string | null,
-    transport: "http" | "file-rpc" | "in-process" | "local-socket" = "in-process",
+    transport: "http" | "file-rpc" | "in-process" | "local-socket" | "composed" = "in-process",
     signal?: AbortSignal,
     httpAuth?: {
       browserRequest: boolean;
@@ -591,6 +602,7 @@ export class Router implements RouteRegistrar {
       localManaged?: LocalManagedIdentity | null;
     },
     originEnvelope: { request_origin?: unknown } = {},
+    caller?: RequestLike,
   ): Promise<boolean> {
     const normalizedMethod = method.toUpperCase();
     const url = new URL(requestUrl, "http://localhost");
@@ -609,7 +621,7 @@ export class Router implements RouteRegistrar {
       let clientIdentity: ResolvedClientIdentity | null = null;
       const gate = this.options.clientAuth;
       if (gate) {
-        clientIdentity = transport === "local-socket"
+        clientIdentity = caller ? caller.client_identity ?? null : transport === "local-socket"
           ? gate.localSocketIdentity?.(requestAmbientIdentity, httpAuth?.managed === true, httpAuth?.localManaged ?? null) ?? null
           : httpAuth?.internalContext && gate.authenticateInternalContext
           ? await gate.authenticateInternalContext(httpAuth.internalContext)
@@ -617,7 +629,7 @@ export class Router implements RouteRegistrar {
             ? gate.localBrowserIdentity()
           : !httpAuth?.browserRequest ? gate.authenticate(
                 credential,
-                clientAuthSourceForTransport(transport),
+                clientAuthSourceForTransport(transport === "composed" ? "http" : transport),
                 { method: normalizedMethod, pathname },
               ) : null;
         const localBootstrap = transport === "local-socket"
@@ -723,14 +735,15 @@ export class Router implements RouteRegistrar {
         body,
         ambient_identity: requestAmbientIdentity,
         ...originEnvelope,
-        local_managed_identity: transport === "local-socket" ? httpAuth?.localManaged ?? null : null,
-        managed_client: transport === "local-socket" && httpAuth?.managed === true,
+        local_managed_identity: caller?.local_managed_identity ?? (transport === "local-socket" ? httpAuth?.localManaged ?? null : null),
+        managed_client: caller?.managed_client ?? (transport === "local-socket" && httpAuth?.managed === true),
         client_identity: clientIdentity,
         signal,
-        target_instance_id: httpAuth?.targetInstanceId ?? null,
+        target_instance_id: caller?.target_instance_id ?? httpAuth?.targetInstanceId ?? null,
       };
 
       try {
+        this.ingress.add(request);
         if (gate && transport !== "in-process") {
           await gate.authorizeProtectedMutation?.(request, resolveOperation(route.options.operation, { instanceRole: this.instance.role, body, params }));
         }
@@ -758,6 +771,8 @@ export class Router implements RouteRegistrar {
           error: String(error),
         });
         response.status(500).json({ error: "internal_error" });
+      } finally {
+        this.ingress.delete(request);
       }
       return true;
     }

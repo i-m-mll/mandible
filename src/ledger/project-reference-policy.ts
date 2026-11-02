@@ -6,7 +6,7 @@ type Locator =
   | { kind: "column"; table: string; column: string }
   | { kind: "json"; table: string; column: string; path: string; discriminator: string }
   | { kind: "repository"; table: string; column: string };
-type Disposition = { disposition: "move" } | { disposition: "merge"; handler: "checkout" | "grants" | "feed" }
+type Disposition = { disposition: "move" } | { disposition: "merge"; handler: "checkout" | "feed" }
   | { disposition: "pin"; reason: string };
 export type ProjectReferencePolicy = {
   key: string;
@@ -26,7 +26,6 @@ export const PROJECT_REFERENCE_POLICIES: readonly ProjectReferencePolicy[] = [
   move("artifact", "source_project_id"), move("project_artifact_associations"), move("spaces"),
   move("trash_entries"), move("auth_request_merge_succeeded_facts"), move("briefing_destination_mutations"),
   column("ledger_project_checkouts", "project_id", { disposition: "merge", handler: "checkout" }),
-  column("permission_grants", "resource_id", { disposition: "merge", handler: "grants" }),
   column("ledger_change_feed_state", "project_id", { disposition: "merge", handler: "feed" }),
   column("ledger_change_log", "project_id", { disposition: "merge", handler: "feed" }),
   pin("auth_clearances", "project_id", "Immutable clearance scope, including expired and revoked clearances"),

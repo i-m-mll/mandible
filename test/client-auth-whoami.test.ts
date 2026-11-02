@@ -1,10 +1,11 @@
 // @vitest-environment node
+import { migratedFileDb } from './helpers/ledger-fixtures.js';
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
-import { openDb, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { registerClientAuthRoutes } from "../src/routes/client-auth.js";
 import { Router } from "../src/server.js";
 import { createUser, setupOperator } from "../src/users/store.js";
@@ -12,7 +13,7 @@ import { createUser, setupOperator } from "../src/users/store.js";
 let root = ""; let db: Db; let auth: ClientAuthenticator; let router: Router;
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-whoami-"));
-  db = openDb(path.join(root, "mandible.db")); setDb(db);
+  db = migratedFileDb(path.join(root, "mandible.db")); setDb(db);
   auth = new ClientAuthenticator(db, { secretsDir: path.join(root, "client-auth") });
   router = new Router({ clientAuth: auth }); registerClientAuthRoutes(router, auth);
 });

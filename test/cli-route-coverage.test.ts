@@ -4,8 +4,40 @@ import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
+import { runCli, startStubDaemon } from "./helpers/cli-process.js";
 
 describe("CLI API route coverage", () => {
+  it("leaves no dispatcher temp root when replacing itself with a child process", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-cli-dispatch-"));
+    try {
+      const result = spawnSync(path.join(process.cwd(), "bin", "mandible"), ["identity", "exec", "--", "true"], {
+        env: { ...process.env, TMPDIR: tempDir, MANDIBLE_SESSION_ID: "" },
+        encoding: "utf8",
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(fs.readdirSync(tempDir)).toEqual([]);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("cleans the dispatcher's identity lookup before executing a child", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-cli-identity-"));
+    const daemon = await startStubDaemon(({ url }) => url === "/api/sessions/dispatch-session"
+      ? { body: { pid: 1, conversation_id: "dispatch-conversation" } } : undefined);
+    try {
+      const result = await runCli(["identity", "exec", "--", "true"], {
+        env: { ...daemon.env, TMPDIR: tempDir, MANDIBLE_SESSION_ID: "dispatch-session", CODEX_THREAD_ID: "dispatch-conversation" },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(daemon.requests.map((request) => request.url)).toContain("/api/sessions/dispatch-session");
+      expect(fs.readdirSync(tempDir)).toEqual([]);
+    } finally {
+      await daemon.close();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("removes tracked token-bearing temporary files on TERM", () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-cli-cleanup-"));
     const trackedPath = path.join(tempDir, "spool-token.request.json.tmp");

@@ -265,7 +265,6 @@ cmd_repair() {
       if .merge then
         "merge \(.merge.source_project_id | mandible_short_id) -> \(.merge.target_project_id | mandible_short_id)",
         "references: \(.merge.reference_occurrences) occurrences in \(.merge.distinct_rows) distinct rows",
-        "duplicate grants to coalesce: \(.merge.grant_coalescences | length)",
         "mutable reference occurrences: \(([.merge.moves[]?.rows] | add) // 0) across \((.merge.moves // []) | length) table-column(s)",
         if ((.merge.conflicts // []) | length) > 0 then
           "conflicts: \([.merge.conflicts[] | "\(.kind):\(.value) \(.detail)"] | join(", "))"

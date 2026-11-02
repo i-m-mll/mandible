@@ -30,9 +30,6 @@ import {
   getInstructionDeliverySettings,
   updateBackupSettings,
   updateInstructionDeliverySettings,
-  getProjectAccessSettings,
-  listProjectsForPicker,
-  updateProjectAccessSettings,
   canPerformOperation,
   type BackupStatus,
   type DelegatedSigningStatus,
@@ -42,8 +39,6 @@ import {
   type InstructionTargetMode,
   type DesktopDaemonStatus,
   type SecureLocalConnectionsStatus,
-  type ProjectAccessSettings,
-  type ProjectPickerItem,
 } from '../api';
 import type { InstanceInfo } from '../api';
 import type { UserAppearanceSettingKey } from '../api';
@@ -146,7 +141,6 @@ const SETTINGS_SECTIONS = {
   agentHooks: { id: 'settings-agent-hooks', title: 'Agent Hooks' },
   integrations: { id: 'settings-integrations', title: 'Agent integrations' },
   instructionDelivery: { id: 'settings-instruction-delivery', title: 'Instruction Delivery' },
-  projectPermissions: { id: 'settings-project-permissions', title: 'Project permissions' },
   briefings: { id: 'settings-briefings', title: 'Briefings' },
   conversations: { id: 'settings-conversations', title: 'Conversations' },
   chatDefaults: { id: 'settings-chat-defaults', title: 'Chat defaults' },
@@ -1480,110 +1474,6 @@ function BackupSection(props: { section: SettingsSectionDefinition; instance?: I
   );
 }
 
-function ProjectPermissionsSection(props: { section: SettingsSectionDefinition; instance?: InstanceInfo | null }): JSX.Element {
-  const [projects, setProjects] = useState<ProjectPickerItem[]>([]);
-  const [selected, setSelected] = useState('');
-  const [access, setAccess] = useState<ProjectAccessSettings | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  const readAllowed = canPerformOperation(props.instance, 'GET', '/api/projects');
-  const mutationsAllowed = Boolean(selected && canPerformOperation(
-    props.instance,
-    'PATCH',
-    `/api/projects/${encodeURIComponent(selected)}/access`,
-    { restricted: !Boolean(access?.restricted) },
-  ));
-
-  useEffect(() => {
-    if (!readAllowed) {
-      setError('Project permissions are unavailable in this instance.');
-      return;
-    }
-    void listProjectsForPicker().then((items) => {
-      setProjects(items);
-      if (!selected && items[0]) setSelected(items[0].project_key);
-    }).catch((reason) => setError(reason instanceof Error ? reason.message : 'Failed to load projects'));
-  }, [props.instance, readAllowed]);
-
-  useEffect(() => {
-    if (!readAllowed || !selected) {
-      setAccess(null);
-      return;
-    }
-    setError('');
-    void getProjectAccessSettings(selected)
-      .then(setAccess)
-      .catch((reason) => setError(reason instanceof Error ? reason.message : 'Failed to load access'));
-  }, [props.instance, readAllowed, selected]);
-
-  const toggleRestricted = useCallback(async () => {
-    if (!mutationsAllowed || !selected || !access) return;
-    setBusy(true);
-    setError('');
-    try {
-      setAccess(await updateProjectAccessSettings(selected, !access.restricted));
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Failed to update access');
-    } finally {
-      setBusy(false);
-    }
-  }, [selected, access, mutationsAllowed]);
-
-  return (
-    <SettingsSectionShell section={props.section} testId="project-permissions-settings">
-      <SettingsSectionHeader
-        section={props.section}
-        description="Projects remain unrestricted until this toggle is enabled. Grants are managed with the user CLI."
-      />
-      {!mutationsAllowed ? (
-        <DetailPaneNotice severity="info" density="compact" title="Project settings unavailable">
-          This instance cannot change project restrictions.
-        </DetailPaneNotice>
-      ) : null}
-      {error && <DetailPaneNotice severity="error" density="compact" title="Project permissions unavailable">{error}</DetailPaneNotice>}
-      <div className="settings-view__section-body">
-        <div className="settings-view__select-row" data-settings-searchable>
-          <div className="settings-view__select-info">
-            <span className="settings-view__select-label">Project</span>
-          </div>
-          <NativeSelect className="settings-view__select" value={selected}
-            onChange={(event) => setSelected((event.target as HTMLSelectElement).value)}>
-            {projects.map((project) => (
-              <option key={project.id} value={project.project_key}>
-                {project.display_name || project.project_key}
-              </option>
-            ))}
-          </NativeSelect>
-        </div>
-        {access && (
-          <>
-            <div className="settings-view__toggle-row" data-settings-searchable>
-              <div className="settings-view__toggle-info">
-                <h3 className="settings-view__section-title">Restricted</h3>
-                <p className="settings-view__section-desc">Require an explicit read, write, or admin grant.</p>
-              </div>
-              <Toggle enabled={access.restricted} onToggle={() => void toggleRestricted()}
-                disabled={!mutationsAllowed || busy} label="Toggle project restriction" />
-            </div>
-            <div className="settings-view__text-row" data-settings-searchable>
-              <div className="settings-view__text-info">
-                <span className="settings-view__text-label">Grants</span>
-                {access.grants.length === 0 ? (
-                  <span className="settings-view__text-desc">No explicit grants.</span>
-                ) : access.grants.map((grant) => (
-                  <span key={grant.id} className="settings-view__text-desc">
-                    {grant.subject_type}:{grant.subject_id} — {grant.permission}
-                  </span>
-                ))}
-              </div>
-            </div>
-          </>
-        )}
-      </div>
-    </SettingsSectionShell>
-  );
-}
-
 export function SettingsView(props: SettingsViewProps): JSX.Element {
   const {
     settings,
@@ -1790,8 +1680,6 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
         settingsAllowed={instructionSettingsAllowed}
         exportRunsOnSave={exportRunsOnSave}
       />,
-
-      <ProjectPermissionsSection key={SETTINGS_SECTIONS.projectPermissions.id} section={SETTINGS_SECTIONS.projectPermissions} instance={instance} />,
 
       <SettingsSectionShell key={SETTINGS_SECTIONS.briefings.id} section={SETTINGS_SECTIONS.briefings}>
         <SettingsSectionHeader

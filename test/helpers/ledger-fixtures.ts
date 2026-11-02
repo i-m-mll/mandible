@@ -20,7 +20,7 @@ import SqliteDatabase from "../../src/sqlite.ts";
 import fs from "node:fs";
 import path from "node:path";
 
-import { migrate, setDb, type Db } from "../../src/db.js";
+import { migrate, openDb, setDb, type Db, type OpenDbOptions } from "../../src/db.js";
 import { systemAction } from "../../src/identity/resolver.js";
 import { resolveProjectForCheckout, type ResolvedLedgerProject } from "../../src/ledger/projects.js";
 import { LedgerStore } from "../../src/ledger/store.js";
@@ -132,8 +132,7 @@ function migratedDb(filename: string, pragmas: string[]): Db {
   if (filename === ':memory:') {
     db = SqliteDatabase.fromSnapshot(Buffer.from(schemaSnapshot()));
   } else {
-    assertNotProductionDbUnderTest(filename);
-    fs.writeFileSync(filename, schemaSnapshot(), { flag: 'wx', mode: 0o600 });
+    writeSchemaSnapshot(filename);
     db = new SqliteDatabase(filename);
   }
   try {
@@ -157,6 +156,18 @@ function schemaSnapshot(): Buffer {
  */
 export function migratedMemoryDb(): Db {
   return migratedDb(':memory:', []);
+}
+
+function writeSchemaSnapshot(filename: string): void {
+  assertNotProductionDbUnderTest(filename);
+  fs.mkdirSync(path.dirname(filename), { recursive: true });
+  fs.writeFileSync(filename, schemaSnapshot(), { flag: 'wx', mode: 0o600 });
+}
+
+/** Open a private seed copy with production connection configuration. */
+export function migratedFileDb(filename: string, options: OpenDbOptions = {}): Db {
+  writeSchemaSnapshot(filename);
+  return openDb(filename, options);
 }
 
 // --- production-path ledger factories --------------------------------------

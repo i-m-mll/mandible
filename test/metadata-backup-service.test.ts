@@ -1,10 +1,10 @@
+import { migratedFileDb } from './helpers/ledger-fixtures.js';
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createServer } from "node:http";
 import { Worker } from "node:worker_threads";
 import { afterEach, expect, it, vi } from "vitest";
-import { openDb } from "../src/db.js";
 import SqliteDatabase from "../src/sqlite.js";
 import { MetadataBackupService, type BackupWorkerInput } from "../src/metadata-backup-service.js";
 import { waitUntil } from "./helpers/wait-until.js";
@@ -14,7 +14,7 @@ afterEach(async () => { vi.useRealTimers(); for (const close of cleanups.splice(
 
 function fixture(factory?: (input: BackupWorkerInput) => Worker, logger = vi.fn()) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-backup-service-"));
-  const db = openDb(path.join(root, "ledger.db"));
+  const db = migratedFileDb(path.join(root, "ledger.db"));
   const service = new MetadataBackupService(db, logger, factory);
   const destination = path.join(root, "backup.sql");
   service.updateSetting("backup.destination", destination);

@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 
 import { AuthCommandCleanupError, executeAuthCommand } from "../src/auth-executor.js";
+import { waitUntil } from "./helpers/wait-until.js";
 
 describe("executeAuthCommand", () => {
   it("joins the spawned command when the synthetic start callback throws", async () => {
@@ -86,6 +87,7 @@ describe("executeAuthCommand", () => {
     `);
     let sawReady = false;
     try {
+      if (trigger === "timeout") vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       const completed = executeAuthCommand({
         request_id: "process-lifetime", command: `exec ${shellQuote(process.execPath)} ${shellQuote(leader)}`,
         timeoutMs: trigger === "timeout" ? 500 : 5000,
@@ -96,6 +98,11 @@ describe("executeAuthCommand", () => {
           }
         },
       });
+      if (trigger === "timeout") {
+        await waitUntil(() => sawReady, "the TERM-resistant descendant tree to be ready before timeout");
+        vi.advanceTimersByTime(500);
+        vi.useRealTimers();
+      }
       if (trigger === "leader-exit") expect(await completed).toMatchObject({ exit_code: 7 });
       else await expect(completed).rejects.toThrow(trigger === "timeout" ? "timed out" : "output consumer failed");
       if (trigger !== "leader-exit") expect(sawReady).toBe(true);
@@ -105,6 +112,7 @@ describe("executeAuthCommand", () => {
         expect(processIsAlive(pid), `owned process ${pid} still alive at settlement`).toBe(false);
       }
     } finally {
+      if (trigger === "timeout") vi.useRealTimers();
       for (const file of [leaderFile, descendantFile]) {
         if (fs.existsSync(file)) {
           const pid = Number(fs.readFileSync(file, "utf8"));

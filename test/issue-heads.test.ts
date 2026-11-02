@@ -9,6 +9,9 @@ import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import { buildUmbrellaStatus } from "../src/routes/issues.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
+import { buildLedgerIssueProjection } from "../src/ledger/graph-adapter.js";
+import { listLedgerIssueSummaries } from "../src/ledger/issue-projection.js";
+import { loadProjectIssueSet } from "../src/ledger/issue-predicate-context.js";
 
 const SYSTEM_ACTOR = { attribution: systemAction() };
 
@@ -97,6 +100,7 @@ function fixedHeadFixture() {
   link("fixed-inner", "fixed-shared", 201);
   link("fixed-shared", "fixed-root", 202);
   link("fixed-root", "fixed-root", 203);
+  link("fixed-root", "fixed-shared", 204);
   store.upsertIssueRelationship({ actor: SYSTEM_ACTOR, source_issue_id: "fixed-root",
     target_issue_id: "fixed-shared", relationship_type: "parent_child", provenance: "manual", created_at: 204 });
   const kept = store.addComment("fixed-shared", { ...SYSTEM_ACTOR, body: "comment", created_at: 1 });
@@ -127,7 +131,63 @@ function fixedHeadFixture() {
 }
 
 describe("issue heads", () => {
-  it("keeps fixed digest bytes for a fixture with cycles, a self-link, both edge surfaces and tied timestamps", () => {
+  it("removes hierarchy membership across consumers despite legacy rows, labels and prose", () => {
+    const parent = makeIssue("Parent", "umbrella");
+    const child = makeIssue("Child");
+    linkParentChild(parent.id, child.id);
+    linkLegacyParentChild(parent.id, child.id);
+    store.upsertIssueRelationship({ actor: SYSTEM_ACTOR, source_issue_id: parent.id,
+      target_issue_id: child.id, relationship_type: "related", provenance: "manual" });
+    store.setLabel(child.id, `parent:${parent.short_id}`, true, "mandible", SYSTEM_ACTOR);
+    store.updateIssue(parent.id, { body: `Children: [issue:${child.short_id}]` }, SYSTEM_ACTOR);
+    const membership = () => ({
+      children: (buildUmbrellaStatus(db, parent.id).children as Array<{ id: string }>).map(row => row.id),
+      graph: buildLedgerIssueProjection(db, { mode: "issue", status: "all" })!.edges
+        .filter(edge => edge.type === "umbrella_child").length,
+      parents: listLedgerIssueSummaries(db, { getRepos: () => [] }).flatMap(repo => repo.issues)
+        .find(row => row.id === child.short_id)!.parent_ids ?? [],
+      predicate: loadProjectIssueSet(db, projectId).parentChildren.childrenOf(parent.id),
+    });
+    expect(membership()).toEqual({ children: [child.id], graph: 1, parents: [parent.id], predicate: [child.id] });
+    store.unlinkRelationshipEdges({ actor: SYSTEM_ACTOR,
+      source_entity: { entity_type: "issue", entity_id: parent.id },
+      target_entities: [{ entity_type: "issue", entity_id: child.id }], link_type: "parent_child" });
+    expect(membership()).toEqual({ children: [], graph: 0, parents: [], predicate: [] });
+    expect(buildLedgerIssueProjection(db, { mode: "issue", status: "all" })!.edges.map(edge => edge.type)).toEqual(["references", "related"]);
+    const before = getLedgerIssueHead(db, parent.id);
+    comment(child.id);
+    expect(getLedgerIssueHead(db, parent.id).subtree_digest).toBe(before.subtree_digest);
+  });
+
+  it("excludes comment endpoints and deleted issues from hierarchy and closure", () => {
+    const parent = makeIssue("Parent", "umbrella");
+    const child = makeIssue("Deleted child");
+    const other = makeIssue("Comment owner");
+    linkParentChild(parent.id, child.id);
+    const note = comment(other.id);
+    for (const [source, target] of [
+      [{ entity_type: "issue" as const, entity_id: parent.id }, { entity_type: "comment" as const, entity_id: note.id }],
+      [{ entity_type: "comment" as const, entity_id: note.id }, { entity_type: "issue" as const, entity_id: parent.id }],
+    ]) store.linkRelationshipEdges({ actor: SYSTEM_ACTOR, source_entity: source, target_entities: [target], link_type: "parent_child" });
+    db.prepare("UPDATE ledger_issues SET deleted_at = ? WHERE id = ?").run(tick(), child.id);
+    expect(buildUmbrellaStatus(db, parent.id).children).toEqual([]);
+    expect(loadProjectIssueSet(db, projectId).parentChildren.childrenOf(parent.id)).toEqual([]);
+    expect(loadProjectIssueSet(db, projectId).parentChildren.childrenOf(other.id)).toEqual([]);
+    expect(buildLedgerIssueProjection(db, { mode: "issue", status: "all" })!.edges).toEqual([]);
+    expect(listLedgerIssueSummaries(db, { getRepos: () => [] }).flatMap(repo => repo.issues)
+      .find(row => row.id === parent.short_id)!.parent_ids ?? []).toEqual([]);
+    const before = getLedgerIssueHead(db, parent.id);
+    expect(before.subtree_digest).toBe(before.digest);
+    comment(other.id);
+    expect(getLedgerIssueHead(db, parent.id).subtree_digest).toBe(before.subtree_digest);
+    linkParentChild(parent.id, other.id);
+    db.prepare("UPDATE ledger_issues SET deleted_at = ? WHERE id = ?").run(tick(), parent.id);
+    expect(loadProjectIssueSet(db, projectId).parentChildren.childrenOf(parent.id)).toEqual([]);
+    expect(listLedgerIssueSummaries(db, { getRepos: () => [] }).flatMap(repo => repo.issues)
+      .find(row => row.id === other.short_id)!.parent_ids ?? []).toEqual([]);
+  });
+
+  it("keeps fixed digest bytes for a fixture with cycles, a diamond, a self-link and tied timestamps", () => {
     fixedHeadFixture();
     const current = getLedgerIssueHead(db, "fixed-root");
     expect(current).toMatchObject({
@@ -275,7 +335,7 @@ describe("issue heads", () => {
     expect(getLedgerIssueHead(db, a.id).subtree_digest).not.toBe(first.subtree_digest);
   });
 
-  it("includes descendants reachable only through the legacy relationships table", () => {
+  it("excludes descendants reachable only through the legacy relationships table", () => {
     const umbrella = makeIssue("Legacy umbrella", "umbrella");
     const child = makeIssue("Legacy child");
     linkLegacyParentChild(umbrella.id, child.id);
@@ -285,7 +345,7 @@ describe("issue heads", () => {
     const after = getLedgerIssueHead(db, umbrella.id);
 
     expect(after.digest).toBe(before.digest);
-    expect(after.subtree_digest).not.toBe(before.subtree_digest);
+    expect(after.subtree_digest).toBe(before.subtree_digest);
   });
 
   it("gives every root of a multi-root batch the same head it has alone", () => {
@@ -335,6 +395,7 @@ describe("umbrella child summaries", () => {
     linkParentChild(child.id, dual.id);
     linkLegacyParentChild(child.id, dual.id);
     linkParentChild(child.id, removed.id);
+    linkLegacyParentChild(child.id, removed.id);
     store.unlinkRelationshipEdges({
       actor: SYSTEM_ACTOR,
       source_entity: { entity_type: "issue", entity_id: child.id },

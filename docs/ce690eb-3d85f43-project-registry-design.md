@@ -150,8 +150,7 @@ display **without any destructive data move**.
 ### `mandible project repair` — explicit, guarded, dry-run by default
 
 Registry repair requires the configured local operator, including dry runs. Local
-human socket access retains its existing owner authority. Agent identities and
-project-admin grants do not grant registry administration. File-RPC denies this
+human socket access retains its existing owner authority. Agent identities do not grant registry administration. File-RPC denies this
 administrative route. The route preserves 401/403 authorization responses, uses
 one strict request schema, and declares ledger-read for reports and ledger-write
 for apply. Preview effect ceilings continue to apply.
@@ -182,11 +181,7 @@ Mutable namespace fields move without changing row identity or recorded content.
 Checkout moves retain checkout and work-repo identity and signal protection-input
 reconciliation after commit. Feed merging preserves target order and event IDs,
 appends source events, and removes source state; broken continuity blocks repair.
-Project grants union by subject type, subject ID, and permission: source-only rows
-retain ID and creation time, exact duplicates retain the destination survivor
-with an attributed coalescence event, and different roles remain independently
-revocable. Global grants, memberships, operator settings, and approval authority
-remain unchanged. Source and target restricted settings must match.
+Global capability grants, memberships, operator settings and approval authority remain unchanged by project merges. Projects do not carry access restrictions or project grants.
 
 Immutable clearance scopes (all lifecycle states), Git artifact custody,
 registered repo sources and source-move lineage, frozen spawn/reminder records,

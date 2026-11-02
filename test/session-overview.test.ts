@@ -1,9 +1,9 @@
+import { migratedMemoryDb } from './helpers/ledger-fixtures.js';
 // GET /api/sessions/:id/overview: one overview for any session alias of any
 // provider, with or without a process attachment, children from lineage.
-import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { migrate, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { SessionRegistry } from "../src/registry.js";
 import { registerSessionRoutes } from "../src/routes/sessions.js";
 import { Router } from "../src/server.js";
@@ -19,8 +19,7 @@ const CLAUDE_SESSION = "4be0c2a1-6b44-4a43-9d2e-0d6f1c9a7e21";
 const SUBAGENT = "a1b2c3d4e5f6a7b8c";
 
 beforeEach(() => {
-  db = new SqliteDatabase(":memory:");
-  migrate(db);
+  db = migratedMemoryDb();
   setDb(db);
   router = new Router();
   registerSessionRoutes(router, new SessionRegistry(db));

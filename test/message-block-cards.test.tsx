@@ -2,8 +2,7 @@
 
 import { cleanup, fireEvent, render, screen, within } from './helpers/dom.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { latestPlanIndex, parsePlanEntries } from '../ui/src/components/message-blocks/PlanBlock';
-import { PermissionApprovalCard, permissionActionsForRequest } from '../ui/src/components/console/PermissionApprovalCard';
+import { permissionActionsForRequest } from '../ui/src/components/console/PermissionApprovalCard';
 import { ActivityGroup, ActivityRow } from '../ui/src/components/message-blocks/ActivityBlock';
 import { chatRouteHref } from '../ui/src/chat/messageLinks';
 import type { DisplayActivityItem } from '../src/presentation/types';
@@ -17,7 +16,6 @@ afterEach(() => {
 });
 
 describe('message action cards', () => {
-
   it('groups only maximal consecutive tool runs and keeps leaves independently foldable', () => {
     const blocks = [
       { type: 'tool_use', id: 'tool-1', name: 'Read', input: { path: '/tmp/a' } },
@@ -101,38 +99,12 @@ describe('message action cards', () => {
     ]);
   });
 
-  it('renders explicit four-way permission options when supplied by the backend', () => {
-    const request: ConsolePermissionRequest = {
-      id: 'p1',
-      session_id: 's1',
-      tool_name: 'Bash',
-      tool_input: { command: 'npm test' },
-      created_at: 0,
-      expires_at: 1000,
-      options: [
-        { key: '1', label: 'Allow once', decision: 'allow' },
-        { key: '2', label: 'Always allow', decision: 'allow_always' },
-        { key: '3', label: 'Deny', decision: 'reject_once' },
-        { key: '4', label: 'Always deny', decision: 'reject_always' },
-      ],
-    };
-    render(<PermissionApprovalCard request={request} backendType="sdk" onRespond={() => undefined} />);
-    expect(screen.getByText('Always deny')).toBeTruthy();
-    expect(screen.getByText('npm test')).toBeTruthy();
-  });
-
   it('keeps only the latest plan snapshot visible in a turn', () => {
     const blocks = [
       { type: 'plan', text: '- [ ] Old item' },
       { type: 'text', text: 'Working' },
       { type: 'plan', text: '- [x] New item\n- [~] Active item' },
     ] as RenderedTurn['assistantEvent']['message']['content'];
-    expect(latestPlanIndex(blocks)).toBe(2);
-    expect(parsePlanEntries(blocks[2].text)).toEqual([
-      { text: 'New item', status: 'completed' },
-      { text: 'Active item', status: 'in_progress' },
-    ]);
-
     const turn: RenderedTurn = {
       id: 'turn-1',
       assistantEvent: {

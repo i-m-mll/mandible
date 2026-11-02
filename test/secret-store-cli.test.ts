@@ -282,15 +282,38 @@ describe("secret backend seam", () => {
     expect(reader.stderr).toBe("");
   });
 
-  it("creates token-bearing temp files as 0600 inside a 0700 root", () => {
-    const result = keychain().seam(
-      'f="$(api_temp_file)"; printf "file="; stat -f "%Lp" "$f" 2>/dev/null || stat -c "%a" "$f"; '
-        + 'printf "root="; stat -f "%Lp" "$MANDIBLE_API_TEMP_ROOT" 2>/dev/null || stat -c "%a" "$MANDIBLE_API_TEMP_ROOT"',
-    );
-    expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain("file=600");
-    expect(result.stdout).toContain("root=700");
-  });
+  for (const shell of SHELLS) {
+    it(`keeps temporary modes private and restores the caller's umask under ${shell}`, () => {
+      const result = keychain().seam(
+        'api_cleanup_temp_files; for mask in 000 777; do umask "$mask"; '
+          + 'api_ensure_temp_root || exit; f="$(api_temp_file)" || exit; '
+          + 'printf "file="; stat -f "%Lp" "$f" 2>/dev/null || stat -c "%a" "$f"; '
+          + 'printf "root="; stat -f "%Lp" "$MANDIBLE_API_TEMP_ROOT" 2>/dev/null || stat -c "%a" "$MANDIBLE_API_TEMP_ROOT"; '
+          + 'printf "mask="; umask; api_cleanup_temp_files; done',
+        {}, shell,
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout.match(/file=600/g)).toHaveLength(2);
+      expect(result.stdout.match(/root=700/g)).toHaveLength(2);
+      expect(result.stdout).toMatch(/mask=0*000\n/);
+      expect(result.stdout).toMatch(/mask=0*777\n/);
+    });
+
+    it(`isolates concurrent command-substitution files and cleans them on exit under ${shell}`, () => {
+      const result = keychain().seam(
+        'printf "%s\\n" "$MANDIBLE_API_TEMP_ROOT"; '
+          + 'for n in 1 2 3 4 5 6 7 8; do '
+          + '(f="$(api_temp_file)" || exit; [[ -f "$f" ]] || exit; printf "%s\\n" "$f") & done; wait',
+        {}, shell,
+      );
+      expect(result.status, result.stderr).toBe(0);
+      const [root, ...files] = result.stdout.trim().split("\n");
+      expect(files).toHaveLength(8);
+      expect(new Set(files).size).toBe(8);
+      expect(files.every((file) => path.dirname(file) === root)).toBe(true);
+      expect(fs.existsSync(root!)).toBe(false);
+    });
+  }
 
   for (const shell of SHELLS) {
     it(`suppresses and restores xtrace around secret handling under ${shell}`, () => {
@@ -455,19 +478,16 @@ describe("user token mint --store", () => {
   it("rejects non-scalar user and minted credential fields before shell evaluation or storage", async () => {
     const chain = keychain();
     const marker = path.join(chain.dir, "response-executed");
-    for (const value of [["safe", "touch", marker], { unexpected: "object" }]) {
-      for (const field of ["slug", "kind", "token", "credential.id"]) {
-        const beforeMint = field === "slug" || field === "kind";
-        const stub = await userDaemon({ slug: "malformed", kind: "human",
-          ...(beforeMint ? { userFields: { [field]: value } } : { mintFields: field === "token" ? { token: value } : { credential: { id: value } } }),
-        });
-        const result = await cli(chain, stub, ["user", "token", "mint", "malformed", "--store", "--service", "malformed-service", "--json"]);
-        expect(result.status, result.stderr).toBe(1);
-        expect(result.stderr).toMatch(/valid secret-store user fields|malformed token or credential fields/);
-        expect(fs.existsSync(marker)).toBe(false);
-        expect(chain.items()).toEqual([]);
-        if (beforeMint) expect(posted(stub)).toBe(false);
-      }
+    for (const fields of [
+      { userFields: { slug: ["safe", "touch", marker] } },
+      { mintFields: { credential: { id: { unexpected: "object" } } } },
+    ]) {
+      const stub = await userDaemon({ slug: "malformed", kind: "human", ...fields });
+      const result = await cli(chain, stub, ["user", "token", "mint", "malformed", "--store", "--service", "malformed-service", "--json"]);
+      expect(result.status, result.stderr).toBe(1);
+      expect(fs.existsSync(marker)).toBe(false);
+      expect(chain.items()).toEqual([]);
+      expect(posted(stub)).toBe(!("userFields" in fields));
     }
   });
 

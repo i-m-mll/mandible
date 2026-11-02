@@ -1,11 +1,12 @@
 // @vitest-environment node
+import { migratedFileDb } from './helpers/ledger-fixtures.js';
 import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
-import { openDb, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { FileRpcTransport } from "../src/file-rpc-transport.js";
 import { systemAction } from "../src/identity/resolver.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
@@ -18,7 +19,7 @@ import { createUser, SYSTEM_USER_ID } from "../src/users/store.js";
 let root = ""; let db: Db; let auth: ClientAuthenticator; let router: Router;
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-gate-"));
-  db = openDb(path.join(root, "mandible.db")); setDb(db);
+  db = migratedFileDb(path.join(root, "mandible.db")); setDb(db);
   auth = new ClientAuthenticator(db, { secretsDir: path.join(root, "auth") });
   router = new Router({ clientAuth: auth });
   router.post("/api/issues/test-write", (req, res) => res.json({ identity: req.client_identity ?? null }), { operation: { id: "fixture:post:/api/issues/test-write", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: "allow" });
@@ -27,13 +28,14 @@ beforeEach(() => {
 afterEach(() => { db.close(); fs.rmSync(root, { recursive: true, force: true }); });
 
 async function fileRpc(token?: string) {
+  const id = token ? "authenticated" : "anonymous";
   const transport = new FileRpcTransport({ router, dir: path.join(root, "rpc") });
-  fs.mkdirSync(transport.dir, { recursive: true });
-  fs.writeFileSync(path.join(transport.dir, "one.request.json"), JSON.stringify({
-    id: "one", method: "POST", path: "/api/issues/test-write", body: {}, ...(token ? { capability_token: token } : {}),
+  fs.mkdirSync(transport.dir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(transport.dir, `${id}.request.json`), JSON.stringify({
+    id, method: "POST", path: "/api/issues/test-write", body: {}, ...(token ? { capability_token: token } : {}),
   }));
   await transport.processOnce();
-  return JSON.parse(fs.readFileSync(path.join(transport.dir, "one.response.json"), "utf8")) as { status: number; body: unknown };
+  return JSON.parse(fs.readFileSync(path.join(transport.dir, `${id}.response.json`), "utf8")) as { status: number; body: unknown };
 }
 
 describe("strict client-auth boundary", () => {
@@ -67,7 +69,7 @@ describe("operator bootstrap ledger boundary", () => {
       attribution: systemAction(),
     }).id;
     const logger = vi.fn();
-    const bootstrap = new Router({ logger });
+    const bootstrap = new Router({ clientAuth: auth, logger });
     registerUserRoutes(bootstrap);
     registerIssueRoutes(bootstrap, { getRepos: () => [], getRepoById: () => undefined, getBranches: () => [] } as never, undefined, inlineLedgerReader());
 

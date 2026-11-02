@@ -35,25 +35,21 @@ import {
   addGroup,
   addGroupMember,
   evaluateGlobalCapability,
-  evaluateProjectAccess,
   GLOBAL_CAPABILITIES,
   listGrants,
   listGroupMembers,
   listGroups,
-  projectAccessSettings,
   removeGrant,
   removeGroup,
   removeGroupMember,
   type PermissionSubjectType,
 } from "../permissions/store.js";
-import { resolveProjectRef } from "../ledger/project-registry.js";
 import {
   discoverConfiguredPublicSigningKey,
   resolveOpenSshPublicKey,
   type SigningKeyResolution,
 } from "../signing-credential-audit.js";
 import { entityRefs } from "../entity-refs.js";
-
 
 function optionalString(body: Record<string, unknown>, key: string): string | undefined {
   const value = body[key];
@@ -346,15 +342,10 @@ export function registerUserRoutes(router: RouteRegistrar): void {
 
   router.get("/api/users/grants", (req, res) => {
     try {
-      const resourceType = req.query.resource_type;
-      sendJson(res, 200, {
-        grants: listGrants(getDb(), {
-          resource_type: resourceType === "project" || resourceType === "global"
-            ? resourceType
-            : undefined,
-          resource_id: req.query.resource_id || undefined,
-        }),
-      });
+      if ("resource_type" in req.query || "resource_id" in req.query) {
+        throw new UserRegistryError("invalid", "Grant resource filters have been retired.");
+      }
+      sendJson(res, 200, { grants: listGrants(getDb()) });
     } catch (error) {
       handleError(res, error);
     }
@@ -367,19 +358,19 @@ export function registerUserRoutes(router: RouteRegistrar): void {
       const body = bodyRecord(req);
       const subjectType = optionalString(body, "subject_type");
       const subject = optionalString(body, "subject");
-      const resourceType = optionalString(body, "resource_type");
+      if (["resource_type", "resource_id", "resource", "project", "role"].some(key => key in body)) {
+        throw new UserRegistryError("invalid", "Project grants and resource fields have been retired; provide a global permission.");
+      }
       const permission = optionalString(body, "permission");
       if (subjectType !== "user" && subjectType !== "group") {
         throw new UserRegistryError("invalid", "subject_type must be user or group.");
       }
-      if (!subject || !permission || (resourceType !== "project" && resourceType !== "global")) {
-        throw new UserRegistryError("invalid", "subject, resource_type, and permission are required.");
+      if (!subject || !permission) {
+        throw new UserRegistryError("invalid", "subject and permission are required.");
       }
       sendJson(res, 201, { grant: addGrant(db, {
         subject_type: subjectType as PermissionSubjectType,
         subject,
-        resource_type: resourceType,
-        resource: optionalString(body, "resource"),
         permission,
       }) });
     } catch (error) {
@@ -404,11 +395,7 @@ export function registerUserRoutes(router: RouteRegistrar): void {
       const db = getDb();
       const user = resolveUserOrThrow(db, req.params.ref);
       requireSelfOrOperator(db, req, user.id);
-      const projectRef = req.query.project;
-      const project = resolveProjectRef(db, projectRef ?? "");
-      if (!project.ok) {
-        throw new UserRegistryError("not_found", `No project matches '${projectRef ?? ""}'.`);
-      }
+      if ("project" in req.query) throw new UserRegistryError("invalid", "Project access reports have been retired.");
       const identity = {
         user_id: user.id,
         slug: user.slug,
@@ -417,20 +404,12 @@ export function registerUserRoutes(router: RouteRegistrar): void {
         source: "in_process" as const,
         effect_ceiling: PRODUCTION_EFFECTS,
       };
-      const projectAccess = evaluateProjectAccess(db, {
-        identity,
-        project_id: project.project.id,
-        required_role: "read",
-      });
       const capabilities = Object.fromEntries(GLOBAL_CAPABILITIES.map((capability) => [
         capability,
         evaluateGlobalCapability(db, { identity, capability }).allowed,
       ]));
       sendJson(res, 200, {
         user,
-        project: project.project,
-        access: projectAccess,
-        project_settings: projectAccessSettings(db, project.project.id),
         global_capabilities: capabilities,
       });
     } catch (error) {

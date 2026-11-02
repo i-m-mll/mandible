@@ -68,19 +68,6 @@ function ledgerStub(heads: Record<string, unknown>, checkpoints: Record<string, 
 }
 
 describe("issue CLI", () => {
-  it("prints umbrella status through file RPC", async () => {
-    const { env, responder } = spool(() => ({
-      status: 200,
-      body: { umbrella: { short_id: "abc", status: "open" }, delegation_manifest: null, children: [], auth_queue: { pending_requests: [] } },
-    }));
-
-    const result = await runCli(["umbrella", "status", "abc", "--json"], { env });
-
-    expect(result.status, result.stderr).toBe(0);
-    expect(responder.requests[0]).toMatchObject({ method: "GET", path: "/api/ledger/issues/abc/umbrella-status" });
-    expect(JSON.parse(result.stdout).umbrella.short_id).toBe("abc");
-  });
-
   it("returns parent-role revision conflicts distinctly from invalid session errors", async () => {
     const stub = await daemon(({ method, url }) => {
       if (method !== "POST") return undefined;

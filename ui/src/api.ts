@@ -1004,6 +1004,12 @@ export async function getAuthQueue<T>(): Promise<T[]> {
   return normalizeList(payload);
 }
 
+export async function refreshAuthQueue<T>(signal?: AbortSignal): Promise<T[]> {
+  invalidateApiGetCache((key) => key === cacheKeyForGet('/api/auth/queue'));
+  const payload = await cachedApiGetJson<ApiList<T>>('/api/auth/queue', { ...WARMED_ROUTE_GET_OPTIONS, signal });
+  return normalizeList(payload);
+}
+
 export async function getAuthHistory<T>(limit?: number): Promise<T[]> {
   const query = limit != null ? `?limit=${limit}` : '';
   const payload = await cachedApiGetJson<ApiList<T>>(`/api/auth/history${query}`, WARMED_ROUTE_GET_OPTIONS);
@@ -3464,21 +3470,6 @@ export type CanonicalProject = ProjectPickerItem & {
   checkouts: CanonicalProjectCheckout[];
 };
 
-export type ProjectPermissionGrant = {
-  id: string;
-  subject_type: 'user' | 'group';
-  subject_id: string;
-  resource_type: 'project';
-  resource_id: string;
-  permission: 'read' | 'write' | 'admin';
-};
-
-export type ProjectAccessSettings = {
-  project_id: string;
-  restricted: boolean;
-  grants: ProjectPermissionGrant[];
-};
-
 export type SpaceFactPacket = {
   space: ContractSpace;
   items: ContractSpaceItem[];
@@ -3541,30 +3532,6 @@ export async function listCanonicalProjects(read: WarmableRead<CanonicalProject[
     ...read,
     onCached: onCached && ((cached) => onCached(canonicalProjects(cached))),
   }));
-}
-
-export async function getProjectAccessSettings(projectRef: string): Promise<ProjectAccessSettings> {
-  const response = await apiGet(`/api/projects/${encodeURIComponent(projectRef)}/access`);
-  return await parseMaybeJson(response) as ProjectAccessSettings;
-}
-
-export async function updateProjectAccessSettings(
-  projectRef: string,
-  restricted: boolean,
-): Promise<ProjectAccessSettings> {
-  const response = await browserSessionFetch(`/api/projects/${encodeURIComponent(projectRef)}/access`, {
-    method: 'PATCH',
-    headers: { ...DEFAULT_HEADERS, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ restricted }),
-  });
-  const payload = await parseMaybeJson(response);
-  if (!response.ok) {
-    const error = payload && typeof payload === 'object' && !Array.isArray(payload)
-      ? (payload as { error?: unknown }).error
-      : null;
-    throw new Error(typeof error === 'string' ? error : `PATCH project access failed: ${response.status}`);
-  }
-  return payload as ProjectAccessSettings;
 }
 
 export async function getSpace(spaceId: string): Promise<ContractSpace> {

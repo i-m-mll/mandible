@@ -1134,8 +1134,60 @@ describe("one version behind head", () => {
   });
 });
 
+describe("reading-window preview version collision", () => {
+  // These two published preview lineages predate main's v230 ACL retirement.
+  // Replay their actual forward statements from v229, preserving their original version numbers.
+  function previewDatabase(version: 230 | 231): Db {
+    const db = migrateFixtureThrough(229);
+    db.transaction(() => {
+      for (const name of ["conversation_position_spaces", ...(version === 231 ? ["chat_stream_width_preference"] : [])]) {
+        for (const statement of MIGRATIONS.find(item => item.name === name)!.statements) db.exec(statement);
+      }
+      db.prepare("UPDATE meta SET value = ? WHERE key = 'schema_version'").run(String(version));
+    })();
+    return db;
+  }
+
+  it.each([230, 231] as const)("converges preview v%s without losing source positions, preferences or global grants", version => {
+    const db = previewDatabase(version);
+    const fresh = new SqliteDatabase();
+    try {
+      migrate(fresh);
+      const user = setupOperator(db, { slug: "preview-owner", display_name: "Owner" });
+      db.prepare("INSERT INTO user_settings VALUES (?, ?, ?, 8, 123)")
+        .run(user.id, version === 231 ? "chat_stream_max_width_px" : "managed_chat_defaults", version === 231 ? "0" : "{}");
+      db.exec("INSERT INTO conversations (id, source, source_path, source_hash, source_mtime, started_at, session_id) VALUES ('chat', 'codex', '/chat', 'hash', 0, '2026-11-02', 'native')");
+      db.exec("INSERT INTO conversation_sources (id, conversation_id, provider, native_session_id, parser_format, parser_version, normalization_version, created_at, updated_at, position_space_id, position_count, position_fingerprint, position_fingerprint_version, publication_revision) VALUES ('source', 'chat', 'codex', 'native', 'codex-jsonl', '1', '1', 1, 1, 'space', 17, 'fingerprint', 2, 9)");
+      db.exec("INSERT INTO permission_grants VALUES ('global', 'user', 'owner', 'global', NULL, 'backup', 123)");
+      const source = db.prepare("SELECT * FROM conversation_sources").all();
+      const preferences = db.prepare("SELECT * FROM user_settings").all();
+      migrate(db);
+      expect(schemaVersion(db)).toBe(String(CURRENT_SCHEMA_VERSION));
+      expect(sqliteMaster(db)).toEqual(sqliteMaster(fresh));
+      expect(tableInfo(db)).toEqual(tableInfo(fresh));
+      expect(db.prepare("SELECT * FROM conversation_sources").all()).toEqual(source);
+      expect(db.prepare("SELECT * FROM user_settings").all()).toEqual(preferences);
+      expect(db.prepare("SELECT * FROM permission_grants").all()).toEqual([{ id: "global", subject_type: "user", subject_id: "owner", permission: "backup", created_at: 123 }]);
+      expect(db.pragma("foreign_key_check")).toEqual([]);
+      const snapshot = db.serialize();
+      migrate(db);
+      expect(db.serialize().equals(snapshot)).toBe(true);
+    } finally { db.close(); fresh.close(); }
+  });
+
+  it("refuses partial preview shapes before changing schema or retained data", () => {
+    const db = previewDatabase(231);
+    try {
+      db.exec("ALTER TABLE conversation_sources DROP COLUMN position_fingerprint");
+      const snapshot = db.serialize();
+      expect(() => migrate(db)).toThrow("Unrecognized reading-window Chat preview migration collision");
+      expect(db.serialize().equals(snapshot)).toBe(true);
+    } finally { db.close(); }
+  });
+});
+
 it("admits stream width without altering existing preference revisions", () => {
-  const db = migrateFixtureThrough(230);
+  const db = migrateFixtureThrough(231);
   try {
     const operator = setupOperator(db, { slug: "stream-width-operator", display_name: "Operator" });
     db.prepare("INSERT INTO user_settings (user_id, key, value, revision, updated_at) VALUES (?, 'managed_chat_defaults', '{}', 8, 123)").run(operator.id);
@@ -1228,5 +1280,61 @@ it("preserves historical token receipts while admitting truthful local attributi
     expect(db.prepare("SELECT evidence_method FROM briefing_collection_sharing_receipts WHERE id = 'local'").get()).toEqual({ evidence_method: "session_claim" });
     expect(db.pragma("foreign_key_check")).toEqual([]);
     expect(() => db.prepare("UPDATE briefing_collection_sharing_receipts SET reason = 'changed'").run()).toThrow();
+  } finally { db.close(); }
+});
+
+it("retires project ACL schema and rows while preserving global capability IDs and all authored history", () => {
+  const db = migrateFixtureThrough(229);
+  try {
+    const operator = setupOperator(db, { slug: "acl-operator", display_name: "Operator" });
+    const agent = createUser(db, { slug: "acl-agent", kind: "agent", display_name: "Agent" });
+    const first = addProject(db, { project_key: "acl-first" });
+    const second = addProject(db, { project_key: "acl-second" });
+    db.prepare("UPDATE ledger_projects SET restricted = 1 WHERE id = ?").run(first.id);
+    db.prepare("INSERT INTO user_groups (id, slug, display_name, kind, created_at, updated_at) VALUES ('acl-team', 'acl-team', 'Team', 'custom', 1, 1)").run();
+    db.prepare("INSERT INTO user_group_members (group_id, user_id, created_at) VALUES ('acl-team', ?, 1)").run(agent.id);
+    const grant = db.prepare(`INSERT INTO permission_grants
+      (id, subject_type, subject_id, resource_type, resource_id, permission, created_at) VALUES (?, ?, ?, ?, ?, ?, 1)`);
+    grant.run("project-direct", "user", agent.id, "project", first.id, "admin");
+    grant.run("project-group", "group", "acl-team", "project", second.id, "read");
+    grant.run("global-direct", "user", agent.id, "global", null, "spawn_console");
+    grant.run("global-group", "group", "acl-team", "global", null, "backup");
+    const store = new LedgerStore(db);
+    const issue = store.createIssue({ project_id: first.id, title: "Authored history", body: "Preserved",
+      kind: "bug", attribution: { user_id: operator.id, evidence_method: "local_default" } });
+    store.addComment(issue.id, { body: "Historical comment", attribution: { user_id: agent.id, evidence_method: "session_claim" } });
+    const projectRows = db.prepare("SELECT id, display_name, project_key, created_at, updated_at FROM ledger_projects ORDER BY id").all();
+    const tables = ["ledger_issues", "ledger_comments", "ledger_body_revisions", "ledger_events", "users", "user_groups", "user_group_members",
+      "work_unit_custody_events", "auth_request_lifecycle_events", "auth_clearances", "auth_clearance_uses"];
+    const history = () => Object.fromEntries(tables.map(table => [table, db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
+    const before = history();
+    const violations = db.pragma("foreign_key_check");
+    migrate(db);
+    expect(history()).toEqual(before);
+    expect(db.prepare("SELECT id, display_name, project_key, created_at, updated_at FROM ledger_projects ORDER BY id").all()).toEqual(projectRows);
+    expect(db.prepare("SELECT * FROM permission_grants ORDER BY id").all()).toEqual([
+      { id: "global-direct", subject_type: "user", subject_id: agent.id, permission: "spawn_console", created_at: 1 },
+      { id: "global-group", subject_type: "group", subject_id: "acl-team", permission: "backup", created_at: 1 },
+    ]);
+    expect(tableInfo(db, "ledger_projects").some(column => column.name === "restricted")).toBe(false);
+    expect(db.pragma("foreign_key_check")).toEqual(violations);
+    const fresh = openDb(":memory:");
+    try { expect(sqliteMaster(db)).toEqual(sqliteMaster(fresh)); } finally { fresh.close(); }
+  } finally { db.close(); }
+});
+
+it("rolls back the complete ACL retirement if removing a referenced restriction column fails", () => {
+  const db = migrateFixtureThrough(229);
+  try {
+    const project = addProject(db, { project_key: "acl-rollback" });
+    db.prepare("INSERT INTO permission_grants (id, subject_type, subject_id, resource_type, resource_id, permission, created_at) VALUES ('retained-project-grant', 'group', 'team', 'project', ?, 'read', 1)").run(project.id);
+    db.exec("CREATE VIEW fixture_restriction_dependency AS SELECT restricted FROM ledger_projects");
+    const before = sqliteMaster(db);
+    const grants = db.prepare("SELECT * FROM permission_grants").all();
+    expect(() => migrate(db)).toThrow();
+    expect(schemaVersion(db)).toBe("229");
+    expect(sqliteMaster(db)).toEqual(before);
+    expect(db.prepare("SELECT * FROM permission_grants").all()).toEqual(grants);
+    expect(db.pragma("integrity_check")).toEqual([{ integrity_check: "ok" }]);
   } finally { db.close(); }
 });

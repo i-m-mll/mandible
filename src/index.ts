@@ -43,6 +43,7 @@ import {
   writePidFile,
 } from "./lifecycle.js";
 import { registerSessionRoutes } from "./routes/sessions.js";
+import { registerChannelRoutes } from "./routes/channel.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerWorkRoutes } from "./routes/work.js";
 import { registerIssueRoutes } from "./routes/issues.js";
@@ -259,6 +260,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   });
   // Create router and register all partition routes
   const router = new Router({ logger, instance, clientAuth });
+  registerChannelRoutes(router);
   const sessionRegistry = new SessionRegistry(db, logger);
   // Bug: 4e32923 — capture the auth queue so the inbox route can mark
   // auth_requests as delivered when the channel server forwards the event.

@@ -1,9 +1,10 @@
+import { migratedFileDb } from './helpers/ledger-fixtures.js';
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { IngestionActor } from "../src/ingestion-actor.js";
-import { openDb, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { startIngestion, stopIngestionGracefully, triggerExactPathIngest, triggerTargetedIngest } from "../src/ingestion.js";
 import { waitUntil } from "./helpers/wait-until.js";
 
@@ -28,7 +29,7 @@ function setup() {
   const sources = path.join(root, "home", ".codex", "sessions");
   fs.mkdirSync(sources, { recursive: true });
   const dbPath = path.join(root, "ledger.db");
-  const db = openDb(dbPath);
+  const db = migratedFileDb(dbPath);
   const observations: Observation[] = [];
   const actor = new IngestionActor({
     dbPath, logger: (level, message, details) => observations.push({ level, message, details: details ?? {} }),

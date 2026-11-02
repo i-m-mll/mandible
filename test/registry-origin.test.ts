@@ -3,7 +3,7 @@ import { type Db } from "../src/db.js";
 import { addProject, updateProject, addOrUpdateCheckout, repairRegistry } from "../src/ledger/project-registry.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { createUser, updateUser, addCredential, revokeCredential, addBinding, removeBinding } from "../src/users/store.js";
-import { addGroup, addGroupMember, addGrant, removeGroup, setProjectRestricted } from "../src/permissions/store.js";
+import { addGroup, addGroupMember, addGrant, removeGroup, } from "../src/permissions/store.js";
 import { withRequestOrigin } from "../src/request-origin.js";
 import { withLedgerMutationActor } from "../src/ledger/mutation-history.js";
 import { createManagedReminder, reconcileManagedReminders, cancelManagedReminder, acknowledgeManagedReminderOccurrence } from "../src/managed-reminders.js";
@@ -54,19 +54,18 @@ it("records access changes and cascades without secrets, pre-commit notification
   const group = run(() => addGroup(db, { slug: "access-team" }));
   run(() => {
     addGroupMember(db, group.id, actor.id);
-    addGrant(db, { subject_type: "group", subject: group.id, resource_type: "project", resource: project.id, permission: "write" });
-    setProjectRestricted(db, project.id, true);
+    addGrant(db, { subject_type: "group", subject: group.id, permission: "spawn_console" });
     const noOpCount = events().length;
     addGroupMember(db, group.id, actor.id);
-    addGrant(db, { subject_type: "group", subject: group.id, resource_type: "project", resource: project.id, permission: "write" });
-    setProjectRestricted(db, project.id, true);
+    addGrant(db, { subject_type: "group", subject: group.id, permission: "spawn_console" });
+
     expect(events()).toHaveLength(noOpCount);
     revokeCredential(db, credential.id);
     removeBinding(db, binding.id);
     removeGroup(db, group.id);
   });
   const recorded = events().filter(e => JSON.parse(e.payload_json).request_origin?.provider_session_id === origin.provider_session_id);
-  expect(recorded.map(e => e.event_type)).toEqual(["credential.created", "binding.created", "group.created", "group_member.created", "grant.created", "project.updated", "credential.updated", "binding.deleted", "grant.deleted", "group_member.deleted", "group.deleted"]);
+  expect(recorded.map(e => e.event_type)).toEqual(["credential.created", "binding.created", "group.created", "group_member.created", "grant.created", "credential.updated", "binding.deleted", "grant.deleted", "group_member.deleted", "group.deleted"]);
   expect(recorded.every(e => e.actor_user_id === actor.id && e.evidence_method === "api_token")).toBe(true);
   expect(JSON.stringify(recorded)).not.toMatch(/confidential-token-fingerprint|private-label|secret-binding-value/);
   expect(db.prepare("SELECT project_id FROM ledger_change_log WHERE event_id = ?").get(recorded[0].id)).toBeUndefined();

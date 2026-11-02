@@ -558,19 +558,19 @@ describe("unified ref resolver", () => {
     }
   });
 
-  it("refuses approval metadata when its project is absent, ambiguous, or conflicting", async () => {
+  it("resolves approval metadata independently of project association", async () => {
     const id = "2257522a-39a2-467b-b3f8-491aea66754c";
     db.prepare(`INSERT INTO auth_requests (id, command, title, created_at, updated_at, expires_at)
       VALUES (?, 'true', 'Hidden metadata', 1, 1, 9999999999999)`).run(id);
     const resolve = async () => (await checkedResolve(`/api/spaces/resolve?ref=auth:${id}`)).resolution;
-    expect(await resolve()).toMatchObject({ resolved: false, entity: null, error: "project_unresolved" });
+    expect(await resolve()).toMatchObject({ resolved: true, entity: { id: "2257522a", title: "Hidden metadata" } });
     db.prepare("UPDATE auth_requests SET repo = 'unknown-project'").run();
-    expect(await resolve()).toMatchObject({ resolved: false, entity: null, error: "project_unresolved" });
+    expect(await resolve()).toMatchObject({ resolved: true, entity: { id: "2257522a", title: "Hidden metadata" } });
     db.prepare("UPDATE ledger_projects SET display_name = 'Shared'").run();
     db.prepare("UPDATE auth_requests SET repo = 'Shared'").run();
-    expect(await resolve()).toMatchObject({ resolved: false, entity: null, error: "project_unresolved" });
+    expect(await resolve()).toMatchObject({ resolved: true, entity: { id: "2257522a", title: "Hidden metadata" } });
     db.prepare("UPDATE auth_requests SET repo = ?, target_repo_root = ?").run(PROJECT_ID, OTHER_PROJECT_ID);
-    expect(await resolve()).toMatchObject({ resolved: false, entity: null, error: "project_unresolved" });
+    expect(await resolve()).toMatchObject({ resolved: true, entity: { id: "2257522a", title: "Hidden metadata" } });
     addOrUpdateCheckout(db, PROJECT_ID, { root: "/fixture/approval-checkout", name: "Approval checkout", default_branch: "main" });
     db.prepare("UPDATE auth_requests SET repo = NULL, target_repo_root = ?").run("/fixture/approval-checkout");
     expect(await resolve()).toMatchObject({ resolved: true, entity: { id: "2257522a" } });

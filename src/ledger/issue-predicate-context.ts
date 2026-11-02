@@ -8,7 +8,7 @@ import {
   type LabelHistoryIndex,
   type ParentChildIndex,
 } from "./issue-predicate.js";
-import type { LedgerRelationshipEdge } from "./types.js";
+import { listIssueHierarchyEdges } from "./issue-graph.js";
 
 /**
  * A project's issues and the relationships issue predicates read, loaded from
@@ -86,16 +86,9 @@ class ProjectParentChildren implements ParentChildIndex {
   ) {}
 
   childrenOf(issueId: string): readonly string[] {
-    this.childrenByIssueId ??= buildParentChildrenByIssueId(this.issues, this.db.prepare(
-      `SELECT *
-         FROM ledger_relationship_edges
-        WHERE target_project_id = ?
-          AND source_entity_type = 'issue'
-          AND target_entity_type = 'issue'
-          AND link_type = 'parent_child'
-          AND deleted_at IS NULL
-        ORDER BY created_at ASC, id ASC`,
-    ).all(this.projectId) as LedgerRelationshipEdge[]);
+    this.childrenByIssueId ??= buildParentChildrenByIssueId(
+      this.issues, listIssueHierarchyEdges(this.db, { projectId: this.projectId }),
+    );
     return this.childrenByIssueId.get(issueId) ?? [];
   }
 }

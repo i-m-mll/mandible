@@ -290,7 +290,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
   };
   return <MessageLinkContext.Provider value={props.onCopyMessageLink ?? null}>
     <div className="stream-renderer">
-      <div ref={setScrollNode} className="stream-renderer__scroll" tabIndex={0} aria-label="Conversation" {...viewport.inputHandlers}>
+      <div ref={setScrollNode} className="stream-renderer__scroll" tabIndex={0} aria-label="Conversation" aria-busy={!initialVisible} {...viewport.inputHandlers}>
         <div className="stream-renderer__virtual-canvas" style={{ height: `${viewport.engine.getTotalSize()}px`, visibility: initialVisible ? 'visible' : 'hidden' }}>
           <ReadingRowStrip items={viewport.engine.getVirtualItems()} endOffset={viewport.endOffset}>{item => {
             const ref = viewport.rows[item.index];
@@ -312,7 +312,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
             </MeasuredReadingBox>;
           }}</ReadingRowStrip>
         </div>
-        {(!initialVisible || !viewport.rows.length) && <div className="stream-renderer__empty">{props.showEmpty && complete.ready && viewport.appliedGeometry && !complete.rows.length ? props.emptyLabel ?? 'No messages yet' : 'Loading conversation…'}</div>}
+        {(!initialVisible || !viewport.rows.length) && props.showEmpty && complete.ready && viewport.appliedGeometry && !complete.rows.length && <div className="stream-renderer__empty">{props.emptyLabel ?? 'No messages yet'}</div>}
       </div>
       <OverflowTopFade scroller={scrollNode} enabled={initialVisible && viewport.rows.length > 0} contentStart={viewport.engine.options.paddingStart ?? 0} className="stream-renderer__top-fade" />
       {appearance.error && !appearance.ready && <DetailPaneNotice severity="error" density="compact" title="Appearance preferences unavailable" source="chat-appearance" actions={<button type="button" className="btn btn--ghost btn--sm" onClick={appearance.retry}>Retry</button>}>{appearance.error}</DetailPaneNotice>}

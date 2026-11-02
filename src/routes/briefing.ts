@@ -2,7 +2,6 @@ import type { LedgerReader } from "../ledger-reads/index.js";
 import { attributionForRequest, ClientAuthzError, isLocalHumanRequest, isOperator, requireIdentity, requireOperator, requireProtectedOperator } from "../client-auth/authz.js";
 import { createHash, randomUUID } from "node:crypto";
 import { canonicalJson } from "../canonical-json.js";
-import { artifactRequiredProjects, getArtifactCurrentSource } from "../artifact-source.js";
 import type { Db } from "../db.js";
 import {
   applyBriefingAnnotations,
@@ -49,8 +48,7 @@ import {
 } from "../feedback/briefing-groups.js";
 import type { BriefingGroupDestinationChangeInput } from "../feedback/briefing-groups.js";
 import { requireAgentPublisher } from "./agent-publisher-auth.js";
-import { evaluateProjectAccess, PermissionError, requireProjectAccess } from "../permissions/store.js";
-import { resolveArtifactProject } from "../permissions/resources.js";
+import { resolveArtifactProject } from "../ledger/resource-projects.js";
 import { resolveArtifactIdentity } from "../provider-artifacts.js";
 import { placeBriefingReport } from "../feedback/briefing-report-destinations.js";
 import { sendJson } from "./http.js";
@@ -66,7 +64,7 @@ import {
 import { entityRefs } from "../entity-refs.js";
 
 function handleError(res: ResponseLike, error: unknown): void {
-  if (error instanceof ClientAuthzError || error instanceof BriefingStoreError || error instanceof PermissionError) {
+  if (error instanceof ClientAuthzError || error instanceof BriefingStoreError) {
     sendJson(res, error.status, { error: error.message, code: error.code,
       ...(error instanceof BriefingStoreError && error.details ? error.details : {}) });
     return;
@@ -150,19 +148,7 @@ function destinationPrincipal(db: Db, req: RequestLike) {
       : principal.kind === "agent" ? "session_claim" as const : "local_default" as const };
 }
 
-function artifactPublisherAccess(db: Db, req: RequestLike, artifactId: string): void {
-  const scope = resolveArtifactProject(db, artifactId);
-  if (!scope.ok && scope.reason !== "unassociated") {
-    throw new BriefingStoreError("Artifact project ownership is ambiguous", 409, "ambiguous_project");
-  }
-  if (scope.ok) requireProjectAccess(db, req, scope.project_id, "write");
-  const current = getArtifactCurrentSource(db, artifactId);
-  for (const project of artifactRequiredProjects(db, artifactId, current?.source ?? null)) {
-    requireProjectAccess(db, req, project, "write");
-  }
-}
-
-function artifactProjectForWrite(db: Db, req: RequestLike, artifactRef: string):
+function artifactDestinationProject(db: Db, artifactRef: string):
   { logicalArtifactId: string; projectId: string } {
   const resolved = resolveArtifactIdentity(db, artifactRef, "strict-read");
   if (resolved.status !== "resolved" || resolved.target_type !== "artifact" || !resolved.target_id) {
@@ -174,12 +160,12 @@ function artifactProjectForWrite(db: Db, req: RequestLike, artifactRef: string):
       ? "Associate this logical Artifact with one canonical project before changing its destination"
       : "Logical Artifact project ownership is ambiguous", 409, "briefing_destination_project_unresolved",
     { logical_artifact_id: resolved.target_id, reason: scope.reason });
-  requireProjectAccess(db, req, scope.project_id, "write");
+
   return { logicalArtifactId: resolved.target_id, projectId: scope.project_id };
 }
 
-function routeProjectsForWrite(db: Db, req: RequestLike, manifest: ReturnType<typeof parseBriefingDestinationRouteManifest>) {
-  return manifest.routes.map((route) => artifactProjectForWrite(db, req, route.logical_artifact_ref));
+function routeDestinationProjects(db: Db, manifest: ReturnType<typeof parseBriefingDestinationRouteManifest>) {
+  return manifest.routes.map((route) => artifactDestinationProject(db, route.logical_artifact_ref));
 }
 
 function renameViewer(
@@ -329,19 +315,11 @@ function briefingLayoutViewer(db: Db, req: RequestLike): {
 export function briefingReadViewer(db: Db, req: RequestLike) {
   if (!localAgent(db, req)) {
     const actor = activeHuman(db, req);
-    return { userId: actor.user.id, operator: actor.operator, projectScoped: false };
+    return { userId: actor.user.id, operator: actor.operator };
   }
   const operator = configuredHumanOperator(db, "briefing_layout_operator_required",
     "Agent Briefing reads require a configured active human responder.");
-  return { userId: operator.id, operator: true, projectScoped: true };
-}
-
-function agentMayReadBriefing(db: Db, req: RequestLike, artifactId: string | null): boolean {
-  if (!artifactId) return false;
-  const scope = resolveArtifactProject(db, artifactId);
-  if (!scope.ok) return false;
-  return evaluateProjectAccess(db, { identity: req.client_identity ?? null,
-    project_id: scope.project_id, required_role: "read" }).allowed;
+  return { userId: operator.id, operator: true };
 }
 
 function publicationPrincipalAndResponder(db: Db, req: RequestLike): {
@@ -402,17 +380,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
   server.get("/api/briefing-destination-routes", (req, res) => {
     try {
       destinationPrincipal(db, req);
-      const routes = [] as ReturnType<typeof inspectBriefingDestinationRoutes>["routes"];
-      let omittedCount = 0;
-      let unresolvedCount = 0;
-      for (const route of inspectBriefingDestinationRoutes(db).routes) {
-        const scope = resolveArtifactProject(db, route.logical_artifact_id);
-        if (!scope.ok) { unresolvedCount++; continue; }
-        if (!evaluateProjectAccess(db, { identity: req.client_identity ?? null,
-          project_id: scope.project_id, required_role: "write" }).allowed) { omittedCount++; continue; }
-        routes.push(route);
-      }
-      sendJson(res, 200, { routes, omitted_count: omittedCount, unresolved_count: unresolvedCount });
+      sendJson(res, 200, inspectBriefingDestinationRoutes(db));
     } catch (error) { handleError(res, error); }
   }, { operation: { id: "get:/api/briefing-destination-routes", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
@@ -420,7 +388,6 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
     try {
       destinationPrincipal(db, req);
       const route = inspectBriefingDestinationRoutes(db, req.params.routeKey);
-      for (const entry of route.routes) artifactProjectForWrite(db, req, entry.logical_artifact_id);
       sendJson(res, 200, route);
     } catch (error) { handleError(res, error); }
   }, { operation: { id: "get:/api/briefing-destination-routes/:routeKey", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
@@ -429,7 +396,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
     try {
       destinationPrincipal(db, req);
       const manifest = parseBriefingDestinationRouteManifest(req.body);
-      routeProjectsForWrite(db, req, manifest);
+      routeDestinationProjects(db, manifest);
       sendJson(res, 200, planBriefingDestinationRoutes(db, manifest));
     } catch (error) { handleError(res, error); }
   }, { operation: { id: "post:/api/briefing-destination-routes/plan", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
@@ -438,7 +405,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
     try {
       const actor = destinationPrincipal(db, req);
       const manifest = parseBriefingDestinationRouteManifest(req.body);
-      const scopes = routeProjectsForWrite(db, req, manifest);
+      const scopes = routeDestinationProjects(db, manifest);
       const scopeByArtifact = new Map(scopes.map((scope) => [scope.logicalArtifactId, scope.projectId]));
       const result = db.transaction(() => {
         const before = new Map(inspectBriefingDestinationRoutes(db).routes.map((route) => [route.route_key, route]));
@@ -474,7 +441,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
       const unexpected = Object.keys(requestBody).find((key) => !allowed.includes(key));
       if (unexpected) throw new BriefingStoreError(`request body contains unsupported field '${unexpected}'`);
       const artifactRef = typeof requestBody.logical_artifact_ref === "string" ? requestBody.logical_artifact_ref : "";
-      const scope = artifactProjectForWrite(db, req, artifactRef);
+      const scope = artifactDestinationProject(db, artifactRef);
       const route = requestBody.route === undefined ? undefined : parseBriefingDestinationRouteManifest({
         schema: "mandible-briefing-destination-routes@3", routes: [requestBody.route],
       });
@@ -517,7 +484,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
       const briefing = db.prepare("SELECT logical_artifact_id FROM briefings WHERE id = ? AND archived_at IS NULL")
         .get(briefingId) as { logical_artifact_id: string | null } | undefined;
       if (!briefing?.logical_artifact_id) throw new BriefingStoreError("Report Briefing not found", 404, "not_found");
-      const scope = artifactProjectForWrite(db, req, briefing.logical_artifact_id);
+      const scope = artifactDestinationProject(db, briefing.logical_artifact_id);
       const published = db.prepare(`SELECT 1 FROM briefing_destination_routes route
         JOIN briefing_destination_policies policy ON policy.route_key = route.route_key
         JOIN briefing_destination_owners owner ON owner.logical_artifact_id = route.logical_artifact_id
@@ -957,17 +924,6 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
         throw new BriefingStoreError("target_briefing_ref must be a nonblank Briefing ref");
       }
       if (!title) throw new BriefingStoreError("title must be a nonblank string");
-      if (getUserById(db, publication.publisherUserId)?.kind === "agent") {
-        const version = resolveArtifactIdentity(db, artifactVersionRef, "strict-read");
-        if (version.status !== "resolved" || version.target_type !== "artifact_version" || !version.target_id) {
-          throw new BriefingStoreError("Briefing creation requires one exact Artifact version", 404,
-            "artifact_version_not_found");
-        }
-        const logical = db.prepare("SELECT artifact_id FROM artifact_version WHERE id = ?")
-          .get(version.target_id) as { artifact_id: string } | undefined;
-        if (!logical) throw new BriefingStoreError("Artifact version not found", 404, "artifact_version_not_found");
-        artifactProjectForWrite(db, req, logical.artifact_id);
-      }
       const result = publishBriefingFromArtifactVersion(db, {
         title,
         ...(Object.hasOwn(requestBody, "description") ? { description: requestBody.description } : {}),
@@ -1024,10 +980,6 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
           throw new ClientAuthzError(403, "source_namespace_forbidden",
             `Identity '${publisher.slug}' is not permitted to publish '${request.task_identity}' to '${request.source_health.source}'.`);
         }
-        for (const input of request.inputs) {
-          const route = inspectBriefingDestinationRoutes(db, input.route_key);
-          for (const entry of route.routes) artifactPublisherAccess(db, req, entry.logical_artifact_id);
-        }
         const replayed = Boolean(db.prepare(
           "SELECT 1 FROM briefing_composition_runs WHERE publisher_user_id = ? AND task_identity = ? AND run_key = ?",
         ).get(publisher.userId, request.task_identity, request.run_key));
@@ -1056,7 +1008,6 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
       }
       const existing = db.prepare("SELECT logical_artifact_id FROM briefings WHERE briefing_key = ?")
         .get(request.briefing_key) as { logical_artifact_id: string | null } | undefined;
-      if (existing?.logical_artifact_id) artifactPublisherAccess(db, req, existing.logical_artifact_id);
       const existed = Boolean(existing);
       const replayed = Boolean(db.prepare(
         "SELECT 1 FROM briefing_runs WHERE publisher_user_id = ? AND task_identity = ? AND run_key = ?",
@@ -1075,7 +1026,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
   server.get("/api/briefings", async (req, res) => {
     try {
       const viewer = briefingReadViewer(db, req);
-      sendJson(res, 200, await reader.run("briefings_list", { viewer, identity: req.client_identity ?? null }));
+      sendJson(res, 200, await reader.run("briefings_list", { viewer }));
     } catch (error) {
       handleError(res, error);
     }
@@ -1115,10 +1066,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
         operator: viewer.operator,
       });
       if (!projection) throw new BriefingStoreError("briefing not found", 404, "not_found");
-      if (viewer.projectScoped && !agentMayReadBriefing(db, req,
-        projection.briefing.logical_artifact_id as string | null)) {
-        throw new ClientAuthzError(403, "project_permission_required", "Project read permission is required.");
-      }
+
       sendJson(res, 200, projection);
     } catch (error) {
       handleError(res, error);

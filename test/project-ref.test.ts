@@ -1,9 +1,10 @@
+import { migratedFileDb } from './helpers/ledger-fixtures.js';
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { openDb, type Db } from "../src/db.js";
+import { type Db } from "../src/db.js";
 import { addOrUpdateCheckout, addProject, resolveProjectRef, resolveProjectRefAsync } from "../src/ledger/project-registry.js";
 
 let dir: string;
@@ -11,7 +12,7 @@ let db: Db;
 
 beforeEach(() => {
   dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "project-ref-")));
-  db = openDb(path.join(dir, "mandible.db"));
+  db = migratedFileDb(path.join(dir, "mandible.db"));
 });
 
 afterEach(() => {
