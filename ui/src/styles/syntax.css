@@ -1,0 +1,47 @@
+.hljs {
+  background: transparent;
+  color: var(--text-primary);
+}
+
+.hljs .hljs-comment,
+.hljs .hljs-quote {
+  color: var(--text-muted);
+}
+
+.hljs .hljs-keyword,
+.hljs .hljs-selector-tag,
+.hljs .hljs-subst {
+  color: var(--accent-red);
+}
+
+.hljs .hljs-literal,
+.hljs .hljs-number,
+.hljs .hljs-tag .hljs-attr,
+.hljs .hljs-template-variable,
+.hljs .hljs-variable {
+  color: var(--accent-blue);
+}
+
+.hljs .hljs-doctag,
+.hljs .hljs-string {
+  color: var(--accent-green);
+}
+
+.hljs .hljs-section,
+.hljs .hljs-selector-id,
+.hljs .hljs-title {
+  color: var(--accent-purple);
+}
+
+.hljs .hljs-built_in,
+.hljs .hljs-builtin-name,
+.hljs .hljs-name,
+.hljs .hljs-type {
+  color: var(--accent-purple);
+}
+
+.hljs .hljs-meta,
+.hljs .hljs-symbol {
+  color: var(--accent-yellow);
+}
+

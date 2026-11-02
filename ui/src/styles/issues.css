@@ -684,50 +684,6 @@ code.inbox-detail__meta-value {
 .artifact-preview--code .hljs {
   display: block;
   min-width: max-content;
-  background: transparent;
-  color: var(--text-primary);
-}
-
-.artifact-preview--code .hljs-comment,
-.artifact-preview--code .hljs-quote {
-  color: var(--text-muted);
-}
-
-.artifact-preview--code .hljs-keyword,
-.artifact-preview--code .hljs-selector-tag,
-.artifact-preview--code .hljs-subst {
-  color: var(--accent-red);
-}
-
-.artifact-preview--code .hljs-literal,
-.artifact-preview--code .hljs-number,
-.artifact-preview--code .hljs-tag .hljs-attr,
-.artifact-preview--code .hljs-template-variable,
-.artifact-preview--code .hljs-variable {
-  color: var(--accent-blue);
-}
-
-.artifact-preview--code .hljs-doctag,
-.artifact-preview--code .hljs-string {
-  color: var(--accent-green);
-}
-
-.artifact-preview--code .hljs-section,
-.artifact-preview--code .hljs-selector-id,
-.artifact-preview--code .hljs-title {
-  color: var(--accent-purple);
-}
-
-.artifact-preview--code .hljs-built_in,
-.artifact-preview--code .hljs-builtin-name,
-.artifact-preview--code .hljs-name,
-.artifact-preview--code .hljs-type {
-  color: var(--accent-purple);
-}
-
-.artifact-preview--code .hljs-meta,
-.artifact-preview--code .hljs-symbol {
-  color: var(--accent-yellow);
 }
 
 .artifact-detail__hint {

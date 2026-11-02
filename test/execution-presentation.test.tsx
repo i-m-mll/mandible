@@ -112,5 +112,5 @@ it('colors generic shell commands without changing text or guessing an unsupport
   const explicitCode=explicit.container.querySelector('code')!;
   expect(explicitCode.textContent).toBe(command);
   expect(explicitCode.querySelector('span')).toBeNull();
-  expect(explicit.container.textContent).toContain('/custom/interpreter');
+  expect(projectExecution('exec_command',{...input,shell:'/custom/interpreter'})?.facts).toMatchObject({shells:['/custom/interpreter']});
 });
