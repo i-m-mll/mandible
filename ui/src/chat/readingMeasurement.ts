@@ -15,15 +15,17 @@ export type RenderedMeasurementBatch = {
   elements: ReadonlyMap<string, HTMLElement>;
   dispose: () => void;
 };
+export type MaterializedMeasurementBatch<Body> = { bodies: readonly Body[]; release: () => void };
 export type MeasurementRequest<Body> = {
   rows: readonly MeasurementRow[];
   layouts: readonly MeasurementLayout[];
-  materialize: (rows: readonly MeasurementRow[], signal: AbortSignal) => Promise<readonly Body[]>;
+  materialize: (rows: readonly MeasurementRow[], signal: AbortSignal) => Promise<readonly Body[] | MaterializedMeasurementBatch<Body>>;
   renderBatch: (host: HTMLElement, bodies: readonly Body[], layout: MeasurementLayout, rows: readonly MeasurementRow[]) => RenderedMeasurementBatch;
   /** Select the real responsive/font context; honor signal before applying asynchronous changes. */
   prepareLayout?: (layout: MeasurementLayout, signal: AbortSignal) => Promise<void>;
   reuse?: readonly RowMeasurement[];
   batchSize?: number;
+  materializeBatchSize?: number;
   maxSynchronousMs?: number;
   signal?: AbortSignal;
 };
@@ -40,14 +42,15 @@ export function measurementLayoutIdentity(layout: MeasurementLayout): string {
 function measurementKey(row: MeasurementRow, layoutIdentity: string): string {
   return JSON.stringify([row.key, row.revision, row.disclosureIdentity ?? '', layoutIdentity]);
 }
-function untilAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<{ ready: true; value: T } | { ready: false }> {
+function untilAbort<T>(promise: Promise<T>, signal: AbortSignal, discard?: (value: T) => void): Promise<{ ready: true; value: T } | { ready: false }> {
   if (signal.aborted) return Promise.resolve({ ready: false });
   return new Promise((resolve, reject) => {
     const abort = () => resolve({ ready: false });
     signal.addEventListener('abort', abort, { once: true });
     promise.then(value => {
       signal.removeEventListener('abort', abort);
-      resolve(signal.aborted ? { ready: false } : { ready: true, value });
+      if (signal.aborted) { discard?.(value); resolve({ ready: false }); }
+      else resolve({ ready: true, value });
     }, error => { signal.removeEventListener('abort', abort); reject(error); });
   });
 }
@@ -100,12 +103,17 @@ export class ReadingMeasurementService {
     const cancelled = (): MeasurementResult => ({ status: 'cancelled', measurements: partial() });
     let host: HTMLDivElement | undefined;
     let rendered: RenderedMeasurementBatch | undefined;
+    let materialized: MaterializedMeasurementBatch<Body> | undefined;
+    const releaseMaterialized = () => { const batch = materialized; materialized = undefined; batch?.release(); };
     const release = () => {
       const batch = rendered; rendered = undefined;
       try { batch?.dispose(); } finally { host?.replaceChildren(); }
     };
     let cleanupError: unknown;
-    const cleanup = () => { try { release(); } catch (error) { cleanupError = error; } finally { host?.remove(); } };
+    const cleanup = () => {
+      try { release(); } catch (error) { cleanupError = error; }
+      finally { try { releaseMaterialized(); } catch (error) { cleanupError ??= error; } finally { host?.remove(); } }
+    };
     signal.addEventListener('abort', cleanup, { once: true });
     let phase: 'layout' | 'materialize' | 'render' | 'readiness' | 'geometry' = 'materialize';
     try {
@@ -114,8 +122,9 @@ export class ReadingMeasurementService {
       const view = doc.defaultView;
       if (!view || !doc.fonts || !this.parent.isConnected) return { status: 'unsupported', reason: 'Connected browser layout and FontFaceSet are required.', measurements: [] };
       const batchSize = request.batchSize ?? 32;
+      const materializeBatchSize = request.materializeBatchSize ?? batchSize;
       let activeBatchSize = request.maxSynchronousMs ? 1 : batchSize;
-      if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 256 || (request.maxSynchronousMs !== undefined && (!Number.isFinite(request.maxSynchronousMs) || request.maxSynchronousMs <= 0)) || !request.layouts.length
+      if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 256 || !Number.isInteger(materializeBatchSize) || materializeBatchSize < 1 || materializeBatchSize > 256 || (request.maxSynchronousMs !== undefined && (!Number.isFinite(request.maxSynchronousMs) || request.maxSynchronousMs <= 0)) || !request.layouts.length
         || request.layouts.some(layout => !Number.isFinite(layout.width) || layout.width <= 0)
         || new Set(request.rows.map(row => row.key)).size !== request.rows.length
         || new Set(request.layouts.map(measurementLayoutIdentity)).size !== request.layouts.length) {
@@ -133,15 +142,23 @@ export class ReadingMeasurementService {
       Object.assign(host.style, { position: 'fixed', left: '0', top: '0', visibility: 'hidden', pointerEvents: 'none', zIndex: '-1' });
       this.parent.append(host);
       for (let offset = 0; offset < request.rows.length;) {
-        const end = Math.min(request.rows.length, offset + activeBatchSize);
-        const rows = request.rows.slice(offset, end).filter(row => request.layouts.some(layout => !measurements.has(measurementKey(row, measurementLayoutIdentity(layout)))));
+        const end = Math.min(request.rows.length, offset + materializeBatchSize);
+        const bufferRows = request.rows.slice(offset, end).filter(row => request.layouts.some(layout => !measurements.has(measurementKey(row, measurementLayoutIdentity(layout)))));
         offset = end;
-        if (!rows.length) continue;
-        let synchronousMs = 0;
+        if (!bufferRows.length) continue;
         phase = 'materialize';
-        const bodies = await untilAbort(request.materialize(rows, signal), signal);
+        const bodies = await untilAbort(request.materialize(bufferRows, signal), signal, value => {
+          if (!Array.isArray(value)) (value as MaterializedMeasurementBatch<Body>).release();
+        });
         if (!bodies.ready) return cancelled();
-        if (bodies.value.length !== rows.length) throw new Error('Materializer must return one body per requested row in order.');
+        const buffer = Array.isArray(bodies.value) ? bodies.value as readonly Body[] : (materialized = bodies.value as MaterializedMeasurementBatch<Body>).bodies;
+        if (buffer.length !== bufferRows.length) throw new Error('Materializer must return one body per requested row in order.');
+        for (let sliceOffset = 0; sliceOffset < bufferRows.length;) {
+          const sliceEnd = Math.min(bufferRows.length, sliceOffset + activeBatchSize);
+          const rows = bufferRows.slice(sliceOffset, sliceEnd);
+          const sliceBodies = buffer.slice(sliceOffset, sliceEnd);
+          sliceOffset = sliceEnd;
+          let synchronousMs = 0;
         for (const layout of request.layouts) {
           const identity = measurementLayoutIdentity(layout);
           if (rows.every(row => measurements.has(measurementKey(row, identity)))) continue;
@@ -154,7 +171,7 @@ export class ReadingMeasurementService {
           host.style.width = `${layout.width}px`;
           phase = 'render';
           const renderStarted = view.performance.now();
-          rendered ??= request.renderBatch(host, bodies.value, layout, rows);
+          rendered ??= request.renderBatch(host, sliceBodies, layout, rows);
           phase = 'readiness';
           for (const row of rows) rendered.elements.get(row.key)?.getBoundingClientRect();
           synchronousMs += view.performance.now() - renderStarted;
@@ -180,6 +197,8 @@ export class ReadingMeasurementService {
         release();
         if (request.maxSynchronousMs) activeBatchSize = Math.max(1, Math.min(batchSize,
           synchronousMs > request.maxSynchronousMs ? Math.floor(activeBatchSize * request.maxSynchronousMs / synchronousMs) : activeBatchSize * 2));
+        }
+        releaseMaterialized();
       }
       if (signal.aborted) return cancelled();
       const vectors = request.layouts.map(layout => {
