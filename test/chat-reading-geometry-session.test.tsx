@@ -25,13 +25,18 @@ function complete(index: number) {
   job.finish({ status: 'complete', measurements: job.request.rows.map(row => ({ row, layoutIdentity, height: 80 })),
     vectors: [{ layoutIdentity, heights: job.request.rows.map(() => 80), totalHeight: 80 * job.request.rows.length, maxRowHeight: 80 }] });
 }
+function canvasWidth(parent: HTMLElement, width: () => number) {
+  const canvas = document.createElement('div'); canvas.className = 'stream-renderer__virtual-canvas';
+  canvas.getBoundingClientRect = () => ({ width: width() } as DOMRect); parent.append(canvas);
+  Object.defineProperty(parent, 'clientWidth', { get: () => Math.round(width()) });
+}
 afterEach(() => { vi.useRealTimers(); cleanup(); document.body.replaceChildren(); jobs.pending = []; vi.unstubAllGlobals(); });
 
 it('finishes a pinned prefix during append and ignores late geometry from an obsolete width', async () => {
   vi.stubGlobal('ResizeObserver', class { constructor(callback: () => void) { resize = callback; } observe() {} disconnect() {} });
   Object.defineProperty(document, 'fonts', { configurable: true, value: new EventTarget() });
   const parent = document.createElement('div'); parent.style.padding = '0px'; parent.style.setProperty('--reading-responsive-variant', 'wide'); document.body.append(parent);
-  let width = 400; Object.defineProperty(parent, 'clientWidth', { get: () => width });
+  let width = 400; canvasWidth(parent, () => width);
   const first = [{ key: 'first', revision: '1' }];
   const appended = [...first, { key: 'second', revision: '1' }];
   const view = render(<Harness parent={parent} rows={first} />);
@@ -65,7 +70,7 @@ it('retains nonempty content when a breakpoint discovers a new font generation',
   const fonts = new EventTarget();
   Object.defineProperty(document, 'fonts', { configurable: true, value: fonts });
   const parent = document.createElement('div'); parent.style.padding = '0px'; parent.style.setProperty('--reading-responsive-variant', 'wide'); document.body.append(parent);
-  let width = 772; Object.defineProperty(parent, 'clientWidth', { get: () => width });
+  let width = 772; canvasWidth(parent, () => width);
   const rows = [{ key: 'reader', revision: 'same' }, { key: 'remote', revision: 'same' }];
   render(<Harness parent={parent} rows={rows} />);
   await waitFor(() => expect(jobs.pending).toHaveLength(1));
@@ -95,7 +100,7 @@ it('publishes local resize frames while acquiring only the latest quiet width, w
   vi.stubGlobal('ResizeObserver', class { constructor(callback: () => void) { resize = callback; } observe() {} disconnect() {} });
   Object.defineProperty(document, 'fonts', { configurable: true, value: new EventTarget() });
   const parent = document.createElement('div'); parent.style.padding = '0px'; parent.style.setProperty('--reading-responsive-variant', 'wide'); document.body.append(parent);
-  let width = 400; Object.defineProperty(parent, 'clientWidth', { get: () => width });
+  let width = 400; canvasWidth(parent, () => width);
   const rows = [{ key: 'first', revision: 'same' }];
   const view = render(<Harness parent={parent} rows={rows} />);
   expect(jobs.pending).toHaveLength(1);
@@ -127,4 +132,30 @@ it('publishes local resize frames while acquiring only the latest quiet width, w
   await act(async () => vi.advanceTimersByTime(20));
   view.rerender(<Harness parent={parent} rows={[...rows, { key: 'append', revision: 'new' }]} />);
   expect(jobs.pending).toHaveLength(4);
+});
+
+it('patches current fractional-width mounted boxes before each provisional handoff', async () => {
+  vi.stubGlobal('ResizeObserver', class { constructor(callback: () => void) { resize = callback; } observe() {} disconnect() {} });
+  Object.defineProperty(document, 'fonts', { configurable: true, value: new EventTarget() });
+  const parent = document.createElement('div'); parent.style.padding = '0px'; document.body.append(parent);
+  let width = 944.203125; canvasWidth(parent, () => width);
+  const rows = [{ key: 'prose', revision: 'same' }, { key: 'tool', revision: 'same' }, { key: 'remote', revision: 'same' }];
+  render(<Harness parent={parent} rows={rows} />);
+  await waitFor(() => expect(jobs.pending).toHaveLength(1));
+  await act(async () => complete(0));
+  await waitFor(() => expect(geometry!.geometry?.exact).toBe(true));
+  let heights = [140, 67];
+  for (const [index, row] of rows.slice(0, 2).entries()) {
+    const element = document.createElement('div'); element.dataset.readingKey = row.key;
+    element.dataset.readingPayload = JSON.stringify([row.key, row.revision, '']);
+    element.getBoundingClientRect = () => ({ width, height: heights[index] } as DOMRect); parent.append(element);
+  }
+  for (const nextWidth of [772.203125, 452.203125, 944.203125]) {
+    width = nextWidth; heights = width < 500 ? [390, 67] : [140, 67];
+    act(() => resize());
+    await waitFor(() => expect(geometry!.geometry?.layout.width).toBe(width));
+    expect(geometry!.geometry?.exact).toBe(false);
+    expect(geometry!.geometry?.sizes.slice(0, 2)).toEqual(heights);
+  }
+  await waitFor(() => expect(jobs.pending.at(-1)?.request.layouts[0].width).toBe(width));
 });
