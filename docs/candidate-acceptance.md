@@ -53,22 +53,11 @@ the SMAppService upgrade transition, installation adoption, delivery convergence
 native Connections setup, secure gateway trust, or every product workflow.
 Exact unmodified package bytes are checked here and again during the actual
 post-approval handoff. Upgrade lifecycle qualification uses the separate
-[two-hop private fixture](runtime-handoff.md#verification), whose source is
-transformed for private identities, homes and ports; it does not prove identical
-unmodified source/package bytes.
-
-For this bundle-service repair, before presenting approval the coordinator
-requires a clean current-source two-hop upgrade witness retained as a managed
-artifact. An earlier witness that needed recovery demonstrates recovery, not a
-clean current-source upgrade. Keep this repair's pending request verification
-explicit: **Upgrade qualification for this bundle-service repair: pending until
-a clean current-source two-hop witness is retained as a managed artifact.** Once
-that artifact exists, revise the request message through the normal guarded
-revision before approval. Future affected upgrades after migration exercise the
-ongoing bundle-to-bundle contract, without a permanent legacy-bootstrap
-requirement. Upgrade qualification is separate from the automated package/runtime gate. See
-[upgrade qualification](accepted-package-delivery.md#qualification)
-for the command and evidence boundary.
+[native private fixture](runtime-handoff.md#verification); it does not prove
+identical unmodified product package bytes. Retain its source-bound evidence
+before creating the request and reference it in the initial review message.
+See [upgrade qualification](accepted-package-delivery.md#qualification) for the
+command and evidence boundary.
 
 Each run records its exact project, work-unit owner, instance and generated outputs before producing them. The shared owned-run lifecycle saves a compact receipt outside the scratch root and reclaims disposed raw material after assessment or failure. Unknown files, active consumers, identity drift and cleanup errors preserve the remaining bytes and fail the gate. The receipt contains source and executable hashes, the runtime, interaction evidence, log digest, shutdown results and cleanup outcome. Apparent unlinked bytes are reported separately from physical space recovery.
 
@@ -81,11 +70,12 @@ only declared outputs, preserves unknown entries, and retries partial deletion
 without repeating acceptance, publication, merge, or handoff.
 
 Accepted applications remain while a live request selects them, the current
-acceptance needs them, the installed bundle owns them, an unresolved delivery
-references either predecessor or replacement, or an explicit investigation holds
-them. Acquisition and disposal claims share a short SQLite write boundary;
-inspection, application hashing and unlink run outside it. The existing handoff
-owner can release its predecessor only after terminal convergence. Immutable
+acceptance needs them, the installed bundle owns them, a delivery retains a
+predecessor or replacement reference, or an explicit investigation holds them.
+The handoff releases those references at its respective terminal fences; see
+[handoff cleanup](runtime-handoff.md#ownership-receipts-and-cleanup).
+Acquisition and disposal claims share a short SQLite write boundary;
+inspection, application hashing and unlink run outside it. Immutable
 acceptance evidence and release receipts survive payload disposal. Legacy roots
 without recorded producer lifetimes require explicit disposition; this preserves
 existing recovery and investigation material during rollout. The reusable
@@ -113,13 +103,13 @@ Route sweeps using `--keep` additionally require `--project` and `--work-unit`
 owner IDs, `--reason`, and `--review-by` within seven days. Ordinary disposable
 sweeps use process ownership without inventing ledger work units.
 
-Passing runs transfer the complete application that ran into durable owned-run
-custody at `<authority-home>/accepted-releases/<run-id>/Mandible.app` before
-scratch cleanup. The transfer checks every file, mode and symbolic link against
-the pre-launch whole-app digest. No build or reassembly occurs during transfer.
-Only a passing acceptance row authorizes selection of its receipt. A transfer
-or cleanup failure fails the row; any preserved material remains owned by its
-delivery work unit.
+Before execution, a run copies the built application into pending owned-run
+custody at `<authority-home>/accepted-releases/<run-id>/Mandible.app` and checks
+its signature and whole-app digest. On a pass, it checks that the exercised app
+is unchanged and seals it in place; no rebuild or second copy occurs. Only a
+passing acceptance row authorizes selection of its receipt. A sealing or cleanup
+failure fails the row; any preserved material remains owned by its delivery
+work unit.
 
 `scripts/accepted-release.mjs` and its declaration file define the single
 `mandible-accepted-release@1` receipt and resolver. The immutable receipt binds:
@@ -196,11 +186,11 @@ identifies its cap as candidate-script scope. Report the actual acceptance row's
 separately from the script elapsed time. A deadline, stale health reading,
 incomplete required data, failed request, or incomplete cleanup fails the gate.
 
-Retaining the finished package and finalizing and reclaiming its scratch run
+Sealing the exercised package and finalizing and reclaiming its scratch run
 execute in a supervised subprocess of the same candidate script, using the
 existing owned-run and accepted-release helpers. The original deadline includes
-copying, hashing, consumer inspection, descendants, and receipt writing. A
-bounded evidence file is retained before that work starts; interruption leaves
+the earlier package copy, hashing, consumer inspection, descendants, and receipt
+writing. A bounded evidence file is retained before that work starts; interruption leaves
 owned material for inspection and fails acceptance. Nested supervisors allow
 the inner TERM/KILL/join to finish before an outer process can be killed.
 
