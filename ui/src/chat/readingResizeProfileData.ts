@@ -1,0 +1,163 @@
+export const readingResizeProfileData = {
+  "version": "chat-resize-v2-f086961c12a1",
+  "provenance": {
+    "schema": "reading-resize-profile-v1",
+    "issue": "4af0a13",
+    "executableCommit": "eb4dd51ccb1544a6f0c4cd1109939a1b2a77609f",
+    "runLockSha256": "0be6ac6af5353908a7ab5793287d0b5b6cc62136def4620a22a37cb2e10af4b1",
+    "corpusSha256": "5023a67d43dc005c3e5c502029c8ed6b18a62ed28d3958c5ec8580941ff6f64b",
+    "rawRunSha256": "d547ba48f5536d2d41c2ddcb715f4baf85370520a263fff8fd1c32def41960a3",
+    "rendererDependencyDigest": "cbf081f9c8f2a5fdad1ee0d05ab6b6d0071f55ee72f086ea78b9538de3d339e3",
+    "rendererJsSha256": "9a2fa8ae1c86e1ed3a77164332100da1801c8c964d63ca93807fd5d1f6031f83",
+    "stylesheetSha256": "77a6d42cc05aa8bddb1c975090f01e7459162b5e9d34b2aa96f11172bacdd7e3",
+    "browser": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
+    "sourceContract": "complete-chat-source-cache-v10",
+    "chats": 100,
+    "displayedRows": 24074,
+    "gridLayouts": 4700,
+    "heldOutLayouts": 600,
+    "runGridLayouts": 4600,
+    "runHeldOutLayouts": 700,
+    "derivation": "One global narrow150pane/114row-width point uses100 already-measured samples to correct curvature. Those samples are calibration, excluded from width-held-out validation; no new layouts.",
+    "longestSources": "four original indexed top-five plus explicit rank10 substitute; fifth unavailable",
+    "fontAssets": [
+      {
+        "url": "https://fonts.gstatic.com/s/jetbrainsmono/v24/tDbv2o-flEEny0FZhsfKu5WU4zr3E_BX0PnT8RD8yKwBNntkaToggR7BYRbKPxPcwgknk-6nFg.woff2",
+        "bytes": 6800,
+        "sha256": "49c3da6c9a2b279b0f1f860f5cfb1f5dc38d88a5c7be9c9b1837bbc4e3db6111",
+        "capture": "font-load-complete"
+      },
+      {
+        "url": "https://fonts.gstatic.com/s/jetbrainsmono/v24/tDbv2o-flEEny0FZhsfKu5WU4zr3E_BX0PnT8RD8yKwBNntkaToggR7BYRbKPxDcwgknk-4.woff2",
+        "bytes": 31340,
+        "sha256": "2c32b9b3ee358c119e210f6f5195f9bd34894d78a785ff2e95d60e718e400af4",
+        "capture": "font-load-complete"
+      }
+    ]
+  },
+  "normalization": {
+    "variant": "wide",
+    "paneWidth": 800,
+    "actualRowWidth": 764
+  },
+  "variants": {
+    "wide": {
+      "viewport": {
+        "width": 4000,
+        "height": 900
+      },
+      "referencePaneWidth": 800,
+      "referenceRowWidth": 764,
+      "rowWidths": [
+        64,
+        164,
+        264,
+        364,
+        464,
+        564,
+        664,
+        764,
+        864,
+        964,
+        1064,
+        1164,
+        1264,
+        1364,
+        1464,
+        1564,
+        1664,
+        1764,
+        1864,
+        1964,
+        2064,
+        2164,
+        2264,
+        2364,
+        2464,
+        2564,
+        2664,
+        2764,
+        2864,
+        2964,
+        3064,
+        3164,
+        3264,
+        3364,
+        3464,
+        3564,
+        3664,
+        3764
+      ],
+      "ratios": [
+        21.675073103209577,
+        4.6409087416468475,
+        2.3377214360869107,
+        1.6858694711703675,
+        1.3816389145542667,
+        1.2088449709713185,
+        1.0927124708875513,
+        1,
+        0.9399694858987929,
+        0.8909008016250125,
+        0.8499168865187795,
+        0.8209957405333511,
+        0.7941717108970481,
+        0.7727156688844268,
+        0.7541000176926376,
+        0.7320639053104085,
+        0.7246321336306281,
+        0.7054791936809516,
+        0.6906768564968839,
+        0.6770878304373427,
+        0.6663147304120771,
+        0.6547624974631083,
+        0.6425064770876168,
+        0.6334086934386706,
+        0.6315513054614245,
+        0.6273569574264087,
+        0.6217511997665275,
+        0.6180738773899745,
+        0.6141610081090143,
+        0.6117805857706162,
+        0.6100880392572984,
+        0.6085146582600983,
+        0.6071043875721888,
+        0.6062674229390792,
+        0.6056191024750561,
+        0.6021650410261832,
+        0.6015226259686737,
+        0.6010510155459572
+      ]
+    },
+    "narrow": {
+      "viewport": {
+        "width": 720,
+        "height": 900
+      },
+      "referencePaneWidth": 800,
+      "referenceRowWidth": 764,
+      "rowWidths": [
+        64,
+        114,
+        164,
+        264,
+        364,
+        464,
+        564,
+        664,
+        764
+      ],
+      "ratios": [
+        21.55767724511827,
+        5.750565711702981,
+        3.3254042199578873,
+        1.9215847271832003,
+        1.459104117035506,
+        1.2322446431033556,
+        1.0942208509230575,
+        1.0049328371564727,
+        0.9332353815136807
+      ]
+    }
+  }
+} as const;
