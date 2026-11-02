@@ -8,6 +8,7 @@ import { createPortal } from 'preact/compat';
 import { useContext, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 import { ContextualAction } from './ContextualAction';
+import { useMessagePaint } from './useMessagePaint';
 
 export const MessageLinkContext = createContext<((blockId: string) => void) | null>(null);
 
@@ -143,52 +144,7 @@ export function MessageActions({
     if (overflowOpen && variant === 'menu') overflowMenuRef.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus({ preventScroll: true });
   }, [overflowOpen, variant]);
 
-  useLayoutEffect(() => {
-    if (!overflowOpen || variant !== 'menu') return;
-    const owner = ownerRef.current;
-    const content = owner?.querySelector<HTMLElement>(':scope > .msg-text-block, :scope > .user-bubble, :scope > .instruction-message-block');
-    if (!owner || !content) return;
-    const paint = () => {
-      const bounds = owner.getBoundingClientRect();
-      const rects: DOMRect[] = [];
-      if (content.matches('.msg-text-block')) {
-        const walker = owner.ownerDocument.createTreeWalker(content, NodeFilter.SHOW_TEXT);
-        while (walker.nextNode()) {
-          if (!walker.currentNode.textContent?.trim() || walker.currentNode.parentElement?.closest('pre,table,svg')) continue;
-          const range = owner.ownerDocument.createRange(); range.selectNodeContents(walker.currentNode);
-          rects.push(...Array.from(range.getClientRects()));
-        }
-        for (const block of content.querySelectorAll('pre,table,img,video,svg,canvas,hr')) {
-          const box = block.getBoundingClientRect();
-          let left = box.left; let right = box.right; let top = box.top; let bottom = box.bottom;
-          for (let parent = block.parentElement; parent && content.contains(parent); parent = parent.parentElement) {
-            const style = getComputedStyle(parent); const clip = parent.getBoundingClientRect();
-            if (style.overflowX !== 'visible') { left = Math.max(left, clip.left); right = Math.min(right, clip.right); }
-            if (style.overflowY !== 'visible') { top = Math.max(top, clip.top); bottom = Math.min(bottom, clip.bottom); }
-          }
-          rects.push(new DOMRect(left, top, Math.max(0, right - left), Math.max(0, bottom - top)));
-        }
-      } else rects.push(content.getBoundingClientRect());
-      const visible = rects.filter(rect => rect.width > 0 && rect.height > 0);
-      if (!visible.length) return;
-      const left = Math.min(...visible.map(rect => rect.left));
-      const top = Math.min(...visible.map(rect => rect.top));
-      const right = Math.max(...visible.map(rect => rect.right));
-      const bottom = Math.max(...visible.map(rect => rect.bottom));
-      owner.style.setProperty('--message-ink-left', `${left - bounds.left - owner.clientLeft}px`);
-      owner.style.setProperty('--message-ink-top', `${top - bounds.top - owner.clientTop}px`);
-      owner.style.setProperty('--message-ink-width', `${right - left}px`);
-      owner.style.setProperty('--message-ink-height', `${bottom - top}px`);
-      owner.dataset.messageMenuPaint = content.matches('.msg-text-block') ? 'text' : 'surface';
-    };
-    paint();
-    const observer = new ResizeObserver(paint); observer.observe(content);
-    const mutations = new MutationObserver(paint); mutations.observe(content, { childList: true, characterData: true, subtree: true });
-    return () => {
-      observer.disconnect(); mutations.disconnect(); delete owner.dataset.messageMenuPaint;
-      for (const name of ['left', 'top', 'width', 'height']) owner.style.removeProperty(`--message-ink-${name}`);
-    };
-  }, [overflowOpen, variant]);
+  useMessagePaint(actionRootRef, overflowOpen && variant === 'menu');
 
   const handleCopy = (e: MouseEvent) => {
     e.stopPropagation();

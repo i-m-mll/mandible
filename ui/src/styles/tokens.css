@@ -67,6 +67,7 @@
   --neutral-alpha-04: rgba(255, 255, 255, 0.04);
   --neutral-alpha-045: rgba(255, 255, 255, 0.045);
   --neutral-alpha-05: rgba(255, 255, 255, 0.05);
+  --message-menu-backdrop: rgba(255, 255, 255, 0.025);
   --neutral-alpha-055: rgba(255, 255, 255, 0.055);
   --neutral-alpha-06: rgba(255, 255, 255, 0.06);
   --neutral-alpha-07: rgba(255, 255, 255, 0.07);
@@ -310,6 +311,7 @@
   --neutral-alpha-04: rgba(15, 23, 42, 0.04);
   --neutral-alpha-045: rgba(15, 23, 42, 0.045);
   --neutral-alpha-05: rgba(15, 23, 42, 0.05);
+  --message-menu-backdrop: rgba(15, 23, 42, 0.025);
   --neutral-alpha-055: rgba(15, 23, 42, 0.055);
   --neutral-alpha-06: rgba(15, 23, 42, 0.06);
   --neutral-alpha-07: rgba(15, 23, 42, 0.07);
