@@ -226,3 +226,35 @@ it('keeps a follower at the end when composer clearance changes without moving a
   expect(boundary.calls.filter(call => call === 'end')).toHaveLength(1);
   expect(scroller.scrollTop).toBe(250);
 });
+
+
+it.each([false, true])('reveals and focuses the prepared message owner when an inline activity shares its source (activity first: %s)', async activityFirst => {
+  const vector = {...geometry, rows: [...geometry.rows, {key: 'memory-row', revision: '1'}], sizes: [100, 100],
+    rowMembers: new Map([...geometry.rowMembers, ['memory-row', ['memory-member']]])};
+  render(<Harness vector={vector} prepare={async () => ({status: 'prepared', rowKey: 'exact-row'})} />);
+  const {scroller, target} = connect();
+  const memory = document.createElement('div'); memory.tabIndex = -1; memory.textContent = 'Used memory'; scroller.append(memory);
+  memory.getBoundingClientRect = () => rect(600 - scroller.scrollTop, 100);
+  viewport.registerRow('memory-row', memory);
+  boundary.engine.getVirtualItems = () => [{key: 'exact-row', index: 0, size: 100, start: 300, end: 400}, {key: 'memory-row', index: 1, size: 100, start: 600, end: 700}];
+  let disposeMemory!: () => void;
+  const registerMessage = () => viewport.register({coordinate, rowKey: 'exact-row', element: target});
+  const registerMemory = () => {disposeMemory = viewport.register({coordinate, rowKey: 'memory-row', element: memory});};
+  if (activityFirst) {registerMemory(); registerMessage();} else {registerMessage(); registerMemory();}
+  const focusedMessage = vi.spyOn(target, 'focus'); const focusedMemory = vi.spyOn(memory, 'focus');
+  let result: ReadingRevealResult | undefined;
+  await act(async () => {void viewport.reveal({token: 'message-link', target: coordinate}).then(value => {result = value;});});
+  expect(scroller.scrollTop).toBe(300);
+  await frame();
+  boundary.engine.isScrolling = false; act(() => boundary.options.onChange(boundary.engine)); await frame();
+  expect(result).toEqual({token: 'message-link', status: 'revealed'});
+  viewport.focusTarget(coordinate);
+  expect(document.activeElement).toBe(target);
+  expect(focusedMessage).toHaveBeenCalledWith({preventScroll: true});
+  expect(focusedMemory).not.toHaveBeenCalled();
+  const beforeCleanup = focusedMessage.mock.calls.length;
+  disposeMemory(); viewport.focusTarget(coordinate);
+  expect(focusedMessage).toHaveBeenCalledTimes(beforeCleanup + 1);
+  viewport.cancel(); viewport.focusTarget(coordinate);
+  expect(focusedMessage).toHaveBeenCalledTimes(beforeCleanup + 1);
+});

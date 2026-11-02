@@ -670,7 +670,8 @@ describe('compact detail pane shell', () => {
   });
 
   it('cold-opens a copied message link instead of a saved tail selection and reports clipboard failure visibly', async () => {
-    const exactBlock = makeTranscriptBlock({ id: `cblk:${conversation.id}:0`, content: 'Exact cold message', position: 0 });
+    const exactBlock = makeTranscriptBlock({id: `cblk:${conversation.id}:0`, type: 'assistant_message', role: 'assistant', position: 0,
+      content: 'Exact cold message\n\n<oai-mem-citation>\n<citation_entries>\nfixture-memory:L1|note=[fixture]\n</citation_entries>\n<rollout_ids>\nfixture-rollout\n</rollout_ids>\n</oai-mem-citation>'});
     const scopedConversation = mockConversationDetail(defaultControl, [exactBlock]);
     const payload = positionPayload(scopedConversation, [exactBlock], {kind: 'block'});
     vi.mocked(api.getConversationWindow).mockResolvedValue(payload);
@@ -691,6 +692,9 @@ describe('compact detail pane shell', () => {
       expect(await screen.findByText('Exact cold message')).toBeTruthy();
       expect(api.getConversationWindow).toHaveBeenCalledWith(scopedConversation.id, expect.objectContaining({ block: exactBlock.id }));
       await waitFor(() => expect(document.activeElement?.getAttribute('data-block-id')).toBe(exactBlock.id));
+      expect(screen.getByText('Used memory')).toBeTruthy();
+      expect(document.activeElement?.textContent).toContain('Exact cold message');
+      expect(document.activeElement?.textContent).not.toContain('Used memory');
       fireEvent.contextMenu(screen.getByText('Exact cold message'));
       fireEvent.click(screen.getByRole('menuitem', { name: 'Copy link' }));
       expect(await screen.findByText('Could not copy the message link.')).toBeTruthy();
