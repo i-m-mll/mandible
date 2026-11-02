@@ -8,7 +8,7 @@ activity summaries use the same presentation functions.
 | Boundary | Projection and representative coverage |
 | --- | --- |
 | Codex saved function/custom calls | Exact call identity and native input determine the presenter. `execution-presentation.test.tsx` parses saved custom call/output blocks, checks compact command facts and source hydration. |
-| Codex `functions.exec` results | A separate native first content block proves wrapper framing and its UTF-16 payload span. `text(r)` consumes the known command result object once; `text(r.output)` remains literal stdout. Wrapper timing retains its scope. The native `total=46 codex=14 named=32` case is represented in the regression. |
+| Codex `functions.exec` results | A paired exec/functions.exec custom call and a separate native first content block prove wrapper framing and its UTF-16 payload span. `text(r)` consumes the known command result object once; `text(r.output)` remains literal stdout. Wrapper timing retains its scope. The native `total=46 codex=14 named=32` case is represented in the regression. |
 | Static wrapper batches | Acorn accounts for every statement, immutable binding, call and forwarding expression. Sequential calls, `Promise.all`, `Promise.allSettled`, direct result arrays and indexed `forEach` spread/result/stdout forms reuse existing tool cards. Tests cover command/edit mixtures, exact index correspondence, rejected results and malformed/truncated output. |
 | Codex live `commandExecution` | Explicit command, aggregated output, duration, exit code and process identity drive the shared command presenter. The controller adapter regression exercises actual protocol notifications through display projection. |
 | Codex live MCP/dynamic calls | Native item type proves the boundary independently of tool name. MCP content, structured content, error messages and dynamic text/image/audio items remain available; text payloads are never recursively parsed. Controller coverage includes an arbitrary MCP tool name and explicit dynamic failure. |
@@ -19,6 +19,8 @@ The recognized tool categories remain those in `tool-presentation.ts`: command,
 file read/edit/write/delete/move, search, browser, fetch, JavaScript, wait,
 thinking, mode switch and generic tools. Transparent wrappers dispatch through
 that table rather than adding category-specific rendering paths.
+
+The program records literal, explicit JSON and native object emission rules. Literal stdout is never JSON-decoded or stripped by prefix. Several literal emissions without proven boundaries remain together as original output. JSON emissions are decoded once. Native framing is consumed once from its source-proven span.
 
 Indexed outputs are accepted atomically. Duplicate, missing, out-of-range,
 truncated or otherwise unaccountable emissions never receive guessed child
@@ -35,6 +37,6 @@ script bodies, file contents, output or media.
 
 Unrecognized native textual output formats remain literal. In particular, the
 implementation does not infer a direct command result grammar from remembered
-`Chunk ID`-style headers without a current native boundary fixture.
+`Chunk ID`-style headers without a current native boundary fixture. Wait results without already-observed paired native framing evidence also remain literal.
 
 Co-Authored-By: Codex (GPT) <codex@openai.com>

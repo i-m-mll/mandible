@@ -54,7 +54,7 @@ export function projectNativeToolResult(value: unknown, fallback: string, kind?:
       else if(Object.keys(body).length===1 && typeof body.output==='string') results.push({...rawToolResult(name==='run_shell_command' && body.output.startsWith('Output: ') ? body.output.slice(8) : body.output),decoded:true});
       else {const envelope=toolContentEnvelope(body);results.push(envelope ?? {...rawToolResult(JSON.stringify(body,null,2)),decoded:true});}
     }
-    return {...rawToolResult(results.map(result=>result.text).join('\n')),stderr:results.map(result=>result.stderr ?? '').filter(Boolean).join('\n') || undefined,failed:results.some(result=>result.failed),decoded:true};
+    return {...rawToolResult(results.map(result=>result.text).join('\n')),content:results.flatMap(result=>result.content ? typeof result.content==='string' ? [{type:'text' as const,text:result.content}] : result.content : [{type:'text' as const,text:result.text}]),stderr:results.map(result=>result.stderr ?? '').filter(Boolean).join('\n') || undefined,failed:results.some(result=>result.failed),decoded:true};
   }
   return raw;
 }
@@ -91,9 +91,10 @@ export function commandTransport(value: unknown): ToolTransportResult | null {
     metadata:Object.entries(value).filter(([key,value])=>!['output','wall_time_seconds'].includes(key) && value!=null).map(([label,value])=>({label,value:String(value)}))};
 }
 export function programResults(program: ToolProgram, text: string): ToolTransportResult[] | null {
-  const frame=/^(?:Script completed\r?\n|Wall time(?::)? [0-9.]+ seconds\r?\n|Total output lines: \d+\r?\n|Output:\r?\n|\s)*/.exec(text)?.[0] ?? '';
-  const start=frame.length;
-  const emitted=jsonValues(text.slice(start));
+  const nativeObject=(name:string) => ['exec_command','functions.exec_command','write_stdin','functions.write_stdin'].includes(name) || name.startsWith('mcp__');
+  const opaque=program.operations.filter(operation=>operation.encoding==='literal' || (operation.encoding==='native' && !nativeObject(operation.name)));
+  if(opaque.length) return program.operations.length===1 ? [{...rawToolResult(text),decoded:true}] : null;
+  const emitted=jsonValues(text);
   if(!emitted) return null;
   const values: unknown[]=[];
   let operationIndex=0;
@@ -134,7 +135,8 @@ export function programResults(program: ToolProgram, text: string): ToolTranspor
 }
 
 export type NativeResultFrame = { kind:'codex-script'; payloadStart:number; payloadEnd:number; timingScope:'wrapper'; wallTimeSeconds?: number };
-export function codexResultFrame(output: unknown): NativeResultFrame | undefined {
+export function codexResultFrame(output: unknown, call?: {name?:string;kind?:string}): NativeResultFrame | undefined {
+  if(call?.kind!=='custom_tool_call' || !['exec','functions.exec'].includes(call.name ?? '')) return undefined;
   if (!Array.isArray(output) || output.length < 2 || !output.every(block=>record(block) && ['text','input_text','output_text'].includes(String(block.type)) && typeof block.text==='string')) return undefined;
   const first=output[0];
   if (!record(first) || !['text','input_text','output_text'].includes(String(first.type)) || typeof first.text !== 'string') return undefined;
@@ -146,16 +148,18 @@ export function framedToolResult(text: string, frame?: NativeResultFrame): ToolT
   return frame && frame.kind==='codex-script' && frame.payloadStart>=0 && frame.payloadEnd===text.length && frame.payloadStart<=frame.payloadEnd ? {...rawToolResult(text.slice(frame.payloadStart,frame.payloadEnd)),wallTimeSeconds:frame.wallTimeSeconds,timingScope:'wrapper',decoded:true} : rawToolResult(text);
 }
 
-export function wrapperCommandResult(execution: {operations: Array<{forwarding:string}>} | null, text: string): ToolTransportResult {
+export function wrapperCommandResult(execution: {operations: Array<{forwarding:string;encoding?:string}>} | null, text: string): ToolTransportResult {
   const raw=rawToolResult(text);
-  if(execution?.operations.length!==1 || execution.operations[0].forwarding!=='result') return raw;
-  const start=text.indexOf('{');
-  if(start<0 || !/^(?:Script completed\r?\n|Wall time(?::)? [0-9.]+ seconds\r?\n|Total output lines: \d+\r?\n|Output:\r?\n|\s)*$/.test(text.slice(0,start))) return raw;
+  if(execution?.operations.length!==1) return raw;
+  const operation=execution.operations[0];
+  if(operation.forwarding==='stdout' && operation.encoding!=='json') return raw;
+  if(!['stdout','result'].includes(operation.forwarding)) return raw;
   let value: unknown;
-  try {value=JSON.parse(text.slice(start));} catch{return raw;}
+  try {value=JSON.parse(text);} catch{return raw;}
+  if(operation.forwarding==='stdout') return typeof value==='string' ? {...rawToolResult(value),decoded:true} : raw;
   return commandTransport(value) ?? raw;
 }
-export function projectToolResult(execution: {operations:Array<{forwarding:string}>} | null, text: string, frame?: NativeResultFrame, native?: ToolTransportResult, program?: ToolProgram | null): ToolTransportResult {
+export function projectToolResult(execution: {operations:Array<{forwarding:string;encoding?:string}>} | null, text: string, frame?: NativeResultFrame, native?: ToolTransportResult, program?: ToolProgram | null): ToolTransportResult {
   if(native?.decoded) return native;
   const framed=framedToolResult(text,frame);
   const command=wrapperCommandResult(execution,framed.text);

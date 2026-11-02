@@ -1,7 +1,7 @@
-import { wrapperCommandResult, type ToolTransportResult } from './tool-transport.js';
+import { wrapperCommandResult, framedToolResult, type NativeResultFrame, type ToolTransportResult } from './tool-transport.js';
 import { projectToolProgram } from './tool-program.js';
 export type ExecutionForwarding = 'result' | 'stdout' | 'direct';
-export type ExecutionOperation = { command: string; shell?: string; forwarding: ExecutionForwarding };
+export type ExecutionOperation = { command: string; shell?: string; forwarding: ExecutionForwarding; encoding?:'json' };
 export type ExecutionFacts = { kind: 'command'; count: number; shells: Array<string | null>; forwarding: ExecutionForwarding[] }
   | { kind: 'script'; language: 'javascript' };
 export type ExecutionPresentation = { facts: ExecutionFacts; operations: ExecutionOperation[]; script?: string };
@@ -23,7 +23,7 @@ export function projectExecution(name: string, input: Record<string, unknown> | 
     if (script === undefined) return null;
     const program = projectToolProgram(name, input, toolKind);
     operations = program?.operations.every(op => ['exec_command', 'functions.exec_command', 'Bash', 'bash', 'run_shell_command'].includes(op.name))
-      ? program.operations.flatMap(op => {const execution = projectExecution(op.name, op.input); return execution?.operations.map(value => ({...value, forwarding:op.forwarding})) ?? [];}) : null;
+      ? program.operations.flatMap(op => {const execution = projectExecution(op.name, op.input); return execution?.operations.map(value => ({...value, forwarding:op.forwarding,...(op.encoding==='json' ? {encoding:'json' as const} : {})})) ?? [];}) : null;
     if (!operations?.length || operations.length !== program?.operations.length) return {facts: {kind: 'script', language: 'javascript'}, operations: [], script};
   }
   return operations ? {operations, facts: {kind: 'command', count: operations.length,
@@ -31,6 +31,6 @@ export function projectExecution(name: string, input: Record<string, unknown> | 
 }
 
 export type ExecutionResultPresentation = ToolTransportResult;
-export function projectExecutionResult(execution: ExecutionPresentation | null, text: string): ExecutionResultPresentation {
-  return wrapperCommandResult(execution,text);
+export function projectExecutionResult(execution: ExecutionPresentation | null, text: string, frame?:NativeResultFrame): ExecutionResultPresentation {
+  return wrapperCommandResult(execution,framedToolResult(text,frame).text);
 }

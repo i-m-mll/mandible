@@ -1,7 +1,8 @@
 import { parse, type AnyNode, type Identifier } from 'acorn';
 
 type Ast = AnyNode;
-export type ToolProgramOperation = { name: string; input: Record<string, unknown> | string; forwarding: 'result' | 'stdout' | 'direct'; index?: number; indexKey?: string; resultKey?: string; collection?: number; settled?: boolean };
+export type ToolEmissionEncoding = 'literal' | 'json' | 'native';
+export type ToolProgramOperation = { encoding:ToolEmissionEncoding; name: string; input: Record<string, unknown> | string; forwarding: 'result' | 'stdout' | 'direct'; index?: number; indexKey?: string; resultKey?: string; collection?: number; settled?: boolean };
 export type ToolProgram = { operations: ToolProgramOperation[] };
 const identifier = (node: Ast | undefined, name?: string): node is Identifier => node?.type === 'Identifier' && (name === undefined || node.name === name);
 const member = (node: Ast | undefined, object: string, property: string): boolean => node?.type === 'MemberExpression' && !node.computed && !node.optional && identifier(node.object, object) && identifier(node.property, property);
@@ -35,7 +36,7 @@ function operation(node: Ast): ToolProgramOperation | null {
   if (callee.type !== 'MemberExpression' || callee.computed || callee.optional || !identifier(callee.object, 'tools') || !identifier(callee.property)) return null;
   const input = data(node.arguments[0]);
   return input && (typeof input.value === 'string' || (input.value && typeof input.value === 'object' && !Array.isArray(input.value)))
-    ? {name: callee.property.name, input: input.value as Record<string, unknown> | string, forwarding: 'result'} : null;
+    ? {name: callee.property.name, input: input.value as Record<string, unknown> | string, forwarding: 'result',encoding:'native'} : null;
 }
 function calls(node: Ast): {operations: ToolProgramOperation[]; batch: boolean} | null {
   if (node.type !== 'AwaitExpression') return null;
@@ -48,20 +49,28 @@ function calls(node: Ast): {operations: ToolProgramOperation[]; batch: boolean} 
   }
   const op = operation(node); return op ? {batch:false,operations:[op]} : null;
 }
-function forward(node: Ast, name: string): 'result' | 'stdout' | null {
-  if (identifier(node,name)) return 'result';
-  if (member(node,name,'output')) return 'stdout';
-  if (node.type === 'CallExpression' && !node.optional && member(node.callee,'JSON','stringify') && node.arguments.length === 1) return forward(node.arguments[0],name);
+function forwardedValue(node: Ast, name: string): 'result' | 'stdout' | null {
+  if(identifier(node,name)) return 'result';
+  return member(node,name,'output') ? 'stdout' : null;
+}
+function forward(node: Ast, name: string): {forwarding:'result' | 'stdout';encoding:ToolEmissionEncoding} | null {
+  const direct=forwardedValue(node,name);
+  if(direct) return {forwarding:direct,encoding:direct==='stdout' ? 'literal' : 'native'};
+  if(node.type==='CallExpression' && !node.optional && member(node.callee,'JSON','stringify') && node.arguments.length===1) {
+    const value=forwardedValue(node.arguments[0],name);
+    return value ? {forwarding:value,encoding:'json'} : null;
+  }
   return null;
 }
 function textValue(node: Ast): Ast | null {
   const call = node.type === 'ExpressionStatement' ? node.expression : node;
   return call.type === 'CallExpression' && !call.optional && identifier(call.callee,'text') && call.arguments.length === 1 ? call.arguments[0] : null;
 }
-function forwarding(statement: Ast, name: string, batch: boolean): {forwarding:'result' | 'stdout';indexKey?:string;resultKey?:string} | null {
-  if (!batch) { const value = textValue(statement); const mode=value && forward(value,name); return mode ? {forwarding:mode} : null; }
+function forwarding(statement: Ast, name: string, batch: boolean): {forwarding:'result' | 'stdout';encoding:ToolEmissionEncoding;indexKey?:string;resultKey?:string} | null {
+  if (!batch) { const value = textValue(statement); const mode=value && forward(value,name); return mode; }
   const direct=textValue(statement);
-  if(direct && forward(direct,name)==='result') return {forwarding:'result'};
+  const mode=direct && forward(direct,name);
+  if(mode?.forwarding==='result') return {...mode,encoding:'json'};
   const call = statement.type === 'ExpressionStatement' && statement.expression;
   if (!call || call.type !== 'CallExpression' || call.optional || !member(call.callee,name,'forEach') || call.arguments.length !== 1) return null;
   const callback = call.arguments[0];
@@ -76,8 +85,8 @@ function forwarding(statement: Ast, name: string, batch: boolean): {forwarding:'
   if (index.type !== 'Property' || index.computed || index.kind !== 'init' || index.method || (index.key.type!=='Identifier' && (index.key.type!=='Literal' || typeof index.key.value!=='string')) || !identifier(index.value,indexName)
       ) return null;
   const indexKey=index.key.type==='Identifier' ? index.key.name : index.key.type==='Literal' ? String(index.key.value) : '';
-  if (spread.type === 'SpreadElement' && identifier(spread.argument,valueName)) return {forwarding:'result',indexKey};
-  if (spread.type === 'Property' && spread.kind === 'init' && !spread.computed && !spread.method && identifier(spread.key)) {const mode=forward(spread.value,valueName);if(mode) return {forwarding:mode,indexKey,resultKey:spread.key.name};}
+  if (spread.type === 'SpreadElement' && identifier(spread.argument,valueName)) return {forwarding:'result',encoding:'json',indexKey};
+  if (spread.type === 'Property' && spread.kind === 'init' && !spread.computed && !spread.method && identifier(spread.key)) {const mode=forwardedValue(spread.value,valueName);if(mode) return {forwarding:mode,encoding:'json',indexKey,resultKey:spread.key.name};}
   return null;
 }
 /** Project only a complete static program whose outputs account for every call. Never execute provider source. */
@@ -102,11 +111,12 @@ export function projectToolProgram(name: string, input: Record<string, unknown> 
       operations.push(...batch.operations.map(op=>({...op,...mode,...(batch.batch && !mode.indexKey ? {collection:i} : {})})));
     } else {
       let value = textValue(statement);
+      const serialized=value?.type==='CallExpression' && !value.optional && member(value.callee,'JSON','stringify') && value.arguments.length===1;
       if(value?.type==='CallExpression' && !value.optional && member(value.callee,'JSON','stringify') && value.arguments.length===1) value=value.arguments[0];
       const stdout = value?.type === 'MemberExpression' && !value.computed && !value.optional && identifier(value.property,'output');
       const call = value && calls(stdout && value.type==='MemberExpression' ? value.object : value);
       if (!call || (call.batch && stdout)) return null;
-      operations.push(...call.operations.map(op=>({...op,forwarding:stdout ? 'stdout' as const : 'result' as const,...(call.batch ? {collection:i} : {})})));
+      operations.push(...call.operations.map(op=>({...op,encoding:serialized || call.batch ? 'json' as const : stdout ? 'literal' as const : 'native' as const,forwarding:stdout ? 'stdout' as const : 'result' as const,...(call.batch ? {collection:i} : {})})));
     }
   }
   return operations.length ? {operations} : null;

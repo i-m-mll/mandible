@@ -149,27 +149,14 @@ function ResultBody({ result, commandLike, projected }: {
   commandLike: boolean;
   projected: ExecutionResultPresentation;
 }): JSX.Element {
-  const text = projected.text;
-  const images = extractImages(projected.content ?? result.content);
-
+  const content=projected.content ?? (!projected.decoded && Array.isArray(result.content) ? result.content : [{type:'text' as const,text:projected.text}]);
+  const blocks=typeof content==='string' ? [{type:'text' as const,text:content}] : content;
   return (
     <div className={`tool-card__result${result.is_error || projected.failed ? ' tool-card__result--error' : ''}`}>
-      {text && (
-        <OverflowFade lines={10}>
-          <pre className={commandLike ? 'tool-card__terminal-output' : undefined}>
-            {commandLike ? <AnsiText text={text} /> : text}
-          </pre>
-        </OverflowFade>
-      )}
+      {blocks.map((block,index)=>block.type==='text' ? (block.text ? <OverflowFade key={index} lines={10}>
+        <pre className={commandLike ? 'tool-card__terminal-output' : undefined}>{commandLike ? <AnsiText text={block.text} /> : block.text}</pre>
+      </OverflowFade> : null) : <img key={index} className="tool-card__image" src={`data:${block.source.media_type};base64,${block.source.data}`} alt="Tool output" />)}
       {projected.stderr && <OverflowFade lines={10}><pre className="tool-card__terminal-output ansi-red">{projected.stderr}</pre></OverflowFade>}
-      {images.map((src, index) => (
-        <img
-          key={index}
-          className="tool-card__image"
-          src={`data:${src.media_type};base64,${src.data}`}
-          alt="Tool output"
-        />
-      ))}
       {projected.wallTimeSeconds !== undefined && <small style={{display: 'block', textAlign: 'right'}}>{projected.wallTimeSeconds} s</small>}
       {result.truncated && result.omittedCharacters != null && (
         <span className="tool-card__result-note">

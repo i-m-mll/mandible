@@ -630,6 +630,7 @@ export class CodexParser implements ConversationParser {
     // Map call_id → position for linking function outputs to calls
     const callMap = new Map<string, number>();
     const callNameMap = new Map<string, string>();
+    const callKindMap = new Map<string,string>();
     const chatPartsByBlock = new Map<number, ChatContentPart[]>();
     let pendingUserBlockIndex: number | null = null;
 
@@ -748,7 +749,7 @@ export class CodexParser implements ConversationParser {
           }
         } else if (payload.type === "function_call") {
           const toolPos = position;
-          if (payload.call_id) callMap.set(payload.call_id, toolPos);
+          if (payload.call_id) {callMap.set(payload.call_id, toolPos);callKindMap.set(payload.call_id,payload.type);}
           if (payload.call_id && payload.name) callNameMap.set(payload.call_id, payload.name);
           let content = payload.name || "unknown_function";
           if (payload.arguments) {
@@ -802,7 +803,7 @@ export class CodexParser implements ConversationParser {
                 tool_id: payload.call_id || undefined,
                 tool_name: payload.call_id ? callNameMap.get(payload.call_id) : undefined,
                 tool_kind: "function_call_output",
-                display_tool_frame: codexResultFrame(payload.output),
+                display_tool_frame: codexResultFrame(payload.output,{name:payload.call_id ? callNameMap.get(payload.call_id) : undefined,kind:payload.call_id ? callKindMap.get(payload.call_id) : undefined}),
                 tool_output: output.length > 1000 ? undefined : output,
                 visibility: "default_hidden",
                 source_event_type: "function_call_output",
@@ -811,7 +812,7 @@ export class CodexParser implements ConversationParser {
           }
         } else if (payload.type === "custom_tool_call") {
           const toolPos = position;
-          if (payload.call_id) callMap.set(payload.call_id, toolPos);
+          if (payload.call_id) {callMap.set(payload.call_id, toolPos);callKindMap.set(payload.call_id,payload.type);}
           if (payload.call_id && payload.name) callNameMap.set(payload.call_id, payload.name);
           blocks.push({
             type: "tool_use",
@@ -843,7 +844,7 @@ export class CodexParser implements ConversationParser {
               tool_id: payload.call_id || undefined,
               tool_name: payload.call_id ? callNameMap.get(payload.call_id) : undefined,
               tool_kind: "custom_tool_call_output",
-              display_tool_frame: codexResultFrame(payload.output),
+              display_tool_frame: codexResultFrame(payload.output,{name:payload.call_id ? callNameMap.get(payload.call_id) : undefined,kind:payload.call_id ? callKindMap.get(payload.call_id) : undefined}),
               tool_output: output.length > 1000 ? undefined : output,
               visibility: "default_hidden",
               source_event_type: "custom_tool_call_output",
