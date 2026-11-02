@@ -129,5 +129,14 @@ void (async () => {
       adjacency: adjacency(), write: scrollWrites.at(-1) });
     pane.style.width = `${810 - (step < 50 ? step : 100 - step)}.203125px`;
   }
-  document.title = btoa(JSON.stringify({ counterfactual, samples, nativeTop, afterNative, anchorKey: anchor.key, anchorOffset: anchor.point.offset }));
+  await frame();
+  const tailBeforeInput = boxes().get('row:79')!.getBoundingClientRect().top;
+  const topBeforeInput = scroller.scrollTop;
+  scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -80, bubbles: true }));
+  scroller.scrollTop -= 80; scroller.dispatchEvent(new Event('scroll'));
+  const tailNativeTop = scroller.scrollTop;
+  pane.style.width = '808.203125px'; await frame();
+  const tailAfterInput = boxes().get('row:79')!.getBoundingClientRect().top;
+  document.title = btoa(JSON.stringify({ counterfactual, samples, nativeTop, afterNative, anchorKey: anchor.key, anchorOffset: anchor.point.offset,
+    tailNativeTop, tailNativeAfter: scroller.scrollTop, tailIntentDrift: tailAfterInput - tailBeforeInput - (topBeforeInput - tailNativeTop) }));
 })().catch(error => { document.title = `fixture-error:${btoa(String(error.stack ?? error))}`; });

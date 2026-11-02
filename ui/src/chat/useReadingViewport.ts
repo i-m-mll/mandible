@@ -379,7 +379,7 @@ export function useReadingViewport(input: {
   }, []);
   const mounted = engine.getVirtualItems();
   const last = mounted[mounted.length - 1];
-  const endOffset = following.current && last?.index === rows.length - 1 ? engine.getTotalSize() - last.end : undefined;
+  const endOffset = last?.index === rows.length - 1 ? engine.getTotalSize() - last.end : undefined;
   return { captureReaderAnchor: () => capturePin.current(), beginLayout: () => capturePin.current(), engine, rows, endOffset, appliedGeometry: acknowledged === applied ? applied : null, focusTarget: (target: ConversationSourceCoordinate) => targets.current.get(`${target.positionSpaceId}:${target.position}:${target.subtarget ?? ''}`)?.element?.focus({ preventScroll: true }), renderProps: applied?.renderProps, scrollRef, register, registerRow, rowOffset, reveal, cancel, showLatest,
     inputHandlers: { onWheel: inputCancel, onTouchStart: () => { drag.current = true; inputCancel(); }, onTouchEnd: () => { drag.current = false; applyPending.current(); }, onTouchCancel: () => { drag.current = false; applyPending.current(); }, onKeyDown, onPointerDown } };
 }

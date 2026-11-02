@@ -66,6 +66,8 @@ it('keeps consecutive mounted events adjacent in every resize frame and preserve
     const residual = readers.map((sample: any) => (sample.glyph - sample.desired) - ((sample.write?.wanted ?? 0) - (sample.write?.actual ?? 0)));
     expect(Math.max(...residual.map(Math.abs)), `glyph drift=${JSON.stringify(drift)}`).toBeLessThanOrEqual(0.05);
     expect(result.afterNative).toBe(result.nativeTop);
+    expect(result.tailNativeAfter).toBe(result.tailNativeTop);
+    expect(Math.abs(result.tailIntentDrift), 'wheel-away intent alone repositioned the provisional tail strip').toBeLessThanOrEqual(0.05);
     expect(Math.max(...result.samples.filter((sample: any) => sample.phase === 'tail').map((sample: any) => Math.abs(sample.endGap)))).toBeLessThanOrEqual(0.5);
     expect(Math.max(...result.samples.filter((sample: any) => sample.phase === 'tail').map((sample: any) => Math.abs(sample.tailGap)))).toBeLessThanOrEqual(0.5);
     if (process.env.MANDIBLE_CHAT_FRAME_PROOF) console.info(JSON.stringify({ frames: result.samples.length, maxAdjacencyError: Math.max(...gaps), maxGlyphDrift: Math.max(...drift.map(Math.abs)), maxNativeRoundingResidual: Math.max(...residual.map(Math.abs)), maxTailContentGap: Math.max(...result.samples.filter((sample: any) => sample.phase === 'tail').map((sample: any) => Math.abs(sample.tailGap))) }));

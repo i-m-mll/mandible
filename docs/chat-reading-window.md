@@ -283,10 +283,12 @@ preserve anchors when provisional content becomes a canonical row or summary.
 Sorted mounted rows share one stably keyed normal-flow strip. Consecutive rows
 have no geometry-derived gap; absent index ranges use the engine's public
 trailing/leading offsets. A reader strip begins at its first virtual start. A
-following strip that includes the final row uses the public trailing offset to
+strip that includes the final row uses the public trailing offset to
 anchor its bottom, so prose reflow cannot leave the final tool behind or create
 blank tail space before new global geometry arrives. Measurement batches keep
 their independent common origin under the measurement host.
+Following intent alone does not switch this physical reference when native input
+moves away from the end.
 
 Mounted frame and target positions are authoritative for alignment and saved
 offsets; engine positions locate unmounted rows. The same viewport adapter
