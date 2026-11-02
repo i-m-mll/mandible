@@ -30,6 +30,7 @@ export type ReadingRowDescriptor = {
   disclosureOwner: string | null;
   activityMember?: boolean;
   activityEnd?: boolean;
+  activitySibling?: boolean;
   isFinalResponse: boolean;
   turnStart: boolean;
   turnEnd: boolean;
@@ -127,6 +128,7 @@ export function planReadingLayout(input: {
     const current = rows[index];
     current.turnStart = rows[index - 1]?.actionGroup.key !== current.actionGroup.key;
     current.turnEnd = rows[index + 1]?.actionGroup.key !== current.actionGroup.key;
+    current.activitySibling = Boolean(current.activityMember && rows[index - 1]?.activityMember && rows[index - 1]?.disclosureOwner === current.disclosureOwner);
     current.activityEnd = current.activityMember && rows[index + 1]?.disclosureOwner !== current.disclosureOwner;
     const usage = usages.get(current.actionGroup.key);
     if (current.turnEnd && usage?.size) current.totalTokens = [...usage.values()].reduce((sum, value) => sum + value, 0);
@@ -138,7 +140,7 @@ export function planReadingLayout(input: {
       ? [canonicalRunRevision, contributors.filter(member => member.position === undefined).map(member => member.dependencyRevision)]
       : contributors.map(member => member.dependencyRevision);
     current.revision = JSON.stringify([dependencyRevision, current.kind, contributors[0].speaker, current.actionGroup.key,
-      current.disclosureOwner, current.activityMember, current.turnStart, current.turnEnd, current.activityEnd,
+      current.disclosureOwner, current.activityMember, current.turnStart, current.turnEnd, current.activityEnd, current.activitySibling,
       current.totalTokens, current.isFinalResponse, current.activityGroup, current.kind === 'content' ? contributors.map(member => [readingDisclosureState(member.disclosures, input.expanded, input), member.activity?.type === 'tool-call-activity' ? readingToolExecutionActive(member.activity.executionActive, input) : null]) : []]);
   }
   return { rows, membership, viewMembership };
