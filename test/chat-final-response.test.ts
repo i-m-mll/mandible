@@ -13,6 +13,11 @@ import { planConversationReading } from '../src/presentation/reading-manifest';
 import { projectReadingRows } from '../src/presentation/reading';
 import { displayEventsFromBlocks } from '../src/conversations/display-context';
 import { preparePositionSpace } from '../src/conversations/position-space';
+import { defaultDisplayEventsFromBlocks } from '../src/conversations/display-context';
+import { projectDisplayBlock } from '../src/conversations/display-block';
+import { conversationBlocksToStreamEvents } from '../ui/src/chat/conversationEvents';
+import { buildStreamState } from '../src/presentation/model';
+import { indexDisplayFragments } from '../src/conversations/display-indexing';
 
 it('requires native final intent, independently of complete content, tool settlement, and tail position', async () => {
   const input = { filePath: '/private/.claude/projects/session.jsonl', nativeSessionId: 'session', baseBlockCount: 0, sourceHash: 'test', sourceMtime: 0 };
@@ -100,5 +105,109 @@ it('gives one final displayed fragment ownership through body-free manifests and
     const classified = anonymous.map(block => ({...block, metadata: {...block.metadata, chat_item: block.metadata.chat_item
       ? {...block.metadata.chat_item, assistant_response: undefined} : undefined}}));
     expect(preparePositionSpace(classified, anonymousSpace, false).position_space_id).toBe(anonymousSpace.position_space_id);
+  } finally { db.close(); }
+});
+
+it('preserves saved final phases and suppresses only empty completion metadata across body-free and hydrated presentations', async () => {
+  const db = migratedMemoryDb();
+  const file = path.join(testRuntimeRoot, 'saved-final-phase', '.codex/sessions/session.jsonl');
+  fs.mkdirSync(path.dirname(file), {recursive: true});
+  const records = [
+    {type: 'session_meta', payload: {id: 'session'}},
+    {type: 'response_item', payload: {type: 'message', role: 'assistant', phase: 'final_answer', content: [{type: 'output_text', text: 'SAVED FINAL BODY'}]}},
+    {type: 'event_msg', payload: {type: 'task_complete', message: null, reason: null, turn_id: 'turn'}},
+    {type: 'event_msg', payload: {type: 'task_complete', message: '', reason: 'Keep this completion reason', turn_id: 'turn'}},
+    {type: 'event_msg', payload: {type: 'task_complete', message: 'Keep this message', reason: 'Keep this separate reason'}},
+    {type: 'event_msg', payload: {type: 'task_complete', usage: {input: 1, output: 2}}},
+    {type: 'event_msg', payload: {type: 'task_complete', outcome: 'failed'}},
+    {type: 'event_msg', payload: {type: 'turn_aborted', reason: 'Aborted'}},
+    {type: 'response_item', payload: {type: 'message', role: 'assistant', channel: 'commentary', phase: 'final_answer', content: [{type: 'output_text', text: 'INTERIM TAIL'}]}},
+  ];
+  fs.writeFileSync(file, records.map(record => JSON.stringify(record)).join('\n') + '\n');
+  try {
+    const parsed = (await new CodexParser().parse(file))!;
+    const blocks = parsed.blocks.map(block => ({...block, parentPosition: null}));
+    expect(blocks).toHaveLength(8);
+    expect(blocks[0].metadata.chat_item).toMatchObject({assistant_response: 'final', identity: {source_record_ordinal: 1}});
+    expect(blocks[7].metadata.chat_item).toMatchObject({assistant_response: 'interim'});
+    const events = displayEventsFromBlocks(blocks, 'conversation');
+    const canonical = () => projectReadingRows({events, conversationId: 'conversation', positionSpaceId: 'space', readingContext: new Map(), expanded: {}});
+    const full = canonical();
+    expect(full.rows.filter(row => row.isFinalResponse).map(row => row.sources[0]?.position)).toEqual([0]);
+    const visible = (value: typeof events) => buildStreamState(value, true).nodes.flatMap(node =>
+      node.kind === 'activity' ? [node.source?.position] : []);
+    expect(visible(events)).toEqual([2, 3, 4, 5, 6]);
+    expect(visible(defaultDisplayEventsFromBlocks(blocks, 'conversation'))).toEqual([2, 3, 4, 5, 6]);
+    const projected = blocks.map(block => projectDisplayBlock({...block, id: `cblk:conversation:${block.position}`, conversation_id: 'conversation', metadata_json: JSON.stringify(block.metadata), locator: null}));
+    expect(JSON.stringify(projected)).not.toContain('Keep this separate reason');
+    const lean = conversationBlocksToStreamEvents('session', projected);
+    expect(buildStreamState(lean, true).nodes.filter(node => node.kind === 'activity').map(node => node.source?.position)).toEqual([2, 3, 4, 5, 6]);
+    const live = events.map(({source, ...event}) => ({...event, item: {...event.item, provenance: {...event.item.provenance, source: 'live-provider-event' as const}}}));
+    expect(buildStreamState(live, true).nodes.filter(node => node.kind === 'activity')).toHaveLength(5);
+    const empty = events[1];
+    if (empty.item.type !== 'activity') throw new Error('Completion fixture must be an activity.');
+    for (const evidence of [
+      {item: {...empty.item, severity: 'warning' as const}},
+      {item: {...empty.item, severity: 'error' as const}},
+      {item: {...empty.item, execution_outcome: 'failed' as const}},
+      {item: {...empty.item, execution_outcome: 'cancelled' as const}},
+      {item: {...empty.item, elapsed_ms: 123}},
+      {item: empty.item, usage: {key: 'completion', input: 1, output: 2}},
+    ]) {
+      expect(buildStreamState([{...empty, ...evidence}], true).nodes).toHaveLength(1);
+      const block = {...parsed.blocks[1], metadata: {...parsed.blocks[1].metadata, chat_item: evidence.item,
+        ...('usage' in evidence ? {token_usage: evidence.usage} : {})}};
+      expect(indexDisplayFragments([block], 'conversation', () => null).fragments).toMatchObject([{summary_eligible: true}]);
+    }
+    expect(blocks[2].content).toBe('');
+    expect(blocks[2].metadata.chat_item?.parts).toEqual([]);
+    expect(blocks[3].content).toBe('Keep this message');
+    expect(events[3].item.parts.map(part => part.text)).toContain('Keep this separate reason');
+    db.prepare(`INSERT INTO conversations(id,source,source_path,source_hash,source_mtime,session_id,block_count,started_at)
+      VALUES('conversation','codex',?,?,?,'session',?,'2026-11-02')`).run(file, parsed.conversation.source_hash, parsed.conversation.source_mtime, blocks.length);
+    const store = new ConversationSourceStore(db);
+    const stale = parsed.blocks.map(block => ({...block, metadata: {...block.metadata, display_completion_parts: undefined,
+      chat_item: block.metadata.chat_item?.type === 'message'
+      ? {...block.metadata.chat_item, assistant_response: 'unknown' as const} : block.metadata.chat_item}}));
+    await store.recordConversation({conversationId: 'conversation', provider: 'codex', nativeSessionId: 'session', filePath: file,
+      blocks: stale, sourceSnapshot: parsed.sourceSnapshot, ...CURRENT_CONVERSATION_SOURCE_EPOCHS});
+    const before = captureReadingPublication(db, 'conversation')!;
+    const beforePlan = planConversationReading(readConversationReadingManifest(db, 'conversation', before)!, {});
+    expect(beforePlan.rows.some(row => row.isFinalResponse)).toBe(false);
+    expect(beforePlan.membership.has(2)).toBe(false);
+    expect(indexDisplayFragments(stale, 'conversation', () => null).positions[3].revision)
+      .not.toBe(indexDisplayFragments(parsed.blocks, 'conversation', () => null).positions[3].revision);
+    await store.recordConversation({conversationId: 'conversation', provider: 'codex', nativeSessionId: 'session', filePath: file,
+      blocks: parsed.blocks, sourceSnapshot: parsed.sourceSnapshot, ...CURRENT_CONVERSATION_SOURCE_EPOCHS});
+    const source = captureReadingPublication(db, 'conversation')!;
+    expect(source.current_version_id).toBe(before.current_version_id);
+    expect(source.position_space_id).toBe(before.position_space_id);
+    const manifest = readConversationReadingManifest(db, 'conversation', source)!;
+    expect(manifest.blockCount).toBe(8);
+    expect(JSON.stringify(manifest)).not.toContain('SAVED FINAL BODY');
+    const plan = planConversationReading(manifest, {});
+    expect(plan.rows.filter(row => row.isFinalResponse)).toHaveLength(1);
+    expect(plan.rows.flatMap(row => row.sourcePositions)).not.toContain(1);
+    expect([...plan.membership.keys()]).toEqual([...full.membership.keys()]);
+    expect(plan.membership.has(2)).toBe(true);
+    expect(JSON.stringify(manifest)).not.toContain('Keep this separate reason');
+    const final = plan.rows.find(row => row.isFinalResponse)!;
+    expect(final.revision).not.toBe(beforePlan.rows.find(row => row.key === final.key)?.revision);
+    const originalSpace = preparePositionSpace(parsed.blocks, null, false);
+    expect(preparePositionSpace(stale, originalSpace, false).position_space_id).toBe(originalSpace.position_space_id);
+    const edited = parsed.blocks.map(block => block.position === 3 ? {...block, content: 'Genuine replacement message', metadata: {...block.metadata,
+      chat_item: block.metadata.chat_item ? {...block.metadata.chat_item, parts: [{type: 'text' as const, text: 'Genuine replacement message'}]} : undefined}} : block);
+    expect(preparePositionSpace(edited, originalSpace, false).position_space_id).not.toBe(originalSpace.position_space_id);
+    const materialized = await readReadingRowBatch({db, reader: new ConversationSourceReader(db), conversationId: 'conversation',
+      request: {positionSpaceId: manifest.positionSpaceId, rows: plan.rows.filter(row => row.isFinalResponse), expanded: {}}});
+    expect(materialized.status).toBe('source');
+    if (materialized.status === 'source') expect(materialized.rows.filter(row => row.isFinalResponse)).toHaveLength(1);
+    const expanded = Object.fromEntries([...Object.keys(manifest.runs).map(id => [`group:${id}`, true]),
+      ...manifest.members.flatMap(member => member.disclosures?.keys.map(key => [key, true]) ?? [])]);
+    const detailed = planConversationReading(manifest, expanded).rows.filter(row => row.kind === 'content' && row.sourcePositions.includes(3));
+    const completion = await readReadingRowBatch({db, reader: new ConversationSourceReader(db), conversationId: 'conversation',
+      request: {positionSpaceId: manifest.positionSpaceId, rows: detailed, expanded}});
+    expect(completion.status).toBe('source');
+    if (completion.status === 'source') expect(JSON.stringify(completion.rows)).toContain('Keep this separate reason');
   } finally { db.close(); }
 });

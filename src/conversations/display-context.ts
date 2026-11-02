@@ -7,6 +7,7 @@ import type { ActivityRunFacts } from '../presentation/activity-presentation.js'
 import type { PersistedBlockSource } from '../presentation/types.js';
 import type { ConversationBlock } from '../parsers/types.js';
 import type { CanonicalChatItemEvent } from '../presentation/types.js';
+import { displayChatItem, isEmptyCompletionMetadata } from '../presentation/model.js';
 
 export const DISPLAY_CONTEXT_VERSION = 1;
 export type { DisplayFragmentCoordinate };
@@ -70,13 +71,16 @@ export function displayEventsFromBlocks(blocks: readonly {
   position: number; content: string; timestamp?: string | null; details_loaded?: boolean; dag_uuid?: string | null; metadata: ConversationBlock['metadata'] & { display_has_body?: boolean }; parentPosition: number | null;
 }[], conversationId: string): CanonicalChatItemEvent[] {
   return blocks.flatMap(block => {
-    const item = block.metadata.chat_item;
-    if (!item) return [];
+    const canonicalItem = block.metadata.chat_item;
+    if (!canonicalItem) return [];
+    const item = displayChatItem(canonicalItem, block.metadata);
     const intentId = block.metadata.client_intent_id;
     const usage = block.metadata.token_usage;
+    const hasBody = block.metadata.display_has_body ?? (item.type === 'activity' && item.provenance.source_event_type === 'task_complete'
+      ? !isEmptyCompletionMetadata(item, false, usage ?? block.metadata.usage_telemetry) : undefined);
     return [{ type: 'chat:item' as const, item, ...(intentId ? { intentId, displayKey: `intent:${intentId}` } : {}),
       ...(usage && Number.isFinite(usage.input) && Number.isFinite(usage.output) ? { usage: { key: typeof block.metadata.provider_message_id === 'string' ? block.metadata.provider_message_id : `record:${item.identity.source_record_ordinal}`, input: usage.input, output: usage.output } } : {}),
-      source: { ...(block.details_loaded === undefined ? {} : { detailsLoaded: block.details_loaded, defaultVisible: true }), ...(typeof block.metadata.display_has_body === 'boolean' ? { hasBody: block.metadata.display_has_body } : {}), ...(block.timestamp ? { timestamp: block.timestamp } : {}), ...(block.dag_uuid ? { dagUuid: block.dag_uuid } : {}), blockId: `cblk:${conversationId}:${block.position}`, position: block.position,
+      source: { ...(block.details_loaded === undefined ? {} : { detailsLoaded: block.details_loaded, defaultVisible: true }), ...(hasBody === undefined ? {} : { hasBody }), ...(block.timestamp ? { timestamp: block.timestamp } : {}), ...(block.dag_uuid ? { dagUuid: block.dag_uuid } : {}), blockId: `cblk:${conversationId}:${block.position}`, position: block.position,
         ...(block.parentPosition === null ? {} : { parentBlockId: `cblk:${conversationId}:${block.parentPosition}` }) } }];
   });
 }

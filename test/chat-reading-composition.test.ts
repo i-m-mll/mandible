@@ -112,7 +112,7 @@ it('accepts a captured row snapshot when publication freshness advances without 
   } finally {f.close();}
 });
 
-it('keeps transport statuses in complete membership without changing substantive aggregate wording', async () => {
+it('preserves the tool row and source positions when empty completion metadata appends', async () => {
   const f = await fixture(false);
   try {
     const call = f.manifest.members.find(member => member.activity?.type === 'tool-call-activity')!;
@@ -127,12 +127,16 @@ it('keeps transport statuses in complete membership without changing substantive
     await new ConversationSourceStore(f.db).recordConversation({conversationId: 'composition', provider: 'codex', nativeSessionId: 'composition',
       filePath: file, blocks: parsed.blocks, sourceSnapshot: parsed.sourceSnapshot, ...CURRENT_CONVERSATION_SOURCE_EPOCHS});
     const manifest = readConversationReadingManifest(f.db, 'composition', captureReadingPublication(f.db, 'composition')!)!;
-    const summary = planConversationReading(manifest, {}).rows.find(row => row.kind === 'activity-summary')!;
-    expect(summary.memberKeys).toHaveLength(2);
+    expect(manifest.blockCount).toBe(f.manifest.blockCount + 1);
+    expect(manifest.positionSpaceId).toBe(f.manifest.positionSpaceId);
+    const plan = planConversationReading(manifest, {});
+    const retained = plan.rows.find(row => row.key === first.key)!;
+    expect(retained.memberKeys).toEqual(first.memberKeys);
+    expect(plan.membership.has(parsed.blocks.at(-1)!.position)).toBe(false);
     const after = await readReadingRowBatch({db: f.db, reader: f.reader, conversationId: 'composition',
-      request: {positionSpaceId: manifest.positionSpaceId, rows: [summary], expanded: {}}});
+      request: {positionSpaceId: manifest.positionSpaceId, rows: [retained], expanded: {}}});
     if (after.status !== 'source') throw new Error(after.status);
     const original = before.rows[0].activityRun!.presentation;
-    expect(after.rows[0].activityGroup!.presentation).toMatchObject({summary: original.summary, icon: original.icon});
+    expect(after.rows[0].activityRun!.presentation).toMatchObject({summary: original.summary, icon: original.icon});
   } finally {f.close();}
 });

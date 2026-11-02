@@ -98,6 +98,7 @@ interface CodexContentBlock {
 
 interface CodexResponsePayload {
   channel?: string;
+  phase?: string;
   type: string;
   id?: string;
   role?: string | null;
@@ -875,6 +876,11 @@ export class CodexParser implements ConversationParser {
           }
         } else if (evt.type === "task_started" || evt.type === "task_complete"
           || evt.type === "turn_aborted" || evt.type === "context_compacted") {
+          const completionDetails = evt.type === "task_complete" ? Object.fromEntries(Object.entries(evt)
+            .filter(([key, value]) => !["type", "turn_id"].includes(key)
+              && (!["message", "reason"].includes(key) || (value !== null && typeof value !== 'string')))) : {};
+          const completionText = [...new Set([evt.message, evt.reason].filter((value): value is string => typeof value === 'string' && Boolean(value.trim())))];
+          if (Object.keys(completionDetails).length) completionText.push(JSON.stringify(completionDetails, null, 2));
           blocks.push({
             type: "event",
             role: "system",
@@ -885,6 +891,8 @@ export class CodexParser implements ConversationParser {
             metadata: {
               source_event_type: evt.type,
               provider_turn_id: evt.turn_id,
+              ...(evt.type === "task_complete" && completionText.length
+                ? { display_completion_parts: completionText.map(text => ({type: 'text' as const, text})) } : {}),
             },
           });
         } else if (!["agent_message", "agent_reasoning", "item_started", "item_completed", "thread_settings_applied"].includes(evt.type)) {
@@ -927,7 +935,7 @@ export class CodexParser implements ConversationParser {
             sourceEventType,
             sourceRecordOrdinal: options.baseRecordCount + recordIndex,
             sourceSubBlockOrdinal: index - firstRecordBlock,
-            assistantResponse: codexAssistantResponse((rec.payload as CodexResponsePayload).channel),
+            assistantResponse: codexAssistantResponse((rec.payload as CodexResponsePayload).channel ?? (rec.payload as CodexResponsePayload).phase),
             ...(chatPartsByBlock.has(index) ? { parts: chatPartsByBlock.get(index)! } : {}),
             ...(activityKind ? { activityKind } : {}),
             ...(sourceEventType === "turn_aborted" ? { severity: "warning" as const, status: "aborted", executionOutcome: "cancelled" as const }

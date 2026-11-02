@@ -18,7 +18,7 @@ import type {
   TranscriptSemanticEvent,
   UserEvent,
 } from './types.js';
-import type { ActivityItem, ChatItem, MessageItem, PlanItem, ToolCallItem } from '../parsers/types.js';
+import type { ActivityItem, BlockMetadata, ChatItem, MessageItem, PlanItem, ToolCallItem } from '../parsers/types.js';
 
 export type StreamState = {
   nodes: RenderNode[];
@@ -33,12 +33,24 @@ function chatItemText(item: MessageItem | PlanItem | ToolCallItem | ActivityItem
   return item.parts.map((part) => part.text).join('\n');
 }
 
+export function displayChatItem(item: ChatItem, metadata: Pick<BlockMetadata, 'display_completion_parts'>): ChatItem {
+  return item.type === 'activity' && item.provenance.source_event_type === 'task_complete' && metadata.display_completion_parts
+    ? {...item, parts: metadata.display_completion_parts} : item;
+}
+
 /** Empty status and thought transport records are hidden only in Chat. */
-export function isRoutineActivityStatus(item: ActivityItem): boolean {
+export function isRoutineActivityStatus(item: ActivityItem, hasBody = false, usage?: unknown): boolean {
   return ['status', 'thinking', 'reasoning-summary'].includes(item.activity_kind)
     && (item.severity === undefined || item.severity === 'info')
     && (item.execution_outcome === undefined || item.execution_outcome === 'unknown')
-    && item.parts.every((part) => part.text.trim() === '');
+    && item.parts.every((part) => part.text.trim() === '')
+    && !(item.provenance.source_event_type === 'task_complete' && (hasBody || usage
+      || item.elapsed_ms !== undefined || item.tool_name || item.tool_id || item.related_tool_ids?.length));
+}
+
+export function isEmptyCompletionMetadata(item: ActivityItem, hasBody = false, usage?: unknown): boolean {
+  return item.provenance.source_event_type === 'task_complete' && item.status === 'complete'
+    && isRoutineActivityStatus(item, hasBody, usage);
 }
 
 export function chatItemStableKey(item: ChatItem): string {
@@ -279,8 +291,11 @@ export function buildStreamState(events: StreamEvent[], standaloneItems = false)
           }
         }
       } else if (item.type === 'activity') {
-        if (isRoutineActivityStatus(item) && source?.detailsLoaded !== false && !source?.defaultVisible) continue;
-        if (isRoutineActivityStatus(item) && source?.hasBody === false) continue;
+        if (isEmptyCompletionMetadata(item, source?.hasBody, canonical.usage)) continue;
+        if (item.provenance.source_event_type !== 'task_complete' && isRoutineActivityStatus(item)) {
+          if (source?.detailsLoaded !== false && !source?.defaultVisible) continue;
+          if (source?.hasBody === false) continue;
+        }
         flushPendingTurn();
         nodes.push({ kind: 'activity', key, entity: item.activity_kind === 'diagnostic' || item.severity === 'error' || item.execution_outcome === 'failed' ? item.role : 'assistant', item, source });
       }

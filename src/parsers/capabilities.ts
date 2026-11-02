@@ -34,7 +34,8 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
       tool_output: true,
     },
     notes: [
-      "Assistant response channels preserve explicit final/commentary intent; absent channels remain unknown.",
+      "Assistant response channels or saved phases preserve explicit final/commentary intent; absent evidence remains unknown. Empty routine task completion metadata is hidden in Chat while substantive completion messages and diagnostics remain available.",
+      "Additional completion evidence is presentation metadata; existing normalized content, parts and source identity proofs remain unchanged.",
       "Tool uses come from function_call/custom_tool_call response items.",
       "Echoed user_message client_id binds the preceding native user Chat item to its exact submission intent.",
       "Subagent threads are sidechain conversations whose parent is the thread named in the rollout header's session_meta.source.subagent spawn record.",
