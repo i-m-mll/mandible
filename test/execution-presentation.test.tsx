@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { expect, it } from 'vitest';
-import { render, cleanup } from './helpers/dom';
+import { render, cleanup, fireEvent } from './helpers/dom';
 import { afterEach } from 'vitest';
 import { projectExecution, projectExecutionResult } from '../src/presentation/execution-presentation';
 import { ToolUseBlock } from '../ui/src/components/message-blocks/ToolUseBlock';
@@ -129,6 +129,7 @@ it('pairs an indexed static command batch atomically and preserves rejected or u
   const program=projectToolProgram('exec',batch)!;
   const output=[{i:0,...envelope,output:'one\n'},{i:1,...envelope,wall_time_seconds:0.25,output:'two\n',exit_code:4}].map(value=>JSON.stringify(value)).join('\n');
   const view=render(<ToolUseBlock toolName="exec" input={batch} expanded result={{type:'tool_result',tool_use_id:'native',content:output,source:{blockId:'cblk:batch:5'}}} />);
+  for(const button of view.getAllByRole('button').filter(button=>button.getAttribute('aria-expanded')==='false')) fireEvent.click(button);
   expect([...view.container.querySelectorAll('.tool-card__terminal code')].map(node=>node.textContent)).toEqual(['printf one','printf two']);
   expect([...view.container.querySelectorAll('.tool-card__terminal-output')].map(node=>node.textContent)).toEqual(['one\n','two\n']);
   expect(view.container.querySelector('[data-block-id="cblk:batch:5"]')).not.toBeNull();
@@ -147,6 +148,7 @@ it('uses existing edit and command presenters for mixed wrappers and keeps compa
   const mixed='const results=await Promise.all([tools.exec_command({cmd:"echo secret-command"}),tools.Edit({file_path:"/private/example.ts",old_string:"before",new_string:"after"})]);results.forEach((value,index)=>text(JSON.stringify({index,result:value})));';
   const output=[{index:0,result:envelope},{index:1,result:{content:[{type:'text',text:'application content'}]}}].map(value=>JSON.stringify(value)).join('\n');
   const view=render(<ToolUseBlock toolName="exec" input={mixed} expanded result={{type:'tool_result',tool_use_id:'native',content:output}} />);
+  for(const button of view.getAllByRole('button').filter(button=>button.getAttribute('aria-expanded')==='false')) fireEvent.click(button);
   expect(view.container.querySelector('.tool-card__terminal code')?.textContent).toBe('echo secret-command');
   expect(view.container.textContent).toContain('before');
   expect(view.container.textContent).toContain('after');

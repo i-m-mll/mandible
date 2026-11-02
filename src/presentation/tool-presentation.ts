@@ -14,6 +14,8 @@ export type ToolPresentation = {
   target: string;
   execution?: ExecutionFacts;
   operations?: ToolRunFact[];
+  /** Source-hydrated ordered child headers; never retained in compact manifest facts. */
+  children?: Array<{name:string;header:ToolPresentation}>;
 };
 
 const DEFINITIONS: Record<ToolCategory, { icon: IconName; phrase: string; plural: string }> = {
@@ -80,18 +82,19 @@ export function presentTool(
   toolKind?: string,
 ): ToolPresentation {
   const program = projectToolProgram(toolName, inputValue, toolKind);
+  const children = program?.operations.map(operation=>({name:operation.name,header:presentTool(operation.name,operation.input)}));
   if (program && !program.operations.every(operation => projectExecution(operation.name,operation.input)?.facts.kind === 'command')) {
     const facts = toolRunFacts(program.operations);
     const one = program.operations.length === 1 ? presentTool(program.operations[0].name,program.operations[0].input) : null;
     const summary=summarizeToolRunFacts(facts).join('; ');
-    return {...(one ?? {category:'other',icon:facts[0]?.presentation.icon ?? 'monitor',phrase:summary.charAt(0).toUpperCase()+summary.slice(1),target:''}), operations:facts};
+    return {...(one ?? {category:'other',icon:facts[0]?.presentation.icon ?? 'monitor',phrase:summary.charAt(0).toUpperCase()+summary.slice(1),target:''}), operations:facts,children};
   }
   const execution = projectExecution(toolName, inputValue, toolKind);
   if (execution) {
     const command = execution.facts.kind === 'command';
     return {category: command ? 'execute' : 'javascript', icon: command ? 'toolExecute' : 'toolJavascript',
       phrase: command ? execution.operations.length === 1 ? 'Ran' : 'Ran several commands' : 'Ran JavaScript',
-      target: command && execution.operations.length === 1 ? execution.operations[0].command : '', execution: execution.facts};
+      target: command && execution.operations.length === 1 ? execution.operations[0].command : '', execution: execution.facts,...(children && children.length>1 ? {children} : {})};
   }
   const normalizedToolName = normalizedName(toolName);
   const normalizedToolKind = normalizedName(toolKind);

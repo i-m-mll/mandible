@@ -39,6 +39,9 @@ export type ToolUseBlockProps = {
   memberRefs?: string;
   headerMetadata?: ComponentChildren;
   resultPresentation?: ExecutionResultPresentation;
+  withinCollection?: boolean;
+  getDisclosureExpanded?: (key:string,defaultExpanded:boolean)=>boolean;
+  onDisclosureExpandedChange?: (key:string,expanded:boolean,trigger?:HTMLElement)=>void;
 };
 
 export type ToolVisualKind = ToolCategory;
@@ -212,6 +215,9 @@ export function ToolCard({
   memberRefs,
   headerMetadata,
   resultPresentation,
+  withinCollection = false,
+  getDisclosureExpanded,
+  onDisclosureExpandedChange,
 }: ToolUseBlockProps): JSX.Element {
   const inputObj = useMemo(() => input === undefined ? {} : toolInputObject(input), [input]);
   const visual = useMemo(() => {
@@ -225,7 +231,11 @@ export function ToolCard({
   const resultText = framedResult.text;
   const projectedResult = useMemo(() => resultPresentation ?? projectToolResult(execution,originalResultText,result?.source?.toolFrame,result?.presentation,program),[execution,originalResultText,result?.source?.toolFrame,result?.presentation,resultPresentation,program]);
   const operationResults = useMemo(() => program ? programResults(program,resultText) : null,[program,resultText]);
-  const nestedProgram = program && (program.operations.length > 1 || !execution || execution.facts.kind !== 'command');
+  const projectedChildren = program && (program.operations.length > 1 || !execution || execution.facts.kind !== 'command')
+    ? program.operations.map(operation=>({name:operation.name,input:operation.input,header:presentTool(operation.name,operation.input)}))
+    : header?.children?.map(child=>({...child,input:undefined}));
+  const nestedProgram = Boolean(projectedChildren?.length);
+  const executionFacts=execution?.facts ?? header?.execution;
   const displayTarget = visual.kind==='execute' ? visual.target : leftTruncateTarget(visual.target);
   const status = result?.is_error || projectedResult.failed ? 'failed' : projectedResult.running ? 'running' : statusFor(result, statusEmoji);
   const commandLike = visual.kind === 'execute';
@@ -239,14 +249,26 @@ export function ToolCard({
     );
   }, [editLike, inputObj]);
 
+  function renderProgramChildren(): JSX.Element {
+    return <>{projectedChildren!.map((operation,index) => {
+      const key=`operation:${index}`;
+      return <ToolCard key={index} toolName={operation.name} input={operation.input} header={operation.header}
+        detailsAvailable={operation.input===undefined} withinCollection
+        headerMetadata={withinCollection && index===projectedChildren!.length-1 ? headerMetadata : undefined}
+        expanded={getDisclosureExpanded?.(key,withinCollection && Boolean(expanded))}
+        onExpandedChange={(next,trigger)=>onDisclosureExpandedChange?.(key,next,trigger)}
+        getDisclosureExpanded={getDisclosureExpanded ? (childKey,defaultExpanded)=>getDisclosureExpanded(`${key}:${childKey}`,defaultExpanded) : undefined}
+        onDisclosureExpandedChange={onDisclosureExpandedChange ? (childKey,next,trigger)=>onDisclosureExpandedChange(`${key}:${childKey}`,next,trigger) : undefined}
+        result={operationResults ? {type:'tool_result',tool_use_id:'',content:operationResults[index].text,is_error:operationResults[index].failed} : null}
+        resultPresentation={operationResults?.[index]} />;
+    })}</>;
+  }
+
   function renderInputPanel(): JSX.Element {
+    if (projectedChildren) return renderProgramChildren();
     if (input === undefined || (detailsAvailable && (input === '' || (typeof input === 'object' && Object.keys(input).length === 0)))) {
       return <div className="tool-card__input" aria-busy="true">Loading tool input…</div>;
     }
-    if (nestedProgram && program) return <>{program.operations.map((operation,index) => <ToolCard key={index}
-      toolName={operation.name} input={operation.input} expanded
-      result={operationResults ? {type:'tool_result',tool_use_id:'',content:operationResults[index].text,is_error:operationResults[index].failed} : null}
-      resultPresentation={operationResults?.[index]} />)}</>;
     if (editLike) {
       return (
         <OverflowFade lines={10}>
@@ -288,7 +310,7 @@ export function ToolCard({
   }
 
   const summary = `${visual.verb}${displayTarget ? ` ${displayTarget}` : ''}${status === 'failed' ? ' · Failed' : status === 'running' ? ' · Running' : ''}`;
-  const collectionChildren = nestedProgram ? <div className="activity-nested-headers">{renderInputPanel()}</div> : null;
+  const collectionChildren = nestedProgram ? withinCollection ? renderInputPanel() : <div className="activity-nested-headers">{renderInputPanel()}</div> : null;
   const collectionTiming = framedResult.wallTimeSeconds !== undefined && !operationResults?.some(result => result.wallTimeSeconds !== undefined)
     ? <ActivityEventItem><small style={{ display: 'block', textAlign: 'right' }}>{framedResult.wallTimeSeconds} s</small></ActivityEventItem> : null;
   const details = nestedProgram
@@ -316,11 +338,11 @@ export function ToolCard({
       data-id={toolUseId}
       data-member-refs={memberRefs}
     >
-      <CompactActivityRow
-        collection={Boolean(nestedProgram)}
+      {nestedProgram && withinCollection ? details : <CompactActivityRow
+        collection={nestedProgram}
         icon={<Icon name={visual.icon} />}
         summary={summary}
-        expandedSummary={execution?.facts.kind === 'command' && execution.facts.count === 1 ? `Ran command${status === 'failed' ? ' · Failed' : status === 'running' ? ' · Running' : ''}` : undefined}
+        expandedSummary={executionFacts?.kind === 'command' && executionFacts.count === 1 ? `Ran command${status === 'failed' ? ' · Failed' : status === 'running' ? ' · Running' : ''}` : undefined}
         metadata={headerMetadata}
         memberRefs={[memberRefs, result?.source?.blockId].filter(Boolean).join(' ')}
         disclosure={{
@@ -330,7 +352,7 @@ export function ToolCard({
           expanded,
           onExpandedChange,
         }}
-      />
+      />}
     </div>
   );
 }
