@@ -147,7 +147,7 @@ it('keeps old-scope cleanup from overwriting the next conversation during restor
 });
 
 
-it('coalesces geometry while native scrolling and restores the current reader through the public engine offset', () => {
+it('coalesces geometry while native scrolling and preserves mounted DOM alignment despite a different engine prefix', () => {
   const prepare = async () => ({ status: 'not-renderable' as const });
   const view = render(<Harness prepare={prepare} />);
   const { scroller } = connect();
@@ -163,7 +163,7 @@ it('coalesces geometry while native scrolling and restores the current reader th
   boundary.engine.isScrolling = false;
   act(() => boundary.options.onChange(boundary.engine));
   expect(rebuild).toHaveBeenCalledOnce();
-  expect(scroller.scrollTop).toBe(850);
+  expect(scroller.scrollTop).toBe(250);
   expect(boundary.calls.filter(call => call === 'offset')).toHaveLength(1);
 });
 

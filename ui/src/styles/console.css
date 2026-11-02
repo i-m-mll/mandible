@@ -889,12 +889,23 @@
 }
 
 .stream-renderer__virtual-row {
-  position: absolute;
-  left: 0;
-  right: 0;
+  width: 100%;
   contain: layout style;
   display: flow-root;
   padding-block: 0;
+}
+
+.stream-renderer__row-strip {
+  position: absolute;
+  inset-inline: 0;
+  top: 0;
+  display: flow-root;
+}
+
+[data-reading-measurement-host] > .stream-renderer__virtual-row {
+  position: absolute;
+  inset-inline: 0;
+  top: 0;
 }
 
 .stream-renderer__virtual-row--turn-start { padding-block-start: var(--space-2); }

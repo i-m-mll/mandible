@@ -8,8 +8,9 @@ import type { CanonicalChatItemEvent, PersistedBlockSource, StreamRendererProps 
 import { MessageLinkContext } from '../components/shared/MessageActions';
 import { DetailPaneOverlayContext } from '../components/shared/DetailPaneShell';
 import type { ConversationNavigationCommand, ConversationNavigationResult, ConversationTranscriptConsumer, ConversationSourceCoordinate } from '../query/conversationData';
-import { projectReadingRows, type ReadingRow, type ReadingProjection, type ReadingTargetRegistration } from './readingProjection';
-import { ReadingRowBody, ReadingRowFrame } from './ReadingRowView';
+import { projectReadingRows, type ReadingRow, type ReadingProjection } from './readingProjection';
+import { ReadingRowBody } from './ReadingRowView';
+import { MeasuredReadingBox, ReadingRowStrip } from './ReadingRowWindow';
 import { readingRowPrimaryActions, readingRowTurnId } from './readingRowActions';
 import { useCompleteReading, readingPayloadKey } from './useCompleteReading';
 import { useReadingGeometry } from './useReadingGeometry';
@@ -41,30 +42,6 @@ export type ChatSurfaceProps = StreamRendererProps & {
 };
 
 
-type BoxProps = { row: ReadingRow; index: number; start: number; measurement: import('./readingMeasurement').MeasurementRow; reportHeight: (row: import('./readingMeasurement').MeasurementRow, height: number, width: number) => void;
-  register: (target: ReadingTargetRegistration) => () => void; registerRow: (key: string, element: HTMLElement) => () => void; scope: string; space: string;
-  children: JSX.Element; };
-function MeasuredReadingBox({ row, index, start, measurement, reportHeight, register, registerRow, scope, space, children }: BoxProps): JSX.Element {
-  const element = useRef<HTMLDivElement | null>(null);
-  const setNode = useCallback((node: HTMLDivElement | null) => { element.current = node; if (node) node.dataset.readingPayload = readingPayloadKey(measurement); }, [measurement]);
-  useLayoutEffect(() => {
-    const box = element.current;
-    if (!box) return;
-    const disposeRow = registerRow(row.key, box);
-    const observer = new ResizeObserver(() => { const rect = box.getBoundingClientRect(); reportHeight(measurement, rect.height, rect.width); }); observer.observe(box);
-    const dispose = row.sources.map(source => {
-      if (source.position === undefined) return () => {};
-      const exact = row.kind === 'activity-summary' ? box : [...box.querySelectorAll<HTMLElement>('[data-block-id]')].find(node => node.dataset.blockId === source.blockId) ?? null;
-      if (exact) exact.tabIndex = -1;
-      const coordinate = { conversationId: scope, positionSpaceId: space, position: source.position };
-      const clearDefault = row.activityGroup?.expanded ? () => {} : register({ rowKey: row.key, coordinate, element: exact });
-      const clearSubtarget = register({ rowKey: row.key, coordinate: { ...coordinate, subtarget: row.kind === 'activity-summary' ? 'summary' : `source:${source.position}` }, element: exact });
-      return () => { clearDefault(); clearSubtarget(); };
-    });
-    return () => { observer.disconnect(); disposeRow(); dispose.forEach(dispose => dispose()); };
-  }, [row, scope, space, register, registerRow, children, measurement, reportHeight]);
-  return <ReadingRowFrame row={row} index={index} style={{ top: 0, transform: `translateY(${start}px)` }} elementRef={setNode}>{children}</ReadingRowFrame>;
-}
 const emptyProjection: ReadingProjection = { rows: [], membership: new Map(), viewMembership: new Map(), actionRuns: new Map() };
 const boundDisclosures = (value: Record<string, boolean>): Record<string, boolean> => Object.fromEntries(Object.entries(value).slice(-100));
 
@@ -287,15 +264,15 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
     <div className="stream-renderer">
       <div ref={setScrollNode} className="stream-renderer__scroll" tabIndex={0} aria-label="Conversation" {...viewport.inputHandlers}>
         <div className="stream-renderer__virtual-canvas" style={{ height: `${viewport.engine.getTotalSize()}px`, visibility: initialVisible ? 'visible' : 'hidden' }}>
-          {viewport.engine.getVirtualItems().map(item => {
+          <ReadingRowStrip items={viewport.engine.getVirtualItems()} endOffset={viewport.endOffset}>{item => {
             const ref = viewport.rows[item.index];
             if (!ref) return null;
             const row = complete.getBody(ref);
-            if (!row || ('revision' in row && row.revision !== ref.revision)) return <div key={ref.key} data-index={item.index} data-reading-key={ref.key} data-reading-payload={readingPayloadKey(ref)} className="stream-renderer__virtual-row" style={{ height: `${item.size}px`, top: 0, transform: `translateY(${item.start}px)` }} aria-busy="true" />;
+            if (!row || ('revision' in row && row.revision !== ref.revision)) return <MeasuredReadingBox key={ref.key} index={item.index} pendingHeight={item.size} measurement={ref} reportHeight={geometry.reportHeight} register={viewport.register} registerRow={viewport.registerRow} scope={scope} space={space} />;
             const bodyProps = viewport.renderProps?.(row);
             const primaryActions = (bodyProps?.primaryActions ?? []).map(action => action.id === 'select-group' ? action
               : { ...action, onAction: actions.get(readingPayloadKey(ref))?.find(current => current.id === action.id)?.onAction ?? action.onAction });
-            return <MeasuredReadingBox key={row.key} row={row} index={item.index} start={item.start} measurement={ref} reportHeight={geometry.reportHeight} register={viewport.register} registerRow={viewport.registerRow} scope={scope} space={space}>
+            return <MeasuredReadingBox key={row.key} row={row} index={item.index} pendingHeight={item.size} measurement={ref} reportHeight={geometry.reportHeight} register={viewport.register} registerRow={viewport.registerRow} scope={scope} space={space}>
               <MessageLinkContext.Provider value={bodyProps?.onCopyMessageLink ?? null}><ReadingRowBody {...(bodyProps ?? props)} row={row} expandedBlocks={bodyProps?.expandedBlocks ?? expandedBlocks} setBlockExpanded={(key, next, sources) => {
                   setDisclosureRevisions(current => ({ ...current, [row.key]: (current[row.key] ?? 0) + 1 }));
                   setBlockExpanded(key, next, sources);
@@ -304,7 +281,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
                 primaryActions={primaryActions} lastAssistantTurnId={bodyProps?.lastAssistantTurnId}
                 onActivityGroupExpandedChange={next => revealDisclosure(row, next)} /></MessageLinkContext.Provider>
             </MeasuredReadingBox>;
-          })}
+          }}</ReadingRowStrip>
         </div>
         {(!initialVisible || !viewport.rows.length) && <div className="stream-renderer__empty">{props.showEmpty && complete.ready && viewport.appliedGeometry && !complete.rows.length ? props.emptyLabel ?? 'No messages yet' : 'Loading conversation…'}</div>}
       </div>
