@@ -1,6 +1,6 @@
 import { buildReadingManifest, planConversationReading, type ConversationReadingManifest } from '../presentation/reading-manifest.js';
 import { projectReadingRows, type ReadingRow } from '../presentation/reading.js';
-import type { ReadingRowDescriptor } from '../presentation/reading-plan.js';
+import type { ReadingPlan, ReadingRowDescriptor } from '../presentation/reading-plan.js';
 import { getConversationStructureCache } from './structure-cache.js';
 import { displayEventsFromBlocks } from './display-context.js';
 import { readDisplayContext } from './display-context-read.js';
@@ -18,15 +18,23 @@ export function captureReadingPublication(db: Db, conversationId: string): Readi
     FROM conversation_sources WHERE conversation_id = ? AND current_version_id IS NOT NULL AND position_space_id IS NOT NULL
     ORDER BY CASE availability WHEN 'available' THEN 0 ELSE 1 END, updated_at DESC LIMIT 1`).get(conversationId) as ReadingPublication | null;
 }
+type PresentationCache = { publicationKey: string; manifest: ConversationReadingManifest; plans: Map<string, { plan: ReadingPlan; byKey: Map<string, ReadingRowDescriptor> }> };
+const presentationCache = new WeakMap<Db, PresentationCache>();
+
 export function readConversationReadingManifest(db: Db, conversationId: string, source: ReadingPublication): ConversationReadingManifest | null {
+  const publicationKey = JSON.stringify([conversationId, source]);
+  const retained = presentationCache.get(db);
+  if (retained?.publicationKey === publicationKey) return retained.manifest;
   const cache = getConversationStructureCache(db);
   const index = cache.readPresentationIndex(conversationId, source.current_version_id, source);
   const count = cache.blockCount(conversationId, source.current_version_id, source);
   if (!index || count === null || index.positions.length !== count) return null;
   const context = cache.readReadingContext(conversationId, source.current_version_id, 0, count - 1, source);
   if (!context || context.length !== count) return null;
-  return buildReadingManifest({ ...index, conversationId, positionSpaceId: source.position_space_id,
+  const manifest = buildReadingManifest({ ...index, conversationId, positionSpaceId: source.position_space_id,
     sourceVersionId: source.current_version_id, publicationRevision: source.publication_revision, blockCount: count, readingContext: context });
+  presentationCache.set(db, { publicationKey, manifest, plans: new Map() });
+  return manifest;
 }
 export type ReadingRowRequest = { key: string; revision: string };
 export type ReadingRowBatchRequest = {
@@ -50,8 +58,18 @@ export async function readReadingRowBatch(input: {
   if (!source || source.position_space_id !== request.positionSpaceId) return { status: 'position-space-changed', positionSpaceId: source?.position_space_id ?? null };
   const manifest = readConversationReadingManifest(db, conversationId, source);
   if (!manifest) return { status: 'unavailable', reason: 'Complete presentation index is not available.' };
-  const plan = planConversationReading(manifest, request.expanded, request.streaming);
-  const byKey = new Map(plan.rows.map(row => [row.key, row]));
+  if (request.rows.length > 128) return { status: 'resource-limit', reason: 'Split this presentation request into smaller batches.' };
+  const retained = presentationCache.get(db)!;
+  const disclosureKey = JSON.stringify([Boolean(request.streaming), Object.entries(request.expanded)
+    .filter(([key]) => key.startsWith('group:') && manifest.runs[key.slice(6)]).sort(([left], [right]) => left.localeCompare(right))]);
+  let planned = retained.plans.get(disclosureKey);
+  if (!planned) {
+    const plan = planConversationReading(manifest, request.expanded, request.streaming);
+    planned = { plan, byKey: new Map(plan.rows.map(row => [row.key, row])) };
+    if (retained.plans.size >= 2) retained.plans.delete(retained.plans.keys().next().value!);
+    retained.plans.set(disclosureKey, planned);
+  }
+  const { byKey } = planned;
   const requested: ReadingRowDescriptor[] = [];
   for (const row of request.rows) {
     const descriptor = byKey.get(row.key);
@@ -59,18 +77,20 @@ export async function readReadingRowBatch(input: {
     requested.push(descriptor);
   }
   const positions = [...new Set(requested.flatMap(row => [...row.sourcePositions]))];
-  if (request.rows.length > 128 || positions.length > 512) return { status: 'resource-limit', reason: 'Split this presentation request into smaller batches.' };
+  if (positions.length > 512) return { status: 'resource-limit', reason: 'Split this presentation request into smaller batches.' };
   const blocks = await reader.readPositions(conversationId, positions,
     { expectedSourceVersionId: source.current_version_id, expectedBlockCount: manifest.blockCount });
   if (blocks.status !== 'source') return { status: blocks.status === 'stale' ? 'changed' : 'unavailable', reason: blocks.reason };
   const cache = getConversationStructureCache(db);
-  const context = cache.readReadingContext(conversationId, source.current_version_id, 0, manifest.blockCount - 1, source);
   const displayPlan = cache.readDisplayContext(conversationId, source.current_version_id, positions, source);
+  const context = displayPlan ? cache.readReadingContextPositions(conversationId, source.current_version_id,
+    [...new Set([...positions, ...displayPlan.sourcePositions])], source) : null;
   if (!context || !displayPlan) return { status: 'changed', reason: 'Presentation publication changed during the source read.' };
   if (displayPlan.sourcePositions.length > 512) return { status: 'resource-limit', reason: 'This row has too many source contributors for one bounded materialization.' };
+  const byPosition = new Map(context.map(entry => [entry.position, entry]));
   const display = await readDisplayContext({ plan: displayPlan, conversationId, sourceVersionId: source.current_version_id,
     blockCount: manifest.blockCount, reader, actionScope: position => {
-      const scope = context.find(entry => entry.position === position)?.action_scope;
+      const scope = byPosition.get(position)?.action_scope;
       if (!scope) throw new Error('Display owner omitted its source action scope.');
       return scope;
     } });
@@ -86,7 +106,7 @@ export async function readReadingRowBatch(input: {
       parentPosition: block.parent_id ? Number(block.parent_id.slice(block.parent_id.lastIndexOf(':') + 1)) : null };
   }), conversationId);
   const hydrated = projectReadingRows({ events, conversationId, positionSpaceId: source.position_space_id,
-    readingContext: new Map(context.map(entry => [entry.position, entry])), displayContext: display.value,
+    readingContext: byPosition, displayContext: display.value,
     expanded: request.expanded, streaming: request.streaming });
   const hydratedByKey = new Map(hydrated.rows.map(row => [row.key, row]));
   const rows: Array<ReadingRow & { revision: string }> = [];

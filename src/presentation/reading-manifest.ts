@@ -74,7 +74,9 @@ export function buildReadingManifest(input: {
   });
   return { conversationId: input.conversationId, positionSpaceId: input.positionSpaceId, sourceVersionId: input.sourceVersionId,
     publicationRevision: input.publicationRevision, blockCount: input.blockCount, members, runs: Object.fromEntries(runPlans), summarySources, scopes,
-    lastAssistantTurnId: [...input.positions].reverse().find(position => position.turnId)?.turnId };
+    lastAssistantTurnId: [...input.fragments].reverse().flatMap(fragment => fragment.kind === 'content' && fragment.speaker === 'assistant'
+      ? [positions.get(fragment.coordinate.position)?.turnId ?? `cblk:${input.conversationId}:${fragment.coordinate.position}`]
+      : fragment.activity && fragment.activity.type !== 'activity' ? [fragment.activity.turnId] : []).find((id): id is string => id !== undefined) };
 }
 
 export function planConversationReading(manifest: ConversationReadingManifest, expanded: Readonly<Record<string, boolean>>, streaming = false): ReadingPlan {

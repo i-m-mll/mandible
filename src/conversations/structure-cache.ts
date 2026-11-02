@@ -485,6 +485,16 @@ export class ConversationStructureCache {
     return conversation ? readDisplayContextPlan(this.cache, conversation.cache_id, positions) : null;
   }
 
+  readReadingContextPositions(conversationId: string, sourceVersionId: string, positions: readonly number[], epochs?: ConversationSourceEpochs): ReadingContextEntry[] | null {
+    const conversation = this.cachedConversation(conversationId, sourceVersionId, epochs);
+    if (!conversation) return null;
+    const rows = this.cache.prepare(`SELECT b.position,b.activity_owner,s.start,s.end FROM cache_blocks b
+      JOIN cache_reading_scopes s ON s.cache_conversation_id=b.cache_conversation_id AND s.start=b.action_start
+      WHERE b.cache_conversation_id=? AND b.position IN (SELECT value FROM json_each(?)) ORDER BY b.position`)
+      .all(conversation.cache_id, JSON.stringify(positions)) as Array<{ position: number; activity_owner: number | null; start: number; end: number }>;
+    return rows.map(row => ({ position: row.position, activity_owner: row.activity_owner, action_scope: {start: row.start, end: row.end} }));
+  }
+
   readReadingContext(conversationId: string, sourceVersionId: string, start: number, end: number, epochs?: ConversationSourceEpochs): ReadingContextEntry[] | null {
     const conversation = this.cachedConversation(conversationId, sourceVersionId, epochs);
     if (!conversation) return null;
