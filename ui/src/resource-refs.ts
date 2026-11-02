@@ -550,7 +550,7 @@ function linkifyTextNodes(container: HTMLElement): void {
     acceptNode(node) {
       const parent = node.parentElement;
       if (!parent) return NodeFilter.FILTER_REJECT;
-      if (parent.closest('a, code, pre, .resource-ref')) return NodeFilter.FILTER_REJECT;
+      if (parent.closest('a, code, pre, .resource-ref, .katex, .katex-display, math')) return NodeFilter.FILTER_REJECT;
       CUSTOM_BRACKET_PATTERN.lastIndex = 0;
       return CUSTOM_BRACKET_PATTERN.test(node.nodeValue ?? '')
         ? NodeFilter.FILTER_ACCEPT

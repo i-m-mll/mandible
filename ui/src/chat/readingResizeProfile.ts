@@ -1,3 +1,4 @@
+// The v5 corpus remains a provisional resize shape; math-v6 exact geometry is authoritative.
 import { readingResizeProfileData } from './readingResizeProfileData';
 import type { MeasurementLayout } from './readingMeasurement';
 function value(layout: MeasurementLayout): number {

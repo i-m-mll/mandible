@@ -93,7 +93,7 @@ const buildOptions = {
   outdir,
   entryNames: 'app',
   chunkNames: 'chunks/[name]-[hash]',
-  assetNames: 'app',
+  assetNames: 'assets/[name]-[hash]',
   format: 'esm',
   splitting: true,
   sourcemap: isWatch,
@@ -107,6 +107,9 @@ const buildOptions = {
   },
   loader: {
     '.css': 'css',
+    '.woff2': 'file',
+    '.woff': 'file',
+    '.ttf': 'file',
   },
   minify: !isWatch,
   logLevel: 'info',
