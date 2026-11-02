@@ -7,6 +7,8 @@ import type { ConversationTranscriptConsumer } from '../ui/src/query/conversatio
 const boundary = vi.hoisted(() => ({ input: null as any, exact: false, scrollRef: { current: null } }));
 vi.mock('../ui/src/chat/readingResizeProfile', () => ({ getReadingResizeScale: () => 1 }));
 vi.mock('../ui/src/chat/useCompleteReading', () => ({ useCompleteReading: (input: any) => {
+  if (!input.enabled || input.total === 0) return { rows: [], bodies: new Map(), ready: true, plan: null,
+    materialize: async () => [], onRange: () => {}, protect: () => {}, refresh: async () => {} };
   const expanded = input.expanded['group:activity'];
   const row = { sourcePositions: [42], key: expanded ? 'exact-source' : 'folded-summary', revision: expanded ? 'open' : 'closed' };
   const membership = new Map([[42, { rowKey: row.key, summaryRowKey: 'folded-summary', disclosurePath: expanded ? [] : ['activity'], position: 42 }]]);
@@ -36,4 +38,17 @@ it('waits for exact disclosed source geometry before reporting a folded target p
   boundary.exact = true;
   await act(async () => { view.rerender(<ChatSurface events={[]} streaming transcript={transcript} />); });
   expect(await preparation).toEqual({ status: 'prepared', rowKey: 'exact-source' });
+});
+
+
+it('does not report an empty conversation before admission confirms it', async () => {
+  boundary.exact = true;
+  const emptyLabel = 'Confirmed-empty fixture';
+  const view = render(<ChatSurface events={[]} streaming={false} showEmpty={false} emptyLabel={emptyLabel} />);
+  await act(async () => {});
+  expect(view.queryByText(emptyLabel)).toBeNull();
+  const transcript = { conversationId: 'empty', positionSpaceId: 'space', sourceVersionId: 'source', total: 0,
+    displayContext: undefined, readingContext: new Map(), command: null } as unknown as ConversationTranscriptConsumer;
+  await act(async () => { view.rerender(<ChatSurface events={[]} streaming={false} transcript={transcript} showEmpty emptyLabel={emptyLabel} />); });
+  expect(view.queryByText(emptyLabel)).not.toBeNull();
 });
