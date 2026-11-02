@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type SqliteDatabase from '../sqlite.js';
-import { displayFragmentId, type IndexedDisplayFragment, type DisplayFragmentDescriptor, type DisplayPositionFacts } from './display-context.js';
+import { displayFragmentId, displaySummaryMembers, type IndexedDisplayFragment, type DisplayFragmentDescriptor, type DisplayPositionFacts } from './display-context.js';
 
 export type DisplayIndexInput = {
   positions: DisplayPositionFacts[];
@@ -32,9 +32,9 @@ export function writeDisplayIndex(db: SqliteDatabase, cacheId: number, input: Di
     if (pairedPositions.has(fragment.coordinate.position)) continue;
     const run = fragment.kind === 'activity' ? previous?.kind === 'activity' && previous.speaker === fragment.speaker
       ? previous.run_id : fragment.id : null;
-    const { activity, summary_from_source, has_details, disclosures } = fragment;
+    const { activity, summary_from_source, has_details, disclosures, summary_eligible } = fragment;
     insert.run(cacheId, fragment.coordinate.position, fragment.coordinate.part, ordinal, fragment.kind, fragment.speaker, run,
-      JSON.stringify({ activity, summary_from_source, has_details, disclosures, paired_source_positions: [] }));
+      JSON.stringify({ activity, summary_from_source, has_details, disclosures, summary_eligible, paired_source_positions: [] }));
     previous = { position: fragment.coordinate.position, part: fragment.coordinate.part, kind: fragment.kind,
       speaker: fragment.speaker, run_id: run, facts_json: '' };
   }
@@ -48,7 +48,7 @@ export function writeDisplayIndex(db: SqliteDatabase, cacheId: number, input: Di
     if (alias.failed) {
       fact.activity.result = { type: 'tool_result', tool_use_id: fact.activity.id, content: '', is_error: true };
       db.prepare('UPDATE cache_display_fragments SET facts_json = ? WHERE cache_conversation_id = ? AND position = ? AND part = ?')
-        .run(JSON.stringify({ activity: fact.activity, summary_from_source: fact.summary_from_source, has_details: fact.has_details, disclosures: fact.disclosures, paired_source_positions: [] }), cacheId, alias.owner_position, owner.part);
+        .run(JSON.stringify({ activity: fact.activity, summary_from_source: fact.summary_from_source, has_details: fact.has_details, disclosures: fact.disclosures, summary_eligible: fact.summary_eligible, paired_source_positions: [] }), cacheId, alias.owner_position, owner.part);
     }
   }
 }
@@ -81,10 +81,11 @@ export function readDisplayContextPlan(db: SqliteDatabase, cacheId: number, posi
     const members = (db.prepare('SELECT * FROM cache_display_fragments WHERE cache_conversation_id = ? AND run_id = ? ORDER BY position,ordinal')
       .all(cacheId, runId) as FragmentRow[]).map(decode);
     runs.set(runId, members);
-    const unified = members.some(member => member.activity && (member.activity.type !== 'activity'
+    const contributors = displaySummaryMembers(members);
+    const unified = contributors.some(member => member.activity && (member.activity.type !== 'activity'
       || ['thinking', 'reasoning-summary'].includes(member.activity.activity_kind)));
-    for (const [index, member] of members.entries()) {
-      if (member.summary_from_source && (members.length === 1 || (!unified && index === 0)
+    for (const [index, member] of contributors.entries()) {
+      if (member.summary_from_source && (contributors.length === 1 || (!unified && index === 0)
           || (unified && member.activity?.type === 'activity' && !['thinking', 'reasoning-summary'].includes(member.activity.activity_kind)))) {
         sourcePositions.add(member.coordinate.position);
       }

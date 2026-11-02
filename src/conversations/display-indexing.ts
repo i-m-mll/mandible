@@ -1,3 +1,4 @@
+import {isRoutineActivityStatus} from '../presentation/model.js';
 import { readingNodeDisclosures } from '../presentation/reading-disclosures.js';
 import { createHash } from 'node:crypto';
 import { readingMemberKeys, readingSpeaker } from './reading-context.js';
@@ -26,6 +27,7 @@ export function indexDisplayFragments(blocks: readonly Omit<ConversationBlock, '
     else if (activity?.type === 'activity') compact = { ...activity, parts: [] };
     return [{ id: displayFragmentId(coordinate), coordinate, kind: activity ? 'activity' as const : 'content' as const,
       activity_run_id: null, paired_source_positions: fragment.pairedSourcePositions,
+      summary_eligible: !(activity?.type === 'activity' && isRoutineActivityStatus(activity)),
       speaker: node.entity, disclosures: readingNodeDisclosures(node), activity: compact, summary_from_source: activity?.type === 'activity' && activity.parts.some(part => Boolean(part.text.trim())),
       has_details: activityDetailLines(presentations).length > 0 }];
   });

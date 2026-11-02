@@ -168,6 +168,7 @@ export function conversationBlocksToStreamEvents(
     const metadata = parseMetadata(block.metadata_json);
     const source = {
       blockId: block.id,
+      defaultVisible: true,
       ...(Number.isSafeInteger(block.position) ? { position: block.position } : {}),
       ...(block.details_loaded === undefined ? {} : { detailsLoaded: block.details_loaded }),
       ...(typeof metadata.display_has_body === 'boolean' ? { hasBody: metadata.display_has_body } : {}),

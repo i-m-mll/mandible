@@ -1,4 +1,4 @@
-import { DISPLAY_CONTEXT_VERSION, defaultDisplayEventsFromBlocks, displayFragmentId, type ConversationDisplayContext } from './display-context.js';
+import { DISPLAY_CONTEXT_VERSION, displaySummaryMembers, defaultDisplayEventsFromBlocks, displayFragmentId, type ConversationDisplayContext } from './display-context.js';
 import type { DisplayContextPlan } from './display-index.js';
 import { ConversationSourceReader } from './source-reader.js';
 import type { SourceBackedConversationBlock, SourceReadResult } from './source-types.js';
@@ -22,7 +22,7 @@ export async function readDisplayContext(input: {
   const actual = new Map(projectDisplayFragments(events).filter(fragment => fragment.position !== undefined)
     .map(fragment => [displayFragmentId({ position: fragment.position!, part: fragment.part }), fragment]));
   const activity_runs = [...plan.runs].map(([id, members]) => {
-    const items = members.flatMap(member => {
+    const items = displaySummaryMembers(members).flatMap(member => {
       const hydrated = actual.get(member.id)?.node;
       const item = hydrated?.kind === 'activity' && member.summary_from_source ? hydrated.item : member.activity;
       return item ? [item] : [];

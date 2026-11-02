@@ -55,6 +55,7 @@ export type IndexedDisplayFragment = DisplayFragmentDescriptor & {
   speaker: 'user' | 'assistant' | 'system';
   activity: DisplayActivityItem | null;
   summary_from_source: boolean;
+  summary_eligible?: boolean;
   has_details: boolean;
 };
 export type IndexedDisplayContext = {
@@ -74,12 +75,19 @@ export function displayEventsFromBlocks(blocks: readonly {
     const usage = block.metadata.token_usage;
     return [{ type: 'chat:item' as const, item, ...(intentId ? { intentId, displayKey: `intent:${intentId}` } : {}),
       ...(usage && Number.isFinite(usage.input) && Number.isFinite(usage.output) ? { usage: { key: typeof block.metadata.provider_message_id === 'string' ? block.metadata.provider_message_id : `record:${item.identity.source_record_ordinal}`, input: usage.input, output: usage.output } } : {}),
-      source: { ...(block.details_loaded === undefined ? {} : { detailsLoaded: block.details_loaded }), ...(typeof block.metadata.display_has_body === 'boolean' ? { hasBody: block.metadata.display_has_body } : {}), ...(block.timestamp ? { timestamp: block.timestamp } : {}), ...(block.dag_uuid ? { dagUuid: block.dag_uuid } : {}), blockId: `cblk:${conversationId}:${block.position}`, position: block.position,
+      source: { ...(block.details_loaded === undefined ? {} : { detailsLoaded: block.details_loaded, defaultVisible: true }), ...(typeof block.metadata.display_has_body === 'boolean' ? { hasBody: block.metadata.display_has_body } : {}), ...(block.timestamp ? { timestamp: block.timestamp } : {}), ...(block.dag_uuid ? { dagUuid: block.dag_uuid } : {}), blockId: `cblk:${conversationId}:${block.position}`, position: block.position,
         ...(block.parentPosition === null ? {} : { parentBlockId: `cblk:${conversationId}:${block.parentPosition}` }) } }];
   });
 }
 
 /** Source indexing and summary hydration preserve the default lazy renderer's visible status evidence. */
 export function defaultDisplayEventsFromBlocks(blocks: Parameters<typeof displayEventsFromBlocks>[0], conversationId: string): CanonicalChatItemEvent[] {
-  return displayEventsFromBlocks(blocks.map(block => ({ ...block, details_loaded: false })), conversationId);
+  return displayEventsFromBlocks(blocks.map(block => ({ ...block, details_loaded: false,
+    metadata: block.metadata.source_event_type === 'reasoning_summary' ? {...block.metadata, display_has_body: block.content.split(/\r?\n/).map(line => line.trim()).filter(Boolean).length > 1} : block.metadata,
+  })), conversationId);
+}
+
+export function displaySummaryMembers(members: readonly IndexedDisplayFragment[]): readonly IndexedDisplayFragment[] {
+  const contributors = members.filter(member => member.summary_eligible !== false);
+  return contributors.length ? contributors : members;
 }
