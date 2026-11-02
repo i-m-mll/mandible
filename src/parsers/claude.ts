@@ -1,3 +1,4 @@
+import { claudeAssistantResponse } from "./assistant-response.js";
 // Parser for Claude Code JSONL conversation files.
 // Format: ~/.claude/projects/<encoded-path>/<uuid>.jsonl
 
@@ -619,6 +620,7 @@ export class ClaudeParser implements ConversationParser {
             sourceEventType,
             sourceRecordOrdinal: options.baseRecordCount + recordIndex,
             sourceSubBlockOrdinal: index - firstRecordBlock,
+            assistantResponse: claudeAssistantResponse(rec.message?.stop_reason),
             ...(chatPartsByBlock.has(index) ? { parts: chatPartsByBlock.get(index)! } : {}),
             ...(activityKind ? { activityKind } : {}),
             ...(rec.level === "error" ? { severity: "error" as const }

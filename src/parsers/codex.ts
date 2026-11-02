@@ -1,3 +1,4 @@
+import { codexAssistantResponse } from "./assistant-response.js";
 import { canonicalSourcePath, logicalSourceStat } from "../conversations/logical-source.js";
 // Parser for Codex (OpenAI) JSONL conversation files.
 // Format: ~/.codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<ULID>.jsonl
@@ -96,6 +97,7 @@ interface CodexContentBlock {
 }
 
 interface CodexResponsePayload {
+  channel?: string;
   type: string;
   id?: string;
   role?: string | null;
@@ -925,6 +927,7 @@ export class CodexParser implements ConversationParser {
             sourceEventType,
             sourceRecordOrdinal: options.baseRecordCount + recordIndex,
             sourceSubBlockOrdinal: index - firstRecordBlock,
+            assistantResponse: codexAssistantResponse((rec.payload as CodexResponsePayload).channel),
             ...(chatPartsByBlock.has(index) ? { parts: chatPartsByBlock.get(index)! } : {}),
             ...(activityKind ? { activityKind } : {}),
             ...(sourceEventType === "turn_aborted" ? { severity: "warning" as const, status: "aborted", executionOutcome: "cancelled" as const }

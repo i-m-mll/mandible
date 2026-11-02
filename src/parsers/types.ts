@@ -65,8 +65,12 @@ export interface ChatItemBase {
   execution_outcome?: ChatExecutionOutcome;
 }
 
+/** Provider-authored turn intent; content completion alone never establishes a final response. */
+export type AssistantResponseClassification = "final" | "interim" | "unknown";
+
 export interface MessageItem extends ChatItemBase {
   type: "message";
+  assistant_response?: AssistantResponseClassification;
   role: "user" | "assistant" | "system";
 }
 
@@ -281,6 +285,7 @@ export interface TranscriptChatItemInput {
   elapsedMs?: number;
   relatedToolIds?: string[];
   executionOutcome?: ChatExecutionOutcome;
+  assistantResponse?: AssistantResponseClassification;
 }
 
 /** Attach the canonical durable Chat item without inventing provider identity or prose. */
@@ -319,7 +324,8 @@ export function attachTranscriptChatItem(
 
   let item: ChatItem | null = null;
   if (block.type === "user_message" || block.type === "assistant_message") {
-    item = { ...base, type: "message", role: block.role as "user" | "assistant" };
+    item = { ...base, type: "message", role: block.role as "user" | "assistant",
+      ...(block.role === "assistant" ? { assistant_response: input.assistantResponse ?? "unknown" } : {}) };
   } else if (block.type === "plan") {
     item = { ...base, type: "plan", role: "assistant" };
   } else if (block.type === "tool_use" || block.type === "tool_result") {

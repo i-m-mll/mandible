@@ -1,3 +1,4 @@
+import { claudeAssistantResponse } from "../parsers/assistant-response.js";
 import { RUNTIME_SETTING_FIELDS } from "./types.js";
 import type {
   ActivityItem,
@@ -491,7 +492,8 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
       content,
       "complete",
       undefined,
-    )) this.emitItem(controller, item);
+    )) this.emitItem(controller, item.type === "message" && item.role === "assistant"
+      ? { ...item, assistant_response: claudeAssistantResponse(object(record.message)?.stop_reason) } : item);
   }
 
   private emitItem(

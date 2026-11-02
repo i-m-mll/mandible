@@ -1,3 +1,4 @@
+import { assistantResponseMembership } from "../parsers/assistant-response.js";
 import {isRoutineActivityStatus} from '../presentation/model.js';
 import { readingNodeDisclosures } from '../presentation/reading-disclosures.js';
 import { createHash } from 'node:crypto';
@@ -43,6 +44,7 @@ export function indexDisplayFragments(blocks: readonly Omit<ConversationBlock, '
       block.type, block.role, block.content, block.timestamp, block.metadata, parentPosition(block.position),
     ])).digest('hex'), handoffKeys: item ? readingMemberKeys(item, block.metadata.client_intent_id) : [],
       turnId: item?.identity.native_turn_id,
+      ...(item ? { assistantResponse: assistantResponseMembership(item) } : {}),
       ...(item?.type === 'tool-call' && (item.tool_id ?? item.identity.native_tool_id) ? {executionKey: JSON.stringify([item.identity.provider, item.identity.session_id, item.tool_id ?? item.identity.native_tool_id])} : {}),
       ...(item && usage && Number.isFinite(usage.input) && Number.isFinite(usage.output)
         ? { usage: { key: typeof block.metadata.provider_message_id === 'string' ? block.metadata.provider_message_id : `record:${item.identity.source_record_ordinal}`,

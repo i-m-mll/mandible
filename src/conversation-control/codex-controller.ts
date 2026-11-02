@@ -1,3 +1,4 @@
+import { codexAssistantResponse } from "../parsers/assistant-response.js";
 import { managedQuestions, validQuestionAnswers } from "./questions.js";
 import { projectManagedProviderIdentity } from "../backends/mandible-transport.js";
 import type { TurnError } from "./generated/codex-app-server/v2/TurnError.js";
@@ -766,7 +767,8 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
     const completion = complete ? "complete" as const : "streaming" as const;
     if (type === "agentMessage") {
       const value = stringField(item, "text");
-      return value === null ? [] : [this.messageItem(controller, itemId, "assistant", value, completion, turnId)];
+      return value === null ? [] : [{ ...this.messageItem(controller, itemId, "assistant", value, completion, turnId),
+        assistant_response: complete ? codexAssistantResponse(item.phase) : "unknown" }];
     }
     if (type === "plan") {
       const value = stringField(item, "text");

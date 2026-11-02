@@ -60,6 +60,13 @@ lines.on("line", (line) => {
       completedAtMs: Date.now(),
       item: { id: `user-${request.params.clientUserMessageId}`, type: "userMessage", content: request.params.input },
     } });
+    if (request.params.input[0]?.text === "final-response") {
+      for (const [index, phase] of [null, 'commentary', 'final_answer'].entries()) {
+        send({ method: "item/completed", params: { threadId: request.params.threadId, turnId: activeTurnId,
+          item: { id: `response-${index}`, type: "agentMessage", text: `response-${index}`, phase } } });
+      }
+      send({ method: "item/agentMessage/delta", params: { threadId: request.params.threadId, turnId: activeTurnId, itemId: "running-tail", delta: "still running" } });
+    }
     if (request.params.input[0]?.text === "delta") {
       send({ method: "item/agentMessage/delta", params: { threadId: request.params.threadId, turnId: activeTurnId, itemId: "codex-message-1", delta: "hel" } });
       send({ method: "item/agentMessage/delta", params: { threadId: request.params.threadId, turnId: activeTurnId, itemId: "codex-message-1", delta: "lo" } });
