@@ -39,7 +39,6 @@ export type ChatSurfaceProps = StreamRendererProps & {
   onToggleBlockSelect?: (blockId: string, shiftKey: boolean) => void;
   onFork?: (dagUuid: string) => void;
   onResume?: (dagUuid: string) => void;
-  onCreatedTaskNavigate?: (providerSessionId: string) => void | Promise<void>;
   onExpandDetails?: (sources: readonly PersistedBlockSource[]) => void | Promise<void>;
   onCopyMessageLink?: (blockId: string) => void;
 };

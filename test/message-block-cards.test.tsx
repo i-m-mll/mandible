@@ -4,6 +4,9 @@ import { cleanup, fireEvent, render, screen, within } from './helpers/dom.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { latestPlanIndex, parsePlanEntries } from '../ui/src/components/message-blocks/PlanBlock';
 import { PermissionApprovalCard, permissionActionsForRequest } from '../ui/src/components/console/PermissionApprovalCard';
+import { ActivityGroup, ActivityRow } from '../ui/src/components/message-blocks/ActivityBlock';
+import { chatRouteHref } from '../ui/src/chat/messageLinks';
+import type { DisplayActivityItem } from '../src/presentation/types';
 import { MessageGroup } from '../ui/src/components/stream-renderer/MessageGroup';
 import type { ConsolePermissionRequest } from '../ui/src/api';
 import type { RenderedTurn } from '../ui/src/components/stream-renderer/types';
@@ -149,4 +152,51 @@ describe('message action cards', () => {
     expect(screen.getByText('New item')).toBeTruthy();
     expect(screen.getByText('Active item')).toBeTruthy();
   });
+});
+
+
+it('opens explicit chat references directly and retains group disclosure and native link actions', () => {
+  window.history.replaceState(null, '', '#/console?conversation=old&block=old-block&turn=old-turn&position=9&position_space=old-space&sidebar=hidden&agent_session=reader&preview=copy');
+  const directive = (identity: 'threadId' | 'clientThreadId', id: string): DisplayActivityItem => ({
+    type: 'provider-directive', directive: { kind: 'created-thread', identity, providerSessionId: id }, sessionId: 'source',
+  });
+  const items = [directive('threadId', 'server-child'), directive('clientThreadId', 'queued-child')];
+  const toggle = vi.fn();
+  render(<ActivityGroup items={items} onExpandedChange={toggle} renderMember={item => <ActivityRow item={item} onExpandedChange={toggle} />} />);
+  expect(screen.queryAllByRole('link')).toHaveLength(0);
+  fireEvent.click(screen.getByRole('button', { expanded: false }));
+  expect(toggle).toHaveBeenCalledTimes(1);
+  const links = screen.getAllByRole('link');
+  expect(links).toHaveLength(2);
+  for (const [index, link] of links.entries()) {
+    const route = new URL(link.getAttribute('href')!, 'https://example.test/');
+    const params = new URLSearchParams(route.hash.split('?')[1]);
+    expect(params.get('session')).toBe(index === 0 ? 'server-child' : 'queued-child');
+    for (const stale of ['conversation', 'block', 'turn', 'position', 'position_space']) expect(params.has(stale)).toBe(false);
+    expect(params.get('sidebar')).toBe('hidden');
+    expect(params.get('agent_session')).toBe('reader');
+    expect(params.get('preview')).toBe('copy');
+    for (const event of [new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }),
+      new MouseEvent('click', { bubbles: true, cancelable: true, metaKey: true }),
+      new MouseEvent('auxclick', { bubbles: true, cancelable: true, button: 1 }),
+      new MouseEvent('contextmenu', { bubbles: true, cancelable: true })]) {
+      link.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(false);
+    }
+    expect(link.hasAttribute('aria-expanded')).toBe(false);
+  }
+  expect(toggle).toHaveBeenCalledTimes(1);
+  expect(chatRouteHref({ type: 'conversation', id: 'other' }, window.location.hash)).toContain('conversation=other');
+});
+
+
+it('retains memory citation content while opening exact rollout references as chat links', () => {
+  const item: DisplayActivityItem = { type: 'provider-directive', sessionId: 'source', directive: {
+    kind: 'memory-citation', citations: [{ ref: 'MEMORY.md:10-12', note: 'Original citation' }], rolloutIds: ['first-rollout', 'second-rollout'],
+  } };
+  render(<ActivityRow item={item} />);
+  fireEvent.click(screen.getByRole('button', { expanded: false }));
+  expect(screen.getByText('MEMORY.md:10-12')).toBeTruthy();
+  expect(screen.getAllByRole('link').map(link => new URLSearchParams(link.getAttribute('href')!.split('?')[1]).get('session')))
+    .toEqual(['first-rollout', 'second-rollout']);
 });

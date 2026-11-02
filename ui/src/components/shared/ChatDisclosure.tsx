@@ -13,6 +13,7 @@ export type CompactActivityDisclosure = {
 export type CompactActivityRowProps = {
   icon?: JSX.Element;
   summary: string;
+  href?: string;
   disclosure?: CompactActivityDisclosure;
   className?: string;
   memberRefs?: string;
@@ -24,6 +25,7 @@ export type CompactActivityRowProps = {
 export function CompactActivityRow({
   icon,
   summary,
+  href,
   disclosure,
   className = '',
   memberRefs,
@@ -48,7 +50,7 @@ export function CompactActivityRow({
   }, [isExpanded, restoreFocusAfterCollapse]);
 
   const rootClass = `compact-activity${isExpanded ? ' compact-activity--expanded' : ''}${className ? ` ${className}` : ''}`;
-  const rowClass = `compact-activity__row${disclosure ? '' : ' compact-activity__row--inert'}${icon ? '' : ' compact-activity__row--no-icon'}`;
+  const rowClass = `compact-activity__row${disclosure || href ? '' : ' compact-activity__row--inert'}${icon ? '' : ' compact-activity__row--no-icon'}`;
   const rowContent = (
     <>
       {icon ? <span className="compact-activity__icon" aria-hidden="true">{icon}</span> : null}
@@ -63,6 +65,10 @@ export function CompactActivityRow({
   );
   const heading = (row: JSX.Element) => actions
     ? <div className="compact-activity__heading contextual-action-owner">{row}{actions}</div> : row;
+
+  if (href) {
+    return <div className={rootClass}>{heading(<a className={rowClass} href={href} data-member-refs={memberRefs}>{rowContent}</a>)}</div>;
+  }
 
   if (!disclosure) {
     return <div className={rootClass}>{heading(<div className={rowClass} data-member-refs={memberRefs}>{rowContent}</div>)}</div>;

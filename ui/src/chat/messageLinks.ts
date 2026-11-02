@@ -1,5 +1,6 @@
 import { getAgentPageBinding, hashWithAgentSession } from '../agent-page-binding';
 import { routeHashWithParams } from '../routing';
+import type { ChatRouteTarget } from '../api';
 
 export type ConversationAnchor = { expected_position_space_id?: string } & ({ block: string } | { turn: string } | { position: number });
 
@@ -36,4 +37,9 @@ export function messageLinkUrl(currentUrl: string, conversationId: string, block
     conversationAnchorHref(conversationId, { block: blockId, expected_position_space_id: positionSpaceId }, url.hash), getAgentPageBinding(),
   );
   return url.href;
+}
+
+export function chatRouteHref(target: ChatRouteTarget, currentHash = ''): string {
+  return routeHashWithParams(currentHash, 'console', { [target.type]: target.id },
+    ['conversation', 'session', 'block', 'turn', 'position', 'position_space']);
 }
