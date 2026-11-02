@@ -28,6 +28,15 @@ it('keeps real content and hidden action rails beside one another while disclosu
     expect(encoded, rendered.stdout.slice(-2000)).toBeDefined();
     if (encoded!.startsWith('fixture-error:')) throw new Error(Buffer.from(encoded!.slice(14), 'base64').toString());
     const results = JSON.parse(Buffer.from(encoded!, 'base64').toString());
+    for (const boundary of results[0].childBoundaries) {
+      expect(boundary.parentToFirst).toBe(0); expect(boundary.internalParentToFirst).toBe(0);
+      expect(boundary.lastPitch).toBe(33); expect(boundary.internalLastPitch).toBe(33);
+      expect(boundary.outerLeading).toBe(8); expect(boundary.outerTrailing).toBe(8);
+      expect(boundary.headerHeights).toEqual([22, 22, 22, 22]);
+      expect(boundary.normalHeights).toEqual(boundary.measuredHeights);
+      if (boundary.expanded) { expect(boundary.bodyGap).toBe(11); expect(boundary.internalBodyGap).toBe(11); }
+      else { expect(boundary.firstToSecond).toBe(33); expect(boundary.internalFirstToSecond).toBe(33); }
+    }
     for (const result of results) {
       for (const entry of result.entries) {
         expect(entry.rail.width, `${result.width} ${entry.kind}: regular event reserved an action margin`).toBe(0);

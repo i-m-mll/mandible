@@ -410,6 +410,9 @@
   gap: 0;
 }
 
+.stream-renderer__virtual-row.activity-member-boundary--after-sibling,
+.activity-member-boundary--after-sibling { padding-block-start: 11px; }
+
 .activity-details__part {
   white-space: pre-wrap;
   word-break: break-word;
