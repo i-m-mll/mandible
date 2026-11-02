@@ -19,7 +19,7 @@ it.each([chromium, webkit].map(engine => ({ name: engine.name(), engine })))('ke
     const page = await browser.newPage(); page.setDefaultTimeout(5000); await page.goto(pathToFileURL(file).href);
     const menu = page.getByRole('menu'); const parent = page.locator('#parent');
     await parent.waitFor({ state: 'visible' });
-    const paint = (selector: string) => page.locator(selector).evaluate(node => { const style = getComputedStyle(node); return { background: style.backgroundColor, radius: style.borderRadius }; });
+    const paint = (selector: string) => page.locator(selector).evaluate(node => { const style = getComputedStyle(node, '::before'); return { background: style.backgroundColor, radius: style.borderRadius }; });
     const basePaint = await paint('#parent'); const baseBox = await parent.boundingBox();
     const plain = await page.locator('#plain').boundingBox();
     expect(await page.evaluate(() => document.getSelection()!.isCollapsed)).toBe(true);
@@ -79,6 +79,42 @@ it.each([chromium, webkit].map(engine => ({ name: engine.name(), engine })))('ke
     await page.keyboard.press('Escape'); await parent.focus(); await page.keyboard.press('Shift+F10');
     expect(await menu.count()).toBe(0);
     await page.evaluate(() => document.getSelection()!.removeAllRanges());
+    for (const width of [1000, 452.203125]) {
+      await page.locator('#root').evaluate((node, value) => { (node as HTMLElement).style.width = `${value}px`; }, width);
+      for (const id of ['short-message', 'paragraph-message']) {
+        const message = page.locator(`#${id}`);
+        await message.scrollIntoViewIfNeeded();
+        const snapshot = () => page.evaluate(() => {
+          const box = (node: Element) => { const r = node.getBoundingClientRect(); return [r.x, r.y, r.width, r.height, node.scrollWidth, node.scrollHeight]; };
+          const glyphs: number[][] = [];
+          const walker = document.createTreeWalker(document.getElementById('paint-cases')!, NodeFilter.SHOW_TEXT);
+          while (walker.nextNode()) {
+            for (let i = 0; i < (walker.currentNode.textContent?.length ?? 0); i++) {
+              const range = document.createRange(); range.setStart(walker.currentNode, i); range.setEnd(walker.currentNode, i + 1);
+              for (const r of range.getClientRects()) glyphs.push([r.x, r.y, r.width, r.height]);
+            }
+          }
+          return { scroll: [document.documentElement.scrollWidth, document.documentElement.scrollHeight], boxes: Array.from(document.querySelectorAll('#paint-cases, #paint-cases *')).map(box), glyphs };
+        });
+        const before = await snapshot();
+        await message.focus(); await page.keyboard.press('Shift+F10'); await menu.waitFor({ state: 'visible' });
+        expect(await snapshot()).toEqual(before);
+        const painted = await message.evaluate(node => {
+          const style = getComputedStyle(node, '::before'); const bounds = node.getBoundingClientRect();
+          const rects: DOMRect[] = []; const walker = document.createTreeWalker(node.querySelector('.msg-text-block')!, NodeFilter.SHOW_TEXT);
+          while (walker.nextNode()) { const range = document.createRange(); range.selectNodeContents(walker.currentNode); rects.push(...Array.from(range.getClientRects())); }
+          const inkRight = Math.max(...rects.map(r => r.right)); const inkLeft = Math.min(...rects.map(r => r.left));
+          return { left: bounds.left + parseFloat(style.left) - parseFloat(style.boxShadow.split(' ').at(-1)!), right: bounds.left + parseFloat(style.left) + parseFloat(style.width) + parseFloat(style.boxShadow.split(' ').at(-1)!), inkLeft, inkRight, ownerRight: bounds.right, radius: parseFloat(style.borderRadius), padding: parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--space-3')) };
+        });
+        expect(Math.abs(painted.left - (painted.inkLeft - painted.padding))).toBeLessThan(1 / 32);
+        expect(Math.abs(painted.right - (painted.inkRight + painted.padding))).toBeLessThan(1 / 32);
+        expect(painted.radius).toBeGreaterThan(0);
+        if (width === 1000) expect(painted.right).toBeLessThan(painted.ownerRight - 20);
+        await page.keyboard.press('Escape'); await menu.waitFor({ state: 'detached' });
+        expect(await message.getAttribute('data-message-menu-paint')).toBeNull();
+        expect(await snapshot()).toEqual(before);
+      }
+    }
     await page.close();
     for (const selector of ['#prevented', '#stopped', '#link', '#input', '#textarea', '#editable', '#specific', '#media']) {
       const nativePage = await browser.newPage(); nativePage.setDefaultTimeout(5000);

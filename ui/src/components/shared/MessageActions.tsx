@@ -143,6 +143,44 @@ export function MessageActions({
     if (overflowOpen && variant === 'menu') overflowMenuRef.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus({ preventScroll: true });
   }, [overflowOpen, variant]);
 
+  useLayoutEffect(() => {
+    if (!overflowOpen || variant !== 'menu') return;
+    const owner = ownerRef.current;
+    const content = owner?.querySelector<HTMLElement>(':scope > .msg-text-block, :scope > .user-bubble, :scope > .instruction-message-block');
+    if (!owner || !content) return;
+    const paint = () => {
+      const bounds = owner.getBoundingClientRect();
+      const rects: DOMRect[] = [];
+      if (content.matches('.msg-text-block')) {
+        const walker = owner.ownerDocument.createTreeWalker(content, NodeFilter.SHOW_TEXT);
+        while (walker.nextNode()) {
+          if (!walker.currentNode.textContent?.trim()) continue;
+          const range = owner.ownerDocument.createRange(); range.selectNodeContents(walker.currentNode);
+          rects.push(...Array.from(range.getClientRects()));
+        }
+        for (const block of content.querySelectorAll('pre,table,img,video,svg,canvas,hr')) rects.push(block.getBoundingClientRect());
+      } else rects.push(content.getBoundingClientRect());
+      const visible = rects.filter(rect => rect.width > 0 && rect.height > 0);
+      if (!visible.length) return;
+      const left = Math.min(...visible.map(rect => rect.left));
+      const top = Math.min(...visible.map(rect => rect.top));
+      const right = Math.max(...visible.map(rect => rect.right));
+      const bottom = Math.max(...visible.map(rect => rect.bottom));
+      owner.style.setProperty('--message-ink-left', `${left - bounds.left - owner.clientLeft}px`);
+      owner.style.setProperty('--message-ink-top', `${top - bounds.top - owner.clientTop}px`);
+      owner.style.setProperty('--message-ink-width', `${right - left}px`);
+      owner.style.setProperty('--message-ink-height', `${bottom - top}px`);
+      owner.dataset.messageMenuPaint = content.matches('.msg-text-block') ? 'text' : 'surface';
+    };
+    paint();
+    const observer = new ResizeObserver(paint); observer.observe(content);
+    const mutations = new MutationObserver(paint); mutations.observe(content, { childList: true, characterData: true, subtree: true });
+    return () => {
+      observer.disconnect(); mutations.disconnect(); delete owner.dataset.messageMenuPaint;
+      for (const name of ['left', 'top', 'width', 'height']) owner.style.removeProperty(`--message-ink-${name}`);
+    };
+  }, [overflowOpen, variant]);
+
   const handleCopy = (e: MouseEvent) => {
     e.stopPropagation();
     if (onCopy) {

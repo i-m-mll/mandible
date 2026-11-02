@@ -1125,9 +1125,29 @@
   display: none;
 }
 
-.message-block-wrapper:has(> .message-actions--menu.contextual-action-group--persistent):has(> .msg-text-block, > .user-bubble, > .instruction-message-block) {
+[data-message-menu-paint] {
+  isolation: isolate;
+}
+
+/* Shadow padding paints beyond the ink box without expanding scrollable overflow. */
+[data-message-menu-paint]::before {
+  content: '';
+  position: absolute;
+  pointer-events: none;
+  z-index: -1;
+  left: var(--message-ink-left);
+  top: var(--message-ink-top);
+  width: var(--message-ink-width);
+  height: var(--message-ink-height);
   background: var(--neutral-alpha-05);
-  border-radius: var(--radius-chat-surface);
+  border-radius: max(0px, calc(var(--radius-chat-surface) - var(--message-paint-inline, 0px)));
+  box-shadow: 0 0 0 var(--message-paint-inline, 0px) var(--neutral-alpha-05);
+  clip-path: inset(calc(-1 * var(--message-paint-block, 0px)) calc(-1 * var(--message-paint-inline, 0px)) round var(--radius-chat-surface));
+}
+
+[data-message-menu-paint='text'] {
+  --message-paint-inline: var(--space-3);
+  --message-paint-block: var(--space-2);
 }
 
 @container message-block (max-width: 12rem) {
