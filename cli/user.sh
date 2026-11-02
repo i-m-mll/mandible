@@ -715,7 +715,7 @@ cmd_group() {
 
 cmd_grant() {
   local sub="${1:-}"; shift || true
-  local id="" subject_type="" subject="" project="" capability="" role="" resource_type="" resource_id="" json=0 response payload query=""
+  local id="" subject_type="" subject="" capability="" json=0 response payload
   case "$sub" in
     -h|--help|help)
       mandible_command_help user grant
@@ -723,24 +723,15 @@ cmd_grant() {
       ;;
     add)
       local binding
-      binding=$(mandible_bind_arguments "user.grant.add" '{"subject_type":{"option":"subject-type"},"subject":{"option":"subject"},"project":{"option":"project"},"role":{"option":"role"},"capability":{"option":"global"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
+      binding=$(mandible_bind_arguments "user.grant.add" '{"subject_type":{"option":"subject-type"},"subject":{"option":"subject"},"capability":{"option":"global"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
       eval "$binding"
       [[ "$subject_type" == "user" || "$subject_type" == "group" ]] || die "--subject-type must be user or group" 2
       [[ -n "$subject" ]] || die "--subject is required" 2
-      if [[ -n "$project" && -n "$role" && -z "$capability" ]]; then
-        resource_type="project"
-        payload="$(jq -n --arg st "$subject_type" --arg s "$subject" --arg r "$project" --arg p "$role" \
-          '{subject_type:$st,subject:$s,resource_type:"project",resource:$r,permission:$p}')"
-      elif [[ -n "$capability" && -z "$project" && -z "$role" ]]; then
-        resource_type="global"
-        payload="$(jq -n --arg st "$subject_type" --arg s "$subject" --arg p "$capability" \
-          '{subject_type:$st,subject:$s,resource_type:"global",permission:$p}')"
-      else
-        die "Choose either --project <ref> --role <role> or --global <capability>." 2
-      fi
+      [[ -n "$capability" ]] || die "--global is required" 2
+      payload="$(jq -n --arg st "$subject_type" --arg s "$subject" --arg p "$capability" '{subject_type:$st,subject:$s,permission:$p}')"
       require_tools
       response="$(api_send POST "/api/users/grants" "$payload")" || die "Failed to add grant." 1
-      emit "$response" "$json" '.grant | "\(mandible_display_id)\t\(.subject_type):\(.subject_id | mandible_short_id)\t\(.resource_type):\((.resource_id // "-") | mandible_short_id)\t\(.permission)"'
+      emit "$response" "$json" '.grant | "\(mandible_display_id)\t\(.subject_type):\(.subject_id | mandible_short_id)\t\(.permission)"'
       ;;
     rm)
       local binding
@@ -753,29 +744,25 @@ cmd_grant() {
       ;;
     list)
       local binding
-      binding=$(mandible_bind_arguments "user.grant.list" '{"resource_type":{"option":"resource-type"},"resource_id":{"option":"resource-id"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
+      binding=$(mandible_bind_arguments "user.grant.list" '{"json":{"option":"json","constant":"1"}}' "$@") || return $?
       eval "$binding"
-      [[ -z "$resource_type" ]] || query="?resource_type=$(urlencode "$resource_type")"
-      if [[ -n "$resource_id" ]]; then
-        [[ -n "$query" ]] && query="${query}&resource_id=$(urlencode "$resource_id")" || query="?resource_id=$(urlencode "$resource_id")"
-      fi
       require_tools
-      response="$(api_read "/api/users/grants${query}" "grants")" || exit 1
-      emit "$response" "$json" '.grants[]? | "\(mandible_display_id)\t\(.subject_type):\(.subject_id | mandible_short_id)\t\(.resource_type):\((.resource_id // "-") | mandible_short_id)\t\(.permission)"'
+      response="$(api_read "/api/users/grants" "grants")" || exit 1
+      emit "$response" "$json" '.grants[]? | "\(mandible_display_id)\t\(.subject_type):\(.subject_id | mandible_short_id)\t\(.permission)"'
       ;;
     *) die "Unknown grant subcommand: ${sub:-}. Use add|rm|list." 2 ;;
   esac
 }
 
 cmd_access() {
-  local user="" project="" json=0 response
+  local user="" json=0 response
   local binding
-  binding=$(mandible_bind_arguments "user.access" '{"json":{"option":"json","constant":"1"},"user":{"position":0},"project":{"position":1}}' "$@") || return $?
+  binding=$(mandible_bind_arguments "user.access" '{"json":{"option":"json","constant":"1"},"user":{"position":0}}' "$@") || return $?
   eval "$binding"
-  [[ -n "$user" && -n "$project" ]] || die "Usage: $(mandible_command_syntax user.access)" 2
+  [[ -n "$user" ]] || die "Usage: $(mandible_command_syntax user.access)" 2
   require_tools
-  response="$(api_read "/api/users/$(urlencode "$user")/access?project=$(urlencode "$project")" "access")" || exit 1
-  emit "$response" "$json" '.access | "allowed: \(.allowed)\nrole: \(.effective_role // "-")\nreason: \(.reason)"'
+  response="$(api_read "/api/users/$(urlencode "$user")/access" "access")" || exit 1
+  emit "$response" "$json" '.global_capabilities | to_entries[] | "\(.key)\t\(.value)"'
 }
 
 if [[ $# -eq 0 || "${1:-}" == "-h" || "${1:-}" == "--help" || "${1:-}" == "help" ]]; then

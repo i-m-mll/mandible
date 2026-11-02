@@ -1,9 +1,10 @@
+import { migratedFileDb } from './helpers/ledger-fixtures.js';
 import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { testRuntimeRoot } from './helpers/runtime-isolation.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, expect, it } from 'vitest';
-import { openDb, setDb, migrate, type Db } from '../src/db.js';
+import { setDb, migrate, type Db } from '../src/db.js';
 import { ConversationSpawnService } from '../src/conversation-spawn/service.js';
 import { ConversationControlStore } from '../src/conversation-control/store.js';
 import { reconcileConversationIdentities, resolveConversationId } from '../src/conversations/identity.js';
@@ -24,7 +25,7 @@ let transcript: string;
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(testRuntimeRoot, 'chat-identity-'));
-  db = openDb(path.join(root, 'test.db'));
+  db = migratedFileDb(path.join(root, 'test.db'));
   setDb(db);
   transcript = path.join(root, '.claude', 'projects', '-tmp-project', `${nativeId}.jsonl`);
   fs.mkdirSync(path.dirname(transcript), { recursive: true });

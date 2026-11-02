@@ -2,15 +2,10 @@
 import { marked } from 'marked';
 import { linkifyResourceRefs } from '../ui/src/resource-refs';
 import { describe, expect, it } from 'vitest';
-import { renderInlineMarkdown, renderMarkdown } from '../ui/src/lib/markdown';
+import { renderMarkdown } from '../ui/src/lib/markdown';
 import { renderUnifiedDiffFallbackHtml } from '../ui/src/components/DiffView';
 
 describe('shared UI Markdown rendering', () => {
-  it('renders block and inline Markdown', () => {
-    expect(renderMarkdown('**strong**')).toContain('<strong>strong</strong>');
-    expect(renderInlineMarkdown('**strong**')).toBe('<strong>strong</strong>');
-  });
-
   it('uses DOMPurify for dangerous tags, attributes, and URL schemes', () => {
     const html = renderMarkdown('<img src="x" onerror="alert(1)"><script>alert(1)</script>[x](javascript:alert(1))');
     expect(html).not.toContain('onerror');

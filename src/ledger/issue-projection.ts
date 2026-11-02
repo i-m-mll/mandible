@@ -1,3 +1,4 @@
+import { displayIssueId, listIssueHierarchyEdges } from "./issue-graph.js";
 import type { Db } from "../db.js";
 import type {
   GitBugComment,
@@ -137,41 +138,21 @@ function batchParentRelationshipsByIssue(
   issueIds: string[],
 ): Map<string, GitBugIssueParentRelationship[]> {
   const parents = new Map<string, GitBugIssueParentRelationship[]>();
-  for (const ids of chunk(issueIds, IN_CLAUSE_CHUNK)) {
-    const placeholders = ids.map(() => "?").join(", ");
-    const rows = db.prepare(
-      `SELECT e.id, e.target_issue_id, e.source_issue_id, e.provenance,
-              parent.short_id AS parent_ref
-         FROM ledger_relationship_edges e
-         JOIN ledger_issues parent ON parent.id = e.source_issue_id
-        WHERE e.target_issue_id IN (${placeholders})
-          AND e.source_entity_type = 'issue'
-          AND e.target_entity_type = 'issue'
-          AND e.link_type = 'parent_child'
-          AND e.deleted_at IS NULL
-        ORDER BY e.target_issue_id, e.created_at, e.id`,
-    ).all(...ids) as Array<{
-      id: string;
-      target_issue_id: string;
-      source_issue_id: string;
-      provenance: GitBugIssueParentRelationship["provenance"];
-      parent_ref: string | null;
-    }>;
-    const seen = new Set<string>();
-    for (const row of rows) {
-      const key = `${row.target_issue_id}:${row.id}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const list = parents.get(row.target_issue_id) ?? [];
-      list.push({
-        id: row.id,
-        parent_id: row.source_issue_id,
-        parent_ref: row.parent_ref ?? row.source_issue_id,
-        provenance: row.provenance,
-        confidence: "observed",
-      });
-      parents.set(row.target_issue_id, list);
-    }
+  const rows = listIssueHierarchyEdges(db, { targetIds: issueIds });
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const key = `${row.target_issue_id}:${row.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const list = parents.get(row.target_issue_id) ?? [];
+    list.push({
+      id: row.id,
+      parent_id: row.source_issue_id,
+      parent_ref: row.parent_ref ?? row.source_issue_id,
+      provenance: row.provenance,
+      confidence: "observed",
+    });
+    parents.set(row.target_issue_id, list);
   }
   return parents;
 }
@@ -394,10 +375,6 @@ function ledgerIssueToRouteDetail(
         };
       }),
   };
-}
-
-function displayIssueId(detail: LedgerIssueDetail): string {
-  return detail.short_id || detail.id.slice(0, 7);
 }
 
 function resolveError(resolved: Exclude<ResolveIssueRefResult, { ok: true }>) {

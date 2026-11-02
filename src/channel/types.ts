@@ -1,3 +1,4 @@
+import type { AuthRequestStatus } from "../contracts.js";
 // Bug: 1d652d5 — MCP channel server shared types
 
 /** Inbox response from Mandible's GET /api/inbox or /api/inbox/global */
@@ -138,13 +139,6 @@ export interface SessionUpdateResponse {
   [key: string]: unknown;
 }
 
-/** SSE event from Mandible's event stream */
-export interface MandibleSSEEvent {
-  type: string;
-  data: unknown;
-  timestamp?: string;
-}
-
 /**
  * Bug: 4e32923 — minimal auth_result record returned by
  * GET /api/inbox/undelivered. Used at channel-server startup to replay any
@@ -153,7 +147,7 @@ export interface MandibleSSEEvent {
 export interface UndeliveredAuthResult {
   id: string;
   head_branch: string | null;
-  status: string;
+  status: AuthRequestStatus;
   exit_code: number | null;
   resolved_at: number | null;
   title: string | null;

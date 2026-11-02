@@ -1,11 +1,12 @@
 // @vitest-environment node
+import { migratedFileDb, createLedgerProject, createLedgerIssue } from './helpers/ledger-fixtures.js';
 import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { openDb, setDb, type Db } from '../src/db.js';
+import { setDb, type Db } from '../src/db.js';
 import { ClientAuthenticator } from '../src/client-auth/authenticator.js';
 import { createLocalSocketServer, createServer, Router } from '../src/server.js';
 import { localApiSocketPath, startLocalApiSocket } from '../src/local-api-socket.js';
@@ -20,7 +21,6 @@ import { SessionRegistry } from '../src/registry.js';
 import { currentRequestOrigin } from '../src/request-origin.js';
 import { attributionForRequest } from '../src/client-auth/authz.js';
 import { LedgerStore } from '../src/ledger/store.js';
-import { createLedgerProject, createLedgerIssue } from './helpers/ledger-fixtures.js';
 import type { InstanceInfo } from '../src/types.js';
 
 let root: string; let db: Db; let auth: ClientAuthenticator; let router: Router;
@@ -45,7 +45,7 @@ function request(method: string, route: string, headers: Record<string, string> 
 }
 beforeEach(async () => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-socket-'));
-  db = openDb(path.join(root, 'db')); setDb(db);
+  db = migratedFileDb(path.join(root, 'db')); setDb(db);
   setupOperator(db, { display_name: 'Operator', email: 'operator@example.invalid' });
   auth = new ClientAuthenticator(db, { instance: instance(), secretsDir: path.join(root, 'auth'), sessionAuthorityDir: path.join(root, 'sessions') });
   router = new Router({ clientAuth: auth, instance: instance() });
@@ -147,7 +147,7 @@ describe('owner-only local API socket', () => {
       vi.stubEnv(key, value);
     }
     try {
-      const channel = await import('../channel-server/client.js');
+      const channel = await import('./helpers/channel-client.js');
       await channel.registerSession({ id, status: 'active', cwd: root, branch: null });
     } finally {
       vi.unstubAllEnvs();
@@ -376,4 +376,88 @@ describe('owner-only local API socket', () => {
     closeSocket = await startLocalApiSocket(socketServer, socketPath);
     expect((await request('GET', '/api/read')).status).toBe(200);
   });
+});
+
+it('shares ledger surfaces between two active local agent sessions without project grants', async () => {
+  const { inlineLedgerReader } = await import('../src/ledger-reads/index.js');
+  const { registerIssueRoutes } = await import('../src/routes/issues.js');
+  const { registerProviderRoutes } = await import('../src/routes/providers.js');
+  const { registerSpacesRoutes } = await import('../src/routes/spaces.js');
+  const { registerBriefingRoutes } = await import('../src/routes/briefing.js');
+  const { registerProjectRoutes } = await import('../src/routes/projects.js');
+  const { addProject } = await import('../src/ledger/project-registry.js');
+  const { associateProjectArtifact } = await import('../src/provider-artifacts.js');
+  const { setSetting } = await import('../src/client-auth/settings-kv.js');
+  setSetting(db, 'artifact_root', path.join(root, 'artifacts'));
+  const reader = inlineLedgerReader(() => db);
+  registerIssueRoutes(router, { getRepos: () => [], getRepoById: () => undefined, getBranches: () => [] } as never, undefined, reader);
+  registerProviderRoutes(router, reader);
+  registerSpacesRoutes(router);
+  registerBriefingRoutes(router, db, reader);
+  registerProjectRoutes(router);
+  const project = addProject(db, { project_key: 'shared-ledger' });
+  const other = addProject(db, { project_key: 'other-ledger' });
+  const agents = [
+    ['codex', 'CODEX_THREAD_ID', 'socket-codex'],
+    ['claude', 'CLAUDE_CODE_SESSION_ID', 'socket-claude'],
+  ].map(([provider, binding, slug]) => {
+    const user = createUser(db, { slug, kind: 'agent', display_name: slug });
+    addBinding(db, user.id, { binding_type: 'provider_session_env', value: binding });
+    return { user, headers: { 'X-Mandible-Managed-Client': '1', 'X-Mandible-Ambient-Provider': provider,
+      'X-Mandible-Ambient-Provider-Session-Id': `${slug}-session` } };
+  });
+  const [first, second] = agents;
+  const created = await request('POST', '/api/issues/anything', first.headers, true,
+    { project: project.id, title: 'Shared issue', body: 'Initial', kind: 'bug' });
+  expect(created.status, JSON.stringify(created.body)).toBe(200);
+  const issueId = created.body.id;
+  const saved = await request('POST', '/api/artifacts/versions', first.headers, true,
+    { source_kind: 'managed', series_key: 'shared-report', content: '# Shared report\n', media_type: 'text/markdown' });
+  expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+  const version = saved.body.result.artifact_version.id;
+  const artifact = saved.body.result.artifact.reference.canonical_artifact_id;
+  // Unassociated exact refs work before any domain association exists.
+  expect((await request('GET', `/api/artifacts/${encodeURIComponent(version)}/content`, second.headers)).status).toBe(200);
+  associateProjectArtifact(db, { project_ref: project.id, target_type: 'artifact_version', target_id: version });
+  associateProjectArtifact(db, { project_ref: other.id, target_type: 'artifact_version', target_id: version });
+  const briefing = await request('POST', '/api/briefings', first.headers, true,
+    { artifact_version_ref: version, title: 'Shared report' });
+  expect(briefing.status, JSON.stringify(briefing.body)).toBe(201);
+  const briefingId = briefing.body.briefing_id;
+  const space = await request('POST', '/api/spaces', first.headers, true, { title: 'Shared space', project_id: project.id });
+  expect(space.status, JSON.stringify(space.body)).toBe(201);
+  const spaceId = space.body.space.id;
+  for (const { user, headers } of agents) {
+    const comment = await request('POST', `/api/ledger/issues/${issueId}/comments`, headers, true, { body: `Written by ${user.slug}` });
+    expect(comment.status, JSON.stringify(comment.body)).toBe(200);
+    expect((await request('GET', `/api/ledger/issues/${issueId}`, headers)).body.comments)
+      .toEqual(expect.arrayContaining([expect.objectContaining({ body: `Written by ${user.slug}`, author: expect.objectContaining({ attribution: expect.objectContaining({ user: expect.objectContaining({ id: user.id }) }) }) })]));
+    for (const route of ['/api/issues', '/api/artifacts', '/api/artifacts/series', '/api/spaces', '/api/briefings',
+      `/api/artifacts/${encodeURIComponent(version)}/content`, `/api/artifacts/${encodeURIComponent(artifact)}`,
+      `/api/spaces/${spaceId}`, `/api/briefings/${briefingId}`,
+      `/api/refs/resolve?ref=${encodeURIComponent(version)}`, `/api/spaces/resolve?ref=${encodeURIComponent(version)}`]) {
+      const response = await request('GET', route, headers);
+      expect(response.status, `${route}: ${JSON.stringify(response.body)}`).toBe(200);
+    }
+    const updatedArtifact = await request('POST', '/api/artifacts/versions', headers, true,
+      { source_kind: 'managed', artifact_id: artifact, content: '# Update by ' + user.slug });
+    expect(updatedArtifact.status, JSON.stringify(updatedArtifact.body)).toBe(200);
+    expect(updatedArtifact.body.result.artifact_version.id).not.toBe(version);
+    expect((await request('GET', '/api/artifacts/' + encodeURIComponent(version) + '/content', headers)).body.content.preview.text)
+      .toBe('# Shared report\n');
+    const added = await request('POST', `/api/spaces/${spaceId}/items`, headers, true, { ref_type: 'artifact', ref_id: version });
+    expect([200, 201], JSON.stringify(added.body)).toContain(added.status);
+    const renamed = await request('PATCH', `/api/briefings/${briefingId}`, headers, true, { title: `Report ${user.slug}` });
+    expect(renamed.status, JSON.stringify(renamed.body)).toBe(200);
+  }
+  expect(db.prepare('SELECT * FROM permission_grants').all()).toEqual([]);
+  const rejectedRestriction = await request('PATCH', '/api/projects/' + project.id, first.headers, true,
+    { restricted: true, display_name: 'Must not change' });
+  expect(rejectedRestriction).toMatchObject({ status: 400, body: { code: 'retired_project_restriction' } });
+  expect(db.prepare('SELECT display_name FROM ledger_projects WHERE id = ?').get(project.id))
+    .toEqual({ display_name: project.display_name });
+  expect((await request('GET', `/api/projects/${project.id}/access`, first.headers)).status).toBe(404);
+  expect((await request('PATCH', `/api/projects/${project.id}/access`, first.headers, true, { restricted: true })).status).toBe(404);
+  expect((await request('GET', `/api/users/${first.user.id}/access?project=${project.id}`, first.headers)).status).toBe(400);
+  expect((await request('GET', '/api/users/grants?resource_type=project', first.headers)).status).toBe(400);
 });

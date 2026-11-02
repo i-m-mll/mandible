@@ -1,26 +1,16 @@
+import { GLOBAL_CAPABILITIES, type GlobalCapability } from "./schema.js";
+export { GLOBAL_CAPABILITIES, type GlobalCapability } from "./schema.js";
 import { operatorPresenceIdentity } from "../client-auth/operator-presence.js";
 import { mutateLedgerRecord } from "../ledger/mutation-history.js";
 import type { Db } from "../db.js";
 import { getClientAuthMode } from "../client-auth/mode.js";
 import type { RequestLike, ResolvedClientIdentity, ResponseLike } from "../server.js";
-import { resolveProjectRef } from "../ledger/project-registry.js";
 import { getOperatorId, getUserById, resolveUserOrThrow, UserRegistryError } from "../users/store.js";
 import { ulid } from "../users/ids.js";
 
 export const AGENTS_GROUP_ID = "00000000000000000000000001";
 export const AGENTS_GROUP_SLUG = "agents";
 
-export const PROJECT_ROLES = ["read", "write", "admin"] as const;
-export type ProjectRole = typeof PROJECT_ROLES[number];
-export const GLOBAL_CAPABILITIES = [
-  "approve_auth",
-  "spawn_console",
-  "change_settings",
-  "backup",
-  "open_path",
-  "ask.create",
-] as const;
-export type GlobalCapability = typeof GLOBAL_CAPABILITIES[number];
 export type PermissionSubjectType = "user" | "group";
 
 export interface UserGroup {
@@ -36,9 +26,7 @@ export interface PermissionGrant {
   id: string;
   subject_type: PermissionSubjectType;
   subject_id: string;
-  resource_type: "project" | "global";
-  resource_id: string | null;
-  permission: ProjectRole | GlobalCapability;
+  permission: GlobalCapability;
   created_at: number;
 }
 
@@ -46,12 +34,8 @@ export interface AccessDecision {
   allowed: boolean;
   reason: string;
   user_id: string | null;
-  project_id?: string;
-  required_role?: ProjectRole;
-  effective_role?: ProjectRole | null;
   capability?: GlobalCapability;
   operator: boolean;
-  restricted?: boolean;
 }
 
 export class PermissionError extends Error {
@@ -66,7 +50,6 @@ export class PermissionError extends Error {
 }
 
 const SLUG_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
-const ROLE_RANK: Record<ProjectRole, number> = { read: 1, write: 2, admin: 3 };
 
 function resolveGroup(db: Db, ref: string): UserGroup | null {
   return (db.prepare("SELECT * FROM user_groups WHERE id = ? OR slug = ? LIMIT 1")
@@ -196,31 +179,20 @@ function resolveSubjectId(db: Db, type: PermissionSubjectType, ref: string): str
 export function addGrant(db: Db, input: {
   subject_type: PermissionSubjectType;
   subject: string;
-  resource_type: "project" | "global";
-  resource?: string;
   permission: string;
 }, now: number = Date.now()): PermissionGrant {
+  if (["resource_type", "resource_id", "resource", "project", "role"].some(key => key in input)) {
+    throw new UserRegistryError("invalid", "Project grants and resource fields have been retired.");
+  }
   const subjectId = resolveSubjectId(db, input.subject_type, input.subject);
-  let resourceId: string | null = null;
-  if (input.resource_type === "project") {
-    if (!(PROJECT_ROLES as readonly string[]).includes(input.permission)) {
-      throw new UserRegistryError("invalid", `Invalid project role '${input.permission}'.`);
-    }
-    const resolved = resolveProjectRef(db, input.resource ?? "");
-    if ((!resolved.ok && resolved.reason === "ambiguous")) throw new UserRegistryError("conflict", "Project reference is ambiguous.");
-    if (!resolved.ok) {
-      throw new UserRegistryError("not_found", `No project matches '${input.resource ?? ""}'.`);
-    }
-    resourceId = resolved.project.id;
-  } else if (!(GLOBAL_CAPABILITIES as readonly string[]).includes(input.permission)) {
+  if (!(GLOBAL_CAPABILITIES as readonly string[]).includes(input.permission)) {
     throw new UserRegistryError("invalid", `Invalid global capability '${input.permission}'.`);
   }
 
   const existing = db.prepare(
     `SELECT * FROM permission_grants
-      WHERE subject_type = ? AND subject_id = ? AND resource_type = ?
-        AND resource_id IS ? AND permission = ?`,
-  ).get(input.subject_type, subjectId, input.resource_type, resourceId, input.permission) as
+      WHERE subject_type = ? AND subject_id = ? AND permission = ?`,
+  ).get(input.subject_type, subjectId, input.permission) as
     PermissionGrant | undefined;
   if (existing) return existing;
   const id = ulid(now);
@@ -229,14 +201,13 @@ export function addGrant(db: Db, input: {
     entity_type: "grant",
     entity_id: id,
     payload: { subject_id: subjectId },
-    project_id: resourceId,
-    snapshot: () => db.prepare("SELECT id, subject_type, subject_id, resource_type, resource_id, permission FROM permission_grants WHERE id = ?").get(id) ?? null,
+    snapshot: () => db.prepare("SELECT id, subject_type, subject_id, permission FROM permission_grants WHERE id = ?").get(id) ?? null,
   }, () => {
     db.prepare(
       `INSERT INTO permission_grants (
-         id, subject_type, subject_id, resource_type, resource_id, permission, created_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).run(id, input.subject_type, subjectId, input.resource_type, resourceId, input.permission, now);
+         id, subject_type, subject_id, permission, created_at
+       ) VALUES (?, ?, ?, ?, ?)`,
+    ).run(id, input.subject_type, subjectId, input.permission, now);
     return db.prepare("SELECT * FROM permission_grants WHERE id = ?").get(id) as PermissionGrant;
   });
 }
@@ -246,9 +217,8 @@ export function removeGrant(db: Db, id: string): void {
   return mutateLedgerRecord(db, {
     entity_type: "grant",
     entity_id: id,
-    project_id: grant?.resource_id,
     payload: { subject_id: grant?.subject_id },
-    snapshot: () => db.prepare("SELECT id, subject_type, subject_id, resource_type, resource_id, permission FROM permission_grants WHERE id = ?").get(id) ?? null,
+    snapshot: () => db.prepare("SELECT id, subject_type, subject_id, permission FROM permission_grants WHERE id = ?").get(id) ?? null,
   }, () => {
 
     const result = db.prepare("DELETE FROM permission_grants WHERE id = ?").run(id);
@@ -259,8 +229,6 @@ export function removeGrant(db: Db, id: string): void {
 export function listGrants(db: Db, filter: {
   subject_type?: PermissionSubjectType;
   subject_id?: string;
-  resource_type?: "project" | "global";
-  resource_id?: string;
 } = {}): PermissionGrant[] {
   const clauses: string[] = [];
   const params: unknown[] = [];
@@ -274,44 +242,6 @@ export function listGrants(db: Db, filter: {
     .all(...params) as PermissionGrant[];
 }
 
-export function setProjectRestricted(db: Db, projectRef: string, restricted: boolean): string {
-  const resolved = resolveProjectRef(db, projectRef);
-  if ((!resolved.ok && resolved.reason === "ambiguous")) throw new UserRegistryError("conflict", "Project reference is ambiguous.");
-  if (!resolved.ok) {
-    throw new UserRegistryError("not_found", `No project matches '${projectRef}'.`);
-  }
-
-  return mutateLedgerRecord(db, {
-    entity_type: "project",
-    entity_id: resolved.project.id,
-    project_id: resolved.project.id,
-    snapshot: () => db.prepare("SELECT id, restricted FROM ledger_projects WHERE id = ?").get(resolved.project.id) ?? null,
-  }, () => {
-    db.prepare("UPDATE ledger_projects SET restricted = ?, updated_at = ? WHERE id = ?")
-      .run(restricted ? 1 : 0, Date.now(), resolved.project.id);
-    return resolved.project.id;
-  });
-}
-
-export function projectAccessSettings(db: Db, projectRef: string): {
-  project_id: string;
-  restricted: boolean;
-  grants: PermissionGrant[];
-} {
-  const resolved = resolveProjectRef(db, projectRef);
-  if ((!resolved.ok && resolved.reason === "ambiguous")) throw new UserRegistryError("conflict", "Project reference is ambiguous.");
-  if (!resolved.ok) {
-    throw new UserRegistryError("not_found", `No project matches '${projectRef}'.`);
-  }
-  const row = db.prepare("SELECT restricted FROM ledger_projects WHERE id = ?")
-    .get(resolved.project.id) as { restricted: number };
-  return {
-    project_id: resolved.project.id,
-    restricted: row.restricted === 1,
-    grants: listGrants(db, { resource_type: "project", resource_id: resolved.project.id }),
-  };
-}
-
 function identityIsValid(db: Db, identity: Pick<ResolvedClientIdentity, "user_id" | "slug">): boolean {
   const user = getUserById(db, identity.user_id);
   return Boolean(user && user.status === "active" && user.slug === identity.slug);
@@ -323,55 +253,6 @@ function subjectPredicateSql(): string {
       SELECT 1 FROM user_group_members m
        WHERE m.group_id = g.subject_id AND m.user_id = ?
     ))`;
-}
-
-export function evaluateProjectAccess(db: Db, input: {
-  identity: Pick<ResolvedClientIdentity, "user_id" | "slug"> | null;
-  project_id: string;
-  required_role: ProjectRole;
-}): AccessDecision {
-  const operatorId = getOperatorId(db);
-  if (input.identity && !identityIsValid(db, input.identity)) {
-    return { allowed: false, reason: "ambiguous_or_inactive_identity", user_id: input.identity.user_id,
-      project_id: input.project_id, required_role: input.required_role, effective_role: null,
-      operator: false };
-  }
-  if (input.identity && operatorId !== null && input.identity.user_id === operatorId) {
-    return { allowed: true, reason: "operator_implicit_admin", user_id: operatorId,
-      project_id: input.project_id, required_role: input.required_role, effective_role: "admin",
-      operator: true, restricted: true };
-  }
-  if (!input.identity) {
-    const allowed = getClientAuthMode(db) === "compat";
-    return { allowed, reason: allowed ? "compat_anonymous_bypass" : "authentication_required",
-      user_id: null, project_id: input.project_id, required_role: input.required_role,
-      effective_role: null, operator: false };
-  }
-  const project = db.prepare("SELECT restricted FROM ledger_projects WHERE id = ?")
-    .get(input.project_id) as { restricted: number } | undefined;
-  if (!project) {
-    return { allowed: false, reason: "project_not_found", user_id: input.identity.user_id,
-      project_id: input.project_id, required_role: input.required_role, effective_role: null,
-      operator: false };
-  }
-  if (project.restricted !== 1) {
-    return { allowed: true, reason: "project_unrestricted", user_id: input.identity.user_id,
-      project_id: input.project_id, required_role: input.required_role, effective_role: "admin",
-      operator: false, restricted: false };
-  }
-  const rows = db.prepare(
-    `SELECT g.permission FROM permission_grants g
-      WHERE g.resource_type = 'project' AND g.resource_id = ?
-        AND (${subjectPredicateSql()})`,
-  ).all(input.project_id, input.identity.user_id, input.identity.user_id) as Array<{ permission: ProjectRole }>;
-  const effectiveRole = rows.reduce<ProjectRole | null>((best, row) => (
-    !best || ROLE_RANK[row.permission] > ROLE_RANK[best] ? row.permission : best
-  ), null);
-  const allowed = effectiveRole !== null && ROLE_RANK[effectiveRole] >= ROLE_RANK[input.required_role];
-  return { allowed, reason: allowed ? "grant" : "project_permission_required",
-    user_id: input.identity.user_id, project_id: input.project_id,
-    required_role: input.required_role, effective_role: effectiveRole,
-    operator: false, restricted: true };
 }
 
 export function evaluateGlobalCapability(db: Db, input: {
@@ -394,34 +275,11 @@ export function evaluateGlobalCapability(db: Db, input: {
   }
   const grant = db.prepare(
     `SELECT 1 FROM permission_grants g
-      WHERE g.resource_type = 'global' AND g.permission = ?
+      WHERE g.permission = ?
         AND (${subjectPredicateSql()}) LIMIT 1`,
   ).get(input.capability, input.identity.user_id, input.identity.user_id);
   return { allowed: Boolean(grant), reason: grant ? "grant" : "global_capability_required",
     user_id: input.identity.user_id, capability: input.capability, operator: false };
-}
-
-export function requireProjectAccess(
-  db: Db,
-  req: Pick<RequestLike, "client_identity">,
-  projectId: string,
-  requiredRole: ProjectRole,
-): AccessDecision {
-  const decision = evaluateProjectAccess(db, {
-    identity: req.client_identity ?? null,
-    project_id: projectId,
-    required_role: requiredRole,
-  });
-  if (!decision.allowed) {
-    throw new PermissionError(
-      decision.reason === "authentication_required" ? 401 : 403,
-      decision.reason,
-      decision.reason === "authentication_required"
-        ? "Authentication is required for this restricted project."
-        : `Project ${requiredRole} permission is required.`,
-    );
-  }
-  return decision;
 }
 
 export function requireGlobalCapability(

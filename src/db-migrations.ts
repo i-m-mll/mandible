@@ -1,3 +1,4 @@
+import { GLOBAL_GRANT_SCHEMA_SQL, GLOBAL_GRANT_INDEX_SQL } from "./permissions/schema.js";
 import { RESPONSIBILITY_SCHEMA_SQL } from "./responsibility-schema.js";
 import { migrateLocalAuthorizationEvidence } from "./local-authorization-migration.js";
 import { WORK_UNIT_ASSIGNMENT_SCHEMA_SQL, seedLegacyAssignmentTargets } from "./work-unit-assignment-schema.js";
@@ -2249,18 +2250,26 @@ export const MIGRATIONS: readonly Migration[] = [
     "DROP TABLE IF EXISTS daemon_log",
   ] },
   { version: 229, name: "local_authorization_evidence", statements: [], requires_foreign_keys_off: true },
-  { version: 230, name: "conversation_position_spaces", statements: [
+  { version: 230, name: "retire_project_acl", statements: [
+    "ALTER TABLE permission_grants RENAME TO retired_permission_grants",
+    GLOBAL_GRANT_SCHEMA_SQL,
+    "INSERT INTO permission_grants (id, subject_type, subject_id, permission, created_at) SELECT id, subject_type, subject_id, permission, created_at FROM retired_permission_grants WHERE resource_type = 'global'",
+    "DROP TABLE retired_permission_grants",
+    ...GLOBAL_GRANT_INDEX_SQL,
+    "ALTER TABLE ledger_projects DROP COLUMN restricted",
+  ] },
+  { version: 231, name: "conversation_position_spaces", statements: [
     "ALTER TABLE conversation_sources ADD COLUMN position_space_id TEXT",
     "ALTER TABLE conversation_sources ADD COLUMN position_count INTEGER",
     "ALTER TABLE conversation_sources ADD COLUMN position_fingerprint TEXT",
     "ALTER TABLE conversation_sources ADD COLUMN position_fingerprint_version INTEGER",
     "ALTER TABLE conversation_sources ADD COLUMN publication_revision INTEGER NOT NULL DEFAULT 0",
   ] },
-  { version: 231, name: "chat_stream_width_preference", statements: [
-    "ALTER TABLE user_settings RENAME TO user_settings_v230",
+  { version: 232, name: "chat_stream_width_preference", statements: [
+    "ALTER TABLE user_settings RENAME TO user_settings_v231",
     USER_SETTINGS_SCHEMA_SQL,
-    "INSERT INTO user_settings SELECT user_id, key, value, revision, updated_at FROM user_settings_v230",
-    "DROP TABLE user_settings_v230",
+    "INSERT INTO user_settings SELECT user_id, key, value, revision, updated_at FROM user_settings_v231",
+    "DROP TABLE user_settings_v231",
   ] },
 ];
 
@@ -2352,8 +2361,10 @@ function getSchemaVersion(db: Db): number {
 }
 
 /**
- * Reconcile the one schema-number collision created by the persistent Chat
- * integration preview before the auth-report migration landed on `main`.
+ * Reconcile retained schema-number collisions from persistent Chat previews.
+ * Reading-window v230/v231 already contain source positions and optionally
+ * width preferences, but precede canonical v230 ACL retirement. Exact shape
+ * checks permit replaying that migration while retaining the preview data.
  *
  * That preview recorded the v3 Chat lifecycle as v176 and archive state as
  * v177. The protected branch independently used v176 for immutable auth change
@@ -2362,7 +2373,35 @@ function getSchemaVersion(db: Db): number {
  * Applying the canonical auth migration completes the v178 shape without
  * rebuilding or discarding preview-only Chat state.
  */
-function reconcileCollidedChatPreviewSchema(db: Db, found: number): number {
+function reconcileCollidedChatPreviewSchema(db: Db, found: number, through: number): number {
+  if (found === 230 || found === 231) {
+    const restricted = db.prepare("SELECT 1 FROM pragma_table_info('ledger_projects') WHERE name = 'restricted'").get();
+    const scopedGrants = db.prepare("SELECT 1 FROM pragma_table_info('permission_grants') WHERE name = 'resource_type'").get();
+    if (!restricted && !scopedGrants) return found;
+    const positionColumns = db.prepare("SELECT name, type, [notnull], dflt_value FROM pragma_table_info('conversation_sources') WHERE name IN ('position_space_id', 'position_count', 'position_fingerprint', 'position_fingerprint_version', 'publication_revision') ORDER BY cid").all();
+    const expectedColumns = [
+      { name: "position_space_id", type: "TEXT", notnull: 0, dflt_value: null },
+      { name: "position_count", type: "INTEGER", notnull: 0, dflt_value: null },
+      { name: "position_fingerprint", type: "TEXT", notnull: 0, dflt_value: null },
+      { name: "position_fingerprint_version", type: "INTEGER", notnull: 0, dflt_value: null },
+      { name: "publication_revision", type: "INTEGER", notnull: 1, dflt_value: "0" },
+    ];
+    const preference = db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'user_settings'").get() as { sql: string } | undefined;
+    const normalize = (sql: string) => sql.replace(/\s+/g, " ").trim();
+    const expectedPreference = found === 230 ? USER_SETTINGS_V208_SCHEMA_SQL : USER_SETTINGS_SCHEMA_SQL;
+    if (!restricted || !scopedGrants || JSON.stringify(positionColumns) !== JSON.stringify(expectedColumns)
+      || !preference || normalize(preference.sql) !== normalize(expectedPreference)) {
+      throw new Error("Unrecognized reading-window Chat preview migration collision");
+    }
+    const canonicalVersion = found + 1;
+    if (through < canonicalVersion) throw new Error(`The reading-window Chat preview lineage must converge through v${canonicalVersion}`);
+    const aclMigration = MIGRATIONS.find(item => item.name === "retire_project_acl")!;
+    db.transaction(() => {
+      for (const statement of aclMigration.statements) db.exec(statement);
+      db.prepare("UPDATE meta SET value = ? WHERE key = ?").run(String(canonicalVersion), SCHEMA_VERSION_KEY);
+    })();
+    return canonicalVersion;
+  }
   if (found === 194) {
     const preference = db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'user_settings'")
       .get() as { sql: string } | undefined;
@@ -2524,7 +2563,7 @@ export function migrate(db: Db, through: number = CURRENT_SCHEMA_VERSION): void 
   }
 
   found = reconcileExecutionSchemaCollision(db, found, through);
-  found = reconcileCollidedChatPreviewSchema(db, found);
+  found = reconcileCollidedChatPreviewSchema(db, found, through);
 
   if (found < 185 && through >= 185) {
     applySchemaMigrations(db, MIGRATIONS.filter(migration => migration.version > found && migration.version <= 184));

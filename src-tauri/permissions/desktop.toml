@@ -3,6 +3,7 @@ identifier = "allow-desktop-commands"
 description = "Allows only the application commands used by the Mandible desktop shell."
 commands.allow = [
   "daemon_status",
+  "daemon_reconcile_channel",
   "daemon_get_launch_mode",
   "daemon_set_launch_mode",
   "daemon_start",

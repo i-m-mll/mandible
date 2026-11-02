@@ -1,3 +1,5 @@
+import { buildLedgerIssueProjection } from "../src/ledger/graph-adapter.js";
+import { loadProjectIssueSet } from "../src/ledger/issue-predicate-context.js";
 import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import fs from "node:fs";
 import os from "node:os";
@@ -323,12 +325,11 @@ describe("ledger issue routes", () => {
       labels: ["feature"],
       aliases: [{ alias_kind: "git_bug_human", alias: "chi123", external_id: "chi123", is_primary: true }],
     });
-    store.upsertIssueRelationship({
+    store.linkRelationshipEdges({
       actor: SYSTEM_ACTOR,
-      source_issue_id: umbrella.id,
-      target_issue_id: child.id,
-      relationship_type: "parent_child",
-      provenance: "manual",
+      source_entity: { entity_type: "issue", entity_id: umbrella.id },
+      target_entities: [{ entity_type: "issue", entity_id: child.id }],
+      link_type: "parent_child",
     });
     store.addIssueCheckpoint(umbrella.id, {
       ...SYSTEM_ACTOR,
@@ -404,12 +405,11 @@ describe("ledger issue routes", () => {
       labels: ["feature"],
       aliases: [{ alias_kind: "git_bug_human", alias: "deepch", external_id: "deepch", is_primary: true }],
     });
-    store.upsertIssueRelationship({
+    store.linkRelationshipEdges({
       actor: SYSTEM_ACTOR,
-      source_issue_id: umbrella.id,
-      target_issue_id: child.id,
-      relationship_type: "parent_child",
-      provenance: "manual",
+      source_entity: { entity_type: "issue", entity_id: umbrella.id },
+      target_entities: [{ entity_type: "issue", entity_id: child.id }],
+      link_type: "parent_child",
     });
     const linked = store.linkRelationshipEdges({
       actor: SYSTEM_ACTOR,
@@ -527,6 +527,14 @@ describe("ledger issue routes", () => {
         existing_child_refs: [first.short_id, second.short_id],
       },
     });
+    expect(buildLedgerIssueProjection(db, { mode: "issue", status: "all" })!.edges
+      .filter(edge => edge.type === "umbrella_child")).toHaveLength(2);
+    expect(loadProjectIssueSet(db, umbrella.project_id).parentChildren.childrenOf(umbrella.id))
+      .toEqual([first.id, second.id].sort());
+    const summaries = listLedgerIssueSummaries(db, fakeWorkScanner([repoInfo]) as never).flatMap(repo => repo.issues);
+    for (const child of [first, second]) {
+      expect(summaries.find(issue => issue.id === child.short_id)?.parent_ids).toEqual([umbrella.id]);
+    }
     expect(store.listRelationshipEdges({ source_issue_id: umbrella.id })).toHaveLength(2);
     const manifest = store.getLatestIssueCheckpoint(umbrella.id, "delegation-manifest");
     expect(manifest).not.toBeNull();

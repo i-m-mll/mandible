@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { migratedFileDb } from './helpers/ledger-fixtures.js';
 import { execFileSync } from "node:child_process";
 import SqliteDatabase from "../src/sqlite.ts";
 import fs from "node:fs";
@@ -52,11 +53,11 @@ afterEach(() => {
 });
 
 /** Open a path without arming the copy-forward shim the test is setting up. */
-function openExplicitly(dbPath: string) {
+function openExplicitly(dbPath: string, open = openDb) {
   const previous = process.env.MANDIBLE_DB;
   process.env.MANDIBLE_DB = dbPath;
   try {
-    return openDb(dbPath);
+    return open(dbPath);
   } finally {
     if (previous === undefined) delete process.env.MANDIBLE_DB;
     else process.env.MANDIBLE_DB = previous;
@@ -65,7 +66,7 @@ function openExplicitly(dbPath: string) {
 
 function seedDb(dbPath: string, marker: string): void {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-  const db = openExplicitly(dbPath);
+  const db = openExplicitly(dbPath, migratedFileDb);
   db.prepare("INSERT INTO settings (key, value, updated_at) VALUES ('copy_forward_marker', ?, 1)").run(marker);
   db.close();
 }

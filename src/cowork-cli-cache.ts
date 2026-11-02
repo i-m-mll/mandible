@@ -147,7 +147,7 @@ function collectCacheFiles(sourceRoot: string): Array<{ source: string; path: st
     for (const entry of fs.readdirSync(cliDir).sort()) {
       // Shell entrypoints depend on adjacent renderers, syntax data, jq modules,
       // and authored instruction Markdown. Ship the runtime together.
-      if (![".sh", ".cjs", ".json", ".md", ".jq"].includes(path.extname(entry))) continue;
+      if (![".sh", ".cjs", ".mjs", ".json", ".md", ".jq"].includes(path.extname(entry))) continue;
       const source = path.join(CLI_SOURCE_DIR, entry);
       files.push({ source, path: entry });
     }

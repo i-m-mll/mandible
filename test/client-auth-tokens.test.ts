@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { migratedFileDb } from './helpers/ledger-fixtures.js';
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -7,14 +8,14 @@ import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { loadOrCreatePepper } from "../src/client-auth/secret-store.js";
 import { API_TOKEN_PREFIX, fingerprintForToken, generateRawToken, normalizeBearer, verifyApiToken } from "../src/client-auth/tokens.js";
 import { DEFAULT_CLIENT_AUTH_MODE, getClientAuthMode, setClientAuthMode } from "../src/client-auth/mode.js";
-import { openDb, type Db } from "../src/db.js";
+import { type Db } from "../src/db.js";
 import { createUser, revokeCredential, updateUser } from "../src/users/store.js";
 
 let root = ""; let secrets = ""; let db: Db; let pepper = "";
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-client-auth-"));
   secrets = path.join(root, "client-auth");
-  db = openDb(path.join(root, "mandible.db"));
+  db = migratedFileDb(path.join(root, "mandible.db"));
   pepper = loadOrCreatePepper(db, secrets);
 });
 afterEach(() => { db.close(); fs.rmSync(root, { recursive: true, force: true }); });

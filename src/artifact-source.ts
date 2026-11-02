@@ -1,5 +1,4 @@
 import { requestOriginJson } from "./request-origin.js";
-import { artifactAccessProjectIds } from './permissions/resources.js';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import type { Db } from './db.js';
@@ -76,14 +75,9 @@ export function lookupArtifactCurrentSource(db: Db, source: ArtifactSource): Art
   }
   return { ok: true, value: state };
 }
-export function artifactRequiredProjects(db: Db, artifactId: string | null, ...sources: (ArtifactSource | null)[]): string[] {
-  return [...new Set([...(artifactId ? artifactAccessProjectIds(db, artifactId) : []),
-    ...sources.map(s => s?.kind === 'repo' ? s.project_id : null)].filter((id): id is string => Boolean(id)))].sort();
-}
 export interface ArtifactSourceMoveInput { artifact_id: string; expected_revision: number; source: ArtifactSource; actor: string; reconcile?: boolean }
 export interface ArtifactSourceMovePlan extends ArtifactSourceMoveInput {
   previous_source: ArtifactSource | null;
-  required_project_ids: string[];
 }
 const movePlans = new WeakMap<ArtifactSourceMovePlan, { db: Db; frozen: string }>();
 export function planArtifactSourceMove(db: Db, input: ArtifactSourceMoveInput): ArtifactLifecycleResult<ArtifactSourceMovePlan> {
@@ -96,12 +90,7 @@ export function planArtifactSourceMove(db: Db, input: ArtifactSourceMoveInput): 
   if (!input.actor.trim()) return artifactFailure('invalid_input', 'Source moves require an authenticated actor');
   const target = db.prepare('SELECT artifact_id FROM artifact_source WHERE source_json=? AND artifact_id != ?').all(sourceKey(valid.value),input.artifact_id);
   if (target.length) return artifactFailure('source_mismatch', 'Destination source already belongs to another artifact');
-  const plan = { ...input, source: valid.value, previous_source: state.source,
-    required_project_ids: artifactRequiredProjects(db, input.artifact_id, state.source, valid.value) };
-  if (state.reconciliation_reason) {
-    const historical = db.prepare('SELECT DISTINCT source_project_id FROM artifact_version WHERE artifact_id=? AND source_project_id IS NOT NULL').all(input.artifact_id) as {source_project_id:string}[];
-    plan.required_project_ids = [...new Set([...plan.required_project_ids,...historical.map(row=>row.source_project_id)])].sort();
-  }
+  const plan = { ...input, source: valid.value, previous_source: state.source };
   movePlans.set(plan, {db, frozen: JSON.stringify(plan)});
   return { ok: true, value: plan };
 }

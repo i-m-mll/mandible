@@ -246,108 +246,6 @@ describe("inbox tier query (auth_results)", () => {
 
 // --- Channel-server filter tests ----------------------------------------
 
-interface ChannelEventCapture {
-  content: string;
-  meta?: Record<string, string>;
-}
-
-describe("channel-server auth:resolved filter (Bug: 4e32923)", () => {
-  async function getDispatch() {
-    return (await import("../channel-server/notifications.js")).dispatchEvent;
-  }
-
-  it("delivers auth events via the channel-event sender when target_session_id matches", async () => {
-    const dispatchEvent = await getDispatch();
-    const notes: Array<{ category: string }> = [];
-    const channelEvents: ChannelEventCapture[] = [];
-    const delivered: string[] = [];
-    dispatchEvent(
-      { type: "auth:resolved", data: { request_id: "r-match", target_session_id: "session-A", status: "completed", head_branch: "feature/x", title: "Merge feature/x" }, timestamp: "" },
-      "session-A",
-      (category, _message) => notes.push({ category }),
-      (payload) => channelEvents.push(payload),
-      (id) => delivered.push(id),
-    );
-    // Auth events should NOT use the passive logging path.
-    expect(notes).toHaveLength(0);
-    expect(channelEvents).toHaveLength(1);
-    expect(channelEvents[0].content).toContain("Mandible auth request completed");
-    expect(channelEvents[0].content).toContain("feature/x");
-    expect(channelEvents[0].meta).toMatchObject({
-      source: "mandible",
-      event_type: "auth:resolved",
-      request_id: "r-match",
-      status: "completed",
-      head_branch: "feature/x",
-      title: "Merge feature/x",
-    });
-    expect(delivered).toEqual(["r-match"]);
-  });
-
-  it("drops events when target_session_id is a different session", async () => {
-    const dispatchEvent = await getDispatch();
-    const notes: Array<{ category: string }> = [];
-    const channelEvents: ChannelEventCapture[] = [];
-    const delivered: string[] = [];
-    dispatchEvent(
-      { type: "auth:resolved", data: { request_id: "r-other", target_session_id: "session-B", status: "completed" }, timestamp: "" },
-      "session-A",
-      (category, _message) => notes.push({ category }),
-      (payload) => channelEvents.push(payload),
-      (id) => delivered.push(id),
-    );
-    expect(notes).toHaveLength(0);
-    expect(channelEvents).toHaveLength(0);
-    expect(delivered).toHaveLength(0);
-  });
-
-  it("legacy (null target_session_id) events use passive logging, not channel delivery (Bug: 210ffa1)", async () => {
-    const dispatchEvent = await getDispatch();
-    const notes: Array<{ category: string }> = [];
-    const channelEvents: ChannelEventCapture[] = [];
-    const delivered: string[] = [];
-    dispatchEvent(
-      { type: "auth:resolved", data: { request_id: "r-legacy", target_session_id: null, status: "completed" }, timestamp: "" },
-      "session-A",
-      (category, _message) => notes.push({ category }),
-      (payload) => channelEvents.push(payload),
-      (id) => delivered.push(id),
-    );
-    // Bug: 210ffa1 — unscoped events downgraded to passive log (no agent wake-up).
-    expect(notes).toHaveLength(1);
-    expect(notes[0].category).toBe("auth_resolved");
-    expect(channelEvents).toHaveLength(0);
-    expect(delivered).toHaveLength(0); // legacy rows aren't owned, so no delivery watermark
-  });
-
-  // Bug: 66865dd — conversation_id match downgrades to passive log (refines 6d7411b)
-  it("uses passive log (not channel event) when conversation_id matches but target_session_id mismatches", async () => {
-    const dispatchEvent = await getDispatch();
-    const notes: Array<{ category: string; message: string }> = [];
-    const channelEvents: ChannelEventCapture[] = [];
-    const delivered: string[] = [];
-    dispatchEvent(
-      { type: "auth:resolved", data: { request_id: "r-conv", target_session_id: "old-session", conversation_id: "conv-123", status: "completed", head_branch: "feature/z", title: "Merge feature/z" }, timestamp: "" },
-      "new-session",  // different from target_session_id
-      (category, message) => notes.push({ category, message }),
-      (payload) => channelEvents.push(payload),
-      (id) => delivered.push(id),
-      "conv-123",  // matches conversation_id in event
-    );
-    // Bug: 66865dd — conversation_id match uses passive log, NOT channel event
-    expect(channelEvents).toHaveLength(0);
-    expect(delivered).toHaveLength(0);  // no markDelivered — leave in inbox for original session
-    expect(notes).toHaveLength(1);
-    expect(notes[0].category).toBe("auth_resolved");
-    expect(notes[0].message).toContain("feature/z");
-    expect(notes[0].message).toContain("completed");
-    expect(notes[0].message).toContain("Merge feature/z");
-  });
-
-  // Bug: 929c6d0 — error_output in channel events
-
-});
-
 // --- Undelivered endpoint + startup catch-up tests ----------------------
 
 describe("GET /api/inbox/undelivered (Bug: 4e32923)", () => {
@@ -448,7 +346,7 @@ describe("GET /api/inbox/undelivered (Bug: 4e32923)", () => {
 
 describe("channel-server startup catch-up (Bug: 4e32923)", () => {
   it("fetches undelivered rows, sends channel events, and marks each delivered", async () => {
-    const mod = await import("../channel-server/index.js");
+    const mod = await import("../src/channel/catchup.js");
     const sent: Array<{ method?: string; params?: unknown }> = [];
     const delivered: string[] = [];
     const mockServer = {
@@ -503,7 +401,7 @@ describe("channel-server startup catch-up (Bug: 4e32923)", () => {
   // Bug: 6d7411b — startup catch-up passes conversation_id to fetchUndelivered
 
   it("continues replaying when a single markDelivered call fails", async () => {
-    const mod = await import("../channel-server/index.js");
+    const mod = await import("../src/channel/catchup.js");
     const sent: unknown[] = [];
     const delivered: string[] = [];
     const logs: string[] = [];

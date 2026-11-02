@@ -61,7 +61,7 @@ function suiteFiles() {
 function launcherUnits() {
   const lines = readFileSync(path.join(root, LAUNCHER), "utf8")
     .split("\n")
-    .flatMap((line, index) => /^\s+it\(/.test(line) ? [index + 1] : []);
+    .flatMap((line, index) => /^\s*it\(/.test(line) ? [index + 1] : []);
   if (lines.length === 0) throw new Error(`No test declarations found in ${LAUNCHER}.`);
   return [
     ...lines.map((line) => ({ label: `${LAUNCHER}:${line}`, args: [`${LAUNCHER}:${line}`] })),

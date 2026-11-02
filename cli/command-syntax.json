@@ -1656,7 +1656,6 @@
         "kind": "sequence",
         "items": [
           {"kind": "argument","name": "user","value": {"type": "string"}},
-          {"kind": "argument","name": "project","value": {"type": "string"}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
         ]
       }
@@ -1765,7 +1764,7 @@
         "items": [
           {"kind": "option","names": ["--subject-type"],"values": [{"kind": "argument","name": "user|group","value": {"type": "enum","values": ["user","group"]}}]},
           {"kind": "option","names": ["--subject"],"values": [{"kind": "argument","name": "ref","value": {"type": "string"}}]},
-          {"kind": "choice","items": [{"kind": "sequence","items": [{"kind": "option","names": ["--project"],"values": [{"kind": "argument","name": "ref","value": {"type": "string"}}]},{"kind": "option","names": ["--role"],"values": [{"kind": "argument","name": "read|write|admin","value": {"type": "enum","values": ["read","write","admin"]}}]}]},{"kind": "sequence","items": [{"kind": "option","names": ["--global"],"values": [{"kind": "argument","name": "capability","value": {"type": "string"}}]}]}]},
+          {"kind": "option","names": ["--global"],"values": [{"kind": "argument","name": "capability","value": {"type": "string"}}]},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
         ]
       }
@@ -1785,8 +1784,7 @@
       "grammar": {
         "kind": "sequence",
         "items": [
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--resource-type"],"values": [{"kind": "argument","name": "project|global","value": {"type": "enum","values": ["project","global"]}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--resource-id"],"values": [{"kind": "argument","name": "id","value": {"type": "string"}}]}]}},
+
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
         ]
       }

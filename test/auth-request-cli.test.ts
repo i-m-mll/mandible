@@ -192,26 +192,6 @@ function useGitRepo(): void {
 }
 
 describe("action-specific request preparation", () => {
-  it("refuses an old daemon without submitting through the retired route", async () => {
-    let retiredWrites = 0;
-    const server = http.createServer((req, res) => {
-      if (req.url === "/api/instance") { res.end(JSON.stringify(MAIN_CLI_INSTANCE_RESPONSE)); return; }
-      if (req.method === "POST" && req.url === "/api/auth/request") retiredWrites++;
-      res.writeHead(404, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Unknown route" }));
-    });
-    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
-    try {
-      const port = (server.address() as { port: number }).port;
-      const result = await runAsync(["auth", "request", "--type", "config-change", "--command", "echo reviewed",
-        "--repo", "example", "--cwd", tempDir, "--title", "Settings", "--issue", "settings123",
-        "--message", "Apply reviewed settings.", "--depends-on", "source123", "--no-watch"],
-        tempDir, { MANDIBLE_BASE: `http://127.0.0.1:${port}` });
-      expect(result.status).not.toBe(0);
-      expect(retiredWrites).toBe(0);
-    } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
-  });
-
   it("omits an unspecified prerequisite set on supersession so the daemon inherits it", async () => {
     const server = await listenForAuthRequest();
     try {
@@ -224,19 +204,6 @@ describe("action-specific request preparation", () => {
     } finally { await server.close(); }
   });
 
-  it("submits one prerequisite set from repeated depends-on options", async () => {
-    const server = await listenForAuthRequest();
-    try {
-      const result = await runAsync(["auth", "request", "--type", "config-change", "--command", "echo reviewed",
-        "--repo", "example", "--cwd", tempDir, "--title", "Apply reviewed settings", "--issue", "settings123",
-        "--message", "Apply reviewed settings.", "--depends-on", "source123", "--depends-on", "validation123", "--no-watch"],
-        tempDir, { MANDIBLE_BASE: `http://127.0.0.1:${server.port}` });
-      expect(result.status, result.stderr).toBe(0);
-      expect(server.bodies[0]?.depends_on_ids).toEqual(["source123", "validation123"]);
-      expect(server.bodies[0]).not.toHaveProperty("depends_on_id");
-    } finally { await server.close(); }
-  });
-
   it("queues exact non-merge bytes outside Git without preparing or executing a merge", async () => {
     const server = await listenForAuthRequest();
     const executionDir = path.join(homeDir, "operation");
@@ -246,7 +213,8 @@ describe("action-specific request preparation", () => {
       const result = await runAsync([
         "auth", "request", "--type", "config-change", "--command", command,
         "--cwd", executionDir, "--repo", "example", "--title", "Apply reviewed settings",
-        "--issue", "settings123", "--message", "Apply the reviewed settings without changing application data.", "--no-watch",
+        "--issue", "settings123", "--message", "Apply the reviewed settings without changing application data.",
+        "--depends-on", "source123", "--depends-on", "validation123", "--no-watch",
       ], executionDir, { MANDIBLE_BASE: `http://127.0.0.1:${server.port}` });
       expect(result.status, result.stderr).toBe(0);
       expect(server.checkBodies).toEqual([]);
@@ -255,6 +223,7 @@ describe("action-specific request preparation", () => {
         type: "config-change", command, repo: "example", base_branch: null,
         head_branch: null, target_repo_root: null, protected_root_dirty_action: null,
         canonical_message: false, issue_references: ["settings123"], actions: [],
+        depends_on_ids: ["source123", "validation123"],
       });
       expect(fs.realpathSync(String(server.bodies[0].cwd))).toBe(fs.realpathSync(executionDir));
       expect(fs.existsSync(path.join(executionDir, "should-not-exist"))).toBe(false);
@@ -314,26 +283,6 @@ describe("auth request repo context validation", () => {
     );
     expect(result.stderr).toContain("Run mandible auth request from the target repo worktree");
     expect(result.stderr).not.toContain("Mandible unreachable");
-  });
-});
-
-// Issue 8ae6b5f — requests carry no spec. The removed flag fails as an unknown
-// option before anything is submitted.
-describe("auth request without a spec", () => {
-  it("refuses --spec before submission", async () => {
-    const server = await listenForAuthRequest();
-    try {
-      const result = await runAsync([
-        "auth", "request", "feature/demo", "--spec", "Intent", "--title", "Spec refused", "--issue", "8ae6b5f",
-        "--message", "Refuse specs\n\nWhy:\nThe change message carries intent.", "--verification", "n/a",
-        "--no-watch",
-      ], tempDir, { MANDIBLE_BASE: `http://127.0.0.1:${server.port}` });
-      expect(result.status).toBe(2);
-      expect(result.stderr).toMatch(/--spec/);
-      expect(server.bodies).toEqual([]);
-    } finally {
-      await server.close();
-    }
   });
 });
 

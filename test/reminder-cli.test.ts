@@ -41,10 +41,10 @@ describe("reminder CLI", () => {
     expect(responder.requests).toEqual([]);
   });
 
-  it("surfaces identity, project-admission, and idempotency conflicts with their codes", async () => {
+  it("surfaces identity, principal, and idempotency conflicts with their codes", async () => {
     const failures = [
       { status: 401, code: "authentication_required", error: "Authentication required" },
-      { status: 403, code: "project_permission_required", error: "Project write access required" },
+      { status: 403, code: "active_principal_required", error: "Active principal required" },
       { status: 409, code: "idempotency_conflict", error: "Idempotency key was reused with different bytes" },
     ];
 

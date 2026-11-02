@@ -19,7 +19,6 @@ import { readBody, sendJson } from "./http.js";
 import { attributionForRequest } from "../client-auth/authz.js";
 import { LedgerStore } from "../ledger/store.js";
 import { resolveProjectRef } from "../ledger/project-registry.js";
-import { PermissionError, requireProjectAccess } from "../permissions/store.js";
 import {
   mapWorkUnitRow as mapRow,
   normalizeWorkUnitSessionId,
@@ -804,15 +803,6 @@ export function registerWorkUnitRoutes(
       sendJson(res, 409, { error: "Work-unit project identity is not unique." });
       return;
     }
-    try {
-      requireProjectAccess(db, req, project.project.id, "write");
-    } catch (error) {
-      if (error instanceof PermissionError) {
-        sendJson(res, error.status, { error: error.message, code: error.code });
-        return;
-      }
-      throw error;
-    }
     if (unit.custody_generation !== body.expected_generation) {
       sendJson(res, 409, { error: "Responsibility changed; refresh and retry.", code: "custody_generation_conflict" }); return;
     }
@@ -1048,15 +1038,6 @@ function custodyMutationFailure(
   }
   if (!holdsResponsibility(db, row, responsibilityActor(req))) {
     return { status: 403, error: "Only the current responsible user and session may change delivery state.", code: "work_unit_custody_conflict" };
-  }
-  const project = resolveProjectRef(db, row.repo_id);
-  if (project.ok) {
-    try {
-      requireProjectAccess(db, req, project.project.id, "write");
-    } catch (error) {
-      if (error instanceof PermissionError) return { status: error.status, error: error.message, code: error.code };
-      throw error;
-    }
   }
   return null;
 }

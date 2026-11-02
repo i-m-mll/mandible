@@ -52,9 +52,7 @@ it("allows managed app/session agents to create, rename and read ordinary Briefi
   setupOperator(db, { slug: "operator", display_name: "Operator" });
   const agent = createUser(db, { slug: "codex", kind: "agent", display_name: "Codex" });
   const project = addProject(db, { project_key: "briefing-test", display_name: "Briefing test" });
-  db.prepare("UPDATE ledger_projects SET restricted = 1 WHERE id = ?").run(project.id);
-  addGrant(db, { subject_type: "user", subject: agent.id, resource_type: "project",
-    resource: project.id, permission: "write" });
+
   const artifact = recordArtifactVersion(db, { source_kind: "managed", content: "# Report\n",
     series_key: "socket-report", logical_name: "report.md", role: "review-document", media_type: "text/markdown" });
   db.prepare(`INSERT INTO project_artifact_associations

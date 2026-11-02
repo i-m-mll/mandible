@@ -584,7 +584,6 @@ describe("hook registration authority (issue 27241e6)", () => {
       addGrant(db, {
         subject_type: "user",
         subject: agent.id,
-        resource_type: "global",
         permission: "change_settings",
       });
       const granted = await router.invoke({

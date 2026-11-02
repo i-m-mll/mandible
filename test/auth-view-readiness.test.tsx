@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { useLayoutEffect } from 'preact/hooks';
+import { useLayoutEffect, useState } from 'preact/hooks';
 import * as ScrollPersistence from '../ui/src/hooks/usePersistedScrollPosition';
 import { establishTestClientAccess } from './helpers/local-client-access';
 // Bug: 645f8a8 — auth view mutation gate. While the daemon is not ready
@@ -121,6 +121,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   __resetBrowserSessionForTests();
   cleanup();
   vi.unstubAllGlobals();
@@ -128,6 +129,39 @@ afterEach(() => {
 });
 
 describe('AuthQueueView daemon readiness gate', () => {
+  it('rechecks a transient checkout blocker and restores Approve without an error action', async () => {
+    vi.useFakeTimers();
+    const refresh = vi.fn();
+    function RecoveringApproval() {
+      const [blocked, setBlocked] = useState(true);
+      const request = blocked ? {
+        ...pendingRequest,
+        publication_blocker: { code: 'checkout_not_ready' as const, message: 'Git index is locked.' },
+      } : pendingRequest;
+      return <AuthQueueView queue={[request]} historyQueue={[]} outputs={{}} selectedAuthId="req-1"
+        daemonReady instance={authMainInstance} onApprove={vi.fn()} onReject={vi.fn()} onRetry={vi.fn()}
+        onRefreshAuthProjection={async () => {
+          refresh();
+          if (refresh.mock.calls.length === 1) throw new Error('Transient readiness read failed');
+          setBlocked(false);
+        }} />;
+    }
+
+    render(<RecoveringApproval />);
+    const blocker = screen.getByRole('status');
+    expect(within(blocker).getByText('Checkout state blocks approval')).toBeTruthy();
+    expect(within(blocker).queryByRole('button')).toBeNull();
+    expect((screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(screen.getByText('Checkout state blocks approval')).toBeTruthy();
+    window.dispatchEvent(new Event('focus'));
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    expect((screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement).disabled).toBe(false);
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText('Checkout state blocks approval')).toBeNull();
+    vi.useRealTimers();
+  });
+
   it('blocks from canonical dependency readiness and opens only for ready', () => {
     const onApprove = vi.fn();
     const blockedRequest: AuthRequest = {

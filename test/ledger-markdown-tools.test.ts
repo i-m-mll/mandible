@@ -4,10 +4,6 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type Db } from "../src/db.js";
 import { systemAction } from "../src/identity/resolver.js";
-import { buildLedgerIssueDetailProjection } from "../src/ledger/issue-detail.js";
-import {
-  renderIssueMarkdown,
-} from "../src/ledger/issue-markdown-export.js";
 import {
   auditEscapedMarkdownBodies,
   normalizeEscapedMarkdownBodies,
@@ -122,40 +118,6 @@ describe("ledger escaped Markdown audit and normalization", () => {
     expect(() => normalizeEscapedMarkdownBodies(db, { apply: true, actor: SYSTEM_ACTOR })).toThrow(
       /requires explicit targets/,
     );
-  });
-
-});
-
-describe("ledger issue Markdown export", () => {
-  it("renders stable deterministic Markdown without runtime metadata", () => {
-    const project = createProject();
-    const store = new LedgerStore(db);
-    const issue = store.createIssue({
-      ...SYSTEM_ACTOR,
-      project_id: project.id,
-      title: "Export Me",
-      body: "Body",
-      labels: ["feature"],
-      created_at: 1000,
-      aliases: [{ alias_kind: "git_bug_short", alias: "abc1234" }],
-    });
-    store.addComment(issue.id, {
-      ...SYSTEM_ACTOR,
-      body: "A comment",
-      author_display: "Codex",
-      actor_type: "agent",
-      created_at: 2000,
-    });
-
-    const first = renderIssueMarkdown(buildLedgerIssueDetailProjection(db, issue.id));
-    const second = renderIssueMarkdown(buildLedgerIssueDetailProjection(db, issue.id));
-
-    expect(first).toBe(second);
-    expect(first).toContain("# Export Me");
-    expect(first).toContain("## Comments");
-    expect(first).toContain("1970-01-01T00:00:01.000Z");
-    expect(first).not.toContain("generated_at");
-    expect(first).not.toContain("event_nonce");
   });
 
 });

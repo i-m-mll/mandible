@@ -211,13 +211,12 @@ describe("work unit routes", () => {
     expect(db.prepare("SELECT COUNT(*) AS count FROM work_units").get()).toEqual(before);
   });
 
-
   it("corrects an explicit existing kind with exact custody and current umbrella authority", async () => {
     const agent = createUser(db, { slug: "kind-custodian", kind: "agent", display_name: "Custodian" });
     const credential = addCredential(db, agent.id, { type: "api_token", fingerprint: "kind-own" });
     const other = addCredential(db, agent.id, { type: "api_token", fingerprint: "kind-other" });
     const project = addProject(db, { project_key: "kind-project", display_name: "Kind project" });
-    addGrant(db, { subject_type: "user", subject: agent.id, resource_type: "project", resource: project.id, permission: "write" });
+
     const issue = createLedgerIssue(db, { project_id: project.id, kind: "umbrella" });
     const store = new LedgerStore(db);
     const guarded = new Router({ clientAuth: {
@@ -514,7 +513,6 @@ describe("work unit routes", () => {
       .toEqual({ assigned_session_id: "session-1" });
   });
 
-
   it.each(["codex", "claude"] as const)("automatically binds the actual %s child worker and completes only its resolved assignments", async (provider) => {
     const source = provider === "claude" ? "claude_code" : provider;
     const agent = createUser(db, { slug: "automatic-owner", kind: "agent", display_name: "Owner" });
@@ -607,8 +605,6 @@ describe("work unit routes", () => {
       .toEqual({ assigned_session_id: "retained-native", responsibility_session_id: "different-native", custody_generation: 2 });
 
   });
-
-
 
   it("persists explicit ambient identity from HTTP headers", async () => {
     const server = http.createServer((req, res) => {

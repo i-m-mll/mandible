@@ -69,9 +69,10 @@ esac
 source "$MANDIBLE_CLI_DIR/canonical-origin.sh"
 export MANDIBLE_PORT="${MANDIBLE_PORT:-$MANDIBLE_DEFAULT_BACKEND_PORT}"
 # api.sh selects the private socket when no transport was explicitly chosen.
-source "$MANDIBLE_CLI_DIR/api.sh"
+source "$MANDIBLE_CLI_DIR/api.sh" --mandible-api-definitions-only
 # Every subcommand inherits the caller's own identity, never a parent agent's.
 api_scope_inherited_identity
+api_cleanup_temp_files
 
 usage() {
   mandible_command_help
@@ -92,6 +93,7 @@ case "${1:-}" in
     if [[ $# != 2 || "${2:-}" != read ]]; then
       mandible_command_help settings >&2; exit 2
     fi
+    api_ensure_temp_root
     api_get /api/settings ;;
   wrap)    shift; exec "$MANDIBLE_CLI_DIR/wrap.sh" "$@" ;;
   task)    shift; exec "$MANDIBLE_CLI_DIR/task.sh" "$@" ;;

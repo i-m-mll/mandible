@@ -38,6 +38,23 @@ Mandible remain user-owned. The SDK's channel invocation uses the same public
 command. CLI identity scoping remains in the existing CLI implementation;
 channel and hook inputs retain their respective provider identity contracts.
 
+Installed channels run from `~/.mandible/channel/` with their own copied Bun
+runtime, outside the replaceable app bundle. Opening the app, starting its
+backend, installing an accepted update, and invoking `mandible channel` verify
+and repair this installation. An unchanged bridge survives app updates and daemon
+restarts. A genuine bridge or runtime update disconnects only the MCP transport;
+the Claude chat remains open. Reconnect Mandible with `/mcp`. Review any interrupted
+tool call before retrying: mutations are never replayed automatically. Existing
+bundled channel children are retired during migration; unrelated consumers still
+prevent the guarded cleanup from deleting an old app bundle.
+
+The installed-command proof exercises channel repair and bundle replacement in
+the ordinary desktop context because macOS does not permit the installation
+lease's setuid `ps` inspection under `sandbox-exec`. A complementary proof runs
+the selected copied Bun and bridge inside the developer-denial sandbox and
+completes MCP initialization and a tool call. Other public-command proofs retain
+the sandbox. These checks do not replace exact signed candidate acceptance.
+
 Lifecycle exports use the existing Mandible-owned hooks and share their payload
 identity rules. They complement execution observations, which do not replace
 process attachment, native ID projection or navigation. Optional Zellij panes
