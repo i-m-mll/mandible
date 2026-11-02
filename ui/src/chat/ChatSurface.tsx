@@ -143,7 +143,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
     const prepared = resolve();
     return prepared ? { status: 'prepared' as const, rowKey: prepared.rowKey } : { status: 'not-renderable' as const };
   }, [waitFor]);
-  const onRange = useCallback((start: number, end: number, refs: readonly import('./readingMeasurement').MeasurementRow[]) => latest.current.complete.onRange(start, end, refs), []);
+  const onRange = useCallback((demand: import('./readingBodyDemand').ReadingBodyDemand) => latest.current.complete.onRange(demand), []);
   const disclosures = expandedBlocks;
   const viewport = useReadingViewport({ scope, positionSpaceId: space, onInput: () => {
     pendingDisclosure.current = null; focusAfterInitial.current = null; restoredRow.current = true;

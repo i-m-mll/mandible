@@ -5,10 +5,10 @@ import { readingManifestOptions, acquirePresentationRows, type ReadingRowsLease,
 import { composeConversationReading, readingCompositionRequests, materializeConversationReading } from '../../../src/presentation/reading-composition';
 import type { StreamEvent } from '../components/stream-renderer/types';
 import type { ReadingProjection, ReadingRow } from './readingProjection';
+import type { ReadingBodyDemand } from './readingBodyDemand';
 import type { MeasurementRow, MaterializedMeasurementBatch } from './readingMeasurement';
 
 export const readingPayloadKey = (row: MeasurementRow): string => JSON.stringify([row.key, row.revision, row.disclosureIdentity ?? '']);
-const sameKeys = (left: ReadonlySet<string>, right: ReadonlySet<string>) => left.size === right.size && [...left].every(key => right.has(key));
 
 export function useCompleteReading(input: {
   scope: string; space: string; events: readonly StreamEvent[]; sourceVersion?: string | null; total?: number;
@@ -28,8 +28,7 @@ export function useCompleteReading(input: {
     : [...input.local.rows.map(row => ({ key: row.key, revision: JSON.stringify(row) })), ...input.extraRows],
   [plan, input.local, input.enabled, input.disclosureRevisions, input.extraRows, input.selectMode, input.selectedBlockIds, input.expanded, input.actionIdentity]);
   const rowMembers = useMemo(() => new Map(plan?.rows.map(row => [row.key, row.memberKeys]) ?? input.local.rows.map(row => [row.key, [row.key]])), [plan, input.local]);
-  const range = useRef({ start: 0, end: 0 });
-  const visible = useRef<readonly MeasurementRow[]>([]);
+  const demand = useRef<ReadingBodyDemand | null>(null);
   const pendingVector = useRef<readonly MeasurementRow[] | null>(null);
   const custody = useRef({ applied: new Set<string>(), pending: new Set<string>(), measuring: new Set<string>() });
   const [demandVersion, setDemandVersion] = useState(0);
@@ -39,8 +38,8 @@ export function useCompleteReading(input: {
     const snapshot = current.current;
     let byKey = vectorIndices.current.get(vector);
     if (!byKey) { byKey = new Map(vector.map((row, index) => [row.key, index])); vectorIndices.current.set(vector, byKey); }
-    const selected = new Map(vector.slice(range.current.start, range.current.end + 1).map(row => [row.key, row]));
-    for (const ref of visible.current) { const index = byKey.get(ref.key); if (index !== undefined) selected.set(ref.key, vector[index]); }
+    const selected = new Map<string, MeasurementRow>();
+    for (const ref of demand.current?.required ?? vector.slice(0, 1)) { const index = byKey.get(ref.key); if (index !== undefined) selected.set(ref.key, vector[index]); }
     if (snapshot.input.initial) {
       const member = snapshot.input.targetMemberKey ? snapshot.plan?.viewMembership.get(snapshot.input.targetMemberKey) : snapshot.input.targetPosition === undefined ? undefined : snapshot.plan?.membership.get(snapshot.input.targetPosition);
       const targetKey = snapshot.input.targetRowKey && byKey.has(snapshot.input.targetRowKey) ? snapshot.input.targetRowKey : snapshot.input.targetSummary ? member?.summaryRowKey ?? member?.rowKey : member?.rowKey;
@@ -49,7 +48,10 @@ export function useCompleteReading(input: {
     }
     return [...selected.values()];
   }, []);
-  const wanted = useMemo(() => candidates(rows), [rows, candidates, demandVersion, input.initial, input.targetPosition, input.targetSummary, input.targetRowKey, input.targetMemberKey]);
+  const required = useMemo(() => candidates(rows), [rows, candidates, demandVersion, input.initial, input.targetPosition, input.targetSummary, input.targetRowKey, input.targetMemberKey]);
+  const wanted = useMemo(() => {
+    return [...new Map([...required, ...(demand.current?.prefetch ?? [])].map(ref => [readingPayloadKey(ref), ref])).values()];
+  }, [required, rows]);
   const wantedKeys = useMemo(() => new Set(wanted.map(readingPayloadKey)), [wanted]);
   const latestWanted = useRef(wantedKeys); latestWanted.current = wantedKeys;
   const bodyKey = useMemo(() => ['chat', 'conversation', input.scope, 'reading-bodies', input.space] as const, [input.scope, input.space]);
@@ -75,7 +77,7 @@ export function useCompleteReading(input: {
     });
   }, [bodyKey, retainedKeys]);
   useEffect(() => () => { queryClient.removeQueries({ queryKey: bodyKey, exact: true }); }, [bodyKey]);
-  useEffect(() => { custody.current = { applied: new Set(), pending: new Set(), measuring: new Set() }; visible.current = []; range.current = { start: 0, end: 0 }; setHydrationError(null); }, [input.scope, input.space]);
+  useEffect(() => { custody.current = { applied: new Set(), pending: new Set(), measuring: new Set() }; demand.current = null; setHydrationError(null); }, [input.scope, input.space]);
   const acquireMeasurement = useCallback(async (refs: readonly MeasurementRow[], signal: AbortSignal): Promise<MaterializedMeasurementBatch<ReadingRow>> => {
     const cached = refs.map(ref => bodyRef.current.get(readingPayloadKey(ref)));
     if (cached.every((row): row is ReadingRow => row !== undefined)) return { bodies: cached, release: () => {} };
@@ -108,25 +110,45 @@ export function useCompleteReading(input: {
   }, [acquireMeasurement]);
   const materializer = useRef(materialize); materializer.current = materialize;
   const [hydrationError, setHydrationError] = useState<string | null>(null);
+  const active = useRef<{ controller: AbortController; refs: readonly MeasurementRow[]; scope: string; space: string; speculative: boolean } | null>(null);
+  const failures = useRef(new Map<string, string>());
+  useEffect(() => { failures.current.clear(); return () => { active.current?.controller.abort(); active.current = null; }; }, [input.scope, input.space]);
   useEffect(() => {
-    const controller = new AbortController();
     publishBodies();
-    const missing = wanted.filter(ref => !bodyRef.current.has(readingPayloadKey(ref)));
-    void (async () => {
-      try {
-        for (let offset = 0; offset < missing.length; offset += 16) {
-          await materializer.current(missing.slice(offset, offset + 16), controller.signal);
-          if (controller.signal.aborted) return;
-          setHydrationError(null);
-        }
-      } catch (error) { if (!controller.signal.aborted && !isReadingPublicationChanged(error)) setHydrationError(error instanceof Error ? error.message : String(error)); }
-    })();
-    return () => controller.abort();
-  }, [wanted, demandVersion, publishBodies]);
-  const onRange = useCallback((start: number, end: number, applied: readonly MeasurementRow[]) => {
-    const keys = new Set(applied.map(readingPayloadKey));
-    if (range.current.start === start && range.current.end === end && sameKeys(keys, custody.current.applied)) return;
-    range.current = { start, end }; visible.current = applied; custody.current.applied = keys; setDemandVersion(value => value + 1);
+    const requiredKeys = new Set(required.map(readingPayloadKey));
+    const currentKeys = new Set(rows.map(readingPayloadKey));
+    const missingRequired = required.filter(ref => !bodyRef.current.has(readingPayloadKey(ref)));
+    for (const key of failures.current.keys()) if (!wantedKeys.has(key)) failures.current.delete(key);
+    setHydrationError(missingRequired.map(ref => failures.current.get(readingPayloadKey(ref))).find(Boolean) ?? null);
+    const running = active.current;
+    if (running) {
+      const useful = running.refs.some(ref => wantedKeys.has(readingPayloadKey(ref)));
+      const related = running.refs.some(ref => requiredKeys.has(readingPayloadKey(ref)));
+      const invalid = running.scope !== input.scope || running.space !== input.space || running.refs.some(ref => !currentKeys.has(readingPayloadKey(ref)));
+      if (invalid || !useful || (running.speculative && missingRequired.length > 0 && !related)) {
+        running.controller.abort(); active.current = null;
+      } else return;
+    }
+    const missing = (missingRequired.length ? missingRequired : wanted.filter(ref => !bodyRef.current.has(readingPayloadKey(ref))))
+      .filter(ref => currentKeys.has(readingPayloadKey(ref)) && !failures.current.has(readingPayloadKey(ref))).slice(0, 16);
+    if (!missing.length) return;
+    const request = { controller: new AbortController(), refs: missing, scope: input.scope, space: input.space, speculative: missingRequired.length === 0 };
+    active.current = request;
+    void materializer.current(missing, request.controller.signal).catch(error => {
+      if (!request.controller.signal.aborted) {
+        const message = isReadingPublicationChanged(error) ? '' : error instanceof Error ? error.message : String(error);
+        for (const ref of missing) failures.current.set(readingPayloadKey(ref), message);
+      }
+    }).finally(() => {
+      if (active.current !== request) return;
+      active.current = null;
+      setDemandVersion(value => value + 1);
+    });
+  }, [wanted, required, wantedKeys, rows, demandVersion, publishBodies, input.scope, input.space]);
+  const onRange = useCallback((snapshot: ReadingBodyDemand) => {
+    demand.current = snapshot;
+    custody.current.applied = new Set(snapshot.required.map(readingPayloadKey));
+    setDemandVersion(value => value + 1);
   }, []);
   const retainMeasurement = useCallback((vector: readonly MeasurementRow[]) => {
     custody.current.measuring = new Set(candidates(vector).map(readingPayloadKey));
@@ -141,5 +163,5 @@ export function useCompleteReading(input: {
   }, []);
   return { rows, plan, membership: plan?.viewMembership ?? input.local.viewMembership, rowMembers, actionRuns: composition?.actionRuns ?? input.local.actionRuns, lastAssistantTurnId: composition?.lastAssistantTurnId ?? input.local.lastAssistantTurnId,
     manifest: manifest.data, bodies, getBody: (ref: MeasurementRow) => bodies.get(readingPayloadKey(ref)), materialize, acquireMeasurement, onRange, retainMeasurement, retainGeometry, commitGeometry,
-    protect: () => setDemandVersion(value => value + 1), error: manifest.error?.message ?? hydrationError, ready: !input.enabled || Boolean(plan), refresh: () => { setHydrationError(null); setDemandVersion(value => value + 1); return manifest.refetch(); } };
+    protect: () => setDemandVersion(value => value + 1), error: manifest.error?.message ?? hydrationError, ready: !input.enabled || Boolean(plan), refresh: () => { failures.current.clear(); setHydrationError(null); setDemandVersion(value => value + 1); return manifest.refetch(); } };
 }

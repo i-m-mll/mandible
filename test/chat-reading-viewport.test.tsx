@@ -18,9 +18,9 @@ const coordinate = { conversationId: 'conv', positionSpaceId: 'space', position:
 const rows: ReadingRow[] = [{ key: 'exact-row', kind: 'content', isFinalResponse: false, protectedPositions: [42], items: [], nodes: [], sources: [{ blockId: 'cblk:conv:42', position: 42 }], actionGroup: { key: 'scope', start: 0, end: 99 }, disclosureOwner: null }];
 const geometry = { membership: new Map<string, { rowKey: string; position?: number | null }>([['exact-row', { rowKey: 'exact-row', position: 42 }]]), rowMembers: new Map<string, readonly string[]>([['exact-row', ['exact-row']]]), scope: 'conv', rows: rows.map(row => ({ key: row.key, revision: '1' })), sizes: [100], exact: true, serial: 1, layout: { width: 600, styleIdentity: 'test', fonts: [] }, renderProps: () => ({} as any) };
 const rect = (top: number, height: number) => ({ top, bottom: top + height, height, left: 0, right: 600, width: 600, x: 0, y: top, toJSON: () => ({}) } as DOMRect);
-function Harness({ prepare, observeNavigation, space = 'space', scope = 'conv', initializing = false, vector = geometry, disclosures = {}, clearance = 123 }: { observeNavigation?: ReadingNavigationObserver; clearance?: number; disclosures?: Record<string, boolean>; vector?: typeof geometry; scope?: string; initializing?: boolean; prepare: Parameters<typeof useReadingViewport>[0]['prepare']; space?: string;  }) {
+function Harness({ prepare, observeNavigation, space = 'space', scope = 'conv', initializing = false, vector = geometry, disclosures = {}, clearance = 123, onRange = () => {} }: { onRange?: Parameters<typeof useReadingViewport>[0]['onRange']; observeNavigation?: ReadingNavigationObserver; clearance?: number; disclosures?: Record<string, boolean>; vector?: typeof geometry; scope?: string; initializing?: boolean; prepare: Parameters<typeof useReadingViewport>[0]['prepare']; space?: string;  }) {
   viewport = useReadingViewport({ scope, initializing, positionSpaceId: space, geometry: vector, protectedKeys: new Set(),
-    disclosures, clearance, onInput: () => {}, onApplied: () => {}, onRange: () => {}, prepare, observeNavigation });
+    disclosures, clearance, onInput: () => {}, onApplied: () => {}, onRange, prepare, observeNavigation });
   return <div ref={viewport.scrollRef} {...viewport.inputHandlers}><div data-target tabIndex={-1}>Exact target</div><input /></div>;
 }
 async function frame(): Promise<void> {
@@ -32,7 +32,7 @@ async function frame(): Promise<void> {
 }
 function connect() {
   const scroller = viewport.scrollRef.current!;
-  Object.defineProperty(scroller, 'clientHeight', { value: 400 });
+  Object.defineProperty(scroller, 'clientHeight', { value: 400, configurable: true });
   Object.defineProperty(scroller, 'scrollHeight', { value: 1400 });
   scroller.getBoundingClientRect = () => rect(0, 400);
   const target = scroller.querySelector<HTMLElement>('[data-target]')!;
@@ -46,7 +46,7 @@ beforeEach(() => {
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frames.set(++nextFrame, callback); return nextFrame; });
   vi.stubGlobal('cancelAnimationFrame', (id: number) => frames.delete(id));
   boundary.engine = {
-    measure: () => {}, getTotalSize: () => 1400, getOffsetForIndex: () => [300, 'start'],
+    measure: () => {}, getTotalSize: () => 1400, getOffsetForIndex: () => [300, 'start'], getVirtualItemForOffset: () => ({ index: 0 }),
     isScrolling: false, range: { startIndex: 0, endIndex: 0 },
     isAtEnd: () => viewport.scrollRef.current?.scrollTop === 1000,
     getVirtualItems: () => [{ key: 'exact-row', index: 0, size: 100, start: 300, end: 400 }],
@@ -244,7 +244,7 @@ it('saves and restores a logical row before its distant body arrives without ope
   const disclosures = { 'group:activity': false };
   const view = render(<Harness prepare={prepare} disclosures={disclosures} />);
   let scroller = viewport.scrollRef.current!;
-  Object.defineProperty(scroller, 'clientHeight', { value: 400 }); Object.defineProperty(scroller, 'scrollHeight', { value: 1400 });
+  Object.defineProperty(scroller, 'clientHeight', { value: 400, configurable: true }); Object.defineProperty(scroller, 'scrollHeight', { value: 1400 });
   scroller.scrollTop = 250;
   boundary.engine.isScrolling = true; act(() => boundary.options.onChange(boundary.engine));
   boundary.engine.isScrolling = false; act(() => boundary.options.onChange(boundary.engine));
@@ -255,7 +255,7 @@ it('saves and restores a logical row before its distant body arrives without ope
   boundary.engine.getVirtualItems = () => [{ key: 'exact-row', index: 0, size: 100, start: 900, end: 1000 }];
   render(<Harness prepare={prepare} disclosures={saved.disclosures} initializing />);
   scroller = viewport.scrollRef.current!;
-  Object.defineProperty(scroller, 'clientHeight', { value: 400 }); Object.defineProperty(scroller, 'scrollHeight', { value: 1400 });
+  Object.defineProperty(scroller, 'clientHeight', { value: 400, configurable: true }); Object.defineProperty(scroller, 'scrollHeight', { value: 1400 });
   if (saved.anchor?.kind !== 'row') throw new Error('Expected local row anchor.');
   const restored = viewport.reveal({ token: 'local-restore', restore: { positionSpaceId: saved.positionSpaceId, anchor: saved.anchor } });
   boundary.engine.isScrolling = false; act(() => boundary.options.onChange(boundary.engine));
@@ -324,4 +324,31 @@ it.each([false, true])('reveals and focuses the prepared message owner when an i
   boundary.engine.isScrolling = false; act(() => boundary.options.onChange(boundary.engine)); await frame();
   expect(await disclosed).toEqual({ token: 'disclosure', status: 'revealed' });
   expect(focusedMemory).not.toHaveBeenCalled();
+});
+
+it('fetches a native viewport ahead through variable-height geometry without widening mounted demand', () => {
+  const onRange = vi.fn();
+  const vector = { ...geometry, serial: 2, rows: Array.from({ length: 30 }, (_, index) => ({ key: `row:${index}`, revision: '1' })),
+    sizes: Array.from({ length: 30 }, (_, index) => index < 10 ? 20 : 200) };
+  const offsets = vector.sizes.map((_, index) => vector.sizes.slice(0, index).reduce((sum, size) => sum + size, 0));
+  boundary.engine.getVirtualItemForOffset = (offset: number) => ({ index: Math.max(0, offsets.findLastIndex(start => start <= offset)) });
+  boundary.engine.getVirtualItems = () => [{ key: 'row:11', index: 11, start: 400, end: 600, size: 200 }];
+  boundary.engine.range = { startIndex: 11, endIndex: 11 };
+  boundary.engine.getTotalSize = () => 4200;
+  render(<Harness vector={vector} onRange={onRange} prepare={async () => ({ status: 'not-renderable' })} />);
+  const { scroller } = connect();
+  scroller.scrollTop = 500;
+  act(() => boundary.options.onChange(boundary.engine));
+  expect(onRange.mock.lastCall![0]).toMatchObject({ start: 100, end: 1300, height: 400, required: [vector.rows[11]] });
+  expect(onRange.mock.lastCall![0].prefetch.map((row: any) => row.key)).toContain('row:5');
+  expect(onRange.mock.lastCall![0].prefetch.map((row: any) => row.key)).toContain('row:15');
+  const published = onRange.mock.calls.length;
+  scroller.scrollTop = 550;
+  act(() => boundary.options.onChange(boundary.engine));
+  expect(onRange.mock.calls.length).toBe(published + 1);
+  expect(onRange.mock.lastCall![0].required).toEqual([vector.rows[11]]);
+  Object.defineProperty(scroller, 'clientHeight', { value: 600, configurable: true });
+  act(() => boundary.options.onChange(boundary.engine));
+  expect(onRange.mock.lastCall![0]).toMatchObject({ start: 0, end: 1750, height: 600, required: [vector.rows[11]] });
+  expect(boundary.options.overscan).toBe(6);
 });
