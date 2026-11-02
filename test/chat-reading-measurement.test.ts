@@ -49,3 +49,24 @@ it('retains completed geometry on cancellation, releases the host, and reuses un
   service.dispose();
   expect(parent.childElementCount).toBe(0);
 });
+
+it('retains one mounted batch across finite calibration layouts and releases it afterwards', async () => {
+  Object.defineProperty(document, 'fonts', { configurable: true, value: { ready: Promise.resolve() } });
+  const parent = document.createElement('div'); document.body.append(parent);
+  const service = new ReadingMeasurementService(parent);
+  const rows = [{ key: 'row', revision: '1' }];
+  const dispose = vi.fn();
+  const renderBatch = vi.fn<MeasurementRequest<MeasurementRow>['renderBatch']>((host, bodies) => {
+    const element = document.createElement('div'); host.append(element);
+    element.getBoundingClientRect = () => ({ width: parseFloat(host.style.width), height: 90 }) as DOMRect;
+    return { elements: new Map([[bodies[0].key, element]]), dispose };
+  });
+  const result = await service.measure({ rows, layouts: [layout, { ...layout, width: 800 }],
+    renderBatch, materialize: async batch => batch });
+  expect(result.status).toBe('complete');
+  expect(result.measurements).toHaveLength(2);
+  expect(renderBatch).toHaveBeenCalledOnce();
+  expect(dispose).toHaveBeenCalledOnce();
+  expect(parent.childElementCount).toBe(0);
+  service.dispose();
+});

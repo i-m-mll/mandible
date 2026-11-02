@@ -3,6 +3,7 @@ export type MeasurementRow = { key: string; revision: string; disclosureIdentity
 export type MeasurementLayout = {
   width: number;
   styleIdentity: string;
+  responsiveVariant?: string;
   fonts: readonly { font: string; text?: string }[];
 };
 export type RowMeasurement = {
@@ -33,7 +34,7 @@ export type MeasurementResult = { measurements: readonly RowMeasurement[] } & (
 );
 
 export function measurementLayoutIdentity(layout: MeasurementLayout): string {
-  return JSON.stringify([layout.width, layout.styleIdentity, layout.fonts]);
+  return JSON.stringify([layout.width, layout.styleIdentity, layout.fonts, layout.responsiveVariant]);
 }
 function measurementKey(row: MeasurementRow, layoutIdentity: string): string {
   return JSON.stringify([row.key, row.revision, row.disclosureIdentity ?? '', layoutIdentity]);
@@ -147,7 +148,7 @@ export class ReadingMeasurementService {
           }
           host.style.width = `${layout.width}px`;
           phase = 'render';
-          rendered = request.renderBatch(host, bodies.value, layout, rows);
+          rendered ??= request.renderBatch(host, bodies.value, layout, rows);
           phase = 'readiness';
           const ready = await untilAbort(Promise.all([
             ...layout.fonts.map(({ font, text }) => doc.fonts.load(font, text).then(() => { if (!doc.fonts.check(font, text)) throw new Error(`Requested font unavailable: ${font}`); })),
@@ -164,9 +165,9 @@ export class ReadingMeasurementService {
           });
           if (signal.aborted) return cancelled();
           for (const box of boxes) measurements.set(measurementKey(box.row, identity), box);
-          release();
           await yieldToBrowser(view, signal);
         }
+        release();
       }
       if (signal.aborted) return cancelled();
       const vectors = request.layouts.map(layout => {
