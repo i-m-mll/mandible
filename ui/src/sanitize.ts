@@ -16,12 +16,14 @@ const PROSE_FORBIDDEN_TAGS = [
   'textarea',
 ];
 
+const PROSE_SANITIZER_OPTIONS = { FORBID_TAGS: PROSE_FORBIDDEN_TAGS, ADD_TAGS: ['annotation'], ADD_ATTR: ['encoding'] };
+
 /**
  * Sanitize HTML output from marked before use with dangerouslySetInnerHTML.
  * Uses DOMPurify for robust sanitization, replacing the previous regex-based approach.
  */
 export function sanitizeHtml(html: string): string {
-  return DOMPurify.sanitize(html, { FORBID_TAGS: PROSE_FORBIDDEN_TAGS });
+  return DOMPurify.sanitize(html, PROSE_SANITIZER_OPTIONS);
 }
 
 /**
@@ -29,5 +31,5 @@ export function sanitizeHtml(html: string): string {
  * Callers must import `marked` themselves and pass the raw HTML here.
  */
 export function sanitizeMarkdown(rawHtml: string): string {
-  return DOMPurify.sanitize(rawHtml, { FORBID_TAGS: PROSE_FORBIDDEN_TAGS });
+  return DOMPurify.sanitize(rawHtml, PROSE_SANITIZER_OPTIONS);
 }

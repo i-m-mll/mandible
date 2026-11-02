@@ -1,11 +1,66 @@
-import { marked } from 'marked';
+import { Marked, type TokenizerAndRendererExtension } from 'marked';
+import katex from 'katex';
 
 import { sanitizeHtml } from '../sanitize';
 
-// The UI previously configured the shared marked singleton from individual
-// views. Keep the most complete existing synchronous GFM configuration here so
-// every consumer renders deterministically regardless of module load order.
-marked.setOptions({ async: false, gfm: true, breaks: false });
+type MathToken = { type: string; raw: string; text: string; display: boolean };
+const delimiters = [
+  { open: '\\[', close: '\\]', display: true },
+  { open: '$$', close: '$$', display: true },
+  { open: '\\(', close: '\\)', display: false },
+  { open: '$', close: '$', display: false },
+];
+
+function escaped(source: string, index: number): boolean {
+  let backslashes = 0;
+  while (index > 0 && source[--index] === '\\') backslashes++;
+  return backslashes % 2 === 1;
+}
+
+function mathToken(source: string, block: boolean): MathToken | undefined {
+  for (const { open, close, display } of delimiters) {
+    if ((block && !display) || !source.startsWith(open)) continue;
+    if (open === '$' && (source[1] === '$' || /\s/.test(source[1] ?? '') || /^\$\d[\d,.]*(?=\s|[.,;:!?](?:\s|$))/.test(source))) continue;
+    let end = open.length;
+    while ((end = source.indexOf(close, end)) !== -1) {
+      if (escaped(source, end)) { end += close.length; continue; }
+      const text = source.slice(open.length, end);
+      if (open === '$' && (/\s/.test(source[end - 1]) || /\d/.test(source[end + 1] ?? '') || text.includes('\n'))) return;
+      if (!text.trim()) return;
+      return { type: block ? 'blockMath' : 'inlineMath', raw: source.slice(0, end + close.length), text, display };
+    }
+  }
+}
+
+function mathExtension(block: boolean): TokenizerAndRendererExtension {
+  return {
+    name: block ? 'blockMath' : 'inlineMath',
+    level: block ? 'block' : 'inline',
+    start(source) {
+      const openings = block ? /^(?:\\\[|\$\$)/gm : /\\(?:\(|\[)|\$/g;
+      for (const match of source.matchAll(openings)) {
+        if (!escaped(source, match.index) && mathToken(source.slice(match.index), block)) return match.index;
+      }
+    },
+    tokenizer(source) { return mathToken(source, block); },
+    renderer(token) {
+      const math = token as MathToken;
+      return katex.renderToString(math.text, {
+        displayMode: math.display,
+        output: 'htmlAndMathml',
+        throwOnError: false,
+        trust: false,
+        strict: 'ignore',
+        maxExpand: 1000,
+        maxSize: 100,
+        macros: {},
+      }) + (block ? '\n' : '');
+    },
+  };
+}
+
+// Provider directives use Marked's global lexer; UI syntax must stay local.
+const marked = new Marked({ async: false, gfm: true, breaks: false, extensions: [mathExtension(true), mathExtension(false)] });
 
 function parseMarkdown(source: string): string {
   try {
