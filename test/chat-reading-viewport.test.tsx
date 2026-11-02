@@ -16,7 +16,7 @@ let frames = new Map<number, FrameRequestCallback>();
 let nextFrame = 0;
 const coordinate = { conversationId: 'conv', positionSpaceId: 'space', position: 42 };
 const rows: ReadingRow[] = [{ key: 'exact-row', kind: 'content', isFinalResponse: false, protectedPositions: [42], items: [], nodes: [], sources: [{ blockId: 'cblk:conv:42', position: 42 }], actionGroup: { key: 'scope', start: 0, end: 99 }, disclosureOwner: null }];
-const geometry = { membership: new Map<string, { rowKey: string; position?: number | null }>([['exact-row', { rowKey: 'exact-row', position: 42 }]]), rowMembers: new Map<string, readonly string[]>([['exact-row', ['exact-row']]]), scope: 'conv', rows: rows.map(row => ({ key: row.key, revision: '1' })), sizes: [100], exact: true, serial: 1, layout: { width: 600, styleIdentity: 'test', fonts: [] }, renderProps: () => ({} as any) };
+const geometry = { membership: new Map<string, { rowKey: string; position?: number | null }>([['exact-row', { rowKey: 'exact-row', position: 42 }]]), rowMembers: new Map<string, readonly string[]>([['exact-row', ['exact-row']]]), scope: 'conv:space', rows: rows.map(row => ({ key: row.key, revision: '1' })), sizes: [100], exact: true, serial: 1, layout: { width: 600, styleIdentity: 'test', fonts: [] }, renderProps: () => ({} as any) };
 const rect = (top: number, height: number) => ({ top, bottom: top + height, height, left: 0, right: 600, width: 600, x: 0, y: top, toJSON: () => ({}) } as DOMRect);
 function Harness({ prepare, observeNavigation, space = 'space', scope = 'conv', initializing = false, vector = geometry, disclosures = {}, clearance = 123, onRange = () => {} }: { onRange?: Parameters<typeof useReadingViewport>[0]['onRange']; observeNavigation?: ReadingNavigationObserver; clearance?: number; disclosures?: Record<string, boolean>; vector?: typeof geometry; scope?: string; initializing?: boolean; prepare: Parameters<typeof useReadingViewport>[0]['prepare']; space?: string;  }) {
   viewport = useReadingViewport({ scope, initializing, positionSpaceId: space, geometry: vector, protectedKeys: new Set(),
@@ -354,4 +354,27 @@ it('fetches a native viewport ahead through variable-height geometry without wid
   act(() => boundary.options.onChange(boundary.engine));
   expect(onRange.mock.lastCall![0]).toMatchObject({ start: 0, end: 1750, height: 600, required: [vector.rows[11]] });
   expect(boundary.options.overscan).toBe(6);
+});
+
+it('keeps prior applied demand within the same source while rejecting pending source and position-space replacements', () => {
+  const onRange = vi.fn();
+  const prepare = async () => ({ status: 'not-renderable' as const });
+  const view = render(<Harness prepare={prepare} onRange={onRange} />);
+  const { scroller } = connect();
+  act(() => boundary.options.onChange(boundary.engine));
+  expect(onRange).toHaveBeenCalled();
+  boundary.engine.isScrolling = true;
+  view.rerender(<Harness prepare={prepare} onRange={onRange} vector={{ ...geometry, serial: 2 }} />);
+  scroller.scrollTop = 1;
+  Object.defineProperty(scroller, 'clientHeight', { value: 401, configurable: true });
+  act(() => boundary.options.onChange(boundary.engine));
+  expect(onRange.mock.lastCall![0]).toMatchObject({ vector: geometry.rows, height: 401 });
+  const published = onRange.mock.calls.length;
+  view.rerender(<Harness prepare={prepare} onRange={onRange} space="next-space" vector={{ ...geometry, scope: 'conv:next-space', serial: 3 }} />);
+  Object.defineProperty(scroller, 'clientHeight', { value: 402, configurable: true });
+  act(() => boundary.options.onChange(boundary.engine));
+  expect(onRange.mock.calls.length).toBe(published);
+  view.rerender(<Harness prepare={prepare} onRange={onRange} scope="next-conv" space="next-space" vector={{ ...geometry, scope: 'next-conv:next-space', serial: 4 }} />);
+  act(() => boundary.options.onChange(boundary.engine));
+  expect(onRange.mock.calls.length).toBe(published);
 });
