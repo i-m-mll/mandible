@@ -150,7 +150,7 @@ export class ReadingMeasurementService {
           phase = 'render';
           rendered ??= request.renderBatch(host, bodies.value, layout, rows);
           phase = 'readiness';
-          host.getBoundingClientRect();
+          for (const row of rows) rendered.elements.get(row.key)?.getBoundingClientRect();
           const ready = await untilAbort(Promise.all([
             ...layout.fonts.map(({ font, text }) => doc.fonts.load(font, text).then(() => { if (!doc.fonts.check(font, text)) throw new Error(`Requested font unavailable: ${font}`); })),
             ...[...host.querySelectorAll('img')].map(image => imageReady(image, signal)),
