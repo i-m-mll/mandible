@@ -1,3 +1,5 @@
+import { OverflowTopFade } from '../../../ui/src/components/shared/OverflowFade';
+import { appearanceCssVariables, DEFAULT_APPEARANCE_SETTINGS } from '../../../ui/src/appearance-settings';
 import { render } from 'preact';
 import { useCallback, useMemo, useState } from 'preact/hooks';
 import { useReadingGeometry } from '../../../ui/src/chat/useReadingGeometry';
@@ -8,6 +10,7 @@ import type { ReadingRow } from '../../../ui/src/chat/readingProjection';
 import type { ReadingContentProps } from '../../../ui/src/chat/ReadingContent';
 import { captureReadingDomAnchor, readingDomAnchorOffset } from '../../../ui/src/chat/readingDomAnchor';
 
+const capped = new URLSearchParams(location.search).has('cap');
 const counterfactual = new URLSearchParams(location.search).has('absolute');
 const noop = () => {};
 const bodies: ReadingRow[] = Array.from({ length: 80 }, (_, index) => {
@@ -40,12 +43,14 @@ let geometry: ReturnType<typeof useReadingGeometry>;
 let setProtected: (keys: ReadonlySet<string>) => void;
 let hydrate: () => void;
 let disclose: (expanded: boolean) => void;
+let setCap: (width: number) => void;
 let beginLayout = noop;
 let disclosureExpected = 80;
 let disclosureResult: string | undefined;
 const scrollWrites: Array<{ wanted: number; actual: number }> = [];
 
 function Harness() {
+  const [cap, changeCap] = useState(0); setCap = changeCap;
   const [parent, setParent] = useState<HTMLDivElement | null>(null);
   const [protectedKeys, protect] = useState<ReadonlySet<string>>(new Set()); setProtected = protect;
   const [hydrated, setHydrated] = useState(false); hydrate = () => setHydrated(true);
@@ -72,7 +77,7 @@ function Harness() {
     }
   }, []);
   const items = viewport.engine.getVirtualItems();
-  return <div className="stream-renderer"><div ref={connect} className="stream-renderer__scroll" {...viewport.inputHandlers}>
+  return <div className="stream-renderer" style={appearanceCssVariables({ ...DEFAULT_APPEARANCE_SETTINGS, chatStreamMaxWidthPx: cap })}><div ref={connect} className="stream-renderer__scroll" {...viewport.inputHandlers}>
     <div className="stream-renderer__virtual-canvas" style={{ height: `${viewport.engine.getTotalSize()}px` }}>
       <ReadingRowStrip items={items} endOffset={counterfactual ? undefined : viewport.endOffset}>{item => {
         const ref = viewport.rows[item.index]; const body = bodies[Number(ref.key.split(':')[1])];
@@ -89,7 +94,7 @@ function Harness() {
         return counterfactual ? <div key={row.key} style={{ position: 'absolute', insetInline: 0, top: `${item.start - (items[0]?.start ?? 0)}px` }}>{box}</div> : box;
       }}</ReadingRowStrip>
     </div>
-  </div></div>;
+  </div><OverflowTopFade scroller={parent} contentStart={viewport.engine.options.paddingStart ?? 0} className="stream-renderer__top-fade" /></div>;
 }
 window.addEventListener('error', event => { document.title = `fixture-error:${btoa(String(event.error?.stack ?? event.message))}`; });
 document.title = 'frame-start';
@@ -111,6 +116,38 @@ void (async () => {
   const scroller = viewport.scrollRef.current!;
   const pane = document.getElementById('root')!;
   const samples: Array<Record<string, unknown>> = [];
+  const geometryBox = () => {
+    const canvas = scroller.querySelector<HTMLElement>('.stream-renderer__virtual-canvas')!.getBoundingClientRect();
+    const box = scroller.getBoundingClientRect();
+    return { width: canvas.width, left: canvas.left - box.left, right: box.right - canvas.right,
+      padding: parseFloat(getComputedStyle(scroller).paddingLeft), measuredWidth: geometry.geometry?.layout.width };
+  };
+  const unrestricted = geometryBox();
+
+  if (capped) {
+    setCap(400); await until(() => !!viewport.appliedGeometry?.exact && viewport.appliedGeometry.layout.width === 400, 'capped exact geometry');
+  }
+  const limited = geometryBox();
+  if (capped) {
+    setCap(10000); await until(() => !!viewport.appliedGeometry?.exact && viewport.appliedGeometry.layout.width === unrestricted.width, 'oversized cap');
+    setCap(0); await frame(); await frame();
+  }
+  const oversized = geometryBox();
+  const fade = pane.querySelector<HTMLElement>('.overflow-fade-top')!;
+  scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
+  scroller.scrollTop = 0; scroller.dispatchEvent(new Event('scroll')); await frame(); await frame();
+  const fadeAtStart = fade.classList.contains('overflow-fade-top--visible');
+  const beforeFade = scroller.scrollHeight;
+  scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: 20, bubbles: true }));
+  scroller.scrollTop = 20; scroller.dispatchEvent(new Event('scroll')); await frame(); await frame();
+  const fadeOverPadding = fade.classList.contains('overflow-fade-top--visible');
+  scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: 20, bubbles: true }));
+  scroller.scrollTop = 40; scroller.dispatchEvent(new Event('scroll')); await frame(); await frame();
+  const fadeWithContent = fade.classList.contains('overflow-fade-top--visible');
+  const fadeBox = fade.getBoundingClientRect();
+  const fadeGeometry = { fadeAtStart, fadeOverPadding, fadeWithContent, rangeUnchanged: scroller.scrollHeight === beforeFade,
+    top: fadeBox.top - scroller.getBoundingClientRect().top, width: fadeBox.width, scrollerWidth: scroller.getBoundingClientRect().width,
+    pointerEvents: getComputedStyle(fade).pointerEvents, background: getComputedStyle(fade).backgroundImage };
   scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
   viewport.engine.scrollToIndex(45, { align: 'start', behavior: 'auto' });
   await until(() => boxes().has('row:45'), 'disclosure parent');
@@ -143,11 +180,12 @@ void (async () => {
   frozen = true;
   for (let step = 0; step < 120; step++) {
     await frame();
-    samples.push({ phase: 'reader', width: pane.getBoundingClientRect().width, rowHeight: boxes().get(anchor.key)!.getBoundingClientRect().height, glyph: glyphY(), desired, adjacency: adjacency(), write: scrollWrites.length > readerWritesBefore ? scrollWrites.at(-1) : undefined, protected: boxes().has('row:5'), pending: boxes().get('row:49')?.getAttribute('aria-busy') === 'true' });
+    samples.push({ phase: 'reader', cap: getComputedStyle(scroller).getPropertyValue('--chat-stream-max-width'), contentWidth: scroller.firstElementChild!.getBoundingClientRect().width, scrollTop: scroller.scrollTop, rowTop: boxes().get(anchor.key)!.getBoundingClientRect().top, pointOffset: readingDomAnchorOffset(anchor, boxes().get(anchor.key)!), layoutWidth: viewport.appliedGeometry?.layout.width, width: pane.getBoundingClientRect().width, rowHeight: boxes().get(anchor.key)!.getBoundingClientRect().height, glyph: glyphY(), desired, adjacency: adjacency(), write: scrollWrites.length > readerWritesBefore ? scrollWrites.at(-1) : undefined, protected: boxes().has('row:5'), pending: boxes().get('row:49')?.getAttribute('aria-busy') === 'true' });
     if (step === 20) setProtected(new Set(['row:5']));
     if (step === 40) hydrate();
     if (step === 60) setProtected(new Set());
-    pane.style.width = `${500 - (step < 60 ? step : 120 - step)}.203125px`;
+    if (capped) setCap(400 - (step < 60 ? step : 120 - step));
+    else pane.style.width = `${500 - (step < 60 ? step : 120 - step)}.203125px`;
   }
   await frame();
   if (boxes().get(anchor.key) !== original) throw new Error('Protected range change remounted the reader DOM');
@@ -155,7 +193,7 @@ void (async () => {
   scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: 80, bubbles: true }));
   scroller.scrollTop += 80; scroller.dispatchEvent(new Event('scroll'));
   const nativeTop = scroller.scrollTop;
-  pane.style.width = '490.203125px'; await frame();
+  if (capped) setCap(390); else pane.style.width = '490.203125px'; await frame();
   const afterNative = scroller.scrollTop;
   scroller.dispatchEvent(new Event('scrollend')); await until(() => !viewport.engine.isScrolling, 'native settlement');
   await viewport.reveal({ token: 'tail', end: true });
@@ -165,7 +203,8 @@ void (async () => {
     samples.push({ phase: 'tail', width: pane.getBoundingClientRect().width, endGap: scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop,
       tailGap: scroller.getBoundingClientRect().bottom - boxes().get('row:79')!.getBoundingClientRect().bottom - 16,
       adjacency: adjacency(), write: scrollWrites.at(-1) });
-    pane.style.width = `${490 - (step < 50 ? step : 100 - step)}.203125px`;
+    if (capped) setCap(390 - (step < 50 ? step : 100 - step));
+    else pane.style.width = `${490 - (step < 50 ? step : 100 - step)}.203125px`;
   }
   await frame();
   const tailBeforeInput = boxes().get('row:79')!.getBoundingClientRect().top;
@@ -173,8 +212,8 @@ void (async () => {
   scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -80, bubbles: true }));
   scroller.scrollTop -= 80; scroller.dispatchEvent(new Event('scroll'));
   const tailNativeTop = scroller.scrollTop;
-  pane.style.width = '488.203125px'; await frame();
+  if (capped) setCap(388); else pane.style.width = '488.203125px'; await frame();
   const tailAfterInput = boxes().get('row:79')!.getBoundingClientRect().top;
-  document.title = btoa(JSON.stringify({ counterfactual, samples, nativeTop, afterNative, anchorKey: anchor.key, anchorOffset: anchor.point.offset,
+  document.title = btoa(JSON.stringify({ counterfactual, capped, unrestricted, limited, oversized, fadeGeometry, samples, nativeTop, afterNative, anchorKey: anchor.key, anchorOffset: anchor.point.offset,
     tailNativeTop, tailNativeAfter: scroller.scrollTop, tailIntentDrift: tailAfterInput - tailBeforeInput - (topBeforeInput - tailNativeTop) }));
 })().catch(error => { document.title = `fixture-error:${btoa(String(error.stack ?? error))}`; });

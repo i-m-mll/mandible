@@ -1,4 +1,4 @@
-:root { --reading-responsive-variant: wide; --reading-renderer-version: event-context-footer-v4; }
+:root { --reading-responsive-variant: wide; --reading-renderer-version: event-context-footer-v5; }
 /* Shared chat message block components */
 
 /* ── Shared message-block components — Bug: bce7370 ── */
@@ -38,7 +38,6 @@
 /* msg-text-block — unified markdown text block (replaces .stream-text-block + .block-markdown) */
 .msg-text-block {
   color: var(--text-primary);
-  max-width: var(--chat-max-width);
 }
 
 .msg-text-block {
@@ -451,7 +450,8 @@
 }
 
 .overflow-fade::before,
-.overflow-fade::after {
+.overflow-fade::after,
+.overflow-fade-top {
   content: '';
   position: absolute;
   right: 0;
@@ -462,7 +462,8 @@
   transition: opacity 120ms ease;
 }
 
-.overflow-fade::before {
+.overflow-fade::before,
+.overflow-fade-top {
   top: 0;
   background: linear-gradient(to bottom, var(--overflow-fade-color, var(--surface-app)) 4%, transparent 100%);
 }
@@ -472,7 +473,8 @@
   background: linear-gradient(to bottom, transparent 0%, var(--overflow-fade-color, var(--surface-app)) 96%);
 }
 
-.overflow-fade--above::before {
+.overflow-fade--above::before,
+.overflow-fade-top--visible {
   opacity: 1;
 }
 

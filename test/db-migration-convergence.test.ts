@@ -1134,6 +1134,19 @@ describe("one version behind head", () => {
   });
 });
 
+it("admits stream width without altering existing preference revisions", () => {
+  const db = migrateFixtureThrough(230);
+  try {
+    const operator = setupOperator(db, { slug: "stream-width-operator", display_name: "Operator" });
+    db.prepare("INSERT INTO user_settings (user_id, key, value, revision, updated_at) VALUES (?, 'managed_chat_defaults', '{}', 8, 123)").run(operator.id);
+    migrate(db);
+    expect(db.prepare("SELECT key, value, revision, updated_at FROM user_settings WHERE user_id = ?").all(operator.id))
+      .toEqual([{ key: 'managed_chat_defaults', value: '{}', revision: 8, updated_at: 123 }]);
+    db.prepare("INSERT INTO user_settings (user_id, key, value, revision, updated_at) VALUES (?, 'chat_stream_max_width_px', '840', 1, 456)").run(operator.id);
+    expect(db.pragma("foreign_key_check")).toEqual([]);
+  } finally { db.close(); }
+});
+
 it("preserves current preference bytes and revisions while admitting managed Chat defaults", () => {
   const db = migrateFixtureThrough(207);
   try {

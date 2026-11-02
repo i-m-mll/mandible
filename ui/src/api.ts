@@ -1717,23 +1717,24 @@ export async function updateUserAppRailOrderSetting(
   return parseUserAppRailOrderSetting(await parseMaybeJson(response));
 }
 
-export type UserTypographySettingKey =
+export type UserAppearanceSettingKey =
+  | 'chat_stream_max_width_px'
   | 'ui_font_face'
   | 'ui_font_size'
   | 'detail_font_face'
   | 'detail_font_size';
 
-export type UserTypographySetting = {
+export type UserAppearanceSetting = {
   version: 1;
-  key: UserTypographySettingKey;
+  key: UserAppearanceSettingKey;
   value: string | null;
   revision: number;
 };
 
-function parseUserTypographySetting(
-  key: UserTypographySettingKey,
+function parseUserAppearanceSetting(
+  key: UserAppearanceSettingKey,
   payload: unknown,
-): UserTypographySetting {
+): UserAppearanceSetting {
   const record = payload && typeof payload === 'object'
     ? payload as Record<string, unknown>
     : null;
@@ -1744,22 +1745,22 @@ function parseUserTypographySetting(
     || !Number.isSafeInteger(record.revision)
     || (record.revision as number) < 0
   ) throw new Error(`Invalid authenticated ${key} response`);
-  return record as UserTypographySetting;
+  return record as UserAppearanceSetting;
 }
 
-export async function getUserTypographySetting(
-  key: UserTypographySettingKey,
-): Promise<UserTypographySetting> {
+export async function getUserAppearanceSetting(
+  key: UserAppearanceSettingKey,
+): Promise<UserAppearanceSetting> {
   const response = await apiGet(`/api/user-settings/${key}`);
-  return parseUserTypographySetting(key, await parseMaybeJson(response));
+  return parseUserAppearanceSetting(key, await parseMaybeJson(response));
 }
 
-export async function updateUserTypographySetting(
-  key: UserTypographySettingKey,
+export async function updateUserAppearanceSetting(
+  key: UserAppearanceSettingKey,
   value: string,
-): Promise<UserTypographySetting> {
+): Promise<UserAppearanceSetting> {
   const response = await apiPut(`/api/user-settings/${key}`, { value });
-  return parseUserTypographySetting(key, await parseMaybeJson(response));
+  return parseUserAppearanceSetting(key, await parseMaybeJson(response));
 }
 
 export async function getManagedChatDefaults(): Promise<ManagedChatDefaults> {

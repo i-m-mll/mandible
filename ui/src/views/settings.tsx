@@ -1,3 +1,4 @@
+import { parseChatStreamMaxWidthPx } from '../../../src/contracts';
 import { AgentIntegrations } from '../components/AgentIntegrations';
 import { NativeSelect } from '../components/shared/NativeSelect';
 import { Icon } from '../components/icons/Icon';
@@ -44,12 +45,12 @@ import {
   type ProjectPickerItem,
 } from '../api';
 import type { InstanceInfo } from '../api';
-import type { UserTypographySettingKey } from '../api';
+import type { UserAppearanceSettingKey } from '../api';
 import {
-  DEFAULT_TYPOGRAPHY_SETTINGS,
-  typographySettingValue,
-  type TypographySettings,
-} from '../typography-settings';
+  DEFAULT_APPEARANCE_SETTINGS,
+  appearanceSettingValue,
+  type AppearanceSettings,
+} from '../appearance-settings';
 import { AuthHooksPanel } from './auth';
 import {
   APP_THEME_MODES,
@@ -85,8 +86,8 @@ export type SettingsViewProps = {
   onRefresh?: () => void;
   onClose?: () => void;
   instance?: InstanceInfo | null;
-  typography?: TypographySettings;
-  onTypographySave?: (key: UserTypographySettingKey, value: string) => Promise<void>;
+  appearance?: AppearanceSettings;
+  onAppearanceSave?: (key: UserAppearanceSettingKey, value: string) => Promise<void>;
 };
 
 type FeedbackState = {
@@ -1589,18 +1590,18 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
     loadError = null,
     onRefresh = () => undefined,
     instance = null,
-    typography = DEFAULT_TYPOGRAPHY_SETTINGS,
-    onTypographySave = async () => undefined,
+    appearance = DEFAULT_APPEARANCE_SETTINGS,
+    onAppearanceSave = async () => undefined,
   } = props;
   const onSaveRef = useRef(onSave);
-  const onTypographySaveRef = useRef(onTypographySave);
+  const onAppearanceSaveRef = useRef(onAppearanceSave);
   onSaveRef.current = onSave;
-  onTypographySaveRef.current = onTypographySave;
+  onAppearanceSaveRef.current = onAppearanceSave;
   const saveSetting = useMemo(() => createOrderedSettingSave((key, value) => onSaveRef.current(key, value)), []);
-  const saveTypographySetting = useMemo(() => createOrderedSettingSave(
-    (key, value) => onTypographySaveRef.current(key as UserTypographySettingKey, value),
+  const saveAppearanceSetting = useMemo(() => createOrderedSettingSave(
+    (key, value) => onAppearanceSaveRef.current(key as UserAppearanceSettingKey, value),
   ), []);
-  const canSaveTypography = (key: UserTypographySettingKey) => canPerformOperation(instance, 'PUT', `/api/user-settings/${key}`);
+  const canSaveAppearance = (key: UserAppearanceSettingKey) => canPerformOperation(instance, 'PUT', `/api/user-settings/${key}`);
   const appThemeAllowed = canPerformOperation(instance, 'PUT', '/api/host-preferences/app-theme');
   const instructionReadAllowed = canPerformOperation(instance, 'GET', '/api/settings/instructions-delivery');
   const instructionSettingsAllowed = canPerformOperation(instance, 'PUT', '/api/settings/instructions-delivery', {
@@ -1676,18 +1677,18 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
     }
   }, []);
 
-  const handleTypographyField = useCallback(async (key: UserTypographySettingKey, value: string) => {
-    if (!canSaveTypography(key)) return;
+  const handleAppearanceField = useCallback(async (key: UserAppearanceSettingKey, value: string) => {
+    if (!canSaveAppearance(key)) return;
     setSaving(key);
     try {
-      await saveTypographySetting(key, value);
+      await saveAppearanceSetting(key, value);
       showFeedback({ type: 'success', message: 'Saved' });
     } catch (err) {
       showFeedback({ type: 'error', message: err instanceof Error ? err.message : 'Failed' });
     } finally {
       setSaving(null);
     }
-  }, [instance, saveTypographySetting, showFeedback]);
+  }, [instance, saveAppearanceSetting, showFeedback]);
 
   const sectionViews: VNode<{ section: SettingsSectionDefinition }>[] = [
       <SettingsSectionShell key={SETTINGS_SECTIONS.notifications.id} section={SETTINGS_SECTIONS.notifications}>
@@ -1980,9 +1981,9 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
                   id={`settings-${key}`}
                   className="settings-view__select"
                   aria-describedby={`settings-${key}-description`}
-                  value={typographySettingValue(typography, key)}
-                  disabled={!canSaveTypography(key) || saving === key}
-                  onChange={(event) => void handleTypographyField(key, (event.target as HTMLSelectElement).value)}
+                  value={appearanceSettingValue(appearance, key)}
+                  disabled={!canSaveAppearance(key) || saving === key}
+                  onChange={(event) => void handleAppearanceField(key, (event.target as HTMLSelectElement).value)}
                 >
                   {options.map(([value, text]) => <option value={value} key={value}>{text}</option>)}
                 </NativeSelect>
@@ -1992,6 +1993,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
           {([
             ['ui_font_size', 'UI size', 'Base size for chrome and controls.'],
             ['detail_font_size', 'Detail content size', 'Base size for ordinary entity-detail prose.'],
+            ['chat_stream_max_width_px', 'Chat stream maximum width (px)', '0 uses all available width.'],
           ] as const).map(([key, label, desc]) => (
             <div className="settings-view__text-row" data-settings-searchable key={key}>
               <div className="settings-view__text-info">
@@ -2003,16 +2005,16 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
                   id={`settings-${key}`}
                   className="settings-view__number-input"
                   type="number"
-                  min="10"
-                  max="20"
+                  min={key === 'chat_stream_max_width_px' ? 0 : 10}
+                  max={key === 'chat_stream_max_width_px' ? undefined : 20}
                   step="1"
                   aria-describedby={`settings-${key}-description`}
-                  value={typographySettingValue(typography, key)}
-                  disabled={!canSaveTypography(key) || saving === key}
+                  value={appearanceSettingValue(appearance, key)}
+                  disabled={!canSaveAppearance(key) || saving === key}
                   onChange={(event) => {
                     const value = (event.target as HTMLInputElement).value;
-                    if (Number.isInteger(Number(value)) && Number(value) >= 10 && Number(value) <= 20) {
-                      void handleTypographyField(key, value);
+                    if (key === 'chat_stream_max_width_px' ? parseChatStreamMaxWidthPx(value) !== null : Number.isInteger(Number(value)) && Number(value) >= 10 && Number(value) <= 20) {
+                      void handleAppearanceField(key, value);
                     }
                   }}
                 />

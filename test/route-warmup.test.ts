@@ -23,6 +23,7 @@ const STARTUP_GLOBALS = new Set([
   'GET /api/dashboard/badges',
   'GET /api/host-preferences/app-theme',
   'GET /api/user-settings/app_rail_order',
+  'GET /api/user-settings/chat_stream_max_width_px',
   'GET /api/user-settings/ui_font_face',
   'GET /api/user-settings/ui_font_size',
   'GET /api/user-settings/detail_font_face',

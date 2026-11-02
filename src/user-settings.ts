@@ -2,6 +2,7 @@ import { parseManagedChatDefaults } from "./managed-chat-defaults.js";
 import type { Db } from "./db.js";
 import {
   USER_SETTING_KEYS,
+  parseChatStreamMaxWidthPx,
   type UserSettingKey,
 } from "./contracts.js";
 
@@ -21,6 +22,10 @@ export function parseUserSettingKey(value: string): UserSettingKey | null {
 export function normalizeUserSettingValue(key: UserSettingKey, value: string): string | null {
   if (key === USER_SETTING_KEYS.managedChatDefaults) {
     try { return JSON.stringify(parseManagedChatDefaults(value)); } catch { return null; }
+  }
+  if (key === USER_SETTING_KEYS.chatStreamMaxWidthPx) {
+    const width = parseChatStreamMaxWidthPx(value);
+    return width === null ? null : String(width);
   }
   if (key === USER_SETTING_KEYS.appRailOrder) return value;
   if (key === USER_SETTING_KEYS.uiFontFace || key === USER_SETTING_KEYS.detailFontFace) {

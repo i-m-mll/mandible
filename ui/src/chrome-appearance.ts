@@ -1,6 +1,6 @@
-import { DEFAULT_TYPOGRAPHY_SETTINGS } from './typography-settings';
+import { DEFAULT_APPEARANCE_SETTINGS } from './appearance-settings';
 
-export const CHROME_UI_REFERENCE_FONT_SIZE_PX = DEFAULT_TYPOGRAPHY_SETTINGS.uiFontSize;
+export const CHROME_UI_REFERENCE_FONT_SIZE_PX = DEFAULT_APPEARANCE_SETTINGS.uiFontSize;
 export type ChromeAppearanceTheme = 'light' | 'dark';
 export type ChromeAppearanceParameters = { widthPx: number; profile: number; maxDarkness: number; glassTransparency: number; uiFontSizePt: number };
 export type ChromeShadowParameters = Pick<ChromeAppearanceParameters, 'widthPx' | 'profile' | 'maxDarkness'>;

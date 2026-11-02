@@ -1,4 +1,6 @@
 import { readingMemberKeys, readingSpeaker } from '../../../src/conversations/reading-context';
+import { OverflowTopFade } from '../components/shared/OverflowFade';
+import { AppearanceSettingsContext } from '../appearance-settings';
 import { Icon } from '../components/icons/Icon';
 import type { JSX } from 'preact/jsx-runtime';
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
@@ -50,6 +52,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
   const navigationTarget = transcript?.command ?? props.navigationTarget;
   const scope = transcript?.conversationId ?? props.sessionInfo?.sessionId ?? 'default';
   const space = transcript?.positionSpaceId ?? '';
+  const appearance = useContext(AppearanceSettingsContext);
   const overlay = useContext(DetailPaneOverlayContext);
   const clearance = Math.max(16, overlay?.scrollClearance ?? 0);
   const handled = useRef<string | null>(null);
@@ -83,7 +86,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
   }, [requiredMember, requiredTarget, initialDisclosurePending]);
   const [scrollNode, setScrollElement] = useState<HTMLDivElement | null>(null);
   const layoutChange = useRef<() => void>(() => {});
-  const geometry = useReadingGeometry({ scope: `${scope}:${space}`, chrome: 32 + clearance, onLayoutChange: () => layoutChange.current(), rows: complete.rows, parent: complete.ready && !initialDisclosurePending ? scrollNode : null,
+  const geometry = useReadingGeometry({ scope: `${scope}:${space}`, chrome: 32 + clearance, onLayoutChange: () => layoutChange.current(), rows: complete.rows, parent: appearance.ready && complete.ready && !initialDisclosurePending ? scrollNode : null,
     materialize: complete.acquireMeasurement, membership: complete.membership, rowMembers: complete.rowMembers, onMeasuring: complete.retainMeasurement, onPrepared: complete.retainGeometry, renderProps: row => ({ ...props, row, expandedBlocks, setBlockExpanded: () => {},
       preparing: row.sources.some(source => expandedBlocks[`reveal:${source.position}`]), primaryActions: readingRowPrimaryActions({ copy: () => {}, open: () => {}, turnId: readingRowTurnId(row, complete.actionRuns), selectedMessageId: props.selectedMessageId, select: props.onSelectMessageInfo }),
       lastAssistantTurnId: complete.lastAssistantTurnId, onActivityGroupExpandedChange: () => {} }), scale: getReadingResizeScale });
@@ -290,6 +293,8 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
         </div>
         {(!initialVisible || !viewport.rows.length) && <div className="stream-renderer__empty">{props.showEmpty && complete.ready && viewport.appliedGeometry && !complete.rows.length ? props.emptyLabel ?? 'No messages yet' : 'Loading conversation…'}</div>}
       </div>
+      <OverflowTopFade scroller={scrollNode} enabled={initialVisible && viewport.rows.length > 0} contentStart={viewport.engine.options.paddingStart ?? 0} className="stream-renderer__top-fade" />
+      {appearance.error && !appearance.ready && <div className="stream-renderer__history-error" role="alert">{appearance.error}<button type="button" onClick={appearance.retry}>Retry</button></div>}
       {events.some(event => event.type === 'chat:item' && event.persistencePending) && <div role="status">Some content is awaiting confirmation from saved history.</div>}
       {(notice || complete.error || geometry.error) && <div className="stream-renderer__history-error" role="alert">{notice ?? complete.error ?? geometry.error}<button type="button" onClick={() => { setNotice(null); geometry.retry(); void complete.refresh(); }}>Retry</button></div>}
       {viewport.showLatest && <button type="button" className="chat-circle-action stream-renderer__scroll-btn" aria-label="Jump to latest" title="Jump to latest" disabled={props.jumpingToLatest} aria-busy={props.jumpingToLatest ? "true" : "false"} onClick={jump}><Icon name="jumpToLatest" /></button>}
