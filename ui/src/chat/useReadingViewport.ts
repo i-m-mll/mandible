@@ -404,7 +404,7 @@ export function useReadingViewport(input: {
     const last = instance.getVirtualItemForOffset(end)?.index;
     const required = instance.getVirtualItems().map(item => vector.rows[item.index]).filter(Boolean);
     const prefetch = first === undefined || last === undefined ? [] : vector.rows.slice(first, last + 1);
-    const identity = JSON.stringify([snapshot.scope, snapshot.positionSpaceId, vector.serial, start, end, height, required, prefetch]);
+    const identity = JSON.stringify([snapshot.scope, snapshot.positionSpaceId, vector.serial, first, last, height, required, prefetch]);
     if (identity === lastRange.current) return;
     lastRange.current = identity;
     snapshot.onRange({ vector: vector.rows, required, prefetch, start, end, height });

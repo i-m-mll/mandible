@@ -110,13 +110,15 @@ export function useCompleteReading(input: {
   }, [acquireMeasurement]);
   const materializer = useRef(materialize); materializer.current = materialize;
   const [hydrationError, setHydrationError] = useState<string | null>(null);
-  const active = useRef<{ controller: AbortController; refs: readonly MeasurementRow[]; scope: string; space: string; speculative: boolean } | null>(null);
+  const currentKeys = useMemo(() => new Set(rows.map(readingPayloadKey)), [rows]);
+  const publication = queryClient.getQueryState(readingManifestOptions(input.scope, input.space).queryKey)?.dataUpdateCount ?? 0;
+  const publicationBlocked = useRef<number | null>(null);
+  const active = useRef<{ controller: AbortController; refs: readonly MeasurementRow[]; scope: string; space: string; publication: number } | null>(null);
   const failures = useRef(new Map<string, string>());
-  useEffect(() => { failures.current.clear(); return () => { active.current?.controller.abort(); active.current = null; }; }, [input.scope, input.space]);
+  useEffect(() => { failures.current.clear(); publicationBlocked.current = null; return () => { active.current?.controller.abort(); active.current = null; }; }, [input.scope, input.space]);
   useEffect(() => {
     publishBodies();
     const requiredKeys = new Set(required.map(readingPayloadKey));
-    const currentKeys = new Set(rows.map(readingPayloadKey));
     const missingRequired = required.filter(ref => !bodyRef.current.has(readingPayloadKey(ref)));
     for (const key of failures.current.keys()) if (!wantedKeys.has(key)) failures.current.delete(key);
     setHydrationError(missingRequired.map(ref => failures.current.get(readingPayloadKey(ref))).find(Boolean) ?? null);
@@ -125,18 +127,23 @@ export function useCompleteReading(input: {
       const useful = running.refs.some(ref => wantedKeys.has(readingPayloadKey(ref)));
       const related = running.refs.some(ref => requiredKeys.has(readingPayloadKey(ref)));
       const invalid = running.scope !== input.scope || running.space !== input.space || running.refs.some(ref => !currentKeys.has(readingPayloadKey(ref)));
-      if (invalid || !useful || (running.speculative && missingRequired.length > 0 && !related)) {
+      if (invalid || !useful || (missingRequired.length > 0 && !related)) {
         running.controller.abort(); active.current = null;
       } else return;
+    }
+    if (publicationBlocked.current !== null) {
+      if (publication <= publicationBlocked.current) return;
+      publicationBlocked.current = null;
     }
     const missing = (missingRequired.length ? missingRequired : wanted.filter(ref => !bodyRef.current.has(readingPayloadKey(ref))))
       .filter(ref => currentKeys.has(readingPayloadKey(ref)) && !failures.current.has(readingPayloadKey(ref))).slice(0, 16);
     if (!missing.length) return;
-    const request = { controller: new AbortController(), refs: missing, scope: input.scope, space: input.space, speculative: missingRequired.length === 0 };
+    const request = { controller: new AbortController(), refs: missing, scope: input.scope, space: input.space, publication };
     active.current = request;
     void materializer.current(missing, request.controller.signal).catch(error => {
       if (!request.controller.signal.aborted) {
-        const message = isReadingPublicationChanged(error) ? '' : error instanceof Error ? error.message : String(error);
+        if (isReadingPublicationChanged(error)) { publicationBlocked.current = request.publication; return; }
+        const message = error instanceof Error ? error.message : String(error);
         for (const ref of missing) failures.current.set(readingPayloadKey(ref), message);
       }
     }).finally(() => {
@@ -144,7 +151,7 @@ export function useCompleteReading(input: {
       active.current = null;
       setDemandVersion(value => value + 1);
     });
-  }, [wanted, required, wantedKeys, rows, demandVersion, publishBodies, input.scope, input.space]);
+  }, [wanted, required, wantedKeys, currentKeys, publication, manifest.dataUpdatedAt, manifest.isFetching, demandVersion, publishBodies, input.scope, input.space]);
   const onRange = useCallback((snapshot: ReadingBodyDemand) => {
     demand.current = snapshot;
     custody.current.applied = new Set(snapshot.required.map(readingPayloadKey));

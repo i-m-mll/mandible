@@ -343,6 +343,9 @@ it('fetches a native viewport ahead through variable-height geometry without wid
   expect(onRange.mock.lastCall![0].prefetch.map((row: any) => row.key)).toContain('row:5');
   expect(onRange.mock.lastCall![0].prefetch.map((row: any) => row.key)).toContain('row:15');
   const published = onRange.mock.calls.length;
+  scroller.scrollTop = 501;
+  act(() => boundary.options.onChange(boundary.engine));
+  expect(onRange.mock.calls.length).toBe(published);
   scroller.scrollTop = 550;
   act(() => boundary.options.onChange(boundary.engine));
   expect(onRange.mock.calls.length).toBe(published + 1);
