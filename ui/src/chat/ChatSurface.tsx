@@ -105,7 +105,8 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
       ...Object.fromEntries(requiredMember.disclosurePath.map(owner => [`group:${owner}`, true])), ...Object.fromEntries((requiredMember.detailKeys ?? []).map(key => [key, true])), [`reveal:${requiredTarget.position}`]: true }));
   }, [requiredMember, requiredTarget, initialDisclosurePending]);
   const [scrollNode, setScrollElement] = useState<HTMLDivElement | null>(null);
-  const geometry = useReadingGeometry({ scope: `${scope}:${space}`, chrome: 32 + clearance, rows: complete.rows, parent: complete.ready && !initialDisclosurePending ? scrollNode : null,
+  const layoutChange = useRef<() => void>(() => {});
+  const geometry = useReadingGeometry({ scope: `${scope}:${space}`, chrome: 32 + clearance, onLayoutChange: () => layoutChange.current(), rows: complete.rows, parent: complete.ready && !initialDisclosurePending ? scrollNode : null,
     materialize: complete.acquireMeasurement, membership: complete.membership, rowMembers: complete.rowMembers, onMeasuring: complete.retainMeasurement, onPrepared: complete.retainGeometry, renderProps: row => ({ ...props, row, expandedBlocks, setBlockExpanded: () => {},
       preparing: row.sources.some(source => expandedBlocks[`reveal:${source.position}`]), primaryActions: readingRowPrimaryActions({ copy: () => {}, open: () => {}, turnId: readingRowTurnId(row, complete.actionRuns), selectedMessageId: props.selectedMessageId, select: props.onSelectMessageInfo }),
       lastAssistantTurnId: complete.lastAssistantTurnId, onActivityGroupExpandedChange: () => {} }), scale: getReadingResizeScale });
@@ -151,11 +152,11 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
     } else if (!queued) handled.current = `initial:${scope}:${space}`;
     setInitialNavigationDone(true); latest.current.transcript?.cancelNavigation();
   }, commandToken: navigationTarget?.key, initializing: transcript?.navigationPending || !geometry.geometry, clearance, geometry: geometry.geometry, protectedKeys: protectedRows, disclosures, prepare, onApplied: complete.commitGeometry, onRange });
+  layoutChange.current = viewport.beginLayout;
+  useEffect(() => { if (initialVisible) viewport.captureReaderAnchor(); }, [initialVisible, viewport.appliedGeometry]);
   appliedRows.current = viewport.appliedGeometry ? viewport.rows : [];
   useLayoutEffect(() => {
     for (const check of [...waiting.current]) check();
-    if (!viewport.appliedGeometry) return;
-    onRange(viewport.engine.range?.startIndex ?? 0, viewport.engine.range?.endIndex ?? 0, viewport.engine.getVirtualItems().map(item => viewport.rows[item.index]).filter(Boolean));
   }, [projection, complete.plan, geometry.geometry, viewport.rows, viewport.appliedGeometry, transcript?.command, onRange, viewport.engine]);
   const setScrollNode = useCallback((node: HTMLDivElement | null) => { viewport.scrollRef.current = node; setScrollElement(node); }, [viewport.scrollRef]);
   useEffect(() => {

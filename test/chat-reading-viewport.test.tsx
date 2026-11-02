@@ -159,6 +159,7 @@ it('coalesces geometry while native scrolling and restores the current reader th
   scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: 50, bubbles: true }));
   scroller.scrollTop = 250;
   boundary.engine.getOffsetForIndex = () => [900, 'start'];
+  boundary.engine.getVirtualItems = () => [{ key: 'exact-row', index: 0, size: 100, start: 900, end: 1000 }];
   boundary.engine.isScrolling = false;
   act(() => boundary.options.onChange(boundary.engine));
   expect(rebuild).toHaveBeenCalledOnce();
