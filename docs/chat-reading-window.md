@@ -275,8 +275,9 @@ and core 3.19.10 receive the complete row count, unique keys and committed sizes
 through `estimateSize`. They own global offsets, rendered ranges, total extent
 and scroll writes. No `measureElement`, `resizeItem`, private cache writes,
 competing prefix index or scroller remount participates. Each coherent geometry
-transaction calls public `measure()` once and restores one logical row/local
-offset or following intent through public engine offsets. Verified memberships
+transaction calls public `measure()` once and rebuilds the lazy offset index
+through a public size read. JSX commits that rebuilt canvas extent before the
+adapter restores one logical row/local offset or following intent through public engine offsets. Verified memberships
 preserve anchors when provisional content becomes a canonical row or summary.
 
 Native drag, touch, momentum and scrolling keys defer queued geometry; the

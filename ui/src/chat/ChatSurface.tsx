@@ -151,11 +151,12 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
     } else if (!queued) handled.current = `initial:${scope}:${space}`;
     setInitialNavigationDone(true); latest.current.transcript?.cancelNavigation();
   }, commandToken: navigationTarget?.key, initializing: transcript?.navigationPending || !geometry.geometry, clearance, geometry: geometry.geometry, protectedKeys: protectedRows, disclosures, prepare, onApplied: complete.commitGeometry, onRange });
-  appliedRows.current = viewport.rows;
+  appliedRows.current = viewport.appliedGeometry ? viewport.rows : [];
   useLayoutEffect(() => {
     for (const check of [...waiting.current]) check();
+    if (!viewport.appliedGeometry) return;
     onRange(viewport.engine.range?.startIndex ?? 0, viewport.engine.range?.endIndex ?? 0, viewport.engine.getVirtualItems().map(item => viewport.rows[item.index]).filter(Boolean));
-  }, [projection, complete.plan, geometry.geometry, viewport.rows, transcript?.command, onRange, viewport.engine]);
+  }, [projection, complete.plan, geometry.geometry, viewport.rows, viewport.appliedGeometry, transcript?.command, onRange, viewport.engine]);
   const setScrollNode = useCallback((node: HTMLDivElement | null) => { viewport.scrollRef.current = node; setScrollElement(node); }, [viewport.scrollRef]);
   useEffect(() => {
     overlay?.registerScrollOwner(viewport.scrollRef.current);
@@ -186,7 +187,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
   }, [onRange, viewport.engine, props.selectedBlockIds, complete.plan, scope]);
   useEffect(() => { handled.current = null; restoredRow.current = false; setInitialVisible(false); setInitialNavigationDone(false); setDisclosureRevisions({}); setNotice(null); const saved = readReadingState(scope); setExpandedBlocks(saved?.positionSpaceId === space ? saved.disclosures : {}); }, [scope, space]);
   useEffect(() => {
-    if (!navigationTarget || handled.current === navigationTarget.key || !geometry.geometry || (localRestore && !viewport.appliedGeometry?.exact)) return;
+    if (!navigationTarget || handled.current === navigationTarget.key || !geometry.geometry || !viewport.appliedGeometry || (localRestore && !viewport.appliedGeometry?.exact)) return;
     if (!complete.rows.length) {
       if ((navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest') && transcript?.total !== 0) return;
       if (navigationTarget.kind !== 'initial' && navigationTarget.kind !== 'latest') {
@@ -213,12 +214,12 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
 
   useEffect(() => {
     const token = `initial:${scope}:${space}`;
-    if (navigationTarget || !geometry.geometry || initialNavigationDone || handled.current === token) return;
+    if (navigationTarget || !geometry.geometry || !viewport.appliedGeometry || initialNavigationDone || handled.current === token) return;
     handled.current = token;
     void viewport.reveal({ token, end: true }).then(() => setInitialNavigationDone(true));
-  }, [navigationTarget, geometry.geometry, initialNavigationDone, scope, space, viewport.reveal]);
+  }, [navigationTarget, geometry.geometry, viewport.appliedGeometry, initialNavigationDone, scope, space, viewport.reveal]);
   useEffect(() => {
-    if (initialVisible || !geometry.geometry || !initialNavigationDone) return;
+    if (initialVisible || !geometry.geometry || !viewport.appliedGeometry || !initialNavigationDone) return;
     const items = viewport.engine.getVirtualItems();
     const hydrated = items.every(item => {
       const ref = viewport.rows[item.index];
@@ -226,7 +227,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
       return body && (!('revision' in body) || body.revision === ref.revision);
     });
     if (hydrated && (!viewport.rows.length || items.length > 0)) setInitialVisible(true);
-  }, [initialVisible, initialNavigationDone, navigationTarget, geometry.geometry, complete.bodies, viewport.rows, viewport.engine]);
+  }, [initialVisible, initialNavigationDone, navigationTarget, geometry.geometry, viewport.appliedGeometry, complete.bodies, viewport.rows, viewport.engine]);
 
   useEffect(() => {
     if (initialVisible && focusAfterInitial.current) { viewport.focusTarget(focusAfterInitial.current); focusAfterInitial.current = null; }
@@ -304,7 +305,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
             </MeasuredReadingBox>;
           })}
         </div>
-        {(!initialVisible || !viewport.rows.length) && <div className="stream-renderer__empty">{complete.ready && geometry.geometry && !complete.rows.length ? props.emptyLabel ?? 'No messages yet' : 'Loading conversation…'}</div>}
+        {(!initialVisible || !viewport.rows.length) && <div className="stream-renderer__empty">{complete.ready && viewport.appliedGeometry && !complete.rows.length ? props.emptyLabel ?? 'No messages yet' : 'Loading conversation…'}</div>}
       </div>
       {events.some(event => event.type === 'chat:item' && event.persistencePending) && <div role="status">Some content is awaiting confirmation from saved history.</div>}
       {(notice || complete.error || geometry.error) && <div className="stream-renderer__history-error" role="alert">{notice ?? complete.error ?? geometry.error}<button type="button" onClick={() => { setNotice(null); geometry.retry(); void complete.refresh(); }}>Retry</button></div>}
