@@ -46,14 +46,14 @@ describe('shared Markdown mathematics', () => {
     expect(result.querySelector('annotation')?.textContent).toBe(String.raw`\boxed{A_\theta\ge\alpha(M-r).}`);
     expect(result.querySelector('.katex-html')?.getAttribute('aria-hidden')).toBe('true');
     expect(marked.parse(source)).not.toContain('katex');
-    const formulas = mathDocument(String.raw`Inline \(\frac{1}{2}\) and $x^2$.
+    const formulas = mathDocument(String.raw`Inline \(\frac{1}{2}\) and $x^2$ with $2 + 2 = 4$.
 
 $$
 \begin{aligned}a&=b\\c&=d\end{aligned}
 $$
 
 \[\begin{pmatrix}1&2\\3&4\end{pmatrix}\]`);
-    expect(formulas.querySelectorAll('math')).toHaveLength(4);
+    expect(formulas.querySelectorAll('math')).toHaveLength(5);
     expect(formulas.querySelectorAll('.katex-error')).toHaveLength(0);
   });
 

@@ -20,7 +20,7 @@ function escaped(source: string, index: number): boolean {
 function mathToken(source: string, block: boolean): MathToken | undefined {
   for (const { open, close, display } of delimiters) {
     if ((block && !display) || !source.startsWith(open)) continue;
-    if (open === '$' && (source[1] === '$' || /\s/.test(source[1] ?? '') || /^\$\d[\d,.]*(?=\s|[.,;:!?](?:\s|$))/.test(source))) continue;
+    if (open === '$' && (source[1] === '$' || /\s/.test(source[1] ?? '') || /^\$\d[\d,.]*[.,;:!?](?=\s|$)/.test(source))) continue;
     let end = open.length;
     while ((end = source.indexOf(close, end)) !== -1) {
       if (escaped(source, end)) { end += close.length; continue; }

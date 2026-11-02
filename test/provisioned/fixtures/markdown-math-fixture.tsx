@@ -7,11 +7,13 @@ import '../../../ui/src/styles/math.css';
 import '../../../ui/src/styles/tokens.css';
 import '../../../ui/src/styles/base.css';
 import '../../../ui/src/styles/message-blocks.css';
+import '../../../ui/src/styles/console.css';
 
 const source = String.raw`The bound is
 \[\boxed{A_\theta\ge\alpha(M-r).}\]
 Inline \(\frac{1}{2}+\mathbb{R}+\sqrt{x}\) and
-$$\begin{pmatrix}1&2\\3&4\end{pmatrix}$$`;
+$$\begin{pmatrix}1&2\\3&4\end{pmatrix}$$
+\[\underbrace{x+x+x+x+x+x+x+x+x+x+x+x+x+x+x+x+x+x+x+x+x+x+x+x+x+x+x+x}_{\text{wide equation}}\]`;
 const row: ReadingRow = { key: 'math', kind: 'content', isFinalResponse: false, protectedPositions: [], items: [], sources: [],
   actionGroup: { key: 'math', start: 117, end: 117 }, disclosureOwner: null,
   nodes: [{ kind: 'assistant_turn', key: 'math', entity: 'assistant', turn: { id: 'math', toolResults: new Map(), assistantEvent: {
@@ -42,6 +44,15 @@ void (async () => {
     sameHtml: measuredHtml === visible.innerHTML,
     loadedAtGeometry, fontsReady: document.fonts.status === 'loaded',
     mathCount: visible.querySelectorAll('math').length,
+    overflow: [...visible.querySelectorAll<HTMLElement>('.katex-display')].filter(element => element.scrollWidth > element.clientWidth).map(element => {
+      const box = element.getBoundingClientRect();
+      const bases = [...element.querySelectorAll<HTMLElement>('.katex-html > .katex-base')];
+      const startReachable = bases[0].getBoundingClientRect().left >= box.left - 0.05;
+      element.scrollLeft = element.scrollWidth;
+      const endReachable = bases.at(-1)!.getBoundingClientRect().right <= box.right + 0.05;
+      element.scrollLeft = 0;
+      return { width: box.width, scroll: getComputedStyle(element).overflowX, startReachable, endReachable };
+    }),
     localFonts: [...document.styleSheets].flatMap(sheet => [...sheet.cssRules].filter((rule): rule is CSSFontFaceRule => rule instanceof CSSFontFaceRule)
       .filter(rule => loadedAtGeometry.includes(rule.style.fontFamily.replaceAll('\"', '')))
       .flatMap(rule => [...rule.style.getPropertyValue('src').matchAll(/url\(["']?([^"')]+)["']?\)/g)].map(match => new URL(match[1], sheet.href ?? document.baseURI).href))),
