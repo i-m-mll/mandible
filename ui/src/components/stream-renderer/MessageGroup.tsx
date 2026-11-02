@@ -3,6 +3,7 @@
 // Bug: 236d03b — Fix 5: Per-block hover overlay with MessageActions
 
 import type { ContentBlock, MessageGroupProps, ToolResultContentBlock, ToolUseContentBlock } from './types';
+import type { ComponentChildren } from 'preact';
 import { TextBlock } from '../message-blocks/TextBlock';
 import { ThinkingBlock } from '../message-blocks/ThinkingBlock';
 import { ToolUseBlock } from '../message-blocks/ToolUseBlock';
@@ -23,7 +24,8 @@ export function MessageGroup({
   onToggleBlockSelect,
   onFork,
   onResume,
-}: MessageGroupProps): JSX.Element {
+  headerMetadata,
+}: MessageGroupProps<HTMLElement> & { headerMetadata?: ComponentChildren }): JSX.Element {
   const { assistantEvent, toolResults } = turn;
   const blocks = assistantEvent.message.content;
   const newestPlanIndex = latestPlanIndex(blocks);
@@ -49,10 +51,11 @@ export function MessageGroup({
             <ThinkingBlock
               key={`thinking-${index}`}
               content={block.thinking}
+              headerMetadata={index === blocks.length - 1 ? headerMetadata : undefined}
               defaultCollapsed={!defaultExpanded}
               expanded={expanded}
               detailsAvailable={block.source?.detailsLoaded === false}
-              onExpandedChange={(next) => onBlockExpandedChange?.(block, index, next)}
+              onExpandedChange={(next, trigger) => onBlockExpandedChange?.(block, index, next, undefined, trigger)}
             />
           );
         }
@@ -81,6 +84,7 @@ export function MessageGroup({
           <ToolUseBlock
             key={`tool-${block.id}`}
             toolName={block.name}
+            headerMetadata={index === blocks.length - 1 ? headerMetadata : undefined}
             toolKind={block.toolKind}
             toolUseId={block.id}
             input={block.input}
@@ -89,7 +93,7 @@ export function MessageGroup({
             result={result as import('../message-blocks/ToolUseBlock').ToolResultContentBlock | null}
             defaultExpanded={defaultExpanded}
             expanded={expanded}
-            onExpandedChange={(next) => onBlockExpandedChange?.(block, index, next, result?.source ? [result.source] : [])}
+            onExpandedChange={(next, trigger) => onBlockExpandedChange?.(block, index, next, result?.source ? [result.source] : [], trigger)}
             resultSelected={result?.source ? selectedBlockIds?.has(result.source.blockId) : false}
             selectMode={selectMode}
             onToggleResultSelect={result?.source && onToggleBlockSelect
@@ -158,9 +162,10 @@ export function MessageGroup({
         <ToolCallGroup
           key={groupId}
           summary={summarizeToolRun(run.map((block) => ({ name: block.name, toolKind: block.toolKind })))}
+          headerMetadata={end === blocks.length ? headerMetadata : undefined}
           icon={toolRunIcon(run.map((block) => ({ name: block.name, toolKind: block.toolKind })))}
           expanded={expanded}
-          onExpandedChange={(next) => onDisclosureExpandedChange?.(groupId, next)}
+          onExpandedChange={(next, trigger) => onDisclosureExpandedChange?.(groupId, next, trigger)}
           memberRefs={memberRefs}
         >
           {run.map((block, offset) => renderBlock(block, index + offset))}

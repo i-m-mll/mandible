@@ -4,9 +4,10 @@ import { PermissionApprovalCard } from '../components/console/PermissionApproval
 import { TurnGroup } from '../components/message-blocks/TurnGroup';
 import { ReadingContent, type ReadingContentProps } from './ReadingContent';
 import type { ReadingRow } from './readingProjection';
+import { isCompactReadingRow } from './readingRowPresentation';
 
 export type ReadingRowFrameProps = {
-  row: Pick<ReadingRow, 'key' | 'turnStart' | 'turnEnd' | 'activityMember' | 'activityEnd' | 'activityGroup'>;
+  row: Pick<ReadingRow, 'key' | 'turnStart' | 'turnEnd' | 'activityMember' | 'activityEnd' | 'activityGroup'> & Partial<Pick<ReadingRow, 'kind' | 'nodes'>>;
   busy?: boolean;
   index?: number;
   elementRef?: Ref<HTMLDivElement>;
@@ -15,7 +16,8 @@ export type ReadingRowFrameProps = {
 };
 
 export function ReadingRowFrame({ row, index, busy, elementRef, children, style }: ReadingRowFrameProps) {
-  return <div style={style} ref={elementRef} aria-busy={busy || undefined} data-index={index} data-reading-key={row.key} className={`stream-renderer__virtual-row${row.turnStart ? ' stream-renderer__virtual-row--turn-start' : ''}${row.turnEnd ? ' stream-renderer__virtual-row--turn-end' : ''}${row.activityMember ? ' stream-renderer__virtual-row--activity-member' : ''}${row.activityEnd ? ' stream-renderer__virtual-row--activity-end' : ''}${row.activityGroup?.expanded ? ' stream-renderer__virtual-row--activity-open' : ''}`}>{children}</div>;
+  const compact = isCompactReadingRow(row);
+  return <div style={style} ref={elementRef} aria-busy={busy || undefined} data-index={index} data-reading-key={row.key} className={`stream-renderer__virtual-row${compact ? ' stream-renderer__virtual-row--compact' : ''}${row.turnStart && !compact ? ' stream-renderer__virtual-row--turn-start' : ''}${row.turnEnd && !compact ? ' stream-renderer__virtual-row--turn-end' : ''}${row.activityMember ? ' stream-renderer__virtual-row--activity-member' : ''}${row.activityEnd && !compact ? ' stream-renderer__virtual-row--activity-end' : ''}${row.activityGroup?.expanded ? ' stream-renderer__virtual-row--activity-open' : ''}`}>{children}</div>;
 }
 
 const StableReadingContent = memo(ReadingContent);

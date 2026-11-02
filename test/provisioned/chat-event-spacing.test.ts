@@ -30,15 +30,19 @@ it('keeps real content and hidden action rails beside one another while disclosu
     const results = JSON.parse(Buffer.from(encoded!, 'base64').toString());
     for (const result of results) {
       for (const entry of result.entries) {
-        expect(entry.rail.top, `${result.width} ${entry.kind}: action rail wrapped below content`).toBeLessThan(entry.content.bottom);
-        expect(entry.rail.left, `${result.width} ${entry.kind}: controls overlap text`).toBeGreaterThanOrEqual(entry.content.right);
-        expect(entry.rail.right).toBeLessThanOrEqual(entry.wrapper.right + 0.05);
+        expect(entry.rail.width, `${result.width} ${entry.kind}: regular event reserved an action margin`).toBe(0);
+        expect(entry.rail.height).toBe(0);
         expect(entry.content.width, `${result.width} ${entry.kind}: content collapsed`).toBeGreaterThan(0);
-        expect(entry.wrapper.bottom - Math.max(entry.content.bottom, entry.rail.bottom)).toBeLessThanOrEqual(entry.kind === 'tool' ? 3.05 : 0.05);
+        expect(entry.wrapper.bottom - entry.content.bottom).toBeLessThanOrEqual(entry.kind === 'tool' ? 3.05 : 0.05);
       }
       expect(result.details.width, `${result.width}: disclosed tool details lost available width`).toBeCloseTo(result.expandedWrapper.width, 1);
       expect(result.details.top).toBeGreaterThanOrEqual(result.header.bottom);
       for (const name of ['copy', 'open', 'link', 'info', 'local-copy', 'shift-select']) expect(result.calls[name]).toBe(results.indexOf(result) + 1);
+      for (const child of result.nested) expect(child.frame.height, `${result.width}: a collapsed nested activity acquired spacer lines`).toBeCloseTo(Math.max(child.header.height, child.rail.height), 1);
+      for (let index = 1; index < result.nested.length; index++) expect(result.nested[index].header.top - result.nested[index - 1].header.top).toBeCloseTo(result.nested[index - 1].frame.height, 1);
+      expect(result.final.footer.top).toBeGreaterThanOrEqual(result.final.message.bottom);
+      expect(result.final.opacity).toBe('1'); expect(result.final.pointerEvents).toBe('auto');
+      expect(result.calls['final-copy']).toBe(results.indexOf(result) + 1); expect(result.calls['final-open']).toBe(results.indexOf(result) + 1);
     }
     expect(results[2].entries.find((entry: any) => entry.kind === 'prose').content.height).toBeGreaterThan(results[0].entries.find((entry: any) => entry.kind === 'prose').content.height);
   } finally { rmSync(directory, { recursive: true, force: true }); }

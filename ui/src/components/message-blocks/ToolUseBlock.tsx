@@ -1,4 +1,5 @@
 import { Icon } from '../icons/Icon';
+import type { ComponentChildren } from 'preact';
 import type { IconName } from '../icons/Icon';
 import { useMemo } from 'preact/hooks';
 import { computeDiffStats, FileEditBlock } from './FileEditBlock';
@@ -33,7 +34,7 @@ export type ToolUseBlockProps = {
   result?: ToolResultContentBlock | null;
   defaultExpanded?: boolean;
   expanded?: boolean;
-  onExpandedChange?: (expanded: boolean) => void;
+  onExpandedChange?: (expanded: boolean, trigger?: HTMLElement) => void;
   compact?: boolean;
   statusEmoji?: string;
   active?: boolean;
@@ -44,6 +45,7 @@ export type ToolUseBlockProps = {
   onForkResult?: () => void;
   onResumeResult?: () => void;
   memberRefs?: string;
+  headerMetadata?: ComponentChildren;
 };
 
 export type ToolVisualKind = ToolCategory;
@@ -248,6 +250,7 @@ export function ToolCard({
   onForkResult,
   onResumeResult,
   memberRefs,
+  headerMetadata,
 }: ToolUseBlockProps): JSX.Element {
   const inputObj = useMemo(() => input === undefined ? {} : toolInputObject(input), [input]);
   const visual = useMemo(() => {
@@ -336,6 +339,7 @@ export function ToolCard({
       <CompactActivityRow
         icon={<Icon name={visual.icon} />}
         summary={summary}
+        metadata={headerMetadata}
         memberRefs={[memberRefs, result?.source?.blockId].filter(Boolean).join(' ')}
         disclosure={{
           content: details,

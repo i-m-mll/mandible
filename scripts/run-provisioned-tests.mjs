@@ -17,6 +17,8 @@ import { ProcessGroupSupervisor } from "./process-group-supervisor.mjs";
 import { executeTestPhase, sharedProcessTreeRss } from "./test-phase-executor.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const browserCache = process.env.PLAYWRIGHT_BROWSERS_PATH ?? path.join(
+  process.platform === 'darwin' ? path.join(os.homedir(), 'Library', 'Caches') : process.env.XDG_CACHE_HOME ?? path.join(os.homedir(), '.cache'), 'ms-playwright');
 const SUITE_DIR = "test/provisioned";
 const LAUNCHER = `${SUITE_DIR}/iab-preview-launcher.test.ts`;
 const NATIVE_REPLACEMENT = `${SUITE_DIR}/accepted-app-install.test.ts`;
@@ -103,7 +105,7 @@ function spawnVitest(unit, env) {
   ], {
     cwd: root,
     detached: true,
-    env: { ...env, MANDIBLE_TEST_SUITE: "provisioned" },
+    env: { ...env, PLAYWRIGHT_BROWSERS_PATH: browserCache, MANDIBLE_TEST_SUITE: "provisioned" },
     stdio: ["ignore", "pipe", "pipe"],
   });
 }

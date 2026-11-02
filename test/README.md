@@ -1,5 +1,11 @@
 # `test/` — the gate
 
+`bun run test:browser-install` provisions the pinned Chromium, Firefox and WebKit
+engines. The live event-menu regression runs Chromium and WebKit. Firefox144.0.2
+cannot start its headless protocol on the current macOS host (sandbox-extension
+EPERM and SWGL framebuffer failure); it is not counted as exercised or skipped
+in that regression. The event predicate has no engine-specific behavior.
+
 `bun run test` runs `test/*.test.{ts,tsx}` in parallel forks and takes about a minute. A file is in the gate because it is in this directory. `test/provisioned/` holds tests that need a real browser, macOS `lockf` and launchd, or a daemon fleet (`bun run test:provisioned`, on demand and before a release). `test/quarantine/` holds red tests, each naming an open issue (`bun run test:quarantine`, must fail while it holds any file; it is normally empty). Per-route handler cost against a snapshot of the live ledger is not a test: `bun run route-cost-sweep` measures it, and candidate acceptance runs it ([daemon stall profiling](../docs/daemon-stall-profiling.md#route-cost-sweep)).
 
 ## Should this test exist?

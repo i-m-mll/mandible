@@ -5,7 +5,7 @@ import type { IconName } from '../icons/Icon';
 
 import { createContext } from 'preact';
 import { createPortal } from 'preact/compat';
-import { useContext, useRef, useState } from 'preact/hooks';
+import { useContext, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 import { ContextualAction } from './ContextualAction';
 
@@ -20,6 +20,8 @@ export type MessagePrimaryAction = {
 };
 
 export const MessagePrimaryActionsContext = createContext<readonly MessagePrimaryAction[]>([]);
+export type MessageActionsVariant = 'menu' | 'reply-footer';
+export const MessageActionsVariantContext = createContext<MessageActionsVariant>('menu');
 
 export type MessageActionsMeta = {
   tokenCount?: number;
@@ -29,6 +31,7 @@ export type MessageActionsMeta = {
 };
 
 export type MessageActionsProps = {
+  variant?: MessageActionsVariant;
   blockId?: string;
   onCopy?: () => void;
   onResume?: () => void;
@@ -44,6 +47,7 @@ export type MessageActionsProps = {
 };
 
 export function MessageActions({
+  variant: explicitVariant,
   blockId,
   onCopy,
   onResume,
@@ -58,14 +62,22 @@ export function MessageActions({
 }: MessageActionsProps): JSX.Element {
   const onCopyLink = useContext(MessageLinkContext);
   const primaryActions = useContext(MessagePrimaryActionsContext);
+  const inheritedVariant = useContext(MessageActionsVariantContext);
+  const variant = explicitVariant ?? inheritedVariant;
   const [copiedFeedback, setCopiedFeedback] = useState(false);
   const [overflowOpen, setOverflowOpen] = useState(false);
-  const [overflowCompact, setOverflowCompact] = useState(false);
+  const [anchorPoint, setAnchorPoint] = useState<{ x: number; y: number }>();
+  const actionRootRef = useRef<HTMLDivElement>(null);
+  const ownerRef = useRef<HTMLElement | null>(null);
   const overflowTriggerRef = useRef<HTMLButtonElement>(null);
   const overflowMenuRef = useRef<HTMLDivElement>(null);
   const overflowMenuStyle = useAnchoredMenu({
     open: overflowOpen,
-    anchorRef: overflowTriggerRef,
+    anchorRef: variant === 'menu' ? ownerRef : overflowTriggerRef,
+    focusRef: variant === 'menu' ? ownerRef : undefined,
+    anchorPoint: variant === 'menu' ? anchorPoint : undefined,
+    placement: variant === 'menu' ? 'bottom-start' : 'bottom-end',
+    gap: variant === 'menu' ? 0 : 6,
     menuRef: overflowMenuRef,
     onDismiss: () => setOverflowOpen(false),
   });
@@ -77,6 +89,59 @@ export function MessageActions({
   const hasOverflow = shouldShowResume || shouldShowFork || !!onInfo || !!onCopyLink;
   const selectAction = selectMode || isSelected ? onSelect : undefined;
   const hasCompactActions = !!selectAction || !!onCopy || primaryActions.length > 0;
+  useLayoutEffect(() => {
+    if (variant !== 'menu' || (!hasOverflow && !hasCompactActions)) return;
+    const root = actionRootRef.current; const owner = root?.parentElement;
+    if (!root || !owner) return;
+    ownerRef.current = owner;
+    const previousTabIndex = owner.getAttribute('tabindex'); owner.tabIndex = 0;
+    owner.setAttribute('data-event-menu-owner', '');
+    let gesture: { target: EventTarget | null; selected: boolean } | null = null;
+    const observePointer = (event: MouseEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest('[data-event-menu-owner]') !== owner) { gesture = null; return; }
+      const secondary = event.button === 2 || (event.button === 0 && event.ctrlKey);
+      if (!secondary) { gesture = null; return; }
+      if (event.type === 'mousedown' && gesture?.target === event.target) return;
+      gesture = { target: event.target, selected: owner.ownerDocument.getSelection()?.isCollapsed === false };
+    };
+    const accepts = (event: Event, selected: boolean) => {
+      const target = event.target instanceof Element ? event.target : null;
+      const control = target?.closest('a[href],area[href],input,textarea,select,button,summary,video,audio,img,canvas,iframe,object,embed,[contenteditable]:not([contenteditable="false"]),[role="button"],[role="menu"],[role="menuitem"],[data-context-menu]');
+      const ownDisclosure = control?.matches('.compact-activity__row,.semantic-event__summary,.instruction-message-block__summary');
+      return !event.defaultPrevented && target?.closest('[data-event-menu-owner]') === owner
+        && !selected
+        && (!control || ownDisclosure);
+    };
+    const open = (event: Event, x: number, y: number, selected: boolean) => {
+      if (!accepts(event, selected)) return;
+      event.preventDefault(); event.stopPropagation();
+      setAnchorPoint({ x, y }); setOverflowOpen(true);
+    };
+    const context = (event: MouseEvent) => {
+      const selected = gesture?.target === event.target ? gesture.selected : owner.ownerDocument.getSelection()?.isCollapsed === false;
+      gesture = null; open(event, event.clientX, event.clientY, selected);
+    };
+    const keyboard = (event: KeyboardEvent) => {
+      gesture = null;
+      if (event.key !== 'ContextMenu' && !(event.key === 'F10' && event.shiftKey)) return;
+      const rect = owner.getBoundingClientRect(); open(event, rect.left + Math.min(24, rect.width / 2), rect.top + Math.min(24, rect.height / 2), owner.ownerDocument.getSelection()?.isCollapsed === false);
+    };
+    const clearGesture = () => { gesture = null; };
+    owner.ownerDocument.addEventListener('pointerdown', observePointer, true); owner.ownerDocument.addEventListener('mousedown', observePointer, true);
+    owner.ownerDocument.addEventListener('keydown', clearGesture, true);
+    owner.addEventListener('contextmenu', context); owner.addEventListener('keydown', keyboard);
+    return () => {
+      owner.removeEventListener('contextmenu', context); owner.removeEventListener('keydown', keyboard); owner.removeAttribute('data-event-menu-owner');
+      owner.ownerDocument.removeEventListener('pointerdown', observePointer, true); owner.ownerDocument.removeEventListener('mousedown', observePointer, true);
+      owner.ownerDocument.removeEventListener('keydown', clearGesture, true);
+      if (owner.getAttribute('tabindex') === '0') { if (previousTabIndex === null) owner.removeAttribute('tabindex'); else owner.setAttribute('tabindex', previousTabIndex); }
+      if (ownerRef.current === owner) ownerRef.current = null;
+    };
+  }, [variant, hasOverflow, hasCompactActions]);
+  useLayoutEffect(() => {
+    if (overflowOpen && variant === 'menu') overflowMenuRef.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus({ preventScroll: true });
+  }, [overflowOpen, variant]);
 
   const handleCopy = (e: MouseEvent) => {
     e.stopPropagation();
@@ -89,23 +154,24 @@ export function MessageActions({
 
   const handleOverflowToggle = (e: MouseEvent) => {
     e.stopPropagation();
-    setOverflowCompact(getComputedStyle(e.currentTarget as HTMLElement).getPropertyValue('--message-actions-compact').trim() === '1');
     setOverflowOpen((prev) => !prev);
   };
 
   const handleOverflowItem = (e: MouseEvent, action: (() => void) | undefined) => {
     e.stopPropagation();
     setOverflowOpen(false);
+    if (variant === 'menu') ownerRef.current?.focus({ preventScroll: true });
     if (action) action();
   };
 
   return (
     <div
-      className={`message-actions contextual-action-group${overflowOpen ? ' contextual-action-group--persistent' : ''}${selectMode || isSelected ? ' message-actions--selecting' : ''}`}
+      ref={actionRootRef}
+      className={`message-actions message-actions--${variant} contextual-action-group${overflowOpen ? ' contextual-action-group--persistent' : ''}${selectMode || isSelected ? ' message-actions--selecting' : ''}`}
       data-dag-uuid={dagUuid}
     >
       {/* Primary actions — buttons on right */}
-      {selectAction && (
+      {variant === 'reply-footer' && selectAction && (
         <button
           type="button"
           className={`message-actions__btn message-actions__primary${isSelected ? ' message-actions__btn--selected' : ''}`}
@@ -117,7 +183,7 @@ export function MessageActions({
           <Icon name={isSelected ? 'messageSelectionChecked' : 'messageSelect'} />
         </button>
       )}
-      {onCopy && (
+      {variant === 'reply-footer' && onCopy && (
         <ContextualAction
           className="message-actions__btn message-actions__primary"
           onClick={handleCopy}
@@ -131,7 +197,7 @@ export function MessageActions({
           )}
         </ContextualAction>
       )}
-      {primaryActions.map((action) => (
+      {variant === 'reply-footer' && primaryActions.map((action) => (
         <ContextualAction
           key={action.id}
           className="message-actions__btn message-actions__primary"
@@ -144,9 +210,9 @@ export function MessageActions({
       ))}
 
       {/* Overflow menu — secondary actions behind ellipsis */}
-      {(hasOverflow || hasCompactActions) && (
-        <div className={`message-actions__overflow-wrap${hasOverflow ? '' : ' message-actions__overflow-wrap--compact-only'}`}>
-          <ContextualAction
+      {(hasOverflow || (variant === 'menu' && hasCompactActions)) && (
+        <div className="message-actions__overflow-wrap">
+          {variant === 'reply-footer' && <ContextualAction
             ref={overflowTriggerRef}
             className="message-actions__btn message-actions__overflow"
             onClick={handleOverflowToggle}
@@ -155,7 +221,7 @@ export function MessageActions({
             aria-haspopup="menu"
             aria-expanded={overflowOpen}
           >
-            <Icon name="menu" /></ContextualAction>
+            <Icon name="menu" /></ContextualAction>}
           {overflowOpen && createPortal(
             <div
               ref={overflowMenuRef}
@@ -164,19 +230,19 @@ export function MessageActions({
               popover="manual"
               style={overflowMenuStyle}
             >
-              {overflowCompact && selectAction && (
+              {variant === 'menu' && selectAction && (
                 <button type="button" className="message-actions__overflow-item" role="menuitemcheckbox" aria-checked={isSelected}
                   onClick={(event) => handleOverflowItem(event, () => selectAction(event.shiftKey))}>
                   <Icon name={isSelected ? 'messageSelectionChecked' : 'messageSelect'} /> {isSelected ? 'Deselect message' : 'Select message'}
                 </button>
               )}
-              {overflowCompact && onCopy && (
+              {variant === 'menu' && onCopy && (
                 <button type="button" className="message-actions__overflow-item" role="menuitem"
-                  onClick={(event) => { handleCopy(event); setOverflowOpen(false); }}>
+                  onClick={(event) => { handleCopy(event); setOverflowOpen(false); ownerRef.current?.focus({ preventScroll: true }); }}>
                   <Icon name="copyMessage" /> {copiedFeedback ? 'Copied' : 'Copy message'}
                 </button>
               )}
-              {overflowCompact && primaryActions.map(action => (
+              {variant === 'menu' && primaryActions.map(action => (
                 <button key={action.id} type="button" className="message-actions__overflow-item" role="menuitem" aria-label={action.label}
                   onClick={(event) => handleOverflowItem(event, action.onAction)}>
                   <Icon name={action.icon} /> {action.title}

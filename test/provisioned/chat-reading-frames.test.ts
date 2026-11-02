@@ -26,7 +26,7 @@ it('keeps consecutive mounted events adjacent in every resize frame and preserve
       .map(name => readFileSync(resolve(`ui/src/styles/${name}.css`), 'utf8')).join('\n');
     const file = join(directory, 'fixture.html');
     writeFileSync(file, `<!doctype html><html data-theme="codex"><head><style>${styles}
-      html,body { margin:0; } #root {width:820.203125px;height:700px} .stream-renderer {height:100%}
+      html,body { margin:0; } #root {width:500.203125px;height:700px} .stream-renderer {height:100%}
     </style></head><body><div id="root"></div><script>${readFileSync(output, 'utf8')}</script></body></html>`);
     child = spawnChromium(['--remote-debugging-port=0', `--user-data-dir=${join(directory, 'profile')}`, 'about:blank'], { stdio: ['ignore', 'pipe', 'pipe'] });
     const address = await new Promise<string>((resolve, reject) => {
@@ -59,6 +59,10 @@ it('keeps consecutive mounted events adjacent in every resize frame and preserve
     const gaps = result.samples.flatMap((sample: any) => sample.adjacency.map((pair: any) => Math.abs(pair.gap)));
     expect(Math.max(...gaps), 'a previously painted frame separated or overlapped consecutive mounted events').toBeLessThanOrEqual(0.05);
     const readers = result.samples.filter((sample: any) => sample.phase === 'reader');
+    expect(new Set(readers.map((sample: any) => sample.rowHeight)).size, 'one-pixel widths never reflowed the prose').toBeGreaterThan(1);
+    const disclosure = result.samples.filter((sample: any) => sample.phase === 'disclosure');
+    expect(disclosure.some((sample: any) => sample.count === 77)).toBe(true); expect(disclosure.some((sample: any) => sample.count === 80)).toBe(true);
+    expect(Math.max(...disclosure.map((sample: any) => Math.abs(sample.header - sample.desiredHeader - ((sample.write?.wanted ?? 0) - (sample.write?.actual ?? 0)))))).toBeLessThanOrEqual(0.05);
     expect(readers.some((sample: any) => sample.protected)).toBe(true);
     expect(readers.some((sample: any) => sample.pending)).toBe(true);
     expect(readers.at(-1).pending).toBe(false);
@@ -72,7 +76,7 @@ it('keeps consecutive mounted events adjacent in every resize frame and preserve
     expect(Math.max(...result.samples.filter((sample: any) => sample.phase === 'tail').map((sample: any) => Math.abs(sample.tailGap)))).toBeLessThanOrEqual(0.5);
     if (process.env.MANDIBLE_CHAT_FRAME_PROOF) console.info(JSON.stringify({ frames: result.samples.length, maxAdjacencyError: Math.max(...gaps), maxGlyphDrift: Math.max(...drift.map(Math.abs)), maxNativeRoundingResidual: Math.max(...residual.map(Math.abs)), maxTailContentGap: Math.max(...result.samples.filter((sample: any) => sample.phase === 'tail').map((sample: any) => Math.abs(sample.tailGap))) }));
     const baseline = await run(true);
-    expect(Math.max(...baseline.samples.flatMap((sample: any) => sample.adjacency.map((pair: any) => Math.abs(pair.gap))))).toBeGreaterThan(1);
+    expect(Math.max(...baseline.samples.filter((sample: any) => sample.phase !== 'disclosure').flatMap((sample: any) => sample.adjacency.map((pair: any) => Math.abs(pair.gap))))).toBeGreaterThan(1);
   } finally {
     socket?.close(); child?.kill('SIGKILL');
     if (child && child.exitCode === null) await new Promise<void>(resolve => child!.once('exit', () => resolve()));
