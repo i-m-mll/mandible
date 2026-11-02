@@ -154,11 +154,20 @@ export function MessageActions({
       if (content.matches('.msg-text-block')) {
         const walker = owner.ownerDocument.createTreeWalker(content, NodeFilter.SHOW_TEXT);
         while (walker.nextNode()) {
-          if (!walker.currentNode.textContent?.trim()) continue;
+          if (!walker.currentNode.textContent?.trim() || walker.currentNode.parentElement?.closest('pre,table,svg')) continue;
           const range = owner.ownerDocument.createRange(); range.selectNodeContents(walker.currentNode);
           rects.push(...Array.from(range.getClientRects()));
         }
-        for (const block of content.querySelectorAll('pre,table,img,video,svg,canvas,hr')) rects.push(block.getBoundingClientRect());
+        for (const block of content.querySelectorAll('pre,table,img,video,svg,canvas,hr')) {
+          const box = block.getBoundingClientRect();
+          let left = box.left; let right = box.right; let top = box.top; let bottom = box.bottom;
+          for (let parent = block.parentElement; parent && content.contains(parent); parent = parent.parentElement) {
+            const style = getComputedStyle(parent); const clip = parent.getBoundingClientRect();
+            if (style.overflowX !== 'visible') { left = Math.max(left, clip.left); right = Math.min(right, clip.right); }
+            if (style.overflowY !== 'visible') { top = Math.max(top, clip.top); bottom = Math.min(bottom, clip.bottom); }
+          }
+          rects.push(new DOMRect(left, top, Math.max(0, right - left), Math.max(0, bottom - top)));
+        }
       } else rects.push(content.getBoundingClientRect());
       const visible = rects.filter(rect => rect.width > 0 && rect.height > 0);
       if (!visible.length) return;

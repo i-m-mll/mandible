@@ -81,7 +81,7 @@ it.each([chromium, webkit].map(engine => ({ name: engine.name(), engine })))('ke
     await page.evaluate(() => document.getSelection()!.removeAllRanges());
     for (const width of [1000, 452.203125]) {
       await page.locator('#root').evaluate((node, value) => { (node as HTMLElement).style.width = `${value}px`; }, width);
-      for (const id of ['short-message', 'paragraph-message']) {
+      for (const id of ['short-message', 'paragraph-message', 'code-message']) {
         const message = page.locator(`#${id}`);
         await message.scrollIntoViewIfNeeded();
         const snapshot = () => page.evaluate(() => {
@@ -102,7 +102,8 @@ it.each([chromium, webkit].map(engine => ({ name: engine.name(), engine })))('ke
         const painted = await message.evaluate(node => {
           const style = getComputedStyle(node, '::before'); const bounds = node.getBoundingClientRect();
           const rects: DOMRect[] = []; const walker = document.createTreeWalker(node.querySelector('.msg-text-block')!, NodeFilter.SHOW_TEXT);
-          while (walker.nextNode()) { const range = document.createRange(); range.selectNodeContents(walker.currentNode); rects.push(...Array.from(range.getClientRects())); }
+          while (walker.nextNode()) { if (walker.currentNode.parentElement?.closest('pre')) continue; const range = document.createRange(); range.selectNodeContents(walker.currentNode); rects.push(...Array.from(range.getClientRects())); }
+          for (const block of node.querySelectorAll('pre')) rects.push(block.getBoundingClientRect());
           const inkRight = Math.max(...rects.map(r => r.right)); const inkLeft = Math.min(...rects.map(r => r.left));
           return { left: bounds.left + parseFloat(style.left) - parseFloat(style.boxShadow.split(' ').at(-1)!), right: bounds.left + parseFloat(style.left) + parseFloat(style.width) + parseFloat(style.boxShadow.split(' ').at(-1)!), inkLeft, inkRight, ownerRight: bounds.right, radius: parseFloat(style.borderRadius), padding: parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--space-3')) };
         });
