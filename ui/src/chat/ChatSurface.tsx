@@ -312,7 +312,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
             </MeasuredReadingBox>;
           }}</ReadingRowStrip>
         </div>
-        {props.showEmpty && complete.ready && viewport.appliedGeometry && !complete.rows.length && <div className="stream-renderer__empty">{props.emptyLabel ?? 'No messages yet'}</div>}
+        {(!initialVisible || !viewport.rows.length) && props.showEmpty && complete.ready && viewport.appliedGeometry && !complete.rows.length && <div className="stream-renderer__empty">{props.emptyLabel ?? 'No messages yet'}</div>}
       </div>
       <OverflowTopFade scroller={scrollNode} enabled={initialVisible && viewport.rows.length > 0} contentStart={viewport.engine.options.paddingStart ?? 0} className="stream-renderer__top-fade" />
       {appearance.error && !appearance.ready && <DetailPaneNotice severity="error" density="compact" title="Appearance preferences unavailable" source="chat-appearance" actions={<button type="button" className="btn btn--ghost btn--sm" onClick={appearance.retry}>Retry</button>}>{appearance.error}</DetailPaneNotice>}
