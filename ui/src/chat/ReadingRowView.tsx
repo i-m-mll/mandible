@@ -6,15 +6,16 @@ import { ReadingContent, type ReadingContentProps } from './ReadingContent';
 import type { ReadingRow } from './readingProjection';
 
 export type ReadingRowFrameProps = {
-  row: ReadingRow;
+  row: Pick<ReadingRow, 'key' | 'turnStart' | 'turnEnd' | 'activityMember' | 'activityEnd' | 'activityGroup'>;
+  busy?: boolean;
   index?: number;
   elementRef?: Ref<HTMLDivElement>;
   children: ComponentChildren;
   style?: JSX.CSSProperties;
 };
 
-export function ReadingRowFrame({ row, index, elementRef, children, style }: ReadingRowFrameProps) {
-  return <div style={style} ref={elementRef} data-index={index} data-reading-key={row.key} className={`stream-renderer__virtual-row${row.turnStart ? ' stream-renderer__virtual-row--turn-start' : ''}${row.turnEnd ? ' stream-renderer__virtual-row--turn-end' : ''}${row.activityMember ? ' stream-renderer__virtual-row--activity-member' : ''}${row.activityEnd ? ' stream-renderer__virtual-row--activity-end' : ''}${row.activityGroup?.expanded ? ' stream-renderer__virtual-row--activity-open' : ''}`}>{children}</div>;
+export function ReadingRowFrame({ row, index, busy, elementRef, children, style }: ReadingRowFrameProps) {
+  return <div style={style} ref={elementRef} aria-busy={busy || undefined} data-index={index} data-reading-key={row.key} className={`stream-renderer__virtual-row${row.turnStart ? ' stream-renderer__virtual-row--turn-start' : ''}${row.turnEnd ? ' stream-renderer__virtual-row--turn-end' : ''}${row.activityMember ? ' stream-renderer__virtual-row--activity-member' : ''}${row.activityEnd ? ' stream-renderer__virtual-row--activity-end' : ''}${row.activityGroup?.expanded ? ' stream-renderer__virtual-row--activity-open' : ''}`}>{children}</div>;
 }
 
 const StableReadingContent = memo(ReadingContent);

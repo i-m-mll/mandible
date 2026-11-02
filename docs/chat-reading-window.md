@@ -280,6 +280,23 @@ through a public size read. JSX commits that rebuilt canvas extent before the
 adapter restores one logical row/local offset or following intent through public engine offsets. Verified memberships
 preserve anchors when provisional content becomes a canonical row or summary.
 
+Sorted mounted rows share one stably keyed normal-flow strip. Consecutive rows
+have no geometry-derived gap; absent index ranges use the engine's public
+trailing/leading offsets. A reader strip begins at its first virtual start. A
+strip that includes the final row uses the public trailing offset to
+anchor its bottom, so prose reflow cannot leave the final tool behind or create
+blank tail space before new global geometry arrives. Measurement batches keep
+their independent common origin under the measurement host.
+Following intent alone does not switch this physical reference when native input
+moves away from the end.
+
+Mounted frame and target positions are authoritative for alignment and saved
+offsets; engine positions locate unmounted rows. The same viewport adapter
+corrects the captured DOM text point during local resize observation and layout
+commits, before paint, using the native offset plus the actual glyph displacement.
+This local correction does not rebuild the global index and yields to native
+input. Native scroll rounding is measured separately from content displacement.
+
 Native drag, touch, momentum and scrolling keys defer queued geometry; the
 newest compatible transaction uses the current reader anchor when interaction
 settles. New input cancels obsolete explicit navigation and captured anchors.
@@ -300,7 +317,7 @@ this same global adapter and then clears route reading intent, without replacing
 an active source window for its extent.
 
 Local version 4 reading state is scoped to the canonical conversation and
-position space. Its row anchor stores stable row/member identity, a representative canonical position when available, and row-top offset from the applied geometry, independently of body arrival. Local restore resolves the complete plan and aligns the frame without opening disclosures; canonical URL/source reveal remains separate. Older stored source anchors decode as source intent. State also records following intent and at most 100 explicit Boolean disclosure keys. Explicit URL intent
+position space. Its row anchor stores stable row/member identity, a representative canonical position when available, and the mounted DOM row-top offset when available, otherwise the applied engine offset, independently of body arrival. Local restore resolves the complete plan and aligns the frame without opening disclosures; canonical URL/source reveal remains separate. Older stored source anchors decode as source intent. State also records following intent and at most 100 explicit Boolean disclosure keys. Explicit URL intent
 wins. Settlement and lifecycle exits persist the logical state. Copy all/Open
 turn and native source-link meanings remain independent of virtual row bounds.
 

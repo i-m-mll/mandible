@@ -18,7 +18,7 @@ it('keeps real content and hidden action rails beside one another while disclosu
       '--loader:.css=empty', '--minify', '--log-level=silent',
     ], { encoding: 'utf8', timeout: 10000 });
     expect(bundled.status, bundled.stderr).toBe(0);
-    const styles = ['tokens', 'base', 'console', 'message-blocks', 'contextual-action']
+    const styles = ['tokens', 'base', 'contextual-action', 'message-blocks', 'console']
       .map(name => readFileSync(resolve(`ui/src/styles/${name}.css`), 'utf8')).join('\n');
     const file = join(directory, 'fixture.html');
     writeFileSync(file, `<!doctype html><html data-theme="codex"><head><style>${styles}</style></head><body><div id="root"></div><script>${readFileSync(output, 'utf8')}</script></body></html>`);
@@ -33,10 +33,12 @@ it('keeps real content and hidden action rails beside one another while disclosu
         expect(entry.rail.top, `${result.width} ${entry.kind}: action rail wrapped below content`).toBeLessThan(entry.content.bottom);
         expect(entry.rail.left, `${result.width} ${entry.kind}: controls overlap text`).toBeGreaterThanOrEqual(entry.content.right);
         expect(entry.rail.right).toBeLessThanOrEqual(entry.wrapper.right + 0.05);
+        expect(entry.content.width, `${result.width} ${entry.kind}: content collapsed`).toBeGreaterThan(0);
         expect(entry.wrapper.bottom - Math.max(entry.content.bottom, entry.rail.bottom)).toBeLessThanOrEqual(entry.kind === 'tool' ? 3.05 : 0.05);
       }
       expect(result.details.width, `${result.width}: disclosed tool details lost available width`).toBeCloseTo(result.expandedWrapper.width, 1);
       expect(result.details.top).toBeGreaterThanOrEqual(result.header.bottom);
+      for (const name of ['copy', 'open', 'link', 'info', 'local-copy', 'shift-select']) expect(result.calls[name]).toBe(results.indexOf(result) + 1);
     }
     expect(results[2].entries.find((entry: any) => entry.kind === 'prose').content.height).toBeGreaterThan(results[0].entries.find((entry: any) => entry.kind === 'prose').content.height);
   } finally { rmSync(directory, { recursive: true, force: true }); }

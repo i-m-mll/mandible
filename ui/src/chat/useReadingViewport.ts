@@ -58,6 +58,8 @@ export function useReadingViewport(input: {
   const command = useRef<Command | null>(null);
   const completed = useRef<string | undefined>();
   const rowBoxes = useRef(new Map<string, HTMLElement>());
+  const correctLocal = useRef<() => void>(() => {});
+  const localObserver = useRef<ResizeObserver | null>(null);
   const lifecycleState = useRef<{ scope: string; value: ReadingState } | null>(null);
   const lastRange = useRef('');
   const [showLatest, setShowLatest] = useState(false);
@@ -65,20 +67,32 @@ export function useReadingViewport(input: {
   const settled = useRef(false);
   const frame = useRef<number | null>(null);
   const persistFrame = useRef<number | null>(null);
+  const mountedStart = useCallback((key: string): number | undefined => {
+    const row = rowBoxes.current.get(key); const scroller = scrollRef.current;
+    return row && scroller ? scroller.scrollTop + row.getBoundingClientRect().top - scroller.getBoundingClientRect().top : undefined;
+  }, []);
+  const firstVisible = useCallback((engine: Engine) => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    const top = scroller.getBoundingClientRect().top;
+    const items = engine.getVirtualItems();
+    return items.find(item => { const row = rowBoxes.current.get(String(item.key)); return row && row.getBoundingClientRect().bottom > top; })
+      ?? items.find(item => item.end > scroller.scrollTop);
+  }, []);
   const persist = useCallback((engine: Engine) => {
     const snapshot = current.current;
     if (!snapshot.applied || snapshot.applied !== snapshot.indexed || snapshot.initializing || readback.current || command.current || !scrollRef.current || !snapshot.scope || (snapshot.commandToken && completed.current !== snapshot.commandToken)) return;
-    const first = engine.getVirtualItems().find(item => item.end > scrollRef.current!.scrollTop);
+    const first = firstVisible(engine);
     const memberKey = first ? snapshot.applied?.rowMembers.get(String(first.key))?.[0] ?? String(first.key) : null;
     const membership = memberKey ? snapshot.applied?.membership.get(memberKey) : undefined;
     const state: ReadingState = {
       version: 4, positionSpaceId: snapshot.positionSpaceId, following: engine.isAtEnd(1),
-      anchor: first && memberKey ? { kind: 'row', rowKey: String(first.key), memberKey, position: membership?.position ?? null, offset: first.start - scrollRef.current.scrollTop } : null,
+      anchor: first && memberKey ? { kind: 'row', rowKey: String(first.key), memberKey, position: membership?.position ?? null, offset: (mountedStart(String(first.key)) ?? first.start) - scrollRef.current.scrollTop } : null,
       disclosures: Object.fromEntries(Object.entries(snapshot.disclosures).slice(-100)),
     };
     lifecycleState.current = { scope: snapshot.scope, value: state };
     writeReadingState(snapshot.scope, state);
-  }, []);
+  }, [firstVisible, mountedStart]);
   const getItemKey = useCallback((index: number) => rows[index].key, [rows]);
   const estimateSize = useCallback((index: number) => applied!.sizes[index], [applied?.sizes]);
   const rangeExtractor = useCallback((range: Parameters<typeof defaultRangeExtractor>[0]) => {
@@ -197,7 +211,7 @@ export function useReadingViewport(input: {
         const saved = request.restore.anchor;
         const key = snapshot.rows.some(row => row.key === saved.rowKey) ? saved.rowKey : snapshot.applied?.membership.get(saved.memberKey)?.rowKey;
         const index = snapshot.rows.findIndex(row => row.key === key);
-        const offset = index >= 0 ? engine.getOffsetForIndex(index, 'start')?.[0] : undefined;
+        const offset = key ? mountedStart(key) ?? (index >= 0 ? engine.getOffsetForIndex(index, 'start')?.[0] : undefined) : undefined;
         if (offset === undefined || !scrollRef.current) { finish('not-renderable'); return; }
         active.phase = 'row'; active.rowKey = key;
         active.offset = Math.max(0, Math.min(scrollRef.current.scrollHeight - scrollRef.current.clientHeight, offset - attainableRowOffset(saved.offset, snapshot.applied!.sizes[index], scrollRef.current.clientHeight)));
@@ -222,7 +236,7 @@ export function useReadingViewport(input: {
         notify.current();
       }).catch(() => { if (command.current === active) finish('source-unavailable'); });
     });
-  }, [cancel, engine, finish]);
+  }, [cancel, engine, finish, mountedStart]);
   const schedulePersist = useCallback(() => {
     if (persistFrame.current !== null) return;
     persistFrame.current = requestAnimationFrame(() => { persistFrame.current = null; if (!engine.isScrolling) persist(engine); });
@@ -244,11 +258,26 @@ export function useReadingViewport(input: {
     const pin = captureReadingDomAnchor(scroller, rowBoxes.current, snapshot.applied.rowMembers, snapshot.clearance);
     if (pin) { readerPin.current = pin; setPinKeys(pin.protectedKeys); }
   };
-  useLayoutEffect(() => { capturePin.current(); });
+  correctLocal.current = () => {
+    const scroller = scrollRef.current;
+    if (!scroller || !current.current.applied || userScroll.current || drag.current || (command.current && command.current.phase !== 'end')) return;
+    if (following.current) {
+      if (Math.abs(scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop) > 0.05) engine.scrollToEnd({ behavior: 'auto' });
+      return;
+    }
+    const pin = readerPin.current; const row = pin && rowBoxes.current.get(pin.key);
+    if (!pin || !row) return;
+    const delta = row.getBoundingClientRect().top - scroller.getBoundingClientRect().top + readingDomAnchorOffset(pin, row) - pin.offset;
+    if (Math.abs(delta) > 0.05) engine.scrollToOffset(scroller.scrollTop + delta, { align: 'start', behavior: 'auto' });
+  };
+  useLayoutEffect(() => { correctLocal.current(); capturePin.current(); });
   const registerRow = useCallback((key: string, element: HTMLElement) => {
     rowBoxes.current.set(key, element);
-    return () => { if (rowBoxes.current.get(key) === element) rowBoxes.current.delete(key); };
+    if (!localObserver.current && typeof ResizeObserver !== 'undefined') localObserver.current = new ResizeObserver(() => correctLocal.current());
+    localObserver.current?.observe(element);
+    return () => { localObserver.current?.unobserve(element); if (rowBoxes.current.get(key) === element) rowBoxes.current.delete(key); };
   }, []);
+  useEffect(() => () => localObserver.current?.disconnect(), []);
   applyPending.current = () => {
     const next = pending.current;
     if (engine.isScrolling || drag.current || readback.current || (applied && applied !== indexed)) return;
@@ -259,10 +288,10 @@ export function useReadingViewport(input: {
     chromePending.current = false;
     const scroller = scrollRef.current;
     capturePin.current();
-    const first = engine.getVirtualItems().find(item => item.end > (scroller?.scrollTop ?? 0));
+    const first = firstVisible(engine);
     restore.current = applied && applied.scope === next.scope
       ? following.current ? { kind: 'end' }
-        : first && scroller ? { kind: 'row', key: String(first.key), members: applied.rowMembers.get(String(first.key)) ?? [String(first.key)], offset: first.start - scroller.scrollTop } : null
+        : first && scroller ? { kind: 'row', key: String(first.key), members: applied.rowMembers.get(String(first.key)) ?? [String(first.key)], offset: (mountedStart(String(first.key)) ?? first.start) - scroller.scrollTop } : null
       : null;
     pending.current = null;
     setApplied(next);
@@ -290,10 +319,8 @@ export function useReadingViewport(input: {
       const anchor = pin ?? saved;
       const key = indices.has(anchor.key) ? anchor.key : anchor.members.flatMap(member => applied.membership.get(member)?.rowKey ?? []).find(key => indices.has(key));
       const index = key === undefined ? -1 : indices.get(key)!;
-      const item = engine.getVirtualItems().find(item => item.index === index);
       const row = key ? rowBoxes.current.get(key) : undefined;
-      // Public virtual items expose an unclamped row start, including near the tail.
-      const offset = pin && row ? item?.start : index >= 0 ? engine.getOffsetForIndex(index, 'start')?.[0] : undefined;
+      const offset = key ? mountedStart(key) ?? (index >= 0 ? engine.getOffsetForIndex(index, 'start')?.[0] : undefined) : undefined;
       if (offset !== undefined) engine.scrollToOffset(pin && row
         ? offset + readingDomAnchorOffset(pin, row) - pin.offset
         : offset - attainableRowOffset(saved.offset, applied.sizes[index], scrollRef.current?.clientHeight ?? 0), { align: 'start', behavior: 'auto' });
@@ -350,6 +377,9 @@ export function useReadingViewport(input: {
     window.addEventListener('pointerup', release); window.addEventListener('pointercancel', release); window.addEventListener('keyup', release); window.addEventListener('blur', release);
     return () => { window.removeEventListener('pointerup', release); window.removeEventListener('pointercancel', release); window.removeEventListener('keyup', release); window.removeEventListener('blur', release); };
   }, []);
-  return { captureReaderAnchor: () => capturePin.current(), beginLayout: () => capturePin.current(), engine, rows, appliedGeometry: acknowledged === applied ? applied : null, focusTarget: (target: ConversationSourceCoordinate) => targets.current.get(`${target.positionSpaceId}:${target.position}:${target.subtarget ?? ''}`)?.element?.focus({ preventScroll: true }), renderProps: applied?.renderProps, scrollRef, register, registerRow, rowOffset, reveal, cancel, showLatest,
+  const mounted = engine.getVirtualItems();
+  const last = mounted[mounted.length - 1];
+  const endOffset = last?.index === rows.length - 1 ? engine.getTotalSize() - last.end : undefined;
+  return { captureReaderAnchor: () => capturePin.current(), beginLayout: () => capturePin.current(), engine, rows, endOffset, appliedGeometry: acknowledged === applied ? applied : null, focusTarget: (target: ConversationSourceCoordinate) => targets.current.get(`${target.positionSpaceId}:${target.position}:${target.subtarget ?? ''}`)?.element?.focus({ preventScroll: true }), renderProps: applied?.renderProps, scrollRef, register, registerRow, rowOffset, reveal, cancel, showLatest,
     inputHandlers: { onWheel: inputCancel, onTouchStart: () => { drag.current = true; inputCancel(); }, onTouchEnd: () => { drag.current = false; applyPending.current(); }, onTouchCancel: () => { drag.current = false; applyPending.current(); }, onKeyDown, onPointerDown } };
 }
