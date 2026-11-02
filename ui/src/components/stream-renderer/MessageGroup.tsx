@@ -30,7 +30,7 @@ export function MessageGroup({
   const blocks = assistantEvent.message.content;
   const newestPlanIndex = latestPlanIndex(blocks);
 
-  function renderBlock(block: ContentBlock, index: number): JSX.Element | null {
+  function renderBlock(block: ContentBlock, index: number, withinCollection = false): JSX.Element | null {
     let inner: JSX.Element | null = null;
 
     switch (block.type) {
@@ -92,6 +92,9 @@ export function MessageGroup({
             detailsAvailable={block.source?.detailsLoaded === false}
             result={result as import('../message-blocks/ToolUseBlock').ToolResultContentBlock | null}
             defaultExpanded={defaultExpanded}
+            withinCollection={withinCollection}
+            getDisclosureExpanded={getDisclosureExpanded ? (key,defaultExpanded)=>getDisclosureExpanded(`tool:${block.id}:${key}`,defaultExpanded) : undefined}
+            onDisclosureExpandedChange={onDisclosureExpandedChange ? (key,next,trigger)=>onDisclosureExpandedChange(`tool:${block.id}:${key}`,next,trigger) : undefined}
             expanded={expanded}
             onExpandedChange={(next, trigger) => onBlockExpandedChange?.(block, index, next, result?.source ? [result.source] : [], trigger)}
             resultSelected={result?.source ? selectedBlockIds?.has(result.source.blockId) : false}
@@ -168,7 +171,7 @@ export function MessageGroup({
           onExpandedChange={(next, trigger) => onDisclosureExpandedChange?.(groupId, next, trigger)}
           memberRefs={memberRefs}
         >
-          {run.map((block, offset) => renderBlock(block, index + offset))}
+          {run.map((block, offset) => renderBlock(block, index + offset, true))}
         </ToolCallGroup>,
       );
       index = end;

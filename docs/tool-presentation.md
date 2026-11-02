@@ -1,9 +1,6 @@
 # Tool presentation
 
-Chat derives tool semantics from native provider boundaries and complete static
-wrapper programs. The source transcript, normalized text/parts and canonical
-positions remain unchanged. Tool cards, complete-height measurement and indexed
-activity summaries use the same presentation functions.
+Chat derives tool semantics from native provider boundaries and complete static wrapper programs. The source transcript, normalized text/parts and canonical positions remain unchanged. Tool cards, complete-height measurement and indexed activity summaries use the same presentation functions.
 
 | Boundary | Projection and representative coverage |
 | --- | --- |
@@ -15,28 +12,14 @@ activity summaries use the same presentation functions.
 | Claude saved/live results | Native strings remain literal. Typed text/image content and explicit errors survive in display evidence. Saved flattened canonical text/parts stay intact; lean projections omit media bodies. The parser regression covers that boundary and existing controller paths preserve native results. |
 | Gemini `toolCalls` | Native function-response arrays must match their call name/identity. The shared shell presenter uses `run_shell_command.command`. Known response output or structured stdout/stderr is displayed, with execution state preserved and no invented duration. Unknown response shapes remain data. |
 
-The recognized tool categories remain those in `tool-presentation.ts`: command,
-file read/edit/write/delete/move, search, browser, fetch, JavaScript, wait,
-thinking, mode switch and generic tools. Transparent wrappers dispatch through
-that table rather than adding category-specific rendering paths.
+The recognized tool categories remain those in `tool-presentation.ts`: command, file read/edit/write/delete/move, search, browser, fetch, JavaScript, wait, thinking, mode switch and generic tools. Transparent wrappers dispatch through that table rather than adding category-specific rendering paths.
 
 The program records literal, explicit JSON and native object emission rules. Literal stdout is never JSON-decoded or stripped by prefix. Several literal emissions without proven boundaries remain together as original output. JSON emissions are decoded once. Native framing is consumed once from its source-proven span. Isolated source-record hydration supplies only the matching verified structural parent call facts for that result record; its normalized text, parts and canonical linkage are unchanged. Parsed-record reuse retains that parent-admission proof.
 
-Indexed outputs are accepted atomically. Duplicate, missing, out-of-range,
-truncated or otherwise unaccountable emissions never receive guessed child
-bindings. Spread output requires a known noncolliding result envelope; nested
-result fields can retain arbitrary application values. Substantive JavaScript
-remains complete JavaScript.
+Indexed outputs are accepted atomically. Duplicate, missing, out-of-range, truncated or otherwise unaccountable emissions never receive guessed child bindings. Spread output requires a known noncolliding result envelope; nested result fields can retain arbitrary application values. Substantive JavaScript remains complete JavaScript.
 
-Native call/result wrappers own source navigation, selection and disclosure.
-Children use local operation indices and have no invented source positions.
-Complete export retains original source content. The disposable structure cache
-is version17; source parser/normalization epochs remain unchanged. Compact facts
-contain categories, counts, language/binding facts and state, without commands,
-script bodies, file contents, output or media.
+Native call/result wrappers own source navigation, selection and disclosure. Children use local operation indices and have no invented source positions. Inside an existing activity/tool collection, a transparent batch contributes direct sibling event leaves; a standalone batch retains its sole native collection header. Operation disclosures are folded by default and use the native owner’s existing expansion store. An explicit native detail reveal supplies defaults only: a stored operation fold wins. Ordered child header facts are hydrated from the verified source, while full inputs and results remain absent until a detail key is opened. Complete export retains original source content. The disposable structure cache is version18; source parser/normalization epochs remain unchanged. Compact facts contain categories, counts, language/binding facts and state, without commands, script bodies, file contents, output or media.
 
-Unrecognized native textual output formats remain literal. In particular, the
-implementation does not infer a direct command result grammar from remembered
-`Chunk ID`-style headers without a current native boundary fixture. Wait results without already-observed paired native framing evidence also remain literal.
+Unrecognized native textual output formats remain literal. In particular, the implementation does not infer a direct command result grammar from remembered `Chunk ID`-style headers without a current native boundary fixture. Wait results without already-observed paired native framing evidence also remain literal.
 
 Co-Authored-By: Codex (GPT) <codex@openai.com>

@@ -125,6 +125,9 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
               header={node.item.header}
               result={node.item.result}
               defaultExpanded={false}
+              withinCollection={row.activityMember}
+              getDisclosureExpanded={(key,defaultExpanded)=>expandedBlocks[`${disclosureKey}:${key}`] ?? (preparing || defaultExpanded)}
+              onDisclosureExpandedChange={(key,next,trigger)=>setBlockExpanded(`${disclosureKey}:${key}`,next,[source,resultSource],trigger)}
               expanded={expanded}
               onExpandedChange={(next, trigger) => setBlockExpanded(disclosureKey, next, [source, resultSource], trigger)}
               resultSelected={resultSource ? selectedBlockIds?.has(resultSource.blockId) : false}
@@ -194,7 +197,7 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
               onBlockExpandedChange={(contentBlock, index, expanded, relatedSources = [], trigger) => (
                 setBlockExpanded(readingContentBlockDisclosureKey(turn.id, contentBlock, index), expanded, [contentBlock.source, ...relatedSources], trigger)
               )}
-              getDisclosureExpanded={(id, defaultExpanded) => preparing || (expandedBlocks[`${node.key}:${id}`] ?? defaultExpanded)}
+              getDisclosureExpanded={(id, defaultExpanded) => expandedBlocks[`${node.key}:${id}`] ?? (preparing || defaultExpanded)}
               onDisclosureExpandedChange={(id, expanded, trigger) => setBlockExpanded(`${node.key}:${id}`, expanded, row.sources, trigger)}
               selectedBlockIds={selectedBlockIds}
               selectMode={selectMode}
