@@ -19,6 +19,7 @@ import { useCompleteReading, readingPayloadKey } from './useCompleteReading';
 import { useReadingGeometry } from './useReadingGeometry';
 import { getReadingResizeScale } from './readingResizeProfile';
 import { useReadingViewport } from './useReadingViewport';
+import { readingNavigationObserver, type ReadingNavigationOrigin } from './readingNavigationObservation';
 import { readReadingState, type ReadingRestore } from './readingState';
 import { openMarkdownSource } from './markdownActions';
 import { buildStreamState, serializeDisplayGroupToMarkdown } from './renderModel';
@@ -52,6 +53,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
   const navigationTarget = transcript?.command ?? props.navigationTarget;
   const scope = transcript?.conversationId ?? props.sessionInfo?.sessionId ?? 'default';
   const space = transcript?.positionSpaceId ?? '';
+  const observeNavigation = useMemo(() => readingNavigationObserver(), []);
   const appearance = useContext(AppearanceSettingsContext);
   const overlay = useContext(DetailPaneOverlayContext);
   const clearance = Math.max(16, overlay?.scrollClearance ?? 0);
@@ -90,7 +92,12 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
     materialize: complete.acquireMeasurement, membership: complete.membership, rowMembers: complete.rowMembers, onMeasuring: complete.retainMeasurement, onPrepared: complete.retainGeometry, renderProps: row => ({ ...props, row, expandedBlocks, setBlockExpanded: () => {},
       preparing: row.sources.some(source => expandedBlocks[`reveal:${source.position}`]), primaryActions: readingRowPrimaryActions({ copy: () => {}, open: () => {}, turnId: readingRowTurnId(row, complete.actionRuns), selectedMessageId: props.selectedMessageId, select: props.onSelectMessageInfo }),
       lastAssistantTurnId: complete.lastAssistantTurnId, onActivityGroupExpandedChange: () => {} }), scale: getReadingResizeScale });
-  const latest = useRef({ projection, transcript, props, complete, geometry }); latest.current = { projection, transcript, props, complete, geometry };
+  const latest = useRef({ scope, space, projection, transcript, props, complete, geometry }); latest.current = { scope, space, projection, transcript, props, complete, geometry };
+  const observeNotice = (origin: ReadingNavigationOrigin, result: import('./readingProjection').ReadingRevealResult, target?: ConversationSourceCoordinate) => {
+    observeNavigation?.({ event: 'notice', origin, token: result.token, scope, positionSpaceId: space, target, status: result.status,
+      currentScope: latest.current.scope, currentPositionSpaceId: latest.current.space,
+      currentToken: (latest.current.transcript?.command ?? latest.current.props.navigationTarget)?.key });
+  };
   const waiting = useRef(new Set<() => void>());
   const waitFor = useCallback((test: () => boolean, signal: AbortSignal): Promise<boolean> => {
     if (signal.aborted) return Promise.resolve(false);
@@ -131,7 +138,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
       handled.current = queued.key; latest.current.props.onNavigationResult?.({ key: queued.key, status: 'cancelled' });
     } else if (!queued) handled.current = `initial:${scope}:${space}`;
     setInitialNavigationDone(true); latest.current.transcript?.cancelNavigation();
-  }, commandToken: navigationTarget?.key, initializing: transcript?.navigationPending || !geometry.geometry, clearance, geometry: geometry.geometry, protectedKeys: protectedRows, disclosures, prepare, onApplied: complete.commitGeometry, onRange });
+  }, observeNavigation, commandToken: navigationTarget?.key, initializing: transcript?.navigationPending || !geometry.geometry, clearance, geometry: geometry.geometry, protectedKeys: protectedRows, disclosures, prepare, onApplied: complete.commitGeometry, onRange });
   layoutChange.current = viewport.beginLayout;
   useEffect(() => { if (initialVisible) viewport.captureReaderAnchor(); }, [initialVisible, viewport.appliedGeometry]);
   appliedRows.current = viewport.appliedGeometry ? viewport.rows : [];
@@ -185,8 +192,8 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
     const restore = localRestore; if (restore) restoredRow.current = true;
     const end = navigationTarget.kind === 'latest' || navigationTarget.kind === 'initial';
     if (!restore && !target && !end) { onNavigationResult?.({ key: navigationTarget.key, status: 'not-renderable' }); return; }
-    void viewport.reveal(restore ? { token: navigationTarget.key, restore } : end ? { token: navigationTarget.key, end: true } : { token: navigationTarget.key, target: target! }).then(result => {
-      if (result.status !== 'revealed' && result.status !== 'cancelled') setNotice(`Reading target: ${result.status}.`);
+    void viewport.reveal(restore ? { token: navigationTarget.key, restore, origin: 'source-navigation' } : end ? { token: navigationTarget.key, end: true, origin: 'source-navigation' } : { token: navigationTarget.key, target: target!, origin: 'source-navigation' }).then(result => {
+      if (result.status !== 'revealed' && result.status !== 'cancelled') { observeNotice('source-navigation', result, target); setNotice(`Reading target: ${result.status}.`); }
       focusAfterInitial.current = result.status === 'revealed' && !restore && !end ? target ?? null : null;
       setInitialNavigationDone(true);
       onNavigationResult?.({ key: result.token, status: result.status });
@@ -197,7 +204,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
     const token = `initial:${scope}:${space}`;
     if (navigationTarget || !geometry.geometry || !viewport.appliedGeometry || initialNavigationDone || handled.current === token) return;
     handled.current = token;
-    void viewport.reveal({ token, end: true }).then(() => setInitialNavigationDone(true));
+    void viewport.reveal({ token, end: true, origin: 'initial' }).then(() => setInitialNavigationDone(true));
   }, [navigationTarget, geometry.geometry, viewport.appliedGeometry, initialNavigationDone, scope, space, viewport.reveal]);
   useEffect(() => {
     if (initialVisible || !geometry.geometry || !viewport.appliedGeometry || !initialNavigationDone) return;
@@ -258,14 +265,14 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
     const summary = (complete.plan?.rows ?? projection.rows).find(row => row.kind === 'activity-summary' && row.disclosureOwner === pending.owner);
     if (summary?.activityGroup?.expanded !== pending.next) return;
     pendingDisclosure.current = null;
-    void viewport.reveal({ token: pending.token, preserveReaderPin: true, target: { conversationId: scope, positionSpaceId: space, position: pending.position,
-      offset: pending.offset, subtarget: 'summary' } }).then(result => {
-      if (result.status !== 'revealed' && result.status !== 'cancelled') setNotice(`Reading target: ${result.status}.`);
+    const target: ConversationSourceCoordinate = { conversationId: scope, positionSpaceId: space, position: pending.position, offset: pending.offset, subtarget: 'summary' };
+    void viewport.reveal({ token: pending.token, origin: 'disclosure-pin', preserveReaderPin: true, target }).then(result => {
+      if (result.status !== 'revealed' && result.status !== 'cancelled') { observeNotice('disclosure-pin', result, target); setNotice(`Reading target: ${result.status}.`); }
     });
   }, [expandedBlocks, complete.plan, projection, viewport.reveal, scope, space]);
   const jump = () => {
     restoredRow.current = true; pendingDisclosure.current = null; focusAfterInitial.current = null;
-    void viewport.reveal({ token: `latest:${crypto.randomUUID()}`, end: true }).then(result => { if (result.status === 'revealed') void latest.current.props.onJumpToLatest?.(); });
+    void viewport.reveal({ token: `latest:${crypto.randomUUID()}`, end: true, origin: 'latest' }).then(result => { if (result.status === 'revealed') void latest.current.props.onJumpToLatest?.(); });
   };
   return <MessageLinkContext.Provider value={props.onCopyMessageLink ?? null}>
     <div className="stream-renderer">
