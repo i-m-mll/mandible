@@ -25,7 +25,7 @@ function complete(index: number) {
   job.finish({ status: 'complete', measurements: job.request.rows.map(row => ({ row, layoutIdentity, height: 80 })),
     vectors: [{ layoutIdentity, heights: job.request.rows.map(() => 80), totalHeight: 80 * job.request.rows.length, maxRowHeight: 80 }] });
 }
-afterEach(() => { cleanup(); document.body.replaceChildren(); jobs.pending = []; vi.unstubAllGlobals(); });
+afterEach(() => { vi.useRealTimers(); cleanup(); document.body.replaceChildren(); jobs.pending = []; vi.unstubAllGlobals(); });
 
 it('finishes a pinned prefix during append and ignores late geometry from an obsolete width', async () => {
   vi.stubGlobal('ResizeObserver', class { constructor(callback: () => void) { resize = callback; } observe() {} disconnect() {} });
@@ -66,7 +66,7 @@ it('retains nonempty content when a breakpoint discovers a new font generation',
   Object.defineProperty(document, 'fonts', { configurable: true, value: fonts });
   const parent = document.createElement('div'); parent.style.padding = '0px'; parent.style.setProperty('--reading-responsive-variant', 'wide'); document.body.append(parent);
   let width = 772; Object.defineProperty(parent, 'clientWidth', { get: () => width });
-  const rows = [{ key: 'reader', revision: 'same' }];
+  const rows = [{ key: 'reader', revision: 'same' }, { key: 'remote', revision: 'same' }];
   render(<Harness parent={parent} rows={rows} />);
   await waitFor(() => expect(jobs.pending).toHaveLength(1));
   await act(async () => complete(0));
@@ -80,11 +80,51 @@ it('retains nonempty content when a breakpoint discovers a new font generation',
   await waitFor(() => expect(jobs.pending).toHaveLength(3));
   await waitFor(() => expect(geometry!.geometry?.layout.styleIdentity).toContain('[1,'));
   expect(geometry!.geometry?.rows).toEqual(rows);
-  expect(geometry!.geometry?.sizes[0]).toBe(200);
+  expect(geometry!.geometry?.sizes).toEqual([200, 160]);
   expect(geometry!.geometry?.exact).toBe(false);
   expect(jobs.pending[1].request.signal?.aborted).toBe(true);
   await act(async () => complete(1));
   expect(geometry!.geometry?.exact).toBe(false);
   await act(async () => { geometry!.reportHeight(rows[0], 210, width); complete(2); });
   await waitFor(() => expect(geometry!.geometry?.exact).toBe(true));
+});
+
+
+it('publishes local resize frames while acquiring only the latest quiet width, with append work independent', async () => {
+  vi.useFakeTimers();
+  vi.stubGlobal('ResizeObserver', class { constructor(callback: () => void) { resize = callback; } observe() {} disconnect() {} });
+  Object.defineProperty(document, 'fonts', { configurable: true, value: new EventTarget() });
+  const parent = document.createElement('div'); parent.style.padding = '0px'; parent.style.setProperty('--reading-responsive-variant', 'wide'); document.body.append(parent);
+  let width = 400; Object.defineProperty(parent, 'clientWidth', { get: () => width });
+  const rows = [{ key: 'first', revision: 'same' }];
+  const view = render(<Harness parent={parent} rows={rows} />);
+  expect(jobs.pending).toHaveLength(1);
+  width = 450; act(() => resize());
+  expect(jobs.pending[0].request.signal?.aborted).toBe(true);
+  await act(async () => vi.advanceTimersByTime(50));
+  expect(jobs.pending).toHaveLength(1);
+  width = 475; act(() => resize());
+  await act(async () => vi.advanceTimersByTime(50));
+  expect(jobs.pending).toHaveLength(1);
+  expect(geometry!.geometry).toBeNull();
+  await act(async () => vi.advanceTimersByTime(120));
+  expect(jobs.pending).toHaveLength(2);
+  expect(jobs.pending[1].request.layouts[0].width).toBe(475);
+  await act(async () => complete(1));
+  await act(async () => vi.advanceTimersByTime(20));
+  expect(geometry!.geometry?.exact).toBe(true);
+  for (width of [500, 600, 700]) {
+    act(() => resize());
+    await act(async () => vi.advanceTimersByTime(50));
+    expect(geometry!.geometry?.layout.width).toBe(width);
+    expect(geometry!.geometry?.exact).toBe(false);
+    expect(jobs.pending).toHaveLength(2);
+  }
+  await act(async () => vi.advanceTimersByTime(120));
+  expect(jobs.pending).toHaveLength(3);
+  expect(jobs.pending[2].request.layouts[0].width).toBe(700);
+  await act(async () => complete(2));
+  await act(async () => vi.advanceTimersByTime(20));
+  view.rerender(<Harness parent={parent} rows={[...rows, { key: 'append', revision: 'new' }]} />);
+  expect(jobs.pending).toHaveLength(4);
 });

@@ -3,6 +3,7 @@ export type MeasurementRow = { key: string; revision: string; disclosureIdentity
 export type MeasurementLayout = {
   width: number;
   styleIdentity: string;
+  profileIdentity?: string;
   responsiveVariant?: string;
   fonts: readonly { font: string; text?: string }[];
 };

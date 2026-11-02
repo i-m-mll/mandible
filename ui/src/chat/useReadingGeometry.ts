@@ -32,6 +32,8 @@ export function useReadingGeometry(input: {
   const basis = useRef<ReadingGeometry | null>(null);
   const serial = useRef(0);
   const fontGeneration = useRef(0);
+  const startedScope = useRef<string | null>(null);
+  const activeMeasurement = useRef<AbortController | null>(null);
   const rowIndices = useMemo(() => new Map(geometry?.rows.map((row, index) => [row.key, index]) ?? []), [geometry?.rows]);
   const published = useRef({ geometry, rowIndices }); published.current = { geometry, rowIndices };
   const reports = useRef(new Map<string, { row: MeasurementRow; height: number; width: number }>());
@@ -100,8 +102,10 @@ export function useReadingGeometry(input: {
       const style = getComputedStyle(parent);
       const width = parent.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
       if (width <= 0) return;
-      const next: MeasurementLayout = { width, responsiveVariant: style.getPropertyValue('--reading-responsive-variant').trim(), styleIdentity: JSON.stringify([fontGeneration.current, style.fontFamily, style.fontSize, style.fontWeight, style.fontStyle, style.lineHeight, style.letterSpacing, document.documentElement.dataset.theme]), fonts: [{ font: `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}` }] };
+      const profileIdentity = JSON.stringify([style.fontFamily, style.fontSize, style.fontWeight, style.fontStyle, style.lineHeight, style.letterSpacing, document.documentElement.dataset.theme]);
+      const next: MeasurementLayout = { width, profileIdentity, responsiveVariant: style.getPropertyValue('--reading-responsive-variant').trim(), styleIdentity: JSON.stringify([fontGeneration.current, profileIdentity]), fonts: [{ font: `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}` }] };
       if (!layoutRef.current || measurementLayoutIdentity(layoutRef.current) !== measurementLayoutIdentity(next)) {
+        activeMeasurement.current?.abort();
         latest.current.onLayoutChange?.(next); layoutRef.current = next; setLayout(next);
       }
     };
@@ -117,14 +121,14 @@ export function useReadingGeometry(input: {
   useEffect(() => {
     if (!layout || !input.parent) return;
     const parent = input.parent;
-    const controller = new AbortController();
+    const controller = new AbortController(); activeMeasurement.current = controller;
     const service = new ReadingMeasurementService(parent);
     const identity = measurementLayoutIdentity(layout);
     facts.current = facts.current.filter(fact => fact.layoutIdentity === identity);
     const compatible = basis.current;
     const held = published.current.geometry?.scope === input.scope ? published.current.geometry : compatible;
     if (held) {
-      const scalable = compatible && compatible.layout.styleIdentity === layout.styleIdentity
+      const scalable = compatible && (compatible.layout.profileIdentity ?? compatible.layout.styleIdentity) === (layout.profileIdentity ?? layout.styleIdentity)
         && JSON.stringify(compatible.layout.fonts) === JSON.stringify(layout.fonts)
         && compatible.rows.length === latest.current.rows.length && compatible.rows.every((row, index) => row.key === latest.current.rows[index].key
           && row.revision === latest.current.rows[index].revision && row.disclosureIdentity === latest.current.rows[index].disclosureIdentity);
@@ -141,6 +145,7 @@ export function useReadingGeometry(input: {
         const snapshot = latest.current;
         const rows = snapshot.rows;
         snapshot.onMeasuring(rows);
+        startedScope.current = input.scope;
         const result = await service.measure({ rows, layouts: [layout], materialize: snapshot.materialize,
           renderBatch: createReadingRowBatchRenderer(snapshot.renderProps), reuse: facts.current,
           signal: controller.signal, batchSize: 16, materializeBatchSize: 128, maxSynchronousMs: 8 });
@@ -164,9 +169,15 @@ export function useReadingGeometry(input: {
       }
       running = false;
     };
-    wake.current = () => { void run(); };
-    void run();
-    return () => { controller.abort(); service.dispose(); wake.current = () => {}; };
+    let startTimer: ReturnType<typeof setTimeout> | null = null;
+    wake.current = () => { if (startTimer === null) void run(); };
+    if (startedScope.current === input.scope) startTimer = setTimeout(() => { startTimer = null; void run(); }, 120);
+    else void run();
+    return () => {
+      if (startTimer !== null) clearTimeout(startTimer);
+      controller.abort(); if (activeMeasurement.current === controller) activeMeasurement.current = null;
+      service.dispose(); wake.current = () => {};
+    };
   }, [layout, input.parent, input.scope]);
   useEffect(() => { wake.current(); }, [input.rows]);
   return { geometry: geometry?.scope === input.scope ? geometry : null, error, layout, reportHeight, retry: () => wake.current() };
