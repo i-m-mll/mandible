@@ -1,3 +1,4 @@
+import { readingPayloadKey } from './useCompleteReading';
 import { nativeReadingCapacity } from './readingCapacity';
 import { isReadingPublicationChanged } from '../query/readingPresentation';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
@@ -6,9 +7,6 @@ import type { ReadingRow } from './readingProjection';
 import type { ReadingContentProps } from './ReadingContent';
 import { createReadingRowBatchRenderer } from './renderReadingMeasurementBatch';
 
-let diagnosticInstance = 0;
-let diagnosticParent = 0;
-const diagnosticParents = new WeakMap<HTMLElement, number>();
 type GeometryMembership = ReadonlyMap<string, { rowKey: string; position?: number | null }>;
 export type ReadingGeometry = { membership: GeometryMembership; rowMembers: ReadonlyMap<string, readonly string[]>; scope: string; rows: readonly MeasurementRow[]; sizes: readonly number[]; layout: MeasurementLayout; exact: boolean; serial: number; renderProps: (row: ReadingRow) => ReadingContentProps };
 /** One current width, one compatible complete basis, and reusable current-width facts. */
@@ -17,17 +15,20 @@ export function useReadingGeometry(input: {
   materialize: MeasurementRequest<ReadingRow>['materialize'];
   renderProps: (row: ReadingRow) => ReadingContentProps;
   membership: GeometryMembership; rowMembers: ReadonlyMap<string, readonly string[]>;
+  onLayoutChange?: (layout: MeasurementLayout) => void;
   onMeasuring: (rows: readonly MeasurementRow[]) => void;
   onPrepared: (rows: readonly MeasurementRow[]) => void;
   scale: (from: MeasurementLayout, to: MeasurementLayout) => number;
 }) {
-  const instance = useMemo(() => ++diagnosticInstance, []);
-  const diagnosticCount = useRef(0);
   const latest = useRef(input); latest.current = input;
   const [layout, setLayout] = useState<MeasurementLayout | null>(null);
   const [geometry, setGeometry] = useState<ReadingGeometry | null>(null);
   const [error, setError] = useState<string | null>(null);
   const facts = useRef<readonly RowMeasurement[]>([]);
+  const layoutRef = useRef<MeasurementLayout | null>(null);
+  const queued = useRef<ReadingGeometry | null>(null);
+  const publicationFrame = useRef<number | null>(null);
+  const publish = useRef<(geometry: ReadingGeometry) => void>(() => {});
   const basis = useRef<ReadingGeometry | null>(null);
   const serial = useRef(0);
   const fontGeneration = useRef(0);
@@ -41,7 +42,8 @@ export function useReadingGeometry(input: {
     if (reportFrame.current !== null) return;
     reportFrame.current = requestAnimationFrame(() => {
       reportFrame.current = null;
-      const { geometry: snapshot, rowIndices: indices } = published.current;
+      const snapshot = queued.current ?? published.current.geometry;
+      const indices = snapshot === published.current.geometry ? published.current.rowIndices : new Map(snapshot?.rows.map((row, index) => [row.key, index]) ?? []);
       if (!snapshot || snapshot.scope !== latest.current.scope) { reports.current.clear(); return; }
       const additions: Array<RowMeasurement & { index: number }> = [];
       for (const [key, report] of reports.current) {
@@ -65,19 +67,32 @@ export function useReadingGeometry(input: {
       facts.current = [...facts.current.filter(fact => !replaced.has(fact.row.key)), ...additions];
       const next = { ...snapshot, sizes, serial: ++serial.current };
       if (snapshot.exact) basis.current = next;
-      setGeometry(next);
+      publish.current(next);
     });
   }, []);
   useEffect(() => () => { if (reportFrame.current !== null) cancelAnimationFrame(reportFrame.current); }, []);
-  const wake = useRef<() => void>(() => {});
-  const diagnose = (reason: string, detail?: unknown) => {
-    const parent = latest.current.parent;
-    if (parent && !diagnosticParents.has(parent)) diagnosticParents.set(parent, ++diagnosticParent);
-    if (diagnosticCount.current++ < 32) console.debug('[reading-geometry-diagnostic]', JSON.stringify({ reason, instance, scope: latest.current.scope,
-      parent: parent ? diagnosticParents.get(parent) : null, fontGeneration: fontGeneration.current, rows: published.current.geometry?.rows.length ?? null,
-      layout: published.current.geometry ? measurementLayoutIdentity(published.current.geometry.layout) : null, detail }));
+  publish.current = next => {
+    queued.current = next;
+    if (publicationFrame.current !== null) return;
+    publicationFrame.current = requestAnimationFrame(() => {
+      publicationFrame.current = null;
+      const candidate = queued.current; queued.current = null;
+      if (!candidate || candidate.scope !== latest.current.scope || !layoutRef.current
+        || measurementLayoutIdentity(candidate.layout) !== measurementLayoutIdentity(layoutRef.current)) return;
+      const sizes = [...candidate.sizes];
+      const wanted = new Map(candidate.rows.map((row, index) => [row.key, { row, index }]));
+      for (const element of latest.current.parent?.querySelectorAll<HTMLElement>('[data-reading-key]') ?? []) {
+        const value = wanted.get(element.dataset.readingKey ?? '');
+        if (!value || element.getAttribute('aria-busy') === 'true' || element.dataset.readingPayload !== readingPayloadKey(value.row)) continue;
+        const box = element.getBoundingClientRect();
+        if (box.height > 0 && Math.abs(box.width - candidate.layout.width) <= 0.05) sizes[value.index] = box.height;
+      }
+      const next = { ...candidate, sizes };
+      latest.current.onPrepared(next.rows); setGeometry(next);
+    });
   };
-  useEffect(() => { diagnose('mount'); return () => diagnose('unmount'); }, []);
+  useEffect(() => () => { if (publicationFrame.current !== null) cancelAnimationFrame(publicationFrame.current); }, []);
+  const wake = useRef<() => void>(() => {});
   useLayoutEffect(() => {
     const parent = input.parent;
     if (!parent) return;
@@ -86,16 +101,18 @@ export function useReadingGeometry(input: {
       const width = parent.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
       if (width <= 0) return;
       const next: MeasurementLayout = { width, responsiveVariant: style.getPropertyValue('--reading-responsive-variant').trim(), styleIdentity: JSON.stringify([fontGeneration.current, style.fontFamily, style.fontSize, style.fontWeight, style.fontStyle, style.lineHeight, style.letterSpacing, document.documentElement.dataset.theme]), fonts: [{ font: `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}` }] };
-      setLayout(previous => { if (!previous || measurementLayoutIdentity(previous) !== measurementLayoutIdentity(next)) diagnose('layout', { previous, next }); return previous && measurementLayoutIdentity(previous) === measurementLayoutIdentity(next) ? previous : next; });
+      if (!layoutRef.current || measurementLayoutIdentity(layoutRef.current) !== measurementLayoutIdentity(next)) {
+        latest.current.onLayoutChange?.(next); layoutRef.current = next; setLayout(next);
+      }
     };
     const observer = new ResizeObserver(update); observer.observe(parent);
-    const fontsChanged = () => { fontGeneration.current++; diagnose('fonts-loadingdone'); update(); };
+    const fontsChanged = () => { fontGeneration.current++; update(); };
     const themeObserver = new MutationObserver(update); themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] });
     window.addEventListener('resize', update); document.fonts?.addEventListener('loadingdone', fontsChanged); update();
     return () => { observer.disconnect(); themeObserver.disconnect(); window.removeEventListener('resize', update); document.fonts?.removeEventListener('loadingdone', fontsChanged); };
   }, [input.parent]);
   useEffect(() => {
-    diagnose('clear-scope'); facts.current = []; basis.current = null; setGeometry(null); setError(null);
+    facts.current = []; basis.current = null; queued.current = null; setGeometry(null); setError(null);
   }, [input.scope]);
   useEffect(() => {
     if (!layout || !input.parent) return;
@@ -105,11 +122,16 @@ export function useReadingGeometry(input: {
     const identity = measurementLayoutIdentity(layout);
     facts.current = facts.current.filter(fact => fact.layoutIdentity === identity);
     const compatible = basis.current;
-    if (compatible && compatible.layout.styleIdentity === layout.styleIdentity && JSON.stringify(compatible.layout.fonts) === JSON.stringify(layout.fonts) && compatible.rows.length === latest.current.rows.length && compatible.rows.every((row, index) => row.key === latest.current.rows[index].key && row.revision === latest.current.rows[index].revision && row.disclosureIdentity === latest.current.rows[index].disclosureIdentity)) {
-      const ratio = latest.current.scale(compatible.layout, layout);
-      latest.current.onPrepared(compatible.rows);
-      setGeometry({ ...compatible, sizes: compatible.sizes.map(size => size * ratio), layout, exact: false, serial: ++serial.current });
-    } else if (compatible && compatible.layout.styleIdentity !== layout.styleIdentity) { diagnose('clear-style', { before: compatible.layout, after: layout }); setGeometry(null); }
+    const held = published.current.geometry?.scope === input.scope ? published.current.geometry : compatible;
+    if (held) {
+      const scalable = compatible && compatible.layout.styleIdentity === layout.styleIdentity
+        && JSON.stringify(compatible.layout.fonts) === JSON.stringify(layout.fonts)
+        && compatible.rows.length === latest.current.rows.length && compatible.rows.every((row, index) => row.key === latest.current.rows[index].key
+          && row.revision === latest.current.rows[index].revision && row.disclosureIdentity === latest.current.rows[index].disclosureIdentity);
+      const source = scalable ? compatible : held;
+      const ratio = scalable ? latest.current.scale(source.layout, layout) : 1;
+      publish.current({ ...source, sizes: source.sizes.map(size => size * ratio), layout, exact: false, serial: ++serial.current });
+    }
     let running = false;
     let completedPlan: readonly MeasurementRow[] | undefined;
     const run = async () => {
@@ -122,7 +144,7 @@ export function useReadingGeometry(input: {
         const result = await service.measure({ rows, layouts: [layout], materialize: snapshot.materialize,
           renderBatch: createReadingRowBatchRenderer(snapshot.renderProps), reuse: facts.current,
           signal: controller.signal, batchSize: 16, materializeBatchSize: 128, maxSynchronousMs: 8 });
-        if (controller.signal.aborted) break;
+        if (controller.signal.aborted || !layoutRef.current || measurementLayoutIdentity(layoutRef.current) !== identity) break;
         facts.current = result.measurements;
         if (result.status !== 'complete') {
           if (result.status === 'error' && result.reason === 'materialize' && isReadingPublicationChanged(result.cause)) {
@@ -138,8 +160,7 @@ export function useReadingGeometry(input: {
           setError(`This conversation exceeds this browser's native scroll capacity (${vector.totalHeight}px total; ${vector.maxRowHeight}px maximum row).`); break;
         }
         const next = { scope: input.scope, membership: snapshot.membership, rowMembers: snapshot.rowMembers, rows, sizes: vector.heights, layout, exact: true, serial: ++serial.current, renderProps: snapshot.renderProps };
-        snapshot.onPrepared(rows);
-        basis.current = next; setGeometry(next); setError(null); completedPlan = rows;
+        basis.current = next; publish.current(next); setError(null); completedPlan = rows;
       }
       running = false;
     };
