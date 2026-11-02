@@ -1,6 +1,7 @@
+import { readingNodeDisclosures } from '../presentation/reading-disclosures.js';
 import { createHash } from 'node:crypto';
-import { readingMemberKeys } from './reading-context.js';
-import { displayEventsFromBlocks, displayFragmentId, type IndexedDisplayFragment, type DisplayPositionFacts } from './display-context.js';
+import { readingMemberKeys, readingSpeaker } from './reading-context.js';
+import { defaultDisplayEventsFromBlocks, displayFragmentId, type IndexedDisplayFragment, type DisplayPositionFacts } from './display-context.js';
 import { projectDisplayFragments } from '../presentation/fragments.js';
 import { presentActivityItems, activityDetailLines } from '../presentation/activity-presentation.js';
 import type { ConversationBlock } from '../parsers/types.js';
@@ -9,7 +10,7 @@ export function indexDisplayFragments(blocks: readonly Omit<ConversationBlock, '
   conversationId: string, parentPosition: (position: number) => number | null): {
     fragments: IndexedDisplayFragment[]; aliases: Array<{ position: number; owner_position: number; failed: boolean }>; positions: DisplayPositionFacts[];
   } {
-  const events = displayEventsFromBlocks(blocks.map(block => ({ ...block, parentPosition: parentPosition(block.position) })), conversationId);
+  const events = defaultDisplayEventsFromBlocks(blocks.map(block => ({ ...block, parentPosition: parentPosition(block.position) })), conversationId);
   const fragments = projectDisplayFragments(events, true).flatMap(fragment => {
     if (fragment.position === undefined) return [];
     const node = fragment.node;
@@ -25,7 +26,7 @@ export function indexDisplayFragments(blocks: readonly Omit<ConversationBlock, '
     else if (activity?.type === 'activity') compact = { ...activity, parts: [] };
     return [{ id: displayFragmentId(coordinate), coordinate, kind: activity ? 'activity' as const : 'content' as const,
       activity_run_id: null, paired_source_positions: fragment.pairedSourcePositions,
-      speaker: node.entity, activity: compact, summary_from_source: activity?.type === 'activity' && activity.parts.some(part => Boolean(part.text.trim())),
+      speaker: node.entity, disclosures: readingNodeDisclosures(node), activity: compact, summary_from_source: activity?.type === 'activity' && activity.parts.some(part => Boolean(part.text.trim())),
       has_details: activityDetailLines(presentations).length > 0 }];
   });
   const aliases = blocks.flatMap(block => {
@@ -36,10 +37,11 @@ export function indexDisplayFragments(blocks: readonly Omit<ConversationBlock, '
   const positions = blocks.map(block => {
     const item = block.metadata.chat_item;
     const usage = block.metadata.token_usage;
-    return { position: block.position, revision: createHash('sha256').update(JSON.stringify([
+    return { position: block.position, speaker: readingSpeaker(block.role), revision: createHash('sha256').update(JSON.stringify([
       block.type, block.role, block.content, block.timestamp, block.metadata, parentPosition(block.position),
     ])).digest('hex'), handoffKeys: item ? readingMemberKeys(item, block.metadata.client_intent_id) : [],
       turnId: item?.identity.native_turn_id,
+      ...(item?.type === 'tool-call' && (item.tool_id ?? item.identity.native_tool_id) ? {executionKey: JSON.stringify([item.identity.provider, item.identity.session_id, item.tool_id ?? item.identity.native_tool_id])} : {}),
       ...(item && usage && Number.isFinite(usage.input) && Number.isFinite(usage.output)
         ? { usage: { key: typeof block.metadata.provider_message_id === 'string' ? block.metadata.provider_message_id : `record:${item.identity.source_record_ordinal}`,
           input: usage.input, output: usage.output } } : {}) };

@@ -1,7 +1,7 @@
-import { DISPLAY_CONTEXT_VERSION, displayEventsFromBlocks, displayFragmentId, type ConversationDisplayContext } from './display-context.js';
+import { DISPLAY_CONTEXT_VERSION, defaultDisplayEventsFromBlocks, displayFragmentId, type ConversationDisplayContext } from './display-context.js';
 import type { DisplayContextPlan } from './display-index.js';
 import { ConversationSourceReader } from './source-reader.js';
-import type { SourceReadResult } from './source-types.js';
+import type { SourceBackedConversationBlock, SourceReadResult } from './source-types.js';
 import { projectDisplayFragments } from '../presentation/fragments.js';
 import { activityRunFacts, presentActivityRunFacts } from '../presentation/activity-presentation.js';
 import { presentTool } from '../presentation/tool-presentation.js';
@@ -10,14 +10,14 @@ import { sparseConversationBlockPosition } from './structure-cache.js';
 /** Body-derived presentation is ephemeral and proved against the same native source snapshot. */
 export async function readDisplayContext(input: {
   plan: DisplayContextPlan; conversationId: string; sourceVersionId: string; blockCount: number;
-  reader: ConversationSourceReader; actionScope: (position: number) => { start: number; end: number };
+  reader: ConversationSourceReader; sourceBlocks?: readonly SourceBackedConversationBlock[]; actionScope: (position: number) => { start: number; end: number };
 }): Promise<SourceReadResult<ConversationDisplayContext>> {
   const { plan, conversationId, sourceVersionId } = input;
-  const read = plan.sourcePositions.length ? await input.reader.readPositions(conversationId, plan.sourcePositions,
+  const read = input.sourceBlocks ? {status: 'source' as const, sourceVersionId, value: input.sourceBlocks} : plan.sourcePositions.length ? await input.reader.readPositions(conversationId, plan.sourcePositions,
     { expectedSourceVersionId: sourceVersionId, expectedBlockCount: input.blockCount }) : null;
   if (read && read.status !== 'source') return read;
   const blocks = read?.status === 'source' ? read.value : [];
-  const events = displayEventsFromBlocks(blocks.map(block => ({ ...block, metadata: JSON.parse(block.metadata_json),
+  const events = defaultDisplayEventsFromBlocks(blocks.map(block => ({ ...block, metadata: JSON.parse(block.metadata_json),
     parentPosition: block.parent_id ? sparseConversationBlockPosition(conversationId, block.parent_id) : null })), conversationId);
   const actual = new Map(projectDisplayFragments(events).filter(fragment => fragment.position !== undefined)
     .map(fragment => [displayFragmentId({ position: fragment.position!, part: fragment.part }), fragment]));

@@ -32,9 +32,9 @@ export function writeDisplayIndex(db: SqliteDatabase, cacheId: number, input: Di
     if (pairedPositions.has(fragment.coordinate.position)) continue;
     const run = fragment.kind === 'activity' ? previous?.kind === 'activity' && previous.speaker === fragment.speaker
       ? previous.run_id : fragment.id : null;
-    const { activity, summary_from_source, has_details } = fragment;
+    const { activity, summary_from_source, has_details, disclosures } = fragment;
     insert.run(cacheId, fragment.coordinate.position, fragment.coordinate.part, ordinal, fragment.kind, fragment.speaker, run,
-      JSON.stringify({ activity, summary_from_source, has_details, paired_source_positions: [] }));
+      JSON.stringify({ activity, summary_from_source, has_details, disclosures, paired_source_positions: [] }));
     previous = { position: fragment.coordinate.position, part: fragment.coordinate.part, kind: fragment.kind,
       speaker: fragment.speaker, run_id: run, facts_json: '' };
   }
@@ -48,7 +48,7 @@ export function writeDisplayIndex(db: SqliteDatabase, cacheId: number, input: Di
     if (alias.failed) {
       fact.activity.result = { type: 'tool_result', tool_use_id: fact.activity.id, content: '', is_error: true };
       db.prepare('UPDATE cache_display_fragments SET facts_json = ? WHERE cache_conversation_id = ? AND position = ? AND part = ?')
-        .run(JSON.stringify({ activity: fact.activity, summary_from_source: fact.summary_from_source, has_details: fact.has_details, paired_source_positions: [] }), cacheId, alias.owner_position, owner.part);
+        .run(JSON.stringify({ activity: fact.activity, summary_from_source: fact.summary_from_source, has_details: fact.has_details, disclosures: fact.disclosures, paired_source_positions: [] }), cacheId, alias.owner_position, owner.part);
     }
   }
 }

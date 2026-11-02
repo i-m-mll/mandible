@@ -1,5 +1,6 @@
+import { readingContentBlockDisclosureKey, readingNodeDisclosures } from '../../../src/presentation/reading-disclosures';
 import type { JSX } from 'preact/jsx-runtime';
-import type { ContentBlock, PersistedBlockSource, RenderNode } from '../components/stream-renderer/types';
+import type { PersistedBlockSource, RenderNode } from '../components/stream-renderer/types';
 import { MessageGroup } from '../components/stream-renderer/MessageGroup';
 import { MessageActions, MessageLinkContext, MessagePrimaryActionsContext, type MessagePrimaryAction } from '../components/shared/MessageActions';
 import { TurnGroup } from '../components/message-blocks/TurnGroup';
@@ -10,13 +11,6 @@ import { ThinkingBlock } from '../components/message-blocks/ThinkingBlock';
 import { ToolUseBlock } from '../components/message-blocks/ToolUseBlock';
 import type { ReadingRow } from './readingProjection';
 import type { ChatSurfaceProps } from './ChatSurface';
-function blockId(turnId: string, block: ContentBlock, index: number): string {
-  if (block.contentKey) return block.contentKey;
-  if (block.type === 'tool_use') {
-    return `tool:${block.id}`;
-  }
-  return `${turnId}:${block.type}:${index}`;
-}
 
 export type ReadingContentProps = ChatSurfaceProps & {
   row: ReadingRow;
@@ -68,9 +62,9 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
               content={node.event.content}
               label={node.event.label}
               isError={node.event.is_error}
-              expanded={preparing || expandedBlocks[`semantic:${node.key}`]}
+              expanded={preparing || expandedBlocks[readingNodeDisclosures(node).keys[0]]}
               detailsAvailable={source?.detailsLoaded === false}
-              onExpandedChange={next => setBlockExpanded(`semantic:${node.key}`, next, [source])}
+              onExpandedChange={next => setBlockExpanded(readingNodeDisclosures(node).keys[0], next, [source])}
             />
             <MessageActions
               blockId={source?.blockId}
@@ -85,7 +79,7 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
 
       case 'unmatched_tool_result': {
         const source = node.result.source;
-        const disclosureKey = `unmatched-tool-result:${node.key}`;
+        const disclosureKey = readingNodeDisclosures(node).keys[0];
         return (
           <div key={node.key} className="message-block-wrapper" data-block-id={source?.blockId}>
             <UnmatchedToolResultBlock
@@ -109,7 +103,7 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
         const source = node.source;
         const sourceBlockId = source?.blockId
           ?? (node.item.type === 'provider-directive' ? node.item.blockId ?? undefined : undefined);
-        const disclosureKey = `activity:${node.key}`;
+        const disclosureKey = readingNodeDisclosures(node).keys[0];
         const defaultExpanded = node.item.type === 'thinking-block-activity'
           && streaming
           && node.item.turnId === lastAssistantTurnId;
@@ -194,10 +188,10 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
               isStreaming={isLastStreamingTurn}
               isThinking={isThinking}
               getBlockExpanded={(contentBlock, index, defaultExpanded) => (
-                preparing || (expandedBlocks[blockId(turn.id, contentBlock, index)] ?? defaultExpanded)
+                preparing || (expandedBlocks[readingContentBlockDisclosureKey(turn.id, contentBlock, index)] ?? defaultExpanded)
               )}
               onBlockExpandedChange={(contentBlock, index, expanded, relatedSources = []) => (
-                setBlockExpanded(blockId(turn.id, contentBlock, index), expanded, [contentBlock.source, ...relatedSources])
+                setBlockExpanded(readingContentBlockDisclosureKey(turn.id, contentBlock, index), expanded, [contentBlock.source, ...relatedSources])
               )}
               getDisclosureExpanded={(id, defaultExpanded) => preparing || (expandedBlocks[`${node.key}:${id}`] ?? defaultExpanded)}
               onDisclosureExpandedChange={(id, expanded) => setBlockExpanded(`${node.key}:${id}`, expanded, row.sources)}

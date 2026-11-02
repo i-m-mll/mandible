@@ -1,3 +1,5 @@
+import { readingNodeDisclosures } from './reading-disclosures.js';
+import type { ReadingPlan, ReadingPlanMember, ReadingRowDescriptor } from './reading-plan.js';
 import { planReadingLayout, readingSourceKey } from './reading-plan.js';
 import { readingSpeaker } from '../conversations/reading-context.js';
 import type { CanonicalChatItemEvent, PersistedBlockSource, RenderNode, StreamEvent } from './types.js';
@@ -9,6 +11,10 @@ export type ConversationSourceCoordinate = { conversationId: string; positionSpa
 
 export type ReadingRow = {
   key: string;
+  revision?: string;
+  memberKeys?: readonly string[];
+  materializedMemberKeys?: readonly string[];
+  activityRun?: NonNullable<ReadingPlanMember['run']>;
   kind: 'content' | 'activity-summary' | 'permission';
   protectedPositions: readonly number[];
   items: readonly CanonicalChatItemEvent[];
@@ -55,7 +61,7 @@ function toolExecutionKey(event: CanonicalChatItemEvent): string | null {
 }
 
 /** Canonical fragments use exact source coordinates; native/intent identities provide verified handoffs. */
-export function projectReadingRows(input: {
+export type ReadingPreparationInput = {
   events: readonly StreamEvent[];
   conversationId: string;
   positionSpaceId: string;
@@ -63,10 +69,12 @@ export function projectReadingRows(input: {
   expanded: Readonly<Record<string, boolean>>;
   streaming?: boolean;
   displayContext?: import('../conversations/display-context.js').ConversationDisplayContext;
-}): ReadingProjection {
-  const rows: ReadingRow[] = [];
-  const membership = new Map<number, ReadingMembership>();
-  const viewMembership = new Map<string, ReadingMembership>();
+};
+
+export type PreparedReadingMember = ReadingPlanMember & { node: RenderNode; event?: CanonicalChatItemEvent; sources: readonly PersistedBlockSource[] };
+export type ReadingPreparation = { members: PreparedReadingMember[]; actionRuns: ReadonlyMap<string, ReadingActionRun>; lastAssistantTurnId?: string };
+
+export function prepareReadingMembers(input: ReadingPreparationInput): ReadingPreparation {
   const canonicalEvents = input.events.filter((event): event is CanonicalChatItemEvent => event.type === 'chat:item');
   const runs: Array<{ speaker: ReturnType<typeof readingSpeaker>; events: CanonicalChatItemEvent[]; scope: ReadingActionGroup | null }> = [];
   for (const event of canonicalEvents) {
@@ -147,30 +155,60 @@ export function projectReadingRows(input: {
     return { fragment, node, event, native, identity, key, canonicalRun, actionGroup,
       sources: [source, resultSource].filter((value): value is PersistedBlockSource => Boolean(value)) };
   });
-  const byKey = new Map(prepared.map(entry => [entry.key, entry]));
-  const plan = planReadingLayout({ ...input, lastAssistantTurnId, members: prepared.map(entry => ({
+  return { actionRuns, lastAssistantTurnId, members: prepared.map(entry => ({
     key: entry.key, position: entry.fragment.position, part: entry.fragment.part,
     kind: entry.node.kind === 'activity' ? 'activity' : 'content', speaker: entry.node.entity,
     actionGroup: entry.actionGroup, activity: entry.node.kind === 'activity' ? entry.node.item : null,
-    run: entry.canonicalRun, dependencyRevision: '',
+    run: entry.canonicalRun, dependencyRevision: JSON.stringify([entry.node, entry.event?.executionActive]),
     sourcePositions: [entry.fragment.position, ...entry.fragment.pairedSourcePositions].filter((position): position is number => position !== undefined),
     handoffKeys: [entry.identity, entry.native].filter((key): key is string => Boolean(key)), usage: entry.event?.usage,
-  })) });
-  for (const descriptor of plan.rows) {
-    const entries = descriptor.memberKeys.map(key => byKey.get(key)!);
+    disclosures: readingNodeDisclosures(entry.node), node: entry.node, event: entry.event, sources: entry.sources,
+  })) };
+}
+
+export function materializePreparedReadingRows(descriptors: readonly ReadingRowDescriptor[], members: readonly PreparedReadingMember[]): ReadingRow[] {
+  const byKey = new Map(members.map(member => [member.key, member]));
+  return descriptors.map(descriptor => {
+    const entries = descriptor.memberKeys.flatMap(key => byKey.get(key) ? [byKey.get(key)!] : []);
     const nodes = entries.map(entry => entry.node);
-    rows.push({ ...descriptor, protectedPositions: descriptor.kind === 'content' ? [...descriptor.sourcePositions] : [],
+    return { ...descriptor, materializedMemberKeys: entries.map(entry => entry.key), activityRun: entries.find(entry => entry.run)?.run,
+      protectedPositions: descriptor.kind === 'content' ? [...descriptor.sourcePositions] : [],
       items: entries.flatMap(entry => entry.event ? [entry.event] : []),
-      nodes: descriptor.kind === 'content' ? nodes : [], sources: entries.flatMap(entry => entry.sources),
+      nodes: descriptor.kind === 'content' ? nodes : [], sources: entries.flatMap(entry => [...entry.sources]),
       activityGroup: descriptor.activityGroup ? { ...descriptor.activityGroup,
         items: nodes.filter((node): node is Extract<RenderNode, {kind: 'activity'}> => node.kind === 'activity') } : undefined,
-    });
+    };
+  });
+}
+
+export function preparedReadingMembersFromRows(rows: readonly ReadingRow[]): Map<string, Pick<PreparedReadingMember, 'node' | 'event' | 'sources'>> {
+  const members = new Map<string, Pick<PreparedReadingMember, 'node' | 'event' | 'sources'>>();
+  for (const row of rows) {
+    const nodes = row.activityGroup?.items ?? row.nodes;
+    for (const [index, key] of (row.materializedMemberKeys ?? [row.key]).entries()) {
+      const node = nodes[index];
+      if (!node) continue;
+      const sources = row.sources.filter(source => source.position === (node.kind === 'activity' ? node.source?.position
+        : node.kind === 'assistant_turn' ? node.turn.assistantEvent.message.content[0]?.source?.position
+        : node.kind === 'user_message' ? node.persisted?.position : node.kind === 'semantic_event' ? node.event.source?.position
+        : node.kind === 'unmatched_tool_result' ? node.result.source?.position : undefined)
+        || (node.kind === 'activity' && node.item.type === 'tool-call-activity' && source.position === node.item.result?.source?.position));
+      members.set(key, {node, sources, event: row.items.find(event => event.source?.position === sources[0]?.position)});
+    }
   }
-  for (const [position, value] of plan.membership) membership.set(position, { ...value,
-    detailSources: byKey.get(value.memberKey)!.sources });
-  for (const [key, value] of plan.viewMembership) viewMembership.set(key, { ...value,
-    detailSources: byKey.get(value.memberKey)!.sources });
-  return { rows, membership, viewMembership, actionRuns, lastAssistantTurnId };
+  return members;
+}
+
+export function projectReadingRows(input: ReadingPreparationInput): ReadingProjection {
+  const prepared = prepareReadingMembers(input);
+  const plan: ReadingPlan = planReadingLayout({ ...input, members: prepared.members, lastAssistantTurnId: prepared.lastAssistantTurnId });
+  const byKey = new Map(prepared.members.map(member => [member.key, member]));
+  const membership = new Map<number, ReadingMembership>();
+  const viewMembership = new Map<string, ReadingMembership>();
+  for (const [position, value] of plan.membership) membership.set(position, { ...value, detailSources: byKey.get(value.memberKey)!.sources });
+  for (const [key, value] of plan.viewMembership) viewMembership.set(key, { ...value, detailSources: byKey.get(value.memberKey)!.sources });
+  return { rows: materializePreparedReadingRows(plan.rows, prepared.members), membership, viewMembership,
+    actionRuns: prepared.actionRuns, lastAssistantTurnId: prepared.lastAssistantTurnId };
 }
 
 export type ReadingRevealCommand = { token: string; target: ConversationSourceCoordinate; end?: false } | { token: string; target?: ConversationSourceCoordinate; end: true };
