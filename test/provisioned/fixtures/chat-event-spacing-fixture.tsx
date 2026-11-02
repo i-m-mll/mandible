@@ -7,10 +7,10 @@ import { MessageActions, MessageLinkContext, MessagePrimaryActionsContext } from
 import { ReadingRowView } from '../../../ui/src/chat/ReadingRowView';
 import type { ReadingRow } from '../../../ui/src/chat/readingProjection';
 
-const nestedRows: ReadingRow[] = [0, 1, 2, 3, 4].map(index => ({
-  key: `nested:${index}`, kind: index === 4 ? 'activity-summary' : 'content', isFinalResponse: false, protectedPositions: [], items: [], sources: [], actionGroup: { key: `turn:${index}`, start: index, end: index },
-  disclosureOwner: 'activity-group', activityMember: index < 3, activityEnd: index === 2, turnStart: index !== 1, turnEnd: index !== 1,
-  ...(index === 4 ? { activityGroup: { expanded: false, items: [], presentation: { summary: 'Parent tool activity', icon: 'terminal', hasDisclosure: true, defaultExpanded: false } } } : {}),
+const nestedRows: ReadingRow[] = [0, 1, 2, 3, 4, 5, 6].map(index => ({
+  key: `nested:${index}`, kind: index === 4 || index === 5 ? 'activity-summary' : 'content', isFinalResponse: false, protectedPositions: [], items: [], sources: [], actionGroup: { key: `turn:${index}`, start: index, end: index },
+  disclosureOwner: 'activity-group', activityMember: index < 3 || index === 6, activityEnd: index === 2 || index === 6, turnStart: index !== 1, turnEnd: index !== 1,
+  ...(index === 4 || index === 5 ? { activityGroup: { expanded: index === 5, items: [], presentation: { summary: 'Parent tool activity', icon: 'terminal', hasDisclosure: true, defaultExpanded: false } } } : {}),
   totalTokens: index === 2 ? 1234 : undefined,
   nodes: [{ kind: 'activity', key: `nested:${index}`, entity: 'assistant', item: index === 1
     ? { type: 'thinking-block-activity', content: 'Consider the shared header contract\nReasoning detail remains disclosed separately', sessionId: 'fixture' }
@@ -93,7 +93,7 @@ void (async () => {
     const nested = [...document.querySelectorAll<HTMLElement>('#nested [data-reading-key]')].map(row => ({ frame: box(row), header: box(row.querySelector('.compact-activity__row')!), rail: box(row.querySelector('.message-actions')!) }));
     const footer = final.querySelector<HTMLElement>('.message-actions--reply-footer')!;
     footer.querySelector<HTMLButtonElement>('[aria-label="Copy all"]')!.click(); footer.querySelector<HTMLButtonElement>('[aria-label="Open turn"]')!.click();
-    results.push({ width, entries, details: box(details), expandedWrapper: box(tool), header: box(header), calls: { ...calls }, nested,
+    results.push({ width, spacing: parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--space-2')), entries, details: box(details), expandedWrapper: box(tool), header: box(header), calls: { ...calls }, nested,
       final: { message: box(final.querySelector('.msg-text-block')!), footer: box(footer), opacity: getComputedStyle(footer).opacity, pointerEvents: getComputedStyle(footer).pointerEvents } });
     header.click(); await task();
   }

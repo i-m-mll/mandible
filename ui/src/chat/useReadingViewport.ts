@@ -156,8 +156,10 @@ export function useReadingViewport(input: {
   const cancel = useCallback(() => { finish('cancelled'); engine.cancelScroll(); }, [finish, engine]);
   const alignRegistered = useCallback((active: Command, element: HTMLElement, scroller: HTMLElement) => {
     engine.cancelScroll();
+    const pin = readerPin.current;
+    const target = active.preserveReaderPin && pin && pin.key === active.rowKey && pin.element?.isConnected ? pin.element : element;
     active.offset = Math.max(0, Math.min(scroller.scrollHeight - scroller.clientHeight,
-      scroller.scrollTop + element.getBoundingClientRect().top - scroller.getBoundingClientRect().top - (active.target?.offset ?? 0)));
+      scroller.scrollTop + target.getBoundingClientRect().top - scroller.getBoundingClientRect().top - (active.target?.offset ?? 0)));
     active.phase = 'align';
     engine.scrollToOffset(active.offset, { align: 'start', behavior: 'auto' });
     if (!active.preserveReaderPin) element.focus({ preventScroll: true });

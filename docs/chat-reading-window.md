@@ -298,9 +298,11 @@ This local correction does not rebuild the global index and yields to native
 input. Native scroll rounding is measured separately from content displacement.
 
 The shared renderer classifies compact non-message headers once for both their
-frame and body. Singleton tools, nested children and parent summaries have no
-turn/run-end spacer lines. Existing usage facts appear inline in their owning
-header; genuine short or expanded detail bodies retain their content. Disclosure
+frame and body. Each outer activity unit has one event-gap token before and after
+it. An expanded group summary owns the leading gap and its final child owns the
+trailing gap; intermediate children have no frame/body spacer. Message spacing
+stays independent. Existing usage facts appear inline in their owning header;
+genuine short or expanded detail bodies retain their content. Disclosure
 intent carries its actual triggering element to the viewport adapter. A mounted
 prepared target aligns directly from DOM, retaining the clicked header offset
 and focus without an intermediate index seek.

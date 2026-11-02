@@ -38,8 +38,11 @@ it('keeps real content and hidden action rails beside one another while disclosu
       expect(result.details.width, `${result.width}: disclosed tool details lost available width`).toBeCloseTo(result.expandedWrapper.width, 1);
       expect(result.details.top).toBeGreaterThanOrEqual(result.header.bottom);
       for (const name of ['copy', 'open', 'link', 'info', 'local-copy', 'shift-select']) expect(result.calls[name]).toBe(results.indexOf(result) + 1);
-      for (const child of result.nested) expect(child.frame.height, `${result.width}: a collapsed nested activity acquired spacer lines`).toBeCloseTo(Math.max(child.header.height, child.rail.height), 1);
-      for (let index = 1; index < result.nested.length; index++) expect(result.nested[index].header.top - result.nested[index - 1].header.top).toBeCloseTo(result.nested[index - 1].frame.height, 1);
+      const outerGaps = [[0, 0], [0, 0], [0, 1], [1, 1], [1, 1], [1, 0], [0, 1]];
+      for (const [index, child] of result.nested.entries()) {
+        expect(child.header.top - child.frame.top, `${result.width}: wrong outer leading separation`).toBeCloseTo(outerGaps[index][0] * result.spacing, 1);
+        expect(child.frame.bottom - child.header.bottom, `${result.width}: wrong outer trailing separation`).toBeCloseTo(outerGaps[index][1] * result.spacing, 1);
+      }
       expect(result.final.footer.top).toBeGreaterThanOrEqual(result.final.message.bottom);
       expect(result.final.opacity).toBe('1'); expect(result.final.pointerEvents).toBe('auto');
       expect(result.calls['final-copy']).toBe(results.indexOf(result) + 1); expect(result.calls['final-open']).toBe(results.indexOf(result) + 1);

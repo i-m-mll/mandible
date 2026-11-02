@@ -229,6 +229,10 @@ export function MessageActions({
               role="menu"
               popover="manual"
               style={overflowMenuStyle}
+              onPointerMove={event => {
+                const item = (event.target as Element).closest<HTMLButtonElement>('button[role="menuitem"],button[role="menuitemcheckbox"]');
+                if (item && !item.disabled && event.currentTarget.contains(item) && item.ownerDocument.activeElement !== item) item.focus({ preventScroll: true });
+              }}
             >
               {variant === 'menu' && selectAction && (
                 <button type="button" className="message-actions__overflow-item" role="menuitemcheckbox" aria-checked={isSelected}
