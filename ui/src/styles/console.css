@@ -894,7 +894,7 @@
   .stream-renderer__scroll:focus-within::-webkit-scrollbar-thumb { background: var(--text-chrome-faint); }
 }
 
-.stream-renderer__top-fade { z-index: 1; }
+.stream-renderer__top-fade { height: 2.7em; z-index: 1; }
 
 .stream-renderer__virtual-canvas {
   max-width: var(--chat-stream-max-width, none);
