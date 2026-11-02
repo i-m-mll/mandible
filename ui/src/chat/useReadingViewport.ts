@@ -13,11 +13,13 @@ const targetCoordinateKey = (target: ConversationSourceCoordinate): string => JS
 const targetRegistrationKey = (target: ConversationSourceCoordinate, rowKey: string): string => JSON.stringify([rowKey, targetCoordinateKey(target)]);
 const attainableRowOffset = (offset: number, size: number, viewport: number) => Math.max(1 - size, Math.min(offset, Math.max(0, viewport - 1)));
 type Engine = Virtualizer<HTMLDivElement, HTMLDivElement>;
+export type ReadingSummaryTarget = { rowKey: string; disclosureOwner: string };
 type Command = {
   token: string;
   origin?: ReadingNavigationOrigin;
   scope: string;
   positionSpaceId: string;
+  summary?: ReadingSummaryTarget;
   target?: ConversationSourceCoordinate;
   controller: AbortController;
   phase: 'prepare' | 'materialize' | 'align' | 'end' | 'row';
@@ -39,7 +41,7 @@ export function useReadingViewport(input: {
   geometry: ReadingGeometry | null;
   protectedKeys: ReadonlySet<string>;
   disclosures: Readonly<Record<string, boolean>>;
-  prepare: (target: ConversationSourceCoordinate, signal: AbortSignal, token: string) => Promise<
+  prepare: (target: ConversationSourceCoordinate, signal: AbortSignal, token: string, summary?: ReadingSummaryTarget) => Promise<
     { status: 'prepared'; rowKey: string } | { status: 'source-unavailable' | 'position-space-changed' | 'not-renderable' }>;
   onApplied: (rows: readonly import('./readingMeasurement').MeasurementRow[]) => void;
   onRange: (start: number, end: number, refs: readonly import('./readingMeasurement').MeasurementRow[]) => void;
@@ -165,7 +167,7 @@ export function useReadingViewport(input: {
       const pin = active.preserveReaderPin ? readerPin.current : null;
       const pinRect = pin?.element?.isConnected ? pin.element.getBoundingClientRect() : undefined;
       snapshot.observeNavigation({ event: 'terminal', origin: active.origin, token: active.token, scope: active.scope, positionSpaceId: active.positionSpaceId,
-        target: active.target, status, currentScope: snapshot.scope, currentPositionSpaceId: snapshot.positionSpaceId, currentToken: snapshot.commandToken,
+        target: active.target, summary: active.summary, status, currentScope: snapshot.scope, currentPositionSpaceId: snapshot.positionSpaceId, currentToken: snapshot.commandToken,
         terminal: { reason, phase: active.phase, rowKey: active.rowKey, preserveReaderPin: active.preserveReaderPin, pinOffset: pin?.offset,
           pinRect: pinRect && { top: pinRect.top, bottom: pinRect.bottom }, wantedOffset: active.offset, scrollTop: scroller?.scrollTop,
           maxOffset: scroller ? Math.max(0, scroller.scrollHeight - scroller.clientHeight) : undefined, scrolling: engine.isScrolling,
@@ -231,13 +233,13 @@ export function useReadingViewport(input: {
       persist(engine);
     });
   };
-  const reveal = useCallback(async (request: ((ReadingRevealCommand & { preserveReaderPin?: boolean }) | { token: string; restore: ReadingRestore }) & { origin?: ReadingNavigationOrigin }): Promise<ReadingRevealResult> => {
+  const reveal = useCallback(async (request: ((ReadingRevealCommand & { preserveReaderPin?: boolean; summary?: ReadingSummaryTarget }) | { token: string; restore: ReadingRestore }) & { origin?: ReadingNavigationOrigin }): Promise<ReadingRevealResult> => {
     cancel(); if (!('preserveReaderPin' in request && request.preserveReaderPin)) { readerPin.current = null; setPinKeys(new Set()); }
     return new Promise(resolve => {
       const active: Command = { ...request, scope: current.current.scope, positionSpaceId: current.current.positionSpaceId, controller: new AbortController(), phase: 'prepare', finish: resolve };
       command.current = active;
       current.current.observeNavigation?.({ event: 'start', origin: active.origin, token: active.token, scope: active.scope, positionSpaceId: active.positionSpaceId,
-        target: active.target, currentScope: current.current.scope, currentPositionSpaceId: current.current.positionSpaceId, currentToken: current.current.commandToken });
+        target: active.target, summary: active.summary, currentScope: current.current.scope, currentPositionSpaceId: current.current.positionSpaceId, currentToken: current.current.commandToken });
       const deadline = setTimeout(() => { if (command.current === active) finish('unsuccessful', 'deadline'); }, 10000);
       active.controller.signal.addEventListener('abort', () => clearTimeout(deadline), { once: true });
       if ('restore' in request) {
@@ -261,7 +263,7 @@ export function useReadingViewport(input: {
         notify.current();
         return;
       }
-      void current.current.prepare(request.target, active.controller.signal, request.token).then(result => {
+      void current.current.prepare(request.target, active.controller.signal, request.token, request.summary).then(result => {
         if (command.current !== active) return;
         if (result.status !== 'prepared') { finish(result.status, 'preparation'); return; }
         active.rowKey = result.rowKey;
