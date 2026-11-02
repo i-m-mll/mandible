@@ -15,6 +15,17 @@ export function plainActivityParts(item: ActivityItem): string[] {
     .filter(Boolean);
 }
 
+/** Only an authored leading heading supplies a reasoning title. */
+export function presentReasoning(parts: readonly string[]): { summary: string; details: string[]; hasBody: boolean } {
+  const nonempty = parts.map(part => part.trim()).filter(Boolean);
+  const first = nonempty[0] ?? '';
+  const heading = /^(?:\*\*([^\n]+?)\*\*|__([^\n]+?)__|#{1,6}[ \t]+([^\n]+?))[ \t]*(?:\r?\n|$)/.exec(first);
+  const summary = heading ? plainActivityHeader(heading[1] ?? heading[2] ?? heading[3]).trim() : 'Thought';
+  const remainder = heading ? first.slice(heading[0].length).trim() : first;
+  const details = [remainder || first, ...nonempty.slice(1)].filter(Boolean).map(plainActivityHeader);
+  return { summary, details, hasBody: nonempty.length > 0 };
+}
+
 export type ActivityDetail = string
   | { kind: 'citation'; ref: string; note: string | null }
   | { kind: 'created-thread'; identity: 'threadId' | 'clientThreadId'; providerSessionId: string };
@@ -47,8 +58,8 @@ function activityDetails(item: DisplayActivityItem, parts: readonly string[]): A
     }];
   }
   if (item.type === 'tool-call-activity') return [];
-  if (item.type === 'thinking-block-activity') return item.content.trim() ? [item.content.trim()] : [];
-  if (item.activity_kind === 'thinking') return [...parts.slice(1)];
+  if (item.type === 'thinking-block-activity') return presentReasoning([item.content]).details;
+  if (item.activity_kind === 'thinking' || item.activity_kind === 'reasoning-summary') return presentReasoning(item.parts.map(part => part.text)).details;
   const details = [...parts.slice(1)];
   if (item.tool_name) details.push(`Tool: ${item.tool_name}`);
   if (item.elapsed_ms !== undefined) details.push(`${item.elapsed_ms.toLocaleString()} ms`);
@@ -72,7 +83,8 @@ function activitySummary(item: DisplayActivityItem, parts: readonly string[], st
     const execution = item.execution ?? presentation.execution;
     return execution?.kind === 'command' ? execution.count === 1 ? 'Ran command' : 'Ran several commands' : presentation.phrase;
   }
-  if (item.type === 'thinking-block-activity') return 'Thought';
+  if (item.type === 'thinking-block-activity') return presentReasoning([item.content]).summary;
+  if (item.activity_kind === 'thinking' || item.activity_kind === 'reasoning-summary') return presentReasoning(item.parts.map(part => part.text)).summary;
   const base = parts[0] ?? ACTIVITY_LABELS[item.activity_kind];
   return [...new Set([base, ...state])].join(' · ');
 }

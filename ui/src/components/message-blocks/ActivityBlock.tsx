@@ -1,10 +1,11 @@
 import { Icon } from '../icons/Icon';
 import type { ComponentChildren } from 'preact';
 import { CompactActivityRow } from '../shared/ChatDisclosure';
+import { ReasoningDetails } from '../shared/ReasoningDetails';
 import type { DisplayActivityItem } from '../stream-renderer/types';
 
 import { plainActivityHeader } from './activityText';
-import { activityIconName, presentActivityItems, activityDetailLines, summarizeActivityRun, type ActivityDetail } from '../../../../src/presentation/activity-presentation';
+import { activityIconName, presentActivityItems, presentReasoning, activityDetailLines, summarizeActivityRun, type ActivityDetail } from '../../../../src/presentation/activity-presentation';
 export { plainActivityParts, presentActivityItems } from '../../../../src/presentation/activity-presentation';
 export type { ActivityPresentation } from '../../../../src/presentation/activity-presentation';
 
@@ -61,9 +62,11 @@ export function ActivityRow({ item, expanded, onExpandedChange, onCreatedTaskNav
 }): JSX.Element {
   const presentation = presentActivityItems([item])[0];
   const lines = activityDetailLines([presentation]);
+  const reasoning = item.type === 'activity' && (item.activity_kind === 'thinking' || item.activity_kind === 'reasoning-summary')
+    ? presentReasoning(item.parts.map(part => part.text)) : undefined;
   const disclosure = lines.length > 0 || detailsAvailable
     ? {
-        content: <ActivityDetails lines={lines} onCreatedTaskNavigate={onCreatedTaskNavigate} />,
+        content: reasoning ? <ReasoningDetails parts={reasoning.details} /> : <ActivityDetails lines={lines} onCreatedTaskNavigate={onCreatedTaskNavigate} />,
         regionLabel: `${presentation.summary} details`,
         expanded,
         onExpandedChange,
