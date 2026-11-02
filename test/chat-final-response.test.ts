@@ -115,7 +115,9 @@ it('preserves saved final phases and suppresses only empty completion metadata a
   const records = [
     {type: 'session_meta', payload: {id: 'session'}},
     {type: 'response_item', payload: {type: 'message', role: 'assistant', phase: 'final_answer', content: [{type: 'output_text', text: 'SAVED FINAL BODY'}]}},
-    {type: 'event_msg', payload: {type: 'task_complete', message: null, reason: null, turn_id: 'turn'}},
+    {type: 'event_msg', payload: {type: 'task_complete', message: null, reason: null, turn_id: 'turn',
+      last_agent_message: 'SAVED FINAL BODY', started_at: '2026-11-02T12:00:00Z', completed_at: '2026-11-02T12:00:01Z',
+      duration_ms: 1000, time_to_first_token_ms: 100}},
     {type: 'event_msg', payload: {type: 'task_complete', message: '', reason: 'Keep this completion reason', turn_id: 'turn'}},
     {type: 'event_msg', payload: {type: 'task_complete', message: 'Keep this message', reason: 'Keep this separate reason'}},
     {type: 'event_msg', payload: {type: 'task_complete', usage: {input: 1, output: 2}}},
@@ -137,6 +139,7 @@ it('preserves saved final phases and suppresses only empty completion metadata a
     const visible = (value: typeof events) => buildStreamState(value, true).nodes.flatMap(node =>
       node.kind === 'activity' ? [node.source?.position] : []);
     expect(visible(events)).toEqual([2, 3, 4, 5, 6]);
+    expect(full.rows.filter(row => row.kind === 'activity-summary').some(row => row.sourcePositions.includes(1))).toBe(false);
     expect(visible(defaultDisplayEventsFromBlocks(blocks, 'conversation'))).toEqual([2, 3, 4, 5, 6]);
     const projected = blocks.map(block => projectDisplayBlock({...block, id: `cblk:conversation:${block.position}`, conversation_id: 'conversation', metadata_json: JSON.stringify(block.metadata), locator: null}));
     expect(JSON.stringify(projected)).not.toContain('Keep this separate reason');
