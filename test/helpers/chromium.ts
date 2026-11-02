@@ -9,6 +9,7 @@
  */
 import { spawn, spawnSync, type SpawnOptions, type SpawnSyncOptions } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import type { BrowserType } from 'playwright-core';
 
 const CANDIDATES = [
   process.env.CHROME_BIN,
@@ -53,4 +54,8 @@ export function runChromium(args: readonly string[], options: Omit<SpawnSyncOpti
 
 export function spawnChromium(args: readonly string[], options: SpawnOptions = {}) {
   return spawn(chromiumBinary(), chromiumArgs(args), options);
+}
+
+export function launchTestBrowser(engine: BrowserType) {
+  return engine.launch({ headless: true, timeout: 10000, args: engine.name() === 'chromium' ? [...ISOLATION_FLAGS] : undefined });
 }

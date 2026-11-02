@@ -14,7 +14,7 @@ let viewport: ReturnType<typeof useReadingViewport>;
 let frames = new Map<number, FrameRequestCallback>();
 let nextFrame = 0;
 const coordinate = { conversationId: 'conv', positionSpaceId: 'space', position: 42 };
-const rows: ReadingRow[] = [{ key: 'exact-row', kind: 'content', protectedPositions: [42], items: [], nodes: [], sources: [{ blockId: 'cblk:conv:42', position: 42 }], actionGroup: { key: 'scope', start: 0, end: 99 }, disclosureOwner: null }];
+const rows: ReadingRow[] = [{ key: 'exact-row', kind: 'content', isFinalResponse: false, protectedPositions: [42], items: [], nodes: [], sources: [{ blockId: 'cblk:conv:42', position: 42 }], actionGroup: { key: 'scope', start: 0, end: 99 }, disclosureOwner: null }];
 const geometry = { membership: new Map<string, { rowKey: string; position?: number | null }>([['exact-row', { rowKey: 'exact-row', position: 42 }]]), rowMembers: new Map<string, readonly string[]>([['exact-row', ['exact-row']]]), scope: 'conv', rows: rows.map(row => ({ key: row.key, revision: '1' })), sizes: [100], exact: true, serial: 1, layout: { width: 600, styleIdentity: 'test', fonts: [] }, renderProps: () => ({} as any) };
 const rect = (top: number, height: number) => ({ top, bottom: top + height, height, left: 0, right: 600, width: 600, x: 0, y: top, toJSON: () => ({}) } as DOMRect);
 function Harness({ prepare, space = 'space', scope = 'conv', initializing = false, vector = geometry, disclosures = {}, clearance = 123 }: { clearance?: number; disclosures?: Record<string, boolean>; vector?: typeof geometry; scope?: string; initializing?: boolean; prepare: Parameters<typeof useReadingViewport>[0]['prepare']; space?: string;  }) {
@@ -67,7 +67,7 @@ it('restores an explicit collapse and preserves saved positive disclosure intent
   expect(readReadingState('conv')?.disclosures).toEqual({ 'activity:tool': true });
 });
 
-it('prepares, materializes and aligns once, then requires measured visibility and settlement', async () => {
+it('aligns an already-mounted prepared target without an intermediate index seek, then requires settlement', async () => {
   const prepare = vi.fn(async () => ({ status: 'prepared' as const, rowKey: 'exact-row' }));
   render(<Harness prepare={prepare} />);
   const { target } = connect();
@@ -75,9 +75,9 @@ it('prepares, materializes and aligns once, then requires measured visibility an
   let result: ReadingRevealResult | undefined;
   await act(async () => { void viewport.reveal({ token: 'exact', target: coordinate }).then(value => { result = value; }); });
   expect(prepare).toHaveBeenCalledWith(coordinate, expect.any(AbortSignal), 'exact');
-  expect(boundary.calls).toEqual(['cancel', 'index']);
+  expect(boundary.calls).toEqual(['cancel', 'cancel', 'offset']);
   await frame();
-  expect(boundary.calls).toEqual(['cancel', 'index', 'cancel', 'offset']);
+  expect(boundary.calls).toEqual(['cancel', 'cancel', 'offset']);
   expect(focus).toHaveBeenCalledWith({ preventScroll: true });
   await frame();
   expect(result).toBeUndefined();

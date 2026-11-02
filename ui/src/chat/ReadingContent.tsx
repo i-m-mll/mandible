@@ -2,7 +2,7 @@ import { readingContentBlockDisclosureKey, readingNodeDisclosures, readingThinki
 import type { JSX } from 'preact/jsx-runtime';
 import type { PersistedBlockSource, RenderNode } from '../components/stream-renderer/types';
 import { MessageGroup } from '../components/stream-renderer/MessageGroup';
-import { MessageActions, MessageLinkContext, MessagePrimaryActionsContext, type MessagePrimaryAction } from '../components/shared/MessageActions';
+import { MessageActions, MessageActionsVariantContext, MessageLinkContext, MessagePrimaryActionsContext, type MessagePrimaryAction } from '../components/shared/MessageActions';
 import { TurnGroup } from '../components/message-blocks/TurnGroup';
 import { UserBubble } from '../components/message-blocks/UserBubble';
 import { SemanticEventBlock, UnmatchedToolResultBlock } from '../components/message-blocks/SemanticEventBlock';
@@ -11,15 +11,16 @@ import { ThinkingBlock } from '../components/message-blocks/ThinkingBlock';
 import { ToolUseBlock } from '../components/message-blocks/ToolUseBlock';
 import type { ReadingRow } from './readingProjection';
 import type { ChatSurfaceProps } from './ChatSurface';
+import { isCompactReadingRow } from './readingRowPresentation';
 
 export type ReadingContentProps = ChatSurfaceProps & {
   row: ReadingRow;
   expandedBlocks: Readonly<Record<string, boolean>>;
-  setBlockExpanded: (id: string, expanded: boolean, sources?: readonly (PersistedBlockSource | undefined)[]) => void;
+  setBlockExpanded: (id: string, expanded: boolean, sources?: readonly (PersistedBlockSource | undefined)[], trigger?: HTMLElement) => void;
   preparing: boolean;
   primaryActions: MessagePrimaryAction[];
   lastAssistantTurnId?: string;
-  onActivityGroupExpandedChange: (expanded: boolean) => void;
+  onActivityGroupExpandedChange: (expanded: boolean, trigger?: HTMLElement) => void;
 };
 export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparing, primaryActions,
   lastAssistantTurnId,
@@ -27,6 +28,7 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
   streaming, selectedMessageId, sessionInfo, onToggleBlockSelect, selectedBlockIds, selectMode,
   onFork, onResume, onCreatedTaskNavigate }: ReadingContentProps): JSX.Element {
   const nodes = row.nodes;
+  const compact = isCompactReadingRow(row);
   function renderNodeBody(node: RenderNode, memberRef?: string): JSX.Element | null {
     switch (node.kind) {
       case 'transcript_boundary': return null;
@@ -38,7 +40,7 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
             className="message-block-wrapper contextual-action-owner"
             data-block-id={source?.blockId}
           >
-            <UserBubble text={node.text} provider={sessionInfo?.backend} getDisclosureExpanded={key => preparing || expandedBlocks[`${node.key}:${key}`]} onDisclosureExpandedChange={(key, next) => setBlockExpanded(`${node.key}:${key}`, next, row.sources)} />
+            <UserBubble text={node.text} provider={sessionInfo?.backend} getDisclosureExpanded={key => preparing || expandedBlocks[`${node.key}:${key}`]} onDisclosureExpandedChange={(key, next, trigger) => setBlockExpanded(`${node.key}:${key}`, next, row.sources, trigger)} />
             <MessageActions
               blockId={source?.blockId}
               onSelect={source && onToggleBlockSelect ? (shiftKey) => onToggleBlockSelect(source.blockId, shiftKey) : undefined}
@@ -59,12 +61,13 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
           <div key={node.key} className="message-block-wrapper" data-block-id={source?.blockId}>
             <SemanticEventBlock
               kind={node.event.semantic_kind}
+              headerMetadata={compact ? footer : undefined}
               content={node.event.content}
               label={node.event.label}
               isError={node.event.is_error}
               expanded={preparing || expandedBlocks[readingNodeDisclosures(node).keys[0]]}
               detailsAvailable={source?.detailsLoaded === false}
-              onExpandedChange={next => setBlockExpanded(readingNodeDisclosures(node).keys[0], next, [source])}
+              onExpandedChange={(next, trigger) => setBlockExpanded(readingNodeDisclosures(node).keys[0], next, [source], trigger)}
             />
             <MessageActions
               blockId={source?.blockId}
@@ -84,9 +87,10 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
           <div key={node.key} className="message-block-wrapper" data-block-id={source?.blockId}>
             <UnmatchedToolResultBlock
               result={node.result}
+              headerMetadata={compact ? footer : undefined}
               unmatched={!source?.parentBlockId}
               expanded={preparing || expandedBlocks[disclosureKey]}
-              onExpandedChange={(next) => setBlockExpanded(disclosureKey, next, [source])}
+              onExpandedChange={(next, trigger) => setBlockExpanded(disclosureKey, next, [source], trigger)}
             />
             <MessageActions
               blockId={source?.blockId}
@@ -112,6 +116,7 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
           activity = (
             <ToolUseBlock
               toolName={node.item.name}
+              headerMetadata={compact ? footer : undefined}
               toolKind={node.item.toolKind}
               toolUseId={node.item.id}
               active={readingToolExecutionActive(node.item.executionActive, { streaming, lastAssistantTurnId })}
@@ -121,7 +126,7 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
               result={node.item.result}
               defaultExpanded={false}
               expanded={expanded}
-              onExpandedChange={(next) => setBlockExpanded(disclosureKey, next, [source, resultSource])}
+              onExpandedChange={(next, trigger) => setBlockExpanded(disclosureKey, next, [source, resultSource], trigger)}
               resultSelected={resultSource ? selectedBlockIds?.has(resultSource.blockId) : false}
               selectMode={selectMode}
               onToggleResultSelect={resultSource && onToggleBlockSelect
@@ -135,19 +140,21 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
           activity = (
             <ThinkingBlock
               content={node.item.content}
+              headerMetadata={compact ? footer : undefined}
               defaultCollapsed={!defaultExpanded}
               expanded={expanded}
               detailsAvailable={source?.detailsLoaded === false}
-              onExpandedChange={(next) => setBlockExpanded(disclosureKey, next, [source])}
+              onExpandedChange={(next, trigger) => setBlockExpanded(disclosureKey, next, [source], trigger)}
             />
           );
         } else {
           activity = (
             <ActivityRow
               item={node.item}
+              headerMetadata={compact ? footer : undefined}
               expanded={expanded}
               detailsAvailable={source?.detailsLoaded === false && source.hasBody !== false}
-              onExpandedChange={(next) => setBlockExpanded(disclosureKey, next, [source])}
+              onExpandedChange={(next, trigger) => setBlockExpanded(disclosureKey, next, [source], trigger)}
               onCreatedTaskNavigate={onCreatedTaskNavigate}
             />
           );
@@ -180,15 +187,16 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
           >
             <MessageGroup
               turn={turn}
+              headerMetadata={compact ? footer : undefined}
               defaultThinkingExpanded={defaultThinkingExpanded}
               getBlockExpanded={(contentBlock, index, defaultExpanded) => (
                 preparing || (expandedBlocks[readingContentBlockDisclosureKey(turn.id, contentBlock, index)] ?? defaultExpanded)
               )}
-              onBlockExpandedChange={(contentBlock, index, expanded, relatedSources = []) => (
-                setBlockExpanded(readingContentBlockDisclosureKey(turn.id, contentBlock, index), expanded, [contentBlock.source, ...relatedSources])
+              onBlockExpandedChange={(contentBlock, index, expanded, relatedSources = [], trigger) => (
+                setBlockExpanded(readingContentBlockDisclosureKey(turn.id, contentBlock, index), expanded, [contentBlock.source, ...relatedSources], trigger)
               )}
               getDisclosureExpanded={(id, defaultExpanded) => preparing || (expandedBlocks[`${node.key}:${id}`] ?? defaultExpanded)}
-              onDisclosureExpandedChange={(id, expanded) => setBlockExpanded(`${node.key}:${id}`, expanded, row.sources)}
+              onDisclosureExpandedChange={(id, expanded, trigger) => setBlockExpanded(`${node.key}:${id}`, expanded, row.sources, trigger)}
               selectedBlockIds={selectedBlockIds}
               selectMode={selectMode}
               onToggleBlockSelect={onToggleBlockSelect}
@@ -205,10 +213,11 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
   }
 
   const speaker = row.activityGroup?.items[0]?.entity ?? nodes.find(node => node.kind !== 'transcript_boundary')?.entity ?? 'assistant';
-  const footer = row.totalTokens === undefined ? undefined : <span className="turn-group__stats">{row.totalTokens.toLocaleString()} tokens</span>;
+  const footer = row.totalTokens === undefined ? undefined : <span className="turn-group__stats" title={`${row.totalTokens.toLocaleString()} tokens`}>{row.totalTokens.toLocaleString()} tokens</span>;
   const body = row.activityGroup ? <div className="message-block-wrapper"><ActivityGroup
         items={row.activityGroup.items.map(node => node.item)}
         presentation={row.activityGroup.presentation}
+    headerMetadata={compact ? footer : undefined}
         active={streaming && row.activityGroup.items.some(node => node.item.type === 'tool-call-activity' && node.item.executionActive)}
         expanded={row.activityGroup.expanded}
         onExpandedChange={onActivityGroupExpandedChange}
@@ -216,8 +225,8 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
         renderMember={() => null}
         externalMembers
       /></div> : nodes.map(node => renderNodeBody(node));
-  return <MessagePrimaryActionsContext.Provider value={primaryActions}>
-    {row.activityMember ? <div className="activity-details activity-group__members">{body}{footer}</div>
+  return <MessageActionsVariantContext.Provider value={row.isFinalResponse ? 'reply-footer' : 'menu'}><MessagePrimaryActionsContext.Provider value={primaryActions}>
+    {compact ? <div className="reading-compact-row">{body}</div>
       : <TurnGroup speaker={speaker} footer={footer}>{body}</TurnGroup>}
-  </MessagePrimaryActionsContext.Provider>;
+  </MessagePrimaryActionsContext.Provider></MessageActionsVariantContext.Provider>;
 }

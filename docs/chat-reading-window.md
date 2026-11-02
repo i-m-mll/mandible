@@ -297,6 +297,22 @@ commits, before paint, using the native offset plus the actual glyph displacemen
 This local correction does not rebuild the global index and yields to native
 input. Native scroll rounding is measured separately from content displacement.
 
+The shared renderer classifies compact non-message headers once for both their
+frame and body. Singleton tools, nested children and parent summaries have no
+turn/run-end spacer lines. Existing usage facts appear inline in their owning
+header; genuine short or expanded detail bodies retain their content. Disclosure
+intent carries its actual triggering element to the viewport adapter. A mounted
+prepared target aligns directly from DOM, retaining the clicked header offset
+and focus without an intermediate index seek.
+
+Ordinary event actions use one context menu with no inline margin. Pre-existing
+selection and more-specific controls or menus retain native behavior. Read-only
+secondary-pointer evidence distinguishes a browser's same-gesture automatic word
+selection from pre-existing selection; keyboard invocation uses current selection.
+Menu positioning uses viewport coordinates independently of transformed row
+ancestry. Only the provider-backed `isFinalResponse` fragment receives the visible
+full action footer below its message, using the existing callbacks.
+
 Native drag, touch, momentum and scrolling keys defer queued geometry; the
 newest compatible transaction uses the current reader anchor when interaction
 settles. New input cancels obsolete explicit navigation and captured anchors.

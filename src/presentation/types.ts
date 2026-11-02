@@ -302,13 +302,13 @@ export type DisplayGroup = {
 // FileEditBlockProps have moved to ../message-blocks/. These types remain here
 // only for backward compatibility with imports from this module.
 
-export interface MessageGroupProps {
+export interface MessageGroupProps<DisclosureTrigger = never> {
   turn: RenderedTurn;
   defaultThinkingExpanded: boolean;
   getBlockExpanded?: (block: ContentBlock, index: number, defaultExpanded: boolean) => boolean;
-  onBlockExpandedChange?: (block: ContentBlock, index: number, expanded: boolean, relatedSources?: PersistedBlockSource[]) => void;
+  onBlockExpandedChange?: (block: ContentBlock, index: number, expanded: boolean, relatedSources?: PersistedBlockSource[], trigger?: DisclosureTrigger) => void;
   getDisclosureExpanded?: (id: string, defaultExpanded: boolean) => boolean;
-  onDisclosureExpandedChange?: (id: string, expanded: boolean) => void;
+  onDisclosureExpandedChange?: (id: string, expanded: boolean, trigger?: DisclosureTrigger) => void;
   selectedBlockIds?: ReadonlySet<string>;
   selectMode?: boolean;
   onToggleBlockSelect?: (blockId: string, shiftKey: boolean) => void;

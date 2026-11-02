@@ -1,4 +1,6 @@
 import { useState } from 'preact/hooks';
+import type { ComponentChildren } from 'preact';
+import { CompactActivityRow } from '../shared/ChatDisclosure';
 import type { ToolResultContentBlock } from '../stream-renderer/types';
 import { extractResultText } from './ToolUseBlock';
 
@@ -11,6 +13,7 @@ export function SemanticEventBlock({
   detailsAvailable = false,
   expanded,
   onExpandedChange,
+  headerMetadata,
 }: {
   kind: 'system' | 'event' | 'tool_result';
   content: string;
@@ -19,7 +22,8 @@ export function SemanticEventBlock({
   unmatched?: boolean;
   detailsAvailable?: boolean;
   expanded?: boolean;
-  onExpandedChange?: (expanded: boolean) => void;
+  onExpandedChange?: (expanded: boolean, trigger?: HTMLElement) => void;
+  headerMetadata?: ComponentChildren;
 }): JSX.Element {
   const [localExpanded, setLocalExpanded] = useState(false);
   const isExpanded = expanded ?? localExpanded;
@@ -29,35 +33,22 @@ export function SemanticEventBlock({
       ? 'System'
       : kind === 'tool_result' ? (isError ? 'Tool error' : 'Tool result') : (isError ? 'Error event' : 'Event');
   const canCollapse = content.length > 500 || detailsAvailable;
-  const visible = isExpanded || !canCollapse ? content : `${content.slice(0, 500).trimEnd()}…`;
-
-  return (
-    <details className={`semantic-event${isError ? ' semantic-event--error' : ''}`} open={isExpanded || !canCollapse}>
-      <summary
-        className="semantic-event__summary"
-        onClick={(event) => {
-          if (!canCollapse) event.preventDefault();
-          else {
-            event.preventDefault();
-            const next = !isExpanded;
-            if (expanded === undefined) setLocalExpanded(next);
-            onExpandedChange?.(next);
-          }
-        }}
-      >
-        <span>{title}</span>
-        {label && <span className="semantic-event__label">{label}</span>}
-      </summary>
-      <pre className="semantic-event__content">{visible}</pre>
-    </details>
-  );
+  const body = <pre className="semantic-event__content">{content}</pre>;
+  return <div className={`semantic-event-block${isError ? ' semantic-event--error' : ''}`}>
+    <CompactActivityRow summary={title} metadata={label || headerMetadata ? <>{label && <span className="semantic-event__label">{label}</span>}{headerMetadata}</> : undefined}
+      disclosure={canCollapse ? { content: body, regionLabel: `${title} details`, expanded: isExpanded, onExpandedChange: (next, trigger) => {
+        if (expanded === undefined) setLocalExpanded(next); onExpandedChange?.(next, trigger);
+      } } : undefined} />
+    {!canCollapse && body}
+  </div>;
 }
 
-export function UnmatchedToolResultBlock({ result, expanded, onExpandedChange, unmatched = true }: {
+export function UnmatchedToolResultBlock({ result, expanded, onExpandedChange, unmatched = true, headerMetadata }: {
   result: ToolResultContentBlock;
   unmatched?: boolean;
   expanded?: boolean;
-  onExpandedChange?: (expanded: boolean) => void;
+  onExpandedChange?: (expanded: boolean, trigger?: HTMLElement) => void;
+  headerMetadata?: ComponentChildren;
 }): JSX.Element {
   return (
     <SemanticEventBlock
@@ -68,6 +59,7 @@ export function UnmatchedToolResultBlock({ result, expanded, onExpandedChange, u
       detailsAvailable={result.source?.detailsLoaded === false}
       expanded={expanded}
       onExpandedChange={onExpandedChange}
+      headerMetadata={headerMetadata}
     />
   );
 }

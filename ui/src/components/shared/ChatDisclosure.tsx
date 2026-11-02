@@ -7,7 +7,7 @@ export type CompactActivityDisclosure = {
   regionLabel: string;
   expanded?: boolean;
   defaultExpanded?: boolean;
-  onExpandedChange?: (expanded: boolean) => void;
+  onExpandedChange?: (expanded: boolean, trigger?: HTMLElement) => void;
 };
 
 export type CompactActivityRowProps = {
@@ -17,6 +17,7 @@ export type CompactActivityRowProps = {
   className?: string;
   memberRefs?: string;
   actions?: ComponentChildren;
+  metadata?: ComponentChildren;
 };
 
 /** The sole compact row geometry for tool and provider activity. */
@@ -27,6 +28,7 @@ export function CompactActivityRow({
   className = '',
   memberRefs,
   actions,
+  metadata,
 }: CompactActivityRowProps): JSX.Element {
   const [localExpanded, setLocalExpanded] = useState(disclosure?.defaultExpanded ?? false);
   const isExpanded = disclosure?.expanded ?? localExpanded;
@@ -51,6 +53,7 @@ export function CompactActivityRow({
     <>
       {icon ? <span className="compact-activity__icon" aria-hidden="true">{icon}</span> : null}
       <span className="compact-activity__summary" title={summary}>{summary}</span>
+      {metadata ? <span className="compact-activity__metadata">{metadata}</span> : null}
       {disclosure ? (
         <span className="compact-activity__chevron" aria-hidden="true">
           <DisclosureChevronIcon expanded={isExpanded} />
@@ -65,10 +68,10 @@ export function CompactActivityRow({
     return <div className={rootClass}>{heading(<div className={rowClass} data-member-refs={memberRefs}>{rowContent}</div>)}</div>;
   }
 
-  const toggle = (): void => {
+  const toggle = (event: MouseEvent): void => {
     const next = !isExpanded;
     if (disclosure.expanded === undefined) setLocalExpanded(next);
-    disclosure.onExpandedChange?.(next);
+    disclosure.onExpandedChange?.(next, event.currentTarget as HTMLElement);
   };
 
   return (

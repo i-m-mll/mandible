@@ -1,4 +1,5 @@
 import { Icon } from '../icons/Icon';
+import type { ComponentChildren } from 'preact';
 import { CompactActivityRow } from '../shared/ChatDisclosure';
 import type { DisplayActivityItem } from '../stream-renderer/types';
 
@@ -49,13 +50,14 @@ function ActivityDetails({ lines, onCreatedTaskNavigate }: {
   );
 }
 
-export function ActivityRow({ item, expanded, onExpandedChange, onCreatedTaskNavigate, memberRefs, detailsAvailable = false }: {
+export function ActivityRow({ item, expanded, onExpandedChange, onCreatedTaskNavigate, memberRefs, detailsAvailable = false, headerMetadata }: {
   item: DisplayActivityItem;
   expanded?: boolean;
-  onExpandedChange?: (expanded: boolean) => void;
+  onExpandedChange?: (expanded: boolean, trigger?: HTMLElement) => void;
   onCreatedTaskNavigate?: (providerSessionId: string) => void | Promise<void>;
   memberRefs?: string;
   detailsAvailable?: boolean;
+  headerMetadata?: ComponentChildren;
 }): JSX.Element {
   const presentation = presentActivityItems([item])[0];
   const lines = activityDetailLines([presentation]);
@@ -72,6 +74,7 @@ export function ActivityRow({ item, expanded, onExpandedChange, onCreatedTaskNav
       className={`activity-block${item.type === 'activity' && item.severity ? ` activity-block--${item.severity}` : ''}`}
       icon={activityIcon(item)}
       summary={presentation.summary}
+      metadata={headerMetadata}
       disclosure={disclosure}
       memberRefs={memberRefs}
     />
@@ -102,17 +105,19 @@ export function ActivityGroup({
   actions,
   presentation,
   externalMembers = false,
+  headerMetadata,
 }: {
   items: readonly DisplayActivityItem[];
   active?: boolean;
   actions?: import('preact').ComponentChildren;
   expanded?: boolean;
-  onExpandedChange?: (expanded: boolean) => void;
+  onExpandedChange?: (expanded: boolean, trigger?: HTMLElement) => void;
   memberRefs?: readonly (string | undefined)[];
   renderMember: (item: DisplayActivityItem, index: number) => JSX.Element | null;
   /** Complete canonical run facts when member bodies are loaded independently. */
   presentation?: ReturnType<typeof import('../../../../src/presentation/activity-presentation').presentActivityRunFacts>;
   externalMembers?: boolean;
+  headerMetadata?: ComponentChildren;
 }): JSX.Element {
   const presentations = presentActivityItems(items);
   const summary = presentation?.summary ?? summarizeActivityRun(items, presentations);
@@ -126,6 +131,7 @@ export function ActivityGroup({
       className={`activity-group${active ? ' activity-group--active' : ''}`}
       icon={activeTool ? activityIcon(activeTool) : presentation ? <Icon name={presentation.icon} /> : activityIcon(items[0])}
       summary={summary}
+      metadata={headerMetadata}
       actions={actions}
       memberRefs={memberRefs?.filter(Boolean).join(' ')}
       disclosure={hasMemberDisclosure ? {

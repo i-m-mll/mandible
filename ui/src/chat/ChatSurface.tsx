@@ -68,7 +68,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
     readingContext: new Map(),
     expanded: expandedBlocks, streaming: props.streaming }), [events, scope, space, Boolean(transcript), expandedBlocks, props.streaming]);
   const extraRows = useMemo<Array<ReadingRow & { revision: string }>>(() => props.activePermissionRequest && props.onPermissionRespond
-    ? [{ key: `permission:${props.activePermissionRequest.id}`, revision: JSON.stringify(props.activePermissionRequest), kind: 'permission', protectedPositions: [], items: [], nodes: [], sources: [], actionGroup: { key: 'permission', start: null, end: null }, disclosureOwner: null, turnStart: true, turnEnd: true }] : [], [props.activePermissionRequest, props.onPermissionRespond]);
+    ? [{ key: `permission:${props.activePermissionRequest.id}`, revision: JSON.stringify(props.activePermissionRequest), kind: 'permission', isFinalResponse: false, protectedPositions: [], items: [], nodes: [], sources: [], actionGroup: { key: 'permission', start: null, end: null }, disclosureOwner: null, turnStart: true, turnEnd: true }] : [], [props.activePermissionRequest, props.onPermissionRespond]);
   const localRestore = !restoredRow.current ? props.readingRestore : undefined;
   const complete = useCompleteReading({ scope, space, events, initial: !initialVisible, targetPosition: localRestore?.anchor.position ?? navigationTarget?.target?.position, targetRowKey: localRestore?.anchor.rowKey, targetMemberKey: localRestore?.anchor.memberKey, targetSummary: navigationTarget?.target?.subtarget === 'summary', sourceVersion: transcript?.sourceVersionId, total: transcript?.total,
     actionIdentity: JSON.stringify([Boolean(props.onSelectMessageInfo), Boolean(props.onCopyMessageLink)]), selectMode: props.selectMode, selectedBlockIds: props.selectedBlockIds, extraRows, expanded: expandedBlocks, disclosureRevisions, streaming: props.streaming, local: projection, enabled: Boolean(transcript) });
@@ -242,9 +242,10 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
     },
     open: () => { void openMarkdownSource(exportRow(row)).catch(() => setNotice('Could not open turn.')); },
   })])), [complete.bodies, complete.actionRuns, exportRow, props.onSelectMessageInfo, props.selectedMessageId]);
-  const revealDisclosure = (row: ReadingRow, next: boolean) => {
+  const revealDisclosure = (row: ReadingRow, next: boolean, trigger?: HTMLElement) => {
+    viewport.pinDisclosure(row.key, trigger);
     const position = row.sources[0]?.position;
-    const offset = viewport.rowOffset(row.key) ?? 0;
+    const offset = trigger && viewport.scrollRef.current ? trigger.getBoundingClientRect().top - viewport.scrollRef.current.getBoundingClientRect().top : viewport.rowOffset(row.key) ?? 0;
     if (position !== undefined) pendingDisclosure.current = { position, offset, owner: row.disclosureOwner, next, token: `disclosure:${crypto.randomUUID()}` };
     setExpandedBlocks(current => boundDisclosures({ ...current, [`group:${row.disclosureOwner}`]: next }));
   };
@@ -254,12 +255,15 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
     const summary = (complete.plan?.rows ?? projection.rows).find(row => row.kind === 'activity-summary' && row.disclosureOwner === pending.owner);
     if (summary?.activityGroup?.expanded !== pending.next) return;
     pendingDisclosure.current = null;
-    void viewport.reveal({ token: pending.token, target: { conversationId: scope, positionSpaceId: space, position: pending.position,
+    void viewport.reveal({ token: pending.token, preserveReaderPin: true, target: { conversationId: scope, positionSpaceId: space, position: pending.position,
       offset: pending.offset, subtarget: 'summary' } }).then(result => {
       if (result.status !== 'revealed' && result.status !== 'cancelled') setNotice(`Reading target: ${result.status}.`);
     });
   }, [expandedBlocks, complete.plan, projection, viewport.reveal, scope, space]);
-  const jump = () => { void viewport.reveal({ token: `latest:${crypto.randomUUID()}`, end: true }).then(result => { if (result.status === 'revealed') void latest.current.props.onJumpToLatest?.(); }); };
+  const jump = () => {
+    restoredRow.current = true; pendingDisclosure.current = null; focusAfterInitial.current = null;
+    void viewport.reveal({ token: `latest:${crypto.randomUUID()}`, end: true }).then(result => { if (result.status === 'revealed') void latest.current.props.onJumpToLatest?.(); });
+  };
   return <MessageLinkContext.Provider value={props.onCopyMessageLink ?? null}>
     <div className="stream-renderer">
       <div ref={setScrollNode} className="stream-renderer__scroll" tabIndex={0} aria-label="Conversation" {...viewport.inputHandlers}>
@@ -273,13 +277,14 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
             const primaryActions = (bodyProps?.primaryActions ?? []).map(action => action.id === 'select-group' ? action
               : { ...action, onAction: actions.get(readingPayloadKey(ref))?.find(current => current.id === action.id)?.onAction ?? action.onAction });
             return <MeasuredReadingBox key={row.key} row={row} index={item.index} pendingHeight={item.size} measurement={ref} reportHeight={geometry.reportHeight} register={viewport.register} registerRow={viewport.registerRow} scope={scope} space={space}>
-              <MessageLinkContext.Provider value={bodyProps?.onCopyMessageLink ?? null}><ReadingRowBody {...(bodyProps ?? props)} row={row} expandedBlocks={bodyProps?.expandedBlocks ?? expandedBlocks} setBlockExpanded={(key, next, sources) => {
+              <MessageLinkContext.Provider value={bodyProps?.onCopyMessageLink ?? null}><ReadingRowBody {...(bodyProps ?? props)} row={row} expandedBlocks={bodyProps?.expandedBlocks ?? expandedBlocks} setBlockExpanded={(key, next, sources, trigger) => {
+                  viewport.pinDisclosure(row.key, trigger);
                   setDisclosureRevisions(current => ({ ...current, [row.key]: (current[row.key] ?? 0) + 1 }));
                   setBlockExpanded(key, next, sources);
                 }}
                 preparing={bodyProps?.preparing ?? false}
                 primaryActions={primaryActions} lastAssistantTurnId={bodyProps?.lastAssistantTurnId}
-                onActivityGroupExpandedChange={next => revealDisclosure(row, next)} /></MessageLinkContext.Provider>
+                onActivityGroupExpandedChange={(next, trigger) => revealDisclosure(row, next, trigger)} /></MessageLinkContext.Provider>
             </MeasuredReadingBox>;
           }}</ReadingRowStrip>
         </div>

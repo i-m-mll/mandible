@@ -14,6 +14,7 @@ type Command = {
   controller: AbortController;
   phase: 'prepare' | 'materialize' | 'align' | 'end' | 'row';
   end?: boolean;
+  preserveReaderPin?: boolean;
   rowKey?: string;
   offset?: number;
   finish: (result: ReadingRevealResult) => void;
@@ -153,6 +154,14 @@ export function useReadingViewport(input: {
     requestAnimationFrame(() => capturePin.current());
   }, [engine]);
   const cancel = useCallback(() => { finish('cancelled'); engine.cancelScroll(); }, [finish, engine]);
+  const alignRegistered = useCallback((active: Command, element: HTMLElement, scroller: HTMLElement) => {
+    engine.cancelScroll();
+    active.offset = Math.max(0, Math.min(scroller.scrollHeight - scroller.clientHeight,
+      scroller.scrollTop + element.getBoundingClientRect().top - scroller.getBoundingClientRect().top - (active.target?.offset ?? 0)));
+    active.phase = 'align';
+    engine.scrollToOffset(active.offset, { align: 'start', behavior: 'auto' });
+    if (!active.preserveReaderPin) element.focus({ preventScroll: true });
+  }, [engine]);
   notify.current = () => {
     if (!command.current || frame.current !== null) return;
     frame.current = requestAnimationFrame(() => {
@@ -181,12 +190,7 @@ export function useReadingViewport(input: {
       const rect = registration.element.getBoundingClientRect();
       const viewport = scroller.getBoundingClientRect();
       if (active.phase === 'materialize') {
-        engine.cancelScroll();
-        active.offset = Math.max(0, Math.min(scroller.scrollHeight - scroller.clientHeight,
-          scroller.scrollTop + rect.top - viewport.top - (active.target.offset ?? 0)));
-        active.phase = 'align';
-        engine.scrollToOffset(active.offset, { align: 'start', behavior: 'auto' });
-        registration.element.focus({ preventScroll: true });
+        alignRegistered(active, registration.element, scroller);
         notify.current();
         return;
       }
@@ -197,8 +201,8 @@ export function useReadingViewport(input: {
       persist(engine);
     });
   };
-  const reveal = useCallback(async (request: ReadingRevealCommand | ({ token: string; restore: ReadingRestore })): Promise<ReadingRevealResult> => {
-    cancel(); readerPin.current = null; setPinKeys(new Set());
+  const reveal = useCallback(async (request: (ReadingRevealCommand & { preserveReaderPin?: boolean }) | ({ token: string; restore: ReadingRestore })): Promise<ReadingRevealResult> => {
+    cancel(); if (!('preserveReaderPin' in request && request.preserveReaderPin)) { readerPin.current = null; setPinKeys(new Set()); }
     return new Promise(resolve => {
       const active: Command = { ...request, controller: new AbortController(), phase: 'prepare', finish: resolve };
       command.current = active;
@@ -232,11 +236,14 @@ export function useReadingViewport(input: {
         active.phase = 'materialize';
         const index = current.current.rows.findIndex(row => row.key === result.rowKey);
         if (index < 0) { finish('not-renderable'); return; }
-        engine.scrollToIndex(index, { align: 'start', behavior: 'auto' });
+        const registration = targets.current.get(`${request.target.positionSpaceId}:${request.target.position}:${request.target.subtarget ?? ''}`);
+        if (registration?.element === null) { finish('not-renderable'); return; }
+        if (registration?.element?.isConnected && scrollRef.current) alignRegistered(active, registration.element, scrollRef.current);
+        else engine.scrollToIndex(index, { align: 'start', behavior: 'auto' });
         notify.current();
       }).catch(() => { if (command.current === active) finish('source-unavailable'); });
     });
-  }, [cancel, engine, finish, mountedStart]);
+  }, [cancel, engine, finish, mountedStart, alignRegistered]);
   const schedulePersist = useCallback(() => {
     if (persistFrame.current !== null) return;
     persistFrame.current = requestAnimationFrame(() => { persistFrame.current = null; if (!engine.isScrolling) persist(engine); });
@@ -252,6 +259,17 @@ export function useReadingViewport(input: {
     const scroll = scrollRef.current;
     return row && scroll ? row.getBoundingClientRect().top - scroll.getBoundingClientRect().top : undefined;
   }, []);
+  const pinDisclosure = useCallback((key: string, trigger?: HTMLElement) => {
+    const row = rowBoxes.current.get(key); const scroller = scrollRef.current;
+    if (!row || !scroller || !trigger || !row.contains(trigger) || !current.current.applied) return;
+    cancel(); following.current = false; userScroll.current = false; restore.current = null;
+    const header = trigger;
+    const visible = captureReadingDomAnchor(scroller, rowBoxes.current, current.current.applied.rowMembers, current.current.clearance);
+    const protectedKeys = new Set([...(visible?.protectedKeys ?? []), key]);
+    readerPin.current = { key, members: current.current.applied.rowMembers.get(key) ?? [key], point: null, element: header,
+      offset: header.getBoundingClientRect().top - scroller.getBoundingClientRect().top, protectedKeys };
+    setPinKeys(protectedKeys); setShowLatest(true);
+  }, [cancel]);
   capturePin.current = () => {
     const snapshot = current.current; const scroller = scrollRef.current;
     if (!scroller || !snapshot.applied || command.current || readback.current || userScroll.current || drag.current || engine.isScrolling || following.current || readerPin.current) return;
@@ -260,7 +278,7 @@ export function useReadingViewport(input: {
   };
   correctLocal.current = () => {
     const scroller = scrollRef.current;
-    if (!scroller || !current.current.applied || userScroll.current || drag.current || (command.current && command.current.phase !== 'end')) return;
+    if (!scroller || !current.current.applied || userScroll.current || drag.current || (command.current && command.current.phase !== 'end' && !command.current.preserveReaderPin)) return;
     if (following.current) {
       if (Math.abs(scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop) > 0.05) engine.scrollToEnd({ behavior: 'auto' });
       return;
@@ -380,6 +398,6 @@ export function useReadingViewport(input: {
   const mounted = engine.getVirtualItems();
   const last = mounted[mounted.length - 1];
   const endOffset = last?.index === rows.length - 1 ? engine.getTotalSize() - last.end : undefined;
-  return { captureReaderAnchor: () => capturePin.current(), beginLayout: () => capturePin.current(), engine, rows, endOffset, appliedGeometry: acknowledged === applied ? applied : null, focusTarget: (target: ConversationSourceCoordinate) => targets.current.get(`${target.positionSpaceId}:${target.position}:${target.subtarget ?? ''}`)?.element?.focus({ preventScroll: true }), renderProps: applied?.renderProps, scrollRef, register, registerRow, rowOffset, reveal, cancel, showLatest,
+  return { captureReaderAnchor: () => capturePin.current(), beginLayout: () => capturePin.current(), pinDisclosure, engine, rows, endOffset, appliedGeometry: acknowledged === applied ? applied : null, focusTarget: (target: ConversationSourceCoordinate) => targets.current.get(`${target.positionSpaceId}:${target.position}:${target.subtarget ?? ''}`)?.element?.focus({ preventScroll: true }), renderProps: applied?.renderProps, scrollRef, register, registerRow, rowOffset, reveal, cancel, showLatest,
     inputHandlers: { onWheel: inputCancel, onTouchStart: () => { drag.current = true; inputCancel(); }, onTouchEnd: () => { drag.current = false; applyPending.current(); }, onTouchCancel: () => { drag.current = false; applyPending.current(); }, onKeyDown, onPointerDown } };
 }

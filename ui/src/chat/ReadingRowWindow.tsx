@@ -36,7 +36,7 @@ export function MeasuredReadingBox({ row, index, measurement, pendingHeight, rep
     const dispose = row.sources.map(source => {
       if (source.position === undefined) return () => {};
       const exact = row.kind === 'activity-summary' ? box : [...box.querySelectorAll<HTMLElement>('[data-block-id]')].find(node => node.dataset.blockId === source.blockId) ?? null;
-      if (exact) exact.tabIndex = -1;
+      if (exact && !exact.hasAttribute('tabindex')) exact.tabIndex = -1;
       const coordinate = { conversationId: scope, positionSpaceId: space, position: source.position };
       const clearDefault = row.activityGroup?.expanded ? () => {} : register({ rowKey: row.key, coordinate, element: exact });
       const clearSubtarget = register({ rowKey: row.key, coordinate: { ...coordinate, subtarget: row.kind === 'activity-summary' ? 'summary' : `source:${source.position}` }, element: exact });
