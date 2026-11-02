@@ -147,6 +147,8 @@ export function useReadingViewport(input: {
       const scroller = scrollRef.current;
       if (!active || !scroller || active.phase === 'prepare') return;
       if (active.phase === 'end') {
+        const snapshot = current.current;
+        if (readback.current || snapshot.applied !== snapshot.indexed || (pending.current && pending.current !== snapshot.applied)) return;
         if (!engine.isScrolling) { finish(engine.isAtEnd(1) ? 'revealed' : 'unsuccessful'); persist(engine); }
         return;
       }
@@ -279,7 +281,8 @@ export function useReadingViewport(input: {
     if (!applied || indexed !== applied) return;
     const saved = restore.current; restore.current = null;
     readback.current = applied;
-    if (saved && !command.current) {
+    if (command.current?.phase === 'end' && following.current) engine.scrollToEnd({ behavior: 'auto' });
+    else if (saved && !command.current) {
       if (saved.following) engine.scrollToEnd({ behavior: 'auto' });
       else {
         const pin = readerPin.current;
