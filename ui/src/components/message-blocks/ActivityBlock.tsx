@@ -123,6 +123,7 @@ export function ActivityGroup({
   return (
     <CompactActivityRow
       className={`activity-group${active ? ' activity-group--active' : ''}`}
+      collection
       icon={activeTool ? activityIcon(activeTool) : presentation ? <Icon name={presentation.icon} /> : activityIcon(items[0])}
       summary={summary}
       metadata={headerMetadata}

@@ -107,18 +107,25 @@ void (async () => {
 })().catch(error => { document.title = `fixture-error:${btoa(String(error.stack ?? error))}`; });
 
 async function measureChildBoundaries() {
-  const members: PreparedReadingMember[] = [0, 1, 2].map(index => {
+  const script = 'const first=await tools.exec_command({cmd:"one"});text(JSON.stringify(first.output));const second=await tools.exec_command({cmd:"two"});text(JSON.stringify(second.output))';
+  const paired = '"first output"\n"second output"';
+  const members: PreparedReadingMember[] = [0, 1, 2, 3, 4].map(index => {
     const key = `sibling:${index}`;
-    const activity = { type: 'tool-call-activity' as const, id: key, name: 'Bash', input: { command: 'Inspect the child body\nThen inspect the next sibling' }, result: null, sessionId: 'fixture' };
-    return { key, part: 'tool', kind: 'activity', speaker: 'assistant', actionGroup: { key: 'siblings', start: 0, end: 2 }, activity,
+    const activity = index === 0 || index === 4
+      ? { type: 'thinking-block-activity' as const, content: '**Thought heading**\n\nReasoning before the next event.\n\nKeep the complete final paragraph.', sessionId: 'fixture' }
+      : { type: 'tool-call-activity' as const, id: key, name: index === 1 ? 'Bash' : 'exec', input: index === 1 ? { command: 'Inspect the child body\nThen inspect the next sibling' } : script,
+        result: { type: 'tool_result' as const, tool_use_id: key, content: index === 2 ? paired : 'A parent-owned result',
+          source: { blockId: `result:${index}`, ...(index === 2 ? { toolFrame: { kind: 'codex-script' as const, payloadStart: 0, payloadEnd: paired.length, timingScope: 'wrapper' as const, wallTimeSeconds: 0.4 } } : {}) } }, sessionId: 'fixture' };
+    return { key, part: 'tool', kind: 'activity', speaker: 'assistant', actionGroup: { key: 'siblings', start: 0, end: 4 }, activity,
       dependencyRevision: '1', sourcePositions: [], handoffKeys: [], sources: [], node: { kind: 'activity', key, entity: 'assistant', item: activity } };
   });
   const planned = planReadingLayout({ members, conversationId: 'siblings', positionSpaceId: 'fixture', expanded: { 'group:live:sibling:0': true } });
   const rows = materializePreparedReadingRows(planned.rows, members);
   const results = [];
   for (const fontSize of [14, 20]) for (const expanded of [false, true]) {
-    const expandedBlocks = { [readingNodeDisclosures(members[0].node).keys[0]]: expanded };
-    const props = (row: ReadingRow) => ({ row, events: [], streaming: false, expandedBlocks, setBlockExpanded: () => {}, preparing: false, primaryActions: [], onActivityGroupExpandedChange: () => {} });
+    const expandedBlocks = Object.fromEntries(members.map(member => [readingNodeDisclosures(member.node).keys[0], expanded]));
+    const triggers: HTMLElement[] = [];
+    const props = (row: ReadingRow) => ({ row, events: [], streaming: false, expandedBlocks, setBlockExpanded: (_: string, __: boolean, ___: unknown, trigger?: HTMLElement) => { if (trigger) triggers.push(trigger); }, preparing: false, primaryActions: [], onActivityGroupExpandedChange: () => {} });
     const normal = document.createElement('section'); normal.style.width = '452.203125px'; normal.style.setProperty('--text-lg', `${fontSize}px`); document.body.append(normal);
     render(<>{rows.map(row => <ReadingRowView key={row.key} {...props(row)} />)}</>, normal);
     const internal = document.createElement('section'); internal.style.cssText = normal.style.cssText; document.body.append(internal);
@@ -127,27 +134,83 @@ async function measureChildBoundaries() {
     const batch = createReadingRowBatchRenderer(props)(offscreen, rows);
     const standalone = document.createElement('section'); standalone.style.cssText = normal.style.cssText; document.body.append(standalone);
     render(<ReadingRowView {...props({ ...rows[1], activityMember: false, activityEnd: false })} />, standalone);
+    Object.assign(normal.style, { position: 'fixed', top: '0', left: '0', zIndex: '10' });
     await task();
     const frames = [...normal.querySelectorAll<HTMLElement>('[data-reading-key]')];
-    const headers = frames.map(frame => box(frame.querySelector('.compact-activity__row')!));
-    const internalHeaders = [...internal.querySelectorAll('.compact-activity__row')].map(box);
+    const headerNodes = frames.map(frame => frame.querySelector<HTMLElement>('.compact-activity__row')!);
+    const headers = headerNodes.map(box);
+    const internalMembers = [...internal.querySelector('.activity-group__members')!.children];
+    const internalHeaders = [internal.querySelector('.compact-activity__row')!, ...internalMembers.map(member => member.querySelector('.compact-activity__row')!)].map(box);
     const firstBody = frames[1].querySelector('.compact-activity__details');
-    const internalFirst = internal.querySelector('.activity-group__members')!.firstElementChild!;
     const contentInsets = (header: Element) => {
       const frame = box(header); const text = box(header.querySelector('.compact-activity__summary')!);
       return { above: text.top - frame.top, below: frame.bottom - text.bottom };
     };
     const bodyTypography = (details: Element | null) => details ? { height: box(details).height, font: getComputedStyle(details).font, lineHeight: getComputedStyle(details).lineHeight } : null;
-    results.push({ fontSize, expanded, parentToFirst: headers[1].top - headers[0].bottom, firstToSecond: headers[2].top - headers[1].top,
-      lastPitch: headers[3].top - headers[2].top, outerLeading: headers[0].top - box(frames[0]).top,
-      outerTrailing: box(frames[3]).bottom - headers[3].bottom, bodyGap: firstBody ? headers[2].top - box(firstBody).bottom : null,
+    const itemBoundaries = (container: Element) => {
+      const items = [...container.querySelectorAll<HTMLElement>('.activity-event-item')];
+      const visible = items.map(item => {
+        const header = item.querySelector(':scope > .activity-event-item__header .compact-activity__summary');
+        const payloads = [...item.querySelectorAll('.activity-payload-box')];
+        const timing = item.querySelector('small');
+        const first = header ?? payloads[0] ?? timing!;
+        const last = payloads.at(-1) ?? timing ?? header!;
+        const inset = parseFloat(getComputedStyle(item).paddingTop);
+        return { top: box(first).top, bottom: box(last).bottom, inset };
+      });
+      return visible.slice(1).map((item, index) => ({ actual: item.top - visible[index].bottom, expected: visible[index].inset + item.inset }));
+    };
+    const firstPayload = frames[1].querySelector('.activity-payload-box');
+    const button = headerNodes[1] as HTMLButtonElement;
+    const buttonRect = box(button);
+    const hitTargets = [buttonRect.top + 0.5, buttonRect.bottom - 0.5].map(y => {
+      const target = document.elementFromPoint(buttonRect.left + 5, y);
+      return { y, target: target?.outerHTML.slice(0, 200), contains: button.contains(target) };
+    });
+    const pointHits = hitTargets.every(target => target.contains);
+    const reference = document.createElement('div');
+    Object.assign(reference.style, { position: 'fixed', top: `${buttonRect.top}px`, left: '600px', zIndex: '20' });
+    reference.style.setProperty('--text-lg', `${fontSize}px`);
+    for (const header of headerNodes.slice(1, 3)) {
+      const clone = header.cloneNode(true) as HTMLElement;
+      clone.style.paddingBlock = getComputedStyle(header).paddingBlock;
+      reference.append(clone);
+    }
+    document.body.append(reference);
+    const referenceButton = reference.firstElementChild!;
+    const referenceRect = box(referenceButton);
+    const referenceEdges = [referenceRect.top + 0.5, referenceRect.bottom - 0.5].every(y => referenceButton.contains(document.elementFromPoint(referenceRect.left + 5, y)));
+    const innerEdges = [buttonRect.top + 1, buttonRect.bottom - 1].every(y => button.contains(document.elementFromPoint(buttonRect.left + 5, y)));
+    reference.remove();
+    button.focus(); button.click();
+    const hit = { edges: pointHits, referenceEdges, innerEdges, trigger: triggers.at(-1) === button, focused: document.activeElement === button };
+    let activeOwner = null;
+    if (expanded) {
+      const parent = frames[3].querySelector('.tool-card')!;
+      const ownIcon = parent.querySelector(':scope > .compact-activity > .activity-event-item > .activity-event-item__header .compact-activity__icon')!;
+      const childIcon = parent.querySelector('.compact-activity__details .tool-card .compact-activity__icon')!;
+      const before = { color: getComputedStyle(ownIcon).color, animation: getComputedStyle(ownIcon).animationName,
+        childColor: getComputedStyle(childIcon).color, childAnimation: getComputedStyle(childIcon).animationName };
+      parent.classList.add('tool-card--active');
+      activeOwner = { reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches, colorChanged: getComputedStyle(ownIcon).color !== before.color, animationChanged: getComputedStyle(ownIcon).animationName !== before.animation,
+        childColorUnchanged: getComputedStyle(childIcon).color === before.childColor, childAnimationUnchanged: getComputedStyle(childIcon).animationName === before.childAnimation };
+      parent.classList.remove('tool-card--active');
+    }
+    results.push({ fontSize, expanded, parentToFirst: headers[1].top - headers[0].bottom,
+      outerLeading: headers[0].top - box(frames[0]).top,
+      outerTrailing: box(frames.at(-1)!).bottom - box(frames.at(-1)!.querySelector('.compact-activity')!).bottom,
       headerHeights: headers.map(header => header.height), internalParentToFirst: internalHeaders[1].top - internalHeaders[0].bottom,
-      internalFirstToSecond: internalHeaders[2].top - internalHeaders[1].top, internalLastPitch: internalHeaders[3].top - internalHeaders[2].top,
-      internalBodyGap: expanded ? internalHeaders[2].top - box(internalFirst).bottom : null,
       standaloneHeight: box(standalone.querySelector('.compact-activity__row')!).height,
       standaloneInset: contentInsets(standalone.querySelector('.compact-activity__row')!),
-      nestedInset: contentInsets(frames[1].querySelector('.compact-activity__row')!),
+      nestedInset: contentInsets(headerNodes[1]),
       nestedBody: bodyTypography(firstBody), standaloneBody: bodyTypography(standalone.querySelector('.compact-activity__details')),
+      headerToPayload: firstPayload ? box(firstPayload).top - box(headerNodes[1].querySelector('.compact-activity__summary')!).bottom : null,
+      boundaries: itemBoundaries(normal), internalBoundaries: itemBoundaries(internal), hit, hitTargets, buttonRect,
+      hitBoxes: headerNodes.slice(1, 3).map(header => ({ header: box(header), item: box(header.closest('.activity-event-item')!), wrapper: box(header.parentElement!), padding: getComputedStyle(header.closest('.activity-event-item')!).paddingBlock, margin: getComputedStyle(header.parentElement!).marginBlock })),
+      payloadRadius: firstPayload ? getComputedStyle(firstPayload).borderRadius : null, activeOwner,
+      collectionFooter: expanded ? { pairedSourceChildren: frames[3].querySelector('[data-block-id="result:2"]')!.querySelectorAll('.tool-card').length,
+        timingFooter: Boolean(frames[3].querySelector('.activity-event-item > small')),
+        unpairedFooter: Boolean(frames[4].querySelector('.activity-event-item > [data-block-id="result:3"]')) } : null,
       normalHeights: frames.map(frame => box(frame).height), measuredHeights: rows.map(row => box(batch.elements.get(row.key)!).height) });
     batch.dispose(); render(null, normal); render(null, internal); render(null, standalone); normal.remove(); internal.remove(); offscreen.remove(); standalone.remove();
   }

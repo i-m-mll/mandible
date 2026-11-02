@@ -1,5 +1,6 @@
 import type { ToolResultContent, ToolResultContentBlock } from '../../../../src/presentation/types';
 import { ActivityPayloadBox } from '../shared/ActivityPayloadBox';
+import { ActivityEventItem } from '../shared/ActivityEventItem';
 import { projectToolProgram } from '../../../../src/presentation/tool-program';
 import { programResults, projectToolResult, framedToolResult } from '../../../../src/presentation/tool-transport';
 import { projectExecution, type ExecutionResultPresentation } from '../../../../src/presentation/execution-presentation';
@@ -287,13 +288,21 @@ export function ToolCard({
   }
 
   const summary = `${visual.verb}${displayTarget ? ` ${displayTarget}` : ''}${status === 'failed' ? ' · Failed' : status === 'running' ? ' · Running' : ''}`;
-  const details = (
+  const collectionChildren = nestedProgram ? <div className="activity-nested-headers">{renderInputPanel()}</div> : null;
+  const collectionTiming = framedResult.wallTimeSeconds !== undefined && !operationResults?.some(result => result.wallTimeSeconds !== undefined)
+    ? <ActivityEventItem><small style={{ display: 'block', textAlign: 'right' }}>{framedResult.wallTimeSeconds} s</small></ActivityEventItem> : null;
+  const details = nestedProgram
+    ? operationResults
+      ? renderResult(<>{collectionChildren}{collectionTiming}</>, false)
+      : <>{collectionChildren}{result && hasVisibleResult(result, projectedResult)
+        ? <ActivityEventItem>{renderResult(<ResultBody result={result} commandLike={commandLike} projected={projectedResult} />)}</ActivityEventItem> : null}</>
+    : (
     <div className="tool-card__body">
-      {nestedProgram ? (operationResults ? renderResult(<>{renderInputPanel()}{framedResult.wallTimeSeconds!==undefined && !operationResults.some(result=>result.wallTimeSeconds!==undefined) ? <small style={{display:'block',textAlign:'right'}}>{framedResult.wallTimeSeconds} s</small> : null}</>,false) : renderInputPanel()) : <ActivityPayloadBox className="tool-card__input-wrapper">
+      <ActivityPayloadBox className="tool-card__input-wrapper">
         {diffStats ? <div className="tool-card__diff-stats">+{diffStats.additions} / -{diffStats.deletions}</div> : null}
         {renderInputPanel()}
-      </ActivityPayloadBox>}
-      {result && !(nestedProgram && operationResults) && hasVisibleResult(result, projectedResult)
+      </ActivityPayloadBox>
+      {result && hasVisibleResult(result, projectedResult)
         ? renderResult(<ResultBody result={result} commandLike={commandLike} projected={projectedResult} />)
         : null}
     </div>
@@ -308,6 +317,7 @@ export function ToolCard({
       data-member-refs={memberRefs}
     >
       <CompactActivityRow
+        collection={Boolean(nestedProgram)}
         icon={<Icon name={visual.icon} />}
         summary={summary}
         expandedSummary={execution?.facts.kind === 'command' && execution.facts.count === 1 ? `Ran command${status === 'failed' ? ' · Failed' : status === 'running' ? ' · Running' : ''}` : undefined}

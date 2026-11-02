@@ -31,7 +31,6 @@ it('keeps real content and hidden action rails beside one another while disclosu
     for (const boundary of results[0].childBoundaries) {
       const pitch = boundary.fontSize === 14 ? 24.95 : 26;
       expect(boundary.parentToFirst).toBe(0); expect(boundary.internalParentToFirst).toBe(0);
-      expect(boundary.lastPitch).toBeCloseTo(pitch, 1); expect(boundary.internalLastPitch).toBeCloseTo(pitch, 1);
       expect(boundary.outerLeading).toBe(8); expect(boundary.outerTrailing).toBe(8);
       expect(boundary.standaloneHeight).toBe(boundary.fontSize === 14 ? 22 : 25);
       expect(boundary.headerHeights[0]).toBe(boundary.standaloneHeight);
@@ -40,8 +39,14 @@ it('keeps real content and hidden action rails beside one another while disclosu
       expect(boundary.nestedInset.above).toBeCloseTo(boundary.standaloneInset.above * 1.5, 1);
       expect(boundary.nestedBody).toEqual(boundary.standaloneBody);
       expect(boundary.normalHeights).toEqual(boundary.measuredHeights);
-      if (boundary.expanded) { expect(boundary.bodyGap).toBe(0); expect(boundary.internalBodyGap).toBe(0); }
-      else { expect(boundary.firstToSecond).toBeCloseTo(pitch, 1); expect(boundary.internalFirstToSecond).toBeCloseTo(pitch, 1); }
+      for (const edge of [...boundary.boundaries, ...boundary.internalBoundaries]) expect(edge.actual).toBeCloseTo(edge.expected, 1);
+      expect(boundary.hit.edges, JSON.stringify({ expanded: boundary.expanded, fontSize: boundary.fontSize, rect: boundary.buttonRect, targets: boundary.hitTargets, boxes: boundary.hitBoxes })).toBe(boundary.hit.referenceEdges);
+      expect(boundary.hit).toMatchObject({ innerEdges: true, trigger: true, focused: true });
+      if (boundary.expanded) {
+        expect(boundary.headerToPayload).toBeCloseTo(boundary.nestedInset.below, 1);
+        expect(boundary.collectionFooter).toEqual({ pairedSourceChildren: 2, timingFooter: true, unpairedFooter: true });
+        expect(boundary.activeOwner).toMatchObject({ colorChanged: true, animationChanged: !boundary.activeOwner.reducedMotion, childColorUnchanged: true, childAnimationUnchanged: true });
+      }
     }
     for (const result of results) {
       for (const entry of result.entries) {
