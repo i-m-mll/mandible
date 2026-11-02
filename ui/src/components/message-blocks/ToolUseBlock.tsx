@@ -1,3 +1,5 @@
+import { projectExecution, projectExecutionResult, type ExecutionResultPresentation } from '../../../../src/presentation/execution-presentation';
+import { ExecutionInput } from './ExecutionInput';
 import { Icon } from '../icons/Icon';
 import type { ComponentChildren } from 'preact';
 import type { IconName } from '../icons/Icon';
@@ -62,16 +64,6 @@ type ToolStatus = 'pending' | 'running' | 'success' | 'failed';
 export function getToolVisual(toolName: string, toolKind?: string): ToolVisual {
   const presentation = presentTool(toolName, {}, toolKind);
   return { kind: presentation.category, icon: presentation.icon, verb: presentation.phrase, target: presentation.target };
-}
-
-function firstString(input: Record<string, unknown>, keys: string[]): string {
-  for (const key of keys) {
-    const value = input[key];
-    if (typeof value === 'string' && value.trim()) {
-      return value;
-    }
-  }
-  return '';
 }
 
 export function getToolTarget(toolName: string, input: Record<string, unknown>): string {
@@ -162,15 +154,16 @@ function AnsiText({ text }: { text: string }): JSX.Element {
   );
 }
 
-function ResultBody({ result, commandLike }: {
+function ResultBody({ result, commandLike, projected }: {
   result: ToolResultContentBlock;
   commandLike: boolean;
+  projected: ExecutionResultPresentation;
 }): JSX.Element {
-  const text = result.fullText ?? extractResultText(result.content);
+  const text = projected.text;
   const images = extractImages(result.content);
 
   return (
-    <div className={`tool-card__result${result.is_error ? ' tool-card__result--error' : ''}`}>
+    <div className={`tool-card__result${result.is_error || projected.failed ? ' tool-card__result--error' : ''}`}>
       {text && (
         <OverflowFade lines={10}>
           <pre className={commandLike ? 'tool-card__terminal-output' : undefined}>
@@ -186,6 +179,10 @@ function ResultBody({ result, commandLike }: {
           alt="Tool output"
         />
       ))}
+      {projected.decoded && <div className="tool-card__execution-state" style={{display: 'flex', flexWrap: 'wrap', gap: '0.75em'}}>
+        {projected.metadata.map(item => <span key={item.label}>{item.label}: {item.value}</span>)}
+      </div>}
+      {projected.wallTimeSeconds !== undefined && <small style={{display: 'block', textAlign: 'right'}}>{projected.wallTimeSeconds} s</small>}
       {result.truncated && result.omittedCharacters != null && (
         <span className="tool-card__result-note">
           {result.omittedCharacters.toLocaleString()} chars hidden
@@ -195,28 +192,15 @@ function ResultBody({ result, commandLike }: {
   );
 }
 
-function hasVisibleResult(result: ToolResultContentBlock): boolean {
+function hasVisibleResult(result: ToolResultContentBlock, projected: ExecutionResultPresentation): boolean {
   const text = result.fullText ?? extractResultText(result.content);
-  return Boolean(text || extractImages(result.content).length > 0 || (result.truncated && result.omittedCharacters != null));
+  return Boolean(projected.decoded || text || extractImages(result.content).length > 0 || (result.truncated && result.omittedCharacters != null));
 }
 
 function JsonInputPanel({ input }: { input: Record<string, unknown> | string }): JSX.Element {
   return (
     <div className="tool-card__input">
       <OverflowFade lines={10}><pre>{formatInput(input)}</pre></OverflowFade>
-    </div>
-  );
-}
-
-function CommandInputPanel({ input, inputObj }: {
-  input: Record<string, unknown> | string;
-  inputObj: Record<string, unknown>;
-}): JSX.Element {
-  const structuredCommand = firstString(inputObj, ['command', 'cmd', 'description']);
-  const command = structuredCommand || (typeof input === 'string' ? input : JSON.stringify(inputObj, null, 2));
-  return (
-    <div className="tool-card__terminal">
-      <OverflowFade lines={10}><pre><AnsiText text={command} /></pre></OverflowFade>
     </div>
   );
 }
@@ -257,8 +241,10 @@ export function ToolCard({
     const presentation = header ?? presentTool(toolName, input, toolKind);
     return { kind: presentation.category, icon: presentation.icon, verb: presentation.phrase, target: presentation.target };
   }, [toolName, input, toolKind, header]);
-  const displayTarget = useMemo(() => leftTruncateTarget(visual.target), [visual.target]);
-  const status = statusFor(result, statusEmoji);
+  const execution = useMemo(() => input === undefined ? null : projectExecution(toolName, input, toolKind), [toolName, input, toolKind]);
+  const projectedResult = useMemo(() => projectExecutionResult(execution, result?.fullText ?? (result ? extractResultText(result.content) : '')), [execution, result]);
+  const displayTarget = execution || header?.execution ? visual.target : leftTruncateTarget(visual.target);
+  const status = result?.is_error || projectedResult.failed ? 'failed' : projectedResult.running ? 'running' : statusFor(result, statusEmoji);
   const commandLike = visual.kind === 'execute';
   const editLike = visual.kind === 'edit' && typeof inputObj.file_path === 'string';
 
@@ -285,9 +271,7 @@ export function ToolCard({
         </OverflowFade>
       );
     }
-    if (commandLike) {
-      return <CommandInputPanel input={input} inputObj={inputObj} />;
-    }
+    if (execution) return <ExecutionInput execution={execution} />;
     if (visual.kind === 'write') {
       return <WriteInputPanel input={inputObj} />;
     }
@@ -302,7 +286,7 @@ export function ToolCard({
         {content}
         <MessageActions
           blockId={source?.blockId}
-          onCopy={() => { navigator.clipboard.writeText(result.fullText ?? extractResultText(result.content)).catch(() => {}); }}
+          onCopy={() => { navigator.clipboard.writeText(projectedResult.text).catch(() => {}); }}
           onSelect={onToggleResultSelect}
           isSelected={resultSelected}
           selectMode={selectMode}
@@ -315,15 +299,15 @@ export function ToolCard({
     );
   }
 
-  const summary = `${visual.verb}${displayTarget ? ` ${displayTarget}` : ''}${status === 'failed' ? ' · Failed' : ''}`;
+  const summary = `${visual.verb}${displayTarget ? ` ${displayTarget}` : ''}${status === 'failed' ? ' · Failed' : status === 'running' ? ' · Running' : ''}`;
   const details = (
     <div className="tool-card__body">
       <div className="tool-card__payload-box tool-card__input-wrapper">
         {diffStats ? <div className="tool-card__diff-stats">+{diffStats.additions} / -{diffStats.deletions}</div> : null}
         {renderInputPanel()}
       </div>
-      {result && hasVisibleResult(result)
-        ? renderResult(<ResultBody result={result} commandLike={commandLike} />)
+      {result && hasVisibleResult(result, projectedResult)
+        ? renderResult(<ResultBody result={result} commandLike={commandLike} projected={projectedResult} />)
         : null}
     </div>
   );

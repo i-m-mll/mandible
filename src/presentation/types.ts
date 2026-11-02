@@ -20,6 +20,7 @@ export type ToolCallActivity = {
   toolKind?: string;
   input?: Record<string, unknown> | string;
   header?: import('./tool-presentation.js').ToolPresentation;
+  execution?: import('./execution-presentation.js').ExecutionFacts;
   result: ToolResultContentBlock | null;
   turnId?: string;
   sessionId: string;

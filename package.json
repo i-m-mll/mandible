@@ -49,6 +49,7 @@
     "@modelcontextprotocol/sdk": "1.29.0",
     "@tanstack/preact-query": "5.102.8",
     "@tanstack/react-virtual": "3.14.25",
+    "acorn": "8.19.0",
     "chokidar": "4.0.3",
     "jose": "6.2.2",
     "lucide-preact": "1.63.0",
