@@ -32,7 +32,7 @@ it('keeps the applied payload paintable until matching pending geometry replaces
   render(<Harness />);
   await waitFor(() => expect(reading!.rows[0] && reading!.getBody(reading!.rows[0])).toBeTruthy());
   const old = reading!.rows[0];
-  act(() => { reading!.onRange(0, 0, [old]); reading!.retainGeometry([old]); });
+  act(() => { reading!.onRange({ vector: [old], required: [old], prefetch: [], start: 0, end: 100, height: 100 }); reading!.retainGeometry([old]); });
   boundary.revision = 'new';
   await act(async () => { queryClient.setQueryData(['payload-transition-manifest'], { revision: 'new' }); });
   await waitFor(() => expect(boundary.release).toBeTruthy());
@@ -43,7 +43,7 @@ it('keeps the applied payload paintable until matching pending geometry replaces
   await waitFor(() => expect(reading!.getBody(pending)).toBeTruthy());
   act(() => reading!.retainGeometry([pending]));
   expect(reading!.getBody(old)?.revision).toBe('old');
-  await act(async () => { reading!.commitGeometry(reading!.rows); reading!.onRange(0, 0, [pending]); });
+  await act(async () => { reading!.commitGeometry(reading!.rows); reading!.onRange({ vector: [pending], required: [pending], prefetch: [], start: 0, end: 100, height: 100 }); });
   await waitFor(() => expect(reading!.getBody(old)).toBeUndefined());
   expect(reading!.getBody(pending)?.revision).toBe('new');
 });

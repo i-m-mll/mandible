@@ -2,6 +2,7 @@ import { defaultRangeExtractor, useVirtualizer, type Virtualizer } from '@tansta
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { ConversationSourceCoordinate } from '../query/conversationData';
 import type { ReadingRevealCommand, ReadingRevealResult, ReadingTargetRegistration } from './readingProjection';
+import type { ReadingBodyDemand } from './readingBodyDemand';
 import type { ReadingGeometry } from './useReadingGeometry';
 import { captureReadingDomAnchor, readingDomAnchorOffset, type ReadingDomAnchor } from './readingDomAnchor';
 import { writeReadingState, type ReadingState, type ReadingRestore } from './readingState';
@@ -44,7 +45,7 @@ export function useReadingViewport(input: {
   prepare: (target: ConversationSourceCoordinate, signal: AbortSignal, token: string, summary?: ReadingSummaryTarget) => Promise<
     { status: 'prepared'; rowKey: string } | { status: 'source-unavailable' | 'position-space-changed' | 'not-renderable' }>;
   onApplied: (rows: readonly import('./readingMeasurement').MeasurementRow[]) => void;
-  onRange: (start: number, end: number, refs: readonly import('./readingMeasurement').MeasurementRow[]) => void;
+  onRange: (demand: ReadingBodyDemand) => void;
 }) {
   const [applied, setApplied] = useState<ReadingGeometry | null>(null);
   const [indexed, setIndexed] = useState<ReadingGeometry | null>(null);
@@ -75,6 +76,7 @@ export function useReadingViewport(input: {
   const localObserver = useRef<ResizeObserver | null>(null);
   const lifecycleState = useRef<{ scope: string; value: ReadingState } | null>(null);
   const lastRange = useRef('');
+  const publishDemand = useRef<(engine: Engine) => void>(() => {});
   const [showLatest, setShowLatest] = useState(false);
   const notify = useRef<() => void>(() => {});
   const settled = useRef(false);
@@ -134,7 +136,6 @@ export function useReadingViewport(input: {
     useScrollendEvent: true,
     directDomUpdates: false,
     onChange(instance) {
-      const latest = current.current;
       const height = instance.scrollRect?.height;
       if (height !== undefined) { if (viewportHeight.current !== null && viewportHeight.current !== height) chromePending.current = true; viewportHeight.current = height; }
       if (userScroll.current) { following.current = instance.isAtEnd(1); if (!instance.isScrolling && !drag.current) { userScroll.current = false; capturePin.current(); } }
@@ -142,12 +143,7 @@ export function useReadingViewport(input: {
         const next = !following.current;
         return previous === next ? previous : next;
       });
-      const range = instance.range;
-      const rangeKey = `${range?.startIndex}:${range?.endIndex}`;
-      if (!readback.current && latest.applied === latest.indexed && range && lastRange.current !== rangeKey) {
-        lastRange.current = rangeKey;
-        latest.onRange(Math.max(0, range.startIndex - 6), Math.min(latest.rows.length - 1, range.endIndex + 6), instance.getVirtualItems().map(item => latest.rows[item.index]).filter(Boolean));
-      }
+      publishDemand.current(instance);
       acknowledge.current();
       if (!instance.isScrolling && !settled.current) persist(instance);
       settled.current = !instance.isScrolling;
@@ -392,15 +388,28 @@ export function useReadingViewport(input: {
     engine.getVirtualItems();
     snapshot.onApplied(ready.rows); setAcknowledged(ready);
     lastRange.current = '';
-    const range = engine.range;
-    if (range) snapshot.onRange(Math.max(0, range.startIndex - 6), Math.min(snapshot.rows.length - 1, range.endIndex + 6), engine.getVirtualItems().map(item => snapshot.rows[item.index]).filter(Boolean));
+    publishDemand.current(engine);
     capturePin.current(); applyPending.current();
   };
-  useLayoutEffect(() => {
-    if (!applied || indexed !== applied || readback.current) return;
-    const range = engine.range;
-    if (range) current.current.onRange(Math.max(0, range.startIndex - 6), Math.min(rows.length - 1, range.endIndex + 6), engine.getVirtualItems().map(item => rows[item.index]).filter(Boolean));
-  }, [input.protectedKeys, pinKeys, indexed, applied, engine]);
+  publishDemand.current = instance => {
+    const snapshot = current.current;
+    const vector = snapshot.applied;
+    const scroller = scrollRef.current;
+    if (!vector || vector.scope !== snapshot.scope || vector !== snapshot.indexed || readback.current || !scroller || !instance.range) return;
+    const height = scroller.clientHeight;
+    if (height <= 0) return;
+    const start = Math.max(0, scroller.scrollTop - height);
+    const end = Math.min(instance.getTotalSize(), scroller.scrollTop + 2 * height);
+    const first = instance.getVirtualItemForOffset(start)?.index;
+    const last = instance.getVirtualItemForOffset(end)?.index;
+    const required = instance.getVirtualItems().map(item => vector.rows[item.index]).filter(Boolean);
+    const prefetch = first === undefined || last === undefined ? [] : vector.rows.slice(first, last + 1);
+    const identity = JSON.stringify([snapshot.scope, snapshot.positionSpaceId, vector.serial, first, last, height, required, prefetch]);
+    if (identity === lastRange.current) return;
+    lastRange.current = identity;
+    snapshot.onRange({ vector: vector.rows, required, prefetch, start, end, height });
+  };
+  useLayoutEffect(() => { publishDemand.current(engine); }, [input.protectedKeys, pinKeys, indexed, applied, engine]);
   useEffect(() => {
     const scope = input.scope;
     const save = () => {
