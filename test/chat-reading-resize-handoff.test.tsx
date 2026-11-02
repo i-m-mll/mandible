@@ -11,8 +11,8 @@ const rows = Array.from({ length: 100 }, (_, index) => ({ key: `row:${index}`, r
 const provisional: ReadingGeometry = { scope: 'chat', rows, sizes: rows.map(() => 80), exact: false, serial: 1,
   layout: { width: 853, styleIdentity: 'same-layout', fonts: [] }, membership: new Map(), rowMembers: new Map(), renderProps: () => ({} as any) };
 const exact: ReadingGeometry = { ...provisional, sizes: rows.map(() => 100), exact: true, serial: 2 };
-function Harness({ geometry }: { geometry: ReadingGeometry }) {
-  viewport = useReadingViewport({ scope: 'chat', positionSpaceId: 'space', geometry, clearance: 16, disclosures: {}, protectedKeys: new Set(),
+function Harness({ geometry, clearance = 16 }: { geometry: ReadingGeometry; clearance?: number }) {
+  viewport = useReadingViewport({ scope: 'chat', positionSpaceId: 'space', geometry, clearance, disclosures: {}, protectedKeys: new Set(),
     onInput: () => {}, onApplied: () => {}, onRange: () => {}, prepare: async () => ({ status: 'not-renderable' }) });
   const connect = useCallback((node: HTMLDivElement | null) => {
     viewport.scrollRef.current = node;
@@ -160,5 +160,32 @@ it('retains explicit latest ownership through provisional and exact resize commi
   const appended = { ...final, serial: 5, sizes: rows.map(() => 140) };
   await act(async () => view.rerender(<Harness geometry={appended} />));
   await waitFor(() => expect(viewport!.appliedGeometry).toBe(appended));
+  expect(scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop).toBeLessThanOrEqual(1);
+});
+
+it('follows completed latest through resized geometry when native end has no intersecting row', async () => {
+  const original = { ...exact, layout: { ...exact.layout, width: 700 } };
+  const view = render(<Harness geometry={original} clearance={900} />);
+  await waitFor(() => expect(viewport!.appliedGeometry).toBe(original));
+  const scroller = viewport!.scrollRef.current!;
+  await act(async () => {
+    scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
+    scroller.scrollTo({ top: 4000 });
+  });
+  await waitFor(() => expect(viewport!.engine.isScrolling).toBe(false));
+  let result: Awaited<ReturnType<typeof viewport.reveal>> | undefined;
+  await act(async () => { void viewport!.reveal({ token: 'latest', end: true }).then(value => { result = value; }); });
+  await waitFor(() => expect(result?.status).toBe('revealed'));
+  expect(viewport!.engine.getVirtualItems().some(item => item.end > scroller.scrollTop)).toBe(false);
+  const resized = { ...provisional, serial: 3 };
+  await act(async () => view.rerender(<Harness geometry={resized} clearance={900} />));
+  await waitFor(() => expect(viewport!.appliedGeometry).toBe(resized));
+  await waitFor(() => expect(viewport!.engine.isScrolling).toBe(false));
+  expect(Math.abs(scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop)).toBeLessThanOrEqual(1);
+  expect(viewport!.engine.getVirtualItems().some(item => item.end > scroller.scrollTop)).toBe(false);
+  const final = { ...exact, serial: 4, sizes: rows.map(() => 120) };
+  await act(async () => view.rerender(<Harness geometry={final} clearance={900} />));
+  await waitFor(() => expect(viewport!.appliedGeometry).toBe(final));
+  await waitFor(() => expect(viewport!.engine.isScrolling).toBe(false));
   expect(scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop).toBeLessThanOrEqual(1);
 });
