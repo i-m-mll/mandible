@@ -46,6 +46,7 @@ export type DisplayPositionFacts = {
   revision: string;
   speaker: 'user' | 'assistant' | 'system';
   handoffKeys: string[];
+  assistantResponse?: import("../parsers/assistant-response.js").AssistantResponseMembership;
   executionKey?: string;
   turnId?: string;
   usage?: { key: string; input: number; output: number };

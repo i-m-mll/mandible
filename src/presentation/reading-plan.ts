@@ -13,6 +13,7 @@ export type ReadingPlanMember = {
   actionGroup: ReadingActionGroup;
   activity: DisplayActivityItem | null;
   run?: { id: string; revision?: string; member_count: number; presentation: ReturnType<typeof presentActivityRunFacts> & { facts: ActivityRunFacts } };
+  assistantResponse?: import("../parsers/assistant-response.js").AssistantResponseMembership;
   dependencyRevision: string;
   sourcePositions: readonly number[];
   handoffKeys: readonly string[];
@@ -29,6 +30,7 @@ export type ReadingRowDescriptor = {
   disclosureOwner: string | null;
   activityMember?: boolean;
   activityEnd?: boolean;
+  isFinalResponse: boolean;
   turnStart: boolean;
   turnEnd: boolean;
   totalTokens?: number;
@@ -64,7 +66,7 @@ export function planReadingLayout(input: {
   const row = (members: readonly ReadingPlanMember[], key: string, kind: ReadingRowDescriptor['kind'], owner: string | null): ReadingRowDescriptor => ({
     key, kind, memberKeys: members.map(member => member.key), sourcePositions: [...new Set(members.flatMap(member => [...member.sourcePositions]))],
     actionGroup: members[0].actionGroup, disclosureOwner: owner, turnStart: false, turnEnd: false,
-    activityMember: kind === 'content' && owner !== null, revision: '',
+    activityMember: kind === 'content' && owner !== null, isFinalResponse: false, revision: '',
   });
   const register = (member: ReadingPlanMember, target: ReadingRowDescriptor, disclosurePath: string[], summaryRowKey?: string) => {
     const value: ReadingPlanMembership = { rowKey: target.key, memberKey: member.key, position: member.position ?? null,
@@ -118,6 +120,8 @@ export function planReadingLayout(input: {
     if (!run) usages.set(member.actionGroup.key, run = new Map());
     run.set(member.usage.key, member.usage.input + member.usage.output);
   }
+  const finalOwners = new Map<string, string>();
+  for (const member of input.members) if (member.assistantResponse?.classification === 'final') finalOwners.set(member.assistantResponse.key, member.key);
   const membersByKey = new Map(input.members.map(member => [member.key, member]));
   for (let index = 0; index < rows.length; index++) {
     const current = rows[index];
@@ -127,13 +131,15 @@ export function planReadingLayout(input: {
     const usage = usages.get(current.actionGroup.key);
     if (current.turnEnd && usage?.size) current.totalTokens = [...usage.values()].reduce((sum, value) => sum + value, 0);
     const contributors = current.memberKeys.map(key => membersByKey.get(key)!);
+    current.isFinalResponse = current.kind === 'content' && contributors.some(member => member.assistantResponse?.classification === 'final'
+      && finalOwners.get(member.assistantResponse.key) === member.key);
     const canonicalRunRevision = current.kind === 'activity-summary' ? contributors[0].run?.revision : undefined;
     const dependencyRevision = canonicalRunRevision
       ? [canonicalRunRevision, contributors.filter(member => member.position === undefined).map(member => member.dependencyRevision)]
       : contributors.map(member => member.dependencyRevision);
     current.revision = JSON.stringify([dependencyRevision, current.kind, contributors[0].speaker, current.actionGroup.key,
       current.disclosureOwner, current.activityMember, current.turnStart, current.turnEnd, current.activityEnd,
-      current.totalTokens, current.activityGroup, current.kind === 'content' ? contributors.map(member => [readingDisclosureState(member.disclosures, input.expanded, input), member.activity?.type === 'tool-call-activity' ? readingToolExecutionActive(member.activity.executionActive, input) : null]) : []]);
+      current.totalTokens, current.isFinalResponse, current.activityGroup, current.kind === 'content' ? contributors.map(member => [readingDisclosureState(member.disclosures, input.expanded, input), member.activity?.type === 'tool-call-activity' ? readingToolExecutionActive(member.activity.executionActive, input) : null]) : []]);
   }
   return { rows, membership, viewMembership };
 }

@@ -71,6 +71,8 @@ export function buildReadingManifest(input: {
       position, part: fragment.coordinate.part, kind: fragment.kind, speaker: fragment.speaker,
       actionGroup: { key: `group:${input.conversationId}:${input.positionSpaceId}:${context.action_scope.start}`, ...context.action_scope },
       activity: fragment.activity, disclosures: fragment.disclosures, executionKey: facts.executionKey, activityRunId: fragment.activity_run_id,
+      ...(fragment.kind === "content" && fragment.speaker === "assistant" && fragment.coordinate.part.startsWith("content:")
+        ? { assistantResponse: facts.assistantResponse } : {}),
       dependencyRevision, sourcePositions,
       handoffKeys: sourcePositions.flatMap(position => positions.get(position)?.handoffKeys ?? []).filter(key => handoffOwners.get(key)?.length === 1),
       handoffCoordinates: sourcePositions.flatMap(position => (positions.get(position)?.handoffKeys ?? []).filter(key => handoffOwners.get(key)?.length === 1).map(key => ({key, position}))),

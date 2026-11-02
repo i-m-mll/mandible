@@ -302,3 +302,20 @@ it("buffers SDK startup observations until adoption and fences parent observatio
     expect(execution.read("claude", session)?.state.kind).toBe("ended");
   } finally { await service.close(); unregister(); setSseManager(null); db.close(); }
 });
+
+
+it("preserves live Claude stop intent without treating truncation or tool handoffs as final responses", async () => {
+  const native = fakeSdk();
+  const adapter = new ClaudeSdkControllerAdapter({sdk: native.sdk}); adapters.push(adapter);
+  const events: import('../src/conversation-control/types.js').ProviderAdapterEvent[] = [];
+  adapter.subscribeProviderEvents(event => events.push(event));
+  expect((await adapter.acquire(start)).ok).toBe(true);
+  expect((await adapter.deliver(message('final-turn'))).ok).toBe(true);
+  for (const [index, stop_reason] of ['end_turn', 'tool_use', 'max_tokens', 'stop_sequence', null].entries()) {
+    native.emit({type: 'assistant', session_id: native.options.sessionId, message: {id: `response-${index}`, stop_reason,
+      content: [{type: 'text', text: 'reply'}]}});
+  }
+  await until(() => events.some(event => event.kind === 'provisional-content' && event.item.identity.native_item_id === 'response-4'));
+  expect(events.flatMap(event => event.kind === 'provisional-content' && event.item.type === 'message' && event.item.role === 'assistant'
+    ? [event.item.assistant_response ?? 'unknown'] : [])).toEqual(['final', 'interim', 'interim', 'interim', 'unknown']);
+});
