@@ -5,6 +5,7 @@ import type { ReadingRevealCommand, ReadingRevealResult, ReadingTargetRegistrati
 import type { ReadingGeometry } from './useReadingGeometry';
 import { captureReadingDomAnchor, readingDomAnchorOffset, type ReadingDomAnchor } from './readingDomAnchor';
 import { writeReadingState, type ReadingState, type ReadingRestore } from './readingState';
+import type { ReadingNavigationObservation, ReadingNavigationObserver, ReadingNavigationOrigin } from './readingNavigationObservation';
 
 const targetCoordinateKey = (target: ConversationSourceCoordinate): string => JSON.stringify([
   target.conversationId, target.positionSpaceId, target.position, target.subtarget ?? null,
@@ -14,6 +15,9 @@ const attainableRowOffset = (offset: number, size: number, viewport: number) => 
 type Engine = Virtualizer<HTMLDivElement, HTMLDivElement>;
 type Command = {
   token: string;
+  origin?: ReadingNavigationOrigin;
+  scope: string;
+  positionSpaceId: string;
   target?: ConversationSourceCoordinate;
   controller: AbortController;
   phase: 'prepare' | 'materialize' | 'align' | 'end' | 'row';
@@ -28,6 +32,7 @@ export function useReadingViewport(input: {
   scope: string;
   positionSpaceId: string;
   onInput: () => void;
+  observeNavigation?: ReadingNavigationObserver;
   commandToken?: string;
   initializing?: boolean;
   clearance: number;
@@ -148,9 +153,25 @@ export function useReadingViewport(input: {
       notify.current();
     },
   });
-  const finish = useCallback((status: ReadingRevealResult['status']) => {
+  const finish = useCallback((status: ReadingRevealResult['status'], reason: NonNullable<ReadingNavigationObservation['terminal']>['reason']) => {
     const active = command.current;
     if (!active) return;
+    const snapshot = current.current;
+    if (snapshot.observeNavigation) {
+      const scroller = scrollRef.current;
+      const element = active.target && active.rowKey ? targets.current.get(targetRegistrationKey(active.target, active.rowKey))?.element : undefined;
+      const rect = element?.getBoundingClientRect();
+      const viewport = scroller?.getBoundingClientRect();
+      const pin = active.preserveReaderPin ? readerPin.current : null;
+      const pinRect = pin?.element?.isConnected ? pin.element.getBoundingClientRect() : undefined;
+      snapshot.observeNavigation({ event: 'terminal', origin: active.origin, token: active.token, scope: active.scope, positionSpaceId: active.positionSpaceId,
+        target: active.target, status, currentScope: snapshot.scope, currentPositionSpaceId: snapshot.positionSpaceId, currentToken: snapshot.commandToken,
+        terminal: { reason, phase: active.phase, rowKey: active.rowKey, preserveReaderPin: active.preserveReaderPin, pinOffset: pin?.offset,
+          pinRect: pinRect && { top: pinRect.top, bottom: pinRect.bottom }, wantedOffset: active.offset, scrollTop: scroller?.scrollTop,
+          maxOffset: scroller ? Math.max(0, scroller.scrollHeight - scroller.clientHeight) : undefined, scrolling: engine.isScrolling,
+          targetConnected: Boolean(element?.isConnected), targetRect: rect && { top: rect.top, bottom: rect.bottom }, viewportRect: viewport && { top: viewport.top, bottom: viewport.bottom },
+          appliedSerial: snapshot.applied?.serial, indexedSerial: snapshot.indexed?.serial, pendingSerial: pending.current?.serial, readbackSerial: readback.current?.serial } });
+    }
     command.current = null;
     completed.current = active.token;
     completedTarget.current = status === 'revealed' && active.target && active.rowKey
@@ -160,7 +181,7 @@ export function useReadingViewport(input: {
     active.finish({ token: active.token, status });
     requestAnimationFrame(() => capturePin.current());
   }, [engine]);
-  const cancel = useCallback(() => { completedTarget.current = null; finish('cancelled'); engine.cancelScroll(); }, [finish, engine]);
+  const cancel = useCallback(() => { completedTarget.current = null; finish('cancelled', 'cancelled'); engine.cancelScroll(); }, [finish, engine]);
   const alignRegistered = useCallback((active: Command, element: HTMLElement, scroller: HTMLElement) => {
     engine.cancelScroll();
     const pin = readerPin.current;
@@ -181,18 +202,18 @@ export function useReadingViewport(input: {
       if (active.phase === 'end') {
         const snapshot = current.current;
         if (readback.current || snapshot.applied !== snapshot.indexed || (pending.current && pending.current !== snapshot.applied)) return;
-        if (!engine.isScrolling) { finish(engine.isAtEnd(1) ? 'revealed' : 'unsuccessful'); persist(engine); }
+        if (!engine.isScrolling) { finish(engine.isAtEnd(1) ? 'revealed' : 'unsuccessful', 'settled-end'); persist(engine); }
         return;
       }
       if (active.phase === 'row') {
-        if (!engine.isScrolling) { finish(Math.abs(scroller.scrollTop - (active.offset ?? 0)) <= 1 ? 'revealed' : 'unsuccessful'); persist(engine); }
+        if (!engine.isScrolling) { finish(Math.abs(scroller.scrollTop - (active.offset ?? 0)) <= 1 ? 'revealed' : 'unsuccessful', 'settled-row'); persist(engine); }
         return;
       }
-      if (!active.target) { finish('not-renderable'); return; }
+      if (!active.target) { finish('not-renderable', 'not-renderable'); return; }
       const rowIndex = current.current.rows.findIndex(row => row.key === active.rowKey);
       if (rowIndex < 0) return;
       const registration = targets.current.get(targetRegistrationKey(active.target, active.rowKey!));
-      if (registration && registration.element === null) { finish('not-renderable'); return; }
+      if (registration && registration.element === null) { finish('not-renderable', 'not-renderable'); return; }
       if (!registration?.element?.isConnected) return;
       const measurement = engine.getVirtualItems().find(item => item.key === active.rowKey);
       if (!measurement || measurement.size <= 0) return;
@@ -206,26 +227,28 @@ export function useReadingViewport(input: {
       if (engine.isScrolling) return;
       const visible = rect.bottom > viewport.top && rect.top < viewport.bottom;
       const aligned = Math.abs(scroller.scrollTop - (active.offset ?? 0)) <= 1;
-      finish(visible && aligned ? 'revealed' : 'unsuccessful');
+      finish(visible && aligned ? 'revealed' : 'unsuccessful', 'settled-target');
       persist(engine);
     });
   };
-  const reveal = useCallback(async (request: (ReadingRevealCommand & { preserveReaderPin?: boolean }) | ({ token: string; restore: ReadingRestore })): Promise<ReadingRevealResult> => {
+  const reveal = useCallback(async (request: ((ReadingRevealCommand & { preserveReaderPin?: boolean }) | { token: string; restore: ReadingRestore }) & { origin?: ReadingNavigationOrigin }): Promise<ReadingRevealResult> => {
     cancel(); if (!('preserveReaderPin' in request && request.preserveReaderPin)) { readerPin.current = null; setPinKeys(new Set()); }
     return new Promise(resolve => {
-      const active: Command = { ...request, controller: new AbortController(), phase: 'prepare', finish: resolve };
+      const active: Command = { ...request, scope: current.current.scope, positionSpaceId: current.current.positionSpaceId, controller: new AbortController(), phase: 'prepare', finish: resolve };
       command.current = active;
-      const deadline = setTimeout(() => { if (command.current === active) finish('unsuccessful'); }, 10000);
+      current.current.observeNavigation?.({ event: 'start', origin: active.origin, token: active.token, scope: active.scope, positionSpaceId: active.positionSpaceId,
+        target: active.target, currentScope: current.current.scope, currentPositionSpaceId: current.current.positionSpaceId, currentToken: current.current.commandToken });
+      const deadline = setTimeout(() => { if (command.current === active) finish('unsuccessful', 'deadline'); }, 10000);
       active.controller.signal.addEventListener('abort', () => clearTimeout(deadline), { once: true });
       if ('restore' in request) {
         following.current = false; userScroll.current = false;
         const snapshot = current.current;
-        if (request.restore.positionSpaceId !== snapshot.positionSpaceId) { finish('position-space-changed'); return; }
+        if (request.restore.positionSpaceId !== snapshot.positionSpaceId) { finish('position-space-changed', 'preparation'); return; }
         const saved = request.restore.anchor;
         const key = snapshot.rows.some(row => row.key === saved.rowKey) ? saved.rowKey : snapshot.applied?.membership.get(saved.memberKey)?.rowKey;
         const index = snapshot.rows.findIndex(row => row.key === key);
         const offset = key ? mountedStart(key) ?? (index >= 0 ? engine.getOffsetForIndex(index, 'start')?.[0] : undefined) : undefined;
-        if (offset === undefined || !scrollRef.current) { finish('not-renderable'); return; }
+        if (offset === undefined || !scrollRef.current) { finish('not-renderable', 'not-renderable'); return; }
         active.phase = 'row'; active.rowKey = key;
         active.offset = Math.max(0, Math.min(scrollRef.current.scrollHeight - scrollRef.current.clientHeight, offset - attainableRowOffset(saved.offset, snapshot.applied!.sizes[index], scrollRef.current.clientHeight)));
         engine.scrollToOffset(active.offset, { align: 'start', behavior: 'auto' }); notify.current(); return;
@@ -240,17 +263,17 @@ export function useReadingViewport(input: {
       }
       void current.current.prepare(request.target, active.controller.signal, request.token).then(result => {
         if (command.current !== active) return;
-        if (result.status !== 'prepared') { finish(result.status); return; }
+        if (result.status !== 'prepared') { finish(result.status, 'preparation'); return; }
         active.rowKey = result.rowKey;
         active.phase = 'materialize';
         const index = current.current.rows.findIndex(row => row.key === result.rowKey);
-        if (index < 0) { finish('not-renderable'); return; }
+        if (index < 0) { finish('not-renderable', 'not-renderable'); return; }
         const registration = targets.current.get(targetRegistrationKey(request.target, result.rowKey));
-        if (registration?.element === null) { finish('not-renderable'); return; }
+        if (registration?.element === null) { finish('not-renderable', 'not-renderable'); return; }
         if (registration?.element?.isConnected && scrollRef.current) alignRegistered(active, registration.element, scrollRef.current);
         else engine.scrollToIndex(index, { align: 'start', behavior: 'auto' });
         notify.current();
-      }).catch(() => { if (command.current === active) finish('source-unavailable'); });
+      }).catch(() => { if (command.current === active) finish('source-unavailable', 'preparation'); });
     });
   }, [cancel, engine, finish, mountedStart, alignRegistered]);
   const schedulePersist = useCallback(() => {

@@ -18,7 +18,7 @@ vi.mock('../ui/src/chat/useCompleteReading', () => ({ useCompleteReading: (input
 vi.mock('../ui/src/chat/useReadingGeometry', () => ({ useReadingGeometry: (input: any) => ({ geometry: boundary.exact ? { rows: input.rows, exact: true } : null, reportHeight: () => {}, retry: () => {} }) }));
 vi.mock('../ui/src/chat/useReadingViewport', () => ({ useReadingViewport: (input: any) => {
   boundary.input = input;
-  return { rows: input.geometry?.rows ?? [], appliedGeometry: input.geometry, engine: { range: null, getVirtualItems: () => [], getTotalSize: () => 0 },
+  return { rows: input.geometry?.rows ?? [], appliedGeometry: input.geometry, engine: { options: { paddingStart: 32 }, range: null, getVirtualItems: () => [], getTotalSize: () => 0 },
     scrollRef: boundary.scrollRef, inputHandlers: {}, showLatest: boundary.showLatest, reveal: async (request: any) => { boundary.reveals.push(request); return { status: 'revealed' }; }, focusTarget: () => {}, cancel: () => {},
     register: () => () => {}, registerRow: () => () => {}, rowOffset: () => 0 };
 } }));
