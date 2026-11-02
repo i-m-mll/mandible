@@ -432,7 +432,7 @@
   color: var(--text-primary);
 }
 
-.reasoning-details {
+.activity-payload-box .reasoning-details {
   margin: 0;
   color: inherit;
   background: transparent;
