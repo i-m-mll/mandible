@@ -73,6 +73,8 @@ export function applyConversationSse(
     }
   }
 
+  void client.invalidateQueries({ queryKey: ['chat', 'conversation', data.id, 'reading-manifest'] });
+
   const aggregateKey = conversationKeys.aggregate(data.id);
   const aggregate = client.getQueryData<ConversationTranscriptData>(aggregateKey);
   if (aggregate) {

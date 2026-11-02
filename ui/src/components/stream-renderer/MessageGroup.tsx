@@ -13,8 +13,7 @@ import { summarizeToolRun, toolRunIcon } from '../message-blocks/toolPresentatio
 
 export function MessageGroup({
   turn,
-  isStreaming,
-  isThinking,
+  defaultThinkingExpanded,
   getBlockExpanded,
   onBlockExpandedChange,
   getDisclosureExpanded,
@@ -44,7 +43,7 @@ export function MessageGroup({
         // so the user can see thinking content accumulate. When streaming ends,
         // the block collapses intentionally rather than jarring.
         {
-          const defaultExpanded = isStreaming && isThinking === true;
+          const defaultExpanded = defaultThinkingExpanded;
           const expanded = getBlockExpanded?.(block, index, defaultExpanded);
           inner = (
             <ThinkingBlock

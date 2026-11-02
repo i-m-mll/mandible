@@ -1337,8 +1337,8 @@ export function ConversationDetail({
   const routeGeneration = useRef({ identity: routeIdentity, generation: 0 });
   if (routeGeneration.current.identity !== routeIdentity) routeGeneration.current = { identity: routeIdentity, generation: routeGeneration.current.generation + 1 };
   const requestGeneration = routeGeneration.current.generation;
-  const initialAnchor = anchor ?? (restoredScope.current !== conversationId && restoredAnchor
-    ? { position: restoredAnchor.position, expected_position_space_id: restoredAnchor.positionSpaceId } : null);
+  const initialAnchor = anchor ?? (restoredScope.current !== conversationId && restoredAnchor && restoredAnchor.position !== null
+    ? { position: restoredAnchor.position, expected_position_space_id: savedReading!.positionSpaceId } : null);
   const [anchorState, setAnchorState] = useState<{ identity: string; anchor: ConversationAnchor | null }>(() => ({ identity: routeIdentity, anchor: initialAnchor }));
   const effectiveAnchor = anchorState.identity === routeIdentity ? anchorState.anchor : initialAnchor;
   const setEffectiveAnchor = useCallback((next: ConversationAnchor | null) => setAnchorState({ identity: routeIdentity, anchor: next }), [routeIdentity]);
@@ -1415,7 +1415,7 @@ export function ConversationDetail({
         key: `${conversationId}:${target.kind}:${String(target.value)}:${incoming.publication_revision}:${crypto.randomUUID()}`,
         kind: target.kind, turnId: incoming.target.turn_id, blockId: incoming.target.block_id, smooth: false,
         target: incoming.target.position !== null && incoming.position_space_id ? { conversationId, positionSpaceId: incoming.position_space_id, position: incoming.target.position,
-          ...(restoredAnchor && target.kind === 'position' && target.value === restoredAnchor.position ? { offset: restoredAnchor.offset, subtarget: restoredAnchor.subtarget } : {}) } : undefined,
+          ...(restoredAnchor?.kind === 'source' && target.kind === 'position' && target.value === restoredAnchor.position ? { offset: restoredAnchor.offset, subtarget: restoredAnchor.subtarget } : {}) } : undefined,
       } };
     }
     queryClient.setQueryData(aggregateKey, finalize ? finalize(reconciled) : reconciled);
@@ -1724,7 +1724,7 @@ export function ConversationDetail({
   useEffect(() => {
     const initialSelection = restoredScope.current !== conversationId;
     restoredScope.current = conversationId;
-    setEffectiveAnchor(anchor ?? (initialSelection && restoredAnchor ? { position: restoredAnchor.position, expected_position_space_id: restoredAnchor.positionSpaceId } : null));
+    setEffectiveAnchor(anchor ?? (initialSelection && restoredAnchor && restoredAnchor.position !== null ? { position: restoredAnchor.position, expected_position_space_id: savedReading!.positionSpaceId } : null));
     handledAnchorKeyRef.current = null;
     setNavigationTarget(null);
     setNavigationError(null);
@@ -2871,8 +2871,13 @@ export function ConversationDetail({
                 ? 'Conversation content unavailable.'
                 : 'No messages yet'}
             transcript={transcriptConsumer}
+            readingRestore={restoredAnchor?.kind === 'row' ? { positionSpaceId: savedReading!.positionSpaceId, anchor: restoredAnchor } : undefined}
             unmaterializedAfterCount={transcriptConsumer?.unmaterializedAfterCount ?? 0}
-            onJumpToLatest={handleJumpToLatest}
+            onJumpToLatest={() => {
+              setEffectiveAnchor(null);
+              setNavigationError(null);
+              replaceRouteHash(conversationLatestHref(window.location.hash, conversationId));
+            }}
             jumpingToLatest={jumpingToLatest}
             navigationTarget={navigationTarget}
             onNavigationResult={handleNavigationResult}

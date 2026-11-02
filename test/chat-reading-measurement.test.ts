@@ -1,4 +1,7 @@
 // @vitest-environment jsdom
+import { planReadingLayout, type ReadingPlanMember } from '../src/presentation/reading-plan';
+import { readingNodeDisclosures } from '../src/presentation/reading-disclosures';
+import type { RenderNode } from '../src/presentation/types';
 import { waitUntil } from './helpers/wait-until';
 import { afterEach, expect, it, vi } from 'vitest';
 import { ReadingMeasurementService, type MeasurementLayout, type MeasurementRequest, type MeasurementRow, type MaterializedMeasurementBatch } from '../ui/src/chat/readingMeasurement';
@@ -123,5 +126,33 @@ it('does not start another acquisition after cancellation during the final layou
   expect(materialize).toHaveBeenCalledOnce();
   expect(release).toHaveBeenCalledOnce();
   expect(parent.childElementCount).toBe(0);
+  service.dispose();
+});
+
+
+it('remeasures a formerly active thinking row while reusing explicit overrides and unrelated history', async () => {
+  Object.defineProperty(document, 'fonts', { configurable: true, value: { ready: Promise.resolve() } });
+  const parent = document.createElement('div'); document.body.append(parent);
+  const service = new ReadingMeasurementService(parent);
+  const member = (key: string, position: number, thinking: boolean): ReadingPlanMember => {
+    const node: RenderNode = { kind: 'activity', key, entity: 'assistant', item: { type: 'thinking-block-activity', content: 'Thought\nDetails', turnId: 'current', sessionId: 'chat' } };
+    return { key, position, part: 'content:0', kind: thinking ? 'activity' : 'content', speaker: 'assistant',
+      actionGroup: { key: 'turn', start: 0, end: 4 }, activity: thinking ? node.item : null,
+      dependencyRevision: key, sourcePositions: [position], handoffKeys: [], disclosures: thinking ? readingNodeDisclosures(node) : { keys: [], prefixes: [] } };
+  };
+  const members = [member('prefix', 0, false), member('explicit', 1, true), member('separator', 2, false), member('thinking', 3, true), member('suffix', 4, false)];
+  const expanded = { 'activity:explicit': false };
+  const plan = (streaming: boolean) => planReadingLayout({ members, expanded, streaming, lastAssistantTurnId: 'current', conversationId: 'chat', positionSpaceId: 'space' }).rows;
+  const materialize = vi.fn(async (rows: readonly MeasurementRow[]) => rows);
+  const renderBatch: MeasurementRequest<MeasurementRow>['renderBatch'] = (host, rows) => {
+    const elements = new Map(rows.map(row => { const element = document.createElement('div'); host.append(element);
+      element.getBoundingClientRect = () => ({ width: 480, height: 80 }) as DOMRect; return [row.key, element]; }));
+    return { elements, dispose: () => host.replaceChildren() };
+  };
+  const first = await service.measure({ rows: plan(true), layouts: [layout], materialize, renderBatch });
+  expect(first.status).toBe('complete'); materialize.mockClear();
+  const ended = await service.measure({ rows: plan(false), layouts: [layout], reuse: first.measurements, materialize, renderBatch });
+  expect(ended.status).toBe('complete');
+  expect(materialize.mock.calls.flatMap(([rows]) => rows.map(row => row.key))).toEqual(['thinking']);
   service.dispose();
 });

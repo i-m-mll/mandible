@@ -87,7 +87,7 @@ text is sent to the source index or stored in the manifest.
 
 Shared `reading-disclosures.ts` supplies renderer disclosure keys and prefix
 relations. Effective content-row revisions include only their own disclosure
-state. Opening or revealing a native-backed call hydrates its exact call and
+state. Row-local effective thinking defaults and active tool state also participate: ending a stream or changing its active turn invalidates the affected boxes while explicit overrides and unrelated history remain reusable. The renderer consumes the same shared default rule. Disposable index version 11 carries the body-free default dependencies. Opening or revealing a native-backed call hydrates its exact call and
 paired result through the normal row request; `detailsLoaded: true` is emitted
 only for bodies read from that captured source. Call and result memberships and
 focus subtargets remain distinct. Default-visible transport status evidence
@@ -154,9 +154,9 @@ no display projection. Unscoped canonical positions address the current space.
 New message URLs carry `position_space`, the canonical block coordinate, and
 the existing origin/session binding. A scoped old position is never rebound.
 
-## Query and the active span
+## Query and bounded source windows
 
-Query remains the fetched-data authority. `ConversationTranscriptData` contains
+Query remains the fetched-data authority. Initial source reads and live reconciliation retain bounded source windows independently of the complete presentation extent. `ConversationTranscriptData` contains
 the source snapshot, cached blocks/intervals, and a separate contiguous
 `active_window`. `activeConversationBlocks` is the active-list projection;
 cached distant ranges do not extend it.
@@ -202,7 +202,7 @@ Each position window carries bounded `reading_context.positions` entries
 `reading_context.speaker_runs` entries `{start, end}`, captured with the same
 source version, position space and publication revision as its blocks. Range
 reads join indexed scopes; they neither parse bodies nor scan the full history.
-Chat never fetches the complete structure. Query retains context only for its
+The body-free complete reading manifest supplies global presentation metadata. Source-window Query context covers only its
 cached blocks and updates scopes by stable `(position space, start)` identity.
 Closed owners have one summary; expansion exposes individually keyed members.
 Closed summaries retain their view identity when members at a window edge are
@@ -224,8 +224,7 @@ Membership maps each canonical position to its row key, disclosure path and
 stable source subtarget. `viewMembership` also maps native/intent member keys to
 that membership, including closed summaries. When durable source membership
 replaces a provisional row with a closed summary, the prior native key resolves
-to the exact canonical member and disclosure path. The viewport uses this map
-for the explicit replacement/reveal handoff when row identity cannot be kept.
+to the exact canonical member and disclosure path. The viewport uses verified membership when an applied logical row becomes a canonical row or folded summary.
 Renderer preparation materializes lazy/disclosed
 content and registers the exact focusable target inside the measured row box.
 `ReadingRevealResult` distinguishes success, cancellation, unavailable/changed
@@ -234,52 +233,75 @@ scroll commands and defines no geometry.
 
 ## Measured viewport
 
-`useReadingViewport` is the sole scroll owner. TanStack React Virtual 3.14.25
-and core 3.19.10 measure normally ordered semantic boxes in one native scroller.
-The engine uses end anchoring, its default resize compensation, direct DOM
-updates, native scrollend support and cached offscreen size hints. It never
-receives a content-type height table, a global history spacer or a cache reset
-on reflow. The shared shell publishes its measured composer clearance as
-`scrollClearance`; the adapter accounts for it in `paddingEnd`.
+`useCompleteReading` owns complete descriptor planning and bounded row payloads
+through Query. Payload custody uses row key, dependency revision and local
+presentation identity. Applied visible/overscan, focused/selected, pending
+geometry and active measurement/reveal candidates may coexist while a new
+transaction is prepared. Old visible payloads remain paintable until their
+geometry is replaced. Released bodies never reduce the complete row count or
+extent. Independent transport ownership prevents cancellation of an obsolete
+measurement from cancelling visible hydration.
 
-Query commits a replacement window and `reading_command` together. The adapter
-supervises one cancellable preparation, materialization, alignment and terminal
-result. Renderers prepare their disclosures and full details, then register
-exact focus targets within the measured box. The adapter materializes by public
-`scrollToIndex`, calls public `cancelScroll`, and performs one final
-`scrollToOffset` from current measured geometry. Visibility at attainable
-alignment and scrolling settlement determine success; a safety deadline is a
-failure. Jump to latest replaces with the actual tail and uses `scrollToEnd`.
-Ordinary refreshes carry the expected position space. A changed space preserves
-the useful current window and exposes an explicit Open current source action;
-that action performs a commanded replacement. Wheel, touch, scrolling keys and native scrollbar input cancel source navigation
-and engine reconciliation. Editable keyboard behavior is retained.
+`ReadingMeasurementService` uses `ReadingRowView` under the real CSS ancestry,
+with the same action controls and message-link context as the visible row.
+Production measures one current layout. Query leases retain one bounded acquisition buffer of up to 128 source rows while DOM slices stay at or below 16 rows. Acquisition is independent of render slicing. Bounded batches yield between mounts;
+measured synchronous work adjusts the following production batch within its
+maximum. A single indivisible renderer remains an explicit limit. Finite
+calibration layouts retain one mounted batch across widths. Mounted row layout
+triggers font discovery before readiness; authoritative border boxes are read
+after font/image settlement. Failed images retain the renderer's terminal
+failed/alt presentation. Late font loads advance the layout generation.
 
-`viewMembership` supplies an explicit reveal when a settled provisional anchor
-becomes a canonical closed summary. Explicit collapse uses the same protocol to
-reveal the summary. Routine prepend, trim, append and reflow compensation belong
-to the engine. Following is enabled only when the active source span reaches
-the captured true end; an older window's bottom cannot enable it. Advertised
-append counts remain same-space freshness hints and never extend positional
-availability. Jump to latest retains the useful current window while a captured
-tail trails that hint, and rereads the source. An unchanged still-behind source
-snapshot terminates with `freshness_pending` instead of retrying indefinitely.
-A changed position space resets the advertised-count bound.
+`useReadingGeometry` retains one compatible complete exact basis and reusable
+current-layout facts. First display waits for complete exact geometry, initial
+disclosure preparation, navigation and initial payload hydration. Loading,
+confirmed empty and source/render failure remain distinct. There is no cold
+row-count estimate or guaranteed first-open deadline. Source appends retain
+unchanged measurements and replace only new or changed dependencies; ongoing
+publication does not restart a completed prefix. Obsolete width work is stopped.
 
-Local version 2 state is scoped to the canonical conversation. It contains a
-position-space anchor and measured local offset, or the following flag, and at
-most 100 open disclosure keys. Writes happen at settlement, explicit disclosure
-changes and lifecycle exits. An explicit URL wins over stored state. Restoration
-loads the anchor window before revealing it; changed or unavailable spaces
-produce an explicit outcome. Obsolete group/pixel coordinates are discarded.
+A width change scales the last compatible complete vector by the frozen global
+resize profile while exact work proceeds. Lookup uses actual common-row width,
+CSS's `--reading-responsive-variant`, and reciprocal-width interpolation between
+measured coordinates, with endpoint clamping of the estimate only. Both
+responsive variants use each calibration chat's wide 800px-pane height as their
+normalization, so crossing the responsive rule preserves relative scale. This
+changes neither UI widths nor exact measurements. Geometry-affecting font/style
+changes invalidate incompatible facts. The profile is fixed rather than learned
+from runtime use.
 
-The native scrollbar describes only the materialized reading window. Engine
-range transitions load adjacent canonical ranges through Query, including
-windows consisting entirely of hidden telemetry. Retention protects viewport,
-overscan, focus and native text selection and bounds fetched positions and
-bytes. Source actions, Markdown serialization and clipboard work occur only on
-invocation. The shared hover rail, exact Copy link and turn action meanings are
-independent of virtual row boundaries.
+`useReadingViewport` is the sole scroll adapter. TanStack React Virtual 3.14.25
+and core 3.19.10 receive the complete row count, unique keys and committed sizes
+through `estimateSize`. They own global offsets, rendered ranges, total extent
+and scroll writes. No `measureElement`, `resizeItem`, private cache writes,
+competing prefix index or scroller remount participates. Each coherent geometry
+transaction calls public `measure()` once and restores one logical row/local
+offset or following intent through public engine offsets. Verified memberships
+preserve anchors when provisional content becomes a canonical row or summary.
+
+Native drag, touch, momentum and scrolling keys defer queued geometry; the
+newest compatible transaction uses the current reader anchor when interaction
+settles. New input cancels obsolete explicit navigation and captured anchors.
+The visible body and its geometry-affecting renderer props come from the same
+applied snapshot. Range changes hydrate distant bodies directly at global row
+indices. Focus and native text selection keep their rows mounted. Padding starts
+at 32px; measured composer `scrollClearance` supplies `paddingEnd` with a 16px
+minimum. These chrome contributions are separate from width-scaled row boxes.
+The actual browser's native row and total extent capacity is probed and checked
+against measured geometry plus current chrome; unsupported extents are explicit.
+
+Source reveal prepares the exact canonical member, disclosure keys and paired
+details under the expected position space, waits for matching applied exact
+geometry, materializes its global range and aligns the registered source target.
+Call and result subtargets remain distinct. The command reports a terminal
+result; cancellation never substitutes a nearby source item. Jump to latest uses
+this same global adapter and then clears route reading intent, without replacing
+an active source window for its extent.
+
+Local version 4 reading state is scoped to the canonical conversation and
+position space. Its row anchor stores stable row/member identity, a representative canonical position when available, and row-top offset from the applied geometry, independently of body arrival. Local restore resolves the complete plan and aligns the frame without opening disclosures; canonical URL/source reveal remains separate. Older stored source anchors decode as source intent. State also records following intent and at most 100 explicit Boolean disclosure keys. Explicit URL intent
+wins. Settlement and lifecycle exits persist the logical state. Copy all/Open
+turn and native source-link meanings remain independent of virtual row bounds.
 
 Browser and packaged-product acceptance follow the source and protocol checks.
 
