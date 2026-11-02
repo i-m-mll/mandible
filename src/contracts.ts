@@ -725,7 +725,7 @@ export type StoredConversationBlock = {
   role: Role;
   content: string;
   position: number;
-  timestamp: string;
+  timestamp: string | null;
   parent_id: string | null;
   metadata_json: string;
   dag_uuid?: string | null;

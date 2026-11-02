@@ -171,7 +171,7 @@ export function buildStreamState(events: StreamEvent[], standaloneItems = false)
     if (event.type === 'chat:item') {
       const canonical = event as CanonicalChatItemEvent;
       const item = canonical.item;
-      const key = canonical.displayKey ?? chatItemStableKey(item);
+      const key = canonical.source?.blockId ?? canonical.displayKey ?? chatItemStableKey(item);
       const source = canonical.source;
       const turnId = item.identity.native_turn_id;
       const turnEventId = turnId ?? key;
@@ -226,7 +226,8 @@ export function buildStreamState(events: StreamEvent[], standaloneItems = false)
             });
       } else if (item.type === 'tool-call') {
         const toolItem = item as ToolCallItem;
-        const toolId = toolItem.tool_id ?? toolItem.identity.native_tool_id ?? key;
+        const nativeToolId = toolItem.tool_id ?? toolItem.identity.native_tool_id ?? key;
+        const toolId = toolItem.phase === 'call' ? source?.blockId ?? nativeToolId : source?.parentBlockId ?? nativeToolId;
         if (toolItem.phase === 'call') {
           if (!pendingAssistant) {
             pendingAssistant = {
@@ -266,7 +267,7 @@ export function buildStreamState(events: StreamEvent[], standaloneItems = false)
             is_error: toolItem.execution_outcome === 'failed',
             source,
           });
-          if (pendingAssistant) pendingResults.set(toolId, result);
+          if (pendingAssistant?.message.content.some(block => block.type === 'tool_use' && block.id === toolId)) pendingResults.set(toolId, result);
           else if (attachResultToPriorTurn(toolId, result, source?.parentBlockId)) {
             // Exact tool identity repairs results separated from their call by
             // an intervening activity item without changing transcript order.
