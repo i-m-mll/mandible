@@ -123,7 +123,7 @@ it('returns exact clipped run/directive context and a source-backed lazy owner w
     expect(mergeDisplayContext(hydrated, { ...result, blocks: [] }, [], true).owners).toEqual([]);
     const prose = await read(4);
     expect(prose.display_context.fragments.map(fragment => fragment.coordinate.part)).toEqual(['content:0', 'directive:0', 'content:1']);
-    expect(prose.display_context.activity_runs).toMatchObject([{ id: '4:directive:0', member_count: 1, presentation: { summary: 'Chat' } }]);
+    expect(prose.display_context.activity_runs).toMatchObject([{ id: '4:directive:0', member_count: 1, presentation: { summary: 'Created chat' } }]);
     const plan = getConversationStructureCache(db).readDisplayContext('display', clipped.source_version_id!, [2]);
     expect(JSON.stringify(plan?.runs.get('0:tool:0'))).not.toContain('PRIVATE');
     const generic = await read(6);
