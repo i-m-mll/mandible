@@ -52,10 +52,10 @@ function untilAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<{ read
 }
 function imageReady(image: HTMLImageElement, signal: AbortSignal): Promise<void> {
   image.loading = 'eager';
-  const loaded = image.complete ? Promise.resolve() : new Promise<void>((resolve, reject) => {
+  const loaded = image.complete ? Promise.resolve() : new Promise<void>((resolve) => {
     const clear = () => { image.removeEventListener('load', load); image.removeEventListener('error', error); signal.removeEventListener('abort', abort); };
     const load = () => { clear(); resolve(); };
-    const error = () => { clear(); reject(new Error('Image could not load.')); };
+    const error = () => { clear(); resolve(); };
     const abort = () => { clear(); resolve(); };
     image.addEventListener('load', load, { once: true });
     image.addEventListener('error', error, { once: true });
@@ -63,8 +63,8 @@ function imageReady(image: HTMLImageElement, signal: AbortSignal): Promise<void>
   });
   return loaded.then(async () => {
     if (signal.aborted) return;
-    if (!image.naturalWidth) throw new Error('Image has no intrinsic size.');
-    await image.decode();
+    if (!image.naturalWidth) return;
+    try { await image.decode(); } catch (error) { if (!image.complete || image.naturalWidth) throw error; }
   });
 }
 function yieldToBrowser(view: Window, signal: AbortSignal): Promise<unknown> {
@@ -150,6 +150,7 @@ export class ReadingMeasurementService {
           phase = 'render';
           rendered ??= request.renderBatch(host, bodies.value, layout, rows);
           phase = 'readiness';
+          host.getBoundingClientRect();
           const ready = await untilAbort(Promise.all([
             ...layout.fonts.map(({ font, text }) => doc.fonts.load(font, text).then(() => { if (!doc.fonts.check(font, text)) throw new Error(`Requested font unavailable: ${font}`); })),
             ...[...host.querySelectorAll('img')].map(image => imageReady(image, signal)),
