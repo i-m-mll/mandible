@@ -1,5 +1,6 @@
 import { planConversationReading, type ConversationReadingManifest } from '../src/presentation/reading-manifest';
 import { expect, it, vi } from 'vitest';
+import { readingNodeDisclosures } from '../src/presentation/reading-disclosures';
 import { projectDisplayFragments } from '../src/presentation/fragments';
 import { activityRunFacts, mergeActivityRunFacts, presentActivityRunFacts } from '../src/presentation/activity-presentation';
 import type { CanonicalChatItemEvent, DisplayActivityItem } from '../src/presentation/types';
@@ -38,6 +39,14 @@ it('splits source directives and prose once, with member-relative parts stable a
   expect(prepended.filter(fragment => fragment.memberKey === live[0].memberKey).map(fragment => fragment.part)).toEqual(live.map(fragment => fragment.part));
   expect(persisted.map(fragment => fragment.part)).toEqual(live.map(fragment => fragment.part));
   expect(projectDisplayFragments([message('quoted', '```\n::created-thread{threadId="example"}\n```')])).toHaveLength(1);
+  const footer = projectDisplayFragments([message('footer', 'Final answer\n::created-thread{threadId="server-child"}\n::created-thread{clientThreadId="queued-child"}\n<oai-mem-citation>\n<citation_entries>\nMEMORY.md:10-12|note=[citation]\n</citation_entries>\n<rollout_ids>\nmemory-rollout\n</rollout_ids>\n</oai-mem-citation>', 9)]);
+  expect(footer.map(fragment => fragment.part)).toEqual(['content:0', 'directive:0', 'directive:1', 'directive:2']);
+  const references = footer.slice(1, 3).map(fragment => fragment.node);
+  expect(references.map(node => node.kind === 'activity' && node.item.type === 'provider-directive' && node.item.directive))
+    .toEqual([{ kind: 'created-thread', identity: 'threadId', providerSessionId: 'server-child' },
+      { kind: 'created-thread', identity: 'clientThreadId', providerSessionId: 'queued-child' }]);
+  expect(references.map(readingNodeDisclosures)).toEqual([{ keys: [], prefixes: [] }, { keys: [], prefixes: [] }]);
+
 });
 
 it('folds canonical and live activity facts with the existing tool/thought wording', () => {
@@ -114,7 +123,7 @@ it('returns exact clipped run/directive context and a source-backed lazy owner w
     expect(mergeDisplayContext(hydrated, { ...result, blocks: [] }, [], true).owners).toEqual([]);
     const prose = await read(4);
     expect(prose.display_context.fragments.map(fragment => fragment.coordinate.part)).toEqual(['content:0', 'directive:0', 'content:1']);
-    expect(prose.display_context.activity_runs).toMatchObject([{ id: '4:directive:0', member_count: 1, presentation: { summary: 'Created task' } }]);
+    expect(prose.display_context.activity_runs).toMatchObject([{ id: '4:directive:0', member_count: 1, presentation: { summary: 'Chat' } }]);
     const plan = getConversationStructureCache(db).readDisplayContext('display', clipped.source_version_id!, [2]);
     expect(JSON.stringify(plan?.runs.get('0:tool:0'))).not.toContain('PRIVATE');
     const generic = await read(6);

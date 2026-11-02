@@ -236,6 +236,7 @@
   font: 400 var(--text-lg)/1.15 var(--font-sans);
   text-align: left;
   cursor: pointer;
+  text-decoration: none;
 }
 
 .compact-activity__row:hover,
@@ -337,7 +338,7 @@
   color: var(--tool-activity-box-text);
 }
 
-.tool-card__payload-box {
+.activity-payload-box {
   box-sizing: border-box;
   width: 100%;
   border: 1px solid var(--tool-activity-border);
@@ -410,6 +411,9 @@
   gap: 0;
 }
 
+.stream-renderer__virtual-row.activity-member-boundary--after-sibling,
+.activity-member-boundary--after-sibling { padding-block-start: 11px; }
+
 .activity-details__part {
   white-space: pre-wrap;
   word-break: break-word;
@@ -431,9 +435,10 @@
   color: var(--text-primary);
 }
 
-.thinking-block__body pre {
+.activity-payload-box .reasoning-details {
   margin: 0;
   color: inherit;
+  background: transparent;
   white-space: pre-wrap;
   word-break: break-word;
   font: 400 var(--text-lg)/1.5 var(--font-sans);

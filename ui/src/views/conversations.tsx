@@ -873,11 +873,6 @@ export type ConversationsViewProps = {
 
 // ── Detail View ──
 
-async function resolveProviderSessionConversation(providerSessionId: string): Promise<{ id: string } | null> {
-  const result = await resolveChatRouteTarget({ type: 'session', id: providerSessionId });
-  return result.status === 'resolved' && result.selection.type === 'conversation' ? result.selection : null;
-}
-
 function formatActivityDuration(seconds: number | null): string | null {
   if (seconds == null) return null;
   if (seconds < 60) return `${seconds}s`;
@@ -1294,18 +1289,6 @@ export function ConversationDetail({
 
   // Fork/control state
   const [toast, setToast] = useState<ToastState>(null);
-  const navigateToCreatedTask = useCallback(async (providerSessionId: string) => {
-    try {
-      const target = await resolveProviderSessionConversation(providerSessionId);
-      if (target) onNavigateRef.current(target.id);
-      else setToast({ message: 'Created task conversation is not available yet.', type: 'info' });
-    } catch (error) {
-      setToast({
-        message: `Could not open created task: ${error instanceof Error ? error.message : String(error)}`,
-        type: 'error',
-      });
-    }
-  }, []);
   const [attachmentStore, setAttachmentStore] = useState(getAttachmentDraftSnapshot);
   useEffect(() => subscribeAttachmentDrafts(() => setAttachmentStore(getAttachmentDraftSnapshot())), []);
   const continueDraft = attachmentStore.drafts[conversationId]?.text ?? '';
@@ -2882,7 +2865,6 @@ export function ConversationDetail({
             navigationTarget={navigationTarget}
             onNavigationResult={handleNavigationResult}
             onFork={handleFork}
-            onCreatedTaskNavigate={navigateToCreatedTask}
             onExpandDetails={handleExpandConversationDetails}
             onCopyMessageLink={async (blockId) => {
               try {

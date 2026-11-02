@@ -1,3 +1,7 @@
+import { projectToolProgram } from '../presentation/tool-program.js';
+import { projectToolResult } from '../presentation/tool-transport.js';
+import { extractToolResultText } from '../presentation/model.js';
+import { presentTool } from '../presentation/tool-presentation.js';
 import { projectExecution } from '../presentation/execution-presentation.js';
 import { assistantResponseMembership } from "../parsers/assistant-response.js";
 import {isRoutineActivityStatus} from '../presentation/model.js';
@@ -21,8 +25,12 @@ export function indexDisplayFragments(blocks: readonly Omit<ConversationBlock, '
     const activity = node.kind === 'activity' ? node.item : null;
     const presentations = activity ? presentActivityItems([activity]) : [];
     let compact = activity;
-    if (activity?.type === 'tool-call-activity') compact = { ...activity, execution: projectExecution(activity.name, activity.input, activity.toolKind)?.facts, input: '', result: activity.result
-      ? { ...activity.result, content: '', fullText: undefined } : null };
+    if (activity?.type === 'tool-call-activity') {
+      const execution=projectExecution(activity.name,activity.input,activity.toolKind);
+      const result=activity.result;
+      const projected=result ? projectToolResult(execution,result.fullText ?? extractToolResultText(result.content),result.source?.toolFrame,result.presentation,projectToolProgram(activity.name,activity.input,activity.toolKind)) : null;
+      compact={...activity,execution:execution?.facts,operations:presentTool(activity.name,activity.input,activity.toolKind).operations,input:'',result:result ? {...result,content:'',fullText:undefined,presentation:undefined,is_error:result.is_error || projected?.failed,running:projected?.running} : null};
+    }
     else if (activity?.type === 'thinking-block-activity') compact = { ...activity, content: '' };
     else if (activity?.type === 'provider-directive') compact = { ...activity, directive: activity.directive.kind === 'memory-citation'
       ? { kind: 'memory-citation', citations: [], rolloutIds: [] } : { ...activity.directive } };
@@ -36,7 +44,7 @@ export function indexDisplayFragments(blocks: readonly Omit<ConversationBlock, '
   const aliases = blocks.flatMap(block => {
     const parent = parentPosition(block.position);
     return block.type === 'tool_result' && parent !== null ? [{ position: block.position, owner_position: parent,
-      failed: block.metadata.chat_item?.execution_outcome === 'failed' }] : [];
+      failed: block.metadata.display_tool_error === true || block.metadata.chat_item?.execution_outcome === 'failed' }] : [];
   });
   const positions = blocks.map(block => {
     const item = block.metadata.chat_item;

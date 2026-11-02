@@ -21,6 +21,7 @@ export type ToolCallActivity = {
   input?: Record<string, unknown> | string;
   header?: import('./tool-presentation.js').ToolPresentation;
   execution?: import('./execution-presentation.js').ExecutionFacts;
+  operations?: import('./tool-presentation.js').ToolRunFact[];
   result: ToolResultContentBlock | null;
   turnId?: string;
   sessionId: string;
@@ -45,6 +46,7 @@ export type DisplayActivityItem = ActivityItem | ProviderDirectiveActivity | Too
 
 export type PersistedBlockSource = {
   blockId: string;
+  toolFrame?: import('./tool-transport.js').NativeResultFrame;
   position?: number;
   /** False when a display projection omitted expandable block payload. */
   detailsLoaded?: boolean;
@@ -104,17 +106,18 @@ export type ContentBlock = TextContentBlock | ThinkingContentBlock | PlanContent
 
 export type ToolResultContent =
   | string
-  | Array<{ type: 'text'; text: string }>
-  | Array<{ type: 'image'; source: { type: string; media_type: string; data: string } }>;
+  | Array<{ type: 'text'; text: string } | { type: 'image'; source: { type: string; media_type: string; data: string } }>;
 
 export type ToolResultContentBlock = {
   type: 'tool_result';
   tool_use_id: string;
   content: ToolResultContent;
   is_error?: boolean;
+  running?: boolean;
   truncated?: boolean;
   fullText?: string;
   omittedCharacters?: number;
+  presentation?: import('./tool-transport.js').ToolTransportResult;
   source?: PersistedBlockSource;
 };
 

@@ -1,3 +1,4 @@
+import { projectToolProgram } from './tool-program.js';
 import { projectExecution, type ExecutionFacts } from './execution-presentation.js';
 export type PresentationIcon = 'toolRead' | 'toolEdit' | 'toolWrite' | 'toolDelete' | 'toolMove' | 'toolSearch' | 'toolExecute' | 'toolJavascript' | 'history' | 'thought' | 'toolFetch' | 'toolBrowser' | 'toolSwitchMode' | 'monitor' | 'chat' | 'terminal' | 'info' | 'issues';
 type IconName = PresentationIcon;
@@ -12,6 +13,7 @@ export type ToolPresentation = {
   phrase: string;
   target: string;
   execution?: ExecutionFacts;
+  operations?: ToolRunFact[];
 };
 
 const DEFINITIONS: Record<ToolCategory, { icon: IconName; phrase: string; plural: string }> = {
@@ -77,6 +79,13 @@ export function presentTool(
   inputValue: Record<string, unknown> | string = {},
   toolKind?: string,
 ): ToolPresentation {
+  const program = projectToolProgram(toolName, inputValue, toolKind);
+  if (program && !program.operations.every(operation => projectExecution(operation.name,operation.input)?.facts.kind === 'command')) {
+    const facts = toolRunFacts(program.operations);
+    const one = program.operations.length === 1 ? presentTool(program.operations[0].name,program.operations[0].input) : null;
+    const summary=summarizeToolRunFacts(facts).join('; ');
+    return {...(one ?? {category:'other',icon:facts[0]?.presentation.icon ?? 'monitor',phrase:summary.charAt(0).toUpperCase()+summary.slice(1),target:''}), operations:facts};
+  }
   const execution = projectExecution(toolName, inputValue, toolKind);
   if (execution) {
     const command = execution.facts.kind === 'command';
@@ -170,15 +179,17 @@ export function toolTarget(toolName: string, inputValue: Record<string, unknown>
   return '';
 }
 
-export type ToolOperationInput = {name: string; toolKind?: string; input?: Record<string, unknown> | string; execution?: ExecutionFacts};
+export type ToolOperationInput = {name: string; toolKind?: string; input?: Record<string, unknown> | string; execution?: ExecutionFacts; operations?: ToolRunFact[]};
 export type ToolRunFact = { category: ToolCategory; presentation: ToolPresentation; count: number; names: string[] };
 export function toolRunFacts(tools: readonly ToolOperationInput[]): ToolRunFact[] {
-  return mergeToolRunFacts([], tools.map(tool => {
+  return mergeToolRunFacts([], tools.flatMap(tool => {
+    if (tool.operations) return tool.operations;
     const projected = presentTool(tool.name, tool.input, tool.toolKind);
     const execution = tool.execution ?? projected.execution;
+    if (projected.operations) return projected.operations;
     const category = execution ? execution.kind === 'command' ? 'execute' : 'javascript' : projected.category;
     const presentation = {category, icon: DEFINITIONS[category].icon, phrase: category === 'other' ? projected.phrase : DEFINITIONS[category].phrase, target: '', ...(execution ? {execution} : {})};
-    return {category, presentation, count: execution?.kind === 'command' ? execution.count : 1, names: [normalizedName(tool.name)]};
+    return [{category, presentation, count: execution?.kind === 'command' ? execution.count : 1, names: [normalizedName(tool.name)]}];
   }));
 }
 export function mergeToolRunFacts(left: readonly ToolRunFact[], right: readonly ToolRunFact[]): ToolRunFact[] {
@@ -213,5 +224,6 @@ export function summarizeToolRun(
 export function toolRunIcon(
   tools: readonly ToolOperationInput[],
 ): IconName {
+  if(tools[0]?.operations?.length) return tools[0].operations[0].presentation.icon;
   return tools[0]?.execution?.kind === 'command' ? 'toolExecute' : presentTool(tools[0]?.name ?? '', tools[0]?.input, tools[0]?.toolKind).icon;
 }

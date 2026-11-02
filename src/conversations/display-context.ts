@@ -3,7 +3,7 @@ import type { DisplayActivityItem, ToolCallActivity } from '../presentation/type
 import type { DisplayFragmentCoordinate } from '../presentation/fragments.js';
 import type { PresentationIcon } from '../presentation/tool-presentation.js';
 import type { ToolPresentation } from '../presentation/tool-presentation.js';
-import type { ActivityRunFacts } from '../presentation/activity-presentation.js';
+import { presentReasoning, type ActivityRunFacts } from '../presentation/activity-presentation.js';
 import type { PersistedBlockSource } from '../presentation/types.js';
 import type { ConversationBlock } from '../parsers/types.js';
 import type { CanonicalChatItemEvent } from '../presentation/types.js';
@@ -80,7 +80,7 @@ export function displayEventsFromBlocks(blocks: readonly {
       ? !isEmptyCompletionMetadata(item, false, usage ?? block.metadata.usage_telemetry) : undefined);
     return [{ type: 'chat:item' as const, item, ...(intentId ? { intentId, displayKey: `intent:${intentId}` } : {}),
       ...(usage && Number.isFinite(usage.input) && Number.isFinite(usage.output) ? { usage: { key: typeof block.metadata.provider_message_id === 'string' ? block.metadata.provider_message_id : `record:${item.identity.source_record_ordinal}`, input: usage.input, output: usage.output } } : {}),
-      source: { ...(block.details_loaded === undefined ? {} : { detailsLoaded: block.details_loaded, defaultVisible: true }), ...(hasBody === undefined ? {} : { hasBody }), ...(block.timestamp ? { timestamp: block.timestamp } : {}), ...(block.dag_uuid ? { dagUuid: block.dag_uuid } : {}), blockId: `cblk:${conversationId}:${block.position}`, position: block.position,
+      source: { ...(block.metadata.display_tool_frame ? {toolFrame:block.metadata.display_tool_frame} : {}), ...(block.details_loaded === undefined ? {} : { detailsLoaded: block.details_loaded, defaultVisible: true }), ...(hasBody === undefined ? {} : { hasBody }), ...(block.timestamp ? { timestamp: block.timestamp } : {}), ...(block.dag_uuid ? { dagUuid: block.dag_uuid } : {}), blockId: `cblk:${conversationId}:${block.position}`, position: block.position,
         ...(block.parentPosition === null ? {} : { parentBlockId: `cblk:${conversationId}:${block.parentPosition}` }) } }];
   });
 }
@@ -88,7 +88,7 @@ export function displayEventsFromBlocks(blocks: readonly {
 /** Source indexing and summary hydration preserve the default lazy renderer's visible status evidence. */
 export function defaultDisplayEventsFromBlocks(blocks: Parameters<typeof displayEventsFromBlocks>[0], conversationId: string): CanonicalChatItemEvent[] {
   return displayEventsFromBlocks(blocks.map(block => ({ ...block, details_loaded: false,
-    metadata: block.metadata.source_event_type === 'reasoning_summary' ? {...block.metadata, display_has_body: block.content.split(/\r?\n/).map(line => line.trim()).filter(Boolean).length > 1} : block.metadata,
+    metadata: block.metadata.source_event_type === 'reasoning_summary' ? {...block.metadata, display_has_body: presentReasoning([block.content]).hasBody} : block.metadata,
   })), conversationId);
 }
 

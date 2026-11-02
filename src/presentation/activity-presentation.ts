@@ -15,14 +15,25 @@ export function plainActivityParts(item: ActivityItem): string[] {
     .filter(Boolean);
 }
 
+/** Only an authored leading heading supplies a reasoning title. */
+export function presentReasoning(parts: readonly string[]): { summary: string; details: string[]; hasBody: boolean } {
+  const nonempty = parts.map(part => part.trim()).filter(Boolean);
+  const first = nonempty[0] ?? '';
+  const heading = /^(?:\*\*([^\n]+?)\*\*|__([^\n]+?)__|#{1,6}[ \t]+([^\n]+?))[ \t]*(?:\r?\n|$)/.exec(first);
+  const summary = heading ? plainActivityHeader(heading[1] ?? heading[2] ?? heading[3]).trim() : 'Thought';
+  const remainder = heading ? first.slice(heading[0].length).trim() : first;
+  const details = [remainder || first, ...nonempty.slice(1)].filter(Boolean).map(plainActivityHeader);
+  return { summary, details, hasBody: nonempty.length > 0 };
+}
+
 export type ActivityDetail = string
   | { kind: 'citation'; ref: string; note: string | null }
-  | { kind: 'created-thread'; identity: 'threadId' | 'clientThreadId'; providerSessionId: string };
+  | { kind: 'chat-reference'; providerSessionId: string };
 
 export function activityState(item: DisplayActivityItem): string[] {
   if (item.type === 'provider-directive') return [];
   if (item.type === 'tool-call-activity') {
-    return item.result?.is_error ? ['Failed'] : [];
+    return [item.result?.is_error || item.result?.presentation?.failed ? 'Failed' : undefined,item.result?.running || item.result?.presentation?.running ? 'Running' : undefined].filter((value):value is string=>Boolean(value));
   }
   if (item.type === 'thinking-block-activity') return [];
   return [
@@ -37,18 +48,14 @@ function activityDetails(item: DisplayActivityItem, parts: readonly string[]): A
     if (item.directive.kind === 'memory-citation') {
       return [
         ...item.directive.citations.map((citation) => ({ kind: 'citation' as const, ...citation })),
-        ...item.directive.rolloutIds.map((id) => `Task: ${id}`),
+        ...item.directive.rolloutIds.map((id) => ({ kind: 'chat-reference' as const, providerSessionId: id })),
       ];
     }
-    return [{
-      kind: 'created-thread',
-      identity: item.directive.identity,
-      providerSessionId: item.directive.providerSessionId,
-    }];
+    return [];
   }
   if (item.type === 'tool-call-activity') return [];
-  if (item.type === 'thinking-block-activity') return item.content.trim() ? [item.content.trim()] : [];
-  if (item.activity_kind === 'thinking') return [...parts.slice(1)];
+  if (item.type === 'thinking-block-activity') return presentReasoning([item.content]).details;
+  if (item.activity_kind === 'thinking' || item.activity_kind === 'reasoning-summary') return presentReasoning(item.parts.map(part => part.text)).details;
   const details = [...parts.slice(1)];
   if (item.tool_name) details.push(`Tool: ${item.tool_name}`);
   if (item.elapsed_ms !== undefined) details.push(`${item.elapsed_ms.toLocaleString()} ms`);
@@ -64,14 +71,16 @@ export type ActivityPresentation = {
 /** Fold adjacent exact-visible duplicates without changing canonical membership. */
 function activitySummary(item: DisplayActivityItem, parts: readonly string[], state: readonly string[]): string {
   if (item.type === 'provider-directive') {
-    return item.directive.kind === 'memory-citation' ? 'Used memory' : 'Created task';
+    return item.directive.kind === 'memory-citation' ? 'Used memory' : 'Chat';
   }
   if (item.type === 'tool-call-activity') {
+    if (item.operations) {const label=summarizeToolRunFacts(item.operations).join('; ');return label.charAt(0).toUpperCase()+label.slice(1);}
     const presentation = item.header ?? presentTool(item.name, item.input, item.toolKind);
     const execution = item.execution ?? presentation.execution;
     return execution?.kind === 'command' ? execution.count === 1 ? 'Ran command' : 'Ran several commands' : presentation.phrase;
   }
-  if (item.type === 'thinking-block-activity') return 'Thought';
+  if (item.type === 'thinking-block-activity') return presentReasoning([item.content]).summary;
+  if (item.activity_kind === 'thinking' || item.activity_kind === 'reasoning-summary') return presentReasoning(item.parts.map(part => part.text)).summary;
   const base = parts[0] ?? ACTIVITY_LABELS[item.activity_kind];
   return [...new Set([base, ...state])].join(' · ');
 }
@@ -119,12 +128,12 @@ export function activityRunFacts(items: readonly DisplayActivityItem[]): Activit
   items.forEach((item,index)=>{
     if(item.type==='tool-call-activity')return;
     if(item.type==='thinking-block-activity'||(item.type==='activity'&&['thinking','reasoning-summary'].includes(item.activity_kind)))add('thought','thought');
-    else if(item.type==='provider-directive')add(item.directive.kind==='memory-citation'?'memory':'created-task',item.directive.kind==='memory-citation'?'used memory':'created task');
+    else if(item.type==='provider-directive')add(item.directive.kind==='memory-citation'?'memory':'chat-reference',item.directive.kind==='memory-citation'?'used memory':'chat');
     else { const summary=presentations[index].summary; const label=summary.charAt(0).toLowerCase()+summary.slice(1); add(item.activity_kind+':'+label,label); }
   });
   return {memberCount:items.length, unified:items.some(item=>item.type!=='activity'||['thinking','reasoning-summary'].includes(item.activity_kind)),
     firstSummary:presentations[0]?.summary??'',firstIcon:items[0]?activityIconName(items[0]):'monitor',
-    states:[...new Set(items.flatMap(activityState))], toolStates:[...new Set(tools.flatMap(activityState))],tools:toolRunFacts(tools.map(item=>({name:item.name,toolKind:item.toolKind,input:item.input,execution:item.execution}))),
+    states:[...new Set(items.flatMap(activityState))], toolStates:[...new Set(tools.flatMap(activityState))],tools:toolRunFacts(tools.map(item=>({name:item.name,toolKind:item.toolKind,input:item.input,execution:item.execution,operations:item.operations}))),
     hasThinkingTool:tools.some(item=>classifyTool(item.name)==='think'),labels:[...labels.values()],
     hasDetails:items.some(item=>item.type!=='activity'||['thinking','reasoning-summary'].includes(item.activity_kind))||activityDetailLines(presentations).length>0};
 }
@@ -141,7 +150,7 @@ export function presentActivityRunFacts(facts:ActivityRunFacts):{summary:string;
   if(facts.memberCount>1){
     if(!facts.unified)summary=[...new Set([...facts.firstSummary.split(' · '),...facts.states])].join(' · ');
     else {
-      const labels=facts.labels.filter(label=>label.key!=='thought'||!facts.hasThinkingTool).map(label=>label.key==='created-task'&&label.count>1?'created tasks':label.label);
+      const labels=facts.labels.filter(label=>label.key!=='thought'||!facts.hasThinkingTool).map(label=>label.key==='chat-reference'&&label.count>1?'chats':label.label);
       const states=facts.toolStates.map(state=>state.charAt(0).toLowerCase()+state.slice(1));
       const text=[...summarizeToolRunFacts(facts.tools),...labels,...states].join('; ');summary=text.charAt(0).toUpperCase()+text.slice(1);
     }
@@ -154,6 +163,7 @@ export function summarizeActivityRun(items:readonly DisplayActivityItem[],_prese
 
 export function activityIconName(item: DisplayActivityItem): PresentationIcon {
   if (item.type === 'provider-directive') return item.directive.kind === 'memory-citation' ? 'history' : 'chat';
+  if (item.type === 'tool-call-activity' && item.operations?.length) return item.operations[0].presentation.icon;
   if (item.type === 'tool-call-activity') return item.execution?.kind === 'command' ? 'toolExecute' : (item.header ?? presentTool(item.name, item.input, item.toolKind)).icon;
   if (item.type === 'thinking-block-activity') return 'thought';
   if (item.activity_kind === 'thinking' || item.activity_kind === 'reasoning-summary') return 'thought';

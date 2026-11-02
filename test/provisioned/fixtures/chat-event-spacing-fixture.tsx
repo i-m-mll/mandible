@@ -4,7 +4,12 @@ import { ToolUseBlock } from '../../../ui/src/components/message-blocks/ToolUseB
 import { TextBlock } from '../../../ui/src/components/message-blocks/TextBlock';
 import { UserBubble } from '../../../ui/src/components/message-blocks/UserBubble';
 import { MessageActions, MessageLinkContext, MessagePrimaryActionsContext } from '../../../ui/src/components/shared/MessageActions';
-import { ReadingRowView } from '../../../ui/src/chat/ReadingRowView';
+import { ReadingRowView, ReadingRowBody } from '../../../ui/src/chat/ReadingRowView';
+import { ActivityGroup } from '../../../ui/src/components/message-blocks/ActivityBlock';
+import { createReadingRowBatchRenderer } from '../../../ui/src/chat/renderReadingMeasurementBatch';
+import { planReadingLayout } from '../../../src/presentation/reading-plan';
+import { materializePreparedReadingRows, type PreparedReadingMember } from '../../../src/presentation/reading';
+import { readingNodeDisclosures } from '../../../src/presentation/reading-disclosures';
 import type { ReadingRow } from '../../../ui/src/chat/readingProjection';
 
 const nestedRows: ReadingRow[] = [0, 1, 2, 3, 4, 5, 6].map(index => ({
@@ -97,5 +102,43 @@ void (async () => {
       final: { message: box(final.querySelector('.msg-text-block')!), footer: box(footer), opacity: getComputedStyle(footer).opacity, pointerEvents: getComputedStyle(footer).pointerEvents } });
     header.click(); await task();
   }
+  results[0].childBoundaries = await measureChildBoundaries();
   document.title = btoa(JSON.stringify(results));
 })().catch(error => { document.title = `fixture-error:${btoa(String(error.stack ?? error))}`; });
+
+async function measureChildBoundaries() {
+  const members: PreparedReadingMember[] = [0, 1, 2].map(index => {
+    const key = `sibling:${index}`;
+    const activity = { type: 'tool-call-activity' as const, id: key, name: 'Bash', input: { command: 'Inspect the child body\nThen inspect the next sibling' }, result: null, sessionId: 'fixture' };
+    return { key, part: 'tool', kind: 'activity', speaker: 'assistant', actionGroup: { key: 'siblings', start: 0, end: 2 }, activity,
+      dependencyRevision: '1', sourcePositions: [], handoffKeys: [], sources: [], node: { kind: 'activity', key, entity: 'assistant', item: activity } };
+  });
+  const planned = planReadingLayout({ members, conversationId: 'siblings', positionSpaceId: 'fixture', expanded: { 'group:live:sibling:0': true } });
+  const rows = materializePreparedReadingRows(planned.rows, members);
+  const results = [];
+  for (const expanded of [false, true]) {
+    const expandedBlocks = { [readingNodeDisclosures(members[0].node).keys[0]]: expanded };
+    const props = (row: ReadingRow) => ({ row, events: [], streaming: false, expandedBlocks, setBlockExpanded: () => {}, preparing: false, primaryActions: [], onActivityGroupExpandedChange: () => {} });
+    const normal = document.createElement('section'); normal.style.width = '452.203125px'; document.body.append(normal);
+    render(<>{rows.map(row => <ReadingRowView key={row.key} {...props(row)} />)}</>, normal);
+    const internal = document.createElement('section'); internal.style.width = normal.style.width; document.body.append(internal);
+    render(<ActivityGroup items={members.map(member => member.activity!)} expanded renderMember={(_, index) => <ReadingRowBody {...props(rows[index + 1])} />} />, internal);
+    const offscreen = document.createElement('div'); offscreen.dataset.readingMeasurementHost = ''; Object.assign(offscreen.style, { width: normal.style.width, position: 'fixed', visibility: 'hidden' }); document.body.append(offscreen);
+    const batch = createReadingRowBatchRenderer(props)(offscreen, rows);
+    await task();
+    const frames = [...normal.querySelectorAll<HTMLElement>('[data-reading-key]')];
+    const headers = frames.map(frame => box(frame.querySelector('.compact-activity__row')!));
+    const internalHeaders = [...internal.querySelectorAll('.compact-activity__row')].map(box);
+    const firstBody = frames[1].querySelector('.compact-activity__details');
+    const internalFirst = internal.querySelector('.activity-group__members')!.firstElementChild!;
+    results.push({ expanded, parentToFirst: headers[1].top - headers[0].bottom, firstToSecond: headers[2].top - headers[1].top,
+      lastPitch: headers[3].top - headers[2].top, outerLeading: headers[0].top - box(frames[0]).top,
+      outerTrailing: box(frames[3]).bottom - headers[3].bottom, bodyGap: firstBody ? headers[2].top - box(firstBody).bottom : null,
+      headerHeights: headers.map(header => header.height), internalParentToFirst: internalHeaders[1].top - internalHeaders[0].bottom,
+      internalFirstToSecond: internalHeaders[2].top - internalHeaders[1].top, internalLastPitch: internalHeaders[3].top - internalHeaders[2].top,
+      internalBodyGap: expanded ? internalHeaders[2].top - box(internalFirst).bottom : null,
+      normalHeights: frames.map(frame => box(frame).height), measuredHeights: rows.map(row => box(batch.elements.get(row.key)!).height) });
+    batch.dispose(); render(null, normal); render(null, internal); normal.remove(); internal.remove(); offscreen.remove();
+  }
+  return results;
+}

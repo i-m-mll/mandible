@@ -14,6 +14,7 @@ export type ReadingDisclosures = {
 export function readingNodeDisclosures(node: RenderNode): ReadingDisclosures {
   switch (node.kind) {
     case 'activity': {
+      if (node.item.type === 'provider-directive' && node.item.directive.kind === 'created-thread') return { keys: [], prefixes: [] };
       const key = `activity:${node.key}`;
       return { keys: [key], prefixes: [], ...(node.item.type === 'thinking-block-activity' ? { thinkingDefaults: [{ key, turnId: node.item.turnId }] } : {}) };
     }

@@ -1,6 +1,7 @@
 import type { SourceBackedConversationBlock } from './source-types.js';
 import type { ActivityItem } from '../parsers/types.js';
 import { displayChatItem, isEmptyCompletionMetadata } from '../presentation/model.js';
+import { presentReasoning } from '../presentation/activity-presentation.js';
 
 export function projectDisplayBlock(row: SourceBackedConversationBlock): SourceBackedConversationBlock & { details_loaded?: false } {
   let metadata: Record<string, unknown> = {};
@@ -21,11 +22,12 @@ export function projectDisplayBlock(row: SourceBackedConversationBlock): SourceB
   const reasoningLines = reasoningSummary
     ? row.content.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
     : [];
-  if (reasoningSummary) metadata.display_has_body = reasoningLines.length > 1;
+  if (reasoningSummary) metadata.display_has_body = presentReasoning([row.content]).hasBody;
   if (activity && (item as ActivityItem).provenance.source_event_type === 'task_complete') {
     metadata.display_has_body = !isEmptyCompletionMetadata(displayChatItem(item as ActivityItem, metadata) as ActivityItem, false, metadata.token_usage ?? metadata.usage_telemetry);
   }
   delete metadata.display_completion_parts;
+  delete metadata.display_tool_content;
   delete metadata.tool_input;
   delete metadata.tool_output;
   if (item && typeof item === "object" && !Array.isArray(item)) {
