@@ -29,13 +29,19 @@ it('keeps real content and hidden action rails beside one another while disclosu
     if (encoded!.startsWith('fixture-error:')) throw new Error(Buffer.from(encoded!.slice(14), 'base64').toString());
     const results = JSON.parse(Buffer.from(encoded!, 'base64').toString());
     for (const boundary of results[0].childBoundaries) {
+      const pitch = boundary.fontSize === 14 ? 24.95 : 26;
       expect(boundary.parentToFirst).toBe(0); expect(boundary.internalParentToFirst).toBe(0);
-      expect(boundary.lastPitch).toBe(33); expect(boundary.internalLastPitch).toBe(33);
+      expect(boundary.lastPitch).toBeCloseTo(pitch, 1); expect(boundary.internalLastPitch).toBeCloseTo(pitch, 1);
       expect(boundary.outerLeading).toBe(8); expect(boundary.outerTrailing).toBe(8);
-      expect(boundary.headerHeights).toEqual([22, 22, 22, 22]);
+      expect(boundary.standaloneHeight).toBe(boundary.fontSize === 14 ? 22 : 25);
+      expect(boundary.headerHeights[0]).toBe(boundary.standaloneHeight);
+      for (const height of boundary.headerHeights.slice(1)) expect(height).toBeCloseTo(pitch, 1);
+      expect(boundary.nestedInset.above).toBeCloseTo(boundary.nestedInset.below, 1);
+      expect(boundary.nestedInset.above).toBeCloseTo(boundary.standaloneInset.above * 1.5, 1);
+      expect(boundary.nestedBody).toEqual(boundary.standaloneBody);
       expect(boundary.normalHeights).toEqual(boundary.measuredHeights);
-      if (boundary.expanded) { expect(boundary.bodyGap).toBe(11); expect(boundary.internalBodyGap).toBe(11); }
-      else { expect(boundary.firstToSecond).toBe(33); expect(boundary.internalFirstToSecond).toBe(33); }
+      if (boundary.expanded) { expect(boundary.bodyGap).toBe(0); expect(boundary.internalBodyGap).toBe(0); }
+      else { expect(boundary.firstToSecond).toBeCloseTo(pitch, 1); expect(boundary.internalFirstToSecond).toBeCloseTo(pitch, 1); }
     }
     for (const result of results) {
       for (const entry of result.entries) {

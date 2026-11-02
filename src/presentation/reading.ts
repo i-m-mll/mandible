@@ -29,7 +29,6 @@ export type ReadingRow = {
   turnEnd?: boolean;
   activityMember?: boolean;
   activityEnd?: boolean;
-  activitySibling?: boolean;
   totalTokens?: number;
 };
 

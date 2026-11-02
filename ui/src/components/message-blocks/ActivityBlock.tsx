@@ -82,10 +82,9 @@ function ActivityGroupDetails({
   items: readonly DisplayActivityItem[];
   renderMember: (item: DisplayActivityItem, index: number) => JSX.Element | null;
 }): JSX.Element {
-  const members = items.map(renderMember).filter(member => member !== null);
   return (
-    <div className="activity-details activity-group__members">
-      {members.map((member, index) => <div key={member.key ?? index} className={index > 0 ? 'activity-member-boundary--after-sibling' : undefined}>{member}</div>)}
+    <div className="activity-details activity-group__members activity-nested-headers">
+      {items.map(renderMember)}
     </div>
   );
 }

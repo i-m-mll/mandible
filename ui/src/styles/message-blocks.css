@@ -1,4 +1,11 @@
-:root { --reading-responsive-variant: wide; --reading-renderer-version: event-context-footer-v5; }
+:root {
+  --reading-responsive-variant: wide;
+  --reading-renderer-version: event-context-footer-v5;
+  --compact-activity-header-min-height: 22px;
+  --compact-activity-header-line-height: 1.15;
+  --compact-activity-header-icon-size: 16px;
+  --compact-activity-header-padding: 1px;
+}
 /* Shared chat message block components */
 
 /* ── Shared message-block components — Bug: bce7370 ── */
@@ -223,17 +230,19 @@
 }
 
 .compact-activity__row {
+  --compact-activity-header-content-height: max(calc(var(--text-lg) * var(--compact-activity-header-line-height)), var(--compact-activity-header-icon-size));
+  --compact-activity-header-centered-inset: max(var(--compact-activity-header-padding), calc((var(--compact-activity-header-min-height) - var(--compact-activity-header-content-height)) / 2));
   display: flex;
   align-items: center;
   width: max-content;
   max-width: 100%;
   gap: 6px;
-  min-height: 22px;
-  padding: 1px 0;
+  min-height: var(--compact-activity-header-min-height);
+  padding: var(--compact-activity-header-padding) 0;
   border: 0;
   background: transparent;
   color: var(--tool-activity-text);
-  font: 400 var(--text-lg)/1.15 var(--font-sans);
+  font: 400 var(--text-lg)/var(--compact-activity-header-line-height) var(--font-sans);
   text-align: left;
   cursor: pointer;
   text-decoration: none;
@@ -253,15 +262,15 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
-  flex: 0 0 16px;
+  width: var(--compact-activity-header-icon-size);
+  height: var(--compact-activity-header-icon-size);
+  flex: 0 0 var(--compact-activity-header-icon-size);
   color: inherit;
 }
 
 .compact-activity__icon > :is(.app-icon, span) {
-  width: 16px;
-  height: 16px;
+  width: var(--compact-activity-header-icon-size);
+  height: var(--compact-activity-header-icon-size);
 }
 
 .compact-activity__summary {
@@ -411,8 +420,9 @@
   gap: 0;
 }
 
-.stream-renderer__virtual-row.activity-member-boundary--after-sibling,
-.activity-member-boundary--after-sibling { padding-block-start: 11px; }
+.activity-nested-headers .compact-activity__row {
+  padding-block: calc(var(--compact-activity-header-centered-inset) * 1.5);
+}
 
 .activity-details__part {
   white-space: pre-wrap;
