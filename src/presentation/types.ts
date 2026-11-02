@@ -49,7 +49,7 @@ export type PersistedBlockSource = {
   detailsLoaded?: boolean;
   /** Preserve default visible source evidence while its real detail body is hydrated. */
   defaultVisible?: boolean;
-  /** Whether a compact thinking summary has body lines beyond its title. */
+  /** Whether compact activity retains substantive evidence beyond its visible shell. */
   hasBody?: boolean;
   /** Exact persisted parent link; a present value proves a result is not orphaned. */
   parentBlockId?: string;

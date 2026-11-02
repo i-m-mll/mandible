@@ -65,7 +65,7 @@ export interface ChatItemBase {
   execution_outcome?: ChatExecutionOutcome;
 }
 
-/** Provider-authored turn intent; content completion alone never establishes a final response. */
+/** Provider-authored turn intent (including Codex response channels and saved phases); content completion alone never establishes a final response. */
 export type AssistantResponseClassification = "final" | "interim" | "unknown";
 
 export interface MessageItem extends ChatItemBase {
