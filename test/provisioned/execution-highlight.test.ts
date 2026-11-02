@@ -22,9 +22,11 @@ it('paints command tokens with the shared artifact syntax palette under producti
     expect(rendered.status,rendered.stderr).toBe(0);
     const encoded=rendered.stdout.match(/<title>([^<]+)<\/title>/)?.[1];
     expect(encoded,rendered.stdout.slice(-2000)).toBeDefined();
-    const values=JSON.parse(Buffer.from(encoded!,'base64').toString()) as Array<{theme:string;code:string;string:string;artifactString:string;command:string}>;
+    const values=JSON.parse(Buffer.from(encoded!,'base64').toString()) as Array<{theme:string;code:string;string:string;artifactString:string;command:string;npmCommand:string;npmColor:string;primaryColor:string}>;
     for(const value of values) {
       expect(value.command).toBe("sed -n '1,260p' /tmp/example.md");
+      expect(value.npmCommand).toBe('npm run iab-preview-cleanup -- --dry-run --json');
+      expect(value.npmColor,value.theme).toBe(value.primaryColor);
       expect(value.string,value.theme).not.toBe(value.code);
       expect(value.string,value.theme).toBe(value.artifactString);
     }
