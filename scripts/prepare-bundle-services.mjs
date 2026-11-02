@@ -1,7 +1,21 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 import { serviceRoles, bundleServiceLabel } from './bundle-service-roles.mjs';
+
+export function buildBundleService(root, env = process.env) {
+  const output = execFileSync('cargo', ['build', '--locked', '--release', '--bin', 'mandible-service',
+    '--message-format=json-render-diagnostics', '--manifest-path', path.join(root, 'src-tauri/service-helper/Cargo.toml')], {
+    cwd: root, env: { ...env, MACOSX_DEPLOYMENT_TARGET: '13.0' }, timeout: 60_000,
+    encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'],
+  });
+  const artifacts = output.trim().split('\n').filter(Boolean).map(line => JSON.parse(line)).filter(message =>
+    message.reason === 'compiler-artifact' && message.target.name === 'mandible-service'
+      && message.target.kind.includes('bin') && message.executable);
+  if (artifacts.length !== 1) throw new Error(`Cargo reported ${artifacts.length} mandible-service executables; expected exactly one.`);
+  return artifacts[0].executable;
+}
 
 /** Staging only: call before signing the final app. No user paths enter signed descriptors. */
 export function stageBundleServices(contents, helper, identifier = 'bio.mll.mandible') {
