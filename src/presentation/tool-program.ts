@@ -18,6 +18,12 @@ function data(node: Ast, bindings = new Map<string, unknown>()): { value: unknow
     const values = node.elements.map((element: Ast | null) => element && data(element,bindings));
     return values.every((value): value is {value:unknown} => value!==null) ? {value: values.map(value => value.value)} : null;
   }
+  if (node.type === 'CallExpression') {
+    const entries=mappedEntries(node,bindings);
+    if(!entries)return null;
+    const values=entries.map(entry=>data(entry.node,entry.bindings));
+    return values.every((value):value is {value:unknown}=>value!==null)?{value:values.map(value=>value.value)}:null;
+  }
   if (node.type === 'ObjectExpression') {
     const value: Record<string, unknown> = {};
     for (const property of node.properties) {
@@ -47,6 +53,16 @@ function bindPattern(pattern:Ast,value:unknown,bindings:Map<string,unknown>):boo
   if(pattern.type==='ObjectPattern'&&value&&typeof value==='object')return pattern.properties.every((entry:Ast)=>entry.type==='Property'&&!entry.computed&&entry.kind==='init'&&identifier(entry.key)&&Object.hasOwn(value,entry.key.name)&&bindPattern(entry.value,(value as Record<string,unknown>)[entry.key.name],bindings));
   return false;
 }
+function mappedEntries(node:Ast,bindings:Map<string,unknown>):Array<{node:Ast;bindings:Map<string,unknown>}>|null {
+  if(node.type!=='CallExpression'||node.optional||node.callee.type!=='MemberExpression'||node.callee.computed||node.callee.optional||!identifier(node.callee.property,'map')||node.arguments.length!==1)return null;
+  const items=data(node.callee.object,bindings),callback=node.arguments[0];
+  if(!items||!Array.isArray(items.value)||items.value.length>256||callback.type!=='ArrowFunctionExpression'||callback.async||callback.params.length!==1)return null;
+  const body=callback.body.type==='BlockStatement'&&callback.body.body.length===1&&callback.body.body[0].type==='ReturnStatement'?callback.body.body[0].argument:callback.body;
+  if(!body)return null;
+  const entries:Array<{node:Ast;bindings:Map<string,unknown>}>=[];
+  for(const value of items.value){const scoped=new Map(bindings);if(!bindPattern(callback.params[0],value,scoped))return null;entries.push({node:body,bindings:scoped});}
+  return entries;
+}
 function calls(node:Ast,bindings=new Map<string,unknown>(),pure?:(node:Ast,scope?:ReadonlyMap<string,unknown>)=>boolean):{operations:ToolProgramOperation[];batch:boolean}|null {
   if(node.type!=='AwaitExpression')return null;
   const call=node.argument;
@@ -55,13 +71,7 @@ function calls(node:Ast,bindings=new Map<string,unknown>(),pure?:(node:Ast,scope
     const collection=call.arguments[0];
     const entries:Array<{node:Ast;bindings:Map<string,unknown>}> = [];
     if(collection.type==='ArrayExpression'){for(const entry of collection.elements){if(!entry)return null;entries.push({node:entry,bindings});}}
-    else if(collection.type==='CallExpression'&&!collection.optional&&collection.callee.type==='MemberExpression'&&!collection.callee.computed&&identifier(collection.callee.property,'map')&&collection.arguments.length===1) {
-      const items=data(collection.callee.object,bindings),callback=collection.arguments[0];
-      if(!items||!Array.isArray(items.value)||items.value.length>256||callback.type!=='ArrowFunctionExpression'||callback.params.length!==1)return null;
-      const body=callback.body.type==='BlockStatement'&&callback.body.body.length===1&&callback.body.body[0].type==='ReturnStatement'?callback.body.body[0].argument:callback.body;
-      if(!body)return null;
-      for(const value of items.value){const scoped=new Map(bindings);if(!bindPattern(callback.params[0],value,scoped))return null;entries.push({node:body,bindings:scoped});}
-    }else return null;
+    else {const mapped=mappedEntries(collection,bindings);if(!mapped)return null;entries.push(...mapped);}
     const operations:ToolProgramOperation[]=[];
     const returned=(node:Ast,scope:Map<string,unknown>,path:Array<string|number>):boolean=>{
       const op=operation(node,scope,pure);
