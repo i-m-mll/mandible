@@ -1,5 +1,5 @@
 import type { ActivityFacts } from '../conversations/conversation-index.js';
-import { compactToolRunFacts } from './tool-presentation.js';
+import { compactToolRunFacts, compactToolOperation } from './tool-presentation.js';
 import type { ActivityItem, ActivityKind } from '../parsers/types.js';
 import type { DisplayActivityItem } from './types.js';
 import { plainActivityHeader } from './activity-text.js';
@@ -126,7 +126,7 @@ export function activitySemanticFacts(item: DisplayActivityItem): ActivityFacts 
   if (item.type === 'tool-call-activity') return {kind:'tool',toolName:item.name,toolKind:item.toolKind,turnId:item.turnId,
     execution:item.execution ?? presentTool(item.name,item.input,item.toolKind).execution,
     operations:toolRunFacts([{name:item.name,toolKind:item.toolKind,input:item.input,execution:item.execution,operations:item.operations}])
-      .map(({category,count,names})=>({category,count,names})),
+      .map(compactToolOperation),
     hasResult:Boolean(item.result),failed:item.result?.is_error || item.result?.presentation?.failed,running:item.result?.running || item.result?.presentation?.running};
   if (item.type === 'thinking-block-activity') return {kind:'thinking',turnId:item.turnId,summary:presentReasoning([item.content]).summary};
   if (item.type === 'provider-directive') return {kind:item.directive.kind === 'memory-citation' ? 'directive-memory' : 'directive-thread',turnId:item.turnId};
