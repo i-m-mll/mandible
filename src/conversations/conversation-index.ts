@@ -6,6 +6,8 @@ import type { ToolCategory } from '../presentation/tool-presentation.js';
 import type { ReadingDisclosures } from '../presentation/reading-disclosures.js';
 import type { AssistantResponseMembership } from '../parsers/assistant-response.js';
 
+export type OperationFacts = {category:ToolCategory;count:number;names:string[];nativeName?:string;otherKind?:'function'|'custom'};
+
 /** Body-free semantic facts shared by ingestion, conversion and presentation. */
 export type ActivityFacts = {
   kind: 'tool' | 'thinking' | 'directive-memory' | 'directive-thread' | 'activity';
@@ -23,7 +25,7 @@ export type ActivityFacts = {
   failed?: boolean;
   running?: boolean;
   execution?: ExecutionFacts;
-  operations?: Array<{ category: ToolCategory; count: number; names: string[] }>;
+  operations?: OperationFacts[];
 };
 export type PositionFacts = {
   position: number; revision: string; speaker: 'user' | 'assistant' | 'system'; handoffKeys: string[];

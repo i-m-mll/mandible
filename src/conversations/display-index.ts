@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type SqliteDatabase from '../sqlite.js';
 import { displayFragmentId, displaySummaryMembers, type IndexedDisplayFragment, type DisplayFragmentDescriptor, type DisplayPositionFacts } from './display-context.js';
 import { semanticActivityUnified } from '../presentation/activity-presentation.js';
-import { KEY_RECIPE_COLUMNS, encodeIndexKey, indexKeyDecoder, type KeyRecipeRow } from './index-keys.js';
+import { KEY_RECIPE_COLUMNS, indexKeyEncoder, indexKeyDecoder, type KeyRecipeRow } from './index-keys.js';
 import type { ActivityFacts, IndexWriteBatch } from './conversation-index.js';
 
 export type DisplayIndexInput = IndexWriteBatch;
@@ -24,51 +24,64 @@ const partName=(kind:number,ordinal:number):string=>{const value=PARTS[kind];if(
 type FragmentRow={position:number;part_kind:number;part_ordinal:number;ordinal:number;kind:number;run_position:number|null;run_kind:number|null;run_ordinal:number|null;
   activity_kind:number|null;activity_subtype:number|null;severity:number|null;outcome:number|null;status:string|null;tool_name:string|null;tool_kind:string|null;turn_id:string|null;flags:number;execution_kind:number|null;execution_count:number|null;role_code:number};
 const speaker=(role:number):DisplayPositionFacts['speaker']=>role===0?'user':role===2?'system':'assistant';
+const fragmentSpeaker=(row:Pick<FragmentRow,'flags'|'role_code'>):DisplayPositionFacts['speaker']=>((row.flags>>6)&3)===1?'user':((row.flags>>6)&3)===2?'assistant':((row.flags>>6)&3)===3?'system':speaker(row.role_code);
 const fragmentSelect=`SELECT f.*,b.role_code FROM cache_display_fragments f JOIN cache_blocks b ON b.cache_conversation_id=f.cache_conversation_id AND b.position=f.position`;
 function conversationId(db:SqliteDatabase,id:number):string {const row=db.prepare('SELECT conversation_id FROM cache_conversations WHERE cache_id=?').get(id) as {conversation_id:string}|undefined;if(!row)throw new Error('Missing index generation');return row.conversation_id;}
 export function writeDisplayIndex(db:SqliteDatabase,cacheId:number,input:DisplayIndexInput):void {
-  const conversation=conversationId(db,cacheId);
+  const encodeKey=indexKeyEncoder(db,cacheId,conversationId(db,cacheId));
   const update=db.prepare('UPDATE cache_blocks SET revision=?,turn_id=?,response_class=?,usage_key=?,usage_input=?,usage_output=? WHERE cache_conversation_id=? AND position=?');
   const identity=db.prepare(`INSERT INTO cache_position_identities VALUES(?,?,?,?,${KEY_RECIPE_COLUMNS.split(',').map(()=>'?').join(',')})`);
+  const deleteIdentities=db.prepare('DELETE FROM cache_position_identities WHERE cache_conversation_id=? AND position=?');
   for(const position of input.positions) {
     if(!/^[0-9a-f]{64}$/.test(position.revision))throw new Error('Invalid source revision digest');
     const result=update.run(Buffer.from(position.revision,'hex'),position.turnId??null,code(RESPONSES,position.response?.classification),position.usage?.key??null,position.usage?.input??null,position.usage?.output??null,cacheId,position.position);
     if(!result.changes)throw new Error('Presentation facts have no source position');
-    db.prepare('DELETE FROM cache_position_identities WHERE cache_conversation_id=? AND position=?').run(cacheId,position.position);
+    deleteIdentities.run(cacheId,position.position);
     for(const [kind,keys] of [position.handoff,position.response?[position.response.identity]:[],position.execution?[position.execution]:[]].entries())
-      for(const [ordinal,key] of keys.entries())identity.run(cacheId,position.position,kind,ordinal,...encodeIndexKey(db,cacheId,conversation,key));
+      for(const [ordinal,key] of keys.entries())identity.run(cacheId,position.position,kind,ordinal,...encodeKey(key));
   }
   let previous=db.prepare(`${fragmentSelect} WHERE f.cache_conversation_id=? ORDER BY f.position DESC,f.ordinal DESC LIMIT 1`).get(cacheId) as FragmentRow|undefined;
-  const paired=new Set(input.aliases.filter(alias=>input.fragments.some(fragment=>fragment.coordinate.position===alias.owner_position&&fragment.activity?.kind==='tool')
-    ||db.prepare('SELECT 1 FROM cache_display_fragments WHERE cache_conversation_id=? AND position=? AND activity_kind=0').get(cacheId,alias.owner_position)).map(alias=>alias.position));
+  const toolOwners=new Set(input.fragments.filter(fragment=>fragment.activity?.kind==='tool').map(fragment=>fragment.coordinate.position));
+  const ownerExists=db.prepare('SELECT 1 FROM cache_display_fragments WHERE cache_conversation_id=? AND position=? AND activity_kind=0');
+  const paired=new Set(input.aliases.filter(alias=>toolOwners.has(alias.owner_position)||ownerExists.get(cacheId,alias.owner_position)).map(alias=>alias.position));
   const insert=db.prepare('INSERT INTO cache_display_fragments VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
   const disclosure=db.prepare(`INSERT INTO cache_fragment_disclosures VALUES(?,?,?,?,?,?,?,${KEY_RECIPE_COLUMNS.split(',').map(()=>'?').join(',')})`);
+  const roles=new Map((db.prepare('SELECT position,role_code FROM cache_blocks WHERE cache_conversation_id=? AND position IN (SELECT value FROM json_each(?))').all(cacheId,JSON.stringify(input.fragments.map(fragment=>fragment.coordinate.position))) as Array<{position:number;role_code:number}>).map(row=>[row.position,row.role_code]));
+  const insertOperation=db.prepare('INSERT INTO cache_fragment_operations VALUES(?,?,?,?,?,?,?,?,?)');
+  const insertName=db.prepare('INSERT INTO cache_operation_names VALUES(?,?,?,?,?,?,?)');
+  const insertStep=db.prepare('INSERT INTO cache_execution_steps VALUES(?,?,?,?,?,?,?)');
   for(const [ordinal,fragment] of input.fragments.entries()) {
     if(paired.has(fragment.coordinate.position))continue;
     const [kind,partOrdinal]=fragmentPart(fragment.coordinate.part);const position=fragment.coordinate.position;
-    const run=fragment.kind==='activity' ? previous?.kind===1&&speaker(previous.role_code)===fragment.speaker
+    const run=fragment.kind==='activity' ? previous?.kind===1&&fragmentSpeaker(previous)===fragment.speaker
       ? [previous.run_position!,previous.run_kind!,previous.run_ordinal!] : [position,kind,partOrdinal] : [null,null,null];
     const activity=fragment.activity;
-    const flags=(fragment.summary_from_source?1:0)|(fragment.has_details?2:0)|(fragment.summary_eligible===false?4:0)|(activity?.failed?8:0)|(activity?.running?16:0)|(activity?.hasResult?32:0);
+    const sourceRole=roles.get(position)!;
+    const speakerOverride=speaker(sourceRole)===fragment.speaker?0:(fragment.speaker==='user'?1:fragment.speaker==='assistant'?2:3)<<6;
+    const flags=speakerOverride|(fragment.summary_from_source?1:0)|(fragment.has_details?2:0)|(fragment.summary_eligible===false?4:0)|(activity?.failed?8:0)|(activity?.running?16:0)|(activity?.hasResult?32:0);
     insert.run(cacheId,position,kind,partOrdinal,ordinal,fragment.kind==='activity'?1:0,...run,
       code(ACTIVITIES,activity?.kind),code(SUBTYPES,activity?.activityKind),code(SEVERITIES,activity?.severity),code(OUTCOMES,activity?.outcome),
       activity?.status??null,activity?.toolName??null,activity?.toolKind??null,activity?.turnId??null,flags,
       activity?.execution ? activity.execution.kind==='command'?0:1 : null,activity?.execution?.kind==='command'?activity.execution.count:null);
     for(const [disclosureKind,keys] of [fragment.disclosureRecipes?.keys??[],fragment.disclosureRecipes?.prefixes??[],fragment.disclosureRecipes?.thinkingDefaults?.map(value=>value.key)??[]].entries())
-      for(const [index,key] of keys.entries())disclosure.run(cacheId,position,kind,partOrdinal,disclosureKind,index,disclosureKind===2?fragment.disclosureRecipes?.thinkingDefaults?.[index]?.turnId??null:null,...encodeIndexKey(db,cacheId,conversation,key));
+      for(const [index,key] of keys.entries())disclosure.run(cacheId,position,kind,partOrdinal,disclosureKind,index,disclosureKind===2?fragment.disclosureRecipes?.thinkingDefaults?.[index]?.turnId??null:null,...encodeKey(key));
     for(const [index,operation] of (activity?.operations??[]).entries()) {
-      db.prepare('INSERT INTO cache_fragment_operations VALUES(?,?,?,?,?,?,?)').run(cacheId,position,kind,partOrdinal,index,code(CATEGORIES,operation.category),operation.count);
-      for(const [nameIndex,name] of operation.names.entries())db.prepare('INSERT INTO cache_operation_names VALUES(?,?,?,?,?,?,?)').run(cacheId,position,kind,partOrdinal,index,nameIndex,name);
+      insertOperation.run(cacheId,position,kind,partOrdinal,index,code(CATEGORIES,operation.category),operation.count,operation.nativeName??null,operation.otherKind===undefined?null:operation.otherKind==='function'?0:1);
+      for(const [nameIndex,name] of operation.names.entries())insertName.run(cacheId,position,kind,partOrdinal,index,nameIndex,name);
     }
-    if(activity?.execution?.kind==='command')for(const [index,forwarding] of activity.execution.forwarding.entries())db.prepare('INSERT INTO cache_execution_steps VALUES(?,?,?,?,?,?,?)').run(cacheId,position,kind,partOrdinal,index,activity.execution.shells[index]??null,code(FORWARDING,forwarding));
-    previous={position,kind:fragment.kind==='activity'?1:0,role_code:fragment.speaker==='user'?0:fragment.speaker==='system'?2:1,run_position:run[0],run_kind:run[1],run_ordinal:run[2]} as FragmentRow;
+    if(activity?.execution?.kind==='command')for(const [index,forwarding] of activity.execution.forwarding.entries())insertStep.run(cacheId,position,kind,partOrdinal,index,activity.execution.shells[index]??null,code(FORWARDING,forwarding));
+    previous={position,kind:fragment.kind==='activity'?1:0,role_code:fragment.speaker==='user'?0:fragment.speaker==='system'?2:1,run_position:run[0],run_kind:run[1],run_ordinal:run[2],flags:0} as FragmentRow;
   }
+  const findOwner=db.prepare('SELECT part_kind,part_ordinal FROM cache_display_fragments WHERE cache_conversation_id=? AND position=? AND activity_kind=0 ORDER BY ordinal LIMIT 1');
+  const insertAlias=db.prepare('INSERT OR REPLACE INTO cache_display_aliases VALUES(?,?,?,?,?)');
+  const setResult=db.prepare('UPDATE cache_display_fragments SET flags=flags|32 WHERE cache_conversation_id=? AND position=? AND part_kind=? AND part_ordinal=?');
+  const setFailed=db.prepare('UPDATE cache_display_fragments SET flags=flags|8 WHERE cache_conversation_id=? AND position=? AND part_kind=? AND part_ordinal=?');
   for(const alias of input.aliases) {
-    const owner=db.prepare('SELECT part_kind,part_ordinal FROM cache_display_fragments WHERE cache_conversation_id=? AND position=? AND activity_kind=0 ORDER BY ordinal LIMIT 1').get(cacheId,alias.owner_position) as {part_kind:number;part_ordinal:number}|undefined;
+    const owner=findOwner.get(cacheId,alias.owner_position) as {part_kind:number;part_ordinal:number}|undefined;
     if(!owner)continue;
-    db.prepare('INSERT OR REPLACE INTO cache_display_aliases VALUES(?,?,?,?,?)').run(cacheId,alias.position,alias.owner_position,owner.part_kind,owner.part_ordinal);
-    db.prepare('UPDATE cache_display_fragments SET flags=flags|32 WHERE cache_conversation_id=? AND position=? AND part_kind=? AND part_ordinal=?').run(cacheId,alias.owner_position,owner.part_kind,owner.part_ordinal);
-    if(alias.failed)db.prepare('UPDATE cache_display_fragments SET flags=flags|8 WHERE cache_conversation_id=? AND position=? AND part_kind=? AND part_ordinal=?').run(cacheId,alias.owner_position,owner.part_kind,owner.part_ordinal);
+    insertAlias.run(cacheId,alias.position,alias.owner_position,owner.part_kind,owner.part_ordinal);
+    setResult.run(cacheId,alias.owner_position,owner.part_kind,owner.part_ordinal);
+    if(alias.failed)setFailed.run(cacheId,alias.owner_position,owner.part_kind,owner.part_ordinal);
   }
 }
 function decodeRows(db:SqliteDatabase,id:number,rows:FragmentRow[]):IndexedDisplayFragment[] {
@@ -86,11 +99,11 @@ function decodeRows(db:SqliteDatabase,id:number,rows:FragmentRow[]):IndexedDispl
       ...(row.status===null?{}:{status:row.status}),...(row.tool_name===null?{}:{toolName:row.tool_name}),...(row.tool_kind===null?{}:{toolKind:row.tool_kind}),...(row.turn_id===null?{}:{turnId:row.turn_id}),
       ...(row.flags&32?{hasResult:true}:{}),...(row.flags&8?{failed:true}:{}),...(row.flags&16?{running:true}:{}),
       ...(row.execution_kind===null?{}:{execution:row.execution_kind===1?{kind:'script',language:'javascript'}:{kind:'command',count:row.execution_count!,shells:(steps.get(key)??[]).map(step=>step.shell),forwarding:(steps.get(key)??[]).map(step=>enumValue(FORWARDING,step.forwarding)!)}}),
-      ...(operations.has(key)?{operations:operations.get(key)!.map(operation=>({category:enumValue(CATEGORIES,operation.category)!,count:operation.count,names:(names.get(key)??[]).filter(name=>name.operation===operation.ordinal).map(name=>name.name)}))}:{})}:null;
+      ...(operations.has(key)?{operations:operations.get(key)!.map(operation=>({category:enumValue(CATEGORIES,operation.category)!,count:operation.count,...(operation.native_name===null?{}:{nativeName:operation.native_name}),...(operation.other_kind===null?{}:{otherKind:operation.other_kind===0?'function' as const:'custom' as const}),names:(names.get(key)??[]).filter(name=>name.operation===operation.ordinal).map(name=>name.name)}))}:{})}:null;
     const disclosureRows=disclosures.get(key)??[];
     const disclosureKeys=(kind:number)=>disclosureRows.filter(value=>value.kind===kind).map(value=>decodeKey(value));
     const coordinate={position:row.position,part:partName(row.part_kind,row.part_ordinal)};
-    return {id:displayFragmentId(coordinate),coordinate,kind:row.kind===1?'activity':'content',speaker:speaker(row.role_code),
+    return {id:displayFragmentId(coordinate),coordinate,kind:row.kind===1?'activity':'content',speaker:fragmentSpeaker(row),
       activity_run_id:row.run_position===null?null:displayFragmentId({position:row.run_position,part:partName(row.run_kind!,row.run_ordinal!)}),
       activity,paired_source_positions:(paired.get(key)??[]).map(value=>value.paired_position),summary_from_source:Boolean(row.flags&1),has_details:Boolean(row.flags&2),summary_eligible:!(row.flags&4),
       disclosures:{keys:disclosureKeys(0),prefixes:disclosureKeys(1),...(disclosureRows.some(value=>value.kind===2)?{thinkingDefaults:disclosureRows.filter(value=>value.kind===2).map(value=>({key:decodeKey(value),...(value.turn_id===null?{}:{turnId:value.turn_id})}))}:{})}};

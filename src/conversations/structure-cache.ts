@@ -92,6 +92,7 @@ export interface SourceManifestRow {
 export interface ConversationStructureCacheOptions {
   cachePath?: string;
   readonly?: boolean;
+  maxBytes?: number;
 }
 
 export function defaultConversationStructureCachePath(db?: Db): string {
@@ -185,6 +186,7 @@ export class ConversationStructureCache {
     this.cache.pragma("foreign_keys = ON");
     const initialized = this.cache.prepare("SELECT name FROM sqlite_master WHERE name = 'cache_meta'").get();
     if (!initialized) this.cache.transaction(() => this.initialize()).immediate();
+    if(options.maxBytes!==undefined)this.setByteLimit(options.maxBytes);
   }
 
   private initialize(): void {
@@ -195,10 +197,16 @@ export class ConversationStructureCache {
       .run(String(CONVERSATION_STRUCTURE_CACHE_VERSION));
   }
 
+  setByteLimit(maxBytes:number):void {
+    if(!Number.isSafeInteger(maxBytes)||maxBytes<1)throw new Error('Invalid conversation cache byte limit');
+    const pageSize=Number(this.cache.pragma('page_size',{simple:true}));
+    this.cache.pragma(`max_page_count = ${Math.max(1,Math.floor(maxBytes/pageSize))}`);
+  }
+
   async projectGenerationsTo(destination:ConversationStructureCache,manifests:readonly SourceManifestRow[],options:{signal?:AbortSignal;maxBytes?:number;batchSize?:number;cooperate?:()=>Promise<void>}={}):Promise<{generations:number;rows:number}> {
     const batchSize=options.batchSize??512;if(!Number.isSafeInteger(batchSize)||batchSize<1)throw new Error('Invalid projection batch size');
     let rows=0,generations=0;
-    if(options.maxBytes!==undefined){const pageSize=Number(destination.cache.pragma('page_size',{simple:true}));destination.cache.pragma(`max_page_count = ${Math.max(1,Math.floor(options.maxBytes/pageSize))}`);}
+    if(options.maxBytes!==undefined)destination.setByteLimit(options.maxBytes);
     const check=()=>{options.signal?.throwIfAborted();if(options.maxBytes!==undefined) {
       const bytes=['','-wal','-shm'].reduce((sum,suffix)=>sum+(fs.existsSync(destination.cachePath+suffix)?fs.statSync(destination.cachePath+suffix).size:0),0);
       if(bytes>options.maxBytes)throw new Error('Conversation cache projection exceeds its byte budget');
