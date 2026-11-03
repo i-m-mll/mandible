@@ -1,9 +1,10 @@
 import { parse, type AnyNode, type Identifier } from 'acorn';
 
 type Ast = AnyNode;
+const GLOBAL_BINDINGS=new Set(['tools','text','image','audio','JSON','Promise','ALL_TOOLS','Object','Array','String','Number','Boolean']);
 export type ToolEmissionEncoding = 'literal' | 'json' | 'native';
-export type ToolProgramOperation = { encoding:ToolEmissionEncoding; name: string; input: Record<string, unknown> | string; forwarding: 'result' | 'stdout' | 'direct'; index?: number; indexKey?: string; resultKey?: string; collection?: number; settled?: boolean };
-export type ToolProgram = { operations: ToolProgramOperation[] };
+export type ToolProgramOperation = { encoding:ToolEmissionEncoding; name: string; input: Record<string, unknown> | string | undefined; emission?:number; resultPath?:Array<string|number>; collectionPath?:Array<string|number>; resultTransformed?:boolean; forwarding: 'result' | 'stdout' | 'direct'; index?: number; indexKey?: string; resultKey?: string; collection?: number; settled?: boolean };
+export type ToolProgram = { operations: ToolProgramOperation[]; outputAttributed?:boolean;effectsComplete?:false };
 const identifier = (node: Ast | undefined, name?: string): node is Identifier => node?.type === 'Identifier' && (name === undefined || node.name === name);
 const member = (node: Ast | undefined, object: string, property: string): boolean => node?.type === 'MemberExpression' && !node.computed && !node.optional && identifier(node.object, object) && identifier(node.property, property);
 function data(node: Ast, bindings = new Map<string, unknown>()): { value: unknown } | null {
@@ -30,25 +31,50 @@ function data(node: Ast, bindings = new Map<string, unknown>()): { value: unknow
   }
   return null;
 }
-function operation(node: Ast, bindings = new Map<string, unknown>()): ToolProgramOperation | null {
-  if (node.type === 'AwaitExpression') return operation(node.argument,bindings);
+function operation(node: Ast, bindings = new Map<string, unknown>(), pure?:(node:Ast,scope?:ReadonlyMap<string,unknown>)=>boolean): ToolProgramOperation | null {
+  if (node.type === 'AwaitExpression') return operation(node.argument,bindings,pure);
   if (node.type !== 'CallExpression' || node.optional || node.arguments.length !== 1) return null;
   const callee = node.callee;
+  if(callee.type==='MemberExpression'&&!callee.computed&&identifier(callee.property)&&['then','catch'].includes(callee.property.name)&&pure?.(node.arguments[0],bindings)){const original=operation(callee.object,bindings,pure);return original?{...original,resultTransformed:true}:null;}
   if (callee.type !== 'MemberExpression' || callee.computed || callee.optional || !identifier(callee.object, 'tools') || !identifier(callee.property)) return null;
   const input = data(node.arguments[0],bindings);
   return input && (typeof input.value === 'string' || (input.value && typeof input.value === 'object' && !Array.isArray(input.value)))
-    ? {name: callee.property.name, input: input.value as Record<string, unknown> | string, forwarding: 'result',encoding:'native'} : null;
+    ? {name: callee.property.name, input: input.value as Record<string, unknown> | string, forwarding: 'result',encoding:'native'} : pure?.(node.arguments[0],bindings)?{name:callee.property.name,input:undefined,forwarding:'result',encoding:'native'}:null;
 }
-function calls(node: Ast, bindings = new Map<string, unknown>()): {operations: ToolProgramOperation[]; batch: boolean} | null {
-  if (node.type !== 'AwaitExpression') return null;
-  const call = node.argument;
-  if (call.type === 'CallExpression' && !call.optional && call.arguments.length === 1
-      && (member(call.callee, 'Promise', 'all') || member(call.callee, 'Promise', 'allSettled')) && call.arguments[0].type === 'ArrayExpression') {
-    const settled = member(call.callee, 'Promise', 'allSettled');
-    const operations = call.arguments[0].elements.map((element: Ast | null) => element && operation(element,bindings));
-    return operations.length && operations.every((op): op is ToolProgramOperation => op!==null) ? {batch:true, operations: operations.map((op: ToolProgramOperation,index: number) => ({...op,index,...(settled ? {settled:true} : {})}))} : null;
+function bindPattern(pattern:Ast,value:unknown,bindings:Map<string,unknown>):boolean {
+  if(identifier(pattern)){if(GLOBAL_BINDINGS.has(pattern.name))return false;bindings.set(pattern.name,value);return true;}
+  if(pattern.type==='ArrayPattern'&&Array.isArray(value)&&pattern.elements.length===value.length)return pattern.elements.every((entry:Ast|null,index:number)=>entry&&bindPattern(entry,value[index],bindings));
+  if(pattern.type==='ObjectPattern'&&value&&typeof value==='object')return pattern.properties.every((entry:Ast)=>entry.type==='Property'&&!entry.computed&&entry.kind==='init'&&identifier(entry.key)&&Object.hasOwn(value,entry.key.name)&&bindPattern(entry.value,(value as Record<string,unknown>)[entry.key.name],bindings));
+  return false;
+}
+function calls(node:Ast,bindings=new Map<string,unknown>(),pure?:(node:Ast,scope?:ReadonlyMap<string,unknown>)=>boolean):{operations:ToolProgramOperation[];batch:boolean}|null {
+  if(node.type!=='AwaitExpression')return null;
+  const call=node.argument;
+  if(call.type==='CallExpression'&&!call.optional&&call.arguments.length===1&&(member(call.callee,'Promise','all')||member(call.callee,'Promise','allSettled'))) {
+    const settled=member(call.callee,'Promise','allSettled');
+    const collection=call.arguments[0];
+    const entries:Array<{node:Ast;bindings:Map<string,unknown>}> = [];
+    if(collection.type==='ArrayExpression'){for(const entry of collection.elements){if(!entry)return null;entries.push({node:entry,bindings});}}
+    else if(collection.type==='CallExpression'&&!collection.optional&&collection.callee.type==='MemberExpression'&&!collection.callee.computed&&identifier(collection.callee.property,'map')&&collection.arguments.length===1) {
+      const items=data(collection.callee.object,bindings),callback=collection.arguments[0];
+      if(!items||!Array.isArray(items.value)||items.value.length>256||callback.type!=='ArrowFunctionExpression'||callback.params.length!==1)return null;
+      const body=callback.body.type==='BlockStatement'&&callback.body.body.length===1&&callback.body.body[0].type==='ReturnStatement'?callback.body.body[0].argument:callback.body;
+      if(!body)return null;
+      for(const value of items.value){const scoped=new Map(bindings);if(!bindPattern(callback.params[0],value,scoped))return null;entries.push({node:body,bindings:scoped});}
+    }else return null;
+    const operations:ToolProgramOperation[]=[];
+    const returned=(node:Ast,scope:Map<string,unknown>,path:Array<string|number>):boolean=>{
+      const op=operation(node,scope,pure);
+      if(op){operations.push({...op,index:Number(path[0]),collectionPath:path,...(settled?{settled:true}:{})});return operations.length<=256;}
+      if(data(node,scope))return true;
+      if(node.type==='ArrayExpression')return node.elements.every((entry:Ast|null,index:number)=>entry&&returned(entry,scope,[...path,index]));
+      if(node.type==='ObjectExpression')return node.properties.every((entry:Ast)=>entry.type==='Property'&&!entry.computed&&entry.kind==='init'&&!entry.method&&identifier(entry.key)&&returned(entry.value,scope,[...path,entry.key.name]));
+      return false;
+    };
+    for(const [index,entry] of entries.entries())if(!returned(entry.node,entry.bindings,[index]))return null;
+    return operations.length?{batch:true,operations}:null;
   }
-  const op = operation(node,bindings); return op ? {batch:false,operations:[op]} : null;
+  const op=operation(node,bindings,pure);return op?{batch:false,operations:[op]}:null;
 }
 function forwardedValue(node: Ast, name: string): 'result' | 'stdout' | null {
   if(identifier(node,name)) return 'result';
@@ -103,12 +129,12 @@ function pureDiscovery(node: Ast, locals = new Set<string>()): boolean {
     return node.body.type!=='BlockStatement' && pureDiscovery(node.body,names);
   }
   if (node.type === 'CallExpression' && !node.optional && node.callee.type==='MemberExpression' && !node.callee.computed && identifier(node.callee.property)
-    && ['filter','map','includes','test','toLowerCase','join'].includes(node.callee.property.name)) return pureDiscovery(node.callee.object,locals) && node.arguments.every((arg:Ast)=>pureDiscovery(arg,locals));
+    && ['filter','map','slice','includes','test','toLowerCase','join'].includes(node.callee.property.name)) return pureDiscovery(node.callee.object,locals) && node.arguments.every((arg:Ast)=>pureDiscovery(arg,locals));
   return false;
 }
 function discoveryRoot(node:Ast, collections:ReadonlySet<string> = new Set(['ALL_TOOLS'])):boolean {
   return node.type==='CallExpression' && node.callee.type==='MemberExpression' && !node.callee.computed && identifier(node.callee.property)
-    && ['filter','map'].includes(node.callee.property.name) && ((identifier(node.callee.object) && collections.has(node.callee.object.name)) || discoveryRoot(node.callee.object,collections));
+    && ['filter','map','slice'].includes(node.callee.property.name) && ((identifier(node.callee.object) && collections.has(node.callee.object.name)) || discoveryRoot(node.callee.object,collections));
 }
 function discoveryProgram(statements:readonly Ast[]):boolean {
   const collections=new Set(['ALL_TOOLS']);
@@ -130,7 +156,7 @@ function discoveryProgram(statements:readonly Ast[]):boolean {
   if(output?.type!=='ExpressionStatement' || output.expression.type!=='CallExpression' || output.expression.optional || output.expression.arguments.length!==1) return false;
   const call=output.expression;
   if(identifier(call.callee) && emitters.has(call.callee.name)) return identifier(call.arguments[0]) && collections.has(call.arguments[0].name);
-  if(call.callee.type!=='MemberExpression' || call.callee.computed || call.callee.optional || !identifier(call.callee.object) || !collections.has(call.callee.object.name) || !identifier(call.callee.property,'forEach')) return false;
+  if(call.callee.type!=='MemberExpression' || call.callee.computed || call.callee.optional || !((identifier(call.callee.object)&&collections.has(call.callee.object.name))||(discoveryRoot(call.callee.object,collections)&&pureDiscovery(call.callee.object,collections))) || !identifier(call.callee.property,'forEach')) return false;
   const callback=call.arguments[0];
   if(callback.type!=='ArrowFunctionExpression' || callback.async || callback.params.length!==1 || !identifier(callback.params[0]) || emitters.has(callback.params[0].name)) return false;
   const body=callback.body.type==='BlockStatement' && callback.body.body.length===1 ? callback.body.body[0] : callback.body;
@@ -171,41 +197,140 @@ function fallbackContentForwarding(loop:Ast,fallback:Ast | undefined,name:string
   const result=fallback.consequent.type==='BlockStatement' && fallback.consequent.body.length===1 ? fallback.consequent.body[0] : fallback.consequent;
   return identifier(textValue(result) ?? undefined,name);
 }
-/** Project only a complete static program whose outputs account for every call. Never execute provider source. */
-export function projectToolProgram(name: string, input: Record<string, unknown> | string = {}, kind?: string): ToolProgram | null {
-  if (!['exec','functions.exec'].includes(name.toLowerCase()) || (kind && kind !== 'custom_tool_call')) return null;
-  const script = typeof input === 'string' ? input : input.code;
-  if (typeof script !== 'string') return null;
-  let program;
-  try {program = parse(script,{ecmaVersion:'latest',sourceType:'module'});} catch {return null;}
-  if(discoveryProgram(program.body)) return {operations:[{name:'__tool_discovery',input:{},forwarding:'result',encoding:'literal'}]};
-  const operations: ToolProgramOperation[] = [];
-  const bindings = new Map<string,unknown>();
-  const names = new Set(['tools','text','image','audio','JSON','Promise','ALL_TOOLS']);
-  for (let i=0;i<program.body.length;i++) {
-    const statement = program.body[i] as Ast;
-    if (statement.type === 'VariableDeclaration' && statement.kind === 'const' && statement.declarations.length === 1) {
-      const declaration = statement.declarations[0];
-      if (!identifier(declaration.id) || names.has(declaration.id.name) || !declaration.init) return null;
-      names.add(declaration.id.name);
-      const literal = data(declaration.init,bindings);
-      if (literal) {bindings.set(declaration.id.name,literal.value);continue;}
-      const batch = calls(declaration.init,bindings);
-      const output = program.body[++i] as Ast | undefined;
-      const fallbackForward=batch && !batch.batch && output && fallbackContentForwarding(output,program.body[i+1] as Ast | undefined,declaration.id.name);
-      const mode = batch && output && (forwarding(output,declaration.id.name,batch.batch) || (!batch.batch && (contentForwarding(output,declaration.id.name) || fallbackForward) ? {forwarding:'result' as const,encoding:'literal' as const} : null));
-      if (!batch || !mode) return null;
-      if(fallbackForward) i++;
-      operations.push(...batch.operations.map(op=>({...op,...mode,...(batch.batch && !mode.indexKey ? {collection:i} : {})})));
-    } else {
-      let value = textValue(statement);
-      const serialized=value?.type==='CallExpression' && !value.optional && member(value.callee,'JSON','stringify') && value.arguments.length===1;
-      if(value?.type==='CallExpression' && !value.optional && member(value.callee,'JSON','stringify') && value.arguments.length===1) value=value.arguments[0];
-      const stdout = value?.type === 'MemberExpression' && !value.computed && !value.optional && identifier(value.property,'output');
-      const call = value && calls(stdout && value.type==='MemberExpression' ? value.object : value,bindings);
-      if (!call || (call.batch && stdout)) return null;
-      operations.push(...call.operations.map(op=>({...op,encoding:serialized || call.batch ? 'json' as const : stdout ? 'literal' as const : 'native' as const,forwarding:stdout ? 'stdout' as const : 'result' as const,...(call.batch ? {collection:i} : {})})));
+type ResultReference={indices:number[];batch:boolean;paths?:Array<Array<string|number>>};
+/** Recover unconditional tool effects and transparent output provenance without evaluating source. */
+export function projectToolProgram(name:string,input:Record<string,unknown>|string={},kind?:string):ToolProgram|null {
+  if(!['exec','functions.exec'].includes(name.toLowerCase())||(kind&&kind!=='custom_tool_call'))return null;
+  const script=typeof input==='string'?input:input.code;
+  if(typeof script!=='string')return null;
+  let program;try{program=parse(script,{ecmaVersion:'latest',sourceType:'module'});}catch{return null;}
+  if(program.body.some(statement=>statement.type==='FunctionDeclaration'&&statement.id&&GLOBAL_BINDINGS.has(statement.id.name)))return null;
+  if(program.body.some(statement=>statement.type==='VariableDeclaration'&&statement.declarations.some(declaration=>identifier(declaration.id)&&GLOBAL_BINDINGS.has(declaration.id.name))))return null;
+  if(discoveryProgram(program.body))return {operations:[{name:'__tool_discovery',input:{},forwarding:'result',encoding:'literal'}]};
+  const operations:ToolProgramOperation[]=[];
+  let emissions=0,opaque=false;
+  const analyze=(statements:readonly Ast[],environment:{bindings:Map<string,unknown>;references:Map<string,ResultReference>;names:Set<string>;values:Set<string>;mutable:Set<string>}):boolean=>{
+  const {bindings,references,names,values,mutable}=environment;
+  const pure=(node:Ast,locals:ReadonlySet<string>=values):boolean=>{
+    if(node.type==='Literal')return !node.regex;
+    if(identifier(node))return locals.has(node.name)||['undefined','NaN','Infinity'].includes(node.name);
+    if(node.type==='ChainExpression')return pure(node.expression,locals);
+    if(node.type==='MemberExpression')return pure(node.object,locals)&&(!node.computed||pure(node.property,locals));
+    if(node.type==='TemplateLiteral')return node.expressions.every((entry:Ast)=>pure(entry,locals));
+    if(node.type==='BinaryExpression'||node.type==='LogicalExpression')return pure(node.left,locals)&&pure(node.right,locals);
+    if(node.type==='UnaryExpression')return ['!','+','-','typeof','void'].includes(node.operator)&&pure(node.argument,locals);
+    if(node.type==='ConditionalExpression')return pure(node.test,locals)&&pure(node.consequent,locals)&&pure(node.alternate,locals);
+    if(node.type==='ArrayExpression')return node.elements.every((entry:Ast|null)=>entry&&pure(entry,locals));
+    if(node.type==='ObjectExpression')return node.properties.every((entry:Ast)=>entry.type==='SpreadElement'?pure(entry.argument,locals):entry.type==='Property'&&entry.kind==='init'&&!entry.method&&(!entry.computed||pure(entry.key,locals))&&pure(entry.value,locals));
+    if(node.type==='ArrowFunctionExpression'&&!node.async&&node.params.every((param:Ast)=>identifier(param))) {
+      const scoped=new Set([...locals,...node.params.map((param:Identifier)=>param.name)]);
+      return node.body.type==='BlockStatement'?pureOutputStatement(node.body,scoped,new Set()):pure(node.body,scoped);
     }
+    if(node.type==='CallExpression'&&!node.optional&&identifier(node.callee)&&['String','Number','Boolean'].includes(node.callee.name))return node.arguments.every((entry:Ast)=>pure(entry,locals));
+    if(node.type==='CallExpression'&&!node.optional&&node.callee.type==='MemberExpression'&&!node.callee.computed&&identifier(node.callee.property)) {
+      const builtin=(identifier(node.callee.object,'JSON')&&['parse','stringify'].includes(node.callee.property.name))
+        ||(identifier(node.callee.object,'Object')&&['keys','values','entries','fromEntries'].includes(node.callee.property.name))
+        ||(identifier(node.callee.object,'Array')&&node.callee.property.name==='isArray');
+      return (builtin||(['map','flatMap','at','filter','find','findIndex','some','every','slice','includes','join','trim','toLowerCase','toUpperCase','startsWith','endsWith','substring','split'].includes(node.callee.property.name)&&pure(node.callee.object,locals)))&&node.arguments.every((entry:Ast)=>pure(entry,locals));
+    }
+    return false;
+  };
+  const append=(node:Ast):ResultReference|null=>{
+    const batch=calls(node,bindings,(entry,scope)=>pure(entry,new Set([...values,...(scope?.keys()??[])]))); if(!batch)return null;
+    if(operations.length+batch.operations.length>256)return null;
+    const indices=batch.operations.map(op=>{const index=operations.length;operations.push(op);return index;});
+    return {indices,batch:batch.batch,paths:batch.operations.map((op,index)=>op.collectionPath??[index])};
+  };
+  const assign=(reference:ResultReference,emission:number,path:Array<string|number>,mode:{encoding:ToolEmissionEncoding;forwarding:'result'|'stdout'})=>{
+    reference.indices.forEach((index,offset)=>{const op=operations[index];if(op.emission!==undefined)opaque=true;
+      Object.assign(op,mode,{emission,resultPath:reference.batch?[...path,...(reference.paths?.[offset]??[offset])]:path});});
+  };
+  const output=(node:Ast,emission:number,path:Array<string|number>=[],encoding:ToolEmissionEncoding='native'):boolean=>{
+    if(identifier(node)&&references.has(node.name)){assign(references.get(node.name)!,emission,path,{encoding,forwarding:'result'});return true;}
+    if(node.type==='AwaitExpression'){const ref=append(node);if(ref){assign(ref,emission,path,{encoding,forwarding:'result'});return true;}return false;}
+    if(node.type==='MemberExpression'&&!node.computed&&node.object.type==='AwaitExpression'&&identifier(node.property,'output')){const ref=append(node.object);if(!ref||ref.batch)return false;assign(ref,emission,path,{encoding:encoding==='json'?'json':'literal',forwarding:'stdout'});return true;}
+    if(node.type==='MemberExpression'&&!node.computed&&identifier(node.object)&&references.has(node.object.name)&&identifier(node.property,'output')){const ref=references.get(node.object.name)!;if(ref.batch)return false;assign(ref,emission,path,{encoding:encoding==='json'?'json':'literal',forwarding:'stdout'});return true;}
+    if(node.type==='CallExpression'&&!node.optional&&member(node.callee,'JSON','stringify')&&node.arguments.length===1)return output(node.arguments[0],emission,path,'json');
+    if(node.type==='ObjectExpression')return node.properties.every((entry:Ast)=>{if(entry.type!=='Property'||entry.computed||entry.kind!=='init'||entry.method)return false;const key=entry.key.type==='Identifier'?entry.key.name:entry.key.type==='Literal'?entry.key.value:null;return typeof key==='string'&&output(entry.value,emission,[...path,key],'json');});
+    if(node.type==='ArrayExpression')return node.elements.every((entry:Ast|null,index:number)=>entry&&output(entry,emission,[...path,index],'json'));
+    return false;
+  };
+  const pureOutputStatement=(node:Ast,locals:Set<string>=values,mutableLocals:Set<string>=mutable):boolean=>{
+    if(node.type==='EmptyStatement')return true;
+    if(node.type==='ReturnStatement')return !node.argument||pure(node.argument,locals);
+    if(node.type==='ForStatement'){const scope=new Set(locals),assignable=new Set(mutableLocals);return (!node.init||pureOutputStatement(node.init,scope,assignable))&&(!node.test||pure(node.test,scope))&&(!node.update||(node.update.type==='UpdateExpression'&&identifier(node.update.argument)&&assignable.has(node.update.argument.name)))&&pureOutputStatement(node.body,scope,assignable);}
+    if(node.type==='BlockStatement'){const scope=new Set(locals),assignable=new Set(mutableLocals);return node.body.every((entry:Ast)=>pureOutputStatement(entry,scope,assignable));}
+    if(node.type==='VariableDeclaration'&&['const','let'].includes(node.kind))return node.declarations.every(entry=>{if(!identifier(entry.id)||!entry.init||!pure(entry.init,locals))return false;locals.add(entry.id.name);if(node.kind==='let')mutableLocals.add(entry.id.name);return true;});
+    if(node.type==='IfStatement')return pure(node.test,locals)&&pureOutputStatement(node.consequent,locals,mutableLocals)&&(!node.alternate||pureOutputStatement(node.alternate,locals,mutableLocals));
+    if(node.type==='TryStatement'){const scope=new Set(locals);if(node.handler?.param){if(!identifier(node.handler.param))return false;scope.add(node.handler.param.name);}return pureOutputStatement(node.block,locals,mutableLocals)&&(!node.handler||pureOutputStatement(node.handler.body,scope,mutableLocals))&&(!node.finalizer||pureOutputStatement(node.finalizer,locals,mutableLocals));}
+    if(node.type==='ForOfStatement'&&!node.await&&pure(node.right,locals)&&node.left.type==='VariableDeclaration'&&node.left.kind==='const'&&node.left.declarations.length===1){const pattern=node.left.declarations[0].id;const ids=identifier(pattern)?[pattern]:pattern.type==='ArrayPattern'?pattern.elements:[];if(!ids.length||ids.some((entry:Ast|null)=>!entry||!identifier(entry)))return false;const scope=new Set(locals);for(const id of ids as Identifier[])scope.add(id.name);return pureOutputStatement(node.body,scope,new Set(mutableLocals));}
+    if(node.type==='ExpressionStatement'){
+      const expression=node.expression;
+      if(expression.type==='AssignmentExpression'&&expression.operator==='='&&identifier(expression.left)&&mutableLocals.has(expression.left.name))return pure(expression.right,locals);
+      if(expression.type==='CallExpression'&&!expression.optional&&expression.callee.type==='MemberExpression'&&!expression.callee.computed&&identifier(expression.callee.property,'forEach')&&pure(expression.callee.object,locals)&&expression.arguments.length===1) {
+        const callback=expression.arguments[0];if(callback.type!=='ArrowFunctionExpression'||callback.async||!callback.params.every((param:Ast)=>identifier(param)))return false;
+        const scope=new Set(locals);for(const param of callback.params as Identifier[])scope.add(param.name);
+        return pureOutputStatement(callback.body.type==='BlockStatement'?callback.body:{...callback.body,type:'ExpressionStatement',expression:callback.body} as Ast,scope,new Set(mutableLocals));
+      }
+      return expression.type==='CallExpression'&&!expression.optional&&identifier(expression.callee)&&['text','image','audio'].includes(expression.callee.name)&&expression.arguments.length===1&&pure(expression.arguments[0],locals);
+    }
+    return false;
+  };
+  for(let index=0;index<statements.length;index++) {
+    const statement=statements[index] as Ast;
+    if(statement.type==='FunctionDeclaration'&&statement.id&&!names.has(statement.id.name)){names.add(statement.id.name);continue;}
+    if(statement.type==='ForOfStatement'&&!statement.await&&statement.left.type==='VariableDeclaration'&&statement.left.kind==='const'&&statement.left.declarations.length===1) {
+      const collection=data(statement.right,bindings);
+      if(collection&&Array.isArray(collection.value)&&collection.value.length<=256) {
+        for(const value of collection.value){const scoped={bindings:new Map(bindings),references:new Map(references),names:new Set(names),values:new Set(values),mutable:new Set(mutable)};
+          if(!bindPattern(statement.left.declarations[0].id,value,scoped.bindings))return false;
+          for(const key of scoped.bindings.keys()){scoped.names.add(key);scoped.values.add(key);}
+          if(!analyze(statement.body.type==='BlockStatement'?statement.body.body:[statement.body],scoped))return false;
+        }continue;
+      }
+    }
+    if(statement.type==='VariableDeclaration'&&['const','let'].includes(statement.kind)) {
+      for(const declaration of statement.declarations) {
+        if(!declaration.init)return false;
+        const ids=identifier(declaration.id)?[declaration.id]:declaration.id.type==='ArrayPattern'?declaration.id.elements:[];
+        if(!ids.length||ids.some((id:Ast|null)=>!id||!identifier(id)||names.has(id.name)))return false;
+        const literal=data(declaration.init,bindings);
+        const ref=literal?null:append(declaration.init);
+        if(!literal&&!ref&&!pure(declaration.init))return false;
+        if(ids.length>1&&(!ref?.batch||ids.length!==ref.indices.length))return false;
+        ids.forEach((pattern,offset:number)=>{const id=pattern as Identifier;names.add(id.name);values.add(id.name);
+          if(literal&&statement.kind==='const')bindings.set(id.name,literal.value);
+          if(statement.kind==='let')mutable.add(id.name);
+          if(ref)references.set(id.name,declaration.id.type==='ArrayPattern'?{indices:[ref.indices[offset]],batch:false}:ref);
+          else if(identifier(declaration.init??undefined)&&references.has((declaration.init as Identifier).name))references.set(id.name,references.get((declaration.init as Identifier).name)!);
+        });
+      }
+      continue;
+    }
+    const value=textValue(statement);
+    if(value) {
+      const emission=emissions++;
+      if(!output(value,emission)){if(!pure(value))return false;opaque=true;}
+      continue;
+    }
+    if(statement.type==='ExpressionStatement'&&statement.expression.type==='AwaitExpression') {if(!append(statement.expression))return false;continue;}
+    let forwarded=false;
+    for(const [name,ref] of references) {
+      const mode=forwarding(statement,name,ref.batch);
+      if(mode&&ref.batch) {
+        ref.indices.forEach((operationIndex,offset)=>{const op=operations[operationIndex];if(op.emission!==undefined)opaque=true;Object.assign(op,mode,{emission:emissions+offset,resultPath:[]});});emissions+=ref.indices.length;forwarded=true;break;
+      }
+      const fallback=!ref.batch&&fallbackContentForwarding(statement,statements[index+1] as Ast|undefined,name);
+      if(!ref.batch&&(contentForwarding(statement,name)||fallback)) {
+        assign(ref,emissions++,[],{forwarding:'result',encoding:'literal'});if(fallback)index++;forwarded=true;break;
+      }
+    }
+    if(forwarded)continue;
+    if(pureOutputStatement(statement)){opaque=true;continue;}
+    return false;
   }
-  return operations.length ? {operations} : null;
+  return true;
+  };
+  const complete=analyze(program.body,{bindings:new Map(),references:new Map(),names:new Set(GLOBAL_BINDINGS),values:new Set(),mutable:new Set()});
+  return operations.length?{operations,...(!complete?{effectsComplete:false as const}:{}),outputAttributed:complete&&!opaque&&operations.every(op=>op.emission!==undefined&&!op.resultTransformed)}:null;
 }

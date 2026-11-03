@@ -10,14 +10,14 @@ const enumCode=<T extends string>(values:readonly T[],value:T):number=>{const in
 export const enumEntry=<T extends string>(values:readonly T[],index:number):T=>{const value=values[index];if(value===undefined)throw Error('Invalid observation code');return value;};
 
 export function observationWriter(db:SqliteDatabase,generation:number,conversationId:string,encode=indexKeyEncoder(db,generation,conversationId)) {
-  const insert=db.prepare('INSERT INTO cache_fragment_operations VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+  const insert=db.prepare('INSERT INTO cache_fragment_operations VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
   const target=db.prepare('INSERT INTO cache_operation_targets VALUES(?,?,?,?,?,?,?,?,?,?)');
   return (position:number,kind:number,part:number,observation:CompactOperationObservation)=>{
     let next=0;
     const write=(value:CompactOperationObservation,parent:number|null)=>{
       const ordinal=next++;
       insert.run(generation,position,kind,part,ordinal,parent,value.operation,value.nativeName??null,value.subject??null,
-        enumCode(EXECUTION_STATES,value.execution.state),enumCode(EXECUTION_PROVENANCES,value.execution.provenance),value.payload.state==='none'?0:1,
+        enumCode(EXECUTION_STATES,value.execution.state),enumCode(EXECUTION_PROVENANCES,value.execution.provenance),value.payload.state==='none'?0:1,value.resultAttribution==='opaque'?1:0,
         value.timing?.elapsedSeconds??null,value.timing?value.timing.scope==='operation'?0:1:null,value.reportKind?value.reportKind==='final'?0:1:null);
       for(const [index,ref] of value.targets.entries()) {
         const scope=ref.kind==='pending-thread'?null:encode({kind:'execution',provider:ref.provider,sessionId:ref.kind==='thread'?ref.sessionId:ref.parentSessionId,nativeId:''})[1];
@@ -40,7 +40,7 @@ export function readObservations(db:SqliteDatabase,generation:number,positions:r
   const result=new Map<string,CompactOperationObservation>();const nodes=new Map<string,CompactOperationObservation>();
   for(const row of rows){const key=`${row.position}:${row.part_kind}:${row.part_ordinal}`;const observation:CompactOperationObservation={operation:row.operation,
     ...(row.native_name===null?{}:{nativeName:row.native_name}),...(row.subject===null?{}:{subject:row.subject}),targets:targets.get(`${key}:${row.ordinal}`)??[],
-    execution:{state:enumEntry(EXECUTION_STATES,row.execution_state),provenance:enumEntry(EXECUTION_PROVENANCES,row.execution_provenance)},payload:{state:row.payload_state===0?'none':'unloaded'},
+    execution:{state:enumEntry(EXECUTION_STATES,row.execution_state),provenance:enumEntry(EXECUTION_PROVENANCES,row.execution_provenance)},payload:{state:row.payload_state===0?'none':'unloaded'},...(row.result_attribution===1?{resultAttribution:'opaque' as const}:{}),
     ...(row.elapsed_seconds===null?{}:{timing:{elapsedSeconds:row.elapsed_seconds,scope:row.timing_scope===0?'operation':'wrapper'}}),...(row.report_kind===null?{}:{reportKind:row.report_kind===0?'final':'update'})};
     if(row.parent_ordinal===null)result.set(key,observation);else{const parent=nodes.get(`${key}:${row.parent_ordinal}`);if(!parent)throw Error('Missing observation parent');(parent.children??=[]).push(observation);}nodes.set(`${key}:${row.ordinal}`,observation);}
   return result;

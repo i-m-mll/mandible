@@ -12,9 +12,9 @@ import { operationResult, substantiveToolResult, threadReports } from './tool-op
 export function toolObservation(name:string,input:Record<string,unknown> | string = {},kind?:string,
   result?:{text:string;content?:ToolResultContent;frame?:NativeResultFrame;native?:ToolTransportResult;failed?:boolean;unloaded?:boolean},header?:ToolPresentation) {
   const program=projectToolProgram(name,input,kind);
-  if(program?.operations.length===1) {
+  if(program?.operations.length===1&&program.effectsComplete!==false) {
     const operation=program.operations[0];
-    const presentation=presentTool(operation.name,operation.input);
+    const presentation:ToolPresentation={...presentTool(operation.name,operation.input),...(program.outputAttributed===false?{resultAttribution:'opaque',outputPolicy:undefined}:{})};
     const framed=result ? framedToolResult(result.text,result.frame) : undefined;
     const decoded=result?.native?.decoded ? result.native : framed ? programResults(program,framed.text)?.[0] : undefined;
     const media=framed && !framed.decoded && Array.isArray(result?.content) && result.content.some(block=>block.type==='image') ? result.content : undefined;
@@ -29,8 +29,8 @@ export function toolObservation(name:string,input:Record<string,unknown> | strin
 
 function observedHeader(header:ToolPresentation,result?:ToolTransportResult,unloaded=false):ToolPresentation {
   if(unloaded || (!result && header.hasDetails!==undefined)) return header;
-  const reports=result && header.operation==='thread-wait' ? threadReports(result.text) : null;
-  return {...header,hasDetails:!['thread-read','thread-wait','sleep','tool-discovery','execution-wait'].includes(header.operation ?? '') || Boolean(result && substantiveToolResult(result)),
+  const reports=result && header.resultAttribution!=='opaque' && header.operation==='thread-wait' ? threadReports(result.text) : null;
+  return {...header,hasDetails:header.resultAttribution==='opaque' || !['thread-read','thread-wait','sleep','tool-discovery','execution-wait'].includes(header.operation ?? '') || Boolean(result && substantiveToolResult(result)),
     ...(result ? {observation:{...(result.wallTimeSeconds!==undefined ? {elapsedSeconds:result.wallTimeSeconds}:{}),...(reports?.length ? {report:reports.every(report=>report.final)?'final' as const:'update' as const}:{})}} : {})};
 }
 
@@ -45,23 +45,24 @@ export function operationObservationForTool(item:ToolCallActivity):CompactOperat
   const header=observation.header;
   const execution=item.executionEvidence??result?.source?.toolExecution??{state:result?(result.is_error||observation.result?.failed?'failed':'completed'):'unknown',provenance:result?'paired-result':'provider-item'};
   const native=projectToolProgram(name,value,kind);
-  const children=native&&native.operations.length>1?native.operations.map((operation,index)=>operationObservationForTool({type:'tool-call-activity',id:item.id+':'+index,name:operation.name,input:operation.input,result:null,sessionId:item.sessionId,
+  const children=native&&(native.operations.length>1||native.effectsComplete===false)?native.operations.map((operation,index)=>operationObservationForTool({type:'tool-call-activity',id:item.id+':'+index,name:operation.name,input:operation.input,result:null,sessionId:item.sessionId,
     executionEvidence:{state:'unknown',provenance:execution.provenance}})):undefined;
   return compactOperationObservation({operation:item.callSource?.toolOperationKind??result?.source?.toolOperationKind??header.operation??(children?'batch':header.category),nativeName:observation.name,
     ...(header.target&&!['execute','javascript'].includes(header.category)&&header.target.length<=256?{subject:header.target}:{}),
     targets:[...(item.callSource?.toolTargets??[]),...(result?.source?.toolTargets??[]),...(header.threadTargets??[]).filter(target=>target.type==='session').map(target=>({kind:'thread' as const,provider:'codex' as const,sessionId:target.id}))].filter((target,index,all)=>all.findIndex(other=>activityTargetKey(other)===activityTargetKey(target))===index),
     execution:observation.result?.failed||result?.is_error?{...execution,state:'failed'}:execution,payload:{state:header.hasDetails===false?'none':'unloaded'},
     ...(header.observation?.elapsedSeconds===undefined?{}:{timing:{elapsedSeconds:header.observation.elapsedSeconds,scope:observation.result?.timingScope??'wrapper'}}),
+    ...(header.resultAttribution==='opaque'?{resultAttribution:'opaque' as const}:{}),
     ...(header.observation?.report?{reportKind:header.observation.report}:{}),...(children?{children}:{})});
 }
 
 export function presentationForObservation(observation:OperationObservation,kind?:string):ToolPresentation {
   const names:Record<string,string>={'tool-discovery':'__tool_discovery','thread-read':'codex_app__read_thread','thread-wait':'codex_app__wait_threads','execution-wait':'wait',sleep:'clock__sleep',command:'exec_command',javascript:'js','file-read':'Read','file-edit':'Edit','file-write':'Write','file-delete':'Delete','file-move':'Move'};
-  const base=presentTool(observation.nativeName??names[observation.operation]??'tool',{},kind);
+  const base=presentTool(observation.operation==='javascript'?'js':observation.nativeName??names[observation.operation]??'tool',{},kind);
   const children=observation.children?.map(child=>({name:child.nativeName??'tool',header:presentationForObservation(child)}));
-  const operations=children?toolRunFacts(children.map(child=>({name:child.name,header:child.header}))):undefined;
+  const operations=children?toolRunFacts([...children.map(child=>({name:child.name,header:child.header})),...(observation.operation==='javascript'?[{name:'js'}]:[])]):undefined;
   const summary=operations?summarizeToolRunFacts(operations).join('; '):undefined;
-  return {...base,operation:observation.operation,target:observation.subject??'',hasDetails:observation.payload.state!=='none',
+  return {...base,...(observation.resultAttribution?{resultAttribution:observation.resultAttribution,outputPolicy:undefined}:{}),operation:observation.operation,target:observation.subject??'',hasDetails:observation.payload.state!=='none',
     threadTargets:observation.targets.filter((target):target is Extract<ActivityTarget,{kind:'thread'}>=>target.kind==='thread').map(target=>({type:'session',id:target.sessionId})),
     observation:{...(observation.timing?{elapsedSeconds:observation.timing.elapsedSeconds}:{}),...(observation.reportKind?{report:observation.reportKind}:{})},
     ...(summary?{phrase:summary.charAt(0).toUpperCase()+summary.slice(1),operations,children}:{}),
@@ -80,7 +81,7 @@ export function mergeOperationExecution(current:import('../parsers/types.js').To
 export function observeOperationReceipt(current:CompactOperationObservation,receipt:OperationReceipt):CompactOperationObservation {
   const header=presentationForObservation(current);
   const result=operationResult(header,receipt.result);
-  const reports=current.operation==='thread-wait'?threadReports(result.text):null;
+  const reports=current.operation==='thread-wait'&&current.resultAttribution!=='opaque'?threadReports(result.text):null;
   const targets=[...current.targets,...(receipt.targets??[]),...(reports??[]).map(report=>({kind:'thread' as const,provider:'codex' as const,sessionId:report.threadId}))];
   const uniqueTargets=new Map<string,ActivityTarget>();for(const target of targets)if(!uniqueTargets.has(activityTargetKey(target)))uniqueTargets.set(activityTargetKey(target),target);
   return {...current,execution:mergeOperationExecution(current.execution,receipt.execution,result.failed),

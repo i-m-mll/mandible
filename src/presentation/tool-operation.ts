@@ -29,7 +29,7 @@ const ongoing:Readonly<Record<string,string>>={read:'Reading file',edit:'Editing
 export function operationPhrase(header:ToolPresentation,state:OperationState,result?:ToolTransportResult):string {
   const elapsed=result?.wallTimeSeconds ?? header.observation?.elapsedSeconds;
   const duration=elapsed!==undefined && elapsed>0 ? ` ${elapsed} s` : '';
-  if(header.operation==='thread-wait') {const reports=result ? threadReports(result.text) : null;const report=reports?.length ? reports.every(report=>report.final)?'final':'update' : header.observation?.report;if(report) return report==='final' ? 'Received response from thread' : 'Received update from thread';}
+  if(header.operation==='thread-wait') {const reports=result && header.resultAttribution!=='opaque' ? threadReports(result.text) : null;const report=reports?.length ? reports.every(report=>report.final)?'final':'update' : header.observation?.report;if(report) return report==='final' ? 'Received response from thread' : 'Received update from thread';}
   if(header.operation==='thread-wait') return state==='ongoing'?'Waiting for thread':state==='unknown' && !duration?'Wait for thread':`Waited${duration} for thread`;
   if(header.operation==='execution-wait') return state==='ongoing'?'Waiting for execution':state==='unknown' && !duration?'Wait for execution':`Waited${duration} for execution`;
   if(header.operation==='sleep') return state==='ongoing'?'Waiting':state==='unknown' && !duration?'Wait':`Waited${duration}`;

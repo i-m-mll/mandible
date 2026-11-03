@@ -1,6 +1,6 @@
 import { providerEvidenceWriter, readProviderEvidence, type ProviderIndexEvidence } from './index-provider-evidence.js';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
-import { CONVERSATION_CACHE_FORMAT, copyIndexGeneration } from './index-storage.js';
+import { CONVERSATION_CACHE_FORMAT, copyIndexGeneration, conversationCacheSchemaIdentity, validateConversationCacheColumns } from './index-storage.js';
 import { writeDisplayIndex, readCompleteDisplayIndex, readDisplayContextPlan, type DisplayIndexInput, type DisplayContextPlan } from './display-index.js';
 import { nextReadingContext, type ReadingContextEntry, type ReadingContextState } from './reading-context.js';
 import fs from "node:fs";
@@ -195,8 +195,12 @@ export class ConversationStructureCache {
   }
 
   private validateFormat(): void {
+    try {
     const row=this.cache.prepare("SELECT value FROM cache_meta WHERE key='schema_version'").get() as {value:string}|undefined;
-    if(row?.value!==String(CONVERSATION_STRUCTURE_CACHE_VERSION)){this.cache.close();throw new Error('Conversation cache format mismatch');}
+    const identity=this.cache.prepare("SELECT value FROM cache_meta WHERE key='schema_identity'").get() as {value:string}|undefined;
+    if(row?.value!==String(CONVERSATION_STRUCTURE_CACHE_VERSION)||identity?.value!==conversationCacheSchemaIdentity){throw new Error('Conversation cache format mismatch');}
+    validateConversationCacheColumns(this.cache);
+    } catch(error) {this.cache.close();throw error;}
   }
 
   private initialize(): void {
@@ -205,6 +209,7 @@ export class ConversationStructureCache {
     this.cache.exec(CONVERSATION_CACHE_FORMAT.schema);
     this.cache.prepare("INSERT INTO cache_meta (key, value) VALUES ('schema_version', ?)")
       .run(String(CONVERSATION_STRUCTURE_CACHE_VERSION));
+    this.cache.prepare("INSERT INTO cache_meta(key,value) VALUES('schema_identity',?)").run(conversationCacheSchemaIdentity);
   }
 
   setByteLimit(maxBytes:number):void {

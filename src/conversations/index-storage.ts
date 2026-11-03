@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import SqliteDatabase from '../sqlite.js';
 import { CONVERSATION_STRUCTURE_CACHE_VERSION } from './structure-cache-path.js';
 
@@ -38,7 +39,7 @@ export const CONVERSATION_CACHE_FORMAT = {
     CREATE TABLE cache_fragment_operations (${generation},position INTEGER NOT NULL,part_kind INTEGER NOT NULL,part_ordinal INTEGER NOT NULL,
       ordinal INTEGER NOT NULL,parent_ordinal INTEGER,operation TEXT NOT NULL,native_name TEXT,subject TEXT,
       execution_state INTEGER NOT NULL CHECK(execution_state BETWEEN 0 AND 4),execution_provenance INTEGER NOT NULL CHECK(execution_provenance BETWEEN 0 AND 3),
-      payload_state INTEGER NOT NULL CHECK(payload_state IN(0,1)),elapsed_seconds REAL,timing_scope INTEGER CHECK(timing_scope IN(0,1)),report_kind INTEGER CHECK(report_kind IN(0,1)),
+      payload_state INTEGER NOT NULL CHECK(payload_state IN(0,1)),result_attribution INTEGER NOT NULL CHECK(result_attribution IN(0,1)),elapsed_seconds REAL,timing_scope INTEGER CHECK(timing_scope IN(0,1)),report_kind INTEGER CHECK(report_kind IN(0,1)),
       UNIQUE(cache_conversation_id,position,part_kind,part_ordinal,ordinal));
     CREATE TABLE cache_operation_targets (${generation},position INTEGER NOT NULL,part_kind INTEGER NOT NULL,part_ordinal INTEGER NOT NULL,
       operation_ordinal INTEGER NOT NULL,ordinal INTEGER NOT NULL,kind INTEGER NOT NULL CHECK(kind BETWEEN 0 AND 2),scope_id INTEGER,native_id TEXT,label_hint TEXT,
@@ -62,4 +63,12 @@ export function copyIndexGeneration(db: SqliteDatabase, sourceId: number, target
     count+=Number(result.changes);
   }
   return count;
+}
+
+export const conversationCacheSchemaIdentity=createHash('sha256').update(CONVERSATION_CACHE_FORMAT.schema.replace(/\s+/g,' ').trim()).digest('hex');
+let columnInventory:ReadonlyMap<string,string>|undefined;
+export function validateConversationCacheColumns(db:SqliteDatabase):void {
+  const signature=(database:SqliteDatabase,table:string)=>JSON.stringify(database.prepare(`PRAGMA table_info(${table})`).all());
+  if(!columnInventory){const reference=new SqliteDatabase(':memory:');try{reference.exec(CONVERSATION_CACHE_FORMAT.schema);columnInventory=new Map(['cache_meta','cache_conversations',...CONVERSATION_CACHE_FORMAT.tables].map(table=>[table,signature(reference,table)]));}finally{reference.close();}}
+  for(const [table,expected] of columnInventory)if(signature(db,table)!==expected)throw new Error('Conversation cache column contract mismatch');
 }

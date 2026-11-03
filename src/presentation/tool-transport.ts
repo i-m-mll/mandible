@@ -91,6 +91,7 @@ export function commandTransport(value: unknown): ToolTransportResult | null {
     metadata:Object.entries(value).filter(([key,value])=>!['output','wall_time_seconds'].includes(key) && value!=null).map(([label,value])=>({label,value:String(value)}))};
 }
 export function programResults(program: ToolProgram, text: string): ToolTransportResult[] | null {
+  if(program.outputAttributed===false)return null;
   const contentTool=(name:string)=>name.startsWith('mcp__') || ['codex_app__read_thread','codex_app__wait_threads'].includes(name);
   const nativeObject=(name:string) => ['exec_command','functions.exec_command','write_stdin','functions.write_stdin'].includes(name) || contentTool(name);
   const opaque=program.operations.filter(operation=>operation.encoding==='literal' || (operation.encoding==='native' && !nativeObject(operation.name)));
@@ -98,6 +99,9 @@ export function programResults(program: ToolProgram, text: string): ToolTranspor
   const emitted=jsonValues(text);
   if(!emitted) return null;
   const values: unknown[]=[];
+  if(program.operations.every(operation=>operation.emission!==undefined)){
+    for(const operation of program.operations){let value=emitted[operation.emission!];for(const key of operation.resultPath??[]){if(!value||typeof value!=='object'||!Object.hasOwn(value,key))return null;value=(value as Record<string|number,unknown>)[key];}values.push(value);}
+  }else{
   let operationIndex=0;
   for(const value of emitted) {
     const operation=program.operations[operationIndex];
@@ -108,6 +112,7 @@ export function programResults(program: ToolProgram, text: string): ToolTranspor
       if(!Array.isArray(value) || value.length!==length) return null;
       values.push(...value);operationIndex+=length;
     } else {values.push(value);operationIndex++;}
+  }
   }
   if(values.length!==program.operations.length) return null;
   const results: ToolTransportResult[]=[];

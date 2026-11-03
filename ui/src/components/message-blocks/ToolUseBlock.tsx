@@ -224,7 +224,7 @@ export function ToolCard({
   const displayTarget = visual.kind==='execute' ? visual.target : leftTruncateTarget(visual.target);
   const state = operationState(executionEvidence?.state ?? result?.source?.toolExecution?.state,result ? {failed:projectedResult.failed,is_error:result.is_error} : undefined,active);
   const phrase = operationPhrase(presentation,state,projectedResult);
-  const reports = presentation.operation==='thread-wait' && !projectedResult.failed ? threadReports(projectedResult.text) : null;
+  const reports = presentation.operation==='thread-wait' && presentation.resultAttribution!=='opaque' && !projectedResult.failed ? threadReports(projectedResult.text) : null;
   const semanticInput = !['thread-read','thread-wait','sleep','tool-discovery','execution-wait'].includes(presentation.operation ?? '');
   const patch = toolName.toLowerCase()==='apply_patch' && typeof input==='string' ? patchFileChanges(input) : [];
   const commandLike = visual.kind === 'execute';
@@ -254,7 +254,7 @@ export function ToolCard({
   }
 
   function renderInputPanel(): JSX.Element {
-    if (projectedChildren) return renderProgramChildren();
+    if (projectedChildren) return <>{renderProgramChildren()}{program?.effectsComplete===false&&execution?<ExecutionInput execution={execution}/>:null}</>;
     if (input === undefined || (detailsAvailable && (input === '' || (typeof input === 'object' && Object.keys(input).length === 0)))) {
       return <div className="tool-card__input" aria-busy="true">Loading tool input…</div>;
     }

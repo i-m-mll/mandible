@@ -13,6 +13,7 @@ export type ToolPresentation = {
   hasDetails?: boolean;
   observation?: {elapsedSeconds?:number;report?:'final' | 'update'};
   threadTargets?: Array<{type:'conversation' | 'session';id:string}>;
+  resultAttribution?:'operation'|'opaque';
   outputPolicy?: 'acknowledgement' | 'thread-wait' | 'sleep';
   category: ToolCategory;
   icon: IconName;
@@ -118,11 +119,11 @@ export function presentTool(
   }
   const program = projectToolProgram(toolName, inputValue, toolKind);
   const children = program?.operations.map(operation=>({name:operation.name,header:presentTool(operation.name,operation.input)}));
-  if (program && !program.operations.every(operation => projectExecution(operation.name,operation.input)?.facts.kind === 'command')) {
-    const facts = toolRunFacts(program.operations);
-    const one = program.operations.length === 1 ? presentTool(program.operations[0].name,program.operations[0].input) : null;
+  if (program) {
+    const facts = toolRunFacts(program.effectsComplete===false?[...program.operations,{name:'js'}]:program.operations);
+    const one = program.operations.length === 1 && program.effectsComplete!==false ? presentTool(program.operations[0].name,program.operations[0].input) : null;
     const summary=summarizeToolRunFacts(facts).join('; ');
-    return {...(one ?? {category:'other',icon:facts[0]?.presentation.icon ?? 'monitor',phrase:summary.charAt(0).toUpperCase()+summary.slice(1),target:''}), operations:facts,children};
+    return {...(one ?? {operation:program.effectsComplete===false?'javascript':'batch',category:program.effectsComplete===false?'javascript':'other',icon:program.effectsComplete===false?'toolJavascript':facts[0]?.presentation.icon ?? 'monitor',phrase:summary.charAt(0).toUpperCase()+summary.slice(1),target:''}), operations:facts,children,...(program.outputAttributed===false?{resultAttribution:'opaque' as const,outputPolicy:undefined}:{})};
   }
   const execution = projectExecution(toolName, inputValue, toolKind);
   if (execution) {

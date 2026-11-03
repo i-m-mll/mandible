@@ -22,7 +22,7 @@ export function projectExecution(name: string, input: Record<string, unknown> | 
     const script = typeof input === 'string' ? input : typeof input.code === 'string' ? input.code : undefined;
     if (script === undefined) return null;
     const program = projectToolProgram(name, input, toolKind);
-    operations = program?.operations.every(op => ['exec_command', 'functions.exec_command', 'Bash', 'bash', 'run_shell_command'].includes(op.name))
+    operations = program?.outputAttributed!==false && program?.operations.every(op => ['exec_command', 'functions.exec_command', 'Bash', 'bash', 'run_shell_command'].includes(op.name))
       ? program.operations.flatMap(op => {const execution = projectExecution(op.name, op.input); return execution?.operations.map(value => ({...value, forwarding:op.forwarding,...(op.encoding==='json' ? {encoding:'json' as const} : {})})) ?? [];}) : null;
     if (!operations?.length || operations.length !== program?.operations.length) return {facts: {kind: 'script', language: 'javascript'}, operations: [], script};
   }

@@ -131,3 +131,14 @@ it('round-trips body-free thread observations and provider frame evidence throug
     expect(source.readPresentationIndex('conv','yielded',epochs)!.fragments[0].activity!.observation!.execution).toEqual(result.metadata.display_tool_execution);
   } finally {source.close();selected.close();}
 });
+
+it('rejects changed physical observation columns despite matching format metadata',async()=>{
+  const {default:SqliteDatabase}=await import('../src/sqlite');
+  const root=path.join(testRuntimeRoot,'compact-admission');fs.mkdirSync(root,{recursive:true});
+  const cache=new ConversationStructureCache(undefined,{cachePath:path.join(root,'cache')});
+  const physical=cache.cachePath;cache.close();
+  const changed=new SqliteDatabase(physical);
+  try {changed.exec('ALTER TABLE cache_fragment_operations ADD COLUMN unrelated INTEGER');}finally{changed.close();}
+  try {expect(()=>new ConversationStructureCache(undefined,{cachePath:physical,readonly:true})).toThrow('column contract mismatch');}
+  finally{fs.rmSync(root,{recursive:true,force:true});}
+});

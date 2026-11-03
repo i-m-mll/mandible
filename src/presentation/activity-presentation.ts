@@ -196,7 +196,7 @@ export function semanticActivityRunFacts(items: readonly ActivityFacts[]): Activ
   const tools=items.filter(item=>item.kind==='tool');
   return {memberCount:items.length,unified:items.some(semanticActivityUnified),firstSummary:items[0]?semanticActivitySummary(items[0]):'',
     firstIcon:items[0]?semanticActivityIcon(items[0]):'monitor',states:[...new Set(items.flatMap(semanticActivityState))],
-    toolStates:[...new Set(tools.flatMap(semanticActivityState))],tools:tools.reduce<ToolRunFact[]>((facts,item)=>mergeToolRunFacts(facts,item.observation ? toolRunFacts((item.observation.children??[item.observation]).map(observation=>({name:observation.nativeName??item.toolName??'',header:presentationForObservation(observation,item.toolKind)}))) : compactToolRunFacts(semanticToolOperations(item))),[]),
+    toolStates:[...new Set(tools.flatMap(semanticActivityState))],tools:tools.reduce<ToolRunFact[]>((facts,item)=>mergeToolRunFacts(facts,item.observation ? toolRunFacts([{name:item.observation.nativeName??item.toolName??'',header:presentationForObservation(item.observation,item.toolKind)}]) : compactToolRunFacts(semanticToolOperations(item))),[]),
     hasThinkingTool:tools.some(item=>classifyTool(item.toolName ?? '')==='think'),labels:[...labels.values()],
     hasDetails:items.some(semanticActivityUnified)||items.length>1};
 }

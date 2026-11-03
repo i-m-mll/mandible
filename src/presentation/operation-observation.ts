@@ -14,6 +14,7 @@ export type OperationObservation = {
   execution:ToolExecutionEvidence;
   payload:OperationPayload;
   timing?:{elapsedSeconds:number;scope:'operation'|'wrapper'};
+  resultAttribution?:'opaque';
   reportKind?:'final'|'update';
   children?:OperationObservation[];
 };

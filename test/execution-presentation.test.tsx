@@ -215,3 +215,25 @@ it('keeps inline thread navigation independent of report disclosure', () => {
   fireEvent.click(view.getByRole('button',{expanded:false}));
   expect(changed).toHaveBeenCalledTimes(1);
 });
+
+it('separates unconditional wrapper effects from opaque result inspection and exact batch output attribution',async()=>{
+  const {projectToolProgram}=await import('../src/presentation/tool-program');
+  const {programResults}=await import('../src/presentation/tool-transport');
+  const {toolObservation}=await import('../src/presentation/tool-observation');
+  const batch='const [blind, skill] = await Promise.all([tools.codex_app__create_thread({title:"Blind review"}),tools.codex_app__create_thread({title:"Improve attachments"})]);text(JSON.stringify({blind,skill}));';
+  const program=projectToolProgram('exec',batch)!;
+  expect(program.operations.map(operation=>operation.input)).toEqual([{title:'Blind review'},{title:'Improve attachments'}]);
+  expect(programResults(program,JSON.stringify({blind:'{"threadId":"native"}',skill:'{"clientThreadId":"client-new-thread:queued"}'}))?.map(result=>result.text)).toEqual(['{"threadId":"native"}','{"clientThreadId":"client-new-thread:queued"}']);
+  const inspected='const raw=await tools.codex_app__read_thread({threadId:"exact"});let parsed=raw;if(typeof raw==="string")parsed=JSON.parse(raw);text((parsed.turns??[]).flatMap(turn=>turn.items??[]).at(-1));';
+  expect(projectToolProgram('exec',inspected)?.operations[0].name).toBe('codex_app__read_thread');
+  expect(toolObservation('exec',inspected,undefined,{text:'transformed but useful'}).result?.text).toBe('transformed but useful');
+  expect(programResults(projectToolProgram('exec',inspected)!,'{}')).toBeNull();
+  const mapped=projectToolProgram('exec','const ids=[["first","one"],["second","two"]];const rs=await Promise.all(ids.map(async ([label,id])=>[label,await tools.codex_app__read_thread({threadId:id}).then(r=>({label,result:r}))]));for(const [label,r] of rs)text(JSON.stringify({label,r}));')!;
+  expect(mapped.operations.map(operation=>operation.input)).toEqual([{threadId:'one'},{threadId:'two'}]);
+  expect(mapped.outputAttributed).toBe(false);
+  const partial=projectToolProgram('exec','const r=await tools.codex_app__read_thread({threadId:"exact"});inspectRecursively(r);')!;
+  expect(partial).toMatchObject({effectsComplete:false,outputAttributed:false,operations:[{name:'codex_app__read_thread'}]});
+  expect(projectToolProgram('exec','text(await tools.codex_app__read_thread({threadId:"exact"}));function tools(){}')).toBeNull();
+  expect(projectToolProgram('exec','if(ready) text(await tools.codex_app__read_thread({threadId:"exact"}));')).toBeNull();
+  expect(projectToolProgram('exec','const r=await tools.codex_app__read_thread({threadId:locate()});text(r);')).toBeNull();
+});
