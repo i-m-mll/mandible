@@ -2518,12 +2518,7 @@ export async function getConversationStructure(id: string, signal?: AbortSignal,
   return (await parseMaybeJson(resp)) as ConversationStructure;
 }
 
-export async function getConversationWindow(
-  id: string,
-  request: ConversationWindowRequest = {},
-): Promise<ConversationPositionWindow> {
-  const trace=typeof window!=='undefined'&&new URLSearchParams(window.location.search).get('reading_trace')==='1';
-  const started=trace?performance.now():0;
+function conversationWindowSuffix(request:ConversationWindowRequest):string {
   const query = new URLSearchParams();
   if ('target' in request && request.target) query.set('target', request.target);
   if ('block' in request) query.set('block', request.block);
@@ -2532,14 +2527,25 @@ export async function getConversationWindow(
   if (request.limit) query.set('limit', String(request.limit));
   if (request.view) query.set('view', request.view);
   if (request.expected_position_space_id) query.set('expected_position_space_id', request.expected_position_space_id);
-  const suffix = query.size > 0 ? `?${query.toString()}` : '';
-  const resp = await apiGet(`/api/conversations/${encodeURIComponent(id)}${suffix}`, {
-    signal: request.signal,
-  });
+  return query.size > 0 ? `?${query.toString()}` : '';
+}
+
+export type ConversationMetadata=import('../../src/contracts').ConversationMetadata;
+async function readConversationProjection<T extends ConversationPositionWindow|ConversationMetadata>(id:string,request:ConversationWindowRequest,projection:'window'|'metadata'):Promise<T>{
+  const trace=typeof window!=='undefined'&&new URLSearchParams(window.location.search).get('reading_trace')==='1';
+  const started=trace?performance.now():0;
+  const query=new URLSearchParams(conversationWindowSuffix(request).slice(1));if(projection==='metadata')query.set('view','metadata');
+  const response=await apiGet(`/api/conversations/${encodeURIComponent(id)}${query.size?'?'+query.toString():''}`,{signal:request.signal});
   const received=trace?performance.now():0;
-  const payload = (await parseMaybeJson(resp)) as ConversationPositionWindow;
-  if(trace)console.info('[mandible:reading-window]',JSON.stringify({conversationId:id,requestMs:received-started,decodeMs:performance.now()-received,
-    blocks:payload.blocks.length,total:payload.total,contentLength:resp.headers.get('content-length')}));
+  const payload=await parseMaybeJson(response) as T;
+  if(trace)console.info('[mandible:reading-window]',JSON.stringify({conversationId:id,projection,requestMs:received-started,decodeMs:performance.now()-received,blocks:'blocks'in payload?payload.blocks.length:0,total:payload.total,contentLength:response.headers.get('content-length')}));
+  return payload;
+}
+export function getConversationMetadata(id:string,request:ConversationWindowRequest={}):Promise<ConversationMetadata>{
+  return readConversationProjection(id,request,'metadata');
+}
+export async function getConversationWindow(id:string,request:ConversationWindowRequest={}):Promise<ConversationPositionWindow>{
+  const payload=await readConversationProjection<ConversationPositionWindow>(id,request,'window');
   if (!payload.reading_context || payload.reading_context.positions.length !== payload.blocks.length) {
     throw new ApiError('Source reading context is incomplete.', 409, 'freshness_pending');
   }

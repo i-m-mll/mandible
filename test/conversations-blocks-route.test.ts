@@ -1,8 +1,9 @@
+import { testRuntimeRoot } from './helpers/runtime-isolation';
+import { ConversationSourceReader } from '../src/conversations/source-reader';
 import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { sparseConversationBlockId } from "../src/conversations/structure-cache.js";
 import { nativeSearchSource } from "./helpers/search-native-source.js";
 import { setDb, type Db } from "../src/db.js";
@@ -14,7 +15,7 @@ let tempDir = "";
 let db: Db;
 
 beforeEach(() => {
-  tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-conversation-blocks-route-"));
+  tempDir = fs.mkdtempSync(path.join(testRuntimeRoot, "mandible-conversation-blocks-route-"));
   db = migratedMemoryDb();
   setDb(db);
 });
@@ -86,4 +87,17 @@ it('returns bounded reading context and exports the current complete speaker run
     format: 'markdown', speaker_run_start: 11, expected_position_space_id: 'obsolete-space',
   } });
   expect(obsolete).toMatchObject({ status: 409, body: { code: 'position_space_changed' } });
+});
+
+
+it('resolves metadata source anchors without acquiring native bodies',async()=>{
+  await source(3);const router=new Router();registerConversationRoutes(router,inlineLedgerReader());
+  const native=await router.invoke({method:'GET',url:'/api/conversations/native?position=1&limit=1'});
+  const read=vi.spyOn(ConversationSourceReader.prototype,'readPage').mockRejectedValue(new Error('Metadata must not acquire native bodies'));
+  try{
+    const metadata=await router.invoke({method:'GET',url:'/api/conversations/native?position=1&view=metadata'});
+    expect(metadata.status).toBe(200);
+    expect(read).not.toHaveBeenCalled();
+    expect((metadata.body as import('../src/contracts').ConversationMetadata).target).toEqual((native.body as import('../src/contracts').ConversationPositionWindow).target);
+  }finally{read.mockRestore();}
 });
