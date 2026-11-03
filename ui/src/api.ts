@@ -2838,6 +2838,7 @@ export type NativeHost = {
   kind: 'tauri';
   platform: string;
   framePresentation: 'macos-overlay' | 'system';
+  sessionId: string;
 };
 
 export type WindowHost = NativeHost | { kind: 'browser'; framePresentation: 'system' };

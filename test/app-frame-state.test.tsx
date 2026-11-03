@@ -17,7 +17,7 @@ const windowed: NativeWindowCapabilities = { framePresentation: 'macos-overlay',
 function nativeHost() {
   Object.assign(window, {
     __TAURI_INTERNALS__: { invoke: vi.fn() },
-    __MANDIBLE_NATIVE_HOST__: { kind: 'tauri', platform: 'macos', framePresentation: 'macos-overlay' } satisfies NativeHost,
+    __MANDIBLE_NATIVE_HOST__: { kind: 'tauri', platform: 'macos', framePresentation: 'macos-overlay', sessionId: 'native-test' } satisfies NativeHost,
   });
 }
 beforeEach(() => {

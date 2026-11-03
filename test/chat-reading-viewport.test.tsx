@@ -54,7 +54,7 @@ beforeEach(() => {
     scrollToEnd: () => { boundary.calls.push('end'); viewport.scrollRef.current!.scrollTop = 1000; boundary.engine.isScrolling = true; },
     scrollToOffset: (offset: number) => { boundary.calls.push('offset'); viewport.scrollRef.current!.scrollTop = offset; boundary.engine.isScrolling = true; },
   };
-  localStorage.clear();
+  sessionStorage.clear();
 });
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); window.history.replaceState(null, '', '/'); });
 
@@ -155,12 +155,12 @@ it('keeps old-scope cleanup from overwriting the next conversation during restor
   const view = render(<Harness prepare={prepare} />); connect();
   boundary.engine.isScrolling = true; act(() => boundary.options.onChange(boundary.engine));
   boundary.engine.isScrolling = false; act(() => boundary.options.onChange(boundary.engine));
-  const previous = localStorage.getItem('mandible:chat-reading:conv');
+  const previous = sessionStorage.getItem('mandible:chat-reading:conv');
   const next = JSON.stringify({ version: 2, positionSpaceId: 'other-space', following: false, anchor: { conversationId: 'other', positionSpaceId: 'other-space', position: 9, subtarget: 'summary', offset: 20 }, disclosures: ['owner:9'] });
-  localStorage.setItem('mandible:chat-reading:other', next);
+  sessionStorage.setItem('mandible:chat-reading:other', next);
   view.rerender(<Harness prepare={prepare} scope="other" space="other-space" initializing />);
-  expect(localStorage.getItem('mandible:chat-reading:conv')).toBe(previous);
-  expect(localStorage.getItem('mandible:chat-reading:other')).toBe(next);
+  expect(sessionStorage.getItem('mandible:chat-reading:conv')).toBe(previous);
+  expect(sessionStorage.getItem('mandible:chat-reading:other')).toBe(next);
 });
 
 

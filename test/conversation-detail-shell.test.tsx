@@ -49,6 +49,7 @@ beforeEach(async () => {
   await establishTestClientAccess();
   readingSources.clear();
   window.localStorage.clear();
+  window.sessionStorage.clear();
   vi.spyOn(api, 'resolveChatRouteTarget').mockImplementation(async (target) => ({ status: 'resolved', selection: target }));
   mockChatViewport();
   mockManagedSettings({ model: conversation.model!, effort: 'medium', permission_mode: 'agent' });
@@ -540,7 +541,7 @@ describe('compact detail pane shell', () => {
     const payload = positionPayload(scopedConversation, [exactBlock], {kind: 'block'});
     vi.mocked(api.getConversationWindow).mockResolvedValue(payload);
     serveReadingPresentation(payload);
-    window.localStorage.setItem(`mandible:chat-reading:${scopedConversation.id}`, JSON.stringify({
+    window.sessionStorage.setItem(`mandible:chat-reading:${scopedConversation.id}`, JSON.stringify({
       version: 4, positionSpaceId: 'fixture-space', following: false,
       anchor: {kind: 'row', rowKey: 'saved-tail', memberKey: 'saved-tail', position: 999, offset: 0}, disclosures: {},
     }));
