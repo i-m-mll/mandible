@@ -1,3 +1,4 @@
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import { CONVERSATION_CACHE_FORMAT, copyIndexGeneration } from './index-storage.js';
 import { writeDisplayIndex, readCompleteDisplayIndex, readDisplayContextPlan, type DisplayIndexInput, type DisplayContextPlan } from './display-index.js';
 import { nextReadingContext, type ReadingContextEntry, type ReadingContextState } from './reading-context.js';
@@ -231,7 +232,7 @@ export class ConversationStructureCache {
               const batch=this.cache.prepare(`SELECT ${withoutRowid?'*':'rowid AS __cursor,*'} FROM ${table} WHERE cache_conversation_id=?${after} ORDER BY ${cursorColumns.join(',')} LIMIT ?`).all(source.cache_id,...(cursor??[]),batchSize) as Array<Record<string,unknown>>;
               if(!batch.length)break;
               destination.cache.transaction(()=>{for(const row of batch)insert.run(...columns.map(column=>column==='cache_conversation_id'?target:row[column]));})();
-              rows+=batch.length;const last=batch[batch.length-1];cursor=cursorColumns.map(column=>column==='rowid'?last.__cursor:last[column]);check();await options.cooperate?.();
+              rows+=batch.length;const last=batch[batch.length-1];cursor=cursorColumns.map(column=>column==='rowid'?last.__cursor:last[column]);check();if(options.cooperate)await options.cooperate();else await yieldToEventLoop();
             }
           }
           destination.completeGeneration(target);generations++;

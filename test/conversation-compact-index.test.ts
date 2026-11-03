@@ -1,13 +1,13 @@
 import { expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { ConversationStructureCache } from '../src/conversations/structure-cache';
+import { ConversationStructureCache, projectConversationCache } from '../src/conversations/structure-cache';
 import { indexDisplayFragments } from '../src/conversations/display-indexing';
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from '../src/conversations/source-types';
 import { testRuntimeRoot } from './helpers/runtime-isolation';
 import type { ChatItem, ConversationBlock } from '../src/parsers/types';
 import { buildReadingManifest, planConversationReading } from '../src/presentation/reading-manifest';
-import { readingNodeDisclosures } from '../src/presentation/reading-disclosures';
+import { readingNodeDisclosures, readingDisclosureState } from '../src/presentation/reading-disclosures';
 import { projectDisplayFragments } from '../src/presentation/fragments';
 import { defaultDisplayEventsFromBlocks } from '../src/conversations/display-context';
 
@@ -70,5 +70,34 @@ it('retains exact source disclosure constructors and the system speaker of an un
     expect(stored.speaker).toBe('system');
     expect(stored.disclosures).toEqual(readingNodeDisclosures(visible.node));
     expect(planConversationReading(plan(cache,'orphan'),{}).rows[0].sourcePositions).toEqual([0]);
+    const message=(position:number,text:string)=>block(position,{type:'message',role:'assistant',identity:{...item(position).identity,native_turn_id:undefined,native_tool_id:undefined,native_item_id:`message-${position}`},
+      provenance:item(position).provenance,parts:[{type:'text',text}],content_completion:'complete'});
+    const messages=[message(0,'Earlier'),message(1,'<oai-mem-citation>\n<citation_entries>\nMEMORY.md:1|note=[source]\n</citation_entries>\n<rollout_ids>\nnative-rollout\n</rollout_ids>\n</oai-mem-citation>')];
+    const projected=projectDisplayFragments(defaultDisplayEventsFromBlocks(messages.map(value=>({...value,parentPosition:null})),'conv'),true);
+    cache.replaceRows(manifest('missing-native-turn',messages.length),rows(messages,()=>null),new Map(),undefined,indexDisplayFragments(messages,'conv',()=>null));
+    const directive=cache.readPresentationIndex('conv','missing-native-turn',epochs)!.fragments.find(fragment=>fragment.activity?.kind==='directive-memory')!;
+    const visibleDirective=projected.find(fragment=>fragment.node.kind==='activity'&&fragment.node.item.type==='provider-directive')!;
+    const expected=readingNodeDisclosures(visibleDirective.node);
+    expect(directive.disclosures).toEqual(expected);
+    expect(expected.keys).toEqual(['activity:provider-directive:cblk:conv:0:cblk:conv:1:0']);
+    const expanded={[expected.keys[0]]:true};
+    expect(readingDisclosureState(directive.disclosures,expanded)).toEqual([[expected.keys[0],true]]);
+
   } finally {cache.close();}
+});
+
+it('admits timer cancellation between projection batches without a custom scheduling callback',async()=>{
+  const root=path.join(testRuntimeRoot,'compact-projection-cancel');fs.mkdirSync(root,{recursive:true});
+  const source=new ConversationStructureCache(undefined,{cachePath:path.join(root,'source')});
+  const call=block(0,item(0));
+  try {
+    source.replaceRows(manifest('ready',1),rows([call],()=>null),new Map(),undefined,indexDisplayFragments([call],'conv',()=>null));
+    const controller=new AbortController();const reason=new Error('projection cancelled at timer barrier');
+    const barrier=new Promise<void>(resolve=>setImmediate(()=>{controller.abort(reason);resolve();}));
+    const destination=path.join(root,'selected.v19');
+    await expect(projectConversationCache(source.cachePath,destination,[manifest('ready',1)],{batchSize:1,signal:controller.signal})).rejects.toBe(reason);
+    await barrier;
+    const selected=new ConversationStructureCache(undefined,{cachePath:destination,readonly:true});
+    try {expect(selected.readPresentationIndex('conv','ready',epochs)).toBeNull();}finally{selected.close();}
+  } finally {source.close();fs.rmSync(root,{recursive:true,force:true});}
 });

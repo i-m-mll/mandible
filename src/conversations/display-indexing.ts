@@ -1,3 +1,4 @@
+import { inlineActivityKeyParts } from '../presentation/reading-disclosures.js';
 import { chatItemIdentityRecipe } from './index-keys.js';
 import { compactActivityFacts } from './conversation-index.js';
 import type { IndexKeyRecipe, IndexWriteBatch } from './conversation-index.js';
@@ -69,11 +70,12 @@ function sourceDisclosures(node:import('../presentation/types.js').RenderNode,po
   switch(node.kind) {
     case 'activity': {
       if(node.item.type==='provider-directive'&&node.item.directive.kind==='created-thread')return {keys:[],prefixes:[]};
-      const key:IndexKeyRecipe=node.item.type==='thinking-block-activity'
-        ?source(`activity:thinking:${node.item.turnId??nodeSource?.blockId}:`)
-        :node.item.type==='provider-directive'
-          ?source(`activity:provider-directive:${node.item.turnId??nodeSource?.blockId}:`,':'+node.item.sequence)
-          :source('activity:');
+      let key:IndexKeyRecipe;
+      if(node.item.type==='thinking-block-activity'||node.item.type==='provider-directive') {
+        if(!node.inlineIdentity)throw new Error('Inline activity omitted its projected turn identity');
+        const {prefix,suffix}=inlineActivityKeyParts(node.inlineIdentity);
+        key=source('activity:'+prefix,suffix||undefined);
+      } else key=source('activity:');
       return {keys:[key],prefixes:node.item.type==='tool-call-activity'?[source('activity:',':operation:')]:[],...(node.item.type==='thinking-block-activity'?{thinkingDefaults:[{key,turnId:node.item.turnId}]}:{})};
     }
     case 'semantic_event':return {keys:[source('semantic:')],prefixes:[]};
