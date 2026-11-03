@@ -100,6 +100,8 @@ export function programResults(program: ToolProgram, text: string): ToolTranspor
   if(!emitted) return null;
   const values: unknown[]=[];
   if(program.operations.every(operation=>operation.emission!==undefined)){
+    const slots=new Set(program.operations.map(operation=>operation.emission!));
+    if(emitted.length!==slots.size||emitted.some((_,index)=>!slots.has(index)))return null;
     for(const operation of program.operations){let value=emitted[operation.emission!];for(const key of operation.resultPath??[]){if(!value||typeof value!=='object'||!Object.hasOwn(value,key))return null;value=(value as Record<string|number,unknown>)[key];}values.push(value);}
   }else{
   let operationIndex=0;
@@ -128,7 +130,7 @@ export function programResults(program: ToolProgram, text: string): ToolTranspor
     if(operation.settled) {
       if(!record(value)) return null;
       if(value.status==='rejected' && Object.keys(value).every(key=>['status','reason'].includes(key)) && Object.hasOwn(value,'reason')) {results.push({...rawToolResult(typeof value.reason === 'string' ? value.reason : JSON.stringify(value.reason,null,2)),failed:true,decoded:true});continue;}
-      if(value.status!=='fulfilled' || Object.keys(value).some(key=>!['status','value'].includes(key))) return null;
+      if(value.status!=='fulfilled' || !Object.hasOwn(value,'value') || Object.keys(value).some(key=>!['status','value'].includes(key))) return null;
       value=value.value;
     }
     const command = ['exec_command','functions.exec_command','write_stdin','functions.write_stdin'].includes(operation.name) ? commandTransport(value) : null;

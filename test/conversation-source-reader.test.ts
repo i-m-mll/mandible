@@ -82,6 +82,29 @@ async function record(db: SqliteDatabase, id: string, filePath: string): Promise
 }
 
 describe("versioned conversation source reader", () => {
+  it('retains split native wrapper output without inventing a payload for an emission outside the receipt',async()=>{
+    const db=migratedMemoryDb(),file=rolloutPath();
+    const script='const sent=await tools.mcp__codex_app__send_message_to_thread({threadId:"child",text:"inspect"});text(sent);const report=await tools.mcp__codex_app__wait_threads({targets:[{threadId:"child"}]});text(report);';
+    const sent=JSON.stringify({queued:true});
+    const report=JSON.stringify({timedOut:false,polls:[{thread:{id:'child'},latestAssistantMessage:{phase:'final_answer',text:'actual returned report'}}]});
+    const yielded=`Script running with cell ID 7\nWall time 10 seconds\nOutput:\n${sent}`;
+    const completed=`Script completed\nWall time 2 seconds\nOutput:\n${report}`;
+    try {
+      writeRecords(file,[records()[0],
+        {type:'response_item',payload:{type:'custom_tool_call',call_id:'split',name:'exec',input:script}},
+        {type:'response_item',payload:{type:'custom_tool_call_output',call_id:'split',output:yielded}},
+        {type:'response_item',payload:{type:'function_call',call_id:'continuation',name:'wait',arguments:'{"cell_id":"7"}'}},
+        {type:'response_item',payload:{type:'function_call_output',call_id:'continuation',output:completed}},
+      ]);
+      const parsed=await parse(file);insertConversation(db,'split-output',file,parsed);
+      await record(db,'split-output',file);
+      const reader=new ConversationSourceReader(db);
+      const read=await reader.readPositions('split-output',[1,3],{maxBatchBytes:1});
+      if(read.status!=='source')throw Error(read.reason);
+      expect(read.value.map(block=>block.content)).toEqual([yielded,completed]);
+    } finally {db.close();}
+  });
+
   it('keeps reused cell continuations bound to their exact exec origin across sparse windows and terminal reconciliation', async () => {
     const db=migratedMemoryDb();
     const file=rolloutPath();

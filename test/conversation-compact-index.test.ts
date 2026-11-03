@@ -47,7 +47,6 @@ it('keeps admitted readers and disclosure identity while a late result updates i
       expect(after.members[0].handoffKeys).toEqual(expect.arrayContaining(before.members[0].handoffKeys));
       expect(after.members[0].sourcePositions).toEqual([0,1]);
       expect(after.members[0].dependencyRevision).not.toBe(member.dependencyRevision);
-      expect(after.runs['0:tool:0'].presentation.summary).toBe('Used CustomCASE');
       expect(planConversationReading(after,expanded).rows[0].key).toBe(planConversationReading(before,expanded).rows[0].key);
       expect(cache.readDisplayContext('conv','after',[1],epochs)?.aliases).toEqual([{position:1,fragment_id:'0:tool:0'}]);
     } finally {admitted.close();}

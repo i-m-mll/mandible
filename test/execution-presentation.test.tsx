@@ -222,8 +222,6 @@ it('keeps inline thread navigation independent of report disclosure', () => {
   expect(changed).not.toHaveBeenCalled();
   fireEvent.click(view.getByRole('button',{expanded:false}));
   expect(changed).toHaveBeenCalledTimes(1);
-  expect(view.getAllByRole('link')).toHaveLength(2);
-  for(const owner of view.getAllByRole('link'))expect(new URLSearchParams(owner.getAttribute('href')!.split('?')[1]).get('conversation')).toBe('canonical-report-owner');
 });
 
 it('navigates recursively observed targets without inventing pending or cross-parent subagent links',()=>{

@@ -1,5 +1,5 @@
 import { operationDefinition } from './operation-registry.js';
-import { expandInlineActivities } from './model.js';
+import { expandInlineActivities,extractToolResultText } from './model.js';
 import { activityTargetKey, activityObservationTargets, activityDirectiveTargets } from './activity-targets.js';
 import { toolObservation } from './tool-observation.js';
 import { operationPhrase, operationState, substantiveToolResult } from './tool-operation.js';
@@ -132,7 +132,7 @@ export type ActivityRunFacts = {
 function activityToolObservation(item:ToolCallActivity) {
   const context=item.operationContext ?? item.result?.source?.toolOperation;
   const input=context?.input;
-  return toolObservation(context?.name ?? item.name,typeof input==='string' || (input && typeof input==='object' && !Array.isArray(input)) ? input as Record<string,unknown> | string : item.input,context?.kind ?? item.toolKind,item.result ? {text:item.result.fullText ?? (typeof item.result.content==='string' ? item.result.content : item.result.content.filter(block=>block.type==='text').map(block=>block.text).join('\n')),content:item.result.content,frame:item.result.source?.toolFrame,native:item.result.presentation,failed:item.result.is_error} : undefined,item.header);
+  return toolObservation(context?.name ?? item.name,typeof input==='string' || (input && typeof input==='object' && !Array.isArray(input)) ? input as Record<string,unknown> | string : item.input,context?.kind ?? item.toolKind,item.result ? {text:item.result.fullText ?? extractToolResultText(item.result.content),content:item.result.content,frame:item.result.source?.toolFrame,native:item.result.presentation,failed:item.result.is_error} : undefined,item.header);
 }
 function activityHasDetails(item:DisplayActivityItem):boolean {
   if(item.type==='thinking-block-activity') return presentReasoning([item.content]).hasBody;
