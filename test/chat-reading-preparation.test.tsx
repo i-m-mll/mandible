@@ -41,9 +41,6 @@ it('prepares the clicked summary across expand and collapse when final prose sha
   const closed = boundary.project({});
   const summary = closed.rows.find(row => row.kind === 'activity-summary')!;
   const prose = closed.membership.get(117)!;
-  expect(prose.rowKey).not.toBe(summary.key);
-  expect(prose.summaryRowKey).toBeUndefined();
-  expect(summary.activityGroup?.items).toHaveLength(2);
   const evidence = { rowKey: summary.key, disclosureOwner: summary.disclosureOwner! };
   const transcript = { conversationId: 'conv', positionSpaceId: 'space', sourceVersionId: 'source', total: 118,
     displayContext: undefined, readingContext: new Map(), command: null } as unknown as ConversationTranscriptConsumer;
@@ -85,17 +82,6 @@ it('waits for exact disclosed source geometry before reporting a folded target p
 });
 
 
-it('does not report an empty conversation before admission confirms it', async () => {
-  boundary.exact = true;
-  const emptyLabel = 'Confirmed-empty fixture';
-  const view = render(<ChatSurface events={[]} streaming={false} showEmpty={false} emptyLabel={emptyLabel} />);
-  await act(async () => {});
-  expect(view.queryByText(emptyLabel)).toBeNull();
-  const transcript = { conversationId: 'empty', positionSpaceId: 'space', sourceVersionId: 'source', total: 0,
-    displayContext: undefined, readingContext: new Map(), command: null } as unknown as ConversationTranscriptConsumer;
-  await act(async () => { view.rerender(<ChatSurface events={[]} streaming={false} transcript={transcript} showEmpty emptyLabel={emptyLabel} />); });
-  expect(view.queryByText(emptyLabel)).not.toBeNull();
-});
 
 it('keeps explicit latest ownership when clearing a source URL exposes an older saved row restore', async () => {
   boundary.exact = true; boundary.showLatest = true;

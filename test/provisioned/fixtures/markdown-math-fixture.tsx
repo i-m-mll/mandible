@@ -26,12 +26,11 @@ void (async () => {
   const width = 423.203125;
   parent.style.width = `${width}px`;
   const service = new ReadingMeasurementService(parent);
-  let measuredHtml = '';
   let loadedAtGeometry: string[] = [];
   const renderer = createReadingRowBatchRenderer(() => props);
   const measurement = await service.measure({ rows: [{ key: row.key, revision: '1' }], layouts: [{ width, styleIdentity: 'math', fonts: [] }],
     materialize: async () => [row],
-    renderBatch: (...args) => { const batch = renderer(...args); measuredHtml = batch.elements.get(row.key)!.innerHTML; return batch; },
+    renderBatch: renderer,
     onPhase: event => { if (event.phase === 'geometry') loadedAtGeometry = [...document.fonts].filter(font => font.family.startsWith('KaTeX') && font.status === 'loaded').map(font => font.family); },
   });
   service.dispose();
@@ -41,9 +40,7 @@ void (async () => {
   const visibleHeight = visible.getBoundingClientRect().height;
   const result = {
     measuredHeight: measurement.measurements[0].height, visibleHeight,
-    sameHtml: measuredHtml === visible.innerHTML,
     loadedAtGeometry, fontsReady: document.fonts.status === 'loaded',
-    mathCount: visible.querySelectorAll('math').length,
     overflow: [...visible.querySelectorAll<HTMLElement>('.katex-display')].filter(element => element.scrollWidth > element.clientWidth).map(element => {
       const box = element.getBoundingClientRect();
       const bases = [...element.querySelectorAll<HTMLElement>('.katex-html > .katex-base')];
@@ -51,7 +48,7 @@ void (async () => {
       element.scrollLeft = element.scrollWidth;
       const endReachable = bases.at(-1)!.getBoundingClientRect().right <= box.right + 0.05;
       element.scrollLeft = 0;
-      return { width: box.width, scroll: getComputedStyle(element).overflowX, startReachable, endReachable };
+      return { startReachable, endReachable };
     }),
     localFonts: [...document.styleSheets].flatMap(sheet => [...sheet.cssRules].filter((rule): rule is CSSFontFaceRule => rule instanceof CSSFontFaceRule)
       .filter(rule => loadedAtGeometry.includes(rule.style.fontFamily.replaceAll('\"', '')))

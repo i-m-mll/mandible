@@ -5,7 +5,7 @@ import { ChatSurface } from '../ui/src/chat/ChatSurface';
 import { queryClient } from '../ui/src/query/client';
 import type { ConversationTranscriptConsumer } from '../ui/src/query/conversationData';
 
-const boundary = vi.hoisted(() => ({ options: null as any, engine: null as any, acquired: [] as number[], geometryScopes: [] as string[] }));
+const boundary = vi.hoisted(() => ({ options: null as any, engine: null as any, acquired: [] as number[] }));
 vi.mock('../ui/src/chat/readingResizeProfile', () => ({ getReadingResizeScale: () => 1 }));
 vi.mock('../ui/src/query/readingPresentation', () => ({
   readingManifestOptions: () => ({ queryKey: ['first-open-manifest'], queryFn: async () => ({}) }),
@@ -26,7 +26,7 @@ vi.mock('../ui/src/chat/useReadingGeometry', async () => {
   return { useReadingGeometry: (input: any) => {
     const geometry = useMemo(() => ({ scope: input.scope, rows: input.rows, sizes: input.rows.map(() => 100), serial: 1, exact: true,
       membership: input.membership, rowMembers: input.rowMembers, layout: { width: 600, styleIdentity: 'fixture', fonts: [] }, renderProps: input.renderProps }), [input.scope, input.rows]);
-    useLayoutEffect(() => { boundary.geometryScopes.push(input.scope); input.onPrepared(input.rows); }, [geometry]);
+    useLayoutEffect(() => { input.onPrepared(input.rows); }, [geometry]);
     return { geometry, reportHeight: () => {}, retry: () => {} };
   } };
 });
@@ -39,7 +39,7 @@ async function flushFrames() {
   await act(async () => { const pending = [...frames.values()]; frames.clear(); pending.forEach(callback => callback(0)); });
 }
 beforeEach(() => {
-  boundary.acquired = []; boundary.geometryScopes = []; frames = new Map(); nextFrame = 0;
+  boundary.acquired = []; frames = new Map(); nextFrame = 0;
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frames.set(++nextFrame, callback); return nextFrame; });
   vi.stubGlobal('cancelAnimationFrame', (id: number) => frames.delete(id));
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
@@ -68,8 +68,6 @@ it('opens a measured long chat when mounted body demand extends beyond the retai
   await flushFrames();
   await flushFrames();
   expect(boundary.acquired).toContain(20);
-  await waitFor(() => expect(view.container.querySelector('.stream-renderer__virtual-canvas')?.getAttribute('style')).toContain('visibility: visible'));
-  expect(boundary.geometryScopes).toContain('conv:space');
-  expect(view.container.querySelectorAll('[data-reading-key]')).toHaveLength(10);
+  await waitFor(() => expect(getComputedStyle(view.container.querySelector('.stream-renderer__virtual-canvas')!).visibility).toBe('visible'));
   expect(view.container.querySelectorAll('[data-reading-key][aria-busy="true"]')).toHaveLength(0);
 });

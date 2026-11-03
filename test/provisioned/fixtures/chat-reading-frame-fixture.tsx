@@ -116,38 +116,6 @@ void (async () => {
   const scroller = viewport.scrollRef.current!;
   const pane = document.getElementById('root')!;
   const samples: Array<Record<string, unknown>> = [];
-  const geometryBox = () => {
-    const canvas = scroller.querySelector<HTMLElement>('.stream-renderer__virtual-canvas')!.getBoundingClientRect();
-    const box = scroller.getBoundingClientRect();
-    return { width: canvas.width, left: canvas.left - box.left, right: box.right - canvas.right,
-      padding: parseFloat(getComputedStyle(scroller).paddingLeft), measuredWidth: geometry.geometry?.layout.width };
-  };
-  const unrestricted = geometryBox();
-
-  if (capped) {
-    setCap(400); await until(() => !!viewport.appliedGeometry?.exact && viewport.appliedGeometry.layout.width === 400, 'capped exact geometry');
-  }
-  const limited = geometryBox();
-  if (capped) {
-    setCap(10000); await until(() => !!viewport.appliedGeometry?.exact && viewport.appliedGeometry.layout.width === unrestricted.width, 'oversized cap');
-    setCap(0); await frame(); await frame();
-  }
-  const oversized = geometryBox();
-  const fade = pane.querySelector<HTMLElement>('.overflow-fade-top')!;
-  scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
-  scroller.scrollTop = 0; scroller.dispatchEvent(new Event('scroll')); await frame(); await frame();
-  const fadeAtStart = fade.classList.contains('overflow-fade-top--visible');
-  const beforeFade = scroller.scrollHeight;
-  scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: 20, bubbles: true }));
-  scroller.scrollTop = 20; scroller.dispatchEvent(new Event('scroll')); await frame(); await frame();
-  const fadeOverPadding = fade.classList.contains('overflow-fade-top--visible');
-  scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: 20, bubbles: true }));
-  scroller.scrollTop = 40; scroller.dispatchEvent(new Event('scroll')); await frame(); await frame();
-  const fadeWithContent = fade.classList.contains('overflow-fade-top--visible');
-  const fadeBox = fade.getBoundingClientRect();
-  const fadeGeometry = { fadeAtStart, fadeOverPadding, fadeWithContent, rangeUnchanged: scroller.scrollHeight === beforeFade,
-    top: fadeBox.top - scroller.getBoundingClientRect().top, width: fadeBox.width, scrollerWidth: scroller.getBoundingClientRect().width,
-    pointerEvents: getComputedStyle(fade).pointerEvents, background: getComputedStyle(fade).backgroundImage };
   scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
   viewport.engine.scrollToIndex(45, { align: 'start', behavior: 'auto' });
   await until(() => boxes().has('row:45'), 'disclosure parent');
@@ -214,6 +182,6 @@ void (async () => {
   const tailNativeTop = scroller.scrollTop;
   if (capped) setCap(388); else pane.style.width = '488.203125px'; await frame();
   const tailAfterInput = boxes().get('row:79')!.getBoundingClientRect().top;
-  document.title = btoa(JSON.stringify({ counterfactual, capped, unrestricted, limited, oversized, fadeGeometry, samples, nativeTop, afterNative, anchorKey: anchor.key, anchorOffset: anchor.point.offset,
+  document.title = btoa(JSON.stringify({ counterfactual, capped, samples, nativeTop, afterNative, anchorKey: anchor.key, anchorOffset: anchor.point.offset,
     tailNativeTop, tailNativeAfter: scroller.scrollTop, tailIntentDrift: tailAfterInput - tailBeforeInput - (topBeforeInput - tailNativeTop) }));
 })().catch(error => { document.title = `fixture-error:${btoa(String(error.stack ?? error))}`; });

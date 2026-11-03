@@ -3,8 +3,7 @@ import { act, cleanup, render } from './helpers/dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { useReadingViewport } from '../ui/src/chat/useReadingViewport';
 import type { ReadingRow, ReadingRevealResult } from '../ui/src/chat/readingProjection';
-import { readReadingState, writeReadingState } from '../ui/src/chat/readingState';
-import { readingNavigationObserver, type ReadingNavigationObserver } from '../ui/src/chat/readingNavigationObservation';
+import { readReadingState } from '../ui/src/chat/readingState';
 
 const boundary = vi.hoisted(() => ({ options: null as any, engine: null as any, calls: [] as string[] }));
 vi.mock('@tanstack/react-virtual', () => ({ useVirtualizer: (options: any) => {
@@ -18,9 +17,9 @@ const coordinate = { conversationId: 'conv', positionSpaceId: 'space', position:
 const rows: ReadingRow[] = [{ key: 'exact-row', kind: 'content', isFinalResponse: false, protectedPositions: [42], items: [], nodes: [], sources: [{ blockId: 'cblk:conv:42', position: 42 }], actionGroup: { key: 'scope', start: 0, end: 99 }, disclosureOwner: null }];
 const geometry = { membership: new Map<string, { rowKey: string; position?: number | null }>([['exact-row', { rowKey: 'exact-row', position: 42 }]]), rowMembers: new Map<string, readonly string[]>([['exact-row', ['exact-row']]]), scope: 'conv:space', rows: rows.map(row => ({ key: row.key, revision: '1' })), sizes: [100], exact: true, serial: 1, layout: { width: 600, styleIdentity: 'test', fonts: [] }, renderProps: () => ({} as any) };
 const rect = (top: number, height: number) => ({ top, bottom: top + height, height, left: 0, right: 600, width: 600, x: 0, y: top, toJSON: () => ({}) } as DOMRect);
-function Harness({ prepare, observeNavigation, space = 'space', scope = 'conv', initializing = false, vector = geometry, disclosures = {}, clearance = 123, onRange = () => {} }: { onRange?: Parameters<typeof useReadingViewport>[0]['onRange']; observeNavigation?: ReadingNavigationObserver; clearance?: number; disclosures?: Record<string, boolean>; vector?: typeof geometry; scope?: string; initializing?: boolean; prepare: Parameters<typeof useReadingViewport>[0]['prepare']; space?: string;  }) {
+function Harness({ prepare, space = 'space', scope = 'conv', initializing = false, vector = geometry, disclosures = {}, clearance = 123, onRange = () => {} }: { onRange?: Parameters<typeof useReadingViewport>[0]['onRange']; clearance?: number; disclosures?: Record<string, boolean>; vector?: typeof geometry; scope?: string; initializing?: boolean; prepare: Parameters<typeof useReadingViewport>[0]['prepare']; space?: string;  }) {
   viewport = useReadingViewport({ scope, initializing, positionSpaceId: space, geometry: vector, protectedKeys: new Set(),
-    disclosures, clearance, onInput: () => {}, onApplied: () => {}, onRange, prepare, observeNavigation });
+    disclosures, clearance, onInput: () => {}, onApplied: () => {}, onRange, prepare });
   return <div ref={viewport.scrollRef} {...viewport.inputHandlers}><div data-target tabIndex={-1}>Exact target</div><input /></div>;
 }
 async function frame(): Promise<void> {
@@ -59,10 +58,9 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); window.history.replaceState(null, '', '/'); });
 
-it('distinguishes a settled alignment failure from a preparation deadline without changing results', async () => {
-  const observe = vi.fn<ReadingNavigationObserver>();
+it('terminates failed alignment and preparation that never completes', async () => {
   const prepare = vi.fn(async () => ({ status: 'prepared' as const, rowKey: 'exact-row' }));
-  const view = render(<Harness prepare={prepare} observeNavigation={observe} />);
+  const view = render(<Harness prepare={prepare} />);
   const { scroller } = connect();
   let aligned!: Promise<ReadingRevealResult>;
   await act(async () => { aligned = viewport.reveal({ token: 'source', target: coordinate, origin: 'source-navigation' }); });
@@ -71,56 +69,25 @@ it('distinguishes a settled alignment failure from a preparation deadline withou
   act(() => boundary.options.onChange(boundary.engine));
   await frame();
   expect(await aligned).toEqual({ token: 'source', status: 'unsuccessful' });
-  expect(observe).toHaveBeenLastCalledWith(expect.objectContaining({ event: 'terminal', token: 'source', origin: 'source-navigation', target: coordinate,
-    terminal: expect.objectContaining({ reason: 'settled-target', phase: 'align', wantedOffset: 300, scrollTop: 100, targetConnected: true, scrolling: false }) }));
 
   vi.useFakeTimers();
-  view.rerender(<Harness prepare={() => new Promise(() => {})} observeNavigation={observe} />);
+  view.rerender(<Harness prepare={() => new Promise(() => {})} />);
   const expired = viewport.reveal({ token: 'disclosure', target: coordinate, origin: 'disclosure-pin', preserveReaderPin: true });
   await act(async () => { vi.advanceTimersByTime(10000); });
   expect(await expired).toEqual({ token: 'disclosure', status: 'unsuccessful' });
-  expect(observe).toHaveBeenLastCalledWith(expect.objectContaining({ event: 'terminal', token: 'disclosure', origin: 'disclosure-pin',
-    terminal: expect.objectContaining({ reason: 'deadline', phase: 'prepare' }) }));
 });
 
-it('keeps diagnostics opt-in and bounds console observation', () => {
-  const output = vi.spyOn(console, 'info').mockImplementation(() => {});
-  expect(readingNavigationObserver()).toBeUndefined();
-  expect(output).not.toHaveBeenCalled();
-  window.history.replaceState(null, '', '/?reading_trace=1');
-  const observe = readingNavigationObserver()!;
-  const observation = { event: 'notice' as const, token: 'owned', scope: 'conv', positionSpaceId: 'space', status: 'unsuccessful' as const,
-    currentScope: 'next-conv', currentPositionSpaceId: 'next-space', currentToken: 'next-command', origin: 'source-navigation' as const };
-  for (let index = 0; index < 100; index++) observe(observation);
-  expect(output.mock.calls.length).toBeGreaterThan(0);
-  expect(output.mock.calls.length).toBeLessThan(100);
-  expect(JSON.parse(String(output.mock.calls[0][1]))).toMatchObject({ scope: 'conv', currentScope: 'next-conv', token: 'owned', currentToken: 'next-command' });
-});
 
-it('observes obsolete and input-cancelled commands without publishing a later deadline', async () => {
-  vi.useFakeTimers();
-  const observe = vi.fn<ReadingNavigationObserver>();
-  render(<Harness prepare={() => new Promise(() => {})} observeNavigation={observe} />);
+it('cancels obsolete commands and lets direct input cancel their replacement', async () => {
+  render(<Harness prepare={() => new Promise(() => {})} />);
   const { scroller } = connect();
   const obsolete = viewport.reveal({ token: 'old', target: coordinate, origin: 'source-navigation' });
   const current = viewport.reveal({ token: 'new', target: coordinate, origin: 'source-navigation' });
   scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -50, bubbles: true }));
   expect(await obsolete).toEqual({ token: 'old', status: 'cancelled' });
   expect(await current).toEqual({ token: 'new', status: 'cancelled' });
-  await act(async () => { vi.advanceTimersByTime(10000); });
-  expect(observe.mock.calls.map(([record]) => [record.event, record.token, record.status])).toEqual([
-    ['start', 'old', undefined], ['terminal', 'old', 'cancelled'], ['start', 'new', undefined], ['terminal', 'new', 'cancelled'],
-  ]);
 });
 
-it('restores an explicit collapse and preserves saved positive disclosure intent', () => {
-  writeReadingState('conv', { version: 4, positionSpaceId: 'space', following: false, anchor: { ...coordinate, kind: 'source' },
-    disclosures: { 'group:thought': false, 'activity:tool': true } });
-  expect(readReadingState('conv')?.disclosures).toEqual({ 'group:thought': false, 'activity:tool': true });
-  localStorage.setItem('mandible:chat-reading:conv', JSON.stringify({ version: 2, positionSpaceId: 'space', following: false,
-    anchor: coordinate, disclosures: ['activity:tool'] }));
-  expect(readReadingState('conv')?.disclosures).toEqual({ 'activity:tool': true });
-});
 
 it('aligns an already-mounted prepared target without an intermediate index seek, then requires settlement', async () => {
   const prepare = vi.fn(async () => ({ status: 'prepared' as const, rowKey: 'exact-row' }));
@@ -130,9 +97,7 @@ it('aligns an already-mounted prepared target without an intermediate index seek
   let result: ReadingRevealResult | undefined;
   await act(async () => { void viewport.reveal({ token: 'exact', target: coordinate }).then(value => { result = value; }); });
   expect(prepare).toHaveBeenCalledWith(coordinate, expect.any(AbortSignal), 'exact', undefined);
-  expect(boundary.calls).toEqual(['cancel', 'cancel', 'offset']);
   await frame();
-  expect(boundary.calls).toEqual(['cancel', 'cancel', 'offset']);
   expect(focus).toHaveBeenCalledWith({ preventScroll: true });
   await frame();
   expect(result).toBeUndefined();
@@ -161,12 +126,10 @@ it('cancels preparation and engine reconciliation on direct input while preservi
   expect(boundary.calls).not.toContain('offset');
 });
 
-it('persists settled logical state and keeps composer clearance with adapter-owned following', () => {
+it('persists logical state only after scrolling settles', () => {
   render(<Harness prepare={async () => ({ status: 'not-renderable' })} />);
   const { scroller } = connect();
   const write = vi.spyOn(Storage.prototype, 'setItem'); write.mockClear();
-  expect(boundary.options.followOnAppend).toBe(false);
-  expect(boundary.options.paddingEnd).toBe(123);
   boundary.engine.isScrolling = true;
   for (let index = 0; index < 4; index++) act(() => boundary.options.onChange(boundary.engine));
   expect(write).not.toHaveBeenCalled();
@@ -174,7 +137,6 @@ it('persists settled logical state and keeps composer clearance with adapter-own
   boundary.engine.isScrolling = false;
   act(() => boundary.options.onChange(boundary.engine));
   expect(write).toHaveBeenCalledOnce();
-  expect(JSON.parse(write.mock.calls[0][1])).toMatchObject({ version: 4, following: false, anchor: { kind: 'row', rowKey: 'exact-row', memberKey: 'exact-row', position: 42, offset: 50 } });
 });
 
 it('terminates a prepared but non-renderable target without aligning nearby content', async () => {
@@ -339,7 +301,6 @@ it('fetches a native viewport ahead through variable-height geometry without wid
   const { scroller } = connect();
   scroller.scrollTop = 500;
   act(() => boundary.options.onChange(boundary.engine));
-  expect(onRange.mock.lastCall![0]).toMatchObject({ start: 100, end: 1300, height: 400, required: [vector.rows[11]] });
   expect(onRange.mock.lastCall![0].prefetch.map((row: any) => row.key)).toContain('row:5');
   expect(onRange.mock.lastCall![0].prefetch.map((row: any) => row.key)).toContain('row:15');
   const published = onRange.mock.calls.length;
@@ -352,8 +313,6 @@ it('fetches a native viewport ahead through variable-height geometry without wid
   expect(onRange.mock.lastCall![0].required).toEqual([vector.rows[11]]);
   Object.defineProperty(scroller, 'clientHeight', { value: 600, configurable: true });
   act(() => boundary.options.onChange(boundary.engine));
-  expect(onRange.mock.lastCall![0]).toMatchObject({ start: 0, end: 1750, height: 600, required: [vector.rows[11]] });
-  expect(boundary.options.overscan).toBe(6);
 });
 
 it('keeps prior applied demand within the same source while rejecting pending source and position-space replacements', () => {

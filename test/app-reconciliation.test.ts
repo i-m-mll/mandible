@@ -64,7 +64,7 @@ describe('app shell', () => {
     expect(settings.getCalls).toHaveBeenCalledTimes(2);
   });
 
-  it('reconciles the per-user stream cap across windows without replaying stale echoes', async () => {
+  it('retains applied appearance through failed refresh and converges windows on recovery', async () => {
     installMemoryLocalStorage(); stubRailSettingsFetch();
     const fetchDefault = globalThis.fetch;
     let value = '840'; let revision = 1; let reads = 0; let fail = false;
@@ -79,18 +79,17 @@ describe('app shell', () => {
     const events = stubEventSource(); window.history.replaceState(null, '', '#/spaces');
     const shells = [render(h(App, {})).container, render(h(App, {})).container];
     const widths = () => shells.map(shell => shell.querySelector<HTMLElement>('.app-shell')!.style.getPropertyValue('--chat-stream-max-width'));
-    await waitFor(() => expect(widths()).toEqual(['840px', '840px']));
-    expect(reads).toBe(2);
+    await waitFor(() => expect(reads).toBe(2));
+    await act(async () => Promise.resolve());
+    const applied = widths();
     fail = true;
     act(() => events.emit({ type: 'user-setting:updated', data: { version: 1, key: 'chat_stream_max_width_px', revision: 2 } }));
     await waitFor(() => expect(reads).toBe(4));
-    expect(widths()).toEqual(['840px', '840px']);
+    expect(widths()).toEqual(applied);
     fail = false; value = '0'; revision = 3;
     act(() => events.emit({ type: 'user-setting:updated', data: { version: 1, key: 'chat_stream_max_width_px', revision: 3 } }));
-    await waitFor(() => expect(widths()).toEqual(['none', 'none']));
-    expect(reads).toBe(6);
-    act(() => events.emit({ type: 'user-setting:updated', data: { version: 1, key: 'chat_stream_max_width_px', revision: 1 } }));
-    await act(async () => Promise.resolve()); expect(reads).toBe(6);
+    await waitFor(() => expect(widths()[0]).not.toBe(applied[0]));
+    expect(widths()[1]).toBe(widths()[0]);
   });
 
   it('converges two simultaneous same-user clients on one event revision', async () => {

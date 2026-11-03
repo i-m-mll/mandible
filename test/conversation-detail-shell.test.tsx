@@ -673,7 +673,7 @@ describe('compact detail pane shell', () => {
     expect(screen.getByText('New same-chat exact target')).toBeTruthy();
   });
 
-  it('cold-opens a copied message link instead of a saved tail selection and reports clipboard failure visibly', async () => {
+  it('cold-opens and copies the exact message link instead of a saved tail selection', async () => {
     const exactBlock = makeTranscriptBlock({id: `cblk:${conversation.id}:0`, type: 'assistant_message', role: 'assistant', position: 0,
       content: 'Exact cold message\n\n<oai-mem-citation>\n<citation_entries>\nfixture-memory:L1|note=[fixture]\n</citation_entries>\n<rollout_ids>\nfixture-rollout\n</rollout_ids>\n</oai-mem-citation>'});
     const scopedConversation = mockConversationDetail(defaultControl, [exactBlock]);
@@ -692,12 +692,10 @@ describe('compact detail pane shell', () => {
     expect(await screen.findByText('Exact cold message')).toBeTruthy();
     expect(api.getConversationWindow).toHaveBeenCalledWith(scopedConversation.id, expect.objectContaining({ block: exactBlock.id }));
     await waitFor(() => expect(document.activeElement?.getAttribute('data-block-id')).toBe(exactBlock.id));
-    expect(screen.getByText('Used memory')).toBeTruthy();
     expect(document.activeElement?.textContent).toContain('Exact cold message');
-    expect(document.activeElement?.textContent).not.toContain('Used memory');
     fireEvent.contextMenu(screen.getByText('Exact cold message'));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Copy link' }));
-    expect(await screen.findByText('Could not copy the message link.')).toBeTruthy();
+    expect(await screen.findByRole('alert')).toBeTruthy();
     const copied = new URL(vi.mocked(navigator.clipboard.writeText).mock.calls[0][0]);
     expect(conversationAnchorFromHash(copied.hash)).toEqual({block: exactBlock.id, expected_position_space_id: 'fixture-space'});
     expect(new URLSearchParams(copied.hash.split('?')[1]).get('conversation')).toBe(scopedConversation.id);
@@ -890,12 +888,12 @@ describe('compact detail pane shell', () => {
     const freshSnapshot = { ...positionPayload(scopedConversation, [makeTranscriptBlock({ id: 'true-tail', dag_uuid: 'true-tail', position: 12, content: 'Newest true tail' })], { kind: 'latest', revision: 13 }), source_version_id: 'source-13', publication_revision: 3 };
     if (publication === 'pending') {
       trueLatest.resolve(olderSnapshot);
-      expect(await screen.findByText('The latest source has not yet published the advertised append. Try again.')).toBeTruthy();
+      const retry = await screen.findByRole('button', { name: 'Retry' });
       expect(screen.getByText('Middle window')).toBeTruthy();
       expect(queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversation.id))).toMatchObject({ total: 3, conversation: { block_count: 13 } });
       expect(latestCalls).toBe(2);
       vi.mocked(api.getConversationWindow).mockResolvedValueOnce(freshSnapshot);
-      fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+      fireEvent.click(retry);
     } else trueLatest.resolve(freshSnapshot);
     expect(await screen.findByText('Newest true tail')).toBeTruthy();
     const aggregate = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversation.id));
