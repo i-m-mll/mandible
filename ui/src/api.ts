@@ -2522,6 +2522,8 @@ export async function getConversationWindow(
   id: string,
   request: ConversationWindowRequest = {},
 ): Promise<ConversationPositionWindow> {
+  const trace=typeof window!=='undefined'&&new URLSearchParams(window.location.search).get('reading_trace')==='1';
+  const started=trace?performance.now():0;
   const query = new URLSearchParams();
   if ('target' in request && request.target) query.set('target', request.target);
   if ('block' in request) query.set('block', request.block);
@@ -2534,7 +2536,10 @@ export async function getConversationWindow(
   const resp = await apiGet(`/api/conversations/${encodeURIComponent(id)}${suffix}`, {
     signal: request.signal,
   });
+  const received=trace?performance.now():0;
   const payload = (await parseMaybeJson(resp)) as ConversationPositionWindow;
+  if(trace)console.info('[mandible:reading-window]',JSON.stringify({conversationId:id,requestMs:received-started,decodeMs:performance.now()-received,
+    blocks:payload.blocks.length,total:payload.total,contentLength:resp.headers.get('content-length')}));
   if (!payload.reading_context || payload.reading_context.positions.length !== payload.blocks.length) {
     throw new ApiError('Source reading context is incomplete.', 409, 'freshness_pending');
   }
