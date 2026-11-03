@@ -244,9 +244,9 @@ export class ConversationStructureCache {
   beginGeneration(manifest: SourceManifestRow, priorVersionId?: string): number {
     return this.cache.transaction(() => {
       const tuple=[manifest.conversation_id,manifest.source_version_id,manifest.parser_format,manifest.parser_version,manifest.normalization_version,manifest.redaction_epoch];
-      const existing=this.cache.prepare('SELECT cache_id,ready FROM cache_conversations WHERE conversation_id=? AND source_version_id=? AND parser_format=? AND parser_version=? AND normalization_version=? AND redaction_epoch=?').get(...tuple) as {cache_id:number;ready:number}|undefined;
-      if(existing?.ready)return existing.cache_id;
-      if(existing)this.cache.prepare('DELETE FROM cache_conversations WHERE cache_id=? AND ready=0').run(existing.cache_id);
+      const existing=this.cache.prepare('SELECT cache_id,ready,block_count FROM cache_conversations WHERE conversation_id=? AND source_version_id=? AND parser_format=? AND parser_version=? AND normalization_version=? AND redaction_epoch=? ORDER BY ready DESC,cache_id DESC').get(...tuple) as {cache_id:number;ready:number;block_count:number}|undefined;
+      if(existing?.ready&&existing.block_count===manifest.block_count)return existing.cache_id;
+      this.cache.prepare('DELETE FROM cache_conversations WHERE conversation_id=? AND source_version_id=? AND parser_format=? AND parser_version=? AND normalization_version=? AND redaction_epoch=? AND ready=0').run(...tuple);
       const now=Date.now();
       const id=Number(this.cache.prepare('INSERT INTO cache_conversations(conversation_id,source_version_id,parser_format,parser_version,normalization_version,redaction_epoch,block_count,updated_at,accessed_at) VALUES(?,?,?,?,?,?,?,?,?)').run(...tuple,manifest.block_count,now,now).lastInsertRowid);
       if(priorVersionId) {
@@ -282,7 +282,7 @@ export class ConversationStructureCache {
 
   completeGeneration(cacheId:number):void {
     this.cache.transaction(()=>{
-      const manifest=this.cache.prepare('SELECT block_count,ready FROM cache_conversations WHERE cache_id=?').get(cacheId) as {block_count:number;ready:number}|undefined;
+      const manifest=this.cache.prepare('SELECT * FROM cache_conversations WHERE cache_id=?').get(cacheId) as CacheConversationRow&{ready:number}|undefined;
       if(!manifest)throw new Error('Index generation is missing');
       if(manifest.ready)return;
       const count=this.cache.prepare('SELECT COUNT(*) AS count,MIN(position) AS first,MAX(position) AS last FROM cache_blocks WHERE cache_conversation_id=?').get(cacheId) as {count:number;first:number|null;last:number|null};
@@ -294,6 +294,7 @@ export class ConversationStructureCache {
         if(this.cache.prepare('SELECT 1 FROM cache_blocks WHERE cache_conversation_id=? AND revision IS NULL LIMIT 1').get(cacheId))throw new Error('Prepared presentation position facts are incomplete');
         if(this.cache.prepare(`SELECT 1 FROM cache_display_aliases a WHERE a.cache_conversation_id=? AND (NOT EXISTS(SELECT 1 FROM cache_blocks b WHERE b.cache_conversation_id=a.cache_conversation_id AND b.position=a.position) OR NOT EXISTS(SELECT 1 FROM cache_display_fragments f WHERE f.cache_conversation_id=a.cache_conversation_id AND f.position=a.owner_position AND f.part_kind=a.owner_kind AND f.part_ordinal=a.owner_ordinal AND f.activity_kind=0)) LIMIT 1`).get(cacheId))throw new Error('Prepared presentation alias owner is missing');
       }
+      this.cache.prepare('DELETE FROM cache_conversations WHERE conversation_id=? AND source_version_id=? AND parser_format=? AND parser_version=? AND normalization_version=? AND redaction_epoch=? AND cache_id!=? AND ready=1').run(manifest.conversation_id,manifest.source_version_id,manifest.parser_format,manifest.parser_version,manifest.normalization_version,manifest.redaction_epoch,cacheId);
       this.cache.prepare('UPDATE cache_conversations SET ready=1 WHERE cache_id=?').run(cacheId);
     })();
   }
