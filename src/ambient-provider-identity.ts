@@ -53,10 +53,10 @@ export function resolveAmbientProviderIdentity(env: NodeJS.ProcessEnv = process.
   const providers = Object.entries(PROVIDER_ENV).filter(([, markers]) => markers.some(marker => Boolean(env[marker])));
   if (providers.length !== 1) return null;
   const provider = providers[0][0];
-  if (provider === "codex") return normalizeAmbientProviderIdentity({ provider, agent_id: env.CODEX_THREAD_ID, session_id: env.CODEX_SESSION_ID });
+  if (provider === "codex") return normalizeAmbientProviderIdentity({ provider, agent_id: env.CODEX_THREAD_ID || null, session_id: env.CODEX_SESSION_ID || null });
   if (provider === "gemini") return normalizeAmbientProviderIdentity({ provider, agent_id: env.GEMINI_SESSION_ID, session_id: env.GEMINI_SESSION_ID });
   if (env.CLAUDE_CODE_SESSION_ID && env.CLAUDE_SESSION_ID && env.CLAUDE_CODE_SESSION_ID !== env.CLAUDE_SESSION_ID) return null;
-  return normalizeAmbientProviderIdentity({ provider, agent_id: env.CLAUDE_AGENT_ID, session_id: env.CLAUDE_CODE_SESSION_ID || env.CLAUDE_SESSION_ID });
+  return normalizeAmbientProviderIdentity({ provider, agent_id: env.CLAUDE_AGENT_ID || null, session_id: env.CLAUDE_CODE_SESSION_ID || env.CLAUDE_SESSION_ID });
 }
 
 /** Lossless scalar projection for exact executor aliases. */
