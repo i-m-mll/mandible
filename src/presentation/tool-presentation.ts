@@ -14,6 +14,7 @@ export type ToolPresentation = {
   operation?: string;
   hasDetails?: boolean;
   observation?: {elapsedSeconds?:number;report?:'final' | 'update'};
+  targetCount?:number;
   threadTargets?: Array<{type:'conversation' | 'session';id:string}>;
   resultAttribution?:'operation'|'opaque';
   outputPolicy?: 'acknowledgement' | 'thread-wait' | 'sleep';
@@ -107,7 +108,7 @@ export function presentTool(
   if(operation&&definition) {
     const ids=operation==='thread-read'||operation==='thread-send'?[object.threadId??object.thread_id]:operation==='thread-wait'?Array.isArray(object.targets)?object.targets.map(target=>target&&typeof target==='object'?(target as Record<string,unknown>).threadId:undefined):object.threadIds??object.thread_ids:[];
     const threadTargets=(Array.isArray(ids)?ids:[]).filter((id):id is string=>typeof id==='string'&&Boolean(id)).map(id=>({type:'session' as const,id}));
-    return {operation,category:definition.category,icon:definition.icon,phrase:definition.completed,target:'',...(threadTargets.length?{threadTargets}:{}),...(definition.outputPolicy?{outputPolicy:definition.outputPolicy}:{})};
+    return {operation,category:definition.category,icon:definition.icon,phrase:definition.completed,target:'',...(threadTargets.length?{threadTargets,targetCount:threadTargets.length}:{}),...(definition.outputPolicy?{outputPolicy:definition.outputPolicy}:{})};
   }
   if(name==='apply_patch') {
     const patch = typeof inputValue==='string' ? inputValue : typeof object.patch==='string' ? object.patch : '';
@@ -245,7 +246,7 @@ export function mergeToolRunFacts(left: readonly ToolRunFact[], right: readonly 
 }
 export function summarizeToolRunFacts(facts: readonly ToolRunFact[]): string[] {
   return facts.filter(fact=>!fact.outcomeOnly).map(({presentation,count,names,state}) => {
-    const phrase = operationLabel(presentation.operation,state??'unknown',count) ?? (count === 1 ? presentation.phrase : presentation.operation==='thread-read' ? 'Read threads' : presentation.operation==='thread-wait' ? 'Waited for threads' : presentation.operation==='tool-discovery' ? 'Checked available tools' : presentation.operation==='execution-wait' ? 'Waited for executions' : presentation.operation==='sleep' ? 'Waited several times' : presentation.category === 'other'
+    const phrase = operationLabel(presentation.operation,state??'unknown',Math.max(count,presentation.targetCount??0)) ?? (count === 1 ? presentation.phrase : presentation.operation==='thread-read' ? 'Read threads' : presentation.operation==='thread-wait' ? 'Waited for threads' : presentation.operation==='tool-discovery' ? 'Checked available tools' : presentation.operation==='execution-wait' ? 'Waited for executions' : presentation.operation==='sleep' ? 'Waited several times' : presentation.category === 'other'
       ? names.length === 1 ? presentation.phrase + ' several times' : DEFINITIONS.other.plural
       : DEFINITIONS[presentation.category].plural);
     return phrase.charAt(0).toLowerCase() + phrase.slice(1);

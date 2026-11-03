@@ -31,11 +31,11 @@ export function operationPhrase(header:ToolPresentation,state:OperationState,res
   const elapsed=result?.wallTimeSeconds ?? header.observation?.elapsedSeconds;
   const duration=elapsed!==undefined && elapsed>0 ? ` ${elapsed} s` : '';
   if(header.operation==='thread-wait') {const reports=result && header.resultAttribution!=='opaque' ? threadReports(result.text) : null;const report=reports?.length ? reports.every(report=>report.final)?'final':'update' : header.observation?.report;if(report) return report==='final' ? 'Received response from thread' : 'Received update from thread';}
-  if(header.operation==='thread-wait') return state==='ongoing'?'Waiting for thread':state==='unknown' && !duration?'Wait for thread':`Waited${duration} for thread`;
+  if(header.operation==='thread-wait') {const target=(header.targetCount??header.threadTargets?.length??0)>1?'threads':'thread';return state==='ongoing'?`Waiting for ${target}`:state==='unknown'&&!duration?`Wait for ${target}`:`Waited${duration} for ${target}`;}
   if(header.operation==='execution-wait') return state==='ongoing'?'Waiting for execution':state==='unknown' && !duration?'Wait for execution':`Waited${duration} for execution`;
   if(header.operation==='sleep') return state==='ongoing'?'Waiting':state==='unknown' && !duration?'Wait':`Waited${duration}`;
   if(header.operations?.length)return header.phrase;
-  const registered=operationLabel(header.operation,state);if(registered)return registered;
+  const registered=operationLabel(header.operation,state,Math.max(1,header.targetCount??0));if(registered)return registered;
   if(header.operation==='thread-read') return state==='ongoing'?'Reading thread':state==='unknown'?'Read thread':header.phrase;
   if(header.operation==='tool-discovery') return state==='ongoing'?'Checking available tools':state==='unknown'?'Check available tools':header.phrase;
   if(header.category==='other' && header.phrase.startsWith('Used ')) return state==='ongoing' ? header.phrase.replace(/^Used /,'Using ') : state==='unknown' ? header.phrase.replace(/^Used /,'Use ') : header.phrase;
