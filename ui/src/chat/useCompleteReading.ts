@@ -72,6 +72,10 @@ export function useCompleteReading(input: {
   const bodyKey = useMemo(() => ['chat', 'conversation', input.scope, 'reading-bodies', input.space] as const, [input.scope, input.space]);
   const bodyQuery = useQuery({ queryKey: bodyKey, queryFn: skipToken, initialData: () => new Map<string, ReadingRow>(), enabled: false, gcTime: 0 }, queryClient);
   const bodies: ReadonlyMap<string, ReadingRow> = bodyQuery.data ?? new Map();
+  const firstRequiredSource = useRef<{scope:string;at:number}|null>(null);
+  const sourceScope=JSON.stringify([input.scope,input.space]);
+  if(firstRequiredSource.current?.scope!==sourceScope && required.length && required.every(row=>bodies.has(readingBodyKey(row))))
+    firstRequiredSource.current={scope:sourceScope,at:performance.now()};
   const bodyRef = useRef(bodies); bodyRef.current = bodies;
   const targetsByBody = useMemo(() => new Map([...bodies].map(([key, body]) => [key, activityTargetsFromReadingRows([body])])), [bodies]);
   const targets = useMemo(() => [...targetsByBody.values()].flat(), [targetsByBody]);
@@ -211,7 +215,8 @@ export function useCompleteReading(input: {
     pendingVector.current = null; custody.current.pending = new Set(); setDemandVersion(value => value + 1);
   }, []);
   return { rows, plan, membership: plan?.viewMembership ?? input.local.viewMembership, rowMembers, actionRuns: composition?.actionRuns ?? input.local.actionRuns, lastAssistantTurnId: composition?.lastAssistantTurnId ?? input.local.lastAssistantTurnId,
-    manifest: manifest.data, bodies, getBody: (ref: MeasurementRow) => bodies.get(readingBodyKey(ref)),
+    manifest: manifest.data, bodies, firstRequiredSourceAt:firstRequiredSource.current?.scope===sourceScope?firstRequiredSource.current.at:undefined,
+    getBody: (ref: MeasurementRow) => bodies.get(readingBodyKey(ref)),
     materialize, acquireMeasurement, onRange, retainMeasurement, retainGeometry, commitGeometry,
     protect: () => setDemandVersion(value => value + 1), error: manifest.error?.message ?? hydrationError, ready: !input.enabled || Boolean(plan), refresh: () => { failures.current.clear(); setHydrationError(null); setDemandVersion(value => value + 1); return manifest.refetch(); } };
 }

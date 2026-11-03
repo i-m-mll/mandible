@@ -2,7 +2,7 @@ import { readingPayloadKey } from './useCompleteReading';
 import { nativeReadingCapacity } from './readingCapacity';
 import { isReadingPublicationChanged } from '../query/readingPresentation';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { ReadingMeasurementService, measurementLayoutIdentity, type MeasurementLayout, type MeasurementRow, type RowMeasurement, type MeasurementRequest } from './readingMeasurement';
+import { ReadingMeasurementService, measurementLayoutIdentity, type MeasurementLayout, type MeasurementRow, type RowMeasurement, type MeasurementRequest, type MeasurementPhase } from './readingMeasurement';
 import type { ReadingRow } from './readingProjection';
 import type { ReadingContentProps } from './ReadingContent';
 import { createReadingRowBatchRenderer } from './renderReadingMeasurementBatch';
@@ -12,6 +12,7 @@ export type ReadingGeometry = { membership: GeometryMembership; rowMembers: Read
 /** One current width, one compatible complete basis, and reusable current-width facts. */
 export function useReadingGeometry(input: {
   scope: string; chrome: number; rows: readonly MeasurementRow[]; parent: HTMLElement | null;
+  firstRequiredSourceAt?:number;
   materialize: MeasurementRequest<ReadingRow>['materialize'];
   renderProps: (row: ReadingRow, ref?: MeasurementRow) => ReadingContentProps;
   membership: GeometryMembership; rowMembers: ReadonlyMap<string, readonly string[]>;
@@ -21,6 +22,9 @@ export function useReadingGeometry(input: {
   scale: (from: MeasurementLayout, to: MeasurementLayout) => number;
 }) {
   const latest = useRef(input); latest.current = input;
+  const traceEnabled=useMemo(()=>new URLSearchParams(window.location.search).get('reading_trace')==='1',[]);
+  const trace=useRef({scope:input.scope,mountedAt:performance.now(),attempts:[] as Array<{startMs:number;wallMs:number;rows:number;status:string;phases:Partial<Record<MeasurementPhase,{ms:number;batches:number;rows:number}>>}>,publications:0});
+  if(trace.current.scope!==input.scope)trace.current={scope:input.scope,mountedAt:performance.now(),attempts:[],publications:0};
   const [layout, setLayout] = useState<MeasurementLayout | null>(null);
   const [geometry, setGeometry] = useState<ReadingGeometry | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -74,6 +78,7 @@ export function useReadingGeometry(input: {
   }, []);
   useEffect(() => () => { if (reportFrame.current !== null) cancelAnimationFrame(reportFrame.current); }, []);
   publish.current = next => {
+    const queuedAt=performance.now();
     queued.current = next;
     if (publicationFrame.current !== null) return;
     publicationFrame.current = requestAnimationFrame(() => {
@@ -93,6 +98,11 @@ export function useReadingGeometry(input: {
       }
       const next = { ...candidate, sizes };
       latest.current.onPrepared(next.rows); setGeometry(next);
+      if(traceEnabled && trace.current.publications++<8)console.info('[mandible:reading-measurement]',JSON.stringify({scope:input.scope,
+        mountedAt:trace.current.mountedAt,firstRequiredSourceMs:latest.current.firstRequiredSourceAt===undefined?null:latest.current.firstRequiredSourceAt-trace.current.mountedAt,
+        publishedMs:performance.now()-trace.current.mountedAt,publicationRafMs:performance.now()-queuedAt,
+        rows:next.rows.length,exact:next.exact,attempts:trace.current.attempts,
+        note:'Phase totals overlap: source lookahead, fonts, images and readiness. Times start at Chat geometry hook mount; exclude initial route request.'}));
     });
   };
   useEffect(() => () => { if (publicationFrame.current !== null) cancelAnimationFrame(publicationFrame.current); }, []);
@@ -150,9 +160,13 @@ export function useReadingGeometry(input: {
         const rows = snapshot.rows;
         snapshot.onMeasuring(rows);
         startedScope.current = input.scope;
+        const phaseStarted=performance.now();
+        const phases:Partial<Record<MeasurementPhase,{ms:number;batches:number;rows:number}>>={};
         const result = await service.measure({ rows, layouts: [layout], materialize: snapshot.materialize,
           renderBatch: createReadingRowBatchRenderer(snapshot.renderProps), reuse: facts.current,
-          signal: controller.signal, batchSize: 16, materializeBatchSize: 128, prefetchMaterialization: true, maxSynchronousMs: 8 });
+          signal: controller.signal, batchSize: 16, materializeBatchSize: 128, prefetchMaterialization: true, maxSynchronousMs: 8,
+          onPhase:traceEnabled?event=>{const total=phases[event.phase]??={ms:0,batches:0,rows:0};total.ms+=event.durationMs;total.batches++;total.rows+=event.rowCount;}:undefined });
+        if(traceEnabled && trace.current.attempts.length<8)trace.current.attempts.push({startMs:phaseStarted-trace.current.mountedAt,wallMs:performance.now()-phaseStarted,rows:rows.length,status:result.status,phases});
         if (controller.signal.aborted || !layoutRef.current || measurementLayoutIdentity(layoutRef.current) !== identity) break;
         facts.current = result.measurements;
         if (result.status !== 'complete') {

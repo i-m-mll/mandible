@@ -89,6 +89,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
   const [scrollNode, setScrollElement] = useState<HTMLDivElement | null>(null);
   const layoutChange = useRef<() => void>(() => {});
   const geometry = useReadingGeometry({ scope: `${scope}:${space}`, chrome: 32 + clearance, onLayoutChange: () => layoutChange.current(), rows: complete.rows, parent: appearance.ready && complete.ready && !initialDisclosurePending ? scrollNode : null,
+    firstRequiredSourceAt:complete.firstRequiredSourceAt,
     materialize: complete.acquireMeasurement, membership: complete.membership, rowMembers: complete.rowMembers, onMeasuring: complete.retainMeasurement, onPrepared: complete.retainGeometry, renderProps: (row, ref) => ({ ...props, row, targetLabels: readingTargetLabels(ref), expandedBlocks, setBlockExpanded: () => {},
       preparing: row.sources.some(source => expandedBlocks[`reveal:${source.position}`]), primaryActions: readingRowPrimaryActions({ copy: () => {}, open: () => {}, turnId: readingRowTurnId(row, complete.actionRuns), selectedMessageId: props.selectedMessageId, select: props.onSelectMessageInfo }),
       lastAssistantTurnId: complete.lastAssistantTurnId, onActivityGroupExpandedChange: () => {} }), scale: getReadingResizeScale });
