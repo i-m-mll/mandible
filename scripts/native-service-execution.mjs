@@ -29,5 +29,7 @@ export function classifyNativeExecution(model, role, executable) {
   const expected = model.ok && model.roles[role];
   if (!expected) return 'foreign';
   if (executable === expected.terminal) return 'executable-qualified';
-  return expected.pending.includes(executable) ? 'pending' : 'foreign';
+  const shortName = /^\(([^/\\()]+)\)$/.exec(executable)?.[1];
+  const declaredShortName = shortName && [expected.terminal, ...expected.pending].some(candidate => path.basename(candidate) === shortName);
+  return expected.pending.includes(executable) || declaredShortName ? 'pending' : 'foreign';
 }

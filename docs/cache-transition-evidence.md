@@ -28,6 +28,6 @@ Focused checks cover interrupted retry and ready-only visibility, selected conve
 
 The first 60-second measurement stopped safely with an incomplete private cache. Hoisting repeated statement preparation improved the observed prefix from 507,237 blocks in 59.4 s to 570,615 blocks in 38.8 s. A second partial run was cancelled when the final operation-fact elision changed the measurement inputs. Both obsolete private outputs were removed. The final run used the frozen storage inputs and a bounded 480-second command timeout authorized for this full-corpus evidence.
 
-The final private v19 file remains available to the coordinator for selective preview extraction. Production conversion and obsolete-file retirement were not executed. Retirement is performed by the existing trusted handoff helper only after accepted delivery, verified old-process drain, complete coverage, exact-file consumer checks and a durable receipt-bound deletion intent.
+The final private v19 file was used for selective long-chat preview extraction and removed after qualification; the measurements are retained. Production conversion and obsolete-file retirement were not executed. Retirement is performed by the existing trusted handoff helper only after accepted delivery, verified old-process drain, complete coverage, exact-file consumer checks and a durable receipt-bound deletion intent.
 
 Co-Authored-By: Codex (GPT) <codex@openai.com>

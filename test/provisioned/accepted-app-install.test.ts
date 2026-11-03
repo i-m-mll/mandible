@@ -10,8 +10,8 @@ import { createPendingRelease, retainAcceptedRelease, applicationIdentity, readA
 import { acceptedInstallPaths, applicationRootIdentity, preparedApplicationContext } from '../../scripts/accepted-app-install.mjs';
 import { installedFileIdentity, readInstalledRelease, verifyInstalledRelease } from '../../scripts/installed-release.mjs';
 import { serviceInstallationContext, inspectServiceDefinitionsSync, matchingServiceDefinitions } from '../../scripts/service-definitions.mjs';
-import { readBundleOwner, nativeServiceControls } from '../../scripts/bundle-services.mjs';
-import { bindingDigest, handoffDirectory, readRuntimeHandoffReceipt, runRuntimeHandoffWorker } from '../../scripts/runtime-handoff.mjs';
+import { readBundleOwner, nativeServiceControls, bundleRuntimeCommand } from '../../scripts/bundle-services.mjs';
+import { bindingDigest, handoffDirectory, readRuntimeHandoffReceipt, runRuntimeHandoffWorker, withRuntimeObservation } from '../../scripts/runtime-handoff.mjs';
 import { pathToFileURL } from 'node:url';
 import http from 'node:http';
 import { readBundleProcess } from '../../scripts/local-runtime.mjs';
@@ -19,6 +19,7 @@ import { stageBundleServices } from '../../scripts/prepare-bundle-services.mjs';
 import { withLifecycleLock, processIdentity } from '../../scripts/lifecycle-lock.mjs';
 import { runSupervisedCommand } from '../../scripts/process-group-supervisor.mjs';
 import { RuntimeObservationError, runtimeProcessChanged } from '../../scripts/runtime-observation.mjs';
+import { migratedFileDb } from '../helpers/ledger-fixtures.js';
 import type { ServiceKind } from '../../scripts/service-definitions.mjs';
 import type { RuntimeProcessIdentity } from '../../scripts/runtime-observation.mjs';
 import { resolveAppSigning, requireNativeAppSigning, openAppSigner, nativeSigningIdentifier, verifyNativeAppSignatures } from '../../scripts/app-signing.mjs';
@@ -60,6 +61,7 @@ it('replaces retained signed bundles through real native service startup, qualif
   const root = fs.realpathSync(fs.mkdtempSync('/tmp/mandible-native-'));
   const home = path.join(root, 'account/.mandible');
   const accountHome = path.dirname(home);
+  const database = path.join(home, 'mandible.db');
   const app = path.join(root, 'Installed.app');
   const gatewaySocket = path.join(root, 'admin.sock');
   const identifier = `bio.mll.mandible.fixture.${randomUUID().replaceAll('-', '')}`;
@@ -81,7 +83,7 @@ it('replaces retained signed bundles through real native service startup, qualif
     try {
       const timeout = until - Date.now() - 500;
       if (timeout <= 0) throw new Error(`Native replacement termination allowance exhausted before ${phase}.`);
-      await runSupervisedCommand(runtime!, args, { cwd: process.cwd(), env: process.env,
+      await runSupervisedCommand(runtime!, args, { cwd: process.cwd(), env: { ...process.env, HOME: accountHome, MANDIBLE_HOME: home, MANDIBLE_DB: database },
         stdio: ['ignore', log, log], timeout, graceMs: 100 });
       checkDeadline(phase, until);
     } catch (error) {
@@ -111,6 +113,8 @@ it('replaces retained signed bundles through real native service startup, qualif
   };
   try {
     if (!runtime) throw new Error('Run through the pinned provisioned test runner.');
+    fs.mkdirSync(home, { recursive: true });
+    migratedFileDb(database).close();
     sourceRevision = run('git', ['rev-parse', 'HEAD'], 'source revision').trim();
     if (run('git', ['status', '--porcelain', '--untracked-files=all'], 'source checkout check').trim()) throw new Error('Native qualification requires a clean committed source checkout.');
     const candidateApp = process.env.MANDIBLE_NATIVE_PROOF_APP;
@@ -180,18 +184,21 @@ const file=path.join(process.env.HOME,'.cache/mandible',role+'.json');
 const pulse=()=>{const active=path.join(process.env.HOME,'.mandible/config/local-sessions/handoff-active.json');if(fs.existsSync(active)){const owner=JSON.parse(fs.readFileSync(active));const handoff=JSON.parse(fs.readFileSync(owner.journal));if(handoff.acknowledgedAt&&handoff.bridgeInstalled&&handoff.attempt?.effects.prepare?.completedAt&&handoff.binding.oldProcess.pid===process.pid)process.exit(0);}const next=file+'.'+process.pid;fs.writeFileSync(next,JSON.stringify({pid:process.pid,generation:release.provenance.commit,role,root,at:Date.now()}));fs.renameSync(next,file);};
 pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInterval(timer);process.exit(0);});
 `);
+      fs.mkdirSync(path.join(resources, 'channel'));
+      fs.copyFileSync(path.join(candidateApp, 'Contents/Resources', candidateRelease.entrypoints.channel), path.join(resources, 'channel/bridge.mjs'));
       const native = { bun: '../MacOS/mandible-bun', caddy: '../MacOS/mandible-caddy', serviceHelper: '../MacOS/mandible-service' };
-      const files = Object.fromEntries(['foreground.mjs', 'service-fixture.json', ...Object.values(native)].map(relative => [relative, installedFileIdentity(path.resolve(resources, relative))]));
+      const files = Object.fromEntries(['foreground.mjs', 'service-fixture.json', 'channel/bridge.mjs', ...Object.values(native)].map(relative => [relative, installedFileIdentity(path.resolve(resources, relative))]));
       checkDeadline(`generation ${pin} inventory`);
       fs.writeFileSync(path.join(resources, 'release.json'), JSON.stringify({ schema: 'mandible-installed-release@1', version: String(index + 1), target: `${process.platform}-${process.arch}`,
         layout: { kind: 'macos-app', roots: { resources: '.', executables: '../MacOS', agents: '../Library/LaunchAgents' } },
-        provenance: { commit: candidate.pin_sha, source_digest: pin.repeat(64) }, entrypoints: { daemon: 'foreground.mjs', service: 'foreground.mjs' }, serviceExecutables: { backend: 'bun', gateway: 'caddy' }, ...(index ? { serviceControlProtocol: 2 } : {}), native, files }));
+        provenance: { commit: candidate.pin_sha, source_digest: pin.repeat(64) }, entrypoints: { daemon: 'foreground.mjs', service: 'foreground.mjs', channel: 'channel/bridge.mjs' },
+        qualification: { bun_sha256: candidateRelease.qualification.bun_sha256 }, channelRuntimePolicy: candidateRelease.channelRuntimePolicy, serviceExecutables: { backend: 'bun', gateway: 'caddy' }, ...(index ? { serviceControlProtocol: 2 } : {}), native, files }));
       signer.sign(built, null, true, identifier);
       verifyNativeAppSignatures(built, signer, { native });
       const evidence = path.join(root, `evidence-${pin}`);
       fs.writeFileSync(evidence, JSON.stringify({ scope: 'private native service replacement fixture', generation: candidate.pin_sha }));
       checkDeadline(`generation ${pin} retention admission`);
-      const pending = await createPendingRelease({ storage: path.join(root, 'retained'), ownership: { runId: randomUUID(), instanceId: 'fixture', project: 'mandible', workUnit: 'fixture' } });
+      const pending = await createPendingRelease({ storage: path.join(home, 'accepted-releases'), ownership: { runId: randomUUID(), instanceId: 'fixture', project: 'mandible', workUnit: 'fixture' } });
       fs.cpSync(built, pending.app, { recursive: true, verbatimSymlinks: true });
       const { reference } = await retainAcceptedRelease({ pending,
         candidate, acceptance: { record_id: null, request_id: null }, evidence: { receipt: evidence, sha256: installedFileIdentity(evidence).sha256 },
@@ -278,6 +285,14 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
         expect(completed.attempt.effects.prepare.stageIdentity).toEqual(stageIdentity);
       }
       expect(completed.attempt.state, JSON.stringify(completed.attempt.lastObservation)).toBe('complete');
+      // This source-driven fixture starts no independent helper process.
+      await withRuntimeObservation(completed, () => {
+        const terminal = JSON.parse(fs.readFileSync(file, 'utf8'));
+        expect(terminal.attempt.fence).toBeDefined();
+        expect(terminal.helperLabel).toBeUndefined();
+        expect(terminal.helperPlist).toBeUndefined();
+        fs.writeFileSync(file, JSON.stringify({ ...terminal, helperFencedAt: Date.now() }));
+      });
       qualified = completed.attempt.effects.services.processes;
       const terminal = readRuntimeHandoffReceipt(completed);
       expect(terminal).toMatchObject({ schema: 'mandible-runtime-receipt@2', attemptId: completed.attempt.id,
@@ -326,7 +341,13 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
     const teardownStarted = Date.now();
     let cleaned = false;
     try {
-      if (fs.existsSync(app)) await withLifecycleLock(home, () => stop(cleanupUntil));
+      if (fs.existsSync(app)) await withLifecycleLock(home, async () => {
+        await stop(cleanupUntil);
+        await bundleRuntimeCommand('remove', { context, release: readInstalledRelease(path.join(app, 'Contents/Resources')), launchMode: 'manual',
+          control: (privateContext, operation, role) => nativeServiceControls(privateContext, operation, [role], { until: cleanupUntil })[role],
+          previewCount: () => 0 });
+        expect(readBundleOwner(context)).toBeNull();
+      });
       for (const reference of references) {
         checkDeadline('final disposal admission', cleanupUntil);
         const receipt = readAcceptedReleaseReceipt(reference);
