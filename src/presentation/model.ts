@@ -522,6 +522,15 @@ export type ActivityDisplayEntry =
   | { kind: 'node'; node: RenderNode }
   | { kind: 'activity-group'; key: string; nodes: Array<Extract<RenderNode, { kind: 'activity' }>> };
 
+export function toolCallActivity(block:import('./types.js').ToolUseContentBlock,turn:RenderedTurn):ToolCallActivity {
+  const result=turn.toolResults.get(block.id)??null;
+  return {type:'tool-call-activity',id:block.id,name:block.name,toolKind:block.toolKind,input:block.input,result,
+    turnId:block.sourceIdentity?block.sourceIdentity.turnId:turn.assistantEvent.message.id??turn.assistantEvent.uuid,
+    sessionId:turn.assistantEvent.session_id,sourceIdentity:block.sourceIdentity,operationContext:block.source?.toolOperation,callSource:block.source,
+    executionEvidence:result?.source?.toolExecution??block.source?.toolExecution??block.executionEvidence,
+    executionActive:block.executionActive&&!result};
+}
+
 export function expandInlineActivities(nodes: readonly RenderNode[]): RenderNode[] {
   const expanded: RenderNode[] = [];
   for (const node of nodes) {
@@ -562,23 +571,7 @@ export function expandInlineActivities(nodes: readonly RenderNode[]): RenderNode
     blocks.forEach((block, blockIndex) => {
       if (block.type === 'tool_use') {
         flushFragment();
-        const item: ToolCallActivity = {
-          type: 'tool-call-activity',
-          id: block.id,
-          name: block.name,
-          toolKind: block.toolKind,
-          input: block.input,
-          result: node.turn.toolResults.get(block.id) ?? null,
-          turnId: block.sourceIdentity
-            ? block.sourceIdentity.turnId
-            : node.turn.assistantEvent.message.id ?? node.turn.assistantEvent.uuid,
-          sessionId: node.turn.assistantEvent.session_id,
-          sourceIdentity: block.sourceIdentity,
-          operationContext: block.source?.toolOperation,
-          callSource: block.source,
-          executionEvidence: node.turn.toolResults.get(block.id)?.source?.toolExecution ?? block.source?.toolExecution ?? block.executionEvidence,
-          executionActive: block.executionActive && !node.turn.toolResults.has(block.id),
-        };
+        const item=toolCallActivity(block,node.turn);
         expanded.push({
           kind: 'activity',
           key: block.contentKey ?? `tool-call:${block.id}`,

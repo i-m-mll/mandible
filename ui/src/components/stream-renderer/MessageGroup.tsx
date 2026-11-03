@@ -1,3 +1,6 @@
+import { toolCallActivity } from '../../../../src/presentation/model';
+import { operationObservationForTool } from '../../../../src/presentation/tool-observation';
+import { activityRunFacts,presentActivityRunFacts } from '../../../../src/presentation/activity-presentation';
 // Bug: aa35aeb — Console tab renderer: one message group per assistant turn
 // Bug: bce7370 — Adapted to use shared message-blocks components
 // Bug: 236d03b — Fix 5: Per-block hover overlay with MessageActions
@@ -10,7 +13,6 @@ import { ToolUseBlock } from '../message-blocks/ToolUseBlock';
 import { latestPlanIndex, PlanBlock } from '../message-blocks/PlanBlock';
 import { MessageActions } from '../shared/MessageActions';
 import { ToolCallGroup } from '../message-blocks/ToolCallGroup';
-import { summarizeToolRun, toolRunIcon } from '../message-blocks/toolPresentation';
 
 export function MessageGroup({
   turn,
@@ -86,6 +88,7 @@ export function MessageGroup({
             toolName={block.name}
             operationContext={block.source?.toolOperation}
             executionEvidence={result?.source?.toolExecution ?? block.source?.toolExecution ?? block.executionEvidence}
+            observation={operationObservationForTool(toolCallActivity(block,turn))}
             headerMetadata={index === blocks.length - 1 ? headerMetadata : undefined}
             toolKind={block.toolKind}
             toolUseId={block.id}
@@ -163,12 +166,13 @@ export function MessageGroup({
         .flatMap((block) => [block.source?.blockId, toolResults.get(block.id)?.source?.blockId])
         .filter((blockId): blockId is string => Boolean(blockId))
         .join(' ');
+      const presentation=presentActivityRunFacts(activityRunFacts(run.map(block=>toolCallActivity(block,turn))));
       rendered.push(
         <ToolCallGroup
           key={groupId}
-          summary={summarizeToolRun(run.map((block) => ({ name: block.name, toolKind: block.toolKind, input: block.input })))}
+          summary={presentation.summary}
           headerMetadata={end === blocks.length ? headerMetadata : undefined}
-          icon={toolRunIcon(run.map((block) => ({ name: block.name, toolKind: block.toolKind, input: block.input })))}
+          icon={presentation.icon}
           expanded={expanded}
           onExpandedChange={(next, trigger) => onDisclosureExpandedChange?.(groupId, next, trigger)}
           memberRefs={memberRefs}
