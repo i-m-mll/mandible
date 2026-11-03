@@ -1,7 +1,11 @@
 import { settleReadingLayout } from '../components/shared/readingLayoutReadiness';
 
 /** Exact DOM geometry only; source ownership and viewport policy stay with callers. */
-export type MeasurementRow = { key: string; revision: string; disclosureIdentity?: string; disclosureEnd?: string };
+export type MeasurementRow = { key: string; revision: string; disclosureIdentity?: string; disclosureEnd?: string;
+  /** Source-body admission excludes current metadata labels. */
+  bodyIdentity?: string;
+  targetLabels?: import('../components/shared/ActivityTargetLinks').ActivityTargetLabels;
+};
 export type MeasurementLayout = {
   width: number;
   styleIdentity: string;
@@ -156,10 +160,11 @@ export class ReadingMeasurementService {
         || new Set(request.layouts.map(measurementLayoutIdentity)).size !== request.layouts.length) {
         return { status: 'error', reason: 'invalid-request', detail: 'Require unique rows/layouts, positive finite widths and a batch size from 1 to 256.', measurements: [] };
       }
-      const wanted = new Set(request.layouts.flatMap(layout => request.rows.map(row => measurementKey(row, measurementLayoutIdentity(layout)))));
+      const wanted = new Map(request.layouts.flatMap(layout => request.rows.map(row => [measurementKey(row, measurementLayoutIdentity(layout)),row] as const)));
       for (const value of request.reuse ?? []) {
         const key = measurementKey(value.row, value.layoutIdentity);
-        if (wanted.has(key) && Number.isFinite(value.height) && value.height > 0) measurements.set(key, value);
+        const row = wanted.get(key);
+        if (row && Number.isFinite(value.height) && value.height > 0) measurements.set(key, {...value,row});
       }
       host = doc.createElement('div');
       host.inert = true;

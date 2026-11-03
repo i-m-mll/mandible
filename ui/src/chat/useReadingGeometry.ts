@@ -8,12 +8,12 @@ import type { ReadingContentProps } from './ReadingContent';
 import { createReadingRowBatchRenderer } from './renderReadingMeasurementBatch';
 
 type GeometryMembership = ReadonlyMap<string, { rowKey: string; position?: number | null }>;
-export type ReadingGeometry = { membership: GeometryMembership; rowMembers: ReadonlyMap<string, readonly string[]>; scope: string; rows: readonly MeasurementRow[]; sizes: readonly number[]; layout: MeasurementLayout; exact: boolean; serial: number; renderProps: (row: ReadingRow) => ReadingContentProps };
+export type ReadingGeometry = { membership: GeometryMembership; rowMembers: ReadonlyMap<string, readonly string[]>; scope: string; rows: readonly MeasurementRow[]; sizes: readonly number[]; layout: MeasurementLayout; exact: boolean; serial: number; renderProps: (row: ReadingRow, ref?: MeasurementRow) => ReadingContentProps };
 /** One current width, one compatible complete basis, and reusable current-width facts. */
 export function useReadingGeometry(input: {
   scope: string; chrome: number; rows: readonly MeasurementRow[]; parent: HTMLElement | null;
   materialize: MeasurementRequest<ReadingRow>['materialize'];
-  renderProps: (row: ReadingRow) => ReadingContentProps;
+  renderProps: (row: ReadingRow, ref?: MeasurementRow) => ReadingContentProps;
   membership: GeometryMembership; rowMembers: ReadonlyMap<string, readonly string[]>;
   onLayoutChange?: (layout: MeasurementLayout) => void;
   onMeasuring: (rows: readonly MeasurementRow[]) => void;

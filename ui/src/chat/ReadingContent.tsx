@@ -15,6 +15,7 @@ import { isCompactReadingRow } from './readingRowPresentation';
 
 export type ReadingContentProps = ChatSurfaceProps & {
   row: ReadingRow;
+  targetLabels?: import('../components/shared/ActivityTargetLinks').ActivityTargetLabels;
   expandedBlocks: Readonly<Record<string, boolean>>;
   setBlockExpanded: (id: string, expanded: boolean, sources?: readonly (PersistedBlockSource | undefined)[], trigger?: HTMLElement) => void;
   preparing: boolean;

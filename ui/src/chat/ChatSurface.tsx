@@ -15,7 +15,7 @@ import { projectReadingRows, type ReadingRow, type ReadingProjection } from './r
 import { ReadingRowBody } from './ReadingRowView';
 import { MeasuredReadingBox, ReadingRowStrip } from './ReadingRowWindow';
 import { readingRowPrimaryActions, readingRowTurnId } from './readingRowActions';
-import { useCompleteReading, readingPayloadKey } from './useCompleteReading';
+import { useCompleteReading, readingBodyKey } from './useCompleteReading';
 import { useReadingGeometry } from './useReadingGeometry';
 import { getReadingResizeScale } from './readingResizeProfile';
 import { useReadingViewport, type ReadingSummaryTarget } from './useReadingViewport';
@@ -89,7 +89,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
   const [scrollNode, setScrollElement] = useState<HTMLDivElement | null>(null);
   const layoutChange = useRef<() => void>(() => {});
   const geometry = useReadingGeometry({ scope: `${scope}:${space}`, chrome: 32 + clearance, onLayoutChange: () => layoutChange.current(), rows: complete.rows, parent: appearance.ready && complete.ready && !initialDisclosurePending ? scrollNode : null,
-    materialize: complete.acquireMeasurement, membership: complete.membership, rowMembers: complete.rowMembers, onMeasuring: complete.retainMeasurement, onPrepared: complete.retainGeometry, renderProps: row => ({ ...props, row, expandedBlocks, setBlockExpanded: () => {},
+    materialize: complete.acquireMeasurement, membership: complete.membership, rowMembers: complete.rowMembers, onMeasuring: complete.retainMeasurement, onPrepared: complete.retainGeometry, renderProps: (row, ref) => ({ ...props, row, targetLabels: ref?.targetLabels, expandedBlocks, setBlockExpanded: () => {},
       preparing: row.sources.some(source => expandedBlocks[`reveal:${source.position}`]), primaryActions: readingRowPrimaryActions({ copy: () => {}, open: () => {}, turnId: readingRowTurnId(row, complete.actionRuns), selectedMessageId: props.selectedMessageId, select: props.onSelectMessageInfo }),
       lastAssistantTurnId: complete.lastAssistantTurnId, onActivityGroupExpandedChange: () => {} }), scale: getReadingResizeScale });
   const latest = useRef({ scope, space, projection, transcript, props, complete, geometry }); latest.current = { scope, space, projection, transcript, props, complete, geometry };
@@ -282,9 +282,9 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
             if (!ref) return null;
             const row = complete.getBody(ref);
             if (!row || ('revision' in row && row.revision !== ref.revision)) return <MeasuredReadingBox key={ref.key} index={item.index} pendingHeight={item.size} measurement={ref} reportHeight={geometry.reportHeight} register={viewport.register} registerRow={viewport.registerRow} scope={scope} space={space} />;
-            const bodyProps = viewport.renderProps?.(row);
+            const bodyProps = viewport.renderProps?.(row, ref);
             const primaryActions = (bodyProps?.primaryActions ?? []).map(action => action.id === 'select-group' ? action
-              : { ...action, onAction: actions.get(readingPayloadKey(ref))?.find(current => current.id === action.id)?.onAction ?? action.onAction });
+              : { ...action, onAction: actions.get(readingBodyKey(ref))?.find(current => current.id === action.id)?.onAction ?? action.onAction });
             return <MeasuredReadingBox key={row.key} row={row} index={item.index} pendingHeight={item.size} measurement={ref} reportHeight={geometry.reportHeight} register={viewport.register} registerRow={viewport.registerRow} scope={scope} space={space}>
               <MessageLinkContext.Provider value={bodyProps?.onCopyMessageLink ?? null}><ReadingRowBody {...(bodyProps ?? props)} row={row} expandedBlocks={bodyProps?.expandedBlocks ?? expandedBlocks} setBlockExpanded={(key, next, sources, trigger) => {
                   viewport.pinDisclosure(row.key, trigger);

@@ -4,7 +4,7 @@ import type { VirtualItem } from '@tanstack/react-virtual';
 import type { ReadingRow, ReadingTargetRegistration } from './readingProjection';
 import type { MeasurementRow } from './readingMeasurement';
 import { ReadingRowFrame } from './ReadingRowView';
-import { readingPayloadKey } from './useCompleteReading';
+import { readingBodyKey, readingPayloadKey } from './useCompleteReading';
 
 /** Consecutive mounted rows share browser flow; only absent index ranges need geometry gaps. */
 export function ReadingRowStrip({ items, endOffset, children }: { items: readonly VirtualItem[]; endOffset?: number; children: (item: VirtualItem) => ComponentChildren }) {
@@ -26,7 +26,7 @@ export function MeasuredReadingBox({ row, index, measurement, pendingHeight, rep
   scope: string; space: string; children?: ComponentChildren;
 }) {
   const element = useRef<HTMLDivElement | null>(null);
-  const setNode = useCallback((node: HTMLDivElement | null) => { element.current = node; if (node) node.dataset.readingPayload = readingPayloadKey(measurement); }, [measurement]);
+  const setNode = useCallback((node: HTMLDivElement | null) => { element.current = node; if (node) { node.dataset.readingPayload = readingPayloadKey(measurement); node.dataset.readingBody = readingBodyKey(measurement); } }, [measurement]);
   useLayoutEffect(() => {
     const box = element.current;
     if (!box) return;

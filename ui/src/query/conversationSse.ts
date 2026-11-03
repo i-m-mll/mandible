@@ -7,6 +7,7 @@ import {
 } from './conversationData';
 import { conversationKeys, type ConversationSidebarFilters } from './conversationKeys';
 import { markSidebarListsStale } from './conversationSidebarRefresh';
+import { invalidateActivityTargets } from './activityTargets';
 
 const MEMBERSHIP_FIELDS = new Set([
   'starred',
@@ -37,6 +38,7 @@ export function applyConversationSse(
   type: 'conversation:new' | 'conversation:updated',
   data: ConversationAppendPayload,
 ): void {
+  invalidateActivityTargets(client, type === 'conversation:updated' ? data.id : undefined);
   if (type === 'conversation:new' || !data.id) {
     void client.invalidateQueries({ queryKey: conversationKeys.routeTargets() });
     markSidebarListsStale(client);
