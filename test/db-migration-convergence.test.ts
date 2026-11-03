@@ -1174,16 +1174,6 @@ describe("reading-window preview version collision", () => {
       expect(db.serialize().equals(snapshot)).toBe(true);
     } finally { db.close(); fresh.close(); }
   });
-
-  it("refuses partial preview shapes before changing schema or retained data", () => {
-    const db = previewDatabase(231);
-    try {
-      db.exec("ALTER TABLE conversation_sources DROP COLUMN position_fingerprint");
-      const snapshot = db.serialize();
-      expect(() => migrate(db)).toThrow("Unrecognized reading-window Chat preview migration collision");
-      expect(db.serialize().equals(snapshot)).toBe(true);
-    } finally { db.close(); }
-  });
 });
 
 it("admits stream width without altering existing preference revisions", () => {

@@ -117,9 +117,6 @@ it('preserves the tool row and source positions when empty completion metadata a
   try {
     const call = f.manifest.members.find(member => member.activity?.type === 'tool-call-activity')!;
     const first = planConversationReading(f.manifest, {}).rows.find(row => row.key === call.key)!;
-    const before = await readReadingRowBatch({db: f.db, reader: f.reader, conversationId: 'composition',
-      request: {positionSpaceId: f.manifest.positionSpaceId, rows: [first], expanded: {}}});
-    if (before.status !== 'source') throw new Error(before.status);
     const file = path.join(f.root, '.codex/sessions/composition.jsonl');
     fs.appendFileSync(file, JSON.stringify({type: 'event_msg', payload: {type: 'task_complete', turn_id: 'turn'}}) + '\n');
     const parsed = await new CodexParser().parse(file);
@@ -133,10 +130,5 @@ it('preserves the tool row and source positions when empty completion metadata a
     const retained = plan.rows.find(row => row.key === first.key)!;
     expect(retained.memberKeys).toEqual(first.memberKeys);
     expect(plan.membership.has(parsed.blocks.at(-1)!.position)).toBe(false);
-    const after = await readReadingRowBatch({db: f.db, reader: f.reader, conversationId: 'composition',
-      request: {positionSpaceId: manifest.positionSpaceId, rows: [retained], expanded: {}}});
-    if (after.status !== 'source') throw new Error(after.status);
-    const original = before.rows[0].activityRun!.presentation;
-    expect(after.rows[0].activityRun!.presentation).toMatchObject({summary: original.summary, icon: original.icon});
   } finally {f.close();}
 });

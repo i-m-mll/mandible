@@ -54,10 +54,5 @@
         }
       }
     }
-  ],
-  "command_preview": {
-    "native_record_ordinal": 12291,
-    "input": "const r=await tools.exec_command({cmd:\"GIT_OPTIONAL_LOCKS=0 git worktree list --porcelain | awk '/^worktree /{total++; if ($2 ~ /\\\\.codex\\\\/worktrees/) detached++} END{print \\\"total=\\\" total, \\\"codex=\\\" detached, \\\"named=\\\" total-detached}'\",workdir:\"/Users/mll/Main/10 Projects/05 Utils/mandible\",max_output_tokens:200});text(r.output);\n",
-    "command": "GIT_OPTIONAL_LOCKS=0 git worktree list --porcelain | awk '/^worktree /{total++; if ($2 ~ /\\.codex\\/worktrees/) detached++} END{print \"total=\" total, \"codex=\" detached, \"named=\" total-detached}'"
-  }
+  ]
 }

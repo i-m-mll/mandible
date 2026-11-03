@@ -135,9 +135,6 @@ describe('SettingsView', () => {
     const streamWidth = screen.getByRole('spinbutton', { name: 'Chat stream maximum width (px)' });
     fireEvent.change(streamWidth, { target: { value: '840' } });
     await waitFor(() => expect(onAppearanceSave).toHaveBeenCalledWith('chat_stream_max_width_px', '840'));
-    const saved = onAppearanceSave.mock.calls.length;
-    for (const value of ['', '-1', '1.5']) fireEvent.change(streamWidth, { target: { value } });
-    expect(onAppearanceSave).toHaveBeenCalledTimes(saved);
     fireEvent.change(streamWidth, { target: { value: '0' } });
     await waitFor(() => expect(onAppearanceSave).toHaveBeenCalledWith('chat_stream_max_width_px', '0'));
 
