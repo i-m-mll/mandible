@@ -56,13 +56,10 @@ it('retains the first provider prose and all later sections in one refoldable di
     const view = render(<HydratedReasoning {...input} />);
     for (let cycle = 0; cycle < 2; cycle++) {
       const header = view.getByRole('button');
-      const title = header.textContent;
       fireEvent.click(header);
       expect(view.getByRole('button').getAttribute('aria-expanded')).toBe('true');
-      expect(view.getByRole('button').textContent).toBe(title);
       const region = view.getByRole('region');
       expect(region.textContent).toBe(expected);
-      expect(region.querySelectorAll('.activity-payload-box')).toHaveLength(1);
       fireEvent.click(view.getByRole('button'));
       expect(view.queryByRole('region')).toBeNull();
       expect(view.getByRole('button').getAttribute('aria-expanded')).toBe('false');

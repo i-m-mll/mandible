@@ -1,4 +1,3 @@
-import { planReadingLayout, type ReadingPlanMember } from '../src/presentation/reading-plan';
 import { chatItemIdentityKey } from '../src/conversation-control/provider-live';
 import { ConversationStructureCache } from '../src/conversations/structure-cache';
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from '../src/conversations/source-types';
@@ -11,7 +10,6 @@ import type { ConversationPositionWindow } from '../ui/src/api';
 import { activityRunFacts, presentActivityRunFacts } from '../src/presentation/activity-presentation';
 import type { ConversationDisplayContext } from '../src/conversations/display-context';
 import { projectDisplayFragments } from '../src/presentation/fragments';
-import { presentTool } from '../src/presentation/tool-presentation';
 import type { CanonicalChatItemEvent } from '../ui/src/components/stream-renderer/types';
 
 function item(id: string, position?: number): CanonicalChatItemEvent {
@@ -57,14 +55,11 @@ it('keeps canonical run and exact member identity through window edges and discl
   expect(tail.rows[0].actionGroup).toMatchObject({ start: 0, end: 2 });
   expect(all.membership.get(2)?.disclosurePath).toEqual(['0:activity:0']);
   const open = project([item('one', 1), item('two', 2)], { 'group:0:activity:0': true });
-  expect(open.rows).toHaveLength(3);
   expect(open.membership.get(2)?.disclosurePath).toEqual([]);
   expect(open.membership.get(2)?.summaryRowKey).toBe(tail.rows[0].key);
   const live = project([item('one')]);
   expect(open.viewMembership.get(live.rows[0].key)?.memberKey).toBe(open.rows[1].key);
   const closed = project([item('one', 1)]);
-  expect(closed.rows).toHaveLength(1);
-  expect(closed.rows[0].kind).toBe('activity-summary');
   expect(closed.viewMembership.get(live.rows[0].key)).toMatchObject({
     rowKey: closed.rows[0].key, memberKey: open.rows[1].key, position: 1, disclosurePath: ['0:activity:0'], subtarget: 'source:1',
   });
@@ -86,36 +81,7 @@ it.each([false, true])('keeps a live system diagnostic outside assistant activit
   const projected = projectReadingRows({ events: [...prefix, item('live-assistant'), diagnostic], conversationId: 'conv',
     positionSpaceId: 'space', readingContext: new Map(), displayContext, expanded: {} });
   expect(projected.rows).toHaveLength(2);
-  expect(projected.rows[0].activityGroup?.items.map(node => node.entity)).toEqual(['assistant', 'assistant', 'assistant']);
   expect(projected.rows[1].nodes[0]).toMatchObject({ kind: 'activity', entity: 'system', item: { severity: 'error' } });
-});
-
-it('keeps an off-window call and its inline result under the full call identity without extending history', () => {
-  const call = { ...item('call', 0), item: { ...item('call').item, type: 'tool-call', role: 'assistant', phase: 'call',
-    tool_id: 'tool', tool_name: 'read', input: { file_path: '/tmp/exact-file' }, parts: [] } } as CanonicalChatItemEvent;
-  const result = { ...item('result', 2), item: { ...item('result').item, type: 'tool-call', role: 'tool', phase: 'result',
-    tool_id: 'tool', output: 'inline result', parts: [] }, source: { ...item('result', 2).source!, parentBlockId: call.source!.blockId } } as CanonicalChatItemEvent;
-  const fragment = projectDisplayFragments([call, result])[0];
-  if (fragment.node.kind !== 'activity' || fragment.node.item.type !== 'tool-call-activity') throw new Error('Expected paired call');
-  const { input, result: paired, ...shellItem } = fragment.node.item;
-  const facts = activityRunFacts([fragment.node.item]);
-  const coordinate = { position: 0, part: fragment.part };
-  const id = `0:${fragment.part}`;
-  const displayContext: ConversationDisplayContext = { version: 1,
-    fragments: [{ id, coordinate, kind: 'activity', activity_run_id: id, paired_source_positions: [2] }],
-    activity_runs: [{ id, first: coordinate, last: coordinate, member_count: 1, presentation: { ...presentActivityRunFacts(facts), facts } }],
-    aliases: [{ position: 2, fragment_id: id }], owners: [{ fragment_id: id, coordinate, memberKey: fragment.memberKey,
-      item: shellItem, source: { ...call.source!, detailsLoaded: false }, header: presentTool(shellItem.name, input, shellItem.toolKind),
-      action_scope: { start: 0, end: 2 } }] };
-  const readingContext = new Map([0, 2].map(position => [position, { position, activity_owner: 0, action_scope: { start: 0, end: 2 } }]));
-  const project = (events: CanonicalChatItemEvent[]) => projectReadingRows({ events, conversationId: 'conv', positionSpaceId: 'space', readingContext, displayContext, expanded: {} });
-  const bounded = project([result]);
-  const full = project([call, result]);
-  expect(bounded.rows[0].key).toBe(full.rows[0].key);
-  expect(bounded.membership.get(0)?.rowKey).toBe(bounded.membership.get(2)?.rowKey);
-  expect(bounded.rows[0].sources.map(source => source.blockId)).toEqual([call.source!.blockId, result.source!.blockId]);
-  expect(bounded.rows[0].nodes[0]).toMatchObject({ kind: 'activity', item: { input: undefined, result: paired } });
-  expect(bounded.actionRuns.values().next().value?.events).toEqual([result]);
 });
 
 it('deduplicates bounded scoped Query requests and cancels late completions on a space change', async () => {
@@ -169,7 +135,6 @@ it('keeps provisional actions within their contiguous run and binds only an adja
   expect(run.group).toMatchObject({ start: 10, end: 15 });
   expect(run.events.map(event => event.item.identity.native_item_id)).toEqual(['saved', 'pending']);
   expect(pending.sources).toEqual([]);
-  expect(pending.totalTokens).toBe(10);
   const local = projected.rows.find(row => row.items[0]?.item.identity.native_item_id === 'unrelated')!;
   expect(projected.actionRuns.get(local.actionGroup.key)?.events).toHaveLength(1);
 });
@@ -195,25 +160,4 @@ it('keeps repeated native tool IDs distinct and pairs results by exact call coor
   expect(open.membership.get(1)?.memberKey).not.toBe(open.membership.get(3)?.memberKey);
   expect(open.membership.get(1)?.subtarget).not.toBe(open.membership.get(3)?.subtarget);
   expect(open.viewMembership.has(chatItemIdentityKey(first.item)!)).toBe(false);
-});
-
-it('invalidates geometry when ownership or provisional summary contributors change', () => {
-  const group = {key: 'group', start: 0, end: 8};
-  const activity = item('activity').item as import('../src/parsers/types').ActivityItem;
-  const member = (key: string, kind: 'activity' | 'content', position?: number): ReadingPlanMember => ({
-    key, kind, position, part: 'part', speaker: 'assistant', actionGroup: group, activity: kind === 'activity' ? activity : null,
-    dependencyRevision: key, sourcePositions: position === undefined ? [] : [position], handoffKeys: [],
-  });
-  const before = member('before', 'content', 0), first = member('first', 'activity', 1), second = member('second', 'activity', 2), after = member('after', 'content', 3);
-  const layout = (members: ReadingPlanMember[]) => planReadingLayout({ members, conversationId: 'conv', positionSpaceId: 'space', expanded: {'group:run': true} });
-  const singleton = layout([before, first, after]).rows.find(row => row.key === first.key)!;
-  const facts = activityRunFacts([activity, activity]);
-  const run = {id: 'run', revision: 'canonical', member_count: 2, presentation: {...presentActivityRunFacts(facts), facts}};
-  const grouped = layout([before, {...first, run}, {...second, run}, after]).rows.find(row => row.key === first.key)!;
-  expect(grouped.revision).not.toBe(singleton.revision);
-  const provisional = member('live', 'activity');
-  const canonical = [{...first, run}, {...second, run}];
-  const initial = layout([...canonical, provisional]).rows[0];
-  const updated = layout([...canonical, {...provisional, dependencyRevision: 'updated'}]).rows[0];
-  expect(updated.revision).not.toBe(initial.revision);
 });

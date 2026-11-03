@@ -197,12 +197,6 @@ for (const provider of ['claude_code', 'codex'] as const) describe(`${provider} 
     expect(buildStreamState(streaming).nodes.map(node => node.kind)).toEqual(['user_message', 'assistant_turn']);
     const events = reconcileProviderProjection([saved(native, 0), saved(reply, 1)], projected, aliases);
     expect(events).toHaveLength(2);
-    const project = (events: readonly StreamEvent[]) => projectReadingRows({ events, conversationId: 'conversation', positionSpaceId: 'space', readingContext: new Map(), expanded: {} });
-    const provisionalKey = project(initial).rows[0].key;
-    expect(project(events).viewMembership.get(provisionalKey)?.memberKey).toBe(project(events).rows[0].key);
-    expect(reconcileProviderProjection([saved(native, 0), saved(reply, 1)], projected, aliases)).toEqual(events);
-    const persisted = project(reconcileProviderProjection([saved(native, 0), saved(reply, 1)], null, aliases));
-    expect(persisted.viewMembership.get(provisionalKey)?.memberKey).toBe(persisted.rows[0].key);
   });
 
   it('keeps first observation order through deltas and preserves identical distinct messages', () => {

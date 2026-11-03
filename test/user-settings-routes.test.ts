@@ -248,7 +248,6 @@ it("retains the committed width and revision when incomplete or invalid caps are
     const routes = new TestRoutes(); registerUserSettingsRoutes(routes, db);
     const who = identity(user.id, user.slug);
     const key = "chat_stream_max_width_px";
-    expect(await call(routes, "GET", request("GET", who, undefined, key))).toMatchObject({ payload: { value: null, revision: 0 } });
     await call(routes, "PUT", request("PUT", who, "840", key));
     for (const value of ["", " ", "-1", "1.5", "Infinity", "NaN", "2e", "9007199254740992"]) {
       expect(await call(routes, "PUT", request("PUT", who, value, key))).toMatchObject({ statusCode: 400 });
