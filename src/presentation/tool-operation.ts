@@ -52,11 +52,12 @@ export function substantiveToolResult(result:ToolTransportResult):boolean {
 
 export type ThreadReport = {threadId:string;hostId?:string;text:string;final:boolean;truncated?:boolean;originalChars?:number};
 const record=(value:unknown):value is Record<string,unknown>=>Boolean(value) && typeof value==='object' && !Array.isArray(value);
-export type ThreadWaitBody={reports:ThreadReport[];residual?:string};
+export type ThreadWaitBody={reports:ThreadReport[];notice?:string;residual?:string};
 const extras=(value:Record<string,unknown>,known:readonly string[])=>Object.fromEntries(Object.entries(value).filter(([key,value])=>!known.includes(key)&&value!=null));
 /** Decode the provider envelope once; unfamiliar substantive fields remain visible. */
 export function threadWaitBody(text:string):ThreadWaitBody|null {
   let value:unknown;try{value=JSON.parse(text);}catch{return null;}
+  if(record(value)&&typeof value.message==='string'&&typeof value.timedOut==='boolean'&&Object.keys(value).every(key=>key==='message'||key==='timedOut'))return {reports:[],notice:value.message};
   if(!record(value)||typeof value.timedOut!=='boolean'||!Array.isArray(value.polls))return null;
   const reports:ThreadReport[]=[];
   const residual:unknown[]=[];
@@ -80,4 +81,4 @@ export function threadWaitBody(text:string):ThreadWaitBody|null {
   return {reports,...(residual.length?{residual:JSON.stringify(residual,null,2)}:{})};
 }
 export function threadReports(text:string):ThreadReport[]|null{return threadWaitBody(text)?.reports??null;}
-function emptyThreadWait(text:string):boolean{const body=threadWaitBody(text);return body!==null&&!body.reports.length&&!body.residual;}
+function emptyThreadWait(text:string):boolean{const body=threadWaitBody(text);return body!==null&&!body.reports.length&&!body.notice&&!body.residual;}
