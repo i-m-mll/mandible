@@ -1,6 +1,8 @@
-# Warmed cache transition evidence
+# Historical v19 cache transition evidence
 
-[issue:44569c8] implements the v18→v19 transition for [issue:fc18cb7]. The measured storage implementation is `b602c464`; conversion code is `9300cd78`. The pinned Bun selector qualified candidate `900eae300`. [Raw measurements](evidence/cache-transition-corpus.json) retain table allocation/payload/overflow/unused counts and the exact corpus digest; the [semantic cohort](evidence/cache-transition-cohort.json) contains only counts, tuple digests and equality results.
+This records the accepted v19 implementation and its private qualification corpus. The current v20 runtime uses selected native-source rebuilding and receipt-bound invalidation instead of this converter; see [the current cache contract](compact-conversation-cache.md). These measurements remain evidence for the v19 candidate only.
+
+[issue:44569c8] implemented the v18→v19 transition for [issue:fc18cb7]. The measured storage implementation is `b602c464`; conversion code is `9300cd78`. The pinned Bun selector qualified candidate `900eae300`. [Raw measurements](evidence/cache-transition-corpus.json) retain table allocation/payload/overflow/unused counts and the exact corpus digest; the [semantic cohort](evidence/cache-transition-cohort.json) contains only counts, tuple digests and equality results.
 
 One read-only `src/sqlite.ts` connection held a WAL snapshot throughout conversion and comparison. Every compatible v18 generation in that snapshot was converted through the production generation writer into a private cache. A private measurement ledger selected each exact old tuple in turn, including retained prior versions; production ledger pointers and caches were never changed. No transcript reparse, full-cache backup or VACUUM was used.
 
@@ -28,6 +30,6 @@ Focused checks cover interrupted retry and ready-only visibility, selected conve
 
 The first 60-second measurement stopped safely with an incomplete private cache. Hoisting repeated statement preparation improved the observed prefix from 507,237 blocks in 59.4 s to 570,615 blocks in 38.8 s. A second partial run was cancelled when the final operation-fact elision changed the measurement inputs. Both obsolete private outputs were removed. The final run used the frozen storage inputs and a bounded 480-second command timeout authorized for this full-corpus evidence.
 
-The final private v19 file was used for selective long-chat preview extraction and removed after qualification; the measurements are retained. Production conversion and obsolete-file retirement were not executed. Retirement is performed by the existing trusted handoff helper only after accepted delivery, verified old-process drain, complete coverage, exact-file consumer checks and a durable receipt-bound deletion intent.
+The final private v19 file was used for selective long-chat preview extraction and removed after qualification; the measurements are retained. Production conversion and obsolete-file retirement were not executed during this measurement. The measured v19 candidate qualified conversion coverage and retirement through the existing handoff helper. Current v20 invalidation has its separate current-runtime and exact-file qualification described in the cache contract.
 
 Co-Authored-By: Codex (GPT) <codex@openai.com>
