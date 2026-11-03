@@ -150,7 +150,7 @@ function ResultBody({ result, commandLike, projected, body }: {
   const blocks=typeof content==='string' ? [{type:'text' as const,text:content}] : content;
   return (
     <div className={`tool-card__result${result.is_error || projected.failed ? ' tool-card__result--error' : ''}`}>
-      {body.kind==='prose' ? <>{body.reports.map((report,index)=><div key={index}><TextBlock content={report.text}/>{report.truncated ? <span className="tool-card__result-note">Truncated{report.originalChars!==undefined ? ` · ${report.originalChars.toLocaleString()} original chars` : ''}</span> : null}</div>)}{body.residual?<pre>{body.residual}</pre>:null}{blocks.filter(block=>block.type!=='text').map((block,index)=>block.type==='image'?<img key={index} className="tool-card__image" src={`data:${block.source.media_type};base64,${block.source.data}`} alt="Tool output"/>:null)}</> : blocks.map((block,index)=>block.type==='text' ? (block.text ? <OverflowFade key={index} lines={10}>
+      {body.kind==='prose' ? <>{body.reports.map((report,index)=><div key={index}><OverflowFade lines={10}><TextBlock content={report.text}/></OverflowFade>{report.truncated ? <span className="tool-card__result-note">Truncated{report.originalChars!==undefined ? ` · ${report.originalChars.toLocaleString()} original chars` : ''}</span> : null}</div>)}{body.residual?<pre>{body.residual}</pre>:null}{blocks.filter(block=>block.type!=='text').map((block,index)=>block.type==='image'?<img key={index} className="tool-card__image" src={`data:${block.source.media_type};base64,${block.source.data}`} alt="Tool output"/>:null)}</> : blocks.map((block,index)=>block.type==='text' ? (block.text ? <OverflowFade key={index} lines={10}>
         <pre className={commandLike ? 'tool-card__terminal-output' : undefined}>{commandLike ? <AnsiText text={block.text} /> : block.text}</pre>
       </OverflowFade> : null) : <img key={index} className="tool-card__image" src={`data:${block.source.media_type};base64,${block.source.data}`} alt="Tool output" />)}
       {projected.stderr && <OverflowFade lines={10}><pre className="tool-card__terminal-output ansi-red">{projected.stderr}</pre></OverflowFade>}
@@ -238,7 +238,8 @@ export function ToolCard({
   const semanticInput=inputBody.kind!=='none';
   const visibleResult=resultBody.kind!=='none'||Boolean(result?.truncated&&result.omittedCharacters);
   const requested=inputBody.requested;
-  const requestMetadata=requested?<small>{[requested.model?providerModelLabel(requested.provider,requested.model):undefined,requested.effort?providerEffortLabel(requested.effort):undefined].filter(Boolean).join(' · ')}</small>:null;
+  const requestedLabel=requested?[requested.model?providerModelLabel(requested.provider,requested.model):undefined,requested.effort?providerEffortLabel(requested.effort):undefined].filter(Boolean).join(' · '):'';
+  const requestMetadata=requestedLabel?<small style={{display:'block',textAlign:'right'}}>{requestedLabel}</small>:null;
   const patch = toolName.toLowerCase()==='apply_patch' && typeof input==='string' ? patchFileChanges(input) : [];
   const commandLike = visual.kind === 'execute';
   const editLike = visual.kind === 'edit' && typeof inputObj.file_path === 'string';
@@ -270,7 +271,7 @@ export function ToolCard({
 
   function renderInputPanel(): JSX.Element {
     if (projectedChildren) return <>{renderProgramChildren()}{program?.effectsComplete===false&&execution?<ExecutionInput execution={execution}/>:null}</>;
-    if(inputBody.kind==='prose')return <TextBlock content={inputBody.text}/>;
+    if(inputBody.kind==='prose')return <OverflowFade lines={10}><TextBlock content={inputBody.text}/></OverflowFade>;
     if(inputBody.kind==='code')return <ExecutionInput execution={{facts:{kind:'script',language:'javascript'},operations:[],script:inputBody.text}}/>;
     if (inputBody.kind==='unloaded') {
       return <div className="tool-card__input" aria-busy="true">Loading tool input…</div>;
@@ -330,6 +331,7 @@ export function ToolCard({
     : (
     <div className="tool-card__body">
       {semanticInput && <ActivityPayloadBox className="tool-card__input-wrapper">
+        {requestMetadata}
         {diffStats ? <div className="tool-card__diff-stats">+{diffStats.additions} / -{diffStats.deletions}</div> : null}
         {renderInputPanel()}
       </ActivityPayloadBox>}
@@ -352,7 +354,7 @@ export function ToolCard({
         icon={<Icon name={visual.icon} />}
         summary={summary}
         expandedSummary={executionFacts?.kind === 'command' && executionFacts.count === 1 ? `${operationPhrase({...presentation,phrase:'Ran command'},state,projectedResult)}${state === 'failed' ? ' · Failed' : ''}` : undefined}
-        metadata={<>{requestMetadata}{resultBody.kind==='prose'&&projectedResult.wallTimeSeconds!==undefined&&projectedResult.wallTimeSeconds>0?<small>{projectedResult.wallTimeSeconds} s</small>:null}{headerMetadata}</>}
+        metadata={<>{resultBody.kind==='prose'&&projectedResult.wallTimeSeconds!==undefined&&projectedResult.wallTimeSeconds>0?<small>{projectedResult.wallTimeSeconds} s</small>:null}{headerMetadata}</>}
         summaryContent={targets.length ? <>{phrase} <ActivityTargetLinks targets={targets} />{state==='failed' ? ' · Failed' : state==='cancelled' ? ' · Cancelled' : ''}</> : undefined}
         memberRefs={[memberRefs, result?.source?.blockId].filter(Boolean).join(' ')}
         disclosure={semanticInput || nestedProgram || (result && visibleResult) || (detailsAvailable && presentation.hasDetails!==false) ? {
