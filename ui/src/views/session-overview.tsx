@@ -7,8 +7,6 @@ import { acquireSharedSse } from "../sse-shared";
 // #/overview?session=<ref> selection, else the tab-local agent_session
 // binding. A prefix naming several sessions lists them to pick from. The
 // binding is display/navigation-only: it is never attached to a mutation.
-import { CONVERSATION_SOURCE_TO_PROVIDER } from '../../../src/provider-identities';
-import { chatControlFailureNotice } from '../chat/ChatFailureNotice';
 import type { ComponentChildren } from 'preact';
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { AppOperationalNoticeOutlet, useLiveLoad, useRouteLoad } from '../app-shell';
@@ -43,33 +41,6 @@ export type ManagedConversationOverview = {
   spawn: ConversationSpawnReceipt | null;
 };
 
-function ManagedConversationFacts({ conversation, control, spawn }: ManagedConversationOverview): JSX.Element {
-  const provider = CONVERSATION_SOURCE_TO_PROVIDER[conversation.source] ?? conversation.source;
-  const matchingControl = control?.conversation_id === conversation.id ? control : null;
-  const failure = spawn?.error?.message ?? (
-    matchingControl?.turn.kind === 'failed' ? chatControlFailureNotice(matchingControl.turn.error).detail
-      : matchingControl?.controller.kind === 'failed' ? chatControlFailureNotice(matchingControl.controller.error).detail
-        : null
-  );
-  const status = spawn?.state === 'failed' ? 'Failed'
-    : spawn && (spawn.state === 'reserved' || spawn.state === 'starting') && (!matchingControl || matchingControl.turn.kind === 'none') ? spawn.state
-    : matchingControl ? matchingControl.turn.kind === 'none' ? matchingControl.controller.kind : matchingControl.turn.kind
-      : spawn?.state ?? null;
-  return (
-    <section className="session-overview__section" aria-label="Conversation">
-      <dl className="session-overview__facts">
-        <div className="session-overview__facts-wide"><dt>Conversation</dt><dd>{conversation.title}</dd></div>
-        <div><dt>Provider</dt><dd>{provider}</dd></div>
-        {status ? <div><dt>Status</dt><dd>{status}</dd></div> : null}
-        {conversation.model ? <div><dt>{conversation.source_path?.startsWith('mandible://') ? 'Requested model' : 'Recorded model'}</dt><dd>{conversation.model}</dd></div> : null}
-        {conversation.branch ? <div><dt>Branch</dt><dd>{overviewBranch(conversation.branch)}</dd></div> : null}
-        {conversation.cwd ? <div className="session-overview__facts-wide"><dt>Cwd</dt><dd className="session-overview__path">{conversation.cwd}</dd></div> : null}
-        <div><dt>Started</dt><dd>{formatTimestamp(conversation.started_at)}</dd></div>
-        {failure ? <div className="session-overview__facts-wide" role="alert"><dt>Failure</dt><dd>{failure}</dd></div> : null}
-      </dl>
-    </section>
-  );
-}
 type OverviewState =
   | { kind: 'idle' }
   | { kind: 'loading' }
@@ -503,7 +474,6 @@ export function SessionOverviewView({
   return (
     <div ref={scrollOwnerRef} className={`view session-overview${embedded ? ' session-overview--embedded' : ''}`}>
       {frameHeaderHost ? <FrameHeaderPortal host={frameHeaderHost}>{sharedHeader}</FrameHeaderPortal> : sharedHeader}
-      {managedConversation ? <ManagedConversationFacts {...managedConversation} /> : null}
       <AppOperationalNoticeOutlet registerAsMain={!embedded} />
       {errorMessage ? (
         <DetailPaneNotice severity="error" density="compact" title="Session overview unavailable">

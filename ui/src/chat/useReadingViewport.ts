@@ -13,7 +13,6 @@ const targetCoordinateKey = (target: ConversationSourceCoordinate): string => JS
 ]);
 const targetRegistrationKey = (target: ConversationSourceCoordinate, rowKey: string): string => JSON.stringify([rowKey, targetCoordinateKey(target)]);
 const attainableRowOffset = (offset: number, size: number, viewport: number) => Math.max(1 - size, Math.min(offset, Math.max(0, viewport - 1)));
-const readingPaddingStart = 32;
 const disclosureRevision = (row: import('./readingMeasurement').MeasurementRow | undefined) => JSON.stringify([row?.revision, row?.disclosureIdentity, row?.disclosureEnd]);
 type Engine = Virtualizer<HTMLDivElement, HTMLDivElement>;
 export type ReadingSummaryTarget = { rowKey: string; disclosureOwner: string };
@@ -76,7 +75,6 @@ export function useReadingViewport(input: {
   const completed = useRef<string | undefined>();
   const completedTarget = useRef<{ coordinate: ConversationSourceCoordinate; rowKey: string; token: string } | null>(null);
   const rowBoxes = useRef(new Map<string, HTMLElement>());
-  const geometryOffsets = useRef(new WeakMap<ReadingGeometry, ReadonlyMap<string, number>>());
   const pinPosition = useCallback((pin: ReadingDomAnchor): number | undefined => {
     const snapshot = current.current.applied; const scroller = scrollRef.current;
     if (!snapshot || !scroller) return;
@@ -84,14 +82,20 @@ export function useReadingViewport(input: {
       const key = snapshot.rows.find(row => row.key === pin.key)?.disclosureEnd ?? pin.key;
       const mounted = rowBoxes.current.get(key);
       if (mounted) return mounted.getBoundingClientRect().bottom - scroller.getBoundingClientRect().top;
-      let offsets = geometryOffsets.current.get(snapshot);
-      if (!offsets) {
-        let end = readingPaddingStart;
-        offsets = new Map(snapshot.rows.map((row, index) => { end += snapshot.sizes[index]; return [row.key, end]; }));
-        geometryOffsets.current.set(snapshot, offsets);
+      const index = snapshot.rows.findIndex(row => row.key === key);
+      if (index < 0) return;
+      let low = 0; let high = engine.getTotalSize();
+      let offset = engine.getOffsetForIndex(index, 'start')?.[0] ?? 0;
+      while (high - low > 0.05) {
+        const item = engine.getVirtualItemForOffset(offset);
+        if (!item) return;
+        if (item.index === index) return item.key === key ? item.end - scroller.scrollTop : undefined;
+        if (item.index < index) low = Math.max(offset, item.end);
+        else high = Math.min(offset, item.start);
+        offset = (low + high) / 2;
       }
-      const end = offsets.get(key);
-      return end === undefined ? undefined : end - scroller.scrollTop;
+      const item = engine.getVirtualItemForOffset(low);
+      return item?.key === key ? item.end - scroller.scrollTop : undefined;
     }
     const row = rowBoxes.current.get(pin.key);
     return row ? row.getBoundingClientRect().top - scroller.getBoundingClientRect().top + readingDomAnchorOffset(pin, row) : undefined;
@@ -155,7 +159,7 @@ export function useReadingViewport(input: {
     overscan: 6,
     rangeExtractor,
     initialRect: { width: 600, height: 720 },
-    paddingStart: readingPaddingStart,
+    paddingStart: 32,
     paddingEnd: input.clearance,
     followOnAppend: false,
     scrollEndThreshold: 1,
