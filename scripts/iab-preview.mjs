@@ -26,6 +26,7 @@ const require = createRequire(import.meta.url);
 const { liveDbPath } = require("../cli/mandible-paths.cjs");
 import SqliteDatabase from "../src/sqlite.ts";
 import { conversationStructureCachePath } from "../src/conversations/structure-cache-path.ts";
+import { userSchema } from "./sqlite-user-schema.mjs";
 
 const DEFAULT_PORT_START = 29421;
 const DEFAULT_PORT_END = 29499;
@@ -1630,6 +1631,8 @@ export async function createProjectedSnapshot({ sourceDb, dbCopy, worktree, allo
     sourceCache: sourceConversationStructureCachePath(sourceDb),
     targetCache: previewIsolationEnv(previewRoot, sourceDb).MANDIBLE_CONVERSATION_STRUCTURE_DB,
     projectedDb: dbCopy,
+    maxOutputBytes: allocation ? allocation.maxIntermediateBytes - allocation.currentBytes - fs.statSync(dbCopy).size : undefined,
+    reserveBytes: allocation?.reserveBytes,
   });
   const briefingDemo = await materializeProjectedBriefingDemo({
     worktree,
@@ -1653,7 +1656,7 @@ function sourceConversationStructureCachePath(sourceDb) {
  * previews keep that private index across code refreshes because a selected
  * source read may have advanced it beyond main.
  */
-export async function seedProjectedConversationStructureCache({ sourceCache, targetCache, projectedDb, preserveExisting = false, signal }) {
+export async function seedProjectedConversationStructureCache({ sourceCache, targetCache, projectedDb, preserveExisting = false, signal, maxOutputBytes = Infinity, reserveBytes = 512 * 1024 * 1024 }) {
   targetCache = conversationStructureCachePath("", targetCache);
   const preserveTarget = preserveExisting && fs.existsSync(targetCache);
   if (!preserveTarget && !fs.existsSync(sourceCache)) {
@@ -1661,15 +1664,52 @@ export async function seedProjectedConversationStructureCache({ sourceCache, tar
   }
   fs.mkdirSync(path.dirname(targetCache), { recursive: true });
   if (!preserveTarget) {
-    for (const candidate of [targetCache, `${targetCache}-journal`, `${targetCache}-wal`, `${targetCache}-shm`]) {
-      fs.rmSync(candidate, { force: true });
-    }
-
-    const source = new SqliteDatabase(sourceCache, { readonly: true, fileMustExist: true });
+    const stage = `${targetCache}.partial-${process.pid}`;
+    const volume = fs.statfsSync(path.dirname(targetCache));
+    const budget = Math.min(maxOutputBytes, Number(volume.bavail) * Number(volume.bsize) - reserveBytes);
+    if (budget < 64 * 1024) throw new Error('Insufficient allocation for projected conversation cache');
+    const target = new SqliteDatabase(stage);
     try {
-      await source.backup(targetCache, { signal });
+      signal?.throwIfAborted();
+      target.pragma('journal_mode = OFF');
+      target.pragma('synchronous = OFF');
+      target.pragma('temp_store = MEMORY');
+      const pageSize = Number(target.pragma('page_size', { simple: true }));
+      target.pragma(`max_page_count = ${Math.floor(budget / pageSize)}`);
+      target.prepare('ATTACH DATABASE ? AS source').run(sourceCache);
+      target.prepare('ATTACH DATABASE ? AS projected').run(projectedDb);
+      target.exec('BEGIN DEFERRED');
+      const schema = userSchema(target, 'source');
+      const quote = name => `"${name.replaceAll('"', '""')}"`;
+      for (const table of schema.tables) target.exec(table.sql);
+      target.exec(`INSERT INTO main.cache_conversations
+        SELECT cached.* FROM source.cache_conversations cached
+        WHERE EXISTS (SELECT 1 FROM projected.conversations conversation
+          JOIN projected.conversation_sources source ON source.conversation_id = conversation.id
+          WHERE conversation.id = cached.conversation_id AND source.current_version_id = cached.source_version_id)`);
+      for (const table of schema.tables) {
+        if (table.name === 'cache_conversations') continue;
+        signal?.throwIfAborted();
+        const keys = target.prepare('SELECT * FROM pragma_foreign_key_list(?, ?)').all(table.name, 'source');
+        const key = keys.find(key => key.table === 'cache_conversations' && key.to === 'cache_id');
+        if (!key && table.name !== 'cache_meta') throw new Error(`Unclassified conversation cache table: ${table.name}`);
+        const where = key ? ` WHERE cached.${quote(key.from)} IN (SELECT cache_id FROM main.cache_conversations)` : '';
+        target.exec(`INSERT INTO main.${quote(table.name)} SELECT cached.* FROM source.${quote(table.name)} cached${where}`);
+      }
+      for (const object of [...schema.indexes, ...schema.views, ...schema.triggers]) target.exec(object.sql);
+      target.exec('COMMIT');
+      target.prepare('DETACH DATABASE source').run();
+      target.prepare('DETACH DATABASE projected').run();
+      if (target.pragma('quick_check', { simple: true }) !== 'ok'
+        || target.pragma('foreign_key_check').length) throw new Error('Projected conversation cache validation failed');
+      signal?.throwIfAborted();
+      target.close();
+      const fd = fs.openSync(stage, 'r');
+      try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+      fs.renameSync(stage, targetCache);
     } finally {
-      source.close();
+      if (target.open) target.close();
+      fs.rmSync(stage, { force: true });
     }
   }
 
@@ -1689,7 +1729,6 @@ export async function seedProjectedConversationStructureCache({ sourceCache, tar
        )
     `).run();
     target.prepare("DETACH DATABASE projected").run();
-    if (!preserveTarget) target.exec("VACUUM");
     return {
       status: preserveTarget ? "preserved" : "seeded",
       source: sourceCache,
