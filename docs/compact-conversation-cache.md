@@ -91,3 +91,19 @@ DAG: A contract checkpoint → A implementation and B transition in parallel →
 - RocksDB LSM/compaction architecture: https://github.com/facebook/rocksdb/wiki/RocksDB-Overview
 
 Co-Authored-By: Codex (GPT) <codex@openai.com>
+
+## Retirement integration ruling
+
+Use the existing terminal-handoff cleanup mechanism. Add one independent `conversation-cache` obligation to `cleanupHandoff` in `scripts/runtime-handoff.mjs:806`; do not pass a trusted-looking drain Boolean into ingestion and do not give the ingestion worker runtime-lifecycle authority.
+
+The ingestion worker owns conversion coverage. After finishing conversion, it closes every legacy-cache read session, stops scheduling legacy reads, and publishes a small persisted completion receipt: exact owning ledger/cache paths, old-format/file identity and source-generation coverage identity, target format, and checkpoint revision. All usable current warmed generations must be converted or superseded by ready new-format generations. This is cache evidence, not authorization to unlink.
+
+The existing external cleanup helper owns retirement. `cleanupRuntimeHandoff` already acquires installation/observation ownership and verifies an accepted terminal receipt (`:851`). Within that scope, the cache obligation revalidates the journal-bound drain evidence, including the exact old daemon and drained service process identities and their exit. Recovery may reuse the already-verified drain record from its bound prior attempt; do not invent a new requirement that only the latest attempt contain a fresh drain. Combine that evidence with the cache completion receipt, exact installation/ledger/path binding, unchanged old cache identity and completed coverage. Use the existing process-consumer inspection approach for the exact legacy DB/sidecar paths before unlink, rather than scanning an entire directory. Missing coverage or a live reader is pending cleanup, not success. The helper closes its own verification handles and idempotently removes only the exact obsolete owned files. A crash after removal is settled on retry.
+
+**Automatic retry is required.** Extend `runtimeHandoffCleanupWake` (`:833`) with the cache transition's small checkpoint revision/state, in addition to its existing process identity observations. Currently its wake hash only observes process/reason changes; leaving that unchanged would permanently suppress a retry when conversion later completes. The existing auth-hook reconciliation scheduler then reruns cleanup after coverage changes, including across daemon restart. Read one status record for wake calculation; do not rescan the corpus on the daemon event loop. Preserve independent cleanup obligations and their existing journal blockers so cache work does not delay app/package disposal or approved runtime availability.
+
+No new ownership manager, approval, permanent dual-store reader, or separate cleanup daemon is needed. B owns this small worker-evidence → existing-handoff-cleanup seam and its tests: pending coverage later wakes and retires; live old identity/reader defers then wakes; repeat/restart after deletion is unchanged; mismatched ledger/cache identity refuses deletion.
+
+## Checkpoint 90eb81cc boundary clarification
+
+The string-rich `PositionFacts` and `FragmentFacts` shapes are acceptable as derived presentation/read views. They must not force the persistent writer to reverse-engineer strings it just created. Before conversion freezes, distinguish the authoritative write batch containing structured native identity and disclosure recipes from that derived view. Fresh ingestion supplies primitives; `legacyDisplayIndexBatch` is the one conversion-only decoder from v18 strings and proves exact key reconstruction. B calls this adapter and does not duplicate prefix decomposition. Public/member/disclosure strings remain identical at consuming boundaries. No other material issue was identified in this bounded contract review.
