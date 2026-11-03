@@ -1,3 +1,4 @@
+import { indexDisplayFragments } from '../src/conversations/display-indexing';
 import { chatItemIdentityKey } from '../src/conversation-control/provider-live';
 import { ConversationStructureCache } from '../src/conversations/structure-cache';
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from '../src/conversations/source-types';
@@ -114,9 +115,12 @@ it('publishes canonical owner and complete action scope independently of bounded
     role: type === 'tool_result' ? 'tool' as const : type === 'user_message' ? 'user' as const : 'assistant' as const,
     parentPosition, recordOffset: position * 10, recordLength: 10, recordOrdinal: position, subBlockOrdinal: 0 });
   try {
-    cache.replaceRows(manifest('v1', 3), [row(0, 'user_message'), row(1, 'tool_use'), row(2, 'tool_result', 1)]);
+    const first=[row(0,'user_message'),row(1,'tool_use'),row(2,'tool_result',1)];
+    const display=(items:typeof first)=>indexDisplayFragments(items.map(value=>({...value,content:'',timestamp:null,metadata:{}})),'conv',position=>items.find(value=>value.position===position)?.parentPosition??null);
+    cache.replaceRows(manifest('v1',3),first,new Map(),undefined,display(first));
     expect(cache.readReadingContext('conv', 'v1', 2, 2, epochs)).toEqual([{ position: 2, activity_owner: 1, action_scope: { start: 1, end: 2 } }]);
-    cache.replaceRows(manifest('v2', 5), [row(3, 'assistant_message'), row(4, 'user_message')], new Map(), 'v1');
+    const tail=[row(3,'assistant_message'),row(4,'user_message')];
+    cache.replaceRows(manifest('v2',5),tail,new Map(),'v1',display(tail));
     expect(cache.readReadingContext('conv', 'v2', 2, 2, epochs)).toEqual([{ position: 2, activity_owner: 1, action_scope: { start: 1, end: 3 } }]);
     expect(cache.readReadingContext('conv', 'v1', 2, 2, epochs)?.[0].action_scope.end).toBe(2);
     expect(cache.readReadingContext('conv', 'v2', 4, 4, epochs)?.[0].action_scope).toEqual({ start: 4, end: 4 });

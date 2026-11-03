@@ -1,0 +1,338 @@
+{
+  "schema": "compact-semantic-cost@1",
+  "runtime": "1.4.3",
+  "repeats": 3,
+  "iterations": 500,
+  "publications": [
+    {
+      "index_ms": 0.6995830000000005,
+      "publication_ms": 1.6990420000000022
+    },
+    {
+      "index_ms": 0.5555839999999996,
+      "publication_ms": 0.9751660000000015
+    },
+    {
+      "index_ms": 0.14116700000000293,
+      "publication_ms": 1.1394169999999981
+    },
+    {
+      "index_ms": 0.2412920000000014,
+      "publication_ms": 0.9566669999999995
+    }
+  ],
+  "long_publication": {
+    "index_ms": 5.100041999999803,
+    "publication_ms": 5.809416999999939
+  },
+  "append": {
+    "index_ms": 0.23537499999997635,
+    "publication_ms": 2.9953330000000733
+  },
+  "storage": [
+    {
+      "name": "cache_position_identities",
+      "allocated": 28672,
+      "payload": 18371,
+      "unused": 8044
+    },
+    {
+      "name": "cache_fragment_disclosures",
+      "allocated": 28672,
+      "payload": 20978,
+      "unused": 4462
+    },
+    {
+      "name": "cache_display_fragments",
+      "allocated": 24576,
+      "payload": 16621,
+      "unused": 5719
+    },
+    {
+      "name": "cache_blocks",
+      "allocated": 24576,
+      "payload": 16584,
+      "unused": 7141
+    },
+    {
+      "name": "sqlite_autoindex_cache_fragment_disclosures_1",
+      "allocated": 16384,
+      "payload": 8005,
+      "unused": 6379
+    },
+    {
+      "name": "sqlite_schema",
+      "allocated": 12288,
+      "payload": 7063,
+      "unused": 4980
+    },
+    {
+      "name": "sqlite_autoindex_cache_position_identities_1",
+      "allocated": 12288,
+      "payload": 4558,
+      "unused": 6327
+    },
+    {
+      "name": "sqlite_autoindex_cache_display_fragments_1",
+      "allocated": 12288,
+      "payload": 4682,
+      "unused": 6206
+    },
+    {
+      "name": "idx_display_runs",
+      "allocated": 12288,
+      "payload": 6611,
+      "unused": 4277
+    },
+    {
+      "name": "cache_execution_steps",
+      "allocated": 12288,
+      "payload": 3272,
+      "unused": 8122
+    },
+    {
+      "name": "sqlite_sequence",
+      "allocated": 4096,
+      "payload": 23,
+      "unused": 4061
+    },
+    {
+      "name": "sqlite_autoindex_cache_operation_names_1",
+      "allocated": 4096,
+      "payload": 0,
+      "unused": 4088
+    },
+    {
+      "name": "sqlite_autoindex_cache_native_scopes_2",
+      "allocated": 4096,
+      "payload": 94,
+      "unused": 3976
+    },
+    {
+      "name": "sqlite_autoindex_cache_native_scopes_1",
+      "allocated": 4096,
+      "payload": 34,
+      "unused": 4036
+    },
+    {
+      "name": "sqlite_autoindex_cache_fragment_operations_1",
+      "allocated": 4096,
+      "payload": 0,
+      "unused": 4088
+    },
+    {
+      "name": "sqlite_autoindex_cache_execution_steps_1",
+      "allocated": 4096,
+      "payload": 2228,
+      "unused": 1269
+    },
+    {
+      "name": "idx_cache_tuple",
+      "allocated": 4096,
+      "payload": 224,
+      "unused": 3846
+    },
+    {
+      "name": "cache_tool_links",
+      "allocated": 4096,
+      "payload": 0,
+      "unused": 4088
+    },
+    {
+      "name": "cache_reading_scopes",
+      "allocated": 4096,
+      "payload": 32,
+      "unused": 4038
+    },
+    {
+      "name": "cache_operation_names",
+      "allocated": 4096,
+      "payload": 0,
+      "unused": 4088
+    },
+    {
+      "name": "cache_native_scopes",
+      "allocated": 4096,
+      "payload": 89,
+      "unused": 3975
+    },
+    {
+      "name": "cache_meta",
+      "allocated": 4096,
+      "payload": 19,
+      "unused": 4066
+    },
+    {
+      "name": "cache_fragment_operations",
+      "allocated": 4096,
+      "payload": 0,
+      "unused": 4088
+    },
+    {
+      "name": "cache_display_aliases",
+      "allocated": 4096,
+      "payload": 0,
+      "unused": 4088
+    },
+    {
+      "name": "cache_conversations",
+      "allocated": 4096,
+      "payload": 302,
+      "unused": 3762
+    }
+  ],
+  "owned_tables": [
+    "cache_blocks",
+    "cache_reading_scopes",
+    "cache_tool_links",
+    "cache_native_scopes",
+    "cache_position_identities",
+    "cache_display_fragments",
+    "cache_display_aliases",
+    "cache_fragment_disclosures",
+    "cache_fragment_operations",
+    "cache_operation_names",
+    "cache_execution_steps"
+  ],
+  "reports": [
+    {
+      "name": "direct-command",
+      "source_bytes": 127,
+      "invocation_reuse": {
+        "complete_plan": 1,
+        "bounded_acquisition": 1,
+        "hydrated_rows": "source is already acquired for details"
+      },
+      "samples": [
+        {
+          "derive_available_ms": 0.8027080000000026,
+          "acquire_parse_derive_ms": 6.669833000000004,
+          "read_compact_ms": 3.2757919999999956,
+          "full_index_reader_ms": 102.799083,
+          "derive_compact_ms": 0.19050000000001432
+        },
+        {
+          "derive_available_ms": 0.4613329999999962,
+          "acquire_parse_derive_ms": 6.441167000000007,
+          "read_compact_ms": 2.8564580000000035,
+          "full_index_reader_ms": 97.114667,
+          "derive_compact_ms": 0.0484170000000006
+        },
+        {
+          "derive_available_ms": 0.3037909999999897,
+          "acquire_parse_derive_ms": 5.893041000000011,
+          "read_compact_ms": 2.7486660000000143,
+          "full_index_reader_ms": 95.56216599999999,
+          "derive_compact_ms": 0.03254099999998061
+        }
+      ]
+    },
+    {
+      "name": "nested-wrapper",
+      "source_bytes": 247,
+      "invocation_reuse": {
+        "complete_plan": 1,
+        "bounded_acquisition": 1,
+        "hydrated_rows": "source is already acquired for details"
+      },
+      "samples": [
+        {
+          "derive_available_ms": 18.140625,
+          "acquire_parse_derive_ms": 18.192457999999988,
+          "read_compact_ms": 2.387292000000002,
+          "full_index_reader_ms": 98.25187500000004,
+          "derive_compact_ms": 0.03187500000001364
+        },
+        {
+          "derive_available_ms": 9.674082999999996,
+          "acquire_parse_derive_ms": 16.737291000000027,
+          "read_compact_ms": 2.5121250000000828,
+          "full_index_reader_ms": 98.73637500000007,
+          "derive_compact_ms": 0.014375000000086402
+        },
+        {
+          "derive_available_ms": 8.505874999999946,
+          "acquire_parse_derive_ms": 15.2534169999999,
+          "read_compact_ms": 2.8207920000000968,
+          "full_index_reader_ms": 99.67904199999998,
+          "derive_compact_ms": 0.018458000000009633
+        }
+      ]
+    },
+    {
+      "name": "reasoning-detail",
+      "source_bytes": 2885,
+      "invocation_reuse": {
+        "complete_plan": 1,
+        "bounded_acquisition": 1,
+        "hydrated_rows": "source is already acquired for details"
+      },
+      "samples": [
+        {
+          "derive_available_ms": 0.6509580000000597,
+          "acquire_parse_derive_ms": 7.802832999999964,
+          "read_compact_ms": 2.5190000000000055,
+          "full_index_reader_ms": 97.01566700000001,
+          "derive_compact_ms": 0.04820900000004258
+        },
+        {
+          "derive_available_ms": 0.5612499999999727,
+          "acquire_parse_derive_ms": 7.206874999999968,
+          "read_compact_ms": 2.2294169999998985,
+          "full_index_reader_ms": 94.89525000000003,
+          "derive_compact_ms": 0.037249999999971806
+        },
+        {
+          "derive_available_ms": 0.7731659999999465,
+          "acquire_parse_derive_ms": 6.970584000000031,
+          "read_compact_ms": 1.9181670000000395,
+          "full_index_reader_ms": 95.14145800000006,
+          "derive_compact_ms": 0.023207999999840467
+        }
+      ]
+    },
+    {
+      "name": "inline-directives",
+      "source_bytes": 277,
+      "invocation_reuse": {
+        "complete_plan": 1,
+        "bounded_acquisition": 1,
+        "hydrated_rows": "source is already acquired for details"
+      },
+      "samples": [
+        {
+          "derive_available_ms": 6.308875000000171,
+          "acquire_parse_derive_ms": 11.822959000000083,
+          "read_compact_ms": 2.3450000000000273,
+          "full_index_reader_ms": 108.66579100000013,
+          "derive_compact_ms": 0.012458000000151515
+        },
+        {
+          "derive_available_ms": 4.38470899999993,
+          "acquire_parse_derive_ms": 11.902667000000065,
+          "read_compact_ms": 2.25324999999998,
+          "full_index_reader_ms": 107.73616700000002,
+          "derive_compact_ms": 0.012042000000064945
+        },
+        {
+          "derive_available_ms": 3.7283749999999145,
+          "acquire_parse_derive_ms": 9.997333000000026,
+          "read_compact_ms": 2.2221669999998994,
+          "full_index_reader_ms": 121.43820800000003,
+          "derive_compact_ms": 0.010499999999865395
+        }
+      ]
+    }
+  ],
+  "complete_128_plan_ms": [
+    5.963624999999865,
+    3.14120899999989,
+    3.70049999999992
+  ],
+  "bounded_128_acquisition_ms": [
+    11.924749999999904,
+    12.323458999999957,
+    11.618666000000076
+  ],
+  "sink": 88059
+}
