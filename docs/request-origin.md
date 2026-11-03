@@ -63,3 +63,5 @@ Registry/access snapshots exclude update timestamps and runtime observations. Un
 Co-Authored-By: Codex (GPT) <codex@openai.com>
 
 Canonical execution-context envelope presence survives invalid values across HTTP, socket and file RPC. Managed callers retain that classification when identity is unknown; legacy session headers never replace an explicitly supplied canonical envelope. Native lifecycle hooks replace inherited context with their payload identity, and nested CLI invocations discard inherited exact context when the provider or enclosing session changes. Same-session child context remains available.
+
+Channel business tools derive their current actor from the request execution context independently of captured origin. Self-assignment, task updates, continuation authorship and auth submission session refs use that exact actor. Missing exact identity refuses self mutations. The channel wrapper session remains the connection and liveness target. A missing actor attachment refuses task updates without selecting the wrapper.

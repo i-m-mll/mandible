@@ -1,3 +1,4 @@
+import { exactAgentRef } from "../ambient-provider-identity.js";
 import { EXECUTION_CONTEXT_ARGUMENT } from "../claude-execution-context.js";
 import * as z from "zod";
 import { CHANNEL_EVENT_SCHEMA, DOMAIN_EVENT_SCHEMA, DOMAIN_EVENTS, type MandibleEvent } from "../contracts.js";
@@ -29,7 +30,7 @@ export function registerChannelRoutes(router: Router): void {
     const collector = { tool(name: string, description: string, shape: z.ZodRawShape, run: Tool["run"]) {
       result.push({ name, description, schema: z.object(shape), run });
     } };
-    registerTools(collector as unknown as McpServer, ctx.session_id, clientFor(req, ctx.app), ctx.cwd);
+    registerTools(collector as unknown as McpServer, ctx.session_id, clientFor(req, ctx.app), ctx.cwd, exactAgentRef(req.ambient_identity ?? null));
     return result;
   }
   router.post("/api/channel/catalog", (req, res) => {

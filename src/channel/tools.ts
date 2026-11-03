@@ -22,6 +22,8 @@ const execute = promisify(execFile);
  * connection, discovered at startup from the environment or passed by
  * the spawning process.
  *
+ * actorRef is the exact executor for this request, separate from connection liveness.
+ *
  * Session registration belongs to channel connection and reconnection; calls
  * record tool usage for liveness tracking.
  */
@@ -30,6 +32,7 @@ export function registerTools(
   sessionId: string | null,
   client: ChannelClient,
   cwd = process.cwd(),
+  actorRef: string | null = null,
 ): void {
   async function ensureChannelRegistered(toolName: string): Promise<void> {
     if (!sessionId) return;
@@ -99,18 +102,14 @@ export function registerTools(
     async (args) => {
       await ensureChannelRegistered("mandible_report_status");
       try {
-        // Update session task field if we have a session ID
-        if (sessionId) {
-          await client.updateSession(sessionId, {
-            task: args.status,
-          });
-        }
+        if (!actorRef) return errorResult(new Error("Exact executing agent identity is required to report status."));
+        await client.updateSession(actorRef, { task: args.status });
 
         // Update work unit continuation if we have a work unit ID
         if (args.work_unit_id) {
           await client.patchWorkUnit(args.work_unit_id, {
             continuation: args.details ?? args.status,
-            continuation_by: sessionId ?? "mcp-channel",
+            continuation_by: actorRef,
             continuation_at: Date.now(),
           });
         }
@@ -119,7 +118,7 @@ export function registerTools(
           content: [
             {
               type: "text",
-              text: `Status reported${sessionId ? ` (session: ${sessionId.slice(0, 8)}...)` : ""}.`,
+              text: "Status reported.",
             },
           ],
         };
@@ -167,6 +166,7 @@ export function registerTools(
     async (args) => {
       await ensureChannelRegistered("mandible_submit_auth");
       try {
+        if (!actorRef) return errorResult(new Error("Exact executing agent identity is required to submit an auth request."));
         // Issue 08a5f04 — approve-time canonical enforcement only accepts
         // `mandible auth merge <head> --into <base>`, so emit the canonical
         // form whenever the protected base can be resolved here. The daemon
@@ -197,7 +197,7 @@ export function registerTools(
           commit_message: args.message,
           verification: args.verification,
           depends_on_ids: args.depends_on_ids ?? [],
-          session_id: sessionId,
+          session_id: actorRef,
         });
 
         return {
@@ -274,6 +274,7 @@ export function registerTools(
     async (args) => {
       await ensureChannelRegistered("mandible_request_work");
       try {
+        if (args.assign && !actorRef) return errorResult(new Error("Exact executing agent identity is required to self-assign work."));
         const result = await client.getWorkUnits({
           state: args.state ?? "open",
           repo_id: args.repo_id,
@@ -297,10 +298,10 @@ export function registerTools(
         }
 
         // Optionally self-assign the first available
-        if (args.assign && sessionId && available.length > 0) {
+        if (args.assign && actorRef && available.length > 0) {
           const wu = available[0];
           await client.patchWorkUnit(wu.id, {
-            assigned_session_id: sessionId,
+            assigned_session_id: actorRef,
           });
           return {
             content: [
