@@ -1,3 +1,4 @@
+import { CollapsiblePanel } from '../../../ui/src/components/shared/CollapsiblePanel';
 import { OverflowTopFade } from '../../../ui/src/components/shared/OverflowFade';
 import { appearanceCssVariables, DEFAULT_APPEARANCE_SETTINGS } from '../../../ui/src/appearance-settings';
 import { render } from 'preact';
@@ -233,6 +234,22 @@ void (async () => {
   if (initialAssetHeight >= assetCap || visibleAsset.querySelector('.user-bubble__content')!.getBoundingClientRect().height <= assetCap) throw new Error('Image did not cross the folded preview boundary');
   if (Math.abs(measuredAsset.vectors[0].heights[0] - settledAssetHeight) > 0.05) throw new Error(`Asset footer missing from accepted geometry: ${measuredAsset.vectors[0].heights[0]} versus ${settledAssetHeight}`);
   render(null, visibleAsset); visibleAsset.remove(); measureAsset.dispose();
+  const panelHost = document.createElement('div'); Object.assign(panelHost.style, { position: 'fixed', width: '320px', top: '0', right: '0' }); document.body.append(panelHost);
+  const drawPanel = (height: number) => render(<CollapsiblePanel title={<span />} expanded onExpandedChange={noop}><div style={{ height }}><input /></div></CollapsiblePanel>, panelHost);
+  drawPanel(1200);
+  const panelToggle = panelHost.querySelector<HTMLButtonElement>('button[aria-controls]')!;
+  const panelScroller = document.getElementById(panelToggle.getAttribute('aria-controls')!)!;
+  const faded = (edge: 'before' | 'after') => Number(getComputedStyle(panelScroller.parentElement!, `::${edge}`).opacity);
+  await until(() => faded('before') === 0 && faded('after') === 1, 'common panel only fades below at top');
+  panelScroller.scrollTop = (panelScroller.scrollHeight - panelScroller.clientHeight) / 2;
+  await until(() => faded('before') === 1 && faded('after') === 1, 'common panel fades both overflowing edges');
+  panelScroller.scrollTop = panelScroller.scrollHeight;
+  await until(() => faded('before') === 1 && faded('after') === 0, 'common panel only fades above at bottom');
+  const panelInput = panelHost.querySelector('input')!; panelInput.focus({ preventScroll: true });
+  drawPanel(60);
+  await until(() => faded('before') === 0 && faded('after') === 0, 'common panel clears fades after content shrinks');
+  if (document.activeElement !== panelInput) throw new Error('Common panel overflow reconciliation replaced focused content');
+  render(null, panelHost); panelHost.remove();
   document.title = btoa(JSON.stringify({ counterfactual, capped, samples, nativeTop, afterNative, anchorKey: anchor.key, anchorOffset: anchor.point.offset,
     tailNativeTop, tailNativeAfter, tailIntentDrift: tailAfterInput - tailBeforeInput - (topBeforeInput - tailNativeTop) }));
 })().catch(error => { document.title = `fixture-error:${btoa(String(error.stack ?? error))}`; });

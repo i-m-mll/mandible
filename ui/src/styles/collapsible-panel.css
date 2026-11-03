@@ -1,8 +1,9 @@
 .collapsible-panel {
+  --overflow-fade-color: var(--surface-content);
   min-width: 0;
   padding: 12px;
   border: 1px solid var(--neutral-alpha-06);
-  border-radius: 12px;
+  border-radius: var(--radius-panel);
   background: var(--neutral-alpha-02);
 }
 
@@ -55,8 +56,11 @@
   margin-left: auto;
 }
 
-.collapsible-panel__body {
+.collapsible-panel__overflow {
   margin-top: 8px;
+}
+
+.collapsible-panel__body {
   font-size: 13px;
   color: var(--text-primary);
   max-height: 500px;
