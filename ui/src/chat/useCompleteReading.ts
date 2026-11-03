@@ -11,6 +11,7 @@ import { activityTargetsFromReadingRows } from '../../../src/presentation/activi
 import { activityTargetKey } from '../../../src/presentation/activity-targets';
 import { useActivityTargetResolutions } from '../query/activityTargets';
 import { activityTargetDisplayLabel, type ActivityTargetLabels } from '../components/shared/ActivityTargetLinks';
+import {traceReadingAcquisition} from './readingNavigationObservation';
 
 export const readingPayloadKey = (row: MeasurementRow): string => JSON.stringify([row.key, row.revision, row.disclosureIdentity ?? '']);
 export const readingBodyKey = (row: MeasurementRow): string => JSON.stringify([row.key, row.revision, row.bodyIdentity ?? row.disclosureIdentity ?? '']);
@@ -181,6 +182,7 @@ export function useCompleteReading(input: {
       const related = running.refs.some(ref => requiredKeys.has(readingBodyKey(ref)));
       const invalid = running.scope !== input.scope || running.space !== input.space || running.refs.some(ref => !currentKeys.has(readingBodyKey(ref)));
       if (invalid || !useful || (missingRequired.length > 0 && !related)) {
+        traceReadingAcquisition({event:'viewport-cancel',scope:input.scope,keys:running.refs.map(row=>row.key)});
         running.controller.abort(); active.current = null;
       } else return;
     }
@@ -193,6 +195,8 @@ export function useCompleteReading(input: {
     if (!missing.length) return;
     const request = { controller: new AbortController(), refs: missing, scope: input.scope, space: input.space, publication };
     active.current = request;
+    const startedAt=performance.now();
+    traceReadingAcquisition({event:'viewport-start',scope:input.scope,keys:missing.map(row=>row.key),required:missingRequired.map(row=>row.key)});
     void materializer.current(missing, request.controller.signal).catch(error => {
       if (!request.controller.signal.aborted) {
         if (isReadingPublicationChanged(error)) { publicationBlocked.current = request.publication; return; }
@@ -200,12 +204,16 @@ export function useCompleteReading(input: {
         for (const ref of missing) failures.current.set(readingBodyKey(ref), message);
       }
     }).finally(() => {
+      traceReadingAcquisition({event:'viewport-finish',scope:request.scope,keys:missing.map(row=>row.key),elapsedMs:performance.now()-startedAt,cancelled:request.controller.signal.aborted});
       if (active.current !== request) return;
       active.current = null;
       setDemandVersion(value => value + 1);
     });
   }, [wanted, required, wantedKeys, currentKeys, publication, manifest.dataUpdatedAt, manifest.isFetching, demandVersion, publishBodies, input.scope, input.space]);
   const onRange = useCallback((snapshot: ReadingBodyDemand) => {
+    const visible=snapshot.visible??snapshot.required;
+    traceReadingAcquisition({event:'range',scope:current.current.input.scope,offset:snapshot.offset,
+      visible:visible.map(row=>row.key),missing:visible.filter(row=>!bodyRef.current.has(readingBodyKey(row))).map(row=>row.key)});
     demand.current = snapshot;
     custody.current.applied = new Set(snapshot.required.map(readingBodyKey));
     setDemandVersion(value => value + 1);

@@ -466,7 +466,7 @@ export function useReadingViewport(input: {
     const identity = JSON.stringify([snapshot.scope, snapshot.positionSpaceId, vector.serial, first, last, height, required, prefetch]);
     if (identity === lastRange.current) return;
     lastRange.current = identity;
-    snapshot.onRange({ vector: vector.rows, required, visible, prefetch, start, end, height });
+    snapshot.onRange({ vector: vector.rows, required, visible, prefetch, start, end, height,offset:scroller.scrollTop });
   };
   useLayoutEffect(() => { publishDemand.current(engine); }, [input.protectedKeys, pinKeys, indexed, applied, engine]);
   useEffect(() => {
