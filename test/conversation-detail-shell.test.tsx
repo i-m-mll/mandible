@@ -316,6 +316,18 @@ function deferred<T>() {
 
 describe('compact detail pane shell', () => {
 
+  it('keeps conversation metadata behind the existing explicit action', async () => {
+    const selected = mockConversationDetail(defaultControl, [transcriptBlock], { cwd: '/recorded/workspace' });
+    render(<ConversationDetail conversationId={selected.id} initialConversation={selected} anchor={null}
+      onNavigate={() => undefined} consoleSessions={[]} sidebarCollapsed={false} chatEntityLinkAction={() => undefined} />);
+    const actions = await screen.findByRole('button', { name: 'Conversation actions' });
+    expect(screen.queryByText(selected.cwd!)).toBeNull();
+    fireEvent.click(actions);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'View metadata' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog.contains(screen.getByText(selected.cwd!))).toBe(true);
+  });
+
   it('keeps the selected transcript and reading cache while archiving and restoring', async () => {
     const selected = mockConversationDetail(defaultControl, [transcriptBlock]);
     const archive = vi.spyOn(api, 'updateConversationArchive').mockImplementation(async (id, archived) => ({
