@@ -1,0 +1,402 @@
+{
+  "method": "One pinned read-only src/sqlite.ts WAL snapshot; no source copy or transcript reparse. Every compatible v18 generation is converted using private current-source pointers; input generation tuples are fixed by corpusDigest.",
+  "input": "owning-ledger.conversation-structure.db.v18",
+  "corpusDigest": "d82adaf3768620050d393eef6980d4cb5ed37f868be6ba4050e6bffdc78470ea",
+  "generations": 10246,
+  "blocks": 2269442,
+  "elapsedMs": 171055.651209,
+  "before": {
+    "main": {
+      "bytes": 4234711040,
+      "allocated": 4234711040
+    },
+    "-wal": {
+      "bytes": 16298752,
+      "allocated": 16302080
+    },
+    "-shm": {
+      "bytes": 32768,
+      "allocated": 32768
+    }
+  },
+  "after": {
+    "main": {
+      "bytes": 813387776,
+      "allocated": 813387776
+    },
+    "-wal": {
+      "bytes": 0,
+      "allocated": 0
+    },
+    "-shm": {
+      "bytes": 32768,
+      "allocated": 32768
+    }
+  },
+  "peakTemporaryOutputBytes": 817240088,
+  "peakInputBytes": 4251042560,
+  "semanticCohort": [
+    {
+      "tupleDigest": "cdcbe96dac9d757b7551aaec8fca160f48647315ca432a8e1e81391c419cf748",
+      "blocks": 26343,
+      "fragments": 23554,
+      "positionsEqual": true,
+      "fragmentMeaningEqual": true,
+      "aliasesEqual": true
+    },
+    {
+      "tupleDigest": "615b38ddf677509d69d2653154bdfb53b87f31e98b2adc3cfd7b80318a28a346",
+      "blocks": 19754,
+      "fragments": 9695,
+      "positionsEqual": true,
+      "fragmentMeaningEqual": true,
+      "aliasesEqual": true
+    },
+    {
+      "tupleDigest": "e5f9b5fcb222e48758f8b132b5526b1d490070ae3202886392af578205a5b61e",
+      "blocks": 18403,
+      "fragments": 6980,
+      "positionsEqual": true,
+      "fragmentMeaningEqual": true,
+      "aliasesEqual": true
+    },
+    {
+      "tupleDigest": "21c4967e378c2617c48dc8876a8221e49130c5bc392c7c65ba77e92a7dc91076",
+      "blocks": 258,
+      "fragments": 149,
+      "positionsEqual": true,
+      "fragmentMeaningEqual": true,
+      "aliasesEqual": true
+    },
+    {
+      "tupleDigest": "b3849b1bec032cab72b61e43ff2f04f4075ce5ec3625123d41bc867b3b524c92",
+      "blocks": 235,
+      "fragments": 120,
+      "positionsEqual": true,
+      "fragmentMeaningEqual": true,
+      "aliasesEqual": true
+    },
+    {
+      "tupleDigest": "7c9c5f04a19cdb40ab0f5098fd4bb51aca599fab6b597c9a4754d1cb028e2a2f",
+      "blocks": 28,
+      "fragments": 16,
+      "positionsEqual": true,
+      "fragmentMeaningEqual": true,
+      "aliasesEqual": true
+    },
+    {
+      "tupleDigest": "144d6eee925e83d0d1d143eb486246aebcb9e17979cba61743c92e9b7a88402f",
+      "blocks": 56,
+      "fragments": 32,
+      "positionsEqual": true,
+      "fragmentMeaningEqual": true,
+      "aliasesEqual": true
+    },
+    {
+      "tupleDigest": "48b5e0f15a8a66935c1fb101d257bcd178a25280d62bd9ae1487de6cbe993293",
+      "blocks": 142,
+      "fragments": 73,
+      "positionsEqual": true,
+      "fragmentMeaningEqual": true,
+      "aliasesEqual": true
+    },
+    {
+      "tupleDigest": "3d3b257959182e35f5dca584c6bc20d2f1ba2f273df8a940f3461882fcff9d91",
+      "blocks": 138,
+      "fragments": 71,
+      "positionsEqual": true,
+      "fragmentMeaningEqual": true,
+      "aliasesEqual": true
+    },
+    {
+      "tupleDigest": "f35e73ec05f99fb7aaec79e37cde1756263586dd3562d2fe383220e654ce2f18",
+      "blocks": 131,
+      "fragments": 58,
+      "positionsEqual": true,
+      "fragmentMeaningEqual": true,
+      "aliasesEqual": true
+    },
+    {
+      "tupleDigest": "2db2a4995990a89f6e4324721d26427832fd36a6f9ef26332bad5b8b18249121",
+      "blocks": 101,
+      "fragments": 43,
+      "positionsEqual": true,
+      "fragmentMeaningEqual": true,
+      "aliasesEqual": true
+    },
+    {
+      "tupleDigest": "c35b896ce2812a42bd2538fc77d5ac93027a1c9eaedbca4df03961eafb357ca4",
+      "blocks": 38,
+      "fragments": 14,
+      "positionsEqual": true,
+      "fragmentMeaningEqual": true,
+      "aliasesEqual": true
+    }
+  ],
+  "sourceStats": [
+    {
+      "name": "cache_display_fragments",
+      "allocated": 3217575936,
+      "payload": 1134252246,
+      "unused": 2070962090,
+      "overflow": 2346950656
+    },
+    {
+      "name": "cache_display_positions",
+      "allocated": 831295488,
+      "payload": 748253692,
+      "unused": 71528596,
+      "overflow": 0
+    },
+    {
+      "name": "cache_blocks",
+      "allocated": 93945856,
+      "payload": 75483654,
+      "unused": 11378648,
+      "overflow": 0
+    },
+    {
+      "name": "idx_display_runs",
+      "allocated": 45420544,
+      "payload": 36166209,
+      "unused": 5200979,
+      "overflow": 0
+    },
+    {
+      "name": "cache_tool_links",
+      "allocated": 18481152,
+      "payload": 14479498,
+      "unused": 2107098,
+      "overflow": 0
+    },
+    {
+      "name": "cache_display_aliases",
+      "allocated": 13516800,
+      "payload": 9964714,
+      "unused": 1669284,
+      "overflow": 0
+    },
+    {
+      "name": "cache_reading_scopes",
+      "allocated": 11968512,
+      "payload": 7916657,
+      "unused": 1490429,
+      "overflow": 0
+    },
+    {
+      "name": "cache_conversations",
+      "allocated": 1269760,
+      "payload": 1187571,
+      "unused": 24995,
+      "overflow": 0
+    },
+    {
+      "name": "sqlite_autoindex_cache_conversations_1",
+      "allocated": 1224704,
+      "payload": 1040770,
+      "unused": 149612,
+      "overflow": 0
+    },
+    {
+      "name": "sqlite_schema",
+      "allocated": 4096,
+      "payload": 3722,
+      "unused": 217,
+      "overflow": 0
+    },
+    {
+      "name": "cache_meta",
+      "allocated": 4096,
+      "payload": 19,
+      "unused": 4066,
+      "overflow": 0
+    }
+  ],
+  "targetStats": [
+    {
+      "name": "cache_position_identities",
+      "allocated": 233488384,
+      "payload": 209580141,
+      "unused": 2154120,
+      "overflow": 0
+    },
+    {
+      "name": "cache_blocks",
+      "allocated": 203173888,
+      "payload": 175080056,
+      "unused": 20690274,
+      "overflow": 0
+    },
+    {
+      "name": "cache_fragment_disclosures",
+      "allocated": 85913600,
+      "payload": 72494496,
+      "unused": 472254,
+      "overflow": 0
+    },
+    {
+      "name": "cache_display_fragments",
+      "allocated": 65609728,
+      "payload": 57087144,
+      "unused": 426612,
+      "overflow": 0
+    },
+    {
+      "name": "sqlite_autoindex_cache_position_identities_1",
+      "allocated": 59760640,
+      "payload": 42424958,
+      "unused": 7355235,
+      "overflow": 0
+    },
+    {
+      "name": "sqlite_autoindex_cache_fragment_disclosures_1",
+      "allocated": 43704320,
+      "payload": 31907245,
+      "unused": 5367182,
+      "overflow": 0
+    },
+    {
+      "name": "idx_display_runs",
+      "allocated": 31444992,
+      "payload": 23622793,
+      "unused": 3809787,
+      "overflow": 0
+    },
+    {
+      "name": "sqlite_autoindex_cache_display_fragments_1",
+      "allocated": 24047616,
+      "payload": 17093307,
+      "unused": 2963569,
+      "overflow": 0
+    },
+    {
+      "name": "cache_tool_links",
+      "allocated": 18440192,
+      "payload": 14479498,
+      "unused": 2066258,
+      "overflow": 0
+    },
+    {
+      "name": "cache_reading_scopes",
+      "allocated": 11964416,
+      "payload": 7916657,
+      "unused": 1486345,
+      "overflow": 0
+    },
+    {
+      "name": "cache_display_aliases",
+      "allocated": 10702848,
+      "payload": 7507106,
+      "unused": 1321184,
+      "overflow": 0
+    },
+    {
+      "name": "cache_execution_steps",
+      "allocated": 7753728,
+      "payload": 5534100,
+      "unused": 25952,
+      "overflow": 0
+    },
+    {
+      "name": "sqlite_autoindex_cache_execution_steps_1",
+      "allocated": 7270400,
+      "payload": 5259638,
+      "unused": 900400,
+      "overflow": 0
+    },
+    {
+      "name": "cache_operation_names",
+      "allocated": 2052096,
+      "payload": 1723772,
+      "unused": 18336,
+      "overflow": 0
+    },
+    {
+      "name": "cache_fragment_operations",
+      "allocated": 1974272,
+      "payload": 1656255,
+      "unused": 19640,
+      "overflow": 0
+    },
+    {
+      "name": "cache_conversations",
+      "allocated": 1282048,
+      "payload": 1197817,
+      "unused": 23987,
+      "overflow": 0
+    },
+    {
+      "name": "idx_cache_tuple",
+      "allocated": 1277952,
+      "payload": 1081626,
+      "unused": 161848,
+      "overflow": 0
+    },
+    {
+      "name": "sqlite_autoindex_cache_operation_names_1",
+      "allocated": 1110016,
+      "payload": 807025,
+      "unused": 140662,
+      "overflow": 0
+    },
+    {
+      "name": "sqlite_autoindex_cache_fragment_operations_1",
+      "allocated": 1011712,
+      "payload": 725995,
+      "unused": 129322,
+      "overflow": 0
+    },
+    {
+      "name": "sqlite_autoindex_cache_native_scopes_2",
+      "allocated": 663552,
+      "payload": 548405,
+      "unused": 82760,
+      "overflow": 0
+    },
+    {
+      "name": "cache_native_scopes",
+      "allocated": 589824,
+      "payload": 528252,
+      "unused": 8663,
+      "overflow": 0
+    },
+    {
+      "name": "sqlite_autoindex_cache_native_scopes_1",
+      "allocated": 131072,
+      "payload": 80953,
+      "unused": 19292,
+      "overflow": 0
+    },
+    {
+      "name": "sqlite_schema",
+      "allocated": 12288,
+      "payload": 7063,
+      "unused": 4980,
+      "overflow": 0
+    },
+    {
+      "name": "sqlite_sequence",
+      "allocated": 4096,
+      "payload": 24,
+      "unused": 4060,
+      "overflow": 0
+    },
+    {
+      "name": "cache_meta",
+      "allocated": 4096,
+      "payload": 19,
+      "unused": 4066,
+      "overflow": 0
+    }
+  ],
+  "integrity": [
+    {
+      "quick_check": "ok"
+    }
+  ],
+  "foreignKeys": [],
+  "peakCombinedUpperBoundBytes": 5068282648,
+  "measurementRevision": "9300cd78",
+  "storageRevision": "b602c464",
+  "runtime": "Pinned Bun candidate 900eae300 via scripts/bun-runtime.sh"
+}
