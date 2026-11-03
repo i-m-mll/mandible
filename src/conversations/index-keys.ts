@@ -33,7 +33,13 @@ export function legacyIndexKeyRecipe(key:string,conversationId:string):IndexKeyR
   if(key.endsWith(':'))return {kind:'native',value:key.slice(0,-1),suffix:':'};
   throw new Error(`Unknown legacy Chat key recipe: ${key.slice(0,100)}`);
 }
-export function encodeIndexKey(db:SqliteDatabase,generation:number,conversationId:string,key:IndexKeyRecipe): unknown[] {
+type ScopeCatalog={byKey:Map<string,number>;byId:Map<number,{provider:string;session_id:string}>;next:number};
+export function indexKeyEncoder(db:SqliteDatabase,generation:number,conversationId:string):(key:IndexKeyRecipe)=>unknown[] {
+  const scopes=db.prepare('SELECT scope_id,provider,session_id FROM cache_native_scopes WHERE cache_conversation_id=?').all(generation) as Array<{scope_id:number;provider:string;session_id:string}>;
+  const catalog:ScopeCatalog={byKey:new Map(scopes.map(row=>[JSON.stringify([row.provider,row.session_id]),row.scope_id])),byId:new Map(scopes.map(row=>[row.scope_id,row])),next:Math.max(0,...scopes.map(row=>row.scope_id))+1};
+  return key=>encodeIndexKey(db,generation,conversationId,key,catalog);
+}
+export function encodeIndexKey(db:SqliteDatabase,generation:number,conversationId:string,key:IndexKeyRecipe,catalog?:ScopeCatalog): unknown[] {
   const empty={scope_id:null,item_kind:null,basis:null,native_id:null,content_index:null,record_ordinal:null,prefix:null,suffix:null};
   let row:KeyRecipeRow;
   const wrapper={prefix:'prefix' in key?key.prefix??null:null,suffix:'suffix' in key?key.suffix??null:null};
@@ -41,16 +47,21 @@ export function encodeIndexKey(db:SqliteDatabase,generation:number,conversationI
   else if(key.kind==='source')row={recipe:2,...empty,...wrapper,record_ordinal:key.position};
   else if(key.kind==='intent')row={recipe:3,...empty,native_id:key.id};
   else {
-    const scope=db.prepare('SELECT scope_id FROM cache_native_scopes WHERE cache_conversation_id=? AND provider=? AND session_id=?').get(generation,key.provider,key.sessionId) as {scope_id:number}|undefined;
-    const scopeId=scope?.scope_id ?? (db.prepare('SELECT COALESCE(MAX(scope_id),0)+1 AS next FROM cache_native_scopes WHERE cache_conversation_id=?').get(generation) as {next:number}).next;
-    if(!scope)db.prepare('INSERT INTO cache_native_scopes VALUES(?,?,?,?)').run(generation,scopeId,key.provider,key.sessionId);
+    const scopeKey=JSON.stringify([key.provider,key.sessionId]);
+    let scopeId=catalog?.byKey.get(scopeKey);
+    if(scopeId===undefined) {
+      const scope=db.prepare('SELECT scope_id FROM cache_native_scopes WHERE cache_conversation_id=? AND provider=? AND session_id=?').get(generation,key.provider,key.sessionId) as {scope_id:number}|undefined;
+      scopeId=scope?.scope_id ?? (catalog?catalog.next++:undefined) ?? (db.prepare('SELECT COALESCE(MAX(scope_id),0)+1 AS next FROM cache_native_scopes WHERE cache_conversation_id=?').get(generation) as {next:number}).next;
+      if(!scope)db.prepare('INSERT INTO cache_native_scopes VALUES(?,?,?,?)').run(generation,scopeId,key.provider,key.sessionId);
+      catalog?.byKey.set(scopeKey,scopeId);catalog?.byId.set(scopeId,{provider:key.provider,session_id:key.sessionId});
+    }
     row={recipe:1,...empty,...wrapper,scope_id:scopeId};
     if(key.kind==='identity'){row.item_kind=key.itemKind;row.basis=key.basis;row.native_id=key.nativeId??null;row.record_ordinal=key.recordOrdinal??null;row.content_index=key.contentIndex;}
     else if(key.kind==='execution'){row.basis='execution';row.native_id=key.nativeId;}
     else if(key.kind==='response-record'){row.basis='response:record';row.record_ordinal=key.recordOrdinal;}
     else {row.basis='response:native';row.native_id=key.nativeId;row.item_kind=key.turnId;}
   }
-  const decoded=decodeIndexKey(db,generation,conversationId,row);
+  const decoded=decodeIndexKey(db,generation,conversationId,row,catalog?.byId);
   if(decoded!==indexKeyString(key,conversationId))throw new Error('Lossy Chat identity recipe');
   return KEY_RECIPE_COLUMNS.split(',').map(column=>row[column as keyof KeyRecipeRow]);
 }

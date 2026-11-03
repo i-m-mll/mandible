@@ -232,7 +232,18 @@ export function toolRunIcon(
 }
 
 /** Reconstruct shared labels from the compact operation domain. */
-export function compactToolRunFacts(facts: readonly { category: ToolCategory; count: number; names: string[] }[]): ToolRunFact[] {
+export function compactToolRunFacts(facts: readonly import('../conversations/conversation-index.js').OperationFacts[]): ToolRunFact[] {
   return facts.map(fact => ({ ...fact, presentation: {category:fact.category,icon:DEFINITIONS[fact.category].icon,
-    phrase:fact.category === 'other' && fact.names.length === 1 ? 'Used ' + fact.names[0] : DEFINITIONS[fact.category].phrase,target:''} }));
+    phrase:fact.category === 'other' ? fact.nativeName!==undefined ? 'Used '+fact.nativeName
+      : fact.otherKind==='function' ? 'Called a function' :fact.otherKind==='custom' ? 'Used a custom tool' : DEFINITIONS.other.phrase : DEFINITIONS[fact.category].phrase,target:''} }));
+}
+export function compactToolOperation(fact:ToolRunFact):import('../conversations/conversation-index.js').OperationFacts {
+  const result:import('../conversations/conversation-index.js').OperationFacts={category:fact.category,count:fact.count,names:fact.names};
+  if(fact.category!=='other')return result;
+  const phrase=fact.presentation.phrase;
+  if(phrase===DEFINITIONS.other.phrase)return result;
+  if(phrase==='Called a function')return {...result,otherKind:'function'};
+  if(phrase==='Used a custom tool')return {...result,otherKind:'custom'};
+  if(phrase.startsWith('Used '))return {...result,nativeName:phrase.slice(5)};
+  throw new Error('Unknown native tool operation presentation');
 }
