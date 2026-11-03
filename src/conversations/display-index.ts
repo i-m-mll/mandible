@@ -59,7 +59,8 @@ export function writeDisplayIndex(db:SqliteDatabase,cacheId:number,input:Display
     const activity=fragment.activity;
     const sourceRole=roles.get(position)!;
     const speakerOverride=speaker(sourceRole)===fragment.speaker?0:(fragment.speaker==='user'?1:fragment.speaker==='assistant'?2:3)<<6;
-    const flags=speakerOverride|(fragment.summary_from_source?1:0)|(fragment.has_details&&!activity?.observation?2:0)|(fragment.summary_eligible===false?4:0)|(activity?.failed&&!activity.observation?8:0)|(activity?.running&&!activity.observation?16:0)|(activity?.hasResult?32:0);
+    const flags=speakerOverride|(fragment.summary_from_source?1:0)|(fragment.has_details&&!activity?.observation?2:0)|(fragment.summary_eligible===false?4:0)|(activity?.failed&&!activity.observation?8:0)|(activity?.running&&!activity.observation?16:0)|(activity?.hasResult?32:0)
+      |(activity?.localCommandStream ? 256|(activity.localCommandStream==='stderr'?512:0) : 0);
     insert.run(cacheId,position,kind,partOrdinal,ordinal,fragment.kind==='activity'?1:0,...run,
       code(ACTIVITIES,activity?.kind),code(SUBTYPES,activity?.activityKind),code(SEVERITIES,activity?.severity),code(OUTCOMES,activity?.outcome),
       activity?.status??null,activity?.toolName??null,activity?.toolKind??null,activity?.turnId??null,flags,
@@ -107,6 +108,7 @@ function decodeRows(db:SqliteDatabase,id:number,rows:FragmentRow[]):IndexedDispl
       ...(row.activity_subtype===null?{}:{activityKind:enumValue(SUBTYPES,row.activity_subtype)}),...(row.severity===null?{}:{severity:enumValue(SEVERITIES,row.severity)}),...(row.outcome===null?{}:{outcome:enumValue(OUTCOMES,row.outcome)}),
       ...(row.status===null?{}:{status:row.status}),...(row.tool_name===null?{}:{toolName:row.tool_name}),...(row.tool_kind===null?{}:{toolKind:row.tool_kind}),...(row.turn_id===null?{}:{turnId:row.turn_id}),
       ...(row.flags&32?{hasResult:true}:{}),...(row.flags&8?{failed:true}:{}),...(row.flags&16?{running:true}:{}),
+      ...(row.flags&256?{localCommandStream:row.flags&512?'stderr' as const:'stdout' as const}:{}),
       ...(row.execution_kind===null?{}:{execution:row.execution_kind===1?{kind:'script',language:'javascript'}:{kind:'command',count:row.execution_count!,shells:(steps.get(key)??[]).map(step=>step.shell),forwarding:(steps.get(key)??[]).map(step=>enumValue(FORWARDING,step.forwarding)!)}}),
       ...(observations.has(key)?{observation:observations.get(key)!}:{})}:null;
     const disclosureRows=disclosures.get(key)??[];

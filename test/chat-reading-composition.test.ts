@@ -5,6 +5,10 @@ import path from 'node:path';
 import { expect, it, vi } from 'vitest';
 import { migratedMemoryDb } from './helpers/ledger-fixtures';
 import { CodexParser } from '../src/parsers/codex';
+import { ClaudeParser } from '../src/parsers/claude';
+import { activitySemanticFacts, semanticActivityIcon, presentActivityItems } from '../src/presentation/activity-presentation';
+import { activityObservationTargets } from '../src/presentation/activity-targets';
+import { operationObservationForTool } from '../src/presentation/tool-observation';
 import { ConversationSourceStore } from '../src/conversations/source-store';
 import { ConversationSourceReader } from '../src/conversations/source-reader';
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from '../src/conversations/source-types';
@@ -13,12 +17,13 @@ import { planConversationReading } from '../src/presentation/reading-manifest';
 import { composeConversationReading, materializeConversationReading, readingCompositionRequests } from '../src/presentation/reading-composition';
 import type { CanonicalChatItemEvent } from '../src/presentation/types';
 
-async function fixture(includeResult: boolean) {
+async function fixture(includeResult: boolean, native?: {provider:'claude_code'; records:Record<string,unknown>[]}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-reading-composition-'));
   const db = migratedMemoryDb();
-  const file = path.join(root, '.codex/sessions/composition.jsonl');
+  const provider = native?.provider ?? 'codex';
+  const file = path.join(root, provider === 'codex' ? '.codex/sessions/composition.jsonl' : '.claude/projects/-tmp/composition.jsonl');
   fs.mkdirSync(path.dirname(file), {recursive: true});
-  const records = [
+  const records = native?.records ?? [
     {type: 'session_meta', payload: {id: 'composition', cwd: '/tmp'}},
     {type: 'event_msg', payload: {type: 'task_started', turn_id: 'turn'}},
     {type: 'response_item', payload: {type: 'message', role: 'user', content: [{type: 'input_text', text: 'inspect'}]}},
@@ -26,15 +31,74 @@ async function fixture(includeResult: boolean) {
     ...(includeResult ? [{type: 'response_item', payload: {type: 'function_call_output', call_id: 'call', output: 'EXACT RESULT BODY'}}] : []),
   ];
   fs.writeFileSync(file, records.map(record => JSON.stringify(record)).join('\n') + '\n');
-  const parsed = await new CodexParser().parse(file);
+  const parsed = await (provider === 'codex' ? new CodexParser() : new ClaudeParser()).parse(file);
   if (!parsed) throw new Error('Native composition fixture did not parse.');
   db.prepare(`INSERT INTO conversations(id,source,source_path,source_hash,source_mtime,session_id,block_count,started_at)
-    VALUES('composition','codex',?,?,?,'composition',?,'2026-11-01')`).run(file, parsed.conversation.source_hash, parsed.conversation.source_mtime, parsed.blocks.length);
-  await new ConversationSourceStore(db).recordConversation({conversationId: 'composition', provider: 'codex', nativeSessionId: 'composition',
+    VALUES('composition',?,?,?,?,'composition',?,'2026-11-01')`).run(provider, file, parsed.conversation.source_hash, parsed.conversation.source_mtime, parsed.blocks.length);
+  await new ConversationSourceStore(db).recordConversation({conversationId: 'composition', provider, nativeSessionId: 'composition',
     filePath: file, blocks: parsed.blocks, sourceSnapshot: parsed.sourceSnapshot, ...CURRENT_CONVERSATION_SOURCE_EPOCHS});
   const manifest = readConversationReadingManifest(db, 'composition', captureReadingPublication(db, 'composition')!)!;
   return {root, db, parsed, manifest, reader: new ConversationSourceReader(db), close: () => {db.close(); fs.rmSync(root, {recursive: true, force: true});}};
 }
+
+it('keeps Claude command roles and stream facts through typed indexing and folded source materialization', async () => {
+  const invocation = '<command-name>/memory</command-name>\n<command-message>memory</command-message>\n<command-args>project</command-args>';
+  const output = 'Updated memory\nDETAIL ONLY IN SOURCE';
+  const records = [
+    {uuid:'old-invocation',type:'user',message:{role:'user',content:invocation}},
+    {uuid:'old-output',parentUuid:'old-invocation',type:'user',message:{role:'user',content:`<local-command-stdout>${output}</local-command-stdout>`}},
+    {uuid:'new-invocation',type:'system',subtype:'local_command',content:invocation},
+    {uuid:'new-output',parentUuid:'new-invocation',type:'system',subtype:'local_command',commandRun:{command:'memory',args:'project'},content:'<local-command-stderr>Permission denied</local-command-stderr>'},
+  ].map(record => ({sessionId:'composition',timestamp:'2026-11-01T00:00:00Z',...record}));
+  const f = await fixture(false,{provider:'claude_code',records});
+  try {
+    expect(f.manifest.members.map(member => [member.speaker,member.sourcePositions])).toEqual([['user',[0]],['system',[1]],['user',[2]],['system',[3]]]);
+    const outputs = f.manifest.members.filter(member => member.activityFacts?.localCommandStream);
+    expect(outputs.map(member => member.activityFacts!.localCommandStream)).toEqual(['stdout','stderr']);
+    expect(outputs.map(member => semanticActivityIcon(member.activityFacts!))).toEqual(['workSettings','workSettings']);
+    expect(Object.values(f.manifest.summarySources).flat()).toEqual(expect.arrayContaining([1,3]));
+    expect(JSON.stringify(f.manifest)).not.toContain('DETAIL ONLY IN SOURCE');
+    const headers: unknown[] = [];
+    for (const expanded of [{}, Object.fromEntries(outputs.flatMap(member => member.disclosures!.keys.map(key => [key,true])))]) {
+      const plan = planConversationReading(f.manifest,expanded);
+      const result = await readReadingRowBatch({db:f.db,reader:f.reader,conversationId:'composition',request:{positionSpaceId:f.manifest.positionSpaceId,rows:plan.rows,expanded}});
+      expect(result.status).toBe('source');
+      if(result.status !== 'source')throw new Error(result.status);
+      const nodes = result.rows.flatMap(row => row.activityGroup?.items ?? row.nodes);
+      expect(nodes.filter(node => node.kind === 'user_message')).toHaveLength(2);
+      const activities = nodes.flatMap(node => node.kind === 'activity' && node.item.type === 'activity' && node.item.local_command ? [node.item] : []);
+      expect(activities.map(item => item.local_command!.stream)).toEqual(['stdout','stderr']);
+      headers.push(activities.map(item => ({presentation:presentActivityItems([item]).map(value => value.summary),icon:semanticActivityIcon(activitySemanticFacts(item))})));
+    }
+    expect(headers[1]).toEqual(headers[0]);
+    expect(f.parsed.blocks[0].content).toBe(invocation);
+    expect(f.parsed.blocks[1].role).toBe('user');
+  } finally {f.close();}
+});
+
+it('retains Claude create/resume actions and parent-scoped targets in compact and materialized owners', async () => {
+  const descriptions = ['Inspect settings','Continue inspection'];
+  const records = descriptions.flatMap((description,index) => [
+    {uuid:`call-${index}`,type:'assistant',message:{role:'assistant',content:[{type:'tool_use',id:`agent-${index}`,name:index?'Task':'Agent',input:{description,prompt:'Inspect',...(index?{resume:'native-agent'}:{})}}]}},
+    {uuid:`result-${index}`,parentUuid:`call-${index}`,type:'user',toolUseResult:{agentId:'native-agent',...(index?{}:{description}),status:index?'completed':'async_launched'},message:{role:'user',content:[{type:'tool_result',tool_use_id:`agent-${index}`,content:'Agent result'}]}},
+  ]).map(record => ({sessionId:'composition',timestamp:'2026-11-01T00:00:00Z',...record}));
+  const f = await fixture(false,{provider:'claude_code',records});
+  try {
+    const members = f.manifest.members.filter(member => member.activityFacts?.kind === 'tool');
+    expect(members).toHaveLength(2);
+    expect(members.map(member => member.activityFacts!.observation!.operation)).toEqual(['subagent-create','subagent-resume']);
+    const expected = descriptions.map(labelHint => [{kind:'subagent',provider:'claude_code',parentSessionId:'composition',agentId:'native-agent',labelHint}]);
+    expect(members.map(member => activityObservationTargets(member.activityFacts!.observation!))).toEqual(expected);
+    const expanded = {[`group:${members[0].activityRunId}`]:true};
+    const plan = planConversationReading(f.manifest,expanded);
+    const result = await readReadingRowBatch({db:f.db,reader:f.reader,conversationId:'composition',request:{positionSpaceId:f.manifest.positionSpaceId,rows:plan.rows,expanded}});
+    expect(result.status).toBe('source');
+    if(result.status !== 'source')throw new Error(result.status);
+    const observed = result.rows.filter(row => row.kind === 'content').flatMap(row => row.nodes).flatMap(node => node.kind === 'activity' && node.item.type === 'tool-call-activity' ? [operationObservationForTool(node.item)] : []);
+    expect(observed.map(item => item.operation)).toEqual(['subagent-create','subagent-resume']);
+    expect(observed.map(activityObservationTargets)).toEqual(expected);
+  } finally {f.close();}
+});
 
 it('materializes exact disclosed call/result targets through the normal row source', async () => {
   const f = await fixture(true);

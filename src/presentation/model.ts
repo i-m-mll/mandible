@@ -320,7 +320,7 @@ export function buildStreamState(events: StreamEvent[], standaloneItems = false)
           if (source?.hasBody === false) continue;
         }
         flushPendingTurn();
-        nodes.push({ kind: 'activity', key, entity: item.activity_kind === 'diagnostic' || item.severity === 'error' || item.execution_outcome === 'failed' ? item.role : 'assistant', item, source });
+        nodes.push({ kind: 'activity', key, entity: item.local_command || item.activity_kind === 'diagnostic' || item.severity === 'error' || item.execution_outcome === 'failed' ? item.role : 'assistant', item, source });
       }
     } else if (event.type === 'transcript:boundary') {
       flushPendingTurn();
@@ -575,6 +575,7 @@ export function expandInlineActivities(nodes: readonly RenderNode[]): RenderNode
           sessionId: node.turn.assistantEvent.session_id,
           sourceIdentity: block.sourceIdentity,
           operationContext: block.source?.toolOperation,
+          callSource: block.source,
           executionEvidence: node.turn.toolResults.get(block.id)?.source?.toolExecution ?? block.source?.toolExecution ?? block.executionEvidence,
           executionActive: block.executionActive && !node.turn.toolResults.has(block.id),
         };

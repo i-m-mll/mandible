@@ -16,6 +16,7 @@ export type ActivityFacts = {
   severity?: 'info' | 'warning' | 'error';
   outcome?: 'succeeded' | 'failed' | 'cancelled' | 'unknown';
   status?: string;
+  localCommandStream?: 'stdout' | 'stderr';
   /** Ephemeral authored summary, supplied only after source hydration. */
   summary?: string;
   toolName?: string;

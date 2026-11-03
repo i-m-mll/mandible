@@ -7,6 +7,10 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { ClaudeParser } from "../src/parsers/claude.js";
+import { ConversationStructureCache } from '../src/conversations/structure-cache';
+import { CURRENT_CONVERSATION_SOURCE_EPOCHS as epochs } from '../src/conversations/source-types';
+import { indexDisplayFragments } from '../src/conversations/display-indexing';
+import { activityObservationTargets } from '../src/presentation/activity-targets';
 
 async function parseNativeRows(rows: Record<string, unknown>[]) {
   const file = await makeClaudeSession();
@@ -17,6 +21,27 @@ async function parseNativeRows(rows: Record<string, unknown>[]) {
 const tempRoots: string[] = [];
 
 describe('Claude native display evidence', () => {
+  it('enriches the typed owner from an isolated late agent result without losing native scope', async () => {
+    const call = await parseNativeRows([{uuid:'call',type:'assistant',message:{role:'assistant',content:[{type:'tool_use',id:'native-call',name:'Agent',input:{description:'Inspect settings',prompt:'Inspect'}}]}}]);
+    const result = await parseNativeRows([{uuid:'result',parentUuid:'call',type:'user',toolUseResult:{agentId:'native-agent',description:'Inspect settings'},message:{role:'user',content:[{type:'tool_result',tool_use_id:'native-call',content:'Agent launched'}]}}]);
+    result[0].position = 1;
+    const manifest = (source_version_id:string,block_count:number) => ({conversation_id:'conv',source_version_id,block_count,parser_format:epochs.parserFormat,parser_version:epochs.parserVersion,normalization_version:epochs.normalizationVersion,redaction_epoch:epochs.redactionEpoch});
+    const rows = (blocks:typeof call,parentPosition:number|null) => blocks.map(block => ({position:block.position,type:block.type,role:block.role,parentPosition,recordOffset:block.position*10,recordLength:10,recordOrdinal:block.position,subBlockOrdinal:0}));
+    const cache = new ConversationStructureCache(undefined,{cachePath:':memory:'});
+    try {
+      cache.replaceRows(manifest('call',1),rows(call,null),new Map(),undefined,indexDisplayFragments(call,'conv',()=>null));
+      const before = cache.readPresentationIndex('conv','call',epochs)!.fragments[0];
+      expect(before.activity!.observation!.targets).toEqual([]);
+      const generation = cache.beginGeneration(manifest('result',2),'call');
+      cache.appendGeneration(generation,{rows:rows(result,0),display:indexDisplayFragments(result,'conv',()=>0)});
+      cache.completeGeneration(generation);
+      const after = cache.readPresentationIndex('conv','result',epochs)!.fragments;
+      expect(after).toHaveLength(1);
+      expect(after[0].paired_source_positions).toEqual([1]);
+      expect(after[0].activity!.observation!.operation).toBe(before.activity!.observation!.operation);
+      expect(activityObservationTargets(after[0].activity!.observation!)).toEqual(result[0].metadata.display_tool_targets);
+    } finally {cache.close();}
+  });
   it('projects both command envelope generations without changing transcript identity or losing output', async () => {
     const invocation = '<command-name>/memory</command-name>\n <command-message>memory</command-message>\n <command-args>project</command-args>';
     const body = 'Updated memory\n\nFile: project.md\nKept all entries';

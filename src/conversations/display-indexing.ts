@@ -54,7 +54,8 @@ export function indexDisplayFragments(blocks: readonly Omit<ConversationBlock, '
       receipt:{result:(()=>{const item=block.metadata.chat_item;const native=item?.type==='tool-call'?projectNativeToolResult(item.output,block.content,item.tool_kind,item.tool_name,item.tool_id):undefined;
         const context=block.metadata.display_tool_operation;
         return context?toolObservation(context.name,context.input as Record<string,unknown>|string,context.kind,{text:native?.text??block.content,frame:block.metadata.display_tool_frame,native,failed:block.metadata.display_tool_error===true}).result!:
-          native?.decoded?native:framedToolResult(native?.text??block.content,block.metadata.display_tool_frame);})(),execution:block.metadata.display_tool_execution} }] : [];
+          native?.decoded?native:framedToolResult(native?.text??block.content,block.metadata.display_tool_frame);})(),execution:block.metadata.display_tool_execution,
+        ...(block.metadata.display_tool_targets ? {targets:block.metadata.display_tool_targets} : {})} }] : [];
   });
   const positions = blocks.map(block => {
     const item = block.metadata.chat_item;

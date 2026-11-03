@@ -49,7 +49,7 @@ export function operationObservationForTool(item:ToolCallActivity):CompactOperat
     executionEvidence:{state:'unknown',provenance:execution.provenance}})):undefined;
   return compactOperationObservation({operation:item.callSource?.toolOperationKind??result?.source?.toolOperationKind??header.operation??(children?'batch':header.category),nativeName:observation.name,
     ...(header.target&&!['execute','javascript'].includes(header.category)&&header.target.length<=256?{subject:header.target}:{}),
-    targets:[...(item.callSource?.toolTargets??[]),...(result?.source?.toolTargets??[]),...(header.threadTargets??[]).filter(target=>target.type==='session').map(target=>({kind:'thread' as const,provider:'codex' as const,sessionId:target.id}))],
+    targets:[...(item.callSource?.toolTargets??[]),...(result?.source?.toolTargets??[]),...(header.threadTargets??[]).filter(target=>target.type==='session').map(target=>({kind:'thread' as const,provider:'codex' as const,sessionId:target.id}))].filter((target,index,all)=>all.findIndex(other=>activityTargetKey(other)===activityTargetKey(target))===index),
     execution:observation.result?.failed||result?.is_error?{...execution,state:'failed'}:execution,payload:{state:header.hasDetails===false?'none':'unloaded'},
     ...(header.observation?.elapsedSeconds===undefined?{}:{timing:{elapsedSeconds:header.observation.elapsedSeconds,scope:observation.result?.timingScope??'wrapper'}}),
     ...(header.observation?.report?{reportKind:header.observation.report}:{}),...(children?{children}:{})});

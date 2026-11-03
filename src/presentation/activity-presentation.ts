@@ -151,6 +151,7 @@ export function activitySemanticFacts(item: DisplayActivityItem): ActivityFacts 
   if (item.type === 'thinking-block-activity') return {kind:'thinking',turnId:item.turnId,summary:presentReasoning([item.content]).summary};
   if (item.type === 'provider-directive') return {kind:item.directive.kind === 'memory-citation' ? 'directive-memory' : 'directive-thread',turnId:item.turnId};
   return {kind:'activity',activityKind:item.activity_kind,severity:item.severity,outcome:item.execution_outcome,status:item.status,
+    ...(item.local_command ? {localCommandStream:item.local_command.stream} : {}),
     summary:activitySummary(item,plainActivityParts(item),activityState(item))};
 }
 export function semanticActivityState(item: ActivityFacts): string[] {
@@ -171,6 +172,7 @@ export function semanticActivitySummary(item: ActivityFacts): string {
   return [...new Set([ACTIVITY_LABELS[item.activityKind!],...semanticActivityState(item)])].join(' · ');
 }
 export function semanticActivityIcon(item: ActivityFacts): PresentationIcon {
+  if(item.localCommandStream)return 'workSettings';
   if(item.kind==='tool'&&item.observation) return presentationForObservation(item.observation,item.toolKind).icon;
   if(item.kind==='tool') return compactToolRunFacts(semanticToolOperations(item))[0]?.presentation.icon ?? 'monitor';
   if(item.kind==='thinking')return 'thought';
