@@ -2368,9 +2368,10 @@ export async function updateBackupSettings(settings: {
 
 export type ChatRouteTarget = { type: 'conversation' | 'session'; id: string };
 export async function resolveActivityTargets(targets: readonly import('../../src/presentation/activity-targets').ActivityTarget[], signal?: AbortSignal): Promise<import('../../src/presentation/activity-targets').ActivityTargetResolution[]> {
-  const query = new URLSearchParams({ targets: JSON.stringify(targets) });
-  const response = await apiGet(`/api/conversations/activity-targets?${query}`, { signal });
-  if (!response.ok) throw new Error(`Activity target resolution failed: ${response.status}`);
+  const endpoint = '/api/conversations/activity-targets';
+  const response = await browserSessionFetch(endpoint, { method: 'POST',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ targets }), signal });
+  if (!response.ok) await throwOnError(response, 'POST', endpoint);
   const result = await parseMaybeJson(response) as { targets: import('../../src/presentation/activity-targets').ActivityTargetResolution[] };
   return result.targets;
 }

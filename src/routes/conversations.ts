@@ -252,14 +252,11 @@ export function registerConversationRoutes(
 
   // --- Static routes MUST be registered before parameterized :id routes ---
 
-  server.get('/api/conversations/activity-targets', (req, res) => {
-    let value: unknown;
-    try { value = JSON.parse(req.query.targets ?? 'null'); }
-    catch { return sendJson(res, 400, { error: 'Invalid activity targets' }); }
-    const parsed = activityTargetsSchema.safeParse(value);
+  server.post('/api/conversations/activity-targets', (req, res) => {
+    const parsed = activityTargetsSchema.safeParse(readBody<{ targets?: unknown }>(req)?.targets);
     if (!parsed.success) return sendJson(res, 400, { error: 'Invalid activity targets' });
     return sendJson(res, 200, { targets: resolveActivityTargets(db, parsed.data) });
-  }, { operation: { id: 'get:/api/conversations/activity-targets', effects: ['ledger:read'], requestSchema: null, reportingCategory: null }, fileRpc: 'allow' });
+  }, { operation: { id: 'post:/api/conversations/activity-targets', effects: ['ledger:read'], requestSchema: null, reportingCategory: null }, fileRpc: 'allow' });
 
   server.get("/api/conversations/resolve-target", (req, res) => {
     const { conversation, session } = req.query;
