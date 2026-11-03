@@ -285,6 +285,7 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
         expect(completed.attempt.effects.prepare.stageIdentity).toEqual(stageIdentity);
       }
       expect(completed.attempt.state, JSON.stringify(completed.attempt.lastObservation)).toBe('complete');
+      // This source-driven fixture starts no independent helper process.
       await withRuntimeObservation(completed, () => {
         const terminal = JSON.parse(fs.readFileSync(file, 'utf8'));
         expect(terminal.attempt.fence).toBeDefined();
