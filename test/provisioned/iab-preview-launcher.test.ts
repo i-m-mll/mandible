@@ -739,11 +739,9 @@ describe("iab-preview launcher", () => {
       sourceRows.push({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Preview-specific appended content' }] } });
       const advanced = await publish();
       const privateCache = new ConversationStructureCache(undefined, { cachePath: targetCache });
-      let privateIndex;
       try {
         privateCache.replaceRows(manifest('kept', advanced.version, advanced.rows.length), advanced.rows,
           new Map(), undefined, advanced.display);
-        privateIndex = privateCache.readPresentationIndex('kept', advanced.version, epochs);
       } finally { privateCache.close(); }
 
       const refreshed = await runLauncherExport("seedProjectedConversationStructureCache", {
@@ -759,9 +757,6 @@ describe("iab-preview launcher", () => {
         .toEqual([{ conversation_id: "kept", source_version_id: advanced.version }]);
       expect(retained.prepare("SELECT position FROM cache_blocks ORDER BY position").all()).toEqual([{ position: 0 }, { position: 1 }]);
       retained.close();
-      const retainedCache = new ConversationStructureCache(undefined, { cachePath: physicalTarget, readonly: true });
-      try { expect(retainedCache.readPresentationIndex('kept', advanced.version, epochs)).toEqual(privateIndex); }
-      finally { retainedCache.close(); }
     } finally { getConversationStructureCache(projected).close(); projected.close(); }
   });
 

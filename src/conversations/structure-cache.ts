@@ -1,3 +1,4 @@
+import { providerEvidenceWriter, readProviderEvidence, type ProviderIndexEvidence } from './index-provider-evidence.js';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import { CONVERSATION_CACHE_FORMAT, copyIndexGeneration } from './index-storage.js';
 import { writeDisplayIndex, readCompleteDisplayIndex, readDisplayContextPlan, type DisplayIndexInput, type DisplayContextPlan } from './display-index.js';
@@ -37,6 +38,7 @@ export interface SparseConversationBlockRow {
   type: BlockType;
   role: Role;
   parentPosition: number | null;
+  toolEvidence?: ProviderIndexEvidence;
   recordOffset: number;
   recordLength: number;
   recordOrdinal: number;
@@ -179,6 +181,7 @@ export class ConversationStructureCache {
     }
     this.cache = new SqliteDatabase(this.cachePath, options.readonly ? { readonly: true, fileMustExist: true } : undefined);
     if (options.readonly) {
+      this.validateFormat();
       this.cache.pragma("query_only = ON");
       return;
     }
@@ -187,7 +190,13 @@ export class ConversationStructureCache {
     this.cache.pragma("foreign_keys = ON");
     const initialized = this.cache.prepare("SELECT name FROM sqlite_master WHERE name = 'cache_meta'").get();
     if (!initialized) this.cache.transaction(() => this.initialize()).immediate();
+    this.validateFormat();
     if(options.maxBytes!==undefined)this.setByteLimit(options.maxBytes);
+  }
+
+  private validateFormat(): void {
+    const row=this.cache.prepare("SELECT value FROM cache_meta WHERE key='schema_version'").get() as {value:string}|undefined;
+    if(row?.value!==String(CONVERSATION_STRUCTURE_CACHE_VERSION)){this.cache.close();throw new Error('Conversation cache format mismatch');}
   }
 
   private initialize(): void {
@@ -276,10 +285,12 @@ export class ConversationStructureCache {
       const parent=this.cache.prepare('SELECT activity_owner FROM cache_blocks WHERE cache_conversation_id=? AND position=?');
       const scope=this.cache.prepare('INSERT INTO cache_reading_scopes VALUES(?,?,?) ON CONFLICT(cache_conversation_id,start) DO UPDATE SET end=excluded.end');
       const insert=this.cache.prepare('INSERT INTO cache_blocks(cache_conversation_id,position,type_code,role_code,parent_position,record_offset,record_length,record_ordinal,sub_block_ordinal,model,client_intent_id,activity_owner,action_start) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)');
+      const writeEvidence=providerEvidenceWriter(this.cache,cacheId);
       for(const row of batch.rows??[]) {
         const owner=row.parentPosition===null?null:parent.get(cacheId,row.parentPosition) as {activity_owner:number|null}|undefined;
         previous=nextReadingContext(row,previous,owner?.activity_owner??null);
         scope.run(cacheId,previous.action_scope.start,row.position);
+        writeEvidence(row.position,row.toolEvidence);
         insert.run(cacheId,row.position,blockTypeCode(row.type),roleCode(row.role),row.parentPosition,row.recordOffset,row.recordLength,row.recordOrdinal,row.subBlockOrdinal,row.model??null,row.clientIntentId??null,previous.activity_owner,previous.action_scope.start);
       }
       if(batch.display)writeDisplayIndex(this.cache,cacheId,batch.display);
@@ -401,11 +412,13 @@ export class ConversationStructureCache {
         FROM cache_blocks WHERE ${where}
        ORDER BY position LIMIT ? OFFSET ?
     `).all(...params, options.limit, options.offset) as CacheBlockRow[];
+    const evidence=readProviderEvidence(this.cache,conversation.cache_id,rows.map(row=>row.position));
     return {
       rows: rows.map((row) => ({
         conversationId,
         sourceVersionId,
         position: row.position,
+        toolEvidence:evidence.get(row.position),
         type: decodeType(row.type_code),
         role: decodeRole(row.role_code),
         parentPosition: row.parent_position,
@@ -492,16 +505,17 @@ export class ConversationStructureCache {
     includeParents = false): SparseConversationBlockRow[] | null {
     const conversation = this.cachedConversation(conversationId, sourceVersionId, epochs);
     if (!conversation) return null;
-    const rows = this.cache.prepare(`WITH requested AS (
-      SELECT * FROM cache_blocks WHERE position IN (SELECT value FROM json_each(?)) AND cache_conversation_id = ?
-    ) SELECT * FROM requested
-      UNION SELECT * FROM cache_blocks WHERE cache_conversation_id = ? AND ?
-        AND position IN (SELECT parent_position FROM requested WHERE parent_position IS NOT NULL)
-      ORDER BY position`).all(JSON.stringify([...new Set(positions)]), conversation.cache_id, conversation.cache_id, includeParents ? 1 : 0) as CacheBlockRow[];
+    const rows = this.cache.prepare(`WITH RECURSIVE requested(position) AS (
+      SELECT value FROM json_each(?)
+      UNION SELECT b.parent_position FROM cache_blocks b JOIN requested r ON r.position=b.position WHERE b.cache_conversation_id=? AND ? AND b.parent_position IS NOT NULL
+      UNION SELECT e.origin_position FROM cache_provider_evidence e JOIN requested r ON r.position=e.position WHERE e.cache_conversation_id=? AND ? AND e.origin_position IS NOT NULL
+    ) SELECT b.* FROM cache_blocks b JOIN requested r ON r.position=b.position WHERE b.cache_conversation_id=? ORDER BY b.position`).all(JSON.stringify([...new Set(positions)]),conversation.cache_id,includeParents?1:0,conversation.cache_id,includeParents?1:0,conversation.cache_id) as CacheBlockRow[];
+    const evidence=readProviderEvidence(this.cache,conversation.cache_id,rows.map(row=>row.position));
     return rows.map(row => ({
       conversationId,
       sourceVersionId,
       position: row.position,
+      toolEvidence:evidence.get(row.position),
       type: decodeType(row.type_code),
       role: decodeRole(row.role_code),
       parentPosition: row.parent_position,

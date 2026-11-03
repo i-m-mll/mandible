@@ -10,63 +10,11 @@ function svgIcon(artwork: VNode<JSX.SVGAttributes<SVGSVGElement>>): ComponentTyp
   };
 }
 
-function glyphIcon(glyph: string): ComponentType<IconSourceProps> {
-  return function GlyphIcon({ size, style, focusable: _focusable, ...props }: IconSourceProps): JSX.Element {
-    return <span {...props} style={{ ...(size === undefined ? {} : { fontSize: size }), ...style }}>{glyph}</span>;
-  };
-}
-
-/** Thought — Lucide lightbulb (https://lucide.dev/icons/lightbulb).
- * Copyright (c) 2026 Lucide Icons and Contributors. ISC License:
- * Permission to use, copy, modify, and/or distribute this software for any
- * purpose with or without fee is hereby granted, provided that the above
- * copyright notice and this permission notice appear in all copies.
- * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
- * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
- * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
- * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
- * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
- * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
-const thought = svgIcon(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5" />
-      <path d="M9 18h6" />
-      <path d="M10 22h4" />
-    </svg>);
-
-function TokenRemove({ size = 8, style, focusable: _focusable, ...props }: IconSourceProps): JSX.Element {
-  const line: JSX.CSSProperties = {
-    position: 'absolute', left: 0, top: 'calc(50% - 0.75px)',
-    width: '100%', height: 1.5, borderRadius: 999, background: 'currentColor',
-  };
-  return (
-    <span {...props} style={{ display: 'inline-block', position: 'relative', width: size, height: size, ...style }}>
-      <span style={{ ...line, transform: 'rotate(45deg)' }} />
-      <span style={{ ...line, transform: 'rotate(-45deg)' }} />
-    </span>
-  );
-}
-
-function SelectIndicator({ size = 8, style, focusable: _focusable, ...props }: IconSourceProps): JSX.Element {
-  return <span {...props} style={{
-    display: 'inline-block', width: size, height: size / 2,
-    backgroundImage: 'linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%)',
-    backgroundPosition: 'left center, right center', backgroundRepeat: 'no-repeat', backgroundSize: '50% 100%', ...style,
-  }} />;
-}
-
 const pin = svgIcon(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M12 17v5" />
       <path d="M5 17h14" />
       <path d="M7 17l2-8-2-3V3h10v3l-2 3 2 8" />
     </svg>);
-const plusGlyph = glyphIcon('+');
-const forwardGlyph = glyphIcon('→');
-const upGlyph = glyphIcon('↑');
-const downGlyph = glyphIcon('↓');
-const ellipsisGlyph = glyphIcon('…');
-const checkGlyph = glyphIcon('✓');
 
 export const mandibleSet = {
   rightSidebar: svgIcon(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -238,39 +186,10 @@ export const mandibleSet = {
               <path d="M9 15h6" />
               <path d="M9 18h3" />
             </svg>),
-  toolExecute: svgIcon(<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="1.75" y="2.5" width="12.5" height="11" rx="2" />
-      <path d="m4.25 6 2 2-2 2M8.25 10h3" />
-    </svg>),
   issueMetadata: svgIcon(<svg fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
       <circle cx="12" cy="12" r="9" />
       <path d="M12 17v-5" />
       <path d="M12 8h.01" />
-    </svg>),
-  chat: svgIcon(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-    </svg>),
-  history: svgIcon(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
-      <path d="M3 3v5h5" />
-      <path d="M12 7v5l4 2" />
-    </svg>),
-  thought: thought,
-  monitor: svgIcon(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
-    </svg>),
-  issues: svgIcon(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M8 2l1.88 1.88" />
-      <path d="M14.12 3.88 16 2" />
-      <path d="M9 7.13v-1a3.003 3.003 0 1 1 6 0v1" />
-      <path d="M12 20c-3.3 0-6-2.7-6-6v-3a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v3c0 3.3-2.7 6-6 6" />
-      <path d="M12 20v-9" />
-      <path d="M6.53 9C4.6 8.8 3 7.1 3 5" />
-      <path d="M6 13H2" />
-      <path d="M3 21c0-2.1 1.7-3.9 3.8-4" />
-      <path d="M20.97 5c0 2.1-1.6 3.8-3.5 4" />
-      <path d="M22 13h-4" />
-      <path d="M17.2 17c2.1.1 3.8 1.9 3.8 4" />
     </svg>),
   artifacts: svgIcon(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="m21 8-9-5-9 5 9 5 9-5Z" />
@@ -337,16 +256,6 @@ export const mandibleSet = {
       <path d="M13 6h3a2 2 0 0 1 2 2v7" />
       <path d="M6 9v12" />
     </svg>),
-  info: svgIcon(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="10" />
-      <path d="M12 16v-4" />
-      <path d="M12 8h.01" />
-    </svg>),
-  terminal: svgIcon(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <rect width="20" height="16" x="2" y="4" rx="2" />
-      <path d="m6 8 4 4-4 4" />
-      <path d="M12 16h6" />
-    </svg>),
   preview: svgIcon(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
       <circle cx="12" cy="12" r="2.5" />
@@ -404,54 +313,6 @@ export const mandibleSet = {
           <path d="m3 17 9 5 9-5" />
         </>)}
     </svg>),
-  dismiss: glyphIcon("×"),
-  menu: ellipsisGlyph,
-  forkConversation: glyphIcon('⑁'),
-  resume: glyphIcon('↩'),
-  information: glyphIcon('ℹ'),
-  subagent: glyphIcon('⤷'),
-  subagentActivity: glyphIcon('↳'),
-  workflow: glyphIcon("◇"),
-  attachmentAnnotation: glyphIcon("✎"),
-  attachmentImage: glyphIcon("▧"),
-  attachmentFile: glyphIcon("▤"),
-  pending: ellipsisGlyph,
-  toolRead: glyphIcon("↗"),
-  toolEdit: glyphIcon("±"),
-  toolWrite: plusGlyph,
-  toolDelete: glyphIcon("−"),
-  toolMove: forwardGlyph,
-  toolSwitchMode: forwardGlyph,
-  toolSearch: glyphIcon("⌕"),
-  toolJavascript: glyphIcon("JS"),
-  toolFetch: downGlyph,
-  toolBrowser: glyphIcon("◎"),
-  planCompleted: checkGlyph,
-  planInProgress: glyphIcon("•"),
-  planPending: glyphIcon("○"),
-  disclosureTextCollapsed: glyphIcon("▸"),
-  disclosureTextExpanded: glyphIcon("▾"),
-  sectionCollapsed: glyphIcon("▶"),
-  sectionExpanded: glyphIcon("▼"),
-  sortAscending: upGlyph,
-  sortDescending: downGlyph,
-  remoteAhead: glyphIcon("☁↑"),
-  remoteBehind: glyphIcon("☁↓"),
-  pushAll: glyphIcon("↑↑"),
-  push: upGlyph,
-  pushCompleted: checkGlyph,
-  pushFailed: glyphIcon("✗"),
-  workSettings: glyphIcon("⚙"),
-  plan: glyphIcon("P"),
-  add: plusGlyph,
-  messageSelect: glyphIcon('□'),
-  messageSelectionChecked: checkGlyph,
-  openLink: forwardGlyph,
-  menuSelected: checkGlyph,
-  removeToken: TokenRemove,
-  selectIndicator: SelectIndicator,
-  warning: glyphIcon('⚠'),
-  permission: glyphIcon("!"),
   historyBack: svgIcon(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round"><path d="m11 6-6 6 6 6" /><path d="M5 12h14" /></svg>),
   historyForward: svgIcon(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round"><path d="m13 6 6 6-6 6" /><path d="M19 12H5" /></svg>),
   chatSubmit: svgIcon(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round"><path d="m6 12 6-6 6 6" /><path d="M12 6v12" /></svg>),

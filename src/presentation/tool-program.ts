@@ -6,22 +6,23 @@ export type ToolProgramOperation = { encoding:ToolEmissionEncoding; name: string
 export type ToolProgram = { operations: ToolProgramOperation[] };
 const identifier = (node: Ast | undefined, name?: string): node is Identifier => node?.type === 'Identifier' && (name === undefined || node.name === name);
 const member = (node: Ast | undefined, object: string, property: string): boolean => node?.type === 'MemberExpression' && !node.computed && !node.optional && identifier(node.object, object) && identifier(node.property, property);
-function data(node: Ast): { value: unknown } | null {
+function data(node: Ast, bindings = new Map<string, unknown>()): { value: unknown } | null {
+  if (identifier(node) && bindings.has(node.name)) return {value:bindings.get(node.name)};
   if (node.type === 'Literal' && !node.regex && typeof node.value !== 'bigint') return {value: node.value};
   if (node.type === 'TemplateLiteral' && !node.expressions.length) return {value: node.quasis[0].value.cooked};
   if (node.type === 'UnaryExpression' && ['-', '+'].includes(node.operator)) {
-    const value = data(node.argument); return value && typeof value.value === 'number' ? {value: node.operator === '-' ? -value.value : value.value} : null;
+    const value = data(node.argument,bindings); return value && typeof value.value === 'number' ? {value: node.operator === '-' ? -value.value : value.value} : null;
   }
   if (node.type === 'ArrayExpression') {
-    const values = node.elements.map((element: Ast | null) => element && data(element));
+    const values = node.elements.map((element: Ast | null) => element && data(element,bindings));
     return values.every((value): value is {value:unknown} => value!==null) ? {value: values.map(value => value.value)} : null;
   }
   if (node.type === 'ObjectExpression') {
     const value: Record<string, unknown> = {};
     for (const property of node.properties) {
-      if (property.type !== 'Property' || property.kind !== 'init' || property.method || property.computed || property.shorthand) return null;
+      if (property.type !== 'Property' || property.kind !== 'init' || property.method || property.computed) return null;
       const key = property.key.type === 'Identifier' ? property.key.name : property.key.type === 'Literal' ? property.key.value : undefined;
-      const entry = data(property.value);
+      const entry = data(property.value,bindings);
       if (typeof key !== 'string' || Object.hasOwn(value, key) || !entry || key === '__proto__') return null;
       value[key] = entry.value;
     }
@@ -29,25 +30,25 @@ function data(node: Ast): { value: unknown } | null {
   }
   return null;
 }
-function operation(node: Ast): ToolProgramOperation | null {
-  if (node.type === 'AwaitExpression') return operation(node.argument);
+function operation(node: Ast, bindings = new Map<string, unknown>()): ToolProgramOperation | null {
+  if (node.type === 'AwaitExpression') return operation(node.argument,bindings);
   if (node.type !== 'CallExpression' || node.optional || node.arguments.length !== 1) return null;
   const callee = node.callee;
   if (callee.type !== 'MemberExpression' || callee.computed || callee.optional || !identifier(callee.object, 'tools') || !identifier(callee.property)) return null;
-  const input = data(node.arguments[0]);
+  const input = data(node.arguments[0],bindings);
   return input && (typeof input.value === 'string' || (input.value && typeof input.value === 'object' && !Array.isArray(input.value)))
     ? {name: callee.property.name, input: input.value as Record<string, unknown> | string, forwarding: 'result',encoding:'native'} : null;
 }
-function calls(node: Ast): {operations: ToolProgramOperation[]; batch: boolean} | null {
+function calls(node: Ast, bindings = new Map<string, unknown>()): {operations: ToolProgramOperation[]; batch: boolean} | null {
   if (node.type !== 'AwaitExpression') return null;
   const call = node.argument;
   if (call.type === 'CallExpression' && !call.optional && call.arguments.length === 1
       && (member(call.callee, 'Promise', 'all') || member(call.callee, 'Promise', 'allSettled')) && call.arguments[0].type === 'ArrayExpression') {
     const settled = member(call.callee, 'Promise', 'allSettled');
-    const operations = call.arguments[0].elements.map((element: Ast | null) => element && operation(element));
+    const operations = call.arguments[0].elements.map((element: Ast | null) => element && operation(element,bindings));
     return operations.length && operations.every((op): op is ToolProgramOperation => op!==null) ? {batch:true, operations: operations.map((op: ToolProgramOperation,index: number) => ({...op,index,...(settled ? {settled:true} : {})}))} : null;
   }
-  const op = operation(node); return op ? {batch:false,operations:[op]} : null;
+  const op = operation(node,bindings); return op ? {batch:false,operations:[op]} : null;
 }
 function forwardedValue(node: Ast, name: string): 'result' | 'stdout' | null {
   if(identifier(node,name)) return 'result';
@@ -89,6 +90,87 @@ function forwarding(statement: Ast, name: string, batch: boolean): {forwarding:'
   if (spread.type === 'Property' && spread.kind === 'init' && !spread.computed && !spread.method && identifier(spread.key)) {const mode=forwardedValue(spread.value,valueName);if(mode) return {forwarding:mode,encoding:'json',indexKey,resultKey:spread.key.name};}
   return null;
 }
+function pureDiscovery(node: Ast, locals = new Set<string>()): boolean {
+  if (node.type === 'Literal') return true;
+  if (identifier(node)) return node.name === 'ALL_TOOLS' || locals.has(node.name);
+  if (node.type === 'MemberExpression') return !node.optional && pureDiscovery(node.object,locals) && (!node.computed || pureDiscovery(node.property,locals));
+  if (node.type==='LogicalExpression' || node.type==='BinaryExpression') return pureDiscovery(node.left,locals) && pureDiscovery(node.right,locals);
+  if (node.type === 'UnaryExpression') return ['!','typeof'].includes(node.operator) && pureDiscovery(node.argument,locals);
+  if (node.type === 'ArrayExpression') return node.elements.every(entry=>Boolean(entry && pureDiscovery(entry,locals)));
+  if (node.type === 'ObjectExpression') return node.properties.every((entry:Ast)=>entry.type==='Property' && !entry.computed && !entry.method && entry.kind==='init' && pureDiscovery(entry.value,locals));
+  if (node.type === 'ArrowFunctionExpression' && !node.async && node.params.every((param:Ast)=>identifier(param))) {
+    const names = new Set([...locals,...node.params.map((param:Identifier)=>param.name)]);
+    return node.body.type!=='BlockStatement' && pureDiscovery(node.body,names);
+  }
+  if (node.type === 'CallExpression' && !node.optional && node.callee.type==='MemberExpression' && !node.callee.computed && identifier(node.callee.property)
+    && ['filter','map','includes','test','toLowerCase','join'].includes(node.callee.property.name)) return pureDiscovery(node.callee.object,locals) && node.arguments.every((arg:Ast)=>pureDiscovery(arg,locals));
+  return false;
+}
+function discoveryRoot(node:Ast, collections:ReadonlySet<string> = new Set(['ALL_TOOLS'])):boolean {
+  return node.type==='CallExpression' && node.callee.type==='MemberExpression' && !node.callee.computed && identifier(node.callee.property)
+    && ['filter','map'].includes(node.callee.property.name) && ((identifier(node.callee.object) && collections.has(node.callee.object.name)) || discoveryRoot(node.callee.object,collections));
+}
+function discoveryProgram(statements:readonly Ast[]):boolean {
+  const collections=new Set(['ALL_TOOLS']);
+  const emitters=new Set(['text']);
+  const names=new Set(['ALL_TOOLS','text','tools','image','audio','JSON','Promise']);
+  let discovered=false;
+  for(const statement of statements.slice(0,-1)) {
+    if(statement.type!=='VariableDeclaration' || statement.kind!=='const' || statement.declarations.length!==1) return false;
+    const declaration=statement.declarations[0];
+    if(!identifier(declaration.id) || names.has(declaration.id.name) || !declaration.init) return false;
+    names.add(declaration.id.name);
+    if(identifier(declaration.init) && collections.has(declaration.init.name)) collections.add(declaration.id.name);
+    else if(identifier(declaration.init) && emitters.has(declaration.init.name)) emitters.add(declaration.id.name);
+    else if(discoveryRoot(declaration.init,collections) && pureDiscovery(declaration.init,collections)) {collections.add(declaration.id.name);discovered=true;}
+    else return false;
+  }
+  if(!discovered) return false;
+  const output=statements.at(-1);
+  if(output?.type!=='ExpressionStatement' || output.expression.type!=='CallExpression' || output.expression.optional || output.expression.arguments.length!==1) return false;
+  const call=output.expression;
+  if(identifier(call.callee) && emitters.has(call.callee.name)) return identifier(call.arguments[0]) && collections.has(call.arguments[0].name);
+  if(call.callee.type!=='MemberExpression' || call.callee.computed || call.callee.optional || !identifier(call.callee.object) || !collections.has(call.callee.object.name) || !identifier(call.callee.property,'forEach')) return false;
+  const callback=call.arguments[0];
+  if(callback.type!=='ArrowFunctionExpression' || callback.async || callback.params.length!==1 || !identifier(callback.params[0]) || emitters.has(callback.params[0].name)) return false;
+  const body=callback.body.type==='BlockStatement' && callback.body.body.length===1 ? callback.body.body[0] : callback.body;
+  const emission=body.type==='ExpressionStatement' ? body.expression : body;
+  return emission.type==='CallExpression' && !emission.optional && identifier(emission.callee) && emitters.has(emission.callee.name) && emission.arguments.length===1 && identifier(emission.arguments[0],callback.params[0].name);
+}
+function contentForwarding(statement:Ast,name:string):boolean {
+  if(statement.type!=='ForOfStatement' || statement.await || statement.left.type!=='VariableDeclaration' || statement.left.kind!=='const' || statement.left.declarations.length!==1 || !identifier(statement.left.declarations[0].id) || !member(statement.right,name,'content')) return false;
+  const item=statement.left.declarations[0].id.name;
+  const branch=(node:Ast,kind?:string):boolean=>{
+    if(node.type==='BlockStatement') return node.body.length===1 && branch(node.body[0],kind);
+    if(node.type==='IfStatement') return node.test.type==='BinaryExpression' && ['===','=='].includes(node.test.operator) && member(node.test.left,item,'type') && node.test.right.type==='Literal' && typeof node.test.right.value==='string' && ['text','image','audio'].includes(node.test.right.value) && branch(node.consequent,String(node.test.right.value)) && (!node.alternate || branch(node.alternate));
+    const call=node.type==='ExpressionStatement' && node.expression;
+    if(!call || call.type!=='CallExpression' || call.optional || !identifier(call.callee) || call.arguments.length!==1) return false;
+    return (kind==='text' && call.callee.name==='text' && member(call.arguments[0],item,'text')) || (kind===call.callee.name && ['image','audio'].includes(call.callee.name) && identifier(call.arguments[0],item));
+  };
+  return branch(statement.body);
+}
+function optionalContent(node:Ast,name:string):boolean {
+  const value=node.type==='ChainExpression' ? node.expression : node;
+  return value.type==='MemberExpression' && !value.computed && identifier(value.object,name) && identifier(value.property,'content');
+}
+function fallbackContentForwarding(loop:Ast,fallback:Ast | undefined,name:string):boolean {
+  if(loop.type!=='ForOfStatement' || loop.await || loop.left.type!=='VariableDeclaration' || loop.left.kind!=='const' || loop.left.declarations.length!==1 || !identifier(loop.left.declarations[0].id)) return false;
+  const content=loop.right;
+  if(content.type!=='LogicalExpression' || content.operator!=='??' || !optionalContent(content.left,name) || content.right.type!=='ArrayExpression' || content.right.elements.length) return false;
+  const item=loop.left.declarations[0].id.name;
+  const body=loop.body.type==='BlockStatement' && loop.body.body.length===1 ? loop.body.body[0] : loop.body;
+  const conditional=body.type==='ExpressionStatement' && body.expression;
+  if(!conditional || conditional.type!=='ConditionalExpression' || conditional.test.type!=='BinaryExpression' || conditional.test.operator!=='===' || !member(conditional.test.left,item,'type') || conditional.test.right.type!=='Literal' || conditional.test.right.value!=='image') return false;
+  const image=conditional.consequent;
+  const text=conditional.alternate;
+  if(image.type!=='CallExpression' || image.optional || !identifier(image.callee,'image') || image.arguments.length!==1 || !identifier(image.arguments[0],item)
+    || text.type!=='CallExpression' || text.optional || !identifier(text.callee,'text') || text.arguments.length!==1) return false;
+  const value=text.arguments[0];
+  if(value.type!=='LogicalExpression' || value.operator!=='??' || !member(value.left,item,'text') || !identifier(value.right,item)) return false;
+  if(fallback?.type!=='IfStatement' || fallback.alternate || fallback.test.type!=='UnaryExpression' || fallback.test.operator!=='!' || !optionalContent(fallback.test.argument,name)) return false;
+  const result=fallback.consequent.type==='BlockStatement' && fallback.consequent.body.length===1 ? fallback.consequent.body[0] : fallback.consequent;
+  return identifier(textValue(result) ?? undefined,name);
+}
 /** Project only a complete static program whose outputs account for every call. Never execute provider source. */
 export function projectToolProgram(name: string, input: Record<string, unknown> | string = {}, kind?: string): ToolProgram | null {
   if (!['exec','functions.exec'].includes(name.toLowerCase()) || (kind && kind !== 'custom_tool_call')) return null;
@@ -96,25 +178,31 @@ export function projectToolProgram(name: string, input: Record<string, unknown> 
   if (typeof script !== 'string') return null;
   let program;
   try {program = parse(script,{ecmaVersion:'latest',sourceType:'module'});} catch {return null;}
+  if(discoveryProgram(program.body)) return {operations:[{name:'__tool_discovery',input:{},forwarding:'result',encoding:'literal'}]};
   const operations: ToolProgramOperation[] = [];
-  const names = new Set(['tools','text','JSON','Promise']);
+  const bindings = new Map<string,unknown>();
+  const names = new Set(['tools','text','image','audio','JSON','Promise','ALL_TOOLS']);
   for (let i=0;i<program.body.length;i++) {
     const statement = program.body[i] as Ast;
     if (statement.type === 'VariableDeclaration' && statement.kind === 'const' && statement.declarations.length === 1) {
       const declaration = statement.declarations[0];
       if (!identifier(declaration.id) || names.has(declaration.id.name) || !declaration.init) return null;
       names.add(declaration.id.name);
-      const batch = calls(declaration.init);
+      const literal = data(declaration.init,bindings);
+      if (literal) {bindings.set(declaration.id.name,literal.value);continue;}
+      const batch = calls(declaration.init,bindings);
       const output = program.body[++i] as Ast | undefined;
-      const mode = batch && output && forwarding(output,declaration.id.name,batch.batch);
+      const fallbackForward=batch && !batch.batch && output && fallbackContentForwarding(output,program.body[i+1] as Ast | undefined,declaration.id.name);
+      const mode = batch && output && (forwarding(output,declaration.id.name,batch.batch) || (!batch.batch && (contentForwarding(output,declaration.id.name) || fallbackForward) ? {forwarding:'result' as const,encoding:'literal' as const} : null));
       if (!batch || !mode) return null;
+      if(fallbackForward) i++;
       operations.push(...batch.operations.map(op=>({...op,...mode,...(batch.batch && !mode.indexKey ? {collection:i} : {})})));
     } else {
       let value = textValue(statement);
       const serialized=value?.type==='CallExpression' && !value.optional && member(value.callee,'JSON','stringify') && value.arguments.length===1;
       if(value?.type==='CallExpression' && !value.optional && member(value.callee,'JSON','stringify') && value.arguments.length===1) value=value.arguments[0];
       const stdout = value?.type === 'MemberExpression' && !value.computed && !value.optional && identifier(value.property,'output');
-      const call = value && calls(stdout && value.type==='MemberExpression' ? value.object : value);
+      const call = value && calls(stdout && value.type==='MemberExpression' ? value.object : value,bindings);
       if (!call || (call.batch && stdout)) return null;
       operations.push(...call.operations.map(op=>({...op,encoding:serialized || call.batch ? 'json' as const : stdout ? 'literal' as const : 'native' as const,forwarding:stdout ? 'stdout' as const : 'result' as const,...(call.batch ? {collection:i} : {})})));
     }

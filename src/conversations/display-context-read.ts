@@ -4,6 +4,7 @@ import { ConversationSourceReader } from './source-reader.js';
 import type { SourceBackedConversationBlock, SourceReadResult } from './source-types.js';
 import { projectDisplayFragments } from '../presentation/fragments.js';
 import { activitySemanticFacts, semanticActivityRunFacts, presentActivityRunFacts } from '../presentation/activity-presentation.js';
+import { presentationForObservation } from '../presentation/tool-observation.js';
 import { presentTool } from '../presentation/tool-presentation.js';
 import { sparseConversationBlockPosition } from './structure-cache.js';
 
@@ -39,9 +40,11 @@ export async function readDisplayContext(input: {
       return { status: 'stale', reason: 'Display owner no longer matches the indexed source fragment.' };
     }
     const { input: toolInput, result: _result, ...item } = fragment.node.item;
+    const header=item.operationContext ? presentTool(item.operationContext.name,item.operationContext.input as Record<string,unknown> | string,item.operationContext.kind) : presentTool(item.name,toolInput,item.toolKind);
+    const facts=owner.activity?.kind==='tool'&&owner.activity.observation ? presentationForObservation(owner.activity.observation,item.toolKind) : undefined;
     owners.push({ fragment_id: owner.id, memberKey: fragment.memberKey, coordinate: owner.coordinate, item,
       source: { ...fragment.node.source!, detailsLoaded: false },
-      header: presentTool(item.name, toolInput, item.toolKind), action_scope: input.actionScope(owner.coordinate.position) });
+      header: {...header,...facts,target:header.target,children:header.children}, action_scope: input.actionScope(owner.coordinate.position) });
   }
   return { status: 'source', sourceVersionId, value: { version: DISPLAY_CONTEXT_VERSION,
     fragments: plan.fragments, aliases: plan.aliases, activity_runs, owners } };

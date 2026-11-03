@@ -1139,6 +1139,8 @@ function ConversationMetadataModal({
   open,
   conversation,
   linkedConsoleSession,
+  control,
+  spawn,
   issueLinks,
   headerRef,
   onClose,
@@ -1146,10 +1148,21 @@ function ConversationMetadataModal({
   open: boolean;
   conversation: Conversation & { blocks: ConversationBlock[]; children: ConversationChild[] };
   linkedConsoleSession: ConsoleSession | null;
+  control: ConversationControlSnapshot | null;
+  spawn: ConversationSpawnReceipt | null;
   issueLinks: Array<{ issue_id: string; repo_id: string }>;
   headerRef: { current: HTMLElement | null };
   onClose: () => void;
 }): JSX.Element {
+  const matchingControl = control?.conversation_id === conversation.id ? control : null;
+  const failure = spawn?.error?.message ?? (
+    matchingControl?.turn.kind === 'failed' ? chatControlFailureNotice(matchingControl.turn.error).detail
+      : matchingControl?.controller.kind === 'failed' ? chatControlFailureNotice(matchingControl.controller.error).detail : null
+  );
+  const status = spawn?.state === 'failed' ? 'Failed'
+    : spawn && (spawn.state === 'reserved' || spawn.state === 'starting') && (!matchingControl || matchingControl.turn.kind === 'none') ? spawn.state
+    : matchingControl ? matchingControl.turn.kind === 'none' ? matchingControl.controller.kind : matchingControl.turn.kind
+      : spawn?.state ?? null;
   return (
     <DetailPaneModal
       open={open}
@@ -1164,8 +1177,12 @@ function ConversationMetadataModal({
       panelClassName="conv-detail__metadata-panel"
     >
       <div className="conv-info-grid">
+          <div><span className="conv-info-grid__label">Conversation</span><span>{conversation.title}</span></div>
+          {status && <div><span className="conv-info-grid__label">Status</span><span>{status}</span></div>}
+          {conversation.cwd && <div><span className="conv-info-grid__label">Cwd</span><span className="conv-info-grid__mono">{conversation.cwd}</span></div>}
+          {failure && <div role="alert"><span className="conv-info-grid__label">Failure</span><span>{failure}</span></div>}
           <div>
-            <span className="conv-info-grid__label">Agent</span>
+            <span className="conv-info-grid__label">Provider</span>
             <span>{SOURCE_LABELS[conversation.source] ?? conversation.source}</span>
           </div>
           <div>
@@ -1185,7 +1202,7 @@ function ConversationMetadataModal({
             <span>{conversation.branch || 'unknown'}</span>
           </div>
           <div>
-            <span className="conv-info-grid__label">Model</span>
+            <span className="conv-info-grid__label">{conversation.source_path?.startsWith('mandible://') ? 'Requested model' : 'Recorded model'}</span>
             <span>{conversation.model || parseModelFromArgs(linkedConsoleSession?.args) || 'default'}</span>
           </div>
           <div>
@@ -2810,6 +2827,8 @@ export function ConversationDetail({
         open={infoOpen}
         conversation={conversation}
         linkedConsoleSession={linkedConsoleSession}
+        control={control}
+        spawn={creationReceipt ?? null}
         issueLinks={sessionIssueLinks}
         headerRef={headerRef}
         onClose={() => setInfoOpen(false)}

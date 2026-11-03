@@ -1,11 +1,10 @@
+import { framedToolResult, projectNativeToolResult } from '../presentation/tool-transport.js';
 import { inlineActivityKeyParts } from '../presentation/reading-disclosures.js';
 import { chatItemIdentityRecipe } from './index-keys.js';
 import { compactActivityFacts } from './conversation-index.js';
 import type { IndexKeyRecipe, IndexWriteBatch } from './conversation-index.js';
-import { projectToolProgram } from '../presentation/tool-program.js';
-import { projectToolResult } from '../presentation/tool-transport.js';
+import { toolObservation, operationObservationForTool } from '../presentation/tool-observation.js';
 import { extractToolResultText } from '../presentation/model.js';
-import { presentTool } from '../presentation/tool-presentation.js';
 import { projectExecution } from '../presentation/execution-presentation.js';
 import {isRoutineActivityStatus} from '../presentation/model.js';
 import { createHash } from 'node:crypto';
@@ -26,10 +25,17 @@ export function indexDisplayFragments(blocks: readonly Omit<ConversationBlock, '
     const presentations = activity ? presentActivityItems([activity]) : [];
     let compact = activity;
     if (activity?.type === 'tool-call-activity') {
-      const execution=projectExecution(activity.name,activity.input,activity.toolKind);
+      const operation=activity.operationContext;
+      const name=operation?.name ?? activity.name, input=operation?.input as Record<string,unknown> | string | undefined ?? activity.input, kind=operation?.kind ?? activity.toolKind;
+      const execution=projectExecution(name,input,kind);
       const result=activity.result;
-      const projected=result ? projectToolResult(execution,result.fullText ?? extractToolResultText(result.content),result.source?.toolFrame,result.presentation,projectToolProgram(activity.name,activity.input,activity.toolKind)) : null;
-      compact={...activity,execution:execution?.facts,operations:presentTool(activity.name,activity.input,activity.toolKind).operations,input:'',result:result ? {...result,content:'',fullText:undefined,presentation:undefined,is_error:result.is_error || projected?.failed,running:projected?.running} : null};
+      const observation=toolObservation(name,input,kind,result ? {text:result.fullText ?? extractToolResultText(result.content),content:result.content,frame:result.source?.toolFrame,native:result.presentation,failed:result.is_error} : undefined);
+      const projected=observation.result;
+      const {children:_children,...header}=observation.header;
+      header.target=['execute','javascript'].includes(header.category) || header.target.length>256 ? '' : header.target;
+      const {operationContext:_operationContext,...bounded}=activity;
+      const source=result?.source ? {...result.source,toolOperation:undefined} : undefined;
+      compact={...bounded,observation:operationObservationForTool(activity),header,execution:execution?.facts,operations:observation.header.operations,input:'',result:result ? {...result,source,content:'',fullText:undefined,presentation:undefined,is_error:result.is_error || projected?.failed,running:activity.executionEvidence ? activity.executionEvidence.state==='ongoing' : projected?.running} : null};
     }
     else if (activity?.type === 'thinking-block-activity') compact = { ...activity, content: '' };
     else if (activity?.type === 'provider-directive') compact = { ...activity, directive: activity.directive.kind === 'memory-citation'
@@ -44,7 +50,11 @@ export function indexDisplayFragments(blocks: readonly Omit<ConversationBlock, '
   const aliases = blocks.flatMap(block => {
     const parent = parentPosition(block.position);
     return block.type === 'tool_result' && parent !== null ? [{ position: block.position, owner_position: parent,
-      failed: block.metadata.display_tool_error === true || block.metadata.chat_item?.execution_outcome === 'failed' }] : [];
+      failed: block.metadata.display_tool_error === true || block.metadata.chat_item?.execution_outcome === 'failed',
+      receipt:{result:(()=>{const item=block.metadata.chat_item;const native=item?.type==='tool-call'?projectNativeToolResult(item.output,block.content,item.tool_kind,item.tool_name,item.tool_id):undefined;
+        const context=block.metadata.display_tool_operation;
+        return context?toolObservation(context.name,context.input as Record<string,unknown>|string,context.kind,{text:native?.text??block.content,frame:block.metadata.display_tool_frame,native,failed:block.metadata.display_tool_error===true}).result!:
+          native?.decoded?native:framedToolResult(native?.text??block.content,block.metadata.display_tool_frame);})(),execution:block.metadata.display_tool_execution} }] : [];
   });
   const positions = blocks.map(block => {
     const item = block.metadata.chat_item;
@@ -53,6 +63,7 @@ export function indexDisplayFragments(blocks: readonly Omit<ConversationBlock, '
       block.type, block.role, block.content, block.timestamp, block.metadata, parentPosition(block.position),
     ])).digest('hex'), handoff: [...(item ? [chatItemIdentityRecipe(item)].filter((key):key is IndexKeyRecipe=>key!==null) : []),...(block.metadata.client_intent_id ? [{kind:'intent' as const,id:block.metadata.client_intent_id}] : [])],
       turnId: item?.identity.native_turn_id,
+      ...(block.metadata.display_tool_origin ? {presentationDependencies:[block.metadata.display_tool_origin.position]} : {}),
       ...(item?.type==='message'&&item.role==='assistant' ? {response:{identity:item.provenance.source==='verified-provider-transcript' ? {kind:'response-record' as const,provider:item.identity.provider,sessionId:item.identity.session_id,recordOrdinal:item.identity.source_record_ordinal} : {kind:'response-native' as const,provider:item.identity.provider,sessionId:item.identity.session_id,turnId:item.identity.native_turn_id??null,nativeId:item.identity.native_item_id??null},classification:item.content_completion==='complete'?item.assistant_response??'unknown':'unknown'}} : {}),
       ...(item?.type === 'tool-call' && (item.tool_id ?? item.identity.native_tool_id) ? {execution: {kind:'execution' as const,provider:item.identity.provider,sessionId:item.identity.session_id,nativeId:(item.tool_id ?? item.identity.native_tool_id)!}} : {}),
       ...(item && usage && Number.isFinite(usage.input) && Number.isFinite(usage.output)

@@ -1,6 +1,6 @@
 :root {
   --reading-responsive-variant: wide;
-  --reading-renderer-version: event-context-footer-math-v6;
+  --reading-renderer-version: event-observation-row-boundaries-v8;
   --compact-activity-header-min-height: 22px;
   --compact-activity-header-line-height: 1.15;
   --compact-activity-header-icon-size: 16px;
@@ -17,7 +17,6 @@
   box-sizing: border-box;
   display: flex;
   width: 100%;
-  padding-block-end: var(--chat-event-gap);
   position: relative;
 }
 
@@ -63,6 +62,15 @@
   display: flex;
   flex-direction: column;
 }
+
+.user-bubble--bounded { background: #222222; border-radius: var(--radius-chat-surface); overflow: hidden; }
+.user-bubble__content { display: flex; flex-direction: column; gap: inherit; }
+.user-bubble__viewport { display: flex; flex-direction: column; gap: inherit; }
+.user-bubble--bounded .user-bubble__text { background: transparent; }
+.user-bubble__viewport--folded { mask-image: linear-gradient(to bottom, #000 calc(100% - 2rem), transparent); }
+.user-bubble__disclosure { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); width: 100%; padding: var(--space-2) var(--space-3); border: 0; background: transparent; color: var(--text-muted); cursor: pointer; font: inherit; font-size: var(--text-sm); }
+.user-bubble__disclosure:hover { color: var(--text-primary); background: var(--bg-hover); }
+:root[data-theme='light'] .user-bubble--bounded { background: #F3F3F4; }
 
 .user-bubble__text {
   background: #222222;
@@ -262,6 +270,15 @@
   color: var(--text-primary);
 }
 
+.compact-activity__row[data-disclosure-owner]:has(a:is(:hover, :focus-visible)) {
+  color: var(--tool-activity-text);
+}
+
+.compact-activity__summary a:is(:hover, :focus-visible) {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+
 .compact-activity__row--inert {
   cursor: default;
 }
@@ -297,6 +314,16 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.compact-activity__toggle {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
 }
 
 .compact-activity__details {
@@ -482,6 +509,7 @@
   height: 1.35em;
   opacity: 0;
   pointer-events: none;
+  z-index: 1;
   transition: opacity 120ms ease;
 }
 

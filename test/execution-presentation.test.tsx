@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { render, cleanup, fireEvent } from './helpers/dom';
 import { afterEach } from 'vitest';
 import { projectExecution, projectExecutionResult } from '../src/presentation/execution-presentation';
@@ -23,10 +23,10 @@ afterEach(cleanup);
 it('unwraps only fully accounted literal wrappers and retains substantive or dynamic JavaScript', () => {
   expect(projectExecution('exec', script)?.operations).toEqual([{command, shell:'/bin/zsh', forwarding:'result'}]);
   expect(projectExecution('exec', 'text((await tools.exec_command({cmd:`echo literal`})).output)')?.operations).toEqual([{command:'echo literal',forwarding:'stdout'}]);
+  expect(projectExecution('exec', `const cmd = 'pwd'; text(await tools.exec_command({cmd}))`)?.operations).toMatchObject([{command:'pwd'}]);
   const many = `${script}text(await tools.exec_command({cmd:'pwd'}))`;
   expect(projectExecution('exec', many)?.facts).toMatchObject({kind:'command',count:2});
   for (const substantive of [
-    `const cmd = 'pwd'; text(await tools.exec_command({cmd}))`,
     `text(await tools.exec_command({cmd:\`echo \${name}\`}))`,
     `if (ready) { ${script} }`, `${script}text('extra')`,
     `const r = await tools.exec_command({cmd:'pwd'}); r.output='changed';text(r)`,
@@ -194,4 +194,24 @@ it('renders ordered native text and media and keeps image-only Gemini responses 
   expect(image.text).toBe('');
   const only=render(<ToolUseBlock toolName="gallery" input={{}} expanded result={{type:'tool_result',tool_use_id:'gallery-call',content:'',presentation:image}} />);
   expect(only.container.querySelector('.tool-card__result img')?.getAttribute('src')).toBe('data:image/png;base64,aW1hZ2U=');
+});
+
+it('keeps inline thread navigation independent of report disclosure', () => {
+  window.history.replaceState(null,'','#/console?conversation=stale&position=9');
+  const changed=vi.fn();
+  const target='exact-provider-thread';
+  const report={timedOut:false,polls:[{thread:{id:target,hostId:'local'},latestAssistantMessage:{phase:'final_answer',text:'Retained report',truncated:true,originalChars:32186}}]};
+  const view=render(<ToolUseBlock toolName="codex_app__wait_threads" input={{targets:[{threadId:target,hostId:'local'}]}} onExpandedChange={changed}
+    result={{type:'tool_result',tool_use_id:'wait',content:JSON.stringify(report)}} />);
+  const link=view.getByRole('link',{name:'thread'});
+  const route=new URL(link.getAttribute('href')!,'https://example.test');
+  const params=new URLSearchParams(route.hash.split('?')[1]);
+  expect(params.get('session')).toBe(target);
+  expect(params.has('conversation')).toBe(false);
+  const event=new MouseEvent('click',{bubbles:true,cancelable:true,ctrlKey:true});
+  link.dispatchEvent(event);
+  expect(event.defaultPrevented).toBe(false);
+  expect(changed).not.toHaveBeenCalled();
+  fireEvent.click(view.getByRole('button',{expanded:false}));
+  expect(changed).toHaveBeenCalledTimes(1);
 });

@@ -1,4 +1,8 @@
 import type { ToolResultContent, ToolResultContentBlock } from '../../../../src/presentation/types';
+import { toolObservation } from '../../../../src/presentation/tool-observation';
+import { operationPhrase, operationState, operationResult, patchFileChanges, substantiveToolResult, threadReports, type ThreadReport } from '../../../../src/presentation/tool-operation';
+import { chatRouteHref } from '../../chat/messageLinks';
+import type { ToolOperationContext, ToolExecutionEvidence } from '../../../../src/parsers/types';
 import { ActivityPayloadBox } from '../shared/ActivityPayloadBox';
 import { ActivityEventItem } from '../shared/ActivityEventItem';
 import { projectToolProgram } from '../../../../src/presentation/tool-program';
@@ -19,6 +23,8 @@ export type { ToolResultContent, ToolResultContentBlock } from '../../../../src/
 
 export type ToolUseBlockProps = {
   toolName: string;
+  operationContext?: ToolOperationContext;
+  executionEvidence?: ToolExecutionEvidence;
   toolKind?: string;
   toolUseId?: string;
   input?: Record<string, unknown> | string;
@@ -53,8 +59,6 @@ export type ToolVisual = {
   target: string;
 };
 
-type ToolStatus = 'pending' | 'running' | 'success' | 'failed';
-
 export function getToolVisual(toolName: string, toolKind?: string): ToolVisual {
   const presentation = presentTool(toolName, {}, toolKind);
   return { kind: presentation.category, icon: presentation.icon, verb: presentation.phrase, target: presentation.target };
@@ -88,27 +92,8 @@ export function extractResultText(content: ToolResultContent): string {
   return '';
 }
 
-function extractImages(content: ToolResultContent): Array<{ type: string; media_type: string; data: string }> {
-  if (!Array.isArray(content)) {
-    return [];
-  }
-  return (content as Array<{ type: string; source?: { type: string; media_type: string; data: string } }>)
-    .filter((item) => item.type === 'image' && item.source)
-    .map((item) => item.source as { type: string; media_type: string; data: string });
-}
-
 function formatInput(input: Record<string, unknown> | string): string {
   return typeof input === 'string' ? input : JSON.stringify(input, null, 2);
-}
-
-function statusFor(result?: ToolResultContentBlock | null, statusEmoji?: string): ToolStatus {
-  if (statusEmoji && /run|hourglass|⏳|…/.test(statusEmoji.toLowerCase())) {
-    return 'running';
-  }
-  if (!result) {
-    return 'pending';
-  }
-  return result.is_error ? 'failed' : 'success';
 }
 
 function ansiClass(code: string): string | null {
@@ -148,7 +133,8 @@ function AnsiText({ text }: { text: string }): JSX.Element {
   );
 }
 
-function ResultBody({ result, commandLike, projected }: {
+function ResultBody({ result, commandLike, projected, reports }: {
+  reports?:ThreadReport[] | null;
   result: ToolResultContentBlock;
   commandLike: boolean;
   projected: ExecutionResultPresentation;
@@ -157,11 +143,11 @@ function ResultBody({ result, commandLike, projected }: {
   const blocks=typeof content==='string' ? [{type:'text' as const,text:content}] : content;
   return (
     <div className={`tool-card__result${result.is_error || projected.failed ? ' tool-card__result--error' : ''}`}>
-      {blocks.map((block,index)=>block.type==='text' ? (block.text ? <OverflowFade key={index} lines={10}>
+      {reports?.length ? reports.map((report,index)=><div key={index}><a href={chatRouteHref({type:'session',id:report.threadId},window.location.hash)}>{report.threadId}</a>{report.hostId ? <small>{report.hostId}</small> : null}<OverflowFade lines={10}><pre>{report.text}</pre></OverflowFade>{report.truncated ? <span className="tool-card__result-note">Truncated{report.originalChars!==undefined ? ` · ${report.originalChars.toLocaleString()} original chars` : ''}</span> : null}</div>) : blocks.map((block,index)=>block.type==='text' ? (block.text ? <OverflowFade key={index} lines={10}>
         <pre className={commandLike ? 'tool-card__terminal-output' : undefined}>{commandLike ? <AnsiText text={block.text} /> : block.text}</pre>
       </OverflowFade> : null) : <img key={index} className="tool-card__image" src={`data:${block.source.media_type};base64,${block.source.data}`} alt="Tool output" />)}
       {projected.stderr && <OverflowFade lines={10}><pre className="tool-card__terminal-output ansi-red">{projected.stderr}</pre></OverflowFade>}
-      {projected.wallTimeSeconds !== undefined && <small style={{display: 'block', textAlign: 'right'}}>{projected.wallTimeSeconds} s</small>}
+      {projected.wallTimeSeconds !== undefined && projected.wallTimeSeconds > 0 && <small style={{display: 'block', textAlign: 'right'}}>{projected.wallTimeSeconds} s</small>}
       {result.truncated && result.omittedCharacters != null && (
         <span className="tool-card__result-note">
           {result.omittedCharacters.toLocaleString()} chars hidden
@@ -172,8 +158,7 @@ function ResultBody({ result, commandLike, projected }: {
 }
 
 function hasVisibleResult(result: ToolResultContentBlock, projected: ExecutionResultPresentation): boolean {
-  const text = result.fullText ?? extractResultText(result.content);
-  return Boolean(projected.decoded || text || extractImages(result.content).length > 0 || (result.truncated && result.omittedCharacters != null));
+  return substantiveToolResult(projected) || Boolean(result.truncated && result.omittedCharacters);
 }
 
 function JsonInputPanel({ input }: { input: Record<string, unknown> | string }): JSX.Element {
@@ -195,6 +180,7 @@ function WriteInputPanel({ input }: { input: Record<string, unknown> }): JSX.Ele
 
 export function ToolCard({
   toolName,
+  executionEvidence,
   toolKind,
   toolUseId,
   input,
@@ -204,7 +190,6 @@ export function ToolCard({
   expanded,
   onExpandedChange,
   compact,
-  statusEmoji,
   active = false,
   detailsAvailable = false,
   resultSelected,
@@ -220,16 +205,16 @@ export function ToolCard({
   onDisclosureExpandedChange,
 }: ToolUseBlockProps): JSX.Element {
   const inputObj = useMemo(() => input === undefined ? {} : toolInputObject(input), [input]);
+  const presentation = useMemo(() => header ?? presentTool(toolName,input,toolKind),[header,toolName,input,toolKind]);
   const visual = useMemo(() => {
-    const presentation = header ?? presentTool(toolName, input, toolKind);
     return { kind: presentation.category, icon: presentation.icon, verb: presentation.phrase, target: presentation.target };
-  }, [toolName, input, toolKind, header]);
+  }, [presentation]);
   const execution = useMemo(() => input === undefined ? null : projectExecution(toolName, input, toolKind), [toolName, input, toolKind]);
   const program = useMemo(() => input === undefined ? null : projectToolProgram(toolName,input,toolKind),[toolName,input,toolKind]);
   const originalResultText = result?.fullText ?? (result ? extractResultText(result.content) : '');
   const framedResult = useMemo(() => framedToolResult(originalResultText,result?.source?.toolFrame),[originalResultText,result?.source?.toolFrame]);
   const resultText = framedResult.text;
-  const projectedResult = useMemo(() => resultPresentation ?? projectToolResult(execution,originalResultText,result?.source?.toolFrame,result?.presentation,program),[execution,originalResultText,result?.source?.toolFrame,result?.presentation,resultPresentation,program]);
+  const projectedResult = useMemo(() => operationResult(presentation,resultPresentation ?? projectToolResult(execution,originalResultText,result?.source?.toolFrame,result?.presentation,program)),[presentation,execution,originalResultText,result?.source?.toolFrame,result?.presentation,resultPresentation,program]);
   const operationResults = useMemo(() => program ? programResults(program,resultText) : null,[program,resultText]);
   const projectedChildren = program && (program.operations.length > 1 || !execution || execution.facts.kind !== 'command')
     ? program.operations.map(operation=>({name:operation.name,input:operation.input,header:presentTool(operation.name,operation.input)}))
@@ -237,7 +222,11 @@ export function ToolCard({
   const nestedProgram = Boolean(projectedChildren?.length);
   const executionFacts=execution?.facts ?? header?.execution;
   const displayTarget = visual.kind==='execute' ? visual.target : leftTruncateTarget(visual.target);
-  const status = result?.is_error || projectedResult.failed ? 'failed' : projectedResult.running ? 'running' : statusFor(result, statusEmoji);
+  const state = operationState(executionEvidence?.state ?? result?.source?.toolExecution?.state,result ? {failed:projectedResult.failed,is_error:result.is_error} : undefined,active);
+  const phrase = operationPhrase(presentation,state,projectedResult);
+  const reports = presentation.operation==='thread-wait' && !projectedResult.failed ? threadReports(projectedResult.text) : null;
+  const semanticInput = !['thread-read','thread-wait','sleep','tool-discovery','execution-wait'].includes(presentation.operation ?? '');
+  const patch = toolName.toLowerCase()==='apply_patch' && typeof input==='string' ? patchFileChanges(input) : [];
   const commandLike = visual.kind === 'execute';
   const editLike = visual.kind === 'edit' && typeof inputObj.file_path === 'string';
 
@@ -269,6 +258,7 @@ export function ToolCard({
     if (input === undefined || (detailsAvailable && (input === '' || (typeof input === 'object' && Object.keys(input).length === 0)))) {
       return <div className="tool-card__input" aria-busy="true">Loading tool input…</div>;
     }
+    if (patch.length) return <>{patch.map(file=><FileEditBlock key={file.filePath} {...file} />)}</>;
     if (editLike) {
       return (
         <OverflowFade lines={10}>
@@ -309,23 +299,23 @@ export function ToolCard({
     );
   }
 
-  const summary = `${visual.verb}${displayTarget ? ` ${displayTarget}` : ''}${status === 'failed' ? ' · Failed' : status === 'running' ? ' · Running' : ''}`;
+  const summary = `${phrase}${displayTarget ? ` ${displayTarget}` : ''}${state === 'failed' ? ' · Failed' : state === 'cancelled' ? ' · Cancelled' : ''}`;
   const collectionChildren = nestedProgram ? withinCollection ? renderInputPanel() : <div className="activity-nested-headers">{renderInputPanel()}</div> : null;
-  const collectionTiming = framedResult.wallTimeSeconds !== undefined && !operationResults?.some(result => result.wallTimeSeconds !== undefined)
+  const collectionTiming = framedResult.wallTimeSeconds !== undefined && framedResult.wallTimeSeconds > 0 && !operationResults?.some(result => result.wallTimeSeconds !== undefined)
     ? <ActivityEventItem><small style={{ display: 'block', textAlign: 'right' }}>{framedResult.wallTimeSeconds} s</small></ActivityEventItem> : null;
   const details = nestedProgram
     ? operationResults
       ? renderResult(<>{collectionChildren}{collectionTiming}</>, false)
       : <>{collectionChildren}{result && hasVisibleResult(result, projectedResult)
-        ? <ActivityEventItem>{renderResult(<ResultBody result={result} commandLike={commandLike} projected={projectedResult} />)}</ActivityEventItem> : null}</>
+        ? <ActivityEventItem>{renderResult(<ResultBody result={result} commandLike={commandLike} projected={projectedResult} reports={reports} />)}</ActivityEventItem> : null}</>
     : (
     <div className="tool-card__body">
-      <ActivityPayloadBox className="tool-card__input-wrapper">
+      {semanticInput && <ActivityPayloadBox className="tool-card__input-wrapper">
         {diffStats ? <div className="tool-card__diff-stats">+{diffStats.additions} / -{diffStats.deletions}</div> : null}
         {renderInputPanel()}
-      </ActivityPayloadBox>
+      </ActivityPayloadBox>}
       {result && hasVisibleResult(result, projectedResult)
-        ? renderResult(<ResultBody result={result} commandLike={commandLike} projected={projectedResult} />)
+        ? renderResult(<ResultBody result={result} commandLike={commandLike} projected={projectedResult} reports={reports} />)
         : null}
     </div>
   );
@@ -342,21 +332,27 @@ export function ToolCard({
         collection={nestedProgram}
         icon={<Icon name={visual.icon} />}
         summary={summary}
-        expandedSummary={executionFacts?.kind === 'command' && executionFacts.count === 1 ? `Ran command${status === 'failed' ? ' · Failed' : status === 'running' ? ' · Running' : ''}` : undefined}
+        expandedSummary={executionFacts?.kind === 'command' && executionFacts.count === 1 ? `${operationPhrase({...presentation,phrase:'Ran command'},state,projectedResult)}${state === 'failed' ? ' · Failed' : ''}` : undefined}
         metadata={headerMetadata}
+        summaryContent={presentation.threadTargets?.length ? <>{phrase.replace(/threads?$/, '')}{presentation.threadTargets.map((target,index)=><>{index ? ', ' : ''}<a key={target.id} href={chatRouteHref(target,window.location.hash)}>thread{presentation.threadTargets!.length>1 ? ` ${target.id}` : ''}</a></>)}{state==='failed' ? ' · Failed' : state==='cancelled' ? ' · Cancelled' : ''}</> : undefined}
         memberRefs={[memberRefs, result?.source?.blockId].filter(Boolean).join(' ')}
-        disclosure={{
+        disclosure={semanticInput || nestedProgram || (result && hasVisibleResult(result,projectedResult)) || (detailsAvailable && presentation.hasDetails!==false) ? {
           content: details,
-          regionLabel: `${visual.verb} details`,
+          regionLabel: `${operationPhrase(presentation,'unknown')} details`,
           defaultExpanded,
           expanded,
           onExpandedChange,
-        }}
+        } : undefined}
       />}
     </div>
   );
 }
 
 export function ToolUseBlock(props: ToolUseBlockProps): JSX.Element {
-  return <ToolCard {...props} />;
+  const context=props.operationContext ?? props.result?.source?.toolOperation;
+  const operationName=context?.name ?? props.toolName;
+  const operationInput=context && (typeof context.input==='string' || (context.input && typeof context.input==='object' && !Array.isArray(context.input))) ? context.input as string | Record<string,unknown> : props.input;
+  const operationKind=context?.kind ?? props.toolKind;
+  const observation=toolObservation(operationName,operationInput,operationKind,props.result ? {text:props.result.fullText ?? extractResultText(props.result.content),content:props.result.content,frame:props.result.source?.toolFrame,native:props.result.presentation,failed:props.result.is_error,unloaded:props.detailsAvailable} : undefined,props.header);
+  return <ToolCard {...props} toolName={observation.name} toolKind={observation.kind} input={operationInput===undefined ? undefined : observation.input} header={observation.header} resultPresentation={observation.result} />;
 }

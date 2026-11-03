@@ -1,6 +1,7 @@
 import type { ComponentChildren, JSX } from 'preact';
-import { useId } from 'preact/hooks';
+import { useId, useState } from 'preact/hooks';
 import { DisclosureChevronIcon } from './DisclosureChevronIcon';
+import { OverflowFade } from './OverflowFade';
 
 export type CollapsiblePanelAvailability = 'available' | 'unknown' | 'unavailable';
 
@@ -38,6 +39,7 @@ export function CollapsiblePanel({
 }: CollapsiblePanelProps): JSX.Element {
   const bodyId = useId();
   const titleId = useId();
+  const [scroller, setScroller] = useState<HTMLDivElement | null>(null);
   const available = availability === 'available';
   const showBody = available && expanded;
 
@@ -68,9 +70,11 @@ export function CollapsiblePanel({
       </div>
       {available && persistentContent}
       {showBody ? (
-        <div id={bodyId} className={`collapsible-panel__body${bodyClassName ? ` ${bodyClassName}` : ''}`}>
+        <OverflowFade scroller={scroller} className="collapsible-panel__overflow">
+        <div ref={setScroller} id={bodyId} className={`collapsible-panel__body${bodyClassName ? ` ${bodyClassName}` : ''}`}>
           {children}
         </div>
+        </OverflowFade>
       ) : null}
     </section>
   );

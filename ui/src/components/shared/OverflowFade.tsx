@@ -1,31 +1,34 @@
 import type { ComponentChildren } from 'preact';
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
+import { useCallback, useLayoutEffect, useRef, useState } from 'preact/hooks';
 
-export function OverflowFade({ children, className = '', lines = 10, direction = 'vertical' }: {
+export function OverflowFade({ children, className = '', lines = 10, direction = 'vertical', scroller }: {
   children: ComponentChildren;
   className?: string;
   lines?: number;
   direction?: 'vertical' | 'horizontal';
+  scroller?: HTMLElement | null;
 }): JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [hasAbove, setHasAbove] = useState(false);
   const [hasBelow, setHasBelow] = useState(false);
   const refresh = useCallback(() => {
-    const node = scrollRef.current;
+    const node = scroller === undefined ? scrollRef.current : scroller;
     setHasAbove(Boolean(node && (direction === 'horizontal' ? node.scrollLeft > 1 : node.scrollTop > 1)));
     setHasBelow(Boolean(node && (direction === 'horizontal'
       ? node.scrollLeft + node.clientWidth < node.scrollWidth - 1
       : node.scrollTop + node.clientHeight < node.scrollHeight - 1)));
-  }, [direction]);
+  }, [direction, scroller]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     refresh();
-    const node = scrollRef.current;
-    if (!node || typeof ResizeObserver === 'undefined') return undefined;
-    const observer = new ResizeObserver(refresh);
-    observer.observe(node);
-    if (node.firstElementChild) observer.observe(node.firstElementChild);
-    return () => observer.disconnect();
+    const node = scroller === undefined ? scrollRef.current : scroller;
+    if (!node) return;
+    node.addEventListener('scroll', refresh, { passive: true });
+    const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(refresh);
+    const observe = () => { observer?.disconnect(); observer?.observe(node); for (const child of node.children) observer?.observe(child); refresh(); };
+    observe();
+    const mutation = new MutationObserver(observe); mutation.observe(node, { childList: true });
+    return () => { node.removeEventListener('scroll', refresh); observer?.disconnect(); mutation.disconnect(); };
   }, [children, refresh]);
 
   return (
@@ -33,7 +36,7 @@ export function OverflowFade({ children, className = '', lines = 10, direction =
       className={`overflow-fade${direction === 'horizontal' ? ' overflow-fade--horizontal' : ''}${hasAbove ? ' overflow-fade--above' : ''}${hasBelow ? ' overflow-fade--below' : ''}${className ? ` ${className}` : ''}`}
       style={{ '--overflow-fade-lines': lines } as Record<string, number>}
     >
-      <div ref={scrollRef} className="overflow-fade__scroll" onScroll={refresh}>{children}</div>
+      {scroller === undefined ? <div ref={scrollRef} className="overflow-fade__scroll">{children}</div> : children}
     </div>
   );
 }

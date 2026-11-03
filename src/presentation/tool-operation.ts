@@ -1,0 +1,99 @@
+import type { ToolPresentation } from './tool-presentation.js';
+import type { ToolTransportResult } from './tool-transport.js';
+
+/** Patch contents contain only the source context supplied by the patch author. */
+export function patchFileChanges(patch: string): Array<{filePath:string;oldString:string;newString:string;kind:'edit'|'write'|'delete'|'move'}> {
+  if (!patch.startsWith('*** Begin Patch\n') || !patch.trimEnd().endsWith('*** End Patch')) return [];
+  const files:Array<{filePath:string;oldString:string;newString:string;kind:'edit'|'write'|'delete'|'move'}>=[];
+  let file: {filePath:string;oldString:string;newString:string;kind:'edit'|'write'|'delete'|'move'}|undefined;
+  for(const line of patch.split('\n').slice(1)) {
+    const directive=/^\*\*\* (Update|Add|Delete) File: (.+)$/.exec(line);
+    if(directive) {file={filePath:directive[2],oldString:'',newString:'',kind:directive[1]==='Add'?'write':directive[1]==='Delete'?'delete':'edit'};files.push(file);continue;}
+    if(file && line.startsWith('*** Move to: ')) {file.filePath+=' → '+line.slice(13);file.kind='move';continue;}
+    if(line.startsWith('*** ') || line.startsWith('@@') || !file) continue;
+    if(line.startsWith('-') || line.startsWith(' ')) file.oldString+=line.slice(1)+'\n';
+    if(line.startsWith('+') || line.startsWith(' ')) file.newString+=line.slice(1)+'\n';
+  }
+  return files;
+}
+
+export type OperationState = 'ongoing' | 'completed' | 'failed' | 'cancelled' | 'unknown';
+/** Terminal failure/cancellation is more specific than settlement or historical progress. */
+export function operationState(evidence:OperationState | undefined,result?:{failed?:boolean;is_error?:boolean},active=false):OperationState {
+  if(evidence==='failed' || result?.failed || result?.is_error) return 'failed';
+  if(evidence==='cancelled') return 'cancelled';
+  return evidence ?? (result ? 'completed' : active ? 'ongoing' : 'unknown');
+}
+const neutral:Readonly<Record<string,string>>={read:'Read file',edit:'Edit file',write:'Write file',delete:'Remove file',move:'Move file',search:'Search',execute:'Run command',javascript:'Run JavaScript',fetch:'Fetch resource',browser:'Use browser',think:'Think',other:'Use tool'};
+const ongoing:Readonly<Record<string,string>>={read:'Reading file',edit:'Editing file',write:'Writing file',delete:'Removing file',move:'Moving file',search:'Searching',execute:'Running command',javascript:'Running JavaScript',fetch:'Fetching resource',browser:'Using browser',think:'Thinking',other:'Using tool'};
+export function operationPhrase(header:ToolPresentation,state:OperationState,result?:ToolTransportResult):string {
+  const elapsed=result?.wallTimeSeconds ?? header.observation?.elapsedSeconds;
+  const duration=elapsed!==undefined && elapsed>0 ? ` ${elapsed} s` : '';
+  if(header.operation==='thread-wait') {const reports=result ? threadReports(result.text) : null;const report=reports?.length ? reports.every(report=>report.final)?'final':'update' : header.observation?.report;if(report) return report==='final' ? 'Received response from thread' : 'Received update from thread';}
+  if(header.operation==='thread-wait') return state==='ongoing'?'Waiting for thread':state==='unknown' && !duration?'Wait for thread':`Waited${duration} for thread`;
+  if(header.operation==='execution-wait') return state==='ongoing'?'Waiting for execution':state==='unknown' && !duration?'Wait for execution':`Waited${duration} for execution`;
+  if(header.operation==='sleep') return state==='ongoing'?'Waiting':state==='unknown' && !duration?'Wait':`Waited${duration}`;
+  if(header.operation==='thread-read') return state==='ongoing'?'Reading thread':state==='unknown'?'Read thread':header.phrase;
+  if(header.operation==='tool-discovery') return state==='ongoing'?'Checking available tools':state==='unknown'?'Check available tools':header.phrase;
+  if(header.category==='other' && header.phrase.startsWith('Used ')) return state==='ongoing' ? header.phrase.replace(/^Used /,'Using ') : state==='unknown' ? header.phrase.replace(/^Used /,'Use ') : header.phrase;
+  return state==='ongoing' ? ongoing[header.category] ?? header.phrase : state==='unknown' ? neutral[header.category] ?? header.phrase : header.phrase;
+}
+export function operationResult(header:ToolPresentation,result:ToolTransportResult):ToolTransportResult {
+  if(!result.failed && !result.stderr && header.outputPolicy==='thread-wait' && emptyThreadWait(result.text) && (!Array.isArray(result.content) || result.content.every(block=>block.type==='text'))) return {...result,text:'',content:undefined};
+  if(!result.failed && header.outputPolicy==='acknowledgement' && result.text.trim()==='{}' && !result.stderr && !result.content) return {...result,text:'',wallTimeSeconds:undefined};
+  return result;
+}
+export function substantiveToolResult(result:ToolTransportResult):boolean {
+  return Boolean(result.text.trim() || result.stderr?.trim() || result.failed || (Array.isArray(result.content) && result.content.some(block=>block.type!=='text' || block.text.trim())));
+}
+
+export type ThreadReport = {threadId:string;hostId?:string;text:string;final:boolean;truncated?:boolean;originalChars?:number};
+const record=(value:unknown):value is Record<string,unknown>=>Boolean(value) && typeof value==='object' && !Array.isArray(value);
+const knownKeys=(value:Record<string,unknown>,keys:readonly string[]):boolean=>Object.keys(value).every(key=>keys.includes(key));
+/** Only the native thread-wait report envelope identifies a returned child report. */
+export function threadReports(text:string):ThreadReport[] | null {
+  let value:unknown;
+  try {value=JSON.parse(text);} catch{return null;}
+  if(!value || typeof value!=='object' || Array.isArray(value)) return null;
+  const envelope=value as Record<string,unknown>;
+  if(typeof envelope.timedOut!=='boolean' || !Array.isArray(envelope.polls) || !knownKeys(envelope,['timedOut','wake','polls'])) return null;
+  if(envelope.wake!=null && (!record(envelope.wake) || !knownKeys(envelope.wake,['reason','turnId','threadId','hostId']))) return null;
+  const reports:ThreadReport[]=[];
+  for(const entry of envelope.polls) {
+    if(!entry || typeof entry!=='object') return null;
+    const poll=entry as Record<string,unknown>;
+    if(!knownKeys(poll,['schemaVersion','cursor','revision','changed','thread','latestTurn','latestAssistantMessageId','latestAssistantMessage','latestToolMarkerId','latestToolMarker'])) return null;
+    const turn=poll.latestTurn;
+    if(turn!=null && (!record(turn) || !knownKeys(turn,['id','status','error','startedAt','completedAt','durationMs']))) return null;
+    const marker=poll.latestToolMarker;
+    if(marker!=null && (!record(marker) || !knownKeys(marker,['id','turnId','type','name','status']))) return null;
+    if(poll.error!=null || (turn && typeof turn==='object' && (turn as Record<string,unknown>).error!=null)) return null;
+    const message=poll.latestAssistantMessage;
+    const thread=poll.thread;
+    if(!record(thread) || !knownKeys(thread,['id','hostId','status']) || (thread.status!=null && (!record(thread.status) || !knownKeys(thread.status,['type'])))) return null;
+    if(!message) continue;
+    if(typeof message!=='object') return null;
+    const body=message as Record<string,unknown>;
+    const target=thread as Record<string,unknown>;
+    if(typeof body.text!=='string' || typeof target.id!=='string' || !knownKeys(body,['id','turnId','phase','text','truncated','originalChars']) || !knownKeys(target,['id','hostId','status'])
+      || (body.truncated!==undefined && typeof body.truncated!=='boolean') || (body.originalChars!==undefined && (typeof body.originalChars!=='number' || !Number.isSafeInteger(body.originalChars) || body.originalChars<0))
+      || (target.status!=null && (!record(target.status) || !knownKeys(target.status,['type'])))) return null;
+    if(body.text.trim()) reports.push({threadId:target.id,...(typeof target.hostId==='string'?{hostId:target.hostId}:{}),text:body.text,final:body.phase==='final_answer',...(typeof body.truncated==='boolean'?{truncated:body.truncated}:{}),...(typeof body.originalChars==='number'?{originalChars:body.originalChars}:{})});
+  }
+  return reports;
+}
+
+function emptyThreadWait(text:string):boolean {
+  let value:unknown;
+  try {value=JSON.parse(text);} catch{return false;}
+  const object=(entry:unknown):entry is Record<string,unknown>=>Boolean(entry) && typeof entry==='object' && !Array.isArray(entry);
+  const keys=(entry:Record<string,unknown>,allowed:string[])=>Object.keys(entry).every(key=>allowed.includes(key));
+  if(!object(value) || !keys(value,['timedOut','wake','polls']) || typeof value.timedOut!=='boolean' || !Array.isArray(value.polls)) return false;
+  if(value.wake!=null && (!object(value.wake) || !keys(value.wake,['reason','turnId','threadId','hostId']))) return false;
+  return value.polls.every(poll=>object(poll) && keys(poll,['schemaVersion','cursor','revision','changed','thread','latestTurn','latestAssistantMessageId','latestAssistantMessage','latestToolMarkerId','latestToolMarker'])
+    && poll.latestAssistantMessage==null
+    && object(poll.thread) && keys(poll.thread,['id','hostId','status'])
+    && object(poll.thread.status) && keys(poll.thread.status,['type'])
+    && (poll.latestTurn==null || (object(poll.latestTurn) && poll.latestTurn.error==null && keys(poll.latestTurn,['id','status','error','startedAt','completedAt','durationMs'])))
+    && (poll.latestToolMarker==null || (object(poll.latestToolMarker) && keys(poll.latestToolMarker,['id','turnId','type','name','status']))));
+}

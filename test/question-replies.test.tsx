@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { cleanup, render } from './helpers/dom.js';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { UserBubble } from '../ui/src/components/message-blocks/UserBubble';
 
-afterEach(cleanup);
+beforeEach(() => vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }));
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 const envelope = `<send_user_message_question_reply>\n${JSON.stringify([
   { questionItemId: '["request_user_input_async","call_example",0]', question: 'Which option?', answer: 'This one' },

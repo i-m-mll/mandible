@@ -1109,7 +1109,7 @@
   max-width: 100%;
 }
 
-.auth-change-breakdown > .auth-change-breakdown__body {
+.auth-change-breakdown > .collapsible-panel__overflow > .auth-change-breakdown__body {
   display: flex;
   flex-direction: column;
   gap: 12px;

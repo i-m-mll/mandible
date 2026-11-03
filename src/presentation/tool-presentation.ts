@@ -1,3 +1,4 @@
+import { patchFileChanges } from './tool-operation.js';
 import { projectToolProgram } from './tool-program.js';
 import { projectExecution, type ExecutionFacts } from './execution-presentation.js';
 export type PresentationIcon = 'toolRead' | 'toolEdit' | 'toolWrite' | 'toolDelete' | 'toolMove' | 'toolSearch' | 'toolExecute' | 'toolJavascript' | 'history' | 'thought' | 'toolFetch' | 'toolBrowser' | 'toolSwitchMode' | 'monitor' | 'chat' | 'terminal' | 'info' | 'issues';
@@ -8,6 +9,11 @@ export type ToolCategory =
   | 'javascript' | 'wait' | 'think' | 'fetch' | 'browser' | 'switch_mode' | 'other';
 
 export type ToolPresentation = {
+  operation?: string;
+  hasDetails?: boolean;
+  observation?: {elapsedSeconds?:number;report?:'final' | 'update'};
+  threadTargets?: Array<{type:'conversation' | 'session';id:string}>;
+  outputPolicy?: 'acknowledgement' | 'thread-wait' | 'sleep';
   category: ToolCategory;
   icon: IconName;
   phrase: string;
@@ -39,6 +45,17 @@ const DEFINITIONS: Record<ToolCategory, { icon: IconName; phrase: string; plural
 const TOOL_NAME_CATEGORIES: Readonly<Record<string, ToolCategory>> = {
   bash: 'execute',
   exec_command: 'execute',
+  read_file: 'read',
+  mcp__filesystem__read_file: 'read',
+  mcp__filesystem__read_text_file: 'read',
+  mcp__filesystem__edit_file: 'edit',
+  mcp__filesystem__write_file: 'write',
+  mcp__filesystem__search_files: 'search',
+  edit_file: 'edit',
+  write_file: 'write',
+  apply_patch: 'edit',
+  search_files: 'search',
+  skill: 'other',
   exec: 'other',
   read: 'read',
   edit: 'edit',
@@ -67,7 +84,7 @@ const TOOL_KIND_PRESENTATIONS: Readonly<Record<string, ToolPresentation>> = {
 };
 
 function normalizedName(value: string | undefined): string {
-  return value?.trim().toLowerCase() ?? '';
+  return value?.trim().toLowerCase().replace(/^functions\./,'') ?? '';
 }
 
 export function classifyTool(toolName: string): ToolCategory {
@@ -81,6 +98,24 @@ export function presentTool(
   inputValue: Record<string, unknown> | string = {},
   toolKind?: string,
 ): ToolPresentation {
+  const name = normalizedName(toolName);
+  const object = toolInputObject(inputValue);
+  if(name==='__tool_discovery') return {operation:'tool-discovery',category:'search',icon:'toolSearch',phrase:'Checked available tools',target:''};
+  const thread = /^(?:mcp__)?codex_app__(read_thread|wait_threads)$/.exec(name);
+  if(thread) {
+    const ids = thread[1]==='read_thread' ? [object.threadId ?? object.thread_id] : Array.isArray(object.targets) ? object.targets.map(target=>target && typeof target==='object' ? (target as Record<string,unknown>).threadId : undefined) : object.threadIds ?? object.thread_ids;
+    const threadTargets = (Array.isArray(ids) ? ids : []).filter((id):id is string=>typeof id==='string' && Boolean(id)).map(id=>({type:'session' as const,id}));
+    return {operation:thread[1]==='read_thread'?'thread-read':'thread-wait',category:thread[1]==='read_thread'?'read':'wait',icon:thread[1]==='read_thread'?'chat':'history',phrase:thread[1]==='read_thread'?'Read thread':'Wait for thread',target:'',threadTargets,...(thread[1]==='wait_threads'?{outputPolicy:'thread-wait' as const}:{})};
+  }
+  if(['clock.sleep','clock__sleep','mcp__clock__sleep','sleep'].includes(name)) return {operation:'sleep',category:'wait',icon:'history',phrase:'Wait',target:'',outputPolicy:'sleep'};
+  if(['wait'].includes(name)) return {operation:'execution-wait',category:'wait',icon:'history',phrase:'Wait for execution',target:''};
+  if(name==='apply_patch') {
+    const patch = typeof inputValue==='string' ? inputValue : typeof object.patch==='string' ? object.patch : '';
+    const changes = patchFileChanges(patch);
+    const category = changes.length && changes.every(change=>change.kind===changes[0].kind) ? changes[0].kind : 'edit';
+    const definition=DEFINITIONS[category];
+    return {operation:`file-${category}`,category,icon:definition.icon,phrase:changes.length>1?definition.plural:definition.phrase,target:changes.map(file=>file.filePath).join(', '),...(changes.length ? {outputPolicy:'acknowledgement' as const} : {})};
+  }
   const program = projectToolProgram(toolName, inputValue, toolKind);
   const children = program?.operations.map(operation=>({name:operation.name,header:presentTool(operation.name,operation.input)}));
   if (program && !program.operations.every(operation => projectExecution(operation.name,operation.input)?.facts.kind === 'command')) {
@@ -92,7 +127,7 @@ export function presentTool(
   const execution = projectExecution(toolName, inputValue, toolKind);
   if (execution) {
     const command = execution.facts.kind === 'command';
-    return {category: command ? 'execute' : 'javascript', icon: command ? 'toolExecute' : 'toolJavascript',
+    return {operation:command?'command':'javascript',category: command ? 'execute' : 'javascript', icon: command ? 'toolExecute' : 'toolJavascript',
       phrase: command ? execution.operations.length === 1 ? 'Ran' : 'Ran several commands' : 'Ran JavaScript',
       target: command && execution.operations.length === 1 ? execution.operations[0].command : '', execution: execution.facts,...(children && children.length>1 ? {children} : {})};
   }
@@ -104,6 +139,7 @@ export function presentTool(
   if (category) {
     const definition = DEFINITIONS[category];
     return {
+      operation:['read','edit','write','delete','move'].includes(category)?`file-${category}`:category,
       category,
       icon: definition.icon,
       phrase: category === 'other' ? 'Used ' + toolName.trim() : definition.phrase,
@@ -182,31 +218,32 @@ export function toolTarget(toolName: string, inputValue: Record<string, unknown>
   return '';
 }
 
-export type ToolOperationInput = {name: string; toolKind?: string; input?: Record<string, unknown> | string; execution?: ExecutionFacts; operations?: ToolRunFact[]};
-export type ToolRunFact = { category: ToolCategory; presentation: ToolPresentation; count: number; names: string[] };
+export type ToolOperationInput = {header?:ToolPresentation;name: string; toolKind?: string; input?: Record<string, unknown> | string; execution?: ExecutionFacts; operations?: ToolRunFact[]};
+export type ToolRunFact = { operation?:string; category: ToolCategory; presentation: ToolPresentation; count: number; names: string[] };
 export function toolRunFacts(tools: readonly ToolOperationInput[]): ToolRunFact[] {
   return mergeToolRunFacts([], tools.flatMap(tool => {
     if (tool.operations) return tool.operations;
-    const projected = presentTool(tool.name, tool.input, tool.toolKind);
+    const projected = tool.header ?? presentTool(tool.name, tool.input, tool.toolKind);
     const execution = tool.execution ?? projected.execution;
     if (projected.operations) return projected.operations;
     const category = execution ? execution.kind === 'command' ? 'execute' : 'javascript' : projected.category;
-    const presentation = {category, icon: DEFINITIONS[category].icon, phrase: category === 'other' ? projected.phrase : DEFINITIONS[category].phrase, target: '', ...(execution ? {execution} : {})};
-    return [{category, presentation, count: execution?.kind === 'command' ? execution.count : 1, names: [normalizedName(tool.name)]}];
+    const phrase = execution?.kind==='command' ? DEFINITIONS.execute.phrase : projected.operation ? projected.phrase : category === 'other' ? projected.phrase : DEFINITIONS[category].phrase;
+    const presentation = {...projected,children:undefined,operations:undefined,threadTargets:undefined,category, icon: projected.icon, phrase, target: '', ...(execution ? {execution} : {})};
+    return [{operation:projected.operation ?? category,category, presentation, count: execution?.kind === 'command' ? execution.count : 1, names: [normalizedName(tool.name)]}];
   }));
 }
 export function mergeToolRunFacts(left: readonly ToolRunFact[], right: readonly ToolRunFact[]): ToolRunFact[] {
-  const counts = new Map(left.map(fact => [fact.category, { ...fact, names: [...fact.names] }]));
+  const counts = new Map(left.map(fact => [fact.operation ?? fact.category, { ...fact, names: [...fact.names] }]));
   for (const fact of right) {
-    const prior = counts.get(fact.category);
+    const prior = counts.get(fact.operation ?? fact.category);
     if (prior) { prior.count += fact.count; prior.names = [...new Set([...prior.names, ...fact.names])]; }
-    else counts.set(fact.category, { ...fact, names: [...fact.names] });
+    else counts.set(fact.operation ?? fact.category, { ...fact, names: [...fact.names] });
   }
   return [...counts.values()];
 }
 export function summarizeToolRunFacts(facts: readonly ToolRunFact[]): string[] {
   return facts.map(({presentation,count,names}) => {
-    const phrase = count === 1 ? presentation.phrase : presentation.category === 'other'
+    const phrase = count === 1 ? presentation.phrase : presentation.operation==='thread-read' ? 'Read threads' : presentation.operation==='thread-wait' ? 'Waited for threads' : presentation.operation==='tool-discovery' ? 'Checked available tools' : presentation.operation==='execution-wait' ? 'Waited for executions' : presentation.operation==='sleep' ? 'Waited several times' : presentation.category === 'other'
       ? names.length === 1 ? presentation.phrase + ' several times' : DEFINITIONS.other.plural
       : DEFINITIONS[presentation.category].plural;
     return phrase.charAt(0).toLowerCase() + phrase.slice(1);

@@ -3,6 +3,7 @@ export type ReadingDomAnchor = {
   key: string; members: readonly string[]; offset: number;
   point: { node: Node; offset: number; path: number[] } | null;
   element: Element | null; protectedKeys: ReadonlySet<string>;
+  edge?: 'bottom'; elementPath?: number[]; disclosureEnd?: boolean; disclosureRevision?: string;
 };
 function pathFrom(row: Element, node: Node): number[] {
   const path: number[] = [];
@@ -47,6 +48,11 @@ export function captureReadingDomAnchor(scroller: HTMLElement, boxes: ReadonlyMa
 }
 /** Resolve only within the retained semantic row; never search transcript text. */
 export function readingDomAnchorOffset(anchor: ReadingDomAnchor, row: HTMLElement): number {
+  if (anchor.edge === 'bottom') {
+    let element: Node | undefined = anchor.element && row.contains(anchor.element) ? anchor.element : row;
+    if (element === row && anchor.elementPath) for (const index of anchor.elementPath) element = element?.childNodes[index];
+    return (element instanceof Element ? element : row).getBoundingClientRect().bottom - row.getBoundingClientRect().top;
+  }
   let node: Node | undefined = anchor.point?.node;
   if (anchor.point && (!node || !row.contains(node))) {
     node = row;
@@ -55,4 +61,9 @@ export function readingDomAnchorOffset(anchor: ReadingDomAnchor, row: HTMLElemen
   const text = anchor.point && node ? pointBox(node, anchor.point.offset) : undefined;
   const element = anchor.element && row.contains(anchor.element) ? anchor.element : row;
   return (text?.top ?? element.getBoundingClientRect().top) - row.getBoundingClientRect().top;
+}
+
+export function captureDisclosureDomAnchor(key: string, row: HTMLElement, element: HTMLElement, scroller: HTMLElement, members: readonly string[], protectedKeys: ReadonlySet<string>): ReadingDomAnchor {
+  return { key, members, point: null, element, edge: 'bottom', elementPath: pathFrom(row, element),
+    offset: element.getBoundingClientRect().bottom - scroller.getBoundingClientRect().top, protectedKeys };
 }

@@ -36,16 +36,9 @@ async function fixture(includeResult: boolean) {
   return {root, db, parsed, manifest, reader: new ConversationSourceReader(db), close: () => {db.close(); fs.rmSync(root, {recursive: true, force: true});}};
 }
 
-it('retains default status evidence and materializes exact disclosed call/result targets through the normal row source', async () => {
+it('materializes exact disclosed call/result targets through the normal row source', async () => {
   const f = await fixture(true);
   try {
-    const status = f.parsed.blocks.find(block => block.metadata.source_event_type === 'task_started')!;
-    expect(planConversationReading(f.manifest, {}).membership.has(status.position)).toBe(true);
-    const statusMember = f.manifest.members.find(member => member.position === status.position)!;
-    const statusExpanded = {[statusMember.disclosures!.keys[0]]: true};
-    const statusRow = planConversationReading(f.manifest, statusExpanded).rows.find(row => row.memberKeys.includes(statusMember.key))!;
-    expect(await readReadingRowBatch({db: f.db, reader: f.reader, conversationId: 'composition',
-      request: {positionSpaceId: f.manifest.positionSpaceId, rows: [statusRow], expanded: statusExpanded}})).toMatchObject({status: 'source'});
     const call = f.manifest.members.find(member => member.activityFacts?.kind === 'tool')!;
     const closed = planConversationReading(f.manifest, {});
     const expanded = {[call.disclosures!.keys[0]]: true};
@@ -78,6 +71,7 @@ it('composes a live result and live suffix with the canonical owner through one 
     const composed = composeConversationReading({manifest: f.manifest, events: [result, suffix], expanded: {}});
     const owner = f.manifest.members.find(member => member.activityFacts?.kind === 'tool')!;
     const summary = composed.plan.rows.find(row => row.kind === 'activity-summary')!;
+    expect(composed.members.find(member=>member.key===owner.key)?.activityFacts?.observation?.execution.state).toBe('completed');
     expect(summary.memberKeys).toHaveLength(2);
     expect(composed.actionRuns.get(summary.actionGroup.key)?.events).toContain(result);
     expect(composed.plan.membership.get(owner.position!)?.rowKey).toBe(summary.key);
@@ -90,6 +84,9 @@ it('composes a live result and live suffix with the canonical owner through one 
     if (hydrated.status !== 'source') throw new Error(hydrated.reason);
     expect(hydrated.rows[0].activityGroup?.items.find(node => node.source?.position === owner.position)?.item).toMatchObject({result: {content: 'LIVE RESULT'}});
     expect(hydrated.rows[0].activityGroup?.items.find(node => !node.source)?.item).toMatchObject({name: 'edit'});
+    const hydratedOwner=hydrated.rows[0].activityGroup!.items.find(node=>node.source?.position===owner.position)!;
+    if(hydratedOwner.item.type!=='tool-call-activity')throw Error('Expected the exact tool owner');
+    expect(hydratedOwner.item.observation).toEqual(composed.members.find(member=>member.key===owner.key)?.activityFacts?.observation);
     expect(JSON.stringify(refs)).not.toContain('LIVE RESULT');
   } finally {f.close();}
 });

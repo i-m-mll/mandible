@@ -60,7 +60,6 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
   const clearance = Math.max(16, overlay?.scrollClearance ?? 0);
   const handled = useRef<string | null>(null);
   const restoredRow = useRef(false);
-  const pendingDisclosure = useRef<{ position: number; offset: number; summary: ReadingSummaryTarget; next: boolean; token: string } | null>(null);
   const appliedRows = useRef<readonly import('./readingMeasurement').MeasurementRow[]>([]);
   const focusAfterInitial = useRef<ConversationSourceCoordinate | null>(null);
   const initialState = useMemo(() => readReadingState(scope), [scope]);
@@ -146,7 +145,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
   const onRange = useCallback((demand: import('./readingBodyDemand').ReadingBodyDemand) => latest.current.complete.onRange(demand), []);
   const disclosures = expandedBlocks;
   const viewport = useReadingViewport({ scope, positionSpaceId: space, onInput: () => {
-    pendingDisclosure.current = null; focusAfterInitial.current = null; restoredRow.current = true;
+    focusAfterInitial.current = null; restoredRow.current = true;
     const queued = latest.current.transcript?.command ?? latest.current.props.navigationTarget;
     if (queued && handled.current !== queued.key) {
       handled.current = queued.key; latest.current.props.onNavigationResult?.({ key: queued.key, status: 'cancelled' });
@@ -268,24 +267,10 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
   })])), [complete.bodies, complete.actionRuns, exportRow, props.onSelectMessageInfo, props.selectedMessageId]);
   const revealDisclosure = (row: ReadingRow, next: boolean, trigger?: HTMLElement) => {
     viewport.pinDisclosure(row.key, trigger);
-    const position = row.sources[0]?.position;
-    const offset = trigger && viewport.scrollRef.current ? trigger.getBoundingClientRect().top - viewport.scrollRef.current.getBoundingClientRect().top : viewport.rowOffset(row.key) ?? 0;
-    if (position !== undefined && row.disclosureOwner !== null) pendingDisclosure.current = { position, offset, summary: { rowKey: row.key, disclosureOwner: row.disclosureOwner }, next, token: `disclosure:${crypto.randomUUID()}` };
     setExpandedBlocks(current => boundDisclosures({ ...current, [`group:${row.disclosureOwner}`]: next }));
   };
-  useEffect(() => {
-    const pending = pendingDisclosure.current;
-    if (!pending || expandedBlocks[`group:${pending.summary.disclosureOwner}`] !== pending.next) return;
-    const summary = (complete.plan?.rows ?? projection.rows).find(row => row.key === pending.summary.rowKey && row.kind === 'activity-summary' && row.disclosureOwner === pending.summary.disclosureOwner);
-    if (summary?.activityGroup?.expanded !== pending.next) return;
-    pendingDisclosure.current = null;
-    const target: ConversationSourceCoordinate = { conversationId: scope, positionSpaceId: space, position: pending.position, offset: pending.offset, subtarget: 'summary' };
-    void viewport.reveal({ token: pending.token, origin: 'disclosure-pin', preserveReaderPin: true, target, summary: pending.summary }).then(result => {
-      if (result.status !== 'revealed' && result.status !== 'cancelled') { observeNotice('disclosure-pin', result, target); setNotice(readingNavigationFailureMessage(result.status)); }
-    });
-  }, [expandedBlocks, complete.plan, projection, viewport.reveal, scope, space]);
   const jump = () => {
-    restoredRow.current = true; pendingDisclosure.current = null; focusAfterInitial.current = null;
+    restoredRow.current = true; focusAfterInitial.current = null;
     void viewport.reveal({ token: `latest:${crypto.randomUUID()}`, end: true, origin: 'latest' }).then(result => { if (result.status === 'revealed') void latest.current.props.onJumpToLatest?.(); });
   };
   return <MessageLinkContext.Provider value={props.onCopyMessageLink ?? null}>
