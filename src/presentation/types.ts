@@ -24,6 +24,7 @@ export type ToolCallActivity = {
   operations?: import('./tool-presentation.js').ToolRunFact[];
   observation?: import('./operation-observation.js').CompactOperationObservation;
   operationContext?: import('../parsers/types.js').ToolOperationContext;
+  callSource?: PersistedBlockSource;
   executionEvidence?: import('../parsers/types.js').ToolExecutionEvidence;
   result: ToolResultContentBlock | null;
   turnId?: string;
@@ -51,6 +52,8 @@ export type PersistedBlockSource = {
   blockId: string;
   toolFrame?: import('./tool-transport.js').NativeResultFrame;
   toolOperation?: import('../parsers/types.js').ToolOperationContext;
+  toolTargets?: import('./activity-targets.js').ActivityTarget[];
+  toolOperationKind?: 'subagent-create'|'subagent-resume';
   toolExecution?: import('../parsers/types.js').ToolExecutionEvidence;
   position?: number;
   /** False when a display projection omitted expandable block payload. */

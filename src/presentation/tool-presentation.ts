@@ -1,7 +1,7 @@
 import { patchFileChanges } from './tool-operation.js';
 import { projectToolProgram } from './tool-program.js';
 import { projectExecution, type ExecutionFacts } from './execution-presentation.js';
-export type PresentationIcon = 'toolRead' | 'toolEdit' | 'toolWrite' | 'toolDelete' | 'toolMove' | 'toolSearch' | 'toolExecute' | 'toolJavascript' | 'history' | 'thought' | 'toolFetch' | 'toolBrowser' | 'toolSwitchMode' | 'monitor' | 'chat' | 'terminal' | 'info' | 'issues';
+export type PresentationIcon = 'workSettings' | 'subagent' | 'toolRead' | 'toolEdit' | 'toolWrite' | 'toolDelete' | 'toolMove' | 'toolSearch' | 'toolExecute' | 'toolJavascript' | 'history' | 'thought' | 'toolFetch' | 'toolBrowser' | 'toolSwitchMode' | 'monitor' | 'chat' | 'terminal' | 'info' | 'issues';
 type IconName = PresentationIcon;
 
 export type ToolCategory =

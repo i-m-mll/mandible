@@ -240,6 +240,7 @@ export function summarizeActivityRun(items:readonly DisplayActivityItem[],_prese
 }
 
 export function activityIconName(item: DisplayActivityItem): PresentationIcon {
+  if(item.type==='activity'&&item.local_command)return 'workSettings';
   if (item.type === 'provider-directive') return item.directive.kind === 'memory-citation' ? 'history' : 'chat';
   if (item.type === 'tool-call-activity' && item.operations?.length) return item.operations[0].presentation.icon;
   if (item.type === 'tool-call-activity') return item.execution?.kind === 'command' ? 'toolExecute' : (item.header ?? presentTool(item.name, item.input, item.toolKind)).icon;

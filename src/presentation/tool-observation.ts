@@ -47,9 +47,9 @@ export function operationObservationForTool(item:ToolCallActivity):CompactOperat
   const native=projectToolProgram(name,value,kind);
   const children=native&&native.operations.length>1?native.operations.map((operation,index)=>operationObservationForTool({type:'tool-call-activity',id:item.id+':'+index,name:operation.name,input:operation.input,result:null,sessionId:item.sessionId,
     executionEvidence:{state:'unknown',provenance:execution.provenance}})):undefined;
-  return compactOperationObservation({operation:header.operation??(children?'batch':header.category),nativeName:observation.name,
+  return compactOperationObservation({operation:item.callSource?.toolOperationKind??result?.source?.toolOperationKind??header.operation??(children?'batch':header.category),nativeName:observation.name,
     ...(header.target&&!['execute','javascript'].includes(header.category)&&header.target.length<=256?{subject:header.target}:{}),
-    targets:(header.threadTargets??[]).filter(target=>target.type==='session').map(target=>({kind:'thread' as const,provider:'codex' as const,sessionId:target.id})),
+    targets:[...(item.callSource?.toolTargets??[]),...(result?.source?.toolTargets??[]),...(header.threadTargets??[]).filter(target=>target.type==='session').map(target=>({kind:'thread' as const,provider:'codex' as const,sessionId:target.id}))],
     execution:observation.result?.failed||result?.is_error?{...execution,state:'failed'}:execution,payload:{state:header.hasDetails===false?'none':'unloaded'},
     ...(header.observation?.elapsedSeconds===undefined?{}:{timing:{elapsedSeconds:header.observation.elapsedSeconds,scope:observation.result?.timingScope??'wrapper'}}),
     ...(header.observation?.report?{reportKind:header.observation.report}:{}),...(children?{children}:{})});
@@ -68,7 +68,7 @@ export function presentationForObservation(observation:OperationObservation,kind
     ...(observation.operation==='command'?{execution:{kind:'command',count:1,shells:[null],forwarding:['direct']}}:{})};
 }
 
-export type OperationReceipt={result:ToolTransportResult;execution?:import('../parsers/types.js').ToolExecutionEvidence};
+export type OperationReceipt={targets?:ActivityTarget[];result:ToolTransportResult;execution?:import('../parsers/types.js').ToolExecutionEvidence};
 export function mergeOperationExecution(current:import('../parsers/types.js').ToolExecutionEvidence,incoming:import('../parsers/types.js').ToolExecutionEvidence|undefined,failed=false):import('../parsers/types.js').ToolExecutionEvidence {
   if(failed||incoming?.state==='failed')return {state:'failed',provenance:incoming?.provenance??'paired-result'};
   if(current.state==='failed'||current.state==='cancelled')return current;
@@ -81,7 +81,7 @@ export function observeOperationReceipt(current:CompactOperationObservation,rece
   const header=presentationForObservation(current);
   const result=operationResult(header,receipt.result);
   const reports=current.operation==='thread-wait'?threadReports(result.text):null;
-  const targets=[...current.targets,...(reports??[]).map(report=>({kind:'thread' as const,provider:'codex' as const,sessionId:report.threadId}))];
+  const targets=[...current.targets,...(receipt.targets??[]),...(reports??[]).map(report=>({kind:'thread' as const,provider:'codex' as const,sessionId:report.threadId}))];
   const uniqueTargets=new Map<string,ActivityTarget>();for(const target of targets)if(!uniqueTargets.has(activityTargetKey(target)))uniqueTargets.set(activityTargetKey(target),target);
   return {...current,execution:mergeOperationExecution(current.execution,receipt.execution,result.failed),
     payload:{state:current.payload.state==='unloaded'||substantiveToolResult(result)?'unloaded':'none'},
