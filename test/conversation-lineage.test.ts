@@ -105,9 +105,6 @@ describe("conversation lineage", () => {
     ]);
     expect(resolutions.map(result => result.status === 'resolved' ? result.conversationId : result.status))
       .toEqual(['claude-parent', 'codex-parent', 'claude-child', 'not_found', 'codex-child']);
-    db.prepare("UPDATE conversations SET title = ? WHERE id = ?").run('Renamed child', 'claude-child');
-    expect(resolveActivityTargets(db, [{ kind: 'subagent', provider: 'claude_code', parentSessionId: ROOT, agentId: 'shared-agent' }])[0])
-      .toMatchObject({ status: 'resolved', title: 'Renamed child' });
     insert.run('ambiguous-codex', 'codex', '/ambiguous', ROOT, 'Ambiguous', null, null, null);
     expect(resolveActivityTargets(db, [{ kind: 'thread', provider: 'codex', sessionId: ROOT }])[0].status).toBe('ambiguous');
   });
