@@ -58,8 +58,8 @@ export class IngestionPathScheduler {
     if (failures.length) throw new AggregateError(failures, `Failed to ingest ${failures.length} source(s)`);
   }
 
-  background(operation: (cooperate: () => Promise<void>) => Promise<void>): Promise<void> {
-    return this.queue.enqueue(operation);
+  background(operation: (cooperate: () => Promise<void>) => Promise<void>, priority = false): Promise<void> {
+    return this.queue.enqueue(operation, priority);
   }
 
   async inline(filePath: string, forceFull = false): Promise<void> {
