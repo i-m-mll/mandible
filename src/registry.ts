@@ -1,3 +1,4 @@
+import { exactAgentRef, parseExactAgentRef } from "./ambient-provider-identity.js";
 import { mutateWorkUnit } from "./work-unit-history.js";
 import { DOMAIN_EVENTS } from "./contracts.js";
 import { execFile } from "node:child_process";
@@ -898,7 +899,8 @@ export class SessionRegistry {
     if (!parent) {
       return null;
     }
-    const childId = input.id ?? crypto.randomUUID();
+    const childId = this.childAttachmentId(parent, input.id ?? crypto.randomUUID(), input.app ?? parent.app);
+    if (!childId) return null;
     const child = this.registerSession({
       id: childId,
       app: input.app ?? parent.app,
@@ -913,15 +915,26 @@ export class SessionRegistry {
   }
 
   updateChildStatus(parentId: string, childId: string, status: SessionStatus): Session | null {
-    const child = this.getSession(childId);
+    const parent = this.getSession(parentId);
+    const attachmentId = parent ? this.childAttachmentId(parent, childId, parent.app) : null;
+    const child = attachmentId ? this.getSession(attachmentId) : null;
     if (!child || child.parent_id !== parentId) {
       return null;
     }
-    const updated = this.updateSession(childId, { status });
+    const updated = this.updateSession(child.id, { status });
     if (updated && (status === "ended" || status === "dead")) {
       broadcast(DOMAIN_EVENTS.SESSION_CHILD_ENDED, { parent_id: parentId, child: updated });
     }
     return updated;
+  }
+
+  private childAttachmentId(parent: Session, childId: string, app: string): string | null {
+    if (app !== "claude") return childId;
+    const parentIdentity = parseExactAgentRef(parent.id);
+    const sessionId = parentIdentity?.provider === "claude" ? parentIdentity.session_id : parent.conversation_id ?? parent.id;
+    const childIdentity = parseExactAgentRef(childId);
+    if (childIdentity) return childIdentity.provider === "claude" && childIdentity.session_id === sessionId ? childId : null;
+    return exactAgentRef({ provider: "claude", agent_id: childId, session_id: sessionId });
   }
 
   private buildSessionFilter(options: SessionListOptions): {

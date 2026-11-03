@@ -1,7 +1,8 @@
+import { exactAgentRef } from "./ambient-provider-identity.js";
 import { GLOBAL_GRANT_SCHEMA_SQL, GLOBAL_GRANT_INDEX_SQL } from "./permissions/schema.js";
 import { RESPONSIBILITY_SCHEMA_SQL } from "./responsibility-schema.js";
 import { migrateLocalAuthorizationEvidence } from "./local-authorization-migration.js";
-import { WORK_UNIT_ASSIGNMENT_SCHEMA_SQL, seedLegacyAssignmentTargets } from "./work-unit-assignment-schema.js";
+import { WORK_UNIT_ASSIGNMENT_SCHEMA_SQL, seedLegacyAssignmentTargets, EXACT_AGENT_WORK_UNIT_SCHEMA_SQL, recoverHistoricalExactAssignments } from "./work-unit-assignment-schema.js";
 import { CHILD_RETENTION_SCHEMA_SQL } from "./conversations/retention-schema.js";
 import { AUTH_HOOK_EXECUTIONS_TABLE_SQL, AUTH_HOOK_EXECUTIONS_INDEX_SQL } from './auth-hook-schema.js';
 import { LEDGER_ORIGIN_SCHEMA_SQL, MANAGED_SESSION_ORIGIN_INDEX_SQL } from "./ledger-origin-schema.js";
@@ -2271,6 +2272,7 @@ export const MIGRATIONS: readonly Migration[] = [
     "INSERT INTO user_settings SELECT user_id, key, value, revision, updated_at FROM user_settings_v231",
     "DROP TABLE user_settings_v231",
   ] },
+  { version: 233, name: "exact_agent_work_unit_identity", statements: EXACT_AGENT_WORK_UNIT_SCHEMA_SQL },
 ];
 
 /**
@@ -2485,6 +2487,7 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
         }
         if (migration.version === 190) loadHistoricalMigrations().preserveLegacyDocuments(db);
         if (migration.version === 223) seedLegacyAssignmentTargets(db);
+        if (migration.version === 233) recoverHistoricalExactAssignments(db);
         setVersion.run(SCHEMA_VERSION_KEY, String(migration.version));
       }
     })();
@@ -2533,6 +2536,7 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
  * same path production takes; a fresh database is only ever created at head.
  */
 export function migrate(db: Db, through: number = CURRENT_SCHEMA_VERSION): void {
+  db.function("mandible_exact_agent_ref", { deterministic: true }, (provider: unknown, agent: unknown) => exactAgentRef({ provider: String(provider), agent_id: String(agent), session_id: null }));
   db.function("mandible_artifact_metadata", { deterministic: true }, artifactDescriptiveMetadataJson);
   db.function("mandible_sha256", { deterministic: true }, (value: unknown) =>
     createHash("sha256").update(String(value)).digest("hex"));

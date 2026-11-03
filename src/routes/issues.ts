@@ -1,3 +1,4 @@
+import { exactAgentRef } from "../ambient-provider-identity.js";
 import { listIssueHierarchyEdges } from "../ledger/issue-graph.js";
 import { responsibilityActor, sameResponsibilitySession, sessionResponsibilityActor } from "../responsibility.js";
 import type { LedgerReader } from "../ledger-reads/index.js";
@@ -915,7 +916,7 @@ export function registerIssueRoutes(
       : freshSessionAliasResolver((resolve) => {
         const db = getDb();
         currentParentRoleHolder(db, issueId, resolve);
-        if (req.ambient_identity?.provider_session_id) resolve(db, req.ambient_identity.provider_session_id);
+        if (req.ambient_identity) { const ref = exactAgentRef(req.ambient_identity); if (ref) resolve(db, ref); }
       });
 
   // GET /api/issues — list repo summaries with optional filtering
@@ -1120,7 +1121,9 @@ export function registerIssueRoutes(
 
   server.post("/api/ledger/issues/:issueId/parent-role", async (req, res) => {
     const body = getBody(req) ?? {};
-    const sessionId = typeof body.session_id === "string" ? body.session_id.trim() : "";
+    const selectedSessionId = typeof body.session_id === "string" ? body.session_id.trim() : "";
+    const caller = responsibilityActor(req);
+    const sessionId = selectedSessionId === req.ambient_identity?.agent_id ? caller.session_id ?? selectedSessionId : selectedSessionId;
     const mechanism = typeof body.mechanism === "string" && body.mechanism.trim()
       ? body.mechanism.trim()
       : "unknown";
@@ -1152,9 +1155,7 @@ export function registerIssueRoutes(
     const successor = handingOff ? sessionResponsibilityActor(db, sessionId) : actor;
     if (!successor) { sendJson(res, 400, { error: "Successor user is unresolved." }); return; }
     const checkpoint = recordParentRoleCheckpoint(req, issueId, (now) => ({
-      // `session_id` stays exactly what the caller supplied; existing readers
-      // (including the archive path's holder protection) depend on it.
-      session_id: sessionId,
+      session_id: resolution.agent_ref ?? sessionId,
       resolved_session_id: resolution.mandible_session_id,
       console_session_id: resolution.console_session_id,
       provider: resolution.provider,
@@ -1166,7 +1167,7 @@ export function registerIssueRoutes(
       previous_holder: holder,
       // Current responsibility is independent of the checkpoint author.
       authenticated_user_id: successor.user_id,
-      responsibility_session_id: resolution.provider_session_id ?? sessionId,
+      responsibility_session_id: successor.session_id,
     }));
     sendJson(res, 200, {
       ok: true,
@@ -1192,7 +1193,7 @@ export function registerIssueRoutes(
     const checkpoint = recordParentRoleCheckpoint(req, issueId, (now) => ({
       released: true,
       released_at: now,
-      released_by_session_id: req.ambient_identity?.provider_session_id ?? null,
+      released_by_session_id: responsibilityActor(req).session_id,
       reason: body.reason,
       authority: "relinquishment",
       previous_holder: holder,

@@ -104,49 +104,34 @@ file_rpc_list() {
 }
 
 conversation_resolve_mutation_target() {
-  local target="$1" current="$2" source="" session_id="" exact_file session_file exact_status response count parent_id
-  exact_file=$(api_temp_file)
-  session_file=$(api_temp_file)
+  local target="$1" current="$2" response resolution_status selected exact_id=""
   if (( current )); then
-    source=$(api_ambient_provider)
-    session_id=$(api_ambient_session_id)
-    [[ -n "$source" && -n "$session_id" ]] || {
-      echo "Error: --current requires an ambient provider session/thread id." >&2
+    target=$(api_current_agent_ref)
+    [[ -n "$target" ]] || {
+      echo "Error: --current requires exact executing agent identity." >&2
       return 2
     }
-    source=$(conversation_source "$source")
-    printf '{}\n' > "$exact_file"
   else
-    session_id="$target"
-    exact_status=$(api_capture GET "/api/conversations/$(urlencode "$target")" "" "$exact_file")
-    [[ "$exact_status" == "404" || "$exact_status" =~ ^2 ]] || {
-      cat "$exact_file" >&2
-      return 22
-    }
-  fi
-  response=$(api_get "/api/conversations?session_id=$(urlencode "$session_id")&limit=200${source:+&source=$(urlencode "$source")}")
-  printf '%s\n' "$response" > "$session_file"
-  response=$(jq -sc '[ (.[0].conversation? // empty), (.[1].conversations[]? // empty) ] | unique_by(.id)' "$exact_file" "$session_file")
-  count=$(printf '%s\n' "$response" | jq 'length')
-  if (( count > 1 )); then
-    parent_id=$(printf '%s\n' "$response" | jq -r '
-      def sidechain: (.is_sidechain == true or .is_sidechain == 1);
-      [ .[] | select((sidechain | not) and (.parent_conversation_id // null) == null) ] as $parents
-      | if ($parents | length) == 1
-          and all(.[]; .id == $parents[0].id or (sidechain and .parent_conversation_id == $parents[0].id))
-        then $parents[0].id
-        else empty
-        end')
-    if [[ -n "$parent_id" ]]; then
-      printf '%s\n' "$parent_id"
-      return 0
+    response=$(api_get "/api/conversations/resolve-target?conversation=$(urlencode "$target")") || return $?
+    exact_id=$(printf '%s' "$response" | jq -r 'select(.status == "resolved" and .selection.type == "conversation") | .selection.id')
+    if [[ "$(printf '%s' "$response" | jq -r '.status')" == "ambiguous" ]]; then
+      echo "Error: conversation reference is ambiguous." >&2
+      return 2
     fi
   fi
-  if [[ "$count" != "1" ]]; then
-    echo "Error: conversation reference resolved to ${count} matches; expected exactly one." >&2
+  response=$(api_get "/api/conversations/resolve-target?session=$(urlencode "$target")") || return $?
+  selected=$(printf '%s' "$response" | jq -r 'select(.status == "resolved" and .selection.type == "conversation") | .selection.id')
+  resolution_status=$(printf '%s' "$response" | jq -r '.status // "not_found"')
+  if [[ "$resolution_status" == "ambiguous" || ( -n "$selected" && -n "$exact_id" && "$selected" != "$exact_id" ) ]]; then
+    echo "Error: conversation reference is ambiguous." >&2
     return 2
   fi
-  printf '%s\n' "$response" | jq -r '.[0].id'
+  selected="${selected:-$exact_id}"
+  if [[ -z "$selected" ]]; then
+    echo "Error: conversation reference is ${resolution_status}; expected exactly one indexed conversation." >&2
+    return 2
+  fi
+  printf '%s\n' "$selected"
 }
 
 conversation_render_mutation() {

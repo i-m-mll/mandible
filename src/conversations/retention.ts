@@ -1,3 +1,4 @@
+import { parseExactAgentRef } from "../ambient-provider-identity.js";
 import type { Db } from "../db.js";
 import type { ConversationSource } from "../parsers/types.js";
 import { SessionExecutionStore } from "../session-execution.js";
@@ -33,15 +34,16 @@ export interface ChildRetentionSchedulerOptions {
   pendingNativeQueue?: (sessionId: string) => Promise<{ status: "known"; pending: boolean } | { status: "unknown"; reason: string }>;
 }
 
-export function scheduleResolvedWorkerArchive(db: Db, provider: ConversationSource, sessionId: string, now = Date.now()): boolean {
-  const child = getRetainedChildByProvider(db, provider, sessionId);
+export function scheduleResolvedWorkerArchive(db: Db, provider: ConversationSource, sessionId: string, now = Date.now(), agentRef?: string): boolean {
+  const scope = agentRef ? parseExactAgentRef(agentRef) : null;
+  const child = getRetainedChildByProvider(db, provider, sessionId, scope?.provider === "claude" ? scope.session_id : null);
   if (!child || child.role !== "worker") return false;
   const settings = readChildRetentionSettings(db);
   if (!settings.enabled || !settings.worker.enabled) return false;
-  const assignments = getWorkerAssignments(db, { provider, provider_session_id: sessionId });
+  const assignments = getWorkerAssignments(db, { provider, provider_session_id: sessionId, agent_ref: child.agentRef });
   if (!assignments.complete) return false;
   const receipt = db.prepare("SELECT archived_at FROM worker_thread_archives WHERE work_unit_id=? AND thread_id=?");
-  if (assignments.resolvedUnitIds.every(id => receipt.get(id, sessionId))) return false;
+  if (assignments.resolvedUnitIds.every(id => receipt.get(id, child.provider === "claude_code" ? child.agentRef : child.sessionId))) return false;
   db.prepare(`INSERT INTO conversation_retention_state(conversation_id,role,trigger,due_at)
     VALUES (?,'worker','resolved-worker',?) ON CONFLICT(conversation_id) DO UPDATE SET
     trigger='resolved-worker',due_at=CASE WHEN native_pending=1 THEN due_at ELSE excluded.due_at END`)
@@ -78,11 +80,11 @@ export class ChildRetentionScheduler {
       this.db.prepare(`INSERT INTO conversation_retention_state(conversation_id,role) VALUES (?,?)`).run(id, child.role);
       rearmChildRetention(this.db, id);
     }
-    const workers = this.db.prepare(`SELECT DISTINCT worker_provider,worker_provider_session_id FROM work_units
+    const workers = this.db.prepare(`SELECT DISTINCT worker_provider,worker_provider_session_id,worker_agent_ref FROM work_units
       WHERE state='resolved' AND worker_provider IS NOT NULL AND worker_provider_session_id IS NOT NULL`).all() as {
-        worker_provider: ConversationSource; worker_provider_session_id: string;
+        worker_provider: ConversationSource; worker_provider_session_id: string; worker_agent_ref: string | null;
       }[];
-    for (const worker of workers) scheduleResolvedWorkerArchive(this.db, worker.worker_provider, worker.worker_provider_session_id, this.now());
+    for (const worker of workers) scheduleResolvedWorkerArchive(this.db, worker.worker_provider, worker.worker_provider_session_id, this.now(), worker.worker_agent_ref ?? undefined);
     this.arm();
   }
 
@@ -112,11 +114,11 @@ export class ChildRetentionScheduler {
     if (this.stopped) return;
     const data = event.data as Record<string, unknown>;
     if (event.type === "ledger:event:created" && data.entity_type === "work_unit" && typeof data.entity_id === "string") {
-      const unit = this.db.prepare("SELECT worker_provider,worker_provider_session_id FROM work_units WHERE id=?").get(data.entity_id) as {
-        worker_provider: ConversationSource | null; worker_provider_session_id: string | null;
+      const unit = this.db.prepare("SELECT worker_provider,worker_provider_session_id,worker_agent_ref FROM work_units WHERE id=?").get(data.entity_id) as {
+        worker_provider: ConversationSource | null; worker_provider_session_id: string | null; worker_agent_ref: string | null;
       } | undefined;
       if (unit?.worker_provider && unit.worker_provider_session_id) {
-        scheduleResolvedWorkerArchive(this.db, unit.worker_provider, unit.worker_provider_session_id, this.now());
+        scheduleResolvedWorkerArchive(this.db, unit.worker_provider, unit.worker_provider_session_id, this.now(), unit.worker_agent_ref ?? undefined);
       }
     }
     if (event.type === DOMAIN_EVENTS.SESSION_EXECUTION_UPDATED) {
@@ -192,7 +194,7 @@ export class ChildRetentionScheduler {
     const settings = readChildRetentionSettings(this.db);
     if (!settings.enabled || !settings[child.role].enabled) return false;
     if (child.role === "worker") return row.trigger === "resolved-worker"
-      && getWorkerAssignments(this.db, { provider: child.provider, provider_session_id: child.sessionId }).complete;
+      && getWorkerAssignments(this.db, { provider: child.provider, provider_session_id: child.sessionId, agent_ref: child.agentRef }).complete;
     return true;
   }
 
@@ -211,8 +213,10 @@ export class ChildRetentionScheduler {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
       }
     }
+    const identity = parseExactAgentRef(child.agentRef);
+    const executionTarget = identity?.provider === "claude" && identity.agent_id !== identity.session_id ? child.agentRef : child.sessionId;
     const execution = child.provider === "gemini" ? null
-      : new SessionExecutionStore(this.db).read(child.provider === "claude_code" ? "claude" : "codex", child.sessionId);
+      : new SessionExecutionStore(this.db).read(child.provider === "claude_code" ? "claude" : "codex", executionTarget);
     if (execution && execution.observed_at >= Math.max(row.last_activity_at ?? 0, row.last_terminal_at ?? 0)) {
       return execution.state.kind !== "working" && execution.state.kind !== "unknown";
     }
@@ -266,10 +270,10 @@ export class ChildRetentionScheduler {
       setConversationArchiveState(this.db, { conversation_id: child.conversationId, archived: true,
         cause: current.trigger ?? "retention" }, { actor_type: "system", actor_id: "child-retention", attribution: systemAction() });
       if (child.role === "worker") {
-        const units = getWorkerAssignments(this.db, { provider: child.provider, provider_session_id: child.sessionId });
+        const units = getWorkerAssignments(this.db, { provider: child.provider, provider_session_id: child.sessionId, agent_ref: child.agentRef });
         const record = this.db.prepare(`INSERT INTO worker_thread_archives(work_unit_id,thread_id,archived_at,attempts)
           VALUES(?,?,?,0) ON CONFLICT(work_unit_id,thread_id) DO UPDATE SET archived_at=excluded.archived_at`);
-        for (const id of units.resolvedUnitIds) record.run(id, child.sessionId, this.now());
+        for (const id of units.resolvedUnitIds) record.run(id, child.provider === "claude_code" ? child.agentRef : child.sessionId, this.now());
       }
       this.db.prepare(`UPDATE conversation_retention_state SET native_pending=?,due_at=?,attempts=0
         WHERE conversation_id=?`).run(child.provider === "codex" ? 1 : 0, child.provider === "codex" ? this.now() : null, child.conversationId);

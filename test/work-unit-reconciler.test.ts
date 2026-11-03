@@ -34,11 +34,15 @@ beforeEach(() => {
       provider_session_id TEXT,
       worker_provider TEXT,
       worker_provider_session_id TEXT,
+      worker_agent_ref TEXT,
       activated_at INTEGER,
       auth_request_id TEXT,
       resolved_at INTEGER,
       created_at INTEGER NOT NULL DEFAULT 0
     );
+
+    CREATE TRIGGER fixture_active_assignment AFTER INSERT ON work_units WHEN NEW.assigned_session_id IS NOT NULL
+    BEGIN UPDATE work_units SET assignment_target_json = json_object('kind', 'alias', 'session_id', NEW.assigned_session_id) WHERE id = NEW.id; END;
 
     CREATE TABLE branches (
       repo_root TEXT NOT NULL DEFAULT '',
@@ -139,7 +143,7 @@ describe("work unit reconciler", () => {
   it("clears a finished Codex thread holder with no session row and keeps one holding its writer lock", async () => {
     db.exec(`
       CREATE TABLE conversations (
-        id TEXT PRIMARY KEY, source TEXT NOT NULL, session_id TEXT NOT NULL,
+        id TEXT PRIMARY KEY, source TEXT NOT NULL, session_id TEXT NOT NULL, agent_id TEXT, is_sidechain INTEGER DEFAULT 0, parent_conversation_id TEXT, parent_source TEXT, parent_session_id TEXT, opening_lineage TEXT, opening_line TEXT,
         source_path TEXT NOT NULL, cwd TEXT, branch TEXT, updated_at TEXT,
         ended_at TEXT, source_mtime REAL
       );
@@ -223,6 +227,7 @@ describe("work unit reconciler", () => {
 
   it("projects work-unit liveness from the same exact provider identity", () => {
     const workUnit = mapWorkUnitRow({
+      assignment_target_json: JSON.stringify({ kind: "native", agent_ref: "agent:codex:desktop-task" }),
       id: "wu-live-provider",
       issue_id: "issue",
       repo_id: "repo",
@@ -237,7 +242,7 @@ describe("work unit reconciler", () => {
 
     expect(liveness).toEqual({
       state: "live",
-      agent_session_id: "desktop-task",
+      agent_session_id: "agent:codex:desktop-task",
       agent_status: "active",
       is_processing: false,
       last_activity: Date.parse("2026-09-05T19:01:00Z"),

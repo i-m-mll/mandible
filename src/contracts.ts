@@ -590,6 +590,10 @@ export type WorkUnitKind = "solo" | "partition" | "integration";
 export type WorkUnitState = "open" | "committed" | "resolved" | "abandoned";
 
 export type WorkUnitAssignmentTarget =
+  | { kind: "native"; agent_ref: string }
+  | { kind: "alias"; session_id: string };
+
+export type WorkUnitLegacyAssignmentTarget =
   | { kind: "native"; provider: ConversationSource; session_id: string }
   | { kind: "alias"; session_id: string };
 
@@ -604,6 +608,8 @@ export type WorkUnit = {
   state: WorkUnitState;
   assigned_session_id: string | null;
   assignment_target: WorkUnitAssignmentTarget | null;
+  legacy_assignment_target: WorkUnitLegacyAssignmentTarget | null;
+  execution_identity: { provider: string; agent_id: string | null; session_id: string | null } | null;
   provider: string | null;
   provider_session_id: string | null;
   worker_provider: string | null;

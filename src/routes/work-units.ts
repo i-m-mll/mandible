@@ -4,6 +4,7 @@ import { responsibilityActor, holdsResponsibility, sessionResponsibilityActor } 
 import { randomUUID } from "node:crypto";
 import {
   normalizeAmbientProviderIdentity,
+  exactAgentRef,
   providerSessionEnvBindingValues,
   type AmbientProviderIdentity,
 } from "../ambient-provider-identity.js";
@@ -294,6 +295,7 @@ export function registerWorkUnitRoutes(
     if (refuseUnresolvedIssue(db, res, body.issue_id, repoId)) return;
     const assignedSessionId = normalizeWorkUnitSessionId(body.assigned_session_id);
     const ambientIdentity = workUnitAmbientIdentity(req, body);
+    if (ambientIdentity && !exactAgentRef(ambientIdentity)) { sendJson(res, 409, { code: "agent_identity_required", error: "Exact executing agent identity is required for custody." }); return; }
     const now = Date.now();
     const match = findExistingWorkUnit(db, body.issue_id, repoId, body.branch ?? null);
     if (match.status === "ambiguous") {
@@ -374,8 +376,8 @@ export function registerWorkUnitRoutes(
         params.push(assignedSessionId);
       }
       if (ambientIdentity) {
-        updates.push("provider = ?", "provider_session_id = ?");
-        params.push(ambientIdentity.provider, ambientIdentity.provider_session_id);
+        updates.push("execution_identity_json = ?");
+        params.push(JSON.stringify(ambientIdentity));
       }
       const actor = responsibilityIdentity(req);
       const owned = db.prepare("SELECT owner_user_id, responsibility_session_id FROM work_units WHERE id = ?").get(existing.id) as { owner_user_id: string | null; responsibility_session_id: string | null };
@@ -390,7 +392,7 @@ export function registerWorkUnitRoutes(
         Boolean("assigned_session_id" in body && existing.assigned_session_id !== assignedSessionId);
       if (actor && (recordsSession || current.custody_generation > 0)) {
         const refusal = holderRefusal(db, mapRow(current as unknown as Record<string, unknown>), actor,
-          ambientIdentity?.provider_session_id ?? null, sessionManager, readCodexTask);
+          (ambientIdentity ? exactAgentRef(ambientIdentity) : null), sessionManager, readCodexTask);
         if (refusal) { sendJson(res, 409, refusal); return; }
       }
       if (actor) {
@@ -464,8 +466,8 @@ export function registerWorkUnitRoutes(
     mutateWorkUnit(db, id, () => db.prepare(
       `INSERT INTO work_units (
         id, issue_id, repo_id, branch, parent_branch, kind, state, assigned_session_id,
-        provider, provider_session_id, created_at, owner_user_id, responsibility_session_id, custody_generation, assignment_target_json
-      ) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?)`
+        execution_identity_json, created_at, owner_user_id, responsibility_session_id, custody_generation, assignment_target_json
+      ) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id,
       body.issue_id,
@@ -474,8 +476,7 @@ export function registerWorkUnitRoutes(
       body.parent_branch ?? null,
       kind,
       assignedSessionId,
-      ambientIdentity?.provider ?? null,
-      ambientIdentity?.provider_session_id ?? null,
+      ambientIdentity ? JSON.stringify(ambientIdentity) : null,
       now,
       ownerUserId,
       null,
@@ -513,6 +514,7 @@ export function registerWorkUnitRoutes(
     const now = Date.now();
     const assignedSessionId = normalizeWorkUnitSessionId(body.assigned_session_id);
     const ambientIdentity = workUnitAmbientIdentity(req, body);
+    if (ambientIdentity && !exactAgentRef(ambientIdentity)) { sendJson(res, 409, { code: "agent_identity_required", error: "Exact executing agent identity is required for custody." }); return; }
     if (body.worker_owner !== undefined && typeof body.worker_owner !== "boolean") {
       sendJson(res, 400, { error: "worker_owner must be a boolean" });
       return;
@@ -538,7 +540,7 @@ export function registerWorkUnitRoutes(
       if (actor) {
         const unit = mapRow(db.prepare("SELECT * FROM work_units WHERE id = ?").get(existing.id) as Record<string, unknown>);
         const refusal = holderRefusal(db, unit, actor,
-          ambientIdentity?.provider_session_id ?? assignedSessionId, sessionManager, readCodexTask);
+          (ambientIdentity ? exactAgentRef(ambientIdentity) : null), sessionManager, readCodexTask);
         if (refusal) { sendJson(res, 409, refusal); return; }
       }
       if (actor) {
@@ -566,11 +568,11 @@ export function registerWorkUnitRoutes(
       } else if (ambientIdentity) {
         const row = db.prepare("SELECT * FROM work_units WHERE id = ?").get(existing.id) as Record<string, unknown>;
         const holder = assignmentTargetForSession(db, existing.assigned_session_id,
-          row.provider && row.provider_session_id ? { provider: String(row.provider), provider_session_id: String(row.provider_session_id) } : null);
+          normalizeAmbientProviderIdentity(typeof row.execution_identity_json === "string" ? JSON.parse(row.execution_identity_json) : null));
         const identity = resolveAssignmentTarget(db, holder);
         const ambient = assignmentTargetForSession(db, null, ambientIdentity);
         if (!parseAssignmentTarget(row.assignment_target_json) && identity && ambient?.kind === "native"
-          && identity.provider === ambient.provider && identity.session_id === ambient.session_id) {
+          && identity.agent_ref === ambient.agent_ref) {
           updates.push("assignment_target_json = ?");
           params.push(JSON.stringify(ambient));
         }
@@ -580,8 +582,8 @@ export function registerWorkUnitRoutes(
         params.push(assignedSessionId);
       }
       if (ambientIdentity) {
-        updates.push("provider = ?", "provider_session_id = ?");
-        params.push(ambientIdentity.provider, ambientIdentity.provider_session_id);
+        updates.push("execution_identity_json = ?");
+        params.push(JSON.stringify(ambientIdentity));
       }
       params.push(existing.id);
 
@@ -613,17 +615,16 @@ export function registerWorkUnitRoutes(
       mutateWorkUnit(db, id, () => db.prepare(
         `INSERT INTO work_units (
           id, issue_id, repo_id, branch, kind, state, assigned_session_id,
-          provider, provider_session_id, created_at, activated_at, last_commit_at,
+          execution_identity_json, created_at, activated_at, last_commit_at,
           owner_user_id, worker_provider_session_id, responsibility_session_id, custody_generation, assignment_target_json
-        ) VALUES (?, ?, ?, ?, 'solo', 'committed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, 'solo', 'committed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         id,
         body.issue_id,
         repoId,
         body.branch ?? null,
         assignedSessionId,
-        ambientIdentity?.provider ?? null,
-        ambientIdentity?.provider_session_id ?? null,
+        ambientIdentity ? JSON.stringify(ambientIdentity) : null,
         now,
         now,
         now,
@@ -942,8 +943,8 @@ export function registerWorkUnitRoutes(
     }
 
     if (ambientIdentity) {
-      updates.push("provider = ?", "provider_session_id = ?");
-      params.push(ambientIdentity.provider, ambientIdentity.provider_session_id);
+      updates.push("execution_identity_json = ?");
+      params.push(JSON.stringify(ambientIdentity));
     }
 
     if (updates.length === 0) {

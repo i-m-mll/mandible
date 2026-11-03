@@ -72,6 +72,20 @@ describe("conversation metadata routes", () => {
     expect(await resolve("session", "provider-session")).toEqual({ status: "ambiguous" });
   });
 
+  it("resolves exact native Claude children without selecting the enclosing conversation", async () => {
+    db.prepare(`INSERT INTO conversations(id, source, source_path, source_hash, source_mtime, session_id, agent_id, started_at)
+      VALUES ('claude-root', 'claude_code', '/private/root', '', 1, 'enclosing', NULL, '2026-01-01'),
+      ('claude-child', 'claude_code', '/private/child', '', 1, 'enclosing', 'child', '2026-01-01'),
+      ('other-child', 'claude_code', '/private/other', '', 1, 'other', 'child', '2026-01-01')`).run();
+    const router = new Router(); registerConversationRoutes(router, inlineLedgerReader());
+    for (const [ref, id] of [['agent:claude:enclosing:child', 'claude-child'], ['agent:claude:other:child', 'other-child'], ['agent:claude:enclosing:enclosing', 'claude-root']]) {
+      const resolved = await router.invoke({ method: "GET", url: `/api/conversations/resolve-target?session=${encodeURIComponent(ref)}` });
+      expect(resolved.body).toEqual({ status: "resolved", selection: { type: "conversation", id } });
+    }
+    expect((await router.invoke({ method: "GET", url: "/api/conversations/resolve-target?session=child" })).body)
+      .toEqual({ status: "not_found" });
+  });
+
   it("returns parsed tags, filters exactly, and atomically applies canonical metadata updates", async () => {
     await nativeSearchSource(db, tempDir, "conv-1", "Native transcript for metadata export");
     const router = new Router({ clientAuth: new ClientAuthenticator(db, { secretsDir: path.join(tempDir, "auth") }) });
@@ -171,7 +185,7 @@ describe("conversation metadata routes", () => {
     });
     const archiveHistory = db.prepare("SELECT event_type,payload_json FROM ledger_events WHERE entity_type='conversation_metadata' AND entity_id=? ORDER BY rowid").all(reservationId) as Array<{event_type:string;payload_json:string}>;
     expect(archiveHistory.map(row=>({event_type:row.event_type,origin:JSON.parse(row.payload_json).request_origin}))).toEqual([
-      {event_type:"conversation_metadata.created",origin:{provider:"codex",provider_session_id:"archive-author"}},
+      {event_type:"conversation_metadata.created",origin:{provider:"codex",agent_id:"archive-author",session_id:null}},
       {event_type:"conversation_metadata.deleted",origin:null},
     ]);
     expect(restored.body).toEqual({ id: reservationId, archived_at: null });

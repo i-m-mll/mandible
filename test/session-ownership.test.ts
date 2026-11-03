@@ -184,10 +184,10 @@ describe("session and work-unit ownership", () => {
     });
     expect(activation.status).toBe(409);
     expect(db.prepare(
-      "SELECT owner_user_id, provider_session_id FROM work_units WHERE id = ?",
+      "SELECT owner_user_id, execution_identity_json FROM work_units WHERE id = ?",
     ).get(id)).toEqual({
       owner_user_id: codex.id,
-      provider_session_id: "codex-thread-1",
+      execution_identity_json: JSON.stringify({ provider: "codex", agent_id: "codex-thread-1", session_id: null }),
     });
   });
 

@@ -1,4 +1,4 @@
-import { parseAssignmentTarget } from "./work-unit-assignment.js";
+import { assignmentTargetId, parseAssignmentTarget } from "./work-unit-assignment.js";
 import { hasArchivedResponsibility } from "./work-unit-worker.js";
 import { mutateWorkUnit } from "./work-unit-history.js";
 import fs from "node:fs";
@@ -23,7 +23,7 @@ type AuthPipelineMatch =
 
 function workUnitDecisionState(db: Db, id: string): string {
   const row = db.prepare("SELECT * FROM work_units WHERE id = ?").get(id) as Record<string, unknown> | undefined;
-  return JSON.stringify(row ? ["id", "state", "branch", "repo_id", "created_at", "assigned_session_id", "assignment_target_json", "worker_provider_session_id", "provider_session_id", "auth_request_id", "owner_user_id", "responsibility_session_id", "custody_generation", "resolved_at"].map(key => row[key] ?? null) : null);
+  return JSON.stringify(row ? ["id", "state", "branch", "repo_id", "created_at", "assigned_session_id", "assignment_target_json", "worker_provider_session_id", "worker_agent_ref", "execution_identity_json", "auth_request_id", "owner_user_id", "responsibility_session_id", "custody_generation", "resolved_at"].map(key => row[key] ?? null) : null);
 }
 
 // Bug: 8a281b3 — periodic reconciler for work unit state consistency.
@@ -118,14 +118,15 @@ export class WorkUnitReconciler {
       )
       .all() as Array<Record<string, unknown> & { id: string; assigned_session_id: string }>;
     const resolve = this.resolveSession ?? await freshSessionAliasResolver((probe) => {
-      for (const row of heldRows()) probe(db, row.assigned_session_id);
+      for (const row of heldRows()) { const id = assignmentTargetId(parseAssignmentTarget(row.assignment_target_json)); if (id) probe(db, id); }
     });
     const held = heldRows();
 
     const dead: typeof held = [];
     let unknown = 0;
     for (const row of held) {
-      const liveness = resolve(db, row.assigned_session_id)?.liveness ?? "unknown";
+      const target = assignmentTargetId(parseAssignmentTarget(row.assignment_target_json));
+      const liveness = target ? resolve(db, target)?.liveness ?? "unknown" : "unknown";
       if (liveness === "stopped" && !hasArchivedResponsibility(db, row)) dead.push(row);
       else if (liveness === "unknown") unknown++;
     }
@@ -189,10 +190,9 @@ export class WorkUnitReconciler {
       if (result.status !== "fulfilled") throw new Error("Unsettled work-unit pipeline observation");
       return result.value;
     }));
-    const holderOf = (row: (typeof gone)[number]) => row.assigned_session_id
-      ?? parseAssignmentTarget(row.assignment_target_json)?.session_id
-      ?? row.worker_provider_session_id
-      ?? row.provider_session_id;
+    const holderOf = (row: (typeof gone)[number]) => assignmentTargetId(parseAssignmentTarget(row.assignment_target_json))
+      ?? row.assigned_session_id
+      ?? row.worker_provider_session_id;
     const resolve = this.resolveSession ?? await freshSessionAliasResolver((probe) => {
       for (const row of gone) {
         const sessionId = holderOf(row);
