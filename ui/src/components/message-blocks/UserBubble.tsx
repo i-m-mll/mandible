@@ -7,7 +7,7 @@ import { NativeDisclosureIcon } from '../icons/NativeDisclosureIcon';
 
 import type { ComponentChildren } from 'preact';
 import { useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { DisclosureChevronIcon } from '../shared/DisclosureChevronIcon';
+import { DisclosureFooter } from '../shared/DisclosureFooter';
 import { registerReadingLayoutReadiness } from '../shared/readingLayoutReadiness';
 import { flushSync } from 'preact/compat';
 import { renderMarkdown } from '../../lib/markdown';
@@ -41,10 +41,10 @@ function BoundedUserBubble({ children, className = '', getDisclosureExpanded, on
     <div className={`user-bubble__viewport${overflow && !expanded ? ' user-bubble__viewport--folded' : ''}`} style={{ maxHeight: expanded ? undefined : `${previewRem}rem`, overflow: expanded ? undefined : 'hidden' }}>
       <div ref={content} className="user-bubble__content">{children}</div>
     </div>
-    {overflow && <button type="button" className="user-bubble__disclosure" aria-expanded={expanded} onClick={event => {
-      if (!getDisclosureExpanded) setLocalExpanded(!expanded);
-      onDisclosureExpandedChange?.('message', !expanded, event.currentTarget);
-    }}><span>{expanded ? 'Show less' : 'Show more'}</span><DisclosureChevronIcon expanded={expanded} /></button>}
+    {overflow && <DisclosureFooter expanded={expanded} onExpandedChange={(next,trigger) => {
+      if (!getDisclosureExpanded) setLocalExpanded(next);
+      onDisclosureExpandedChange?.('message', next, trigger);
+    }}/>}
   </div>;
 }
 

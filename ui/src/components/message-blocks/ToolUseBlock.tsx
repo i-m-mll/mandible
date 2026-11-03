@@ -265,16 +265,17 @@ export function ToolCard({
     if (input === undefined || (detailsAvailable && (input === '' || (typeof input === 'object' && Object.keys(input).length === 0)))) {
       return <div className="tool-card__input" aria-busy="true">Loading tool input…</div>;
     }
-    if (patch.length) return <>{patch.map(file=><FileEditBlock key={file.filePath} {...file} />)}</>;
+    const diffDisclosure=(path:string)=>({expanded:getDisclosureExpanded?.(`diff:${path}`,false),
+      onExpandedChange:(next:boolean,trigger:HTMLElement)=>onDisclosureExpandedChange?.(`diff:${path}`,next,trigger)});
+    if (patch.length) return <>{patch.map(file=><FileEditBlock key={file.filePath} {...file} {...diffDisclosure(file.filePath)}/>)}</>;
     if (editLike) {
       return (
-        <OverflowFade lines={10}>
           <FileEditBlock
             filePath={inputObj.file_path as string}
             oldString={typeof inputObj.old_string === 'string' ? inputObj.old_string : ''}
             newString={typeof inputObj.new_string === 'string' ? inputObj.new_string : ''}
+            {...diffDisclosure(inputObj.file_path as string)}
           />
-        </OverflowFade>
       );
     }
     if (execution) return <ExecutionInput execution={execution} />;

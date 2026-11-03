@@ -68,8 +68,8 @@
 .user-bubble__viewport { display: flex; flex-direction: column; gap: inherit; }
 .user-bubble--bounded .user-bubble__text { background: transparent; }
 .user-bubble__viewport--folded { mask-image: linear-gradient(to bottom, #000 calc(100% - 2rem), transparent); }
-.user-bubble__disclosure { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); width: 100%; padding: var(--space-2) var(--space-3); border: 0; background: transparent; color: var(--text-muted); cursor: pointer; font: inherit; font-size: var(--text-sm); }
-.user-bubble__disclosure:hover { color: var(--text-primary); background: var(--bg-hover); }
+.reading-disclosure-footer { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); width: 100%; padding: var(--space-2) var(--space-3); border: 0; background: transparent; color: var(--text-muted); cursor: pointer; font: inherit; font-size: var(--text-sm); }
+.reading-disclosure-footer:hover { color: var(--text-primary); background: var(--bg-hover); }
 :root[data-theme='light'] .user-bubble--bounded { background: #F3F3F4; }
 
 .user-bubble__text {
@@ -567,22 +567,6 @@
   background: linear-gradient(to left, var(--overflow-fade-color, var(--surface-app)), transparent);
 }
 
-.tool-card__secondary-action,
-.diff-review__close {
-  border: 1px solid var(--neutral-alpha-10);
-  border-radius: 6px;
-  background: var(--neutral-alpha-04);
-  color: var(--text-primary);
-  font-size: 12px;
-  padding: 5px 9px;
-  cursor: pointer;
-}
-
-.tool-card__secondary-action:hover,
-.diff-review__close:hover {
-  background: var(--neutral-alpha-08);
-}
-
 .tool-card__image {
   max-width: 100%;
   border-radius: 6px;
@@ -616,8 +600,7 @@
   border-top: 1px solid var(--neutral-alpha-08);
 }
 
-.diff-view__hunk-header,
-.diff-view__truncated {
+.diff-view__hunk-header {
   padding: 5px 10px;
   background: var(--neutral-alpha-06);
   color: var(--text-muted);
@@ -661,53 +644,6 @@
 .diff-view__line--remove .diff-view__prefix,
 .diff-view__line--remove .diff-view__text {
   color: var(--diff-removed-fg);
-}
-
-.diff-review {
-  position: fixed;
-  inset: 0;
-  z-index: 90;
-  display: flex;
-  justify-content: center;
-  align-items: stretch;
-  padding: 4vh 4vw;
-  background: var(--scrim-modal);
-}
-
-.diff-review__panel {
-  width: min(1180px, 100%);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  border: 1px solid var(--neutral-alpha-12);
-  border-radius: 8px;
-  background: var(--surface-card);
-  box-shadow: var(--shadow-soft);
-}
-
-.diff-review__header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--neutral-alpha-08);
-}
-
-.diff-review__title {
-  min-width: 0;
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--font-mono);
-  font-size: 13px;
-}
-
-.diff-review .diff-view {
-  flex: 1;
-  overflow: auto;
-  border: 0;
-  border-radius: 0;
 }
 
 .plan-card {
