@@ -2,7 +2,7 @@ import { presentTool, type ToolPresentation } from './tool-presentation.js';
 import { projectToolProgram } from './tool-program.js';
 import { projectExecution } from './execution-presentation.js';
 import { framedToolResult, programResults, projectToolResult, type NativeResultFrame, type ToolTransportResult } from './tool-transport.js';
-import { operationResult } from './tool-operation.js';
+import { operationResult, substantiveToolResult, threadReports } from './tool-operation.js';
 
 /** Direct calls and fully recognized one-operation wrappers share the same operation. */
 export function toolObservation(name:string,input:Record<string,unknown> | string = {},kind?:string,
@@ -14,8 +14,17 @@ export function toolObservation(name:string,input:Record<string,unknown> | strin
     const framed=result ? framedToolResult(result.text,result.frame) : undefined;
     const decoded=framed ? programResults(program,framed.text)?.[0] : undefined;
     const projected=framed ? operationResult(presentation,{...framed,...decoded,wallTimeSeconds:decoded?.wallTimeSeconds ?? framed.wallTimeSeconds,failed:Boolean(result?.failed || framed.failed || decoded?.failed)}) : undefined;
-    return {name:operation.name,input:operation.input,kind:undefined,header:presentation,result:projected};
+    return {name:operation.name,input:operation.input,kind:undefined,result:projected,header:observedHeader(presentation,projected)};
   }
   const presentation=header ?? presentTool(name,input,kind);
-  return {name,input,kind,header:presentation,result:result ? operationResult(presentation,projectToolResult(projectExecution(name,input,kind),result.text,result.frame,result.native,program)) : undefined};
+  const transport=result ? projectToolResult(projectExecution(name,input,kind),result.text,result.frame,result.native,program) : undefined;
+  const projected=transport ? operationResult(presentation,{...transport,failed:Boolean(result?.failed || transport.failed)}) : undefined;
+  return {name,input,kind,header:observedHeader(presentation,projected),result:projected};
+}
+
+function observedHeader(header:ToolPresentation,result?:ToolTransportResult):ToolPresentation {
+  if(!result && header.hasDetails!==undefined) return header;
+  const reports=result && header.operation==='thread-wait' ? threadReports(result.text) : null;
+  return {...header,hasDetails:!['thread-read','thread-wait','sleep','tool-discovery','execution-wait'].includes(header.operation ?? '') || Boolean(result && substantiveToolResult(result)),
+    ...(result ? {observation:{...(result.wallTimeSeconds!==undefined ? {elapsedSeconds:result.wallTimeSeconds}:{}),...(reports?.length ? {report:reports.every(report=>report.final)?'final' as const:'update' as const}:{})}} : {})};
 }

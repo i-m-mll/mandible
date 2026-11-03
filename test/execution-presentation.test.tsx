@@ -23,10 +23,10 @@ afterEach(cleanup);
 it('unwraps only fully accounted literal wrappers and retains substantive or dynamic JavaScript', () => {
   expect(projectExecution('exec', script)?.operations).toEqual([{command, shell:'/bin/zsh', forwarding:'result'}]);
   expect(projectExecution('exec', 'text((await tools.exec_command({cmd:`echo literal`})).output)')?.operations).toEqual([{command:'echo literal',forwarding:'stdout'}]);
+  expect(projectExecution('exec', `const cmd = 'pwd'; text(await tools.exec_command({cmd}))`)?.operations).toMatchObject([{command:'pwd'}]);
   const many = `${script}text(await tools.exec_command({cmd:'pwd'}))`;
   expect(projectExecution('exec', many)?.facts).toMatchObject({kind:'command',count:2});
   for (const substantive of [
-    `const cmd = 'pwd'; text(await tools.exec_command({cmd}))`,
     `text(await tools.exec_command({cmd:\`echo \${name}\`}))`,
     `if (ready) { ${script} }`, `${script}text('extra')`,
     `const r = await tools.exec_command({cmd:'pwd'}); r.output='changed';text(r)`,
