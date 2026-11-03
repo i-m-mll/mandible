@@ -4,6 +4,9 @@ import { render, cleanup, fireEvent } from './helpers/dom';
 import { afterEach } from 'vitest';
 import { projectExecution, projectExecutionResult } from '../src/presentation/execution-presentation';
 import { ToolUseBlock } from '../ui/src/components/message-blocks/ToolUseBlock';
+import { ActivityTargetLabelsContext } from '../ui/src/components/shared/ActivityTargetLinks';
+import { activityTargetKey, type ActivityTarget } from '../src/presentation/activity-targets';
+import type { CompactOperationObservation } from '../src/presentation/operation-observation';
 import { indexDisplayFragments } from '../src/conversations/display-indexing';
 import { readDisplayContext } from '../src/conversations/display-context-read';
 import { ConversationSourceReader } from '../src/conversations/source-reader';
@@ -202,17 +205,46 @@ it('keeps inline thread navigation independent of report disclosure', () => {
   window.history.replaceState(null,'','#/console?conversation=stale&position=9');
   const changed=vi.fn();
   const target='exact-provider-thread';
+  const reference:ActivityTarget={kind:'thread',provider:'codex',sessionId:target};
+  const labels={[activityTargetKey(reference)]:{label:'Indexed report owner',selection:{type:'conversation' as const,id:'canonical-report-owner'}}};
   const report={timedOut:false,polls:[{thread:{id:target,hostId:'local'},latestAssistantMessage:{phase:'final_answer',text:'Retained report',truncated:true,originalChars:32186}}]};
-  const view=render(<ToolUseBlock toolName="codex_app__wait_threads" input={{targets:[{threadId:target,hostId:'local'}]}} onExpandedChange={changed}
-    result={{type:'tool_result',tool_use_id:'wait',content:JSON.stringify(report)}} />);
-  const link=view.getByRole('link',{name:'thread'});
+  const view=render(<ActivityTargetLabelsContext.Provider value={labels}><ToolUseBlock toolName="codex_app__wait_threads" input={{targets:[{threadId:target,hostId:'local'}]}} onExpandedChange={changed}
+    result={{type:'tool_result',tool_use_id:'wait',content:JSON.stringify(report)}} /></ActivityTargetLabelsContext.Provider>);
+  const link=view.getByRole('link');
   const route=new URL(link.getAttribute('href')!,'https://example.test');
   const params=new URLSearchParams(route.hash.split('?')[1]);
-  expect(params.get('session')).toBe(target);
-  expect(params.has('conversation')).toBe(false);
+  expect(params.get('conversation')).toBe('canonical-report-owner');
+  expect(params.has('session')).toBe(false);
+  expect(params.has('position')).toBe(false);
   const event=new MouseEvent('click',{bubbles:true,cancelable:true,ctrlKey:true});
   link.dispatchEvent(event);
   expect(event.defaultPrevented).toBe(false);
+  expect(changed).not.toHaveBeenCalled();
+  fireEvent.click(view.getByRole('button',{expanded:false}));
+  expect(changed).toHaveBeenCalledTimes(1);
+  expect(view.getAllByRole('link')).toHaveLength(2);
+  for(const owner of view.getAllByRole('link'))expect(new URLSearchParams(owner.getAttribute('href')!.split('?')[1]).get('conversation')).toBe('canonical-report-owner');
+});
+
+it('navigates recursively observed targets without inventing pending or cross-parent subagent links',()=>{
+  const native:ActivityTarget={kind:'thread',provider:'codex',sessionId:'native-thread'};
+  const child:ActivityTarget={kind:'subagent',provider:'claude_code',parentSessionId:'known-parent',agentId:'shared-agent',labelHint:'Authored task'};
+  const otherParent:ActivityTarget={...child,parentSessionId:'other-parent'};
+  const pending:ActivityTarget={kind:'pending-thread',provider:'codex',clientThreadId:'client-only',labelHint:'Pending task'};
+  const node=(targets:ActivityTarget[],children?:CompactOperationObservation[]):CompactOperationObservation=>({operation:'thread-read',nativeName:'codex_app__read_thread',targets,execution:{state:'unknown',provenance:'provider-item'},payload:{state:'unloaded'},...(children?{children}:{})});
+  const observation={...node([native],[node([otherParent],[node([child,pending])])]),operation:'batch',nativeName:'exec'};
+  const labels={[activityTargetKey(child)]:{label:'Canonical child',selection:{type:'conversation' as const,id:'resolved-child'}}};
+  const changed=vi.fn();
+  const view=render(<ActivityTargetLabelsContext.Provider value={labels}><ToolUseBlock toolName="exec" observation={observation} onExpandedChange={changed} /></ActivityTargetLabelsContext.Provider>);
+  const links=view.getAllByRole('link');
+  expect(links).toHaveLength(2);
+  const destinations=links.map(link=>new URLSearchParams(link.getAttribute('href')!.split('?')[1]));
+  expect(destinations.map(params=>[params.get('session'),params.get('conversation')])).toEqual([['native-thread',null],[null,'resolved-child']]);
+  for(const link of links) {
+    const click=new MouseEvent('click',{bubbles:true,cancelable:true,ctrlKey:true});
+    link.dispatchEvent(click);
+    expect(click.defaultPrevented).toBe(false);
+  }
   expect(changed).not.toHaveBeenCalled();
   fireEvent.click(view.getByRole('button',{expanded:false}));
   expect(changed).toHaveBeenCalledTimes(1);

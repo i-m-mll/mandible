@@ -13,10 +13,14 @@ export function activityTargetFallbackLabel(target: ActivityTarget): string {
   return target.labelHint || nativeId.slice(0, 8);
 }
 
+export function activityTargetLabel(target:ActivityTarget,labels:ActivityTargetLabels):string {
+  return labels[activityTargetKey(target)]?.label || activityTargetFallbackLabel(target);
+}
+
 export function ActivityTargetLink({ target }: { target: ActivityTarget }): JSX.Element {
   const labels = useContext(ActivityTargetLabelsContext);
   const resolved = labels[activityTargetKey(target)];
-  const label = resolved?.label || activityTargetFallbackLabel(target);
+  const label = activityTargetLabel(target,labels);
   const selection = resolved?.selection ?? (target.kind === 'thread' ? { type: 'session' as const, id: target.sessionId } : undefined);
   return selection ? <a href={chatRouteHref(selection, window.location.hash)}>{label}</a> : <span>{label}</span>;
 }

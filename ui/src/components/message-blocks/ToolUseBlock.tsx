@@ -1,7 +1,8 @@
 import type { ToolResultContent, ToolResultContentBlock } from '../../../../src/presentation/types';
 import { toolObservation, presentationForObservation } from '../../../../src/presentation/tool-observation';
 import { operationPhrase, operationState, operationResult, patchFileChanges, substantiveToolResult, threadReports, type ThreadReport } from '../../../../src/presentation/tool-operation';
-import { chatRouteHref } from '../../chat/messageLinks';
+import { activityObservationTargets, type ActivityTarget } from '../../../../src/presentation/activity-targets';
+import { ActivityTargetLink, ActivityTargetLinks, ActivityTargetLabelsContext, activityTargetLabel } from '../shared/ActivityTargetLinks';
 import type { ToolOperationContext, ToolExecutionEvidence } from '../../../../src/parsers/types';
 import { ActivityPayloadBox } from '../shared/ActivityPayloadBox';
 import { ActivityEventItem } from '../shared/ActivityEventItem';
@@ -12,7 +13,7 @@ import { ExecutionInput } from './ExecutionInput';
 import { Icon } from '../icons/Icon';
 import type { ComponentChildren } from 'preact';
 import type { IconName } from '../icons/Icon';
-import { useMemo } from 'preact/hooks';
+import { useContext, useMemo } from 'preact/hooks';
 import { computeDiffStats, FileEditBlock } from './FileEditBlock';
 import { MessageActions } from '../shared/MessageActions';
 import { OverflowFade } from '../shared/OverflowFade';
@@ -144,7 +145,7 @@ function ResultBody({ result, commandLike, projected, reports }: {
   const blocks=typeof content==='string' ? [{type:'text' as const,text:content}] : content;
   return (
     <div className={`tool-card__result${result.is_error || projected.failed ? ' tool-card__result--error' : ''}`}>
-      {reports?.length ? reports.map((report,index)=><div key={index}><a href={chatRouteHref({type:'session',id:report.threadId},window.location.hash)}>{report.threadId}</a>{report.hostId ? <small>{report.hostId}</small> : null}<OverflowFade lines={10}><pre>{report.text}</pre></OverflowFade>{report.truncated ? <span className="tool-card__result-note">Truncated{report.originalChars!==undefined ? ` · ${report.originalChars.toLocaleString()} original chars` : ''}</span> : null}</div>) : blocks.map((block,index)=>block.type==='text' ? (block.text ? <OverflowFade key={index} lines={10}>
+      {reports?.length ? reports.map((report,index)=><div key={index}><ActivityTargetLink target={{kind:'thread',provider:'codex',sessionId:report.threadId}} />{report.hostId ? <small>{report.hostId}</small> : null}<OverflowFade lines={10}><pre>{report.text}</pre></OverflowFade>{report.truncated ? <span className="tool-card__result-note">Truncated{report.originalChars!==undefined ? ` · ${report.originalChars.toLocaleString()} original chars` : ''}</span> : null}</div>) : blocks.map((block,index)=>block.type==='text' ? (block.text ? <OverflowFade key={index} lines={10}>
         <pre className={commandLike ? 'tool-card__terminal-output' : undefined}>{commandLike ? <AnsiText text={block.text} /> : block.text}</pre>
       </OverflowFade> : null) : <img key={index} className="tool-card__image" src={`data:${block.source.media_type};base64,${block.source.data}`} alt="Tool output" />)}
       {projected.stderr && <OverflowFade lines={10}><pre className="tool-card__terminal-output ansi-red">{projected.stderr}</pre></OverflowFade>}
@@ -186,6 +187,7 @@ export function ToolCard({
   toolUseId,
   input,
   header,
+  observation,
   result,
   defaultExpanded,
   expanded,
@@ -205,6 +207,7 @@ export function ToolCard({
   getDisclosureExpanded,
   onDisclosureExpandedChange,
 }: ToolUseBlockProps): JSX.Element {
+  const labels = useContext(ActivityTargetLabelsContext);
   const inputObj = useMemo(() => input === undefined ? {} : toolInputObject(input), [input]);
   const presentation = useMemo(() => header ?? presentTool(toolName,input,toolKind),[header,toolName,input,toolKind]);
   const visual = useMemo(() => {
@@ -225,6 +228,7 @@ export function ToolCard({
   const displayTarget = visual.kind==='execute' ? visual.target : leftTruncateTarget(visual.target);
   const state = operationState(executionEvidence?.state ?? result?.source?.toolExecution?.state,result ? {failed:projectedResult.failed,is_error:result.is_error} : undefined,active);
   const phrase = operationPhrase(presentation,state,projectedResult);
+  const targets = observation ? activityObservationTargets(observation) : (presentation.threadTargets??[]).flatMap((target):ActivityTarget[]=>target.type==='session'?[{kind:'thread',provider:'codex',sessionId:target.id}]:[]);
   const reports = presentation.operation==='thread-wait' && presentation.resultAttribution!=='opaque' && !projectedResult.failed ? threadReports(projectedResult.text) : null;
   const semanticInput = !['thread-read','thread-wait','sleep','tool-discovery','execution-wait'].includes(presentation.operation ?? '');
   const patch = toolName.toLowerCase()==='apply_patch' && typeof input==='string' ? patchFileChanges(input) : [];
@@ -243,6 +247,8 @@ export function ToolCard({
     return <>{projectedChildren!.map((operation,index) => {
       const key=`operation:${index}`;
       return <ToolCard key={index} toolName={operation.name} input={operation.input} header={operation.header}
+        observation={observation?.children?.[index]}
+        executionEvidence={observation?.children?.[index]?.execution}
         detailsAvailable={operation.input===undefined} withinCollection
         headerMetadata={withinCollection && index===projectedChildren!.length-1 ? headerMetadata : undefined}
         expanded={getDisclosureExpanded?.(key,withinCollection && Boolean(expanded))}
@@ -300,7 +306,8 @@ export function ToolCard({
     );
   }
 
-  const summary = `${phrase}${displayTarget ? ` ${displayTarget}` : ''}${state === 'failed' ? ' · Failed' : state === 'cancelled' ? ' · Cancelled' : ''}`;
+  const summaryTarget = targets.length ? targets.map(target=>activityTargetLabel(target,labels)).join(', ') : displayTarget;
+  const summary = `${phrase}${summaryTarget ? ` ${summaryTarget}` : ''}${state === 'failed' ? ' · Failed' : state === 'cancelled' ? ' · Cancelled' : ''}`;
   const collectionChildren = nestedProgram ? withinCollection ? renderInputPanel() : <div className="activity-nested-headers">{renderInputPanel()}</div> : null;
   const collectionTiming = framedResult.wallTimeSeconds !== undefined && framedResult.wallTimeSeconds > 0 && !operationResults?.some(result => result.wallTimeSeconds !== undefined)
     ? <ActivityEventItem><small style={{ display: 'block', textAlign: 'right' }}>{framedResult.wallTimeSeconds} s</small></ActivityEventItem> : null;
@@ -335,7 +342,7 @@ export function ToolCard({
         summary={summary}
         expandedSummary={executionFacts?.kind === 'command' && executionFacts.count === 1 ? `${operationPhrase({...presentation,phrase:'Ran command'},state,projectedResult)}${state === 'failed' ? ' · Failed' : ''}` : undefined}
         metadata={headerMetadata}
-        summaryContent={presentation.threadTargets?.length ? <>{phrase.replace(/threads?$/, '')}{presentation.threadTargets.map((target,index)=><>{index ? ', ' : ''}<a key={target.id} href={chatRouteHref(target,window.location.hash)}>thread{presentation.threadTargets!.length>1 ? ` ${target.id}` : ''}</a></>)}{state==='failed' ? ' · Failed' : state==='cancelled' ? ' · Cancelled' : ''}</> : undefined}
+        summaryContent={targets.length ? <>{phrase} <ActivityTargetLinks targets={targets} />{state==='failed' ? ' · Failed' : state==='cancelled' ? ' · Cancelled' : ''}</> : undefined}
         memberRefs={[memberRefs, result?.source?.blockId].filter(Boolean).join(' ')}
         disclosure={semanticInput || nestedProgram || (result && hasVisibleResult(result,projectedResult)) || (detailsAvailable && presentation.hasDetails!==false) ? {
           content: details,

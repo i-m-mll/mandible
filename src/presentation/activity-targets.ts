@@ -11,9 +11,19 @@ export function activityTargetKey(target: ActivityTarget): string {
     : [target.kind,target.provider,target.parentSessionId,target.agentId]);
 }
 
-export function activityObservationTargets(observation: {targets:readonly ActivityTarget[];children?:readonly {targets:readonly ActivityTarget[]}[]}):ActivityTarget[] {
-  const targets=[...observation.targets,...(observation.children??[]).flatMap(child=>child.targets)];
+type TargetObservation = {targets:readonly ActivityTarget[];children?:readonly TargetObservation[]};
+export function activityObservationTargets(observation: TargetObservation):ActivityTarget[] {
+  const targets:ActivityTarget[]=[];
+  const visit=(value:TargetObservation)=>{targets.push(...value.targets);for(const child of value.children??[])visit(child);};
+  visit(observation);
   return [...new Map(targets.map(target=>[activityTargetKey(target),target])).values()];
+}
+
+export function activityDirectiveTargets(directive:import('./provider-directives.js').ProviderDirective):ActivityTarget[] {
+  return directive.kind==='created-thread' ? [directive.identity==='threadId'
+    ? {kind:'thread',provider:'codex',sessionId:directive.providerSessionId}
+    : {kind:'pending-thread',provider:'codex',clientThreadId:directive.providerSessionId}]
+    : directive.rolloutIds.map(sessionId=>({kind:'thread',provider:'codex',sessionId}));
 }
 
 export type ActivityTargetResolution = { key: string } & (

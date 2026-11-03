@@ -2,7 +2,9 @@ import { Icon } from '../icons/Icon';
 import type { ComponentChildren } from 'preact';
 import { CompactActivityRow } from '../shared/ChatDisclosure';
 import { ReasoningDetails } from '../shared/ReasoningDetails';
-import { chatRouteHref } from '../../chat/messageLinks';
+import { useContext } from 'preact/hooks';
+import { activityDirectiveTargets } from '../../../../src/presentation/activity-targets';
+import { ActivityTargetLink, ActivityTargetLinks, ActivityTargetLabelsContext, activityTargetLabel } from '../shared/ActivityTargetLinks';
 import type { DisplayActivityItem } from '../stream-renderer/types';
 
 import { plainActivityHeader } from './activityText';
@@ -32,7 +34,7 @@ function ActivityDetails({ lines }: {
         }
         return (
           <div key={index} className="activity-details__part">
-            <a href={chatRouteHref({ type: 'session', id: line.providerSessionId }, window.location.hash)}>Thread</a>
+            <ActivityTargetLink target={{kind:'thread',provider:'codex',sessionId:line.providerSessionId}} />
           </div>
         );
       })}
@@ -48,13 +50,14 @@ export function ActivityRow({ item, expanded, onExpandedChange, memberRefs, deta
   detailsAvailable?: boolean;
   headerMetadata?: ComponentChildren;
 }): JSX.Element {
+  const labels = useContext(ActivityTargetLabelsContext);
   const presentation = presentActivityItems([item])[0];
   const lines = activityDetailLines([presentation]);
   const reasoning = item.type === 'activity' && (item.activity_kind === 'thinking' || item.activity_kind === 'reasoning-summary')
     ? presentReasoning(item.parts.map(part => part.text)) : undefined;
-  const chatTarget = item.type === 'provider-directive' && item.directive.kind === 'created-thread'
-    ? { type: 'session' as const, id: item.directive.providerSessionId } : null;
-  const disclosure = !chatTarget && (lines.length > 0 || detailsAvailable)
+  const targets = item.type === 'provider-directive' && item.directive.kind === 'created-thread' ? activityDirectiveTargets(item.directive) : [];
+  const summary = targets.length ? `${presentation.summary} ${targets.map(target=>activityTargetLabel(target,labels)).join(', ')}` : presentation.summary;
+  const disclosure = !targets.length && (lines.length > 0 || detailsAvailable)
     ? {
         content: reasoning ? <ReasoningDetails parts={reasoning.details} /> : <ActivityDetails lines={lines} />,
         regionLabel: `${presentation.summary} details`,
@@ -66,8 +69,8 @@ export function ActivityRow({ item, expanded, onExpandedChange, memberRefs, deta
     <CompactActivityRow
       className={`activity-block${item.type === 'activity' && item.severity ? ` activity-block--${item.severity}` : ''}`}
       icon={activityIcon(item)}
-      summary={presentation.summary}
-      href={chatTarget ? chatRouteHref(chatTarget, window.location.hash) : undefined}
+      summary={summary}
+      summaryContent={targets.length ? <>{presentation.summary} <ActivityTargetLinks targets={targets} /></> : undefined}
       metadata={headerMetadata}
       disclosure={disclosure}
       memberRefs={memberRefs}

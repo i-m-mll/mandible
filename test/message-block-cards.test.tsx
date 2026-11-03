@@ -137,10 +137,11 @@ it('opens explicit chat references directly and retains group disclosure and nat
   fireEvent.click(screen.getByRole('button', { expanded: false }));
   expect(toggle).toHaveBeenCalledTimes(1);
   const links = screen.getAllByRole('link');
-  for (const [index, link] of links.entries()) {
+  expect(links).toHaveLength(1);
+  for (const link of links) {
     const route = new URL(link.getAttribute('href')!, 'https://example.test/');
     const params = new URLSearchParams(route.hash.split('?')[1]);
-    expect(params.get('session')).toBe(index === 0 ? 'server-child' : 'queued-child');
+    expect(params.get('session')).toBe('server-child');
     for (const stale of ['conversation', 'block', 'turn', 'position', 'position_space']) expect(params.has(stale)).toBe(false);
     expect(params.get('sidebar')).toBe('hidden');
     expect(params.get('agent_session')).toBe('reader');
