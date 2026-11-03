@@ -137,6 +137,27 @@ async function verifyPackagedUpdaterEntrypoint({ resources, runtime, environment
   throw acceptanceFailure('candidate', 'The packaged updater accepted a deliberately invalid handoff journal; it must refuse one.');
 }
 
+export async function verifyPackagedExports({ resources, runtime, environment, home, provenance, budget, onSpawn }) {
+  const fixtureRoot = path.join(home, 'exports');
+  fs.mkdirSync(fixtureRoot, { mode: 0o700 });
+  let proof;
+  try {
+    const output = await runSupervisedCommand(runtime, ['--no-install', path.join(root, 'scripts/prove-installed-exports.mjs'), resources, fixtureRoot], {
+      env: { ...environment, MANDIBLE_EXPORT_PROOF_SUPERVISED: '1' }, cwd: fixtureRoot,
+      capture: true, maxBuffer: 32 * 1024, timeout: budget.remaining('preparation'), graceMs: 250,
+      deadline: budget.cutoffs.report, onSpawn,
+    });
+    proof = JSON.parse(output.stdout);
+  } catch (error) {
+    if (error.timedOut || error.code === 'acceptance_budget_exhausted') throw error;
+    throw acceptanceFailure('candidate', `The exact packaged CLI and hook export proof failed: ${sentence(error.stderr?.trim() || error.message)}`);
+  }
+  if (proof?.passed !== true || proof.commit !== provenance.commit || proof.source_digest !== provenance.source_digest) {
+    throw acceptanceFailure('candidate', 'The packaged CLI and hook export proof did not pass for the verified candidate commit and source digest.');
+  }
+  return proof;
+}
+
 export function diagnosticReplayPackage(receiptFile, app) {
   if (!receiptFile || !app) throw new Error('Diagnostic replay requires both --diagnostic-receipt and --diagnostic-app.');
   const source = JSON.parse(fs.readFileSync(receiptFile, 'utf8'));
@@ -545,6 +566,9 @@ async function main(budget) {
     executionProfile = installedExecutionProfile({ checkout: root, commonDirectory: boundedCommand("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"]), app });
     if (!diagnostic) result.checks.updater_entrypoint = await verifyPackagedUpdaterEntrypoint({ resources, runtime: packagedRuntime,
       environment: resourceEnv, home, profile: executionProfile, budget });
+    result.checks.installed_exports = await verifyPackagedExports({ resources, runtime: packagedRuntime,
+      environment: resourceEnv, home, provenance: shipped.provenance, budget,
+      onSpawn: child => recordScratchProcess(metadataFile, child, true) });
     result.provenance = { marker, daemon_sha256: sha256(releaseFile(resources, shipped.entrypoints.daemon)), native_sha256: sha256(path.join(app, "Contents/MacOS/mandible-app")), harness_sha256: sha256(fileURLToPath(import.meta.url)), package_sha256: testedPackageDigest, shipped };
     budget.remaining('preparation');
     result.phases.package_verification.status = 'passed';

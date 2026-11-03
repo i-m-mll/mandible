@@ -1,9 +1,10 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
+import fs from "node:fs";
 import { describe, expect, it } from "vitest";
 import { exactAgentRef, parseExactAgentRef, resolveAmbientProviderIdentity, normalizeAmbientProviderIdentity } from "../src/ambient-provider-identity.js";
-import { runCli } from "./helpers/cli-process.js";
+import { startStubDaemon, scratchDir, runCli } from "./helpers/cli-process.js";
 import { mergeMandibleClaudeHookSettings } from "../src/claude-hook-settings.js";
 import { currentRequestOrigin, requestOriginForRequest, withRequestOrigin } from "../src/request-origin.js";
 import { withChannelExecutionContext, ambientHeaders } from "../channel-server/transport.js";
@@ -45,7 +46,68 @@ describe("exact execution ingress", () => {
     expect((await run("/bin/bash", ["-c", shell], { timeout: 10_000, env })).stdout).toBe("");
     const invalid = await run("/bin/bash", ["-c", shell], { timeout: 10_000, env: { ...env, MANDIBLE_EXECUTION_CONTEXT: "malformed" } });
     expect(invalid.stdout).toContain("X-Mandible-Managed-Client: 1");
-    expect(invalid.stdout).not.toContain("X-Mandible-Execution-Context:");
+    expect(invalid.stdout).toContain("X-Mandible-Execution-Context: null");
+    expect(invalid.stdout).not.toContain("X-Mandible-Ambient-Provider:");
+    const enclosingOnly = await runCli(['identity', 'exec', '--', '/bin/bash', '-c', shell], {
+      env: { ...env, MANDIBLE_EXECUTION_CONTEXT: 'malformed', CODEX_SESSION_ID: 'enclosing-only' }, inheritEnv: false,
+    });
+    expect(enclosingOnly.status, enclosingOnly.stderr).toBe(0);
+    expect(enclosingOnly.stdout).toContain('X-Mandible-Execution-Context: null');
+    expect(enclosingOnly.stdout).not.toContain('X-Mandible-Ambient-Provider:');
+  });
+
+  it("replaces inherited lifecycle identity with the actual root or child hook payload", async () => {
+    const root = scratchDir('nested-hook');
+    const daemon = await startStubDaemon(() => ({ body: {} }));
+    try {
+      for (const hook of ['session-start', 'subagent-start', 'subagent-stop', 'session-end']) {
+        daemon.requests.length = 0;
+        const agent_id = hook.startsWith('subagent') ? 'new-child' : 'new-session';
+        const result = await runCli(['hook', hook], { input: JSON.stringify({ session_id: 'new-session', ...(hook.startsWith('subagent') ? { agent_id } : {}), cwd: root }),
+          env: { ...daemon.env, MANDIBLE_TOKEN: 'fixture', MANDIBLE_NO_KEYCHAIN_TOKEN: '1', MANDIBLE_SESSION_ID: undefined,
+            CODEX_THREAD_ID: undefined, CODEX_SESSION_ID: undefined, GEMINI_SESSION_ID: undefined, CLAUDE_SESSION_ID: undefined,
+            CLAUDE_CODE_SESSION_ID: 'old-session', CLAUDE_AGENT_ID: 'old-child', CLAUDE_PID: String(process.pid),
+            CLAUDE_ENV_FILE: path.join(root, 'env'), MANDIBLE_EXECUTION_CONTEXT: JSON.stringify({ provider: 'claude', session_id: 'old-session', agent_id: 'old-child' }) } });
+        expect(result.status, result.stderr).toBe(0);
+        const writes = daemon.requests.filter(request => request.method !== 'GET');
+        expect(writes.length).toBeGreaterThan(0);
+        for (const request of writes) expect(JSON.parse(String(request.headers['x-mandible-execution-context'])))
+          .toEqual({ provider: 'claude', session_id: 'new-session', agent_id });
+      }
+    } finally { await daemon.close(); fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("scopes actual CLI projection when enclosing sessions or the nearest provider change", async () => {
+    const root = scratchDir('nested-provider');
+    const env = { CODEX_THREAD_ID: undefined, CODEX_SESSION_ID: undefined, GEMINI_SESSION_ID: undefined,
+      CLAUDE_SESSION_ID: undefined, MANDIBLE_SESSION_ID: undefined, CLAUDE_CODE_SESSION_ID: 'same-session', CLAUDE_AGENT_ID: 'child',
+      MANDIBLE_EXECUTION_CONTEXT: JSON.stringify({ provider: 'claude', session_id: 'same-session', agent_id: 'child' }) };
+    const output = 'printf "%s|%s" "$MANDIBLE_EXECUTION_CONTEXT" "${CLAUDE_AGENT_ID:-}"';
+    try {
+      const same = await runCli(['identity', 'exec', '--', '/bin/sh', '-c', output], { env });
+      expect(same.status, same.stderr).toBe(0);
+      expect(same.stdout).toBe(JSON.stringify({ provider: 'claude', agent_id: 'child', session_id: 'same-session' }) + '|child');
+      const changed = await runCli(['identity', 'exec', '--', '/bin/sh', '-c', output], { env: { ...env, CLAUDE_CODE_SESSION_ID: 'new-session' } });
+      expect(changed.status, changed.stderr).toBe(0);
+      expect(changed.stdout).toBe(JSON.stringify({ provider: 'claude', agent_id: null, session_id: 'new-session' }) + '|');
+      const codex = path.join(root, 'codex'); fs.symlinkSync('/bin/bash', codex);
+      const nested = await runCli(['-c', '"$1" identity exec -- /bin/sh -c "$2"; :', 'nested', path.resolve('bin/mandible'), output],
+        { command: codex, env: { ...env, CODEX_THREAD_ID: 'new-thread', CLAUDE_PID: undefined } });
+      expect(nested.status, nested.stderr).toBe(0);
+      expect(nested.stdout).toBe(JSON.stringify({ provider: 'codex', agent_id: 'new-thread', session_id: null }) + '|');
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("preserves native Codex child and partial evidence without promoting wrapper bindings to executors", () => {
+    const managed = { app_name: 'codex', session_id: 'wrapper' };
+    const wrapperOrigin = { provider: 'codex', agent_id: null, session_id: 'root-thread' };
+    const resolve = () => ({ status: 'resolved' as const, origin: wrapperOrigin });
+    for (const ambient_identity of [
+      { provider: 'codex', agent_id: 'child-thread', session_id: 'root-thread' },
+      { provider: 'codex', agent_id: null, session_id: 'root-thread' },
+      { provider: 'codex', agent_id: 'root-thread', session_id: null },
+    ]) expect(requestOriginForRequest({ ambient_identity, local_managed_identity: managed }, resolve)).toEqual(ambient_identity);
+    expect(requestOriginForRequest({ local_managed_identity: managed }, () => ({ status: 'unknown' }))).toBeNull();
   });
 
   it("isolates channel calls and deferred origins while retaining session-only managed evidence", async () => {

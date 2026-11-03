@@ -5,19 +5,28 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { runSupervisedCommand } from './process-group-supervisor.mjs';
 import { installedRuntimeEnvironment, verifyInstalledRelease } from './installed-release.mjs';
 
+if (process.env.MANDIBLE_EXPORT_PROOF_SUPERVISED !== '1') {
+  await runSupervisedCommand(process.execPath, ['--no-install', ...process.argv.slice(1)], {
+    env: { ...process.env, MANDIBLE_EXPORT_PROOF_SUPERVISED: '1' }, stdio: 'inherit', timeout: 30_000, graceMs: 250,
+  });
+  process.exit(0);
+}
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const accountHome = os.homedir();
+const accountHome = os.userInfo().homedir;
 const sourceRoot = path.dirname(execFileSync('/usr/bin/git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: root, encoding: 'utf8', timeout: 5000 }).trim());
 const resources = fs.realpathSync(process.argv[2]);
 const release = verifyInstalledRelease(resources);
-const scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-export-proof-')));
+const scratch = fs.realpathSync(process.argv[3] || fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-export-proof-')));
+if (!process.argv[3]) process.once('exit', () => fs.rmSync(scratch, { recursive: true, force: true }));
 const home = path.join(scratch, 'home'); fs.mkdirSync(home);
 const env = installedRuntimeEnvironment(resources, { HOME: home, PATH: '/usr/bin:/bin:/usr/sbin:/sbin', TMPDIR: scratch,
   MANDIBLE_HOME: path.join(home, '.mandible'), MANDIBLE_DB: path.join(scratch, 'fixture.db'), MANDIBLE_BASE: '',
   GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', MANDIBLE_NO_KEYCHAIN_TOKEN: '1',
-  MANDIBLE_SOCKET: path.join(scratch, 'private/api.sock') });
+  MANDIBLE_SOCKET: path.join(scratch, 's') });
 Object.assign(process.env, env);
 const load = name => import(pathToFileURL(path.join(resources, 'dist', `${name}.js`)).href);
 const { openDb, setDb } = await load('db');
@@ -26,6 +35,7 @@ const { ClientAuthenticator } = await load('client-auth/authenticator');
 const { SseManager } = await load('sse');
 const { setupOperator, createUser, addBinding } = await load('users/store');
 const { SessionRegistry } = await load('registry');
+const { exactAgentRef } = await load('ambient-provider-identity');
 const { registerSessionRoutes } = await load('routes/sessions');
 const { registerSettingsRoutes } = await load('routes/settings');
 const { startLocalApiSocket } = await load('local-api-socket');
@@ -54,11 +64,11 @@ const denied = [sourceRoot, path.join(accountHome, '.dotfiles'), path.join(accou
 const profile = `(version 1)(allow default)\n${denied.filter(p => fs.existsSync(p)).map(p => `(deny file-read* (subpath ${JSON.stringify(fs.realpathSync(p))}))`).join('\n')}\n(deny file-write* (subpath ${JSON.stringify(resources)}))\n(deny network-outbound (remote ip "*:80") (remote ip "*:443"))`;
 const cli = path.join(resources, release.entrypoints.cli);
 async function run(args, input = '', extra = {}, command = cli) {
-  const child = spawn('/usr/bin/sandbox-exec', ['-p', profile, command, ...args], { cwd: scratch, env: { ...env, ...extra }, detached: true });
+  const child = spawn('/usr/bin/sandbox-exec', ['-p', profile, command, ...args], { cwd: scratch, env: { ...env, ...extra } });
   let stdout = '', stderr = '';
   child.stdout.on('data', chunk => stdout += chunk); child.stderr.on('data', chunk => stderr += chunk);
   child.stdin.on('error', error => { if (error.code !== 'EPIPE') throw error; });
-  const timer = setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; } }, 10_000);
+  const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; } }, 10_000);
   child.stdin.end(input);
   return new Promise((resolve, reject) => {
     child.once('error', reject); child.once('close', status => { clearTimeout(timer); resolve({ status, stdout, stderr }); });
@@ -99,6 +109,7 @@ try {
     return success(await run(['-c', projection.hookSpecificOutput.updatedInput.command], '', hookEnv, '/bin/bash'));
   }));
   assert.deepEqual(calls, ['agent:claude:lifecycle-native:child-a', 'agent:claude:lifecycle-native:child-b', 'agent:claude:lifecycle-native:lifecycle-native']);
+  const childRef = exactAgentRef({ provider: 'claude', session_id: session, agent_id: 'child-proof' });
   const childPayload = { ...payload, agent_id: 'child-proof', agent_type: 'worker', description: 'Child proof' };
   const tools = path.join(scratch, 'user-tools'); fs.mkdirSync(tools);
   const paneCapture = path.join(scratch, 'pane.json');
@@ -110,9 +121,9 @@ try {
   assert.equal(pane.cmd, path.join(tools, 'agent-viewer'));
   assert.deepEqual(pane.args.slice(-2), ['--mode', 'transcript']);
   assert.equal(pane.close_on_exit, true);
-  assert.equal(db.prepare('SELECT parent_id,status FROM sessions WHERE id=?').get('child-proof').parent_id, session);
+  assert.equal(db.prepare('SELECT parent_id,status FROM sessions WHERE id=?').get(childRef).parent_id, session);
   success(await run(['hook', 'subagent-stop'], JSON.stringify(childPayload), hookEnv));
-  assert.equal(db.prepare('SELECT status FROM sessions WHERE id=?').get('child-proof').status, 'ended');
+  assert.equal(db.prepare('SELECT status FROM sessions WHERE id=?').get(childRef).status, 'ended');
   success(await run(['hook', 'session-end'], JSON.stringify(payload), hookEnv));
   assert.equal(db.prepare('SELECT status FROM sessions WHERE id=?').get(session).status, 'ended');
   assert.deepEqual(db.prepare('SELECT pid,conversation_id FROM sessions WHERE id=?').get('stale-parent'), { pid: 999999999, conversation_id: 'parent-native' });

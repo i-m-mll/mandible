@@ -18,6 +18,9 @@ import { PRODUCTION_ORIGIN } from '../src/canonical-origin.js';
 import { registerUserRoutes } from '../src/routes/users.js';
 import { registerSessionRoutes } from '../src/routes/sessions.js';
 import { SessionRegistry } from '../src/registry.js';
+import { FileRpcTransport } from '../src/file-rpc-transport.js';
+import { runCli } from './helpers/cli-process.js';
+import { responsibilityActor } from '../src/responsibility.js';
 import { currentRequestOrigin } from '../src/request-origin.js';
 import { attributionForRequest } from '../src/client-auth/authz.js';
 import { LedgerStore } from '../src/ledger/store.js';
@@ -81,6 +84,38 @@ describe('owner-only local API socket', () => {
     }
     expect((await request('GET', '/api/read', { 'X-Mandible-Execution-Context': 'malformed' })).status).toBe(401);
   });
+  it('keeps unknown managed HTTP and file callers marked and refuses custody despite operator credentials', async () => {
+    const token = auth.mintApiToken(getOperator(db)!.id).token;
+    router.post('/api/custody-probe', (req, res) => res.json(responsibilityActor(req)), {
+      fileRpc: 'allow', operation: { id: 'fixture.custody-probe', effects: ['ledger:write'], reportingCategory: 'ledger', requestSchema: null },
+    });
+    expect((await request('POST', '/api/custody-probe', { Authorization: `Bearer ${token}` }, false, {})).status).toBe(200);
+    for (const context of ['null', 'malformed']) {
+      const headers = { Authorization: `Bearer ${token}`, 'X-Mandible-Execution-Context': context, 'X-Mandible-Managed-Client': '1',
+        'X-Mandible-Ambient-Provider': 'codex', 'X-Mandible-Ambient-Provider-Session-Id': 'enclosing-only' };
+      expect((await request('GET', '/api/read', headers, false)).body).toMatchObject({ managed: true, ambient: null, request_origin: null });
+      expect(await request('POST', '/api/custody-probe', headers, false, {})).toMatchObject({ status: 409, body: { code: 'agent_identity_required' } });
+    }
+    const spool = path.join(root, 'rpc'); fs.mkdirSync(spool, { mode: 0o700 });
+    const transport = new FileRpcTransport({ router, dir: spool });
+    for (const [id, route, method] of [['read', '/api/read', 'GET'], ['custody', '/api/custody-probe', 'POST']]) {
+      fs.writeFileSync(path.join(spool, `${id}.request.json`), JSON.stringify({ id, method, path: route, body: {}, capability_token: token,
+        managed_client: true, ambient_identity: null }));
+      await transport.processOnce();
+      const response = JSON.parse(fs.readFileSync(path.join(spool, `${id}.response.json`), 'utf8'));
+      if (id === 'read') expect(response.body).toMatchObject({ managed: true, ambient: null, request_origin: null });
+      else expect(response).toMatchObject({ status: 409, body: { code: 'agent_identity_required' } });
+    }
+    transport.start();
+    try {
+      const cli = await runCli(['-c', 'source "$1" --mandible-api-definitions-only; api_client_token() { printf %s "$FIXTURE_TOKEN"; }; api_get /api/read', 'fixture', path.resolve('cli/api.sh')], {
+        command: '/bin/bash', env: { MANDIBLE_BASE: `file://${spool}`, FIXTURE_TOKEN: token, MANDIBLE_EXECUTION_CONTEXT: 'malformed',
+          CODEX_SESSION_ID: 'enclosing-only', CODEX_THREAD_ID: undefined, MANDIBLE_SESSION_ID: undefined },
+      });
+      expect(cli.status, cli.stderr).toBe(0);
+      expect(JSON.parse(cli.stdout)).toMatchObject({ managed: true, ambient: null, request_origin: null });
+    } finally { transport.stop(); }
+  });
   it('carries a subprocess origin as metadata while its explicit human credential remains authoritative', async () => {
     const operator = getOperator(db)!;
     const credential = auth.mintApiToken(operator.id).token;
@@ -132,16 +167,16 @@ describe('owner-only local API socket', () => {
     expect((await request('GET', '/api/read', headers)).body.request_origin).toBeNull();
     db.prepare('UPDATE sessions SET conversation_id = ? WHERE id = ?').run('exact-native-codex', 'wrapper-session-1');
     expect((await request('GET', '/api/read', headers)).body.request_origin)
-      .toEqual({ provider: 'codex', agent_id: 'exact-native-codex', session_id: null });
+      .toBeNull();
     addBinding(db, agent.id, { binding_type: 'provider_session_env', value: 'CODEX_THREAD_ID' });
     expect((await request('GET', '/api/read', { ...headers,
-      'X-Mandible-Ambient-Provider': 'codex', 'X-Mandible-Ambient-Provider-Session-Id': 'conflicting-native-codex' })).body.request_origin).toBeNull();
+      'X-Mandible-Ambient-Provider': 'codex', 'X-Mandible-Ambient-Provider-Session-Id': 'conflicting-native-codex' })).body.request_origin).toEqual({ provider: 'codex', agent_id: 'conflicting-native-codex', session_id: null });
     db.prepare(`INSERT INTO console_sessions (id, label, command, created_at, updated_at, mandible_session_id, provider_session_id)
       VALUES ('console-binding', 'Exact binding', 'codex', 1, 1, 'wrapper-session-1', 'different-recorded-native')`).run();
     expect((await request('GET', '/api/read', headers)).body.request_origin).toBeNull();
     db.prepare("UPDATE console_sessions SET provider_session_id = 'exact-native-codex' WHERE id = 'console-binding'").run();
     expect((await request('GET', '/api/read', headers)).body.request_origin)
-      .toEqual({ provider: 'codex', agent_id: 'exact-native-codex', session_id: null });
+      .toBeNull();
   });
   it('keeps a wrapper-launched Claude session and its claim intact when the channel server re-registers it', async () => {
     // Issue f52d4dd: the channel server relabeled the session `claude-channel`

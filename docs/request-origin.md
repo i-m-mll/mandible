@@ -61,3 +61,5 @@ Registry/access snapshots exclude update timestamps and runtime observations. Un
 `Db.afterCommit` queues synchronous effects through managed transaction savepoints, discards rolled-back effects, and runs committed effects outside the rollback handler. An unmanaged SQL transaction cannot register these effects.
 
 Co-Authored-By: Codex (GPT) <codex@openai.com>
+
+Canonical execution-context envelope presence survives invalid values across HTTP, socket and file RPC. Managed callers retain that classification when identity is unknown; legacy session headers never replace an explicitly supplied canonical envelope. Native lifecycle hooks replace inherited context with their payload identity, and nested CLI invocations discard inherited exact context when the provider or enclosing session changes. Same-session child context remains available.
