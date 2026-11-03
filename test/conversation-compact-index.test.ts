@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { ConversationStructureCache } from '../src/conversations/structure-cache';
+import { ConversationStructureCache, projectConversationCache } from '../src/conversations/structure-cache';
 import { indexDisplayFragments } from '../src/conversations/display-indexing';
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from '../src/conversations/source-types';
 import { testRuntimeRoot } from './helpers/runtime-isolation';
@@ -84,4 +84,20 @@ it('retains exact source disclosure constructors and the system speaker of an un
     expect(readingDisclosureState(directive.disclosures,expanded)).toEqual([[expected.keys[0],true]]);
 
   } finally {cache.close();}
+});
+
+it('admits timer cancellation between projection batches without a custom scheduling callback',async()=>{
+  const root=path.join(testRuntimeRoot,'compact-projection-cancel');fs.mkdirSync(root,{recursive:true});
+  const source=new ConversationStructureCache(undefined,{cachePath:path.join(root,'source')});
+  const call=block(0,item(0));
+  try {
+    source.replaceRows(manifest('ready',1),rows([call],()=>null),new Map(),undefined,indexDisplayFragments([call],'conv',()=>null));
+    const controller=new AbortController();const reason=new Error('projection cancelled at timer barrier');
+    const barrier=new Promise<void>(resolve=>setImmediate(()=>{controller.abort(reason);resolve();}));
+    const destination=path.join(root,'selected.v19');
+    await expect(projectConversationCache(source.cachePath,destination,[manifest('ready',1)],{batchSize:1,signal:controller.signal})).rejects.toBe(reason);
+    await barrier;
+    const selected=new ConversationStructureCache(undefined,{cachePath:destination,readonly:true});
+    try {expect(selected.readPresentationIndex('conv','ready',epochs)).toBeNull();}finally{selected.close();}
+  } finally {source.close();fs.rmSync(root,{recursive:true,force:true});}
 });
