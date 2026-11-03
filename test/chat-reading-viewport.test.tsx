@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { useReadingViewport } from '../ui/src/chat/useReadingViewport';
 import type { ReadingRow, ReadingRevealResult } from '../ui/src/chat/readingProjection';
 import { readReadingState } from '../ui/src/chat/readingState';
+import { MeasuredReadingBox } from '../ui/src/chat/ReadingRowWindow';
 
 const boundary = vi.hoisted(() => ({ options: null as any, engine: null as any, calls: [] as string[] }));
 vi.mock('@tanstack/react-virtual', () => ({ useVirtualizer: (options: any) => {
@@ -14,6 +15,20 @@ let viewport: ReturnType<typeof useReadingViewport>;
 let frames = new Map<number, FrameRequestCallback>();
 let nextFrame = 0;
 const coordinate = { conversationId: 'conv', positionSpaceId: 'space', position: 42 };
+
+it('registers a merged native source alias on its visible event without matching unrelated source text',()=>{
+  vi.stubGlobal('ResizeObserver',class{observe(){} disconnect(){}});
+  const registered=new Map<number,HTMLElement|null>();
+  const row:ReadingRow={...rows[0],sources:[{blockId:'call',position:0},{blockId:'result-alias',position:1},{blockId:'unrelated',position:2}]};
+  const view=render(<MeasuredReadingBox row={row} index={0} measurement={{key:row.key,revision:'1'}} pendingHeight={100}
+    reportHeight={()=>{}} registerRow={()=>()=>{}} scope="conv" space="space"
+    register={target=>{registered.set(target.coordinate.position,target.element);return ()=>{};}}>
+    <div data-block-id="call" data-member-refs="call result-alias">unrelated</div>
+  </MeasuredReadingBox>);
+  expect(registered.get(0)).toBe(view.container.querySelector('[data-block-id]'));
+  expect(registered.get(1)).toBe(registered.get(0));
+  expect(registered.get(2)).toBeNull();
+});
 const rows: ReadingRow[] = [{ key: 'exact-row', kind: 'content', isFinalResponse: false, protectedPositions: [42], items: [], nodes: [], sources: [{ blockId: 'cblk:conv:42', position: 42 }], actionGroup: { key: 'scope', start: 0, end: 99 }, disclosureOwner: null }];
 const geometry = { membership: new Map<string, { rowKey: string; position?: number | null }>([['exact-row', { rowKey: 'exact-row', position: 42 }]]), rowMembers: new Map<string, readonly string[]>([['exact-row', ['exact-row']]]), scope: 'conv:space', rows: rows.map(row => ({ key: row.key, revision: '1' })), sizes: [100], exact: true, serial: 1, layout: { width: 600, styleIdentity: 'test', fonts: [] }, renderProps: () => ({} as any) };
 const rect = (top: number, height: number) => ({ top, bottom: top + height, height, left: 0, right: 600, width: 600, x: 0, y: top, toJSON: () => ({}) } as DOMRect);

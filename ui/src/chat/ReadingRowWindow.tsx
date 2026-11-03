@@ -35,7 +35,8 @@ export function MeasuredReadingBox({ row, index, measurement, pendingHeight, rep
     const observer = new ResizeObserver(() => { const rect = box.getBoundingClientRect(); reportHeight(measurement, rect.height, rect.width); }); observer.observe(box);
     const dispose = row.sources.map(source => {
       if (source.position === undefined) return () => {};
-      const exact = row.kind === 'activity-summary' ? box : [...box.querySelectorAll<HTMLElement>('[data-block-id]')].find(node => node.dataset.blockId === source.blockId) ?? null;
+      const exact = row.kind === 'activity-summary' ? box : [...box.querySelectorAll<HTMLElement>('[data-block-id],[data-member-refs]')]
+        .find(node => node.dataset.blockId === source.blockId || node.dataset.memberRefs?.split(' ').includes(source.blockId)) ?? null;
       if (exact && !exact.hasAttribute('tabindex')) exact.tabIndex = -1;
       const coordinate = { conversationId: scope, positionSpaceId: space, position: source.position };
       const clearDefault = row.activityGroup?.expanded ? () => {} : register({ rowKey: row.key, coordinate, element: exact });

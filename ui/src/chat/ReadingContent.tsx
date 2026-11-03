@@ -132,9 +132,9 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
               defaultExpanded={false}
               withinCollection={row.activityMember}
               getDisclosureExpanded={(key,defaultExpanded)=>expandedBlocks[`${disclosureKey}:${key}`] ?? (preparing || defaultExpanded)}
-              onDisclosureExpandedChange={(key,next,trigger)=>setBlockExpanded(`${disclosureKey}:${key}`,next,[source,resultSource],trigger)}
+              onDisclosureExpandedChange={(key,next,trigger)=>setBlockExpanded(`${disclosureKey}:${key}`,next,[source,resultSource,...(node.sourceAliases??[])],trigger)}
               expanded={expanded}
-              onExpandedChange={(next, trigger) => setBlockExpanded(disclosureKey, next, [source, resultSource], trigger)}
+              onExpandedChange={(next, trigger) => setBlockExpanded(disclosureKey, next, [source, resultSource,...(node.sourceAliases??[])], trigger)}
               resultSelected={resultSource ? selectedBlockIds?.has(resultSource.blockId) : false}
               selectMode={selectMode}
               onToggleResultSelect={resultSource && onToggleBlockSelect
