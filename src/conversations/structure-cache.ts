@@ -198,6 +198,7 @@ export class ConversationStructureCache {
   async projectGenerationsTo(destination:ConversationStructureCache,manifests:readonly SourceManifestRow[],options:{signal?:AbortSignal;maxBytes?:number;batchSize?:number;cooperate?:()=>Promise<void>}={}):Promise<{generations:number;rows:number}> {
     const batchSize=options.batchSize??512;if(!Number.isSafeInteger(batchSize)||batchSize<1)throw new Error('Invalid projection batch size');
     let rows=0,generations=0;
+    if(options.maxBytes!==undefined){const pageSize=Number(destination.cache.pragma('page_size',{simple:true}));destination.cache.pragma(`max_page_count = ${Math.max(1,Math.floor(options.maxBytes/pageSize))}`);}
     const check=()=>{options.signal?.throwIfAborted();if(options.maxBytes!==undefined) {
       const bytes=['','-wal','-shm'].reduce((sum,suffix)=>sum+(fs.existsSync(destination.cachePath+suffix)?fs.statSync(destination.cachePath+suffix).size:0),0);
       if(bytes>options.maxBytes)throw new Error('Conversation cache projection exceeds its byte budget');
@@ -206,19 +207,23 @@ export class ConversationStructureCache {
     try {
       for(const manifest of manifests) {
         check();const source=this.cachedConversation(manifest.conversation_id,manifest.source_version_id,{parserFormat:manifest.parser_format,parserVersion:manifest.parser_version,normalizationVersion:manifest.normalization_version,redactionEpoch:manifest.redaction_epoch});
-        if(!source||source.block_count!==manifest.block_count)throw new Error('Exact ready conversation cache generation is unavailable');
+        if(!source||source.block_count!==manifest.block_count)continue;
         if(destination.hasCompleteConversation(manifest.conversation_id,manifest.source_version_id,manifest.block_count,{parserFormat:manifest.parser_format,parserVersion:manifest.parser_version,normalizationVersion:manifest.normalization_version,redactionEpoch:manifest.redaction_epoch}))continue;
         const target=destination.beginGeneration(manifest);
         try {
           for(const table of CONVERSATION_CACHE_FORMAT.tables) {
             const columns=(this.cache.prepare(`PRAGMA table_info(${table})`).all() as Array<{name:string}>).map(row=>row.name);
             const insert=destination.cache.prepare(`INSERT INTO ${table}(${columns.join(',')}) VALUES(${columns.map(()=>'?').join(',')})`);
-            let offset=0;
+            const tableInfo=this.cache.prepare(`PRAGMA table_info(${table})`).all() as Array<{name:string;pk:number}>;
+            const withoutRowid=(this.cache.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").get(table) as {sql:string}).sql.includes('WITHOUT ROWID');
+            const cursorColumns=withoutRowid?tableInfo.filter(column=>column.pk>0&&column.name!=='cache_conversation_id').sort((left,right)=>left.pk-right.pk).map(column=>column.name):['rowid'];
+            let cursor:unknown[]|undefined;
             while(true) {
-              check();const batch=this.cache.prepare(`SELECT * FROM ${table} WHERE cache_conversation_id=? LIMIT ? OFFSET ?`).all(source.cache_id,batchSize,offset) as Array<Record<string,unknown>>;
+              check();const after=cursor?` AND (${cursorColumns.join(',')})>(${cursorColumns.map(()=>'?').join(',')})`:'';
+              const batch=this.cache.prepare(`SELECT ${withoutRowid?'*':'rowid AS __cursor,*'} FROM ${table} WHERE cache_conversation_id=?${after} ORDER BY ${cursorColumns.join(',')} LIMIT ?`).all(source.cache_id,...(cursor??[]),batchSize) as Array<Record<string,unknown>>;
               if(!batch.length)break;
               destination.cache.transaction(()=>{for(const row of batch)insert.run(...columns.map(column=>column==='cache_conversation_id'?target:row[column]));})();
-              rows+=batch.length;offset+=batch.length;check();await options.cooperate?.();
+              rows+=batch.length;const last=batch[batch.length-1];cursor=cursorColumns.map(column=>column==='rowid'?last.__cursor:last[column]);check();await options.cooperate?.();
             }
           }
           destination.completeGeneration(target);generations++;
@@ -298,7 +303,14 @@ export class ConversationStructureCache {
   replaceRows(manifest:SourceManifestRow,rows:readonly Omit<SparseConversationBlockRow,'conversationId'|'sourceVersionId'|'parserFormat'|'parserVersion'|'normalizationVersion'|'redactionEpoch'>[],tools:ReadonlyMap<string,number>=new Map(),priorVersionId?:string,display?:DisplayIndexInput):void {
     if(this.hasCompleteConversation(manifest.conversation_id,manifest.source_version_id,manifest.block_count,{parserFormat:manifest.parser_format,parserVersion:manifest.parser_version,normalizationVersion:manifest.normalization_version,redactionEpoch:manifest.redaction_epoch}))return;
     const id=this.beginGeneration(manifest,priorVersionId);
-    try{this.appendGeneration(id,{rows,tools,display});this.completeGeneration(id);}catch(error){this.discardGeneration(id);throw error;}
+    try {
+      const size=512;
+      for(let offset=0;offset<rows.length;offset+=size) {
+        const part=rows.slice(offset,offset+size);const first=part[0].position,last=part[part.length-1].position;
+        this.appendGeneration(id,{rows:part,display:display?{positions:display.positions.filter(position=>position.position>=first&&position.position<=last),fragments:display.fragments.filter(fragment=>fragment.coordinate.position>=first&&fragment.coordinate.position<=last),aliases:display.aliases.filter(alias=>alias.position>=first&&alias.position<=last)}:undefined});
+      }
+      this.appendGeneration(id,{tools});this.completeGeneration(id);
+    } catch(error){this.discardGeneration(id);throw error;}
   }
 
   private cachedConversation(conversationId: string, sourceVersionId: string, epochs?: ConversationSourceEpochs): CacheConversationRow | null {

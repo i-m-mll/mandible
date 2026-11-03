@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type SqliteDatabase from '../sqlite.js';
 import { displayFragmentId, displaySummaryMembers, type IndexedDisplayFragment, type DisplayFragmentDescriptor, type DisplayPositionFacts } from './display-context.js';
 import { semanticActivityUnified } from '../presentation/activity-presentation.js';
-import { KEY_RECIPE_COLUMNS, encodeIndexKey, decodeIndexKey, type KeyRecipeRow } from './index-keys.js';
+import { KEY_RECIPE_COLUMNS, encodeIndexKey, indexKeyDecoder, type KeyRecipeRow } from './index-keys.js';
 import type { ActivityFacts, IndexWriteBatch } from './conversation-index.js';
 
 export type DisplayIndexInput = IndexWriteBatch;
@@ -73,7 +73,7 @@ export function writeDisplayIndex(db:SqliteDatabase,cacheId:number,input:Display
 }
 function decodeRows(db:SqliteDatabase,id:number,rows:FragmentRow[]):IndexedDisplayFragment[] {
   if(!rows.length)return [];
-  const conversation=conversationId(db,id);const positions=JSON.stringify([...new Set(rows.map(row=>row.position))]);
+  const decodeKey=indexKeyDecoder(db,id,conversationId(db,id));const positions=JSON.stringify([...new Set(rows.map(row=>row.position))]);
   const children=(table:string)=>db.prepare(`SELECT * FROM ${table} WHERE cache_conversation_id=? AND position IN (SELECT value FROM json_each(?)) ORDER BY position,part_kind,part_ordinal,ordinal`).all(id,positions) as Array<any>;
   const group=(values:Array<any>)=>{const result=new Map<string,any[]>();for(const value of values){const key=`${value.position}:${value.part_kind}:${value.part_ordinal}`;let list=result.get(key);if(!list)result.set(key,list=[]);list.push(value);}return result;};
   const disclosures=group(children('cache_fragment_disclosures'));const operations=group(children('cache_fragment_operations'));const names=group(children('cache_operation_names'));const steps=group(children('cache_execution_steps'));
@@ -88,12 +88,12 @@ function decodeRows(db:SqliteDatabase,id:number,rows:FragmentRow[]):IndexedDispl
       ...(row.execution_kind===null?{}:{execution:row.execution_kind===1?{kind:'script',language:'javascript'}:{kind:'command',count:row.execution_count!,shells:(steps.get(key)??[]).map(step=>step.shell),forwarding:(steps.get(key)??[]).map(step=>enumValue(FORWARDING,step.forwarding)!)}}),
       ...(operations.has(key)?{operations:operations.get(key)!.map(operation=>({category:enumValue(CATEGORIES,operation.category)!,count:operation.count,names:(names.get(key)??[]).filter(name=>name.operation===operation.ordinal).map(name=>name.name)}))}:{})}:null;
     const disclosureRows=disclosures.get(key)??[];
-    const disclosureKeys=(kind:number)=>disclosureRows.filter(value=>value.kind===kind).map(value=>decodeIndexKey(db,id,conversation,value));
+    const disclosureKeys=(kind:number)=>disclosureRows.filter(value=>value.kind===kind).map(value=>decodeKey(value));
     const coordinate={position:row.position,part:partName(row.part_kind,row.part_ordinal)};
     return {id:displayFragmentId(coordinate),coordinate,kind:row.kind===1?'activity':'content',speaker:speaker(row.role_code),
       activity_run_id:row.run_position===null?null:displayFragmentId({position:row.run_position,part:partName(row.run_kind!,row.run_ordinal!)}),
       activity,paired_source_positions:(paired.get(key)??[]).map(value=>value.paired_position),summary_from_source:Boolean(row.flags&1),has_details:Boolean(row.flags&2),summary_eligible:!(row.flags&4),
-      disclosures:{keys:disclosureKeys(0),prefixes:disclosureKeys(1),...(disclosureRows.some(value=>value.kind===2)?{thinkingDefaults:disclosureRows.filter(value=>value.kind===2).map(value=>({key:decodeIndexKey(db,id,conversation,value),...(value.turn_id===null?{}:{turnId:value.turn_id})}))}:{})}};
+      disclosures:{keys:disclosureKeys(0),prefixes:disclosureKeys(1),...(disclosureRows.some(value=>value.kind===2)?{thinkingDefaults:disclosureRows.filter(value=>value.kind===2).map(value=>({key:decodeKey(value),...(value.turn_id===null?{}:{turnId:value.turn_id})}))}:{})}};
   });
 }
 export type DisplayContextPlan={fragments:DisplayFragmentDescriptor[];aliases:Array<{position:number;fragment_id:string}>;runs:Map<string,IndexedDisplayFragment[]>;ownerFragments:IndexedDisplayFragment[];sourcePositions:number[]};
@@ -116,11 +116,11 @@ export function readDisplayContextPlan(db:SqliteDatabase,id:number,positions:rea
 }
 export function readCompleteDisplayIndex(db:SqliteDatabase,id:number):{fragments:IndexedDisplayFragment[];positions:DisplayPositionFacts[];aliases:DisplayContextPlan['aliases'];revisions:{members:Record<string,string>;runs:Record<string,string>}} {
   const fragments=decodeRows(db,id,db.prepare(`${fragmentSelect} WHERE f.cache_conversation_id=? ORDER BY f.position,f.ordinal`).all(id) as FragmentRow[]);
-  const conversation=conversationId(db,id);
+  const decodeKey=indexKeyDecoder(db,id,conversationId(db,id));
   const keys=new Map<number,Array<KeyRecipeRow&{kind:number;ordinal:number}>>();
   for(const row of db.prepare('SELECT * FROM cache_position_identities WHERE cache_conversation_id=? ORDER BY position,kind,ordinal').all(id) as Array<KeyRecipeRow&{position:number;kind:number;ordinal:number}>) {let values=keys.get(row.position);if(!values)keys.set(row.position,values=[]);values.push(row);}
   const positions=(db.prepare('SELECT position,role_code,revision,turn_id,response_class,usage_key,usage_input,usage_output FROM cache_blocks WHERE cache_conversation_id=? ORDER BY position').all(id) as Array<any>).map(row=>{
-    const identities=keys.get(row.position)??[];const key=(kind:number)=>identities.filter(value=>value.kind===kind).map(value=>decodeIndexKey(db,id,conversation,value));
+    const identities=keys.get(row.position)??[];const key=(kind:number)=>identities.filter(value=>value.kind===kind).map(value=>decodeKey(value));
     const response=key(1)[0],execution=key(2)[0];
     return {position:row.position,speaker:speaker(row.role_code),revision:row.revision?Buffer.from(row.revision).toString('hex'):'',handoffKeys:key(0),...(row.turn_id===null?{}:{turnId:row.turn_id}),
       ...(response?{assistantResponse:{key:response,classification:enumValue(RESPONSES,row.response_class)!}}:{}),...(execution?{executionKey:execution}:{}),...(row.usage_key===null?{}:{usage:{key:row.usage_key,input:row.usage_input,output:row.usage_output}})};
