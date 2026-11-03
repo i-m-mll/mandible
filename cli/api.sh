@@ -220,7 +220,7 @@ api_is_file_rpc() {
 # generic managed/session markers still fence off operator credentials even
 # when they do not identify a provider-specific agent account.
 api_managed_client_markers_present() {
-  [[ -n "${MANDIBLE_MANAGED_CLIENT:-}${CODEX_THREAD_ID:-}${CODEX_SESSION_ID:-}${CLAUDE_CODE_SESSION_ID:-}${CLAUDE_SESSION_ID:-}${GEMINI_SESSION_ID:-}${MANDIBLE_SESSION_ID:-}" ]]
+  [[ -n "${MANDIBLE_EXECUTION_CONTEXT:-}${CLAUDE_AGENT_ID:-}${MANDIBLE_MANAGED_CLIENT:-}${CODEX_THREAD_ID:-}${CODEX_SESSION_ID:-}${CLAUDE_CODE_SESSION_ID:-}${CLAUDE_SESSION_ID:-}${GEMINI_SESSION_ID:-}${MANDIBLE_SESSION_ID:-}" ]]
 }
 
 api_local_path_is_canonical() {
@@ -242,6 +242,11 @@ api_local_path_is_canonical() {
 # nothing. The hint participates in the same ambiguity check.
 api_agent_provider() {
   local hint="${1:-}" provider="" count=0
+  if [[ "${MANDIBLE_EXECUTION_CONTEXT+x}" ]]; then
+    provider=$(jq -er 'select(.provider == "claude" or .provider == "codex" or .provider == "gemini") | .provider' <<< "$MANDIBLE_EXECUTION_CONTEXT") || return 1
+    [[ -z "$hint" || "$hint" == "$provider" ]] || return 1
+    printf '%s' "$provider"; return 0
+  fi
   local has_codex=0 has_claude=0 has_gemini=0
   [[ -z "$hint" ]] || secret_material_valid "$hint" || return 1
   [[ -z "${CLAUDE_CODE_SESSION_ID:-}" || -z "${CLAUDE_SESSION_ID:-}" || "$CLAUDE_CODE_SESSION_ID" == "$CLAUDE_SESSION_ID" ]] || return 1
@@ -1021,15 +1026,52 @@ api_ambient_session_id() {
   esac
 }
 
+api_execution_context_json() {
+  if [[ "${MANDIBLE_EXECUTION_CONTEXT+x}" ]]; then
+    jq -cn --arg context "$MANDIBLE_EXECUTION_CONTEXT" '
+      def native_id: type == "string" and length > 0 and (explode | all(. >= 32 and . != 127));
+      try (($context | fromjson | select(type == "object") |
+        select(.provider == "claude" or .provider == "codex" or .provider == "gemini") |
+        select((.agent_id == null or (.agent_id|native_id)) and (.session_id == null or (.session_id|native_id))) |
+        select(.agent_id != null or .session_id != null) |
+        select(.provider != "claude" or .session_id != null) |
+        {provider,agent_id,session_id}) // null) catch null'
+    return
+  fi
+  local provider agent_id="" session_id=""
+  provider=$(api_ambient_provider)
+  case "$provider" in
+    codex) agent_id="${CODEX_THREAD_ID:-}"; session_id="${CODEX_SESSION_ID:-}" ;;
+    claude) agent_id="${CLAUDE_AGENT_ID:-}"; session_id="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}" ;;
+    gemini) agent_id="${GEMINI_SESSION_ID:-}"; session_id="$agent_id" ;;
+  esac
+  jq -cn --arg provider "$provider" --arg agent "$agent_id" --arg session "$session_id" '
+    if $provider == "" or ($agent == "" and $session == "") then null
+    else {provider:$provider,agent_id:(if $agent == "" then null else $agent end),session_id:(if $session == "" then null else $session end)} end'
+}
+
+api_current_agent_ref() {
+  api_execution_context_json | jq -r '
+    if .agent_id == null or .provider == null then empty
+    elif .provider == "claude" then
+      if .session_id == null then empty else "agent:claude:" + (.session_id|@uri) + ":" + (.agent_id|@uri) end
+    elif .provider == "codex" or .provider == "gemini" then "agent:" + .provider + ":" + (.agent_id|@uri)
+    else empty end'
+}
+
 api_request_origin_json() {
   [[ "${MANDIBLE_REQUEST_ORIGIN+x}" ]] || return 0
   jq -cn --arg origin "$MANDIBLE_REQUEST_ORIGIN" 'try ($origin | fromjson) catch null'
 }
 
 api_curl_ambient_headers() {
-  local provider session_id managed_app="${MANDIBLE_MANAGED_APP:-}" managed_session="${MANDIBLE_SESSION_ID:-}"
+  local context provider session_id managed_app="${MANDIBLE_MANAGED_APP:-}" managed_session="${MANDIBLE_SESSION_ID:-}"
   provider=$(api_ambient_provider)
   session_id=$(api_ambient_session_id)
+  context=$(api_execution_context_json)
+  if [[ "$context" != null ]]; then
+    printf '%s\0%s\0' '-H' "X-Mandible-Execution-Context: ${context}"
+  fi
   local request_origin
   request_origin=$(api_request_origin_json)
   [[ -z "$request_origin" ]] || printf '%s\0%s\0' '-H' "X-Mandible-Request-Origin: ${request_origin}"
@@ -1549,6 +1591,7 @@ api_file_rpc_exchange() {
     --arg path "$request_path" \
     --arg provider "$provider" \
     --arg provider_session_id "$session_id" \
+    --argjson execution_context "$(api_execution_context_json)" \
     --arg request_origin "$request_origin" \
     --arg attach_field "$attach_field" \
     --arg attach_name "$attach_name" \
@@ -1558,8 +1601,8 @@ api_file_rpc_exchange() {
      + (if ($body[0] != null) then {body:$body[0]} else {} end)
      + (if $attach_field != "" and $attach_name != "" then {attachments:{($attach_field):$attach_name}} else {} end)
      + (if ($ENV.MANDIBLE_CLIENT_TOKEN // "") != "" then {capability_token:$ENV.MANDIBLE_CLIENT_TOKEN} else {} end)
-     + (if $method != "GET" and $provider != "" and $provider_session_id != ""
-        then {ambient_identity:{provider:$provider, provider_session_id:$provider_session_id}}
+     + (if $execution_context != null
+        then {ambient_identity:$execution_context}
         else {} end)' > "$request_tmp"
   (( rpc_token_traced == 0 )) || set -x
   rm -f "$body_tmp"

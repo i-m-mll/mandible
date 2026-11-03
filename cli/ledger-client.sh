@@ -433,3 +433,7 @@ mandible_issue_file_write() {
     done
   } > "$issue_file"
 }
+
+mandible_current_agent_ref() {
+  api_current_agent_ref
+}

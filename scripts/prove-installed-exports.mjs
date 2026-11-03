@@ -88,6 +88,17 @@ try {
     { id: session, pid: process.pid, conversation_id: session, status: 'active', terminal: 'wezterm', nav_session: 'terminal-session', nav_tab: 'terminal-tab', nav_pane_id: 'pane-7' });
   const projection = success(await run(['-c', '. "$1"; printf "%s|%s|%s" "${MANDIBLE_SESSION_ID:-}" "$CLAUDE_CODE_SESSION_ID" "${CODEX_THREAD_ID:-}"', 'fixture', envFile], '', hookEnv, '/bin/bash'));
   assert.equal(projection, `|${session}|`);
+  const calls = await Promise.all(['child-a', 'child-b', null].map(async agent => {
+    const toolInput = { command: `exec ${JSON.stringify(cli)} identity exec -- /bin/sh -c 'printf %s "$MANDIBLE_AGENT_REF"'`, timeout: 123, description: 'Preserved' };
+    const projection = JSON.parse(success(await run(['hook', 'pre-tool-use'], JSON.stringify({
+      session_id: session, ...(agent ? { agent_id: agent } : {}), tool_name: 'Bash', tool_input: toolInput,
+    }))));
+    assert.equal(projection.hookSpecificOutput.permissionDecision, undefined);
+    assert.equal(projection.hookSpecificOutput.updatedInput.timeout, 123);
+    assert.equal(projection.hookSpecificOutput.updatedInput.description, 'Preserved');
+    return success(await run(['-c', projection.hookSpecificOutput.updatedInput.command], '', hookEnv, '/bin/bash'));
+  }));
+  assert.deepEqual(calls, ['agent:claude:lifecycle-native:child-a', 'agent:claude:lifecycle-native:child-b', 'agent:claude:lifecycle-native:lifecycle-native']);
   const childPayload = { ...payload, agent_id: 'child-proof', agent_type: 'worker', description: 'Child proof' };
   const tools = path.join(scratch, 'user-tools'); fs.mkdirSync(tools);
   const paneCapture = path.join(scratch, 'pane.json');
@@ -108,6 +119,6 @@ try {
   assert.notEqual(db.prepare('SELECT status FROM sessions WHERE id=?').get('stale-parent').status, 'ended');
   process.stdout.write(`${JSON.stringify({ passed: true, commit: release.provenance.commit, source_digest: release.provenance.source_digest,
     evidence: ['identity exec retains PID, argument boundaries, stdin/stdout/stderr and exit status while removing stale managed identity',
-      'settings read over authenticated private socket', 'lifecycle native ID environment projection, process attachment, navigation and filtered inbox',
+      'concurrent installed per-call Claude child/root projections and exact identity exec refs', 'settings read over authenticated private socket', 'lifecycle native ID environment projection, process attachment, navigation and filtered inbox',
       'subagent registration/end and session end preserve parent ownership', 'checkout, developer stores and ambient developer tools denied'], scratch }, null, 2)}\n`);
 } finally { await closeSocket(); db.close(); }

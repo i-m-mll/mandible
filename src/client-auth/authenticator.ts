@@ -170,7 +170,7 @@ export class ClientAuthenticator implements ClientAuthGate {
     let userId: string | null = null;
     if (ambient) {
       const provider = resolveProviderSessionAttributionResult(this.db, ambient.provider);
-      const session = resolveSessionIdAttributionResult(this.db, ambient.provider_session_id);
+      const session = resolveSessionIdAttributionResult(this.db, (ambient.agent_id ?? ambient.session_id)!);
       if (provider.status !== "resolved" || session.status === "conflict"
           || (session.status === "resolved" && session.attribution.user_id !== provider.attribution.user_id)) return null;
       userId = provider.attribution.user_id;
@@ -197,7 +197,7 @@ export class ClientAuthenticator implements ClientAuthGate {
         method: "local_socket",
         credential_id: null,
         source: "local_socket",
-        session_id: localManaged?.session_id ?? ambient?.provider_session_id ?? null,
+        session_id: localManaged?.session_id ?? ambient?.agent_id ?? ambient?.session_id ?? null,
         effect_ceiling: this.instance?.allowed_effects ?? PRODUCTION_EFFECTS,
       };
     }

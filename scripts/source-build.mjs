@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { build as esbuild } from 'esbuild';
 import { writeBuildRevision } from './build-revision.mjs';
 import { typeScriptCompiler } from './run-tsc.js';
 
@@ -19,7 +20,7 @@ export async function sourceBuild(directory, mode = 'build', { timeout = 60_000 
   const commands = projects.map(project => {
     const config = project === 'backend' ? 'tsconfig.json' : project === 'channel' ? 'channel-server/tsconfig.json' : 'ui/tsconfig.json';
     const args = ['--smol', compiler, '-p', config];
-    if (checking || project === 'ui') args.push('--noEmit', '--incremental', '--tsBuildInfoFile', `.cache/typescript/${project}-check.tsbuildinfo`);
+    if (checking || project === 'ui' || project === 'channel') args.push('--noEmit', '--incremental', '--tsBuildInfoFile', `.cache/typescript/${project}-check.tsbuildinfo`);
     return { name: `${project}-${checking || project === 'ui' ? 'check' : 'emit'}`, args };
   });
   if (mode === 'build') commands.push({ name: 'ui-bundle', args: ['ui/esbuild.config.js'] });
@@ -38,6 +39,11 @@ export async function sourceBuild(directory, mode = 'build', { timeout = 60_000 
   })));
   const failed = results.find(result => result.error || result.code !== 0);
   if (failed) throw new Error(`Source stage ${failed.args.join(' ')} failed: ${failed.error?.message ?? failed.signal ?? failed.code}`);
+  if (!checking && projects.includes('channel')) {
+    await esbuild({ entryPoints: [path.join(directory, 'channel-server/index.ts')],
+      outfile: path.join(directory, 'dist/channel-server/index.js'), bundle: true, platform: 'node',
+      format: 'esm', target: 'node22', packages: 'external', sourcemap: false });
+  }
   if (mode === 'build') writeBuildRevision(directory);
 }
 

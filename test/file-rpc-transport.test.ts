@@ -65,7 +65,7 @@ it("persists file-RPC native origin with its authoritative comment revision", as
     router.post('/api/ledger/issues/:issueId/comments', (_req, res) => {
       res.json(store.addComment(issue.id, { body: 'From file RPC', actor_type: 'system', author_display: 'System', attribution: systemAction() }));
     }, { fileRpc: 'allow', operation: { id: 'fixture.origin-comment', effects: ['ledger:write'], reportingCategory: 'ledger', requestSchema: null } });
-    const origin = { provider: 'claude', provider_session_id: 'exact-file-native' };
+    const origin = { provider: 'claude', agent_id: 'child', session_id: 'exact-file-native' };
     fs.writeFileSync(path.join(tempDir, 'origin.request.json'), JSON.stringify({ id: 'origin', method: 'POST',
       path: `/api/ledger/issues/${issue.id}/comments`, request_origin: origin }));
     await new FileRpcTransport({ router, dir: tempDir }).processOnce();
