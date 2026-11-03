@@ -24,6 +24,11 @@ export class ConversationCacheTransition {
       ? `${this.target.cachePath.slice(0, -4)}.v18` : null);
   }
 
+  async preparePath(filePath: string, cooperate: () => Promise<void>): Promise<void> {
+    const conversations = this.ledger.prepare('SELECT id FROM conversations WHERE source_path = ?').all(filePath) as Array<{ id: string }>;
+    for (const conversation of conversations) await this.prepare(conversation.id, cooperate);
+  }
+
   async prepare(conversationId: string | undefined, cooperate: () => Promise<void>): Promise<void> {
     if (!this.obsoletePath || !fs.existsSync(this.obsoletePath)) return;
     const receiptPath = cacheTransitionReceiptPath(this.target.cachePath);
