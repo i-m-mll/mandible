@@ -1,3 +1,4 @@
+import { readingMeasurementKey as measurementKey } from './readingRowKeys';
 import { settleReadingLayout } from '../components/shared/readingLayoutReadiness';
 
 /** Exact DOM geometry only; source ownership and viewport policy stay with callers. */
@@ -58,9 +59,7 @@ export type MeasurementResult = { measurements: readonly RowMeasurement[] } & (
 export function measurementLayoutIdentity(layout: MeasurementLayout): string {
   return JSON.stringify([layout.width, layout.styleIdentity, layout.fonts, layout.responsiveVariant]);
 }
-function measurementKey(row: MeasurementRow, layoutIdentity: string): string {
-  return JSON.stringify([row.key, row.revision, row.disclosureIdentity ?? '', layoutIdentity]);
-}
+
 function untilAbort<T>(promise: Promise<T>, signal: AbortSignal, discard?: (value: T) => void): Promise<{ ready: true; value: T } | { ready: false }> {
   return new Promise((resolve, reject) => {
     const abort = () => { signal.removeEventListener('abort', abort); resolve({ ready: false }); };

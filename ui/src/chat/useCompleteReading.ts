@@ -12,8 +12,8 @@ import { activityTargetKey } from '../../../src/presentation/activity-targets';
 import { useActivityTargetResolutions } from '../query/activityTargets';
 import { activityTargetDisplayLabel, type ActivityTargetLabels } from '../components/shared/ActivityTargetLinks';
 
-export const readingPayloadKey = (row: MeasurementRow): string => JSON.stringify([row.key, row.revision, row.disclosureIdentity ?? '']);
-export const readingBodyKey = (row: MeasurementRow): string => JSON.stringify([row.key, row.revision, row.bodyIdentity ?? row.disclosureIdentity ?? '']);
+import { readingBodyKey } from './readingRowKeys';
+export { readingBodyKey, readingPayloadKey } from './readingRowKeys';
 /** Decode an accepted offscreen snapshot only when its row is actually rendered. */
 export function readingTargetLabels(row?: MeasurementRow): ActivityTargetLabels | undefined {
   if (!row || row.targetLabels) return row?.targetLabels;
