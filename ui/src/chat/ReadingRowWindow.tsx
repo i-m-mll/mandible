@@ -26,7 +26,9 @@ export function MeasuredReadingBox({ row, index, measurement, pendingHeight, rep
   scope: string; space: string; children?: ComponentChildren;
 }) {
   const element = useRef<HTMLDivElement | null>(null);
-  const setNode = useCallback((node: HTMLDivElement | null) => { element.current = node; if (node) { node.dataset.readingPayload = readingPayloadKey(measurement); node.dataset.readingBody = readingBodyKey(measurement); } }, [measurement]);
+  const payloadKey = readingPayloadKey(measurement);
+  const bodyKey = readingBodyKey(measurement);
+  const setNode = useCallback((node: HTMLDivElement | null) => { element.current = node; if (node) { node.dataset.readingPayload = payloadKey; node.dataset.readingBody = bodyKey; } }, [payloadKey,bodyKey]);
   useLayoutEffect(() => {
     const box = element.current;
     if (!box) return;
@@ -44,6 +46,6 @@ export function MeasuredReadingBox({ row, index, measurement, pendingHeight, rep
       return () => { clearDefault(); clearSubtarget(); };
     });
     return () => { observer.disconnect(); disposeRow(); dispose.forEach(dispose => dispose()); };
-  }, [row, scope, space, register, registerRow, children, measurement, reportHeight]);
+  }, [row, scope, space, register, registerRow, payloadKey, reportHeight]);
   return <ReadingRowFrame row={row ?? measurement} index={index} busy={!row} style={row ? undefined : { height: `${pendingHeight}px` }} elementRef={setNode}>{children}</ReadingRowFrame>;
 }
