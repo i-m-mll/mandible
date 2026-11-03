@@ -12,6 +12,11 @@ import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import SqliteDatabase from "../../src/sqlite.ts";
 
 import { openDb } from "../../src/db.js";
+import { ConversationStructureCache, getConversationStructureCache } from "../../src/conversations/structure-cache.js";
+import { ConversationSourceStore } from "../../src/conversations/source-store.js";
+import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../../src/conversations/source-types.js";
+import { indexDisplayFragments } from "../../src/conversations/display-indexing.js";
+import { CodexParser } from "../../src/parsers/codex.js";
 import { setSetting } from "../../src/client-auth/settings-kv.js";
 import { LocalSessionAuthority } from "../../src/client-auth/session-authority.js";
 import { localCaPaths } from "../../scripts/local-ca-trust.mjs";
@@ -671,80 +676,93 @@ describe("iab-preview launcher", () => {
     const sourceCache = path.join(root, "source-structure.db");
     const targetCache = path.join(root, "preview", "conversations", "structure.db");
 
-    const projected = new SqliteDatabase(projectedDb);
-    projected.exec(`
-      CREATE TABLE conversations (id TEXT PRIMARY KEY);
-      CREATE TABLE conversation_sources (
-        conversation_id TEXT NOT NULL,
-        current_version_id TEXT
-      );
-      INSERT INTO conversations VALUES ('kept');
-      INSERT INTO conversation_sources VALUES ('kept', 'version-current');
-    `);
-    projected.close();
+    const file = path.join(root, '.codex', 'sessions', 'kept.jsonl');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const sourceRows = [
+      { type: 'session_meta', payload: { id: 'kept', cwd: root } },
+      { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Initial preview content' }] } },
+    ];
+    const projected = openDb(projectedDb);
+    const epochs = CURRENT_CONVERSATION_SOURCE_EPOCHS;
+    const publish = async () => {
+      fs.writeFileSync(file, sourceRows.map(row => JSON.stringify(row)).join('\n') + '\n');
+      const parsed = await new CodexParser().parse(file);
+      if (!parsed) throw new Error('Preview source fixture did not parse');
+      projected.prepare(`INSERT INTO conversations(id,source,source_path,source_hash,source_mtime,title,started_at,session_id,block_count)
+        VALUES('kept','codex',?,?,?,'Preview','2026-11-01','kept',?) ON CONFLICT(id) DO UPDATE SET block_count=excluded.block_count`)
+        .run(file, parsed.conversation.source_hash, parsed.conversation.source_mtime, parsed.blocks.length);
+      const version = await new ConversationSourceStore(projected).recordConversation({
+        conversationId: 'kept', provider: 'codex', nativeSessionId: 'kept', filePath: file,
+        blocks: parsed.blocks, sourceSnapshot: parsed.sourceSnapshot, ...epochs,
+      });
+      const rows = getConversationStructureCache(projected).readPage('kept', version, { offset: 0, limit: 10, epochs })!.rows;
+      const display = indexDisplayFragments(parsed.blocks, 'kept', () => null);
+      return { version, rows, display };
+    };
+    try {
+      const current = await publish();
+      const manifest = (conversationId: string, version: string, count: number) => ({
+        conversation_id: conversationId, source_version_id: version, parser_format: epochs.parserFormat,
+        parser_version: epochs.parserVersion, normalization_version: epochs.normalizationVersion,
+        redaction_epoch: epochs.redactionEpoch, block_count: count,
+      });
+      const source = new ConversationStructureCache(undefined, { cachePath: sourceCache });
+      try {
+        source.replaceRows(manifest('kept', current.version, current.rows.length), current.rows, new Map(), undefined, current.display);
+        source.replaceRows(manifest('kept', 'version-old', current.rows.length), current.rows, new Map(), undefined, current.display);
+        source.replaceRows({ ...manifest('kept', current.version, current.rows.length), normalization_version: 'outdated' },
+          current.rows, new Map(), undefined, current.display);
+        source.replaceRows(manifest('unrelated', 'version-unrelated', current.rows.length), current.rows, new Map(), undefined, current.display);
+      } finally { source.close(); }
+      const physicalSource = source.cachePath;
 
-    const source = new SqliteDatabase(sourceCache);
-    source.exec(`
-      PRAGMA foreign_keys = ON;
-      CREATE TABLE cache_conversations (
-        cache_id INTEGER PRIMARY KEY,
-        conversation_id TEXT NOT NULL UNIQUE,
-        source_version_id TEXT NOT NULL
-      );
-      CREATE TABLE cache_blocks (
-        cache_conversation_id INTEGER NOT NULL REFERENCES cache_conversations(cache_id) ON DELETE CASCADE,
-        position INTEGER NOT NULL,
-        PRIMARY KEY (cache_conversation_id, position)
-      );
-      INSERT INTO cache_conversations VALUES (1, 'kept', 'version-current');
-      INSERT INTO cache_conversations VALUES (2, 'stale', 'version-old');
-      INSERT INTO cache_blocks VALUES (1, 0);
-      INSERT INTO cache_blocks VALUES (2, 0);
-    `);
-    source.close();
+      const result = await runLauncherExport("seedProjectedConversationStructureCache", {
+        sourceCache: physicalSource,
+        targetCache,
+        projectedDb,
+      });
+      expect(result.status, result.stderr).toBe(0);
+      const physicalTarget = JSON.parse(result.stdout).target;
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        status: "seeded",
+        source: physicalSource,
+        conversations: 1,
+        blocks: 1,
+      });
+      const seeded = new SqliteDatabase(physicalTarget, { readonly: true });
+      expect(seeded.prepare("SELECT conversation_id, source_version_id FROM cache_conversations").all())
+        .toEqual([{ conversation_id: "kept", source_version_id: current.version }]);
+      expect(seeded.prepare("SELECT position FROM cache_blocks").all())
+        .toEqual([{ position: 0 }]);
+      seeded.close();
 
-    const result = await runLauncherExport("seedProjectedConversationStructureCache", {
-      sourceCache,
-      targetCache,
-      projectedDb,
-    });
-    expect(result.status, result.stderr).toBe(0);
-    const physicalTarget = JSON.parse(result.stdout).target;
-    expect(JSON.parse(result.stdout)).toMatchObject({
-      status: "seeded",
-      source: sourceCache,
-      conversations: 1,
-      blocks: 1,
-    });
-    const seeded = new SqliteDatabase(physicalTarget, { readonly: true });
-    expect(seeded.prepare("SELECT conversation_id, source_version_id FROM cache_conversations").all())
-      .toEqual([{ conversation_id: "kept", source_version_id: "version-current" }]);
-    expect(seeded.prepare("SELECT cache_conversation_id, position FROM cache_blocks").all())
-      .toEqual([{ cache_conversation_id: 1, position: 0 }]);
-    seeded.close();
+      sourceRows.push({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Preview-specific appended content' }] } });
+      const advanced = await publish();
+      const privateCache = new ConversationStructureCache(undefined, { cachePath: targetCache });
+      let privateIndex;
+      try {
+        privateCache.replaceRows(manifest('kept', advanced.version, advanced.rows.length), advanced.rows,
+          new Map(), undefined, advanced.display);
+        privateIndex = privateCache.readPresentationIndex('kept', advanced.version, epochs);
+      } finally { privateCache.close(); }
 
-    const previewDb = new SqliteDatabase(projectedDb);
-    previewDb.prepare("UPDATE conversation_sources SET current_version_id = 'version-preview' WHERE conversation_id = 'kept'").run();
-    previewDb.close();
-    const privateCache = new SqliteDatabase(physicalTarget);
-    privateCache.prepare("UPDATE cache_conversations SET source_version_id = 'version-preview' WHERE conversation_id = 'kept'").run();
-    privateCache.prepare("UPDATE cache_blocks SET position = 17 WHERE cache_conversation_id = 1").run();
-    privateCache.close();
-
-    const refreshed = await runLauncherExport("seedProjectedConversationStructureCache", {
-      sourceCache,
-      targetCache,
-      projectedDb,
-      preserveExisting: true,
-    });
-    expect(refreshed.status, refreshed.stderr).toBe(0);
-    expect(JSON.parse(refreshed.stdout)).toMatchObject({ status: "preserved", conversations: 1, blocks: 1 });
-    const retained = new SqliteDatabase(physicalTarget, { readonly: true });
-    expect(retained.prepare("SELECT conversation_id, source_version_id FROM cache_conversations").all())
-      .toEqual([{ conversation_id: "kept", source_version_id: "version-preview" }]);
-    expect(retained.prepare("SELECT cache_conversation_id, position FROM cache_blocks").all())
-      .toEqual([{ cache_conversation_id: 1, position: 17 }]);
-    retained.close();
+      const refreshed = await runLauncherExport("seedProjectedConversationStructureCache", {
+        sourceCache: physicalSource,
+        targetCache,
+        projectedDb,
+        preserveExisting: true,
+      });
+      expect(refreshed.status, refreshed.stderr).toBe(0);
+      expect(JSON.parse(refreshed.stdout)).toMatchObject({ status: "preserved", conversations: 1, blocks: 2 });
+      const retained = new SqliteDatabase(physicalTarget, { readonly: true });
+      expect(retained.prepare("SELECT conversation_id, source_version_id FROM cache_conversations").all())
+        .toEqual([{ conversation_id: "kept", source_version_id: advanced.version }]);
+      expect(retained.prepare("SELECT position FROM cache_blocks ORDER BY position").all()).toEqual([{ position: 0 }, { position: 1 }]);
+      retained.close();
+      const retainedCache = new ConversationStructureCache(undefined, { cachePath: physicalTarget, readonly: true });
+      try { expect(retainedCache.readPresentationIndex('kept', advanced.version, epochs)).toEqual(privateIndex); }
+      finally { retainedCache.close(); }
+    } finally { getConversationStructureCache(projected).close(); projected.close(); }
   });
 
   it("rejects malformed agents-review refs before touching the launcher-owned copy", async () => {
