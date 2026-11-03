@@ -2533,13 +2533,9 @@ function conversationWindowSuffix(request:ConversationWindowRequest):string {
 
 export type ConversationMetadata=import('../../src/contracts').ConversationMetadata;
 async function readConversationProjection<T extends ConversationPositionWindow|ConversationMetadata>(id:string,request:ConversationWindowRequest,projection:'window'|'metadata'):Promise<T>{
-  const trace=typeof window!=='undefined'&&new URLSearchParams(window.location.search).get('reading_trace')==='1';
-  const started=trace?performance.now():0;
   const query=new URLSearchParams(conversationWindowSuffix(request).slice(1));if(projection==='metadata')query.set('view','metadata');
   const response=await apiGet(`/api/conversations/${encodeURIComponent(id)}${query.size?'?'+query.toString():''}`,{signal:request.signal});
-  const received=trace?performance.now():0;
   const payload=await parseMaybeJson(response) as T;
-  if(trace)console.info('[mandible:reading-window]',JSON.stringify({conversationId:id,projection,requestMs:received-started,decodeMs:performance.now()-received,blocks:'blocks'in payload?payload.blocks.length:0,total:payload.total,contentLength:response.headers.get('content-length')}));
   return payload;
 }
 export function getConversationMetadata(id:string,request:ConversationWindowRequest={}):Promise<ConversationMetadata>{

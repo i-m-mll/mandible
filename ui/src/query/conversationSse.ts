@@ -87,7 +87,7 @@ export function applyConversationSse(
     });
   }
 
-  for(const [key,cached]of client.getQueriesData<import('../api').ConversationMetadata>({queryKey:conversationKeys.metadatas(data.id)}))if(cached){
+  for(const [key,cached]of client.getQueriesData<import('../api').ConversationMetadata>({queryKey:conversationKeys.metadata(data.id)}))if(cached){
     client.setQueryData(key,{...cached,conversation:{...cached.conversation,...data,block_count:Math.max(cached.conversation.block_count,data.block_count??0)}});
     if(typeof data.block_count==='number')void client.invalidateQueries({queryKey:key,exact:true});
   }

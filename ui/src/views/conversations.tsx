@@ -475,7 +475,7 @@ async function warmSelectedConversationWindow(
   const target=normalizeWindowTarget({target:'initial'});
   await Promise.all([
     appQueryClient.fetchQuery({...readingManifestOptions(conversationId),gcTime:WARMED_QUERY_GC_TIME_MS}),
-    appQueryClient.fetchQuery({queryKey:conversationKeys.metadata(conversationId,target),queryFn:({signal})=>readConversationMetadataWhenReady(conversationId,windowRequest(target,signal)),staleTime:ROUTE_DATA_FRESH_MS,gcTime:WARMED_QUERY_GC_TIME_MS}),
+    appQueryClient.fetchQuery({queryKey:conversationKeys.metadata(conversationId),queryFn:({signal})=>readConversationMetadataWhenReady(conversationId,windowRequest(target,signal)),staleTime:ROUTE_DATA_FRESH_MS,gcTime:WARMED_QUERY_GC_TIME_MS}),
   ]);
 }
 
@@ -1438,10 +1438,19 @@ export function ConversationDetail({
     staleTime: ROUTE_DATA_FRESH_MS,
   }, queryClient);
   const metadataTarget=useMemo(()=>normalizeWindowTarget(effectiveAnchor??{target:'initial'}),[windowTargetJson]);
-  const metadataQuery=useQuery({queryKey:conversationKeys.metadata(conversationId,metadataTarget),queryFn:({signal})=>{
+  const metadataQuery=useQuery({queryKey:conversationKeys.metadata(conversationId),queryFn:({signal})=>{
     const pending=readConversationMetadataWhenReady(conversationId,windowRequest(metadataTarget,signal));registerInitialRouteLoad(pending);return pending;
   },enabled:transcriptLive,staleTime:ROUTE_DATA_FRESH_MS},queryClient);
   const readingQuery=useQuery({...readingManifestOptions(conversationId),enabled:transcriptLive},queryClient);
+  const metadataMatchesTarget=metadataQuery.data?.target.kind===metadataTarget.kind&&metadataQuery.data.target.requested_value===metadataTarget.value;
+  const metadataRequest=useRef({conversationId,generation:requestGeneration});
+  useEffect(()=>{
+    const previous=metadataRequest.current;metadataRequest.current={conversationId,generation:requestGeneration};
+    if(previous.conversationId!==conversationId||(previous.generation===requestGeneration&&(!metadataQuery.data||metadataMatchesTarget)))return;
+    void queryClient.cancelQueries({queryKey:conversationKeys.metadata(conversationId),exact:true}).then(()=>{
+      if(selectionRef.current.conversationId===conversationId&&routeGeneration.current.generation===requestGeneration)return metadataQuery.refetch();
+    });
+  },[conversationId,requestGeneration,metadataTarget]);
   const windowRefreshing = windowQuery.isFetching||metadataQuery.isFetching;
   const aggregateQuery = useQuery<ConversationTranscriptData>({
     queryKey: conversationKeys.aggregate(conversationId),
@@ -1724,12 +1733,13 @@ export function ConversationDetail({
 
   useEffect(()=>{
     const receipt=metadataQuery.data,publication=readingQuery.data;
-    if(!receipt||!publication||handledAnchorKeyRef.current===incomingAnchorKey)return;
+    if(!receipt||!publication||!metadataMatchesTarget||handledAnchorKeyRef.current===incomingAnchorKey)return;
     if(receipt.position_space_id!==publication.positionSpaceId||receipt.source_version_id!==publication.sourceVersionId||receipt.publication_revision!==publication.publicationRevision){void Promise.allSettled([metadataQuery.refetch(),readingQuery.refetch()]);return;}
     handledAnchorKeyRef.current=incomingAnchorKey;
+    queryClient.setQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversationId),current=>current?.reading_command?{...current,reading_command:null}:current);
     setNavigationTarget({key:`${conversationId}:${metadataTarget.kind}:${String(metadataTarget.value)}:${receipt.publication_revision}:${crypto.randomUUID()}`,kind:metadataTarget.kind,turnId:receipt.target.turn_id,blockId:receipt.target.block_id,smooth:false,
       target:receipt.target.position!==null?{conversationId:publication.conversationId,positionSpaceId:publication.positionSpaceId,position:receipt.target.position,...(restoredAnchor?.kind==='source'&&metadataTarget.kind==='position'&&metadataTarget.value===restoredAnchor.position?{offset:restoredAnchor.offset,subtarget:restoredAnchor.subtarget}:{})}:undefined});
-  },[metadataQuery.data,readingQuery.data,incomingAnchorKey]);
+  },[metadataQuery.data,readingQuery.data,incomingAnchorKey,metadataMatchesTarget]);
 
   useEffect(()=>{
     const publication=readingQuery.data;if(!publication)return;
