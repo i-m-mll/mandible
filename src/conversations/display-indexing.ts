@@ -1,4 +1,5 @@
 import { chatItemIdentityRecipe } from './index-keys.js';
+import { compactActivityFacts } from './conversation-index.js';
 import type { IndexKeyRecipe, IndexWriteBatch } from './conversation-index.js';
 import { projectToolProgram } from '../presentation/tool-program.js';
 import { projectToolResult } from '../presentation/tool-transport.js';
@@ -10,7 +11,7 @@ import { createHash } from 'node:crypto';
 import { readingSpeaker } from './reading-context.js';
 import { defaultDisplayEventsFromBlocks, displayFragmentId } from './display-context.js';
 import { projectDisplayFragments } from '../presentation/fragments.js';
-import { presentActivityItems, activityDetailLines, activitySemanticFacts } from '../presentation/activity-presentation.js';
+import { presentActivityItems, activityDetailLines } from '../presentation/activity-presentation.js';
 import type { ConversationBlock } from '../parsers/types.js';
 
 export function indexDisplayFragments(blocks: readonly Omit<ConversationBlock, 'id' | 'conversation_id'>[],
@@ -36,7 +37,7 @@ export function indexDisplayFragments(blocks: readonly Omit<ConversationBlock, '
     return [{ id: displayFragmentId(coordinate), coordinate, kind: activity ? 'activity' as const : 'content' as const,
       activity_run_id: null, paired_source_positions: fragment.pairedSourcePositions,
       summary_eligible: !(activity?.type === 'activity' && isRoutineActivityStatus(activity, node.kind === 'activity' && node.source?.hasBody)),
-      speaker: node.entity, disclosureRecipes: sourceDisclosures(node,fragment.position), activity: compact ? (() => { const {summary: _summary, ...facts} = activitySemanticFacts(compact); return facts; })() : null, summary_from_source: activity?.type === 'activity' && activity.parts.some(part => Boolean(part.text.trim())),
+      speaker: node.entity, disclosureRecipes: sourceDisclosures(node,fragment.position), activity: compact ? compactActivityFacts(compact) : null, summary_from_source: activity?.type === 'activity' && activity.parts.some(part => Boolean(part.text.trim())),
       has_details: activityDetailLines(presentations).length > 0 }];
   });
   const aliases = blocks.flatMap(block => {

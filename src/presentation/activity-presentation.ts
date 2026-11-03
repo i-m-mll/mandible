@@ -138,16 +138,19 @@ export function semanticActivityState(item: ActivityFacts): string[] {
     : item.kind === 'activity' ? [item.severity && item.severity !== 'info' ? item.severity : undefined,
       item.outcome && item.outcome !== 'unknown' ? item.outcome : undefined,item.status].filter((value):value is string=>Boolean(value)) : [];
 }
+export function semanticToolOperations(item:ActivityFacts):NonNullable<ActivityFacts['operations']> {
+  return item.operations??toolRunFacts([{name:item.toolName??'',toolKind:item.toolKind,execution:item.execution}]).map(compactToolOperation);
+}
 export function semanticActivitySummary(item: ActivityFacts): string {
   if(item.summary !== undefined)return item.summary;
-  if(item.kind==='tool') {const text=summarizeToolRunFacts(compactToolRunFacts(item.operations ?? [])).join('; '); return text.charAt(0).toUpperCase()+text.slice(1);}
+  if(item.kind==='tool') {const text=summarizeToolRunFacts(compactToolRunFacts(semanticToolOperations(item))).join('; '); return text.charAt(0).toUpperCase()+text.slice(1);}
   if(item.kind==='thinking')return 'Thought';
   if(item.kind==='directive-memory')return 'Used memory';
   if(item.kind==='directive-thread')return 'Created chat';
   return [...new Set([ACTIVITY_LABELS[item.activityKind!],...semanticActivityState(item)])].join(' · ');
 }
 export function semanticActivityIcon(item: ActivityFacts): PresentationIcon {
-  if(item.kind==='tool') return compactToolRunFacts(item.operations ?? [])[0]?.presentation.icon ?? 'monitor';
+  if(item.kind==='tool') return compactToolRunFacts(semanticToolOperations(item))[0]?.presentation.icon ?? 'monitor';
   if(item.kind==='thinking')return 'thought';
   if(item.kind==='directive-memory')return 'history';
   if(item.kind==='directive-thread')return 'chat';
@@ -169,7 +172,7 @@ export function semanticActivityRunFacts(items: readonly ActivityFacts[]): Activ
   const tools=items.filter(item=>item.kind==='tool');
   return {memberCount:items.length,unified:items.some(semanticActivityUnified),firstSummary:items[0]?semanticActivitySummary(items[0]):'',
     firstIcon:items[0]?semanticActivityIcon(items[0]):'monitor',states:[...new Set(items.flatMap(semanticActivityState))],
-    toolStates:[...new Set(tools.flatMap(semanticActivityState))],tools:tools.reduce<ToolRunFact[]>((facts,item)=>mergeToolRunFacts(facts,compactToolRunFacts(item.operations ?? [])),[]),
+    toolStates:[...new Set(tools.flatMap(semanticActivityState))],tools:tools.reduce<ToolRunFact[]>((facts,item)=>mergeToolRunFacts(facts,compactToolRunFacts(semanticToolOperations(item))),[]),
     hasThinkingTool:tools.some(item=>classifyTool(item.toolName ?? '')==='think'),labels:[...labels.values()],
     hasDetails:items.some(semanticActivityUnified)||items.length>1};
 }
