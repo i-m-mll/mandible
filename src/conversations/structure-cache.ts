@@ -1,3 +1,4 @@
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import { CONVERSATION_CACHE_FORMAT, copyIndexGeneration } from './index-storage.js';
 import { writeDisplayIndex, readCompleteDisplayIndex, readDisplayContextPlan, type DisplayIndexInput, type DisplayContextPlan } from './display-index.js';
 import { nextReadingContext, type ReadingContextEntry, type ReadingContextState } from './reading-context.js';
@@ -231,7 +232,7 @@ export class ConversationStructureCache {
               const batch=this.cache.prepare(`SELECT ${withoutRowid?'*':'rowid AS __cursor,*'} FROM ${table} WHERE cache_conversation_id=?${after} ORDER BY ${cursorColumns.join(',')} LIMIT ?`).all(source.cache_id,...(cursor??[]),batchSize) as Array<Record<string,unknown>>;
               if(!batch.length)break;
               destination.cache.transaction(()=>{for(const row of batch)insert.run(...columns.map(column=>column==='cache_conversation_id'?target:row[column]));})();
-              rows+=batch.length;const last=batch[batch.length-1];cursor=cursorColumns.map(column=>column==='rowid'?last.__cursor:last[column]);check();await options.cooperate?.();
+              rows+=batch.length;const last=batch[batch.length-1];cursor=cursorColumns.map(column=>column==='rowid'?last.__cursor:last[column]);check();if(options.cooperate)await options.cooperate();else await yieldToEventLoop();
             }
           }
           destination.completeGeneration(target);generations++;
@@ -298,8 +299,9 @@ export class ConversationStructureCache {
       const invalid=this.cache.prepare(`SELECT 1 FROM cache_blocks b WHERE b.cache_conversation_id=? AND (b.record_offset<0 OR b.record_length<0 OR (b.parent_position IS NOT NULL AND NOT EXISTS(SELECT 1 FROM cache_blocks p WHERE p.cache_conversation_id=b.cache_conversation_id AND p.position=b.parent_position))) LIMIT 1`).get(cacheId);
       if(invalid)throw new Error('Invalid source coordinates in index generation');
       const fragments=this.cache.prepare('SELECT COUNT(*) AS count FROM cache_display_fragments WHERE cache_conversation_id=?').get(cacheId) as {count:number};
+      if(this.cache.prepare('SELECT 1 FROM cache_blocks WHERE cache_conversation_id=? AND revision IS NULL LIMIT 1').get(cacheId))throw new Error('Prepared presentation position facts are incomplete');
       if(fragments.count) {
-        if(this.cache.prepare('SELECT 1 FROM cache_blocks WHERE cache_conversation_id=? AND revision IS NULL LIMIT 1').get(cacheId))throw new Error('Prepared presentation position facts are incomplete');
+
         if(this.cache.prepare(`SELECT 1 FROM cache_display_aliases a WHERE a.cache_conversation_id=? AND (NOT EXISTS(SELECT 1 FROM cache_blocks b WHERE b.cache_conversation_id=a.cache_conversation_id AND b.position=a.position) OR NOT EXISTS(SELECT 1 FROM cache_display_fragments f WHERE f.cache_conversation_id=a.cache_conversation_id AND f.position=a.owner_position AND f.part_kind=a.owner_kind AND f.part_ordinal=a.owner_ordinal AND f.activity_kind=0)) LIMIT 1`).get(cacheId))throw new Error('Prepared presentation alias owner is missing');
       }
       this.cache.prepare('DELETE FROM cache_conversations WHERE conversation_id=? AND source_version_id=? AND parser_format=? AND parser_version=? AND normalization_version=? AND redaction_epoch=? AND cache_id!=? AND ready=1').run(manifest.conversation_id,manifest.source_version_id,manifest.parser_format,manifest.parser_version,manifest.normalization_version,manifest.redaction_epoch,cacheId);

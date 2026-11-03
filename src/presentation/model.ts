@@ -1,3 +1,5 @@
+import { inlineActivityKey } from './reading-disclosures.js';
+import type { InlineActivityIdentity } from './types.js';
 import { projectNativeToolResult } from './tool-transport.js';
 import { splitProviderDirectives } from './provider-directives.js';
 import type { ToolCallActivity, ThinkingBlockActivity, ProviderDirectiveActivity } from './types.js';
@@ -583,9 +585,11 @@ export function expandInlineActivities(nodes: readonly RenderNode[]): RenderNode
           turnId: node.turn.assistantEvent.message.id ?? node.turn.assistantEvent.uuid,
           sessionId: node.turn.assistantEvent.session_id,
         };
+        const inlineIdentity:InlineActivityIdentity={kind:'thinking',turnId:node.turn.id,source:block.source?.blockId??blockIndex};
         expanded.push({
           kind: 'activity',
-          key: `thinking:${node.turn.id}:${block.source?.blockId ?? blockIndex}`,
+          key: inlineActivityKey(inlineIdentity),
+          inlineIdentity,
           entity: 'assistant',
           item,
           source: block.source,
@@ -629,9 +633,11 @@ export function expandInlineActivities(nodes: readonly RenderNode[]): RenderNode
         };
         const source = ownsSource ? block.source : undefined;
         ownsSource = false;
+        const inlineIdentity:InlineActivityIdentity={kind:'provider-directive',turnId:node.turn.id,source:block.source?.blockId??blockIndex,ordinal:directiveIndex++};
         expanded.push({
           kind: 'activity',
-          key: `provider-directive:${node.turn.id}:${block.source?.blockId ?? blockIndex}:${directiveIndex++}`,
+          key: inlineActivityKey(inlineIdentity),
+          inlineIdentity,
           memberKey: block.contentKey,
           entity: 'assistant',
           item,
