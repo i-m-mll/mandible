@@ -308,6 +308,16 @@
   white-space: nowrap;
 }
 
+.compact-activity__toggle {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+
 .compact-activity__details {
   width: 100%;
   box-sizing: border-box;

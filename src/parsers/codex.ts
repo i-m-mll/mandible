@@ -932,7 +932,7 @@ export class CodexParser implements ConversationParser {
         }
         const block = blocks[index];
         const nativeTurn=rec.type==='response_item' ? (rec.payload as CodexResponsePayload).internal_chat_message_metadata_passthrough?.turn_id : undefined;
-        if(nativeTurn) block.metadata.provider_turn_id=nativeTurn;
+        if(nativeTurn && block.type==='tool_use') block.metadata.display_tool_turn_id=nativeTurn;
         if(block.type==='tool_use' && ['wait','functions.wait'].includes(block.metadata.tool_name ?? '')) {
           const input=block.metadata.tool_input;
           const cell=input && typeof input==='object' && 'cell_id' in input ? String(input.cell_id) : undefined;
@@ -946,7 +946,7 @@ export class CodexParser implements ConversationParser {
           block.metadata.display_tool_execution={state:frame?.state==='running' ? 'ongoing' : frame?.state==='terminated' ? 'cancelled' : 'completed',provenance:frame ? 'native-wrapper' : 'paired-result'};
           if(call) call.metadata.display_tool_execution=block.metadata.display_tool_execution;
           if(frame && call) {
-            const origin=call.metadata.display_tool_origin ?? (call.metadata.tool_id && call.metadata.tool_kind==='custom_tool_call' && ['exec','functions.exec'].includes(call.metadata.tool_name ?? '') ? {provider:'codex' as const,session_id:sessionId,native_tool_id:call.metadata.tool_id,...(call.metadata.provider_turn_id ? {native_turn_id:call.metadata.provider_turn_id} : {}),position:call.position,source_record_ordinal:call.metadata.source_record_ordinal!,source_sub_block_ordinal:call.metadata.source_sub_block_ordinal!} : undefined);
+            const origin=call.metadata.display_tool_origin ?? (call.metadata.tool_id && call.metadata.tool_kind==='custom_tool_call' && ['exec','functions.exec'].includes(call.metadata.tool_name ?? '') ? {provider:'codex' as const,session_id:sessionId,native_tool_id:call.metadata.tool_id,...(call.metadata.display_tool_turn_id ? {native_turn_id:call.metadata.display_tool_turn_id} : {}),position:call.position,source_record_ordinal:call.metadata.source_record_ordinal!,source_sub_block_ordinal:call.metadata.source_sub_block_ordinal!} : undefined);
             const input=call.metadata.tool_input;
             const waitedCell=input && typeof input==='object' && 'cell_id' in input ? String(input.cell_id) : undefined;
             if(waitedCell && call.metadata.display_tool_origin && frame.state!=='running') {
