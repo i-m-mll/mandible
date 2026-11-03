@@ -361,7 +361,8 @@ export function ToolUseBlock(props: ToolUseBlockProps): JSX.Element {
   const operationName=context?.name ?? props.toolName;
   const operationInput=context && (typeof context.input==='string' || (context.input && typeof context.input==='object' && !Array.isArray(context.input))) ? context.input as string | Record<string,unknown> : props.input;
   const operationKind=context?.kind ?? props.toolKind;
-  const indexedHeader=props.observation&&props.input===undefined?{...presentationForObservation(props.observation,operationKind),...(props.header?{target:props.header.target}:{})}:props.header;
-  const observation=toolObservation(operationName,operationInput,operationKind,props.result ? {text:props.result.fullText ?? extractResultText(props.result.content),content:props.result.content,frame:props.result.source?.toolFrame,native:props.result.presentation,failed:props.result.is_error,unloaded:props.detailsAvailable} : undefined,indexedHeader);
-  return <ToolCard {...props} executionEvidence={props.observation?.execution??props.executionEvidence} toolName={observation.name} toolKind={observation.kind} input={operationInput===undefined ? undefined : observation.input} header={observation.header} resultPresentation={observation.result} />;
+  const observation=toolObservation(operationName,operationInput,operationKind,props.result ? {text:props.result.fullText ?? extractResultText(props.result.content),content:props.result.content,frame:props.result.source?.toolFrame,native:props.result.presentation,failed:props.result.is_error,unloaded:props.detailsAvailable} : undefined,props.header);
+  const indexedHeader=props.observation?presentationForObservation(props.observation,operationKind):undefined;
+  const header=indexedHeader?{...observation.header,...indexedHeader,target:observation.header.target,children:indexedHeader.children}:observation.header;
+  return <ToolCard {...props} executionEvidence={props.observation?.execution??props.executionEvidence} toolName={observation.name} toolKind={observation.kind} input={operationInput===undefined ? undefined : observation.input} header={header} resultPresentation={observation.result} />;
 }
