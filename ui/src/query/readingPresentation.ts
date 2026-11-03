@@ -2,7 +2,6 @@ import { queryClient } from './client';
 import { browserSessionFetch } from '../client-auth-token';
 import type { ConversationReadingManifest } from '../../../src/presentation/reading-manifest';
 import type { ReadingRowBatchRequest, ReadingRowBatchResult } from '../../../src/conversations/reading-materialization';
-import { traceReadingAcquisition } from '../chat/readingNavigationObservation';
 
 export class ReadingPresentationError extends Error {
   constructor(readonly status: Exclude<ReadingRowBatchResult['status'], 'source'>, detail: string) { super(detail); }
@@ -75,10 +74,8 @@ async function acquireBatch(id: string, request: ReadingRowBatchRequest, signal:
     throw new ReadingPresentationError(result.status, result.status === 'position-space-changed' ? result.status : `${result.status}: ${result.reason}`);
   } catch (error) { release(); throw error; }
 }
-type SharedRow = { owners: number; body: Promise<ReadingRowsLease['rows'][number]>; release: () => void;
-  batch:{id:number;rows:number;startedAt:number;finishedAt?:number}; };
+type SharedRow = { owners: number; body: Promise<ReadingRowsLease['rows'][number]>; release: () => void; };
 const acquiredRows = new Map<string, SharedRow>();
-let acquisitionGroupId=0;
 
 /** Viewport and measurement share exact rows, while cancellation releases only its own custody. */
 export async function acquirePresentationRows(id: string, request: ReadingRowBatchRequest, signal: AbortSignal,
@@ -90,19 +87,16 @@ export async function acquirePresentationRows(id: string, request: ReadingRowBat
     const controller = new AbortController();
     let lease: ReadingRowsLease | undefined;
     const entries: SharedRow[] = [];
-    const group={id:++acquisitionGroupId,rows:missing.length,startedAt:performance.now(),finishedAt:undefined as number|undefined};
     const releaseBatch = () => {
       if (entries.some(entry => entry.owners > 0)) return;
       controller.abort(); lease?.release();
     };
     const batch = acquireBatch(id, { ...request, rows: missing }, controller.signal).then(value => {
-      group.finishedAt=performance.now();
-      traceReadingAcquisition({event:'batch-ready',scope:id,batch:group.id,rows:group.rows,elapsedMs:group.finishedAt-group.startedAt});
       lease = value; releaseBatch(); return value;
     });
     for (const [index, row] of missing.entries()) {
       const identity = key(row);
-      const entry: SharedRow = { owners: 0, body: batch.then(value => value.rows[index]),batch:group,release: () => {
+      const entry: SharedRow = { owners: 0, body: batch.then(value => value.rows[index]),release: () => {
         if (--entry.owners === 0 && acquiredRows.get(identity) === entry) acquiredRows.delete(identity);
         releaseBatch();
       } };
@@ -110,8 +104,6 @@ export async function acquirePresentationRows(id: string, request: ReadingRowBat
     }
   }
   const entries = request.rows.map(row => acquiredRows.get(key(row))!);
-  traceReadingAcquisition({event:'acquire',scope:id,keys:request.rows.map(row=>row.key),
-    groups:[...new Set(entries.map(entry=>entry.batch))].map(batch=>({id:batch.id,rows:batch.rows,ageMs:performance.now()-batch.startedAt,ready:batch.finishedAt!==undefined}))});
   for (const entry of entries) entry.owners++;
   let released = false;
   const release = () => {

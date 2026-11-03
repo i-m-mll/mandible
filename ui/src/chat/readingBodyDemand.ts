@@ -8,5 +8,4 @@ export type ReadingBodyDemand = {
   start: number;
   end: number;
   height: number;
-  offset?:number;
 };

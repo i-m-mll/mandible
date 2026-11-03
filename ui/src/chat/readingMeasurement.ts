@@ -45,7 +45,6 @@ export type MeasurementRequest<Body> = {
   signal?: AbortSignal;
   /** Font/image durations overlap; readiness covers their join and the final document font barrier. */
   onPhase?: (event: MeasurementPhaseEvent) => void;
-  prioritize?: () => readonly string[];
   onMeasured?: (measurements: readonly RowMeasurement[]) => void;
   isCurrent?:()=>boolean;
 };
@@ -180,10 +179,8 @@ export class ReadingMeasurementService {
       Object.assign(host.style, { position: 'fixed', left: '0', top: '0', visibility: 'hidden', pointerEvents: 'none', zIndex: '-1' });
       this.parent.append(host);
       let offset = 0;
-      const byKey=new Map(request.rows.map(row=>[row.key,row]));
       const nextBuffer = (): Buffer | undefined => {
         const missing=(row:MeasurementRow)=>request.layouts.some(layout=>!measurements.has(measurementKey(row,measurementLayoutIdentity(layout))));
-        const prioritized=(request.prioritize?.()??[]).flatMap(key=>{const row=byKey.get(key);return row&&missing(row)?[row]:[];}).slice(0,batchSize);
         const acquire=(rows:readonly MeasurementRow[]):Buffer=>{
           const started=clock();
           const work=untilAbort(request.materialize(rows,signal),signal,discard);
@@ -191,7 +188,6 @@ export class ReadingMeasurementService {
           void work.then(()=>observe('materialize',started,rows.length),()=>{});
           return {rows,work};
         };
-        if(prioritized.length)return acquire(prioritized);
         while (offset < request.rows.length && !signal.aborted) {
           const end = Math.min(request.rows.length, offset + materializeBatchSize);
           const rows = request.rows.slice(offset, end).filter(missing);

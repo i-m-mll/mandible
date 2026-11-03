@@ -2,39 +2,25 @@ import { readingPayloadKey } from './useCompleteReading';
 import { nativeReadingCapacity } from './readingCapacity';
 import { isReadingPublicationChanged } from '../query/readingPresentation';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { ReadingMeasurementService, measurementLayoutIdentity, type MeasurementLayout, type MeasurementRow, type RowMeasurement, type MeasurementRequest, type MeasurementPhase } from './readingMeasurement';
+import { ReadingMeasurementService, measurementLayoutIdentity, type MeasurementLayout, type MeasurementRow, type RowMeasurement, type MeasurementRequest } from './readingMeasurement';
 import type { ReadingRow } from './readingProjection';
 import type { ReadingContentProps } from './ReadingContent';
 import { createReadingRowBatchRenderer } from './renderReadingMeasurementBatch';
 
 type GeometryMembership = ReadonlyMap<string, { rowKey: string; position?: number | null }>;
-export type ReadingGeometry = { membership: GeometryMembership; rowMembers: ReadonlyMap<string, readonly string[]>; scope: string; rows: readonly MeasurementRow[]; sizes: readonly number[]; layout: MeasurementLayout; exact: boolean; measured?:ReadonlySet<string>; serial: number; renderProps: (row: ReadingRow, ref?: MeasurementRow) => ReadingContentProps };
-export const readingGeometryRowReady=(geometry:ReadingGeometry|null|undefined,key:string)=>Boolean(geometry&&geometry.rows.some(row=>row.key===key)&&(geometry.exact||geometry.measured?.has(key)));
-export function readingGeometryDisclosureReady(geometry:ReadingGeometry,key:string):boolean {
-  const start=geometry.rows.findIndex(row=>row.key===key);
-  if(start<0)return false;
-  const endKey=geometry.rows[start].disclosureEnd??key;
-  const end=geometry.rows.findIndex(row=>row.key===endKey);
-  return end>=start&&(geometry.exact||geometry.rows.slice(start,end+1).every(row=>geometry.measured?.has(row.key)));
-}
+export type ReadingGeometry = { membership: GeometryMembership; rowMembers: ReadonlyMap<string, readonly string[]>; scope: string; rows: readonly MeasurementRow[]; sizes: readonly number[]; layout: MeasurementLayout; exact: boolean; serial: number; renderProps: (row: ReadingRow, ref?: MeasurementRow) => ReadingContentProps };
 /** One current width, one compatible complete basis, and reusable current-width facts. */
 export function useReadingGeometry(input: {
   scope: string; chrome: number; rows: readonly MeasurementRow[]; parent: HTMLElement | null;
-  firstRequiredSourceAt?:number;
-  priorityKeys?:readonly string[];
-  initialTarget?:{key:string;align:'start'|'end';offset?:number};
   materialize: MeasurementRequest<ReadingRow>['materialize'];
   renderProps: (row: ReadingRow, ref?: MeasurementRow) => ReadingContentProps;
   membership: GeometryMembership; rowMembers: ReadonlyMap<string, readonly string[]>;
   onLayoutChange?: (layout: MeasurementLayout) => void;
-  onMeasuring: (rows: readonly MeasurementRow[],priority?:readonly MeasurementRow[]) => void;
+  onMeasuring: (rows: readonly MeasurementRow[]) => void;
   onPrepared: (rows: readonly MeasurementRow[]) => void;
   scale: (from: MeasurementLayout, to: MeasurementLayout) => number;
 }) {
   const latest = useRef(input); latest.current = input;
-  const traceEnabled=useMemo(()=>new URLSearchParams(window.location.search).get('reading_trace')==='1',[]);
-  const trace=useRef({scope:input.scope,mountedAt:performance.now(),attempts:[] as Array<{startMs:number;wallMs:number;rows:number;status:string;phases:Partial<Record<MeasurementPhase,{ms:number;batches:number;rows:number}>>}>,publications:0,completeLogged:false});
-  if(trace.current.scope!==input.scope)trace.current={scope:input.scope,mountedAt:performance.now(),attempts:[],publications:0,completeLogged:false};
   const [layout, setLayout] = useState<MeasurementLayout | null>(null);
   const [geometry, setGeometry] = useState<ReadingGeometry | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -81,7 +67,7 @@ export function useReadingGeometry(input: {
         }
       }
       const replaced = new Set(additions.map(fact => fact.row.key));
-      facts.current = [...facts.current.filter(fact => !replaced.has(fact.row.key)), ...additions.filter(fact=>readingGeometryRowReady(snapshot,fact.row.key))];
+      facts.current = [...facts.current.filter(fact => !replaced.has(fact.row.key)), ...additions];
       const next = { ...snapshot, sizes, serial: ++serial.current };
       if (snapshot.exact) basis.current = next;
       publish.current(next);
@@ -89,7 +75,6 @@ export function useReadingGeometry(input: {
   }, []);
   useEffect(() => () => { if (reportFrame.current !== null) cancelAnimationFrame(reportFrame.current); }, []);
   publish.current = next => {
-    const queuedAt=performance.now();
     queued.current = next;
     if (publicationFrame.current !== null) return;
     publicationFrame.current = requestAnimationFrame(() => {
@@ -110,14 +95,6 @@ export function useReadingGeometry(input: {
       const next = { ...candidate, sizes };
       prepared.current=next;
       latest.current.onPrepared(next.rows); setGeometry(next);
-      if(traceEnabled && (trace.current.publications++<8 || next.exact&&!trace.current.completeLogged)){
-        if(next.exact)trace.current.completeLogged=true;
-        console.info('[mandible:reading-measurement]',JSON.stringify({scope:input.scope,
-        mountedAt:trace.current.mountedAt,firstRequiredSourceMs:latest.current.firstRequiredSourceAt===undefined?null:latest.current.firstRequiredSourceAt-trace.current.mountedAt,
-        publishedMs:performance.now()-trace.current.mountedAt,publicationRafMs:performance.now()-queuedAt,
-        rows:next.rows.length,exact:next.exact,attempts:trace.current.attempts,
-        note:'Phase totals overlap: source lookahead, fonts, images and readiness. Times start at Chat geometry hook mount; exclude initial route request.'}));
-      }
     });
   };
   useEffect(() => () => { if (publicationFrame.current !== null) cancelAnimationFrame(publicationFrame.current); }, []);
@@ -163,7 +140,7 @@ export function useReadingGeometry(input: {
           && row.revision === latest.current.rows[index].revision && row.disclosureIdentity === latest.current.rows[index].disclosureIdentity);
       const source = scalable ? compatible : held;
       const ratio = scalable ? latest.current.scale(source.layout, layout) : 1;
-      publish.current({ ...source, sizes: source.sizes.map(size => size * ratio), layout, exact: false, measured:new Set(),serial: ++serial.current });
+      publish.current({ ...source, sizes: source.sizes.map(size => size * ratio), layout, exact: false,serial: ++serial.current });
     }
     let running = false;
     let completedPlan: readonly MeasurementRow[] | undefined;
@@ -173,15 +150,11 @@ export function useReadingGeometry(input: {
       while (!controller.signal.aborted && completedPlan !== latest.current.rows) {
         const snapshot = latest.current;
         const rows = snapshot.rows;
-        const byKey=new Map(rows.map((row,index)=>[row.key,{row,index}]));
-        const valid=(fact:RowMeasurement)=>{const row=byKey.get(fact.row.key)?.row;return row&&fact.layoutIdentity===identity&&row.revision===fact.row.revision&&row.disclosureIdentity===fact.row.disclosureIdentity;};
+        const byKey=new Map(rows.map(row=>[row.key,row]));
+        const valid=(fact:RowMeasurement)=>{const row=byKey.get(fact.row.key);return row&&fact.layoutIdentity===identity&&row.revision===fact.row.revision&&row.disclosureIdentity===fact.row.disclosureIdentity;};
         const measured=new Map(facts.current.filter(valid).map(fact=>[fact.row.key,fact]));
         snapshot.onMeasuring(rows);
         startedScope.current = input.scope;
-        const phaseStarted=performance.now();
-        const phases:Partial<Record<MeasurementPhase,{ms:number;batches:number;rows:number}>>={};
-        const attempt={startMs:phaseStarted-trace.current.mountedAt,wallMs:0,rows:rows.length,status:'running',phases};
-        if(traceEnabled&&trace.current.scope===input.scope&&trace.current.attempts.length<8)trace.current.attempts.push(attempt);
         const result = await service.measure({ rows, layouts: [layout], materialize: snapshot.materialize,
           renderBatch: createReadingRowBatchRenderer(snapshot.renderProps), reuse: facts.current,
           signal: controller.signal, batchSize: 16, materializeBatchSize: 128,maxSynchronousMs: 8,
@@ -190,8 +163,7 @@ export function useReadingGeometry(input: {
             for(const fact of additions){measured.set(fact.row.key,fact);}
             facts.current=[...measured.values()];
           },
-          onPhase:traceEnabled?event=>{const total=phases[event.phase]??={ms:0,batches:0,rows:0};total.ms+=event.durationMs;total.batches++;total.rows+=event.rowCount;attempt.wallMs=performance.now()-phaseStarted;}:undefined });
-        attempt.wallMs=performance.now()-phaseStarted;attempt.status=result.status;
+        });
         if (controller.signal.aborted || !layoutRef.current || measurementLayoutIdentity(layoutRef.current) !== identity) break;
         facts.current = result.measurements;
         if (result.status !== 'complete') {
@@ -224,7 +196,5 @@ export function useReadingGeometry(input: {
     };
   }, [layout, input.parent, input.scope]);
   useEffect(() => { wake.current(); }, [input.rows]);
-  const prioritySignature=JSON.stringify(input.priorityKeys??[]);
-  useEffect(()=>{wake.current();},[prioritySignature]);
   return { geometry: geometry?.scope === input.scope ? geometry : null, error, layout, reportHeight, retry: () => wake.current() };
 }

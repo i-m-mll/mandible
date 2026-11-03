@@ -46,7 +46,7 @@ it('publishes ready visible source rows while another shared group remains pendi
     disclosureRevisions:revisions,local,enabled:true,initial:false,actionIdentity:''});return null;}
   render(h(Harness,{}));
   await waitFor(()=>expect(transport.calls).toHaveLength(1));
-  await act(async()=>transport.calls[0].finish(new Response(JSON.stringify({status:'source',manifest:{revision:'same',keys:['ready','pending']}}))));
+  await act(async()=>transport.calls[0].finish(new Response(JSON.stringify({status:'source',manifest:{positionSpaceId:'space',revision:'same',keys:['ready','pending']}}))));
   await waitFor(()=>expect(transport.calls).toHaveLength(2));
   const [ready,pending]=reading.rows;
   const measurementController=new AbortController();

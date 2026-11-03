@@ -11,7 +11,6 @@ import { activityTargetsFromReadingRows } from '../../../src/presentation/activi
 import { activityTargetKey } from '../../../src/presentation/activity-targets';
 import { useActivityTargetResolutions } from '../query/activityTargets';
 import { activityTargetDisplayLabel, type ActivityTargetLabels } from '../components/shared/ActivityTargetLinks';
-import {traceReadingAcquisition} from './readingNavigationObservation';
 
 export const readingPayloadKey = (row: MeasurementRow): string => JSON.stringify([row.key, row.revision, row.disclosureIdentity ?? '']);
 export const readingBodyKey = (row: MeasurementRow): string => JSON.stringify([row.key, row.revision, row.bodyIdentity ?? row.disclosureIdentity ?? '']);
@@ -83,10 +82,6 @@ export function useCompleteReading(input: {
   const bodyKey = useMemo(() => ['chat', 'conversation', input.scope, 'reading-bodies', input.space] as const, [input.scope, input.space]);
   const bodyQuery = useQuery({ queryKey: bodyKey, queryFn: skipToken, initialData: () => new Map<string, ReadingRow>(), enabled: false, gcTime: 0 }, queryClient);
   const bodies: ReadonlyMap<string, ReadingRow> = bodyQuery.data ?? new Map();
-  const firstRequiredSource = useRef<{scope:string;at:number}|null>(null);
-  const sourceScope=JSON.stringify([input.scope,input.space]);
-  if(firstRequiredSource.current?.scope!==sourceScope && required.length && required.every(row=>bodies.has(readingBodyKey(row))))
-    firstRequiredSource.current={scope:sourceScope,at:performance.now()};
   const bodyRef = useRef(bodies); bodyRef.current = bodies;
   const targetsByBody = useMemo(() => new Map([...bodies].map(([key, body]) => [key, activityTargetsFromReadingRows([body])])), [bodies]);
   const targets = useMemo(() => [...targetsByBody.values()].flat(), [targetsByBody]);
@@ -202,7 +197,6 @@ export function useCompleteReading(input: {
       const invalid = running.scope !== input.scope || running.space !== input.space || running.refs.some(ref => !currentKeys.has(readingBodyKey(ref)));
       const coverage=new Set(running.refs.map(readingBodyKey));
       if (invalid || !useful || desiredVisible.some(ref=>!coverage.has(readingBodyKey(ref))) || (missingRequired.length > 0 && !related)) {
-        traceReadingAcquisition({event:'viewport-cancel',scope:input.scope,keys:running.refs.map(row=>row.key)});
         superseded=running;active.current = null;
       } else return;
     }
@@ -215,8 +209,6 @@ export function useCompleteReading(input: {
     if (!missing.length) {superseded?.controller.abort();return;}
     const request = { controller: new AbortController(), refs: missing, scope: input.scope, space: input.space, publication };
     active.current = request;
-    const startedAt=performance.now();
-    traceReadingAcquisition({event:'viewport-start',scope:input.scope,keys:missing.map(row=>row.key),required:missingRequired.map(row=>row.key)});
     const work=materializer.current(missing, request.controller.signal);
     // Join useful shared rows before retiring the previous consumer's custody.
     superseded?.controller.abort();
@@ -227,22 +219,18 @@ export function useCompleteReading(input: {
         for (const ref of missing) failures.current.set(readingBodyKey(ref), message);
       }
     }).finally(() => {
-      traceReadingAcquisition({event:'viewport-finish',scope:request.scope,keys:missing.map(row=>row.key),elapsedMs:performance.now()-startedAt,cancelled:request.controller.signal.aborted});
       if (active.current !== request) return;
       active.current = null;
       setDemandVersion(value => value + 1);
     });
   }, [wanted, required, wantedKeys, currentKeys, publication, manifest.dataUpdatedAt, manifest.isFetching, demandVersion, publishBodies, input.scope, input.space]);
   const onRange = useCallback((snapshot: ReadingBodyDemand) => {
-    const visible=snapshot.visible??snapshot.required;
-    traceReadingAcquisition({event:'range',scope:current.current.input.scope,offset:snapshot.offset,
-      visible:visible.map(row=>row.key),missing:visible.filter(row=>!bodyRef.current.has(readingBodyKey(row))).map(row=>row.key)});
     demand.current = snapshot;
     custody.current.applied = new Set(snapshot.required.map(readingBodyKey));
     setDemandVersion(value => value + 1);
   }, []);
-  const retainMeasurement = useCallback((vector: readonly MeasurementRow[],priority?:readonly MeasurementRow[]) => {
-    custody.current.measuring = new Set([...(priority??[]),...candidates(vector)].map(readingBodyKey));
+  const retainMeasurement = useCallback((vector: readonly MeasurementRow[]) => {
+    custody.current.measuring = new Set(candidates(vector).map(readingBodyKey));
   }, [candidates]);
   const retainGeometry = useCallback((vector: readonly MeasurementRow[]) => {
     pendingVector.current = vector;
@@ -252,11 +240,9 @@ export function useCompleteReading(input: {
     if (pendingVector.current !== vector) return;
     pendingVector.current = null; custody.current.pending = new Set(); setDemandVersion(value => value + 1);
   }, []);
-  const initialTargetKey=initialKey(bodyRows);
-  return { rows, plan, initialTargetKey,
-    priorityKeys:[...(demand.current?.visible??required),...(demand.current?.prefetch??[])].map(row=>row.key),
+  return { rows, plan,
     membership: plan?.viewMembership ?? input.local.viewMembership, rowMembers, actionRuns: composition?.actionRuns ?? input.local.actionRuns, lastAssistantTurnId: composition?.lastAssistantTurnId ?? input.local.lastAssistantTurnId,
-    manifest: manifest.data, bodies, firstRequiredSourceAt:firstRequiredSource.current?.scope===sourceScope?firstRequiredSource.current.at:undefined,
+    manifest: manifest.data, bodies,
     getBody: (ref: MeasurementRow) => bodies.get(readingBodyKey(ref)),
     materialize, acquireMeasurement, onRange, retainMeasurement, retainGeometry, commitGeometry,
     protect: () => setDemandVersion(value => value + 1), error: manifest.error?.message ?? hydrationError, ready: !input.enabled || Boolean(plan), refresh: () => { failures.current.clear(); setHydrationError(null); setDemandVersion(value => value + 1); return manifest.refetch(); } };

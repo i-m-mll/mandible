@@ -36,13 +36,6 @@ export type ReadingNavigationObservation = {
   };
 };
 export type ReadingNavigationObserver = (observation: ReadingNavigationObservation) => void;
-let acquisitionTraceBudget=128;
-export function traceReadingAcquisition(observation:Record<string,unknown>):void {
-  if(acquisitionTraceBudget<=0||typeof window==='undefined'||new URLSearchParams(window.location.search).get('reading_trace')!=='1')return;
-  acquisitionTraceBudget--;
-  console.info('[mandible:reading-acquisition]',JSON.stringify({atMs:performance.now(),...observation}));
-}
-
 /** Explicit, bounded diagnostics for observing the public reading-target lifecycle. */
 export function readingNavigationObserver(): ReadingNavigationObserver | undefined {
   if (new URLSearchParams(window.location.search).get('reading_trace') !== '1') return;
