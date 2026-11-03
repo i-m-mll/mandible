@@ -7,10 +7,20 @@ export type ToolProgramOperation = { encoding:ToolEmissionEncoding; name: string
 export type ToolProgram = { operations: ToolProgramOperation[]; outputAttributed?:boolean;effectsComplete?:false };
 const identifier = (node: Ast | undefined, name?: string): node is Identifier => node?.type === 'Identifier' && (name === undefined || node.name === name);
 const member = (node: Ast | undefined, object: string, property: string): boolean => node?.type === 'MemberExpression' && !node.computed && !node.optional && identifier(node.object, object) && identifier(node.property, property);
+const primitive=(value:unknown):value is string|number|boolean|null=>value===null||['string','number','boolean'].includes(typeof value);
 function data(node: Ast, bindings = new Map<string, unknown>()): { value: unknown } | null {
   if (identifier(node) && bindings.has(node.name)) return {value:bindings.get(node.name)};
   if (node.type === 'Literal' && !node.regex && typeof node.value !== 'bigint') return {value: node.value};
-  if (node.type === 'TemplateLiteral' && !node.expressions.length) return {value: node.quasis[0].value.cooked};
+  if(node.type==='TemplateLiteral'){
+    let value=node.quasis[0].value.cooked;if(value==null)return null;
+    for(const [index,expression]of node.expressions.entries()){const part=data(expression,bindings),tail=node.quasis[index+1].value.cooked;if(!part||!primitive(part.value)||tail==null)return null;value+=String(part.value)+tail;}
+    return {value};
+  }
+  if(node.type==='BinaryExpression'&&node.operator==='+'){
+    const left=data(node.left,bindings),right=data(node.right,bindings);
+    if(left&&right&&primitive(left.value)&&primitive(right.value)&&(typeof left.value==='string'||typeof right.value==='string'))return {value:String(left.value)+String(right.value)};
+    return null;
+  }
   if (node.type === 'UnaryExpression' && ['-', '+'].includes(node.operator)) {
     const value = data(node.argument,bindings); return value && typeof value.value === 'number' ? {value: node.operator === '-' ? -value.value : value.value} : null;
   }
@@ -61,11 +71,11 @@ function bindPattern(pattern:Ast,value:unknown,bindings:Map<string,unknown>):boo
 function mappedEntries(node:Ast,bindings:Map<string,unknown>,allowAsync=false):Array<{node:Ast;bindings:Map<string,unknown>}>|null {
   if(node.type!=='CallExpression'||node.optional||node.callee.type!=='MemberExpression'||node.callee.computed||node.callee.optional||!identifier(node.callee.property,'map')||node.arguments.length!==1)return null;
   const items=data(node.callee.object,bindings),callback=node.arguments[0];
-  if(!items||!Array.isArray(items.value)||items.value.length>256||callback.type!=='ArrowFunctionExpression'||(!allowAsync&&callback.async)||callback.params.length!==1)return null;
+  if(!items||!Array.isArray(items.value)||items.value.length>256||callback.type!=='ArrowFunctionExpression'||(!allowAsync&&callback.async)||(callback.params.length!==1&&callback.params.length!==2)||(callback.params.length===2&&!identifier(callback.params[1])))return null;
   const body=callback.body.type==='BlockStatement'&&callback.body.body.length===1&&callback.body.body[0].type==='ReturnStatement'?callback.body.body[0].argument:callback.body;
   if(!body)return null;
   const entries:Array<{node:Ast;bindings:Map<string,unknown>}>=[];
-  for(const value of items.value){const scoped=new Map(bindings);if(!bindPattern(callback.params[0],value,scoped))return null;entries.push({node:body,bindings:scoped});}
+  for(const [index,value]of items.value.entries()){const scoped=new Map(bindings);if(!bindPattern(callback.params[0],value,scoped)||(callback.params[1]&&!bindPattern(callback.params[1],index,scoped)))return null;entries.push({node:body,bindings:scoped});}
   return entries;
 }
 function calls(node:Ast,bindings=new Map<string,unknown>(),pure?:(node:Ast,scope?:ReadonlyMap<string,unknown>)=>boolean):{operations:ToolProgramOperation[];batch:boolean}|null {
