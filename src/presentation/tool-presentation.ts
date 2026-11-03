@@ -227,7 +227,8 @@ export function toolRunFacts(tools: readonly ToolOperationInput[]): ToolRunFact[
     const execution = tool.execution ?? projected.execution;
     if (projected.operations) return projected.operations;
     const category = execution ? execution.kind === 'command' ? 'execute' : 'javascript' : projected.category;
-    const presentation = {...projected,children:undefined,operations:undefined,threadTargets:undefined,category, icon: projected.icon, phrase: projected.operation ? projected.phrase : category === 'other' ? projected.phrase : DEFINITIONS[category].phrase, target: '', ...(execution ? {execution} : {})};
+    const phrase = execution?.kind==='command' ? DEFINITIONS.execute.phrase : projected.operation ? projected.phrase : category === 'other' ? projected.phrase : DEFINITIONS[category].phrase;
+    const presentation = {...projected,children:undefined,operations:undefined,threadTargets:undefined,category, icon: projected.icon, phrase, target: '', ...(execution ? {execution} : {})};
     return [{operation:projected.operation ?? category,category, presentation, count: execution?.kind === 'command' ? execution.count : 1, names: [normalizedName(tool.name)]}];
   }));
 }
