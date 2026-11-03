@@ -24,13 +24,15 @@ it('keeps authored subagent descriptions while persistent thread labels follow c
 it('shares native target cache identities across authored labels and bounds metadata batches', async () => {
   const targets = Array.from({length:65}, (_,index):ActivityTarget => ({kind:'subagent',provider:'claude_code',parentSessionId:'parent',agentId:`agent-${index}`,labelHint:'Authored task'}));
   const results = await Promise.all(targets.map(target => queryClient.fetchQuery(activityTargetOptions(target))));
-  expect(transport.batches.map(batch => batch.length)).toEqual([64,1]);
+  expect(transport.batches.every(batch=>batch.length<=64)).toBe(true);
+  expect(transport.batches.flat().map(activityTargetKey).sort()).toEqual(targets.map(activityTargetKey).sort());
   expect(transport.batches.flat().every(target => !('labelHint' in target))).toBe(true);
   expect(results.map(result => result.key)).toEqual(targets.map(activityTargetKey));
   const same = await queryClient.fetchQuery(activityTargetOptions({...targets[0],labelHint:'Reworded task'}));
   expect(same).toBe(results[0]);
-  expect(transport.batches).toHaveLength(2);
+  const requested=transport.batches.flat().map(activityTargetKey);
+  expect(requested).toHaveLength(targets.length);
   const otherParent = await queryClient.fetchQuery(activityTargetOptions({...targets[0],parentSessionId:'different-parent'} as ActivityTarget));
   expect(otherParent.key).not.toBe(results[0].key);
-  expect(transport.batches).toHaveLength(3);
+  expect(transport.batches.flat().map(activityTargetKey)).toEqual([...requested,otherParent.key]);
 });

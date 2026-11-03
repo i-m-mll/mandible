@@ -80,10 +80,11 @@ it('acquires one bounded buffer independently of small DOM slices', async () => 
   service.dispose();
 });
 
-it('releases current and late speculative source custody when pipelined measurement is cancelled', async () => {
+it.each(['cancelled','render-failed'] as const)('releases current and late speculative source custody when pipelined measurement is %s', async outcome => {
   Object.defineProperty(document,'fonts',{configurable:true,value:{ready:Promise.resolve()}});
   const parent=document.createElement('div'); document.body.append(parent);
   const renderBatch:MeasurementRequest<MeasurementRow>['renderBatch']=(host,bodies)=>{
+    if(outcome==='render-failed')throw new Error('Renderer failed');
     const elements=new Map(bodies.map(row=>{
       const element=document.createElement('div'); host.append(element);
       element.getBoundingClientRect=()=>({width:480,height:80}) as DOMRect;
@@ -96,16 +97,20 @@ it('releases current and late speculative source custody when pipelined measurem
   const rows = ['current','next','unrequested'].map(key=>({key,revision:'1'}));
   const currentRelease=vi.fn(), lateRelease=vi.fn();
   let finish!: (value:MaterializedMeasurementBatch<MeasurementRow>)=>void;
-  const materialize=vi.fn(async(batch:readonly MeasurementRow[]) => batch[0].key==='current'
-    ? {bodies:batch,release:currentRelease}
-    : new Promise<MaterializedMeasurementBatch<MeasurementRow>>(resolve=>{finish=resolve;}));
+  let nextSignal!:AbortSignal;
+  const materialize=vi.fn(async(batch:readonly MeasurementRow[],signal:AbortSignal) => {
+    if(batch[0].key==='current')return {bodies:batch,release:currentRelease};
+    nextSignal=signal;
+    return new Promise<MaterializedMeasurementBatch<MeasurementRow>>(resolve=>{finish=resolve;});
+  });
   const work=service.measure({rows,layouts:[layout],batchSize:1,materializeBatchSize:1,prefetchMaterialization:true,
     materialize,renderBatch,signal:controller.signal});
   await waitUntil(()=>currentRelease.mock.calls.length,'current measured buffer released');
-  controller.abort();
+  if(outcome==='cancelled')controller.abort();
   const result=await work;
-  expect(result.status).toBe('cancelled');
-  expect(result.measurements).toHaveLength(1);
+  expect(result.status).toBe(outcome==='cancelled'?'cancelled':'error');
+  expect(result.measurements).toHaveLength(outcome==='cancelled'?1:0);
+  expect(nextSignal.aborted).toBe(true);
   expect(materialize.mock.calls.flatMap(([batch])=>batch.map(row=>row.key))).toEqual(['current','next']);
   finish({bodies:[rows[1]],release:lateRelease});
   await waitUntil(()=>lateRelease.mock.calls.length,'speculative buffer released');

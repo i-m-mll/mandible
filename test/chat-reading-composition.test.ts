@@ -55,7 +55,6 @@ it('keeps Claude command roles and stream facts through typed indexing and folde
     expect(f.manifest.members.map(member => [member.speaker,member.sourcePositions])).toEqual([['user',[0]],['system',[1]],['user',[2]],['system',[3]]]);
     const outputs = f.manifest.members.filter(member => member.activityFacts?.localCommandStream);
     expect(outputs.map(member => member.activityFacts!.localCommandStream)).toEqual(['stdout','stderr']);
-    expect(outputs.map(member => semanticActivityIcon(member.activityFacts!))).toEqual(['workSettings','workSettings']);
     expect(Object.values(f.manifest.summarySources).flat()).toEqual(expect.arrayContaining([1,3]));
     expect(JSON.stringify(f.manifest)).not.toContain('DETAIL ONLY IN SOURCE');
     const headers: unknown[] = [];

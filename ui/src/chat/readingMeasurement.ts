@@ -285,6 +285,8 @@ export class ReadingMeasurementService {
     } catch (error) {
       return signal.aborted ? cancelled() : { status: 'error', reason: phase, detail: error instanceof Error ? error.message : String(error), cause: error, measurements: partial() };
     } finally {
+      // A failed render/readiness barrier also retires speculative source work.
+      controller.abort();
       cleanup();
       signal.removeEventListener('abort', cleanup);
       request.signal?.removeEventListener('abort', abort);
