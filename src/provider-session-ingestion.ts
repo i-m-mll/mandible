@@ -69,9 +69,10 @@ export function resolveProviderSessionIngestions(
       ORDER BY c.updated_at DESC, c.id ASC`).all(JSON.stringify(exactTargets)) as IngestionRow[];
     for (const [id, rows] of groupRows(exactRows)) rowsById.set(id, rows);
   }
-  const children = bare.filter((id) => !rowsById.has(id));
+  const children = bare;
   if (children.length > 0 && columnExists(db, "conversations", "parent_session_id")) {
-    for (const [id, rows] of groupRows(select("agent_id", " AND source = 'claude_code'", children))) rowsById.set(id, rows);
+    for (const [id, rows] of groupRows(select("agent_id", " AND source = 'claude_code' AND agent_id != session_id", children)))
+      rowsById.set(id, [...(rowsById.get(id) ?? []), ...rows]);
   }
   return new Map(ids.map((id) => [id, ingestionFromRows(id, rowsById.get(id) ?? [])]));
 }

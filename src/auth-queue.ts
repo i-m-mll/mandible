@@ -2248,7 +2248,7 @@ export class AuthQueue {
            WHERE id = ? AND state = 'committed' AND resolved_at IS NULL
              AND owner_user_id = ? AND responsibility_session_id IS ? AND custody_generation = ?
              AND (auth_request_id IS NULL OR auth_request_id = ?)`,
-          ).run(request.id, custody.id, actor.user_id, actor.session_id ?? null, custody.custody_generation, predecessor?.id ?? null));
+          ).run(request.id, custody.id, custody.owner_user_id, custody.responsibility_session_id, custody.custody_generation, predecessor?.id ?? null));
           if (bound.changes !== 1) {
             throw new AuthQueueError("custody_conflict", "Work-unit custody changed before submission completed.");
           }
@@ -8280,11 +8280,11 @@ export class AuthQueue {
     const logSummary = options.logSummary ?? true;
     try {
       const candidates = this.db.prepare(`SELECT id AS work_unit_id,COALESCE(ledger_issue_id,issue_id) AS issue_id,
-        worker_provider,worker_provider_session_id AS provider_session_id FROM work_units
+        worker_provider,worker_provider_session_id AS provider_session_id,worker_agent_ref FROM work_units
         WHERE state='resolved' AND auth_request_id=? AND worker_provider IS NOT NULL AND worker_provider_session_id IS NOT NULL`)
-        .all(completed.id) as { work_unit_id: string; issue_id: string; worker_provider: ConversationSource; provider_session_id: string }[];
+        .all(completed.id) as { work_unit_id: string; issue_id: string; worker_provider: ConversationSource; provider_session_id: string; worker_agent_ref: string | null }[];
       for (const candidate of candidates) {
-        scheduleResolvedWorkerArchive(this.db, candidate.worker_provider, candidate.provider_session_id, this.now());
+        scheduleResolvedWorkerArchive(this.db, candidate.worker_provider, candidate.provider_session_id, this.now(), candidate.worker_agent_ref ?? undefined);
         result.candidates.push({ provider_session_id: candidate.provider_session_id, work_unit_id: candidate.work_unit_id,
           issue_id: candidate.issue_id, console_session_id: null, mandible_session_id: null, archived: false });
       }

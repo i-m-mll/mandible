@@ -100,20 +100,22 @@ describe("auth queue", () => {
       const credential = addCredential(db, operator.id, {
         type: "api_token", fingerprint: `candidate-repair-${crypto.randomUUID()}`,
       });
-      const actor = { user_id: operator.id, evidence_method: "api_token" as const,
+      const actor = { user_id: operator.id, session_id: "agent:codex:legacy-thread", evidence_method: "api_token" as const,
         credential_id: credential.id, authority_path: "custodian" as const };
       db.prepare(`INSERT INTO work_units
         (id, issue_id, repo_id, branch, kind, state, created_at, activated_at,
          ledger_issue_id, owner_user_id, responsibility_session_id, custody_generation)
         VALUES (?, '8420a44', ?, 'feature/b', 'solo', 'committed', 1, 1, ?, ?, ?, 1)`)
-        .run(crypto.randomUUID(), project.project.project_key, issue.id, operator.id, null);
+        .run(crypto.randomUUID(), project.project.project_key, issue.id, operator.id, "legacy-thread");
       const pending = (await queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge", command: "mandible auth merge feature/b --into main", title: "Merge b",
         repo: project.project.project_key, base_branch: "main", head_branch: "feature/b",
         merge_head_sha: git(repo, ["rev-parse", "feature/b"]), cwd: repo,
         requester_evidence_method: "api_token", requester_credential_id: credential.id,
-        require_delivery_custody: true, issue_references: ["8420a44"],
+        session_id: "agent:codex:legacy-thread", require_delivery_custody: true, issue_references: ["8420a44"],
       }, operator.id));
+      expect(db.prepare("SELECT responsibility_session_id, custody_generation FROM work_units WHERE auth_request_id = ?").get(pending.id))
+        .toEqual({ responsibility_session_id: "legacy-thread", custody_generation: 1 });
       const sibling = await submitPausedSibling(queue, db, repo);
       await completeFixturePublication(queue, sibling.id);
       const firstMerge = git(repo, ["rev-parse", "main"]);

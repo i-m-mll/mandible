@@ -1,3 +1,4 @@
+import { parseAssignmentTarget, resolveAssignmentTarget } from "../work-unit-assignment.js";
 import { exactAgentRef } from "../ambient-provider-identity.js";
 import { listIssueHierarchyEdges } from "../ledger/issue-graph.js";
 import { responsibilityActor, sameResponsibilitySession, sessionResponsibilityActor } from "../responsibility.js";
@@ -12,7 +13,7 @@ import {
   type LivenessState,
   type SessionAliasResolver,
 } from "../session-liveness.js";
-import { summarizeSessionKey } from "../session-summary.js";
+import { sessionConversationTarget, summarizeSessionKey } from "../session-summary.js";
 import { mapWorkUnitRow, computeWorkUnitLiveness } from "../work-unit-utils.js";
 import { ledgerIssueLifecycleError, LedgerSingletonKindError, LedgerStore, storedWorkerStatusError } from "../ledger/store.js";
 import type { AttributionContext } from "../identity/resolver.js";
@@ -2279,16 +2280,14 @@ export function registerIssueRoutes(
     const row = readUnit();
     if (!row || !["open", "committed"].includes(String(row.state))) return sendJson(res, 409, { error: "work_unit_unavailable" });
     if (row.custody_generation !== body.expected_custody_generation) return sendJson(res, 409, { error: "custody_generation_conflict" });
-    const assignment = typeof row.assigned_session_id === "string" ? sessionAliasResolver(db, row.assigned_session_id) : null;
-    const nativeId = assignment?.provider_session_id;
-    if (!nativeId) return sendJson(res, 422, { error: "assigned_conversation_unavailable", message: "This work unit has no exact assigned native conversation." });
-    const conversations = db.prepare("SELECT id, source, cwd FROM conversations WHERE session_id = ? AND parent_conversation_id IS NULL").all(nativeId) as { id: string; source: string; cwd: string | null }[];
+    const assignment = resolveAssignmentTarget(db, parseAssignmentTarget(row.assignment_target_json));
+    if (!assignment) return sendJson(res, 422, { error: "assigned_conversation_unavailable", message: "This work unit has no exact assigned native conversation." });
+    const target = sessionConversationTarget(assignment.agent_ref);
+    const conversations = db.prepare(`SELECT c.id, c.source, c.cwd FROM conversations c WHERE ${target.where}`)
+      .all(...target.params) as { id: string; source: string; cwd: string | null }[];
     if (conversations.length !== 1) return sendJson(res, 409, { error: "assigned_conversation_ambiguous" });
     const conversation = conversations[0];
-    const normalizeProvider = (value: unknown) => value === "claude" || value === "claude_code" ? "claude_code" : value;
-    if (normalizeProvider(assignment.provider) !== conversation.source || row.provider && normalizeProvider(row.provider) !== conversation.source) {
-      return sendJson(res, 409, { error: "assigned_provider_conflict" });
-    }
+    if (assignment.provider !== conversation.source) return sendJson(res, 409, { error: "assigned_provider_conflict" });
     const repo = workScanner.getRepos().find(value => value.id === repoId);
     const checkout = repo && typeof row.branch === "string" ? workScanner.getBranches(repo.root).find(value => value.branch === row.branch)?.worktree_path : null;
     if (!checkout || !existsSync(checkout)) return sendJson(res, 409, { error: "assigned_checkout_unavailable", message: "Restore the assigned branch checkout before resuming." });

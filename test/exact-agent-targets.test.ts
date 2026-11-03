@@ -168,6 +168,11 @@ it("uses Codex thread ids even when siblings share a display nickname", () => {
     expect(assignmentTargetForSession(db, thread)).toEqual({ kind: "native", agent_ref: `agent:codex:${thread}` });
   }
   expect(resolveSessionAlias(db, "Worker")).toBeNull();
+  transcript("claude-collision", "enclosing", "thread-one");
+  expect(resolveProviderSessionIngestions(db, ["thread-one"]).get("thread-one")).toMatchObject({ status: "ambiguous" });
+  expect(resolveSessionAlias(db, "thread-one")).toBeNull();
+  expect(resolveSessionAlias(db, "agent:codex:thread-one")).toMatchObject({ provider_session_id: "thread-one" });
+  expect(resolveSessionAlias(db, "agent:claude:enclosing:thread-one")).toMatchObject({ provider_session_id: "thread-one" });
 });
 
 it("requires exact context from agent principals even when every managed marker is omitted", async () => {

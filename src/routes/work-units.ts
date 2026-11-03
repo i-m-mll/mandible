@@ -1,6 +1,6 @@
 import { serializeAssignmentTarget, assignmentTargetForSession, parseAssignmentTarget, resolveAssignmentTarget } from "../work-unit-assignment.js";
 import { mutateWorkUnit } from "../work-unit-history.js";
-import { responsibilityActor, holdsResponsibility, sessionResponsibilityActor } from "../responsibility.js";
+import { responsibilityActor, holdsResponsibility, sessionResponsibilityActor, sameResponsibilitySession } from "../responsibility.js";
 import { randomUUID } from "node:crypto";
 import {
   normalizeAmbientProviderIdentity,
@@ -341,7 +341,7 @@ export function registerWorkUnitRoutes(
                 ? "This umbrella has no parent-role checkpoint; run issue parent-role assume first."
                 : checkpoint.id !== body.parent_role_checkpoint_id
                   ? `Checkpoint ${shortRef(db, "checkpoint", body.parent_role_checkpoint_id)} is not this umbrella's latest parent-role checkpoint (${shortRef(db, "checkpoint", checkpoint.id)}); pass the latest one.`
-                  : payload?.authenticated_user_id !== actor.user_id || payload?.responsibility_session_id !== actor.session_id
+                  : payload?.authenticated_user_id !== actor.user_id || !sameResponsibilitySession(db, payload?.responsibility_session_id as string | null, actor.session_id)
                     ? "The latest parent-role checkpoint was recorded by another responsible session; run issue parent-role assume with this actor."
                     : null;
           if (refusal) {

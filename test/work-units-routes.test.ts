@@ -233,7 +233,7 @@ describe("work unit routes", () => {
     const id = (claimed.body as { id: string }).id;
     const before = db.prepare('SELECT * FROM work_units WHERE id = ?').get(id) as Record<string, unknown>;
     const checkpoint = (ownerCredential: string, createdAt: number) => store.addIssueCheckpoint(issue.id, {
-      kind: 'parent-role', payload: { authenticated_user_id: agent.id, responsibility_session_id: "agent:codex:kind-thread", credential_evidence: ownerCredential, assumed_at: createdAt },
+      kind: 'parent-role', payload: { authenticated_user_id: agent.id, responsibility_session_id: "kind-thread", credential_evidence: ownerCredential, assumed_at: createdAt },
       attribution: systemAction(), created_at: createdAt,
     }).id;
     const previous = checkpoint(credential.id, 1);

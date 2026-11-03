@@ -217,12 +217,17 @@ describe("work unit reconciler", () => {
       "desktop-task",
     );
 
+    db.prepare("UPDATE work_units SET assignment_target_json = ? WHERE id = 'wu-live-provider'")
+      .run(JSON.stringify({ kind: "native", agent_ref: "agent:codex:desktop-task" }));
+    db.prepare("INSERT INTO work_units(id,state,branch,repo_id,provider,assigned_session_id) VALUES ('wu-legacy-claude','committed','feature/deleted',?,'claude','enclosing')").run(repo);
+    db.prepare("UPDATE work_units SET assignment_target_json = NULL WHERE id = 'wu-legacy-claude'").run();
     await new WorkUnitReconciler(() => undefined, {
-      resolveSession: (_database, id) => id === "desktop-task" ? liveCodexResolution(id) : null,
+      resolveSession: (_database, id) => id === "agent:codex:desktop-task" ? liveCodexResolution(id) : null,
     }).reconcile();
 
     expect(db.prepare("SELECT state FROM work_units WHERE id = ?").get("wu-live-provider"))
       .toEqual({ state: "committed" });
+    expect(db.prepare("SELECT state FROM work_units WHERE id = 'wu-legacy-claude'").get()).toEqual({ state: "committed" });
   });
 
   it("projects work-unit liveness from the same exact provider identity", () => {
