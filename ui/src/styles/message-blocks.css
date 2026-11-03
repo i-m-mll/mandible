@@ -1,6 +1,6 @@
 :root {
   --reading-responsive-variant: wide;
-  --reading-renderer-version: event-disclosure-bottom-user-fold-v7;
+  --reading-renderer-version: event-observation-row-boundaries-v8;
   --compact-activity-header-min-height: 22px;
   --compact-activity-header-line-height: 1.15;
   --compact-activity-header-icon-size: 16px;
@@ -17,7 +17,6 @@
   box-sizing: border-box;
   display: flex;
   width: 100%;
-  padding-block-end: var(--chat-event-gap);
   position: relative;
 }
 
@@ -269,6 +268,15 @@
 .compact-activity__row:hover,
 .compact-activity__row:focus-visible {
   color: var(--text-primary);
+}
+
+.compact-activity__row[data-disclosure-owner]:has(a:is(:hover, :focus-visible)) {
+  color: var(--tool-activity-text);
+}
+
+.compact-activity__summary a:is(:hover, :focus-visible) {
+  color: var(--text-primary);
+  text-decoration: underline;
 }
 
 .compact-activity__row--inert {
