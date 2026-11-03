@@ -41,6 +41,16 @@ async function fixture(includeResult: boolean, native?: {provider:'codex'|'claud
   return {root, db, parsed, manifest, reader: new ConversationSourceReader(db), close: () => {db.close(); fs.rmSync(root, {recursive: true, force: true});}};
 }
 
+it('stops cancelled row acquisition at the native source boundary',async()=>{
+  const f=await fixture(true);
+  try{
+    const request={positionSpaceId:f.manifest.positionSpaceId,rows:planConversationReading(f.manifest,{}).rows,expanded:{}};
+    expect((await readReadingRowBatch({db:f.db,reader:f.reader,conversationId:'composition',request})).status).toBe('source');
+    const controller=new AbortController();controller.abort();
+    expect((await readReadingRowBatch({db:f.db,reader:f.reader,conversationId:'composition',request,signal:controller.signal})).status).toBe('unavailable');
+  }finally{f.close();}
+});
+
 it('keeps Claude command roles and stream facts through typed indexing and folded source materialization', async () => {
   const invocation = '<command-name>/memory</command-name>\n<command-message>memory</command-message>\n<command-args>project</command-args>';
   const output = 'Updated memory\nDETAIL ONLY IN SOURCE';

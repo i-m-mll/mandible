@@ -41,14 +41,13 @@ export type MeasurementRequest<Body> = {
   reuse?: readonly RowMeasurement[];
   batchSize?: number;
   materializeBatchSize?: number;
-  /** Acquire at most one next source buffer while the current buffer is measured. */
-  prefetchMaterialization?: boolean;
   maxSynchronousMs?: number;
   signal?: AbortSignal;
   /** Font/image durations overlap; readiness covers their join and the final document font barrier. */
   onPhase?: (event: MeasurementPhaseEvent) => void;
   prioritize?: () => readonly string[];
   onMeasured?: (measurements: readonly RowMeasurement[]) => void;
+  isCurrent?:()=>boolean;
 };
 export type MeasurementResult = { measurements: readonly RowMeasurement[] } & (
   | { status: 'complete'; vectors: readonly { layoutIdentity: string; heights: readonly number[]; totalHeight: number; maxRowHeight: number }[] }
@@ -114,8 +113,6 @@ export class ReadingMeasurementService {
   private disposed = false;
   constructor(private readonly parent: HTMLElement) {}
 
-  cancel(): void { this.active?.abort(); }
-
   dispose(): void {
     this.disposed = true;
     this.active?.abort();
@@ -141,7 +138,6 @@ export class ReadingMeasurementService {
     let rendered: RenderedMeasurementBatch | undefined;
     let materialized: MaterializedMeasurementBatch<Body> | undefined;
     type Buffer = { rows: readonly MeasurementRow[]; work: ReturnType<typeof untilAbort<readonly Body[] | MaterializedMeasurementBatch<Body>>> };
-    let prefetched: Buffer | undefined;
     const discard = (value: readonly Body[] | MaterializedMeasurementBatch<Body>) => {
       if (!Array.isArray(value)) (value as MaterializedMeasurementBatch<Body>).release();
     };
@@ -152,10 +148,6 @@ export class ReadingMeasurementService {
     };
     let cleanupError: unknown;
     const cleanup = () => {
-      if (prefetched) {
-        void prefetched.work.then(result => { if (result.ready) discard(result.value); }, () => {});
-        prefetched = undefined;
-      }
       try { release(); } catch (error) { cleanupError = error; }
       finally { try { releaseMaterialized(); } catch (error) { cleanupError ??= error; } finally { host?.remove(); } }
     };
@@ -188,13 +180,11 @@ export class ReadingMeasurementService {
       Object.assign(host.style, { position: 'fixed', left: '0', top: '0', visibility: 'hidden', pointerEvents: 'none', zIndex: '-1' });
       this.parent.append(host);
       let offset = 0;
-      const reserved=new Set<string>();
       const byKey=new Map(request.rows.map(row=>[row.key,row]));
       const nextBuffer = (): Buffer | undefined => {
-        const missing=(row:MeasurementRow)=>!reserved.has(row.key)&&request.layouts.some(layout=>!measurements.has(measurementKey(row,measurementLayoutIdentity(layout))));
+        const missing=(row:MeasurementRow)=>request.layouts.some(layout=>!measurements.has(measurementKey(row,measurementLayoutIdentity(layout))));
         const prioritized=(request.prioritize?.()??[]).flatMap(key=>{const row=byKey.get(key);return row&&missing(row)?[row]:[];}).slice(0,batchSize);
         const acquire=(rows:readonly MeasurementRow[]):Buffer=>{
-          rows.forEach(row=>reserved.add(row.key));
           const started=clock();
           const work=untilAbort(request.materialize(rows,signal),signal,discard);
           void work.catch(()=>{});
@@ -209,19 +199,17 @@ export class ReadingMeasurementService {
           if (rows.length)return acquire(rows);
         }
       };
-      while (prefetched || offset < request.rows.length) {
+      while (offset < request.rows.length) {
         if (signal.aborted) return cancelled();
         phase = 'materialize';
-        const next = prefetched ?? nextBuffer();
+        const next = nextBuffer();
         if (!next) break;
-        prefetched = undefined;
         const bodies = await next.work;
         if (!bodies.ready) return cancelled();
         if (signal.aborted) { discard(bodies.value); return cancelled(); }
         const bufferRows = next.rows;
         const buffer = Array.isArray(bodies.value) ? bodies.value as readonly Body[] : (materialized = bodies.value as MaterializedMeasurementBatch<Body>).bodies;
         if (buffer.length !== bufferRows.length) throw new Error('Materializer must return one body per requested row in order.');
-        if (request.prefetchMaterialization) prefetched = nextBuffer();
         for (let sliceOffset = 0; sliceOffset < bufferRows.length;) {
           const sliceEnd = Math.min(bufferRows.length, sliceOffset + activeBatchSize);
           const rows = bufferRows.slice(sliceOffset, sliceEnd);
@@ -285,7 +273,7 @@ export class ReadingMeasurementService {
             synchronousMs > request.maxSynchronousMs ? Math.floor(activeBatchSize * request.maxSynchronousMs / synchronousMs) : activeBatchSize * 2));
         }
         releaseMaterialized();
-        bufferRows.forEach(row=>reserved.delete(row.key));
+        if(request.isCurrent?.()===false)return cancelled();
       }
       if (signal.aborted) return cancelled();
       const vectors = request.layouts.map(layout => {
@@ -297,7 +285,7 @@ export class ReadingMeasurementService {
     } catch (error) {
       return signal.aborted ? cancelled() : { status: 'error', reason: phase, detail: error instanceof Error ? error.message : String(error), cause: error, measurements: partial() };
     } finally {
-      // A failed render/readiness barrier also retires speculative source work.
+      // Retire any remaining asset/readiness callbacks owned by this job.
       controller.abort();
       cleanup();
       signal.removeEventListener('abort', cleanup);

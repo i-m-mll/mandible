@@ -619,7 +619,7 @@ export function registerConversationRoutes(
       if (sendFreshnessError(res, error)) return;
       return sendJson(res, 503, { status: 'unavailable', reason: error instanceof Error ? error.message : String(error) });
     }
-    const result = await readReadingRowBatch({ db, conversationId: id, reader: sourceReader, request });
+    const result = await readReadingRowBatch({ db, conversationId: id, reader: sourceReader, request,signal:req.signal });
     return sendJson(res, result.status === 'source' ? 200 : result.status === 'resource-limit' ? 413 : 409, result);
   }, { operation: { id: 'post:/api/conversations/:id/reading-rows', effects: ['ledger:read'], requestSchema: null, reportingCategory: null },
     fileRpc: 'allow', refs: { params: { id: entityRefs.conversation } } });

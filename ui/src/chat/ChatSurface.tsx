@@ -63,6 +63,9 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
   const appliedRows = useRef<readonly import('./readingMeasurement').MeasurementRow[]>([]);
   const focusAfterInitial = useRef<ConversationSourceCoordinate | null>(null);
   const initialState = useMemo(() => readReadingState(scope), [scope]);
+  const initialIntent=useMemo(()=>({active:true,
+    restore:!navigationTarget||navigationTarget.kind==='initial'?props.readingRestore:undefined,
+    target:navigationTarget?.target}),[scope,space,navigationTarget?.key]);
   const [expandedBlocks, setExpandedBlocks] = useState<Record<string, boolean>>(() => initialState?.positionSpaceId === space ? initialState.disclosures : {});
   const [protectedRows, setProtectedRows] = useState<ReadonlySet<string>>(new Set());
   const [disclosureRevisions, setDisclosureRevisions] = useState<Record<string, number>>({});
@@ -74,8 +77,10 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
     expanded: expandedBlocks, streaming: props.streaming }), [events, scope, space, Boolean(transcript), expandedBlocks, props.streaming]);
   const extraRows = useMemo<Array<ReadingRow & { revision: string }>>(() => props.activePermissionRequest && props.onPermissionRespond
     ? [{ key: `permission:${props.activePermissionRequest.id}`, revision: JSON.stringify(props.activePermissionRequest), kind: 'permission', isFinalResponse: false, protectedPositions: [], items: [], nodes: [], sources: [], actionGroup: { key: 'permission', start: null, end: null }, disclosureOwner: null, turnStart: true, turnEnd: true }] : [], [props.activePermissionRequest, props.onPermissionRespond]);
-  const localRestore = !restoredRow.current ? props.readingRestore : undefined;
-  const complete = useCompleteReading({ scope, space, events, initial: !initialVisible, targetPosition: localRestore?.anchor.position ?? navigationTarget?.target?.position, targetRowKey: localRestore?.anchor.rowKey, targetMemberKey: localRestore?.anchor.memberKey, targetSummary: navigationTarget?.target?.subtarget === 'summary', sourceVersion: transcript?.sourceVersionId, total: transcript?.total,
+  const localRestore = !restoredRow.current&&(!navigationTarget||navigationTarget.kind==='initial') ? props.readingRestore : undefined;
+  const measurementRestore=!initialVisible&&initialIntent.active?initialIntent.restore:localRestore;
+  const measurementTarget=!initialVisible&&initialIntent.active?initialIntent.target:navigationTarget?.target;
+  const complete = useCompleteReading({ scope, space, events, initial: !initialVisible&&initialIntent.active, targetPosition: measurementRestore?.anchor.position ?? measurementTarget?.position, targetRowKey: measurementRestore?.anchor.rowKey, targetMemberKey: measurementRestore?.anchor.memberKey, targetSummary: measurementTarget?.subtarget === 'summary', sourceVersion: transcript?.sourceVersionId, total: transcript?.total,
     actionIdentity: JSON.stringify([Boolean(props.onSelectMessageInfo), Boolean(props.onCopyMessageLink)]), selectMode: props.selectMode, selectedBlockIds: props.selectedBlockIds, extraRows, expanded: expandedBlocks, disclosureRevisions, streaming: props.streaming, local: projection, enabled: Boolean(transcript) });
   const requiredTarget = localRestore ? undefined : navigationTarget?.target;
   const requiredMember = requiredTarget && requiredTarget.positionSpaceId === space ? complete.plan?.membership.get(requiredTarget.position) : undefined;
@@ -92,7 +97,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
   const geometry = useReadingGeometry({ scope: `${scope}:${space}`, chrome: 32 + clearance, onLayoutChange: () => layoutChange.current(), rows: complete.rows, parent: appearance.ready && complete.ready && !initialDisclosurePending ? scrollNode : null,
     firstRequiredSourceAt:complete.firstRequiredSourceAt,
     priorityKeys:preparingRow?[preparingRow.key,...complete.priorityKeys]:complete.priorityKeys,
-    initialTarget:!initialVisible&&complete.initialTargetKey?{key:complete.initialTargetKey,align:localRestore||navigationTarget?.target?'start':'end',offset:localRestore?.anchor.offset??navigationTarget?.target?.offset}:undefined,
+    initialTarget:!initialVisible&&initialIntent.active&&complete.initialTargetKey?{key:complete.initialTargetKey,align:measurementRestore||measurementTarget?'start':'end',offset:measurementRestore?.anchor.offset??measurementTarget?.offset}:undefined,
     materialize: complete.acquireMeasurement, membership: complete.membership, rowMembers: complete.rowMembers, onMeasuring: complete.retainMeasurement, onPrepared: complete.retainGeometry, renderProps: (row, ref) => ({ ...props, row, targetLabels: readingTargetLabels(ref), expandedBlocks, setBlockExpanded: () => {},
       preparing: row.sources.some(source => expandedBlocks[`reveal:${source.position}`]), primaryActions: readingRowPrimaryActions({ copy: () => {}, open: () => {}, turnId: readingRowTurnId(row, complete.actionRuns), selectedMessageId: props.selectedMessageId, select: props.onSelectMessageInfo }),
       lastAssistantTurnId: complete.lastAssistantTurnId, onActivityGroupExpandedChange: () => {} }), scale: getReadingResizeScale });
@@ -151,6 +156,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
   const onRange = useCallback((demand: import('./readingBodyDemand').ReadingBodyDemand) => latest.current.complete.onRange(demand), []);
   const disclosures = expandedBlocks;
   const viewport = useReadingViewport({ scope, positionSpaceId: space, onInput: () => {
+    initialIntent.active=false;
     focusAfterInitial.current = null; restoredRow.current = true;
     const queued = latest.current.transcript?.command ?? latest.current.props.navigationTarget;
     if (queued && handled.current !== queued.key) {
@@ -221,10 +227,10 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
 
   useEffect(() => {
     const token = `initial:${scope}:${space}`;
-    if (navigationTarget || !geometry.geometry || !viewport.appliedGeometry || initialNavigationDone || handled.current === token) return;
+    if (transcript?.navigationPending || navigationTarget || !geometry.geometry || !viewport.appliedGeometry || initialNavigationDone || handled.current === token) return;
     handled.current = token;
     void viewport.reveal({ token, end: true, origin: 'initial' }).then(() => setInitialNavigationDone(true));
-  }, [navigationTarget, geometry.geometry, viewport.appliedGeometry, initialNavigationDone, scope, space, viewport.reveal]);
+  }, [transcript?.navigationPending,navigationTarget, geometry.geometry, viewport.appliedGeometry, initialNavigationDone, scope, space, viewport.reveal]);
   useEffect(() => {
     if (initialVisible || !geometry.geometry || !viewport.appliedGeometry || !initialNavigationDone) return;
     const scroller=viewport.scrollRef.current;
@@ -235,7 +241,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
       const body = ref && complete.getBody(ref);
       return body && readingGeometryRowReady(viewport.appliedGeometry,ref.key) && (!('revision' in body) || body.revision === ref.revision);
     });
-    if (hydrated && (!viewport.rows.length || items.length > 0)) setInitialVisible(true);
+    if (hydrated && (!viewport.rows.length || items.length > 0)) {initialIntent.active=false;setInitialVisible(true);}
   }, [initialVisible, initialNavigationDone, navigationTarget, geometry.geometry, viewport.appliedGeometry, complete.bodies, viewport.rows, viewport.engine]);
 
   useEffect(() => {

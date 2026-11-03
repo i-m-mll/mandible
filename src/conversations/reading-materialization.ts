@@ -52,7 +52,7 @@ export type ReadingRowBatchResult =
 
 /** A newer publication may satisfy older descriptors, but only after proving every requested dependency unchanged. */
 export async function readReadingRowBatch(input: {
-  db: Db; conversationId: string; reader: ConversationSourceReader; request: ReadingRowBatchRequest;
+  db: Db; conversationId: string; reader: ConversationSourceReader; request: ReadingRowBatchRequest; signal?:AbortSignal;
 }): Promise<ReadingRowBatchResult> {
   const { db, conversationId, reader, request } = input;
   const source = captureReadingPublication(db, conversationId);
@@ -87,11 +87,11 @@ export async function readReadingRowBatch(input: {
   const context = cache.readReadingContextPositions(conversationId, source.current_version_id, allPositions, source);
   if (!context) return {status: 'changed', reason: 'Presentation publication changed before the source read.'};
   const blocks = await reader.readPositions(conversationId, allPositions,
-    { expectedSourceVersionId: source.current_version_id, expectedBlockCount: manifest.blockCount });
+    { expectedSourceVersionId: source.current_version_id, expectedBlockCount: manifest.blockCount,signal:input.signal });
   if (blocks.status !== 'source') return { status: blocks.status === 'stale' ? 'changed' : 'unavailable', reason: blocks.reason };
   const byPosition = new Map(context.map(entry => [entry.position, entry]));
   const display = await readDisplayContext({ plan: displayPlan, conversationId, sourceVersionId: source.current_version_id,
-    blockCount: manifest.blockCount, reader, sourceBlocks: blocks.value, actionScope: position => {
+    blockCount: manifest.blockCount, reader, sourceBlocks: blocks.value,signal:input.signal,actionScope: position => {
       const scope = byPosition.get(position)?.action_scope;
       if (!scope) throw new Error('Display owner omitted its source action scope.');
       return scope;

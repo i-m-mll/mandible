@@ -12,10 +12,11 @@ import { sparseConversationBlockPosition } from './structure-cache.js';
 export async function readDisplayContext(input: {
   plan: DisplayContextPlan; conversationId: string; sourceVersionId: string; blockCount: number;
   reader: ConversationSourceReader; sourceBlocks?: readonly SourceBackedConversationBlock[]; actionScope: (position: number) => { start: number; end: number };
+  signal?:AbortSignal;
 }): Promise<SourceReadResult<ConversationDisplayContext>> {
   const { plan, conversationId, sourceVersionId } = input;
   const read = input.sourceBlocks ? {status: 'source' as const, sourceVersionId, value: input.sourceBlocks} : plan.sourcePositions.length ? await input.reader.readPositions(conversationId, plan.sourcePositions,
-    { expectedSourceVersionId: sourceVersionId, expectedBlockCount: input.blockCount }) : null;
+    { expectedSourceVersionId: sourceVersionId, expectedBlockCount: input.blockCount,signal:input.signal }) : null;
   if (read && read.status !== 'source') return read;
   const blocks = read?.status === 'source' ? read.value : [];
   const events = defaultDisplayEventsFromBlocks(blocks.map(block => ({ ...block, metadata: JSON.parse(block.metadata_json),

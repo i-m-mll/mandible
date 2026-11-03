@@ -5,7 +5,7 @@ import { ChatSurface } from '../ui/src/chat/ChatSurface';
 import { queryClient } from '../ui/src/query/client';
 import type { ConversationTranscriptConsumer } from '../ui/src/query/conversationData';
 
-const boundary = vi.hoisted(() => ({ options: null as any, engine: null as any, acquired: [] as number[] }));
+const boundary = vi.hoisted(() => ({ options: null as any, engine: null as any, acquired: [] as number[],targets:[] as (string|undefined)[] }));
 vi.mock('../ui/src/chat/readingResizeProfile', () => ({ getReadingResizeScale: () => 1 }));
 vi.mock('../ui/src/query/readingPresentation', () => ({
   readingManifestOptions: () => ({ queryKey: ['first-open-manifest'], queryFn: async () => ({}) }),
@@ -25,6 +25,7 @@ vi.mock('../ui/src/chat/useReadingGeometry', async importOriginal => {
   const actual = await importOriginal<typeof import('../ui/src/chat/useReadingGeometry')>();
   const { useMemo, useLayoutEffect } = await import('preact/hooks');
   return { ...actual, useReadingGeometry: (input: any) => {
+    boundary.targets.push(input.initialTarget?.key);
     const geometry = useMemo(() => ({ scope: input.scope, rows: input.rows, sizes: input.rows.map(() => 100), serial: 1, exact: true,
       membership: input.membership, rowMembers: input.rowMembers, layout: { width: 600, styleIdentity: 'fixture', fonts: [] }, renderProps: input.renderProps }), [input.scope, input.rows]);
     useLayoutEffect(() => { input.onPrepared(input.rows); }, [geometry]);
@@ -40,7 +41,7 @@ async function flushFrames() {
   await act(async () => { const pending = [...frames.values()]; frames.clear(); pending.forEach(callback => callback(0)); });
 }
 beforeEach(() => {
-  boundary.acquired = []; frames = new Map(); nextFrame = 0;
+  boundary.acquired = [];boundary.targets=[]; frames = new Map(); nextFrame = 0;
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frames.set(++nextFrame, callback); return nextFrame; });
   vi.stubGlobal('cancelAnimationFrame', (id: number) => frames.delete(id));
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
@@ -54,6 +55,7 @@ beforeEach(() => {
       const row = boundary.options.count - 10 + index; return { key: boundary.options.getItemKey(row), index: row, size: 100, start: row * 100, end: (row + 1) * 100 };
     }),
     getVirtualItemForOffset: (offset: number) => ({ index: Math.min(29, Math.floor(offset / 100)) }),
+    getOffsetForIndex:(index:number)=>[index*100,'start'],
     isAtEnd: () => boundary.options.getScrollElement()?.scrollTop === 2600,
     scrollToEnd: () => { boundary.options.getScrollElement().scrollTop = 2600; },
     scrollToOffset: (offset: number) => { boundary.options.getScrollElement().scrollTop = offset; },
@@ -70,5 +72,19 @@ it('opens a measured long chat when mounted body demand extends beyond the retai
   await flushFrames();
   expect(boundary.acquired).toContain(20);
   await waitFor(() => expect(getComputedStyle(view.container.querySelector('.stream-renderer__virtual-canvas')!).visibility).toBe('visible'));
-  expect(view.container.querySelectorAll('[data-reading-key][aria-busy="true"]')).toHaveLength(0);
+  const scroller=boundary.options.getScrollElement();
+  const busy=new Set([...view.container.querySelectorAll<HTMLElement>('[data-reading-key][aria-busy="true"]')].map(row=>row.dataset.readingKey));
+  const visible=boundary.engine.getVirtualItems().filter((item:any)=>item.end>scroller.scrollTop&&item.start<scroller.scrollTop+scroller.clientHeight);
+  expect(visible.every((item:any)=>!busy.has(item.key))).toBe(true);
+});
+
+it('keeps saved member intent after restore issuance until its viewport becomes useful',async()=>{
+  const transcript={conversationId:'conv',positionSpaceId:'space',sourceVersionId:'source',total:30,readingContext:new Map(),
+    command:{key:'initial-saved',kind:'initial'}} as unknown as ConversationTranscriptConsumer;
+  const restore={positionSpaceId:'space',anchor:{kind:'row' as const,rowKey:'row:15',memberKey:'row:15',position:15,offset:7}};
+  const view=render(<ChatSurface events={[]} streaming={false} transcript={transcript} readingRestore={restore}/>);
+  await waitFor(()=>expect(boundary.targets).toContain(restore.anchor.rowKey));
+  await flushFrames();
+  view.rerender(<ChatSurface events={[]} streaming={false} transcript={transcript} readingRestore={restore}/>);
+  expect(boundary.targets.filter(Boolean).every(key=>key===restore.anchor.rowKey)).toBe(true);
 });

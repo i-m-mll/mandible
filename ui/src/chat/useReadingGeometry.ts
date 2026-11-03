@@ -121,7 +121,7 @@ export function useReadingGeometry(input: {
     });
   };
   useEffect(() => () => { if (publicationFrame.current !== null) cancelAnimationFrame(publicationFrame.current); }, []);
-  const wake = useRef<(priorityChanged?:boolean) => void>(() => {});
+  const wake = useRef<() => void>(() => {});
   useLayoutEffect(() => {
     const parent = input.parent;
     if (!parent) return;
@@ -166,7 +166,6 @@ export function useReadingGeometry(input: {
       publish.current({ ...source, sizes: source.sizes.map(size => size * ratio), layout, exact: false, measured:new Set(),serial: ++serial.current });
     }
     let running = false;
-    let measuringRows:readonly MeasurementRow[]|undefined;
     let completedPlan: readonly MeasurementRow[] | undefined;
     const run = async () => {
       if (running || controller.signal.aborted || completedPlan === latest.current.rows) return;
@@ -174,7 +173,6 @@ export function useReadingGeometry(input: {
       while (!controller.signal.aborted && completedPlan !== latest.current.rows) {
         const snapshot = latest.current;
         const rows = snapshot.rows;
-        measuringRows=rows;
         const byKey=new Map(rows.map((row,index)=>[row.key,{row,index}]));
         const valid=(fact:RowMeasurement)=>{const row=byKey.get(fact.row.key)?.row;return row&&fact.layoutIdentity===identity&&row.revision===fact.row.revision&&row.disclosureIdentity===fact.row.disclosureIdentity;};
         const measured=new Map(facts.current.filter(valid).map(fact=>[fact.row.key,fact]));
@@ -233,7 +231,8 @@ export function useReadingGeometry(input: {
         if(traceEnabled&&trace.current.scope===input.scope&&trace.current.attempts.length<8)trace.current.attempts.push(attempt);
         const result = await service.measure({ rows, layouts: [layout], materialize: snapshot.materialize,
           renderBatch: createReadingRowBatchRenderer(snapshot.renderProps), reuse: facts.current,
-          signal: controller.signal, batchSize: 16, materializeBatchSize: 128,maxSynchronousMs: 8,
+          signal: controller.signal, batchSize: 16, materializeBatchSize: 16,maxSynchronousMs: 8,
+          isCurrent:()=>rows.length===latest.current.rows.length&&rows.every((row,index)=>row.key===latest.current.rows[index].key&&row.revision===latest.current.rows[index].revision&&row.disclosureIdentity===latest.current.rows[index].disclosureIdentity),
           prioritize:priority,onMeasured:additions=>{
             for(const fact of additions){measured.set(fact.row.key,fact);sizes[byKey.get(fact.row.key)!.index]=fact.height;}
             facts.current=[...measured.values()];publishProgress();
@@ -262,12 +261,7 @@ export function useReadingGeometry(input: {
       running = false;
     };
     let startTimer: ReturnType<typeof setTimeout> | null = null;
-    wake.current = priorityChanged => {
-      const rows=latest.current.rows;
-      const missingPriority=priorityChanged&&(latest.current.priorityKeys??[]).some(key=>!facts.current.some(fact=>fact.row.key===key&&fact.layoutIdentity===identity));
-      if(running&&measuringRows&&(missingPriority||rows.length<measuringRows.length||measuringRows.some((row,index)=>row.key!==rows[index].key||row.revision!==rows[index].revision||row.disclosureIdentity!==rows[index].disclosureIdentity)))service.cancel();
-      else if (startTimer === null) void run();
-    };
+    wake.current = () => { if(!running&&startTimer===null)void run(); };
     if (startedScope.current === input.scope) startTimer = setTimeout(() => { startTimer = null; void run(); }, 120);
     else void run();
     return () => {
@@ -278,6 +272,6 @@ export function useReadingGeometry(input: {
   }, [layout, input.parent, input.scope]);
   useEffect(() => { wake.current(); }, [input.rows]);
   const prioritySignature=JSON.stringify(input.priorityKeys??[]);
-  useEffect(()=>{wake.current(true);},[prioritySignature]);
+  useEffect(()=>{wake.current();},[prioritySignature]);
   return { geometry: geometry?.scope === input.scope ? geometry : null, error, layout, reportHeight, retry: () => wake.current() };
 }
