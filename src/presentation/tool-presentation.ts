@@ -230,3 +230,9 @@ export function toolRunIcon(
   if(tools[0]?.operations?.length) return tools[0].operations[0].presentation.icon;
   return tools[0]?.execution?.kind === 'command' ? 'toolExecute' : presentTool(tools[0]?.name ?? '', tools[0]?.input, tools[0]?.toolKind).icon;
 }
+
+/** Reconstruct shared labels from the compact operation domain. */
+export function compactToolRunFacts(facts: readonly { category: ToolCategory; count: number; names: string[] }[]): ToolRunFact[] {
+  return facts.map(fact => ({ ...fact, presentation: {category:fact.category,icon:DEFINITIONS[fact.category].icon,
+    phrase:fact.category === 'other' && fact.names.length === 1 ? 'Used ' + fact.names[0] : DEFINITIONS[fact.category].phrase,target:''} }));
+}

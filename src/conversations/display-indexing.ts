@@ -1,22 +1,20 @@
+import { chatItemIdentityRecipe } from './index-keys.js';
+import type { IndexKeyRecipe, IndexWriteBatch } from './conversation-index.js';
 import { projectToolProgram } from '../presentation/tool-program.js';
 import { projectToolResult } from '../presentation/tool-transport.js';
 import { extractToolResultText } from '../presentation/model.js';
 import { presentTool } from '../presentation/tool-presentation.js';
 import { projectExecution } from '../presentation/execution-presentation.js';
-import { assistantResponseMembership } from "../parsers/assistant-response.js";
 import {isRoutineActivityStatus} from '../presentation/model.js';
-import { readingNodeDisclosures } from '../presentation/reading-disclosures.js';
 import { createHash } from 'node:crypto';
-import { readingMemberKeys, readingSpeaker } from './reading-context.js';
-import { defaultDisplayEventsFromBlocks, displayFragmentId, type IndexedDisplayFragment, type DisplayPositionFacts } from './display-context.js';
+import { readingSpeaker } from './reading-context.js';
+import { defaultDisplayEventsFromBlocks, displayFragmentId } from './display-context.js';
 import { projectDisplayFragments } from '../presentation/fragments.js';
-import { presentActivityItems, activityDetailLines } from '../presentation/activity-presentation.js';
+import { presentActivityItems, activityDetailLines, activitySemanticFacts } from '../presentation/activity-presentation.js';
 import type { ConversationBlock } from '../parsers/types.js';
 
 export function indexDisplayFragments(blocks: readonly Omit<ConversationBlock, 'id' | 'conversation_id'>[],
-  conversationId: string, parentPosition: (position: number) => number | null): {
-    fragments: IndexedDisplayFragment[]; aliases: Array<{ position: number; owner_position: number; failed: boolean }>; positions: DisplayPositionFacts[];
-  } {
+  conversationId: string, parentPosition: (position: number) => number | null): IndexWriteBatch {
   const events = defaultDisplayEventsFromBlocks(blocks.map(block => ({ ...block, parentPosition: parentPosition(block.position) })), conversationId);
   const fragments = projectDisplayFragments(events, true).flatMap(fragment => {
     if (fragment.position === undefined) return [];
@@ -38,7 +36,7 @@ export function indexDisplayFragments(blocks: readonly Omit<ConversationBlock, '
     return [{ id: displayFragmentId(coordinate), coordinate, kind: activity ? 'activity' as const : 'content' as const,
       activity_run_id: null, paired_source_positions: fragment.pairedSourcePositions,
       summary_eligible: !(activity?.type === 'activity' && isRoutineActivityStatus(activity, node.kind === 'activity' && node.source?.hasBody)),
-      speaker: node.entity, disclosures: readingNodeDisclosures(node), activity: compact, summary_from_source: activity?.type === 'activity' && activity.parts.some(part => Boolean(part.text.trim())),
+      speaker: node.entity, disclosureRecipes: sourceDisclosures(node,fragment.position), activity: compact ? (() => { const {summary: _summary, ...facts} = activitySemanticFacts(compact); return facts; })() : null, summary_from_source: activity?.type === 'activity' && activity.parts.some(part => Boolean(part.text.trim())),
       has_details: activityDetailLines(presentations).length > 0 }];
   });
   const aliases = blocks.flatMap(block => {
@@ -51,13 +49,36 @@ export function indexDisplayFragments(blocks: readonly Omit<ConversationBlock, '
     const usage = block.metadata.token_usage;
     return { position: block.position, speaker: readingSpeaker(block.role), revision: createHash('sha256').update(JSON.stringify([
       block.type, block.role, block.content, block.timestamp, block.metadata, parentPosition(block.position),
-    ])).digest('hex'), handoffKeys: item ? readingMemberKeys(item, block.metadata.client_intent_id) : [],
+    ])).digest('hex'), handoff: [...(item ? [chatItemIdentityRecipe(item)].filter((key):key is IndexKeyRecipe=>key!==null) : []),...(block.metadata.client_intent_id ? [{kind:'intent' as const,id:block.metadata.client_intent_id}] : [])],
       turnId: item?.identity.native_turn_id,
-      ...(item ? { assistantResponse: assistantResponseMembership(item) } : {}),
-      ...(item?.type === 'tool-call' && (item.tool_id ?? item.identity.native_tool_id) ? {executionKey: JSON.stringify([item.identity.provider, item.identity.session_id, item.tool_id ?? item.identity.native_tool_id])} : {}),
+      ...(item?.type==='message'&&item.role==='assistant' ? {response:{identity:item.provenance.source==='verified-provider-transcript' ? {kind:'response-record' as const,provider:item.identity.provider,sessionId:item.identity.session_id,recordOrdinal:item.identity.source_record_ordinal} : {kind:'response-native' as const,provider:item.identity.provider,sessionId:item.identity.session_id,turnId:item.identity.native_turn_id??null,nativeId:item.identity.native_item_id??null},classification:item.content_completion==='complete'?item.assistant_response??'unknown':'unknown'}} : {}),
+      ...(item?.type === 'tool-call' && (item.tool_id ?? item.identity.native_tool_id) ? {execution: {kind:'execution' as const,provider:item.identity.provider,sessionId:item.identity.session_id,nativeId:(item.tool_id ?? item.identity.native_tool_id)!}} : {}),
       ...(item && usage && Number.isFinite(usage.input) && Number.isFinite(usage.output)
         ? { usage: { key: typeof block.metadata.provider_message_id === 'string' ? block.metadata.provider_message_id : `record:${item.identity.source_record_ordinal}`,
           input: usage.input, output: usage.output } } : {}) };
   });
   return { fragments, aliases, positions };
+}
+
+/** Source-backed nodes use the same explicit constructors as their hydrated disclosures. */
+function sourceDisclosures(node:import('../presentation/types.js').RenderNode,position:number):NonNullable<IndexWriteBatch['fragments'][number]['disclosureRecipes']> {
+  const source=(prefix?:string,suffix?:string):IndexKeyRecipe=>({kind:'source',position,prefix,suffix});
+  const nodeSource=node.kind==='user_message'?node.persisted:node.kind==='activity'?node.source:undefined;
+  const nativeNode=(suffix?:string):IndexKeyRecipe=>nodeSource&&node.key===nodeSource.blockId?source(undefined,suffix):{kind:'native',value:node.key,suffix};
+  switch(node.kind) {
+    case 'activity': {
+      if(node.item.type==='provider-directive'&&node.item.directive.kind==='created-thread')return {keys:[],prefixes:[]};
+      const key:IndexKeyRecipe=node.item.type==='thinking-block-activity'
+        ?source(`activity:thinking:${node.item.turnId??nodeSource?.blockId}:`)
+        :node.item.type==='provider-directive'
+          ?source(`activity:provider-directive:${node.item.turnId??nodeSource?.blockId}:`,':'+node.item.sequence)
+          :source('activity:');
+      return {keys:[key],prefixes:node.item.type==='tool-call-activity'?[source('activity:',':operation:')]:[],...(node.item.type==='thinking-block-activity'?{thinkingDefaults:[{key,turnId:node.item.turnId}]}:{})};
+    }
+    case 'semantic_event':return {keys:[source('semantic:')],prefixes:[]};
+    case 'unmatched_tool_result':return {keys:[source('unmatched-tool-result:')],prefixes:[]};
+    case 'user_message':return {keys:[],prefixes:[source(undefined,':')]};
+    case 'assistant_turn':return {keys:[source()],prefixes:[node.key===node.turn.assistantEvent.message.content[0]?.source?.blockId?source(undefined,':'):nativeNode(':')]};
+    case 'transcript_boundary':throw new Error('Transcript boundary is not a source fragment');
+  }
 }

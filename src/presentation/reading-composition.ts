@@ -1,6 +1,6 @@
 import { chatItemIdentityKey } from '../conversation-control/provider-live.js';
 import { readingSpeaker } from '../conversations/reading-context.js';
-import { activityRunFacts, presentActivityRunFacts } from './activity-presentation.js';
+import { activitySemanticFacts, semanticActivityRunFacts, presentActivityRunFacts } from './activity-presentation.js';
 import { planConversationReading, type ConversationReadingManifest } from './reading-manifest.js';
 import { planReadingLayout, type ReadingPlan, type ReadingPlanMember, type ReadingRowDescriptor } from './reading-plan.js';
 import { materializePreparedReadingRows, prepareReadingMembers, preparedReadingMembersFromRows, type PreparedReadingMember, type ReadingActionRun, type ReadingRow } from './reading.js';
@@ -28,7 +28,7 @@ const executionKey = (event: CanonicalChatItemEvent): string | null => {
 };
 function overlayRun(run: NonNullable<ReadingPlanMember['run']>, overlays: readonly ReadingPlanMember[]): NonNullable<ReadingPlanMember['run']> {
   if (!overlays.length) return run;
-  const changed = activityRunFacts(overlays.flatMap(member => member.activity ? [member.activity] : []));
+  const changed = semanticActivityRunFacts(overlays.flatMap(member => member.activityFacts ? [member.activityFacts] : member.activity ? [activitySemanticFacts(member.activity)] : []));
   const facts = { ...run.presentation.facts,
     states: [...new Set([...run.presentation.facts.states, ...changed.states])],
     toolStates: [...new Set([...run.presentation.facts.toolStates, ...changed.toolStates])],
@@ -57,9 +57,9 @@ export function composeConversationReading(input: {
     const handoff = [event.intentId ? `intent:${event.intentId}` : event.displayKey, chatItemIdentityKey(event.item)]
       .flatMap(key => key ? aliases.get(key) ?? [] : []);
     const positions = new Set(handoff.map(member => member.position));
-    const owner = handoff.find(member => member.activity?.type === 'tool-call-activity');
+    const owner = handoff.find(member => member.activityFacts?.kind === 'tool');
     const newExecution = event.item.type === 'tool-call' && event.item.phase === 'call' && event.executionActive
-      && owner && (owner.sourcePositions.length > 1 || (owner.activity?.type === 'tool-call-activity' && owner.activity.result));
+      && owner && (owner.sourcePositions.length > 1 || owner.activityFacts?.hasResult);
     if (positions.size === 1 && !newExecution) {
       handoffGroups.set(event, handoff[0].actionGroup);
       if (owner && event.item.type === 'tool-call' && event.item.phase === 'call' && owner.sourcePositions.length === 1) {
@@ -74,8 +74,8 @@ export function composeConversationReading(input: {
   for (const event of unmatched) {
     const key = executionKey(event);
     const owners = key && !localCallKeys.has(key) && event.item.type === 'tool-call' && event.item.phase === 'result'
-      ? canonical.filter(member => member.executionKey === key && member.activity?.type === 'tool-call-activity'
-        && member.sourcePositions.length === 1 && !member.activity.result) : [];
+      ? canonical.filter(member => member.executionKey === key && member.activityFacts?.kind === 'tool'
+        && member.sourcePositions.length === 1 && !member.activityFacts?.hasResult) : [];
     if (owners.length === 1) {
       const prepared = prepareReadingMembers({ ...input, events: [event], conversationId: manifest.conversationId,
         positionSpaceId: manifest.positionSpaceId, readingContext: new Map() });
@@ -89,9 +89,9 @@ export function composeConversationReading(input: {
   }
   for (const member of canonical) {
     const overlay = overlays.get(member.key);
-    if (!overlay || member.activity?.type !== 'tool-call-activity') continue;
-    member.activity = { ...member.activity, executionActive: overlay.executionActive,
-      ...(overlay.result ? { result: overlay.result } : {}) };
+    if (!overlay || member.activityFacts?.kind !== 'tool') continue;
+    member.activityFacts = { ...member.activityFacts, executionActive: overlay.executionActive,
+      ...(overlay.result ? {hasResult:true,failed:overlay.result.is_error,running:overlay.result.running} : {}) };
     member.dependencyRevision = JSON.stringify([member.dependencyRevision, overlay]);
   }
   const changedRuns = new Map<string, NonNullable<ReadingPlanMember['run']>>();
