@@ -1,6 +1,6 @@
 import { operationDefinition } from './operation-registry.js';
 import { expandInlineActivities } from './model.js';
-import { activityTargetKey, activityObservationTargets } from './activity-targets.js';
+import { activityTargetKey, activityObservationTargets, activityDirectiveTargets } from './activity-targets.js';
 import { toolObservation } from './tool-observation.js';
 import { operationPhrase, operationState, substantiveToolResult } from './tool-operation.js';
 import type { ActivityFacts } from '../conversations/conversation-index.js';
@@ -249,12 +249,7 @@ export function activityTargetsFromReadingRows(rows:readonly import('./reading.j
     if(node.kind!=='activity')continue;
     const item=node.item;
     if(item.type==='tool-call-activity')targets.push(...activityObservationTargets(operationObservationForTool(item)));
-    else if(item.type==='provider-directive') {
-      if(item.directive.kind==='created-thread')targets.push(item.directive.identity==='threadId'
-        ?{kind:'thread',provider:'codex',sessionId:item.directive.providerSessionId}
-        :{kind:'pending-thread',provider:'codex',clientThreadId:item.directive.providerSessionId});
-      else for(const sessionId of item.directive.rolloutIds)targets.push({kind:'thread',provider:'codex',sessionId});
-    }
+    else if(item.type==='provider-directive')targets.push(...activityDirectiveTargets(item.directive));
   }
   return [...new Map(targets.map(target=>[activityTargetKey(target),target])).values()];
 }
