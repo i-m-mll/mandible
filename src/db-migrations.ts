@@ -1,4 +1,5 @@
 import { GLOBAL_GRANT_SCHEMA_SQL, GLOBAL_GRANT_INDEX_SQL } from "./permissions/schema.js";
+import { HISTORICAL_PROJECT_ROOTS_SCHEMA_SQL } from "./ledger/historical-root-schema.js";
 import { RESPONSIBILITY_SCHEMA_SQL } from "./responsibility-schema.js";
 import { migrateLocalAuthorizationEvidence } from "./local-authorization-migration.js";
 import { WORK_UNIT_ASSIGNMENT_SCHEMA_SQL, seedLegacyAssignmentTargets } from "./work-unit-assignment-schema.js";
@@ -2271,6 +2272,7 @@ export const MIGRATIONS: readonly Migration[] = [
     "INSERT INTO user_settings SELECT user_id, key, value, revision, updated_at FROM user_settings_v231",
     "DROP TABLE user_settings_v231",
   ] },
+  { version: 233, name: "historical_project_roots", statements: HISTORICAL_PROJECT_ROOTS_SCHEMA_SQL },
 ];
 
 /**

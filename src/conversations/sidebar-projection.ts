@@ -14,6 +14,7 @@ export interface ConversationSidebarProject {
   project_key: string;
   display_name: string;
   checkout_roots: string[];
+  historical_roots?: string[];
 }
 
 export interface ConversationSidebarRow {
@@ -58,7 +59,7 @@ export function conversationProjectGroupKey(projectId: string): string {
 function normalizedAbsolutePath(value: string | null): string | null {
   const trimmed = value?.trim() ?? "";
   if (!trimmed || !path.isAbsolute(trimmed)) return null;
-  return path.normalize(trimmed);
+  return path.resolve(trimmed);
 }
 
 function rootSpecificity(root: string): number {
@@ -81,11 +82,11 @@ function* matchableRoots(candidate: string): Generator<string> {
   }
 }
 
-function createCanonicalProjectResolver(projects: ConversationSidebarProject[]): CanonicalProjectResolver {
+export function createCanonicalProjectResolver(projects: ConversationSidebarProject[]): CanonicalProjectResolver {
   const projectsById = new Map(projects.map((project) => [project.id, project]));
   const projectsByRoot = new Map<string, { depth: number; projects: ConversationSidebarProject[] }>();
   for (const project of projects) {
-    for (const rawRoot of project.checkout_roots) {
+    for (const rawRoot of [...project.checkout_roots,...(project.historical_roots ?? [])]) {
       const root = normalizedAbsolutePath(rawRoot);
       if (!root) continue;
       const entry = projectsByRoot.get(root) ?? { depth: rootSpecificity(root), projects: [] };

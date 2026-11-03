@@ -101,7 +101,7 @@ function parseSidebarProjectIds(raw: string | undefined): string[] {
   return parseSidebarIds(raw, "project_ids");
 }
 
-function loadSidebarProjects(db: Db): ConversationSidebarProject[] {
+export function loadSidebarProjects(db: Db): ConversationSidebarProject[] {
   const projects = db.prepare(
     `SELECT id, project_key, display_name
      FROM ledger_projects
@@ -118,9 +118,11 @@ function loadSidebarProjects(db: Db): ConversationSidebarProject[] {
     existing.push(checkout.root);
     rootsByProject.set(checkout.project_id, existing);
   }
+  const historicalRoots = db.prepare('SELECT project_id, root FROM ledger_project_historical_roots ORDER BY project_id, root').all() as Array<{project_id:string;root:string}>;
   return projects.map((project) => ({
     ...project,
     checkout_roots: rootsByProject.get(project.id) ?? [],
+    historical_roots: historicalRoots.filter(root=>root.project_id===project.id).map(root=>root.root),
   }));
 }
 

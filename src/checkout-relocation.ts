@@ -8,6 +8,7 @@ import {
 import { mutateLedgerRecord } from "./ledger/mutation-history.js";
 import { quoteIdentifier } from "./ledger/project-reference-policy.js";
 import { notifyProtectionInputsChanged } from "./protection-inputs.js";
+import { recordHistoricalProjectRoot } from "./ledger/historical-roots.js";
 
 type Locator =
   | { kind: "column"; table: string; column: string }
@@ -50,6 +51,7 @@ export const CHECKOUT_PATH_POLICIES: readonly CheckoutPathPolicy[] = [
   ...pin("Session or dispatch working directory as recorded",
     "agent_dispatch_events.cwd", "agent_dispatch_events.prompt_path", "console_sessions.cwd", "sessions.cwd",
     "conversations.cwd", "conversations.project_path"),
+  ...pin("Historical canonical project association", "ledger_project_historical_roots.root"),
   ...pin("Provider transcript source", "conversations.source_path", "conversation_ingest_state.file_path",
     "conversation_source_aliases.root_path", "conversation_source_aliases.relative_path", "conversation_source_aliases.path",
     "console_session_telemetry.transcript_path"),
@@ -188,6 +190,7 @@ export function relocateCheckoutRows(db: Db, input: RelocateCheckoutRowsInput): 
 
   const now = Date.now();
   for (const checkout of checkouts) {
+    recordHistoricalProjectRoot(db,{project_id:checkout.project_id,root:checkout.root,evidence:{kind:'relocation',checkout_id:checkout.id,new_root:relocatePath(relocation,checkout.root)}},now);
     mutateLedgerRecord(db, {
       entity_type: "checkout",
       entity_id: checkout.id,

@@ -123,6 +123,18 @@ cmd_add() {
   fi
 }
 
+cmd_historical_root() {
+  local ref="" root="" evidence="" apply=0 json=0 binding
+  binding=$(mandible_bind_arguments "project.historical-root" '{"ref":{"position":0},"root":{"position":1},"evidence":{"option":"evidence"},"apply":{"option":"apply","constant":"1"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
+  eval "$binding"
+  [[ -n "$ref" && -n "$root" && -n "$evidence" ]] || die "Usage: $(mandible_command_syntax project.historical-root)" 2
+  require_tools
+  local payload response
+  payload=$(jq -n --arg root "$root" --arg evidence "$evidence" --argjson apply "$apply" '{root:$root,evidence:$evidence,apply:($apply==1)}')
+  response=$(api_send POST "/api/projects/$(urlencode "$ref")/historical-roots" "$payload") || die "Failed to record historical project root" 1
+  emit "$response" "$json" '.report | "\(.project_id)\t\(.root)\nsidebar: \(.sidebar_conversations.before) → \(.sidebar_conversations.after)\nactive conversations: \(.active_conversations.before) → \(.active_conversations.after)\n" + (if .applied then "applied" else "dry run; pass --apply to record" end)'
+}
+
 cmd_update() {
   local ref="" key="" display="" remote="" namespace="" json=0
   local binding
@@ -295,6 +307,7 @@ case "$cmd" in
   add-checkout)    cmd_add_checkout "$@" ;;
   update-checkout) cmd_update_checkout "$@" ;;
   relocate-checkout) cmd_relocate_checkout "$@" ;;
+  historical-root) cmd_historical_root "$@" ;;
   audit)           cmd_audit "$@" ;;
   repair)          cmd_repair "$@" ;;
   *) die "Unknown project subcommand: $cmd" 2 ;;
