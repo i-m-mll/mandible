@@ -8,6 +8,7 @@ import { bindOperationCatalog, clearApiGetCache, type InstanceInfo } from '../ui
 import { clearPersistedDetailCache, readPersistedDetail, writePersistedDetail } from '../ui/src/detail-cache';
 import { ROUTE_DATA_FRESH_MS } from '../ui/src/query/policy';
 import { queryClient } from '../ui/src/query/client';
+import { conversationKeys } from '../ui/src/query/conversationKeys';
 import { CHILD_RETENTION_SETTINGS_SCHEMA, DEFAULT_CHILD_RETENTION_SETTINGS } from '../src/conversations/retention-contract';
 import { StrictUiFixture, jsonFixture, PENDING_RESPONSE, type FixtureHandler } from './helpers/strict-ui-fixture';
 
@@ -193,7 +194,7 @@ class Harness {
       { name: 'warm health', method: 'GET', path: '/api/health', respond: () => jsonFixture(this.health) },
       { name: 'child retention defaults', method: 'GET', path: '/api/settings/child-retention',
         respond: () => jsonFixture(CHILD_RETENTION_SETTINGS_SCHEMA.parse(DEFAULT_CHILD_RETENTION_SETTINGS)) },
-      ...['/api/conversations/conv-warm', '/api/conversations/conv-warm/structure', '/api/conversations/conv-warm/control', '/api/conversations/conv-warm/control/live'].map<FixtureHandler>(path => ({
+      ...['/api/conversations/conv-warm', '/api/conversations/conv-warm/reading-manifest', '/api/conversations/conv-warm/structure', '/api/conversations/conv-warm/control', '/api/conversations/conv-warm/control/live'].map<FixtureHandler>(path => ({
         name: 'sidebar-only chat leaves transcript pending', method: 'GET', path, respond: () => PENDING_RESPONSE,
       })),
       ...FIXTURES.map<FixtureHandler>(([method, path, respond]) => ({
@@ -261,11 +262,10 @@ function navigate(hash: string): void {
   });
 }
 
-const WARM_TEXT: Record<WarmedTab, string> = {
+const WARM_TEXT: Record<Exclude<WarmedTab,'console'>, string> = {
   overview: 'sess-warm-1',
   artifacts: 'Warm artifact body',
   timeline: 'Warm timeline issue',
-  console: 'Warm chat title',
   graph: 'Warm graph node',
 };
 
@@ -380,6 +380,10 @@ describe('startup route warmup', () => {
     await harness.settle();
     const warm = harness.routeRequests(beforeWarm).filter(request => activation.includes(request));
     expect(warm.length).toBeGreaterThan(0);
+    const warmedChat = tab === 'console' ? queryClient.getQueryCache().findAll({queryKey:conversationKeys.sidebars()})
+      .find(query=>query.state.data!==undefined) : undefined;
+    const warmedChatData=warmedChat?.state.data;
+    if(tab==='console')expect(warmedChat).toBeDefined();
 
     if (window === 'after') {
       const now = Date.now();
@@ -389,8 +393,13 @@ describe('startup route warmup', () => {
     const beforeSwitch = harness.requested.length;
     navigate(`#/${tab}`);
     await harness.settle(false);
-    const text = WARM_TEXT[tab];
-    expect((await screen.findAllByText(text, { exact: false })).length).toBeGreaterThan(0);
+    if(tab==='console'){
+      expect(warmedChat!.isActive()).toBe(true);
+      expect(warmedChat!.state.data).toBe(warmedChatData);
+    }else{
+      const text = WARM_TEXT[tab];
+      expect((await screen.findAllByText(text, { exact: false })).length).toBeGreaterThan(0);
+    }
     const afterSwitch = harness.routeRequests(beforeSwitch);
     // Inside the window the warm copy is shown without a refetch. Past it the painted data revalidates;
     // the stub never answers, so the data on screen is the warm copy.
