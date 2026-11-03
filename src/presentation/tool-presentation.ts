@@ -245,7 +245,12 @@ export function mergeToolRunFacts(left: readonly ToolRunFact[], right: readonly 
   return [...counts.values()];
 }
 export function summarizeToolRunFacts(facts: readonly ToolRunFact[]): string[] {
-  return facts.filter(fact=>!fact.outcomeOnly).map(({presentation,count,names,state}) => {
+  const primary=mergeToolRunFacts([],facts.filter(fact=>!fact.outcomeOnly).map(fact=>{
+    const terminal=fact.state==='failed'||fact.state==='cancelled';
+    const completed=operationLabel(fact.operation,'completed');
+    return terminal&&completed!==undefined&&operationLabel(fact.operation,fact.state!)===completed?{...fact,state:'completed' as const}:fact;
+  }));
+  return primary.map(({presentation,count,names,state}) => {
     const phrase = operationLabel(presentation.operation,state??'unknown',Math.max(count,presentation.targetCount??0)) ?? (count === 1 ? presentation.phrase : presentation.operation==='thread-read' ? 'Read threads' : presentation.operation==='thread-wait' ? 'Waited for threads' : presentation.operation==='tool-discovery' ? 'Checked available tools' : presentation.operation==='execution-wait' ? 'Waited for executions' : presentation.operation==='sleep' ? 'Waited several times' : presentation.category === 'other'
       ? names.length === 1 ? presentation.phrase + ' several times' : DEFINITIONS.other.plural
       : DEFINITIONS[presentation.category].plural);
