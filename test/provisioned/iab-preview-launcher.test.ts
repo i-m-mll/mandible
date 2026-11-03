@@ -694,12 +694,18 @@ describe("iab-preview launcher", () => {
       CREATE TABLE cache_blocks (
         cache_conversation_id INTEGER NOT NULL REFERENCES cache_conversations(cache_id) ON DELETE CASCADE,
         position INTEGER NOT NULL,
+        payload BLOB,
         PRIMARY KEY (cache_conversation_id, position)
+      );
+      CREATE TABLE cache_reading_scopes (
+        owner INTEGER NOT NULL REFERENCES cache_conversations(cache_id) ON DELETE CASCADE,
+        start INTEGER NOT NULL
       );
       INSERT INTO cache_conversations VALUES (1, 'kept', 'version-current');
       INSERT INTO cache_conversations VALUES (2, 'stale', 'version-old');
-      INSERT INTO cache_blocks VALUES (1, 0);
-      INSERT INTO cache_blocks VALUES (2, 0);
+      INSERT INTO cache_blocks VALUES (1, 0, NULL);
+      INSERT INTO cache_blocks VALUES (2, 0, zeroblob(4194304));
+      INSERT INTO cache_reading_scopes VALUES (1, 0), (2, 0);
     `);
     source.close();
 
@@ -707,6 +713,7 @@ describe("iab-preview launcher", () => {
       sourceCache,
       targetCache,
       projectedDb,
+      maxOutputBytes: 128 * 1024,
     });
     expect(result.status, result.stderr).toBe(0);
     const physicalTarget = JSON.parse(result.stdout).target;
@@ -721,7 +728,20 @@ describe("iab-preview launcher", () => {
       .toEqual([{ conversation_id: "kept", source_version_id: "version-current" }]);
     expect(seeded.prepare("SELECT cache_conversation_id, position FROM cache_blocks").all())
       .toEqual([{ cache_conversation_id: 1, position: 0 }]);
+    expect(seeded.prepare("SELECT * FROM cache_reading_scopes").all()).toEqual([{ owner: 1, start: 0 }]);
+    expect(fs.statSync(physicalTarget).size).toBeLessThanOrEqual(128 * 1024);
     seeded.close();
+
+    const beforeFailure = fileHash(physicalTarget);
+    const enlarged = new SqliteDatabase(sourceCache);
+    enlarged.exec('UPDATE cache_blocks SET payload = zeroblob(4194304) WHERE cache_conversation_id = 1');
+    enlarged.close();
+    const refused = await runLauncherExport("seedProjectedConversationStructureCache", {
+      sourceCache, targetCache, projectedDb, maxOutputBytes: 128 * 1024,
+    });
+    expect(refused.status).toBe(1);
+    expect(fileHash(physicalTarget)).toBe(beforeFailure);
+    expect(fs.readdirSync(path.dirname(physicalTarget)).some(name => name.includes('.partial-'))).toBe(false);
 
     const previewDb = new SqliteDatabase(projectedDb);
     previewDb.prepare("UPDATE conversation_sources SET current_version_id = 'version-preview' WHERE conversation_id = 'kept'").run();
