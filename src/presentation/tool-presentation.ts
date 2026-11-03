@@ -233,9 +233,10 @@ export function toolRunFacts(tools: readonly ToolOperationInput[]): ToolRunFact[
   }));
 }
 export function mergeToolRunFacts(left: readonly ToolRunFact[], right: readonly ToolRunFact[]): ToolRunFact[] {
-  const counts = new Map(left.map(fact => [JSON.stringify([fact.operation??fact.category,fact.state??null,fact.outcomeOnly??false]), { ...fact, names: [...fact.names] }]));
+  const bucket=(fact:ToolRunFact)=>JSON.stringify([fact.operation??fact.category,fact.state??null,fact.outcomeOnly??false]);
+  const counts = new Map(left.map(fact => [bucket(fact), { ...fact, names: [...fact.names] }]));
   for (const fact of right) {
-    const key=JSON.stringify([fact.operation??fact.category,fact.state??null]);
+    const key=bucket(fact);
     const prior = counts.get(key);
     if (prior) { prior.count += fact.count; prior.names = [...new Set([...prior.names, ...fact.names])]; }
     else counts.set(key, { ...fact, names: [...fact.names] });

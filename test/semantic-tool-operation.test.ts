@@ -77,3 +77,9 @@ it('associates batched creation receipts with authored titles and scopes an unat
   expect(failed.children?.some(child=>child.execution.state==='failed')).toBe(false);
   expect(presentationForObservation(failed).operations?.filter(fact=>fact.outcomeOnly)).toMatchObject([{operation:'batch',state:'failed',count:1}]);
 });
+
+it('preserves semantic buckets and phases when operation facts arrive in separate contributions',async()=>{
+  const {toolRunFacts,mergeToolRunFacts}=await import('../src/presentation/tool-presentation');
+  const tools=[{name:'exec_command',input:{cmd:'pwd'},state:'completed' as const},{name:'functions.exec_command',input:{cmd:'ls'},state:'completed' as const},{name:'exec_command',input:{cmd:'tail'},state:'ongoing' as const}];
+  expect(mergeToolRunFacts(toolRunFacts(tools.slice(0,1)),toolRunFacts(tools.slice(1)))).toEqual(toolRunFacts(tools));
+});
