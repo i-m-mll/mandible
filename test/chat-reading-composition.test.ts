@@ -389,3 +389,24 @@ it('keeps invalid native creation receipts distinct from verified thread identit
     expect(node.item.result?.fullText??node.item.result?.content).toBe(output);
   }finally{f.close();}
 });
+
+it('retains a mixed native unarchive receipt once without promoting opaque child effects',async()=>{
+  const ids=['019ff70a-c65a-7e91-9ac2-27389b82a658','019ff70b-6348-7432-8ce9-bb6891bd4362'];
+  const script=`const ids=${JSON.stringify(ids)};for(const threadId of ids)text(await tools.codex_app__set_thread_archived({threadId,hostId:"local",archived:false}));`;
+  const output='Script completed\nWall time 0.1 seconds\nOutput:\n\n'+JSON.stringify({threadId:ids[0],archived:false})+'\nno archived rollout found for thread id '+ids[1];
+  const f=await fixture(false,{provider:'codex',records:[{type:'session_meta',payload:{id:'composition',cwd:'/tmp'}},
+    {type:'response_item',payload:{type:'custom_tool_call',call_id:'unarchive-mixed',name:'exec',input:script}},
+    {type:'response_item',payload:{type:'custom_tool_call_output',call_id:'unarchive-mixed',output}}]});
+  try{
+    const owner=f.manifest.members.find(member=>member.activityFacts?.observation?.children)!;
+    expect(owner.activityFacts!.observation!.children?.map(child=>({operation:child.operation,state:child.execution.state}))).toEqual([
+      {operation:'thread-unarchive-request',state:'completed'},{operation:'thread-unarchive-request',state:'completed'}]);
+    const expanded=Object.fromEntries([...(owner.disclosures?.keys??[]),...(owner.activityRunId?[`group:${owner.activityRunId}`]:[])].map(key=>[key,true]));
+    const row=planConversationReading(f.manifest,expanded).rows.find(row=>row.key===owner.key)!;
+    const read=await readReadingRowBatch({db:f.db,reader:f.reader,conversationId:'composition',request:{positionSpaceId:f.manifest.positionSpaceId,rows:[row],expanded}});
+    if(read.status!=='source')throw Error(read.status);
+    const node=read.rows[0].nodes[0];if(node.kind!=='activity'||node.item.type!=='tool-call-activity')throw Error('Missing native mutation owner');
+    expect(node.item.result?.fullText??node.item.result?.content).toBe(output);
+    expect(node.item.observation?.children?.map(child=>child.operation)).toEqual(['thread-unarchive-request','thread-unarchive-request']);
+  }finally{f.close();}
+});

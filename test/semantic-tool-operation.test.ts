@@ -137,3 +137,11 @@ it('keeps fork destination identity owned by its attributed receipt',()=>{
   const completed=operationObservationForTool({...invocation,result:{type:'tool_result',tool_use_id:'fork',content:JSON.stringify({sourceThreadId:'native-source',threadId:'native-fork',environment:{type:'same-directory'}})}});
   expect(completed.targets).toEqual([{kind:'thread',provider:'codex',sessionId:'native-fork'}]);
 });
+
+it('requires matching native mutation receipts rather than completed transport to confirm an effect',()=>{
+  const invocation={type:'tool-call-activity' as const,id:'archive',name:'codex_app__set_thread_archived',input:{threadId:'native-target',archived:false},executionEvidence:{state:'completed' as const,provenance:'paired-result' as const}};
+  const observe=(receipt:unknown)=>operationObservationForTool({...invocation,result:{type:'tool_result',tool_use_id:'archive',content:JSON.stringify(receipt)}});
+  expect(observe({threadId:'different-target',archived:false}).operation).toBe('thread-unarchive-request');
+  expect(observe({threadId:'native-target',archived:true,ok:true}).operation).toBe('thread-unarchive-request');
+  expect(observe({threadId:'native-target',archived:false}).operation).toBe('thread-unarchive');
+});

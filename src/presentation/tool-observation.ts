@@ -1,6 +1,6 @@
 import { operationInputBody,operationResultBody,type OperationInputBody,type OperationResultBody } from './operation-body.js';
 import { extractToolResultText } from './model.js';
-import { operationDefinition, operationInputTargets, operationReceiptTargets, operationReceiptSubject } from './operation-registry.js';
+import { operationDefinition, operationInputTargets, operationReceiptTargets, mutationRequestOperation, operationReceiptSubject } from './operation-registry.js';
 import type { ToolResultContent } from './types.js';
 import { compactOperationObservation, type OperationObservation, type CompactOperationObservation } from './operation-observation.js';
 import type { ToolCallActivity } from './types.js';
@@ -57,11 +57,11 @@ export function operationObservationForTool(item:ToolCallActivity):CompactOperat
   if(!scope.provider&&['spawn_agent','collaboration.spawn_agent'].includes(name))scope.provider='codex';
   const semantic=item.callSource?.toolOperationKind??result?.source?.toolOperationKind??header.operation??header.category;
   const subject=semantic==='command'?header.target.split(/\r?\n/,1)[0]:typeof object.title==='string'?object.title:typeof object.task_name==='string'?object.task_name:header.target;
-  const receipt=observation.result&&header.resultAttribution!=='opaque'?operationReceiptTargets(semantic,observation.result.text,scope,subject):{operation:semantic,targets:[]};
+  const receipt=observation.result&&header.resultAttribution!=='opaque'?operationReceiptTargets(semantic,observation.result.text,scope,subject,typeof object.threadId==='string'?object.threadId:typeof object.thread_id==='string'?object.thread_id:undefined):{operation:semantic,targets:[]};
   const results=native&&result?programResults(native,framedToolResult(result.fullText??extractToolResultText(result.content),result.source?.toolFrame).text):null;
   const children=native&&(native.operations.length>1||native.effectsComplete===false)?native.operations.map((operation,index)=>operationObservationForTool({type:'tool-call-activity',id:item.id+':'+index,name:operation.name,input:operation.input,result:results?.[index]?{type:'tool_result',tool_use_id:'',content:results[index].text,presentation:results[index],is_error:results[index].failed}:null,sessionId:item.sessionId,sourceIdentity:item.sourceIdentity,
     executionEvidence:{state:results?.[index]?results[index].failed?'failed':results[index].running?'unknown':'completed':execution.state==='completed'&&operation.awaited&&!operation.settled?'completed':'unknown',provenance:results?.[index]?'paired-result':execution.provenance}})):undefined;
-  return compactOperationObservation({operation:children?native?.effectsComplete===false?'javascript':'batch':semantic==='thread-create'&&!receipt.targets.length?'thread-request':semantic==='thread-fork'&&!receipt.targets.length?'thread-fork-request':receipt.operation,nativeName:observation.name,
+  return compactOperationObservation({operation:children?native?.effectsComplete===false?'javascript':'batch':mutationRequestOperation(semantic)&&!receipt.targets.length?mutationRequestOperation(semantic)!:semantic==='thread-create'&&!receipt.targets.length?'thread-request':semantic==='thread-fork'&&!receipt.targets.length?'thread-fork-request':receipt.operation,nativeName:observation.name,
     ...(subject&&header.category!=='javascript'?{subject:subject.slice(0,256)}:{}),
     targets:[...(item.callSource?.toolTargets??[]),...(semantic==='thread-fork'&&receipt.targets.length?[]:operationInputTargets(semantic,object,scope)),...receipt.targets,...(semantic==='thread-wait'&&header.resultAttribution!=='opaque'&&observation.result?(threadReports(observation.result.text)??[]).map(report=>({kind:'thread' as const,provider:'codex' as const,sessionId:report.threadId})):[]),...(result?.source?.toolTargets??[]),...(semantic==='thread-fork'&&receipt.targets.length?[]:header.threadTargets??[]).filter(target=>target.type==='session').map(target=>({kind:'thread' as const,provider:'codex' as const,sessionId:target.id}))].filter((target,index,all)=>all.findIndex(other=>activityTargetKey(other)===activityTargetKey(target))===index),
     execution:observation.result?.failed||result?.is_error?{...execution,state:'failed'}:execution,payload:{state:header.hasDetails===false?'none':'unloaded'},
@@ -98,7 +98,7 @@ export function observeOperationReceipt(current:CompactOperationObservation,rece
   const header=presentationForObservation(current);
   const result=operationResult(header,receipt.result);
   const reports=current.operation==='thread-wait'&&current.resultAttribution!=='opaque'?threadReports(result.text):null;
-  const receiptFacts=current.resultAttribution==='opaque'?{operation:current.operation,targets:[]}:operationReceiptTargets(current.operation,result.text,receipt.scope??{},current.subject);
+  const receiptFacts=current.resultAttribution==='opaque'?{operation:current.operation,targets:[]}:operationReceiptTargets(current.operation,result.text,receipt.scope??{},current.subject,current.targets.length===1&&current.targets[0].kind==='thread'?current.targets[0].sessionId:undefined);
   const targets=[...(['thread-fork','thread-fork-request'].includes(current.operation)&&receiptFacts.operation==='thread-fork'&&receiptFacts.targets.length?[]:current.targets),...receiptFacts.targets,...(receipt.targets??[]),...(reports??[]).map(report=>({kind:'thread' as const,provider:'codex' as const,sessionId:report.threadId}))];
   const uniqueTargets=new Map<string,ActivityTarget>();for(const target of targets)if(!uniqueTargets.has(activityTargetKey(target)))uniqueTargets.set(activityTargetKey(target),target);
   return {...current,subject:operationReceiptSubject(current.operation,current.subject,result.text),operation:['thread-create','thread-request'].includes(current.operation)&&!receiptFacts.targets.length?'thread-request':['thread-fork','thread-fork-request'].includes(current.operation)&&!receiptFacts.targets.length?'thread-fork-request':receiptFacts.operation,execution:mergeOperationExecution(current.execution,receipt.execution,result.failed),

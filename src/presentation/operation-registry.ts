@@ -18,6 +18,9 @@ const operations:Readonly<Record<string,OperationDefinition>>={
   'thread-list':definition('search','chat','thread listing','List threads','Listing threads','Listed threads','Listed threads'),
   'thread-read':definition('read','chat','thread read','Read thread','Reading thread','Read thread','Read threads','Read threads','Reading threads'),
   'thread-send':definition('other','chat','message','Send message to thread','Sending message to thread','Sent message to thread','Sent messages to threads','Send messages to threads','Sending messages to threads'),
+  'thread-archive-request':definition('other','chat','thread archival request','Archive thread','Archiving thread','Requested thread archive','Requested thread archives','Archive threads','Archiving threads'),
+  'thread-unarchive-request':definition('other','chat','thread restoration request','Unarchive thread','Unarchiving thread','Requested thread unarchive','Requested thread unarchives','Unarchive threads','Unarchiving threads'),
+  'thread-rename-request':definition('other','chat','thread rename request','Rename thread','Renaming thread','Requested thread rename','Requested thread renames','Rename threads','Renaming threads'),
   'thread-archive':definition('other','chat','thread archival','Archive thread','Archiving thread','Archived thread','Archived threads','Archive threads','Archiving threads'),
   'thread-unarchive':definition('other','chat','thread restoration','Unarchive thread','Unarchiving thread','Unarchived thread','Unarchived threads','Unarchive threads','Unarchiving threads'),
   'thread-archive-state':definition('other','chat','thread archive update','Set thread archive state','Setting thread archive state','Set thread archive state','Set thread archive states'),
@@ -37,6 +40,8 @@ const operations:Readonly<Record<string,OperationDefinition>>={
   javascript:definition('javascript','toolJavascript','JavaScript invocation','Run JavaScript','Running JavaScript','Ran JavaScript','Ran JavaScript several times','Run JavaScript','Running JavaScript'),
   batch:definition('other','monitor','batch','Run tools','Running tools','Ran tools','Ran batches','Run batches','Running batches'),
 };
+const mutationRequests:Readonly<Record<string,string>>={'thread-archive':'thread-archive-request','thread-unarchive':'thread-unarchive-request','thread-rename':'thread-rename-request'};
+export function mutationRequestOperation(operation:string):string|undefined {return mutationRequests[operation]??(Object.values(mutationRequests).includes(operation)?operation:undefined);}
 export function operationDefinition(operation:string|undefined):OperationDefinition|undefined{return operation?operations[operation]:undefined;}
 export function registeredOperation(name:string,input:Record<string,unknown>):string|undefined {
   const normalized=name.trim().toLowerCase().replace(/^functions\./,'');
@@ -65,15 +70,22 @@ export function operationLabel(operation:string|undefined,state:ToolExecutionEvi
 
 const nonempty=(value:unknown):value is string=>typeof value==='string'&&Boolean(value.trim());
 export function operationInputTargets(operation:string|undefined,input:Record<string,unknown>,scope:{provider?:import('../parsers/types.js').ConversationSource;sessionId?:string}):import('./activity-targets.js').ActivityTarget[] {
-  if(['thread-read','thread-send','thread-archive','thread-unarchive','thread-archive-state','thread-rename','thread-fork','thread-fork-request'].includes(operation??''))return nonempty(input.threadId??input.thread_id)?[{kind:'thread',provider:'codex',sessionId:String(input.threadId??input.thread_id),...(operation==='thread-rename'&&nonempty(input.title)?{labelHint:input.title.slice(0,256)}:{})}]:nonempty(input.clientThreadId)?[{kind:'pending-thread',provider:'codex',clientThreadId:input.clientThreadId}]:[];
+  if(['thread-read','thread-send','thread-archive','thread-unarchive','thread-archive-state','thread-archive-request','thread-unarchive-request','thread-rename','thread-rename-request','thread-fork','thread-fork-request'].includes(operation??''))return nonempty(input.threadId??input.thread_id)?[{kind:'thread',provider:'codex',sessionId:String(input.threadId??input.thread_id),...(['thread-rename','thread-rename-request'].includes(operation??'')&&nonempty(input.title)?{labelHint:input.title.slice(0,256)}:{})}]:nonempty(input.clientThreadId)?[{kind:'pending-thread',provider:'codex',clientThreadId:input.clientThreadId}]:[];
   if(operation==='thread-wait')return (Array.isArray(input.targets)?input.targets:[]).flatMap(target=>target&&typeof target==='object'&&nonempty(target.threadId)?[{kind:'thread' as const,provider:'codex' as const,sessionId:target.threadId}]:[]);
   if(operation==='subagent-resume'&&scope.provider==='claude_code'&&scope.sessionId&&nonempty(input.resume))return [{kind:'subagent',provider:'claude_code',parentSessionId:scope.sessionId,agentId:input.resume,...(nonempty(input.description)?{labelHint:input.description.slice(0,256)}:{})}];
   return [];
 }
-export function operationReceiptTargets(operation:string,result:string,scope:{provider?:import('../parsers/types.js').ConversationSource;sessionId?:string},labelHint?:string):{operation:string;targets:import('./activity-targets.js').ActivityTarget[]} {
+export function operationReceiptTargets(operation:string,result:string,scope:{provider?:import('../parsers/types.js').ConversationSource;sessionId?:string},labelHint?:string,requestedThreadId?:string):{operation:string;targets:import('./activity-targets.js').ActivityTarget[]} {
   let value:unknown;try{value=JSON.parse(result);}catch{return {operation,targets:[]};}
   if(!value||typeof value!=='object'||Array.isArray(value))return {operation,targets:[]};
   const fields=value as Record<string,unknown>,hint=labelHint?{labelHint:labelHint.slice(0,256)}:{};
+  const mutation=Object.entries(mutationRequests).find(([effect,request])=>operation===effect||operation===request)?.[0];
+  if(mutation&&nonempty(requestedThreadId)&&fields.threadId===requestedThreadId&&fields.ok!==false){
+    const desired=mutation==='thread-archive';
+    const confirmed=mutation==='thread-rename'?nonempty(labelHint)&&fields.title===labelHint
+      :fields.archived===desired||(fields.ok===true&&(fields.archived===undefined||fields.archived===desired));
+    if(confirmed)return {operation:mutation,targets:[{kind:'thread',provider:'codex',sessionId:requestedThreadId,...(mutation==='thread-rename'?hint:{})}]};
+  }
   if(operation==='thread-create'||operation==='thread-queue'||operation==='thread-request') {
     if(nonempty(fields.threadId))return {operation:'thread-create',targets:[{kind:'thread',provider:'codex',sessionId:fields.threadId,...hint}]};
     if(nonempty(fields.clientThreadId))return {operation:'thread-queue',targets:[{kind:'pending-thread',provider:'codex',clientThreadId:fields.clientThreadId,...hint}]};
