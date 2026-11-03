@@ -1,4 +1,4 @@
-import { normalizeAmbientProviderIdentity, type AmbientProviderIdentity } from "./ambient-provider-identity.js";
+import { exactAgentRef, normalizeAmbientProviderIdentity, type AmbientProviderIdentity } from "./ambient-provider-identity.js";
 
 export const EXECUTION_CONTEXT_ARGUMENT = "__mandible_execution_context";
 
@@ -16,7 +16,7 @@ export function claudePreToolUseProjection(event: Record<string, unknown>): Reco
   const original = input as Record<string, unknown>;
   let updatedInput: Record<string, unknown>;
   if (event.tool_name === "Bash" && typeof original.command === "string") {
-    const command = `unset MANDIBLE_REQUEST_ORIGIN CODEX_THREAD_ID CODEX_SESSION_ID GEMINI_SESSION_ID CLAUDE_SESSION_ID;\nexport CLAUDE_CODE_SESSION_ID=${shellQuote(context.session_id!)} CLAUDE_AGENT_ID=${shellQuote(context.agent_id!)} MANDIBLE_EXECUTION_CONTEXT=${shellQuote(JSON.stringify(context))};\n${original.command}`;
+    const command = `unset MANDIBLE_REQUEST_ORIGIN CODEX_THREAD_ID CODEX_SESSION_ID GEMINI_SESSION_ID CLAUDE_SESSION_ID;\nexport CLAUDE_CODE_SESSION_ID=${shellQuote(context.session_id!)} CLAUDE_AGENT_ID=${shellQuote(context.agent_id!)} MANDIBLE_EXECUTION_CONTEXT=${shellQuote(JSON.stringify(context))} MANDIBLE_AGENT_REF=${shellQuote(exactAgentRef(context)!)};\n${original.command}`;
     updatedInput = { ...original, command };
   } else if (typeof event.tool_name === "string" && event.tool_name.startsWith("mcp__mandible__")) {
     updatedInput = { ...original, [EXECUTION_CONTEXT_ARGUMENT]: context };

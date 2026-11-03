@@ -27,16 +27,16 @@ describe("exact execution ingress", () => {
     const settings = mergeMandibleClaudeHookSettings({}, "external") as { hooks: { PreToolUse: Array<{ hooks: Array<{ command: string }> }> } };
     const hook = settings.hooks.PreToolUse[0].hooks[0].command;
     const bash = async (agent_id?: string) => {
-      const input = { session_id: "enclosing", ...(agent_id ? { agent_id } : {}), tool_name: "Bash", tool_input: { command: `source '${path.resolve("cli/api.sh")}' --mandible-api-definitions-only; api_current_agent_ref; printf '%s' "$CLAUDE_CODE_SESSION_ID"`, timeout: 123, description: "original" } };
+      const input = { session_id: "enclosing", ...(agent_id ? { agent_id } : {}), tool_name: "Bash", tool_input: { command: `printf '%s|' "$MANDIBLE_AGENT_REF"; source '${path.resolve("cli/api.sh")}' --mandible-api-definitions-only; api_current_agent_ref; printf '%s' "$CLAUDE_CODE_SESSION_ID"`, timeout: 123, description: "original" } };
       const emitted = await runCli(["-c", hook], { command: "/bin/bash", input: JSON.stringify(input) });
       expect(emitted.status, emitted.stderr).toBe(0);
       const projection = JSON.parse(emitted.stdout) as { hookSpecificOutput: { updatedInput: { command: string; timeout: number; description: string } } };
       expect(projection.hookSpecificOutput).not.toHaveProperty("permissionDecision");
       expect(projection.hookSpecificOutput.updatedInput).toMatchObject({ timeout: 123, description: "original" });
-      return run("/bin/bash", ["-c", projection.hookSpecificOutput.updatedInput.command], { timeout: 10_000, env: { ...process.env, CLAUDE_AGENT_ID: "stale", MANDIBLE_REQUEST_ORIGIN: '{"provider":"codex","agent_id":"stale","session_id":null}' } });
+      return run("/bin/bash", ["-c", projection.hookSpecificOutput.updatedInput.command], { timeout: 10_000, env: { ...process.env, CLAUDE_AGENT_ID: "stale", MANDIBLE_AGENT_REF: "agent:claude:parent:stale", MANDIBLE_REQUEST_ORIGIN: '{"provider":"codex","agent_id":"stale","session_id":null}' } });
     };
     const results = await Promise.all([bash("child-a"), bash("child-b"), bash()]);
-    expect(results.map(result => result.stdout)).toEqual(["agent:claude:enclosing:child-a\nenclosing", "agent:claude:enclosing:child-b\nenclosing", "agent:claude:enclosing:enclosing\nenclosing"]);
+    expect(results.map(result => result.stdout)).toEqual(["agent:claude:enclosing:child-a|agent:claude:enclosing:child-a\nenclosing", "agent:claude:enclosing:child-b|agent:claude:enclosing:child-b\nenclosing", "agent:claude:enclosing:enclosing|agent:claude:enclosing:enclosing\nenclosing"]);
   });
 
   it("does not mark an ordinary local shell as an agent and retains malformed managed evidence", async () => {
