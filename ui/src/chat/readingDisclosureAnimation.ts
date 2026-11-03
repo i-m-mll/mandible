@@ -4,7 +4,7 @@ export type ReadingDisclosureVisual = { play: () => void; complete: () => boolea
 
 /** Snapshot only visible mounted rows; final layout and native scroll remain untouched. */
 export function captureReadingDisclosureVisual(scroller: HTMLElement, boxes: ReadonlyMap<string, HTMLElement>, affected: ReadonlySet<string>, bottom: number): ReadingDisclosureVisual | null {
-  if (typeof Element.prototype.animate !== 'function' || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return null;
+  if (typeof Element.prototype.animate !== 'function') return null;
   const viewport = scroller.getBoundingClientRect();
   const overlay = document.createElement('div');
   overlay.dataset.readingVisualOverlay = '';
