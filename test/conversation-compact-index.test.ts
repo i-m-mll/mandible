@@ -58,6 +58,11 @@ it('retains exact source disclosure constructors and the system speaker of an un
   const cache=new ConversationStructureCache(undefined,{cachePath:':memory:'});
   const result=block(0,{...item(0),type:'tool-call',role:'tool',phase:'result',output:'orphan'});
   try {
+    const incomplete=cache.beginGeneration(manifest('incomplete',1));
+    cache.appendGeneration(incomplete,{rows:rows([result],()=>null)});
+    expect(()=>cache.completeGeneration(incomplete)).toThrow('position facts are incomplete');
+    expect(cache.readPresentationIndex('conv','incomplete',epochs)).toBeNull();
+    cache.discardGeneration(incomplete);
     const events=defaultDisplayEventsFromBlocks([{...result,parentPosition:null}],'conv');
     const visible=projectDisplayFragments(events,true)[0];
     cache.replaceRows(manifest('orphan',1),rows([result],()=>null),new Map(),undefined,indexDisplayFragments([result],'conv',()=>null));
