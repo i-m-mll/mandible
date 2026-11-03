@@ -110,3 +110,12 @@ it('preserves eagerly constructed calls and keyed tuple results without treating
   expect(unknown.effectsComplete).toBe(false);
   expect(unknown.outputAttributed).toBe(false);
 });
+
+
+it('distinguishes an awaited prefix from unawaited promises when only the wrapper receipt is complete',()=>{
+  const observe=(input:string)=>operationObservationForTool({type:'tool-call-activity',id:'native-wrapper',name:'exec',input,executionEvidence:{state:'completed',provenance:'native-wrapper'},result:{type:'tool_result',tool_use_id:'native-wrapper',content:'opaque native output'}});
+  const awaited=observe('const result=await tools.exec_command({cmd:"pwd"});unknownEffect(result);');
+  const pending=observe('const pending=[tools.exec_command({cmd:"pwd"})];unknownEffect(pending);');
+  expect(awaited.children?.[0].execution.state).toBe('completed');
+  expect(pending.children?.[0].execution.state).toBe('unknown');
+});

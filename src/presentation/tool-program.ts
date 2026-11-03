@@ -3,7 +3,7 @@ import { parse, type AnyNode, type Identifier } from 'acorn';
 type Ast = AnyNode;
 const GLOBAL_BINDINGS=new Set(['tools','text','image','audio','JSON','Promise','ALL_TOOLS','Object','Array','String','Number','Boolean']);
 export type ToolEmissionEncoding = 'literal' | 'json' | 'native';
-export type ToolProgramOperation = { encoding:ToolEmissionEncoding; name: string; input: Record<string, unknown> | string | undefined; emission?:number; resultPath?:Array<string|number>; collectionPath?:Array<string|number>; resultTransformed?:boolean; forwarding: 'result' | 'stdout' | 'direct'; index?: number; indexKey?: string; resultKey?: string; collection?: number; settled?: boolean };
+export type ToolProgramOperation = { encoding:ToolEmissionEncoding; name: string; input: Record<string, unknown> | string | undefined; awaited?:boolean; emission?:number; resultPath?:Array<string|number>; collectionPath?:Array<string|number>; resultTransformed?:boolean; forwarding: 'result' | 'stdout' | 'direct'; index?: number; indexKey?: string; resultKey?: string; collection?: number; settled?: boolean };
 export type ToolProgram = { operations: ToolProgramOperation[]; outputAttributed?:boolean;effectsComplete?:false };
 const identifier = (node: Ast | undefined, name?: string): node is Identifier => node?.type === 'Identifier' && (name === undefined || node.name === name);
 const member = (node: Ast | undefined, object: string, property: string): boolean => node?.type === 'MemberExpression' && !node.computed && !node.optional && identifier(node.object, object) && identifier(node.property, property);
@@ -43,7 +43,7 @@ function data(node: Ast, bindings = new Map<string, unknown>()): { value: unknow
   return null;
 }
 function operation(node: Ast, bindings = new Map<string, unknown>(), pure?:(node:Ast,scope?:ReadonlyMap<string,unknown>)=>boolean): ToolProgramOperation | null {
-  if (node.type === 'AwaitExpression') return operation(node.argument,bindings,pure);
+  if (node.type === 'AwaitExpression') {const value=operation(node.argument,bindings,pure);return value?{...value,awaited:true}:null;}
   if (node.type !== 'CallExpression' || node.optional || node.arguments.length !== 1) return null;
   const callee = node.callee;
   if(callee.type==='MemberExpression'&&!callee.computed&&identifier(callee.property)&&['then','catch'].includes(callee.property.name)&&pure?.(node.arguments[0],bindings)){const original=operation(callee.object,bindings,pure);return original?{...original,resultTransformed:true}:null;}
@@ -80,7 +80,7 @@ function calls(node:Ast,bindings=new Map<string,unknown>(),pure?:(node:Ast,scope
     const operations:ToolProgramOperation[]=[];
     const returned=(node:Ast,scope:Map<string,unknown>,path:Array<string|number>):boolean=>{
       const op=operation(node,scope,pure);
-      if(op){operations.push({...op,index:Number(path[0]),collectionPath:path,...(settled?{settled:true}:{})});return operations.length<=256;}
+      if(op){operations.push({...op,awaited:true,index:Number(path[0]),collectionPath:path,...(settled?{settled:true}:{})});return operations.length<=256;}
       if(data(node,scope))return true;
       if(node.type==='ArrayExpression')return node.elements.every((entry:Ast|null,index:number)=>entry&&returned(entry,scope,[...path,index]));
       if(node.type==='ObjectExpression')return node.properties.every((entry:Ast)=>entry.type==='Property'&&!entry.computed&&entry.kind==='init'&&!entry.method&&identifier(entry.key)&&returned(entry.value,scope,[...path,entry.key.name]));
@@ -254,9 +254,9 @@ export function projectToolProgram(name:string,input:Record<string,unknown>|stri
     return false;
   };
   const append=(node:Ast):ResultReference|null=>{
-    if(node.type==='AwaitExpression'&&identifier(node.argument)&&references.has(node.argument.name))return references.get(node.argument.name)!;
+    if(node.type==='AwaitExpression'&&identifier(node.argument)&&references.has(node.argument.name)){const reference=references.get(node.argument.name)!;reference.indices.forEach(index=>operations[index].awaited=true);return reference;}
     if(node.type==='AwaitExpression'&&node.argument.type==='CallExpression'&&member(node.argument.callee,'Promise','all')&&node.argument.arguments.length===1&&identifier(node.argument.arguments[0])){
-      const reference=references.get(node.argument.arguments[0].name);if(reference?.batch)return reference;
+      const reference=references.get(node.argument.arguments[0].name);if(reference?.batch){reference.indices.forEach(index=>operations[index].awaited=true);return reference;}
     }
 
     const batch=calls(node,bindings,(entry,scope)=>pure(entry,new Set([...values,...(scope?.keys()??[])]))); if(!batch)return null;
