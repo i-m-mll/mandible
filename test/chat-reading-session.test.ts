@@ -8,7 +8,10 @@ afterEach(() => { sessionStorage.clear(); localStorage.clear(); vi.unstubAllGlob
 
 it('retains choices within a tab session and ignores durable choices in a new session', () => {
   localStorage.setItem('mandible:chat-reading:chat',JSON.stringify(state));
+  localStorage.setItem('unrelated','preserved');
   expect(readReadingState('chat')).toBeNull();
+  expect(localStorage.getItem('mandible:chat-reading:chat')).toBeNull();
+  expect(localStorage.getItem('unrelated')).toBe('preserved');
   writeReadingState('chat',state);
   expect(readReadingState('chat')).toEqual(state);
   sessionStorage.clear();

@@ -13,7 +13,14 @@ export type ReadingState = {
 };
 const key = (id: string) => `mandible:chat-reading:${id}`;
 const sessionKey = 'mandible:chat-reading-session';
+let retiredDurableChoices = false;
 function storage(): Storage {
+  if (!retiredDurableChoices) {
+    retiredDurableChoices = true;
+    try {
+      for (const name of Object.keys(window.localStorage)) if (name.startsWith('mandible:chat-reading:')) window.localStorage.removeItem(name);
+    } catch { /* Retiring inaccessible durable choices must not prevent session storage. */ }
+  }
   const host = getWindowHost();
   const store = window.sessionStorage;
   if (host.kind === 'browser') return store;
@@ -29,22 +36,20 @@ function storage(): Storage {
 export function readReadingState(conversationId: string): ReadingState | null {
   try {
     const value = JSON.parse(storage().getItem(key(conversationId)) ?? 'null');
-    if (![2, 3, 4].includes(value?.version) || typeof value.positionSpaceId !== 'string' || typeof value.following !== 'boolean') return null;
-    if (value.version === 2 ? !Array.isArray(value.disclosures) : !value.disclosures || typeof value.disclosures !== 'object' || Array.isArray(value.disclosures)) return null;
+    if (value?.version !== 4 || typeof value.positionSpaceId !== 'string' || typeof value.following !== 'boolean') return null;
+    if (!value.disclosures || typeof value.disclosures !== 'object' || Array.isArray(value.disclosures)) return null;
     const anchor = value.anchor;
     if (anchor !== null) {
       if (!anchor || typeof anchor !== 'object' || !Number.isFinite(anchor.offset ?? 0)) return null;
-      if (value.version === 4 && anchor.kind === 'row') {
+      if (anchor.kind === 'row') {
         if (!Number.isFinite(anchor.offset) || typeof anchor.rowKey !== 'string' || !anchor.rowKey || typeof anchor.memberKey !== 'string' || !anchor.memberKey
           || (anchor.position !== null && (!Number.isSafeInteger(anchor.position) || anchor.position < 0))) return null;
-      } else if ((value.version === 4 && anchor.kind !== 'source') || anchor.conversationId !== conversationId || anchor.positionSpaceId !== value.positionSpaceId
+      } else if (anchor.kind !== 'source' || anchor.conversationId !== conversationId || anchor.positionSpaceId !== value.positionSpaceId
         || !Number.isSafeInteger(anchor.position) || anchor.position < 0) return null;
     }
-    const entries = value.version === 2
-      ? value.disclosures.filter((id: unknown) => typeof id === 'string').map((id: string) => [id, true])
-      : Object.entries(value.disclosures).filter(([, expanded]) => typeof expanded === 'boolean');
+    const entries = Object.entries(value.disclosures).filter((entry): entry is [string, boolean] => typeof entry[1] === 'boolean');
     return { positionSpaceId: value.positionSpaceId, following: value.following, version: 4,
-      anchor: anchor === null ? null : value.version === 4 ? anchor : { ...anchor, kind: 'source' }, disclosures: Object.fromEntries(entries.slice(-100)) };
+      anchor, disclosures: Object.fromEntries(entries.slice(-100)) };
   } catch { return null; }
 }
 export function writeReadingState(conversationId: string, value: ReadingState): void {
