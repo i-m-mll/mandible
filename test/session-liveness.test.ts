@@ -177,6 +177,8 @@ describe("a Codex lock check that cannot complete", () => {
     );
     unit.run("wu-held", "committed", THREAD, null, null);
     unit.run("wu-merged", "resolved", null, THREAD, "auth-1");
+    db.prepare("UPDATE work_units SET assignment_target_json = ? WHERE id IN ('wu-held','wu-merged')")
+      .run(JSON.stringify({ kind: "native", agent_ref: `agent:codex:${THREAD}` }));
     setDb(db);
     stderr = [];
     archived = [];

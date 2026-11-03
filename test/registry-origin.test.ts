@@ -14,8 +14,8 @@ import { SYSTEM_USER_ID } from "../src/users/store.js";
 import * as sse from "../src/sse.js";
 
 let db: Db;
-const origin = { provider: "codex", provider_session_id: "native-registry-caller" };
-const later = { provider: "claude", provider_session_id: "native-later-caller" };
+const origin = { provider: "codex", agent_id: "native-registry-caller", session_id: null };
+const later = { provider: "claude", agent_id: "native-child", session_id: "native-later-caller" };
 const events = () => db.prepare("SELECT * FROM ledger_events ORDER BY rowid").all();
 beforeEach(() => { db = migratedMemoryDb(); });
 afterEach(() => { vi.restoreAllMocks(); db.close(); });
@@ -41,7 +41,7 @@ it("keeps project creation, edits, checkout reassignment and deletion history wi
   const n = events().length;
   resolveProjectForCheckout(db, { root: "/tmp/origin-discovery", name: "Discovery" });
   expect(events()).toHaveLength(n);
-  expect(events().find(e => e.entity_id === discovered.checkout.id).payload_json).toContain(origin.provider_session_id);
+  expect(events().find(e => e.entity_id === discovered.checkout.id).payload_json).toContain(origin.agent_id);
 });
 
 it("records access changes and cascades without secrets, pre-commit notifications, or changed authority", () => {
@@ -64,7 +64,7 @@ it("records access changes and cascades without secrets, pre-commit notification
     removeBinding(db, binding.id);
     removeGroup(db, group.id);
   });
-  const recorded = events().filter(e => JSON.parse(e.payload_json).request_origin?.provider_session_id === origin.provider_session_id);
+  const recorded = events().filter(e => JSON.parse(e.payload_json).request_origin?.agent_id === origin.agent_id);
   expect(recorded.map(e => e.event_type)).toEqual(["credential.created", "binding.created", "group.created", "group_member.created", "grant.created", "credential.updated", "binding.deleted", "grant.deleted", "group_member.deleted", "group.deleted"]);
   expect(recorded.every(e => e.actor_user_id === actor.id && e.evidence_method === "api_token")).toBe(true);
   expect(JSON.stringify(recorded)).not.toMatch(/confidential-token-fingerprint|private-label|secret-binding-value/);

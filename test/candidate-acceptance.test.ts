@@ -6,7 +6,7 @@ import path from 'node:path';
 import https from 'node:https';
 import net from 'node:net';
 import { spawn, spawnSync } from 'node:child_process';
-import { acceptanceApplicationPolicy, acceptanceSummary, compactAcceptanceResult, acceptanceScope, acceptanceOwnedOutputs, createAcceptanceHome, acceptanceGatewayConfig, acceptanceHealth, acceptanceFailureLogs, assessAcceptanceLogs, awaitAcceptanceGatewayReadiness, awaitReadiness, loopbackListening, observeAcceptanceHealth, stopOwned, finalizeAcceptance, interactionCompletion } from '../scripts/candidate-acceptance.mjs';
+import { acceptanceApplicationPolicy, acceptanceSummary, compactAcceptanceResult, acceptanceScope, acceptanceOwnedOutputs, createAcceptanceHome, acceptanceGatewayConfig, acceptanceHealth, acceptanceFailureLogs, assessAcceptanceLogs, awaitAcceptanceGatewayReadiness, awaitReadiness, loopbackListening, observeAcceptanceHealth, stopOwned, finalizeAcceptance, interactionCompletion, verifyPackagedExports } from '../scripts/candidate-acceptance.mjs';
 import { acceptanceFailure, describeAcceptanceFailure } from '../scripts/acceptance-failure.mjs';
 import { acceptanceBudgetExhausted } from '../scripts/acceptance-deadline.mjs';
 import { RuntimeHealthObservationError } from '../src/runtime-health-contract.ts';
@@ -600,5 +600,49 @@ it("keeps large shipped inventories in the full receipt and returns bounded fina
     const receipt = JSON.parse(fs.readFileSync(result.receipt, "utf8"));
     expect(receipt.acceptance).toMatchObject({ status: "failed", budget: { scope: "candidate-script" }, phases: { finalization: { status: "passed" } } });
     expect(Object.keys(receipt.acceptance.provenance.shipped.files)).toHaveLength(10_000);
+  } finally { fs.rmSync(cache, { recursive: true, force: true }); }
+});
+
+
+it('requires a passing exact-package export receipt and keeps every proof fixture inside owned cleanup', async () => {
+  const cache = fs.mkdtempSync(path.join(os.tmpdir(), 'acceptance-exports-'));
+  const run = path.join(cache, 'run');
+  const home = path.join(run, 'home');
+  fs.mkdirSync(home, { recursive: true });
+  const ownership = createOwnedRun({ root: run, instanceId: 'exports-test', project: 'project', workUnit: 'unit', disposable: true, outputs: acceptanceOwnedOutputs });
+  const metadataFile = path.join(run, 'metadata.json');
+  saveOwnedMetadata(metadataFile, { ownership });
+  const runtime = path.join(cache, 'packaged-runtime');
+  fs.writeFileSync(runtime, `#!${process.env.MANDIBLE_RUNTIME}
+import fs from 'node:fs';
+fs.writeFileSync('fixture-evidence', 'private proof data');
+const mode = process.env.PROOF_FIXTURE_MODE;
+if (mode === 'failed') { process.stderr.write('hook execution failed'); process.exit(1); }
+process.stdout.write(mode === 'malformed' ? 'bad JSON' : JSON.stringify({passed:mode !== 'not-passed',commit:mode === 'mismatch' ? 'other' : 'candidate',source_digest:'source'}));
+`, { mode: 0o755 });
+  const budget = acceptanceDeadline({});
+  try {
+    for (const mode of ['passed', 'failed', 'malformed', 'not-passed', 'mismatch']) {
+      const fixtureHome = path.join(home, mode);
+      fs.mkdirSync(fixtureHome, { mode: 0o700 });
+      const proof = verifyPackagedExports({ resources: path.join(cache, 'verified-resources'), runtime,
+        environment: { ...process.env, PROOF_FIXTURE_MODE: mode }, home: fixtureHome,
+        provenance: { commit: 'candidate', source_digest: 'source' }, budget });
+      if (mode === 'passed') await expect(proof).resolves.toMatchObject({ passed: true, commit: 'candidate', source_digest: 'source' });
+      else await expect(proof).rejects.toMatchObject({ acceptanceFault: 'candidate' });
+      expect(fs.existsSync(path.join(fixtureHome, 'exports', 'fixture-evidence'))).toBe(true);
+      expect(fs.statSync(path.join(fixtureHome, 'exports')).mode & 0o777).toBe(0o700);
+    }
+    const expiredHome = path.join(home, 'expired');
+    fs.mkdirSync(expiredHome, { mode: 0o700 });
+    await expect(verifyPackagedExports({ resources: path.join(cache, 'verified-resources'), runtime,
+      environment: process.env, home: expiredHome, provenance: { commit: 'candidate', source_digest: 'source' },
+      budget: { ...budget, remaining: () => { throw acceptanceBudgetExhausted('preparation'); } },
+    })).rejects.toMatchObject({ code: 'acceptance_budget_exhausted' });
+    expect(fs.readdirSync(path.join(expiredHome, 'exports'))).toEqual([]);
+    const finalized = await withOwnedRunLock(run, () => finalizeAcceptance({ metadataFile, run, cache, ownership, deadlineEnv: budget.env,
+      result: { status: 'failed', candidate: 'candidate', scope: acceptanceScope, budget: budget.reading(), checks: {}, phases: { finalization: { status: 'running', started_at: Date.now() } } } }));
+    expect(finalized.checks.cleanup).toMatchObject({ action: 'delete-owned', remaining: [] });
+    expect(fs.existsSync(home)).toBe(false);
   } finally { fs.rmSync(cache, { recursive: true, force: true }); }
 });

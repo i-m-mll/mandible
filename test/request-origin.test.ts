@@ -8,8 +8,8 @@ import { systemAction } from "../src/identity/resolver.js";
 
 describe("request origin dispatch", () => {
   it("distinguishes an explicit origin envelope from legacy ambient capture and explicit unknown", () => {
-    const ambient = { provider: "codex", provider_session_id: "executing-session" };
-    const initiating = { provider: "claude", provider_session_id: "initiating-session" };
+    const ambient = { provider: "codex", agent_id: 'executing-session', session_id: null };
+    const initiating = { provider: "claude", agent_id: null, session_id: 'initiating-session' };
     expect(requestOriginForRequest({ ambient_identity: ambient })).toEqual(ambient);
     expect(requestOriginForRequest({ ambient_identity: ambient, request_origin: initiating })).toEqual(initiating);
     for (const request_origin of [null, undefined, "malformed", { provider: "invalid", provider_session_id: "claim" }]) {
@@ -24,7 +24,7 @@ describe("request origin dispatch", () => {
       const store = new LedgerStore(db, { broadcaster: broadcast });
       const user = createUser(db, { slug: 'origin-fixture', kind: 'agent', display_name: 'Before' });
       const initialEvents = db.prepare('SELECT count(*) AS n FROM ledger_events').get();
-      const origin = { provider: 'claude', provider_session_id: 'native-global-author' };
+      const origin = { provider: "claude", agent_id: null, session_id: 'native-global-author' };
       const input = { actor_type: 'system' as const, attribution: systemAction(), entity_type: 'user', entity_id: user.id,
         event_type: 'user.updated', project_id: null, notify: false, payload: { operation: 'update', changed_fields: ['display_name'] } };
       expect(() => withRequestOrigin(origin, () => db.transaction(() => {
@@ -65,10 +65,10 @@ describe("request origin dispatch", () => {
         entered();
         await barrier;
       }
-      res.json(withRequestOriginMetadata({ request_origin: { provider: "claude", provider_session_id: "forged-payload" } }));
+      res.json(withRequestOriginMetadata({ request_origin: { provider: "claude", agent_id: null, session_id: 'forged-payload' } }));
     }, { operation: { id: "origin.write", effects: ["ledger:write"], reportingCategory: "ledger", requestSchema: null }, fileRpc: "allow" });
-    const codex = { provider: "codex", provider_session_id: "first-native" };
-    const claude = { provider: "claude", provider_session_id: "second-native" };
+    const codex = { provider: "codex", agent_id: 'first-native', session_id: null };
+    const claude = { provider: "claude", agent_id: null, session_id: 'second-native' };
     const first = router.invoke({ method: "POST", url: "/write/first", ambient_identity: codex });
     await firstEntered;
     try {

@@ -1,3 +1,4 @@
+import { parseExactAgentRef } from "./ambient-provider-identity.js";
 import { hasArchivedResponsibility } from "./work-unit-worker.js";
 import { mutateWorkUnit } from "./work-unit-history.js";
 import type { SessionExecutionObservation } from "./contracts.js";
@@ -66,7 +67,7 @@ export function classifyHolderLiveness(
   for (const id of sessionIdentities(unit)) {
     const resolution = resolver(db, id);
     if (!resolution || resolution.liveness !== "stopped") continue;
-    const targetProvider = unit.assignment_target?.kind === "native" ? unit.assignment_target.provider : null;
+    const targetProvider = unit.assignment_target?.kind === "native" ? parseExactAgentRef(unit.assignment_target.agent_ref)?.provider : null;
     const bindingProvider = targetProvider ?? unit.worker_provider;
     const provider = bindingProvider === "claude_code" ? "claude" : bindingProvider
       ?? (unit.assigned_session_id || unit.assignment_target ? null : unit.provider);

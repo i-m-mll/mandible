@@ -22,6 +22,7 @@ type ConversationBoundary = {
   source: string;
   session_id: string | null;
   parent_conversation_id: string | null;
+  agent_id: string | null;
   local_draft: number;
 };
 
@@ -144,7 +145,7 @@ export class ConversationControlStore {
 
   getBoundary(conversationId: string): Result<ConversationBoundary, ConversationControlError> {
     const row = this.db.prepare(`
-      SELECT c.id, c.source, NULLIF(c.session_id, '') AS session_id, c.parent_conversation_id,
+      SELECT c.id, c.source, NULLIF(c.session_id, '') AS session_id, c.parent_conversation_id, c.agent_id,
         EXISTS(SELECT 1 FROM conversation_spawn_requests s WHERE s.id = c.id AND s.schema_version = 'mandible-conversation-spawn-request@3' AND s.state = 'ready' AND s.provider_session_id IS NULL) AS local_draft
       FROM conversations c WHERE c.id = ?
     `).get(conversationId) as ConversationBoundary | undefined;
@@ -202,7 +203,7 @@ export class ConversationControlStore {
       if (row.revision !== expectedRevision) return { ok: false as const, error: { kind: "capability-drift" as const, expected_revision: expectedRevision, actual_revision: row.revision } };
       if (row.generation !== expectedGeneration) return { ok: false as const, error: { kind: "stale-generation" as const, expected_generation: expectedGeneration, actual_generation: row.generation } };
       const snapshot = this.toSnapshot(row, boundary.value, capabilities, adapterId);
-      if (row.owner_kind !== "none" || !capabilities.resume_provider_session || boundary.value.parent_conversation_id || !boundary.value.session_id) {
+      if (row.owner_kind !== "none" || !capabilities.resume_provider_session || (boundary.value.source === "claude_code" && boundary.value.agent_id && boundary.value.agent_id !== boundary.value.session_id) || !boundary.value.session_id) {
         return { ok: false as const, error: { kind: "unsupported-operation" as const, operation: "resume-provider-session" as const, capability: snapshot.capability } };
       }
       const generation = row.generation + 1;
@@ -600,9 +601,10 @@ export class ConversationControlStore {
         SELECT c.id AS conversation_id, s.owner_kind, s.generation,
           json_extract(s.owner_detail_json, '$.kind') AS evidence_kind,
           (SELECT r.id FROM sessions r WHERE r.status = 'active' AND r.pid IS NOT NULL
+            AND r.app = CASE c.source WHEN 'claude_code' THEN 'claude' ELSE c.source END
             AND (r.conversation_id = c.session_id OR r.id = c.session_id) ORDER BY r.updated_at DESC LIMIT 1) AS live_session_id
         FROM conversations c LEFT JOIN conversation_control_state s ON s.conversation_id = c.id
-        WHERE NULLIF(c.session_id, '') IS NOT NULL AND c.parent_conversation_id IS NULL AND (? IS NULL OR c.session_id = ?))
+        WHERE NULLIF(c.session_id, '') IS NOT NULL AND (c.source != 'claude_code' OR c.agent_id IS NULL OR c.agent_id = c.session_id) AND (? IS NULL OR c.session_id = ?))
       WHERE (live_session_id IS NOT NULL AND COALESCE(owner_kind, 'none') = 'none')
          OR (live_session_id IS NULL AND owner_kind = 'external' AND evidence_kind = 'registered-process')
     `).all(providerSessionId, providerSessionId) as Array<{ conversation_id: string; generation: number | null; live_session_id: string | null }>;
@@ -695,7 +697,7 @@ export class ConversationControlStore {
     const turn = turnState(row, detail);
     const revision = row.revision;
     let capability: ConversationContinuationCapability;
-    if (boundary.parent_conversation_id) capability = unavailable(revision, "subagent");
+    if (boundary.source === "claude_code" && boundary.agent_id && boundary.agent_id !== boundary.session_id) capability = unavailable(revision, "subagent");
     else if (!boundary.session_id && owner.kind !== "mandible" && !(boundary.local_draft && owner.kind === "none")) capability = unavailable(revision, "no-provider-session");
     else if (owner.kind === "external") capability = { kind: "blocked-external", revision, evidence_kind: owner.evidence.kind };
     else if (!capabilities || !adapterId) capability = unavailable(revision, "unsupported-provider");

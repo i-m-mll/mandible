@@ -184,27 +184,18 @@ describe("session and work-unit ownership", () => {
     });
     expect(activation.status).toBe(409);
     expect(db.prepare(
-      "SELECT owner_user_id, provider_session_id FROM work_units WHERE id = ?",
+      "SELECT owner_user_id, execution_identity_json FROM work_units WHERE id = ?",
     ).get(id)).toEqual({
       owner_user_id: codex.id,
-      provider_session_id: "codex-thread-1",
+      execution_identity_json: JSON.stringify({ provider: "codex", agent_id: "codex-thread-1", session_id: null }),
     });
   });
 
-  it("recognizes Codex, Claude, and Gemini ambient provider descriptors", () => {
-    expect(resolveAmbientProviderIdentity({ CODEX_THREAD_ID: "codex-1" })).toEqual({
-      provider: "codex",
-      provider_session_id: "codex-1",
-    });
-    expect(resolveAmbientProviderIdentity({ CLAUDE_CODE_SESSION_ID: "claude-1" })).toEqual({
-      provider: "claude",
-      provider_session_id: "claude-1",
-    });
-    expect(resolveAmbientProviderIdentity({ GEMINI_SESSION_ID: "gemini-1" })).toEqual({
-      provider: "gemini",
-      provider_session_id: "gemini-1",
-    });
-    expect(resolveAmbientProviderIdentity({ CODEX_THREAD_ID: "codex-1", CODEX_SESSION_ID: "inherited-parent" })).toEqual({ provider: "codex", provider_session_id: "codex-1" });
+  it("recognizes exact and session-only ambient execution evidence", () => {
+    expect(resolveAmbientProviderIdentity({ CODEX_THREAD_ID: "codex-1" })).toEqual({ provider: "codex", agent_id: "codex-1", session_id: null });
+    expect(resolveAmbientProviderIdentity({ CLAUDE_CODE_SESSION_ID: "claude-1" })).toEqual({ provider: "claude", agent_id: null, session_id: "claude-1" });
+    expect(resolveAmbientProviderIdentity({ GEMINI_SESSION_ID: "gemini-1" })).toEqual({ provider: "gemini", agent_id: "gemini-1", session_id: "gemini-1" });
+    expect(resolveAmbientProviderIdentity({ CODEX_THREAD_ID: "codex-1", CODEX_SESSION_ID: "enclosing" })).toEqual({ provider: "codex", agent_id: "codex-1", session_id: "enclosing" });
     expect(resolveAmbientProviderIdentity({ CODEX_THREAD_ID: "codex-1", CLAUDE_SESSION_ID: "claude-1" })).toBeNull();
   });
 });

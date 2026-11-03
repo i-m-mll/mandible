@@ -403,7 +403,7 @@ describe("delegated signer reconnect lifecycle", () => {
       f.addClearance(context.leaseId);
       const borrow = await resource.borrow(context.leaseId);
       const caller = { attribution: { user_id: getOperator(f.db)!.id, evidence_method: "api_token" as const } };
-      const origin = { provider: "codex", provider_session_id: "native-lease-owner" };
+      const origin = { provider: "codex", agent_id: "native-lease-owner", session_id: null };
       withRequestOrigin(origin, () => withLedgerMutationActor(caller, () =>
         shortenDelegatedSigningLease(f.db, context.leaseId, 30_000)));
       const draining = withRequestOrigin(origin, () => withLedgerMutationActor(caller, () =>

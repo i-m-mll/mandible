@@ -50,7 +50,7 @@ fi
 export MANDIBLE_SESSION_ID="$SESSION_ID"
 # A wrapper starts a new provider task. Parent task markers belong to the
 # launching shell and must not be attributed to the wrapped process.
-unset CODEX_THREAD_ID CODEX_SESSION_ID CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID GEMINI_SESSION_ID
+unset MANDIBLE_EXECUTION_CONTEXT MANDIBLE_AGENT_REF CLAUDE_AGENT_ID CODEX_THREAD_ID CODEX_SESSION_ID CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID GEMINI_SESSION_ID
 
 # Signal to shell init (lib/agent-signing.sh) that this is an AI agent
 # session — use software signing key instead of YubiKey.

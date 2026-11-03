@@ -1,3 +1,4 @@
+import { conversationAgentRef } from "./conversation-agent-identity.js";
 import type { Db } from "./db.js";
 import type { LineageEvidence } from "./conversation-lineage.js";
 import { getRetainedChildByProvider } from "./conversations/retention-policy.js";
@@ -14,7 +15,7 @@ function reconcileEvidence(db: Db, id: string): void {
     if (!row) return;
     const target = parseAssignmentTarget(row.assignment_target_json);
     const identity = resolveAssignmentTarget(db, target);
-    const evidence = identity ? getRetainedChildByProvider(db, identity.provider, identity.session_id) : null;
+    const evidence = identity ? getRetainedChildByProvider(db, identity.provider, identity.session_id, identity.execution_identity.session_id) : null;
     const issue = row.ledger_issue_id ? db.prepare("SELECT project_id FROM ledger_issues WHERE id=?")
       .get(row.ledger_issue_id) as { project_id: string } | undefined : undefined;
     mutateLedgerRecord(db, {
@@ -32,18 +33,16 @@ function reconcileEvidence(db: Db, id: string): void {
 export function reconcileWorkerLineageEvidence(db: Db, identities: readonly LineageEvidence[]): void {
   const ids = new Set<string>();
   for (const identity of identities) {
+    const row = db.prepare("SELECT agent_id, session_id FROM conversations WHERE id = ?").get(identity.conversationId) as { agent_id: string | null; session_id: string } | undefined;
     const provider = identity.source === "claude_code" ? "claude" : identity.source;
-    const rows = db.prepare(`SELECT id FROM work_units WHERE assignment_target_json IS NOT NULL
-      AND json_extract(assignment_target_json,'$.kind')='native'
-      AND json_extract(assignment_target_json,'$.provider')=? AND json_extract(assignment_target_json,'$.session_id')=?
-      UNION SELECT id FROM work_units WHERE assignment_target_json IS NOT NULL
-      AND json_extract(assignment_target_json,'$.kind')='alias' AND json_extract(assignment_target_json,'$.provider') IS NULL
-      AND json_extract(assignment_target_json,'$.session_id') IN (
-        SELECT ? UNION SELECT id FROM sessions WHERE app=? AND conversation_id=?
-        UNION SELECT id FROM console_sessions WHERE command=? AND provider_session_id=?
-        UNION SELECT mandible_session_id FROM console_sessions WHERE command=? AND provider_session_id=?)`)
-      .all(identity.source, identity.sessionId, identity.sessionId, provider, identity.sessionId,
-        provider, identity.sessionId, provider, identity.sessionId) as { id: string }[];
+    const ref = conversationAgentRef({ source: identity.source, session_id: row?.session_id ?? identity.sessionId, agent_id: row?.agent_id });
+    const rows = db.prepare(`SELECT id FROM work_units WHERE assignment_target_json IS NOT NULL AND (
+      json_extract(assignment_target_json, '$.agent_ref') = ?
+      OR (json_extract(assignment_target_json, '$.kind') = 'alias' AND json_extract(assignment_target_json, '$.session_id') IN (
+        SELECT ? UNION SELECT id FROM sessions WHERE app = ? AND conversation_id = ?
+        UNION SELECT id FROM console_sessions WHERE command = ? AND provider_session_id = ?
+        UNION SELECT mandible_session_id FROM console_sessions WHERE command = ? AND provider_session_id = ?)))`)
+      .all(ref, identity.source === "claude_code" ? row?.agent_id ?? identity.sessionId : identity.sessionId, provider, identity.sessionId, provider, identity.sessionId, provider, identity.sessionId) as { id: string }[];
     for (const row of rows) ids.add(row.id);
   }
   for (const id of ids) reconcileEvidence(db, id);

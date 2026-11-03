@@ -118,9 +118,9 @@ describe("client-auth durable attribution", () => {
     const store = new LedgerStore(db);
     const before = readLedgerChangeFeed(db, { project_id: projectId, project_key: "mandible" });
     const origins = [
-      { provider: "codex", provider_session_id: "native-codex-1" },
-      { provider: "codex", provider_session_id: "native-codex-2" },
-      { provider: "claude", provider_session_id: "native-claude-1" },
+      { provider: "codex", agent_id: "native-codex-1", session_id: null },
+      { provider: "codex", agent_id: "native-codex-2", session_id: null },
+      { provider: "claude", agent_id: "native-child", session_id: "native-claude-1" },
       null,
     ];
     const issueIds: string[] = [];
@@ -153,6 +153,13 @@ describe("client-auth durable attribution", () => {
     expect((feed.changes as Array<{ event_type: string; request_origin: unknown }>).filter(change => change.event_type === "issue.created").map(change => change.request_origin)).toEqual(origins);
     expect((feed.changes as Array<{ event_type: string; request_origin: unknown }>).filter(change => change.event_type === "relationship.upserted"))
       .toEqual(expect.arrayContaining([expect.objectContaining({ request_origin: origins[2] })]));
+    const legacy = await router.invoke({ method: "POST", url: "/api/issues/mandible", transport: "http", credential: operatorToken,
+      ambient_identity: { provider: "claude", provider_session_id: "legacy-session-only" },
+      body: { title: "Legacy session evidence", kind: "feature", body: "Legacy", project: projectId } });
+    expect(legacy.status).toBe(200);
+    const legacyIssue = db.prepare("SELECT id FROM ledger_issues WHERE title = 'Legacy session evidence'").get()!;
+    expect(store.listBodyRevisions({ entity_type: "issue_body", entity_id: legacyIssue.id })[0].request_origin)
+      .toEqual({ provider: "claude", agent_id: null, session_id: "legacy-session-only" });
     const counts = () => db.prepare("SELECT (SELECT count(*) FROM ledger_events) AS events, (SELECT count(*) FROM ledger_body_revisions) AS revisions, (SELECT count(*) FROM ledger_comments) AS comments").get();
     const prior = counts();
     expect(() => withRequestOrigin(origins[0], () => db.transaction(() => {
@@ -295,6 +302,7 @@ describe("client-auth durable attribution", () => {
         cwd: tempDir,
       },
       credential: agentToken,
+      ambient_identity: { provider: "codex", agent_id: "auth-request-agent-session", session_id: null },
       transport: "http",
     });
     expect(submitted.status).toBe(201);
@@ -336,6 +344,7 @@ describe("client-auth durable attribution", () => {
       method: "POST",
       url: `/api/auth/request/${requestId}/approve`,
       credential: agentToken,
+      ambient_identity: { provider: "codex", agent_id: "auth-request-agent-session", session_id: null },
       transport: "http",
     });
     expect(denied.status).toBe(403);
@@ -436,6 +445,7 @@ describe("client-auth durable attribution", () => {
         session_id: "auth-request-agent-session",
       },
       credential: agentToken,
+      ambient_identity: { provider: "codex", agent_id: "auth-request-agent-session", session_id: null },
       transport: "http",
     });
     expect(conflicting.status).toBe(201);

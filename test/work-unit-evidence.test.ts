@@ -97,7 +97,7 @@ it.each([
   expect(unit(id).worker_provider).toBeNull();
   await ingest(first === worker ? parent : worker);
   expect(unit(id)).toMatchObject({ worker_provider: "codex", worker_provider_session_id: worker,
-    provider_session_id: parent, assigned_session_id: cleanup ? null : worker, state: "resolved" });
+    provider_session_id: null, assigned_session_id: cleanup ? null : worker, state: "resolved" });
   expect(events(id)).toHaveLength(1);
   expect(events(id)[0].actor_type).toBe("system");
   expect(JSON.parse(events(id)[0].payload_json)).toMatchObject({ evidence: { provider: "codex", session_id: worker, conversation_id: evidence()[0].conversationId } });

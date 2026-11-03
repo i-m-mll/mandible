@@ -204,7 +204,7 @@ describe("mandible_submit_auth command shape (issue 08a5f04)", () => {
     };
     // sessionId null — registration/liveness calls are skipped, so the only
     // fetch is the auth submission itself.
-    registerTools(mockServer as never, null, await import("./helpers/channel-client.js"), process.env.CLAUDE_CWD ?? process.cwd());
+    registerTools(mockServer as never, null, await import("./helpers/channel-client.js"), process.env.CLAUDE_CWD ?? process.cwd(), "agent:claude:tool-session:tool-agent");
     const handler = handlers.get("mandible_submit_auth");
     if (!handler) throw new Error("mandible_submit_auth not registered");
     await handler(args);

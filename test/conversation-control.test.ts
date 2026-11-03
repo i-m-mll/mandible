@@ -633,7 +633,7 @@ describe("authoritative conversation control", () => {
     const registry = new SessionRegistry(db);
     registry.onLifecycle((session) => service.syncRegisteredOwnership(session));
 
-    registry.registerSession({ id: "terminal-1", app: "claude", pid: process.pid, conversation_id: "provider-1" });
+    registry.registerSession({ id: "terminal-1", app: "codex", pid: process.pid, conversation_id: "provider-1" });
     const held = service.getSnapshot("conversation-1");
     expect(held.ok && held.value.capability).toMatchObject({ kind: "blocked-external", evidence_kind: "registered-process" });
 

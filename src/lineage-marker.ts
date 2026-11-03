@@ -1,3 +1,4 @@
+import { parseExactAgentRef } from "./ambient-provider-identity.js";
 // The lineage marker: the one structured line a spawner writes as line 1 of a
 // child thread's first user message. This module is the only place its syntax
 // is known.
@@ -87,6 +88,9 @@ function parseSessionRef(value: string): { ok: true; session: ConversationParent
   const source = colon > 0 ? PROVIDERS[value.slice(0, colon)] : undefined;
   if (!source) return { ok: false, reason: `${value} does not start with claude:, codex: or gemini:` };
   const sessionId = value.slice(colon + 1);
+  const exact = parseExactAgentRef(sessionId);
+  if (exact && (exact.provider === "claude" ? "claude_code" : exact.provider) === source)
+    return { ok: true, session: { source, sessionId } };
   if (!SESSION_ID.test(sessionId)) return { ok: false, reason: `${value} does not name a provider session id` };
   return { ok: true, session: { source, sessionId: sessionId.toLowerCase() } };
 }

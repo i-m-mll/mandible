@@ -16,8 +16,8 @@ import { AuthQueue } from "../src/auth-queue.js";
 import { AUTH_COMMAND_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import type { Db } from "../src/db.js";
 
-const codex = { provider: "codex", provider_session_id: "origin-codex" };
-const claude = { provider: "claude", provider_session_id: "origin-claude" };
+const codex = { provider: "codex", agent_id: "origin-codex", session_id: null };
+const claude = { provider: "claude", agent_id: "native-child", session_id: "origin-claude" };
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 

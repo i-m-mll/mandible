@@ -1190,7 +1190,7 @@ parent_role_report() {
 cmd_parent_role_assume() {
   local issue_ref=""
   local session_id
-  session_id="$(api_ambient_session_id)"
+  session_id="$(api_current_agent_ref)"
   session_id="${session_id:-${MANDIBLE_SESSION_ID:-}}"
   local mechanism=""
   local reason="" expected_checkpoint=""

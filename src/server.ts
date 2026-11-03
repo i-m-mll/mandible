@@ -224,6 +224,7 @@ export interface RouterOptions {
 }
 
 export interface RouterInvokeRequest {
+  managed_client?: boolean;
   method: string;
   url: string;
   body?: unknown;
@@ -500,7 +501,7 @@ export class Router implements RouteRegistrar {
       input.credential,
       input.transport ?? "in-process",
       input.signal,
-      undefined,
+      { browserRequest: false, managed: input.managed_client ?? input.ambient_identity != null },
       Object.hasOwn(input, "request_origin") ? { request_origin: input.request_origin } : {},
     );
     if (!handled) {
@@ -736,7 +737,7 @@ export class Router implements RouteRegistrar {
         ambient_identity: requestAmbientIdentity,
         ...originEnvelope,
         local_managed_identity: caller?.local_managed_identity ?? (transport === "local-socket" ? httpAuth?.localManaged ?? null : null),
-        managed_client: caller?.managed_client ?? (transport === "local-socket" && httpAuth?.managed === true),
+        managed_client: caller?.managed_client ?? httpAuth?.managed === true,
         client_identity: clientIdentity,
         signal,
         target_instance_id: caller?.target_instance_id ?? httpAuth?.targetInstanceId ?? null,
@@ -845,6 +846,10 @@ function requestOriginEnvelopeFromHeaders(headers: http.IncomingHttpHeaders): { 
 }
 
 function ambientIdentityFromHeaders(headers: http.IncomingHttpHeaders): AmbientProviderIdentity | null {
+  const context = headerValue(headers["x-mandible-execution-context"]);
+  if (context !== undefined) {
+    try { return normalizeAmbientProviderIdentity(JSON.parse(context)); } catch { return null; }
+  }
   const provider = headerValue(headers["x-mandible-ambient-provider"]);
   const providerSessionId = headerValue(headers["x-mandible-ambient-provider-session-id"]);
   return normalizeAmbientProviderIdentity({
@@ -854,7 +859,8 @@ function ambientIdentityFromHeaders(headers: http.IncomingHttpHeaders): AmbientP
 }
 
 function providerHeadersPresent(headers: http.IncomingHttpHeaders): boolean {
-  return headerValue(headers["x-mandible-ambient-provider"]) !== undefined
+  return headerValue(headers["x-mandible-execution-context"]) !== undefined
+    || headerValue(headers["x-mandible-ambient-provider"]) !== undefined
     || headerValue(headers["x-mandible-ambient-provider-session-id"]) !== undefined;
 }
 
@@ -873,7 +879,8 @@ function localManagedIdentityFromHeaders(headers: http.IncomingHttpHeaders): Loc
 }
 
 function managedClientFromHeaders(headers: http.IncomingHttpHeaders): boolean {
-  return headerValue(headers["x-mandible-managed-client"]) !== undefined
+  return headerValue(headers["x-mandible-execution-context"]) !== undefined
+    || headerValue(headers["x-mandible-managed-client"]) !== undefined
     || headerValue(headers["x-mandible-ambient-provider"]) !== undefined
     || headerValue(headers["x-mandible-ambient-provider-session-id"]) !== undefined
     || headerValue(headers["x-mandible-managed-app"]) !== undefined

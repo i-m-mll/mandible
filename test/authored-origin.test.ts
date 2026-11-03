@@ -18,8 +18,8 @@ import { Router } from "../src/server.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
 
-const codex = { provider: "codex", provider_session_id: "spaces-native-thread" };
-const claude = { provider: "claude", provider_session_id: "metadata-native-session" };
+const codex = { provider: "codex", agent_id: "spaces-native-thread", session_id: null };
+const claude = { provider: "claude", agent_id: "native-child", session_id: "metadata-native-session" };
 let db: Db;
 beforeEach(() => { db = migratedMemoryDb(); setDb(db); });
 afterEach(() => { vi.restoreAllMocks(); db.close(); });

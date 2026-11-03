@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { EXECUTION_CONTEXT_ARGUMENT } from "../src/claude-execution-context.js";
 import fs from "node:fs";
 import http from "node:http";
 import https from "node:https";
@@ -6,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from "@modelcontextprotocol/sdk/types.js";
-import { channelTransportHeaders, request } from "./transport.js";
+import { channelTransportHeaders, request, withChannelExecutionContext } from "./transport.js";
 import { resolveBaseUrl, resolveTransport } from "./base-url.js";
 
 type Catalog = { protocol: number; event_topics: string[]; instructions: string; tools: Tool[] };
@@ -39,7 +40,8 @@ export async function main(): Promise<void> {
     if (stopped) throw new Error("Mandible adapter updated; reconnect using /mcp. Review interrupted calls before retrying.");
     inFlight++;
     try {
-      return await request("POST", "/api/channel/call", { ...ctx, name: message.params.name, arguments: message.params.arguments ?? {} });
+      const { [EXECUTION_CONTEXT_ARGUMENT]: executionContext, ...args } = message.params.arguments ?? {};
+      return await withChannelExecutionContext(executionContext, () => request("POST", "/api/channel/call", { ...ctx, name: message.params.name, arguments: args }));
     } finally { inFlight--; }
   });
   async function render(event?: unknown) {

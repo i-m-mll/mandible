@@ -1,3 +1,4 @@
+import { exactAgentRef, parseExactAgentRef } from "./ambient-provider-identity.js";
 import { sessionExecutionReader } from "./session-execution.js";
 import type { SessionExecutionObservation } from "./contracts.js";
 /**
@@ -53,6 +54,7 @@ export function isLiveSessionStatus(value: unknown): boolean {
 export interface SessionAliasResolution {
   /** Exactly the string the caller supplied. */
   supplied_id: string;
+  agent_ref?: string | null;
   /** `sessions.id`, when the alias reaches a Mandible session row. */
   mandible_session_id: string | null;
   /** `console_sessions.id`, when the alias reaches a console session row. */
@@ -164,7 +166,7 @@ export function sessionAliasResolverFromSources(
  * identity. Linking never creates a `sessions` row.
  */
 export function sessionLinkKey(resolution: SessionAliasResolution): string {
-  return resolution.provider_session_id
+  return resolution.agent_ref ?? resolution.provider_session_id
     ?? resolution.console_session_id
     ?? resolution.mandible_session_id
     ?? resolution.supplied_id;
@@ -172,8 +174,11 @@ export function sessionLinkKey(resolution: SessionAliasResolution): string {
 
 /** Every id the resolved session is known by, for reads keyed on any of them. */
 export function sessionAliasIds(resolution: SessionAliasResolution): string[] {
+  const exact = resolution.agent_ref ? parseExactAgentRef(resolution.agent_ref) : null;
+  if (exact?.provider === "claude" && exact.agent_id !== exact.session_id) return [resolution.agent_ref!];
   return [...new Set(
     [
+      resolution.agent_ref,
       resolution.supplied_id,
       resolution.mandible_session_id,
       resolution.console_session_id,
@@ -231,6 +236,10 @@ export function readSessionAliasSources(db: Db, suppliedIds: Iterable<string>): 
     consoleByAlias: new Map(), ingestions: null, execution: new Map(),
   };
   sources.ids = new Set([...suppliedIds].map(id => id.trim()).filter(Boolean));
+  for (const id of [...sources.ids]) {
+    const exact = parseExactAgentRef(id);
+    if (exact?.agent_id && !(exact.provider === "claude" && exact.agent_id !== exact.session_id)) sources.ids.add(exact.agent_id);
+  }
   const ids = JSON.stringify([...sources.ids]);
   sources.hasSessions = tableExists(db, "sessions");
   const hasConversationId = sources.hasSessions && columnExists(db, "sessions", "conversation_id");
@@ -282,10 +291,17 @@ export function readSessionAliasSources(db: Db, suppliedIds: Iterable<string>): 
   }
   const index = new SessionAliasIndex(sources, {});
   const identities = [...sources.ids].map(id => [id, index.identity(id)] as const);
-  const execution = sessionExecutionReader(db, identities.flatMap(([, identity]) =>
-    identity?.provider_session_id ? [identity.provider_session_id] : []));
+  const executionTarget = (identity: Omit<SessionAliasResolution, "liveness"> | null): string | null => {
+    const exact = identity?.agent_ref ? parseExactAgentRef(identity.agent_ref) : null;
+    return exact?.provider === "claude" && exact.agent_id !== exact.session_id ? identity!.agent_ref! : identity?.provider_session_id ?? null;
+  };
+  const execution = sessionExecutionReader(db, identities.flatMap(([, identity]) => {
+    const target = executionTarget(identity);
+    return target ? [target] : [];
+  }));
   for (const [id, identity] of identities) {
-    sources.execution.set(id, identity ? execution(identity.provider, identity.provider_session_id) : null);
+    const target = executionTarget(identity);
+    sources.execution.set(id, identity && target ? execution(identity.provider, target) : null);
   }
   return sources;
 }
@@ -319,9 +335,25 @@ class SessionAliasIndex {
   }
 
   identity(id: string): Omit<SessionAliasResolution, "liveness"> | null {
-    const directSession = this.session(id) ?? this.sources.sessionsByConversation.get(id)?.[0] ?? null;
-    const consoleRow = this.pickConsoleRow(this.sources.consoleByAlias.get(id) ?? []);
+    const exact = parseExactAgentRef(id);
+    const child = exact?.provider === "claude" && exact.agent_id !== exact.session_id;
+    const lookupId = exact && !child ? exact.agent_id! : id;
+    const providerMatches = (provider: string | null | undefined) => !exact || provider === exact.provider;
+    const direct = this.session(lookupId);
+    const candidates = [direct, ...(this.sources.sessionsByConversation.get(lookupId) ?? [])]
+      .filter((row): row is SessionRow => Boolean(row && providerMatches(row.app) && (!exact || row.conversation_id === exact.agent_id)));
+    const consoles = (this.sources.consoleByAlias.get(lookupId) ?? [])
+      .filter(row => providerMatches(row.command) && (!exact || row.provider_session_id === exact.agent_id));
+    const identities = new Set([
+      ...candidates.map(row => row.app && row.conversation_id ? `${row.app}:${row.conversation_id}` : null),
+      ...consoles.map(row => row.command && row.provider_session_id ? `${row.command}:${row.provider_session_id}` : null),
+    ].filter(Boolean));
+    if (identities.size > 1) return null;
+    const exactAttachment = exact ? this.sources.sessionsById.get(id) : null;
+    const directSession = child && exactAttachment?.app === "claude" ? exactAttachment : candidates[0] ?? null;
+    const consoleRow = this.pickConsoleRow(consoles);
     const ingestion = this.ingestion(id);
+    if (!(ingestion instanceof Error) && ingestion?.status === "ambiguous") return null;
     const providerIngestion = ingestion instanceof Error || ingestion?.status !== "ingested" ? null : ingestion;
     if (!directSession && !consoleRow && !providerIngestion) return null;
 
@@ -331,10 +363,12 @@ class SessionAliasIndex {
       ?? (consoleRow?.mandible_session_id ? this.session(consoleRow.mandible_session_id) : null);
 
     const provider = linkedSession?.app?.trim() || consoleRow?.command?.trim() || providerIngestion?.provider || null;
-    const providerId = consoleRow?.provider_session_id?.trim() || linkedSession?.conversation_id?.trim() || providerIngestion?.provider_session_id || null;
+    const providerId = exact?.agent_id ?? (consoleRow?.provider_session_id?.trim() || linkedSession?.conversation_id?.trim() || providerIngestion?.provider_session_id || null);
     return {
       execution: null,
       supplied_id: id,
+      agent_ref: providerIngestion?.agent_ref ?? (exact ? id : provider && providerId
+        ? exactAgentRef({ provider, agent_id: providerId, session_id: provider === "claude" ? providerId : null }) : null),
       mandible_session_id: linkedSession?.id ?? null,
       console_session_id: consoleRow?.id ?? null,
       provider_session_id: providerId,
@@ -361,17 +395,30 @@ class SessionAliasIndex {
    * short-circuits the Codex lock read. `null` is a row that says nothing.
    */
   private *livenessEvidence(id: string): Generator<LivenessState | null> {
+    const exact = parseExactAgentRef(id);
+    const ingestion = this.ingestion(id);
+    const native = exact ?? (ingestion && !(ingestion instanceof Error) && ingestion.status === "ingested" && ingestion.agent_ref
+      ? parseExactAgentRef(ingestion.agent_ref) : null);
+    if (native?.provider === "claude" && native.agent_id !== native.session_id) {
+      const ref = exact ? id : ingestion && !(ingestion instanceof Error) && ingestion.status === "ingested" ? ingestion.agent_ref : null;
+      const attachment = ref ? this.sources.sessionsById.get(ref) : null;
+      yield attachment?.app === "claude" ? statusLiveness(attachment.status) : "unknown";
+      return;
+    }
+    const suppliedId = id;
+    if (exact?.agent_id) id = exact.agent_id;
     const direct = this.session(id);
-    if (direct) yield statusLiveness(direct.status);
+    if (direct && (!exact || direct.app === exact.provider && direct.conversation_id === exact.agent_id)) yield statusLiveness(direct.status);
     for (const row of this.sources.sessionsByConversation.get(id) ?? []) {
-      if (row.id !== id) yield statusLiveness(row.status);
+      if (row.id !== id && (!exact || row.app === exact.provider)) yield statusLiveness(row.status);
     }
     for (const row of this.sources.consoleByAlias.get(id) ?? []) {
+      if (exact && (row.command !== exact.provider || row.provider_session_id !== exact.agent_id)) continue;
       yield statusLiveness(row.status);
       const linked = this.sources.hasSessions ? this.session(row.mandible_session_id ?? id) : null;
       if (linked) yield statusLiveness(linked.status);
     }
-    yield this.codexTaskLiveness(id);
+    yield this.codexTaskLiveness(suppliedId);
   }
 
   /**
