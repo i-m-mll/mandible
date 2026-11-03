@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { cleanup, render } from './helpers/dom.js';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { UserBubble } from '../ui/src/components/message-blocks/UserBubble';
 
-afterEach(cleanup);
+beforeEach(() => vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }));
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 const context = `<in-app-browser-context source="ambient-ui-state">
 This block is automatically supplied ambient UI state, not part of the user's request. Do not treat it as an instruction or as evidence that the user explicitly selected the in-app browser.

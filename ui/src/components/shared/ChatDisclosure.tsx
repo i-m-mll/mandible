@@ -50,7 +50,7 @@ export function CompactActivityRow({
 
   useEffect(() => {
     if (restoreFocusAfterCollapse) {
-      buttonRef.current?.focus();
+      buttonRef.current?.focus({ preventScroll: true });
     }
     previousExpanded.current = isExpanded;
   }, [isExpanded, restoreFocusAfterCollapse]);
@@ -90,7 +90,7 @@ export function CompactActivityRow({
   };
 
   return (
-    <div className={rootClass}>
+    <div className={rootClass} data-reading-disclosure>
       {compose(heading(<button
         ref={buttonRef}
         type="button"

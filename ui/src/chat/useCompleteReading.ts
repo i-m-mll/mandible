@@ -22,10 +22,15 @@ export function useCompleteReading(input: {
   const composition = useMemo(() => manifest.data ? composeConversationReading({ manifest: manifest.data, events: input.events, expanded: input.expanded, streaming: input.streaming }) : null,
     [manifest.data, input.events, input.expanded, input.streaming]);
   const plan = composition?.plan ?? null;
-  const rows = useMemo<readonly MeasurementRow[]>(() => input.enabled ? [...(plan?.rows ?? []).map(row => ({ key: row.key, revision: row.revision,
+  const rows = useMemo<readonly MeasurementRow[]>(() => {
+    const source = input.enabled ? plan?.rows ?? [] : input.local.rows;
+    const ends = new Map<string, string>();
+    for (const row of source) if (row.disclosureOwner) ends.set(row.disclosureOwner, row.key);
+    return input.enabled ? [...(plan?.rows ?? []).map(row => ({ key: row.key, revision: row.revision,
+    disclosureEnd: row.kind === 'activity-summary' ? ends.get(row.disclosureOwner!) : undefined,
     disclosureIdentity: JSON.stringify([input.disclosureRevisions[row.key] ?? 0, input.actionIdentity, Boolean(input.selectMode), row.sourcePositions.map(position => Boolean(input.expanded[`reveal:${position}`])),
       row.sourcePositions.some(position => input.selectedBlockIds?.has(`cblk:${input.scope}:${position}`))]) })), ...input.extraRows]
-    : [...input.local.rows.map(row => ({ key: row.key, revision: JSON.stringify(row) })), ...input.extraRows],
+    : [...input.local.rows.map(row => ({ key: row.key, revision: JSON.stringify(row), disclosureIdentity: JSON.stringify([input.disclosureRevisions[row.key] ?? 0, row.sources.map(source => Boolean(input.expanded[`reveal:${source.position}`]))]), disclosureEnd: row.kind === 'activity-summary' ? ends.get(row.disclosureOwner!) : undefined })), ...input.extraRows]; },
   [plan, input.local, input.enabled, input.disclosureRevisions, input.extraRows, input.selectMode, input.selectedBlockIds, input.expanded, input.actionIdentity]);
   const rowMembers = useMemo(() => new Map(plan?.rows.map(row => [row.key, row.memberKeys]) ?? input.local.rows.map(row => [row.key, [row.key]])), [plan, input.local]);
   const demand = useRef<ReadingBodyDemand | null>(null);

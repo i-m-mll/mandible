@@ -1,5 +1,7 @@
+import { settleReadingLayout } from '../components/shared/readingLayoutReadiness';
+
 /** Exact DOM geometry only; source ownership and viewport policy stay with callers. */
-export type MeasurementRow = { key: string; revision: string; disclosureIdentity?: string };
+export type MeasurementRow = { key: string; revision: string; disclosureIdentity?: string; disclosureEnd?: string };
 export type MeasurementLayout = {
   width: number;
   styleIdentity: string;
@@ -217,6 +219,7 @@ export class ReadingMeasurementService {
             const ready = await untilAbort(Promise.all([fonts, images]).then(() => doc.fonts.ready), signal);
             observe('readiness', readinessStarted, rows.length, identity);
             if (!ready.ready) return cancelled();
+            settleReadingLayout(host);
             phase = 'geometry';
             const geometryStarted = view.performance.now();
             const boxes = rows.map(row => {
