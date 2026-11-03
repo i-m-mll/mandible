@@ -69,7 +69,7 @@
 .user-bubble--bounded .user-bubble__text { background: transparent; }
 .user-bubble__viewport--folded { mask-image: linear-gradient(to bottom, #000 calc(100% - 2rem), transparent); }
 .reading-disclosure-footer { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); width: 100%; padding: var(--space-2) var(--space-3); border: 0; background: transparent; color: var(--text-muted); cursor: pointer; font: inherit; font-size: var(--text-sm); }
-.reading-disclosure-footer:hover { color: var(--text-primary); background: var(--bg-hover); }
+.reading-disclosure-footer:is(:hover, :focus-visible) > .reading-disclosure-footer__label { color: var(--text-primary); }
 :root[data-theme='light'] .user-bubble--bounded { background: #F3F3F4; }
 
 .user-bubble__text {

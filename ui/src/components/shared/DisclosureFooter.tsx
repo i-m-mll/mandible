@@ -5,6 +5,6 @@ export function DisclosureFooter({expanded,onExpandedChange}:{
 }):JSX.Element {
   return <button type="button" className="reading-disclosure-footer" aria-expanded={expanded}
     onClick={event=>{event.stopPropagation();onExpandedChange(!expanded,event.currentTarget);}}>
-    <span>{expanded?'Show less':'Show more'}</span><DisclosureChevronIcon expanded={expanded}/>
+    <span className="reading-disclosure-footer__label">{expanded?'Show less':'Show more'}</span><DisclosureChevronIcon expanded={expanded}/>
   </button>;
 }
