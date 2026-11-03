@@ -111,8 +111,8 @@ export function prepareReadingMembers(input: ReadingPreparationInput): ReadingPr
   for (const owner of owners.values()) {
     const existing = fragments.find(fragment => fragment.position === owner.coordinate.position && fragment.part === owner.coordinate.part);
     if (existing) {
-      if (existing.node.kind === 'activity' && existing.node.item.type === 'tool-call-activity' && existing.node.source?.detailsLoaded === false) {
-        existing.node = { ...existing.node, item: { ...existing.node.item, header: owner.header } };
+      if (existing.node.kind === 'activity' && existing.node.item.type === 'tool-call-activity') {
+        existing.node = { ...existing.node, item: { ...existing.node.item, observation:owner.item.observation,executionEvidence:owner.item.executionEvidence,...(existing.node.source?.detailsLoaded===false?{header:owner.header}:{}) } };
       }
       continue;
     }

@@ -119,6 +119,7 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
               toolName={node.item.name}
               operationContext={node.item.operationContext}
               executionEvidence={node.item.executionEvidence}
+              observation={node.item.observation}
               headerMetadata={compact ? footer : undefined}
               toolKind={node.item.toolKind}
               toolUseId={node.item.id}

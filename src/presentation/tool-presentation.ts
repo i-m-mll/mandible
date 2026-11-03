@@ -123,7 +123,7 @@ export function presentTool(
     const facts = toolRunFacts(program.effectsComplete===false?[...program.operations,{name:'js'}]:program.operations);
     const one = program.operations.length === 1 && program.effectsComplete!==false ? presentTool(program.operations[0].name,program.operations[0].input) : null;
     const summary=summarizeToolRunFacts(facts).join('; ');
-    return {...(one ?? {operation:program.effectsComplete===false?'javascript':'batch',category:program.effectsComplete===false?'javascript':'other',icon:program.effectsComplete===false?'toolJavascript':facts[0]?.presentation.icon ?? 'monitor',phrase:summary.charAt(0).toUpperCase()+summary.slice(1),target:''}), operations:facts,children,...(program.outputAttributed===false?{resultAttribution:'opaque' as const,outputPolicy:undefined}:{})};
+    return {...(one ?? {operation:program.effectsComplete===false?'javascript':'batch',category:program.effectsComplete===false?'javascript':'other',icon:program.effectsComplete===false?'toolJavascript':facts[0]?.presentation.icon ?? 'monitor',phrase:summary.charAt(0).toUpperCase()+summary.slice(1),target:''}), operations:facts,children:one?undefined:children,...(program.outputAttributed===false?{resultAttribution:'opaque' as const,outputPolicy:undefined}:{})};
   }
   const execution = projectExecution(toolName, inputValue, toolKind);
   if (execution) {

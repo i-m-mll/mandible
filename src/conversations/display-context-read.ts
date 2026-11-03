@@ -41,10 +41,11 @@ export async function readDisplayContext(input: {
     }
     const { input: toolInput, result: _result, ...item } = fragment.node.item;
     const header=item.operationContext ? presentTool(item.operationContext.name,item.operationContext.input as Record<string,unknown> | string,item.operationContext.kind) : presentTool(item.name,toolInput,item.toolKind);
-    const facts=owner.activity?.kind==='tool'&&owner.activity.observation ? presentationForObservation(owner.activity.observation,item.toolKind) : undefined;
-    owners.push({ fragment_id: owner.id, memberKey: fragment.memberKey, coordinate: owner.coordinate, item,
+    const observation=owner.activity?.kind==='tool'?owner.activity.observation:undefined;
+    const facts=observation?presentationForObservation(observation,item.toolKind):undefined;
+    owners.push({ fragment_id: owner.id, memberKey: fragment.memberKey, coordinate: owner.coordinate, item:{...item,...(observation?{observation,executionEvidence:observation.execution}:{})},
       source: { ...fragment.node.source!, detailsLoaded: false },
-      header: {...header,...facts,target:header.target,children:header.children}, action_scope: input.actionScope(owner.coordinate.position) });
+      header: {...header,...facts,target:header.target,children:facts?facts.children:header.children}, action_scope: input.actionScope(owner.coordinate.position) });
   }
   return { status: 'source', sourceVersionId, value: { version: DISPLAY_CONTEXT_VERSION,
     fragments: plan.fragments, aliases: plan.aliases, activity_runs, owners } };

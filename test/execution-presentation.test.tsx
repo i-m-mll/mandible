@@ -86,6 +86,8 @@ it('keeps saved native framing and source targets while compact context remains 
           dag_uuid:block.dag_uuid??null,dag_parent_uuid:null,locator:null}))});
       expect(context.status).toBe('source');
       if(context.status==='source') {
+        expect(context.value.owners[0].item.executionEvidence?.state).toBe('completed');
+        expect(context.value.owners[0].header.children).toBeUndefined();
         expect(context.value.owners[0]).toMatchObject({coordinate:{position:0},header:{target:command,category:'execute'},action_scope:{start:0,end:2}});
         expect(context.value.owners[0].item).not.toHaveProperty('input');
       }
