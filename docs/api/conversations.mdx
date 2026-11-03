@@ -64,15 +64,12 @@ Read a bounded canonical-position window with source-backed blocks and children.
 | `position` | number | Canonical normalized source position |
 | `block` / `turn` | string | Canonical `cblk:<conversation>:<position>` target; turn requires its start coordinate |
 | `limit` | number | Window size, at most 500 |
-| `view` | string | `display` omits lazy detail bodies; omit for full detail |
+| `view` | string | `metadata` returns conversation metadata and a navigation receipt without bodies; `display` omits lazy detail bodies from a window; omit for full detail |
 | `expected_position_space_id` | string | Reject a position from another space with HTTP 409 `position_space_changed` |
 
-Responses include `position_space_id`, `source_version_id`, and monotonic
-`publication_revision` captured with the source bytes, plus canonical window
-boundaries and availability. Append changes freshness while preserving proven
-position continuity. A full detail read uses `position` and `limit=1` without
-`view`. `/api/conversations/:id/structure` returns the same snapshot fields and
-accepts the same expected-space guard. See [reading-window contracts](../chat-reading-window.md).
+Responses include `position_space_id`, `source_version_id`, and monotonic `publication_revision` captured with the source bytes, plus canonical window boundaries and availability. Append changes freshness while preserving proven position continuity. A full detail read uses `position` and `limit=1` without `view`. `/api/conversations/:id/structure` returns the same snapshot fields and accepts the same expected-space guard. See [reading-window contracts](../chat-reading-window.md).
+
+`view=metadata` returns the discriminant `kind: "metadata"`, conversation metadata, children, parent and indexed navigation resolution. It does not return a block window or hydrate native bodies. Chat requests this projection and the complete reading manifest in parallel; the manifest supplies canonical reading identity.
 
 **Response:** `200 OK`
 
