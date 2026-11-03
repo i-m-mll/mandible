@@ -79,24 +79,10 @@ the product daemon, packaged interaction and diagnostic coverage. The native
 replacement proof covers the separate installation and SMAppService boundary;
 it does not repeat package acceptance, a route sweep, or a diagnostic soak.
 
-The earlier [managed recovery witness](https://app.mandible.localhost:19420/artifact/artifact-version:84f710aad45e?sidebar=hidden&agent_session=01a17e9c)
-records both accepted app receipts, native deliveries, exact installed bytes,
-superseded-package disposal, and automatic recovery after a test-induced helper
-interruption. Its status is `functional-pass-after-fixture-timing-failure`: the
-former second-delivery 120-second total wait failed and interrupted its helper.
-The later acknowledgment proves recovery, not an uninterrupted pass of that
-wait. The phase-only fixture correction has focused tests; the full native
-fixture was not rebuilt for that test-only correction. This witness does not
-qualify a clean upgrade from current source.
-
-The focused current-source proof extends the retained installer fixture:
-
-```sh
-/usr/bin/time -p timeout --kill-after=1 19 bun run test:provisioned test/provisioned/accepted-app-install.test.ts
-```
-
-It builds the current checkout's small native service helper once and stages
-two tiny ad-hoc signed bundles with a bundled Bun runtime. Both roles start
+The [focused native proof](runtime-handoff.md#verification) requires a clean
+current checkout, a qualified candidate app, a retained v1 predecessor app, and
+native signing. It stages two small signed private bundles using executables
+from those apps. Both roles start
 through the production native-control, inspector and registration reconciler.
 Per-role generation and PID heartbeats agree with qualified process identities.
 The first generation's writers must stop before the production retained-app

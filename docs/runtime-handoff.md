@@ -46,7 +46,7 @@ same installation gateway and journal observation ownership as the worker.
 
 Native admission completes its no-op bridge prerequisite before the helper can
 start. Helper registration and kickstart are serialized with closure, then the
-producer releases both leases and waits read-only. Replaying an interruption
+producer releases ownership and waits read-only. Replaying an interruption
 before bootstrap retains the same admitted attempt and deadline. A missing active
 pointer is recreated only for an unfinished initial publication; terminal,
 fenced, retired, or superseded admissions cannot recreate it or launch a helper.
@@ -70,8 +70,8 @@ Each effect records intent before execution and completion after observation:
    services. A registration response alone does not establish readiness.
 5. Restore the desktop if it was open, retaining the actual issued intent and
    confirmed installed-image process identity.
-6. Observe actual runtime access, service continuity, logs, and health through
-   activation, then persist the current attempt's completion receipt.
+6. Confirm runtime readiness, service identities, and the daemon's log-file
+   identity, then persist the current attempt's completion receipt.
 
 Continuation observes the app and processes that actually exist. An installed
 accepted app is adopted without repeating its replacement. A completed drain is
@@ -135,16 +135,14 @@ ready observation rather than an old failed phase or lifetime exit status.
 
 ## Ownership, receipts, and cleanup
 
-The existing installation gateway lease is acquired before the journal observation
-lease. Nested lifecycle assertions retain ancestor ownership: losing the gateway
-kernel guard stops effects even if the observation guard remains alive. Controller
-children receive the same validated gateway delegation. Live or uncertain owners
-block a contender. Only exactly proven stale owners are recovered.
-
-Every journal writer requires both live leases scoped to that exact journal;
-absence of an observation scope is an error. The worker waits for a short producer
-lease outside either lock and rereads the journal after acquisition. Full journal
-state comparisons remain strict within that ownership epoch.
+Every journal writer requires the live installation gateway lease and an
+observation scope bound to that exact journal. The scope derives its authority
+from the installation lease; losing that lease stops effects and writes. Live
+or uncertain owners block a contender, and only proven stale owners are recovered.
+For a live protocol-v1 predecessor, the worker also acquires the predecessor's
+real observation lock inside the installation lease through preparation and
+drain. Protocol-v2 predecessors need no separate observation lock. Full journal
+state comparisons remain strict within the ownership epoch.
 
 Acknowledgment is published only after the worker verifies current authority,
 validates the accepted package and prepared app, and records drain intent. Drain
@@ -155,18 +153,21 @@ No gateway delegation token is persisted. Failure and closure clear readiness an
 publish a non-armed phase before releasing ownership, also protecting the current
 predecessor whose reader understands only the older phase/acknowledgment fields.
 
-The reconciler covers actual activation and desktop restoration with live health
-observations. A fresh current collector turn must cover completion. This does not
-wait for an arbitrary 31-second window or an aligned periodic diagnostic interval.
-Process continuity, retained startup-log coverage, health findings, and the existing
-100 ms handler and 250 ms event-loop budgets remain intact.
+The reconciler confirms activation and desktop restoration, qualified service
+process identities, the daemon's stderr file identity, and front-door readiness
+for the intended installation, generation, database, and startup epoch. It does
+not assess the log contents or enforce the event-loop and handler budgets during
+the installed transition; those checks in package/runtime acceptance cover the
+isolated candidate run. Logs and performance monitoring remain available for
+diagnosis rather than determining installation success.
 
-A mandible-runtime-receipt@1 receipt binds the approved target and current attempt
-to installation, services, desktop, access, health, and log evidence. The daemon
-verifies it once in its guarded operation, adopts publication evidence as needed,
-and commits the exact receipt acceptance marker. Acknowledgment consumes an
-opaque one-use verification result bound to that same observation owner and
-receipt digest. It does not repeat package or health verification.
+A `mandible-runtime-receipt@2` receipt binds the approved target and current
+attempt to the installed app, services, desktop intent, startup identity, and
+daemon log-file identity. Adoption verifies the terminal fence, attempt, binding,
+receipt digest, approved package and installed identity, with bounded process
+and readiness probes. The daemon commits an acceptance marker; acknowledgment
+uses the matching verified result or accepted receipt digest. Legacy v1 receipt
+verification additionally binds its one-use result to the observation owner.
 
 The installation-wide handoff lock is derived from the journal, not from the
 existence of `handoff-active.json`. That file names the latest admitted journal,
@@ -231,11 +232,15 @@ are substituted; no separate lifecycle algorithm or full bootstrap is recreated.
 bun run test test/runtime-handoff-admission.test.ts test/runtime-handoff.test.ts test/service-definition-handoff.test.ts test/bundle-service-start.test.ts test/lifecycle-lock.test.ts test/runtime-handoff-readiness.test.ts
 ```
 
-The bounded macOS native fixture reuses executables from the candidate app already
-built for ordinary [candidate acceptance](candidate-acceptance.md):
+The bounded macOS native fixture requires a clean, committed source checkout and
+a configured native app signing identity. It reuses executables from the candidate
+app already built for ordinary [candidate acceptance](candidate-acceptance.md)
+and an explicitly retained predecessor app with the v1 service protocol:
 
 ```bash
-MANDIBLE_NATIVE_PROOF_APP='/absolute/path/to/candidate/Mandible.app' bun run test:provisioned test/provisioned/accepted-app-install.test.ts
+MANDIBLE_NATIVE_PROOF_APP='/absolute/path/to/candidate/Mandible.app' \
+MANDIBLE_NATIVE_PROOF_PREDECESSOR_APP='/absolute/path/to/predecessor/Mandible.app' \
+  bun run test:provisioned test/provisioned/accepted-app-install.test.ts
 ```
 
 It assembles two small signed private descriptors with unique service identities,
