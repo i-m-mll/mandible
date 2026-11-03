@@ -1065,6 +1065,10 @@ api_execution_context_json() {
   fi
   local provider agent_id="" session_id=""
   provider=$(api_ambient_provider)
+  if [[ -z "$provider" ]]; then
+    printf 'null\n'
+    return 0
+  fi
   case "$provider" in
     codex) agent_id="${CODEX_THREAD_ID:-}"; session_id="${CODEX_SESSION_ID:-}" ;;
     claude) agent_id="${CLAUDE_AGENT_ID:-}"; session_id="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}" ;;
