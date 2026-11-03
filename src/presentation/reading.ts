@@ -1,3 +1,5 @@
+import { coalesceTransportWaitMembers } from './wait-chain.js';
+import { operationObservationForTool } from './tool-observation.js';
 import { coalesceAdjacentReasoningMembers, reasoningEquivalence } from './reasoning-equivalence.js';
 import { activitySemanticFacts } from './activity-presentation.js';
 import { assistantResponseMembership } from "../parsers/assistant-response.js";
@@ -72,6 +74,7 @@ export type ReadingPreparationInput = {
   readingContext: ReadonlyMap<number, import('../conversations/reading-context.js').ReadingContextEntry>;
   expanded: Readonly<Record<string, boolean>>;
   streaming?: boolean;
+  positionFacts?:ReadonlyMap<number,import('../conversations/conversation-index.js').PositionFacts>;
   displayContext?: import('../conversations/display-context.js').ConversationDisplayContext;
 };
 
@@ -162,10 +165,25 @@ export function prepareReadingMembers(input: ReadingPreparationInput): ReadingPr
     return { fragment, node, event, eventOrdinal:event?eventOrdinals.get(event):undefined, equivalence,native, identity, key, canonicalRun, actionGroup,
       sources: [source, resultSource].filter((value): value is PersistedBlockSource => Boolean(value)) };
   });
-  return { actionRuns, lastAssistantTurnId, members: coalesceAdjacentReasoningMembers(prepared.map(entry => ({
+  function transportSegment(entry:typeof prepared[number]):Pick<ReadingPlanMember,'transportSegment'> {
+    if(entry.node.kind!=='activity'||entry.node.item.type!=='tool-call-activity'||!entry.event)return {};
+    const position=entry.fragment.position;
+    const facts=position===undefined?undefined:input.positionFacts?.get(position);
+    const positions=[position,...entry.fragment.pairedSourcePositions].filter((value):value is number=>value!==undefined);
+    const frame=entry.node.item.result?.source?.toolFrame;
+    const origin=entry.node.item.operationContext?.origin??entry.node.item.result?.source?.toolOperation?.origin;
+    const key=facts?.executionChainKey??JSON.stringify([origin?JSON.stringify([origin.provider,origin.session_id,origin.native_tool_id]):toolExecutionKey(entry.event),origin?.position??position]);
+    const seconds=positions.map(position=>input.positionFacts?.get(position)?.wrapperSegmentSeconds).find(value=>value!==undefined)??frame?.wallTimeSeconds;
+    const start=facts?.eventOrdinal??entry.eventOrdinal;
+    const end=Math.max(...positions.flatMap(position=>input.positionFacts?.get(position)?.eventOrdinal??(byPosition.get(position)?eventOrdinals.get(byPosition.get(position)!)??[]:[])));
+    return seconds!==undefined&&start!==undefined&&end===start+1?{transportSegment:{chainKey:key,seconds,start,end}}:{};
+  }
+  return { actionRuns, lastAssistantTurnId, members: coalesceTransportWaitMembers(coalesceAdjacentReasoningMembers(prepared.map(entry => ({
     key: entry.key,eventOrdinal:entry.eventOrdinal, position: entry.fragment.position, part: entry.fragment.part,
     kind: entry.node.kind === 'activity' ? 'activity' : 'content', speaker: entry.node.entity,
     actionGroup: entry.actionGroup, activity: entry.node.kind === 'activity' ? entry.node.item : null,
+    ...(entry.node.kind==='activity'&&entry.node.item.type==='tool-call-activity'?{activityFacts:activitySemanticFacts({...entry.node.item,observation:operationObservationForTool(entry.node.item)})}:{}),
+    ...transportSegment(entry),
     ...(entry.equivalence&&entry.node.kind==='activity'?{activityFacts:{...activitySemanticFacts(entry.node.item),reasoningEquivalence:entry.equivalence}}:{}),
     ...(entry.node.kind === 'assistant_turn' && entry.node.turn.assistantEvent.message.content[0]?.type === 'text' && entry.event
       ? { assistantResponse: assistantResponseMembership(entry.event.item) } : {}),
@@ -173,7 +191,7 @@ export function prepareReadingMembers(input: ReadingPreparationInput): ReadingPr
     sourcePositions: [entry.fragment.position, ...entry.fragment.pairedSourcePositions].filter((position): position is number => position !== undefined),
     handoffKeys: [entry.identity, entry.native].filter((key): key is string => Boolean(key)), usage: entry.event?.usage,
     disclosures: readingNodeDisclosures(entry.node), node: entry.node, event: entry.event, sources: entry.sources,
-  }))) };
+  })))) };
 }
 
 export function materializePreparedReadingRows(descriptors: readonly ReadingRowDescriptor[], members: readonly PreparedReadingMember[]): ReadingRow[] {

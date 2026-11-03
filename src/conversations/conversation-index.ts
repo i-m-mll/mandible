@@ -34,6 +34,7 @@ export type ActivityFacts = {
 export type PositionFacts = {
   position: number; revision: string; presentationDependencies?: number[]; speaker: 'user' | 'assistant' | 'system'; handoffKeys: string[];
   assistantResponse?: AssistantResponseMembership; executionKey?: string; turnId?: string;
+  eventOrdinal?:number;executionChainKey?:string;wrapperSegmentSeconds?:number;
   usage?: { key: string; input: number; output: number };
 };
 export type FragmentFacts = {

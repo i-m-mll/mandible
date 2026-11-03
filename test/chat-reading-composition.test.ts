@@ -254,3 +254,33 @@ it('coalesces only adjacent complete reasoning equivalents while retaining every
     expect(node.sourceAliases?.map(source=>source.position)).toEqual([second.position]);
   } finally {f.close();}
 });
+
+it('keeps compact and hydrated wait chains identical without crossing semantic interruptions',async()=>{
+  const report='## Native child report\n\nPreserve this result exactly.';
+  const response=(payload:Record<string,unknown>)=>({type:'response_item',payload});
+  const run=(id:string)=>response({type:'custom_tool_call',call_id:id,name:'exec',input:'text(await tools.codex_app__wait_threads({targets:[{threadId:"child"}]}));'});
+  const wait=(id:string)=>response({type:'function_call',call_id:id,name:'wait',arguments:'{"cell_id":"106"}'});
+  const yielded=(id:string,type:string,seconds:number)=>response({type,call_id:id,output:`Script running with cell ID 106\nWall time ${seconds} seconds\nOutput:\n`});
+  const terminal=response({type:'function_call_output',call_id:'terminal',output:[{type:'input_text',text:'Script completed\nWall time 12.3 seconds\nOutput:\n'},{type:'input_text',text:JSON.stringify({timedOut:false,polls:[{thread:{id:'child'},latestAssistantMessage:{phase:'final_answer',text:report}}]})}]});
+  for(const interrupted of [false,true]){
+    const f=await fixture(false,{provider:'codex',records:[{type:'session_meta',payload:{id:'composition',cwd:'/tmp'}},run('origin'),yielded('origin','custom_tool_call_output',31),
+      {type:'event_msg',payload:{type:'token_count'}},...(interrupted?[{type:'event_msg',payload:{type:'task_started',turn_id:'turn'}}]:[]),wait('continuation'),yielded('continuation','function_call_output',61),wait('terminal'),terminal]});
+    try{
+      const members=f.manifest.members.filter(member=>member.activityFacts?.observation?.operation==='thread-wait');
+      expect(members).toHaveLength(interrupted?2:1);
+      const owner=members.at(-1)!;
+      const expanded=Object.fromEntries([...(owner.disclosures?.keys??[]),...(owner.activityRunId?[`group:${owner.activityRunId}`]:[])].map(key=>[key,true]));
+      const plan=planConversationReading(f.manifest,expanded);
+      const descriptor=plan.rows.find(row=>row.key===owner.key)!;
+      const read=await readReadingRowBatch({db:f.db,reader:f.reader,conversationId:'composition',request:{positionSpaceId:f.manifest.positionSpaceId,rows:[descriptor],expanded}});
+      if(read.status!=='source')throw Error(read.status);
+      const node=read.rows[0].nodes[0];
+      if(node.kind!=='activity'||node.item.type!=='tool-call-activity')throw Error('Missing wait owner');
+      expect(node.item.observation).toEqual(owner.activityFacts!.observation);
+      expect(node.item.result?.fullText??node.item.result?.content).toContain(report.replaceAll('\n','\\n'));
+      expect(new Set(read.rows[0].sources.map(source=>source.position))).toEqual(new Set(owner.sourcePositions));
+      const nativeCalls=f.parsed.blocks.filter(block=>block.type==='tool_use');
+      for(const call of nativeCalls.filter(call=>owner.sourcePositions.includes(call.position)))expect(plan.membership.get(call.position)?.memberKey).toBe(owner.key);
+    }finally{f.close();}
+  }
+});

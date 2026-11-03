@@ -146,10 +146,14 @@ export function readCompleteDisplayIndex(db:SqliteDatabase,id:number):{fragments
   const keys=new Map<number,Array<KeyRecipeRow&{kind:number;ordinal:number}>>();
   for(const row of db.prepare('SELECT * FROM cache_position_identities WHERE cache_conversation_id=? ORDER BY position,kind,ordinal').all(id) as Array<KeyRecipeRow&{position:number;kind:number;ordinal:number}>) {let values=keys.get(row.position);if(!values)keys.set(row.position,values=[]);values.push(row);}
   const evidence=readProviderEvidence(db,id);
+  let eventOrdinal=0;
   const positions=(db.prepare('SELECT position,role_code,revision,turn_id,response_class,usage_key,usage_input,usage_output FROM cache_blocks WHERE cache_conversation_id=? ORDER BY position').all(id) as Array<any>).map(row=>{
     const identities=keys.get(row.position)??[];const key=(kind:number)=>identities.filter(value=>value.kind===kind).map(value=>decodeKey(value));
     const response=key(1)[0],execution=key(2)[0];
-    return {position:row.position,...(evidence.get(row.position)?.display_tool_origin?{presentationDependencies:[evidence.get(row.position)!.display_tool_origin!.position]}:{}),speaker:speaker(row.role_code),revision:row.revision?Buffer.from(row.revision).toString('hex'):'',handoffKeys:key(0),...(row.turn_id===null?{}:{turnId:row.turn_id}),
+    const origin=evidence.get(row.position)?.display_tool_origin;
+    const originExecution=origin?(keys.get(origin.position)??[]).filter(value=>value.kind===2).map(value=>decodeKey(value))[0]:execution;
+    const frame=evidence.get(row.position)?.display_tool_frame;
+    return {position:row.position,...(key(0).length?{eventOrdinal:eventOrdinal++}:{}),...(originExecution?{executionChainKey:JSON.stringify([originExecution,origin?.position??row.position])}:{}),...(frame?.wallTimeSeconds!==undefined?{wrapperSegmentSeconds:frame.wallTimeSeconds}:{}),...(evidence.get(row.position)?.display_tool_origin?{presentationDependencies:[evidence.get(row.position)!.display_tool_origin!.position]}:{}),speaker:speaker(row.role_code),revision:row.revision?Buffer.from(row.revision).toString('hex'):'',handoffKeys:key(0),...(row.turn_id===null?{}:{turnId:row.turn_id}),
       ...(response?{assistantResponse:{key:response,classification:enumValue(RESPONSES,row.response_class)!}}:{}),...(execution?{executionKey:execution}:{}),...(row.usage_key===null?{}:{usage:{key:row.usage_key,input:row.usage_input,output:row.usage_output}})};
   });
   const aliases=fragments.flatMap(fragment=>fragment.paired_source_positions.map(position=>({position,fragment_id:fragment.id}))).sort((a,b)=>a.position-b.position);

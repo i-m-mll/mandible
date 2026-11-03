@@ -67,7 +67,7 @@ export function indexDisplayFragments(blocks: readonly Omit<ConversationBlock, '
     const usage = block.metadata.token_usage;
     return { position: block.position, speaker: readingSpeaker(block.role), revision: createHash('sha256').update(JSON.stringify([
       block.type, block.role, block.content, block.timestamp, block.metadata, parentPosition(block.position),
-    ])).digest('hex'), handoff: [...(item ? [chatItemIdentityRecipe(item)].filter((key):key is IndexKeyRecipe=>key!==null) : []),...(block.metadata.client_intent_id ? [{kind:'intent' as const,id:block.metadata.client_intent_id}] : [])],
+    ])).digest('hex'), handoff: [...(item ? [chatItemIdentityRecipe(item,{allowTranscriptCoordinates:true})].filter((key):key is IndexKeyRecipe=>key!==null) : []),...(block.metadata.client_intent_id ? [{kind:'intent' as const,id:block.metadata.client_intent_id}] : [])],
       turnId: item?.identity.native_turn_id,
       ...(block.metadata.display_tool_origin ? {presentationDependencies:[block.metadata.display_tool_origin.position]} : {}),
       ...(item?.type==='message'&&item.role==='assistant' ? {response:{identity:item.provenance.source==='verified-provider-transcript' ? {kind:'response-record' as const,provider:item.identity.provider,sessionId:item.identity.session_id,recordOrdinal:item.identity.source_record_ordinal} : {kind:'response-native' as const,provider:item.identity.provider,sessionId:item.identity.session_id,turnId:item.identity.native_turn_id??null,nativeId:item.identity.native_item_id??null},classification:item.content_completion==='complete'?item.assistant_response??'unknown':'unknown'}} : {}),

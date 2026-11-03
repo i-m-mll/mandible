@@ -1,3 +1,4 @@
+import { coalesceTransportWaitMembers } from './wait-chain.js';
 import { coalesceAdjacentReasoningMembers } from './reasoning-equivalence.js';
 import {displaySummaryMembers,displaySemanticMembers} from '../conversations/display-context.js';
 import type { IndexedDisplayFragment, DisplayPositionFacts } from '../conversations/display-context.js';
@@ -70,6 +71,7 @@ export function buildReadingManifest(input: {
     return { key: readingSourceKey(input.conversationId, input.positionSpaceId, position, fragment.coordinate.part),
       position, part: fragment.coordinate.part, kind: fragment.kind, speaker: fragment.speaker,
       actionGroup: { key: `group:${input.conversationId}:${input.positionSpaceId}:${context.action_scope.start}`, ...context.action_scope },
+      ...(facts.executionChainKey&&facts.eventOrdinal!==undefined&&Math.max(...sourcePositions.flatMap(position=>positions.get(position)?.eventOrdinal??[]))===facts.eventOrdinal+1&&sourcePositions.some(position=>positions.get(position)?.wrapperSegmentSeconds!==undefined)?{transportSegment:{chainKey:facts.executionChainKey,seconds:sourcePositions.map(position=>positions.get(position)?.wrapperSegmentSeconds).find((value):value is number=>value!==undefined)!,start:facts.eventOrdinal,end:Math.max(...sourcePositions.flatMap(position=>positions.get(position)?.eventOrdinal??[]))}}:{}),
       activity: null, activityFacts: fragment.activity ?? undefined, disclosures: fragment.disclosures, executionKey: facts.executionKey, activityRunId: fragment.activity_run_id,
       ...(fragment.kind === "content" && fragment.speaker === "assistant" && fragment.coordinate.part.startsWith("content:")
         ? { assistantResponse: facts.assistantResponse } : {}),
@@ -78,8 +80,22 @@ export function buildReadingManifest(input: {
       handoffCoordinates: sourcePositions.flatMap(position => (positions.get(position)?.handoffKeys ?? []).filter(key => handoffOwners.get(key)?.length === 1).map(key => ({key, position}))),
     };
   });
+  const reasoningMembers=coalesceAdjacentReasoningMembers(members);
+  const projectedMembers=coalesceTransportWaitMembers(reasoningMembers);
+  if(projectedMembers.length!==reasoningMembers.length){
+    const eligibleByCoordinate=new Map(input.fragments.map(fragment=>[`${fragment.coordinate.position}:${fragment.coordinate.part}`,fragment.summary_eligible!==false]));
+    const projectedByRun=new Map<string,typeof projectedMembers>();
+    for(const member of projectedMembers)if(member.activityRunId){const run=projectedByRun.get(member.activityRunId)??[];run.push(member);projectedByRun.set(member.activityRunId,run);}
+    for(const [id,plan] of runPlans){
+      const projected=projectedByRun.get(id)??[];
+      const eligible=projected.filter(member=>eligibleByCoordinate.get(`${member.position}:${member.part}`)!==false);
+      const facts=semanticActivityRunFacts((eligible.length?eligible:projected).flatMap(member=>member.activityFacts?[member.activityFacts]:[]));
+      facts.hasDetails ||= projected.some(member=>member.activityFacts?.kind==='tool'&&member.activityFacts.observation?.payload.state!=='none');
+      runPlans.set(id,{...plan,member_count:projected.length,presentation:{...presentActivityRunFacts(facts),facts}});
+    }
+  }
   return { conversationId: input.conversationId, positionSpaceId: input.positionSpaceId, sourceVersionId: input.sourceVersionId,
-    publicationRevision: input.publicationRevision, blockCount: input.blockCount, members:coalesceAdjacentReasoningMembers(members), runs: Object.fromEntries(runPlans), summarySources, scopes,
+    publicationRevision: input.publicationRevision, blockCount: input.blockCount, members:projectedMembers, runs: Object.fromEntries(runPlans), summarySources, scopes,
     lastAssistantTurnId: [...input.fragments].reverse().flatMap(fragment => fragment.kind === 'content' && fragment.speaker === 'assistant'
       ? [positions.get(fragment.coordinate.position)?.turnId ?? `cblk:${input.conversationId}:${fragment.coordinate.position}`]
       : fragment.activity && fragment.activity.kind !== 'activity' ? [fragment.activity.turnId] : []).find((id): id is string => id !== undefined) };

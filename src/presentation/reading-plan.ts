@@ -9,6 +9,7 @@ export type ReadingPlanMember = {
   key: string;
   position?: number;
   eventOrdinal?:number;
+  transportSegment?:import('./wait-chain.js').WaitTransportSegment;
   part: string;
   kind: 'content' | 'activity';
   speaker: 'user' | 'assistant' | 'system';
