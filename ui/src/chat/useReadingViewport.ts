@@ -452,8 +452,8 @@ export function useReadingViewport(input: {
     if (!vector || vector.scope !== snapshot.geometry?.scope || vector !== snapshot.indexed || readback.current || !scroller || !instance.range) return;
     const height = scroller.clientHeight;
     if (height <= 0) return;
-    const start = Math.max(0, scroller.scrollTop - 5 * height);
-    const end = Math.min(instance.getTotalSize(), scroller.scrollTop + 6 * height);
+    const start = Math.max(0, scroller.scrollTop - 10 * height);
+    const end = Math.min(instance.getTotalSize(), scroller.scrollTop + 11 * height);
     const firstItem = instance.getVirtualItemForOffset(start);
     const first = firstItem?.index;
     const last = instance.getVirtualItemForOffset(end)?.index;
