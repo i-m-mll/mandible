@@ -19,6 +19,12 @@ it('projects complete transparent wrappers while retaining arbitrary computation
   const discovery='const hits=ALL_TOOLS.filter(tool=>/thread/.test(tool.name+tool.description)).map(tool=>({name:tool.name,description:tool.description}));text(hits);';
   expect(projectToolProgram('functions.exec',discovery)?.operations).toHaveLength(1);
   expect(projectToolProgram('functions.exec',discovery+'await tools.exec_command({cmd:"pwd"})')).toBeNull();
+  const forwarded='const hits=ALL_TOOLS.filter(x=>/codex_app__list_projects/.test(x.name));hits.forEach(x=>text(x));';
+  expect(projectToolProgram('functions.exec',forwarded)?.operations).toEqual(projectToolProgram('functions.exec',discovery)?.operations);
+  const aliased='const available=ALL_TOOLS;const hits=available.filter(x=>/codex_app__list_projects/.test(x.name));const matches=hits;const emit=text;matches.forEach(x=>{emit(x)});';
+  expect(projectToolProgram('functions.exec',aliased)?.operations).toEqual(projectToolProgram('functions.exec',forwarded)?.operations);
+  for(const computed of [forwarded.replace('text(x)','text(JSON.parse(x.name))'),forwarded.replace('text(x)','tools.exec_command(x)'),forwarded.replace('x=>text(x)','text=>text(text)'),forwarded+'text(42)']) expect(projectToolProgram('functions.exec',computed)).toBeNull();
+
 });
 
 it('suppresses only a known empty patch acknowledgement and retains reports, errors and unknown output', () => {

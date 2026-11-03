@@ -106,9 +106,36 @@ function pureDiscovery(node: Ast, locals = new Set<string>()): boolean {
     && ['filter','map','includes','test','toLowerCase','join'].includes(node.callee.property.name)) return pureDiscovery(node.callee.object,locals) && node.arguments.every((arg:Ast)=>pureDiscovery(arg,locals));
   return false;
 }
-function discoveryRoot(node:Ast):boolean {
+function discoveryRoot(node:Ast, collections:ReadonlySet<string> = new Set(['ALL_TOOLS'])):boolean {
   return node.type==='CallExpression' && node.callee.type==='MemberExpression' && !node.callee.computed && identifier(node.callee.property)
-    && ['filter','map'].includes(node.callee.property.name) && (identifier(node.callee.object,'ALL_TOOLS') || discoveryRoot(node.callee.object));
+    && ['filter','map'].includes(node.callee.property.name) && ((identifier(node.callee.object) && collections.has(node.callee.object.name)) || discoveryRoot(node.callee.object,collections));
+}
+function discoveryProgram(statements:readonly Ast[]):boolean {
+  const collections=new Set(['ALL_TOOLS']);
+  const emitters=new Set(['text']);
+  const names=new Set(['ALL_TOOLS','text','tools','image','audio','JSON','Promise']);
+  let discovered=false;
+  for(const statement of statements.slice(0,-1)) {
+    if(statement.type!=='VariableDeclaration' || statement.kind!=='const' || statement.declarations.length!==1) return false;
+    const declaration=statement.declarations[0];
+    if(!identifier(declaration.id) || names.has(declaration.id.name) || !declaration.init) return false;
+    names.add(declaration.id.name);
+    if(identifier(declaration.init) && collections.has(declaration.init.name)) collections.add(declaration.id.name);
+    else if(identifier(declaration.init) && emitters.has(declaration.init.name)) emitters.add(declaration.id.name);
+    else if(discoveryRoot(declaration.init,collections) && pureDiscovery(declaration.init,collections)) {collections.add(declaration.id.name);discovered=true;}
+    else return false;
+  }
+  if(!discovered) return false;
+  const output=statements.at(-1);
+  if(output?.type!=='ExpressionStatement' || output.expression.type!=='CallExpression' || output.expression.optional || output.expression.arguments.length!==1) return false;
+  const call=output.expression;
+  if(identifier(call.callee) && emitters.has(call.callee.name)) return identifier(call.arguments[0]) && collections.has(call.arguments[0].name);
+  if(call.callee.type!=='MemberExpression' || call.callee.computed || call.callee.optional || !identifier(call.callee.object) || !collections.has(call.callee.object.name) || !identifier(call.callee.property,'forEach')) return false;
+  const callback=call.arguments[0];
+  if(callback.type!=='ArrowFunctionExpression' || callback.async || callback.params.length!==1 || !identifier(callback.params[0]) || emitters.has(callback.params[0].name)) return false;
+  const body=callback.body.type==='BlockStatement' && callback.body.body.length===1 ? callback.body.body[0] : callback.body;
+  const emission=body.type==='ExpressionStatement' ? body.expression : body;
+  return emission.type==='CallExpression' && !emission.optional && identifier(emission.callee) && emitters.has(emission.callee.name) && emission.arguments.length===1 && identifier(emission.arguments[0],callback.params[0].name);
 }
 function contentForwarding(statement:Ast,name:string):boolean {
   if(statement.type!=='ForOfStatement' || statement.await || statement.left.type!=='VariableDeclaration' || statement.left.kind!=='const' || statement.left.declarations.length!==1 || !identifier(statement.left.declarations[0].id) || !member(statement.right,name,'content')) return false;
@@ -151,8 +178,7 @@ export function projectToolProgram(name: string, input: Record<string, unknown> 
   if (typeof script !== 'string') return null;
   let program;
   try {program = parse(script,{ecmaVersion:'latest',sourceType:'module'});} catch {return null;}
-  const discovery=program.body.length===2 && program.body[0].type==='VariableDeclaration' && program.body[0].kind==='const' && program.body[0].declarations.length===1 ? program.body[0].declarations[0] : null;
-  if(discovery && identifier(discovery.id) && discovery.init && discoveryRoot(discovery.init) && pureDiscovery(discovery.init) && identifier(textValue(program.body[1] as Ast) ?? undefined,discovery.id.name)) return {operations:[{name:'__tool_discovery',input:{},forwarding:'result',encoding:'literal'}]};
+  if(discoveryProgram(program.body)) return {operations:[{name:'__tool_discovery',input:{},forwarding:'result',encoding:'literal'}]};
   const operations: ToolProgramOperation[] = [];
   const bindings = new Map<string,unknown>();
   const names = new Set(['tools','text','image','audio','JSON','Promise','ALL_TOOLS']);
