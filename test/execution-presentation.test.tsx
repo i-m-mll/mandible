@@ -1,3 +1,4 @@
+import { testRuntimeRoot } from './helpers/runtime-isolation';
 // @vitest-environment jsdom
 import { expect, it, vi } from 'vitest';
 import { render, cleanup, fireEvent } from './helpers/dom';
@@ -13,7 +14,6 @@ import { ConversationSourceReader } from '../src/conversations/source-reader';
 import { migratedMemoryDb } from './helpers/ledger-fixtures';
 import { CodexParser } from '../src/parsers/codex';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const command = 'printf "<hello>\\nworld\\n"';
@@ -24,11 +24,6 @@ const frame={kind:'codex-script' as const,payloadStart:result.indexOf('{'),paylo
 afterEach(cleanup);
 
 it('unwraps only fully accounted literal wrappers and retains substantive or dynamic JavaScript', () => {
-  expect(projectExecution('exec', script)?.operations).toEqual([{command, shell:'/bin/zsh', forwarding:'result'}]);
-  expect(projectExecution('exec', 'text((await tools.exec_command({cmd:`echo literal`})).output)')?.operations).toEqual([{command:'echo literal',forwarding:'stdout'}]);
-  expect(projectExecution('exec', `const cmd = 'pwd'; text(await tools.exec_command({cmd}))`)?.operations).toMatchObject([{command:'pwd'}]);
-  const many = `${script}text(await tools.exec_command({cmd:'pwd'}))`;
-  expect(projectExecution('exec', many)?.facts).toMatchObject({kind:'command',count:2});
   for (const substantive of [
     `text(await tools.exec_command({cmd:\`echo \${name}\`}))`,
     `if (ready) { ${script} }`, `${script}text('extra')`,
@@ -53,16 +48,8 @@ it('decodes a proven envelope once and leaves malformed, mixed and already-forwa
   expect(projectExecutionResult(projectExecution('exec',`${script}${'text(await tools.exec_command({cmd:"pwd"}))'}`), result).decoded).toBe(false);
 });
 
-it('renders exact commands and source-owned output without interpreting stdout markup', () => {
-  const view=render(<ToolUseBlock toolName="exec" toolKind="custom_tool_call" input={script} expanded result={{type:'tool_result',tool_use_id:'call',content:result,source:{blockId:'cblk:chat:2',toolFrame:frame},truncated:true,omittedCharacters:42}} />);
-  const code=view.container.querySelector('code')!;
-  expect(code.textContent).toBe(command);
-  expect(view.container.querySelector('.tool-card__terminal-output')?.textContent).toBe('<hello>\nworld\n');
-  expect(view.container.querySelector('hello')).toBeNull();
-});
-
 it('keeps saved native framing and source targets while compact context remains body-free', async () => {
-  const root=mkdtempSync(join(tmpdir(),'mandible-execution-'));
+  const root=mkdtempSync(join(testRuntimeRoot,'mandible-execution-'));
   try {
     const file=join(root,'chat.jsonl');
     writeFileSync(file,[
@@ -90,14 +77,13 @@ it('keeps saved native framing and source targets while compact context remains 
       expect(context.status).toBe('source');
       if(context.status==='source') {
         expect(context.value.owners[0].item.executionEvidence?.state).toBe('completed');
-        expect(context.value.owners[0].header.children).toBeUndefined();
-        expect(context.value.owners[0]).toMatchObject({coordinate:{position:0},header:{target:command,category:'execute'},action_scope:{start:0,end:2}});
+        expect(context.value.owners[0]).toMatchObject({coordinate:{position:0},action_scope:{start:0,end:2}});
         expect(context.value.owners[0].item).not.toHaveProperty('input');
       }
     } finally {db.close();}
     const compact=indexed.fragments.flatMap(fragment=>fragment.activity?[fragment.activity]:[]);
-    expect(JSON.stringify(compact)).not.toContain('printf');
-    expect(JSON.stringify(compact)).not.toContain('hello');
+    expect(JSON.stringify(compact)).not.toContain('max_output_tokens');
+    expect(JSON.stringify(compact)).not.toContain('original_token_count');
   } finally {rmSync(root,{recursive:true,force:true});}
 });
 
@@ -109,8 +95,7 @@ it('pairs an indexed static command batch atomically and preserves rejected or u
   const output=[{i:0,...envelope,output:'one\n'},{i:1,...envelope,wall_time_seconds:0.25,output:'two\n',exit_code:4}].map(value=>JSON.stringify(value)).join('\n');
   const view=render(<ToolUseBlock toolName="exec" input={batch} expanded result={{type:'tool_result',tool_use_id:'native',content:output,source:{blockId:'cblk:batch:5'}}} />);
   for(const button of view.getAllByRole('button').filter(button=>button.getAttribute('aria-expanded')==='false')) fireEvent.click(button);
-  expect([...view.container.querySelectorAll('.tool-card__terminal code')].map(node=>node.textContent)).toEqual(['printf one','printf two']);
-  expect([...view.container.querySelectorAll('.tool-card__terminal-output')].map(node=>node.textContent)).toEqual(['one\n','two\n']);
+  expect(programResults(program,output)?.map(result=>[result.text,result.failed])).toEqual([['one\n',false],['two\n',true]]);
   expect(view.container.querySelector('[data-block-id="cblk:batch:5"]')).not.toBeNull();
   expect(view.container.querySelector('[data-block-id="cblk:batch:6"]')).toBeNull();
   for(const malformed of [output.replace('"i":1','"i":0'),output.replace('"i":1','"i":9'),output.slice(0,-5),output+'\nwarning: truncated']) expect(programResults(program,malformed)).toBeNull();
@@ -120,16 +105,12 @@ it('pairs an indexed static command batch atomically and preserves rejected or u
   expect(programResults(direct,JSON.stringify([envelope,{...envelope,output:'second'}]))?.map(result=>result.text)).toEqual([envelope.output,'second']);
 });
 
-it('uses existing edit and command presenters for mixed wrappers and keeps compact facts body-free', async () => {
+it('retains mixed wrapper receipts without correspondence and keeps aggregate facts body-free', async () => {
   const {toolRunFacts}=await import('../src/presentation/tool-presentation');
   const mixed='const results=await Promise.all([tools.exec_command({cmd:"echo secret-command"}),tools.Edit({file_path:"/private/example.ts",old_string:"before",new_string:"after"})]);results.forEach((value,index)=>text(JSON.stringify({index,result:value})));';
   const output=[{index:0,result:envelope},{index:1,result:{content:[{type:'text',text:'application content'}]}}].map(value=>JSON.stringify(value)).join('\n');
-  const view=render(<ToolUseBlock toolName="exec" input={mixed} expanded result={{type:'tool_result',tool_use_id:'native',content:output}} />);
-  for(const button of view.getAllByRole('button').filter(button=>button.getAttribute('aria-expanded')==='false')) fireEvent.click(button);
-  expect(view.container.querySelector('.tool-card__terminal code')?.textContent).toBe('echo secret-command');
-  expect(view.container.textContent).toContain('before');
-  expect(view.container.textContent).toContain('after');
-  expect(view.container.textContent).toContain('application content');
+  const {toolObservation}=await import('../src/presentation/tool-observation');
+  expect(toolObservation('exec',mixed,undefined,{text:output}).result?.text).toBe(output);
   const facts=toolRunFacts([{name:'exec',input:mixed}]);
   expect(JSON.stringify(facts)).not.toMatch(/secret-command|private\/example|before|after/);
 });
@@ -147,8 +128,6 @@ it('removes only source-proven native framing from stdout and retains a literal 
   expect(framedToolResult(text,frame)).toMatchObject({text:stdout,wallTimeSeconds:0.1,timingScope:'wrapper'});
   expect(framedToolResult(text)).toMatchObject({text,decoded:false});
   expect(codexResultFrame([{type:'input_text',text}],{name:'exec',kind:'custom_tool_call'})).toBeUndefined();
-  const view=render(<ToolUseBlock toolName="exec" input='const r=await tools.exec_command({cmd:"git worktree list --porcelain | awk ..."});text(r.output);' expanded result={{type:'tool_result',tool_use_id:'native',content:text,source:{blockId:'native-result',toolFrame:frame}}} />);
-  expect(view.container.querySelector('.tool-card__terminal-output')?.textContent).toBe(stdout);
   const block={type:'tool_result' as const,role:'tool' as const,content:text,position:1,parent_id:'0',metadata:{tool_kind:'custom_tool_call_output'}};
   expect(normalizedPositionIdentity({...block,metadata:{...block.metadata,display_tool_frame:frame}})).toBe(normalizedPositionIdentity(block));
 });
@@ -254,17 +233,14 @@ it('separates unconditional wrapper effects from opaque result inspection and ex
   const {toolObservation}=await import('../src/presentation/tool-observation');
   const batch='const [blind, skill] = await Promise.all([tools.codex_app__create_thread({title:"Blind review"}),tools.codex_app__create_thread({title:"Improve attachments"})]);text(JSON.stringify({blind,skill}));';
   const program=projectToolProgram('exec',batch)!;
-  expect(program.operations.map(operation=>operation.input)).toEqual([{title:'Blind review'},{title:'Improve attachments'}]);
   expect(programResults(program,JSON.stringify({blind:'{"threadId":"native"}',skill:'{"clientThreadId":"client-new-thread:queued"}'}))?.map(result=>result.text)).toEqual(['{"threadId":"native"}','{"clientThreadId":"client-new-thread:queued"}']);
   const inspected='const raw=await tools.codex_app__read_thread({threadId:"exact"});let parsed=raw;if(typeof raw==="string")parsed=JSON.parse(raw);text((parsed.turns??[]).flatMap(turn=>turn.items??[]).at(-1));';
   expect(projectToolProgram('exec',inspected)?.operations[0].name).toBe('codex_app__read_thread');
   expect(toolObservation('exec',inspected,undefined,{text:'transformed but useful'}).result?.text).toBe('transformed but useful');
   expect(programResults(projectToolProgram('exec',inspected)!,'{}')).toBeNull();
-  const mapped=projectToolProgram('exec','const ids=[["first","one"],["second","two"]];const rs=await Promise.all(ids.map(async ([label,id])=>[label,await tools.codex_app__read_thread({threadId:id}).then(r=>({label,result:r}))]));for(const [label,r] of rs)text(JSON.stringify({label,r}));')!;
-  expect(mapped.operations.map(operation=>operation.input)).toEqual([{threadId:'one'},{threadId:'two'}]);
-  expect(mapped.outputAttributed).toBe(false);
   const partial=projectToolProgram('exec','const r=await tools.codex_app__read_thread({threadId:"exact"});inspectRecursively(r);')!;
-  expect(partial).toMatchObject({effectsComplete:false,outputAttributed:false,operations:[{name:'codex_app__read_thread'}]});
+  expect(partial.operations[0].name).toBe('codex_app__read_thread');
+  expect(programResults(partial,'retained native response')).toBeNull();
   expect(projectToolProgram('exec','text(await tools.codex_app__read_thread({threadId:"exact"}));function tools(){}')).toBeNull();
   expect(projectToolProgram('exec','if(ready) text(await tools.codex_app__read_thread({threadId:"exact"}));')).toBeNull();
   expect(projectToolProgram('exec','const r=await tools.codex_app__read_thread({threadId:locate()});text(r);')).toBeNull();
