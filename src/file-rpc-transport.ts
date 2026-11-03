@@ -19,6 +19,7 @@ export interface FileRpcRequest {
   query?: Record<string, unknown>;
   body?: unknown;
   ambient_identity?: unknown;
+  managed_client?: boolean;
   request_origin?: unknown;
   // Issue 708dc4c — per-spool capability token. A file-RPC caller's identity is
   // otherwise only filesystem access with self-asserted ambient identity (now a
@@ -158,6 +159,7 @@ export class FileRpcTransport {
         body,
         request.ambient_identity,
         request.capability_token,
+        request.managed_client === true || Object.hasOwn(request, "ambient_identity"),
         Object.hasOwn(request, "request_origin") ? { request_origin: request.request_origin } : {},
       );
       this.writeResponse(requestPath, requestId, response);
@@ -251,6 +253,7 @@ export class FileRpcTransport {
     body: unknown,
     ambientIdentity?: unknown,
     capabilityToken?: string,
+    managedClient = false,
     originEnvelope: { request_origin?: unknown } = {},
   ): Promise<RouterInvokeResponse> {
     const pathname = new URL(requestUrl, "http://localhost").pathname;
@@ -266,6 +269,7 @@ export class FileRpcTransport {
         url: requestUrl,
         body,
         ambient_identity: normalizeAmbientProviderIdentity(ambientIdentity),
+        managed_client: managedClient,
         ...originEnvelope,
         credential: typeof capabilityToken === "string" ? capabilityToken : null,
         transport: "file-rpc",

@@ -7,9 +7,12 @@ provider_session_id=$(jq -r '.session_id // empty' <<< "$INPUT")
 
 # The provider payload identifies this hook's run exactly, even when a nested
 # Claude inherits another session's provider markers.
-unset CODEX_THREAD_ID CODEX_SESSION_ID GEMINI_SESSION_ID CLAUDE_SESSION_ID MANDIBLE_REQUEST_ORIGIN
+unset CODEX_THREAD_ID CODEX_SESSION_ID GEMINI_SESSION_ID CLAUDE_SESSION_ID CLAUDE_AGENT_ID MANDIBLE_EXECUTION_CONTEXT MANDIBLE_AGENT_REF MANDIBLE_REQUEST_ORIGIN
 if [[ -n "$provider_session_id" ]]; then
   export CLAUDE_CODE_SESSION_ID="$provider_session_id"
+  export CLAUDE_AGENT_ID="$(jq -r '.agent_id // .session_id // empty' <<< "$INPUT")"
+  export MANDIBLE_EXECUTION_CONTEXT="$(api_execution_context_json)"
+  export MANDIBLE_AGENT_REF="$(api_current_agent_ref)"
 else
   unset CLAUDE_CODE_SESSION_ID
 fi

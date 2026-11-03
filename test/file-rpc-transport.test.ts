@@ -65,7 +65,7 @@ it("persists file-RPC native origin with its authoritative comment revision", as
     router.post('/api/ledger/issues/:issueId/comments', (_req, res) => {
       res.json(store.addComment(issue.id, { body: 'From file RPC', actor_type: 'system', author_display: 'System', attribution: systemAction() }));
     }, { fileRpc: 'allow', operation: { id: 'fixture.origin-comment', effects: ['ledger:write'], reportingCategory: 'ledger', requestSchema: null } });
-    const origin = { provider: 'claude', provider_session_id: 'exact-file-native' };
+    const origin = { provider: 'claude', agent_id: 'child', session_id: 'exact-file-native' };
     fs.writeFileSync(path.join(tempDir, 'origin.request.json'), JSON.stringify({ id: 'origin', method: 'POST',
       path: `/api/ledger/issues/${issue.id}/comments`, request_origin: origin }));
     await new FileRpcTransport({ router, dir: tempDir }).processOnce();
@@ -312,7 +312,7 @@ describe("file RPC transport", () => {
       expect((await take("0")).status).not.toBe(0);
       const transferred = await take("1");
       expect(transferred.status, transferred.stderr).toBe(0);
-      expect(read()).toMatchObject({ responsibility_session_id: "successor", custody_generation: 2, state: "committed" });
+      expect(read()).toMatchObject({ responsibility_session_id: "agent:codex:successor", custody_generation: 2, state: "committed" });
       const stale = await invoke("old-holder", ["work-unit", "resolve", "--id", id, "--expected-generation", "1"]);
       expect(stale.status).not.toBe(0);
       const released = await invoke("successor", ["work-unit", "release", "--id", id,
@@ -321,7 +321,7 @@ describe("file RPC transport", () => {
       expect(read()).toMatchObject({ owner_user_id: null, responsibility_session_id: null, custody_generation: 3, state: "committed" });
       const receipts = db.prepare("SELECT request_origin_json FROM responsibility_events WHERE entity_id = ? ORDER BY generation").all(id) as Array<{ request_origin_json: string }>;
       expect(receipts).toHaveLength(2);
-      expect(JSON.parse(receipts[0].request_origin_json)).toMatchObject({ provider: "codex", provider_session_id: "successor" });
+      expect(JSON.parse(receipts[0].request_origin_json)).toMatchObject({ provider: "codex", agent_id: "successor", session_id: null });
       expect((await take("3")).status).toBe(0);
       db.prepare("UPDATE work_units SET continuation = ? WHERE id = ?").run("Retain existing handoff notes", id);
       const abandon = (generation: string) => invoke("successor", ["work-unit", "abandon", "--id", id,

@@ -64,7 +64,7 @@ async function advance(changes: Record<string,string>, modeChange = false) {
 }
 
 it("atomically binds frozen source/destination and retains same-publication supersession history", async () => {
-  const origin = {provider:"codex",provider_session_id:"publication-requester"};
+  const origin = {provider:"codex",agent_id:"publication-requester",session_id:null};
   const request = await withRequestOrigin(origin,()=>submit());
   const binding = db.prepare("SELECT payload_json FROM ledger_events WHERE entity_type='space_publication' AND entity_id=? ORDER BY rowid DESC LIMIT 1").get(publication) as {payload_json:string};
   expect(JSON.parse(binding.payload_json)).toMatchObject({request_origin:origin,changed_fields:["auth_request_id","state"]});

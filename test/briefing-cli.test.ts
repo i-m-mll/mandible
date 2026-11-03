@@ -2,7 +2,9 @@
 /**
  * What `mandible briefing` decides before transport: a Briefing binds one exact
  * artifact version, and a destination-route manifest travels as the file's own
- * JSON. Every other subcommand is a grammar entry plus a covered route.
+ * JSON. Group show and review render their human form, whose jq programs
+ * compile only at run time. Every other subcommand is a grammar entry plus a
+ * covered route.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -59,5 +61,25 @@ describe("briefing CLI", () => {
       { method: "POST", path: "/api/briefing-destination-routes/plan", body: manifest },
       { method: "POST", path: "/api/briefing-destination-routes", body: manifest },
     ]));
+  });
+
+  it("renders group show and review in human form", async () => {
+    const group = {
+      id: "bgrp_01KY5J56GRTEYKPQQ8M05FV7N3", key: "agent-policy", name: "Agent policy",
+      current: { id: "bbnd_01KY5J56GRTEYKPQQ8M05FV7N4", name: "Original" },
+      updates: [{ id: "bbnd_01KY5J56GRTEYKPQQ8M05FV7N5", name: "Rewrite" }], history: [],
+    };
+    const candidate = { ready: false, binding_digest: null, layout_changed: true, destination_changes: [] };
+    const { env } = spool((request) => ({ status: 200, body: request.method === "GET" ? { group } : { candidate } }));
+
+    const [show, review] = await Promise.all([
+      runCli(["briefing", "group", "show", "agent-policy"], { env }),
+      runCli(["briefing", "group", "review", "agent-policy", "--expected-base", "bbnd_base", "--proposal", "bbnd_proposal"], { env }),
+    ]);
+
+    expect(show.status, show.stderr).toBe(0);
+    expect(show.stdout).toMatch(/Base: \S+ {2}Base\n {2}proposal: \S+ {2}Rewrite\n/);
+    expect(review.status, review.stderr).toBe(0);
+    expect(review.stdout).toContain("binding=none");
   });
 });

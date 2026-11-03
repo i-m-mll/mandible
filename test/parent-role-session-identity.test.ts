@@ -41,10 +41,10 @@ let db: Db;
 let router: Router;
 let umbrellaId: string;
 
-function seedSession(id: string, status: string, app = "codex"): void {
+function seedSession(id: string, status: string, app = "codex", native = id): void {
   db.prepare(
-    "INSERT INTO sessions (id, app, status, last_active) VALUES (?, ?, ?, ?)",
-  ).run(id, app, status, "2026-08-29T00:00:00Z");
+    "INSERT INTO sessions (id, app, status, last_active, conversation_id) VALUES (?, ?, ?, ?, ?)",
+  ).run(id, app, status, "2026-08-29T00:00:00Z", native);
 }
 
 function seedConsoleSession(options: {
@@ -157,7 +157,7 @@ describe("parent-role assume rejects unverifiable session ids", () => {
 
     expect(response.status).toBe(400);
     const body = response.body as { error: string; supplied_session_id: string };
-    expect(body.supplied_session_id).toBe("01a04e24-not-a-registered-thread");
+    expect(body.supplied_session_id).toBe("agent:codex:01a04e24-not-a-registered-thread");
     expect(body.error).toContain("01a04e24-not-a-registered-thread");
 
     // Nothing was recorded: a refused assume must leave the umbrella holderless
@@ -168,7 +168,7 @@ describe("parent-role assume rejects unverifiable session ids", () => {
 
 describe("parent-role assume accepts every registered alias form", () => {
   beforeEach(() => {
-    seedSession(MANDIBLE_SESSION, "active");
+    seedSession(MANDIBLE_SESSION, "active", "codex", PROVIDER_THREAD);
     seedConsoleSession({
       id: CONSOLE_SESSION,
       status: "running",
@@ -178,11 +178,11 @@ describe("parent-role assume accepts every registered alias form", () => {
   });
 
   it("accepts a Mandible session id and stores both identities", async () => {
-    const response = await assume(MANDIBLE_SESSION);
+    const response = await assume(MANDIBLE_SESSION, false, PROVIDER_THREAD);
 
     expect(response.status).toBe(200);
     expect(holderPayload(response.body)).toMatchObject({
-      session_id: MANDIBLE_SESSION,
+      session_id: `agent:codex:${PROVIDER_THREAD}`,
       resolved_session_id: MANDIBLE_SESSION,
       console_session_id: CONSOLE_SESSION,
       provider: "codex",
@@ -192,11 +192,11 @@ describe("parent-role assume accepts every registered alias form", () => {
   });
 
   it("accepts a console session id", async () => {
-    const response = await assume(CONSOLE_SESSION);
+    const response = await assume(CONSOLE_SESSION, false, PROVIDER_THREAD);
 
     expect(response.status).toBe(200);
     expect(holderPayload(response.body)).toMatchObject({
-      session_id: CONSOLE_SESSION,
+      session_id: `agent:codex:${PROVIDER_THREAD}`,
       resolved_session_id: MANDIBLE_SESSION,
       console_session_id: CONSOLE_SESSION,
       provider_session_id: PROVIDER_THREAD,
@@ -207,10 +207,8 @@ describe("parent-role assume accepts every registered alias form", () => {
     const response = await assume(PROVIDER_THREAD);
 
     expect(response.status).toBe(200);
-    // The supplied spelling is preserved for existing readers; the resolved
-    // identities are added beside it.
     expect(holderPayload(response.body)).toMatchObject({
-      session_id: PROVIDER_THREAD,
+      session_id: `agent:codex:${PROVIDER_THREAD}`,
       resolved_session_id: MANDIBLE_SESSION,
       console_session_id: CONSOLE_SESSION,
       provider_session_id: PROVIDER_THREAD,
@@ -237,7 +235,7 @@ describe("Codex Desktop provider tasks", () => {
     const response = await assume(DESKTOP_TASK);
     expect(response.status).toBe(200);
     expect(holderPayload(response.body)).toMatchObject({
-      session_id: DESKTOP_TASK,
+      session_id: `agent:codex:${DESKTOP_TASK}`,
       resolved_session_id: null,
       provider: "codex",
       provider_session_id: DESKTOP_TASK,
@@ -265,14 +263,14 @@ describe("Codex Desktop provider tasks", () => {
 
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({
-      session_id: DESKTOP_TASK,
+      session_id: `agent:codex:${DESKTOP_TASK}`,
       ledger_issue_id: umbrellaId,
     });
     expect(db.prepare("SELECT count(*) AS n FROM sessions").get()).toEqual({ n: 0 });
 
     const linked = await router.invoke({ method: "GET", url: `/api/sessions/${DESKTOP_TASK}/issues` });
     expect(linked.status).toBe(200);
-    expect(linked.body).toMatchObject([{ session_id: DESKTOP_TASK, ledger_issue_id: umbrellaId }]);
+    expect(linked.body).toMatchObject([{ session_id: `agent:codex:${DESKTOP_TASK}`, ledger_issue_id: umbrellaId }]);
 
     const overview = await router.invoke({
       method: "GET",
@@ -295,10 +293,10 @@ describe("Codex Desktop provider tasks", () => {
     });
 
     expect(response.status).toBe(200);
-    expect(response.body).toMatchObject({ session_id: claudeSession });
+    expect(response.body).toMatchObject({ session_id: `agent:claude:${claudeSession}:${claudeSession}` });
     for (const id of ["wrap-1", claudeSession]) {
       const linked = await router.invoke({ method: "GET", url: `/api/sessions/${id}/issues` });
-      expect(linked.body).toMatchObject([{ session_id: claudeSession, ledger_issue_id: umbrellaId }]);
+      expect(linked.body).toMatchObject([{ session_id: `agent:claude:${claudeSession}:${claudeSession}`, ledger_issue_id: umbrellaId }]);
     }
   });
 

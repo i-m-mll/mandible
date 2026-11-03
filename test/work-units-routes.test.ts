@@ -69,7 +69,7 @@ describe("work unit routes", () => {
     const target = assignmentTargetForSession(db, native);
     expect(target).toEqual({ kind: "alias", session_id: native });
     expect(resolveAssignmentTarget(db, target)).toBeNull();
-    expect(assignmentTargetForSession(db, "ambiguous-codex")).toEqual({ kind: "native", provider: "codex", session_id: native });
+    expect(assignmentTargetForSession(db, "ambiguous-codex")).toEqual({ kind: "native", agent_ref: `agent:codex:${native}` });
     const pending = await router.invoke({ method: "POST", url: "/api/work-units/claim",
       body: { issue_id: "abc123", repo_id: "mandible", branch: "feature/ambiguous", assigned_session_id: native } });
     expect(pending.status).toBe(201);
@@ -77,7 +77,7 @@ describe("work unit routes", () => {
     expect(db.prepare("SELECT assignment_target_json,worker_provider FROM work_units WHERE id = ?").get(pendingId))
       .toEqual({ assignment_target_json: JSON.stringify(target), worker_provider: null });
     const exact = await router.invoke({ method: "POST", url: "/api/work-units/claim",
-      ambient_identity: { provider: "claude", provider_session_id: native },
+      ambient_identity: { provider: "claude", agent_id: native, session_id: native },
       body: { issue_id: "abc123", repo_id: "mandible", branch: "feature/exact-worker" } });
     const exactId = (exact.body as { id: string }).id;
     mutateWorkUnit(db, exactId, () => db.prepare("UPDATE work_units SET state = 'resolved' WHERE id = ?").run(exactId));
@@ -116,7 +116,7 @@ describe("work unit routes", () => {
       ambient_identity: { provider: "codex", provider_session_id: worker },
       body: { issue_id: "abc123", repo_id: "mandible", branch: "feature/other-late" } });
     const pendingId = (pending.body as { id: string }).id;
-    const target = JSON.stringify({ kind: "native", provider: "codex", session_id: worker });
+    const target = JSON.stringify({ kind: "native", agent_ref: `agent:codex:${worker}` });
     const row = () => db.prepare("SELECT * FROM work_units WHERE id = ?").get(id) as Record<string, unknown>;
     expect(row()).toMatchObject({ assignment_target_json: target, worker_provider: null });
     mutateWorkUnit(db, id, () => db.prepare("UPDATE work_units SET assigned_session_id = NULL, provider_session_id = 'coordinator' WHERE id = ?").run(id));
@@ -180,7 +180,7 @@ describe("work unit routes", () => {
     expect(many.units).toHaveLength(10 * identities.length);
     expect(many.queries).toBe(few.queries);
     const inProgress = many.units.filter((unit) => unit.state === "open" || unit.state === "committed");
-    expect(new Set(inProgress.map((unit) => unit.liveness?.state))).toEqual(new Set(["live", "stopped"]));
+    expect(new Set(inProgress.map((unit) => unit.liveness?.state))).toEqual(new Set(["live", "stopped", "unknown"]));
     expect(many.units.filter((unit) => "liveness" in unit)).toEqual(inProgress);
     for (const unit of many.units) {
       const own = await router.invoke({ method: "GET", url: `/api/work-units/${unit.id}` });
@@ -228,12 +228,12 @@ describe("work unit routes", () => {
     } });
     registerWorkUnitRoutes(guarded, {} as never);
     const request = { issue_id: issue.id, repo_id: 'kind-project', branch: 'feature/integration' };
-    const claimed = await guarded.invoke({ method: 'POST', url: '/api/work-units/claim', credential: 'own', body: request });
+    const claimed = await guarded.invoke({ ambient_identity: { provider: "codex", agent_id: "kind-thread", session_id: null }, method: 'POST', url: '/api/work-units/claim', credential: 'own', body: request });
     expect(claimed.status).toBe(201);
     const id = (claimed.body as { id: string }).id;
     const before = db.prepare('SELECT * FROM work_units WHERE id = ?').get(id) as Record<string, unknown>;
     const checkpoint = (ownerCredential: string, createdAt: number) => store.addIssueCheckpoint(issue.id, {
-      kind: 'parent-role', payload: { authenticated_user_id: agent.id, responsibility_session_id: null, credential_evidence: ownerCredential, assumed_at: createdAt },
+      kind: 'parent-role', payload: { authenticated_user_id: agent.id, responsibility_session_id: "kind-thread", credential_evidence: ownerCredential, assumed_at: createdAt },
       attribution: systemAction(), created_at: createdAt,
     }).id;
     const previous = checkpoint(credential.id, 1);
@@ -246,19 +246,19 @@ describe("work unit routes", () => {
       ['own', { ...promote, parent_role_checkpoint_id: previous }],
       ['own', { ...promote, branch: 'feature/missing' }],
     ] as const) {
-      expect((await guarded.invoke({ method: 'POST', url: '/api/work-units/claim', credential: token, body })).status, JSON.stringify(body)).toBeGreaterThanOrEqual(400);
+      expect((await guarded.invoke({ ambient_identity: { provider: "codex", agent_id: "kind-thread", session_id: null }, method: 'POST', url: '/api/work-units/claim', credential: token, body })).status, JSON.stringify(body)).toBeGreaterThanOrEqual(400);
       expect(db.prepare('SELECT * FROM work_units WHERE id = ?').get(id)).toEqual(before);
     }
     // The short checkpoint id `parent-role assume` prints (chk_ + ten characters) is accepted.
-    const promoted = await guarded.invoke({ method: 'POST', url: '/api/work-units/claim', credential: 'own',
+    const promoted = await guarded.invoke({ ambient_identity: { provider: "codex", agent_id: "kind-thread", session_id: null }, method: 'POST', url: '/api/work-units/claim', credential: 'own',
       body: { ...promote, parent_role_checkpoint_id: current.slice(0, 'chk_'.length + 10) } });
     expect(promoted.status).toBe(200);
     expect(promoted.body).toMatchObject({ id, kind: 'integration', custody_generation: 1, existing: true });
     expect(db.prepare('SELECT * FROM work_units WHERE id = ?').get(id)).toEqual({ ...before!, kind: 'integration' });
-    const retry = await guarded.invoke({ method: 'POST', url: '/api/work-units/claim', credential: 'own', body: promote });
+    const retry = await guarded.invoke({ ambient_identity: { provider: "codex", agent_id: "kind-thread", session_id: null }, method: 'POST', url: '/api/work-units/claim', credential: 'own', body: promote });
     expect(retry.status).toBe(200);
     expect(store.listIssueCheckpoints(issue.id, 'work-unit-kind')).toHaveLength(1);
-    expect((await guarded.invoke({ method: 'POST', url: '/api/work-units/claim', credential: 'own',
+    expect((await guarded.invoke({ ambient_identity: { provider: "codex", agent_id: "kind-thread", session_id: null }, method: 'POST', url: '/api/work-units/claim', credential: 'own',
       body: { ...promote, kind: 'solo' } })).status).toBe(409);
     expect(db.prepare('SELECT kind FROM work_units WHERE id = ?').get(id)).toEqual({ kind: 'integration' });
     expect(db.prepare('SELECT COUNT(*) AS count FROM work_units').get()).toEqual({ count: 1 });
@@ -316,7 +316,7 @@ describe("work unit routes", () => {
       branch: "feature/pending-a",
       state: "committed",
       auth_request_id: "auth-pending-a",
-      provider_session_id: "pending-branches-worker-a",
+      provider_session_id: null,
     });
   });
 
@@ -534,26 +534,26 @@ describe("work unit routes", () => {
       `[mandible child parent=${provider}:${parent} parent-role=coordinator role=coordinator]`);
     db.prepare("INSERT INTO sessions (id,app,status,conversation_id) VALUES (?, ?, 'ended', ?)").run(worker, provider, worker);
     const claim = await ownedRouter.invoke({ credential: "own", method: "POST", url: "/api/work-units/claim",
-      ambient_identity: { provider, provider_session_id: worker },
+      ambient_identity: { provider, agent_id: worker, session_id: provider === "claude" ? worker : null },
       body: { issue_id: "abc123", repo_id: "mandible", branch: "feature/own-worker" } });
     expect(claim.status).toBe(201);
     const first = (claim.body as { id: string }).id;
     const create = await ownedRouter.invoke({ credential: "own", method: "POST", url: "/api/work-units/activate",
-      ambient_identity: { provider, provider_session_id: creator },
+      ambient_identity: { provider, agent_id: creator, session_id: provider === "claude" ? creator : null },
       body: { issue_id: "auto123", repo_id: "mandible", branch: "feature/dispatched" } });
     const second = (create.body as { id: string }).id;
     expect(db.prepare("SELECT worker_provider_session_id FROM work_units WHERE id = ?").get(second))
       .toEqual({ worker_provider_session_id: null });
     expect((await ownedRouter.invoke({ credential: "own", method: "PATCH", url: `/api/work-units/${second}`,
-      ambient_identity: { provider, provider_session_id: creator },
+      ambient_identity: { provider, agent_id: creator, session_id: provider === "claude" ? creator : null },
       body: { expected_generation: 1, assigned_session_id: worker } })).status).toBe(200);
     expect(db.prepare("SELECT provider_session_id, worker_provider, worker_provider_session_id FROM work_units WHERE id = ?").get(second))
-      .toEqual({ provider_session_id: creator, worker_provider: source, worker_provider_session_id: worker });
+      .toEqual({ provider_session_id: null, worker_provider: source, worker_provider_session_id: worker });
     const identity = { provider: source, provider_session_id: worker };
     expect(getWorkerAssignments(db, identity).unresolvedUnitIds.sort()).toEqual([first, second].sort());
-    expect((await ownedRouter.invoke({ credential: "own", method: "PATCH", url: `/api/work-units/${first}`, ambient_identity: { provider, provider_session_id: worker }, body: { expected_generation: 1, state: "resolved" } })).status).toBe(200);
+    expect((await ownedRouter.invoke({ credential: "own", method: "PATCH", url: `/api/work-units/${first}`, ambient_identity: { provider, agent_id: worker, session_id: provider === "claude" ? worker : null }, body: { expected_generation: 1, state: "resolved" } })).status).toBe(200);
     expect(getWorkerAssignments(db, identity).complete).toBe(false);
-    expect((await ownedRouter.invoke({ credential: "own", method: "PATCH", url: `/api/work-units/${second}`, ambient_identity: { provider, provider_session_id: creator }, body: { expected_generation: 1, state: "resolved" } })).status).toBe(200);
+    expect((await ownedRouter.invoke({ credential: "own", method: "PATCH", url: `/api/work-units/${second}`, ambient_identity: { provider, agent_id: creator, session_id: provider === "claude" ? creator : null }, body: { expected_generation: 1, state: "resolved" } })).status).toBe(200);
     expect(getWorkerAssignments(db, identity).complete).toBe(true);
     expect(new LedgerStore(db).getIssue((db.prepare("SELECT ledger_issue_id FROM work_units WHERE id = ?").get(first) as { ledger_issue_id: string }).ledger_issue_id)?.status).toBe("open");
   });
@@ -571,7 +571,7 @@ describe("work unit routes", () => {
     for (const native of ["retained-native", "ordinary-native"]) {
       db.prepare("INSERT INTO sessions(id,app,status,conversation_id) VALUES (?, 'claude', 'ended', ?)").run(native, native);
       const claim = await owned.invoke({ method: "POST", url: "/api/work-units/claim", credential: "own",
-        ambient_identity: { provider: "claude", provider_session_id: native },
+        ambient_identity: { provider: "claude", agent_id: native, session_id: native },
         body: { issue_id: "abc123", repo_id: "mandible", branch: `feature/${native}`, assigned_session_id: native } });
       expect(claim.status).toBe(201);
       units.push((claim.body as { id: string }).id);
@@ -581,7 +581,7 @@ describe("work unit routes", () => {
     await new WorkUnitReconciler(() => undefined, { archiver: { archive: async () => undefined, unarchive: async () => undefined },
       resolveSession: (database, id) => resolveSessionAlias(database, id) }).reconcile();
     expect(db.prepare("SELECT assigned_session_id, responsibility_session_id, custody_generation FROM work_units WHERE id = ?").get(units[0]))
-      .toEqual({ assigned_session_id: "retained-native", responsibility_session_id: "retained-native", custody_generation: 1 });
+      .toEqual({ assigned_session_id: "retained-native", responsibility_session_id: "agent:claude:retained-native:retained-native", custody_generation: 1 });
     expect(db.prepare("SELECT assigned_session_id FROM work_units WHERE id = ?").get(units[1])).toEqual({ assigned_session_id: null });
     const parentNative = "019a0000-0000-7000-8000-00000000000a";
     db.prepare(`INSERT INTO conversations(id,source,session_id,source_path,source_hash,source_mtime,started_at)
@@ -595,14 +595,14 @@ describe("work unit routes", () => {
     expect(hasArchivedResponsibility(db, bound)).toBe(true);
     const check = await owned.invoke({ method: "GET", credential: "own",
       url: "/api/work-units/custody-check?repo_id=mandible&branch=feature/retained-native",
-      ambient_identity: { provider: "claude", provider_session_id: "different-native" } });
+      ambient_identity: { provider: "claude", agent_id: "different-native", session_id: "different-native" } });
     expect(check.body).toMatchObject({ outcome: "takeover_available", holder_liveness: { state: "stopped", responsibility_retained: true } });
     const takeover = await owned.invoke({ method: "POST", url: `/api/work-units/${units[0]}/custody/assume`, credential: "own",
-      ambient_identity: { provider: "claude", provider_session_id: "different-native" },
+      ambient_identity: { provider: "claude", agent_id: "different-native", session_id: "different-native" },
       body: { expected_generation: 1, reason: "Try taking over an unloaded holder" } });
     expect(takeover.status, JSON.stringify(takeover.body)).toBe(200);
     expect(db.prepare("SELECT assigned_session_id, responsibility_session_id, custody_generation FROM work_units WHERE id = ?").get(units[0]))
-      .toEqual({ assigned_session_id: "retained-native", responsibility_session_id: "different-native", custody_generation: 2 });
+      .toEqual({ assigned_session_id: "retained-native", responsibility_session_id: "agent:claude:different-native:different-native", custody_generation: 2 });
 
   });
 
@@ -630,8 +630,8 @@ describe("work unit routes", () => {
       expect(response.status).toBe(201);
       const body = await response.json() as { id: string };
       expect(
-        db.prepare("SELECT provider, provider_session_id FROM work_units WHERE id = ?").get(body.id),
-      ).toEqual({ provider: "codex", provider_session_id: "thread-header" });
+        db.prepare("SELECT execution_identity_json FROM work_units WHERE id = ?").get(body.id),
+      ).toEqual({ execution_identity_json: JSON.stringify({ provider: "codex", agent_id: "thread-header", session_id: null }) });
     } finally {
       await new Promise<void>((resolve, reject) => {
         server.close((error) => error ? reject(error) : resolve());
@@ -656,8 +656,8 @@ describe("work unit routes", () => {
       expect(response.status).toBe(201);
       const body = response.body as { id: string };
       expect(
-        db.prepare("SELECT provider, provider_session_id FROM work_units WHERE id = ?").get(body.id),
-      ).toEqual({ provider: null, provider_session_id: null });
+        db.prepare("SELECT execution_identity_json FROM work_units WHERE id = ?").get(body.id),
+      ).toEqual({ execution_identity_json: null });
     } finally {
       if (original === undefined) {
         delete process.env.CODEX_THREAD_ID;

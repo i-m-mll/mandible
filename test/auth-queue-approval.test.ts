@@ -781,7 +781,7 @@ describe("auth queue", () => {
           (id, issue_id, repo_id, branch, kind, state, created_at, activated_at, last_commit_at,
            ledger_issue_id, owner_user_id, responsibility_session_id, custody_generation)
          VALUES (?, 'abc1234', ?, ?, 'solo', 'committed', 1, 1, 1, ?, ?, ?, 1)`,
-      ).run(`wu-${branch}`, project.project.id, branch, issue.id, agent.id, null);
+      ).run(`wu-${branch}`, project.project.id, branch, issue.id, agent.id, "agent:codex:cmd-norm-session");
     }
     const router = authenticatedTestRouter(agent, { credentialId: credential.id });
     const queue = new AuthQueue({
@@ -807,9 +807,10 @@ describe("auth queue", () => {
             ...submission,
             title: `Merge ${submission.head_branch}`,
             cwd: repo,
-            session_id: "cmd-norm-session",
+            session_id: "agent:codex:cmd-norm-session",
             issue_references: ["abc1234"],
           },
+          ambient_identity: { provider: "codex", agent_id: "cmd-norm-session", session_id: null },
         });
         expect(result.status, JSON.stringify(result.body)).toBe(201);
         const requestId = (result.body as { request_id: string }).request_id;

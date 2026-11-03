@@ -1,3 +1,4 @@
+import { exactAgentRef } from "../ambient-provider-identity.js";
 import { attributionForRequest } from "../client-auth/authz.js";
 import { responsibilityActor, holdsResponsibility, sessionResponsibilityActor } from "../responsibility.js";
 import type { LedgerReader } from "../ledger-reads/index.js";
@@ -954,7 +955,7 @@ function resolveAuthRequester(
   const ambientIdentity = req.ambient_identity ?? null;
   const sessionResolution = payload.session_id
     ? ambientIdentity
-      ? payload.session_id === ambientIdentity.provider_session_id
+      ? (payload.session_id === exactAgentRef(ambientIdentity) || payload.session_id === ambientIdentity.agent_id || (ambientIdentity.provider !== "claude" && payload.session_id === ambientIdentity.session_id))
         ? resolveProviderSessionAttributionResult(db, ambientIdentity.provider)
         : { status: "conflict" as const }
       : resolveSessionIdAttributionResult(db, payload.session_id)

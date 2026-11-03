@@ -35,11 +35,8 @@ describe("conversation metadata CLI", () => {
     const spool = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-conversation-current-cli-"));
     tempRoots.push(spool);
     const responder = startFileRpcResponder(spool, (request) => {
-      if (request.method === "GET" && String(request.path).includes("session_id=thread-1")) {
-        return { status: 200, body: { conversations: [
-          { id: "parent", parent_conversation_id: null, is_sidechain: false },
-          { id: "orphan", parent_conversation_id: null, is_sidechain: true },
-        ] } };
+      if (request.method === "GET" && String(request.path).includes("resolve-target?session=")) {
+        return { status: 200, body: { status: "ambiguous" } };
       }
       return { status: 500, body: { error: "unexpected mutation" } };
     });
@@ -56,15 +53,35 @@ describe("conversation metadata CLI", () => {
     }
   });
 
+  it("targets the exact current Claude child and refuses enclosing-session-only context", async () => {
+    const spool = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-exact-current-cli-")); tempRoots.push(spool);
+    const responder = startFileRpcResponder(spool, request => {
+      if (request.method === "GET" && request.path === "/api/conversations/resolve-target?session=agent%3Aclaude%3Aenclosing%3Achild")
+        return { status: 200, body: { status: "resolved", selection: { type: "conversation", id: "exact-child" } } };
+      if (request.method === "PATCH" && request.path === "/api/conversations/exact-child")
+        return { status: 200, body: { id: "exact-child", starred: true } };
+      return { status: 500, body: { error: "unexpected target" } };
+    });
+    try {
+      const env = { MANDIBLE_BASE: `file://${spool}`, MANDIBLE_FILE_RPC_TIMEOUT: "5", CODEX_THREAD_ID: "",
+        MANDIBLE_EXECUTION_CONTEXT: JSON.stringify({ provider: "claude", agent_id: "child", session_id: "enclosing" }) };
+      expect((await run(["conversations", "star", "--current", "--json"], env)).status).toBe(0);
+      expect((await run(["conversations", "star", "--current"], { ...env,
+        MANDIBLE_EXECUTION_CONTEXT: JSON.stringify({ provider: "claude", agent_id: null, session_id: "enclosing" }) })).status).toBe(2);
+      expect(responder.requests.filter(request => request.method === "PATCH").map(request => request.path))
+        .toEqual(["/api/conversations/exact-child"]);
+    } finally { responder.stop(); }
+  });
+
   it("fails an explicit ref when the exact id and exact provider session identify different conversations", async () => {
     const spool = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-conversation-explicit-cli-"));
     tempRoots.push(spool);
     const responder = startFileRpcResponder(spool, (request) => {
-      if (request.method === "GET" && request.path === "/api/conversations/shared") {
-        return { status: 200, body: { conversation: { id: "shared" } } };
+      if (request.method === "GET" && request.path === "/api/conversations/resolve-target?conversation=shared") {
+        return { status: 200, body: { status: "resolved", selection: { type: "conversation", id: "shared" } } };
       }
-      if (request.method === "GET" && String(request.path).includes("session_id=shared")) {
-        return { status: 200, body: { conversations: [{ id: "other" }] } };
+      if (request.method === "GET" && request.path === "/api/conversations/resolve-target?session=shared") {
+        return { status: 200, body: { status: "resolved", selection: { type: "conversation", id: "other" } } };
       }
       return { status: 500, body: { error: "unexpected mutation" } };
     });
@@ -88,16 +105,12 @@ describe("conversation metadata CLI", () => {
       id: "parent", source: "claude_code", session_id: "thread-1", title: "Parent",
       parent_conversation_id: null, is_sidechain: false, starred: false, tags: [], notes: null,
     };
-    const children = ["child-1", "child-2"].map((id) => ({
-      id, source: "claude_code", session_id: "thread-1", title: id,
-      parent_conversation_id: "parent", is_sidechain: true,
-    }));
     const responder = startFileRpcResponder(spool, (request) => {
-      if (request.method === "GET" && request.path === "/api/conversations/thread-1") {
-        return { status: 404, body: { error: "not found" } };
+      if (request.method === "GET" && request.path === "/api/conversations/resolve-target?conversation=thread-1") {
+        return { status: 200, body: { status: "not_found" } };
       }
-      if (request.method === "GET" && String(request.path).includes("session_id=thread-1")) {
-        return { status: 200, body: { conversations: [parent, ...children] } };
+      if (request.method === "GET" && String(request.path).includes("resolve-target?session=")) {
+        return { status: 200, body: { status: "resolved", selection: { type: "conversation", id: "parent" } } };
       }
       if (request.method === "PATCH" && request.path === "/api/conversations/parent") {
         return { status: 200, body: { ...parent, starred: true } };
@@ -113,7 +126,7 @@ describe("conversation metadata CLI", () => {
       expect((await run(["conversations", "star", "thread-1", "--json"], baseEnv)).status).toBe(0);
       expect((await run(["conversations", "star", "--current", "--json"], {
         ...baseEnv,
-        CLAUDE_SESSION_ID: "thread-1",
+        CLAUDE_SESSION_ID: "thread-1", CLAUDE_AGENT_ID: "thread-1",
       })).status).toBe(0);
       expect(responder.requests.filter((request) => request.method === "PATCH").map((request) => request.path))
         .toEqual(["/api/conversations/parent", "/api/conversations/parent"]);

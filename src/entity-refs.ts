@@ -336,7 +336,7 @@ function sessionAliasRecorded(db: Db, alias: string): boolean {
 /** A session alias, completed to the full alias its prefix names. */
 function resolveSessionAliasRef(db: Db, ref: string): RefResolution {
   const trimmed = ref.trim();
-  if (sessionAliasRecorded(db, trimmed)) return { ok: true, id: trimmed };
+  if (sessionAliasRecorded(db, trimmed) && resolveSessionAlias(db, trimmed)) return { ok: true, id: trimmed };
   const resolved = resolveSessionRef(db, trimmed);
   if (resolved.status === "resolved") return { ok: true, id: resolved.resolution.supplied_id };
   if (resolved.status === "ambiguous") {

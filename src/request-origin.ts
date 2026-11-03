@@ -1,12 +1,9 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { normalizeAmbientProviderIdentity } from "./ambient-provider-identity.js";
+import { normalizeAmbientProviderIdentity, type AmbientProviderIdentity } from "./ambient-provider-identity.js";
 import type { Db } from "./db.js";
 
 /** Claimed native provenance only. Never authentication or approval authority. */
-export interface RequestOrigin {
-  readonly provider: string;
-  readonly provider_session_id: string;
-}
+export type RequestOrigin = Readonly<AmbientProviderIdentity>;
 
 const origins = new AsyncLocalStorage<RequestOrigin | null>();
 
@@ -26,7 +23,10 @@ export function requestOriginForRequest(
     ? resolveManaged(request.local_managed_identity) : null;
   if (resolution?.status === "conflict") return null;
   const managed = resolution?.status === "resolved" ? resolution.origin : null;
-  if (identity && managed && (identity.provider !== managed.provider || identity.provider_session_id !== managed.provider_session_id)) return null;
+  if (identity && managed && identity.provider !== managed.provider) return null;
+  if (identity?.provider === "codex") return Object.freeze(identity);
+  if (identity && managed && (identity.provider !== managed.provider || (identity.session_id && managed.session_id && identity.session_id !== managed.session_id) || (identity.agent_id && managed.agent_id && identity.agent_id !== managed.agent_id))) return null;
+  if (identity && managed) return Object.freeze({ provider: identity.provider, agent_id: identity.agent_id ?? managed.agent_id, session_id: identity.session_id ?? managed.session_id });
   if (managed) return Object.freeze(managed);
   return identity ? Object.freeze(identity) : null;
 }
@@ -44,7 +44,8 @@ export function resolveManagedRequestOrigin(db: Db, managed: ManagedIdentity): M
   const ids = new Set([registered?.conversation_id, ...candidates.map(row => row.provider_session_id)]
     .filter((id): id is string => typeof id === "string" && id.trim().length > 0).map(id => id.trim()));
   if (ids.size > 1) return { status: "conflict" };
-  const origin = ids.size === 1 ? normalizeAmbientProviderIdentity({ provider: managed.app_name, provider_session_id: [...ids][0] }) : null;
+  if (managed.app_name === "codex") return { status: "unknown" };
+  const origin = ids.size === 1 ? normalizeAmbientProviderIdentity({ provider: managed.app_name, agent_id: null, session_id: [...ids][0] }) : null;
   return origin ? { status: "resolved", origin } : { status: "unknown" };
 }
 

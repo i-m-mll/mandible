@@ -1,6 +1,7 @@
 {
   "schema_version": 2,
   "commands": {
+    "hook.pre-tool-use": {"route":["hook","pre-tool-use"],"grammar":{"kind":"sequence","items":[]}},
     "hook.session-start": {"route":["hook","session-start"],"grammar":{"kind":"sequence","items":[]}},
     "hook.session-end": {"route":["hook","session-end"],"grammar":{"kind":"sequence","items":[]}},
     "hook.subagent-start": {"route":["hook","subagent-start"],"grammar":{"kind":"sequence","items":[]}},

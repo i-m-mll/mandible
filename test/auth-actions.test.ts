@@ -311,7 +311,7 @@ describe("auth request action execution", () => {
       hooks.listRuns = () => [];
       hooks.listRequestIdsWithRunnableHooks = () => [];
       queue = new AuthQueue({ db, hookManager: hooks, now: () => 40_000, backgroundMaintenance: false });
-      const origin = { provider: "codex", provider_session_id: "queued-closure-origin" };
+      const origin = { provider: "codex", agent_id: "queued-closure-origin", session_id: null };
       const request = await withRequestOrigin(origin, () => submitActionMerge(queue!, {
         type: "merge", command: "mandible auth merge feature/bulk-close --into main",
         title: "Release bulk closures", cwd: repoRoot, repo: path.basename(repoRoot),

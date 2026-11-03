@@ -187,6 +187,8 @@ describe("indexed child retention", () => {
     const chat = await child("claude_code", "worker");
     db.prepare(`INSERT INTO work_units(id,issue_id,repo_id,state,worker_provider,worker_provider_session_id,created_at)
       VALUES('done','','mandible','resolved','claude_code',?,1),('held','','mandible','open','claude_code',?,1)`).run(chat.nativeId, chat.nativeId);
+    db.prepare("UPDATE work_units SET worker_agent_ref = ?, assignment_target_json = ? WHERE id IN ('done', 'held')")
+      .run(`agent:claude:${chat.nativeId}:${chat.nativeId}`, JSON.stringify({ kind: "native", agent_ref: `agent:claude:${chat.nativeId}:${chat.nativeId}` }));
     expect(scheduleResolvedWorkerArchive(db, "claude_code", chat.nativeId, clock)).toBe(false);
     db.prepare("UPDATE work_units SET state='resolved' WHERE id='held'").run();
     expect(scheduleResolvedWorkerArchive(db, "claude_code", chat.nativeId, clock)).toBe(true);
@@ -201,6 +203,8 @@ describe("indexed child retention", () => {
     const codex = await child("codex", "worker");
     db.prepare(`INSERT INTO work_units(id,issue_id,repo_id,state,worker_provider,worker_provider_session_id,created_at)
       VALUES('changing','','mandible','resolved','codex',?,1)`).run(codex.nativeId);
+    db.prepare("UPDATE work_units SET worker_agent_ref = ?, assignment_target_json = ? WHERE id = 'changing'")
+      .run(`agent:codex:${codex.nativeId}`, JSON.stringify({ kind: "native", agent_ref: `agent:codex:${codex.nativeId}` }));
     expect(scheduleResolvedWorkerArchive(db, "codex", codex.nativeId, clock)).toBe(true);
     const race = scheduler({ ensureFresh: async () => ({ conversationId: codex.id, sourceId: "source", sourcePath: codex.file, refreshed: false }),
       pendingNativeQueue: async () => { db.prepare("UPDATE work_units SET state='open' WHERE id='changing'").run(); return { status: "known", pending: false }; },

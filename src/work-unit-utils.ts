@@ -1,3 +1,4 @@
+import { normalizeAmbientProviderIdentity, parseExactAgentRef } from "./ambient-provider-identity.js";
 import { parseAssignmentTarget } from "./work-unit-assignment.js";
 // Bug: f3dbb3e — shared work-unit liveness computation.
 // Canonical mapWorkUnitRow, computeWorkUnitLiveness, and enrichWithLiveness used by
@@ -32,6 +33,8 @@ export function mapWorkUnitRow(row: Record<string, unknown>): WorkUnit {
     state: (row.state as WorkUnit["state"]) ?? "open",
     assigned_session_id: normalizeWorkUnitSessionId(row.assigned_session_id),
     assignment_target: parseAssignmentTarget(row.assignment_target_json),
+    legacy_assignment_target: typeof row.legacy_assignment_target_json === "string" ? JSON.parse(row.legacy_assignment_target_json) : null,
+    execution_identity: normalizeAmbientProviderIdentity(typeof row.execution_identity_json === "string" ? JSON.parse(row.execution_identity_json) : null),
     provider: typeof row.provider === "string" && row.provider.trim() ? row.provider : null,
     provider_session_id: normalizeWorkUnitSessionId(row.provider_session_id),
     worker_provider: typeof row.worker_provider === "string" ? row.worker_provider : null,
@@ -58,10 +61,9 @@ export function normalizeWorkUnitSessionId(value: unknown): string | null {
 
 /** The session identities a work unit names, strongest claim first. */
 export function workUnitSessionIds(workUnit: WorkUnit): string[] {
-  const assigned = [workUnit.assigned_session_id, workUnit.assignment_target?.session_id, workUnit.worker_provider_session_id]
-    .filter((value): value is string => Boolean(value));
-  return [...new Set(assigned.length ? assigned : [workUnit.provider_session_id]
-    .filter((value): value is string => Boolean(value)))];
+  if (workUnit.assignment_target?.kind === "native") return [workUnit.assignment_target.agent_ref];
+  if (workUnit.assignment_target?.kind === "alias") return [workUnit.assignment_target.session_id];
+  return [];
 }
 
 interface BranchSession { id: string; status: string; last_active: string | null }
@@ -86,7 +88,7 @@ function readWorkUnitBranchSources(
   workUnits: readonly WorkUnit[],
 ): Pick<WorkUnitLivenessSnapshot, "branchSessions" | "consoles"> {
   const branches = [...new Set(workUnits
-    .filter((workUnit) => workUnitSessionIds(workUnit).length === 0 && workUnit.branch)
+    .filter((workUnit) => workUnitSessionIds(workUnit).length === 0 && !workUnit.assigned_session_id && !workUnit.legacy_assignment_target && workUnit.branch)
     .map((workUnit) => workUnit.branch!))];
   const byBranch = new Map<string, BranchSession>();
   const consoles = new Map<string, string>();
@@ -138,7 +140,7 @@ function livenessFromSources(
   sessionManager?: SessionManager,
 ): WorkUnitLiveness {
   const noLiveness: WorkUnitLiveness = {
-    state: "stopped",
+    state: workUnit.assignment_target || workUnit.legacy_assignment_target || workUnit.assigned_session_id ? "unknown" : "stopped",
     agent_session_id: null,
     agent_status: null,
     is_processing: false,
@@ -152,7 +154,7 @@ function livenessFromSources(
   for (const id of identityCandidates) {
     const resolution = sources.resolveSession(id);
     if (!resolution) continue;
-    const targetProvider = workUnit.assignment_target?.kind === "native" ? workUnit.assignment_target.provider : null;
+    const targetProvider = workUnit.assignment_target?.kind === "native" ? parseExactAgentRef(workUnit.assignment_target.agent_ref)?.provider : null;
     const bindingProvider = targetProvider ?? workUnit.worker_provider;
     const provider = bindingProvider === "claude_code" ? "claude" : bindingProvider
       ?? (workUnit.assigned_session_id || workUnit.assignment_target ? null : workUnit.provider);
@@ -188,7 +190,7 @@ function livenessFromSources(
 
   // An explicit provider identity is authoritative. Falling back to a session
   // that merely shares the branch would silently substitute another agent.
-  if (identityCandidates.length > 0 || !workUnit.branch) {
+  if (identityCandidates.length > 0 || workUnit.legacy_assignment_target || workUnit.assigned_session_id || !workUnit.branch) {
     return noLiveness;
   }
 

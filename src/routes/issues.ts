@@ -1,3 +1,5 @@
+import { parseAssignmentTarget, resolveAssignmentTarget } from "../work-unit-assignment.js";
+import { exactAgentRef } from "../ambient-provider-identity.js";
 import { listIssueHierarchyEdges } from "../ledger/issue-graph.js";
 import { responsibilityActor, sameResponsibilitySession, sessionResponsibilityActor } from "../responsibility.js";
 import type { LedgerReader } from "../ledger-reads/index.js";
@@ -11,7 +13,7 @@ import {
   type LivenessState,
   type SessionAliasResolver,
 } from "../session-liveness.js";
-import { summarizeSessionKey } from "../session-summary.js";
+import { sessionConversationTarget, summarizeSessionKey } from "../session-summary.js";
 import { mapWorkUnitRow, computeWorkUnitLiveness } from "../work-unit-utils.js";
 import { ledgerIssueLifecycleError, LedgerSingletonKindError, LedgerStore, storedWorkerStatusError } from "../ledger/store.js";
 import type { AttributionContext } from "../identity/resolver.js";
@@ -915,7 +917,7 @@ export function registerIssueRoutes(
       : freshSessionAliasResolver((resolve) => {
         const db = getDb();
         currentParentRoleHolder(db, issueId, resolve);
-        if (req.ambient_identity?.provider_session_id) resolve(db, req.ambient_identity.provider_session_id);
+        if (req.ambient_identity) { const ref = exactAgentRef(req.ambient_identity); if (ref) resolve(db, ref); }
       });
 
   // GET /api/issues — list repo summaries with optional filtering
@@ -1120,7 +1122,9 @@ export function registerIssueRoutes(
 
   server.post("/api/ledger/issues/:issueId/parent-role", async (req, res) => {
     const body = getBody(req) ?? {};
-    const sessionId = typeof body.session_id === "string" ? body.session_id.trim() : "";
+    const selectedSessionId = typeof body.session_id === "string" ? body.session_id.trim() : "";
+    const caller = responsibilityActor(req);
+    const sessionId = selectedSessionId === req.ambient_identity?.agent_id ? caller.session_id ?? selectedSessionId : selectedSessionId;
     const mechanism = typeof body.mechanism === "string" && body.mechanism.trim()
       ? body.mechanism.trim()
       : "unknown";
@@ -1152,9 +1156,7 @@ export function registerIssueRoutes(
     const successor = handingOff ? sessionResponsibilityActor(db, sessionId) : actor;
     if (!successor) { sendJson(res, 400, { error: "Successor user is unresolved." }); return; }
     const checkpoint = recordParentRoleCheckpoint(req, issueId, (now) => ({
-      // `session_id` stays exactly what the caller supplied; existing readers
-      // (including the archive path's holder protection) depend on it.
-      session_id: sessionId,
+      session_id: resolution.agent_ref ?? sessionId,
       resolved_session_id: resolution.mandible_session_id,
       console_session_id: resolution.console_session_id,
       provider: resolution.provider,
@@ -1166,7 +1168,7 @@ export function registerIssueRoutes(
       previous_holder: holder,
       // Current responsibility is independent of the checkpoint author.
       authenticated_user_id: successor.user_id,
-      responsibility_session_id: resolution.provider_session_id ?? sessionId,
+      responsibility_session_id: successor.session_id,
     }));
     sendJson(res, 200, {
       ok: true,
@@ -1192,7 +1194,7 @@ export function registerIssueRoutes(
     const checkpoint = recordParentRoleCheckpoint(req, issueId, (now) => ({
       released: true,
       released_at: now,
-      released_by_session_id: req.ambient_identity?.provider_session_id ?? null,
+      released_by_session_id: responsibilityActor(req).session_id,
       reason: body.reason,
       authority: "relinquishment",
       previous_holder: holder,
@@ -2278,16 +2280,14 @@ export function registerIssueRoutes(
     const row = readUnit();
     if (!row || !["open", "committed"].includes(String(row.state))) return sendJson(res, 409, { error: "work_unit_unavailable" });
     if (row.custody_generation !== body.expected_custody_generation) return sendJson(res, 409, { error: "custody_generation_conflict" });
-    const assignment = typeof row.assigned_session_id === "string" ? sessionAliasResolver(db, row.assigned_session_id) : null;
-    const nativeId = assignment?.provider_session_id;
-    if (!nativeId) return sendJson(res, 422, { error: "assigned_conversation_unavailable", message: "This work unit has no exact assigned native conversation." });
-    const conversations = db.prepare("SELECT id, source, cwd FROM conversations WHERE session_id = ? AND parent_conversation_id IS NULL").all(nativeId) as { id: string; source: string; cwd: string | null }[];
+    const assignment = resolveAssignmentTarget(db, parseAssignmentTarget(row.assignment_target_json));
+    if (!assignment) return sendJson(res, 422, { error: "assigned_conversation_unavailable", message: "This work unit has no exact assigned native conversation." });
+    const target = sessionConversationTarget(assignment.agent_ref);
+    const conversations = db.prepare(`SELECT c.id, c.source, c.cwd FROM conversations c WHERE ${target.where}`)
+      .all(...target.params) as { id: string; source: string; cwd: string | null }[];
     if (conversations.length !== 1) return sendJson(res, 409, { error: "assigned_conversation_ambiguous" });
     const conversation = conversations[0];
-    const normalizeProvider = (value: unknown) => value === "claude" || value === "claude_code" ? "claude_code" : value;
-    if (normalizeProvider(assignment.provider) !== conversation.source || row.provider && normalizeProvider(row.provider) !== conversation.source) {
-      return sendJson(res, 409, { error: "assigned_provider_conflict" });
-    }
+    if (assignment.provider !== conversation.source) return sendJson(res, 409, { error: "assigned_provider_conflict" });
     const repo = workScanner.getRepos().find(value => value.id === repoId);
     const checkout = repo && typeof row.branch === "string" ? workScanner.getBranches(repo.root).find(value => value.branch === row.branch)?.worktree_path : null;
     if (!checkout || !existsSync(checkout)) return sendJson(res, 409, { error: "assigned_checkout_unavailable", message: "Restore the assigned branch checkout before resuming." });

@@ -19,11 +19,11 @@ function fixture() {
   write('package.json', '{"type":"module"}');
   const config = (rootDir, outDir, noEmit = false) => JSON.stringify({ compilerOptions: { target: 'ES2022', module: 'ESNext', types: [], strict: true, declaration: true, rootDir, outDir, noEmit }, include: [rootDir] });
   write('tsconfig.json', config('src', 'dist'));
-  write('channel-server/tsconfig.json', config('src', '../dist/channel-server'));
+  write('channel-server/tsconfig.json', JSON.stringify({ ...JSON.parse(config('..', '../dist/channel-server')), include: ['index.ts'] }));
   write('ui/tsconfig.json', config('src', 'dist', true));
   write('src/index.ts', 'export const value: number = 1;');
   write('src/obsolete.ts', 'export const obsolete = true;');
-  write('channel-server/src/index.ts', 'export const channel = true;');
+  write('channel-server/index.ts', "import {value} from '../src/index'; export const channel = true; console.log(value);");
   write('ui/src/index.ts', 'export const ui = true;');
   write('ui/esbuild.config.js', "import {build} from 'esbuild'; await build({entryPoints:['ui/src/index.ts'],outdir:'ui/dist'});");
   for (const args of [['init'], ['add', '.'], ['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-m', 'fixture']]) {
@@ -49,6 +49,7 @@ test('analysis caches preserve fresh complete emitted outputs through edits and 
   fs.rmSync(path.join(root, 'dist/channel-server/index.js'));
   await sourceBuild(root);
   expect(read('dist/index.js')).toContain('value = 2');
+  expect(read('dist/channel-server/index.js')).toContain('value = 2');
   expect(fs.existsSync(path.join(root, 'dist/obsolete.js'))).toBe(false);
   expect(read('dist/channel-server/index.js')).toContain('channel = true');
   write('ui/src/index.ts', 'export const ui: number = "invalid";');
