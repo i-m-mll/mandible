@@ -997,6 +997,8 @@ function inspectMerge(db: Db, sourceId: string, targetId: string, repositories: 
     ON b.project_id=? AND b.alias_kind=a.alias_kind AND b.alias=a.alias WHERE a.project_id=?`, "Alias unique key collides; neither row may be discarded");
   clashes("association", `SELECT a.id value FROM project_artifact_associations a JOIN project_artifact_associations b
     ON b.project_id=? AND b.target_type=a.target_type AND b.target_id=a.target_id AND b.role=a.role WHERE a.project_id=?`, "Artifact association unique key collides");
+  clashes("association", `SELECT a.root value FROM ledger_project_historical_roots a JOIN ledger_project_historical_roots b
+    ON b.project_id=? AND b.root=a.root WHERE a.project_id=?`, "Historical root association evidence must be reconciled before merging projects");
   for (const kind of SINGLETON_OPEN_ISSUE_KINDS) {
     const rows = db.prepare(`SELECT id FROM ledger_issues WHERE project_id IN (?,?) AND kind=? AND status='open' AND deleted_at IS NULL`).all(sourceId, targetId, kind);
     if (rows.length > 1) conflicts.push({ kind: "singleton", value: kind, count: rows.length, detail: "Only one open issue of this kind is permitted per project" });

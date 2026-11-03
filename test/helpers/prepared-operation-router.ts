@@ -1,3 +1,4 @@
+import { HistoricalRootRequestSchema } from '../../src/ledger/historical-roots.js';
 import { DOMAIN_EVENT_SCHEMA } from "../../src/contracts.js";
 import { RepairOptionsSchema } from "../../src/ledger/project-registry.js";
 import { CHANNEL_CONTEXT_SCHEMA } from "../../src/routes/channel.js";
@@ -21,10 +22,10 @@ const noDatabase = () => { throw new Error("Persisted import effects require an 
 function descriptorFactory(prepared: PreparedOperationRouter): DescriptorFactory {
   const cached = factories.get(prepared);
   if (cached) return cached;
-  const evaluate = new Function("z", "isInlineManagedArtifactByteRequest", "documentArtifactImportEffects", "documentHistoryImportEffects", "getDb", "discoverModels", "CHILD_RETENTION_SETTINGS_SCHEMA", "INTEGRATION_ACTION", "RepairOptionsSchema", "CHANNEL_CONTEXT_SCHEMA", "DOMAIN_EVENT_SCHEMA",
+  const evaluate = new Function("z", "isInlineManagedArtifactByteRequest", "documentArtifactImportEffects", "documentHistoryImportEffects", "getDb", "discoverModels", "CHILD_RETENTION_SETTINGS_SCHEMA", "INTEGRATION_ACTION", "RepairOptionsSchema", "CHANNEL_CONTEXT_SCHEMA", "DOMAIN_EVENT_SCHEMA", "HistoricalRootRequestSchema",
     prepared.descriptorFactoryBody);
   const factory: DescriptorFactory = discoverModels => evaluate(z, isInlineManagedArtifactByteRequest,
-    documentArtifactImportEffects, documentHistoryImportEffects, noDatabase, discoverModels, CHILD_RETENTION_SETTINGS_SCHEMA, INTEGRATION_ACTION, RepairOptionsSchema, CHANNEL_CONTEXT_SCHEMA, DOMAIN_EVENT_SCHEMA);
+    documentArtifactImportEffects, documentHistoryImportEffects, noDatabase, discoverModels, CHILD_RETENTION_SETTINGS_SCHEMA, INTEGRATION_ACTION, RepairOptionsSchema, CHANNEL_CONTEXT_SCHEMA, DOMAIN_EVENT_SCHEMA, HistoricalRootRequestSchema);
   factories.set(prepared, factory);
   return factory;
 }

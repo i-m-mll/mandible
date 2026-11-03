@@ -1496,6 +1496,19 @@
         ]
       }
     },
+    "project.historical-root": {
+      "route": ["project", "historical-root"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind":"argument","name":"ref","value":{"type":"string"}},
+          {"kind":"argument","name":"root","value":{"type":"string"}},
+          {"kind":"option","names":["--evidence"],"values":[{"kind":"argument","name":"reference","value":{"type":"string"}}]},
+          {"kind":"optional","item":{"kind":"sequence","items":[{"kind":"option","names":["--apply"],"values":[]}]}},
+          {"kind":"optional","item":{"kind":"sequence","items":[{"kind":"option","names":["--json"],"values":[]}]}}
+        ]
+      }
+    },
     "project.audit": {
       "route": ["project", "audit"],
       "grammar": {

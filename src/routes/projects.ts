@@ -16,6 +16,7 @@ import type { LedgerNamespacePolicy } from "../ledger/types.js";
 import type { ResponseLike, RouteRegistrar } from "../server.js";
 import { bodyRecord, sendJson } from "./http.js";
 import { ClientAuthzError, requireOperator } from "../client-auth/authz.js";
+import { backfillHistoricalProjectRoot, HistoricalRootRequestSchema } from '../ledger/historical-roots.js';
 
 function optionalString(body: Record<string, unknown>, key: string): string | undefined {
   const value = body[key];
@@ -67,6 +68,12 @@ function projectUpdateInput(body: Record<string, unknown>): AddOrUpdateProjectIn
 }
 
 export function registerProjectRoutes(router: RouteRegistrar): void {
+  router.post('/api/projects/:ref/historical-roots',(req,res)=>{
+    const parsed=HistoricalRootRequestSchema.safeParse(bodyRecord(req));
+    if(!parsed.success) return sendJson(res,400,{code:'invalid_request',error:parsed.error.message});
+    const result=backfillHistoricalProjectRoot(getDb(),req.params.ref,parsed.data);
+    return result.ok ? sendJson(res,200,{report:result.value}) : sendJson(res,result.error.code==='not_found' ? 404 : 400,{...result.error,error:result.error.message});
+  },{operation:{id:'post:/api/projects/:ref/historical-roots',effects:({body})=>(body as {apply?:boolean}).apply===true ? ['ledger:write'] : ['ledger:read'],requestSchema:HistoricalRootRequestSchema,reportingCategory:'projects'},fileRpc:'allow'});
   // Literal subpaths must register before /api/projects/:ref so they are not
   // shadowed by the param route.
   router.get("/api/projects/audit", (_req, res) => {

@@ -1,0 +1,50 @@
+import { randomUUID } from 'node:crypto';
+import { expect,it } from 'vitest';
+import { createMigratedDb } from './helpers/ledger-fixtures.js';
+import { addProject,addOrUpdateCheckout,listProjects,resolveProjectRef } from '../src/ledger/project-registry.js';
+import { registerProjectRoutes } from '../src/routes/projects.js';
+import { registerConversationRoutes } from '../src/routes/conversations.js';
+import { inlineLedgerReader } from '../src/ledger-reads/index.js';
+import { Router } from '../src/server.js';
+import { ConversationSpawnService } from '../src/conversation-spawn/service.js';
+import { CONVERSATION_SPAWN_REQUEST_SCHEMA } from '../src/conversation-spawn/types.js';
+
+it('associates evidenced histories through sidebar resolution without granting checkout launch authority',async()=>{
+  const db=createMigratedDb({setGlobal:true});
+  try {
+    const project=addProject(db,{project_key:'moved'});
+    const checkout=addOrUpdateCheckout(db,project.id,{root:'/new/moved'}).checkout;
+    const insert=db.prepare("INSERT INTO conversations(id,source,source_path,source_hash,source_mtime,title,started_at,session_id,cwd,block_count) VALUES (?,'codex',?,'hash',1,'conversation','2026-10-01',?,?,1)");
+    for(const [id,cwd] of [['old','/old/moved/worktrees/topic'],['earlier','/earlier/moved'],['neighbor','/old/moved-other'],['current','/new/moved']]) insert.run(id,`/native/${id}`,id,cwd);
+    const router=new Router();registerProjectRoutes(router);registerConversationRoutes(router,inlineLedgerReader());
+    const url=`/api/projects/${project.id}/historical-roots`;
+    const body={root:'/old/moved/',evidence:'Verified project relocation receipt'};
+    const dry=await router.invoke({method:'POST',url,body});
+    expect(dry.status).toBe(200);
+    expect(dry.body).toMatchObject({report:{applied:false,sidebar_conversations:{before:1,after:2,newly_associated:1}}});
+    expect(db.prepare('SELECT root FROM ledger_project_historical_roots').all()).toEqual([]);
+    expect((await router.invoke({method:'POST',url,body:{...body,apply:true}})).status).toBe(200);
+    await router.invoke({method:'POST',url,body:{root:'/earlier/moved',evidence:'Earlier verified relocation',apply:true}});
+    const repeat=await router.invoke({method:'POST',url,body:{...body,apply:true}});
+    expect(repeat.body).toMatchObject({report:{existing:true,sidebar_conversations:{changed:0}}});
+    const page=await router.invoke({method:'GET',url:`/api/conversations/sidebar?project_ids=${project.id}&exclude_subagents=true&limit=1`});
+    const groups=(page.body as {groups:Array<{kind:string;total:number;next_cursor:string|null;conversations:Array<{id:string}>}>}).groups;
+    const scoped=groups.find(group=>group.kind==='project')!;
+    expect(scoped.total).toBe(3);expect(scoped.conversations).toHaveLength(1);expect(scoped.next_cursor).not.toBeNull();
+    expect(groups.find(group=>group.kind==='chats')?.conversations.map(row=>row.id)).toEqual(['neighbor']);
+    expect(db.prepare('SELECT cwd FROM conversations WHERE id=?').get('old')).toEqual({cwd:'/old/moved/worktrees/topic'});
+    expect(listProjects(db).find(candidate=>candidate.id===project.id)?.checkouts.map(item=>item.root)).toEqual(['/new/moved']);
+    expect(resolveProjectRef(db,'/old/moved').ok).toBe(false);
+    const service=new ConversationSpawnService(db);
+    const reserve=(checkoutId:string)=>service.reserve({schema:CONVERSATION_SPAWN_REQUEST_SCHEMA,idempotency_key:randomUUID(),provider:'codex',placement:{kind:'project',project_id:project.id,checkout_id:checkoutId}});
+    expect(reserve('/old/moved')).toMatchObject({ok:false,error:{kind:'checkout-not-found'}});
+    expect(reserve(checkout.id).ok).toBe(true);
+    const other=addProject(db,{project_key:'other'});
+    addOrUpdateCheckout(db,other.id,{root:'/new/other'});
+    const ambiguous=await router.invoke({method:'POST',url:`/api/projects/${other.id}/historical-roots`,body:{...body,apply:true}});
+    expect(ambiguous.body).toMatchObject({report:{sidebar_conversations:{newly_associated:0,newly_unresolved:1}}});
+    const after=await router.invoke({method:'GET',url:`/api/conversations/sidebar?project_ids=${project.id},${other.id}&exclude_subagents=true&limit=10`});
+    const remaining=(after.body as {groups:Array<{kind:string;conversations:Array<{id:string}>}>}).groups.find(group=>group.kind==='chats')!;
+    expect(remaining.conversations.map(row=>row.id).sort()).toEqual(['neighbor','old']);
+  } finally {db.close();}
+});
