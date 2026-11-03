@@ -26,6 +26,8 @@ const require = createRequire(import.meta.url);
 const { liveDbPath } = require("../cli/mandible-paths.cjs");
 import SqliteDatabase from "../src/sqlite.ts";
 import { conversationStructureCachePath } from "../src/conversations/structure-cache-path.ts";
+import { projectConversationCache } from "../src/conversations/structure-cache.ts";
+import { projectLegacyConversationCache } from "../src/conversations/cache-transition.ts";
 
 const DEFAULT_PORT_START = 29421;
 const DEFAULT_PORT_END = 29499;
@@ -1630,6 +1632,8 @@ export async function createProjectedSnapshot({ sourceDb, dbCopy, worktree, allo
     sourceCache: sourceConversationStructureCachePath(sourceDb),
     targetCache: previewIsolationEnv(previewRoot, sourceDb).MANDIBLE_CONVERSATION_STRUCTURE_DB,
     projectedDb: dbCopy,
+    maxOutputBytes: allocation ? allocation.maxIntermediateBytes - allocation.currentBytes - fs.statSync(dbCopy).size : undefined,
+    reserveBytes: allocation?.reserveBytes,
   });
   const briefingDemo = await materializeProjectedBriefingDemo({
     worktree,
@@ -1645,61 +1649,58 @@ function sourceConversationStructureCachePath(sourceDb) {
   return conversationStructureCachePath(sourceDb, override);
 }
 
-/**
- * Copy the source daemon's derived coordinate index into preview custody.
- *
- * Preview creation copies the source index with its WAL, then restricts rows
- * to exact conversation/source-version pairs in the projected ledger. Existing
- * previews keep that private index across code refreshes because a selected
- * source read may have advanced it beyond main.
- */
-export async function seedProjectedConversationStructureCache({ sourceCache, targetCache, projectedDb, preserveExisting = false, signal }) {
+/** Copy only the exact ready generations owned by the projected ledger. */
+export async function seedProjectedConversationStructureCache({ sourceCache, targetCache, projectedDb, preserveExisting = false, signal, maxOutputBytes = Infinity, reserveBytes = 512 * 1024 * 1024 }) {
   targetCache = conversationStructureCachePath("", targetCache);
   const preserveTarget = preserveExisting && fs.existsSync(targetCache);
-  if (!preserveTarget && !fs.existsSync(sourceCache)) {
+  const legacySource = sourceCache.endsWith(".v19") ? `${sourceCache.slice(0, -4)}.v18` : null;
+  const sourceAvailable = fs.existsSync(sourceCache);
+  const legacyAvailable = legacySource && fs.existsSync(legacySource);
+  if (!preserveTarget && !sourceAvailable && !legacyAvailable) {
     return { status: "unavailable", source: sourceCache, target: targetCache, conversations: 0, blocks: 0 };
   }
   fs.mkdirSync(path.dirname(targetCache), { recursive: true });
+  const projected = new SqliteDatabase(projectedDb, { readonly: true, fileMustExist: true });
+  let manifests;
+  try {
+    manifests = projected.prepare(`SELECT source.conversation_id, source.current_version_id AS source_version_id,
+      source.parser_format, source.parser_version, source.normalization_version, source.redaction_epoch,
+      conversation.block_count FROM conversation_sources source JOIN conversations conversation
+      ON conversation.id = source.conversation_id WHERE source.current_version_id IS NOT NULL`).all();
+  } finally { projected.close(); }
   if (!preserveTarget) {
-    for (const candidate of [targetCache, `${targetCache}-journal`, `${targetCache}-wal`, `${targetCache}-shm`]) {
-      fs.rmSync(candidate, { force: true });
-    }
-
-    const source = new SqliteDatabase(sourceCache, { readonly: true, fileMustExist: true });
+    const stage = `${targetCache}.partial-${process.pid}-${randomUUID()}.v19`;
+    const volume = fs.statfsSync(path.dirname(targetCache));
+    const budget = Math.min(maxOutputBytes, Number(volume.bavail) * Number(volume.bsize) - reserveBytes);
+    if (budget < 64 * 1024) throw new Error('Insufficient allocation for projected conversation cache');
     try {
-      await source.backup(targetCache, { signal });
+      if (sourceAvailable) await projectConversationCache(sourceCache, stage, manifests, { signal, maxBytes: budget });
+      if (legacyAvailable) await projectLegacyConversationCache(legacySource, stage, projectedDb, { signal, maxBytes: budget });
+      signal?.throwIfAborted();
+      const fd = fs.openSync(stage, 'r');
+      try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+      fs.renameSync(stage, targetCache);
     } finally {
-      source.close();
+      for (const suffix of ['', '-wal', '-shm', '-journal']) fs.rmSync(`${stage}${suffix}`, { force: true });
     }
   }
-
   const target = new SqliteDatabase(targetCache);
   try {
-    target.pragma("foreign_keys = ON");
-    target.prepare("ATTACH DATABASE ? AS projected").run(projectedDb);
-    target.prepare(`
-      DELETE FROM cache_conversations
-       WHERE NOT EXISTS (
-         SELECT 1
-           FROM projected.conversations conversation
-           JOIN projected.conversation_sources source
-             ON source.conversation_id = conversation.id
-          WHERE conversation.id = cache_conversations.conversation_id
-            AND source.current_version_id = cache_conversations.source_version_id
-       )
-    `).run();
-    target.prepare("DETACH DATABASE projected").run();
-    if (!preserveTarget) target.exec("VACUUM");
-    return {
-      status: preserveTarget ? "preserved" : "seeded",
-      source: sourceCache,
-      target: targetCache,
-      conversations: Number(target.prepare("SELECT COUNT(*) AS count FROM cache_conversations").get().count),
-      blocks: Number(target.prepare("SELECT COUNT(*) AS count FROM cache_blocks").get().count),
-    };
-  } finally {
-    target.close();
-  }
+    target.pragma('foreign_keys = ON');
+    target.prepare('ATTACH DATABASE ? AS projected').run(projectedDb);
+    target.prepare(`DELETE FROM cache_conversations WHERE NOT EXISTS (
+      SELECT 1 FROM projected.conversation_sources source JOIN projected.conversations conversation
+      ON conversation.id = source.conversation_id WHERE source.conversation_id = cache_conversations.conversation_id
+      AND source.current_version_id = cache_conversations.source_version_id
+      AND source.parser_format = cache_conversations.parser_format AND source.parser_version = cache_conversations.parser_version
+      AND source.normalization_version = cache_conversations.normalization_version
+      AND source.redaction_epoch = cache_conversations.redaction_epoch AND conversation.block_count = cache_conversations.block_count
+    )`).run();
+    target.prepare('DETACH DATABASE projected').run();
+    return { status: preserveTarget ? 'preserved' : 'seeded', source: sourceCache, target: targetCache,
+      conversations: Number(target.prepare('SELECT count(*) AS count FROM cache_conversations WHERE ready = 1').get().count),
+      blocks: Number(target.prepare('SELECT count(*) AS count FROM cache_blocks').get().count) };
+  } finally { target.close(); }
 }
 
 /**

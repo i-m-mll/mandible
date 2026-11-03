@@ -301,7 +301,8 @@ it('wakes cache cleanup on coverage and reader exit, preserves mismatched identi
   const current = `${database}.conversation-structure.db.v19`;
   for (const [file, version] of [[obsolete, '18'], [current, '19']]) {
     const cache = new SqliteDatabase(file);
-    cache.exec(`CREATE TABLE cache_meta(key TEXT,value TEXT); INSERT INTO cache_meta VALUES('schema_version','${version}');`);
+    cache.exec(`CREATE TABLE cache_meta(key TEXT,value TEXT); INSERT INTO cache_meta VALUES('schema_version','${version}');
+      CREATE TABLE cache_conversations(cache_id INTEGER,conversation_id TEXT,source_version_id TEXT,parser_format TEXT,parser_version TEXT,normalization_version TEXT,redaction_epoch INTEGER,block_count INTEGER,ready INTEGER);`);
     cache.close();
   }
   fs.writeFileSync(f.file, JSON.stringify(journal));

@@ -839,7 +839,7 @@ async function retireConversationCache(journal) {
   const bytes = conversationCacheTransitionWake(journal);
   if (!bytes) throw new Error('Conversation cache conversion coverage is pending.');
   const receipt = JSON.parse(bytes);
-  if (receipt.schema !== 'mandible-conversation-cache-transition@1' || receipt.state !== 'coverage-complete'
+  if (receipt.schema !== 'mandible-conversation-cache-transition@1' || receipt.state !== 'coverage-complete' || receipt.targetFormat !== 19
       || receipt.ledger !== path.resolve(journal.database) || receipt.obsolete !== obsolete || receipt.current !== current
       || !Array.isArray(receipt.files) || receipt.files.length !== OBSOLETE_CACHE_SUFFIXES.length
       || receipt.files.some((file, index) => file.suffix !== OBSOLETE_CACHE_SUFFIXES[index])) {

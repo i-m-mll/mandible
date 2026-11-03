@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import SqliteDatabase from '../sqlite.js';
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from './source-types.js';
 
@@ -10,6 +10,8 @@ export type CacheTransitionReceipt = {
   schema: 'mandible-conversation-cache-transition@1';
   revision: string;
   state: 'coverage-complete';
+  targetFormat: 19;
+  sourceGenerationDigest: string;
   ledger: string;
   obsolete: string;
   current: string;
@@ -27,9 +29,20 @@ export function cacheFileIdentity(file: string): CacheFileIdentity | null {
   }
 }
 export function cacheTransitionReceiptPath(current: string): string { return `${current}.transition-v18.json`; }
-export function publishCacheTransitionReceipt(ledger: string, obsolete: string, current: string, files = OBSOLETE_CACHE_SUFFIXES.map(suffix => ({ suffix, identity: cacheFileIdentity(`${obsolete}${suffix}`) }))): void {
+export function sourceGenerationDigest(source: SqliteDatabase): string {
+  const digest = createHash('sha256');
+  for (const row of source.prepare(`SELECT cache_id,conversation_id,source_version_id,parser_format,parser_version,
+    normalization_version,redaction_epoch,block_count FROM cache_conversations ORDER BY cache_id`).iterate()) {
+    digest.update(JSON.stringify(row));
+  }
+  return digest.digest('hex');
+}
+export function publishCacheTransitionReceipt(ledger: string, obsolete: string, current: string, files = OBSOLETE_CACHE_SUFFIXES.map(suffix => ({ suffix, identity: cacheFileIdentity(`${obsolete}${suffix}`) })), generationDigest?: string): void {
   const receipt: CacheTransitionReceipt = { schema: 'mandible-conversation-cache-transition@1', revision: randomUUID(),
-    state: 'coverage-complete', ledger: path.resolve(ledger), obsolete, current,
+    state: 'coverage-complete', targetFormat: 19, sourceGenerationDigest: generationDigest ?? (() => {
+      const source = new SqliteDatabase(obsolete, { readonly: true, fileMustExist: true });
+      try { return sourceGenerationDigest(source); } finally { source.close(); }
+    })(), ledger: path.resolve(ledger), obsolete, current,
     currentIdentity: { dev: fs.statSync(current).dev, ino: fs.statSync(current).ino },
     files };
   const destination = cacheTransitionReceiptPath(current);
@@ -55,6 +68,7 @@ export function validateCacheTransitionCoverage(receipt: CacheTransitionReceipt)
       || obsolete.prepare("SELECT value FROM cache_meta WHERE key = 'schema_version'").get()?.value !== '18') {
       throw new Error('Conversation cache transition formats differ from the receipt');
     }
+    if (sourceGenerationDigest(obsolete) !== receipt.sourceGenerationDigest) throw new Error('Obsolete source-generation coverage identity changed');
     for (const row of ledger.prepare(`SELECT source.conversation_id, source.current_version_id AS source_version_id,
       source.parser_format, source.parser_version, source.normalization_version, source.redaction_epoch, conversation.block_count
       FROM conversation_sources source JOIN conversations conversation ON conversation.id = source.conversation_id

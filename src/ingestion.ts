@@ -1002,6 +1002,9 @@ export async function repairConversationSourceReadiness(
     return { ...readiness, status: "unavailable", reason: "repair_unavailable" };
   }
   try {
+    await actor.prepareConversationCache(conversationId, options.priority === true);
+    const prepared = readConversationSourceReadiness(db, conversationId);
+    if (prepared.status === "ready") return prepared;
     await ingestExactSelectedPath(actor, readiness.sourcePath, undefined, options.priority === true);
   } catch (error) {
     logger("warn", "ingestion_readiness_repair_failed", { conversation_id: conversationId, error: String(error) });
@@ -1055,7 +1058,11 @@ export function scheduleExactPathReparse(transcriptPath: string, sourceId: strin
     debounceTimers.delete(normalized);
   }
   queuedIngestPaths.delete(normalized);
-  const actorFlight = ingestExactSelectedPath(actor, normalized);
+  const actorFlight = actor.prepareConversationCache(conversationId).then(async () => {
+    if (readConversationSourceReadiness(getDb(), conversationId).status !== "ready") {
+      await ingestExactSelectedPath(actor, normalized);
+    }
+  });
   const flight = actorFlight
     .then(() => {
       if (!isCurrentIngestionRun(runToken)) return;
