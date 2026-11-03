@@ -1,3 +1,4 @@
+import { toolObservation } from '../src/presentation/tool-observation.js';
 import { projectDisplayFragments } from '../src/presentation/fragments.js';
 import fs from "node:fs";
 import { runCli, scratchDir } from "./helpers/cli-process.js";
@@ -157,8 +158,14 @@ describe("structured conversation controller adapters", () => {
     });
     const fragments = projectDisplayFragments(items.filter(item => item.content_completion === 'complete').map(item => ({type: 'chat:item' as const, item})), true);
     const tools = fragments.flatMap(fragment => fragment.node.kind === 'activity' && fragment.node.item.type === 'tool-call-activity' ? [fragment.node.item] : []);
-    expect(tools.find(tool => tool.name === 'unrelated_name')?.result?.presentation?.text).toBe('{"output":"application JSON"}');
+    expect(tools.find(tool => tool.id === 'mcp-rich')?.result?.presentation?.text).toBe('{"output":"application JSON"}');
     expect(tools.find(tool => tool.name === 'custom_dynamic')?.result).toMatchObject({is_error: true, presentation: {text: 'native dynamic failure'}});
+    const thread=tools.find(tool=>tool.id==='mcp-thread');
+    expect(thread).toBeDefined();
+    const semantic=toolObservation(thread!.name,thread!.input,thread!.toolKind);
+    expect(semantic.header.operation).toBe('thread-wait');
+    expect(semantic.header.threadTargets).toEqual([{type:'session',id:'exact-child-thread'}]);
+    expect(thread?.result?.presentation?.text).toContain('Retained child report');
     expect(JSON.stringify(items)).not.toContain("encrypted");
   });
 

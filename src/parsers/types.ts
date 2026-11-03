@@ -99,6 +99,7 @@ export interface ToolCallItem extends ChatItemBase {
   type: "tool-call";
   role: "assistant" | "tool";
   phase: "call" | "result";
+  /** Producer tool name; native MCP server namespaces are retained as mcp__<server>__<tool>. */
   tool_name?: string;
   tool_kind?: string;
   tool_id?: string;

@@ -39,7 +39,7 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
       "Tool uses come from function_call/custom_tool_call response items.",
       "Chat retains producer-verified string and ordered-block script running/completed/terminated frames, reported segment timing and source-ordered cell continuation origins as presentation evidence; canonical output, identity and parent links remain unchanged. Passthrough turn hints scope only continuation matching and never populate canonical turn identity. Cell reuse replaces prior bindings and terminal receipts retire them. Sparse reads verify exact original call dependencies.",
       "Isolated result hydration admits framing only from the matching verified parent call presentation context.",
-      "Live app-server tools retain explicit duration, exit/process facts, MCP content and dynamic content items when supplied.",
+      "Live app-server tools retain qualified MCP server/tool names, explicit duration, exit/process facts, MCP content and dynamic content items when supplied.",
       "Echoed user_message client_id binds the preceding native user Chat item to its exact submission intent.",
       "Subagent threads are sidechain conversations whose parent is the thread named in the rollout header's session_meta.source.subagent spawn record.",
       "Line 1 of the first user message is read for the lineage marker; a message delivered in a create_thread <codex_delegation> envelope is read from its <input>, and its <source_thread_id> is the thread's creator. thread_source = agent_created_thread marks a thread another agent created.",
