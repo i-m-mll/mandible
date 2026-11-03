@@ -6,13 +6,13 @@ Mandible belongs to the logged-in OS user. Opening it always gives that user acc
 
 ## IAB previews and theme
 
-When asked to work on or annotate Mandible in the in-app browser, open an integration branch there, or run a copy-instance for browser iteration, start with:
+When asked to work on or annotate Mandible in the in-app browser, run this from the worktree whose code you want to preview, or from the protected checkout to use a launcher-selected integration preview:
 
 ```sh
 bun run iab-preview -- --json
 ```
 
-The launcher creates or reuses an isolated preview with a copied database, checks its health, and reports the URL and ownership metadata. Open its `freshUrl` in the IAB. A non-protected checkout can preview itself; a protected checkout creates or reuses an integration preview worktree. Use `--force-new` only when the user explicitly needs a separate instance. Do not restart or replace an unrelated preview without an explicit request for that instance.
+Open the returned `freshUrl` in the IAB. Use `bun run iab-preview -- --help` for branch and ownership options. New integration worktrees start from the protected branch. Use `--force-new` only when the user explicitly needs a separate instance. Do not restart or replace an unrelated preview without an explicit request for that instance.
 
 The in-development theme is `codex`. During IAB review, theme feedback without another named target belongs in its shared tokens and components. Ask which theme only after `codex` is declared complete or the user names another theme.
 
