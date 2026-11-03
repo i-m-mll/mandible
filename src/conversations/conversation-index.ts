@@ -1,5 +1,5 @@
 import { indexKeyString, legacyIndexKeyRecipe } from './index-keys.js';
-import { activitySemanticFacts } from '../presentation/activity-presentation.js';
+import { activitySemanticFacts, semanticToolOperations } from '../presentation/activity-presentation.js';
 import type { ActivityKind } from '../parsers/types.js';
 import type { ExecutionFacts } from '../presentation/execution-presentation.js';
 import type { ToolCategory } from '../presentation/tool-presentation.js';
@@ -56,6 +56,7 @@ export function legacyDisplayIndexBatch(input: {positions: PositionFacts[];fragm
 
 export function compactActivityFacts(item: import('../presentation/types.js').DisplayActivityItem): ActivityFacts {
   const {summary: _summary,...facts}=activitySemanticFacts(item);
+  if(facts.kind==='tool'&&JSON.stringify(facts.operations)===JSON.stringify(semanticToolOperations({...facts,operations:undefined}))) {const {operations:_operations,...derived}=facts;return derived;}
   return facts;
 }
 
