@@ -1,6 +1,6 @@
+import { testRuntimeRoot } from './helpers/runtime-isolation';
 import {chatItemIdentityKey} from '../src/conversation-control/provider-live';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { expect, it, vi } from 'vitest';
 import { migratedMemoryDb } from './helpers/ledger-fixtures';
@@ -18,7 +18,7 @@ import { composeConversationReading, materializeConversationReading, readingComp
 import type { CanonicalChatItemEvent } from '../src/presentation/types';
 
 async function fixture(includeResult: boolean, native?: {provider:'codex'|'claude_code'; records:Record<string,unknown>[]}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-reading-composition-'));
+  const root = fs.mkdtempSync(path.join(testRuntimeRoot, 'mandible-reading-composition-'));
   const db = migratedMemoryDb();
   const provider = native?.provider ?? 'codex';
   const file = path.join(root, provider === 'codex' ? '.codex/sessions/composition.jsonl' : '.claude/projects/-tmp/composition.jsonl');
