@@ -30,6 +30,21 @@ export type ActivityKind =
 export type ChatContentCompletion = "streaming" | "complete";
 export type ChatExecutionOutcome = "succeeded" | "failed" | "cancelled" | "unknown";
 
+export type ToolExecutionEvidence = {
+  state: "ongoing" | "completed" | "failed" | "cancelled" | "unknown";
+  provenance: "provider-item" | "paired-result" | "native-wrapper" | "managed-generation";
+};
+export type ToolContinuationOrigin = {
+  provider: "codex";
+  session_id: string;
+  native_tool_id: string;
+  native_turn_id?: string;
+  position: number;
+  source_record_ordinal: number;
+  source_sub_block_ordinal: number;
+};
+export type ToolOperationContext = { origin: ToolContinuationOrigin; name: string; kind: string; input: unknown };
+
 export interface ChatContentPart {
   type: "text";
   text: string;
@@ -92,6 +107,7 @@ export interface ToolCallItem extends ChatItemBase {
   elapsed_ms?: number;
   exit_code?: number;
   process_id?: string;
+  execution?: ToolExecutionEvidence;
 }
 
 export interface ActivityItem extends ChatItemBase {
@@ -109,6 +125,11 @@ export interface ActivityItem extends ChatItemBase {
 export type ChatItem = MessageItem | PlanItem | ToolCallItem | ActivityItem;
 
 export interface BlockMetadata {
+  /** Presentation dependencies never alter native parent links or transcript content. */
+  display_tool_origin?: ToolContinuationOrigin;
+  display_tool_execution?: ToolExecutionEvidence;
+  /** Hydrated only from the verified original call; never retained in the compact index. */
+  display_tool_operation?: ToolOperationContext;
   execution_state?: "active" | "settled" | "unknown";
   tool_name?: string;
   tool_kind?: string;

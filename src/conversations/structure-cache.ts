@@ -41,6 +41,7 @@ export interface SparseConversationBlockRow {
   subBlockOrdinal: number;
   model?: string | null;
   clientIntentId?: string | null;
+  toolEvidence?: Pick<import("../parsers/types.js").BlockMetadata,"display_tool_origin"|"display_tool_execution">;
   parserFormat: string;
   parserVersion: string;
   normalizationVersion: string;
@@ -76,6 +77,7 @@ interface CacheBlockRow {
   sub_block_ordinal: number;
   model: string | null;
   client_intent_id: string | null;
+  tool_evidence: string | null;
 }
 
 export interface SourceManifestRow {
@@ -220,6 +222,7 @@ export class ConversationStructureCache {
         sub_block_ordinal      INTEGER NOT NULL,
         model                  TEXT,
         client_intent_id       TEXT,
+        tool_evidence          TEXT,
         activity_owner         INTEGER,
         action_start           INTEGER NOT NULL,
         PRIMARY KEY (cache_conversation_id, position)
@@ -323,8 +326,8 @@ export class ConversationStructureCache {
       const insert = this.cache.prepare(`
         INSERT INTO cache_blocks (
           cache_conversation_id, position, type_code, role_code, parent_position,
-          record_offset, record_length, record_ordinal, sub_block_ordinal, model, client_intent_id, activity_owner, action_start
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          record_offset, record_length, record_ordinal, sub_block_ordinal, model, client_intent_id, tool_evidence, activity_owner, action_start
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       let priorCacheId: number | undefined;
       if (priorVersionId) {
@@ -335,7 +338,7 @@ export class ConversationStructureCache {
         if (!prior) throw new Error("append structure generation is missing");
         priorCacheId = prior.cache_id;
         this.cache.prepare(`INSERT INTO cache_blocks SELECT ?, position, type_code, role_code, parent_position,
-          record_offset, record_length, record_ordinal, sub_block_ordinal, model, client_intent_id, activity_owner, action_start FROM cache_blocks WHERE cache_conversation_id = ?`)
+          record_offset, record_length, record_ordinal, sub_block_ordinal, model, client_intent_id, tool_evidence, activity_owner, action_start FROM cache_blocks WHERE cache_conversation_id = ?`)
           .run(cacheId, prior.cache_id);
         this.cache.prepare("INSERT INTO cache_reading_scopes SELECT ?, start, end FROM cache_reading_scopes WHERE cache_conversation_id = ?").run(cacheId, prior.cache_id);
         this.cache.prepare("INSERT INTO cache_tool_links SELECT ?, tool_key, position FROM cache_tool_links WHERE cache_conversation_id = ?")
@@ -356,7 +359,7 @@ export class ConversationStructureCache {
         scope.run(cacheId, previous.action_scope.start, row.position);
         insert.run(
           cacheId, row.position, blockTypeCode(row.type), roleCode(row.role), row.parentPosition,
-          row.recordOffset, row.recordLength, row.recordOrdinal, row.subBlockOrdinal, row.model ?? null, row.clientIntentId ?? null, previous.activity_owner, previous.action_scope.start,
+          row.recordOffset, row.recordLength, row.recordOrdinal, row.subBlockOrdinal, row.model ?? null, row.clientIntentId ?? null, row.toolEvidence ? JSON.stringify(row.toolEvidence) : null, previous.activity_owner, previous.action_scope.start,
         );
       }
       if (display) writeDisplayIndex(this.cache, cacheId, display, priorCacheId);
@@ -446,7 +449,7 @@ export class ConversationStructureCache {
       : options.prefix?.blockCount ?? conversation.block_count;
     const rows = this.cache.prepare(`
       SELECT position, type_code, role_code, parent_position, record_offset,
-             record_length, record_ordinal, sub_block_ordinal, model, client_intent_id
+             record_length, record_ordinal, sub_block_ordinal, model, client_intent_id, tool_evidence
         FROM cache_blocks WHERE ${where}
        ORDER BY position LIMIT ? OFFSET ?
     `).all(...params, options.limit, options.offset) as CacheBlockRow[];
@@ -464,6 +467,7 @@ export class ConversationStructureCache {
         subBlockOrdinal: row.sub_block_ordinal,
         model: row.model,
         clientIntentId: row.client_intent_id,
+      toolEvidence: row.tool_evidence ? JSON.parse(row.tool_evidence) : undefined,
         parserFormat: conversation.parser_format,
         parserVersion: conversation.parser_version,
         normalizationVersion: conversation.normalization_version,
@@ -541,12 +545,9 @@ export class ConversationStructureCache {
     includeParents = false): SparseConversationBlockRow[] | null {
     const conversation = this.cachedConversation(conversationId, sourceVersionId, epochs);
     if (!conversation) return null;
-    const rows = this.cache.prepare(`WITH requested AS (
+    const rows = this.cache.prepare(`WITH RECURSIVE requested AS (
       SELECT * FROM cache_blocks WHERE position IN (SELECT value FROM json_each(?)) AND cache_conversation_id = ?
-    ) SELECT * FROM requested
-      UNION SELECT * FROM cache_blocks WHERE cache_conversation_id = ? AND ?
-        AND position IN (SELECT parent_position FROM requested WHERE parent_position IS NOT NULL)
-      ORDER BY position`).all(JSON.stringify([...new Set(positions)]), conversation.cache_id, conversation.cache_id, includeParents ? 1 : 0) as CacheBlockRow[];
+    ), dependencies AS (SELECT * FROM requested UNION SELECT b.* FROM cache_blocks b JOIN dependencies d ON b.cache_conversation_id=d.cache_conversation_id AND (b.position=d.parent_position OR b.position=json_extract(d.tool_evidence,'$.display_tool_origin.position')) WHERE ?) SELECT * FROM dependencies ORDER BY position`).all(JSON.stringify([...new Set(positions)]), conversation.cache_id, includeParents ? 1 : 0) as CacheBlockRow[];
     return rows.map(row => ({
       conversationId,
       sourceVersionId,
@@ -560,6 +561,7 @@ export class ConversationStructureCache {
       subBlockOrdinal: row.sub_block_ordinal,
       model: row.model,
       clientIntentId: row.client_intent_id,
+      toolEvidence: row.tool_evidence ? JSON.parse(row.tool_evidence) : undefined,
       parserFormat: conversation.parser_format,
       parserVersion: conversation.parser_version,
       normalizationVersion: conversation.normalization_version,

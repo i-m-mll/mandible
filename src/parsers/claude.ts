@@ -413,6 +413,7 @@ export class ClaudeParser implements ConversationParser {
                   tool_id: block.tool_use_id || undefined,
                   tool_name: block.tool_use_id ? toolNameMap.get(block.tool_use_id) : undefined,
                   tool_kind: "claude_tool_result",
+                  display_tool_execution: {state:block.is_error===true ? 'failed' : 'completed',provenance:'paired-result'},
                   ...(Array.isArray(block.content) ? {display_tool_content:block.content} : {}),
                   ...(block.is_error === true ? {display_tool_error:true} : {}),
                   tool_output: toolOutput.length > 1000 ? undefined : toolOutput,

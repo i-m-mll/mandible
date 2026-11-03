@@ -91,7 +91,8 @@ export function commandTransport(value: unknown): ToolTransportResult | null {
     metadata:Object.entries(value).filter(([key,value])=>!['output','wall_time_seconds'].includes(key) && value!=null).map(([label,value])=>({label,value:String(value)}))};
 }
 export function programResults(program: ToolProgram, text: string): ToolTransportResult[] | null {
-  const nativeObject=(name:string) => ['exec_command','functions.exec_command','write_stdin','functions.write_stdin'].includes(name) || name.startsWith('mcp__');
+  const contentTool=(name:string)=>name.startsWith('mcp__') || ['codex_app__read_thread','codex_app__wait_threads'].includes(name);
+  const nativeObject=(name:string) => ['exec_command','functions.exec_command','write_stdin','functions.write_stdin'].includes(name) || contentTool(name);
   const opaque=program.operations.filter(operation=>operation.encoding==='literal' || (operation.encoding==='native' && !nativeObject(operation.name)));
   if(opaque.length) return program.operations.length===1 ? [{...rawToolResult(text),decoded:true}] : null;
   const emitted=jsonValues(text);
@@ -126,7 +127,7 @@ export function programResults(program: ToolProgram, text: string): ToolTranspor
       value=value.value;
     }
     const command = ['exec_command','functions.exec_command','write_stdin','functions.write_stdin'].includes(operation.name) ? commandTransport(value) : null;
-    const content = operation.name.startsWith('mcp__') ? toolContentEnvelope(value) : null;
+    const content = contentTool(operation.name) ? toolContentEnvelope(value) : null;
     if(operation.indexKey!==undefined && !operation.resultKey && !operation.settled && !command && !content) return null;
     const result=command ?? content ?? {...rawToolResult(typeof value === 'string' ? value : JSON.stringify(value,null,2)),decoded:true};
     results.push(result);
@@ -134,18 +135,21 @@ export function programResults(program: ToolProgram, text: string): ToolTranspor
   return results;
 }
 
-export type NativeResultFrame = { kind:'codex-script'; payloadStart:number; payloadEnd:number; timingScope:'wrapper'; wallTimeSeconds?: number };
+export type NativeResultFrame = { kind:'codex-script'; payloadStart:number; payloadEnd:number; timingScope:'wrapper'; wallTimeSeconds?: number; state:'running'|'completed'|'terminated'; cellID?:string };
 export function codexResultFrame(output: unknown, call?: {name?:string;kind?:string}): NativeResultFrame | undefined {
-  if(call?.kind!=='custom_tool_call' || !['exec','functions.exec'].includes(call.name ?? '')) return undefined;
-  if (!Array.isArray(output) || output.length < 2 || !output.every(block=>record(block) && ['text','input_text','output_text'].includes(String(block.type)) && typeof block.text==='string')) return undefined;
-  const first=output[0];
-  if (!record(first) || !['text','input_text','output_text'].includes(String(first.type)) || typeof first.text !== 'string') return undefined;
-  const match=/^Script completed\r?\nWall time(?::)? ([0-9.]+) seconds\r?\n(?:Total output lines: \d+\r?\n)?Output:\r?\n$/.exec(first.text);
-  if (!match || !Number.isFinite(Number(match[1]))) return undefined;
-  return {kind:'codex-script',payloadStart:first.text.length+1,payloadEnd:output.map(block=>block.text).filter(Boolean).join('\n').length,timingScope:'wrapper',wallTimeSeconds:Number(match[1])};
+  if(!((call?.kind==='custom_tool_call' && ['exec','functions.exec'].includes(call.name ?? '')) || (call?.kind==='function_call' && ['wait','functions.wait'].includes(call.name ?? '')))) return undefined;
+  const blocks=typeof output==='string' ? [output] : Array.isArray(output) && output.every(block=>record(block) && ['text','input_text','output_text'].includes(String(block.type)) && typeof block.text==='string') ? output.map(block=>block.text as string).filter(Boolean) : null;
+  if(!blocks?.length) return undefined;
+  const text=blocks.join('\n');
+  const match=/^Script (completed|terminated|running with cell ID ([^\r\n]+))\r?\nWall time(?::)? ([0-9.]+) seconds\r?\n(?:Total output lines: \d+\r?\n)?Output:\r?\n/.exec(text);
+  if(!match || !Number.isFinite(Number(match[3]))) return undefined;
+  if(typeof output!=='string' && blocks[0]!==match[0]) return undefined;
+  const state=match[1]==='completed' ? 'completed' : match[1]==='terminated' ? 'terminated' : 'running';
+  const payloadStart=blocks.length>1 && blocks[0]===match[0] ? match[0].length+1 : match[0].length;
+  return {kind:'codex-script',payloadStart,payloadEnd:text.length,timingScope:'wrapper',wallTimeSeconds:Number(match[3]),state,...(match[2] ? {cellID:match[2]} : {})};
 }
 export function framedToolResult(text: string, frame?: NativeResultFrame): ToolTransportResult {
-  return frame && frame.kind==='codex-script' && frame.payloadStart>=0 && frame.payloadEnd===text.length && frame.payloadStart<=frame.payloadEnd ? {...rawToolResult(text.slice(frame.payloadStart,frame.payloadEnd)),wallTimeSeconds:frame.wallTimeSeconds,timingScope:'wrapper',decoded:true} : rawToolResult(text);
+  return frame && frame.kind==='codex-script' && frame.payloadStart>=0 && frame.payloadEnd===text.length && frame.payloadStart<=frame.payloadEnd ? {...rawToolResult(text.slice(frame.payloadStart,frame.payloadEnd)),wallTimeSeconds:frame.wallTimeSeconds,timingScope:'wrapper',running:frame.state==='running',failed:frame.state==='terminated',decoded:true} : rawToolResult(text);
 }
 
 export function wrapperCommandResult(execution: {operations: Array<{forwarding:string;encoding?:string}>} | null, text: string): ToolTransportResult {

@@ -49,7 +49,6 @@ it('retains the first provider prose and all later sections in one refoldable di
     { summary: parts.slice(0, 1), expected: firstProse },
     { summary: parts, expected: `${firstProse}\n\nEvaluating commit statuses\n\nThe status evidence belongs to the next part.\n\nClarifying Git status\n\nKeep the final paragraph as well.` },
     { summary: ['Only one line of untitled reasoning'], expected: 'Only one line of untitled reasoning' },
-    { summary: ['**Title only**'], expected: 'Title only' },
   ]) {
     const input = await reasoning(summary);
     expect(input.hasBody).toBe(true);
@@ -77,4 +76,12 @@ it('keeps untitled thinking intact and exposes the same full payload on repeated
     fireEvent.click(view.getByRole('button', { name: 'Thought' }));
     expect(view.queryByRole('region')).toBeNull();
   }
+});
+
+it('does not invent a reasoning body from its authored heading', async () => {
+  const input=await reasoning(['**Title only**']);
+  expect(input.hasBody).toBe(false);
+  const view=render(<HydratedReasoning {...input} />);
+  expect(view.queryByRole('button')).toBeNull();
+  expect(view.queryByRole('region')).toBeNull();
 });
