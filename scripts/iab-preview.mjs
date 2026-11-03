@@ -25,9 +25,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const require = createRequire(import.meta.url);
 const { liveDbPath } = require("../cli/mandible-paths.cjs");
 import SqliteDatabase from "../src/sqlite.ts";
-import { conversationStructureCachePath } from "../src/conversations/structure-cache-path.ts";
+import { conversationStructureCachePath, CONVERSATION_STRUCTURE_CACHE_VERSION } from "../src/conversations/structure-cache-path.ts";
 import { projectConversationCache } from "../src/conversations/structure-cache.ts";
-import { projectLegacyConversationCache } from "../src/conversations/cache-transition.ts";
 
 const DEFAULT_PORT_START = 29421;
 const DEFAULT_PORT_END = 29499;
@@ -1653,10 +1652,8 @@ function sourceConversationStructureCachePath(sourceDb) {
 export async function seedProjectedConversationStructureCache({ sourceCache, targetCache, projectedDb, preserveExisting = false, signal, maxOutputBytes = Infinity, reserveBytes = 512 * 1024 * 1024 }) {
   targetCache = conversationStructureCachePath("", targetCache);
   const preserveTarget = preserveExisting && fs.existsSync(targetCache);
-  const legacySource = sourceCache.endsWith(".v19") ? `${sourceCache.slice(0, -4)}.v18` : null;
   const sourceAvailable = fs.existsSync(sourceCache);
-  const legacyAvailable = legacySource && fs.existsSync(legacySource);
-  if (!preserveTarget && !sourceAvailable && !legacyAvailable) {
+  if (!preserveTarget && !sourceAvailable) {
     return { status: "unavailable", source: sourceCache, target: targetCache, conversations: 0, blocks: 0 };
   }
   fs.mkdirSync(path.dirname(targetCache), { recursive: true });
@@ -1669,13 +1666,12 @@ export async function seedProjectedConversationStructureCache({ sourceCache, tar
       ON conversation.id = source.conversation_id WHERE source.current_version_id IS NOT NULL`).all();
   } finally { projected.close(); }
   if (!preserveTarget) {
-    const stage = `${targetCache}.partial-${process.pid}-${randomUUID()}.v19`;
+    const stage = `${targetCache}.partial-${process.pid}-${randomUUID()}.v${CONVERSATION_STRUCTURE_CACHE_VERSION}`;
     const volume = fs.statfsSync(path.dirname(targetCache));
     const budget = Math.min(maxOutputBytes, Number(volume.bavail) * Number(volume.bsize) - reserveBytes);
     if (budget < 64 * 1024) throw new Error('Insufficient allocation for projected conversation cache');
     try {
       if (sourceAvailable) await projectConversationCache(sourceCache, stage, manifests, { signal, maxBytes: budget });
-      if (legacyAvailable) await projectLegacyConversationCache(legacySource, stage, projectedDb, { signal, maxBytes: budget });
       signal?.throwIfAborted();
       const fd = fs.openSync(stage, 'r');
       try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }

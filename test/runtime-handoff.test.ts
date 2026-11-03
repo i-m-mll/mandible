@@ -278,19 +278,15 @@ it('settles each cleanup obligation independently and waits on the exact process
   } finally { holder.kill(); }
 });
 
-it('wakes cache cleanup on coverage and reader exit, preserves mismatched identity, and retries deletion idempotently', async () => {
+it('preserves obsolete caches when historical completion lacks current trusted runtime proof', async () => {
   const f = fixture();
   const database = path.join(f.home, 'cache-acceptance.db');
   const db = new SqliteDatabase(database);
-  db.exec(`CREATE TABLE auth_hook_executions(id TEXT,auth_request_id TEXT,hook_id TEXT,state TEXT,output TEXT,command_digest TEXT);
-    CREATE TABLE conversations(id TEXT,block_count INTEGER);
-    CREATE TABLE conversation_sources(conversation_id TEXT,current_version_id TEXT,parser_format TEXT,parser_version TEXT,
-      normalization_version TEXT,redaction_epoch INTEGER,availability TEXT,position_space_id TEXT);
-    CREATE TABLE conversation_source_versions(id TEXT,availability TEXT,generation TEXT);`);
+  db.exec('CREATE TABLE auth_hook_executions(id TEXT,auth_request_id TEXT,hook_id TEXT,state TEXT,output TEXT,command_digest TEXT)');
   const binding = { ...f.binding, hookId: 'hook', commandDigest: 'command', domain: `gui/${process.getuid!()}` };
   const digest = bindingDigest(binding);
   const receipt = { schema: 'mandible-runtime-receipt@2', bindingDigest: digest, attemptId: 'attempt' };
-  const journal = { ...f.journal, binding, bindingDigest: digest, database, helperFencedAt: 1,
+  const journal = { ...f.journal, binding, bindingDigest: digest, database,
     attempt: { id: 'attempt', state: 'complete', effects: { drain: { completedAt: 1, processes: {} } }, receipt,
       receiptDigest: createHash('sha256').update(JSON.stringify(receipt)).digest('hex'), fence: { reason: 'terminal-completion' } },
     cleanup: { state: 'pending' } };
@@ -298,55 +294,16 @@ it('wakes cache cleanup on coverage and reader exit, preserves mismatched identi
     binding.hookId, 'complete', runtimeReceiptAcceptanceMarker(journal), binding.commandDigest);
   db.close();
   const obsolete = `${database}.conversation-structure.db.v18`;
-  const current = `${database}.conversation-structure.db.v19`;
-  for (const [file, version] of [[obsolete, '18'], [current, '19']]) {
-    const cache = new SqliteDatabase(file);
-    cache.exec(`CREATE TABLE cache_meta(key TEXT,value TEXT); INSERT INTO cache_meta VALUES('schema_version','${version}');
-      CREATE TABLE cache_conversations(cache_id INTEGER,conversation_id TEXT,source_version_id TEXT,parser_format TEXT,parser_version TEXT,normalization_version TEXT,redaction_epoch INTEGER,block_count INTEGER,ready INTEGER);`);
-    cache.close();
-  }
-  fs.writeFileSync(`${obsolete}-shm`, '');
+  const old = new SqliteDatabase(obsolete);
+  old.exec(fs.readFileSync(new URL('./fixtures/conversation-cache-v18.sql', import.meta.url), 'utf8')); old.close();
+  const { ConversationStructureCache } = await import('../src/conversations/structure-cache.js');
+  const cache = new ConversationStructureCache(undefined, { cachePath: `${database}.conversation-structure.db` });
+  const current = cache.cachePath; cache.close();
   fs.writeFileSync(f.file, JSON.stringify(journal));
   fs.rmSync(binding.nativeApp, { recursive: true });
   expect(await cleanupRuntimeHandoff(f.file)).toEqual({ cleanup: 'pending' });
   const blocked = readRuntimeHandoff(f.home, binding.requestId, binding.executionId)!;
-  const waiting = runtimeHandoffCleanupWake(blocked);
-  const { publishCacheTransitionReceipt, cacheTransitionReceiptPath } = await import('../src/conversations/cache-transition-receipt.js');
-  publishCacheTransitionReceipt(database, obsolete, current);
-  expect(runtimeHandoffCleanupWake(blocked)).not.toBe(waiting);
-  const statusFile = cacheTransitionReceiptPath(current);
-  const correct = fs.readFileSync(statusFile, 'utf8');
-  fs.writeFileSync(statusFile, correct.replace('"ledger":', '"foreignLedger":'));
-  expect(await cleanupRuntimeHandoff(f.file)).toEqual({ cleanup: 'pending' });
+  expect(blocked.cleanup.blockers.some((blocker: { obligation: string }) => blocker.obligation === 'conversation-cache')).toBe(true);
   expect(fs.existsSync(obsolete)).toBe(true);
-  fs.writeFileSync(statusFile, correct);
-  let readerAlive = true;
-  vi.mocked(childProcess.spawnSync).mockImplementation((program, args, options) => {
-    if (program === '/usr/sbin/lsof') return { status: readerAlive ? 0 : 1, stdout: readerAlive ? '424242\n' : '', stderr: '' } as any;
-    if (program === '/bin/ps' && args?.includes('424242')) {
-      const stdout = args.includes('ppid=,command=') ? '1 fixture-reader\n'
-        : args.includes('pid=,lstart=') ? readerAlive ? '424242 Sat Nov  2 00:00:00 2026\n' : ''
-        : readerAlive ? 'Sat Nov  2 00:00:00 2026\n' : '';
-      return { status: readerAlive ? 0 : 1, stdout, stderr: '' } as any;
-    }
-    return originalSpawn(program, args, options);
-  });
-  expect(await cleanupRuntimeHandoff(f.file)).toEqual({ cleanup: 'pending' });
-  const held = readRuntimeHandoff(f.home, binding.requestId, binding.executionId)!;
-  const heldWake = runtimeHandoffCleanupWake(held);
-  readerAlive = false;
-  expect(runtimeHandoffCleanupWake(held)).not.toBe(heldWake);
-  const unlink = fs.unlinkSync;
-  const interrupted = vi.spyOn(fs, 'unlinkSync').mockImplementation(file => {
-    if (file === `${obsolete}-shm`) throw new Error('interrupted after obsolete main deletion');
-    return unlink(file);
-  });
-  expect(await cleanupRuntimeHandoff(f.file)).toEqual({ cleanup: 'pending' });
-  expect(fs.existsSync(obsolete)).toBe(false);
-  expect(fs.existsSync(`${obsolete}-shm`)).toBe(true);
-  interrupted.mockRestore();
-  expect(await cleanupRuntimeHandoff(f.file)).toEqual({ cleanup: 'complete' });
-  expect(fs.existsSync(obsolete)).toBe(false);
   expect(fs.existsSync(current)).toBe(true);
-  expect(await cleanupRuntimeHandoff(f.file)).toEqual({ cleanup: 'complete' });
 });
