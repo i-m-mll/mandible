@@ -490,7 +490,7 @@ it("publishes a committed work-unit link through the actual SseManager", () => {
     expect(db.prepare("SELECT ledger_issue_id FROM work_units WHERE id = ?").get("sse-linked-work"))
       .toEqual({ ledger_issue_id: null });
     expect(published).not.toHaveBeenCalled();
-    const origin = { provider: "codex", provider_session_id: "native-link-caller" };
+    const origin = { provider: "codex", agent_id: "native-link-caller", session_id: null };
     expect(withRequestOrigin(origin, link)).toMatchObject({ ok: true, issue_id: issue.id });
     expect(link()).toMatchObject({ ok: true, issue_id: issue.id });
     expect(db.prepare("SELECT ledger_issue_id FROM work_units WHERE id = ?").get("sse-linked-work"))
