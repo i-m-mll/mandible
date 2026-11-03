@@ -1,3 +1,5 @@
+import { codexResultFrame } from '../presentation/tool-transport.js';
+import { codexAssistantResponse } from "./assistant-response.js";
 import { canonicalSourcePath, logicalSourceStat } from "../conversations/logical-source.js";
 // Parser for Codex (OpenAI) JSONL conversation files.
 // Format: ~/.codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<ULID>.jsonl
@@ -96,6 +98,8 @@ interface CodexContentBlock {
 }
 
 interface CodexResponsePayload {
+  channel?: string;
+  phase?: string;
   type: string;
   id?: string;
   role?: string | null;
@@ -500,6 +504,7 @@ export class CodexParser implements ConversationParser {
       baseBlockCount: input.baseBlockCount,
       baseRecordCount: input.baseRecordCount ?? 0,
       nativeSessionId: input.nativeSessionId,
+      displayToolCalls: input.displayToolCalls,
       sourceHash: input.sourceHash,
       sourceMtime: input.sourceMtime,
     });
@@ -512,6 +517,7 @@ export class CodexParser implements ConversationParser {
       baseBlockCount: number;
       baseRecordCount: number;
       nativeSessionId?: string;
+      displayToolCalls?: IncrementalParseInput['displayToolCalls'];
       sourceHash: string;
       sourceMtime: number;
       sourceSnapshot?: ParserSourceSnapshot;
@@ -624,8 +630,8 @@ export class CodexParser implements ConversationParser {
     const blocks: Omit<ConversationBlock, "id" | "conversation_id">[] = [];
     let position = options.baseBlockCount;
     // Map call_id → position for linking function outputs to calls
-    const callMap = new Map<string, number>();
-    const callNameMap = new Map<string, string>();
+    const callMap = new Map<string, {position:number;name?:string;kind:string}>();
+    const displayToolCalls=new Map(options.displayToolCalls?.map(call=>[call.id,call]));
     const chatPartsByBlock = new Map<number, ChatContentPart[]>();
     let pendingUserBlockIndex: number | null = null;
 
@@ -744,8 +750,7 @@ export class CodexParser implements ConversationParser {
           }
         } else if (payload.type === "function_call") {
           const toolPos = position;
-          if (payload.call_id) callMap.set(payload.call_id, toolPos);
-          if (payload.call_id && payload.name) callNameMap.set(payload.call_id, payload.name);
+          if(payload.call_id) callMap.set(payload.call_id,{position:toolPos,name:payload.name,kind:payload.type});
           let content = payload.name || "unknown_function";
           if (payload.arguments) {
             content += `(${payload.arguments})`;
@@ -786,7 +791,7 @@ export class CodexParser implements ConversationParser {
             chatPartsByBlock.set(blocks.length - 1, [{ type: "text", text: prompt }]);
           } else {
             const output = codexToolOutputText(payload.output);
-            const parentPos = payload.call_id ? callMap.get(payload.call_id) : undefined;
+            const parentPos = payload.call_id ? callMap.get(payload.call_id)?.position : undefined;
             blocks.push({
               type: "tool_result",
               role: "tool",
@@ -796,8 +801,9 @@ export class CodexParser implements ConversationParser {
               parent_id: parentPos !== undefined ? String(parentPos) : null,
               metadata: {
                 tool_id: payload.call_id || undefined,
-                tool_name: payload.call_id ? callNameMap.get(payload.call_id) : undefined,
+                tool_name: payload.call_id ? callMap.get(payload.call_id)?.name : undefined,
                 tool_kind: "function_call_output",
+                display_tool_frame: codexResultFrame(payload.output,payload.call_id ? callMap.get(payload.call_id) ?? displayToolCalls.get(payload.call_id) : undefined),
                 tool_output: output.length > 1000 ? undefined : output,
                 visibility: "default_hidden",
                 source_event_type: "function_call_output",
@@ -806,8 +812,7 @@ export class CodexParser implements ConversationParser {
           }
         } else if (payload.type === "custom_tool_call") {
           const toolPos = position;
-          if (payload.call_id) callMap.set(payload.call_id, toolPos);
-          if (payload.call_id && payload.name) callNameMap.set(payload.call_id, payload.name);
+          if(payload.call_id) callMap.set(payload.call_id,{position:toolPos,name:payload.name,kind:payload.type});
           blocks.push({
             type: "tool_use",
             role: "assistant",
@@ -826,7 +831,7 @@ export class CodexParser implements ConversationParser {
             });
         } else if (payload.type === "custom_tool_call_output") {
           const output = codexToolOutputText(payload.output);
-          const parentPos = payload.call_id ? callMap.get(payload.call_id) : undefined;
+          const parentPos = payload.call_id ? callMap.get(payload.call_id)?.position : undefined;
           blocks.push({
             type: "tool_result",
             role: "tool",
@@ -836,8 +841,9 @@ export class CodexParser implements ConversationParser {
             parent_id: parentPos !== undefined ? String(parentPos) : null,
             metadata: {
               tool_id: payload.call_id || undefined,
-              tool_name: payload.call_id ? callNameMap.get(payload.call_id) : undefined,
+              tool_name: payload.call_id ? callMap.get(payload.call_id)?.name : undefined,
               tool_kind: "custom_tool_call_output",
+              display_tool_frame: codexResultFrame(payload.output,payload.call_id ? callMap.get(payload.call_id) ?? displayToolCalls.get(payload.call_id) : undefined),
               tool_output: output.length > 1000 ? undefined : output,
               visibility: "default_hidden",
               source_event_type: "custom_tool_call_output",
@@ -873,6 +879,11 @@ export class CodexParser implements ConversationParser {
           }
         } else if (evt.type === "task_started" || evt.type === "task_complete"
           || evt.type === "turn_aborted" || evt.type === "context_compacted") {
+          const completionDetails = evt.type === "task_complete" ? Object.fromEntries(Object.entries(evt)
+            .filter(([key, value]) => !["type", "turn_id", "last_agent_message", "started_at", "completed_at", "duration_ms", "time_to_first_token_ms"].includes(key)
+              && (!["message", "reason"].includes(key) || (value !== null && typeof value !== 'string')))) : {};
+          const completionText = [...new Set([evt.message, evt.reason].filter((value): value is string => typeof value === 'string' && Boolean(value.trim())))];
+          if (Object.keys(completionDetails).length) completionText.push(JSON.stringify(completionDetails, null, 2));
           blocks.push({
             type: "event",
             role: "system",
@@ -883,6 +894,8 @@ export class CodexParser implements ConversationParser {
             metadata: {
               source_event_type: evt.type,
               provider_turn_id: evt.turn_id,
+              ...(evt.type === "task_complete" && completionText.length
+                ? { display_completion_parts: completionText.map(text => ({type: 'text' as const, text})) } : {}),
             },
           });
         } else if (!["agent_message", "agent_reasoning", "item_started", "item_completed", "thread_settings_applied"].includes(evt.type)) {
@@ -925,6 +938,7 @@ export class CodexParser implements ConversationParser {
             sourceEventType,
             sourceRecordOrdinal: options.baseRecordCount + recordIndex,
             sourceSubBlockOrdinal: index - firstRecordBlock,
+            assistantResponse: codexAssistantResponse((rec.payload as CodexResponsePayload).channel ?? (rec.payload as CodexResponsePayload).phase),
             ...(chatPartsByBlock.has(index) ? { parts: chatPartsByBlock.get(index)! } : {}),
             ...(activityKind ? { activityKind } : {}),
             ...(sourceEventType === "turn_aborted" ? { severity: "warning" as const, status: "aborted", executionOutcome: "cancelled" as const }

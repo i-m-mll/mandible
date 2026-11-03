@@ -1,3 +1,4 @@
+import { codexAssistantResponse } from "../parsers/assistant-response.js";
 import { managedQuestions, validQuestionAnswers } from "./questions.js";
 import { projectManagedProviderIdentity } from "../backends/mandible-transport.js";
 import type { TurnError } from "./generated/codex-app-server/v2/TurnError.js";
@@ -766,7 +767,8 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
     const completion = complete ? "complete" as const : "streaming" as const;
     if (type === "agentMessage") {
       const value = stringField(item, "text");
-      return value === null ? [] : [this.messageItem(controller, itemId, "assistant", value, completion, turnId)];
+      return value === null ? [] : [{ ...this.messageItem(controller, itemId, "assistant", value, completion, turnId),
+        assistant_response: complete ? codexAssistantResponse(item.phase) : "unknown" }];
     }
     if (type === "plan") {
       const value = stringField(item, "text");
@@ -809,6 +811,9 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
       return [this.toolItem(controller, itemId, completion, turnId, {
         tool_name: "command",
         tool_kind: type,
+        ...(typeof item.durationMs === 'number' ? {elapsed_ms:item.durationMs} : {}),
+        ...(typeof item.exitCode === 'number' ? {exit_code:item.exitCode} : {}),
+        ...(typeof item.processId === 'string' ? {process_id:item.processId} : {}),
         ...(command !== null ? { input: command } : {}),
         ...(output !== null ? { output, parts: output ? [{ type: "text", text: output }] : [] } : {}),
         ...(executionOutcome ? { execution_outcome: executionOutcome } : {}),
@@ -819,9 +824,12 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
       return [this.toolItem(controller, itemId, completion, turnId, {
         ...(tool ? { tool_name: tool } : {}),
         tool_kind: type,
+        ...(typeof item.durationMs === 'number' ? {elapsed_ms:item.durationMs} : {}),
         ...(item.arguments !== undefined ? { input: item.arguments } : {}),
-        ...(item.result !== undefined && item.result !== null ? { output: item.result } : {}),
-        ...(executionOutcome ? { execution_outcome: executionOutcome } : {}),
+        ...(item.result !== undefined && item.result !== null ? { output: item.result }
+          : type === "dynamicToolCall" && Array.isArray(item.contentItems) ? {output:item.contentItems}
+          : item.error != null ? {output:item.error} : {}),
+        ...(item.success === false ? {execution_outcome:"failed" as const} : executionOutcome ? { execution_outcome: executionOutcome } : {}),
       })];
     }
     if (type === "fileChange" || type === "collabAgentToolCall" || type === "webSearch"

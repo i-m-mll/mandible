@@ -48,6 +48,8 @@ export interface ConversationSourceDescriptor extends ConversationSourceEpochs {
   availability: ConversationSourceAvailability;
   custodyState: ConversationSourceCustodyState;
   currentVersionId: string | null;
+  positionSpaceId: string | null;
+  publicationRevision: number;
   unavailableReason: string | null;
 }
 

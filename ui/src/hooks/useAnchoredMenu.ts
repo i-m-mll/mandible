@@ -15,6 +15,7 @@ export type UseAnchoredMenuOptions = {
   gutter?: number;
   anchorInset?: number;
   matchAnchorWidth?: boolean;
+  anchorPoint?: { x: number; y: number };
 };
 
 const HIDDEN_STYLE: JSX.CSSProperties = {
@@ -42,6 +43,7 @@ export function useAnchoredMenu({
   gutter = 8,
   anchorInset = 0,
   matchAnchorWidth = false,
+  anchorPoint,
 }: UseAnchoredMenuOptions): JSX.CSSProperties | undefined {
   const { active } = useAppShell();
   const [style, setStyle] = useState<JSX.CSSProperties>(HIDDEN_STYLE);
@@ -65,7 +67,9 @@ export function useAnchoredMenu({
     }
 
     const position = () => {
-      const anchorBounds = anchor.getBoundingClientRect();
+      const anchorBounds = anchorPoint
+        ? { left: anchorPoint.x, right: anchorPoint.x, top: anchorPoint.y, bottom: anchorPoint.y, width: 0 }
+        : anchor.getBoundingClientRect();
       const intendedWidth = matchAnchorWidth
         ? Math.max(0, anchorBounds.width - (anchorInset * 2))
         : undefined;
@@ -122,9 +126,9 @@ export function useAnchoredMenu({
     window.addEventListener('resize', position);
     window.addEventListener('scroll', position, true);
 
-    const handlePointerDown = (event: PointerEvent) => {
+    const handlePointerDown = (event: MouseEvent) => {
       const target = event.target as Node | null;
-      if (!target || anchor.contains(target) || menu.contains(target)) return;
+      if (!target || (!anchorPoint && anchor.contains(target)) || menu.contains(target)) return;
       dismissRef.current();
     };
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -137,6 +141,7 @@ export function useAnchoredMenu({
       (focusRef?.current ?? anchor).focus({ preventScroll: true });
     };
     document.addEventListener('pointerdown', handlePointerDown, true);
+    document.addEventListener('mousedown', handlePointerDown, true);
     window.addEventListener('keydown', handleKeyDown, true);
 
     return () => {
@@ -149,9 +154,10 @@ export function useAnchoredMenu({
       window.removeEventListener('resize', position);
       window.removeEventListener('scroll', position, true);
       document.removeEventListener('pointerdown', handlePointerDown, true);
+      document.removeEventListener('mousedown', handlePointerDown, true);
       window.removeEventListener('keydown', handleKeyDown, true);
     };
-  }, [active, anchorInset, anchorRef, focusRef, gap, gutter, matchAnchorWidth, menuRef, open, placement]);
+  }, [active, anchorInset, anchorRef, anchorPoint?.x, anchorPoint?.y, focusRef, gap, gutter, matchAnchorWidth, menuRef, open, placement]);
 
   return open && active ? style : undefined;
 }

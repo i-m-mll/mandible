@@ -3,6 +3,7 @@
 // Bug: 236d03b — Fix 5: Per-block hover overlay with MessageActions
 
 import type { ContentBlock, MessageGroupProps, ToolResultContentBlock, ToolUseContentBlock } from './types';
+import type { ComponentChildren } from 'preact';
 import { TextBlock } from '../message-blocks/TextBlock';
 import { ThinkingBlock } from '../message-blocks/ThinkingBlock';
 import { ToolUseBlock } from '../message-blocks/ToolUseBlock';
@@ -13,8 +14,7 @@ import { summarizeToolRun, toolRunIcon } from '../message-blocks/toolPresentatio
 
 export function MessageGroup({
   turn,
-  isStreaming,
-  isThinking,
+  defaultThinkingExpanded,
   getBlockExpanded,
   onBlockExpandedChange,
   getDisclosureExpanded,
@@ -24,12 +24,13 @@ export function MessageGroup({
   onToggleBlockSelect,
   onFork,
   onResume,
-}: MessageGroupProps): JSX.Element {
+  headerMetadata,
+}: MessageGroupProps<HTMLElement> & { headerMetadata?: ComponentChildren }): JSX.Element {
   const { assistantEvent, toolResults } = turn;
   const blocks = assistantEvent.message.content;
   const newestPlanIndex = latestPlanIndex(blocks);
 
-  function renderBlock(block: ContentBlock, index: number): JSX.Element | null {
+  function renderBlock(block: ContentBlock, index: number, withinCollection = false): JSX.Element | null {
     let inner: JSX.Element | null = null;
 
     switch (block.type) {
@@ -44,16 +45,17 @@ export function MessageGroup({
         // so the user can see thinking content accumulate. When streaming ends,
         // the block collapses intentionally rather than jarring.
         {
-          const defaultExpanded = isStreaming && isThinking === true;
+          const defaultExpanded = defaultThinkingExpanded;
           const expanded = getBlockExpanded?.(block, index, defaultExpanded);
           inner = (
             <ThinkingBlock
               key={`thinking-${index}`}
               content={block.thinking}
+              headerMetadata={index === blocks.length - 1 ? headerMetadata : undefined}
               defaultCollapsed={!defaultExpanded}
               expanded={expanded}
               detailsAvailable={block.source?.detailsLoaded === false}
-              onExpandedChange={(next) => onBlockExpandedChange?.(block, index, next)}
+              onExpandedChange={(next, trigger) => onBlockExpandedChange?.(block, index, next, undefined, trigger)}
             />
           );
         }
@@ -82,13 +84,19 @@ export function MessageGroup({
           <ToolUseBlock
             key={`tool-${block.id}`}
             toolName={block.name}
+            headerMetadata={index === blocks.length - 1 ? headerMetadata : undefined}
             toolKind={block.toolKind}
             toolUseId={block.id}
             input={block.input}
+            active={Boolean(block.executionActive && !result)}
+            detailsAvailable={block.source?.detailsLoaded === false}
             result={result as import('../message-blocks/ToolUseBlock').ToolResultContentBlock | null}
             defaultExpanded={defaultExpanded}
+            withinCollection={withinCollection}
+            getDisclosureExpanded={getDisclosureExpanded ? (key,defaultExpanded)=>getDisclosureExpanded(`tool:${block.id}:${key}`,defaultExpanded) : undefined}
+            onDisclosureExpandedChange={onDisclosureExpandedChange ? (key,next,trigger)=>onDisclosureExpandedChange(`tool:${block.id}:${key}`,next,trigger) : undefined}
             expanded={expanded}
-            onExpandedChange={(next) => onBlockExpandedChange?.(block, index, next, result?.source ? [result.source] : [])}
+            onExpandedChange={(next, trigger) => onBlockExpandedChange?.(block, index, next, result?.source ? [result.source] : [], trigger)}
             resultSelected={result?.source ? selectedBlockIds?.has(result.source.blockId) : false}
             selectMode={selectMode}
             onToggleResultSelect={result?.source && onToggleBlockSelect
@@ -156,13 +164,14 @@ export function MessageGroup({
       rendered.push(
         <ToolCallGroup
           key={groupId}
-          summary={summarizeToolRun(run.map((block) => ({ name: block.name, toolKind: block.toolKind })))}
-          icon={toolRunIcon(run.map((block) => ({ name: block.name, toolKind: block.toolKind })))}
+          summary={summarizeToolRun(run.map((block) => ({ name: block.name, toolKind: block.toolKind, input: block.input })))}
+          headerMetadata={end === blocks.length ? headerMetadata : undefined}
+          icon={toolRunIcon(run.map((block) => ({ name: block.name, toolKind: block.toolKind, input: block.input })))}
           expanded={expanded}
-          onExpandedChange={(next) => onDisclosureExpandedChange?.(groupId, next)}
+          onExpandedChange={(next, trigger) => onDisclosureExpandedChange?.(groupId, next, trigger)}
           memberRefs={memberRefs}
         >
-          {run.map((block, offset) => renderBlock(block, index + offset))}
+          {run.map((block, offset) => renderBlock(block, index + offset, true))}
         </ToolCallGroup>,
       );
       index = end;

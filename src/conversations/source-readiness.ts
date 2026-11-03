@@ -49,6 +49,7 @@ export function readConversationSourceReadiness(db: Db, conversationId: string):
   const needsRepair = (reason: ConversationSourceReadinessReason) =>
     result(repairable ? "repair_needed" : "unavailable", reason);
   if (!source) return needsRepair("source_not_indexed");
+  if (!source.positionSpaceId) return needsRepair("projection_incomplete");
   if (source.availability === "missing" || version?.availability === "missing") {
     return result("unavailable", "source_unavailable");
   }

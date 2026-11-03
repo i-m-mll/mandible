@@ -1,3 +1,5 @@
+import { writeDisplayIndex, readCompleteDisplayIndex, readDisplayContextPlan, type DisplayIndexInput, type DisplayContextPlan } from './display-index.js';
+import { nextReadingContext, type ReadingContextEntry, type ReadingContextState } from './reading-context.js';
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -38,6 +40,7 @@ export interface SparseConversationBlockRow {
   recordOrdinal: number;
   subBlockOrdinal: number;
   model?: string | null;
+  clientIntentId?: string | null;
   parserFormat: string;
   parserVersion: string;
   normalizationVersion: string;
@@ -72,6 +75,7 @@ interface CacheBlockRow {
   record_ordinal: number;
   sub_block_ordinal: number;
   model: string | null;
+  client_intent_id: string | null;
 }
 
 export interface SourceManifestRow {
@@ -215,6 +219,33 @@ export class ConversationStructureCache {
         record_ordinal         INTEGER NOT NULL,
         sub_block_ordinal      INTEGER NOT NULL,
         model                  TEXT,
+        client_intent_id       TEXT,
+        activity_owner         INTEGER,
+        action_start           INTEGER NOT NULL,
+        PRIMARY KEY (cache_conversation_id, position)
+      ) WITHOUT ROWID;
+      CREATE TABLE IF NOT EXISTS cache_reading_scopes (
+        cache_conversation_id INTEGER NOT NULL REFERENCES cache_conversations(cache_id) ON DELETE CASCADE,
+        start INTEGER NOT NULL,
+        end INTEGER NOT NULL,
+        PRIMARY KEY (cache_conversation_id, start)
+      ) WITHOUT ROWID;
+      CREATE TABLE IF NOT EXISTS cache_display_fragments (
+        cache_conversation_id INTEGER NOT NULL REFERENCES cache_conversations(cache_id) ON DELETE CASCADE,
+        position INTEGER NOT NULL, part TEXT NOT NULL, ordinal INTEGER NOT NULL,
+        kind TEXT NOT NULL, speaker TEXT NOT NULL, run_id TEXT, facts_json TEXT NOT NULL,
+        PRIMARY KEY(cache_conversation_id, position, part)
+      ) WITHOUT ROWID;
+      CREATE INDEX IF NOT EXISTS idx_display_runs ON cache_display_fragments(cache_conversation_id,run_id,position,ordinal);
+      CREATE TABLE IF NOT EXISTS cache_display_aliases (
+        cache_conversation_id INTEGER NOT NULL REFERENCES cache_conversations(cache_id) ON DELETE CASCADE,
+        position INTEGER NOT NULL, owner_position INTEGER NOT NULL, owner_part TEXT NOT NULL,
+        PRIMARY KEY(cache_conversation_id,position)
+      ) WITHOUT ROWID;
+      CREATE TABLE cache_display_positions (
+        cache_conversation_id INTEGER NOT NULL REFERENCES cache_conversations(cache_id) ON DELETE CASCADE,
+        position INTEGER NOT NULL,
+        facts_json TEXT NOT NULL,
         PRIMARY KEY (cache_conversation_id, position)
       ) WITHOUT ROWID;
       CREATE TABLE IF NOT EXISTS cache_tool_links (
@@ -234,7 +265,7 @@ export class ConversationStructureCache {
   }
 
   clear(): void {
-    this.cache.exec("DELETE FROM cache_tool_links; DELETE FROM cache_blocks; DELETE FROM cache_conversations");
+    this.cache.exec("DELETE FROM cache_reading_scopes; DELETE FROM cache_tool_links; DELETE FROM cache_blocks; DELETE FROM cache_conversations");
   }
 
   private cacheConversation(manifest: SourceManifestRow, mode: "replace" | "append"): number {
@@ -257,8 +288,12 @@ export class ConversationStructureCache {
       return Number(inserted.lastInsertRowid);
     }
     if (mode === "replace") {
+      this.cache.prepare("DELETE FROM cache_display_positions WHERE cache_conversation_id = ?").run(existing.cache_id);
       this.cache.prepare("DELETE FROM cache_tool_links WHERE cache_conversation_id = ?").run(existing.cache_id);
       this.cache.prepare("DELETE FROM cache_blocks WHERE cache_conversation_id = ?").run(existing.cache_id);
+      this.cache.prepare("DELETE FROM cache_reading_scopes WHERE cache_conversation_id = ?").run(existing.cache_id);
+      this.cache.prepare("DELETE FROM cache_display_fragments WHERE cache_conversation_id = ?").run(existing.cache_id);
+      this.cache.prepare("DELETE FROM cache_display_aliases WHERE cache_conversation_id = ?").run(existing.cache_id);
     }
     this.cache.prepare(`
       UPDATE cache_conversations
@@ -281,33 +316,50 @@ export class ConversationStructureCache {
       "normalizationVersion" | "redactionEpoch">[],
     tools: ReadonlyMap<string, number> = new Map(),
     priorVersionId?: string,
+    display?: DisplayIndexInput,
   ): void {
     const write = this.cache.transaction(() => {
       const cacheId = this.cacheConversation(manifest, "replace");
       const insert = this.cache.prepare(`
         INSERT INTO cache_blocks (
           cache_conversation_id, position, type_code, role_code, parent_position,
-          record_offset, record_length, record_ordinal, sub_block_ordinal, model
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          record_offset, record_length, record_ordinal, sub_block_ordinal, model, client_intent_id, activity_owner, action_start
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
+      let priorCacheId: number | undefined;
       if (priorVersionId) {
         const prior = this.cachedConversation(manifest.conversation_id, priorVersionId, {
           parserFormat: manifest.parser_format, parserVersion: manifest.parser_version,
           normalizationVersion: manifest.normalization_version, redactionEpoch: manifest.redaction_epoch,
         });
         if (!prior) throw new Error("append structure generation is missing");
+        priorCacheId = prior.cache_id;
         this.cache.prepare(`INSERT INTO cache_blocks SELECT ?, position, type_code, role_code, parent_position,
-          record_offset, record_length, record_ordinal, sub_block_ordinal, model FROM cache_blocks WHERE cache_conversation_id = ?`)
+          record_offset, record_length, record_ordinal, sub_block_ordinal, model, client_intent_id, activity_owner, action_start FROM cache_blocks WHERE cache_conversation_id = ?`)
           .run(cacheId, prior.cache_id);
+        this.cache.prepare("INSERT INTO cache_reading_scopes SELECT ?, start, end FROM cache_reading_scopes WHERE cache_conversation_id = ?").run(cacheId, prior.cache_id);
         this.cache.prepare("INSERT INTO cache_tool_links SELECT ?, tool_key, position FROM cache_tool_links WHERE cache_conversation_id = ?")
           .run(cacheId, prior.cache_id);
       }
+      const previousRow = this.cache.prepare(`SELECT position, type_code, role_code, activity_owner, action_start
+        FROM cache_blocks WHERE cache_conversation_id = ? ORDER BY position DESC LIMIT 1`).get(cacheId) as
+        { position: number; type_code: number; role_code: number; activity_owner: number | null; action_start: number } | undefined;
+      let previous: ReadingContextState | null = previousRow ? { position: previousRow.position,
+        type: decodeType(previousRow.type_code), role: decodeRole(previousRow.role_code), activity_owner: previousRow.activity_owner,
+        action_scope: { start: previousRow.action_start, end: previousRow.position } } : null;
+      const parent = this.cache.prepare('SELECT activity_owner FROM cache_blocks WHERE cache_conversation_id = ? AND position = ?');
+      const scope = this.cache.prepare(`INSERT INTO cache_reading_scopes VALUES (?, ?, ?)
+        ON CONFLICT(cache_conversation_id, start) DO UPDATE SET end = excluded.end`);
       for (const row of rows) {
+        const parentRow = row.parentPosition === null ? null : parent.get(cacheId, row.parentPosition) as { activity_owner: number | null } | undefined;
+        previous = nextReadingContext(row, previous, parentRow?.activity_owner ?? null);
+        scope.run(cacheId, previous.action_scope.start, row.position);
         insert.run(
           cacheId, row.position, blockTypeCode(row.type), roleCode(row.role), row.parentPosition,
-          row.recordOffset, row.recordLength, row.recordOrdinal, row.subBlockOrdinal, row.model ?? null,
+          row.recordOffset, row.recordLength, row.recordOrdinal, row.subBlockOrdinal, row.model ?? null, row.clientIntentId ?? null, previous.activity_owner, previous.action_scope.start,
         );
       }
+      if (display) writeDisplayIndex(this.cache, cacheId, display, priorCacheId);
       const count = this.cache.prepare("SELECT COUNT(*) AS count, MIN(position) AS first, MAX(position) AS last FROM cache_blocks WHERE cache_conversation_id = ?")
         .get(cacheId) as { count: number; first: number | null; last: number | null };
       if (count.count !== manifest.block_count || (count.count > 0 && (count.first !== 0 || count.last !== count.count - 1))) {
@@ -394,7 +446,7 @@ export class ConversationStructureCache {
       : options.prefix?.blockCount ?? conversation.block_count;
     const rows = this.cache.prepare(`
       SELECT position, type_code, role_code, parent_position, record_offset,
-             record_length, record_ordinal, sub_block_ordinal, model
+             record_length, record_ordinal, sub_block_ordinal, model, client_intent_id
         FROM cache_blocks WHERE ${where}
        ORDER BY position LIMIT ? OFFSET ?
     `).all(...params, options.limit, options.offset) as CacheBlockRow[];
@@ -411,6 +463,7 @@ export class ConversationStructureCache {
         recordOrdinal: row.record_ordinal,
         subBlockOrdinal: row.sub_block_ordinal,
         model: row.model,
+        clientIntentId: row.client_intent_id,
         parserFormat: conversation.parser_format,
         parserVersion: conversation.parser_version,
         normalizationVersion: conversation.normalization_version,
@@ -420,6 +473,37 @@ export class ConversationStructureCache {
       offset: options.offset,
       limit: options.limit,
     };
+  }
+
+  readPresentationIndex(conversationId: string, sourceVersionId: string, epochs?: ConversationSourceEpochs) {
+    const conversation = this.cachedConversation(conversationId, sourceVersionId, epochs);
+    return conversation ? readCompleteDisplayIndex(this.cache, conversation.cache_id) : null;
+  }
+
+  readDisplayContext(conversationId: string, sourceVersionId: string, positions: readonly number[], epochs?: ConversationSourceEpochs): DisplayContextPlan | null {
+    const conversation = this.cachedConversation(conversationId, sourceVersionId, epochs);
+    return conversation ? readDisplayContextPlan(this.cache, conversation.cache_id, positions) : null;
+  }
+
+  readReadingContextPositions(conversationId: string, sourceVersionId: string, positions: readonly number[], epochs?: ConversationSourceEpochs): ReadingContextEntry[] | null {
+    const conversation = this.cachedConversation(conversationId, sourceVersionId, epochs);
+    if (!conversation) return null;
+    const rows = this.cache.prepare(`SELECT b.position,b.activity_owner,s.start,s.end FROM cache_blocks b
+      JOIN cache_reading_scopes s ON s.cache_conversation_id=b.cache_conversation_id AND s.start=b.action_start
+      WHERE b.cache_conversation_id=? AND b.position IN (SELECT value FROM json_each(?)) ORDER BY b.position`)
+      .all(conversation.cache_id, JSON.stringify(positions)) as Array<{ position: number; activity_owner: number | null; start: number; end: number }>;
+    return rows.map(row => ({ position: row.position, activity_owner: row.activity_owner, action_scope: {start: row.start, end: row.end} }));
+  }
+
+  readReadingContext(conversationId: string, sourceVersionId: string, start: number, end: number, epochs?: ConversationSourceEpochs): ReadingContextEntry[] | null {
+    const conversation = this.cachedConversation(conversationId, sourceVersionId, epochs);
+    if (!conversation) return null;
+    const rows = this.cache.prepare(`SELECT b.position, b.activity_owner, s.start, s.end
+      FROM cache_blocks b JOIN cache_reading_scopes s
+        ON s.cache_conversation_id = b.cache_conversation_id AND s.start = b.action_start
+      WHERE b.cache_conversation_id = ? AND b.position >= ? AND b.position <= ? ORDER BY b.position`)
+      .all(conversation.cache_id, start, end) as Array<{ position: number; activity_owner: number | null; start: number; end: number }>;
+    return rows.map(row => ({ position: row.position, activity_owner: row.activity_owner, action_scope: { start: row.start, end: row.end } }));
   }
 
   readStructure(conversationId: string, sourceVersionId: string, epochs?: ConversationSourceEpochs): Array<{
@@ -448,21 +532,22 @@ export class ConversationStructureCache {
     }));
   }
 
-  readPosition(
-    conversationId: string,
-    sourceVersionId: string,
-    position: number,
-    epochs?: ConversationSourceEpochs,
-  ): SparseConversationBlockRow | null {
+  readPosition(conversationId: string, sourceVersionId: string, position: number, epochs?: ConversationSourceEpochs): SparseConversationBlockRow | null {
+    return this.readPositions(conversationId, sourceVersionId, [position], epochs)?.[0] ?? null;
+  }
+
+  /** Exact requested coordinates and their verified direct parents, from the admitted navigation snapshot. */
+  readPositions(conversationId: string, sourceVersionId: string, positions: readonly number[], epochs?: ConversationSourceEpochs,
+    includeParents = false): SparseConversationBlockRow[] | null {
     const conversation = this.cachedConversation(conversationId, sourceVersionId, epochs);
     if (!conversation) return null;
-    const row = this.cache.prepare(`
-      SELECT position, type_code, role_code, parent_position, record_offset,
-             record_length, record_ordinal, sub_block_ordinal, model
-        FROM cache_blocks WHERE cache_conversation_id = ? AND position = ?
-    `).get(conversation.cache_id, position) as CacheBlockRow | undefined;
-    if (!row) return null;
-    return {
+    const rows = this.cache.prepare(`WITH requested AS (
+      SELECT * FROM cache_blocks WHERE position IN (SELECT value FROM json_each(?)) AND cache_conversation_id = ?
+    ) SELECT * FROM requested
+      UNION SELECT * FROM cache_blocks WHERE cache_conversation_id = ? AND ?
+        AND position IN (SELECT parent_position FROM requested WHERE parent_position IS NOT NULL)
+      ORDER BY position`).all(JSON.stringify([...new Set(positions)]), conversation.cache_id, conversation.cache_id, includeParents ? 1 : 0) as CacheBlockRow[];
+    return rows.map(row => ({
       conversationId,
       sourceVersionId,
       position: row.position,
@@ -473,12 +558,13 @@ export class ConversationStructureCache {
       recordLength: row.record_length,
       recordOrdinal: row.record_ordinal,
       subBlockOrdinal: row.sub_block_ordinal,
-        model: row.model,
+      model: row.model,
+      clientIntentId: row.client_intent_id,
       parserFormat: conversation.parser_format,
       parserVersion: conversation.parser_version,
       normalizationVersion: conversation.normalization_version,
       redactionEpoch: conversation.redaction_epoch,
-    };
+    }));
   }
 
   hasCompleteConversation(

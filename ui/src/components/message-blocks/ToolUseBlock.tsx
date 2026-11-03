@@ -1,38 +1,32 @@
+import type { ToolResultContent, ToolResultContentBlock } from '../../../../src/presentation/types';
+import { ActivityPayloadBox } from '../shared/ActivityPayloadBox';
+import { ActivityEventItem } from '../shared/ActivityEventItem';
+import { projectToolProgram } from '../../../../src/presentation/tool-program';
+import { programResults, projectToolResult, framedToolResult } from '../../../../src/presentation/tool-transport';
+import { projectExecution, type ExecutionResultPresentation } from '../../../../src/presentation/execution-presentation';
+import { ExecutionInput } from './ExecutionInput';
 import { Icon } from '../icons/Icon';
+import type { ComponentChildren } from 'preact';
 import type { IconName } from '../icons/Icon';
 import { useMemo } from 'preact/hooks';
 import { computeDiffStats, FileEditBlock } from './FileEditBlock';
 import { MessageActions } from '../shared/MessageActions';
 import { OverflowFade } from '../shared/OverflowFade';
-import type { PersistedBlockSource } from '../stream-renderer/types';
 import { CompactActivityRow } from '../shared/ChatDisclosure';
-import { presentTool, toolInputObject, toolTarget, type ToolCategory } from './toolPresentation';
+import { presentTool, toolInputObject, toolTarget, type ToolCategory, type ToolPresentation } from './toolPresentation';
 
-export type ToolResultContent =
-  | string
-  | Array<{ type: 'text'; text: string }>
-  | Array<{ type: 'image'; source: { type: string; media_type: string; data: string } }>;
-
-export type ToolResultContentBlock = {
-  type: 'tool_result';
-  tool_use_id: string;
-  content: ToolResultContent;
-  is_error?: boolean;
-  truncated?: boolean;
-  fullText?: string;
-  omittedCharacters?: number;
-  source?: PersistedBlockSource;
-};
+export type { ToolResultContent, ToolResultContentBlock } from '../../../../src/presentation/types';
 
 export type ToolUseBlockProps = {
   toolName: string;
   toolKind?: string;
   toolUseId?: string;
-  input: Record<string, unknown> | string;
+  input?: Record<string, unknown> | string;
+  header?: ToolPresentation;
   result?: ToolResultContentBlock | null;
   defaultExpanded?: boolean;
   expanded?: boolean;
-  onExpandedChange?: (expanded: boolean) => void;
+  onExpandedChange?: (expanded: boolean, trigger?: HTMLElement) => void;
   compact?: boolean;
   statusEmoji?: string;
   active?: boolean;
@@ -43,6 +37,11 @@ export type ToolUseBlockProps = {
   onForkResult?: () => void;
   onResumeResult?: () => void;
   memberRefs?: string;
+  headerMetadata?: ComponentChildren;
+  resultPresentation?: ExecutionResultPresentation;
+  withinCollection?: boolean;
+  getDisclosureExpanded?: (key:string,defaultExpanded:boolean)=>boolean;
+  onDisclosureExpandedChange?: (key:string,expanded:boolean,trigger?:HTMLElement)=>void;
 };
 
 export type ToolVisualKind = ToolCategory;
@@ -59,16 +58,6 @@ type ToolStatus = 'pending' | 'running' | 'success' | 'failed';
 export function getToolVisual(toolName: string, toolKind?: string): ToolVisual {
   const presentation = presentTool(toolName, {}, toolKind);
   return { kind: presentation.category, icon: presentation.icon, verb: presentation.phrase, target: presentation.target };
-}
-
-function firstString(input: Record<string, unknown>, keys: string[]): string {
-  for (const key of keys) {
-    const value = input[key];
-    if (typeof value === 'string' && value.trim()) {
-      return value;
-    }
-  }
-  return '';
 }
 
 export function getToolTarget(toolName: string, input: Record<string, unknown>): string {
@@ -159,30 +148,20 @@ function AnsiText({ text }: { text: string }): JSX.Element {
   );
 }
 
-function ResultBody({ result, commandLike }: {
+function ResultBody({ result, commandLike, projected }: {
   result: ToolResultContentBlock;
   commandLike: boolean;
+  projected: ExecutionResultPresentation;
 }): JSX.Element {
-  const text = result.fullText ?? extractResultText(result.content);
-  const images = extractImages(result.content);
-
+  const content=projected.content ?? (!projected.decoded && Array.isArray(result.content) ? result.content : [{type:'text' as const,text:projected.text}]);
+  const blocks=typeof content==='string' ? [{type:'text' as const,text:content}] : content;
   return (
-    <div className={`tool-card__result${result.is_error ? ' tool-card__result--error' : ''}`}>
-      {text && (
-        <OverflowFade lines={10}>
-          <pre className={commandLike ? 'tool-card__terminal-output' : undefined}>
-            {commandLike ? <AnsiText text={text} /> : text}
-          </pre>
-        </OverflowFade>
-      )}
-      {images.map((src, index) => (
-        <img
-          key={index}
-          className="tool-card__image"
-          src={`data:${src.media_type};base64,${src.data}`}
-          alt="Tool output"
-        />
-      ))}
+    <div className={`tool-card__result${result.is_error || projected.failed ? ' tool-card__result--error' : ''}`}>
+      {blocks.map((block,index)=>block.type==='text' ? (block.text ? <OverflowFade key={index} lines={10}>
+        <pre className={commandLike ? 'tool-card__terminal-output' : undefined}>{commandLike ? <AnsiText text={block.text} /> : block.text}</pre>
+      </OverflowFade> : null) : <img key={index} className="tool-card__image" src={`data:${block.source.media_type};base64,${block.source.data}`} alt="Tool output" />)}
+      {projected.stderr && <OverflowFade lines={10}><pre className="tool-card__terminal-output ansi-red">{projected.stderr}</pre></OverflowFade>}
+      {projected.wallTimeSeconds !== undefined && <small style={{display: 'block', textAlign: 'right'}}>{projected.wallTimeSeconds} s</small>}
       {result.truncated && result.omittedCharacters != null && (
         <span className="tool-card__result-note">
           {result.omittedCharacters.toLocaleString()} chars hidden
@@ -192,28 +171,15 @@ function ResultBody({ result, commandLike }: {
   );
 }
 
-function hasVisibleResult(result: ToolResultContentBlock): boolean {
+function hasVisibleResult(result: ToolResultContentBlock, projected: ExecutionResultPresentation): boolean {
   const text = result.fullText ?? extractResultText(result.content);
-  return Boolean(text || extractImages(result.content).length > 0 || (result.truncated && result.omittedCharacters != null));
+  return Boolean(projected.decoded || text || extractImages(result.content).length > 0 || (result.truncated && result.omittedCharacters != null));
 }
 
 function JsonInputPanel({ input }: { input: Record<string, unknown> | string }): JSX.Element {
   return (
     <div className="tool-card__input">
       <OverflowFade lines={10}><pre>{formatInput(input)}</pre></OverflowFade>
-    </div>
-  );
-}
-
-function CommandInputPanel({ input, inputObj }: {
-  input: Record<string, unknown> | string;
-  inputObj: Record<string, unknown>;
-}): JSX.Element {
-  const structuredCommand = firstString(inputObj, ['command', 'cmd', 'description']);
-  const command = structuredCommand || (typeof input === 'string' ? input : JSON.stringify(inputObj, null, 2));
-  return (
-    <div className="tool-card__terminal">
-      <OverflowFade lines={10}><pre><AnsiText text={command} /></pre></OverflowFade>
     </div>
   );
 }
@@ -232,6 +198,7 @@ export function ToolCard({
   toolKind,
   toolUseId,
   input,
+  header,
   result,
   defaultExpanded,
   expanded,
@@ -246,14 +213,31 @@ export function ToolCard({
   onForkResult,
   onResumeResult,
   memberRefs,
+  headerMetadata,
+  resultPresentation,
+  withinCollection = false,
+  getDisclosureExpanded,
+  onDisclosureExpandedChange,
 }: ToolUseBlockProps): JSX.Element {
-  const inputObj = useMemo(() => toolInputObject(input), [input]);
+  const inputObj = useMemo(() => input === undefined ? {} : toolInputObject(input), [input]);
   const visual = useMemo(() => {
-    const presentation = presentTool(toolName, input, toolKind);
+    const presentation = header ?? presentTool(toolName, input, toolKind);
     return { kind: presentation.category, icon: presentation.icon, verb: presentation.phrase, target: presentation.target };
-  }, [toolName, input, toolKind]);
-  const displayTarget = useMemo(() => leftTruncateTarget(visual.target), [visual.target]);
-  const status = statusFor(result, statusEmoji);
+  }, [toolName, input, toolKind, header]);
+  const execution = useMemo(() => input === undefined ? null : projectExecution(toolName, input, toolKind), [toolName, input, toolKind]);
+  const program = useMemo(() => input === undefined ? null : projectToolProgram(toolName,input,toolKind),[toolName,input,toolKind]);
+  const originalResultText = result?.fullText ?? (result ? extractResultText(result.content) : '');
+  const framedResult = useMemo(() => framedToolResult(originalResultText,result?.source?.toolFrame),[originalResultText,result?.source?.toolFrame]);
+  const resultText = framedResult.text;
+  const projectedResult = useMemo(() => resultPresentation ?? projectToolResult(execution,originalResultText,result?.source?.toolFrame,result?.presentation,program),[execution,originalResultText,result?.source?.toolFrame,result?.presentation,resultPresentation,program]);
+  const operationResults = useMemo(() => program ? programResults(program,resultText) : null,[program,resultText]);
+  const projectedChildren = program && (program.operations.length > 1 || !execution || execution.facts.kind !== 'command')
+    ? program.operations.map(operation=>({name:operation.name,input:operation.input,header:presentTool(operation.name,operation.input)}))
+    : header?.children?.map(child=>({...child,input:undefined}));
+  const nestedProgram = Boolean(projectedChildren?.length);
+  const executionFacts=execution?.facts ?? header?.execution;
+  const displayTarget = visual.kind==='execute' ? visual.target : leftTruncateTarget(visual.target);
+  const status = result?.is_error || projectedResult.failed ? 'failed' : projectedResult.running ? 'running' : statusFor(result, statusEmoji);
   const commandLike = visual.kind === 'execute';
   const editLike = visual.kind === 'edit' && typeof inputObj.file_path === 'string';
 
@@ -265,8 +249,24 @@ export function ToolCard({
     );
   }, [editLike, inputObj]);
 
+  function renderProgramChildren(): JSX.Element {
+    return <>{projectedChildren!.map((operation,index) => {
+      const key=`operation:${index}`;
+      return <ToolCard key={index} toolName={operation.name} input={operation.input} header={operation.header}
+        detailsAvailable={operation.input===undefined} withinCollection
+        headerMetadata={withinCollection && index===projectedChildren!.length-1 ? headerMetadata : undefined}
+        expanded={getDisclosureExpanded?.(key,withinCollection && Boolean(expanded))}
+        onExpandedChange={(next,trigger)=>onDisclosureExpandedChange?.(key,next,trigger)}
+        getDisclosureExpanded={getDisclosureExpanded ? (childKey,defaultExpanded)=>getDisclosureExpanded(`${key}:${childKey}`,defaultExpanded) : undefined}
+        onDisclosureExpandedChange={onDisclosureExpandedChange ? (childKey,next,trigger)=>onDisclosureExpandedChange(`${key}:${childKey}`,next,trigger) : undefined}
+        result={operationResults ? {type:'tool_result',tool_use_id:'',content:operationResults[index].text,is_error:operationResults[index].failed} : null}
+        resultPresentation={operationResults?.[index]} />;
+    })}</>;
+  }
+
   function renderInputPanel(): JSX.Element {
-    if (detailsAvailable && (input === '' || (typeof input === 'object' && Object.keys(input).length === 0))) {
+    if (projectedChildren) return renderProgramChildren();
+    if (input === undefined || (detailsAvailable && (input === '' || (typeof input === 'object' && Object.keys(input).length === 0)))) {
       return <div className="tool-card__input" aria-busy="true">Loading tool input…</div>;
     }
     if (editLike) {
@@ -280,24 +280,23 @@ export function ToolCard({
         </OverflowFade>
       );
     }
-    if (commandLike) {
-      return <CommandInputPanel input={input} inputObj={inputObj} />;
-    }
+    if (execution) return <ExecutionInput execution={execution} />;
     if (visual.kind === 'write') {
       return <WriteInputPanel input={inputObj} />;
     }
     return <JsonInputPanel input={input} />;
   }
 
-  function renderResult(content: JSX.Element): JSX.Element {
+  function renderResult(content: JSX.Element, boxed = true): JSX.Element {
     if (!result) return content;
     const source = result.source;
+    const Container = boxed ? ActivityPayloadBox : 'div';
     return (
-      <div className="message-block-wrapper tool-card__payload-box tool-card__result-wrapper" data-block-id={source?.blockId}>
+      <Container className="message-block-wrapper tool-card__result-wrapper" data-block-id={source?.blockId}>
         {content}
         <MessageActions
           blockId={source?.blockId}
-          onCopy={() => { navigator.clipboard.writeText(result.fullText ?? extractResultText(result.content)).catch(() => {}); }}
+          onCopy={() => { navigator.clipboard.writeText(projectedResult.text).catch(() => {}); }}
           onSelect={onToggleResultSelect}
           isSelected={resultSelected}
           selectMode={selectMode}
@@ -306,19 +305,27 @@ export function ToolCard({
           dagUuid={source?.dagUuid}
           metadata={{ timestamp: source?.timestamp }}
         />
-      </div>
+      </Container>
     );
   }
 
-  const summary = `${visual.verb}${displayTarget ? ` ${displayTarget}` : ''}${status === 'failed' ? ' · Failed' : ''}`;
-  const details = (
+  const summary = `${visual.verb}${displayTarget ? ` ${displayTarget}` : ''}${status === 'failed' ? ' · Failed' : status === 'running' ? ' · Running' : ''}`;
+  const collectionChildren = nestedProgram ? withinCollection ? renderInputPanel() : <div className="activity-nested-headers">{renderInputPanel()}</div> : null;
+  const collectionTiming = framedResult.wallTimeSeconds !== undefined && !operationResults?.some(result => result.wallTimeSeconds !== undefined)
+    ? <ActivityEventItem><small style={{ display: 'block', textAlign: 'right' }}>{framedResult.wallTimeSeconds} s</small></ActivityEventItem> : null;
+  const details = nestedProgram
+    ? operationResults
+      ? renderResult(<>{collectionChildren}{collectionTiming}</>, false)
+      : <>{collectionChildren}{result && hasVisibleResult(result, projectedResult)
+        ? <ActivityEventItem>{renderResult(<ResultBody result={result} commandLike={commandLike} projected={projectedResult} />)}</ActivityEventItem> : null}</>
+    : (
     <div className="tool-card__body">
-      <div className="tool-card__payload-box tool-card__input-wrapper">
+      <ActivityPayloadBox className="tool-card__input-wrapper">
         {diffStats ? <div className="tool-card__diff-stats">+{diffStats.additions} / -{diffStats.deletions}</div> : null}
         {renderInputPanel()}
-      </div>
-      {result && hasVisibleResult(result)
-        ? renderResult(<ResultBody result={result} commandLike={commandLike} />)
+      </ActivityPayloadBox>
+      {result && hasVisibleResult(result, projectedResult)
+        ? renderResult(<ResultBody result={result} commandLike={commandLike} projected={projectedResult} />)
         : null}
     </div>
   );
@@ -331,9 +338,12 @@ export function ToolCard({
       data-id={toolUseId}
       data-member-refs={memberRefs}
     >
-      <CompactActivityRow
+      {nestedProgram && withinCollection ? details : <CompactActivityRow
+        collection={nestedProgram}
         icon={<Icon name={visual.icon} />}
         summary={summary}
+        expandedSummary={executionFacts?.kind === 'command' && executionFacts.count === 1 ? `Ran command${status === 'failed' ? ' · Failed' : status === 'running' ? ' · Running' : ''}` : undefined}
+        metadata={headerMetadata}
         memberRefs={[memberRefs, result?.source?.blockId].filter(Boolean).join(' ')}
         disclosure={{
           content: details,
@@ -342,7 +352,7 @@ export function ToolCard({
           expanded,
           onExpandedChange,
         }}
-      />
+      />}
     </div>
   );
 }

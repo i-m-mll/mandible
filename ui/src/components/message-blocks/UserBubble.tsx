@@ -13,6 +13,8 @@ import { codexUserMessageParts } from './codexUserMessage';
 export type UserBubbleProps = {
   text: string;
   provider?: string;
+  getDisclosureExpanded?: (key: string) => boolean | undefined;
+  onDisclosureExpandedChange?: (key: string, expanded: boolean, trigger?: HTMLElement) => void;
 };
 
 type QuestionReply = { question: string; answer: string };
@@ -57,7 +59,13 @@ export function userMessageVisibleText(text: string, provider?: string): string 
     : ['Browser comments', ...part.comments.map(({ number, comment }) => `User Comment ${number}\n${comment}\nBrowser evidence`)].join('\n')).join('\n') : text;
 }
 
-export function UserBubble({ text, provider }: UserBubbleProps): JSX.Element {
+export function UserBubble({ text, provider, getDisclosureExpanded, onDisclosureExpandedChange }: UserBubbleProps): JSX.Element {
+  const requestDisclosure = (key: string, event: MouseEvent) => {
+    if (!onDisclosureExpandedChange || !getDisclosureExpanded) return;
+    event.preventDefault();
+    const trigger = event.currentTarget as HTMLElement;
+    onDisclosureExpandedChange(key, !(trigger.parentElement as HTMLDetailsElement).open, trigger);
+  };
   const instruction = getInstructionMessageMeta(text);
   const replies = useMemo(() => provider === 'codex' ? codexQuestionReplies(text) : null, [provider, text]);
   const parts = useMemo(() => provider === 'codex' && !replies ? codexUserMessageParts(text) : null, [provider, replies, text]);
@@ -88,8 +96,8 @@ export function UserBubble({ text, provider }: UserBubbleProps): JSX.Element {
             <div className="user-bubble__comment-label">User Comment {number}</div>
             <div className="user-bubble__comment-text rendered-markdown"
               dangerouslySetInnerHTML={{ __html: linkifyResourceRefs(renderMarkdown(comment)) }} />
-            <details className="user-bubble__comment-evidence">
-              <summary>Browser evidence</summary>
+            <details className="user-bubble__comment-evidence" open={getDisclosureExpanded?.(`evidence:${number}`)} onToggle={event => { if (!getDisclosureExpanded) onDisclosureExpandedChange?.(`evidence:${number}`, event.currentTarget.open); }}>
+              <summary onClick={event => requestDisclosure(`evidence:${number}`, event)}>Browser evidence</summary>
               <pre>{evidence}</pre>
             </details>
           </section>)}
@@ -100,8 +108,8 @@ export function UserBubble({ text, provider }: UserBubbleProps): JSX.Element {
 
   if (instruction) {
     return (
-      <details className="instruction-message-block">
-        <summary className="instruction-message-block__summary">
+      <details className="instruction-message-block" open={getDisclosureExpanded?.("instructions")} onToggle={event => { if (!getDisclosureExpanded) onDisclosureExpandedChange?.('instructions', event.currentTarget.open); }}>
+        <summary className="instruction-message-block__summary" onClick={event => requestDisclosure('instructions', event)}>
           <NativeDisclosureIcon />
           <span className="instruction-message-block__label">{instruction.scope} {instruction.filename}</span>
           <span className="instruction-message-block__path">{instruction.path}</span>

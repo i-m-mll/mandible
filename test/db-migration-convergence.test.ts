@@ -1134,6 +1134,71 @@ describe("one version behind head", () => {
   });
 });
 
+describe("reading-window preview version collision", () => {
+  // These two published preview lineages predate main's v230 ACL retirement.
+  // Replay their actual forward statements from v229, preserving their original version numbers.
+  function previewDatabase(version: 230 | 231): Db {
+    const db = migrateFixtureThrough(229);
+    db.transaction(() => {
+      for (const name of ["conversation_position_spaces", ...(version === 231 ? ["chat_stream_width_preference"] : [])]) {
+        for (const statement of MIGRATIONS.find(item => item.name === name)!.statements) db.exec(statement);
+      }
+      db.prepare("UPDATE meta SET value = ? WHERE key = 'schema_version'").run(String(version));
+    })();
+    return db;
+  }
+
+  it.each([230, 231] as const)("converges preview v%s without losing source positions, preferences or global grants", version => {
+    const db = previewDatabase(version);
+    const fresh = new SqliteDatabase();
+    try {
+      migrate(fresh);
+      const user = setupOperator(db, { slug: "preview-owner", display_name: "Owner" });
+      db.prepare("INSERT INTO user_settings VALUES (?, ?, ?, 8, 123)")
+        .run(user.id, version === 231 ? "chat_stream_max_width_px" : "managed_chat_defaults", version === 231 ? "0" : "{}");
+      db.exec("INSERT INTO conversations (id, source, source_path, source_hash, source_mtime, started_at, session_id) VALUES ('chat', 'codex', '/chat', 'hash', 0, '2026-11-02', 'native')");
+      db.exec("INSERT INTO conversation_sources (id, conversation_id, provider, native_session_id, parser_format, parser_version, normalization_version, created_at, updated_at, position_space_id, position_count, position_fingerprint, position_fingerprint_version, publication_revision) VALUES ('source', 'chat', 'codex', 'native', 'codex-jsonl', '1', '1', 1, 1, 'space', 17, 'fingerprint', 2, 9)");
+      db.exec("INSERT INTO permission_grants VALUES ('global', 'user', 'owner', 'global', NULL, 'backup', 123)");
+      const source = db.prepare("SELECT * FROM conversation_sources").all();
+      const preferences = db.prepare("SELECT * FROM user_settings").all();
+      migrate(db);
+      expect(schemaVersion(db)).toBe(String(CURRENT_SCHEMA_VERSION));
+      expect(sqliteMaster(db)).toEqual(sqliteMaster(fresh));
+      expect(tableInfo(db)).toEqual(tableInfo(fresh));
+      expect(db.prepare("SELECT * FROM conversation_sources").all()).toEqual(source);
+      expect(db.prepare("SELECT * FROM user_settings").all()).toEqual(preferences);
+      expect(db.prepare("SELECT * FROM permission_grants").all()).toEqual([{ id: "global", subject_type: "user", subject_id: "owner", permission: "backup", created_at: 123 }]);
+      expect(db.pragma("foreign_key_check")).toEqual([]);
+      const snapshot = db.serialize();
+      migrate(db);
+      expect(db.serialize().equals(snapshot)).toBe(true);
+    } finally { db.close(); fresh.close(); }
+  });
+
+  it("refuses partial preview shapes before changing schema or retained data", () => {
+    const db = previewDatabase(231);
+    try {
+      db.exec("ALTER TABLE conversation_sources DROP COLUMN position_fingerprint");
+      const snapshot = db.serialize();
+      expect(() => migrate(db)).toThrow("Unrecognized reading-window Chat preview migration collision");
+      expect(db.serialize().equals(snapshot)).toBe(true);
+    } finally { db.close(); }
+  });
+});
+
+it("admits stream width without altering existing preference revisions", () => {
+  const db = migrateFixtureThrough(231);
+  try {
+    const operator = setupOperator(db, { slug: "stream-width-operator", display_name: "Operator" });
+    db.prepare("INSERT INTO user_settings (user_id, key, value, revision, updated_at) VALUES (?, 'managed_chat_defaults', '{}', 8, 123)").run(operator.id);
+    migrate(db);
+    expect(db.prepare("SELECT key, value, revision, updated_at FROM user_settings WHERE user_id = ?").all(operator.id))
+      .toEqual([{ key: 'managed_chat_defaults', value: '{}', revision: 8, updated_at: 123 }]);
+    db.prepare("INSERT INTO user_settings (user_id, key, value, revision, updated_at) VALUES (?, 'chat_stream_max_width_px', '840', 1, 456)").run(operator.id);
+    expect(db.pragma("foreign_key_check")).toEqual([]);
+  } finally { db.close(); }
+});
+
 it("preserves current preference bytes and revisions while admitting managed Chat defaults", () => {
   const db = migrateFixtureThrough(207);
   try {

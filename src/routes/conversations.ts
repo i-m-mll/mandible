@@ -1,3 +1,8 @@
+import { captureReadingPublication, readConversationReadingManifest, readReadingRowBatch, type ReadingRowBatchRequest } from '../conversations/reading-materialization.js';
+import { projectDisplayBlock } from '../conversations/display-block.js';
+import { packReadingContext, readingMemberKeys } from '../conversations/reading-context.js';
+import { DISPLAY_CONTEXT_VERSION, type ConversationDisplayContext } from '../conversations/display-context.js';
+import { readDisplayContext } from '../conversations/display-context-read.js';
 import type { ConversationSourceEpochs } from "../conversations/source-types.js";
 import { updateConversationMetadata } from "../conversations/metadata.js";
 import { mapConversation, maskSourceBackedConversationRow } from "../conversations/response-mapping.js";
@@ -52,65 +57,6 @@ import {
 
 // --- Row mapping helpers ---
 
-function projectDisplayBlock(row: SourceBackedConversationBlock): SourceBackedConversationBlock & { details_loaded?: false } {
-  let metadata: Record<string, unknown> = {};
-  try {
-    const parsed: unknown = JSON.parse(row.metadata_json);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      metadata = { ...(parsed as Record<string, unknown>) };
-    }
-  } catch {
-    throw new Error(`block ${row.id} has invalid metadata and cannot be safely projected`);
-  }
-  const item = metadata.chat_item;
-  const activity = item && typeof item === "object" && !Array.isArray(item)
-    && (item as Record<string, unknown>).type === "activity";
-  const targeted = row.type === "tool_use" || row.type === "tool_result" || row.type === "thinking" || activity;
-  if (!targeted) return row;
-  const reasoningSummary = row.type === "thinking" && metadata.source_event_type === "reasoning_summary";
-  const reasoningLines = reasoningSummary
-    ? row.content.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
-    : [];
-  if (reasoningSummary) metadata.display_has_body = reasoningLines.length > 1;
-  delete metadata.tool_input;
-  delete metadata.tool_output;
-  if (item && typeof item === "object" && !Array.isArray(item)) {
-    const compactItem = { ...(item as Record<string, unknown>) };
-    delete compactItem.input;
-    delete compactItem.output;
-    if (reasoningSummary) {
-      compactItem.parts = reasoningLines.length > 0 ? [{ type: "text", text: reasoningLines[0] }] : [];
-    } else if (row.type === "thinking") {
-      compactItem.parts = [];
-    } else if (row.type === "tool_use" || row.type === "tool_result" || activity) {
-      compactItem.parts = [];
-    }
-    metadata.chat_item = compactItem;
-  }
-
-  const content = reasoningSummary
-    ? (reasoningLines[0] ?? "")
-    : row.type === "tool_use"
-      ? (typeof metadata.tool_name === "string" ? metadata.tool_name : "Tool call")
-      : row.type === "tool_result"
-        ? ""
-        : row.type === "thinking" ? "Thought" : "";
-  return {
-    id: row.id,
-    conversation_id: row.conversation_id,
-    type: row.type,
-    role: row.role,
-    content,
-    position: row.position,
-    timestamp: row.timestamp,
-    parent_id: row.parent_id,
-    metadata_json: JSON.stringify(metadata),
-    dag_uuid: row.dag_uuid,
-    dag_parent_uuid: row.dag_parent_uuid,
-    locator: row.locator,
-    details_loaded: false,
-  };
-}
 
 type PositionTargetKind = "initial" | "latest" | "position" | "block" | "turn";
 
@@ -593,11 +539,14 @@ export function registerConversationRoutes(
       return sendJson(res, 503, { error: "freshness_error", message: error instanceof Error ? error.message : String(error) });
     }
     const source = db.prepare(`
-      SELECT current_version_id, parser_format AS parserFormat, parser_version AS parserVersion,
+      SELECT current_version_id, position_space_id, publication_revision, parser_format AS parserFormat, parser_version AS parserVersion,
              normalization_version AS normalizationVersion, redaction_epoch AS redactionEpoch FROM conversation_sources
        WHERE conversation_id = ? AND current_version_id IS NOT NULL
        ORDER BY CASE availability WHEN 'available' THEN 0 ELSE 1 END, updated_at DESC LIMIT 1
-    `).get(id) as ({ current_version_id: string } & ConversationSourceEpochs) | undefined;
+    `).get(id) as ({ current_version_id: string; position_space_id: string | null; publication_revision: number } & ConversationSourceEpochs) | undefined;
+    if (req.query?.expected_position_space_id && req.query.expected_position_space_id !== source?.position_space_id) {
+      return sendJson(res, 409, { error: 'position_space_changed', code: 'position_space_changed', position_space_id: source?.position_space_id ?? null });
+    }
     const version = source?.current_version_id ?? null;
     const cached = version === null ? null : getConversationStructureCache(db).readStructure(id, version, source);
     const rows = cached ?? [];
@@ -608,16 +557,19 @@ export function registerConversationRoutes(
       return sendJson(res, 409, { error: "freshness_pending", code: "freshness_pending",
         message: "conversation structure is incomplete; retry after indexing" });
     }
-    const current = db.prepare(`SELECT current_version_id, parser_format AS parserFormat, parser_version AS parserVersion,
+    const current = db.prepare(`SELECT current_version_id, position_space_id, publication_revision, parser_format AS parserFormat, parser_version AS parserVersion,
              normalization_version AS normalizationVersion, redaction_epoch AS redactionEpoch FROM conversation_sources
       WHERE conversation_id = ? AND current_version_id IS NOT NULL
       ORDER BY CASE availability WHEN 'available' THEN 0 ELSE 1 END, updated_at DESC LIMIT 1`
-    ).get(id) as ({ current_version_id: string } & ConversationSourceEpochs) | undefined;
-    if ((current?.current_version_id ?? null) !== version) {
+    ).get(id) as ({ current_version_id: string; position_space_id: string | null; publication_revision: number } & ConversationSourceEpochs) | undefined;
+    if ((current?.current_version_id ?? null) !== version
+        || current?.publication_revision !== source?.publication_revision
+        || current?.position_space_id !== source?.position_space_id) {
       return sendJson(res, 409, { error: "freshness_pending", code: "freshness_pending",
         message: "conversation source changed during structure read" });
     }
-    sendJson(res, 200, { conversation_id: id, source_version_id: version, total: rows.length,
+    sendJson(res, 200, { conversation_id: id, source_version_id: version,
+      position_space_id: source?.position_space_id ?? null, publication_revision: source?.publication_revision ?? 0, total: rows.length,
       rows: rows.map((row) => ({
         id: sparseConversationBlockId(id, row.position),
         position: row.position, type: row.type, role: row.role,
@@ -626,6 +578,44 @@ export function registerConversationRoutes(
         record_length: row.recordLength,
       })) });
   }, { operation: { id: "get:/api/conversations/:id/structure", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow", refs: { params: { id: entityRefs.conversation } } });
+
+  server.get('/api/conversations/:id/reading-manifest', async (req, res) => {
+    let id: string;
+    try { id = (await ensureFresh(req.params.id, false)).conversationId; }
+    catch (error) {
+      if (sendFreshnessError(res, error)) return;
+      return sendJson(res, 503, { status: 'unavailable', reason: error instanceof Error ? error.message : String(error) });
+    }
+    const source = captureReadingPublication(db, id);
+    if (!source) return sendJson(res, 409, { status: 'unavailable', reason: 'Source presentation is not published.' });
+    if (req.query.expected_position_space_id && req.query.expected_position_space_id !== source.position_space_id) {
+      return sendJson(res, 409, { status: 'position-space-changed', positionSpaceId: source.position_space_id });
+    }
+    const manifest = readConversationReadingManifest(db, id, source);
+    if (!manifest) return sendJson(res, 409, { status: 'unavailable', reason: 'Complete presentation index is not available.' });
+    return sendJson(res, 200, { status: 'source', manifest });
+  }, { operation: { id: 'get:/api/conversations/:id/reading-manifest', effects: ['ledger:read'], requestSchema: null, reportingCategory: null },
+    fileRpc: 'allow', refs: { params: { id: entityRefs.conversation } } });
+
+  server.post('/api/conversations/:id/reading-rows', async (req, res) => {
+    const request = readBody<ReadingRowBatchRequest>(req);
+    if (!request || typeof request.positionSpaceId !== 'string' || !Array.isArray(request.rows)
+        || !request.rows.every(row => row && typeof row.key === 'string' && typeof row.revision === 'string')
+        || !request.expanded || typeof request.expanded !== 'object' || Array.isArray(request.expanded)
+        || !Object.values(request.expanded).every(value => typeof value === 'boolean')
+        || (request.streaming !== undefined && typeof request.streaming !== 'boolean')) {
+      return sendJson(res, 400, { error: 'Expected a position space, row descriptor identities and disclosure state.' });
+    }
+    let id: string;
+    try { id = (await ensureFresh(req.params.id, false)).conversationId; }
+    catch (error) {
+      if (sendFreshnessError(res, error)) return;
+      return sendJson(res, 503, { status: 'unavailable', reason: error instanceof Error ? error.message : String(error) });
+    }
+    const result = await readReadingRowBatch({ db, conversationId: id, reader: sourceReader, request });
+    return sendJson(res, result.status === 'source' ? 200 : result.status === 'resource-limit' ? 413 : 409, result);
+  }, { operation: { id: 'post:/api/conversations/:id/reading-rows', effects: ['ledger:read'], requestSchema: null, reportingCategory: null },
+    fileRpc: 'allow', refs: { params: { id: entityRefs.conversation } } });
 
   // GET /api/conversations/:id — bounded, indexed conversation-position window.
   server.get("/api/conversations/:id", async (req, res) => {
@@ -698,15 +688,24 @@ export function registerConversationRoutes(
     let resolvedBlock: SourceBackedConversationBlock | null = null;
     let resolvedTurnId: string | null = null;
     let sourceVersionId: string | null = null;
+    let positionSpaceId: string | null = null;
+    let publicationRevision = 0;
+    let readingContext: import("../conversations/reading-context.js").ReadingContextEntry[] = [];
+    let displayContext: ConversationDisplayContext = { version: DISPLAY_CONTEXT_VERSION, fragments: [], activity_runs: [], aliases: [], owners: [] };
     {
       const source = db.prepare(`
-        SELECT current_version_id, parser_format AS parserFormat, parser_version AS parserVersion,
+        SELECT current_version_id, position_space_id, publication_revision, parser_format AS parserFormat, parser_version AS parserVersion,
              normalization_version AS normalizationVersion, redaction_epoch AS redactionEpoch FROM conversation_sources
          WHERE conversation_id = ? AND current_version_id IS NOT NULL
          ORDER BY CASE availability WHEN 'available' THEN 0 ELSE 1 END, updated_at DESC
          LIMIT 1
-      `).get(id) as ({ current_version_id: string } & ConversationSourceEpochs) | undefined;
+      `).get(id) as ({ current_version_id: string; position_space_id: string | null; publication_revision: number } & ConversationSourceEpochs) | undefined;
       sourceVersionId = source?.current_version_id ?? null;
+      positionSpaceId = source?.position_space_id ?? null;
+      publicationRevision = source?.publication_revision ?? 0;
+      if (query.expected_position_space_id && query.expected_position_space_id !== positionSpaceId) {
+        return sendJson(res, 409, { error: 'position_space_changed', code: 'position_space_changed', position_space_id: positionSpaceId });
+      }
       const structureCache = getConversationStructureCache(db);
       const cachedTotal = source
         ? structureCache.blockCount(id, source.current_version_id, source)
@@ -744,7 +743,7 @@ export function registerConversationRoutes(
         ? Math.max(0, retainedTotal - limit)
         : Math.max(0, anchorPosition! - Math.floor((limit - 1) / 2));
       const sourcePage = await (displayView && source ? displaySourceReader : sourceReader)
-        .readPage(id, { offset: windowOffset, limit });
+        .readPage(id, { offset: windowOffset, limit, expectedSourceVersionId: sourceVersionId ?? undefined });
       if (sourcePage.status !== "source") {
         if (sourcePage.status === "stale") {
           // The source can append after the pre-read extent check. Reconcile
@@ -771,7 +770,40 @@ export function registerConversationRoutes(
         });
         return;
       }
+      const currentPublication = db.prepare(`SELECT current_version_id, position_space_id, publication_revision FROM conversation_sources WHERE conversation_id = ? ORDER BY CASE availability WHEN 'available' THEN 0 ELSE 1 END, updated_at DESC LIMIT 1`).get(id) as { current_version_id: string; position_space_id: string; publication_revision: number } | undefined;
+      if (sourcePage.sourceVersionId !== sourceVersionId || currentPublication?.publication_revision !== publicationRevision
+          || currentPublication?.position_space_id !== positionSpaceId) {
+        const changed = currentPublication?.position_space_id !== positionSpaceId;
+        return sendJson(res, 409, { error: changed ? 'position_space_changed' : 'freshness_pending',
+          code: changed ? 'position_space_changed' : 'freshness_pending', position_space_id: currentPublication?.position_space_id ?? null });
+      }
       readableBlocks = sourcePage.value.blocks;
+      if (source && readableBlocks.length) {
+        const context = structureCache.readReadingContext(id, source.current_version_id, readableBlocks[0].position, readableBlocks[readableBlocks.length - 1].position, source);
+        if (!context || context.length !== readableBlocks.length) return sendJson(res, 409, { error: 'freshness_pending', code: 'freshness_pending', message: 'Source reading context is incomplete.' });
+        readingContext = context;
+        const plan = structureCache.readDisplayContext(id, source.current_version_id, readableBlocks.map(block => block.position), source);
+        if (!plan) return sendJson(res, 409, { error: 'freshness_pending', code: 'freshness_pending', message: 'Source display context is incomplete.' });
+        const display = await readDisplayContext({ plan, conversationId: id, sourceVersionId: source.current_version_id,
+          blockCount: sourcePage.value.total, reader: sourceReader,
+          actionScope: position => {
+            const scope = structureCache.readReadingContext(id, source.current_version_id, position, position, source)?.[0]?.action_scope;
+            if (!scope) throw new Error('Display owner omitted its canonical action scope.');
+            return scope;
+          } });
+        if (display.status !== 'source') return sendJson(res, 409, { error: display.reason, code: 'freshness_pending' });
+        const finalPublication = db.prepare(`SELECT current_version_id,position_space_id,publication_revision FROM conversation_sources
+          WHERE conversation_id = ? ORDER BY CASE availability WHEN 'available' THEN 0 ELSE 1 END,updated_at DESC LIMIT 1`)
+          .get(id) as { current_version_id: string; position_space_id: string; publication_revision: number } | undefined;
+        if (!finalPublication || finalPublication.current_version_id !== source.current_version_id
+            || finalPublication.position_space_id !== positionSpaceId || finalPublication.publication_revision !== publicationRevision) {
+          const changed = finalPublication?.position_space_id !== positionSpaceId;
+          return sendJson(res, 409, { error: changed ? 'position_space_changed' : 'freshness_pending',
+            code: changed ? 'position_space_changed' : 'freshness_pending', position_space_id: finalPublication?.position_space_id ?? null,
+            message: 'Source changed during display context read.' });
+        }
+        displayContext = display.value;
+      }
       bodySource = sourcePage.status;
       if (sourcePage.status === "source" && sourcePage.sourceVersionId) {
         sourceVersionId = sourcePage.sourceVersionId;
@@ -875,6 +907,10 @@ export function registerConversationRoutes(
       conversation: mapped,
       body_source: bodySource,
       source_version_id: sourceVersionId,
+      position_space_id: positionSpaceId,
+      publication_revision: publicationRevision,
+      reading_context: packReadingContext(readingContext),
+      display_context: displayContext,
       children: childrenWithDuration,
       parent: parent ?? null,
       revision: conv.block_count,
@@ -1108,6 +1144,9 @@ export function registerConversationRoutes(
     const body = readBody<{
       format?: "markdown" | "mdx" | "json";
       block_types?: string[];
+      block_ids?: string[];
+      speaker_run_start?: number;
+      expected_position_space_id?: string;
     }>(req);
 
     const format = body.format || "markdown";
@@ -1127,17 +1166,38 @@ export function registerConversationRoutes(
       return;
     }
 
-    let readable: Awaited<ReturnType<typeof readAllBlocks>> | null = null;
-    {
-      try {
-        readable = await readAllBlocks(sourceReader, id);
-      } catch (error) {
-        if (sendFreshnessError(res, error)) return;
-        sendJson(res, 503, { error: "freshness_error", message: error instanceof Error ? error.message : String(error) });
-        return;
-      }
+    const publication = db.prepare(`SELECT current_version_id, position_space_id, parser_format AS parserFormat, parser_version AS parserVersion, normalization_version AS normalizationVersion, redaction_epoch AS redactionEpoch FROM conversation_sources WHERE conversation_id = ?
+      ORDER BY CASE availability WHEN 'available' THEN 0 ELSE 1 END, updated_at DESC LIMIT 1`).get(id) as ({ current_version_id: string; position_space_id: string } & ConversationSourceEpochs) | undefined;
+    if (body.expected_position_space_id && body.expected_position_space_id !== publication?.position_space_id) {
+      return sendJson(res, 409, { code: 'position_space_changed', error: 'position_space_changed', position_space_id: publication?.position_space_id ?? null });
     }
-    const blocks = readable!.blocks;
+    let range: { start: number; end: number } | undefined;
+    if (body.speaker_run_start !== undefined) {
+      if (!Number.isSafeInteger(body.speaker_run_start) || body.speaker_run_start < 0 || !body.expected_position_space_id) return sendJson(res, 400, { error: 'A speaker run requires a canonical start and expected position space.' });
+      const context = publication ? getConversationStructureCache(db).readReadingContext(id, publication.current_version_id, body.speaker_run_start, body.speaker_run_start, publication)?.[0] : null;
+      if (!context || context.action_scope.start !== body.speaker_run_start) return sendJson(res, 409, { error: 'scope_unavailable', code: 'scope_unavailable' });
+      range = context.action_scope;
+    }
+    const selected = body.block_ids ? new Set(body.block_ids) : null;
+    if (selected) {
+      const positions = [...selected].map(ref => sparseConversationBlockPosition(id, ref));
+      if (positions.some(position => position === null) || positions.length === 0) return sendJson(res, 400, { error: 'Invalid block selection' });
+      range = { start: Math.min(...positions as number[]), end: Math.max(...positions as number[]) };
+    }
+    let readable: Awaited<ReturnType<typeof readAllBlocks>>;
+    try {
+      if (range) {
+        const result = await sourceReader.readRange(id, range.start, range.end, { expectedSourceVersionId: publication?.current_version_id });
+        if (result.status !== 'source') return sendJson(res, 409, { error: 'source_unavailable', message: result.reason });
+        readable = { blocks: result.value, bodySource: 'source' };
+      } else readable = await readAllBlocks(sourceReader, id);
+    } catch (error) {
+      if (sendFreshnessError(res, error)) return;
+      return sendJson(res, 503, { error: 'freshness_error', message: error instanceof Error ? error.message : String(error) });
+    }
+    const currentSpace = db.prepare('SELECT position_space_id FROM conversation_sources WHERE conversation_id = ? ORDER BY updated_at DESC LIMIT 1').get(id) as { position_space_id: string } | undefined;
+    if (currentSpace?.position_space_id !== publication?.position_space_id) return sendJson(res, 409, { error: 'position_space_changed', code: 'position_space_changed', position_space_id: currentSpace?.position_space_id ?? null });
+    const blocks = selected ? readable.blocks.filter(block => selected.has(block.id)) : readable.blocks;
 
     const blockTypes = body.block_types ? new Set(body.block_types) : undefined;
 
@@ -1165,6 +1225,10 @@ export function registerConversationRoutes(
         ? blocks.filter((b) => blockTypes.has(b.type)).length
         : blocks.length,
       body_source: readable!.bodySource,
+      covered_member_keys: [...new Set(blocks.flatMap(block => {
+        const metadata = JSON.parse(block.metadata_json) as { chat_item?: import('../parsers/types.js').ChatItem; client_intent_id?: string };
+        return metadata.chat_item ? readingMemberKeys(metadata.chat_item, metadata.client_intent_id) : [];
+      }))],
     });
   }, { operation: { id: "post:/api/conversations/:id/export", effects: ["files:production"], requestSchema: null, reportingCategory: "conversations" }, fileRpc: "allow", refs: { params: { id: entityRefs.conversation } } });
 

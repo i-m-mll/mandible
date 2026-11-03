@@ -1723,23 +1723,24 @@ export async function updateUserAppRailOrderSetting(
   return parseUserAppRailOrderSetting(await parseMaybeJson(response));
 }
 
-export type UserTypographySettingKey =
+export type UserAppearanceSettingKey =
+  | 'chat_stream_max_width_px'
   | 'ui_font_face'
   | 'ui_font_size'
   | 'detail_font_face'
   | 'detail_font_size';
 
-export type UserTypographySetting = {
+export type UserAppearanceSetting = {
   version: 1;
-  key: UserTypographySettingKey;
+  key: UserAppearanceSettingKey;
   value: string | null;
   revision: number;
 };
 
-function parseUserTypographySetting(
-  key: UserTypographySettingKey,
+function parseUserAppearanceSetting(
+  key: UserAppearanceSettingKey,
   payload: unknown,
-): UserTypographySetting {
+): UserAppearanceSetting {
   const record = payload && typeof payload === 'object'
     ? payload as Record<string, unknown>
     : null;
@@ -1750,22 +1751,22 @@ function parseUserTypographySetting(
     || !Number.isSafeInteger(record.revision)
     || (record.revision as number) < 0
   ) throw new Error(`Invalid authenticated ${key} response`);
-  return record as UserTypographySetting;
+  return record as UserAppearanceSetting;
 }
 
-export async function getUserTypographySetting(
-  key: UserTypographySettingKey,
-): Promise<UserTypographySetting> {
+export async function getUserAppearanceSetting(
+  key: UserAppearanceSettingKey,
+): Promise<UserAppearanceSetting> {
   const response = await apiGet(`/api/user-settings/${key}`);
-  return parseUserTypographySetting(key, await parseMaybeJson(response));
+  return parseUserAppearanceSetting(key, await parseMaybeJson(response));
 }
 
-export async function updateUserTypographySetting(
-  key: UserTypographySettingKey,
+export async function updateUserAppearanceSetting(
+  key: UserAppearanceSettingKey,
   value: string,
-): Promise<UserTypographySetting> {
+): Promise<UserAppearanceSetting> {
   const response = await apiPut(`/api/user-settings/${key}`, { value });
-  return parseUserTypographySetting(key, await parseMaybeJson(response));
+  return parseUserAppearanceSetting(key, await parseMaybeJson(response));
 }
 
 export async function getManagedChatDefaults(): Promise<ManagedChatDefaults> {
@@ -2495,16 +2496,17 @@ export async function getConversationSidebar(params: {
   return readConversationSearch(`/api/conversations/sidebar?${query.toString()}`, params);
 }
 
-export type ConversationWindowRequest =
+export type ConversationWindowRequest = { expected_position_space_id?: string } & (
   | { target?: 'initial' | 'latest'; limit?: number; view?: 'display'; signal?: AbortSignal }
   | { block: string; limit?: number; view?: 'display'; signal?: AbortSignal }
   | { turn: string; limit?: number; view?: 'display'; signal?: AbortSignal }
-  | { position: number; limit?: number; view?: 'display'; signal?: AbortSignal };
+  | { position: number; limit?: number; view?: 'display'; signal?: AbortSignal });
 
 export type ConversationStructure = import('../../src/contracts').ConversationStructure;
 
-export async function getConversationStructure(id: string, signal?: AbortSignal): Promise<ConversationStructure> {
-  const resp = await apiGet(`/api/conversations/${encodeURIComponent(id)}/structure`, { signal });
+export async function getConversationStructure(id: string, signal?: AbortSignal, expectedPositionSpaceId?: string): Promise<ConversationStructure> {
+  const query = expectedPositionSpaceId ? `?expected_position_space_id=${encodeURIComponent(expectedPositionSpaceId)}` : '';
+  const resp = await apiGet(`/api/conversations/${encodeURIComponent(id)}/structure${query}`, { signal });
   return (await parseMaybeJson(resp)) as ConversationStructure;
 }
 
@@ -2519,11 +2521,16 @@ export async function getConversationWindow(
   if ('position' in request) query.set('position', String(request.position));
   if (request.limit) query.set('limit', String(request.limit));
   if (request.view) query.set('view', request.view);
+  if (request.expected_position_space_id) query.set('expected_position_space_id', request.expected_position_space_id);
   const suffix = query.size > 0 ? `?${query.toString()}` : '';
   const resp = await apiGet(`/api/conversations/${encodeURIComponent(id)}${suffix}`, {
     signal: request.signal,
   });
-  return (await parseMaybeJson(resp)) as ConversationPositionWindow;
+  const payload = (await parseMaybeJson(resp)) as ConversationPositionWindow;
+  if (!payload.reading_context || payload.reading_context.positions.length !== payload.blocks.length) {
+    throw new ApiError('Source reading context is incomplete.', 409, 'freshness_pending');
+  }
+  return payload;
 }
 
 export async function updateConversation(id: string, data: {
@@ -2547,10 +2554,12 @@ export async function updateConversationArchive(id: string, archived: boolean): 
 
 export async function exportConversationBlocks(id: string, data: {
   block_ids?: string[];
+  speaker_run_start?: number;
+  expected_position_space_id?: string;
   format: 'mdx' | 'markdown' | 'json';
-}): Promise<{ content: string; block_count: number; body_source: 'source' }> {
+}): Promise<{ content: string; block_count: number; body_source: 'source'; covered_member_keys: string[] }> {
   const resp = await apiPost(`/api/conversations/${encodeURIComponent(id)}/export`, data);
-  return (await parseMaybeJson(resp)) as { content: string; block_count: number; body_source: 'source' };
+  return (await parseMaybeJson(resp)) as { content: string; block_count: number; body_source: 'source'; covered_member_keys: string[] };
 }
 
 export async function transformExport(data: {

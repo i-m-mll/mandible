@@ -3,25 +3,16 @@
 import { cleanup, fireEvent, render, screen, waitFor } from './helpers/dom.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { boundToolResultBlock, buildStreamState, conversationBlocksToStreamEvents, groupMessagesForDisplay } from '../ui/src/chat';
-import { ChatSurface, estimateUserMessageHeight } from '../ui/src/chat/ChatSurface';
+import { boundToolResultBlock, buildStreamState, conversationBlocksToStreamEvents } from '../ui/src/chat';
+import { ChatSurface } from '../ui/src/chat/ChatSurface';
 import { conversationAnchorFromHash, messageLinkUrl } from '../ui/src/chat/messageLinks';
 import { __resetAgentPageBindingForTests, adoptAgentSessionBinding } from '../ui/src/agent-page-binding';
 import { MessageActions, MessageLinkContext } from '../ui/src/components/shared/MessageActions';
-import type { ConversationTranscriptConsumer } from '../ui/src/query/conversationData';
+import { installReadingBrowserFixture } from './helpers/reading-browser-fixture';
 import type { StreamEvent } from '../ui/src/components/stream-renderer/types';
 import type { ChatItem } from '../src/parsers/types';
 
 function installBrowserStubs(): void {
-  if (!HTMLElement.prototype.scrollTo) {
-    Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
-      configurable: true,
-      value: function scrollTo(this: HTMLElement, options: ScrollToOptions) {
-        this.scrollTop = Number(options.top ?? 0);
-        this.dispatchEvent(new Event('scroll'));
-      },
-    });
-  }
   const store = new Map<string, string>();
   const mem: Storage = {
     get length() {
@@ -45,45 +36,6 @@ function installBrowserStubs(): void {
   });
 }
 
-function user(text: string, id: string): StreamEvent {
-  return {
-    type: 'user',
-    uuid: id,
-    session_id: 's1',
-    parent_tool_use_id: null,
-    message: { role: 'user', content: [{ type: 'text', text }] },
-  };
-}
-
-function assistantText(text: string, id: string): StreamEvent {
-  return {
-    type: 'assistant',
-    uuid: id,
-    session_id: 's1',
-    parent_tool_use_id: null,
-    message: {
-      id,
-      role: 'assistant',
-      content: [{ type: 'text', text }],
-      usage: { input_tokens: 1, output_tokens: 2 },
-    },
-  };
-}
-
-function domRect(left: number, top: number, width: number, height: number): DOMRect {
-  return {
-    x: left,
-    y: top,
-    left,
-    top,
-    right: left + width,
-    bottom: top + height,
-    width,
-    height,
-    toJSON: () => ({}),
-  } as DOMRect;
-}
-
 function canonicalItem<T extends ChatItem>(item: Omit<T, 'identity' | 'provenance' | 'content_completion'> & {
   ordinal: number;
   turn?: string;
@@ -93,15 +45,15 @@ function canonicalItem<T extends ChatItem>(item: Omit<T, 'identity' | 'provenanc
     ...rest,
     identity: {
       provider: 'codex', session_id: 'canonical-session', native_turn_id: turn,
-      source_record_ordinal: ordinal, source_sub_block_ordinal: 0,
+      source_record_ordinal: ordinal, source_sub_block_ordinal: 0, native_item_id: `item-${ordinal}`,
     },
     provenance: { source: 'verified-provider-transcript', provider: 'codex', source_event_type: 'test' },
     content_completion: 'complete',
   } as T;
 }
 
-function canonicalEvent(item: ChatItem, blockId: string): StreamEvent {
-  return { type: 'chat:item', item, source: { blockId } };
+function canonicalEvent(item: ChatItem, blockId: string, source: { parentBlockId?: string; position?: number } = {}): StreamEvent {
+  return { type: 'chat:item', item, source: { blockId, position: item.identity.source_record_ordinal, ...source } };
 }
 
 function persistedBlock(id: string, item: ChatItem, timestamp?: string) {
@@ -114,35 +66,33 @@ function persistedBlock(id: string, item: ChatItem, timestamp?: string) {
   };
 }
 
+let disposeBrowser: () => void;
 beforeEach(() => {
+  disposeBrowser = installReadingBrowserFixture();
   installBrowserStubs();
 });
 
 afterEach(() => {
   cleanup();
+  disposeBrowser();
   __resetAgentPageBindingForTests();
   vi.restoreAllMocks();
-  delete (HTMLElement.prototype as { scrollTo?: unknown }).scrollTo;
+  vi.unstubAllGlobals();
 });
 
 it.each(['user', 'assistant', 'system'] as const)('copies an exact %s message link after live content gains durable identity', async (role) => {
   window.history.replaceState(null, '', '/preview?instance=copy-test#/console?session=old-session&turn=old-turn&sidebar=hidden');
   adoptAgentSessionBinding('copy-agent');
   const item = canonicalItem({ type: 'message', role, parts: [{ type: 'text', text: 'Live message' }], ordinal: 0 });
-  const transcript: ConversationTranscriptConsumer = {
-    conversationId: 'copy-conversation', sourceVersionId: 'copy-source', historyLoading: false,
-    total: 1, loadedIntervals: [{ start: 0, end: 0 }], hasOlder: false, hasNewer: false,
-    loadOlder: () => ({ status: 'loaded' }), loadNewer: () => ({ status: 'loaded' }),
-    loadAround: () => ({ status: 'loaded' }),
-  };
-  const copyMessageLink = (blockId: string) => { void navigator.clipboard.writeText(messageLinkUrl(window.location.href, transcript.conversationId, blockId)); };
-  const view = render(<ChatSurface events={[{ type: 'chat:item', item }]} streaming={true} transcript={transcript} onCopyMessageLink={copyMessageLink} />);
-  fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+  const copyMessageLink = (blockId: string) => { void navigator.clipboard.writeText(messageLinkUrl(window.location.href, 'copy-conversation', blockId)); };
+  const view = render(<ChatSurface events={[{ type: 'chat:item', item }]} streaming={true} onCopyMessageLink={copyMessageLink} />);
+  fireEvent.contextMenu(await screen.findByText('Live message'));
   expect((screen.getByRole('menuitem', { name: 'Copy link' }) as HTMLButtonElement).disabled).toBe(true);
 
-  view.rerender(<ChatSurface events={[canonicalEvent(item, 'cblk:copy-conversation:42')]} streaming={false} transcript={transcript} onCopyMessageLink={copyMessageLink} />);
-  const overflow = screen.getByRole('button', { name: 'More actions' });
-  if (overflow.getAttribute('aria-expanded') !== 'true') fireEvent.click(overflow);
+  fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
+  view.rerender(<ChatSurface events={[canonicalEvent(item, 'cblk:copy-conversation:42', { position: 42 })]} streaming={false} onCopyMessageLink={copyMessageLink} />);
+  await waitFor(() => expect(view.container.querySelector('[data-block-id="cblk:copy-conversation:42"]')).not.toBeNull());
+  fireEvent.contextMenu(screen.getByText('Live message'));
   fireEvent.click(screen.getByRole('menuitem', { name: 'Copy link' }));
   await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledOnce());
   const url = new URL(vi.mocked(navigator.clipboard.writeText).mock.calls[0][0]);
@@ -154,12 +104,13 @@ it.each(['user', 'assistant', 'system'] as const)('copies an exact %s message li
   expect(conversationAnchorFromHash(url.hash)).toEqual({ block: 'cblk:copy-conversation:42' });
 });
 
-it.each(['Copy link', 'Fork', 'Resume', 'Info'])('executes %s and closes a menu outside the hover rail', (label) => {
+it.each(['Copy link', 'Fork', 'Resume', 'Info'])('executes %s from the event context menu and restores focus', (label) => {
   const callbacks = { 'Copy link': vi.fn(), Fork: vi.fn(), Resume: vi.fn(), Info: vi.fn() };
   const view = render(<MessageLinkContext.Provider value={callbacks['Copy link']}>
-    <MessageActions blockId="exact-block" dagUuid="exact-dag" onFork={callbacks.Fork} onResume={callbacks.Resume} onInfo={callbacks.Info} />
+    <div><MessageActions blockId="exact-block" dagUuid="exact-dag" onFork={callbacks.Fork} onResume={callbacks.Resume} onInfo={callbacks.Info} /></div>
   </MessageLinkContext.Provider>);
-  fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+  const owner = view.container.querySelector<HTMLElement>('[data-event-menu-owner]')!;
+  fireEvent.contextMenu(owner);
   const menu = screen.getByRole('menu');
   expect(view.container.contains(menu)).toBe(false);
   expect(document.body.contains(menu)).toBe(true);
@@ -171,19 +122,25 @@ it.each(['Copy link', 'Fork', 'Resume', 'Info'])('executes %s and closes a menu 
   expect(callbacks[label as keyof typeof callbacks]).toHaveBeenCalledOnce();
   if (label === 'Copy link') expect(callbacks['Copy link']).toHaveBeenCalledWith('exact-block');
   expect(screen.queryByRole('menu')).toBeNull();
-  expect(screen.getByRole('button', { name: 'More actions' }).getAttribute('aria-expanded')).toBe('false');
+  expect(document.activeElement).toBe(owner);
 });
 
-it('composes group-scoped primary actions and exact-source overflow in one rail', () => {
+it('keeps complete-run actions on the confirmed final footer and exact links on each event', async () => {
   const copyLink = vi.fn();
   const events = ['first', 'second'].map((text, index) => canonicalEvent(canonicalItem({
-    type: 'message', role: 'assistant', parts: [{ type: 'text', text }], ordinal: index, turn: 'shared-turn',
+    type: 'message', role: 'assistant', assistant_response: index === 1 ? 'final' : 'interim', parts: [{ type: 'text', text }], ordinal: index, turn: 'shared-turn',
   }), `message-${text}`));
   const view = render(<ChatSurface events={events} streaming={false} onCopyMessageLink={copyLink} />);
+  await screen.findByRole('button', { name: 'Copy all messages' });
+  expect(screen.getAllByRole('button', { name: 'Copy all messages' })).toHaveLength(1);
+  fireEvent.contextMenu(screen.getByText('first'));
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Copy link' }));
+  expect(copyLink).toHaveBeenLastCalledWith('message-first');
   const rail = view.container.querySelector('[data-block-id="message-second"] .message-actions')!;
   const buttons = Array.from(rail.querySelectorAll('button'));
   expect(buttons.map((button) => button.getAttribute('aria-label'))).toEqual(['Copy all messages', 'Open turn as markdown', 'More actions']);
   fireEvent.click(buttons[0]);
+  await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledOnce());
   const copied = vi.mocked(navigator.clipboard.writeText).mock.calls[0][0];
   expect(copied).toContain('first');
   expect(copied).toContain('second');
@@ -192,31 +149,23 @@ it('composes group-scoped primary actions and exact-source overflow in one rail'
   expect(copyLink).toHaveBeenCalledWith('message-second');
 });
 
-it('estimates tall visible user content by width without charging folded instruction bodies', () => {
-  const text = 'A long wrapped paragraph. '.repeat(400);
-  expect(estimateUserMessageHeight(text, 400, 'codex')).toBeGreaterThan(1000);
-  expect(estimateUserMessageHeight(text, 400, 'codex')).toBeGreaterThan(estimateUserMessageHeight(text, 800, 'codex'));
-  const instruction = '# AGENTS.md instructions for /project\n';
-  expect(estimateUserMessageHeight(instruction + text, 400, 'codex'))
-    .toBe(estimateUserMessageHeight(instruction + 'Short body', 400, 'codex'));
-});
-
-it('opens only the containing disclosure path for an exact grouped tool-result link', async () => {
-  const events = ['one', 'two'].flatMap((id, index): StreamEvent[] => [
-    canonicalEvent(canonicalItem({ type: 'tool-call', role: 'assistant', phase: 'call',
-      tool_id: id, tool_name: 'Shell', parts: [], input: { command: `command-${id}` }, ordinal: index * 2, turn: 'grouped-turn' }), `call-${id}`),
-    canonicalEvent(canonicalItem({ type: 'tool-call', role: 'tool', phase: 'result',
-      tool_id: id, parts: [], output: `output-${id}`, ordinal: index * 2 + 1, turn: 'grouped-turn' }), `result-${id}`),
-  ]);
-  const onNavigationResult = vi.fn();
-  render(<ChatSurface events={events} streaming={false}
-    sessionInfo={{ sessionId: 'grouped-result-link' }}
-    navigationTarget={{ key: 'grouped-result', kind: 'block', blockId: 'result-one', turnId: null, smooth: false }}
-    onNavigationResult={onNavigationResult} />);
-  await waitFor(() => expect(onNavigationResult).toHaveBeenCalledWith({ key: 'grouped-result', status: 'revealed' }));
-  expect(document.activeElement).toBe(document.querySelector('[data-block-id="result-one"]'));
-  expect(screen.getByText('output-one')).toBeTruthy();
-  expect(screen.queryByText('output-two')).toBeNull();
+it('keeps a paired result inline and copies the result source independently of its call', async () => {
+  const copyLink = vi.fn();
+  const call = canonicalItem({ type: 'tool-call', role: 'assistant', phase: 'call', tool_id: 'paired-tool',
+    tool_name: 'read', input: { file_path: '/tmp/example' }, parts: [], ordinal: 0, turn: 'tool-turn' });
+  const result = canonicalItem({ type: 'tool-call', role: 'tool', phase: 'result', tool_id: 'paired-tool',
+    output: 'exact result body', parts: [], ordinal: 1, turn: 'tool-turn' });
+  const view = render(<ChatSurface events={[canonicalEvent(call, 'call-source'), canonicalEvent(result, 'result-source', { parentBlockId: 'call-source' })]}
+    streaming={false} onCopyMessageLink={copyLink} />);
+  const disclosure = await screen.findByRole('button', { name: /read/i });
+  fireEvent.click(disclosure);
+  await screen.findByText('exact result body');
+  const resultBox = view.container.querySelector<HTMLElement>('[data-block-id="result-source"]')!;
+  expect(resultBox.closest('[data-block-id="call-source"]')).not.toBeNull();
+  expect(resultBox.textContent).toContain('exact result body');
+  fireEvent.contextMenu(screen.getByText('exact result body'));
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Copy link' }));
+  expect(copyLink).toHaveBeenCalledWith('result-source');
 });
 
 describe('chat message stream render model', () => {
@@ -232,7 +181,6 @@ describe('chat message stream render model', () => {
     const expanded = buildStreamState(conversationBlocksToStreamEvents('session', [earlier, middle]));
     expect(bounded.nodes[0]).toMatchObject({ kind: 'assistant_turn', turn: { id: 'stable-turn-start' } });
     expect(expanded.nodes[0]).toMatchObject({ kind: 'assistant_turn', key: bounded.nodes[0].key, turn: { id: 'stable-turn-start' } });
-    expect(groupMessagesForDisplay(expanded.nodes)[0].id).toBe(groupMessagesForDisplay(bounded.nodes)[0].id);
     const split = buildStreamState([
       ...conversationBlocksToStreamEvents('session', [earlier]),
       { type: 'transcript:boundary' },
@@ -241,21 +189,6 @@ describe('chat message stream render model', () => {
     expect(split).toHaveLength(2);
     expect(new Set(split.map(node => node.key)).size).toBe(2);
     expect(split.map(node => node.turn.id)).toEqual(['stable-turn-start', 'stable-turn-start']);
-  });
-
-  it('keeps downstream same-speaker row keys stable across prepends and bounds each row', () => {
-    const events = Array.from({ length: 25 }, (_, index) => user(`prompt ${index}`, `u${index}`));
-    const before = groupMessagesForDisplay(buildStreamState(events).nodes);
-    const after = groupMessagesForDisplay(buildStreamState([
-      user('older 0', 'older-0'),
-      user('older 1', 'older-1'),
-      user('older 2', 'older-2'),
-      ...events,
-    ]).nodes);
-
-    expect(before.every((group) => group.nodes.length <= 12)).toBe(true);
-    expect(after.every((group) => group.nodes.length <= 12)).toBe(true);
-    expect(after.slice(-2).map((group) => group.id)).toEqual(before.slice(-2).map((group) => group.id));
   });
 
   it('bounds large tool result text before DOM delivery', () => {
@@ -269,481 +202,5 @@ describe('chat message stream render model', () => {
     expect(bounded.truncated).toBe(true);
     expect(String(bounded.content)).not.toContain('TAIL-MARKER');
     expect(bounded.fullText).toContain('TAIL-MARKER');
-  });
-});
-
-describe('ChatSurface stream behavior', () => {
-
-  it('loads a visible missing range without presenting it as an empty conversation', async () => {
-    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(720);
-    const transcript: ConversationTranscriptConsumer = {
-      conversationId: 'gap-conversation',
-      sourceVersionId: 'version-1',
-      historyLoading: false,
-      total: 10,
-      structure: null,
-      loadedIntervals: [{ start: 0, end: 2 }, { start: 7, end: 9 }],
-      hasOlder: false,
-      hasNewer: false,
-      unmaterializedAfterCount: 0,
-      loadOlder: vi.fn(),
-      loadNewer: vi.fn(),
-      loadAround: vi.fn(),
-    };
-    render(<ChatSurface events={[user('prompt', 'u1')]} streaming={false} transcript={transcript} />);
-
-    expect(screen.queryByText('No messages yet')).toBeNull();
-    expect(document.querySelector('[data-virtual-kind="history"]')).toBeTruthy();
-    await waitFor(() => expect(transcript.loadAround).toHaveBeenCalled());
-    const requested = vi.mocked(transcript.loadAround).mock.calls[0][0];
-    expect(requested).toBeGreaterThanOrEqual(3);
-    expect(requested).toBeLessThanOrEqual(6);
-  });
-
-  it('persists a canonical reading anchor instead of a raw scroll offset', () => {
-    const view = render(
-      <ChatSurface events={[canonicalEvent(canonicalItem({
-        type: 'message', role: 'user', parts: [{ type: 'text', text: 'anchored' }], ordinal: 4,
-      }), 'persisted-anchor')]} streaming={false} sessionInfo={{ sessionId: 'reading-anchor' }} />,
-    );
-    const scroll = view.container.querySelector<HTMLElement>('.stream-renderer__scroll')!;
-    fireEvent.wheel(scroll);
-    fireEvent.scroll(scroll);
-    const stored = JSON.parse(localStorage.getItem('mandible:chat-scroll:reading-anchor')!);
-
-    expect(stored).toMatchObject({ version: 1, blockId: 'persisted-anchor' });
-    expect(stored).toHaveProperty('itemId');
-    expect(stored).toHaveProperty('viewportOffset');
-  });
-
-  it('windows large conversations to a bounded DOM row count', () => {
-    const events: StreamEvent[] = [];
-    for (let i = 0; i < 520; i += 1) {
-      events.push(user(`prompt ${i}`, `u${i}`));
-      events.push(assistantText(`answer ${i}`, `a${i}`));
-    }
-
-    const { container } = render(
-      <ChatSurface events={events} streaming={false} sessionInfo={{ sessionId: 'large' }} />,
-    );
-
-    expect(groupMessagesForDisplay(buildStreamState(events).nodes).length).toBe(1040);
-    expect(container.querySelectorAll('[data-virtual-kind]').length).toBeLessThan(40);
-  });
-
-  it('does not restore a stale anchor while the user is scrolling upward', () => {
-    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function clientHeight() {
-      return this.classList.contains('stream-renderer__scroll') ? 500 : 0;
-    });
-    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function scrollHeight() {
-      if (!this.classList.contains('stream-renderer__scroll')) return 0;
-      return Number.parseFloat(this.querySelector<HTMLElement>('.stream-renderer__virtual-canvas')?.style.height ?? '0');
-    });
-    const scrollTo = vi.fn(function scrollTo(this: HTMLElement, options: ScrollToOptions) {
-      this.scrollTop = Number(options.top ?? 0);
-      this.dispatchEvent(new Event('scroll'));
-    });
-    Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, value: scrollTo });
-    const events = Array.from({ length: 40 }, (_, index) => [
-      user(`prompt ${index}`, `u${index}`),
-      assistantText(`answer ${index}`, `a${index}`),
-    ]).flat();
-    const { container, rerender } = render(
-      <ChatSurface events={events} streaming={false} sessionInfo={{ sessionId: 'scrolling-anchor' }} />,
-    );
-    const scroll = container.querySelector<HTMLElement>('.stream-renderer__scroll')!;
-    scroll.scrollTop = 2000;
-    fireEvent.wheel(scroll, { deltaY: -100 });
-    fireEvent.scroll(scroll);
-    fireEvent.wheel(scroll, { deltaY: -100 });
-    scroll.scrollTop = 1700;
-    const previousScrollCalls = scrollTo.mock.calls.length;
-
-    rerender(
-      <ChatSurface
-        events={[...events, user('new prompt', 'new-u')]}
-        streaming={false}
-        sessionInfo={{ sessionId: 'scrolling-anchor' }}
-      />,
-    );
-
-    expect(scroll.scrollTop).toBe(1700);
-    expect(scrollTo.mock.calls.length).toBe(previousScrollCalls);
-  });
-
-  it('does not jump down when a newly loaded group spanning the viewport is measured', () => {
-    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function clientHeight() {
-      return this.classList.contains('stream-renderer__scroll') ? 500 : 0;
-    });
-    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function scrollHeight() {
-      if (!this.classList.contains('stream-renderer__scroll')) return 0;
-      return Number.parseFloat(this.querySelector<HTMLElement>('.stream-renderer__virtual-canvas')?.style.height ?? '0');
-    });
-    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getBoundingClientRect() {
-      if (this.classList.contains('stream-renderer__virtual-row')) {
-        return domRect(0, 0, 600, this.querySelector('[data-block-id="b18"], [data-block-id="b19"]') ? 600 : 150);
-      }
-      return domRect(0, 0, 600, this.classList.contains('stream-renderer__scroll') ? 500 : 0);
-    });
-    const scrollTo = vi.fn(function scrollTo(this: HTMLElement, options: ScrollToOptions) {
-      this.scrollTop = Number(options.top ?? 0);
-      this.dispatchEvent(new Event('scroll'));
-    });
-    Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, value: scrollTo });
-    const structure = {
-      conversation_id: 'measured-range', source_version_id: 'version-1', total: 30,
-      rows: Array.from({ length: 30 }, (_, position) => ({
-        id: `b${position}`, position, type: position % 2 ? 'assistant_message' : 'user_message',
-        role: position % 2 ? 'assistant' : 'user',
-        parent_position: null, record_offset: position * 1000, record_length: 1000,
-      })),
-    } as const;
-    const transcript = (start: number): ConversationTranscriptConsumer => ({
-      conversationId: 'measured-range', sourceVersionId: 'version-1', historyLoading: false,
-      total: 30, structure, loadedIntervals: [{ start, end: 29 }],
-      hasOlder: true, hasNewer: false, unmaterializedAfterCount: 0,
-      loadOlder: vi.fn(), loadNewer: vi.fn(), loadAround: vi.fn(),
-    });
-    const events = (start: number) => Array.from({ length: 30 - start }, (_, index) => {
-      const position = start + index;
-      return {
-        ...canonicalEvent(canonicalItem({
-          type: 'message', role: position % 2 ? 'assistant' : 'user',
-          parts: [{ type: 'text', text: `message ${position}` }],
-          ordinal: position,
-        }), `b${position}`),
-        source: { blockId: `b${position}`, position },
-      };
-    });
-    const view = render(<ChatSurface events={events(20)} streaming={false} transcript={transcript(20)} />);
-    const scroll = view.container.querySelector<HTMLElement>('.stream-renderer__scroll')!;
-    scroll.scrollTop = 3600;
-    fireEvent.wheel(scroll, { deltaY: -300 });
-    scroll.scrollTop = 3300;
-    fireEvent.scroll(scroll);
-    expect(scroll.scrollTop).toBe(3300);
-    view.rerender(<ChatSurface events={events(19)} streaming={false} transcript={transcript(19)} />);
-
-    const loadedRow = view.container.querySelector('[data-block-id="b19"]')?.closest<HTMLElement>('[data-virtual-kind="group"]');
-    expect(loadedRow).toBeTruthy();
-    const rowStart = Number.parseFloat(loadedRow!.style.transform.split(',')[1]);
-    expect(rowStart).toBeLessThan(3300);
-    expect(scroll.scrollTop).toBeGreaterThanOrEqual(rowStart);
-    expect(scroll.scrollTop).toBeLessThan(rowStart + loadedRow!.getBoundingClientRect().height);
-    const readingInset = scroll.scrollTop - rowStart;
-    view.rerender(<ChatSurface events={events(18)} streaming={false} transcript={transcript(18)} />);
-    const preservedRow = view.container.querySelector('[data-block-id="b19"]')?.closest<HTMLElement>('[data-virtual-kind="group"]')!;
-    expect(preservedRow.dataset.virtualKey).toBe(loadedRow!.dataset.virtualKey);
-    const preservedStart = Number.parseFloat(preservedRow.style.transform.split(',')[1]);
-    expect(scroll.scrollTop - preservedStart).toBeCloseTo(readingInset);
-  });
-
-  it('keeps a reading position when an unloaded gap resolves into messages', () => {
-    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function clientHeight() {
-      return this.classList.contains('stream-renderer__scroll') ? 500 : 0;
-    });
-    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function scrollHeight() {
-      if (!this.classList.contains('stream-renderer__scroll')) return 0;
-      return Number.parseFloat(this.querySelector<HTMLElement>('.stream-renderer__virtual-canvas')?.style.height ?? '0');
-    });
-    const scrollTo = vi.fn(function scrollTo(this: HTMLElement, options: ScrollToOptions) {
-      this.scrollTop = Number(options.top ?? 0);
-      this.dispatchEvent(new Event('scroll'));
-    });
-    Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
-      configurable: true,
-      value: scrollTo,
-    });
-    const total = 1_000;
-    const structure = {
-      conversation_id: 'gap-anchor', source_version_id: 'version-1', total,
-      rows: Array.from({ length: total }, (_, position) => ({
-        id: `b${position}`, position, type: 'user_message', role: 'user',
-        parent_position: null, record_offset: position * 1000, record_length: 1000,
-      })),
-    } as const;
-    const transcript = (withPage: boolean, withAdjacent = false): ConversationTranscriptConsumer => ({
-      conversationId: 'gap-anchor', sourceVersionId: 'version-1', historyLoading: false,
-      total, structure,
-      loadedIntervals: [
-        ...(withAdjacent ? [{ start: 400, end: 409 }] : []),
-        ...(withPage ? [{ start: 500, end: 509 }] : []),
-        { start: 900, end: 999 },
-      ],
-      hasOlder: true, hasNewer: false, unmaterializedAfterCount: 0,
-      loadOlder: vi.fn(), loadNewer: vi.fn(), loadAround: vi.fn(),
-    });
-    const events = (withPage: boolean, withAdjacent = false) => [
-      ...(withAdjacent ? Array.from({ length: 10 }, (_, index) => 400 + index) : []),
-      ...(withPage ? Array.from({ length: 10 }, (_, index) => 500 + index) : []),
-      ...Array.from({ length: 100 }, (_, index) => 900 + index),
-    ].map((position) => {
-      return {
-        ...canonicalEvent(canonicalItem({
-          type: 'message', role: 'user', parts: [{ type: 'text', text: `message ${position}` }],
-          ordinal: position,
-        }), `b${position}`),
-        source: { blockId: `b${position}`, position },
-      };
-    });
-    const view = render(<ChatSurface events={events(false)} streaming={false} transcript={transcript(false)} />);
-    const scroll = view.container.querySelector<HTMLElement>('.stream-renderer__scroll')!;
-    scroll.scrollTop = 75_032;
-    fireEvent.wheel(scroll, { deltaY: -100 });
-    fireEvent.scroll(scroll);
-    fireEvent(scroll, new Event('scrollend'));
-    const saved = JSON.parse(localStorage.getItem('mandible:chat-scroll:default')!);
-    expect(saved.position).toBeGreaterThanOrEqual(500);
-    expect(saved.position).toBeLessThanOrEqual(509);
-    expect(saved.followingTail).toBe(false);
-    expect(saved.viewportOffset).toBeGreaterThan(-200);
-    expect(saved.viewportOffset).toBeLessThanOrEqual(0);
-    const previousScrollCalls = scrollTo.mock.calls.length;
-
-    view.rerender(<ChatSurface events={events(false, true)} streaming={false} transcript={transcript(false, true)} />);
-    expect(scroll.scrollTop).toBeGreaterThan(70_000);
-    expect(scroll.scrollTop).toBeLessThan(80_000);
-    expect(scrollTo.mock.calls.slice(previousScrollCalls).map(([options]) => options.top)
-      .filter((top) => Number(top) > 80_000)).toEqual([]);
-    const adjacentScrollCalls = scrollTo.mock.calls.length;
-
-    view.rerender(<ChatSurface events={events(true, true)} streaming={false} transcript={transcript(true, true)} />);
-
-    expect(view.container.querySelector(`[data-block-id="b${saved.position}"]`)).toBeTruthy();
-    expect(scrollTo.mock.calls.slice(adjacentScrollCalls).map(([options]) => options.top)
-      .filter((top) => Number(top) > 80_000)).toEqual([]);
-    expect(scroll.scrollTop).toBeGreaterThan(70_000);
-    expect(scroll.scrollTop).toBeLessThan(80_000);
-  });
-
-  it('disengages scroll-follow while scrolled up and re-arms at bottom', () => {
-    const events = [user('prompt', 'u1'), assistantText('answer', 'a1')];
-    const { container, rerender } = render(
-      <ChatSurface events={events} streaming sessionInfo={{ sessionId: 'scroll' }} />,
-    );
-    const scroll = container.querySelector('.stream-renderer__scroll') as HTMLElement;
-    Object.defineProperty(scroll, 'clientHeight', { value: 500, configurable: true });
-    Object.defineProperty(scroll, 'scrollHeight', { value: 9000, configurable: true });
-
-    fireEvent.wheel(scroll, { deltaY: -100 });
-    scroll.scrollTop = 1000;
-    fireEvent.scroll(scroll);
-    expect(screen.getByRole('button', { name: /jump to latest/i })).toBeTruthy();
-
-    rerender(
-      <ChatSurface
-        events={[...events, assistantText('new answer', 'a2')]}
-        streaming
-        sessionInfo={{ sessionId: 'scroll' }}
-      />,
-    );
-    expect(scroll.scrollTop).toBeGreaterThan(900);
-    expect(scroll.scrollTop).toBeLessThanOrEqual(1000);
-
-    fireEvent.wheel(scroll, { deltaY: 500 });
-    scroll.scrollTop = 8500;
-    fireEvent.scroll(scroll);
-    expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull();
-
-    fireEvent.wheel(scroll, { deltaY: -20 });
-    scroll.scrollTop = 8480;
-    fireEvent.scroll(scroll);
-    rerender(
-      <ChatSurface
-        events={[...events, assistantText('new answer', 'a2'), assistantText('latest answer', 'a3')]}
-        streaming
-        sessionInfo={{ sessionId: 'scroll' }}
-      />,
-    );
-    expect(scroll.scrollTop).toBeGreaterThan(8400);
-    expect(scroll.scrollTop).toBeLessThanOrEqual(8480);
-  });
-
-  it('follows a same-group append only from the true bottom', () => {
-    const initial = Array.from({ length: 24 }, (_, index) => user(`entry ${index}`, `entry-${index}`));
-    const scrollTo = vi.fn(function scrollTo(this: HTMLElement, options: ScrollToOptions) {
-      this.scrollTop = Number(options.top ?? 0);
-      this.dispatchEvent(new Event('scroll'));
-    });
-    Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, value: scrollTo });
-    const view = render(<ChatSurface events={initial} streaming={false} sessionInfo={{ sessionId: 'append-position' }} />);
-    const scroll = view.container.querySelector<HTMLElement>('.stream-renderer__scroll')!;
-    Object.defineProperty(scroll, 'clientHeight', { configurable: true, value: 500 });
-    Object.defineProperty(scroll, 'scrollHeight', { configurable: true, value: 9000 });
-
-    fireEvent.wheel(scroll, { deltaY: -100 });
-    scroll.scrollTop = 1000;
-    fireEvent.scroll(scroll);
-    const readingTop = scroll.scrollTop;
-    view.rerender(<ChatSurface events={[...initial, user('new entry', 'entry-24')]}
-      streaming={false} sessionInfo={{ sessionId: 'append-position' }} />);
-    expect(scroll.scrollTop).toBe(readingTop);
-
-    scroll.scrollTop = 8450;
-    fireEvent.scroll(scroll);
-    const nearBottomCalls = scrollTo.mock.calls.length;
-    view.rerender(<ChatSurface events={[...initial, user('new entry', 'entry-24'), user('near latest', 'entry-25')]}
-      streaming={false} sessionInfo={{ sessionId: 'append-position' }} />);
-    expect(scrollTo.mock.calls.length).toBe(nearBottomCalls);
-
-    fireEvent.wheel(scroll, { deltaY: 50 });
-    scroll.scrollTop = 8500;
-    fireEvent.scroll(scroll);
-    view.rerender(<ChatSurface events={[...initial, user('new entry', 'entry-24'), user('near latest', 'entry-25'), user('latest', 'entry-26')]}
-      streaming={false} sessionInfo={{ sessionId: 'append-position' }} />);
-    expect(scrollTo).toHaveBeenCalledWith({ top: 9000, behavior: 'auto' });
-  });
-
-  it('does not re-arm tail follow when a content resize moves an earlier reader to the bottom', () => {
-    const initial = Array.from({ length: 24 }, (_, index) => user(`entry ${index}`, `entry-${index}`));
-    let height = 9000;
-    const scrollTo = vi.fn(function scrollTo(this: HTMLElement, options: ScrollToOptions) {
-      this.scrollTop = Number(options.top ?? 0);
-      this.dispatchEvent(new Event('scroll'));
-    });
-    Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, value: scrollTo });
-    const view = render(<ChatSurface events={initial} streaming={false} sessionInfo={{ sessionId: 'resize-reader' }} />);
-    const scroll = view.container.querySelector<HTMLElement>('.stream-renderer__scroll')!;
-    Object.defineProperty(scroll, 'clientHeight', { configurable: true, value: 500 });
-    Object.defineProperty(scroll, 'scrollHeight', { configurable: true, get: () => height });
-
-    fireEvent.wheel(scroll, { deltaY: -200 });
-    scroll.scrollTop = 1000;
-    fireEvent.scroll(scroll);
-    height = 1500;
-    fireEvent.scroll(scroll);
-    expect(JSON.parse(localStorage.getItem('mandible:chat-scroll:resize-reader')!).followingTail).toBe(false);
-
-    view.rerender(<ChatSurface events={[...initial, user('new entry', 'entry-24')]}
-      streaming={false} sessionInfo={{ sessionId: 'resize-reader' }} />);
-    height = 2000;
-    const callsBeforeAppend = scrollTo.mock.calls.length;
-    view.rerender(<ChatSurface events={[...initial, user('new entry', 'entry-24'), user('later', 'entry-25')]}
-      streaming={false} sessionInfo={{ sessionId: 'resize-reader' }} />);
-    expect(scrollTo.mock.calls.slice(callsBeforeAppend)).not.toContainEqual([{ top: 2000, behavior: 'auto' }]);
-    expect(JSON.parse(localStorage.getItem('mandible:chat-scroll:resize-reader')!).followingTail).toBe(false);
-  });
-
-  it('keeps an explicit latest jump through a paged source refresh', () => {
-    let height = 100_000;
-    const scrollTo = vi.fn(function scrollTo(this: HTMLElement, options: ScrollToOptions) {
-      this.scrollTop = options.behavior === 'smooth'
-        ? (this.scrollTop + Number(options.top ?? 0)) / 2
-        : Number(options.top ?? 0);
-      this.dispatchEvent(new Event('scroll'));
-    });
-    Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, value: scrollTo });
-    const transcript = (start: number, total: number): ConversationTranscriptConsumer => ({
-      conversationId: 'paged-latest', sourceVersionId: `version-${total}`,
-      historyLoading: false, total, structure: null,
-      loadedIntervals: [{ start, end: total - 1 }],
-      hasOlder: true, hasNewer: false, unmaterializedAfterCount: 0,
-      loadOlder: vi.fn(), loadNewer: vi.fn(), loadAround: vi.fn(() => 'busy'),
-    });
-    const events = (start: number, total: number) => Array.from({ length: total - start }, (_, index) => {
-      const position = start + index;
-      return { ...canonicalEvent(canonicalItem({
-        type: 'message', role: 'user', parts: [{ type: 'text', text: `entry ${position}` }], ordinal: position,
-      }), `block-${position}`), source: { blockId: `block-${position}`, position } };
-    });
-    const view = render(<ChatSurface events={events(990, 1000)} streaming={false}
-      transcript={transcript(990, 1000)} sessionInfo={{ sessionId: 'paged-latest' }} />);
-    const scroll = view.container.querySelector<HTMLElement>('.stream-renderer__scroll')!;
-    Object.defineProperty(scroll, 'clientHeight', { configurable: true, value: 500 });
-    Object.defineProperty(scroll, 'scrollHeight', { configurable: true, get: () => height });
-    scroll.scrollTop = 20_000;
-    fireEvent.scroll(scroll);
-
-    view.rerender(<ChatSurface events={events(990, 1000)} streaming={false}
-      transcript={transcript(990, 1000)} sessionInfo={{ sessionId: 'paged-latest' }}
-      navigationTarget={{ key: 'jump-latest', kind: 'latest', turnId: null, blockId: null, smooth: true }} />);
-    expect(scrollTo).toHaveBeenCalledWith({ top: 100_000, behavior: 'auto' });
-    view.rerender(<ChatSurface events={events(990, 1000)} streaming={false}
-      transcript={transcript(990, 1000)} sessionInfo={{ sessionId: 'paged-latest' }} />);
-
-    height = 140_000;
-    view.rerender(<ChatSurface events={events(1190, 1200)} streaming={false}
-      transcript={transcript(1190, 1200)} sessionInfo={{ sessionId: 'paged-latest' }} />);
-    expect(scrollTo).toHaveBeenCalledWith({ top: 140_000, behavior: 'auto' });
-    expect(scroll.scrollTop).toBe(140_000);
-    expect(JSON.parse(localStorage.getItem('mandible:chat-scroll:paged-latest')!).followingTail).toBe(true);
-  });
-
-  it('does not re-arm tail follow from a correction during an upward wheel gesture', () => {
-    const view = render(
-      <ChatSurface events={[user('prompt', 'u1')]} streaming sessionInfo={{ sessionId: 'upward-correction' }} />,
-    );
-    const scroll = view.container.querySelector<HTMLElement>('.stream-renderer__scroll')!;
-    Object.defineProperty(scroll, 'clientHeight', { value: 500, configurable: true });
-    Object.defineProperty(scroll, 'scrollHeight', { value: 9000, configurable: true });
-    scroll.scrollTop = 8500;
-    fireEvent.wheel(scroll, { deltaY: -300 });
-    scroll.scrollTop = 8200;
-    fireEvent.scroll(scroll);
-    fireEvent.wheel(scroll, { deltaY: -300 });
-    scroll.scrollTop = 8490;
-    fireEvent.scroll(scroll);
-
-    const anchor = JSON.parse(localStorage.getItem('mandible:chat-scroll:upward-correction')!);
-    expect(anchor.followingTail).toBe(false);
-  });
-
-  it('materializes and centers an exact persisted block anchor', async () => {
-    const blocks = Array.from({ length: 80 }, (_, index) => ({
-      id: `block-${index}`,
-      type: 'event' as const,
-      content: 'provider-shaped content must not render',
-      timestamp: `2026-01-01T00:${String(index % 60).padStart(2, '0')}:00Z`,
-      metadata_json: JSON.stringify({
-        chat_item: canonicalItem({
-          type: 'message',
-          role: index % 2 === 0 ? 'user' : 'assistant',
-          parts: [{ type: 'text', text: `message ${index}` }],
-          ordinal: index,
-          ...(index % 2 === 1 ? { turn: `turn-${index}` } : {}),
-        }),
-      }),
-    }));
-    blocks.splice(52, 0, { ...blocks[51], id: 'block-51-tool', metadata_json: JSON.stringify({
-      chat_item: canonicalItem({ type: 'tool-call', role: 'assistant', phase: 'call', tool_id: 'anchor-tool',
-        tool_name: 'Shell', input: { command: 'pwd' }, ordinal: 51, turn: 'turn-51' }),
-    }) });
-    const scrollIntoView = vi.fn();
-    const navigationResult = vi.fn();
-    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(720);
-    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(30000);
-    Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
-      configurable: true,
-      value: function scrollTo(this: HTMLElement, options: ScrollToOptions) {
-        this.scrollTop = Number(options.top ?? 0);
-        this.dispatchEvent(new Event('scroll'));
-      },
-    });
-    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
-      configurable: true,
-      value: scrollIntoView,
-    });
-
-    const view = render(
-      <ChatSurface
-        events={conversationBlocksToStreamEvents('history-anchor', blocks)}
-        streaming={false}
-        sessionInfo={{ sessionId: 'block-anchor' }}
-        navigationTarget={{ key: 'block-anchor-51', kind: 'block', turnId: null, blockId: 'block-51', smooth: false }}
-      />,
-    );
-
-    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center', behavior: 'auto' }));
-    const exactBlock = document.querySelector('[data-block-id="block-51"]');
-    expect(exactBlock).toBeTruthy();
-    expect(document.activeElement).toBe(exactBlock);
-    expect(document.querySelectorAll('[data-virtual-kind]').length).toBeLessThan(40);
-    view.rerender(<ChatSurface
-      events={conversationBlocksToStreamEvents('history-anchor', blocks)} streaming={false}
-      sessionInfo={{ sessionId: 'block-anchor' }}
-      navigationTarget={{ key: 'native-turn-anchor-51', kind: 'turn', turnId: 'turn-51', blockId: null, smooth: false }}
-      onNavigationResult={navigationResult}
-    />);
-    await waitFor(() => expect(navigationResult).toHaveBeenCalledWith({ key: 'native-turn-anchor-51', status: 'revealed' }));
   });
 });

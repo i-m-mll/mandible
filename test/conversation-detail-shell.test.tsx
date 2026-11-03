@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
-import { mockConversationStructureFromWindow, mockManagedSettings } from './helpers/conversation-ui-transport';
+import { mockChatViewport, mockManagedSettings } from './helpers/conversation-ui-transport';
+import { installReadingBrowserFixture } from './helpers/reading-browser-fixture';
 import { establishTestClientAccess } from './helpers/local-client-access';
 import { act, cleanup, fireEvent, screen, waitFor } from './helpers/dom.js';
 import { render } from './helpers/notice-test-render';
@@ -16,11 +17,15 @@ import { ConversationDetail, ConversationsView, conversationLoadFailure, scopeCo
 import { chatItemIdentityKey } from '../src/conversation-control/provider-live.js';
 import type { ChatItem } from '../src/parsers/types.js';
 import { queryClient } from '../ui/src/query/client.js';
-import { conversationKeys } from '../ui/src/query/conversationKeys.js';
+import { conversationKeys, normalizeWindowTarget } from '../ui/src/query/conversationKeys.js';
 import type { ConversationTranscriptData } from '../ui/src/query/conversationData.js';
 import { applyConversationSse } from '../ui/src/query/conversationSse.js';
 import { addDraftAttachments, clearAcceptedDraft } from '../ui/src/chat/attachmentDrafts.js';
-import { messageLinkUrl } from '../ui/src/chat/messageLinks.js';
+import { indexDisplayFragments } from '../src/conversations/display-indexing';
+import { displayEventsFromBlocks } from '../src/conversations/display-context';
+import { buildReadingManifest, planConversationReading } from '../src/presentation/reading-manifest';
+import { prepareReadingMembers, materializePreparedReadingRows } from '../src/presentation/reading';
+import { conversationAnchorFromHash, messageLinkUrl } from '../ui/src/chat/messageLinks.js';
 
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
@@ -40,11 +45,12 @@ vi.mock('@xterm/xterm', () => ({
 
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} dispose(): void {} } }));
 
+let disposeReadingBrowser: (() => void) | undefined;
 beforeEach(async () => {
   await establishTestClientAccess();
   window.localStorage.clear();
   vi.spyOn(api, 'resolveChatRouteTarget').mockImplementation(async (target) => ({ status: 'resolved', selection: target }));
-  mockConversationStructureFromWindow();
+  mockChatViewport();
   mockManagedSettings({ model: conversation.model!, effort: 'medium', permission_mode: 'agent' });
   vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(600);
   vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(2400);
@@ -80,6 +86,8 @@ beforeEach(async () => {
 
 afterEach(() => {
   cleanup();
+  disposeReadingBrowser?.();
+  disposeReadingBrowser = undefined;
   queryClient.clear();
   __resetSharedSseForTests();
   vi.restoreAllMocks();
@@ -184,8 +192,11 @@ function mockConversationDetail(
   vi.spyOn(api, 'getConversationControl').mockResolvedValue(control);
   vi.spyOn(api, 'getConversationWindow').mockResolvedValue({
     conversation: scopedConversation,
-    body_source: 'legacy',
-    source_version_id: null,
+    body_source: 'source',
+    source_version_id: 'fixture-source',
+    position_space_id: 'fixture-space',
+    publication_revision: 1,
+    reading_context: { positions: blocks.map(block => ({ position: block.position, activity_owner_position: null, speaker_run_start: block.position })), speaker_runs: blocks.map(block => ({ start: block.position, end: block.position })) },
     blocks,
     children: [],
     parent: null,
@@ -210,6 +221,33 @@ function mockConversationDetail(
   vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
   vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
   return scopedConversation;
+}
+
+function serveReadingPresentation(payload: ConversationPositionWindow): void {
+  const conversationId = payload.conversation.id;
+  const blocks = payload.blocks.map(block => ({...block, metadata: JSON.parse(block.metadata_json)}));
+  const index = indexDisplayFragments(blocks, conversationId, () => null);
+  const contexts = payload.reading_context!.positions.map(position => ({position: position.position,
+    activity_owner: position.activity_owner_position,
+    action_scope: payload.reading_context!.speaker_runs.find(run => run.start === position.speaker_run_start)!}));
+  const manifest = buildReadingManifest({conversationId, positionSpaceId: payload.position_space_id!, sourceVersionId: payload.source_version_id!,
+    publicationRevision: payload.publication_revision, blockCount: payload.total, ...index, readingContext: contexts,
+    revisions: {members: Object.fromEntries(index.fragments.map(fragment => [fragment.id, index.positions.find(position => position.position === fragment.coordinate.position)!.revision])), runs: {}}});
+  const events = displayEventsFromBlocks(blocks.map(block => ({...block, parentPosition: null})), conversationId);
+  const transport = globalThis.fetch;
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input), window.location.href);
+    if (url.pathname === `/api/conversations/${conversationId}/reading-manifest`) return new Response(JSON.stringify({status: 'source', manifest}));
+    if (url.pathname === `/api/conversations/${conversationId}/reading-rows`) {
+      const request = JSON.parse(String(init?.body));
+      const plan = planConversationReading(manifest, request.expanded, request.streaming);
+      const prepared = prepareReadingMembers({events, conversationId, positionSpaceId: payload.position_space_id!,
+        readingContext: new Map(contexts.map(context => [context.position, context])), expanded: request.expanded, streaming: request.streaming});
+      const keys = new Set(request.rows.map((row: {key: string}) => row.key));
+      return new Response(JSON.stringify({status: 'source', rows: materializePreparedReadingRows(plan.rows.filter(row => keys.has(row.key)), prepared.members)}));
+    }
+    return transport(input, init);
+  }));
 }
 
 function renderConversationDetail(scopedConversation: Conversation, consoleSessions: ConsoleSession[] = []): void {
@@ -238,15 +276,19 @@ function positionPayload(
 ): ConversationPositionWindow {
   const target = blocks.at(-1) ?? null;
   const revision = options.revision ?? blocks.length;
+  const total = Math.max(revision, (target?.position ?? -1) + 1 + (options.hasAfter ? options.afterCount ?? 1 : 0));
   return {
     conversation: { ...scopedConversation, block_count: revision },
-    body_source: 'legacy',
-    source_version_id: null,
+    body_source: 'source',
+    source_version_id: 'fixture-source',
+    position_space_id: 'fixture-space',
+    publication_revision: 1,
+    reading_context: { positions: blocks.map(block => ({ position: block.position, activity_owner_position: null, speaker_run_start: block.position })), speaker_runs: blocks.map(block => ({ start: block.position, end: block.position })) },
     blocks,
     children: [],
     parent: null,
     revision,
-    total: revision,
+    total,
     target: {
       kind: options.kind ?? 'initial',
       requested_value: options.kind === 'block' ? target?.id ?? null : null,
@@ -356,7 +398,7 @@ describe('compact detail pane shell', () => {
     vi.mocked(api.getConversationWindow).mockImplementation(async (_id, request) => {
       if ('position' in request && request.position === 0) return newSourceEdge.promise;
       if (++initialReads === 1) {
-        return { ...positionPayload(pinned, [recent], { revision: 2, hasBefore: true }), source_version_id: 'source-v1' };
+        return { ...positionPayload(pinned, [recent], { revision: 2, hasBefore: true }), source_version_id: 'source-v1', position_space_id: 'space-v1', publication_revision: 1 };
       }
       return staleRefresh.promise;
     });
@@ -373,17 +415,21 @@ describe('compact detail pane shell', () => {
     await act(async () => newSourceEdge.resolve({
       ...positionPayload(pinned, [newSourceBlock], { kind: 'block', revision: 2, hasAfter: true }),
       source_version_id: 'source-v2',
+      position_space_id: 'space-v1',
+      publication_revision: 2,
     }));
     expect(await screen.findByText('Older source v2')).toBeTruthy();
 
     await act(async () => staleRefresh.resolve({
       ...positionPayload(pinned, [oldReply], { revision: 2, hasBefore: true }),
       source_version_id: 'source-v1',
+      position_space_id: 'space-v1',
+      publication_revision: 1,
     }));
     await waitFor(() => {
       const aggregate = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(pinned.id));
       expect(aggregate?.source_version_id).toBe('source-v2');
-      expect(aggregate?.blocks.map((block) => block.id)).toEqual(['older-v2']);
+      expect(aggregate?.blocks.map((block) => block.id)).toEqual(['older-v2', 'recent-v1']);
     });
   });
 
@@ -448,9 +494,11 @@ describe('compact detail pane shell', () => {
     expect(await screen.findByText('Middle A')).toBeTruthy();
     fireEvent.click(await screen.findByRole('button', { name: /jump to latest/i }));
     mounted.rerender(view(second.id));
+    await waitFor(() => expect(api.getConversationWindow).toHaveBeenCalledWith(second.id, expect.anything()));
     mounted.rerender(view(first.id));
+    await waitFor(() => expect((screen.getByRole('button', { name: /jump to latest/i }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(await screen.findByRole('button', { name: /jump to latest/i }));
-    expect(jumpCount).toBe(2);
+    await waitFor(() => expect(jumpCount).toBe(2));
     expect(screen.getByRole('button', { name: /jump to latest/i }).getAttribute('aria-busy')).toBe('true');
     await act(async () => oldJump.reject(new CancelledError()));
     expect(screen.getByRole('button', { name: /jump to latest/i }).getAttribute('aria-busy')).toBe('true');
@@ -596,12 +644,46 @@ describe('compact detail pane shell', () => {
     expect(screen.getByText('Exact anchor wins')).toBeTruthy();
   });
 
+  it('replaces a loaded same-chat window when a scoped hash target changes', async () => {
+    const scopedConversation = mockConversationDetail(defaultControl, []);
+    const tail = makeTranscriptBlock({ id: `cblk:${conversation.id}:99`, dag_uuid: 'tail-item', content: 'Previously loaded tail', position: 99 });
+    const exactBlock = makeTranscriptBlock({ id: `cblk:${conversation.id}:1`, dag_uuid: 'exact-item', content: 'New same-chat exact target', position: 1 });
+    const exact = deferred<ConversationPositionWindow>();
+    vi.mocked(api.getConversationWindow).mockImplementation(async (_id, request) => {
+      if ('block' in request && request.block === exactBlock.id) return exact.promise;
+      if ('position' in request) return new Promise(() => {});
+      return positionPayload(scopedConversation, [tail], { kind: 'block', revision: 100, hasBefore: true });
+    });
+    const props = { consoleSessions: [], initialConversationId: scopedConversation.id, initialSessionId: null,
+      onSelectSession: () => undefined, onNewConversation: () => undefined };
+    const params = (block: string) => ({ conversation: scopedConversation.id, block, position_space: 'fixture-space' });
+    window.history.replaceState(null, '', `#/console?${new URLSearchParams(params(tail.id))}`);
+    const view = render(<ConversationsView {...props} routeParams={params(tail.id)} />);
+    expect(await screen.findByText('Previously loaded tail')).toBeTruthy();
+
+    window.history.replaceState(null, '', `#/console?${new URLSearchParams(params(exactBlock.id))}`);
+    view.rerender(<ConversationsView {...props} routeParams={params(exactBlock.id)} />);
+    await waitFor(() => expect(api.getConversationWindow).toHaveBeenCalledWith(scopedConversation.id,
+      expect.objectContaining({ block: exactBlock.id, expected_position_space_id: 'fixture-space' })));
+    expect(screen.getByText('Previously loaded tail')).toBeTruthy();
+    await act(async () => exact.resolve(positionPayload(scopedConversation, [exactBlock], { kind: 'block', revision: 100, hasBefore: true, hasAfter: true })));
+    const targetKey = conversationKeys.window(scopedConversation.id, normalizeWindowTarget({ block: exactBlock.id, expected_position_space_id: 'fixture-space', view: 'display' }));
+    await waitFor(() => expect(queryClient.getQueryData<ConversationPositionWindow>(targetKey)?.target.block_id).toBe(exactBlock.id));
+    expect(queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(scopedConversation.id))?.active_window).toEqual({ start: 1, end: 1 });
+    expect(screen.getByText('New same-chat exact target')).toBeTruthy();
+  });
+
   it('cold-opens a copied message link instead of a saved tail selection and reports clipboard failure visibly', async () => {
-    const exactBlock = makeTranscriptBlock({ id: 'cold-message', content: 'Exact cold message', position: 50 });
+    const exactBlock = makeTranscriptBlock({id: `cblk:${conversation.id}:0`, type: 'assistant_message', role: 'assistant', position: 0,
+      content: 'Exact cold message\n\n<oai-mem-citation>\n<citation_entries>\nfixture-memory:L1|note=[fixture]\n</citation_entries>\n<rollout_ids>\nfixture-rollout\n</rollout_ids>\n</oai-mem-citation>'});
     const scopedConversation = mockConversationDetail(defaultControl, [exactBlock]);
-    vi.mocked(api.getConversationWindow).mockResolvedValue(positionPayload(scopedConversation, [exactBlock], { kind: 'block', hasAfter: true }));
-    window.localStorage.setItem(`mandible:chat-scroll:${scopedConversation.session_id}`, JSON.stringify({
-      version: 1, itemId: 'saved-tail', blockId: null, position: 999, viewportOffset: 0, followingTail: true,
+    const payload = positionPayload(scopedConversation, [exactBlock], {kind: 'block'});
+    vi.mocked(api.getConversationWindow).mockResolvedValue(payload);
+    serveReadingPresentation(payload);
+    disposeReadingBrowser = installReadingBrowserFixture();
+    window.localStorage.setItem(`mandible:chat-reading:${scopedConversation.id}`, JSON.stringify({
+      version: 4, positionSpaceId: 'fixture-space', following: false,
+      anchor: {kind: 'row', rowKey: 'saved-tail', memberKey: 'saved-tail', position: 999, offset: 0}, disclosures: {},
     }));
     window.history.replaceState(null, '', messageLinkUrl(window.location.href, scopedConversation.id, exactBlock.id));
     Object.defineProperty(navigator, 'clipboard', { configurable: true,
@@ -610,12 +692,18 @@ describe('compact detail pane shell', () => {
     expect(await screen.findByText('Exact cold message')).toBeTruthy();
     expect(api.getConversationWindow).toHaveBeenCalledWith(scopedConversation.id, expect.objectContaining({ block: exactBlock.id }));
     await waitFor(() => expect(document.activeElement?.getAttribute('data-block-id')).toBe(exactBlock.id));
-    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    expect(screen.getByText('Used memory')).toBeTruthy();
+    expect(document.activeElement?.textContent).toContain('Exact cold message');
+    expect(document.activeElement?.textContent).not.toContain('Used memory');
+    fireEvent.contextMenu(screen.getByText('Exact cold message'));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Copy link' }));
     expect(await screen.findByText('Could not copy the message link.')).toBeTruthy();
+    const copied = new URL(vi.mocked(navigator.clipboard.writeText).mock.calls[0][0]);
+    expect(conversationAnchorFromHash(copied.hash)).toEqual({block: exactBlock.id, expected_position_space_id: 'fixture-space'});
+    expect(new URLSearchParams(copied.hash.split('?')[1]).get('conversation')).toBe(scopedConversation.id);
   });
 
-  it('keeps the live transcript mounted while a same-conversation reconciliation is pending', async () => {
+  it('keeps loaded source content mounted while a same-conversation reconciliation is pending', async () => {
     const scopedConversation = mockConversationDetail(defaultControl, [transcriptBlock]);
     const refresh = deferred<ConversationPositionWindow>();
     const appendedBlock = makeTranscriptBlock({
@@ -638,25 +726,15 @@ describe('compact detail pane shell', () => {
         append: { from_position: 1, blocks: [appendedBlock] },
       });
     });
-    expect(await screen.findByText('Live content stays visible')).toBeTruthy();
-
-    act(() => {
-      applyConversationSse(queryClient, 'conversation:updated', {
-        id: conversation.id,
-        block_count: 4,
-        append: {
-          from_position: 3,
-          blocks: [makeTranscriptBlock({ id: 'gap-block', dag_uuid: 'gap-block', position: 3, content: appendedBlock.content })],
-        },
-      });
-    });
+    expect(screen.getByText(transcriptBlock.content)).toBeTruthy();
+    expect(screen.queryByText('Live content stays visible')).toBeNull();
 
     await waitFor(() => expect(api.getConversationWindow).toHaveBeenCalledTimes(2));
-    expect(screen.getByText('Live content stays visible')).toBeTruthy();
+    expect(screen.getByText(transcriptBlock.content)).toBeTruthy();
     expect(screen.getByPlaceholderText('Message...')).toBeTruthy();
 
     await act(async () => refresh.resolve(positionPayload(scopedConversation, [transcriptBlock, appendedBlock])));
-    expect(screen.getByText('Live content stays visible')).toBeTruthy();
+    expect(await screen.findByText('Live content stays visible')).toBeTruthy();
   });
 
   it('keeps Codex provisional assistant content until its durable replacement arrives', async () => {
@@ -756,7 +834,7 @@ describe('compact detail pane shell', () => {
     await waitFor(() => expect(screen.getAllByText('Assistant stays continuous')).toHaveLength(1));
   });
 
-  it('re-resolves the true end when an append arrives during Jump to latest', async () => {
+  it.each(['published', 'pending'] as const)('re-resolves the true end when an append arrives during Jump to latest (%s)', async (publication) => {
     const scopedConversation = mockConversationDetail(defaultControl, []);
     const firstLatest = deferred<ConversationPositionWindow>();
     const trueLatest = deferred<ConversationPositionWindow>();
@@ -767,6 +845,10 @@ describe('compact detail pane shell', () => {
         latestCalls += 1;
         return latestCalls === 1 ? firstLatest.promise : trueLatest.promise;
       }
+      if ('position' in request) return positionPayload(scopedConversation, [
+        makeTranscriptBlock({ id: 'earlier', dag_uuid: 'earlier', content: 'Earlier source', position: 0 }), middleBlock,
+        makeTranscriptBlock({ id: 'near-tail', dag_uuid: 'near-tail', content: 'Nearby source tail', position: 2 }),
+      ], { revision: 3 });
       return positionPayload(scopedConversation, [middleBlock], {
         kind: 'block',
         hasAfter: true,
@@ -777,7 +859,7 @@ describe('compact detail pane shell', () => {
     window.history.replaceState(null, '', `#/console?conversation=${conversation.id}&block=middle`);
     renderConversationDetail(scopedConversation);
     expect(await screen.findByText('Middle window')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull();
+    expect(screen.getByRole('button', { name: /jump to latest/i })).toBeTruthy();
 
     applyConversationSse(queryClient, 'conversation:updated', {
       id: conversation.id,
@@ -800,22 +882,40 @@ describe('compact detail pane shell', () => {
       block_count: 13,
       append: { from_position: 12, blocks: [makeTranscriptBlock({ id: 'append-12', dag_uuid: 'append-12', position: 12, content: 'append 12' })] },
     });
-    firstLatest.resolve(positionPayload(scopedConversation, [makeTranscriptBlock({ id: 'old-tail', dag_uuid: 'old-tail', position: 11, content: 'Old tail' })], { kind: 'latest', revision: 12 }));
+    const olderSnapshot = { ...positionPayload(scopedConversation, [makeTranscriptBlock({ id: 'old-tail', dag_uuid: 'old-tail', position: 11, content: 'Old tail' })], { kind: 'latest', revision: 12 }), source_version_id: 'source-12', publication_revision: 2 };
+    firstLatest.resolve(olderSnapshot);
     await waitFor(() => expect(latestCalls).toBe(2));
-    trueLatest.resolve(positionPayload(scopedConversation, [makeTranscriptBlock({ id: 'true-tail', dag_uuid: 'true-tail', position: 12, content: 'Newest true tail' })], { kind: 'latest', revision: 13 }));
+    expect(screen.getByText('Middle window')).toBeTruthy();
+    expect(screen.queryByText('Old tail')).toBeNull();
+    const freshSnapshot = { ...positionPayload(scopedConversation, [makeTranscriptBlock({ id: 'true-tail', dag_uuid: 'true-tail', position: 12, content: 'Newest true tail' })], { kind: 'latest', revision: 13 }), source_version_id: 'source-13', publication_revision: 3 };
+    if (publication === 'pending') {
+      trueLatest.resolve(olderSnapshot);
+      expect(await screen.findByText('The latest source has not yet published the advertised append. Try again.')).toBeTruthy();
+      expect(screen.getByText('Middle window')).toBeTruthy();
+      expect(queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversation.id))).toMatchObject({ total: 3, conversation: { block_count: 13 } });
+      expect(latestCalls).toBe(2);
+      vi.mocked(api.getConversationWindow).mockResolvedValueOnce(freshSnapshot);
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    } else trueLatest.resolve(freshSnapshot);
     expect(await screen.findByText('Newest true tail')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull();
+    const aggregate = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversation.id));
+    expect(aggregate).toMatchObject({ total: 13, end_reached: true, active_window: { start: 12, end: 12 } });
     expect(window.location.hash).toBe(`#/console?conversation=${conversation.id}`);
   });
 });
 
 describe('Chat route intent', () => {
   function setupRouteHistory() {
+    disposeReadingBrowser = installReadingBrowserFixture();
     mockConversationDetail(defaultControl);
-    vi.mocked(api.getConversationWindow).mockImplementation(async (id) => positionPayload(
-      { ...conversation, id, title: `Chat ${id}` },
-      [makeTranscriptBlock({ id: `${id}-block`, conversation_id: id, content: `Transcript ${id}` })],
-    ));
+    vi.mocked(api.getConversationWindow).mockImplementation(async (id) => {
+      const payload = positionPayload(
+        { ...conversation, id, title: `Chat ${id}` },
+        [makeTranscriptBlock({ id: `${id}-block`, conversation_id: id, content: `Transcript ${id}` })],
+      );
+      serveReadingPresentation(payload);
+      return payload;
+    });
     const view = (conversationRef: string | null, sessionRef: string | null = null, routeParams?: Record<string, string>) => (
       <ConversationsView consoleSessions={[]} initialConversationId={conversationRef} initialSessionId={sessionRef} routeParams={routeParams}
         onSelectSession={() => undefined} onNewConversation={async () => { throw new Error('unused'); }} />

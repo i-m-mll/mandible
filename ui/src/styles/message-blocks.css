@@ -1,9 +1,18 @@
+:root {
+  --reading-responsive-variant: wide;
+  --reading-renderer-version: event-context-footer-math-v6;
+  --compact-activity-header-min-height: 22px;
+  --compact-activity-header-line-height: 1.15;
+  --compact-activity-header-icon-size: 16px;
+  --compact-activity-header-padding: 1px;
+}
 /* Shared chat message block components */
 
 /* ── Shared message-block components — Bug: bce7370 ── */
 
 /* TurnGroup — shared turn layout (used by both Chat and History) */
 .turn-group {
+  container: chat-turn / inline-size;
   --chat-event-gap: var(--space-2);
   box-sizing: border-box;
   display: flex;
@@ -36,7 +45,6 @@
 /* msg-text-block — unified markdown text block (replaces .stream-text-block + .block-markdown) */
 .msg-text-block {
   color: var(--text-primary);
-  max-width: var(--chat-max-width);
 }
 
 .msg-text-block {
@@ -134,26 +142,10 @@
   margin-top: 12px;
 }
 
-.semantic-event {
-  width: min(100%, 760px);
-  border-left: 2px solid var(--neutral-alpha-10);
-  padding: 6px 10px;
-  color: var(--text-muted);
-}
-
 .semantic-event--error {
-  border-left-color: var(--status-danger-border-soft);
   color: var(--status-danger-fg);
 }
-
-.semantic-event__summary {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  cursor: pointer;
-  font-size: var(--text-sm);
-  font-weight: 600;
-}
+.semantic-event--error .compact-activity__row { color: var(--status-danger-fg); }
 
 .semantic-event__label {
   font-family: var(--font-mono);
@@ -237,20 +229,32 @@
   flex: 0 0 auto;
 }
 
+.activity-event-item {
+  --compact-activity-header-content-height: max(calc(var(--text-lg) * var(--compact-activity-header-line-height)), var(--compact-activity-header-icon-size));
+  --compact-activity-header-centered-inset: max(var(--compact-activity-header-padding), calc((var(--compact-activity-header-min-height) - var(--compact-activity-header-content-height)) / 2));
+  --activity-event-inset: calc(var(--compact-activity-header-centered-inset) * var(--activity-event-inset-scale, 1));
+  display: flow-root;
+  padding-block: var(--activity-event-inset);
+}
+
+.activity-event-item__header { margin-block: calc(-1 * var(--activity-event-inset)); }
+.activity-event-item--with-payload > .activity-event-item__header { margin-block-end: 0; }
+
 .compact-activity__row {
   display: flex;
   align-items: center;
   width: max-content;
   max-width: 100%;
   gap: 6px;
-  min-height: 22px;
-  padding: 1px 0;
+  min-height: var(--compact-activity-header-min-height);
+  padding: var(--activity-event-inset) 0;
   border: 0;
   background: transparent;
   color: var(--tool-activity-text);
-  font: 400 var(--text-lg)/1.15 var(--font-sans);
+  font: 400 var(--text-lg)/var(--compact-activity-header-line-height) var(--font-sans);
   text-align: left;
   cursor: pointer;
+  text-decoration: none;
 }
 
 .compact-activity__row:hover,
@@ -267,20 +271,28 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
-  flex: 0 0 16px;
+  width: var(--compact-activity-header-icon-size);
+  height: var(--compact-activity-header-icon-size);
+  flex: 0 0 var(--compact-activity-header-icon-size);
   color: inherit;
 }
 
 .compact-activity__icon > :is(.app-icon, span) {
-  width: 16px;
-  height: 16px;
+  width: var(--compact-activity-header-icon-size);
+  height: var(--compact-activity-header-icon-size);
 }
 
 .compact-activity__summary {
   min-width: 0;
   max-width: 100%;
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compact-activity__metadata {
+  min-width: 0;
   flex: 0 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -344,11 +356,11 @@
   color: var(--tool-activity-box-text);
 }
 
-.tool-card__payload-box {
+.activity-payload-box {
   box-sizing: border-box;
   width: 100%;
   border: 1px solid var(--tool-activity-border);
-  border-radius: 6px;
+  border-radius: var(--radius-lg);
   background: var(--tool-activity-background);
   padding: 3px 10px;
   color: var(--tool-activity-box-text);
@@ -394,7 +406,8 @@
  * strictly inside tool boxes. This stylesheet loads after shared.css, and the
  * extra class also keeps the later rendered-Markdown code rules from winning
  * when a tool surface appears inside a prose owner. */
-:root :is(.tool-card__input, .tool-card__terminal, .tool-card__result) :is(pre, code) {
+:root :is(.tool-card__input, .tool-card__terminal, .tool-card__result) :is(pre, code),
+:root .activity-payload-box .reasoning-details {
   background: transparent;
 }
 
@@ -417,6 +430,8 @@
   gap: 0;
 }
 
+.activity-nested-headers { --activity-event-inset-scale: 1.5; }
+
 .activity-details__part {
   white-space: pre-wrap;
   word-break: break-word;
@@ -438,9 +453,10 @@
   color: var(--text-primary);
 }
 
-.thinking-block__body pre {
+.activity-payload-box .reasoning-details {
   margin: 0;
   color: inherit;
+  background: transparent;
   white-space: pre-wrap;
   word-break: break-word;
   font: 400 var(--text-lg)/1.5 var(--font-sans);
@@ -457,7 +473,8 @@
 }
 
 .overflow-fade::before,
-.overflow-fade::after {
+.overflow-fade::after,
+.overflow-fade-top {
   content: '';
   position: absolute;
   right: 0;
@@ -468,7 +485,8 @@
   transition: opacity 120ms ease;
 }
 
-.overflow-fade::before {
+.overflow-fade::before,
+.overflow-fade-top {
   top: 0;
   background: linear-gradient(to bottom, var(--overflow-fade-color, var(--surface-app)) 4%, transparent 100%);
 }
@@ -478,7 +496,8 @@
   background: linear-gradient(to bottom, transparent 0%, var(--overflow-fade-color, var(--surface-app)) 96%);
 }
 
-.overflow-fade--above::before {
+.overflow-fade--above::before,
+.overflow-fade-top--visible {
   opacity: 1;
 }
 
@@ -833,6 +852,7 @@
 
 /* User turns use the full stream width when the viewport is narrow. */
 @media (max-width: 720px) {
+  :root { --reading-responsive-variant: narrow; }
   .turn-group--user .turn-group__body {
     width: 100%;
   }

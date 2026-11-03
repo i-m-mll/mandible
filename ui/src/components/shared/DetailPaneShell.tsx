@@ -51,6 +51,7 @@ export type DetailPaneShellProps = {
 
 export type DetailPaneOverlayContextValue = {
   host: HTMLElement | null;
+  scrollClearance: number;
   scrollOwner: HTMLElement | null;
   registerScrollOwner: (owner: HTMLElement | null) => void;
 };
@@ -106,6 +107,7 @@ export function DetailPaneShell({
   const paneHeader = frameHeader ? null : header;
   const [bodyScrollOwner, setBodyScrollOwner] = useState<HTMLDivElement | null>(null);
   const [registeredScrollOwner, setRegisteredScrollOwner] = useState<HTMLElement | null>(null);
+  const [scrollClearance, setScrollClearance] = useState(0);
   const [overlayHost, setOverlayHost] = useState<HTMLDivElement | null>(null);
   const bodyScrollOwnerRef = useRef<HTMLDivElement | null>(null);
   const registeredScrollOwnerRef = useRef<HTMLElement | null>(null);
@@ -135,9 +137,10 @@ export function DetailPaneShell({
   const scrollOwner = registeredScrollOwner ?? bodyScrollOwner;
   const overlayContext = useMemo(() => ({
     host: overlayHost,
+    scrollClearance,
     scrollOwner,
     registerScrollOwner,
-  }), [overlayHost, registerScrollOwner, scrollOwner]);
+  }), [overlayHost, registerScrollOwner, scrollOwner, scrollClearance]);
 
   useLayoutEffect(() => {
     if (footer?.mode !== 'overlay' || !shellRef.current || !footerRef.current || !scrollOwner) return undefined;
@@ -157,6 +160,7 @@ export function DetailPaneShell({
     const bodyViewport = bodyScrollOwnerRef.current;
     if (!overlayControl || !shellRef.current || !overlayControlRef.current || !scrollOwner || !bodyViewport) {
       shellRef.current?.style.removeProperty('--detail-pane-overlay-control-scroll-space');
+      setScrollClearance(0);
       return undefined;
     }
     const updateGeometry = () => {
@@ -170,8 +174,10 @@ export function DetailPaneShell({
           bodyViewport.getBoundingClientRect(),
         );
         shellRef.current.style.setProperty('--detail-pane-overlay-control-scroll-space', `${scrollSpace}px`);
+        setScrollClearance(scrollSpace);
       } else {
         shellRef.current.style.removeProperty('--detail-pane-overlay-control-scroll-space');
+        setScrollClearance(0);
       }
     };
     updateGeometry();

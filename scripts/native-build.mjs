@@ -126,7 +126,9 @@ export async function runNativeBuildPhase({ command, args, cwd, env, log, budget
       process.kill(-child.pid, 'SIGKILL');
       await exited;
     }
-    throw error;
+    const diagnostics = failedBuildOutput(log);
+    receipt.buildProcess.failure = { message: error.message, ...diagnostics };
+    throw new Error(`${error.message}\n${diagnostics.truncated ? 'Build output (last 16384 bytes):' : 'Build output:'}\n${diagnostics.output}`, { cause: error });
   } finally {
     clearTimeout(timer);
     const deadline = Date.now() + 5000;
@@ -144,6 +146,23 @@ export async function runNativeBuildPhase({ command, args, cwd, env, log, budget
     save();
   }
   return Date.now() - started;
+}
+
+function failedBuildOutput(log) {
+  let fd;
+  try {
+    fd = fs.openSync(log, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) throw new Error('Build log is not a regular file');
+    const limit = 16 * 1024;
+    const buffer = Buffer.alloc(Math.min(stat.size, limit));
+    const bytes = fs.readSync(fd, buffer, 0, buffer.length, Math.max(0, stat.size - limit));
+    return { output: buffer.subarray(0, bytes).toString('utf8'), truncated: stat.size > limit };
+  } catch (error) {
+    return { output: `Build output could not be captured: ${error.message}`, truncated: false };
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
 }
 
 export async function buildNativePreview({ worktree, root, candidate, receipt, save, identity }) {

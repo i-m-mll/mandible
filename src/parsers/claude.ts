@@ -1,3 +1,4 @@
+import { claudeAssistantResponse } from "./assistant-response.js";
 // Parser for Claude Code JSONL conversation files.
 // Format: ~/.claude/projects/<encoded-path>/<uuid>.jsonl
 
@@ -21,6 +22,7 @@ import { findJsonlRecord, parseJsonlStringRecords, readJsonlFileRecords } from "
 // --- Raw JSONL record shapes ---
 
 interface ClaudeContentBlock {
+  is_error?: boolean;
   type: string;
   text?: string;
   thinking?: string;
@@ -411,6 +413,8 @@ export class ClaudeParser implements ConversationParser {
                   tool_id: block.tool_use_id || undefined,
                   tool_name: block.tool_use_id ? toolNameMap.get(block.tool_use_id) : undefined,
                   tool_kind: "claude_tool_result",
+                  ...(Array.isArray(block.content) ? {display_tool_content:block.content} : {}),
+                  ...(block.is_error === true ? {display_tool_error:true} : {}),
                   tool_output: toolOutput.length > 1000 ? undefined : toolOutput,
                   visibility: "default_hidden",
                   source_event_type: "tool_result",
@@ -619,6 +623,7 @@ export class ClaudeParser implements ConversationParser {
             sourceEventType,
             sourceRecordOrdinal: options.baseRecordCount + recordIndex,
             sourceSubBlockOrdinal: index - firstRecordBlock,
+            assistantResponse: claudeAssistantResponse(rec.message?.stop_reason),
             ...(chatPartsByBlock.has(index) ? { parts: chatPartsByBlock.get(index)! } : {}),
             ...(activityKind ? { activityKind } : {}),
             ...(rec.level === "error" ? { severity: "error" as const }

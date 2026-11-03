@@ -38,8 +38,6 @@ export {
   deriveTokenCount,
   extractTurns,
   formatElapsed,
-  groupActivityItemsForDisplay,
-  groupMessagesForDisplay,
   isRoutineActivityStatus,
   chatItemStableKey,
   serializeConversationToMarkdown,
@@ -54,3 +52,4 @@ export {
   flushPendingSSE,
   reconcileProviderProjection,
 } from './conversationEvents';
+export * from './readingProjection';

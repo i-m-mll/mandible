@@ -64,6 +64,35 @@ describe('app shell', () => {
     expect(settings.getCalls).toHaveBeenCalledTimes(2);
   });
 
+  it('reconciles the per-user stream cap across windows without replaying stale echoes', async () => {
+    installMemoryLocalStorage(); stubRailSettingsFetch();
+    const fetchDefault = globalThis.fetch;
+    let value = '840'; let revision = 1; let reads = 0; let fail = false;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === '/api/user-settings/chat_stream_max_width_px') {
+        reads++;
+        if (fail) return Promise.resolve(Response.json({ error: 'unavailable' }, { status: 503 }));
+        return Promise.resolve(Response.json({ version: 1, key: 'chat_stream_max_width_px', value, revision }));
+      }
+      return fetchDefault(input, init);
+    }));
+    const events = stubEventSource(); window.history.replaceState(null, '', '#/spaces');
+    const shells = [render(h(App, {})).container, render(h(App, {})).container];
+    const widths = () => shells.map(shell => shell.querySelector<HTMLElement>('.app-shell')!.style.getPropertyValue('--chat-stream-max-width'));
+    await waitFor(() => expect(widths()).toEqual(['840px', '840px']));
+    expect(reads).toBe(2);
+    fail = true;
+    act(() => events.emit({ type: 'user-setting:updated', data: { version: 1, key: 'chat_stream_max_width_px', revision: 2 } }));
+    await waitFor(() => expect(reads).toBe(4));
+    expect(widths()).toEqual(['840px', '840px']);
+    fail = false; value = '0'; revision = 3;
+    act(() => events.emit({ type: 'user-setting:updated', data: { version: 1, key: 'chat_stream_max_width_px', revision: 3 } }));
+    await waitFor(() => expect(widths()).toEqual(['none', 'none']));
+    expect(reads).toBe(6);
+    act(() => events.emit({ type: 'user-setting:updated', data: { version: 1, key: 'chat_stream_max_width_px', revision: 1 } }));
+    await act(async () => Promise.resolve()); expect(reads).toBe(6);
+  });
+
   it('converges two simultaneous same-user clients on one event revision', async () => {
     installMemoryLocalStorage();
     const firstOrder = JSON.stringify({

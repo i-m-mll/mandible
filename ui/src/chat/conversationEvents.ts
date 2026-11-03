@@ -3,6 +3,7 @@ import { conversationExecutionState } from './conversationControl';
 import type { ConversationBlock, ProviderLiveProjection } from '../api';
 import type { ChatItem } from '../../../src/parsers/types';
 import { chatItemIdentityKey } from '../../../src/conversation-control/provider-live';
+import { displayChatItem } from '../../../src/presentation/model';
 import type { AssistantEvent, CanonicalChatItemEvent, StreamEvent } from '../components/stream-renderer/types';
 
 export function deriveStreamingState(events: StreamEvent[]): boolean {
@@ -168,6 +169,7 @@ export function conversationBlocksToStreamEvents(
     const metadata = parseMetadata(block.metadata_json);
     const source = {
       blockId: block.id,
+      defaultVisible: true,
       ...(Number.isSafeInteger(block.position) ? { position: block.position } : {}),
       ...(block.details_loaded === undefined ? {} : { detailsLoaded: block.details_loaded }),
       ...(typeof metadata.display_has_body === 'boolean' ? { hasBody: metadata.display_has_body } : {}),
@@ -180,12 +182,15 @@ export function conversationBlocksToStreamEvents(
     // Missing or malformed items fail closed instead of being guessed from a
     // provider-shaped block.
     if (Object.prototype.hasOwnProperty.call(metadata, 'chat_item')) {
-      const item = canonicalChatItem(metadata.chat_item);
+      const canonicalItem = canonicalChatItem(metadata.chat_item);
+      const item = canonicalItem ? displayChatItem(canonicalItem, metadata) : null;
       const identity = item && item.provenance.source === 'verified-provider-transcript'
         ? chatItemIdentityKey(item, { allowTranscriptCoordinates: true })
         : null;
+      const usage = metadata.token_usage as { input?: number; output?: number } | undefined;
       if (item && identity) events.push({ type: 'chat:item', item, source,
         ...(typeof metadata.client_intent_id === 'string' ? { intentId: metadata.client_intent_id } : {}),
+        ...(usage && Number.isFinite(usage.input) && Number.isFinite(usage.output) ? { usage: { key: typeof metadata.provider_message_id === 'string' ? metadata.provider_message_id : `record:${item.identity.source_record_ordinal}`, input: usage.input!, output: usage.output! } } : {}),
       });
     }
   }

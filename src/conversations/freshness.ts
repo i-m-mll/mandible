@@ -198,7 +198,7 @@ function currentFacts(db: Db, pinned: PinnedConversationSource, sourcePath: stri
   const row = db.prepare(`
     SELECT c.id AS conversation_id, c.title, c.block_count AS normalized_block_count,
            s.id AS source_id, s.availability AS source_availability,
-           s.current_version_id, v.availability AS version_availability,
+           s.current_version_id, s.position_space_id, v.availability AS version_availability,
            v.byte_length AS version_byte_length, v.file_mtime_ms AS version_mtime_ms,
            v.content_sha256 AS version_hash,
            v.filesystem_device, v.filesystem_inode, v.filesystem_ctime_ns,
@@ -227,7 +227,7 @@ function currentFacts(db: Db, pinned: PinnedConversationSource, sourcePath: stri
     ingestTailHash: row.ingest_tail_hash == null ? null : String(row.ingest_tail_hash),
     normalizedBlockCount,
     actualBlockCount: Number(row.actual_block_count),
-    structureCacheComplete: currentVersionId !== null
+    structureCacheComplete: row.position_space_id != null && currentVersionId !== null
       && getConversationStructureCache(db).hasCompleteConversation(
         pinned.conversationId,
         currentVersionId,
@@ -504,12 +504,12 @@ export async function ensureExactConversationFresh(
   }
   if (options.waitForFresh === false || options.indexedOnly) {
     const epochs = db.prepare(`
-      SELECT parser_format, parser_version, normalization_version, redaction_epoch
+      SELECT position_space_id, parser_format, parser_version, normalization_version, redaction_epoch
         FROM conversation_sources WHERE id = ?
     `).get(pinned.sourceId) as {
-      parser_format: string; parser_version: string; normalization_version: string; redaction_epoch: number;
+      position_space_id: string | null; parser_format: string; parser_version: string; normalization_version: string; redaction_epoch: number;
     } | undefined;
-    const outdated = !epochs || !pinned.sourcePath || (
+    const outdated = !epochs || !epochs.position_space_id || !pinned.sourcePath || (
       epochs.parser_format !== CURRENT_CONVERSATION_SOURCE_EPOCHS.parserFormat
       || epochs.parser_version !== CURRENT_CONVERSATION_SOURCE_EPOCHS.parserVersion
       || epochs.normalization_version !== CURRENT_CONVERSATION_SOURCE_EPOCHS.normalizationVersion

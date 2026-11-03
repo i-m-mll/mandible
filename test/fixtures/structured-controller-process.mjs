@@ -60,6 +60,13 @@ lines.on("line", (line) => {
       completedAtMs: Date.now(),
       item: { id: `user-${request.params.clientUserMessageId}`, type: "userMessage", content: request.params.input },
     } });
+    if (request.params.input[0]?.text === "final-response") {
+      for (const [index, phase] of [null, 'commentary', 'final_answer'].entries()) {
+        send({ method: "item/completed", params: { threadId: request.params.threadId, turnId: activeTurnId,
+          item: { id: `response-${index}`, type: "agentMessage", text: `response-${index}`, phase } } });
+      }
+      send({ method: "item/agentMessage/delta", params: { threadId: request.params.threadId, turnId: activeTurnId, itemId: "running-tail", delta: "still running" } });
+    }
     if (request.params.input[0]?.text === "delta") {
       send({ method: "item/agentMessage/delta", params: { threadId: request.params.threadId, turnId: activeTurnId, itemId: "codex-message-1", delta: "hel" } });
       send({ method: "item/agentMessage/delta", params: { threadId: request.params.threadId, turnId: activeTurnId, itemId: "codex-message-1", delta: "lo" } });
@@ -79,8 +86,10 @@ lines.on("line", (line) => {
       } } });
       send({ method: "item/commandExecution/outputDelta", params: { threadId: request.params.threadId, turnId: activeTurnId, itemId: "command-rich", delta: "ok" } });
       send({ method: "item/completed", params: { threadId: request.params.threadId, turnId: activeTurnId, completedAtMs: Date.now(), item: {
-        id: "command-rich", type: "commandExecution", command: "true", status: "completed", aggregatedOutput: "ok",
+        id: "command-rich", type: "commandExecution", command: "true", status: "completed", aggregatedOutput: "ok", durationMs:125,exitCode:0,processId:"process-rich",
       } } });
+      send({method:"item/completed",params:{threadId:request.params.threadId,turnId:activeTurnId,item:{id:"mcp-rich",type:"mcpToolCall",tool:"unrelated_name",arguments:{},status:"completed",durationMs:75,result:{content:[{type:"text",text:'{"output":"application JSON"}'}],structuredContent:null,_meta:null}}}});
+      send({method:"item/completed",params:{threadId:request.params.threadId,turnId:activeTurnId,item:{id:"dynamic-rich",type:"dynamicToolCall",tool:"custom_dynamic",arguments:{},status:"failed",success:false,contentItems:[{type:"inputText",text:"native dynamic failure"}]}}});
     }
     if (request.params.input[0]?.text === "permission") {
       approvalThread=request.params.threadId;

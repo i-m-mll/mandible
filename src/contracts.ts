@@ -184,12 +184,17 @@ export type SseEvent<E extends MandibleEventType = MandibleEventType> = E extend
 export const USER_SETTING_KEYS = Object.freeze({
   appRailOrder: "app_rail_order",
   managedChatDefaults: "managed_chat_defaults",
+  chatStreamMaxWidthPx: "chat_stream_max_width_px",
   uiFontFace: "ui_font_face",
   uiFontSize: "ui_font_size",
   detailFontFace: "detail_font_face",
   detailFontSize: "detail_font_size",
 } as const);
 export type UserSettingKey = (typeof USER_SETTING_KEYS)[keyof typeof USER_SETTING_KEYS];
+
+export function parseChatStreamMaxWidthPx(value: string): number | null {
+  return /^\d+$/.test(value) && Number.isSafeInteger(Number(value)) ? Number(value) : null;
+}
 
 export type ChatEntityClickAction = "preview" | "open";
 
@@ -752,7 +757,7 @@ export type StoredConversationBlock = {
   role: Role;
   content: string;
   position: number;
-  timestamp: string;
+  timestamp: string | null;
   parent_id: string | null;
   metadata_json: string;
   dag_uuid?: string | null;
@@ -835,7 +840,17 @@ export type ConversationPositionTarget = {
   turn_id: string | null;
 };
 
-export type ConversationPositionWindow = {
+export type ConversationSourceSnapshot = {
+  position_space_id: string | null;
+  publication_revision: number;
+  source_version_id: string | null;
+};
+
+export type PositionSpaceChanged = { code: 'position_space_changed'; position_space_id: string | null };
+
+export type ConversationPositionWindow = ConversationSourceSnapshot & {
+  display_context: import('./conversations/display-context.js').ConversationDisplayContext;
+  reading_context: import("./conversations/reading-context.js").ConversationReadingContext;
   conversation: Conversation;
   body_source: "source";
   source_version_id: string | null;
@@ -855,7 +870,7 @@ export type ConversationPositionWindow = {
   blocks: StoredConversationBlock[];
 };
 
-export type ConversationStructure = {
+export type ConversationStructure = ConversationSourceSnapshot & {
   conversation_id: string;
   source_version_id: string | null;
   total: number;

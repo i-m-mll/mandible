@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ConversationSourceReader } from "../src/conversations/source-reader.js";
 import { ConversationSourceStore } from "../src/conversations/source-store.js";
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../src/conversations/source-types.js";
+import { ClaudeParser } from "../src/parsers/claude.js";
 import { CodexParser } from "../src/parsers/codex.js";
 import type { ParseResult } from "../src/parsers/types.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
@@ -80,6 +81,91 @@ async function record(db: SqliteDatabase, id: string, filePath: string): Promise
 }
 
 describe("versioned conversation source reader", () => {
+  it('hydrates overlapping subitems and unrequested tool parents once, returning only ordered unique requested positions', async () => {
+    const db = migratedMemoryDb();
+    const nativeSessionId = '11111111-1111-4111-8111-111111111111';
+    const filePath = path.join(tempDir, '.claude/projects/vector', `${nativeSessionId}.jsonl`);
+    fs.mkdirSync(path.dirname(filePath), {recursive: true});
+    const native = [
+      {type: 'assistant', uuid: 'calls', sessionId: nativeSessionId, timestamp: '2026-11-02T00:00:00Z',
+        message: {id: 'calls', model: 'claude', role: 'assistant', content: [
+          {type: 'text', text: 'prepare'}, {type: 'tool_use', id: 'a', name: 'Read', input: {file_path: '/a'}},
+          {type: 'tool_use', id: 'b', name: 'Edit', input: {file_path: '/b'}},
+        ]}},
+      {type: 'user', uuid: 'results', parentUuid: 'calls', sessionId: nativeSessionId, timestamp: '2026-11-02T00:00:01Z',
+        message: {role: 'user', content: [
+          {type: 'tool_result', tool_use_id: 'a', content: 'read result'}, {type: 'tool_result', tool_use_id: 'b', content: 'edit result'},
+        ]}},
+    ];
+    fs.writeFileSync(filePath, native.map(record => JSON.stringify(record)).join('\n') + '\n');
+    try {
+      const parsed = await new ClaudeParser().parse(filePath);
+      if (!parsed) throw new Error('Native multi-item fixture did not parse.');
+      insertConversation(db, 'vector', filePath, parsed);
+      db.prepare("UPDATE conversations SET source='claude_code' WHERE id='vector'").run();
+      await new ConversationSourceStore(db).recordConversation({conversationId: 'vector', provider: 'claude_code', nativeSessionId,
+        filePath, blocks: parsed.blocks, sourceSnapshot: parsed.sourceSnapshot, ...CURRENT_CONVERSATION_SOURCE_EPOCHS});
+      const reads: Array<{position: number; length: number}> = [];
+      const result = await new ConversationSourceReader(db, {instrumentation: read => reads.push(read)})
+        .readPositions('vector', [4, 1, 3, 4], {maxBatchBytes: 1});
+      expect(result.status).toBe('source');
+      if (result.status !== 'source') throw new Error(result.reason);
+      expect(result.value.map(block => [block.position, block.type, block.content])).toEqual([
+        [1, 'tool_use', parsed.blocks[1].content], [3, 'tool_result', 'read result'], [4, 'tool_result', 'edit result'],
+      ]);
+      expect(result.value.slice(1).map(block => JSON.parse(block.metadata_json).chat_item.tool_name)).toEqual(['Read', 'Edit']);
+      expect(reads).toHaveLength(2);
+    } finally {db.close();}
+  });
+
+  it("persists position continuity through identical rebuild and prefix extension, and rotates on invalidation", async () => {
+    const db = migratedMemoryDb();
+    try {
+      const file = rolloutPath();
+      writeRecords(file, records());
+      insertConversation(db, 'continuity', file, await parse(file));
+      const store = new ConversationSourceStore(db);
+      await record(db, 'continuity', file);
+      const initial = store.resolveConversation('continuity')!;
+      await record(db, 'continuity', file);
+      expect(new ConversationSourceStore(db).resolveConversation('continuity')).toMatchObject({
+        positionSpaceId: initial.positionSpaceId, publicationRevision: initial.publicationRevision + 1,
+      });
+      const tail = { type: 'response_item', timestamp: '2026-08-17T00:00:04Z',
+        payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'extension' }] } };
+      writeRecords(file, records([tail]));
+      await record(db, 'continuity', file);
+      expect(store.resolveConversation('continuity')?.positionSpaceId).toBe(initial.positionSpaceId);
+      expect(store.resolveConversation('continuity')?.currentVersionId).not.toBe(initial.currentVersionId);
+      writeRecords(file, records().slice(0, 2));
+      await record(db, 'continuity', file);
+      const truncated = store.resolveConversation('continuity')!;
+      expect(truncated.positionSpaceId).not.toBe(initial.positionSpaceId);
+      await store.recordConversation({ conversationId: 'continuity', provider: 'codex', nativeSessionId: 'duplicate-session',
+        filePath: file, blocks: (await parse(file)).blocks, ...CURRENT_CONVERSATION_SOURCE_EPOCHS, redactionEpoch: 1 });
+      expect(store.resolveConversation('continuity')?.positionSpaceId).not.toBe(truncated.positionSpaceId);
+    } finally { db.close(); }
+  });
+
+  it('retains an echoed intent identity when a bounded read parses only the earlier prompt record', async () => {
+    const db = migratedMemoryDb();
+    try {
+      const file = rolloutPath();
+      writeRecords(file, [records()[0],
+        { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'prompt' }] } }]);
+      insertConversation(db, 'intent', file, await parse(file));
+      await record(db, 'intent', file);
+      const beforeEcho = new ConversationSourceStore(db).resolveConversation('intent')!.positionSpaceId;
+      fs.appendFileSync(file, `${JSON.stringify({ type: 'event_msg', payload: { type: 'user_message', message: 'prompt', client_id: 'intent-exact' } })}\n`);
+      await record(db, 'intent', file);
+      expect(new ConversationSourceStore(db).resolveConversation('intent')!.positionSpaceId).toBe(beforeEcho);
+      const page = await new ConversationSourceReader(db).readPage('intent', { offset: 0, limit: 1 });
+      expect(page.status).toBe('source');
+      if (page.status !== 'source') throw new Error('fixture source unavailable');
+      expect(JSON.parse(page.value.blocks[0].metadata_json)).toMatchObject({ client_intent_id: 'intent-exact',
+        chat_item: { identity: { native_item_id: 'intent-exact' } } });
+    } finally { db.close(); }
+  });
   it("preserves source versions, locators and block identities across raw/zstd transitions", async () => {
     const db = migratedMemoryDb();
     const filePath = rolloutPath();

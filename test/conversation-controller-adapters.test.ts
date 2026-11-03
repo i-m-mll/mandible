@@ -1,3 +1,4 @@
+import { projectDisplayFragments } from '../src/presentation/fragments.js';
 import fs from "node:fs";
 import { runCli, scratchDir } from "./helpers/cli-process.js";
 import { ConversationControlService } from "../src/conversation-control/service.js";
@@ -135,7 +136,7 @@ describe("structured conversation controller adapters", () => {
     expect((await codex.acquire(acquisition("codex-thread"))).ok).toBe(true);
     expect((await codex.deliver(delivery("resume-provider-session", "rich-turn", "rich"))).ok).toBe(true);
     await waitFor(() => events.some((event) => event.kind === "provisional-content"
-      && event.item.identity.native_item_id === "command-rich"
+      && event.item.identity.native_item_id === "dynamic-rich"
       && event.item.content_completion === "complete"));
 
     const items = events.flatMap((event) => event.kind === "provisional-content" ? [event.item] : []);
@@ -153,6 +154,11 @@ describe("structured conversation controller adapters", () => {
       && item.content_completion === "complete")).toMatchObject({
       tool_kind: "commandExecution", input: "true", output: "ok", execution_outcome: "succeeded",
     });
+    const fragments=projectDisplayFragments(items.filter(item=>item.content_completion==='complete').map(item=>({type:'chat:item' as const,item})),true);
+    const tools=fragments.flatMap(fragment=>fragment.node.kind==='activity' && fragment.node.item.type==='tool-call-activity' ? [fragment.node.item] : []);
+    expect(tools.find(tool=>tool.name==='command')?.result?.presentation).toMatchObject({text:'ok',wallTimeSeconds:0.125,failed:false});
+    expect(tools.find(tool=>tool.name==='unrelated_name')?.result?.presentation).toMatchObject({text:'{"output":"application JSON"}',wallTimeSeconds:0.075,decoded:true});
+    expect(tools.find(tool=>tool.name==='custom_dynamic')?.result).toMatchObject({is_error:true,presentation:{text:'native dynamic failure',failed:true}});
     expect(JSON.stringify(items)).not.toContain("encrypted");
   });
 
@@ -263,4 +269,15 @@ it("persists authoritative Codex terminal errors through retries, duplicates and
     await service.close();
     expect(execution.read("codex", "codex-new-thread")?.state).toEqual({ kind: "ended", reason: "mandible:controller-released" });
   } finally { await service.close(); unregister(); db.close(); fs.rmSync(nativeState, { recursive: true, force: true }); }
+});
+
+
+it("preserves explicit live Codex final phases while complete unknown messages and running tails remain nonfinal", async () => {
+  const adapter = new CodexAppServerControllerAdapter({ spawnProcess: spawner('codex', []), codexExecutable: 'codex' }); adapters.push(adapter);
+  const events = providerEvents(adapter);
+  expect((await adapter.acquire(acquisition('codex-thread'))).ok).toBe(true);
+  expect((await adapter.deliver(delivery('send', 'final-turn', 'final-response'))).ok).toBe(true);
+  await waitUntil(() => events.some(event => event.kind === 'provisional-content' && event.item.identity.native_item_id === 'running-tail'));
+  const messages = events.flatMap(event => event.kind === 'provisional-content' && event.item.type === 'message' && event.item.role === 'assistant' ? [event.item] : []);
+  expect(messages.map(item => item.assistant_response ?? 'unknown')).toEqual(['unknown', 'interim', 'final', 'unknown']);
 });

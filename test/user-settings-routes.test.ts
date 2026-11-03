@@ -169,17 +169,17 @@ describe("authenticated user settings routes", () => {
     const user = createUser(db, { slug: "restart-user", kind: "human", display_name: "Restart User" });
     let routes = new TestRoutes();
     registerUserSettingsRoutes(routes, db);
-    const value = "16";
-    await call(routes, "PUT", request("PUT", identity(user.id, user.slug), value, "ui_font_size"));
+    const value = "840";
+    await call(routes, "PUT", request("PUT", identity(user.id, user.slug), value, "chat_stream_max_width_px"));
     db.close();
 
     db = openDb(dbPath);
     routes = new TestRoutes();
     registerUserSettingsRoutes(routes, db);
-    expect(await call(routes, "GET", request("GET", identity(user.id, user.slug), undefined, "ui_font_size")))
+    expect(await call(routes, "GET", request("GET", identity(user.id, user.slug), undefined, "chat_stream_max_width_px")))
       .toMatchObject({
         statusCode: 200,
-        payload: { version: 1, key: "ui_font_size", value, revision: 1 },
+        payload: { version: 1, key: "chat_stream_max_width_px", value, revision: 1 },
       });
     db.close();
   });
@@ -239,3 +239,21 @@ it("validates provider defaults atomically and isolates each user's choices", as
         .toMatchObject({ payload: { revision: 1 } });
     } finally { db.close(); }
   });
+
+
+it("retains the committed width and revision when incomplete or invalid caps are rejected", async () => {
+  const db = openDb(":memory:");
+  try {
+    const user = createUser(db, { slug: "stream-reader", kind: "human", display_name: "Reader" });
+    const routes = new TestRoutes(); registerUserSettingsRoutes(routes, db);
+    const who = identity(user.id, user.slug);
+    const key = "chat_stream_max_width_px";
+    expect(await call(routes, "GET", request("GET", who, undefined, key))).toMatchObject({ payload: { value: null, revision: 0 } });
+    await call(routes, "PUT", request("PUT", who, "840", key));
+    for (const value of ["", " ", "-1", "1.5", "Infinity", "NaN", "2e", "9007199254740992"]) {
+      expect(await call(routes, "PUT", request("PUT", who, value, key))).toMatchObject({ statusCode: 400 });
+    }
+    expect(await call(routes, "GET", request("GET", who, undefined, key))).toMatchObject({ payload: { value: "840", revision: 1 } });
+    expect(await call(routes, "PUT", request("PUT", who, "0", key))).toMatchObject({ payload: { value: "0", revision: 2 } });
+  } finally { db.close(); }
+});

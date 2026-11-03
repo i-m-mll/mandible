@@ -1,0 +1,52 @@
+{
+  "qualified_at": "2026-11-02",
+  "scope": "Three predetermined 128-row public source batches; no browser, HTTP transport or geometry replay.",
+  "conversation_id": "27a62ff5-56e5-4f4c-9043-4e3001c998aa",
+  "source_version_id": "cver_86a9a19d637f070ad2b38a0788",
+  "conversation_rows": 6772,
+  "batch_offsets": [
+    0,
+    2048,
+    4096
+  ],
+  "rows": 384,
+  "before_ms": 510.9022089999999,
+  "after_ms": 153.64970800000006,
+  "speedup": 3.325110185045062,
+  "payload_identity": "All row payload hashes match, excluding only the runtime receivedAt field. Source coordinates, timestamps, bodies and metadata remain included.",
+  "native_bytes_unchanged": 582661,
+  "native_reads_unchanged": 455,
+  "samples": [
+    {
+      "offset": 0,
+      "rows": 128,
+      "before_ms": 142.09420900000003,
+      "after_ms": 72.40475,
+      "before_verification_ms": 19.229359999999872,
+      "after_verification_ms": 3.9034159999999645,
+      "payload_sha256": "0199924d2d6973cf8f0efa776d972849fde73ed1779015e94812853eae3ff64a",
+      "payload_bytes": 461207
+    },
+    {
+      "offset": 2048,
+      "rows": 128,
+      "before_ms": 151.602625,
+      "after_ms": 41.72029100000003,
+      "before_verification_ms": 16.243240000000185,
+      "after_verification_ms": 1.9800010000000725,
+      "payload_sha256": "79e7f2735efc2cfc349297bc48c5142c4654e4ed5c41bc03c68bd9c5a9d16bd1",
+      "payload_bytes": 492179
+    },
+    {
+      "offset": 4096,
+      "rows": 128,
+      "before_ms": 217.2053749999999,
+      "after_ms": 39.52466700000002,
+      "before_verification_ms": 20.23476100000039,
+      "after_verification_ms": 1.0353750000000446,
+      "payload_sha256": "617f350d54f92138af9ceab1641abb2e00ba10c612180f7f990004fca8b176b7",
+      "payload_bytes": 497429
+    }
+  ],
+  "limitations": "Single same-source comparison on one pinned conversation. This does not establish complete-chat or cold first-open latency."
+}

@@ -51,7 +51,39 @@ it("caps native pages and resolves current positional anchors", async () => {
   const turn = await router.invoke({ method: "GET", url: `/api/conversations/native?turn=${encodeURIComponent(turnId)}&limit=40` });
   expect(turn.status).toBe(200);
   expect(turn.body).toMatchObject({ target: { kind: "turn", block_id: turnId, position: 500 } });
+  const snapshot = turn.body as { position_space_id: string; publication_revision: number; source_version_id: string };
+  expect(snapshot.position_space_id).toBeTruthy();
+  const structure = await router.invoke({ method: 'GET', url: '/api/conversations/native/structure' });
+  expect(structure.body).toMatchObject({ position_space_id: snapshot.position_space_id,
+    publication_revision: snapshot.publication_revision, source_version_id: snapshot.source_version_id });
+  for (const route of ['?position=500&limit=1', '/structure?limit=1']) {
+    const stale = await router.invoke({ method: 'GET', url: `/api/conversations/native${route}&expected_position_space_id=obsolete` });
+    expect(stale).toMatchObject({ status: 409, body: { code: 'position_space_changed', position_space_id: snapshot.position_space_id } });
+  }
   for (const query of ["block=retired-id", "position=601"]) {
     expect((await router.invoke({ method: "GET", url: `/api/conversations/native?${query}` })).status).toBe(404);
   }
+});
+
+it('returns bounded reading context and exports the current complete speaker run within its position space', async () => {
+  await source(20);
+  const router = new Router(); registerConversationRoutes(router, inlineLedgerReader());
+  const selected = await router.invoke({ method: 'GET', url: '/api/conversations/native?position=15&limit=1&view=display' });
+  expect(selected.status).toBe(200);
+  const snapshot = selected.body as { position_space_id: string; reading_context: unknown };
+  expect(snapshot.reading_context).toEqual({ positions: [{ position: 15, activity_owner_position: null, speaker_run_start: 11 }], speaker_runs: [{ start: 11, end: 19 }] });
+  await nativeSearchSource(db, tempDir, 'native', Array.from({ length: 21 }, (_, position) => ({
+    role: position === 0 || position === 10 ? 'user' as const : 'assistant' as const, text: `content ${position}`,
+  })));
+  const result = await router.invoke({ method: 'POST', url: '/api/conversations/native/export', body: {
+    format: 'markdown', speaker_run_start: 11, expected_position_space_id: snapshot.position_space_id,
+  } });
+  expect(result.status).toBe(200);
+  expect(result.body).toMatchObject({ block_count: 10, covered_member_keys: expect.any(Array) });
+  const content = (result.body as { content: string }).content;
+  expect(content).toContain('content 11'); expect(content).toContain('content 20'); expect(content).not.toContain('content 10');
+  const obsolete = await router.invoke({ method: 'POST', url: '/api/conversations/native/export', body: {
+    format: 'markdown', speaker_run_start: 11, expected_position_space_id: 'obsolete-space',
+  } });
+  expect(obsolete).toMatchObject({ status: 409, body: { code: 'position_space_changed' } });
 });

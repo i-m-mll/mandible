@@ -65,8 +65,12 @@ export interface ChatItemBase {
   execution_outcome?: ChatExecutionOutcome;
 }
 
+/** Provider-authored turn intent (including Codex response channels and saved phases); content completion alone never establishes a final response. */
+export type AssistantResponseClassification = "final" | "interim" | "unknown";
+
 export interface MessageItem extends ChatItemBase {
   type: "message";
+  assistant_response?: AssistantResponseClassification;
   role: "user" | "assistant" | "system";
 }
 
@@ -84,6 +88,10 @@ export interface ToolCallItem extends ChatItemBase {
   tool_id?: string;
   input?: unknown;
   output?: unknown;
+  /** Explicit provider execution facts; absent when the source does not report them. */
+  elapsed_ms?: number;
+  exit_code?: number;
+  process_id?: string;
 }
 
 export interface ActivityItem extends ChatItemBase {
@@ -110,6 +118,12 @@ export interface BlockMetadata {
   model?: string;
   token_usage?: { input: number; output: number; cache_read?: number };
   usage_telemetry?: NormalizedUsageTelemetry;
+  /** Additive completion evidence for Chat, excluding provider answer echoes/timing bookkeeping; identity-bearing content and parts remain unchanged. */
+  display_completion_parts?: ChatContentPart[];
+  /** Presentation-only proof of a native ordered output framing block; normalized content remains intact. */
+  display_tool_frame?: import('../presentation/tool-transport.js').NativeResultFrame;
+  display_tool_content?: unknown;
+  display_tool_error?: boolean;
   source_event_type?: string;
   visibility?: "default_hidden" | "default_visible";
   truncated?: boolean;
@@ -250,11 +264,15 @@ export function firstUserMessageOpening(
   return first ? { line: readOpeningLine(first.content), creator: null, atStart } : null;
 }
 
+export type ToolCallPresentationContext = { id:string; name:string; kind:string };
+
 export interface IncrementalParseInput {
   filePath: string;
   raw: string;
   /** Verified native session identity when parsing an isolated durable record. */
   nativeSessionId?: string;
+  /** Exact verified parent calls for presentation admission while reading isolated result records. */
+  displayToolCalls?: readonly ToolCallPresentationContext[];
   baseBlockCount: number;
   baseRecordCount?: number;
   sourceHash: string;
@@ -281,6 +299,7 @@ export interface TranscriptChatItemInput {
   elapsedMs?: number;
   relatedToolIds?: string[];
   executionOutcome?: ChatExecutionOutcome;
+  assistantResponse?: AssistantResponseClassification;
 }
 
 /** Attach the canonical durable Chat item without inventing provider identity or prose. */
@@ -319,7 +338,8 @@ export function attachTranscriptChatItem(
 
   let item: ChatItem | null = null;
   if (block.type === "user_message" || block.type === "assistant_message") {
-    item = { ...base, type: "message", role: block.role as "user" | "assistant" };
+    item = { ...base, type: "message", role: block.role as "user" | "assistant",
+      ...(block.role === "assistant" ? { assistant_response: input.assistantResponse ?? "unknown" } : {}) };
   } else if (block.type === "plan") {
     item = { ...base, type: "plan", role: "assistant" };
   } else if (block.type === "tool_use" || block.type === "tool_result") {

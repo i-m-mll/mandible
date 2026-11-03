@@ -1,3 +1,4 @@
+import { projectReadingRows } from '../ui/src/chat/readingProjection';
 import { describe, expect, it } from "vitest";
 import {
   buildStreamState,
@@ -9,7 +10,7 @@ import {
 import { emptyProviderLiveProjection, mergeProviderLiveProjection, chatItemIdentityKey } from "../src/conversation-control/provider-live";
 import type { ChatItem, ConversationSource } from "../src/parsers/types";
 import type { ProviderLiveContentEvent, ConversationControlSnapshot } from '../src/conversation-control/types';
-import { groupActivityItemsForDisplay, chatItemStableKey } from '../ui/src/chat/renderModel';
+import { chatItemStableKey } from '../ui/src/chat/renderModel';
 import type { CanonicalChatItemEvent } from '../ui/src/components/stream-renderer/types';
 import type { StreamEvent } from "../ui/src/components/stream-renderer/types";
 
@@ -107,7 +108,7 @@ describe("chat render orchestration", () => {
     expect(separatedNodes.map((node) => node.kind)).toEqual(["assistant_turn", "activity"]);
     expect(separatedNodes[0]).toMatchObject({ kind: "assistant_turn" });
     if (separatedNodes[0].kind === "assistant_turn") {
-      expect(separatedNodes[0].turn.toolResults.get("split")?.content).toBe("done");
+      expect(separatedNodes[0].turn.toolResults.values().next().value?.content).toBe("done");
     }
 
     const offWindow = conversationBlocksToStreamEvents("s1", [
@@ -196,9 +197,12 @@ for (const provider of ['claude_code', 'codex'] as const) describe(`${provider} 
     expect(buildStreamState(streaming).nodes.map(node => node.kind)).toEqual(['user_message', 'assistant_turn']);
     const events = reconcileProviderProjection([saved(native, 0), saved(reply, 1)], projected, aliases);
     expect(events).toHaveLength(2);
-    expect(buildStreamState(events).nodes[0].key).toBe(buildStreamState(initial).nodes[0].key);
+    const project = (events: readonly StreamEvent[]) => projectReadingRows({ events, conversationId: 'conversation', positionSpaceId: 'space', readingContext: new Map(), expanded: {} });
+    const provisionalKey = project(initial).rows[0].key;
+    expect(project(events).viewMembership.get(provisionalKey)?.memberKey).toBe(project(events).rows[0].key);
     expect(reconcileProviderProjection([saved(native, 0), saved(reply, 1)], projected, aliases)).toEqual(events);
-    expect(buildStreamState(reconcileProviderProjection([saved(native, 0), saved(reply, 1)], null, aliases)).nodes[0].key).toBe(buildStreamState(initial).nodes[0].key);
+    const persisted = project(reconcileProviderProjection([saved(native, 0), saved(reply, 1)], null, aliases));
+    expect(persisted.viewMembership.get(provisionalKey)?.memberKey).toBe(persisted.rows[0].key);
   });
 
   it('keeps first observation order through deltas and preserves identical distinct messages', () => {
@@ -211,44 +215,26 @@ for (const provider of ['claude_code', 'codex'] as const) describe(`${provider} 
     expect(buildStreamState(swapped).nodes.flatMap(node => node.kind === 'assistant_turn' ? node.turn.assistantEvent.message.content : [])).toHaveLength(2);
   });
 
-  it('retains terminal-before-durable content and hydrates lazy tool inputs under the same row identity', () => {
+  it('retains terminal-before-durable content and hydrates lazy tool inputs under the same identity', () => {
     const tool = reconciliationItem('tool', 'tool', provider);
     const projected = projection([live(tool, 1)]);
-    const liveRow = groupActivityItemsForDisplay(buildStreamState(reconcileProviderProjection([], projected, new Map(), snapshot())).nodes)[0];
     const lazy = saved({ ...tool, input: undefined } as ChatItem, 0); lazy.source!.detailsLoaded = false;
-    const pendingRow = groupActivityItemsForDisplay(buildStreamState(reconcileProviderProjection([lazy], projected, new Map(), snapshot())).nodes)[0];
-    expect(pendingRow.kind === 'node' && pendingRow.node.key).toBe(liveRow.kind === 'node' && liveRow.node.key);
-    if (pendingRow.kind !== 'node' || pendingRow.node.kind !== 'activity') throw new Error('Missing hydrated tool row');
-    expect(JSON.parse(String(pendingRow.node.item.input))).toEqual({ command: 'pwd' });
-    expect(pendingRow.node.item.executionActive).toBe(true);
+    const pending = reconcileProviderProjection([lazy], projected, new Map(), snapshot()) as CanonicalChatItemEvent[];
+    expect(pending[0].item).toMatchObject({ input: { command: 'pwd' } });
+    expect(pending[0].executionActive).toBe(true);
     for (const terminal of ['completed', 'cancelled', 'failed', 'unknown']) {
-      const events = reconcileProviderProjection([], projected, new Map(), snapshot(terminal));
+      const events = reconcileProviderProjection([], projected, new Map(), snapshot(terminal)) as CanonicalChatItemEvent[];
       expect(events).toHaveLength(1);
-      const row = groupActivityItemsForDisplay(buildStreamState(events).nodes)[0];
-      expect(row.kind === 'node' && row.node.kind === 'activity' && row.node.item).toMatchObject({ executionActive: false });
+      expect(events[0].executionActive).toBe(false);
     }
     expect(chatItemStableKey(tool)).toBe(chatItemStableKey(saved(tool, 0).item));
   });
 });
 
-it('groups adjacent activity across empty status and thoughts while retaining explicit gaps and failures', () => {
-  const tool1 = reconciliationItem('tool1', 'tool'), tool2 = reconciliationItem('tool2', 'tool');
-  const empty = { ...reconciliationItem('empty'), type: 'activity', role: 'system', activity_kind: 'thinking', parts: [] } as ChatItem;
-  const nodes = buildStreamState([saved(tool1, 0), saved(empty, 1), saved(tool2, 2)]).nodes;
-  expect(groupActivityItemsForDisplay(nodes)[0]).toMatchObject({ kind: 'activity-group', nodes: [{ key: chatItemStableKey(tool1) }, { key: chatItemStableKey(tool2) }] });
-  const gap = buildStreamState([saved(tool1, 0), { type: 'transcript:boundary' }, saved(tool2, 2)]).nodes;
-  expect(groupActivityItemsForDisplay(gap).map(entry => entry.kind)).toEqual(['node', 'node', 'node']);
-  const error = { ...empty, severity: 'error', execution_outcome: 'failed' } as ChatItem;
-  expect(buildStreamState([saved(error, 1)]).nodes).toHaveLength(1);
-});
-
-
 it('marks each concurrent tool independently and clears only the completed call', () => {
   const first = reconciliationItem('first-tool', 'tool'), second = reconciliationItem('second-tool', 'tool');
   const completed = { ...first, phase: 'result', role: 'tool', output: 'done', content_completion: 'complete' } as ChatItem;
   const events = reconcileProviderProjection([], projection([live(first, 1), live(second, 2), live(completed, 3)]), new Map(), snapshot());
-  const entry = groupActivityItemsForDisplay(buildStreamState(events).nodes)[0];
-  expect(entry.kind).toBe('activity-group');
-  if (entry.kind !== 'activity-group') return;
-  expect(entry.nodes.map(node => node.item.type === 'tool-call-activity' && node.item.executionActive)).toEqual([false, true]);
+  const rows = projectReadingRows({ events, conversationId: 'conv', positionSpaceId: 'space', readingContext: new Map(), expanded: {} }).rows;
+  expect(rows.flatMap(row => row.items).filter(event => event.item.type === 'tool-call' && event.item.phase === 'call').map(event => event.executionActive)).toEqual([false, true]);
 });

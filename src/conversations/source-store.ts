@@ -1,3 +1,5 @@
+import { indexDisplayFragments } from './display-indexing.js';
+import { preparePositionSpace, type PositionSpacePublication } from './position-space.js';
 import { openLogicalSource, canonicalSourcePath, type LogicalSourceHandle } from "./logical-source.js";
 import { createHash } from "node:crypto";
 import path from "node:path";
@@ -265,6 +267,8 @@ function sourceDescriptor(row:Record<string,unknown>):ConversationSourceDescript
       availability: row.availability as ConversationSourceDescriptor["availability"],
       custodyState: row.custody_state as ConversationSourceDescriptor["custodyState"],
       currentVersionId: row.current_version_id == null ? null : String(row.current_version_id),
+      positionSpaceId: row.position_space_id == null ? null : String(row.position_space_id),
+      publicationRevision: Number(row.publication_revision),
       unavailableReason: row.unavailable_reason == null ? null : String(row.unavailable_reason),
       parserFormat: String(row.parser_format),
       parserVersion: String(row.parser_version),
@@ -317,7 +321,7 @@ export class ConversationSourceStore {
     const result=new Map<string,ConversationSourceDescriptor>();
     if(conversationIds.length===0)return result;
     const rows=this.db.prepare(`SELECT id, conversation_id, provider, native_session_id, availability,
-             custody_state, current_version_id, unavailable_reason,
+             custody_state, current_version_id, position_space_id, publication_revision, unavailable_reason,
              parser_format, parser_version, normalization_version, redaction_epoch FROM conversation_sources
       WHERE conversation_id IN (SELECT value FROM json_each(?)) ORDER BY conversation_id,updated_at DESC,id
     `).all(JSON.stringify(conversationIds)) as Array<Record<string,unknown>>;
@@ -464,8 +468,8 @@ export class ConversationSourceStore {
     dispose(): Promise<void>;
   }> {
     const existingSource = this.db.prepare(`
-      SELECT id, current_version_id, parser_format, parser_version, normalization_version, redaction_epoch FROM conversation_sources WHERE conversation_id = ? AND provider = ?
-    `).get(input.conversationId, input.provider) as { id: string; current_version_id: string | null; parser_format: string; parser_version: string; normalization_version: string; redaction_epoch: number } | undefined;
+      SELECT id, current_version_id, position_space_id, position_count, position_fingerprint, position_fingerprint_version, publication_revision, parser_format, parser_version, normalization_version, redaction_epoch FROM conversation_sources WHERE conversation_id = ? AND provider = ?
+    `).get(input.conversationId, input.provider) as (Partial<PositionSpacePublication> & { publication_revision: number; id: string; current_version_id: string | null; parser_format: string; parser_version: string; normalization_version: string; redaction_epoch: number }) | undefined;
     const sourceId = existingSource?.id ?? stableId("csrc", input.conversationId, input.provider);
     let expectedPriorContentHash: string | undefined;
     if (input.sourceSnapshot?.kind === "append") {
@@ -515,6 +519,22 @@ export class ConversationSourceStore {
         dag_parent_uuid: block.dag_parent_uuid ?? null,
       }));
     const structuralMode = input.structuralMode ?? "replace";
+    const sameContract = existingSource && existingSource.parser_format === input.parserFormat
+      && existingSource.parser_version === input.parserVersion
+      && existingSource.normalization_version === input.normalizationVersion
+      && existingSource.redaction_epoch === input.redactionEpoch;
+    const priorPosition = sameContract && existingSource.position_space_id
+      && existingSource.position_count !== undefined && existingSource.position_fingerprint
+      && existingSource.position_fingerprint_version !== undefined
+      ? existingSource as PositionSpacePublication : null;
+    if (structuralMode === 'append' && (!priorPosition || input.sourceSnapshot?.kind !== 'append')) {
+      throw new ConversationSourceChangedError('append publication requires a normalized position prefix; rebuild source index');
+    }
+    const positionSpace = preparePositionSpace(input.blocks, priorPosition,
+      structuralMode === 'append' && input.sourceSnapshot?.kind === 'append');
+    if (input.blockCount !== undefined && positionSpace.position_count !== input.blockCount) {
+      throw new ConversationSourceChangedError('normalized position count does not match publication');
+    }
     const structuralBlocks = blocks.flatMap((block) => {
       const metadata = parseJsonObjectStrict(block.metadata_json, "conversation block metadata_json");
       const wholeGeminiSource = input.provider === "gemini" && input.blocks !== undefined;
@@ -546,16 +566,19 @@ export class ConversationSourceStore {
           parentPosition: parent ?? (tool ? tools.get(tool) ?? cache.findToolPosition(input.conversationId, tool, priorId, input) : null),
           recordOffset: range.offset, recordLength: range.length, recordOrdinal: range.ordinal, subBlockOrdinal,
           model: typeof metadata.model === "string" ? metadata.model : null,
+          clientIntentId: typeof metadata.client_intent_id === "string" ? metadata.client_intent_id : null,
         };
       });
       const priorCount = priorId ? cache.blockCount(input.conversationId, priorId, input) : 0;
+      const displayParents = new Map(rows.map(row => [row.position, row.parentPosition]));
       if (priorId && priorCount === null) throw new ConversationSourceChangedError("append structure generation is missing");
       cache.replaceRows({
         conversation_id: input.conversationId, source_version_id: versionId,
         parser_format: input.parserFormat, parser_version: input.parserVersion,
         normalization_version: input.normalizationVersion, redaction_epoch: input.redactionEpoch,
         block_count: input.blockCount ?? (priorCount ?? 0) + rows.length,
-      }, rows, tools, priorId);
+      }, rows, tools, priorId, indexDisplayFragments(input.blocks, input.conversationId,
+        position => displayParents.get(position) ?? null));
       cache.prune(input.conversationId, existingSource?.current_version_id ?? null);
     }
     let proof: LogicalSourceHandle | undefined;
@@ -586,7 +609,7 @@ export class ConversationSourceStore {
           throw new ConversationSourceChangedError("conversation source changed before publication");
         }
       }
-      const current = this.db.prepare(`SELECT id, current_version_id, parser_format, parser_version,
+      const current = this.db.prepare(`SELECT id, current_version_id, position_space_id, position_count, position_fingerprint, position_fingerprint_version, publication_revision, parser_format, parser_version,
         normalization_version, redaction_epoch FROM conversation_sources WHERE conversation_id = ? AND provider = ?`)
         .get(input.conversationId, input.provider);
       if (JSON.stringify(current) !== JSON.stringify(existingSource)) {
@@ -659,9 +682,11 @@ export class ConversationSourceStore {
       // therefore fails on every changed source when foreign_keys is enabled.
       this.db.prepare(`
         UPDATE conversation_sources
-           SET current_version_id = ?, updated_at = ?
+           SET current_version_id = ?, updated_at = ?, position_space_id = ?, position_count = ?,
+               position_fingerprint = ?, position_fingerprint_version = ?, publication_revision = publication_revision + 1
          WHERE id = ?
-      `).run(versionId, now, sourceId);
+      `).run(versionId, now, positionSpace.position_space_id, positionSpace.position_count,
+        positionSpace.position_fingerprint, positionSpace.position_fingerprint_version, sourceId);
 
     };
     return { versionId, publish, dispose: async () => { await proof?.close(); } };

@@ -11,6 +11,9 @@ import { conversationKeys, normalizeWindowTarget } from '../ui/src/query/convers
 import {
   conversationTranscriptFromWindow,
   reconcileConversationWindow,
+  applyReadingWindowOperation,
+  retainReadingWindow,
+  conversationBlockDetailsCurrent,
 } from '../ui/src/query/conversationData';
 import { applyConversationSse } from '../ui/src/query/conversationSse';
 import { markSidebarListsStale, startSidebarRefresh } from '../ui/src/query/conversationSidebarRefresh';
@@ -60,7 +63,10 @@ function window(target: ConversationPositionWindow['target'], blocks: Conversati
   return {
     conversation: conversation('conv-1', total),
     body_source: 'source',
+    reading_context: { positions: blocks.map(block => ({ position: block.position, activity_owner_position: null, speaker_run_start: 0 })), speaker_runs: [{ start: 0, end: total - 1 }] },
     source_version_id: 'source-v1',
+    position_space_id: 'space-1',
+    publication_revision: 1,
     children: [],
     parent: null,
     revision: total,
@@ -79,6 +85,52 @@ function window(target: ConversationPositionWindow['target'], blocks: Conversati
 }
 
 describe('Chat Query authority', () => {
+  it('never lets an old full detail outrank a newer compact block after an intervening newer range', () => {
+    const target = { kind: 'position' as const, requested_value: 0, position: 0, block_id: 'b0', turn_id: null };
+    const detail = { ...block('b0', 0), content: 'old full body', details_loaded: true };
+    const initial = conversationTranscriptFromWindow(window(target, [detail], 2));
+    const newerRange = { ...window(target, [block('b1', 1)], 2), source_version_id: 'v2', publication_revision: 2 };
+    const advanced = reconcileConversationWindow(initial, newerRange);
+    expect(conversationBlockDetailsCurrent(advanced, detail)).toBe(false);
+    const compact = { ...window(target, [{ ...detail, content: 'new compact body', details_loaded: false }], 2),
+      source_version_id: 'v2', publication_revision: 2 };
+    expect(reconcileConversationWindow(advanced, compact).blocks.find(block => block.id === 'b0'))
+      .toMatchObject({ content: 'new compact body', details_loaded: false });
+  });
+  it('derives true-end availability from the active span and rejects a delayed obsolete space', () => {
+    const target = { kind: 'position' as const, requested_value: 0, position: 0, block_id: 'b0', turn_id: null };
+    const payload = window(target, [block('b0', 0), block('b1', 1)], 2);
+    const tail = conversationTranscriptFromWindow(payload);
+    expect(tail.end_reached).toBe(true);
+    const trimmed = applyReadingWindowOperation(tail, { kind: 'trim-end', position: 0, protected: [] });
+    expect(trimmed).toMatchObject({ status: 'committed', data: { end_reached: false, after_count: 1 } });
+    const grown = reconcileConversationWindow(tail, { ...window(target, [block('b0', 0)], 3),
+      source_version_id: 'append-v2', publication_revision: 2 });
+    expect(grown).toMatchObject({ active_window: { start: 0, end: 1 }, end_reached: false, after_count: 1 });
+    const changed = reconcileConversationWindow(grown, { ...payload, position_space_id: 'space-B', publication_revision: 3 });
+    expect(reconcileConversationWindow(changed, payload)).toBe(changed);
+  });
+  it('extends one active span across append freshness, advances through hidden positions, and protects the reading region', () => {
+    const target = { kind: 'position' as const, requested_value: 0, position: 0, block_id: 'b0', turn_id: null };
+    const initial = conversationTranscriptFromWindow(window(target, [block('b0', 0), block('b1', 1)], 6));
+    const incoming = { ...window(target, [block('b2', 2), block('b3', 3)], 6),
+      source_version_id: 'append-version', publication_revision: 2 };
+    const extended = applyReadingWindowOperation(initial, { kind: 'extend-end', window: incoming, protected: [{ start: 0, end: 1 }] });
+    expect(extended.status).toBe('committed');
+    if (extended.status !== 'committed') throw new Error('extension failed');
+    expect(extended.data.active_window).toEqual({ start: 0, end: 3 });
+    expect(extended.data.blocks.map(block => block.position)).toEqual([0, 1, 2, 3]);
+    expect(reconcileConversationWindow(extended.data, window(target, [block('obsolete', 0)], 4))).toBe(extended.data);
+    expect(applyReadingWindowOperation(extended.data, { kind: 'trim-start', position: 2, protected: [{ start: 1, end: 2 }] }).status).toBe('protected');
+    expect(retainReadingWindow(extended.data.blocks, extended.data.active_window, [{ start: 1, end: 2 }],
+      { bytes: 100000, positions: 2 })?.span).toEqual({ start: 1, end: 2 });
+    expect(applyReadingWindowOperation(extended.data, { kind: 'extend-end', window: window(target, [block('b5', 5)], 6), protected: [] }).status).toBe('obsolete');
+    const distant = { ...window({ ...target, position: 5, requested_value: 5, block_id: 'b5' }, [block('b5', 5)], 6), publication_revision: 2 };
+    expect(applyReadingWindowOperation(extended.data, { kind: 'extend-end', window: distant, protected: [] }).status).toBe('noncontiguous');
+    const replaced = applyReadingWindowOperation(extended.data, { kind: 'replace', window: distant,
+      command: { token: 'jump', target: { conversationId: 'conv-1', positionSpaceId: 'space-1', position: 5 } } });
+    expect(replaced).toMatchObject({ status: 'committed', data: { active_window: { start: 5, end: 5 } }, command: { token: 'jump' } });
+  });
 
   it('cancels an obsolete observed read when rapid selection removes its observer', async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -128,7 +180,7 @@ describe('Chat Query authority', () => {
     });
   });
 
-  it('preserves explicit gaps and replaces the aggregate when source bytes change at the same count', () => {
+  it('keeps distant cache reads outside the active window and replaces the aggregate when position space changes at the same count', () => {
     const head = window(
       { kind: 'position', requested_value: 1, position: 1, block_id: 'b1', turn_id: null },
       [block('b0', 0), block('b1', 1)],
@@ -140,12 +192,14 @@ describe('Chat Query authority', () => {
       6,
     );
     const gapped = reconcileConversationWindow(conversationTranscriptFromWindow(head), tail);
-    expect(gapped.loaded_intervals).toEqual([{ start: 0, end: 1 }, { start: 4, end: 5 }]);
-    expect(gapped.blocks.map((item) => item.id)).toEqual(['b0', 'b1', 'b4', 'b5']);
+    expect(gapped.loaded_intervals).toEqual([{ start: 0, end: 1 }]);
+    expect(gapped.blocks.map((item) => item.id)).toEqual(['b0', 'b1']);
 
     const replacement = {
       ...tail,
       source_version_id: 'source-v2',
+      position_space_id: 'space-2',
+      publication_revision: 2,
       blocks: [block('replacement', 4), block('b5', 5)],
     };
     const replaced = reconcileConversationWindow(gapped, replacement);
@@ -153,7 +207,7 @@ describe('Chat Query authority', () => {
     expect(replaced.blocks.map((item) => item.id)).toEqual(['replacement', 'b5']);
   });
 
-  it('patches complete append payloads and refetches only a gapped window', async () => {
+  it('retains captured source bytes and context until an indexed append refresh', async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const initialTarget = normalizeWindowTarget({ target: 'initial' });
     const exactTarget = normalizeWindowTarget({ block: 'b1' });
@@ -178,14 +232,15 @@ describe('Chat Query authority', () => {
       block_count: 2,
       append: { from_position: 1, blocks: [block('b1', 1)] },
     });
-    expect(client.getQueryData<ConversationPositionWindow>(initialKey)?.blocks.map((item) => item.id)).toEqual(['b0', 'b1']);
+    expect(client.getQueryData<ConversationPositionWindow>(initialKey)?.blocks.map((item) => item.id)).toEqual(['b0']);
+    await waitUntilPasses(() => expect(refetch).toHaveBeenCalledTimes(2));
 
     applyConversationSse(client, 'conversation:updated', {
       id: 'conv-1',
       block_count: 4,
       append: { from_position: 3, blocks: [block('b3', 3)] },
     });
-    await waitUntilPasses(() => expect(refetch).toHaveBeenCalledTimes(2));
+    await waitUntilPasses(() => expect(refetch).toHaveBeenCalledTimes(3));
     unsubscribe();
   });
 });
