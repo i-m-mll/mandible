@@ -1,6 +1,6 @@
 :root {
   --reading-responsive-variant: wide;
-  --reading-renderer-version: event-observation-row-boundaries-v8;
+  --reading-renderer-version: event-observation-row-boundaries-v9;
   --compact-activity-header-min-height: 22px;
   --compact-activity-header-line-height: 1.15;
   --compact-activity-header-icon-size: 16px;
