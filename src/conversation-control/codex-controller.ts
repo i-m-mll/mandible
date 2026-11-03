@@ -732,7 +732,6 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
       parts,
       content_completion: completion,
       ...fields,
-      execution: {state:fields.execution_outcome==='failed' ? 'failed' : fields.execution_outcome==='cancelled' ? 'cancelled' : completion==='complete' ? 'completed' : 'ongoing',provenance:'provider-item'},
     };
   }
 
@@ -753,6 +752,7 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
       parts: [],
       content_completion: completion,
       ...fields,
+      execution: {state:fields.execution_outcome==='failed' ? 'failed' : fields.execution_outcome==='cancelled' ? 'cancelled' : completion==='complete' ? 'completed' : 'ongoing',provenance:'provider-item'},
     };
   }
 
