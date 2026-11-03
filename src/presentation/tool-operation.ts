@@ -1,3 +1,4 @@
+import { operationLabel } from './operation-registry.js';
 import type { ToolPresentation } from './tool-presentation.js';
 import type { ToolTransportResult } from './tool-transport.js';
 
@@ -33,6 +34,8 @@ export function operationPhrase(header:ToolPresentation,state:OperationState,res
   if(header.operation==='thread-wait') return state==='ongoing'?'Waiting for thread':state==='unknown' && !duration?'Wait for thread':`Waited${duration} for thread`;
   if(header.operation==='execution-wait') return state==='ongoing'?'Waiting for execution':state==='unknown' && !duration?'Wait for execution':`Waited${duration} for execution`;
   if(header.operation==='sleep') return state==='ongoing'?'Waiting':state==='unknown' && !duration?'Wait':`Waited${duration}`;
+  if(header.operations?.length)return header.phrase;
+  const registered=operationLabel(header.operation,state);if(registered)return registered;
   if(header.operation==='thread-read') return state==='ongoing'?'Reading thread':state==='unknown'?'Read thread':header.phrase;
   if(header.operation==='tool-discovery') return state==='ongoing'?'Checking available tools':state==='unknown'?'Check available tools':header.phrase;
   if(header.category==='other' && header.phrase.startsWith('Used ')) return state==='ongoing' ? header.phrase.replace(/^Used /,'Using ') : state==='unknown' ? header.phrase.replace(/^Used /,'Use ') : header.phrase;

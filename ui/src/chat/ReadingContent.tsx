@@ -8,6 +8,7 @@ import { UserBubble } from '../components/message-blocks/UserBubble';
 import { SemanticEventBlock, UnmatchedToolResultBlock } from '../components/message-blocks/SemanticEventBlock';
 import { ActivityGroup, ActivityRow } from '../components/message-blocks/ActivityBlock';
 import { ThinkingBlock } from '../components/message-blocks/ThinkingBlock';
+import { operationObservationForTool } from '../../../src/presentation/tool-observation';
 import { ToolUseBlock } from '../components/message-blocks/ToolUseBlock';
 import type { ReadingRow } from './readingProjection';
 import type { ChatSurfaceProps } from './ChatSurface';
@@ -91,7 +92,7 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
               headerMetadata={compact ? footer : undefined}
               unmatched={!source?.parentBlockId}
               expanded={preparing || expandedBlocks[disclosureKey]}
-              onExpandedChange={(next, trigger) => setBlockExpanded(disclosureKey, next, [source,...(node.sourceAliases??[])], trigger)}
+              onExpandedChange={(next, trigger) => setBlockExpanded(disclosureKey, next, [source], trigger)}
             />
             <MessageActions
               blockId={source?.blockId}
@@ -119,7 +120,7 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
               toolName={node.item.name}
               operationContext={node.item.operationContext}
               executionEvidence={node.item.executionEvidence}
-              observation={node.item.observation}
+              observation={node.item.observation??operationObservationForTool(node.item)}
               headerMetadata={compact ? footer : undefined}
               toolKind={node.item.toolKind}
               toolUseId={node.item.id}
@@ -151,7 +152,7 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
               defaultCollapsed={!defaultExpanded}
               expanded={expanded}
               detailsAvailable={source?.detailsLoaded === false}
-              onExpandedChange={(next, trigger) => setBlockExpanded(disclosureKey, next, [source], trigger)}
+              onExpandedChange={(next, trigger) => setBlockExpanded(disclosureKey, next, [source,...(node.sourceAliases??[])], trigger)}
             />
           );
         } else {
@@ -161,7 +162,7 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
               headerMetadata={compact ? footer : undefined}
               expanded={expanded}
               detailsAvailable={source?.detailsLoaded === false && source.hasBody !== false}
-              onExpandedChange={(next, trigger) => setBlockExpanded(disclosureKey, next, [source], trigger)}
+              onExpandedChange={(next, trigger) => setBlockExpanded(disclosureKey, next, [source,...(node.sourceAliases??[])], trigger)}
             />
           );
         }

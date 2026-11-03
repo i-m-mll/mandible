@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import { projectToolProgram } from '../src/presentation/tool-program';
-import { toolObservation } from '../src/presentation/tool-observation';
+import { toolObservation,operationObservationForTool,presentationForObservation } from '../src/presentation/tool-observation';
 import { operationState, operationResult, substantiveToolResult, threadReports } from '../src/presentation/tool-operation';
 import { rawToolResult, codexResultFrame } from '../src/presentation/tool-transport';
 
@@ -13,9 +13,13 @@ it('projects complete transparent wrappers while retaining arbitrary computation
   const media=[{type:'image' as const,source:{type:'base64',media_type:'image/png',data:'aW1hZ2U='}}];
   expect(toolObservation('exec',source,undefined,{text:'',content:media}).result?.content).toEqual(media);
   expect(wrapped.header.threadTargets).toEqual([{type:'session',id:input.threadId}]);
-  for(const computation of [source+'text("extra");',source.replace('text(part.text??part)','text(part.text.toUpperCase())'),`text(await tools.codex_app__read_thread(resolveTarget()))`]) {
-    expect(projectToolProgram('functions.exec',computation,'custom_tool_call')).toBeNull();
+  for(const computation of [source+'text("extra");',source.replace('text(part.text??part)','text(part.text.toUpperCase())')]) {
+    const program=projectToolProgram('functions.exec',computation,'custom_tool_call');
+    expect(program?.operations[0].name).toBe('codex_app__read_thread');
+    expect(program?.outputAttributed).toBe(false);
+    expect(toolObservation('functions.exec',computation,'custom_tool_call',{text:'retained opaque output'}).result?.text).toBe('retained opaque output');
   }
+  expect(projectToolProgram('functions.exec','text(await tools.codex_app__read_thread(resolveTarget()))','custom_tool_call')).toBeNull();
   const discovery='const hits=ALL_TOOLS.filter(tool=>/thread/.test(tool.name+tool.description)).map(tool=>({name:tool.name,description:tool.description}));text(hits);';
   expect(projectToolProgram('functions.exec',discovery)?.operations).toHaveLength(1);
   expect(projectToolProgram('functions.exec',discovery+'await tools.exec_command({cmd:"pwd"})')).toBeNull();
@@ -59,4 +63,17 @@ it('keeps native termination separate from explicit inner failure', () => {
   const inner=toolObservation(call.name,'text(await tools.exec_command({cmd:"false"}))',call.kind,{text:failed,frame:codexResultFrame(failed,call)});
   expect(operationState('cancelled',inner.result)).toBe('failed');
   expect(inner.result?.text).toBe('inner diagnostic');
+});
+
+it('associates batched creation receipts with authored titles and scopes an unattributed wrapper failure',()=>{
+  const input='const [native,queued]=await Promise.all([tools.codex_app__create_thread({title:"Native review"}),tools.codex_app__create_thread({title:"Queued review"})]);text(JSON.stringify({native,queued}));';
+  const item={type:'tool-call-activity' as const,id:'batch',name:'exec',input,sessionId:'parent',sourceIdentity:{provider:'codex',sessionId:'parent'}};
+  const observation=operationObservationForTool({...item,result:{type:'tool_result',tool_use_id:'batch',content:JSON.stringify({native:'{"threadId":"exact-native"}',queued:'{"clientThreadId":"client-new-thread:exact"}'})}});
+  expect(observation.children?.map(child=>({operation:child.operation,targets:child.targets}))).toEqual([
+    {operation:'thread-create',targets:[{kind:'thread',provider:'codex',sessionId:'exact-native',labelHint:'Native review'}]},
+    {operation:'thread-queue',targets:[{kind:'pending-thread',provider:'codex',clientThreadId:'client-new-thread:exact',labelHint:'Queued review'}]},
+  ]);
+  const failed=operationObservationForTool({...item,executionEvidence:{state:'failed',provenance:'native-wrapper'},result:{type:'tool_result',tool_use_id:'batch',content:'outer diagnostic',is_error:true}});
+  expect(failed.children?.some(child=>child.execution.state==='failed')).toBe(false);
+  expect(presentationForObservation(failed).operations?.filter(fact=>fact.outcomeOnly)).toMatchObject([{operation:'batch',state:'failed',count:1}]);
 });

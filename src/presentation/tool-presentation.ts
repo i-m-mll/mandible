@@ -1,3 +1,5 @@
+import { registeredOperation, operationDefinition, operationLabel } from './operation-registry.js';
+import type { ToolExecutionEvidence } from '../parsers/types.js';
 import { patchFileChanges } from './tool-operation.js';
 import { projectToolProgram } from './tool-program.js';
 import { projectExecution, type ExecutionFacts } from './execution-presentation.js';
@@ -101,15 +103,12 @@ export function presentTool(
 ): ToolPresentation {
   const name = normalizedName(toolName);
   const object = toolInputObject(inputValue);
-  if(name==='__tool_discovery') return {operation:'tool-discovery',category:'search',icon:'toolSearch',phrase:'Checked available tools',target:''};
-  const thread = /^(?:mcp__)?codex_app__(read_thread|wait_threads)$/.exec(name);
-  if(thread) {
-    const ids = thread[1]==='read_thread' ? [object.threadId ?? object.thread_id] : Array.isArray(object.targets) ? object.targets.map(target=>target && typeof target==='object' ? (target as Record<string,unknown>).threadId : undefined) : object.threadIds ?? object.thread_ids;
-    const threadTargets = (Array.isArray(ids) ? ids : []).filter((id):id is string=>typeof id==='string' && Boolean(id)).map(id=>({type:'session' as const,id}));
-    return {operation:thread[1]==='read_thread'?'thread-read':'thread-wait',category:thread[1]==='read_thread'?'read':'wait',icon:thread[1]==='read_thread'?'chat':'history',phrase:thread[1]==='read_thread'?'Read thread':'Wait for thread',target:'',threadTargets,...(thread[1]==='wait_threads'?{outputPolicy:'thread-wait' as const}:{})};
+  const operation=registeredOperation(toolName,object),definition=operationDefinition(operation);
+  if(operation&&definition) {
+    const ids=operation==='thread-read'||operation==='thread-send'?[object.threadId??object.thread_id]:operation==='thread-wait'?Array.isArray(object.targets)?object.targets.map(target=>target&&typeof target==='object'?(target as Record<string,unknown>).threadId:undefined):object.threadIds??object.thread_ids:[];
+    const threadTargets=(Array.isArray(ids)?ids:[]).filter((id):id is string=>typeof id==='string'&&Boolean(id)).map(id=>({type:'session' as const,id}));
+    return {operation,category:definition.category,icon:definition.icon,phrase:definition.completed,target:'',...(threadTargets.length?{threadTargets}:{}),...(definition.outputPolicy?{outputPolicy:definition.outputPolicy}:{})};
   }
-  if(['clock.sleep','clock__sleep','mcp__clock__sleep','sleep'].includes(name)) return {operation:'sleep',category:'wait',icon:'history',phrase:'Wait',target:'',outputPolicy:'sleep'};
-  if(['wait'].includes(name)) return {operation:'execution-wait',category:'wait',icon:'history',phrase:'Wait for execution',target:''};
   if(name==='apply_patch') {
     const patch = typeof inputValue==='string' ? inputValue : typeof object.patch==='string' ? object.patch : '';
     const changes = patchFileChanges(patch);
@@ -219,8 +218,8 @@ export function toolTarget(toolName: string, inputValue: Record<string, unknown>
   return '';
 }
 
-export type ToolOperationInput = {header?:ToolPresentation;name: string; toolKind?: string; input?: Record<string, unknown> | string; execution?: ExecutionFacts; operations?: ToolRunFact[]};
-export type ToolRunFact = { operation?:string; category: ToolCategory; presentation: ToolPresentation; count: number; names: string[] };
+export type ToolOperationInput = {state?:ToolExecutionEvidence['state'];header?:ToolPresentation;name: string; toolKind?: string; input?: Record<string, unknown> | string; execution?: ExecutionFacts; operations?: ToolRunFact[]};
+export type ToolRunFact = {outcomeOnly?:boolean;state?:ToolExecutionEvidence['state']; operation?:string; category: ToolCategory; presentation: ToolPresentation; count: number; names: string[] };
 export function toolRunFacts(tools: readonly ToolOperationInput[]): ToolRunFact[] {
   return mergeToolRunFacts([], tools.flatMap(tool => {
     if (tool.operations) return tool.operations;
@@ -230,23 +229,24 @@ export function toolRunFacts(tools: readonly ToolOperationInput[]): ToolRunFact[
     const category = execution ? execution.kind === 'command' ? 'execute' : 'javascript' : projected.category;
     const phrase = execution?.kind==='command' ? DEFINITIONS.execute.phrase : projected.operation ? projected.phrase : category === 'other' ? projected.phrase : DEFINITIONS[category].phrase;
     const presentation = {...projected,children:undefined,operations:undefined,threadTargets:undefined,category, icon: projected.icon, phrase, target: '', ...(execution ? {execution} : {})};
-    return [{operation:projected.operation ?? category,category, presentation, count: execution?.kind === 'command' ? execution.count : 1, names: [normalizedName(tool.name)]}];
+    return [{state:tool.state,operation:projected.operation ?? category,category, presentation, count: execution?.kind === 'command' ? execution.count : 1, names: [normalizedName(tool.name)]}];
   }));
 }
 export function mergeToolRunFacts(left: readonly ToolRunFact[], right: readonly ToolRunFact[]): ToolRunFact[] {
-  const counts = new Map(left.map(fact => [fact.operation ?? fact.category, { ...fact, names: [...fact.names] }]));
+  const counts = new Map(left.map(fact => [JSON.stringify([fact.operation??fact.category,fact.state??null,fact.outcomeOnly??false]), { ...fact, names: [...fact.names] }]));
   for (const fact of right) {
-    const prior = counts.get(fact.operation ?? fact.category);
+    const key=JSON.stringify([fact.operation??fact.category,fact.state??null]);
+    const prior = counts.get(key);
     if (prior) { prior.count += fact.count; prior.names = [...new Set([...prior.names, ...fact.names])]; }
-    else counts.set(fact.operation ?? fact.category, { ...fact, names: [...fact.names] });
+    else counts.set(key, { ...fact, names: [...fact.names] });
   }
   return [...counts.values()];
 }
 export function summarizeToolRunFacts(facts: readonly ToolRunFact[]): string[] {
-  return facts.map(({presentation,count,names}) => {
-    const phrase = count === 1 ? presentation.phrase : presentation.operation==='thread-read' ? 'Read threads' : presentation.operation==='thread-wait' ? 'Waited for threads' : presentation.operation==='tool-discovery' ? 'Checked available tools' : presentation.operation==='execution-wait' ? 'Waited for executions' : presentation.operation==='sleep' ? 'Waited several times' : presentation.category === 'other'
+  return facts.filter(fact=>!fact.outcomeOnly).map(({presentation,count,names,state}) => {
+    const phrase = operationLabel(presentation.operation,state??'unknown',count) ?? (count === 1 ? presentation.phrase : presentation.operation==='thread-read' ? 'Read threads' : presentation.operation==='thread-wait' ? 'Waited for threads' : presentation.operation==='tool-discovery' ? 'Checked available tools' : presentation.operation==='execution-wait' ? 'Waited for executions' : presentation.operation==='sleep' ? 'Waited several times' : presentation.category === 'other'
       ? names.length === 1 ? presentation.phrase + ' several times' : DEFINITIONS.other.plural
-      : DEFINITIONS[presentation.category].plural;
+      : DEFINITIONS[presentation.category].plural);
     return phrase.charAt(0).toLowerCase() + phrase.slice(1);
   });
 }

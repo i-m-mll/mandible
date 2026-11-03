@@ -1,8 +1,9 @@
+import { operationDefinition, operationInputTargets, operationReceiptTargets } from './operation-registry.js';
 import type { ToolResultContent } from './types.js';
 import { compactOperationObservation, type OperationObservation, type CompactOperationObservation } from './operation-observation.js';
 import type { ToolCallActivity } from './types.js';
 import { activityTargetKey, type ActivityTarget } from './activity-targets.js';
-import { presentTool, toolRunFacts, summarizeToolRunFacts, type ToolPresentation } from './tool-presentation.js';
+import { presentTool, toolInputObject, toolRunFacts, summarizeToolRunFacts, type ToolPresentation } from './tool-presentation.js';
 import { projectToolProgram } from './tool-program.js';
 import { projectExecution } from './execution-presentation.js';
 import { framedToolResult, programResults, projectToolResult, type NativeResultFrame, type ToolTransportResult } from './tool-transport.js';
@@ -45,11 +46,18 @@ export function operationObservationForTool(item:ToolCallActivity):CompactOperat
   const header=observation.header;
   const execution=item.executionEvidence??result?.source?.toolExecution??{state:result?(result.is_error||observation.result?.failed?'failed':'completed'):'unknown',provenance:result?'paired-result':'provider-item'};
   const native=projectToolProgram(name,value,kind);
-  const children=native&&(native.operations.length>1||native.effectsComplete===false)?native.operations.map((operation,index)=>operationObservationForTool({type:'tool-call-activity',id:item.id+':'+index,name:operation.name,input:operation.input,result:null,sessionId:item.sessionId,
-    executionEvidence:{state:'unknown',provenance:execution.provenance}})):undefined;
-  return compactOperationObservation({operation:item.callSource?.toolOperationKind??result?.source?.toolOperationKind??header.operation??(children?'batch':header.category),nativeName:observation.name,
-    ...(header.target&&!['execute','javascript'].includes(header.category)&&header.target.length<=256?{subject:header.target}:{}),
-    targets:[...(item.callSource?.toolTargets??[]),...(result?.source?.toolTargets??[]),...(header.threadTargets??[]).filter(target=>target.type==='session').map(target=>({kind:'thread' as const,provider:'codex' as const,sessionId:target.id}))].filter((target,index,all)=>all.findIndex(other=>activityTargetKey(other)===activityTargetKey(target))===index),
+  const object=toolInputObject(observation.input??{});
+  const scope={provider:item.sourceIdentity?.provider as import('../parsers/types.js').ConversationSource|undefined,sessionId:item.sourceIdentity?.sessionId??item.sessionId};
+  if(!scope.provider&&['spawn_agent','collaboration.spawn_agent'].includes(name))scope.provider='codex';
+  const semantic=item.callSource?.toolOperationKind??result?.source?.toolOperationKind??header.operation??header.category;
+  const subject=typeof object.title==='string'?object.title:typeof object.task_name==='string'?object.task_name:header.target;
+  const receipt=observation.result&&header.resultAttribution!=='opaque'?operationReceiptTargets(semantic,observation.result.text,scope,subject):{operation:semantic,targets:[]};
+  const results=native&&result?programResults(native,framedToolResult(result.fullText??(typeof result.content==='string'?result.content:result.content.filter(block=>block.type==='text').map(block=>block.text).join('\n')),result.source?.toolFrame).text):null;
+  const children=native&&(native.operations.length>1||native.effectsComplete===false)?native.operations.map((operation,index)=>operationObservationForTool({type:'tool-call-activity',id:item.id+':'+index,name:operation.name,input:operation.input,result:results?.[index]?{type:'tool_result',tool_use_id:'',content:results[index].text,presentation:results[index],is_error:results[index].failed}:null,sessionId:item.sessionId,sourceIdentity:item.sourceIdentity,
+    executionEvidence:{state:results?.[index]?results[index].failed?'failed':results[index].running?'unknown':'completed':execution.state==='completed'&&native.effectsComplete!==false&&!operation.settled?'completed':'unknown',provenance:results?.[index]?'paired-result':execution.provenance}})):undefined;
+  return compactOperationObservation({operation:children?native?.effectsComplete===false?'javascript':'batch':semantic==='thread-create'&&execution.state==='completed'&&!receipt.targets.length?'thread-request':receipt.operation,nativeName:observation.name,
+    ...(subject&&!['execute','javascript'].includes(header.category)?{subject:subject.slice(0,256)}:{}),
+    targets:[...(item.callSource?.toolTargets??[]),...operationInputTargets(semantic,object,scope),...receipt.targets,...(semantic==='thread-wait'&&header.resultAttribution!=='opaque'&&observation.result?(threadReports(observation.result.text)??[]).map(report=>({kind:'thread' as const,provider:'codex' as const,sessionId:report.threadId})):[]),...(result?.source?.toolTargets??[]),...(header.threadTargets??[]).filter(target=>target.type==='session').map(target=>({kind:'thread' as const,provider:'codex' as const,sessionId:target.id}))].filter((target,index,all)=>all.findIndex(other=>activityTargetKey(other)===activityTargetKey(target))===index),
     execution:observation.result?.failed||result?.is_error?{...execution,state:'failed'}:execution,payload:{state:header.hasDetails===false?'none':'unloaded'},
     ...(header.observation?.elapsedSeconds===undefined?{}:{timing:{elapsedSeconds:header.observation.elapsedSeconds,scope:observation.result?.timingScope??'wrapper'}}),
     ...(header.resultAttribution==='opaque'?{resultAttribution:'opaque' as const}:{}),
@@ -58,18 +66,20 @@ export function operationObservationForTool(item:ToolCallActivity):CompactOperat
 
 export function presentationForObservation(observation:OperationObservation,kind?:string):ToolPresentation {
   const names:Record<string,string>={'tool-discovery':'__tool_discovery','thread-read':'codex_app__read_thread','thread-wait':'codex_app__wait_threads','execution-wait':'wait',sleep:'clock__sleep',command:'exec_command',javascript:'js','file-read':'Read','file-edit':'Edit','file-write':'Write','file-delete':'Delete','file-move':'Move'};
+  const definition=operationDefinition(observation.operation);
   const base=presentTool(observation.operation==='javascript'?'js':observation.nativeName??names[observation.operation]??'tool',{},kind);
-  const children=observation.children?.map(child=>({name:child.nativeName??'tool',header:presentationForObservation(child)}));
-  const operations=children?toolRunFacts([...children.map(child=>({name:child.name,header:child.header})),...(observation.operation==='javascript'?[{name:'js'}]:[])]):undefined;
+  const children=observation.children?.map(child=>({name:child.nativeName??'tool',header:presentationForObservation(child),state:child.execution.state}));
+  const operations=children?toolRunFacts([...children.map(child=>({name:child.name,header:child.header,state:child.state})),...(observation.operation==='javascript'?[{name:'js'}]:[])]):undefined;
+  if(operations&&['failed','cancelled'].includes(observation.execution.state)&&!observation.children?.some(child=>child.execution.state===observation.execution.state))operations.push({operation:observation.operation==='javascript'?'javascript':'batch',category:base.category,presentation:{...base,operation:observation.operation==='javascript'?'javascript':'batch'},count:1,names:[observation.nativeName??''],state:observation.execution.state,outcomeOnly:true});
   const summary=operations?summarizeToolRunFacts(operations).join('; '):undefined;
-  return {...base,...(observation.resultAttribution?{resultAttribution:observation.resultAttribution,outputPolicy:undefined}:{}),operation:observation.operation,target:observation.subject??'',hasDetails:observation.payload.state!=='none',
+  return {...base,...(definition?{category:definition.category,icon:definition.icon,phrase:definition.completed,outputPolicy:definition.outputPolicy}:{}),...(observation.resultAttribution?{resultAttribution:observation.resultAttribution,outputPolicy:undefined}:{}),operation:observation.operation,target:['thread-create','thread-queue','subagent-create','subagent-resume'].includes(observation.operation)?'':observation.subject??'',hasDetails:observation.payload.state!=='none',
     threadTargets:observation.targets.filter((target):target is Extract<ActivityTarget,{kind:'thread'}>=>target.kind==='thread').map(target=>({type:'session',id:target.sessionId})),
     observation:{...(observation.timing?{elapsedSeconds:observation.timing.elapsedSeconds}:{}),...(observation.reportKind?{report:observation.reportKind}:{})},
     ...(summary?{phrase:summary.charAt(0).toUpperCase()+summary.slice(1),operations,children}:{}),
     ...(observation.operation==='command'?{execution:{kind:'command',count:1,shells:[null],forwarding:['direct']}}:{})};
 }
 
-export type OperationReceipt={targets?:ActivityTarget[];result:ToolTransportResult;execution?:import('../parsers/types.js').ToolExecutionEvidence};
+export type OperationReceipt={scope?:{provider:import('../parsers/types.js').ConversationSource;sessionId:string};targets?:ActivityTarget[];result:ToolTransportResult;execution?:import('../parsers/types.js').ToolExecutionEvidence};
 export function mergeOperationExecution(current:import('../parsers/types.js').ToolExecutionEvidence,incoming:import('../parsers/types.js').ToolExecutionEvidence|undefined,failed=false):import('../parsers/types.js').ToolExecutionEvidence {
   if(failed||incoming?.state==='failed')return {state:'failed',provenance:incoming?.provenance??'paired-result'};
   if(current.state==='failed'||current.state==='cancelled')return current;
@@ -82,9 +92,10 @@ export function observeOperationReceipt(current:CompactOperationObservation,rece
   const header=presentationForObservation(current);
   const result=operationResult(header,receipt.result);
   const reports=current.operation==='thread-wait'&&current.resultAttribution!=='opaque'?threadReports(result.text):null;
-  const targets=[...current.targets,...(receipt.targets??[]),...(reports??[]).map(report=>({kind:'thread' as const,provider:'codex' as const,sessionId:report.threadId}))];
+  const receiptFacts=current.resultAttribution==='opaque'?{operation:current.operation,targets:[]}:operationReceiptTargets(current.operation,result.text,receipt.scope??{},current.subject);
+  const targets=[...current.targets,...receiptFacts.targets,...(receipt.targets??[]),...(reports??[]).map(report=>({kind:'thread' as const,provider:'codex' as const,sessionId:report.threadId}))];
   const uniqueTargets=new Map<string,ActivityTarget>();for(const target of targets)if(!uniqueTargets.has(activityTargetKey(target)))uniqueTargets.set(activityTargetKey(target),target);
-  return {...current,execution:mergeOperationExecution(current.execution,receipt.execution,result.failed),
+  return {...current,operation:receiptFacts.operation,execution:mergeOperationExecution(current.execution,receipt.execution,result.failed),
     payload:{state:current.payload.state==='unloaded'||substantiveToolResult(result)?'unloaded':'none'},
     targets:[...uniqueTargets.values()],
     ...(result.wallTimeSeconds===undefined?{}:{timing:{elapsedSeconds:result.wallTimeSeconds,scope:result.timingScope??'operation'}}),

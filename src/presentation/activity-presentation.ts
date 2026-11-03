@@ -1,3 +1,4 @@
+import { operationDefinition } from './operation-registry.js';
 import { expandInlineActivities } from './model.js';
 import { activityTargetKey, activityObservationTargets } from './activity-targets.js';
 import { toolObservation } from './tool-observation.js';
@@ -196,26 +197,13 @@ export function semanticActivityRunFacts(items: readonly ActivityFacts[]): Activ
   const tools=items.filter(item=>item.kind==='tool');
   return {memberCount:items.length,unified:items.some(semanticActivityUnified),firstSummary:items[0]?semanticActivitySummary(items[0]):'',
     firstIcon:items[0]?semanticActivityIcon(items[0]):'monitor',states:[...new Set(items.flatMap(semanticActivityState))],
-    toolStates:[...new Set(tools.flatMap(semanticActivityState))],tools:tools.reduce<ToolRunFact[]>((facts,item)=>mergeToolRunFacts(facts,item.observation ? toolRunFacts([{name:item.observation.nativeName??item.toolName??'',header:presentationForObservation(item.observation,item.toolKind)}]) : compactToolRunFacts(semanticToolOperations(item))),[]),
+    toolStates:[...new Set(tools.flatMap(semanticActivityState))],tools:tools.reduce<ToolRunFact[]>((facts,item)=>mergeToolRunFacts(facts,item.observation ? toolRunFacts([{name:item.observation.nativeName??item.toolName??'',header:presentationForObservation(item.observation,item.toolKind),state:item.observation.execution.state}]) : compactToolRunFacts(semanticToolOperations(item))),[]),
     hasThinkingTool:tools.some(item=>classifyTool(item.toolName ?? '')==='think'),labels:[...labels.values()],
     hasDetails:items.some(semanticActivityUnified)||items.length>1};
 }
-export function activityRunFacts(items: readonly DisplayActivityItem[]): ActivityRunFacts {
-  const presentations = presentActivityItems(items);
-  const tools = items.filter((item):item is ToolCallActivity => item.type === 'tool-call-activity');
-  const labels = new Map<string,{key:string;label:string;count:number}>();
-  const add = (key:string,label:string) => { const prior=labels.get(key); if(prior) prior.count++; else labels.set(key,{key,label,count:1}); };
-  items.forEach((item,index)=>{
-    if(item.type==='tool-call-activity')return;
-    if(item.type==='thinking-block-activity'||(item.type==='activity'&&['thinking','reasoning-summary'].includes(item.activity_kind)))add('thought','thought');
-    else if(item.type==='provider-directive')add(item.directive.kind==='memory-citation'?'memory':'chat-reference',item.directive.kind==='memory-citation'?'used memory':'created thread');
-    else { const summary=presentations[index].summary; const label=summary.charAt(0).toLowerCase()+summary.slice(1); add(item.activity_kind+':'+label,label); }
-  });
-  return {memberCount:items.length, unified:items.some(item=>item.type!=='activity'||['thinking','reasoning-summary'].includes(item.activity_kind)),
-    firstSummary:presentations[0]?.summary??'',firstIcon:items[0]?activityIconName(items[0]):'monitor',
-    states:[...new Set(items.flatMap(activityState))], toolStates:[...new Set(tools.flatMap(activityState))],tools:toolRunFacts(tools.map(item=>({name:item.name,toolKind:item.toolKind,input:item.input,header:item.header,execution:item.execution,operations:item.operations}))),
-    hasThinkingTool:tools.some(item=>classifyTool(item.name)==='think'),labels:[...labels.values()],
-    hasDetails:items.some(activityHasDetails)||activityDetailLines(presentations).length>0};
+export function activityRunFacts(items:readonly DisplayActivityItem[]):ActivityRunFacts {
+  const facts=semanticActivityRunFacts(items.map(activitySemanticFacts));
+  return {...facts,hasDetails:items.some(activityHasDetails)||activityDetailLines(presentActivityItems(items)).length>0};
 }
 export function mergeActivityRunFacts(left:ActivityRunFacts,right:ActivityRunFacts):ActivityRunFacts {
   if(!left.memberCount)return right;if(!right.memberCount)return left;
@@ -231,7 +219,7 @@ export function presentActivityRunFacts(facts:ActivityRunFacts):{summary:string;
     if(!facts.unified)summary=[...new Set([...facts.firstSummary.split(' · '),...facts.states])].join(' · ');
     else {
       const labels=facts.labels.filter(label=>label.key!=='thought'||!facts.hasThinkingTool).map(label=>label.key==='chat-reference'&&label.count>1?'created threads':label.label);
-      const states=facts.toolStates.map(state=>state.charAt(0).toLowerCase()+state.slice(1));
+      const states=facts.tools.filter(fact=>fact.state==='failed'||fact.state==='cancelled').map(fact=>`${fact.count} ${operationDefinition(fact.operation)?.noun??'tool call'}${fact.count===1?'':'s'} ${fact.state}`);
       const text=[...summarizeToolRunFacts(facts.tools),...labels,...states].join('; ');summary=text.charAt(0).toUpperCase()+text.slice(1);
     }
   }
