@@ -49,15 +49,22 @@ export function useCompleteReading(input: {
   const [demandVersion, setDemandVersion] = useState(0);
   const current = useRef({ input, plan }); current.current = { input, plan };
   const vectorIndices = useRef(new WeakMap<readonly MeasurementRow[], ReadonlyMap<string, number>>());
+  const initialKey=useCallback((vector:readonly MeasurementRow[],byKey?:ReadonlyMap<string,number>)=>{
+    const {input,plan}=current.current;
+    const mapping=plan??input.local;
+    const member=input.targetMemberKey?mapping.viewMembership.get(input.targetMemberKey):input.targetPosition===undefined?undefined:mapping.membership.get(input.targetPosition);
+    const selected=input.targetRowKey&&(byKey?byKey.has(input.targetRowKey):vector.some(row=>row.key===input.targetRowKey))?input.targetRowKey
+      :input.targetSummary?member?.summaryRowKey??member?.rowKey:member?.rowKey;
+    return selected??vector.at(-1)?.key;
+  },[]);
   const candidates = useCallback((vector: readonly MeasurementRow[]) => {
     const snapshot = current.current;
     let byKey = vectorIndices.current.get(vector);
     if (!byKey) { byKey = new Map(vector.map((row, index) => [row.key, index])); vectorIndices.current.set(vector, byKey); }
     const selected = new Map<string, MeasurementRow>();
-    for (const ref of demand.current?.required ?? vector.slice(0, 1)) { const index = byKey.get(ref.key); if (index !== undefined) selected.set(ref.key, vector[index]); }
+    for (const ref of demand.current?.required ?? (snapshot.input.initial?[]:vector.slice(0, 1))) { const index = byKey.get(ref.key); if (index !== undefined) selected.set(ref.key, vector[index]); }
     if (snapshot.input.initial) {
-      const member = snapshot.input.targetMemberKey ? snapshot.plan?.viewMembership.get(snapshot.input.targetMemberKey) : snapshot.input.targetPosition === undefined ? undefined : snapshot.plan?.membership.get(snapshot.input.targetPosition);
-      const targetKey = snapshot.input.targetRowKey && byKey.has(snapshot.input.targetRowKey) ? snapshot.input.targetRowKey : snapshot.input.targetSummary ? member?.summaryRowKey ?? member?.rowKey : member?.rowKey;
+      const targetKey = initialKey(vector,byKey);
       const index = targetKey ? byKey.get(targetKey) ?? vector.length - 1 : vector.length - 1;
       for (const row of vector.slice(Math.max(0, index - 6), index + 7)) selected.set(row.key, row);
     }
@@ -203,18 +210,21 @@ export function useCompleteReading(input: {
     custody.current.applied = new Set(snapshot.required.map(readingBodyKey));
     setDemandVersion(value => value + 1);
   }, []);
-  const retainMeasurement = useCallback((vector: readonly MeasurementRow[]) => {
-    custody.current.measuring = new Set(candidates(vector).map(readingBodyKey));
+  const retainMeasurement = useCallback((vector: readonly MeasurementRow[],priority?:readonly MeasurementRow[]) => {
+    custody.current.measuring = new Set([...(priority??[]),...candidates(vector)].map(readingBodyKey));
   }, [candidates]);
   const retainGeometry = useCallback((vector: readonly MeasurementRow[]) => {
     pendingVector.current = vector;
-    custody.current.pending = new Set(candidates(vector).map(readingBodyKey)); custody.current.measuring = new Set();
+    custody.current.pending = new Set([...custody.current.measuring,...candidates(vector).map(readingBodyKey)]); custody.current.measuring = new Set();
   }, [candidates]);
   const commitGeometry = useCallback((vector: readonly MeasurementRow[]) => {
     if (pendingVector.current !== vector) return;
     pendingVector.current = null; custody.current.pending = new Set(); setDemandVersion(value => value + 1);
   }, []);
-  return { rows, plan, membership: plan?.viewMembership ?? input.local.viewMembership, rowMembers, actionRuns: composition?.actionRuns ?? input.local.actionRuns, lastAssistantTurnId: composition?.lastAssistantTurnId ?? input.local.lastAssistantTurnId,
+  const initialTargetKey=initialKey(bodyRows);
+  return { rows, plan, initialTargetKey,
+    priorityKeys:[...(demand.current?.visible??required),...(demand.current?.prefetch??[])].map(row=>row.key),
+    membership: plan?.viewMembership ?? input.local.viewMembership, rowMembers, actionRuns: composition?.actionRuns ?? input.local.actionRuns, lastAssistantTurnId: composition?.lastAssistantTurnId ?? input.local.lastAssistantTurnId,
     manifest: manifest.data, bodies, firstRequiredSourceAt:firstRequiredSource.current?.scope===sourceScope?firstRequiredSource.current.at:undefined,
     getBody: (ref: MeasurementRow) => bodies.get(readingBodyKey(ref)),
     materialize, acquireMeasurement, onRange, retainMeasurement, retainGeometry, commitGeometry,

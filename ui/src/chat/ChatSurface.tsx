@@ -16,7 +16,7 @@ import { ReadingRowBody } from './ReadingRowView';
 import { MeasuredReadingBox, ReadingRowStrip } from './ReadingRowWindow';
 import { readingRowPrimaryActions, readingRowTurnId } from './readingRowActions';
 import { useCompleteReading, readingBodyKey, readingTargetLabels } from './useCompleteReading';
-import { useReadingGeometry } from './useReadingGeometry';
+import { useReadingGeometry,readingGeometryRowReady } from './useReadingGeometry';
 import { getReadingResizeScale } from './readingResizeProfile';
 import { useReadingViewport, type ReadingSummaryTarget } from './useReadingViewport';
 import { readingNavigationObserver, type ReadingNavigationOrigin } from './readingNavigationObservation';
@@ -87,9 +87,12 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
       ...Object.fromEntries(requiredMember.disclosurePath.map(owner => [`group:${owner}`, true])), ...Object.fromEntries((requiredMember.detailKeys ?? []).map(key => [key, true])), [`reveal:${requiredTarget.position}`]: true }));
   }, [requiredMember, requiredTarget, initialDisclosurePending]);
   const [scrollNode, setScrollElement] = useState<HTMLDivElement | null>(null);
+  const [preparingRow,setPreparingRow]=useState<{token:string;key:string}|null>(null);
   const layoutChange = useRef<() => void>(() => {});
   const geometry = useReadingGeometry({ scope: `${scope}:${space}`, chrome: 32 + clearance, onLayoutChange: () => layoutChange.current(), rows: complete.rows, parent: appearance.ready && complete.ready && !initialDisclosurePending ? scrollNode : null,
     firstRequiredSourceAt:complete.firstRequiredSourceAt,
+    priorityKeys:preparingRow?[preparingRow.key,...complete.priorityKeys]:complete.priorityKeys,
+    initialTarget:!initialVisible&&complete.initialTargetKey?{key:complete.initialTargetKey,align:localRestore||navigationTarget?.target?'start':'end',offset:localRestore?.anchor.offset??navigationTarget?.target?.offset}:undefined,
     materialize: complete.acquireMeasurement, membership: complete.membership, rowMembers: complete.rowMembers, onMeasuring: complete.retainMeasurement, onPrepared: complete.retainGeometry, renderProps: (row, ref) => ({ ...props, row, targetLabels: readingTargetLabels(ref), expandedBlocks, setBlockExpanded: () => {},
       preparing: row.sources.some(source => expandedBlocks[`reveal:${source.position}`]), primaryActions: readingRowPrimaryActions({ copy: () => {}, open: () => {}, turnId: readingRowTurnId(row, complete.actionRuns), selectedMessageId: props.selectedMessageId, select: props.onSelectMessageInfo }),
       lastAssistantTurnId: complete.lastAssistantTurnId, onActivityGroupExpandedChange: () => {} }), scale: getReadingResizeScale });
@@ -110,7 +113,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
       waiting.current.add(check); signal.addEventListener('abort', abort, { once: true });
     });
   }, []);
-  const prepare = useCallback(async (target: ConversationSourceCoordinate, signal: AbortSignal, _token: string, summary?: ReadingSummaryTarget) => {
+  const prepare = useCallback(async (target: ConversationSourceCoordinate, signal: AbortSignal, token: string, summary?: ReadingSummaryTarget) => {
     const current = latest.current;
     if (current.scope !== target.conversationId) return { status: 'not-renderable' as const };
     if (current.transcript?.positionSpaceId !== target.positionSpaceId) return { status: 'position-space-changed' as const };
@@ -130,13 +133,15 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
     const { member } = resolved;
     if (target.subtarget !== 'summary') setExpandedBlocks(current => current[`reveal:${target.position}`] && member.disclosurePath.length === 0 && (!('detailKeys' in member) || member.detailKeys?.every(key => current[key])) ? current
       : boundDisclosures({ ...current, ...Object.fromEntries(member.disclosurePath.map(owner => [`group:${owner}`, true])), ...Object.fromEntries(('detailKeys' in member ? member.detailKeys ?? [] : []).map(key => [key, true])), [`reveal:${target.position}`]: true }));
-    await waitFor(() => {
+    setPreparingRow({token,key:resolved.rowKey});
+    try { await waitFor(() => {
       if (latest.current.scope !== target.conversationId || latest.current.transcript?.positionSpaceId !== target.positionSpaceId) return true;
       const resolved = resolve();
       if (summary && !resolved) return true;
       const expected = latest.current.complete.rows.find(row => row.key === resolved?.rowKey);
-      return Boolean(resolved && (target.subtarget === 'summary' || resolved.member.disclosurePath.length === 0) && expected && latest.current.geometry.geometry?.exact && appliedRows.current.some(row => row.key === expected.key && row.revision === expected.revision && row.disclosureIdentity === expected.disclosureIdentity));
-    }, signal);
+      if(expected)setPreparingRow(current=>current?.token===token&&current.key===expected.key?current:{token,key:expected.key});
+      return Boolean(resolved && (target.subtarget === 'summary' || resolved.member.disclosurePath.length === 0) && expected && readingGeometryRowReady(latest.current.geometry.geometry,expected.key) && appliedRows.current.some(row => row.key === expected.key && row.revision === expected.revision && row.disclosureIdentity === expected.disclosureIdentity));
+    }, signal); } finally { setPreparingRow(current=>current?.token===token?null:current); }
     if (signal.aborted) return { status: 'source-unavailable' as const };
     if (latest.current.scope !== target.conversationId) return { status: 'not-renderable' as const };
     if (latest.current.transcript?.positionSpaceId !== target.positionSpaceId) return { status: 'position-space-changed' as const };
@@ -189,7 +194,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
   }, [onRange, viewport.engine, props.selectedBlockIds, complete.plan, scope]);
   useEffect(() => { handled.current = null; restoredRow.current = false; setInitialVisible(false); setInitialNavigationDone(false); setDisclosureRevisions({}); setNotice(null); const saved = readReadingState(scope); setExpandedBlocks(saved?.positionSpaceId === space ? saved.disclosures : {}); }, [scope, space]);
   useEffect(() => {
-    if (!navigationTarget || handled.current === navigationTarget.key || !geometry.geometry || !viewport.appliedGeometry || (localRestore && !viewport.appliedGeometry?.exact)) return;
+    if (!navigationTarget || handled.current === navigationTarget.key || !geometry.geometry || !viewport.appliedGeometry || (localRestore && !readingGeometryRowReady(viewport.appliedGeometry,complete.initialTargetKey??localRestore.anchor.rowKey))) return;
     if (!complete.rows.length) {
       if ((navigationTarget.kind === 'initial' || navigationTarget.kind === 'latest') && transcript?.total !== 0) return;
       if (navigationTarget.kind !== 'initial' && navigationTarget.kind !== 'latest') {
@@ -222,11 +227,13 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
   }, [navigationTarget, geometry.geometry, viewport.appliedGeometry, initialNavigationDone, scope, space, viewport.reveal]);
   useEffect(() => {
     if (initialVisible || !geometry.geometry || !viewport.appliedGeometry || !initialNavigationDone) return;
-    const items = viewport.engine.getVirtualItems();
+    const scroller=viewport.scrollRef.current;
+    if(!scroller)return;
+    const items = viewport.engine.getVirtualItems().filter(item=>item.end>scroller.scrollTop&&item.start<scroller.scrollTop+scroller.clientHeight);
     const hydrated = items.every(item => {
       const ref = viewport.rows[item.index];
       const body = ref && complete.getBody(ref);
-      return body && (!('revision' in body) || body.revision === ref.revision);
+      return body && readingGeometryRowReady(viewport.appliedGeometry,ref.key) && (!('revision' in body) || body.revision === ref.revision);
     });
     if (hydrated && (!viewport.rows.length || items.length > 0)) setInitialVisible(true);
   }, [initialVisible, initialNavigationDone, navigationTarget, geometry.geometry, viewport.appliedGeometry, complete.bodies, viewport.rows, viewport.engine]);

@@ -47,6 +47,8 @@ export type MeasurementRequest<Body> = {
   signal?: AbortSignal;
   /** Font/image durations overlap; readiness covers their join and the final document font barrier. */
   onPhase?: (event: MeasurementPhaseEvent) => void;
+  prioritize?: () => readonly string[];
+  onMeasured?: (measurements: readonly RowMeasurement[]) => void;
 };
 export type MeasurementResult = { measurements: readonly RowMeasurement[] } & (
   | { status: 'complete'; vectors: readonly { layoutIdentity: string; heights: readonly number[]; totalHeight: number; maxRowHeight: number }[] }
@@ -111,6 +113,8 @@ export class ReadingMeasurementService {
   private active?: AbortController;
   private disposed = false;
   constructor(private readonly parent: HTMLElement) {}
+
+  cancel(): void { this.active?.abort(); }
 
   dispose(): void {
     this.disposed = true;
@@ -184,19 +188,25 @@ export class ReadingMeasurementService {
       Object.assign(host.style, { position: 'fixed', left: '0', top: '0', visibility: 'hidden', pointerEvents: 'none', zIndex: '-1' });
       this.parent.append(host);
       let offset = 0;
+      const reserved=new Set<string>();
+      const byKey=new Map(request.rows.map(row=>[row.key,row]));
       const nextBuffer = (): Buffer | undefined => {
+        const missing=(row:MeasurementRow)=>!reserved.has(row.key)&&request.layouts.some(layout=>!measurements.has(measurementKey(row,measurementLayoutIdentity(layout))));
+        const prioritized=(request.prioritize?.()??[]).flatMap(key=>{const row=byKey.get(key);return row&&missing(row)?[row]:[];}).slice(0,batchSize);
+        const acquire=(rows:readonly MeasurementRow[]):Buffer=>{
+          rows.forEach(row=>reserved.add(row.key));
+          const started=clock();
+          const work=untilAbort(request.materialize(rows,signal),signal,discard);
+          void work.catch(()=>{});
+          void work.then(()=>observe('materialize',started,rows.length),()=>{});
+          return {rows,work};
+        };
+        if(prioritized.length)return acquire(prioritized);
         while (offset < request.rows.length && !signal.aborted) {
           const end = Math.min(request.rows.length, offset + materializeBatchSize);
-          const rows = request.rows.slice(offset, end).filter(row => request.layouts.some(layout => !measurements.has(measurementKey(row, measurementLayoutIdentity(layout)))));
+          const rows = request.rows.slice(offset, end).filter(missing);
           offset = end;
-          if (rows.length) {
-            const started = clock();
-            const work = untilAbort(request.materialize(rows, signal), signal, discard);
-            // Observe speculative failure now; the owning await still reports it.
-            void work.catch(() => {});
-            void work.then(() => observe('materialize', started, rows.length), () => {});
-            return { rows, work };
-          }
+          if (rows.length)return acquire(rows);
         }
       };
       while (prefetched || offset < request.rows.length) {
@@ -263,6 +273,7 @@ export class ReadingMeasurementService {
             synchronousMs += view.performance.now() - geometryStarted;
             if (signal.aborted) return cancelled();
             for (const box of boxes) measurements.set(measurementKey(box.row, identity), box);
+            request.onMeasured?.(boxes);
             const yieldStarted = clock();
             await yieldToBrowser(signal);
             observe('yield', yieldStarted, rows.length, identity);
@@ -274,6 +285,7 @@ export class ReadingMeasurementService {
             synchronousMs > request.maxSynchronousMs ? Math.floor(activeBatchSize * request.maxSynchronousMs / synchronousMs) : activeBatchSize * 2));
         }
         releaseMaterialized();
+        bufferRows.forEach(row=>reserved.delete(row.key));
       }
       if (signal.aborted) return cancelled();
       const vectors = request.layouts.map(layout => {

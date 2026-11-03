@@ -3,7 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { ConversationSourceCoordinate } from '../query/conversationData';
 import type { ReadingRevealCommand, ReadingRevealResult, ReadingTargetRegistration } from './readingProjection';
 import type { ReadingBodyDemand } from './readingBodyDemand';
-import type { ReadingGeometry } from './useReadingGeometry';
+import {readingGeometryRowReady,readingGeometryDisclosureReady,type ReadingGeometry} from './useReadingGeometry';
 import { captureDisclosureDomAnchor, captureReadingDomAnchor, readingDomAnchorOffset, type ReadingDomAnchor } from './readingDomAnchor';
 import { writeReadingState, type ReadingState, type ReadingRestore } from './readingState';
 import type { ReadingNavigationObservation, ReadingNavigationObserver, ReadingNavigationOrigin } from './readingNavigationObservation';
@@ -230,16 +230,19 @@ export function useReadingViewport(input: {
       if (active.phase === 'end') {
         const snapshot = current.current;
         if (readback.current || snapshot.applied !== snapshot.indexed || (pending.current && pending.current !== snapshot.applied)) return;
+        if(snapshot.rows.length&&!readingGeometryRowReady(snapshot.applied,snapshot.rows.at(-1)!.key))return;
         if (!engine.isScrolling) { finish(engine.isAtEnd(1) ? 'revealed' : 'unsuccessful', 'settled-end'); persist(engine); }
         return;
       }
       if (active.phase === 'row') {
+        if(!readingGeometryRowReady(current.current.applied,active.rowKey??''))return;
         if (!engine.isScrolling) { finish(Math.abs(scroller.scrollTop - (active.offset ?? 0)) <= 1 ? 'revealed' : 'unsuccessful', 'settled-row'); persist(engine); }
         return;
       }
       if (!active.target) { finish('not-renderable', 'not-renderable'); return; }
       const rowIndex = current.current.rows.findIndex(row => row.key === active.rowKey);
       if (rowIndex < 0) return;
+      if(!readingGeometryRowReady(current.current.applied,active.rowKey!))return;
       const registration = targets.current.get(targetRegistrationKey(active.target, active.rowKey!));
       if (registration && registration.element === null) { finish('not-renderable', 'not-renderable'); return; }
       if (!registration?.element?.isConnected) return;
@@ -425,7 +428,7 @@ export function useReadingViewport(input: {
     // The native offset has been observed: only now may custody follow the new range.
     readback.current = null;
     const pin = readerPin.current;
-    if (ready.exact && pin?.edge === 'bottom' && disclosureRevision(ready.rows.find(row => row.key === pin.key)) !== pin.disclosureRevision) {
+    if (pin?.edge === 'bottom' && readingGeometryDisclosureReady(ready,pin.key) && disclosureRevision(ready.rows.find(row => row.key === pin.key)) !== pin.disclosureRevision) {
       const position = pinPosition(pin);
       if (position !== undefined) {
         const wanted = Math.max(0, Math.min(scroller.scrollHeight - scroller.clientHeight, scroller.scrollTop + position - pin.offset));
@@ -456,12 +459,14 @@ export function useReadingViewport(input: {
     const end = Math.min(instance.getTotalSize(), scroller.scrollTop + 2 * height);
     const first = instance.getVirtualItemForOffset(start)?.index;
     const last = instance.getVirtualItemForOffset(end)?.index;
-    const required = instance.getVirtualItems().map(item => vector.rows[item.index]).filter(Boolean);
+    const items=instance.getVirtualItems();
+    const required = items.map(item => vector.rows[item.index]).filter(Boolean);
+    const visible=items.filter(item=>item.end>scroller.scrollTop&&item.start<scroller.scrollTop+height).map(item=>vector.rows[item.index]).filter(Boolean);
     const prefetch = first === undefined || last === undefined ? [] : vector.rows.slice(first, last + 1);
     const identity = JSON.stringify([snapshot.scope, snapshot.positionSpaceId, vector.serial, first, last, height, required, prefetch]);
     if (identity === lastRange.current) return;
     lastRange.current = identity;
-    snapshot.onRange({ vector: vector.rows, required, prefetch, start, end, height });
+    snapshot.onRange({ vector: vector.rows, required, visible, prefetch, start, end, height });
   };
   useLayoutEffect(() => { publishDemand.current(engine); }, [input.protectedKeys, pinKeys, indexed, applied, engine]);
   useEffect(() => {

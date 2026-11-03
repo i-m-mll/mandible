@@ -21,9 +21,10 @@ vi.mock('../src/presentation/reading-composition', () => ({
   readingCompositionRequests: (_composition: any, refs: any) => refs,
   materializeConversationReading: (_composition: any, _refs: any, rows: any) => ({ status: 'source', rows }),
 }));
-vi.mock('../ui/src/chat/useReadingGeometry', async () => {
+vi.mock('../ui/src/chat/useReadingGeometry', async importOriginal => {
+  const actual = await importOriginal<typeof import('../ui/src/chat/useReadingGeometry')>();
   const { useMemo, useLayoutEffect } = await import('preact/hooks');
-  return { useReadingGeometry: (input: any) => {
+  return { ...actual, useReadingGeometry: (input: any) => {
     const geometry = useMemo(() => ({ scope: input.scope, rows: input.rows, sizes: input.rows.map(() => 100), serial: 1, exact: true,
       membership: input.membership, rowMembers: input.rowMembers, layout: { width: 600, styleIdentity: 'fixture', fonts: [] }, renderProps: input.renderProps }), [input.scope, input.rows]);
     useLayoutEffect(() => { input.onPrepared(input.rows); }, [geometry]);

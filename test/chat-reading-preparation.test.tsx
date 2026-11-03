@@ -12,17 +12,17 @@ vi.mock('../ui/src/chat/useCompleteReading', () => ({ useCompleteReading: (input
   if (boundary.project) {
     const projection = boundary.project(input.expanded);
     return { ...projection, plan: projection, rows: projection.rows.map(row => ({ ...row, revision: JSON.stringify([row.key, row.activityGroup?.expanded]) })),
-      bodies: new Map(), ready: true, onRange: () => {}, protect: () => {}, refresh: async () => {} };
+      bodies: new Map(), priorityKeys:[],ready: true, onRange: () => {}, protect: () => {}, refresh: async () => {} };
   }
-  if (!input.enabled || input.total === 0) return { rows: [], bodies: new Map(), ready: true, plan: null,
+  if (!input.enabled || input.total === 0) return { rows: [], bodies: new Map(), priorityKeys:[],ready: true, plan: null,
     materialize: async () => [], onRange: () => {}, protect: () => {}, refresh: async () => {} };
   const expanded = input.expanded['group:activity'];
   const row = { sourcePositions: [42], key: expanded ? 'exact-source' : 'folded-summary', revision: expanded ? 'open' : 'closed' };
   const membership = new Map([[42, { rowKey: row.key, summaryRowKey: 'folded-summary', disclosurePath: expanded ? [] : ['activity'], position: 42 }]]);
-  return { rows: [row], bodies: new Map(), ready: true, plan: { rows: [row], membership },
+  return { rows: [row], bodies: new Map(), priorityKeys:[],ready: true, plan: { rows: [row], membership },
     materialize: async () => [], onRange: () => {}, protect: () => {}, refresh: async () => {} };
 } }));
-vi.mock('../ui/src/chat/useReadingGeometry', () => ({ useReadingGeometry: (input: any) => ({ geometry: boundary.exact ? { rows: input.rows, exact: true } : null, reportHeight: () => {}, retry: () => {} }) }));
+vi.mock('../ui/src/chat/useReadingGeometry', async importOriginal => ({ ...await importOriginal<typeof import('../ui/src/chat/useReadingGeometry')>(),useReadingGeometry: (input: any) => ({ geometry: boundary.exact ? { rows: input.rows, exact: true } : null, reportHeight: () => {}, retry: () => {} }) }));
 vi.mock('../ui/src/chat/useReadingViewport', () => ({ useReadingViewport: (input: any) => {
   boundary.input = input;
   return { rows: input.geometry?.rows ?? [], appliedGeometry: input.geometry, engine: { options: { paddingStart: 32 }, range: null, getVirtualItems: () => [], getTotalSize: () => 0 },
