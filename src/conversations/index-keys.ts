@@ -64,12 +64,12 @@ export function indexKeyString(key:IndexKeyRecipe,conversationId:string):string 
   if(key.kind==='response-native')return JSON.stringify([...scope,['native',key.turnId,key.nativeId]]);
   return `${key.prefix??''}${JSON.stringify([...scope,key.itemKind,key.basis,key.basis==='record'?key.recordOrdinal:key.nativeId,key.contentIndex])}${key.suffix??''}`;
 }
-export function decodeIndexKey(db:SqliteDatabase,generation:number,conversationId:string,row:KeyRecipeRow):string {
+export function decodeIndexKey(db:SqliteDatabase,generation:number,conversationId:string,row:KeyRecipeRow,scopes?:ReadonlyMap<number,{provider:string;session_id:string}>):string {
   if(row.recipe===0)return `${row.prefix??''}${row.native_id}${row.suffix??''}`;
   if(row.recipe===3)return `intent:${row.native_id}`;
   if(row.recipe===2)return `${row.prefix??''}cblk:${conversationId}:${row.record_ordinal}${row.suffix??''}`;
   if(row.recipe!==1)throw new Error('Invalid Chat key recipe');
-  const scope=db.prepare('SELECT provider,session_id FROM cache_native_scopes WHERE cache_conversation_id=? AND scope_id=?').get(generation,row.scope_id) as {provider:string;session_id:string}|undefined;
+  const scope=scopes?scopes.get(row.scope_id!):db.prepare('SELECT provider,session_id FROM cache_native_scopes WHERE cache_conversation_id=? AND scope_id=?').get(generation,row.scope_id) as {provider:string;session_id:string}|undefined;
   if(!scope)throw new Error('Missing Chat native identity scope');
   const prefix=[scope.provider,scope.session_id];
   const value=row.basis==='execution' ? [...prefix,row.native_id]
@@ -93,4 +93,9 @@ export function chatItemIdentityRecipe(item:import('../parsers/types.js').ChatIt
   if(identity.native_turn_id&&identity.native_content_index!==undefined)return {...common,basis:'turn',nativeId:identity.native_turn_id};
   if(!options.allowTranscriptCoordinates||!Number.isInteger(identity.source_record_ordinal)||identity.source_record_ordinal<0||!Number.isInteger(identity.source_sub_block_ordinal)||identity.source_sub_block_ordinal<0)return null;
   return {...common,basis:'record',recordOrdinal:identity.source_record_ordinal,contentIndex:identity.source_sub_block_ordinal};
+}
+
+export function indexKeyDecoder(db:SqliteDatabase,generation:number,conversationId:string):(row:KeyRecipeRow)=>string {
+  const scopes=new Map((db.prepare('SELECT scope_id,provider,session_id FROM cache_native_scopes WHERE cache_conversation_id=?').all(generation) as Array<{scope_id:number;provider:string;session_id:string}>).map(row=>[row.scope_id,row]));
+  return row=>decodeIndexKey(db,generation,conversationId,row,scopes);
 }
