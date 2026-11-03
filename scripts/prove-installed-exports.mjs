@@ -35,6 +35,7 @@ const { ClientAuthenticator } = await load('client-auth/authenticator');
 const { SseManager } = await load('sse');
 const { setupOperator, createUser, addBinding } = await load('users/store');
 const { SessionRegistry } = await load('registry');
+const { exactAgentRef } = await load('ambient-provider-identity');
 const { registerSessionRoutes } = await load('routes/sessions');
 const { registerSettingsRoutes } = await load('routes/settings');
 const { startLocalApiSocket } = await load('local-api-socket');
@@ -108,6 +109,7 @@ try {
     return success(await run(['-c', projection.hookSpecificOutput.updatedInput.command], '', hookEnv, '/bin/bash'));
   }));
   assert.deepEqual(calls, ['agent:claude:lifecycle-native:child-a', 'agent:claude:lifecycle-native:child-b', 'agent:claude:lifecycle-native:lifecycle-native']);
+  const childRef = exactAgentRef({ provider: 'claude', session_id: session, agent_id: 'child-proof' });
   const childPayload = { ...payload, agent_id: 'child-proof', agent_type: 'worker', description: 'Child proof' };
   const tools = path.join(scratch, 'user-tools'); fs.mkdirSync(tools);
   const paneCapture = path.join(scratch, 'pane.json');
@@ -119,9 +121,9 @@ try {
   assert.equal(pane.cmd, path.join(tools, 'agent-viewer'));
   assert.deepEqual(pane.args.slice(-2), ['--mode', 'transcript']);
   assert.equal(pane.close_on_exit, true);
-  assert.equal(db.prepare('SELECT parent_id,status FROM sessions WHERE id=?').get('child-proof').parent_id, session);
+  assert.equal(db.prepare('SELECT parent_id,status FROM sessions WHERE id=?').get(childRef).parent_id, session);
   success(await run(['hook', 'subagent-stop'], JSON.stringify(childPayload), hookEnv));
-  assert.equal(db.prepare('SELECT status FROM sessions WHERE id=?').get('child-proof').status, 'ended');
+  assert.equal(db.prepare('SELECT status FROM sessions WHERE id=?').get(childRef).status, 'ended');
   success(await run(['hook', 'session-end'], JSON.stringify(payload), hookEnv));
   assert.equal(db.prepare('SELECT status FROM sessions WHERE id=?').get(session).status, 'ended');
   assert.deepEqual(db.prepare('SELECT pid,conversation_id FROM sessions WHERE id=?').get('stale-parent'), { pid: 999999999, conversation_id: 'parent-native' });

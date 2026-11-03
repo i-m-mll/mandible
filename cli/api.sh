@@ -952,10 +952,11 @@ api_scope_inherited_identity() {
     nearest=$(api_nearest_agent "$processes" "")
     case "${nearest#* }" in
       claude) unset CODEX_THREAD_ID CODEX_SESSION_ID GEMINI_SESSION_ID ;;
-      codex) unset CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID GEMINI_SESSION_ID ;;
-      gemini) unset CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID CODEX_THREAD_ID CODEX_SESSION_ID ;;
+      codex) unset CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID CLAUDE_AGENT_ID GEMINI_SESSION_ID ;;
+      gemini) unset CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID CLAUDE_AGENT_ID CODEX_THREAD_ID CODEX_SESSION_ID ;;
     esac
   fi
+  api_scope_execution_context
   [[ -n "${MANDIBLE_SESSION_ID:-}" ]] || return 0
   api_ensure_temp_root || return 1
 
@@ -981,6 +982,30 @@ api_scope_inherited_identity() {
   [[ -n "$processes" ]] || processes=$(api_process_table)
   nearest=$(api_nearest_agent "$processes" "$row_pid")
   [[ "${nearest%% *}" == "$row_pid" ]] || unset MANDIBLE_SESSION_ID
+}
+
+# Reconcile inherited per-call evidence against the current provider's markers.
+api_scope_execution_context() {
+  [[ "${MANDIBLE_EXECUTION_CONTEXT+x}" ]] || return 0
+  [[ "$(api_execution_context_json)" != null ]] || return 0
+  local marker_count raw_provider
+  marker_count=$(api_provider_marker_count)
+  (( marker_count > 0 )) || return 0
+  raw_provider=$(unset MANDIBLE_EXECUTION_CONTEXT; api_ambient_provider)
+  if (( marker_count > 1 )) || ! jq -e \
+      --arg provider "$raw_provider" \
+      --arg claude_session "${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}" --arg claude_agent "${CLAUDE_AGENT_ID:-}" \
+      --arg codex_thread "${CODEX_THREAD_ID:-}" --arg codex_session "${CODEX_SESSION_ID:-}" \
+      --arg gemini_session "${GEMINI_SESSION_ID:-}" '
+        .provider == $provider and
+        (if $provider == "claude" then .session_id == $claude_session and ($claude_agent == "" or .agent_id == $claude_agent)
+         elif $provider == "codex" then
+           ($codex_thread == "" or .agent_id == $codex_thread) and
+           ($codex_session == "" or .session_id == $codex_session)
+         elif $provider == "gemini" then .agent_id == $gemini_session
+         else false end)' <<< "$MANDIBLE_EXECUTION_CONTEXT" >/dev/null 2>&1; then
+    unset MANDIBLE_EXECUTION_CONTEXT MANDIBLE_AGENT_REF CLAUDE_AGENT_ID
+  fi
 }
 
 # A sandbox may deny `ps` (the Codex seatbelt does). An empty table finds no
@@ -1069,7 +1094,7 @@ api_curl_ambient_headers() {
   provider=$(api_ambient_provider)
   session_id=$(api_ambient_session_id)
   context=$(api_execution_context_json)
-  if [[ "$context" != null ]]; then
+  if [[ "$context" != null || "${MANDIBLE_EXECUTION_CONTEXT+x}" ]]; then
     printf '%s\0%s\0' '-H' "X-Mandible-Execution-Context: ${context}"
   fi
   local request_origin
@@ -1078,8 +1103,10 @@ api_curl_ambient_headers() {
   if api_managed_client_markers_present; then
     printf '%s\0%s\0' '-H' 'X-Mandible-Managed-Client: 1'
   fi
-  [[ -z "$provider" ]] || printf '%s\0%s\0' '-H' "X-Mandible-Ambient-Provider: ${provider}"
-  [[ -z "$session_id" ]] || printf '%s\0%s\0' '-H' "X-Mandible-Ambient-Provider-Session-Id: ${session_id}"
+  if [[ ! "${MANDIBLE_EXECUTION_CONTEXT+x}" ]]; then
+    [[ -z "$provider" ]] || printf '%s\0%s\0' '-H' "X-Mandible-Ambient-Provider: ${provider}"
+    [[ -z "$session_id" ]] || printf '%s\0%s\0' '-H' "X-Mandible-Ambient-Provider-Session-Id: ${session_id}"
+  fi
   if [[ -n "$managed_app" && -n "$managed_session" ]] \
       && secret_material_valid "$managed_app" && secret_material_valid "$managed_session"; then
     printf '%s\0%s\0%s\0%s\0' \
@@ -1592,16 +1619,17 @@ api_file_rpc_exchange() {
     --arg provider "$provider" \
     --arg provider_session_id "$session_id" \
     --argjson execution_context "$(api_execution_context_json)" \
+    --argjson managed_client "$(if api_managed_client_markers_present; then printf true; else printf false; fi)" \
     --arg request_origin "$request_origin" \
     --arg attach_field "$attach_field" \
     --arg attach_name "$attach_name" \
     --slurpfile body "$body_tmp" \
-    '{id:$id, method:$method, path:$path}
+    '{id:$id, method:$method, path:$path, managed_client:$managed_client}
      + (if $request_origin != "" then {request_origin:($request_origin | fromjson)} else {} end)
      + (if ($body[0] != null) then {body:$body[0]} else {} end)
      + (if $attach_field != "" and $attach_name != "" then {attachments:{($attach_field):$attach_name}} else {} end)
      + (if ($ENV.MANDIBLE_CLIENT_TOKEN // "") != "" then {capability_token:$ENV.MANDIBLE_CLIENT_TOKEN} else {} end)
-     + (if $execution_context != null
+     + (if $execution_context != null or $managed_client
         then {ambient_identity:$execution_context}
         else {} end)' > "$request_tmp"
   (( rpc_token_traced == 0 )) || set -x
