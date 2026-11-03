@@ -55,9 +55,12 @@ const checkpointTimer = setInterval(() => {
 const cacheTransition = new ConversationCacheTransition(db);
 const service = new IngestionWorkerService({
   prepareCache: (conversationId, cooperate) => withBusyRetry(() => cacheTransition.prepare(conversationId, cooperate)),
-  ingest: (filePath, requirements, withinPass) => withBusyRetry(() => ingestBatchForWorker(
-    [filePath], requirements.forceFull, requirements.bypassSameMtimeUnchanged, true, undefined, withinPass,
-  )),
+  ingest: async (filePath, requirements, withinPass, cooperate) => {
+    await withBusyRetry(() => cacheTransition.preparePath(filePath, cooperate));
+    await withBusyRetry(() => ingestBatchForWorker(
+      [filePath], requirements.forceFull, requirements.bypassSameMtimeUnchanged, true, undefined, withinPass,
+    ));
+  },
   needsFollowup: ingestedPathNeedsFollowup,
   reconcile: (startup, cooperate, ingest) => withBusyRetry(() => reconcileForWorker(startup, cooperate, ingest)),
   fullIngest: (cooperate, ingest) => withBusyRetry(() => triggerFullIngestForWorker(cooperate, ingest)),

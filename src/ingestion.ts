@@ -1002,10 +1002,10 @@ export async function repairConversationSourceReadiness(
     return { ...readiness, status: "unavailable", reason: "repair_unavailable" };
   }
   try {
-    await actor.prepareConversationCache(conversationId, options.priority === true);
+    await actor.prepareConversationCache(conversationId, options.priority !== false);
     const prepared = readConversationSourceReadiness(db, conversationId);
     if (prepared.status === "ready") return prepared;
-    await ingestExactSelectedPath(actor, readiness.sourcePath, undefined, options.priority === true);
+    await ingestExactSelectedPath(actor, readiness.sourcePath, undefined, options.priority !== false);
   } catch (error) {
     logger("warn", "ingestion_readiness_repair_failed", { conversation_id: conversationId, error: String(error) });
     return { ...readiness, status: "unavailable", reason: "repair_failed" };
