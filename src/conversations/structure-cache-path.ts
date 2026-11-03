@@ -1,6 +1,6 @@
 import path from "node:path";
 
-export const CONVERSATION_STRUCTURE_CACHE_VERSION = 18;
+export const CONVERSATION_STRUCTURE_CACHE_VERSION = 19;
 
 /** Physical cache names include the schema, so opening never migrates another writer's cache. */
 export function conversationStructureCachePath(ledgerPath: string, override?: string): string {

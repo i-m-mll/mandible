@@ -1,6 +1,7 @@
 import { readingDisclosureState, readingToolExecutionActive, type ReadingDisclosures } from './reading-disclosures.js';
 import type { ActivityRunFacts } from './activity-presentation.js';
-import { activityRunFacts, mergeActivityRunFacts, presentActivityRunFacts } from './activity-presentation.js';
+import { activitySemanticFacts, semanticActivityRunFacts, mergeActivityRunFacts, presentActivityRunFacts } from './activity-presentation.js';
+import type { ActivityFacts } from '../conversations/conversation-index.js';
 import type { DisplayActivityItem } from './types.js';
 
 export type ReadingActionGroup = { key: string; start: number | null; end: number | null };
@@ -12,6 +13,7 @@ export type ReadingPlanMember = {
   speaker: 'user' | 'assistant' | 'system';
   actionGroup: ReadingActionGroup;
   activity: DisplayActivityItem | null;
+  activityFacts?: ActivityFacts;
   run?: { id: string; revision?: string; member_count: number; presentation: ReturnType<typeof presentActivityRunFacts> & { facts: ActivityRunFacts } };
   assistantResponse?: import("../parsers/assistant-response.js").AssistantResponseMembership;
   dependencyRevision: string;
@@ -99,11 +101,11 @@ export function planReadingLayout(input: {
       const content = row([first], first.key, 'content', null); rows.push(content); register(first, content, []); index = next; continue;
     }
     const provisional = members.filter(member => member.position === undefined).flatMap(member => member.activity ? [member.activity] : []);
-    const presentation = run ? provisional.length ? presentActivityRunFacts(mergeActivityRunFacts(run.presentation.facts, activityRunFacts(provisional)))
-      : run.presentation : presentActivityRunFacts(activityRunFacts(members.flatMap(member => member.activity ? [member.activity] : [])));
+    const presentation = run ? provisional.length ? presentActivityRunFacts(mergeActivityRunFacts(run.presentation.facts, semanticActivityRunFacts(provisional.map(activitySemanticFacts))))
+      : run.presentation : presentActivityRunFacts(semanticActivityRunFacts(members.flatMap(member => member.activityFacts ? [member.activityFacts] : member.activity ? [activitySemanticFacts(member.activity)] : [])));
     const owner = run?.id ?? `live:${first.key}`;
     const expanded = input.expanded[`group:${owner}`] ?? (presentation.defaultExpanded || (Boolean(input.streaming) && members.some(member =>
-      member.activity?.type === 'thinking-block-activity' && member.activity.turnId === input.lastAssistantTurnId)));
+      (member.activityFacts?.kind === 'thinking' && member.activityFacts.turnId === input.lastAssistantTurnId) || (member.activity?.type === 'thinking-block-activity' && member.activity.turnId === input.lastAssistantTurnId))));
     const summary = row(members, `activity:${input.conversationId}:${input.positionSpaceId}:${owner}`, 'activity-summary', owner);
     summary.activityGroup = { presentation, expanded };
     rows.push(summary);
@@ -139,7 +141,7 @@ export function planReadingLayout(input: {
       : contributors.map(member => member.dependencyRevision);
     current.revision = JSON.stringify([dependencyRevision, current.kind, contributors[0].speaker, current.actionGroup.key,
       current.disclosureOwner, current.activityMember, current.turnStart, current.turnEnd, current.activityEnd,
-      current.totalTokens, current.isFinalResponse, current.activityGroup, current.kind === 'content' ? contributors.map(member => [readingDisclosureState(member.disclosures, input.expanded, input), member.activity?.type === 'tool-call-activity' ? readingToolExecutionActive(member.activity.executionActive, input) : null]) : []]);
+      current.totalTokens, current.isFinalResponse, current.activityGroup, current.kind === 'content' ? contributors.map(member => [readingDisclosureState(member.disclosures, input.expanded, input), member.activityFacts?.kind === 'tool' ? readingToolExecutionActive(member.activityFacts.executionActive,input) : member.activity?.type === 'tool-call-activity' ? readingToolExecutionActive(member.activity.executionActive, input) : null]) : []]);
   }
   return { rows, membership, viewMembership };
 }
