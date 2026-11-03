@@ -149,7 +149,7 @@ export function codexResultFrame(output: unknown, call?: {name?:string;kind?:str
   return {kind:'codex-script',payloadStart,payloadEnd:text.length,timingScope:'wrapper',wallTimeSeconds:Number(match[3]),state,...(match[2] ? {cellID:match[2]} : {})};
 }
 export function framedToolResult(text: string, frame?: NativeResultFrame): ToolTransportResult {
-  return frame && frame.kind==='codex-script' && frame.payloadStart>=0 && frame.payloadEnd===text.length && frame.payloadStart<=frame.payloadEnd ? {...rawToolResult(text.slice(frame.payloadStart,frame.payloadEnd)),wallTimeSeconds:frame.wallTimeSeconds,timingScope:'wrapper',running:frame.state==='running',failed:frame.state==='terminated',decoded:true} : rawToolResult(text);
+  return frame && frame.kind==='codex-script' && frame.payloadStart>=0 && frame.payloadEnd===text.length && frame.payloadStart<=frame.payloadEnd ? {...rawToolResult(text.slice(frame.payloadStart,frame.payloadEnd)),wallTimeSeconds:frame.wallTimeSeconds,timingScope:'wrapper',running:frame.state==='running',decoded:true} : rawToolResult(text);
 }
 
 export function wrapperCommandResult(execution: {operations: Array<{forwarding:string;encoding?:string}>} | null, text: string): ToolTransportResult {

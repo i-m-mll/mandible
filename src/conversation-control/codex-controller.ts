@@ -822,8 +822,10 @@ export class CodexAppServerControllerAdapter implements ConversationControllerAd
     }
     if (type === "mcpToolCall" || type === "dynamicToolCall") {
       const tool = stringField(item, "tool");
+      const server = type === "mcpToolCall" ? stringField(item, "server") : null;
+      const qualifiedTool = server && tool ? `mcp__${server}__${tool}` : tool;
       return [this.toolItem(controller, itemId, completion, turnId, {
-        ...(tool ? { tool_name: tool } : {}),
+        ...(qualifiedTool ? { tool_name: qualifiedTool } : {}),
         tool_kind: type,
         ...(typeof item.durationMs === 'number' ? {elapsed_ms:item.durationMs} : {}),
         ...(item.arguments !== undefined ? { input: item.arguments } : {}),

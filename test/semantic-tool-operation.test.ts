@@ -2,7 +2,7 @@ import { expect, it } from 'vitest';
 import { projectToolProgram } from '../src/presentation/tool-program';
 import { toolObservation } from '../src/presentation/tool-observation';
 import { operationState, operationResult, substantiveToolResult, threadReports } from '../src/presentation/tool-operation';
-import { rawToolResult } from '../src/presentation/tool-transport';
+import { rawToolResult, codexResultFrame } from '../src/presentation/tool-transport';
 
 it('projects complete transparent wrappers while retaining arbitrary computation as source', () => {
   const input={threadId:'exact-provider-thread',hostId:'local'};
@@ -41,10 +41,22 @@ it('suppresses only a known empty patch acknowledgement and retains reports, err
   expect(threadReports(JSON.stringify({...report,polls:[{...report.polls[0],latestAssistantMessage:{...report.polls[0].latestAssistantMessage,diagnostic:'must remain visible'}}]}))).toBeNull();
   const failure=toolObservation('exec','text(await tools.exec_command({cmd:"false"}))',undefined,{text:JSON.stringify({output:'diagnostic',exit_code:7,wall_time_seconds:0.1})});
   expect(operationState('completed',failure.result)).toBe('failed');
-  expect(operationState('cancelled',{failed:false})).toBe('cancelled');
   expect(threadReports('arbitrary application output')).toBeNull();
   const waiting=toolObservation('codex_app__wait_threads',{targets:[{threadId:'child',hostId:'local'}]},undefined,{text:JSON.stringify({timedOut:true,polls:[]})});
   expect(waiting.header.hasDetails).toBe(false);
   const diagnostic=toolObservation('codex_app__wait_threads',{},undefined,{text:JSON.stringify({timedOut:true,polls:[],error:'retained'})});
   expect(substantiveToolResult(diagnostic.result!)).toBe(true);
+});
+
+it('keeps native termination separate from explicit inner failure', () => {
+  const prefix='Script terminated\nWall time: 1 seconds\nOutput:\n';
+  const call={name:'functions.exec',kind:'custom_tool_call'};
+  const terminated=prefix+'partial output';
+  const cancelled=toolObservation(call.name,'await arbitraryComputation()',call.kind,{text:terminated,frame:codexResultFrame(terminated,call)});
+  expect(operationState('cancelled',cancelled.result)).toBe('cancelled');
+  expect(cancelled.result?.text).toBe('partial output');
+  const failed=prefix+JSON.stringify({output:'inner diagnostic',exit_code:7,wall_time_seconds:0.5});
+  const inner=toolObservation(call.name,'text(await tools.exec_command({cmd:"false"}))',call.kind,{text:failed,frame:codexResultFrame(failed,call)});
+  expect(operationState('cancelled',inner.result)).toBe('failed');
+  expect(inner.result?.text).toBe('inner diagnostic');
 });
