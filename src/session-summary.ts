@@ -1,3 +1,5 @@
+import { conversationAgentRef } from "./conversation-agent-identity.js";
+import { parseExactAgentRef } from "./ambient-provider-identity.js";
 // What Mandible knows about one agent session, whatever provider runs it and
 // whether or not a process attachment (`sessions` row) exists: identity and
 // liveness from the alias resolver, facts from the indexed conversation, and
@@ -7,7 +9,6 @@
 import type { SessionDescendant, SessionProcess, SessionSummary } from "./contracts.js";
 import type { Db } from "./db.js";
 import { tableExists } from "./db-introspection.js";
-import { childrenOfSessionSql } from "./conversation-lineage.js";
 import {
   resolveSessionAlias,
   sessionAliasIds,
@@ -36,15 +37,20 @@ interface ConversationFacts {
   ended_at: string | null;
 }
 
+export function sessionConversationTarget(key: string, alias = "c"): { where: string; params: (string | null)[] } {
+  const identity = parseExactAgentRef(key);
+  return identity ? { where: `${alias}.source = ?1 AND ${alias}.session_id = ?2 AND (${alias}.source != 'claude_code' OR COALESCE(${alias}.agent_id, ${alias}.session_id) = ?3)`,
+    params: [identity.provider === "claude" ? "claude_code" : identity.provider,
+      identity.provider === "claude" ? identity.session_id : identity.agent_id, identity.agent_id] }
+    : { where: sessionConversationsSql(alias, "?1"), params: [key] };
+}
+
 function conversationFacts(db: Db, key: string): ConversationFacts | null {
   if (!tableExists(db, "conversations")) return null;
-  const row = db.prepare(`
-    SELECT c.id, NULLIF(c.title, '') AS title, c.agent_id, c.cwd, c.branch, c.started_at, c.ended_at
-      FROM conversations c
-     WHERE ${sessionConversationsSql("c", "?1")}
-     ORDER BY c.is_sidechain ASC, c.started_at ASC, c.id ASC
-     LIMIT 1
-  `).get(key) as ConversationFacts | undefined;
+  const target = sessionConversationTarget(key);
+  const row = db.prepare(`SELECT c.id, NULLIF(c.title, '') AS title, c.agent_id, c.cwd, c.branch, c.started_at, c.ended_at
+    FROM conversations c WHERE ${target.where} ORDER BY c.is_sidechain ASC, c.started_at ASC, c.id ASC LIMIT 1`)
+    .get(...target.params) as ConversationFacts | undefined;
   return row ?? null;
 }
 
@@ -128,28 +134,26 @@ export function sessionDescendants(
   rootKey: string,
 ): { items: SessionDescendant[]; truncated: boolean } {
   if (!tableExists(db, "conversations")) return { items: [], truncated: false };
-  const children = db.prepare(`
-    SELECT CASE WHEN c.parent_session_id = c.session_id THEN c.agent_id ELSE c.session_id END AS child_key,
-           c.parent_session_id = c.session_id AS in_session
-      FROM conversations c
-     WHERE ${childrenOfSessionSql("c")}
-     ORDER BY c.started_at ASC, c.id ASC
-  `);
-  const seen = new Set<string>([rootKey]);
+  const root = summarizeSessionKey(db, rootKey);
+  const seen = new Set<string>([root.id]);
   const items: SessionDescendant[] = [];
-  let frontier = [rootKey];
+  let frontier = [{ key: root.id, conversationId: root.conversation_id }];
   for (let depth = 1; frontier.length > 0; depth += 1) {
-    const next: string[] = [];
-    for (const parentKey of frontier) {
-      const rows = children.all(parentKey) as Array<{ child_key: string | null; in_session: number }>;
+    const next: typeof frontier = [];
+    for (const parent of frontier) {
+      if (!parent.conversationId) continue;
+      const parentTarget = sessionConversationTarget(parent.key, "parent");
+      const rows = db.prepare(`SELECT c.source, c.session_id, c.agent_id FROM conversations c
+        JOIN conversations parent ON parent.id = c.parent_conversation_id WHERE ${parentTarget.where}
+        ORDER BY c.started_at ASC, c.id ASC`).all(...parentTarget.params) as Array<{ source: string; session_id: string; agent_id: string | null }>;
       for (const row of rows) {
-        if (!row.child_key || seen.has(row.child_key)) continue;
-        if (depth > SESSION_DESCENDANT_DEPTH_LIMIT || items.length >= SESSION_DESCENDANT_COUNT_LIMIT) {
-          return { items, truncated: true };
-        }
-        seen.add(row.child_key);
-        items.push({ ...summarizeSessionKey(db, row.child_key), parent_id: parentKey, depth });
-        if (!row.in_session) next.push(row.child_key);
+        const key = conversationAgentRef(row);
+        if (!key || seen.has(key)) continue;
+        if (depth > SESSION_DESCENDANT_DEPTH_LIMIT || items.length >= SESSION_DESCENDANT_COUNT_LIMIT) return { items, truncated: true };
+        seen.add(key);
+        const summary = summarizeSessionKey(db, key);
+        items.push({ ...summary, parent_id: parent.key, depth });
+        next.push({ key, conversationId: summary.conversation_id });
       }
     }
     frontier = next;
@@ -165,6 +169,8 @@ export function sessionFamilyAliasIds(
   const ids = new Set(sessionAliasIds(resolution));
   for (const child of descendants) {
     ids.add(child.id);
+    const identity = parseExactAgentRef(child.id);
+    if (identity && identity.provider !== "claude" && child.provider_session_id) ids.add(child.provider_session_id);
     if (child.process) ids.add(child.process.id);
   }
   return [...ids];

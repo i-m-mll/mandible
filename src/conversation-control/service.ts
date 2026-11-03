@@ -783,6 +783,9 @@ export class ConversationControlService {
     if (snapshot.value.ownership.kind !== "mandible" || snapshot.value.ownership.generation !== generation) {
       return { ok: false, error: { kind: "stale-generation", expected_generation: generation, actual_generation: snapshot.value.ownership.generation } };
     }
+    if (snapshot.value.capability.kind === "unavailable" && snapshot.value.capability.reason === "subagent") {
+      return { ok: false, error: { kind: "unsupported-operation", operation: "stop", capability: snapshot.value.capability } };
+    }
     const ownership = snapshot.value.ownership;
     const adapter = this.adapters.byAdapterId(ownership.adapter_id);
     if (!adapter || !adapter.capabilities.stop) {

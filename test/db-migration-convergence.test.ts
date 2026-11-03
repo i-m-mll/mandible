@@ -94,6 +94,38 @@ function makeRepo(repo: string, files: Record<string, string>): string {
 }
 
 describe("floor to head", () => {
+  it("separates active execution identity while retaining historical attribution and reviewed bytes", () => {
+    const db = migrateFixtureThrough(232);
+    try {
+      const origin = '{ "provider": "claude", "provider_session_id": "enclosing" }';
+      const assignment = JSON.stringify({ kind: "native", provider: "claude_code", session_id: "enclosing" });
+      db.prepare(`INSERT INTO work_units(id, issue_id, repo_id, state, created_at, provider, provider_session_id,
+        assignment_target_json, responsibility_session_id, custody_generation) VALUES ('legacy-claude', '', '', 'open', 1,
+        'claude', 'enclosing', ?, 'enclosing', 1)`).run(assignment);
+      db.prepare(`INSERT INTO work_units(id, issue_id, repo_id, state, created_at, provider, provider_session_id)
+        VALUES ('legacy-codex', '', '', 'open', 1, 'codex', 'thread:escaped')`).run();
+      db.prepare(`INSERT INTO ledger_events(id, entity_type, entity_id, event_type, actor_id, actor_type, source,
+        payload_json, occurred_at, observed_at) VALUES ('identity-event', 'work_unit', 'legacy-claude',
+        'test', 'legacy', 'system', 'system', ?, 1, 1)`).run(origin);
+      db.prepare(`INSERT INTO auth_requests(id, command, title, status, created_at, updated_at, expires_at)
+        VALUES ('identity-review', 'echo reviewed', 'Reviewed', 'rejected', 1, 1, 2)`).run();
+      const reviewed = authRequestSnapshot(db, "identity-review");
+      db.prepare(`INSERT INTO auth_request_lifecycle_events(id, auth_request_id, revision, event_type, next_status,
+        snapshot_json, snapshot_sha256, occurred_at, request_origin_json) VALUES ('identity-receipt', 'identity-review', 1,
+        'submitted', 'rejected', ?, ?, 1, ?)`).run(reviewed, authSnapshotDigest(reviewed), origin);
+      const receipt = db.prepare("SELECT * FROM auth_request_lifecycle_events WHERE id = 'identity-receipt'").get();
+      const event = db.prepare("SELECT * FROM ledger_events WHERE id = 'identity-event'").get();
+      migrate(db);
+      expect(authRequestSnapshot(db, "identity-review")).toBe(reviewed);
+      expect(db.prepare("SELECT * FROM auth_request_lifecycle_events WHERE id = 'identity-receipt'").get()).toEqual(receipt);
+      expect(db.prepare("SELECT * FROM ledger_events WHERE id = 'identity-event'").get()).toEqual(event);
+      const row = db.prepare("SELECT legacy_assignment_target_json, assignment_target_json, execution_identity_json, responsibility_session_id, custody_generation FROM work_units WHERE id = 'legacy-claude'").get() as Record<string, unknown>;
+      expect(row).toEqual({ legacy_assignment_target_json: assignment, assignment_target_json: null,
+        execution_identity_json: JSON.stringify({ provider: "claude", agent_id: null, session_id: "enclosing" }), responsibility_session_id: "enclosing", custody_generation: 1 });
+      expect(JSON.parse(String((db.prepare("SELECT execution_identity_json FROM work_units WHERE id = 'legacy-codex'").get() as Record<string, unknown>).execution_identity_json)))
+        .toEqual({ provider: "codex", agent_id: "thread:escaped", session_id: null });
+    } finally { db.close(); }
+  });
   it("observes retained assignment evidence without inventing actor ownership or historical binding time", () => {
     const db = migrateFixtureThrough(220);
     const prior = Date.now();
@@ -111,8 +143,8 @@ describe("floor to head", () => {
     migrate(db);
     const rows = db.prepare("SELECT id,assignment_target_json,provider_session_id FROM work_units ORDER BY id").all() as Array<{id:string;assignment_target_json:string|null;provider_session_id:string}>;
     expect(rows.map(row => [row.id, row.assignment_target_json ? JSON.parse(row.assignment_target_json) : null])).toEqual([
-      ['actor-only',null], ['ambiguous',{kind:'alias',session_id:'shared-native'}], ['conflict',null], ['explicit',{kind:'native',provider:'codex',session_id:'native'}],
-      ['pending',{kind:'alias',session_id:'unindexed-alias'}], ['positive',{kind:'native',provider:'codex',session_id:'positive-native'}], ['uncertain-conflict',null],
+      ['actor-only',null], ['ambiguous',{kind:'alias',session_id:'shared-native'}], ['conflict',null], ['explicit',{kind:'native',agent_ref:'agent:codex:native'}],
+      ['pending',{kind:'alias',session_id:'unindexed-alias'}], ['positive',{kind:'native',agent_ref:'agent:codex:positive-native'}], ['uncertain-conflict',null],
     ]);
     expect(rows.every(row => row.provider_session_id === 'actor')).toBe(true);
     const events = db.prepare("SELECT occurred_at,observed_at,payload_json FROM ledger_events WHERE event_type='work_unit.assignment.observed'").all() as Array<{occurred_at:number;observed_at:number;payload_json:string}>;

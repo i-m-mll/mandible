@@ -1,3 +1,5 @@
+import { conversationAgentRef } from "./conversation-agent-identity.js";
+import { parseExactAgentRef } from "./ambient-provider-identity.js";
 // Conversation lineage: which session created a conversation to do part of its
 // work. `conversations.parent_conversation_id` is the one lineage store, and
 // this module is its one writer.
@@ -36,6 +38,7 @@ const DECLARED_PARENT_ROW_SQL = `(
      AND parent.session_id = conversations.parent_session_id
      AND parent.id != conversations.id
      AND parent.parent_session_id IS NOT parent.session_id
+     AND (parent.source != 'claude_code' OR parent.agent_id IS NULL OR parent.agent_id = parent.session_id)
      AND NOT EXISTS (SELECT 1 FROM conversation_identity_aliases alias WHERE alias.alias_id = parent.id)
    ORDER BY parent.is_sidechain ASC, parent.started_at ASC, parent.created_at ASC, parent.id ASC
    LIMIT 1
@@ -55,6 +58,15 @@ export function recordConversationParent(db: Db, conversationId: string, parent:
            parent_session_id = ?
      WHERE id = ?
   `).run(parent.source, parent.sessionId, parent.source, parent.sessionId, conversationId);
+  const identity = parseExactAgentRef(parent.sessionId);
+  if (identity) {
+    const rows = db.prepare(`SELECT id FROM conversations WHERE source = ? AND session_id = ?
+      AND (source != 'claude_code' OR COALESCE(agent_id, session_id) = ?) AND id != ?
+      AND NOT EXISTS (SELECT 1 FROM conversation_identity_aliases alias WHERE alias.alias_id = conversations.id) LIMIT 2`)
+      .all(parent.source, identity.provider === "claude" ? identity.session_id : identity.agent_id, identity.agent_id, conversationId) as { id: string }[];
+    if (rows.length === 1) db.prepare("UPDATE conversations SET parent_conversation_id = ? WHERE id = ?").run(rows[0].id, conversationId);
+    return;
+  }
   db.prepare(`
     UPDATE conversations
        SET parent_conversation_id = ${DECLARED_PARENT_ROW_SQL}
@@ -72,7 +84,21 @@ export function linkWaitingChildren(
   db: Db,
   conversation: { source: ConversationSource; session_id: string },
 ): LineageEvidence[] {
-  return db.prepare(`
+  const exactParents = db.prepare("SELECT session_id, agent_id FROM conversations WHERE source = ? AND session_id = ?")
+    .all(conversation.source, conversation.session_id) as Array<{ session_id: string; agent_id: string | null }>;
+  const exactLinked: LineageEvidence[] = [];
+  for (const row of exactParents) {
+    const ref = conversationAgentRef({ ...row, source: conversation.source });
+    if (!ref) continue;
+    const waiting = db.prepare("SELECT id FROM conversations WHERE parent_source = ? AND parent_session_id = ? AND parent_conversation_id IS NULL")
+      .all(conversation.source, ref) as { id: string }[];
+    for (const child of waiting) {
+      recordConversationParent(db, child.id, { source: conversation.source, sessionId: ref });
+      const linked = db.prepare("SELECT id AS conversationId, source, session_id AS sessionId FROM conversations WHERE id = ? AND parent_conversation_id IS NOT NULL").get(child.id) as LineageEvidence | undefined;
+      if (linked) exactLinked.push(linked);
+    }
+  }
+  const legacyLinked = db.prepare(`
     UPDATE conversations
        SET parent_conversation_id = ${DECLARED_PARENT_ROW_SQL}
      WHERE parent_session_id = ?
@@ -81,6 +107,7 @@ export function linkWaitingChildren(
        AND ${DECLARED_PARENT_ROW_SQL} IS NOT NULL
      RETURNING id AS conversationId, source, session_id AS sessionId
   `).all(conversation.session_id, conversation.source) as LineageEvidence[];
+  return [...exactLinked, ...legacyLinked];
 }
 
 /**

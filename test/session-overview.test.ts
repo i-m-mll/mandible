@@ -76,11 +76,11 @@ describe("GET /api/sessions/:id/overview", () => {
     const { status, body } = await overview(PARENT);
 
     expect(status).toBe(200);
-    expect(body.session).toMatchObject({ id: PARENT, provider: "codex", process: null });
+    expect(body.session).toMatchObject({ id: `agent:codex:${PARENT}`, provider: "codex", process: null });
     expect(body.children.items.map((child: any) => [child.id, child.parent_id, child.depth])).toEqual([
-      [CHILD, PARENT, 1],
-      [SECOND_CHILD, PARENT, 1],
-      [GRANDCHILD, CHILD, 2],
+      [`agent:codex:${CHILD}`, `agent:codex:${PARENT}`, 1],
+      [`agent:codex:${SECOND_CHILD}`, `agent:codex:${PARENT}`, 1],
+      [`agent:codex:${GRANDCHILD}`, `agent:codex:${CHILD}`, 2],
     ]);
     for (const child of body.children.items) expect(["live", "stopped", "unknown"]).toContain(child.liveness);
     expect(body.work_units.items.map((unit: any) => unit.id)).toEqual(["wu-child"]);
@@ -101,18 +101,18 @@ describe("GET /api/sessions/:id/overview", () => {
 
     const parent = await overview("wrap-1");
     expect(parent.body.session).toMatchObject({
-      id: CLAUDE_SESSION,
+      id: `agent:claude:${CLAUDE_SESSION}:${CLAUDE_SESSION}`,
       provider: "claude",
       liveness: "live",
       conversation_id: "main-row",
       process: { id: "wrap-1", pid: 4242 },
     });
-    expect(parent.body.children.items).toMatchObject([{ id: SUBAGENT, provider: "claude", depth: 1 }]);
+    expect(parent.body.children.items).toMatchObject([{ id: `agent:claude:${CLAUDE_SESSION}:${SUBAGENT}`, provider: "claude", depth: 1 }]);
     expect(parent.body.conversations.items.map((row: any) => row.id)).toEqual(["main-row"]);
 
     const child = await overview(SUBAGENT);
     expect(child.status).toBe(200);
-    expect(child.body.session).toMatchObject({ id: SUBAGENT, conversation_id: "sub-row", process: null });
+    expect(child.body.session).toMatchObject({ id: `agent:claude:${CLAUDE_SESSION}:${SUBAGENT}`, conversation_id: "sub-row", process: null });
     expect(child.body.children.items).toEqual([]);
   });
 
@@ -122,8 +122,8 @@ describe("GET /api/sessions/:id/overview", () => {
 
     const ambiguous = await overview(PARENT.slice(0, 9));
     expect(ambiguous.body.status).toBe("ambiguous");
-    expect(ambiguous.body.candidates.map((c: any) => c.id).sort()).toEqual([CHILD, PARENT].sort());
-    expect((await overview(PARENT.slice(0, 13))).body.session).toMatchObject({ id: PARENT });
+    expect(ambiguous.body.candidates.map((c: any) => c.id).sort()).toEqual([`agent:codex:${CHILD}`, `agent:codex:${PARENT}`].sort());
+    expect((await overview(PARENT.slice(0, 13))).body.session).toMatchObject({ id: `agent:codex:${PARENT}` });
     expect((await overview("ffffffff-0000")).status).toBe(404);
   });
 });

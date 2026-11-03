@@ -1,3 +1,5 @@
+import { parseExactAgentRef } from "../ambient-provider-identity.js";
+import { responsibilityActor } from "../responsibility.js";
 import { getDb } from "../db.js";
 import { entityRefs, resolveId, resolveSessionRef } from "../entity-refs.js";
 import { navigateToSession } from "../navigate.js";
@@ -29,7 +31,7 @@ import {
 import {
   SESSION_DESCENDANT_COUNT_LIMIT,
   SESSION_DESCENDANT_DEPTH_LIMIT,
-  sessionConversationsSql,
+  sessionConversationTarget,
   sessionDescendants,
   sessionFamilyAliasIds,
   summarizeResolvedSession,
@@ -92,20 +94,22 @@ function sessionOverview(db: Db, resolution: SessionAliasResolution): Record<str
            state, assigned_session_id, provider, provider_session_id, worker_provider_session_id,
            created_at, activated_at, last_commit_at, resolved_at, auth_request_id
     FROM work_units
-    WHERE assigned_session_id IN (${familyPlaceholders})
+    WHERE json_extract(assignment_target_json, '$.agent_ref') IN (${familyPlaceholders})
+       OR assigned_session_id IN (${familyPlaceholders})
        OR provider_session_id IN (${familyPlaceholders})
        OR worker_provider_session_id IN (${familyPlaceholders})
     ORDER BY created_at DESC
-  `).all(...family, ...family, ...family);
+  `).all(...family, ...family, ...family, ...family);
 
+  const conversationTarget = sessionConversationTarget(session.id);
   const conversations = db.prepare(`
     SELECT c.id, c.source, c.title, c.session_id, c.started_at, c.ended_at, c.block_count,
            c.model, c.branch, c.cwd, c.updated_at
     FROM conversations c
-    WHERE ${sessionConversationsSql("c", "?1")}
+    WHERE ${conversationTarget.where}
     ORDER BY c.started_at DESC
     LIMIT ${OVERVIEW_CONVERSATIONS_LIMIT}
-  `).all(session.id);
+  `).all(...conversationTarget.params);
 
   return {
     as_of: Date.now(),
@@ -125,6 +129,12 @@ function sessionOverview(db: Db, resolution: SessionAliasResolution): Record<str
 
 // Bug: caa157e — resolve session ID prefix, returning resolved ID or sending error response
 function resolveSessionId(id: string, res: ResponseLike): string | null {
+  if (parseExactAgentRef(id)) {
+    const resolution = resolveSessionAlias(getDb(), id);
+    if (resolution?.mandible_session_id) return resolution.mandible_session_id;
+    sendJson(res, 404, { error: "Session process not found" });
+    return null;
+  }
   const resolved = resolveId(getDb(), "session_row", id);
   if (resolved.ok) {
     return resolved.id;
@@ -172,9 +182,10 @@ export function registerSessionRoutes(
       sendJson(res, 400, { error: "Missing session id" });
       return;
     }
+    const payload = readBody<SessionUpdate & { pinned?: number }>(req);
+    if (Object.hasOwn(payload, "status") && refuseChildProcessScope(req, res)) return;
     const id = resolveSessionId(rawId, res);
     if (!id) return;
-    const payload = readBody<SessionUpdate & { pinned?: number }>(req);
     const updated = registry.updateSession(id, payload);
     if (!updated) {
       sendJson(res, 404, { error: "Session not found" });
@@ -188,6 +199,7 @@ export function registerSessionRoutes(
   }, { operation: { id: "patch:/api/sessions/:id", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "allow" });
 
   server.patch("/api/sessions/:id/end", (req, res) => {
+    if (refuseChildProcessScope(req, res)) return;
     const rawId = req.params.id;
     if (!rawId) {
       sendJson(res, 400, { error: "Missing session id" });
@@ -442,6 +454,7 @@ export function registerSessionRoutes(
 
   // Bug: 14e1e63 — write Reaper Notice before killing so it appears before pane-loop restarts
   server.post("/api/sessions/:id/kill", (req, res) => {
+    if (refuseChildProcessScope(req, res)) return;
     const rawId = req.params.id;
     if (!rawId) {
       sendJson(res, 400, { error: "Missing session id" });
@@ -491,7 +504,8 @@ export function registerSessionRoutes(
   // any alias resolveSessionAlias resolves; the link is keyed on
   // sessionLinkKey and never creates a sessions row (issue 2043af5).
   server.post("/api/sessions/:id/issues", (req, res) => {
-    const rawSessionId = req.params.id;
+    const caller = req.ambient_identity ? responsibilityActor(req) : null;
+    const rawSessionId = caller?.session_id && req.params.id === req.ambient_identity?.agent_id ? caller.session_id : req.params.id;
     if (!rawSessionId) {
       sendJson(res, 400, { error: "Missing session id" });
       return;
@@ -584,4 +598,16 @@ export function registerSessionRoutes(
   }, { operation: { id: "get:/api/sessions/:id/issues", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow",
     refs: { params: { id: entityRefs.session } } });
 
+}
+
+function refuseChildProcessScope(req: import("../server.js").RequestLike, res: ResponseLike): boolean {
+  const identity = req.ambient_identity;
+  responsibilityActor(req);
+  const target = req.params.id ? parseExactAgentRef(req.params.id) : null;
+  if ((identity?.provider === "claude" && identity.agent_id && identity.agent_id !== identity.session_id)
+    || (target?.provider === "claude" && target.agent_id !== target.session_id)) {
+    sendJson(res, 409, { code: "unsupported-scope", error: "Claude native children do not own the enclosing process." });
+    return true;
+  }
+  return false;
 }

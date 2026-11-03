@@ -13,8 +13,7 @@ import type { ConversationRow } from "../ledger-reads/conversations.js";
 
 import { getDb } from "../db.js";
 import { entityRefs, resolveSessionRef } from "../entity-refs.js";
-import { sessionAliasIds } from "../session-liveness.js";
-import { sessionConversationsSql } from "../session-summary.js";
+import { sessionConversationTarget } from "../session-summary.js";
 import {
   ClientAuthzError,
   attributionForRequest,
@@ -272,10 +271,9 @@ export function registerConversationRoutes(
     }
     const resolved = resolveSessionRef(db, session!);
     if (resolved.status !== "resolved") return sendJson(res, 200, { status: resolved.status });
-    const aliases = sessionAliasIds(resolved.resolution);
-    const candidates = db.prepare(`SELECT DISTINCT c.id FROM conversations c WHERE ${
-      aliases.map(() => sessionConversationsSql("c")).join(" OR ")
-    } LIMIT 2`).all(...aliases.flatMap((id) => [id, id])) as Array<{ id: string }>;
+    const target = sessionConversationTarget(resolved.resolution.agent_ref ?? resolved.resolution.provider_session_id ?? session!);
+    const candidates = db.prepare(`SELECT DISTINCT c.id FROM conversations c WHERE ${target.where} LIMIT 2`)
+      .all(...target.params) as Array<{ id: string }>;
     if (candidates.length > 1) return sendJson(res, 200, { status: "ambiguous" });
     if (candidates.length === 1) {
       return sendJson(res, 200, { status: "resolved", selection: { type: "conversation", id: candidates[0].id } });
