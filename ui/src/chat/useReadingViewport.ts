@@ -122,6 +122,7 @@ export function useReadingViewport(input: {
   }, [input.protectedKeys, pinKeys, indices, applied?.membership]);
   const applyPending = useRef<() => void>(() => {});
   const engine = useVirtualizer<HTMLDivElement, HTMLDivElement>({
+    enabled: Boolean(input.geometry),
     count: rows.length,
     getScrollElement: () => scrollRef.current,
     getItemKey,
