@@ -1,3 +1,4 @@
+import { operationInputBody,operationResultBody,type OperationInputBody,type OperationResultBody } from './operation-body.js';
 import { extractToolResultText } from './model.js';
 import { operationDefinition, operationInputTargets, operationReceiptTargets } from './operation-registry.js';
 import type { ToolResultContent } from './types.js';
@@ -21,18 +22,22 @@ export function toolObservation(name:string,input:Record<string,unknown> | strin
     const decoded=result?.native?.decoded ? result.native : framed ? programResults(program,framed.text)?.[0] : undefined;
     const media=framed && !framed.decoded && Array.isArray(result?.content) && result.content.some(block=>block.type==='image') ? result.content : undefined;
     const projected=framed ? operationResult(presentation,{...framed,...decoded,...(media && !decoded?.content ? {content:media}:{}),wallTimeSeconds:decoded?.wallTimeSeconds ?? framed.wallTimeSeconds,failed:Boolean(result?.failed || framed.failed || decoded?.failed)}) : undefined;
-    return {name:operation.name,input:operation.input,kind:undefined,result:projected,header:observedHeader(presentation,projected,result?.unloaded)};
+    const inputBody=operationInputBody(presentation,operation.input,{unresolvedSource:operation.input===undefined?typeof input==='string'?input:typeof input.code==='string'?input.code:undefined:undefined});
+    const resultBody=operationResultBody(presentation,projected,operation.input);
+    return {name:operation.name,input:operation.input,kind:undefined,result:projected,inputBody,resultBody,header:observedHeader(presentation,projected,result?.unloaded,inputBody,resultBody)};
   }
   const presentation=header ?? presentTool(name,input,kind);
   const transport=result ? projectToolResult(projectExecution(name,input,kind),result.text,result.frame,result.native,program) : undefined;
   const projected=transport ? operationResult(presentation,{...transport,failed:Boolean(result?.failed || transport.failed)}) : undefined;
-  return {name,input,kind,header:observedHeader(presentation,projected,result?.unloaded),result:projected};
+  const inputBody=operationInputBody(presentation,input,{unresolvedSource:program?.operations.some(operation=>operation.input===undefined)?typeof input==='string'?input:typeof input.code==='string'?input.code:undefined:undefined});
+  const resultBody=operationResultBody(presentation,projected,input);
+  return {name,input,kind,header:observedHeader(presentation,projected,result?.unloaded,inputBody,resultBody),result:projected,inputBody,resultBody};
 }
 
-function observedHeader(header:ToolPresentation,result?:ToolTransportResult,unloaded=false):ToolPresentation {
+function observedHeader(header:ToolPresentation,result?:ToolTransportResult,unloaded=false,inputBody?:OperationInputBody,resultBody?:OperationResultBody):ToolPresentation {
   if(unloaded || (!result && header.hasDetails!==undefined)) return header;
   const reports=result && header.resultAttribution!=='opaque' && header.operation==='thread-wait' ? threadReports(result.text) : null;
-  return {...header,hasDetails:header.resultAttribution==='opaque' || !['thread-read','thread-wait','sleep','tool-discovery','execution-wait'].includes(header.operation ?? '') || Boolean(result && substantiveToolResult(result)),
+  return {...header,hasDetails:Boolean(inputBody&&inputBody.kind!=='none'||resultBody&&resultBody.kind!=='none'),
     ...(result ? {observation:{...(result.wallTimeSeconds!==undefined ? {elapsedSeconds:result.wallTimeSeconds}:{}),...(reports?.length ? {report:reports.every(report=>report.final)?'final' as const:'update' as const}:{})}} : {})};
 }
 

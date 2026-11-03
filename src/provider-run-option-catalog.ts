@@ -28,7 +28,10 @@ export const CLAUDE_CODE_BOOTSTRAP_EFFORTS = [
 
 /** Display only: recognize exact catalog IDs without rewriting unknown model names. */
 export function providerModelLabel(provider: string, modelId: string, fallbackLabel = modelId): string {
+  if(provider==='codex')return /^gpt-([\d.]+)-(sol|astra|terra|luna)$/.test(modelId)?modelId.replace(/^gpt-([\d.]+)-(sol|astra|terra|luna)$/,(_,version,name)=>`GPT-${version} ${name[0].toUpperCase()}${name.slice(1)}`):fallbackLabel;
   if (provider !== "claude_code") return fallbackLabel;
   if (modelId === "claude-opus-5") return "Opus 5";
   return CLAUDE_CODE_BOOTSTRAP_MODELS.find(choice => choice.value === modelId)?.label ?? fallbackLabel;
 }
+
+export function providerEffortLabel(effort:string):string {return CLAUDE_CODE_BOOTSTRAP_EFFORTS.find(choice=>choice.value===effort)?.label??effort;}

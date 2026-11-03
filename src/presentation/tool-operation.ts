@@ -52,51 +52,32 @@ export function substantiveToolResult(result:ToolTransportResult):boolean {
 
 export type ThreadReport = {threadId:string;hostId?:string;text:string;final:boolean;truncated?:boolean;originalChars?:number};
 const record=(value:unknown):value is Record<string,unknown>=>Boolean(value) && typeof value==='object' && !Array.isArray(value);
-const knownKeys=(value:Record<string,unknown>,keys:readonly string[]):boolean=>Object.keys(value).every(key=>keys.includes(key));
-/** Only the native thread-wait report envelope identifies a returned child report. */
-export function threadReports(text:string):ThreadReport[] | null {
-  let value:unknown;
-  try {value=JSON.parse(text);} catch{return null;}
-  if(!value || typeof value!=='object' || Array.isArray(value)) return null;
-  const envelope=value as Record<string,unknown>;
-  if(typeof envelope.timedOut!=='boolean' || !Array.isArray(envelope.polls) || !knownKeys(envelope,['timedOut','wake','polls'])) return null;
-  if(envelope.wake!=null && (!record(envelope.wake) || !knownKeys(envelope.wake,['reason','turnId','threadId','hostId']))) return null;
+export type ThreadWaitBody={reports:ThreadReport[];residual?:string};
+const extras=(value:Record<string,unknown>,known:readonly string[])=>Object.fromEntries(Object.entries(value).filter(([key,value])=>!known.includes(key)&&value!=null));
+/** Decode the provider envelope once; unfamiliar substantive fields remain visible. */
+export function threadWaitBody(text:string):ThreadWaitBody|null {
+  let value:unknown;try{value=JSON.parse(text);}catch{return null;}
+  if(!record(value)||typeof value.timedOut!=='boolean'||!Array.isArray(value.polls))return null;
   const reports:ThreadReport[]=[];
-  for(const entry of envelope.polls) {
-    if(!entry || typeof entry!=='object') return null;
-    const poll=entry as Record<string,unknown>;
-    if(!knownKeys(poll,['schemaVersion','cursor','revision','changed','thread','latestTurn','latestAssistantMessageId','latestAssistantMessage','latestToolMarkerId','latestToolMarker'])) return null;
-    const turn=poll.latestTurn;
-    if(turn!=null && (!record(turn) || !knownKeys(turn,['id','status','error','startedAt','completedAt','durationMs']))) return null;
-    const marker=poll.latestToolMarker;
-    if(marker!=null && (!record(marker) || !knownKeys(marker,['id','turnId','type','name','status']))) return null;
-    if(poll.error!=null || (turn && typeof turn==='object' && (turn as Record<string,unknown>).error!=null)) return null;
+  const residual:unknown[]=[];
+  const envelope=extras(value,['timedOut','wake','polls']);if(Object.keys(envelope).length)residual.push(envelope);
+  if(value.wake!=null){if(!record(value.wake))return null;const extra=extras(value.wake,['reason','turnId','threadId','hostId']);if(Object.keys(extra).length)residual.push({wake:extra});}
+  for(const poll of value.polls){
+    if(!record(poll)||!record(poll.thread)||typeof poll.thread.id!=='string')return null;
+    const extra=extras(poll,['schemaVersion','cursor','revision','changed','thread','latestTurn','latestAssistantMessageId','latestAssistantMessage','latestToolMarkerId','latestToolMarker','text']);
+    const threadExtra=extras(poll.thread,['id','hostId','status']);if(Object.keys(threadExtra).length)extra.thread=threadExtra;
+    if(poll.latestTurn!=null){if(!record(poll.latestTurn))return null;const turnExtra=extras(poll.latestTurn,['id','status','startedAt','completedAt','durationMs']);if(turnExtra.error==null)delete turnExtra.error;if(Object.keys(turnExtra).length)extra.latestTurn=turnExtra;}
+    if(poll.thread.status!=null){if(!record(poll.thread.status))return null;const statusExtra=extras(poll.thread.status,['type','activeFlags']);if(Object.keys(statusExtra).length)extra.threadStatus=statusExtra;}
+    if(poll.latestToolMarker!=null){if(!record(poll.latestToolMarker))return null;const markerExtra=extras(poll.latestToolMarker,['id','turnId','type','name','status']);if(Object.keys(markerExtra).length)extra.latestToolMarker=markerExtra;}
     const message=poll.latestAssistantMessage;
-    const thread=poll.thread;
-    if(!record(thread) || !knownKeys(thread,['id','hostId','status']) || (thread.status!=null && (!record(thread.status) || !knownKeys(thread.status,['type'])))) return null;
-    if(!message) continue;
-    if(typeof message!=='object') return null;
-    const body=message as Record<string,unknown>;
-    const target=thread as Record<string,unknown>;
-    if(typeof body.text!=='string' || typeof target.id!=='string' || !knownKeys(body,['id','turnId','phase','text','truncated','originalChars']) || !knownKeys(target,['id','hostId','status'])
-      || (body.truncated!==undefined && typeof body.truncated!=='boolean') || (body.originalChars!==undefined && (typeof body.originalChars!=='number' || !Number.isSafeInteger(body.originalChars) || body.originalChars<0))
-      || (target.status!=null && (!record(target.status) || !knownKeys(target.status,['type'])))) return null;
-    if(body.text.trim()) reports.push({threadId:target.id,...(typeof target.hostId==='string'?{hostId:target.hostId}:{}),text:body.text,final:body.phase==='final_answer',...(typeof body.truncated==='boolean'?{truncated:body.truncated}:{}),...(typeof body.originalChars==='number'?{originalChars:body.originalChars}:{})});
+    if(message!=null&&!record(message))return null;
+    const body=record(message)?message:poll;
+    if(body.text!=null&&typeof body.text!=='string')return null;
+    if(typeof body.text==='string'&&body.text.trim())reports.push({threadId:poll.thread.id,...(typeof poll.thread.hostId==='string'?{hostId:poll.thread.hostId}:{}),text:body.text,final:body.phase==='final_answer',...(body.truncated===true?{truncated:true}:{}),...(typeof body.originalChars==='number'?{originalChars:body.originalChars}:{})});
+    if(record(message)){const messageExtra=extras(message,['id','turnId','phase','text','truncated','originalChars']);if(Object.keys(messageExtra).length)extra.latestAssistantMessage=messageExtra;}
+    if(Object.keys(extra).length)residual.push({threadId:poll.thread.id,...extra});
   }
-  return reports;
+  return {reports,...(residual.length?{residual:JSON.stringify(residual,null,2)}:{})};
 }
-
-function emptyThreadWait(text:string):boolean {
-  let value:unknown;
-  try {value=JSON.parse(text);} catch{return false;}
-  const object=(entry:unknown):entry is Record<string,unknown>=>Boolean(entry) && typeof entry==='object' && !Array.isArray(entry);
-  const keys=(entry:Record<string,unknown>,allowed:string[])=>Object.keys(entry).every(key=>allowed.includes(key));
-  if(!object(value) || !keys(value,['timedOut','wake','polls']) || typeof value.timedOut!=='boolean' || !Array.isArray(value.polls)) return false;
-  if(value.wake!=null && (!object(value.wake) || !keys(value.wake,['reason','turnId','threadId','hostId']))) return false;
-  return value.polls.every(poll=>object(poll) && keys(poll,['schemaVersion','cursor','revision','changed','thread','latestTurn','latestAssistantMessageId','latestAssistantMessage','latestToolMarkerId','latestToolMarker'])
-    && poll.latestAssistantMessage==null
-    && object(poll.thread) && keys(poll.thread,['id','hostId','status'])
-    && object(poll.thread.status) && keys(poll.thread.status,['type'])
-    && (poll.latestTurn==null || (object(poll.latestTurn) && poll.latestTurn.error==null && keys(poll.latestTurn,['id','status','error','startedAt','completedAt','durationMs'])))
-    && (poll.latestToolMarker==null || (object(poll.latestToolMarker) && keys(poll.latestToolMarker,['id','turnId','type','name','status']))));
-}
+export function threadReports(text:string):ThreadReport[]|null{return threadWaitBody(text)?.reports??null;}
+function emptyThreadWait(text:string):boolean{const body=threadWaitBody(text);return body!==null&&!body.reports.length&&!body.residual;}

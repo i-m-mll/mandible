@@ -140,7 +140,7 @@ export function presentTool(
   if (category) {
     const definition = DEFINITIONS[category];
     return {
-      operation:['read','edit','write','delete','move'].includes(category)?`file-${category}`:category,
+      operation:category==='execute'?'command':['read','edit','write','delete','move'].includes(category)?`file-${category}`:category,
       category,
       icon: definition.icon,
       phrase: category === 'other' ? 'Used ' + toolName.trim() : definition.phrase,

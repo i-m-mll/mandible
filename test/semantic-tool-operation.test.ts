@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest';
 import { projectToolProgram } from '../src/presentation/tool-program';
 import { toolObservation,operationObservationForTool,presentationForObservation } from '../src/presentation/tool-observation';
-import { operationState, operationResult, substantiveToolResult, threadReports } from '../src/presentation/tool-operation';
+import { operationState, operationResult, substantiveToolResult, threadReports, threadWaitBody } from '../src/presentation/tool-operation';
 import { rawToolResult, codexResultFrame } from '../src/presentation/tool-transport';
 
 it('projects complete transparent wrappers while retaining arbitrary computation as source', () => {
@@ -42,7 +42,10 @@ it('suppresses only a known empty patch acknowledgement and retains reports, err
   const value=toolObservation('codex_app__wait_threads',{targets:[{threadId:'child',hostId:'local'}]},undefined,{text:JSON.stringify(report)});
   expect(threadReports(value.result!.text)).toMatchObject([{threadId:'child',text:report.polls[0].latestAssistantMessage.text,final:true,truncated:true,originalChars:32186}]);
   expect(substantiveToolResult(value.result!)).toBe(true);
-  expect(threadReports(JSON.stringify({...report,polls:[{...report.polls[0],latestAssistantMessage:{...report.polls[0].latestAssistantMessage,diagnostic:'must remain visible'}}]}))).toBeNull();
+  const enriched=threadWaitBody(JSON.stringify({...report,polls:[{...report.polls[0],latestAssistantMessage:{...report.polls[0].latestAssistantMessage,diagnostic:'must remain visible'}}]}));
+  expect(enriched?.reports[0].text).toBe(report.polls[0].latestAssistantMessage.text);
+  expect(enriched?.residual).toContain('must remain visible');
+  expect(threadWaitBody(JSON.stringify({timedOut:true,polls:[{thread:{id:'child'},text:'intermediate source text'}]}))?.reports[0].text).toBe('intermediate source text');
   const failure=toolObservation('exec','text(await tools.exec_command({cmd:"false"}))',undefined,{text:JSON.stringify({output:'diagnostic',exit_code:7,wall_time_seconds:0.1})});
   expect(operationState('completed',failure.result)).toBe('failed');
   expect(threadReports('arbitrary application output')).toBeNull();
