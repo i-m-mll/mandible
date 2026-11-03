@@ -1,4 +1,4 @@
-import { Activity, ArrowDown, ArrowRightLeft, ArrowUp, ArrowUpRight, Bot, Bug, Check, ChevronDown, ChevronRight, ChevronsUp, Circle, CircleDot, CloudDownload, CloudUpload, Code, Copy, Download, Ellipsis, FilePenLine, FilePlus2, FileText, FileX2, GitFork, Globe, History, Image, Info, Lightbulb, Link, ListTodo, MessageSquare, MousePointer2, Paintbrush, Pencil, Play, Plus, Search, Settings, ShieldAlert, Square, SquareCheck, SquareTerminal, TriangleAlert, Workflow, X, type LucideIcon } from 'lucide-preact';
+import { Activity, ArrowDown, ArrowRightLeft, ArrowUp, ArrowUpRight, Bot, Bug, Check, ChevronDown, ChevronRight, ChevronUp, ChevronsUp, Circle, CircleDot, CloudDownload, CloudUpload, Code, Copy, Download, Ellipsis, FilePenLine, FilePlus2, FileText, FileX2, GitFork, Globe, History, Image, Info, Lightbulb, Link, ListTodo, MessageSquare, MousePointer2, Paintbrush, Pencil, Play, Plus, Search, Settings, ShieldAlert, Square, SquareCheck, SquareTerminal, TriangleAlert, Workflow, X, type LucideIcon } from 'lucide-preact';
 import type { IconSourceProps } from './types';
 
 function PaintbrushIcon({ size = 16, ...props }: IconSourceProps) {
@@ -23,6 +23,8 @@ export const lucideSet = {
   planPending: lucideIcon(Circle),
   disclosureTextCollapsed: lucideIcon(ChevronRight),
   disclosureTextExpanded: lucideIcon(ChevronDown),
+  disclosureMore: lucideIcon(ChevronDown),
+  disclosureLess: lucideIcon(ChevronUp),
   sectionCollapsed: lucideIcon(ChevronRight),
   sectionExpanded: lucideIcon(ChevronDown),
   sortAscending: lucideIcon(ArrowUp),
