@@ -258,7 +258,7 @@ export function ToolCard({
       return <ToolCard key={index} toolName={operation.name} input={operation.input} header={operation.header}
         observation={observation?.children?.[index]}
         executionEvidence={observation?.children?.[index]?.execution}
-        detailsAvailable={input===undefined&&detailsAvailable} withinCollection
+        detailsAvailable={inputBody.kind==='unloaded'} withinCollection
         headerMetadata={withinCollection && index===projectedChildren!.length-1 ? headerMetadata : undefined}
         expanded={getDisclosureExpanded?.(key,withinCollection && Boolean(expanded))}
         onExpandedChange={(next,trigger)=>onDisclosureExpandedChange?.(key,next,trigger)}
@@ -377,5 +377,6 @@ export function ToolUseBlock(props: ToolUseBlockProps): JSX.Element {
   const observation=toolObservation(operationName,operationInput,operationKind,props.result ? {text:props.result.fullText ?? extractResultText(props.result.content),content:props.result.content,frame:props.result.source?.toolFrame,native:props.result.presentation,failed:props.result.is_error,unloaded:props.detailsAvailable} : undefined,props.header);
   const indexedHeader=props.observation?presentationForObservation(props.observation,operationKind):undefined;
   const header=indexedHeader?{...observation.header,...indexedHeader,target:observation.header.target,children:indexedHeader.children}:observation.header;
-  return <ToolCard {...props} executionEvidence={props.observation?.execution??props.executionEvidence} toolName={observation.name} toolKind={observation.kind} input={operationInput===undefined ? undefined : observation.input} header={header} inputBody={operationInput===undefined?operationInputBody(header,undefined,{unloaded:props.detailsAvailable}):observation.inputBody} resultBody={observation.resultBody} resultPresentation={observation.result&&props.observation?.timing?{...observation.result,wallTimeSeconds:props.observation.timing.elapsedSeconds}:observation.result} />;
+  const sourceInputBody=operationInputBody(header,operationInput,{unloaded:props.detailsAvailable});
+  return <ToolCard {...props} executionEvidence={props.observation?.execution??props.executionEvidence} toolName={observation.name} toolKind={observation.kind} input={operationInput===undefined ? undefined : observation.input} header={header} inputBody={sourceInputBody.kind==='unloaded'?sourceInputBody:observation.inputBody} resultBody={observation.resultBody} resultPresentation={observation.result&&props.observation?.timing?{...observation.result,wallTimeSeconds:props.observation.timing.elapsedSeconds}:observation.result} />;
 }

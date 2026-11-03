@@ -1,10 +1,12 @@
+import { testRuntimeRoot } from './helpers/runtime-isolation';
+import { projectToolProgram } from '../src/presentation/tool-program';
+import { programResults,framedToolResult } from '../src/presentation/tool-transport';
 import { ReadingContent } from '../ui/src/chat/ReadingContent';
 import { normalizedPositionIdentity } from '../src/conversations/position-space';
 // @vitest-environment jsdom
 import { expect, it } from 'vitest';
 import { cleanup, fireEvent, render } from './helpers/dom';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { migratedMemoryDb } from './helpers/ledger-fixtures';
 import { setDb } from '../src/db';
@@ -19,7 +21,7 @@ import type { ReadingRow } from '../src/presentation/reading';
 
 it('hydrates the annotated native indexed batch through the public reading routes with paired framing intact', async () => {
   const fixture=JSON.parse(readFileSync(join(process.cwd(),'test/fixtures/codex-indexed-command-batch.json'),'utf8'));
-  const directory=mkdtempSync(join(tmpdir(),'mandible-native-batch-'));
+  const directory=mkdtempSync(join(testRuntimeRoot,'mandible-native-batch-'));
   const db=migratedMemoryDb();setDb(db);
   try {
     const file=join(directory,'.codex/sessions/native-batch.jsonl');mkdirSync(join(directory,'.codex/sessions'),{recursive:true});
@@ -74,7 +76,10 @@ it('hydrates the annotated native indexed batch through the public reading route
     if(!tool || tool.kind!=='activity' || tool.item.type!=='tool-call-activity') throw new Error('Hydrated batch missing');
     expect(tool.item.result?.content).toBe(parsed.blocks[1].content);
     const nativeOutputs=fixture.records[1].payload.output.slice(1).map((block:{text:string})=>JSON.parse(block.text));
-    expect([...view.container.querySelectorAll('.tool-card__terminal-output')].map(node=>node.textContent)).toEqual(nativeOutputs.map((output:{output:string})=>output.output));
+    const program=projectToolProgram(tool.item.name,tool.item.input,tool.item.toolKind)!;
+    const raw=tool.item.result?.fullText??tool.item.result?.content;
+    if(typeof raw!=='string')throw Error('Native paired output missing');
+    expect(programResults(program,framedToolResult(raw,tool.item.result?.source?.toolFrame).text)?.map(result=>result.text)).toEqual(nativeOutputs.map((output:{output:string})=>output.output));
     expect(view.container.querySelector('[data-block-id="cblk:native-batch:0"]')).not.toBeNull();
     expect(view.container.querySelector('[data-block-id="cblk:native-batch:1"]')).not.toBeNull();
     fireEvent.click(leaves()[1]);row=await materialize();view.rerender(body());

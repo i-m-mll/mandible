@@ -1,3 +1,4 @@
+import { presentActivityRunFacts } from '../presentation/activity-presentation.js';
 import { readingDisclosureState } from '../presentation/reading-disclosures.js';
 import { buildReadingManifest, planConversationReading, type ConversationReadingManifest } from '../presentation/reading-manifest.js';
 import { projectReadingRows, type ReadingRow } from '../presentation/reading.js';
@@ -111,13 +112,19 @@ export async function readReadingRowBatch(input: {
     const member = retained.membersByKey.get(key);
     return member && readingDisclosureState(member.disclosures, request.expanded, { streaming: request.streaming, lastAssistantTurnId: manifest.lastAssistantTurnId }).some(([, expanded]) => expanded) ? [...member.sourcePositions] : [];
   })));
+  for(const row of requested)if(row.kind==='activity-summary'&&row.disclosureOwner)for(const position of manifest.summarySources[row.disclosureOwner]??[])if(row.sourcePositions.includes(position))details.add(position);
   const events = displayEventsFromBlocks(blocks.value.map(block => {
     const projected = details.has(block.position) ? { ...block, details_loaded: true as const } : projectDisplayBlock(block);
     return { ...projected, metadata: JSON.parse(projected.metadata_json),
       parentPosition: block.parent_id ? Number(block.parent_id.slice(block.parent_id.lastIndexOf(':') + 1)) : null };
   }), conversationId);
   const hydrated = projectReadingRows({ events, conversationId, positionSpaceId: source.position_space_id,
-    readingContext: byPosition,positionFacts:retained.positionsByPosition, displayContext:{...display.value,activity_runs:display.value.activity_runs.map(run=>({...run,...manifest.runs[run.id]}))},
+    readingContext: byPosition,positionFacts:retained.positionsByPosition, displayContext:{...display.value,activity_runs:display.value.activity_runs.map(run=>{
+      const indexed=manifest.runs[run.id];if(!indexed)return run;
+      const facts={...indexed.presentation.facts,labels:run.presentation.facts.labels,
+        ...(manifest.summarySources[run.id]?.includes(run.first.position)?{firstSummary:run.presentation.facts.firstSummary}:{})};
+      return {...run,...indexed,presentation:{...presentActivityRunFacts(facts),facts}};
+    })},
     expanded: request.expanded, streaming: request.streaming });
   const hydratedByKey = new Map(hydrated.rows.map(row => [row.key, row]));
   const rows: Array<ReadingRow & { revision: string }> = [];

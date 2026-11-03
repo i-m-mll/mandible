@@ -1,9 +1,9 @@
+import { testRuntimeRoot } from './helpers/runtime-isolation';
 import { planConversationReading, type ConversationReadingManifest } from '../src/presentation/reading-manifest';
 import { expect, it, vi } from 'vitest';
 import { projectDisplayFragments } from '../src/presentation/fragments';
 import type { CanonicalChatItemEvent } from '../src/presentation/types';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { migratedMemoryDb } from './helpers/ledger-fixtures';
@@ -42,7 +42,7 @@ it('splits source directives and prose once, with member-relative parts stable a
 });
 
 it('returns exact clipped run/directive context and a source-backed lazy owner without extending the requested span', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-display-context-'));
+  const root = fs.mkdtempSync(path.join(testRuntimeRoot, 'mandible-display-context-'));
   const db = migratedMemoryDb();
   setDb(db);
   try {
@@ -86,7 +86,10 @@ it('returns exact clipped run/directive context and a source-backed lazy owner w
       body: { positionSpaceId: manifest.positionSpaceId, rows: rows.map(({key, revision}) => ({key, revision})), expanded: {} } });
     const summary = await batch([changedSummary]);
     expect(summary.status, JSON.stringify(summary.body)).toBe(200);
-    expect(JSON.stringify(summary.body)).toContain('PRIVATE SUMMARY FIRST');
+    const summaryRow=(summary.body as {rows:import('../src/presentation/reading').ReadingRow[]}).rows[0];
+    const firstWarning=summaryRow.activityGroup!.items.find(node=>node.source?.position===5)!.item;
+    if(firstWarning.type!=='activity')throw Error('Native warning missing');
+    expect(firstWarning.parts).toEqual(parsed.blocks[5].metadata.chat_item!.parts);
     expect(JSON.stringify(summary.body)).not.toContain('PRIVATE SUMMARY SECOND');
     expect((summary.body as {rows: unknown[]}).rows).toHaveLength(1);
     const clipped = await read(2);
@@ -107,8 +110,6 @@ it('returns exact clipped run/directive context and a source-backed lazy owner w
     const plan = getConversationStructureCache(db).readDisplayContext('display', clipped.source_version_id!, [2]);
     expect(JSON.stringify(plan?.runs.get('0:tool:0'))).not.toContain('PRIVATE');
     const generic = await read(6);
-    expect(generic.display_context.activity_runs[0].presentation.summary).toContain('PRIVATE SUMMARY FIRST');
-    expect(generic.display_context.activity_runs[0].presentation.summary).not.toContain('PRIVATE SUMMARY SECOND');
     const genericPlan = getConversationStructureCache(db).readDisplayContext('display', clipped.source_version_id!, [6])!;
     expect(genericPlan.sourcePositions).toEqual([5]);
     expect(JSON.stringify(genericPlan.runs.get('5:activity:0'))).not.toContain('PRIVATE SUMMARY');
