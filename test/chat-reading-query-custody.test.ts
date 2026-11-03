@@ -13,7 +13,7 @@ vi.mock('../ui/src/client-auth-token', () => ({ browserSessionFetch: (_url: stri
   transport.calls.push({ signal, finish: resolve });
 }) }));
 vi.mock('../src/presentation/reading-composition', () => ({
-  composeConversationReading: ({manifest}: any) => ({plan: {rows: [{key: 'row', revision: manifest.revision, sourcePositions: []}], membership: new Map()}, actionRuns: new Map()}),
+  composeConversationReading: ({manifest}: any) => ({plan: {rows: (manifest.keys??['row']).map((key:string)=>({key, revision: manifest.revision, sourcePositions: []})), membership: new Map(),viewMembership:new Map()}, actionRuns: new Map()}),
   readingCompositionRequests: (_composition: any, refs: any) => refs,
   materializeConversationReading: (_composition: any, _refs: any, rows: any) => ({status: 'source', rows}),
 }));
@@ -36,6 +36,33 @@ it('does not let obsolete measurement cancel an overlapping visible row read', a
   expect(queryClient.getQueryCache().findAll({ queryKey: ['chat', 'conversation', 'conv', 'reading-batch'] })).toHaveLength(1);
   lease.release(); lease.release();
   expect(queryClient.getQueryCache().findAll({ queryKey: ['chat', 'conversation', 'conv', 'reading-batch'] })).toHaveLength(0);
+});
+
+it('publishes ready visible source rows while another shared group remains pending and transfers overlapping custody',async()=>{
+  let reading!:ReturnType<typeof useCompleteReading>;
+  const empty:[]=[];const expanded={};const revisions={};
+  const local={rows:[],membership:new Map(),viewMembership:new Map(),actionRuns:new Map()};
+  function Harness(){reading=useCompleteReading({scope:'partial',space:'space',events:empty,extraRows:empty,expanded,
+    disclosureRevisions:revisions,local,enabled:true,initial:false,actionIdentity:''});return null;}
+  render(h(Harness,{}));
+  await waitFor(()=>expect(transport.calls).toHaveLength(1));
+  await act(async()=>transport.calls[0].finish(new Response(JSON.stringify({status:'source',manifest:{revision:'same',keys:['ready','pending']}}))));
+  await waitFor(()=>expect(transport.calls).toHaveLength(2));
+  const [ready,pending]=reading.rows;
+  const measurementController=new AbortController();
+  const measurement=reading.acquireMeasurement([pending],measurementController.signal);
+  await waitFor(()=>expect(transport.calls).toHaveLength(3));
+  act(()=>reading.onRange({vector:reading.rows,required:[ready,pending],visible:[ready,pending],prefetch:[],start:0,end:400,height:400}));
+  await act(async()=>{await Promise.resolve();});
+  expect(transport.calls).toHaveLength(3);
+  expect(transport.calls[1].signal.aborted).toBe(false);
+  const body=(ref:typeof ready)=>({...ref,kind:'content',nodes:[],items:[],sources:[]});
+  await act(async()=>transport.calls[1].finish(new Response(JSON.stringify({status:'source',rows:[body(ready)]}))));
+  await waitFor(()=>expect(reading.getBody(ready)).toBeTruthy());
+  expect(reading.getBody(pending)).toBeUndefined();
+  expect(transport.calls[2].signal.aborted).toBe(false);
+  await act(async()=>{transport.calls[2].finish(new Response(JSON.stringify({status:'source',rows:[body(pending)]})));(await measurement).release();});
+  await waitFor(()=>expect(reading.getBody(pending)).toBeTruthy());
 });
 
 

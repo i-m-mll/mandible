@@ -148,11 +148,23 @@ export function useCompleteReading(input: {
         if (!composition) throw new ReadingPresentationError('unavailable', 'The complete presentation is not available.');
         const durable = missing.filter(row => !extras.has(row.key));
         const requests = readingCompositionRequests(composition, durable);
-        const canonical = requests.length ? (lease = await acquirePresentationRows(input.scope, { positionSpaceId: input.space, rows: requests, expanded: input.expanded, streaming: input.streaming }, signal)).rows : [];
+        const received=new Map<string,ReadingRow>();
+        const partial=new Map<string,ReadingRow>();
+        const acceptReady=(canonical:readonly ReadingRow[])=>{
+          if(signal.aborted||current.current.input.scope!==input.scope||current.current.input.space!==input.space)return;
+          for(const row of canonical)received.set(row.key,row);
+          const ready=durable.filter(ref=>!partial.has(ref.key)&&readingCompositionRequests(composition,[ref]).every(dependency=>received.has(dependency.key)));
+          if(!ready.length)return;
+          const composed=materializeConversationReading(composition,ready,[...received.values()]);
+          if(composed.status!=='source')return;
+          const additions=ready.map((ref,index)=>{const body={...composed.rows[index],revision:ref.revision};partial.set(ref.key,body);return {ref,body};});
+          publishBodies(additions);
+        };
+        const canonical = requests.length ? (lease = await acquirePresentationRows(input.scope, { positionSpaceId: input.space, rows: requests, expanded: input.expanded, streaming: input.streaming }, signal,acceptReady)).rows : [];
         const composed = materializeConversationReading(composition, durable, canonical);
         if (composed.status !== 'source') throw new ReadingPresentationError('unavailable', composed.reason);
         const byKey = new Map([...cachedByKey, ...[...composed.rows, ...input.extraRows].map(row => [row.key, row] as const)]);
-        result = refs.map(ref => { const body = byKey.get(ref.key); if (!body) throw new Error('Requested presentation row is unavailable.'); return { ...body, revision: ref.revision }; });
+        result = refs.map(ref => { const body = partial.get(ref.key)??byKey.get(ref.key); if (!body) throw new Error('Requested presentation row is unavailable.'); return partial.has(ref.key)?body:{ ...body, revision: ref.revision }; });
       }
       if (!signal.aborted) publishBodies(refs.map((ref, index) => ({ ref, body: result[index] })));
       return { bodies: result, release: () => lease?.release() };
@@ -174,30 +186,38 @@ export function useCompleteReading(input: {
     publishBodies();
     const requiredKeys = new Set(required.map(readingBodyKey));
     const missingRequired = required.filter(ref => !bodyRef.current.has(readingBodyKey(ref)));
+    const visibleKeys=new Set((demand.current?.visible??required).map(row=>row.key));
+    const missingVisible=missingRequired.filter(row=>visibleKeys.has(row.key));
+    const desiredVisible=missingVisible.slice(0,16);
     for (const key of failures.current.keys()) if (!wantedKeys.has(key)) failures.current.delete(key);
     setHydrationError(missingRequired.map(ref => failures.current.get(readingBodyKey(ref))).find(Boolean) ?? null);
     const running = active.current;
+    let superseded:typeof running=null;
     if (running) {
       const useful = running.refs.some(ref => wantedKeys.has(readingBodyKey(ref)));
       const related = running.refs.some(ref => requiredKeys.has(readingBodyKey(ref)));
       const invalid = running.scope !== input.scope || running.space !== input.space || running.refs.some(ref => !currentKeys.has(readingBodyKey(ref)));
-      if (invalid || !useful || (missingRequired.length > 0 && !related)) {
+      const coverage=new Set(running.refs.map(readingBodyKey));
+      if (invalid || !useful || desiredVisible.some(ref=>!coverage.has(readingBodyKey(ref))) || (missingRequired.length > 0 && !related)) {
         traceReadingAcquisition({event:'viewport-cancel',scope:input.scope,keys:running.refs.map(row=>row.key)});
-        running.controller.abort(); active.current = null;
+        superseded=running;active.current = null;
       } else return;
     }
     if (publicationBlocked.current !== null) {
-      if (publication <= publicationBlocked.current) return;
+      if (publication <= publicationBlocked.current) {superseded?.controller.abort();return;}
       publicationBlocked.current = null;
     }
-    const missing = (missingRequired.length ? missingRequired : wanted.filter(ref => !bodyRef.current.has(readingBodyKey(ref))))
+    const missing = (missingVisible.length?missingVisible:missingRequired.length ? missingRequired : wanted.filter(ref => !bodyRef.current.has(readingBodyKey(ref))))
       .filter(ref => currentKeys.has(readingBodyKey(ref)) && !failures.current.has(readingBodyKey(ref))).slice(0, 16);
-    if (!missing.length) return;
+    if (!missing.length) {superseded?.controller.abort();return;}
     const request = { controller: new AbortController(), refs: missing, scope: input.scope, space: input.space, publication };
     active.current = request;
     const startedAt=performance.now();
     traceReadingAcquisition({event:'viewport-start',scope:input.scope,keys:missing.map(row=>row.key),required:missingRequired.map(row=>row.key)});
-    void materializer.current(missing, request.controller.signal).catch(error => {
+    const work=materializer.current(missing, request.controller.signal);
+    // Join useful shared rows before retiring the previous consumer's custody.
+    superseded?.controller.abort();
+    void work.catch(error => {
       if (!request.controller.signal.aborted) {
         if (isReadingPublicationChanged(error)) { publicationBlocked.current = request.publication; return; }
         const message = error instanceof Error ? error.message : String(error);

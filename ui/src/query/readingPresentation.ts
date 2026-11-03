@@ -81,7 +81,8 @@ const acquiredRows = new Map<string, SharedRow>();
 let acquisitionGroupId=0;
 
 /** Viewport and measurement share exact rows, while cancellation releases only its own custody. */
-export async function acquirePresentationRows(id: string, request: ReadingRowBatchRequest, signal: AbortSignal): Promise<ReadingRowsLease> {
+export async function acquirePresentationRows(id: string, request: ReadingRowBatchRequest, signal: AbortSignal,
+  onReady?:(rows:readonly ReadingRowsLease['rows'][number][])=>void): Promise<ReadingRowsLease> {
   if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
   const key = (row: ReadingRowBatchRequest['rows'][number]) => JSON.stringify([id, request.positionSpaceId, row.key, row.revision]);
   const missing = request.rows.filter(row => !acquiredRows.has(key(row)));
@@ -122,8 +123,25 @@ export async function acquirePresentationRows(id: string, request: ReadingRowBat
   const abort = () => { release(); rejectAbort(new DOMException('Cancelled', 'AbortError')); };
   const cancelled = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
   signal.addEventListener('abort', abort, { once: true });
+  let rejectPartial!:(error:unknown)=>void;
+  const partialFailure=new Promise<never>((_resolve,reject)=>{rejectPartial=reject;});
+  if(onReady){
+    let scheduled=false;
+    let ready:ReadingRowsLease['rows']=[];
+    for(const entry of entries)void entry.body.then(row=>{
+      if(released||signal.aborted)return;
+      ready.push(row);
+      if(scheduled)return;
+      scheduled=true;
+      queueMicrotask(()=>{
+        scheduled=false;const batch=ready;ready=[];
+        if(released||signal.aborted)return;
+        try{onReady(batch);}catch(error){rejectPartial(error);}
+      });
+    },()=>{});
+  }
   try {
-    const rows = await Promise.race([Promise.all(entries.map(entry => entry.body)), cancelled]);
+    const rows = await Promise.race([Promise.all(entries.map(entry => entry.body)), cancelled,partialFailure]);
     return { rows, release };
   } catch (error) { release(); throw error; }
 }
