@@ -143,7 +143,7 @@ export function prepareReadingMembers(input: ReadingPreparationInput): ReadingPr
   const canonicalRuns = new Map(input.displayContext?.activity_runs.map(run => [run.id, run]));
   const lastAssistantTurnId = [...fragments].reverse().flatMap(({ node }) => node.kind === 'assistant_turn' ? [node.turn.id]
     : node.kind === 'activity' && node.item.type !== 'activity' ? [node.item.turnId] : []).find((id): id is string => id !== undefined);
-  const prepared = fragments.map(fragment => {
+  const prepared = fragments.filter(fragment=>!input.displayContext||fragment.position===undefined||descriptorByCoordinate.has(`${fragment.position}:${fragment.part}`)).map(fragment => {
     const node = fragment.node;
     const event = fragment.position === undefined ? byIdentity.get(fragment.memberKey) : byPosition.get(fragment.position);
     const source = node.kind === 'activity' ? node.source : node.kind === 'assistant_turn'

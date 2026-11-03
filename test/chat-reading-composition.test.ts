@@ -312,3 +312,27 @@ it('retains native normalized usage independently of reader window bodies',async
     expect(usage).toEqual(native);
   }finally{f.close();}
 });
+
+
+it('keeps sparse continuation input dependencies outside the rendered row topology',async()=>{
+  const output='Retained native continuation diagnostic';
+  const response=(payload:Record<string,unknown>)=>({type:'response_item',payload});
+  const f=await fixture(false,{provider:'codex',records:[{type:'session_meta',payload:{id:'composition',cwd:'/tmp'}},
+    response({type:'custom_tool_call',call_id:'origin',name:'exec',input:'const ids=["child"];text(await tools.codex_app__wait_threads({targets:ids.map(threadId=>({threadId}))}));'}),
+    response({type:'custom_tool_call_output',call_id:'origin',output:'Script running with cell ID 128\nWall time 11 seconds\nOutput:\n'}),
+    response({type:'message',role:'assistant',content:[{type:'output_text',text:'Intervening authored event'}]}),
+    response({type:'function_call',call_id:'continuation',name:'wait',arguments:'{"cell_id":"128"}'}),
+    response({type:'function_call_output',call_id:'continuation',output:'Script completed\nWall time 0 seconds\nOutput:\n'+output})]});
+  try{
+    const member=f.manifest.members.find(member=>member.position===3)!;
+    for(const expanded of [{},Object.fromEntries(member.disclosures!.keys.map(key=>[key,true]))]){
+      const plan=planConversationReading(f.manifest,expanded),descriptor=plan.rows.find(row=>row.key===member.key)!;
+      const read=await readReadingRowBatch({db:f.db,reader:f.reader,conversationId:'composition',request:{positionSpaceId:f.manifest.positionSpaceId,rows:[descriptor],expanded}});
+      if(read.status!=='source')throw Error(read.reason??read.status);
+      expect(read.rows[0].key).toBe(descriptor.key);
+      expect(read.rows[0].sources.map(source=>source.position)).toEqual(member.sourcePositions);
+      const node=read.rows[0].nodes[0];if(node.kind!=='activity'||node.item.type!=='tool-call-activity')throw Error('Missing continuation owner');
+      if(Object.values(expanded).some(Boolean))expect(node.item.operationContext?.origin.position).toBe(0);
+    }
+  }finally{f.close();}
+});
