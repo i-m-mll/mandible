@@ -338,7 +338,7 @@ export function ToolCard({
         memberRefs={[memberRefs, result?.source?.blockId].filter(Boolean).join(' ')}
         disclosure={semanticInput || nestedProgram || (result && hasVisibleResult(result,projectedResult)) || (detailsAvailable && presentation.hasDetails!==false) ? {
           content: details,
-          regionLabel: `${visual.verb} details`,
+          regionLabel: `${operationPhrase(presentation,'unknown')} details`,
           defaultExpanded,
           expanded,
           onExpandedChange,
