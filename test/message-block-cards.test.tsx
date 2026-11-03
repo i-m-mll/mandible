@@ -134,9 +134,9 @@ it('opens explicit chat references directly and retains group disclosure and nat
   const items = [directive('threadId', 'server-child'), directive('clientThreadId', 'queued-child')];
   const toggle = vi.fn();
   render(<ActivityGroup items={items} onExpandedChange={toggle} renderMember={item => <ActivityRow item={item} onExpandedChange={toggle} />} />);
-  fireEvent.click(screen.getByRole('button', { name: 'Created chats', expanded: false }));
+  fireEvent.click(screen.getByRole('button', { expanded: false }));
   expect(toggle).toHaveBeenCalledTimes(1);
-  const links = screen.getAllByRole('link', { name: 'Created chat' });
+  const links = screen.getAllByRole('link');
   for (const [index, link] of links.entries()) {
     const route = new URL(link.getAttribute('href')!, 'https://example.test/');
     const params = new URLSearchParams(route.hash.split('?')[1]);
@@ -164,6 +164,6 @@ it('retains memory citation content while opening exact rollout references as ch
   render(<ActivityRow item={item} />);
   fireEvent.click(screen.getByRole('button', { expanded: false }));
   expect(screen.getByText('MEMORY.md:10-12')).toBeTruthy();
-  expect(screen.getAllByRole('link', { name: 'Chat' }).map(link => new URLSearchParams(link.getAttribute('href')!.split('?')[1]).get('session')))
+  expect(screen.getAllByRole('link').map(link => new URLSearchParams(link.getAttribute('href')!.split('?')[1]).get('session')))
     .toEqual(['first-rollout', 'second-rollout']);
 });

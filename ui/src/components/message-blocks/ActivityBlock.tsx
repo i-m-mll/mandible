@@ -32,7 +32,7 @@ function ActivityDetails({ lines }: {
         }
         return (
           <div key={index} className="activity-details__part">
-            <a href={chatRouteHref({ type: 'session', id: line.providerSessionId }, window.location.hash)}>Chat</a>
+            <a href={chatRouteHref({ type: 'session', id: line.providerSessionId }, window.location.hash)}>Thread</a>
           </div>
         );
       })}

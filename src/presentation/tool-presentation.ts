@@ -10,6 +10,8 @@ export type ToolCategory =
 
 export type ToolPresentation = {
   operation?: string;
+  hasDetails?: boolean;
+  observation?: {elapsedSeconds?:number;report?:'final' | 'update'};
   threadTargets?: Array<{type:'conversation' | 'session';id:string}>;
   outputPolicy?: 'acknowledgement' | 'thread-wait' | 'sleep';
   category: ToolCategory;
@@ -214,12 +216,12 @@ export function toolTarget(toolName: string, inputValue: Record<string, unknown>
   return '';
 }
 
-export type ToolOperationInput = {name: string; toolKind?: string; input?: Record<string, unknown> | string; execution?: ExecutionFacts; operations?: ToolRunFact[]};
+export type ToolOperationInput = {header?:ToolPresentation;name: string; toolKind?: string; input?: Record<string, unknown> | string; execution?: ExecutionFacts; operations?: ToolRunFact[]};
 export type ToolRunFact = { operation?:string; category: ToolCategory; presentation: ToolPresentation; count: number; names: string[] };
 export function toolRunFacts(tools: readonly ToolOperationInput[]): ToolRunFact[] {
   return mergeToolRunFacts([], tools.flatMap(tool => {
     if (tool.operations) return tool.operations;
-    const projected = presentTool(tool.name, tool.input, tool.toolKind);
+    const projected = tool.header ?? presentTool(tool.name, tool.input, tool.toolKind);
     const execution = tool.execution ?? projected.execution;
     if (projected.operations) return projected.operations;
     const category = execution ? execution.kind === 'command' ? 'execute' : 'javascript' : projected.category;
@@ -238,7 +240,7 @@ export function mergeToolRunFacts(left: readonly ToolRunFact[], right: readonly 
 }
 export function summarizeToolRunFacts(facts: readonly ToolRunFact[]): string[] {
   return facts.map(({presentation,count,names}) => {
-    const phrase = count === 1 ? presentation.phrase : presentation.operation ? presentation.phrase + ' several times' : presentation.category === 'other'
+    const phrase = count === 1 ? presentation.phrase : presentation.operation==='thread-read' ? 'Read threads' : presentation.operation==='thread-wait' ? 'Waited for threads' : presentation.operation==='tool-discovery' ? 'Checked available tools' : presentation.operation==='execution-wait' ? 'Waited for executions' : presentation.operation==='sleep' ? 'Waited several times' : presentation.category === 'other'
       ? names.length === 1 ? presentation.phrase + ' several times' : DEFINITIONS.other.plural
       : DEFINITIONS[presentation.category].plural;
     return phrase.charAt(0).toLowerCase() + phrase.slice(1);

@@ -122,6 +122,28 @@ function contentForwarding(statement:Ast,name:string):boolean {
   };
   return branch(statement.body);
 }
+function optionalContent(node:Ast,name:string):boolean {
+  const value=node.type==='ChainExpression' ? node.expression : node;
+  return value.type==='MemberExpression' && !value.computed && identifier(value.object,name) && identifier(value.property,'content');
+}
+function fallbackContentForwarding(loop:Ast,fallback:Ast | undefined,name:string):boolean {
+  if(loop.type!=='ForOfStatement' || loop.await || loop.left.type!=='VariableDeclaration' || loop.left.kind!=='const' || loop.left.declarations.length!==1 || !identifier(loop.left.declarations[0].id)) return false;
+  const content=loop.right;
+  if(content.type!=='LogicalExpression' || content.operator!=='??' || !optionalContent(content.left,name) || content.right.type!=='ArrayExpression' || content.right.elements.length) return false;
+  const item=loop.left.declarations[0].id.name;
+  const body=loop.body.type==='BlockStatement' && loop.body.body.length===1 ? loop.body.body[0] : loop.body;
+  const conditional=body.type==='ExpressionStatement' && body.expression;
+  if(!conditional || conditional.type!=='ConditionalExpression' || conditional.test.type!=='BinaryExpression' || conditional.test.operator!=='===' || !member(conditional.test.left,item,'type') || conditional.test.right.type!=='Literal' || conditional.test.right.value!=='image') return false;
+  const image=conditional.consequent;
+  const text=conditional.alternate;
+  if(image.type!=='CallExpression' || image.optional || !identifier(image.callee,'image') || image.arguments.length!==1 || !identifier(image.arguments[0],item)
+    || text.type!=='CallExpression' || text.optional || !identifier(text.callee,'text') || text.arguments.length!==1) return false;
+  const value=text.arguments[0];
+  if(value.type!=='LogicalExpression' || value.operator!=='??' || !member(value.left,item,'text') || !identifier(value.right,item)) return false;
+  if(fallback?.type!=='IfStatement' || fallback.alternate || fallback.test.type!=='UnaryExpression' || fallback.test.operator!=='!' || !optionalContent(fallback.test.argument,name)) return false;
+  const result=fallback.consequent.type==='BlockStatement' && fallback.consequent.body.length===1 ? fallback.consequent.body[0] : fallback.consequent;
+  return identifier(textValue(result) ?? undefined,name);
+}
 /** Project only a complete static program whose outputs account for every call. Never execute provider source. */
 export function projectToolProgram(name: string, input: Record<string, unknown> | string = {}, kind?: string): ToolProgram | null {
   if (!['exec','functions.exec'].includes(name.toLowerCase()) || (kind && kind !== 'custom_tool_call')) return null;
@@ -144,8 +166,10 @@ export function projectToolProgram(name: string, input: Record<string, unknown> 
       if (literal) {bindings.set(declaration.id.name,literal.value);continue;}
       const batch = calls(declaration.init,bindings);
       const output = program.body[++i] as Ast | undefined;
-      const mode = batch && output && (forwarding(output,declaration.id.name,batch.batch) || (!batch.batch && contentForwarding(output,declaration.id.name) ? {forwarding:'result' as const,encoding:'literal' as const} : null));
+      const fallbackForward=batch && !batch.batch && output && fallbackContentForwarding(output,program.body[i+1] as Ast | undefined,declaration.id.name);
+      const mode = batch && output && (forwarding(output,declaration.id.name,batch.batch) || (!batch.batch && (contentForwarding(output,declaration.id.name) || fallbackForward) ? {forwarding:'result' as const,encoding:'literal' as const} : null));
       if (!batch || !mode) return null;
+      if(fallbackForward) i++;
       operations.push(...batch.operations.map(op=>({...op,...mode,...(batch.batch && !mode.indexKey ? {collection:i} : {})})));
     } else {
       let value = textValue(statement);
