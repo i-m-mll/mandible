@@ -3146,6 +3146,7 @@ export function ConversationsView({
     retry: false,
   }, queryClient);
   const resolvedRouteSelection = routeResolution.data?.status === 'resolved' ? routeResolution.data.selection : null;
+  const routeFailure = routeResolution.isError ? conversationLoadFailure(routeResolution.error, false, 'initial') : null;
   const selection = routeIntentActive ? resolvedRouteSelection : manualSelection;
   const selectionIntent = useRef({ routeIntentKey, routeTarget, routeParams, selection });
   selectionIntent.current = { routeIntentKey, routeTarget, routeParams, selection };
@@ -4580,17 +4581,22 @@ export function ConversationsView({
           />
         ) : (
           <ChatDetailFrame
-            state={routeIntentActive && routeResolution.isPending ? 'loading' : 'no-selection'}
+            state={routeIntentActive && routeResolution.isPending ? 'loading' : routeIntentActive && routeFailure ? 'error' : 'no-selection'}
             header={<DetailPaneHeader variant="compact" title="Chat" />}
+            notice={routeIntentActive && routeFailure ? (
+              <DetailPaneNotice severity="error" density="compact" actions={routeFailure.retryable ? (
+                <button type="button" className="btn btn--ghost btn--sm" disabled={routeResolution.isFetching} onClick={() => { void routeResolution.refetch(); }}>Retry</button>
+              ) : undefined}>{routeFailure.message}</DetailPaneNotice>
+            ) : undefined}
           >
             <div className="chat-history-detail__empty">
               {routeIntentActive
-                ? routeResolution.isError ? 'Could not open the requested chat.'
+                ? routeResolution.isError ? null
                   : routeResolution.data?.status === 'ambiguous' ? 'This reference matches several chats. Select an exact chat.'
                   : routeResolution.data?.status === 'not_found' ? 'The requested chat was not found.'
                   : selection?.type === 'session' ? 'The requested session is unavailable.'
-                  : 'Opening the requested chat…'
-                : loading ? 'Searching chats…'
+                  : null
+                : loading ? null
                   : searchError ? 'Select a chat or retry the search.'
                   : sidebarLoaded && totalVisibleEntries === 0 && !showingPriorResults ? 'No chats in this view'
                   : 'Select a chat'}
