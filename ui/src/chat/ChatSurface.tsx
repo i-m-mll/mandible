@@ -93,7 +93,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
   }, [requiredMember, requiredTarget, initialDisclosurePending]);
   const [scrollNode, setScrollElement] = useState<HTMLDivElement | null>(null);
   const layoutChange = useRef<() => void>(() => {});
-  const measureBoundary = useRef<(row: import('./readingMeasurement').MeasurementRow, element: HTMLElement) => number | undefined>(() => undefined);
+  const measureBoundary = useRef<(row: import('./readingMeasurement').MeasurementRow, element: HTMLElement) => import('./useReadingGeometry').ReadingBoundaryMeasurement | undefined>(() => undefined);
   const measurementCoverage = useRef<(rows: readonly import('./readingMeasurement').MeasurementRow[], sizes: readonly number[]) => readonly import('./readingMeasurement').MeasurementRow[]>(() => []);
   const geometry = useReadingGeometry({ scope: `${scope}:${space}`, chrome: 32 + clearance, onLayoutChange: () => layoutChange.current(), rows: complete.rows, parent: appearance.ready && complete.ready && !initialDisclosurePending ? scrollNode : null,
     materialize: complete.acquireMeasurement, measurementCoverage: (rows,sizes)=>measurementCoverage.current(rows,sizes), transferMeasured: complete.transferMeasured, measureBoundary: (row, element) => measureBoundary.current(row,element), membership: complete.membership, rowMembers: complete.rowMembers, onMeasuring: complete.retainMeasurement, onPrepared: complete.retainGeometry, renderProps: (row, ref) => ({ ...props, row, targetLabels: readingTargetLabels(ref), expandedBlocks, setBlockExpanded: () => {},

@@ -8,7 +8,8 @@ import type { ReadingContentProps } from './ReadingContent';
 import { createReadingRowBatchRenderer } from './renderReadingMeasurementBatch';
 
 type GeometryMembership = ReadonlyMap<string, { rowKey: string; position?: number | null }>;
-export type ReadingGeometry = { membership: GeometryMembership; rowMembers: ReadonlyMap<string, readonly string[]>; scope: string; rows: readonly MeasurementRow[]; sizes: readonly number[]; boundaryOffsets?: ReadonlyMap<string, number>; layout: MeasurementLayout; exact: boolean; serial: number; renderProps: (row: ReadingRow, ref?: MeasurementRow) => ReadingContentProps };
+export type ReadingBoundaryMeasurement = { anchor: object; offset: number };
+export type ReadingGeometry = { membership: GeometryMembership; rowMembers: ReadonlyMap<string, readonly string[]>; scope: string; rows: readonly MeasurementRow[]; sizes: readonly number[]; boundaryOffsets?: ReadonlyMap<string, ReadingBoundaryMeasurement>; layout: MeasurementLayout; exact: boolean; serial: number; renderProps: (row: ReadingRow, ref?: MeasurementRow) => ReadingContentProps };
 /** One current width, one compatible complete basis, and reusable current-width facts. */
 export function useReadingGeometry(input: {
   scope: string; chrome: number; rows: readonly MeasurementRow[]; parent: HTMLElement | null;
@@ -18,7 +19,7 @@ export function useReadingGeometry(input: {
   onLayoutChange?: (layout: MeasurementLayout) => void;
   onMeasuring: (rows: readonly MeasurementRow[]) => void;
   onPrepared: (rows: readonly MeasurementRow[]) => void;
-  measureBoundary?: (row: MeasurementRow, element: HTMLElement) => number | undefined;
+  measureBoundary?: (row: MeasurementRow, element: HTMLElement) => ReadingBoundaryMeasurement | undefined;
   measurementCoverage?: (rows: readonly MeasurementRow[], sizes: readonly number[]) => readonly MeasurementRow[];
   transferMeasured?: (rows: readonly MeasurementRow[], bodies: readonly ReadingRow[], keep: readonly MeasurementRow[]) => void;
   scale: (from: MeasurementLayout, to: MeasurementLayout) => number;
@@ -28,7 +29,7 @@ export function useReadingGeometry(input: {
   const [geometry, setGeometry] = useState<ReadingGeometry | null>(null);
   const [error, setError] = useState<string | null>(null);
   const facts = useRef<readonly RowMeasurement[]>([]);
-  const boundaryFacts = useRef(new Map<string, number>());
+  const boundaryFacts = useRef(new Map<string, ReadingBoundaryMeasurement>());
   const layoutRef = useRef<MeasurementLayout | null>(null);
   const queued = useRef<ReadingGeometry | null>(null);
   const prepared=useRef<ReadingGeometry|null>(null);
@@ -157,7 +158,7 @@ export function useReadingGeometry(input: {
         const byKey=new Map(rows.map(row=>[row.key,row]));
         const valid=(fact:RowMeasurement)=>{const row=byKey.get(fact.row.key);return row&&fact.layoutIdentity===identity&&row.revision===fact.row.revision&&row.disclosureIdentity===fact.row.disclosureIdentity;};
         const measured=new Map(facts.current.filter(valid).map(fact=>[fact.row.key,fact]));
-        const boundaryOffsets = new Map<string, number>(rows.flatMap(row => {
+        const boundaryOffsets = new Map<string, ReadingBoundaryMeasurement>(rows.flatMap(row => {
           const key = JSON.stringify([identity,readingPayloadKey(row)]);
           const value = boundaryFacts.current.get(key);
           return value === undefined ? [] : [[readingPayloadKey(row),value] as const];

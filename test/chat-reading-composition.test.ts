@@ -15,7 +15,7 @@ import { ConversationSourceReader } from '../src/conversations/source-reader';
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from '../src/conversations/source-types';
 import { captureReadingPublication, readConversationReadingManifest, readReadingRowBatch } from '../src/conversations/reading-materialization';
 import { planConversationReading } from '../src/presentation/reading-manifest';
-import { composeConversationReading, materializeConversationReading, readingCompositionRequests, reprojectHydratedReadingRow } from '../src/presentation/reading-composition';
+import { composeConversationReading, materializeConversationReading, readingCompositionRequests, reprojectHydratedReadingRow, retainedReadingProvenance } from '../src/presentation/reading-composition';
 import type { CanonicalChatItemEvent } from '../src/presentation/types';
 
 async function fixture(includeResult: boolean, native?: {provider:'codex'|'claude_code'; records:Record<string,unknown>[]}) {
@@ -65,14 +65,14 @@ it('reprojects a complete retained payload across disclosure changes but rejects
     const body=rendered.rows.find(row=>row.nodes.some(node=>node.kind==='activity'&&node.item.type==='tool-call-activity'))!;
     const after=composeConversationReading({manifest:f.manifest,events:[],expanded:groups});
     const ref=after.plan.rows.find(row=>row.key===body.key)!;
-    const reused=reprojectHydratedReadingRow(before,after,ref,body);
+    const provenance=retainedReadingProvenance(before,body);
+    const reused=reprojectHydratedReadingRow(provenance,after,ref,body);
     expect(reused).not.toBeNull();
     expect(reused!.revision).toBe(ref.revision);
-    expect(reused!.nodes[0]).toBe(body.nodes[0]);
     expect(ref.revision).not.toBe(before.plan.rows.find(row=>row.key===body.key)!.revision);
     const changed=composeConversationReading({manifest:{...f.manifest,members:f.manifest.members.map(member=>({...member,dependencyRevision:`changed:${member.dependencyRevision}`}))},events:[],expanded:groups});
-    expect(reprojectHydratedReadingRow(before,changed,changed.plan.rows.find(row=>row.key===body.key)!,body)).toBeNull();
-    expect(reprojectHydratedReadingRow(before,after,ref,{...body,sources:body.sources.map(source=>({...source,detailsLoaded:false}))})).toBeNull();
+    expect(reprojectHydratedReadingRow(provenance,changed,changed.plan.rows.find(row=>row.key===body.key)!,body)).toBeNull();
+    expect(reprojectHydratedReadingRow(provenance,after,ref,{...body,sources:body.sources.map(source=>({...source,detailsLoaded:false}))})).toBeNull();
   }finally{f.close();}
 });
 

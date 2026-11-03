@@ -36,20 +36,27 @@ export type ReadingComposition = {
   lastAssistantTurnId?: string;
 };
 
+export type RetainedReadingProvenance = Readonly<{ conversationId: string; positionSpaceId: string; rowKey: string; dependencies: readonly (readonly [string,string])[] }>;
+export function retainedReadingProvenance(composition: ReadingComposition, body: ReadingRow): RetainedReadingProvenance {
+  const descriptor=composition.plan.rows.find(row=>row.key===body.key)!;
+  const members=new Map(composition.members.map(member=>[member.key,member.dependencyRevision]));
+  return Object.freeze({conversationId:composition.manifest.conversationId,positionSpaceId:composition.manifest.positionSpaceId,rowKey:body.key,
+    dependencies:Object.freeze(descriptor.memberKeys.map(key=>Object.freeze([key,members.get(key)!] as const)))});
+}
+
 /** Disclosure presentation can change while complete canonical member payloads remain sufficient. */
-export function reprojectHydratedReadingRow(previous: ReadingComposition, current: ReadingComposition, ref: ReadingRowRef, body: ReadingRow): ReadingRow | null {
-  if (previous.manifest.conversationId !== current.manifest.conversationId || previous.manifest.positionSpaceId !== current.manifest.positionSpaceId) return null;
-  const before = previous.plan.rows.find(row => row.key === body.key);
+export function reprojectHydratedReadingRow(previous: RetainedReadingProvenance, current: ReadingComposition, ref: ReadingRowRef, body: ReadingRow): ReadingRow | null {
+  if (previous.conversationId !== current.manifest.conversationId || previous.positionSpaceId !== current.manifest.positionSpaceId || previous.rowKey!==body.key) return null;
   const after = current.plan.rows.find(row => row.key === ref.key && row.revision === ref.revision);
-  if (!before || !after || before.kind !== 'content' || after.kind !== 'content' || before.memberKeys.length !== after.memberKeys.length || before.memberKeys.some((key,index)=>key!==after.memberKeys[index])) return null;
-  const oldMembers = new Map(previous.members.map(member=>[member.key,member]));
+  if (!after || after.kind !== 'content' || previous.dependencies.length !== after.memberKeys.length || previous.dependencies.some(([key],index)=>key!==after.memberKeys[index])) return null;
+  const oldMembers = new Map(previous.dependencies);
   const members = new Map(current.members.map(member=>[member.key,member]));
   const payloads = preparedReadingMembersFromRows([body]);
   const prepared: PreparedReadingMember[] = [];
   for (const key of after.memberKeys) {
     const member = members.get(key);
     const payload = payloads.get(key);
-    if (!member || oldMembers.get(key)?.dependencyRevision !== member.dependencyRevision || !payload) return null;
+    if (!member || oldMembers.get(key) !== member.dependencyRevision || !payload) return null;
     const fullText = payload.node.kind === 'user_message' || payload.node.kind === 'assistant_turn' && payload.node.turn.assistantEvent.message.content.every(block=>block.type==='text');
     if (!fullText && (!payload.sources.length || payload.sources.some(source=>source.detailsLoaded!==true && source.hasBody!==false))) return null;
     prepared.push({...member,...payload});

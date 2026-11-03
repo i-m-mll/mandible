@@ -2,7 +2,7 @@ import { skipToken, useQuery } from '@tanstack/preact-query';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { queryClient } from '../query/client';
 import { readingManifestOptions, acquirePresentationRows, type ReadingRowsLease, isReadingPublicationChanged, ReadingPresentationError } from '../query/readingPresentation';
-import { composeConversationReading, readingCompositionRequests, materializeConversationReading, reprojectHydratedReadingRow, type ReadingComposition } from '../../../src/presentation/reading-composition';
+import { composeConversationReading, readingCompositionRequests, materializeConversationReading, reprojectHydratedReadingRow, retainedReadingProvenance, type RetainedReadingProvenance } from '../../../src/presentation/reading-composition';
 import type { StreamEvent } from '../components/stream-renderer/types';
 import type { ReadingProjection, ReadingRow } from './readingProjection';
 import type { ReadingBodyDemand } from './readingBodyDemand';
@@ -85,7 +85,7 @@ export function useCompleteReading(input: {
   const bodyQuery = useQuery({ queryKey: bodyKey, queryFn: skipToken, initialData: () => new Map<string, ReadingRow>(), enabled: false, gcTime: 0 }, queryClient);
   const bodies: ReadonlyMap<string, ReadingRow> = bodyQuery.data ?? new Map();
   const bodyRef = useRef(bodies); bodyRef.current = bodies;
-  const bodyProvenance = useRef(new WeakMap<ReadingRow, ReadingComposition>());
+  const bodyProvenance = useRef(new WeakMap<ReadingRow, RetainedReadingProvenance>());
   const targetsByBody = useMemo(() => new Map([...bodies].map(([key, body]) => [key, activityTargetsFromReadingRows([body])])), [bodies]);
   const targets = useMemo(() => [...targetsByBody.values()].flat(), [targetsByBody]);
   const resolutions = useActivityTargetResolutions(targets);
@@ -141,7 +141,7 @@ export function useCompleteReading(input: {
         const body=retained.get(ref.key);
         const previous=body&&bodyProvenance.current.get(body);
         const projected=body&&previous&&reprojectHydratedReadingRow(previous,composition,ref,body);
-        if(projected){cached[index]=projected;bodyProvenance.current.set(projected,composition);}
+        if(projected){cached[index]=projected;bodyProvenance.current.set(projected,retainedReadingProvenance(composition,projected));}
       }
     }
     if(cached.some(Boolean))publishBodies(refs.flatMap((ref,index)=>cached[index]?[{ref,body:cached[index]!}]:[]));
@@ -168,7 +168,7 @@ export function useCompleteReading(input: {
           if(!ready.length)return;
           const composed=materializeConversationReading(composition,ready,[...received.values()]);
           if(composed.status!=='source')return;
-          const additions=ready.map((ref,index)=>{const body={...composed.rows[index],revision:ref.revision};bodyProvenance.current.set(body,composition);partial.set(ref.key,body);return {ref,body};});
+          const additions=ready.map((ref,index)=>{const body={...composed.rows[index],revision:ref.revision};bodyProvenance.current.set(body,retainedReadingProvenance(composition,body));partial.set(ref.key,body);return {ref,body};});
           publishBodies(additions);
         };
         const canonical = requests.length ? (lease = await acquirePresentationRows(input.scope, { positionSpaceId: input.space, rows: requests, expanded: input.expanded, streaming: input.streaming }, signal,acceptReady)).rows : [];
@@ -177,7 +177,7 @@ export function useCompleteReading(input: {
         const byKey = new Map([...cachedByKey, ...[...composed.rows, ...input.extraRows].map(row => [row.key, row] as const)]);
         result = refs.map(ref => { const body = partial.get(ref.key)??byKey.get(ref.key); if (!body) throw new Error('Requested presentation row is unavailable.'); return partial.has(ref.key)?body:{ ...body, revision: ref.revision }; });
       }
-      if(composition)for(const body of result)bodyProvenance.current.set(body,composition);
+      if(composition)for(const body of result)if(composition.plan.rows.some(row=>row.key===body.key))bodyProvenance.current.set(body,retainedReadingProvenance(composition,body));
       if (!signal.aborted) publishBodies(refs.map((ref, index) => ({ ref, body: result[index] })));
       return { bodies: result, release: () => lease?.release() };
     } catch (error) { lease?.release(); throw error; }

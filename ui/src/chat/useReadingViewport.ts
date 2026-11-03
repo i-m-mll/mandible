@@ -392,7 +392,8 @@ export function useReadingViewport(input: {
         let screen: number;
         if (index >= 0 && pin) {
           const old = rowBoxes.current.get(pin.key);
-          local = pin.disclosureEnd ? next.sizes[index] : next.boundaryOffsets?.get(readingPayloadKey(next.rows[index])) ?? (old ? readingDomAnchorOffset(pin, old) : 0);
+          const measured = next.boundaryOffsets?.get(readingPayloadKey(next.rows[index]));
+          local = pin.disclosureEnd ? next.sizes[index] : measured?.anchor === pin ? measured.offset : old ? readingDomAnchorOffset(pin, old) : 0;
           screen = pin.offset;
         } else {
           const first = firstVisible(engine);
@@ -565,7 +566,7 @@ export function useReadingViewport(input: {
     const index = refs.findIndex(row => row.key === key);
     const height = scroller.clientHeight + 32 + current.current.clearance;
     return readingPreparationIndices(sizes,index,0,height,2*height,0,engine.options.overscan).filter(index=>sizes[index]>0).map(index=>refs[index]);
-  }, measureBoundary: (row: import('./readingMeasurement').MeasurementRow, element: HTMLElement) => { const pin = readerPin.current; return pin?.key === row.key && !pin.disclosureEnd ? readingDomAnchorOffset(pin, element) : undefined; }, captureReaderAnchor: () => capturePin.current(), beginLayout: () => capturePin.current(), pinDisclosure, engine, rows, endOffset, appliedGeometry: acknowledged === applied ? applied : null, focusTarget: (target: ConversationSourceCoordinate) => {
+  }, measureBoundary: (row: import('./readingMeasurement').MeasurementRow, element: HTMLElement) => { const pin = readerPin.current; return pin?.key === row.key && pin.edge === 'bottom' && !pin.disclosureEnd ? {anchor:pin,offset:readingDomAnchorOffset(pin, element)} : undefined; }, captureReaderAnchor: () => capturePin.current(), beginLayout: () => capturePin.current(), pinDisclosure, engine, rows, endOffset, appliedGeometry: acknowledged === applied ? applied : null, focusTarget: (target: ConversationSourceCoordinate) => {
     const owner = completedTarget.current;
     if (!owner || owner.coordinate.conversationId !== current.current.scope || owner.coordinate.positionSpaceId !== current.current.positionSpaceId
       || (current.current.commandToken !== undefined && owner.token !== current.current.commandToken)
