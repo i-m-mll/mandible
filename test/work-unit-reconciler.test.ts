@@ -30,6 +30,7 @@ beforeEach(() => {
       state TEXT NOT NULL,
       assigned_session_id TEXT,
       assignment_target_json TEXT,
+      legacy_assignment_target_json TEXT,
       provider TEXT,
       provider_session_id TEXT,
       worker_provider TEXT,
@@ -221,6 +222,8 @@ describe("work unit reconciler", () => {
       .run(JSON.stringify({ kind: "native", agent_ref: "agent:codex:desktop-task" }));
     db.prepare("INSERT INTO work_units(id,state,branch,repo_id,provider,assigned_session_id) VALUES ('wu-legacy-claude','committed','feature/deleted',?,'claude','enclosing')").run(repo);
     db.prepare("UPDATE work_units SET assignment_target_json = NULL WHERE id = 'wu-legacy-claude'").run();
+    db.prepare("INSERT INTO work_units(id,state,branch,repo_id,legacy_assignment_target_json) VALUES ('wu-legacy-ambient','committed','feature/deleted',?,?)")
+      .run(repo, JSON.stringify({ kind: "native", provider: "claude", session_id: "enclosing" }));
     await new WorkUnitReconciler(() => undefined, {
       resolveSession: (_database, id) => id === "agent:codex:desktop-task" ? liveCodexResolution(id) : null,
     }).reconcile();
@@ -228,6 +231,7 @@ describe("work unit reconciler", () => {
     expect(db.prepare("SELECT state FROM work_units WHERE id = ?").get("wu-live-provider"))
       .toEqual({ state: "committed" });
     expect(db.prepare("SELECT state FROM work_units WHERE id = 'wu-legacy-claude'").get()).toEqual({ state: "committed" });
+    expect(db.prepare("SELECT state FROM work_units WHERE id = 'wu-legacy-ambient'").get()).toEqual({ state: "committed" });
   });
 
   it("projects work-unit liveness from the same exact provider identity", () => {
