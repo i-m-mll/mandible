@@ -11,6 +11,7 @@ const primitive=(value:unknown):value is string|number|boolean|null=>value===nul
 function data(node: Ast, bindings = new Map<string, unknown>()): { value: unknown } | null {
   if (identifier(node) && bindings.has(node.name)) return {value:bindings.get(node.name)};
   if (node.type === 'Literal' && !node.regex && typeof node.value !== 'bigint') return {value: node.value};
+  if(node.type==='TaggedTemplateExpression'&&member(node.tag,'String','raw')&&!node.quasi.expressions.length)return {value:node.quasi.quasis[0].value.raw};
   if(node.type==='TemplateLiteral'){
     let value=node.quasis[0].value.cooked;if(value==null)return null;
     for(const [index,expression]of node.expressions.entries()){const part=data(expression,bindings),tail=node.quasis[index+1].value.cooked;if(!part||!primitive(part.value)||tail==null)return null;value+=String(part.value)+tail;}

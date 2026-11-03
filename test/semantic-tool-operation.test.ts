@@ -34,6 +34,14 @@ it('projects complete transparent wrappers while retaining arbitrary computation
 it('suppresses only a known empty patch acknowledgement and retains reports, errors and unknown output', () => {
   const patch='*** Begin Patch\n*** Update File: /tmp/example.ts\n@@\n-before\n+after\n*** End Patch';
   const source=`const patch=${JSON.stringify(patch)};text(await tools.apply_patch(patch));`;
+  const rawPatch=String.raw`*** Begin Patch
+*** Update File: /tmp/raw.ts
+@@
+-before
++after\new
+*** End Patch`;
+  const rawSource='const patch=String.raw`'+rawPatch+'`;text(await tools.apply_patch(patch));';
+  expect(projectToolProgram('exec',rawSource)?.operations[0].input).toBe(rawPatch);
   const observation=toolObservation('exec',source,'custom_tool_call',{text:'{}'});
   expect(observation.header.target).toBe('/tmp/example.ts');
   expect(substantiveToolResult(observation.result!)).toBe(false);
