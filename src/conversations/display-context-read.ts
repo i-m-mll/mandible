@@ -3,7 +3,8 @@ import type { DisplayContextPlan } from './display-index.js';
 import { ConversationSourceReader } from './source-reader.js';
 import type { SourceBackedConversationBlock, SourceReadResult } from './source-types.js';
 import { projectDisplayFragments } from '../presentation/fragments.js';
-import { activityRunFacts, presentActivityRunFacts } from '../presentation/activity-presentation.js';
+import { activitySemanticFacts, semanticActivityRunFacts, presentActivityRunFacts } from '../presentation/activity-presentation.js';
+import { presentationForObservation } from '../presentation/tool-observation.js';
 import { presentTool } from '../presentation/tool-presentation.js';
 import { sparseConversationBlockPosition } from './structure-cache.js';
 
@@ -24,10 +25,10 @@ export async function readDisplayContext(input: {
   const activity_runs = [...plan.runs].map(([id, members]) => {
     const items = displaySummaryMembers(members).flatMap(member => {
       const hydrated = actual.get(member.id)?.node;
-      const item = hydrated?.kind === 'activity' && member.summary_from_source ? hydrated.item : member.activity;
+      const item = hydrated?.kind === 'activity' && member.summary_from_source ? activitySemanticFacts(hydrated.item) : member.activity;
       return item ? [item] : [];
     });
-    const facts = activityRunFacts(items);
+    const facts = semanticActivityRunFacts(items);
     facts.hasDetails ||= members.some(member => member.has_details);
     return { id, first: members[0].coordinate, last: members[members.length - 1].coordinate,
       member_count: members.length, presentation: { ...presentActivityRunFacts(facts), facts } };
@@ -40,7 +41,7 @@ export async function readDisplayContext(input: {
     }
     const { input: toolInput, result: _result, ...item } = fragment.node.item;
     const header=item.operationContext ? presentTool(item.operationContext.name,item.operationContext.input as Record<string,unknown> | string,item.operationContext.kind) : presentTool(item.name,toolInput,item.toolKind);
-    const facts=owner.activity?.type==='tool-call-activity' ? owner.activity.header : undefined;
+    const facts=owner.activity?.kind==='tool'&&owner.activity.observation ? presentationForObservation(owner.activity.observation,item.toolKind) : undefined;
     owners.push({ fragment_id: owner.id, memberKey: fragment.memberKey, coordinate: owner.coordinate, item,
       source: { ...fragment.node.source!, detailsLoaded: false },
       header: {...header,...facts,target:header.target,children:header.children}, action_scope: input.actionScope(owner.coordinate.position) });

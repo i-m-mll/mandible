@@ -26,7 +26,8 @@ const require = createRequire(import.meta.url);
 const { liveDbPath } = require("../cli/mandible-paths.cjs");
 import SqliteDatabase from "../src/sqlite.ts";
 import { conversationStructureCachePath } from "../src/conversations/structure-cache-path.ts";
-import { userSchema } from "./sqlite-user-schema.mjs";
+import { projectConversationCache } from "../src/conversations/structure-cache.ts";
+import { projectLegacyConversationCache } from "../src/conversations/cache-transition.ts";
 
 const DEFAULT_PORT_START = 29421;
 const DEFAULT_PORT_END = 29499;
@@ -1648,97 +1649,58 @@ function sourceConversationStructureCachePath(sourceDb) {
   return conversationStructureCachePath(sourceDb, override);
 }
 
-/**
- * Copy the source daemon's derived coordinate index into preview custody.
- *
- * Preview creation copies the source index with its WAL, then restricts rows
- * to exact conversation/source-version pairs in the projected ledger. Existing
- * previews keep that private index across code refreshes because a selected
- * source read may have advanced it beyond main.
- */
+/** Copy only the exact ready generations owned by the projected ledger. */
 export async function seedProjectedConversationStructureCache({ sourceCache, targetCache, projectedDb, preserveExisting = false, signal, maxOutputBytes = Infinity, reserveBytes = 512 * 1024 * 1024 }) {
   targetCache = conversationStructureCachePath("", targetCache);
   const preserveTarget = preserveExisting && fs.existsSync(targetCache);
-  if (!preserveTarget && !fs.existsSync(sourceCache)) {
+  const legacySource = sourceCache.endsWith(".v19") ? `${sourceCache.slice(0, -4)}.v18` : null;
+  const sourceAvailable = fs.existsSync(sourceCache);
+  const legacyAvailable = legacySource && fs.existsSync(legacySource);
+  if (!preserveTarget && !sourceAvailable && !legacyAvailable) {
     return { status: "unavailable", source: sourceCache, target: targetCache, conversations: 0, blocks: 0 };
   }
   fs.mkdirSync(path.dirname(targetCache), { recursive: true });
+  const projected = new SqliteDatabase(projectedDb, { readonly: true, fileMustExist: true });
+  let manifests;
+  try {
+    manifests = projected.prepare(`SELECT source.conversation_id, source.current_version_id AS source_version_id,
+      source.parser_format, source.parser_version, source.normalization_version, source.redaction_epoch,
+      conversation.block_count FROM conversation_sources source JOIN conversations conversation
+      ON conversation.id = source.conversation_id WHERE source.current_version_id IS NOT NULL`).all();
+  } finally { projected.close(); }
   if (!preserveTarget) {
-    const stage = `${targetCache}.partial-${process.pid}`;
+    const stage = `${targetCache}.partial-${process.pid}-${randomUUID()}.v19`;
     const volume = fs.statfsSync(path.dirname(targetCache));
     const budget = Math.min(maxOutputBytes, Number(volume.bavail) * Number(volume.bsize) - reserveBytes);
     if (budget < 64 * 1024) throw new Error('Insufficient allocation for projected conversation cache');
-    const target = new SqliteDatabase(stage);
     try {
+      if (sourceAvailable) await projectConversationCache(sourceCache, stage, manifests, { signal, maxBytes: budget });
+      if (legacyAvailable) await projectLegacyConversationCache(legacySource, stage, projectedDb, { signal, maxBytes: budget });
       signal?.throwIfAborted();
-      target.pragma('journal_mode = OFF');
-      target.pragma('synchronous = OFF');
-      target.pragma('temp_store = MEMORY');
-      const pageSize = Number(target.pragma('page_size', { simple: true }));
-      target.pragma(`max_page_count = ${Math.floor(budget / pageSize)}`);
-      target.prepare('ATTACH DATABASE ? AS source').run(sourceCache);
-      target.prepare('ATTACH DATABASE ? AS projected').run(projectedDb);
-      target.exec('BEGIN DEFERRED');
-      const schema = userSchema(target, 'source');
-      const quote = name => `"${name.replaceAll('"', '""')}"`;
-      for (const table of schema.tables) target.exec(table.sql);
-      target.exec(`INSERT INTO main.cache_conversations
-        SELECT cached.* FROM source.cache_conversations cached
-        WHERE EXISTS (SELECT 1 FROM projected.conversations conversation
-          JOIN projected.conversation_sources source ON source.conversation_id = conversation.id
-          WHERE conversation.id = cached.conversation_id AND source.current_version_id = cached.source_version_id)`);
-      for (const table of schema.tables) {
-        if (table.name === 'cache_conversations') continue;
-        signal?.throwIfAborted();
-        const keys = target.prepare('SELECT * FROM pragma_foreign_key_list(?, ?)').all(table.name, 'source');
-        const key = keys.find(key => key.table === 'cache_conversations' && key.to === 'cache_id');
-        if (!key && table.name !== 'cache_meta') throw new Error(`Unclassified conversation cache table: ${table.name}`);
-        const where = key ? ` WHERE cached.${quote(key.from)} IN (SELECT cache_id FROM main.cache_conversations)` : '';
-        target.exec(`INSERT INTO main.${quote(table.name)} SELECT cached.* FROM source.${quote(table.name)} cached${where}`);
-      }
-      for (const object of [...schema.indexes, ...schema.views, ...schema.triggers]) target.exec(object.sql);
-      target.exec('COMMIT');
-      target.prepare('DETACH DATABASE source').run();
-      target.prepare('DETACH DATABASE projected').run();
-      if (target.pragma('quick_check', { simple: true }) !== 'ok'
-        || target.pragma('foreign_key_check').length) throw new Error('Projected conversation cache validation failed');
-      signal?.throwIfAborted();
-      target.close();
       const fd = fs.openSync(stage, 'r');
       try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
       fs.renameSync(stage, targetCache);
     } finally {
-      if (target.open) target.close();
-      fs.rmSync(stage, { force: true });
+      for (const suffix of ['', '-wal', '-shm', '-journal']) fs.rmSync(`${stage}${suffix}`, { force: true });
     }
   }
-
   const target = new SqliteDatabase(targetCache);
   try {
-    target.pragma("foreign_keys = ON");
-    target.prepare("ATTACH DATABASE ? AS projected").run(projectedDb);
-    target.prepare(`
-      DELETE FROM cache_conversations
-       WHERE NOT EXISTS (
-         SELECT 1
-           FROM projected.conversations conversation
-           JOIN projected.conversation_sources source
-             ON source.conversation_id = conversation.id
-          WHERE conversation.id = cache_conversations.conversation_id
-            AND source.current_version_id = cache_conversations.source_version_id
-       )
-    `).run();
-    target.prepare("DETACH DATABASE projected").run();
-    return {
-      status: preserveTarget ? "preserved" : "seeded",
-      source: sourceCache,
-      target: targetCache,
-      conversations: Number(target.prepare("SELECT COUNT(*) AS count FROM cache_conversations").get().count),
-      blocks: Number(target.prepare("SELECT COUNT(*) AS count FROM cache_blocks").get().count),
-    };
-  } finally {
-    target.close();
-  }
+    target.pragma('foreign_keys = ON');
+    target.prepare('ATTACH DATABASE ? AS projected').run(projectedDb);
+    target.prepare(`DELETE FROM cache_conversations WHERE NOT EXISTS (
+      SELECT 1 FROM projected.conversation_sources source JOIN projected.conversations conversation
+      ON conversation.id = source.conversation_id WHERE source.conversation_id = cache_conversations.conversation_id
+      AND source.current_version_id = cache_conversations.source_version_id
+      AND source.parser_format = cache_conversations.parser_format AND source.parser_version = cache_conversations.parser_version
+      AND source.normalization_version = cache_conversations.normalization_version
+      AND source.redaction_epoch = cache_conversations.redaction_epoch AND conversation.block_count = cache_conversations.block_count
+    )`).run();
+    target.prepare('DETACH DATABASE projected').run();
+    return { status: preserveTarget ? 'preserved' : 'seeded', source: sourceCache, target: targetCache,
+      conversations: Number(target.prepare('SELECT count(*) AS count FROM cache_conversations WHERE ready = 1').get().count),
+      blocks: Number(target.prepare('SELECT count(*) AS count FROM cache_blocks').get().count) };
+  } finally { target.close(); }
 }
 
 /**

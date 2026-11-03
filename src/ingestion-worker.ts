@@ -12,6 +12,7 @@ import type { IngestionWorkerRequest, IngestionWorkerResponse } from "./ingestio
 import { IngestionWorkerService } from "./ingestion-worker-service.js";
 import { isConversationSourceChangedError } from "./conversations/source-store.js";
 import type { Logger } from "./types.js";
+import { ConversationCacheTransition } from "./conversations/cache-transition.js";
 
 const port = parentPort;
 if (!port) {
@@ -51,10 +52,15 @@ const checkpointTimer = setInterval(() => {
   }
 }, checkpointIntervalMs);
 
+const cacheTransition = new ConversationCacheTransition(db);
 const service = new IngestionWorkerService({
-  ingest: (filePath, requirements, withinPass) => withBusyRetry(() => ingestBatchForWorker(
-    [filePath], requirements.forceFull, requirements.bypassSameMtimeUnchanged, true, undefined, withinPass,
-  )),
+  prepareCache: (conversationId, cooperate) => withBusyRetry(() => cacheTransition.prepare(conversationId, cooperate)),
+  ingest: async (filePath, requirements, withinPass, cooperate) => {
+    await withBusyRetry(() => cacheTransition.preparePath(filePath, cooperate));
+    await withBusyRetry(() => ingestBatchForWorker(
+      [filePath], requirements.forceFull, requirements.bypassSameMtimeUnchanged, true, undefined, withinPass,
+    ));
+  },
   needsFollowup: ingestedPathNeedsFollowup,
   reconcile: (startup, cooperate, ingest) => withBusyRetry(() => reconcileForWorker(startup, cooperate, ingest)),
   fullIngest: (cooperate, ingest) => withBusyRetry(() => triggerFullIngestForWorker(cooperate, ingest)),

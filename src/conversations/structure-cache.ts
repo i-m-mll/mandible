@@ -1,3 +1,6 @@
+import { providerEvidenceWriter, readProviderEvidence, type ProviderIndexEvidence } from './index-provider-evidence.js';
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
+import { CONVERSATION_CACHE_FORMAT, copyIndexGeneration } from './index-storage.js';
 import { writeDisplayIndex, readCompleteDisplayIndex, readDisplayContextPlan, type DisplayIndexInput, type DisplayContextPlan } from './display-index.js';
 import { nextReadingContext, type ReadingContextEntry, type ReadingContextState } from './reading-context.js';
 import fs from "node:fs";
@@ -35,13 +38,13 @@ export interface SparseConversationBlockRow {
   type: BlockType;
   role: Role;
   parentPosition: number | null;
+  toolEvidence?: ProviderIndexEvidence;
   recordOffset: number;
   recordLength: number;
   recordOrdinal: number;
   subBlockOrdinal: number;
   model?: string | null;
   clientIntentId?: string | null;
-  toolEvidence?: Pick<import("../parsers/types.js").BlockMetadata,"display_tool_origin"|"display_tool_execution">;
   parserFormat: string;
   parserVersion: string;
   normalizationVersion: string;
@@ -77,7 +80,6 @@ interface CacheBlockRow {
   sub_block_ordinal: number;
   model: string | null;
   client_intent_id: string | null;
-  tool_evidence: string | null;
 }
 
 export interface SourceManifestRow {
@@ -93,6 +95,7 @@ export interface SourceManifestRow {
 export interface ConversationStructureCacheOptions {
   cachePath?: string;
   readonly?: boolean;
+  maxBytes?: number;
 }
 
 export function defaultConversationStructureCachePath(db?: Db): string {
@@ -178,6 +181,7 @@ export class ConversationStructureCache {
     }
     this.cache = new SqliteDatabase(this.cachePath, options.readonly ? { readonly: true, fileMustExist: true } : undefined);
     if (options.readonly) {
+      this.validateFormat();
       this.cache.pragma("query_only = ON");
       return;
     }
@@ -186,81 +190,65 @@ export class ConversationStructureCache {
     this.cache.pragma("foreign_keys = ON");
     const initialized = this.cache.prepare("SELECT name FROM sqlite_master WHERE name = 'cache_meta'").get();
     if (!initialized) this.cache.transaction(() => this.initialize()).immediate();
+    this.validateFormat();
+    if(options.maxBytes!==undefined)this.setByteLimit(options.maxBytes);
+  }
+
+  private validateFormat(): void {
+    const row=this.cache.prepare("SELECT value FROM cache_meta WHERE key='schema_version'").get() as {value:string}|undefined;
+    if(row?.value!==String(CONVERSATION_STRUCTURE_CACHE_VERSION)){this.cache.close();throw new Error('Conversation cache format mismatch');}
   }
 
   private initialize(): void {
     const initialized = this.cache.prepare("SELECT name FROM sqlite_master WHERE name = 'cache_meta'").get();
     if (initialized) return;
-    this.cache.exec(`
-      CREATE TABLE IF NOT EXISTS cache_meta (
-        key   TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      ) WITHOUT ROWID;
-      CREATE TABLE IF NOT EXISTS cache_conversations (
-        cache_id               INTEGER PRIMARY KEY,
-        conversation_id        TEXT NOT NULL,
-        source_version_id      TEXT NOT NULL,
-        parser_format          TEXT NOT NULL,
-        parser_version         TEXT NOT NULL,
-        normalization_version  TEXT NOT NULL,
-        redaction_epoch        INTEGER NOT NULL,
-        block_count            INTEGER NOT NULL,
-        updated_at             INTEGER NOT NULL,
-        accessed_at            INTEGER NOT NULL,
-        UNIQUE (conversation_id, source_version_id, parser_format, parser_version, normalization_version, redaction_epoch)
-      );
-      CREATE TABLE IF NOT EXISTS cache_blocks (
-        cache_conversation_id  INTEGER NOT NULL
-                                 REFERENCES cache_conversations(cache_id) ON DELETE CASCADE,
-        position               INTEGER NOT NULL,
-        type_code              INTEGER NOT NULL,
-        role_code              INTEGER NOT NULL,
-        parent_position        INTEGER,
-        record_offset          INTEGER NOT NULL,
-        record_length          INTEGER NOT NULL,
-        record_ordinal         INTEGER NOT NULL,
-        sub_block_ordinal      INTEGER NOT NULL,
-        model                  TEXT,
-        client_intent_id       TEXT,
-        tool_evidence          TEXT,
-        activity_owner         INTEGER,
-        action_start           INTEGER NOT NULL,
-        PRIMARY KEY (cache_conversation_id, position)
-      ) WITHOUT ROWID;
-      CREATE TABLE IF NOT EXISTS cache_reading_scopes (
-        cache_conversation_id INTEGER NOT NULL REFERENCES cache_conversations(cache_id) ON DELETE CASCADE,
-        start INTEGER NOT NULL,
-        end INTEGER NOT NULL,
-        PRIMARY KEY (cache_conversation_id, start)
-      ) WITHOUT ROWID;
-      CREATE TABLE IF NOT EXISTS cache_display_fragments (
-        cache_conversation_id INTEGER NOT NULL REFERENCES cache_conversations(cache_id) ON DELETE CASCADE,
-        position INTEGER NOT NULL, part TEXT NOT NULL, ordinal INTEGER NOT NULL,
-        kind TEXT NOT NULL, speaker TEXT NOT NULL, run_id TEXT, facts_json TEXT NOT NULL,
-        PRIMARY KEY(cache_conversation_id, position, part)
-      ) WITHOUT ROWID;
-      CREATE INDEX IF NOT EXISTS idx_display_runs ON cache_display_fragments(cache_conversation_id,run_id,position,ordinal);
-      CREATE TABLE IF NOT EXISTS cache_display_aliases (
-        cache_conversation_id INTEGER NOT NULL REFERENCES cache_conversations(cache_id) ON DELETE CASCADE,
-        position INTEGER NOT NULL, owner_position INTEGER NOT NULL, owner_part TEXT NOT NULL,
-        PRIMARY KEY(cache_conversation_id,position)
-      ) WITHOUT ROWID;
-      CREATE TABLE cache_display_positions (
-        cache_conversation_id INTEGER NOT NULL REFERENCES cache_conversations(cache_id) ON DELETE CASCADE,
-        position INTEGER NOT NULL,
-        facts_json TEXT NOT NULL,
-        PRIMARY KEY (cache_conversation_id, position)
-      ) WITHOUT ROWID;
-      CREATE TABLE IF NOT EXISTS cache_tool_links (
-        cache_conversation_id INTEGER NOT NULL
-          REFERENCES cache_conversations(cache_id) ON DELETE CASCADE,
-        tool_key BLOB NOT NULL,
-        position INTEGER NOT NULL,
-        PRIMARY KEY (cache_conversation_id, tool_key)
-      ) WITHOUT ROWID;
-    `);
+    this.cache.exec(CONVERSATION_CACHE_FORMAT.schema);
     this.cache.prepare("INSERT INTO cache_meta (key, value) VALUES ('schema_version', ?)")
       .run(String(CONVERSATION_STRUCTURE_CACHE_VERSION));
+  }
+
+  setByteLimit(maxBytes:number):void {
+    if(!Number.isSafeInteger(maxBytes)||maxBytes<1)throw new Error('Invalid conversation cache byte limit');
+    const pageSize=Number(this.cache.pragma('page_size',{simple:true}));
+    this.cache.pragma(`max_page_count = ${Math.max(1,Math.floor(maxBytes/pageSize))}`);
+  }
+
+  async projectGenerationsTo(destination:ConversationStructureCache,manifests:readonly SourceManifestRow[],options:{signal?:AbortSignal;maxBytes?:number;batchSize?:number;cooperate?:()=>Promise<void>}={}):Promise<{generations:number;rows:number}> {
+    const batchSize=options.batchSize??512;if(!Number.isSafeInteger(batchSize)||batchSize<1)throw new Error('Invalid projection batch size');
+    let rows=0,generations=0;
+    if(options.maxBytes!==undefined)destination.setByteLimit(options.maxBytes);
+    const check=()=>{options.signal?.throwIfAborted();if(options.maxBytes!==undefined) {
+      const bytes=['','-wal','-shm'].reduce((sum,suffix)=>sum+(fs.existsSync(destination.cachePath+suffix)?fs.statSync(destination.cachePath+suffix).size:0),0);
+      if(bytes>options.maxBytes)throw new Error('Conversation cache projection exceeds its byte budget');
+    }};
+    this.cache.exec('BEGIN');
+    try {
+      for(const manifest of manifests) {
+        check();const source=this.cachedConversation(manifest.conversation_id,manifest.source_version_id,{parserFormat:manifest.parser_format,parserVersion:manifest.parser_version,normalizationVersion:manifest.normalization_version,redactionEpoch:manifest.redaction_epoch});
+        if(!source||source.block_count!==manifest.block_count)continue;
+        if(destination.hasCompleteConversation(manifest.conversation_id,manifest.source_version_id,manifest.block_count,{parserFormat:manifest.parser_format,parserVersion:manifest.parser_version,normalizationVersion:manifest.normalization_version,redactionEpoch:manifest.redaction_epoch}))continue;
+        const target=destination.beginGeneration(manifest);
+        try {
+          for(const table of CONVERSATION_CACHE_FORMAT.tables) {
+            const columns=(this.cache.prepare(`PRAGMA table_info(${table})`).all() as Array<{name:string}>).map(row=>row.name);
+            const insert=destination.cache.prepare(`INSERT INTO ${table}(${columns.join(',')}) VALUES(${columns.map(()=>'?').join(',')})`);
+            const tableInfo=this.cache.prepare(`PRAGMA table_info(${table})`).all() as Array<{name:string;pk:number}>;
+            const withoutRowid=(this.cache.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").get(table) as {sql:string}).sql.includes('WITHOUT ROWID');
+            const cursorColumns=withoutRowid?tableInfo.filter(column=>column.pk>0&&column.name!=='cache_conversation_id').sort((left,right)=>left.pk-right.pk).map(column=>column.name):['rowid'];
+            let cursor:unknown[]|undefined;
+            while(true) {
+              check();const after=cursor?` AND (${cursorColumns.join(',')})>(${cursorColumns.map(()=>'?').join(',')})`:'';
+              const batch=this.cache.prepare(`SELECT ${withoutRowid?'*':'rowid AS __cursor,*'} FROM ${table} WHERE cache_conversation_id=?${after} ORDER BY ${cursorColumns.join(',')} LIMIT ?`).all(source.cache_id,...(cursor??[]),batchSize) as Array<Record<string,unknown>>;
+              if(!batch.length)break;
+              destination.cache.transaction(()=>{for(const row of batch)insert.run(...columns.map(column=>column==='cache_conversation_id'?target:row[column]));})();
+              rows+=batch.length;const last=batch[batch.length-1];cursor=cursorColumns.map(column=>column==='rowid'?last.__cursor:last[column]);check();if(options.cooperate)await options.cooperate();else await yieldToEventLoop();
+            }
+          }
+          destination.completeGeneration(target);generations++;
+        } catch(error) {destination.discardGeneration(target);throw error;}
+      }
+      return {generations,rows};
+    } finally {this.cache.exec('ROLLBACK');}
   }
 
   close(): void {
@@ -271,108 +259,79 @@ export class ConversationStructureCache {
     this.cache.exec("DELETE FROM cache_reading_scopes; DELETE FROM cache_tool_links; DELETE FROM cache_blocks; DELETE FROM cache_conversations");
   }
 
-  private cacheConversation(manifest: SourceManifestRow, mode: "replace" | "append"): number {
-    const existing = this.cachedConversation(manifest.conversation_id, manifest.source_version_id, {
-      parserFormat: manifest.parser_format, parserVersion: manifest.parser_version,
-      normalizationVersion: manifest.normalization_version, redactionEpoch: manifest.redaction_epoch,
-    });
-    const now = Date.now();
-    if (!existing) {
-      const inserted = this.cache.prepare(`
-        INSERT INTO cache_conversations (
-          conversation_id, source_version_id, parser_format, parser_version,
-          normalization_version, redaction_epoch, block_count, updated_at, accessed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        manifest.conversation_id, manifest.source_version_id, manifest.parser_format,
-        manifest.parser_version, manifest.normalization_version, manifest.redaction_epoch,
-        manifest.block_count, now, now,
-      );
-      return Number(inserted.lastInsertRowid);
-    }
-    if (mode === "replace") {
-      this.cache.prepare("DELETE FROM cache_display_positions WHERE cache_conversation_id = ?").run(existing.cache_id);
-      this.cache.prepare("DELETE FROM cache_tool_links WHERE cache_conversation_id = ?").run(existing.cache_id);
-      this.cache.prepare("DELETE FROM cache_blocks WHERE cache_conversation_id = ?").run(existing.cache_id);
-      this.cache.prepare("DELETE FROM cache_reading_scopes WHERE cache_conversation_id = ?").run(existing.cache_id);
-      this.cache.prepare("DELETE FROM cache_display_fragments WHERE cache_conversation_id = ?").run(existing.cache_id);
-      this.cache.prepare("DELETE FROM cache_display_aliases WHERE cache_conversation_id = ?").run(existing.cache_id);
-    }
-    this.cache.prepare(`
-      UPDATE cache_conversations
-         SET source_version_id = ?, parser_format = ?, parser_version = ?,
-             normalization_version = ?, redaction_epoch = ?, block_count = ?,
-             updated_at = ?, accessed_at = ?
-       WHERE cache_id = ?
-    `).run(
-      manifest.source_version_id, manifest.parser_format, manifest.parser_version,
-      manifest.normalization_version, manifest.redaction_epoch, manifest.block_count,
-      now, now, existing.cache_id,
-    );
-    return existing.cache_id;
+  beginGeneration(manifest: SourceManifestRow, priorVersionId?: string, options:{replaceReady?:boolean}={}): number {
+    return this.cache.transaction(() => {
+      const tuple=[manifest.conversation_id,manifest.source_version_id,manifest.parser_format,manifest.parser_version,manifest.normalization_version,manifest.redaction_epoch];
+      const existing=this.cache.prepare('SELECT cache_id,ready,block_count FROM cache_conversations WHERE conversation_id=? AND source_version_id=? AND parser_format=? AND parser_version=? AND normalization_version=? AND redaction_epoch=? ORDER BY ready DESC,cache_id DESC').get(...tuple) as {cache_id:number;ready:number;block_count:number}|undefined;
+      if(existing?.ready&&existing.block_count===manifest.block_count&&!options.replaceReady)return existing.cache_id;
+      this.cache.prepare('DELETE FROM cache_conversations WHERE conversation_id=? AND source_version_id=? AND parser_format=? AND parser_version=? AND normalization_version=? AND redaction_epoch=? AND ready=0').run(...tuple);
+      const now=Date.now();
+      const id=Number(this.cache.prepare('INSERT INTO cache_conversations(conversation_id,source_version_id,parser_format,parser_version,normalization_version,redaction_epoch,block_count,updated_at,accessed_at) VALUES(?,?,?,?,?,?,?,?,?)').run(...tuple,manifest.block_count,now,now).lastInsertRowid);
+      if(priorVersionId) {
+        const prior=this.cachedConversation(manifest.conversation_id,priorVersionId,{parserFormat:manifest.parser_format,parserVersion:manifest.parser_version,normalizationVersion:manifest.normalization_version,redactionEpoch:manifest.redaction_epoch});
+        if(!prior)throw new Error('Append structure generation is missing');
+        copyIndexGeneration(this.cache,prior.cache_id,id);
+      }
+      return id;
+    })();
   }
 
-  replaceRows(
-    manifest: SourceManifestRow,
-    rows: readonly Omit<SparseConversationBlockRow,
-      "conversationId" | "sourceVersionId" | "parserFormat" | "parserVersion" |
-      "normalizationVersion" | "redactionEpoch">[],
-    tools: ReadonlyMap<string, number> = new Map(),
-    priorVersionId?: string,
-    display?: DisplayIndexInput,
-  ): void {
-    const write = this.cache.transaction(() => {
-      const cacheId = this.cacheConversation(manifest, "replace");
-      const insert = this.cache.prepare(`
-        INSERT INTO cache_blocks (
-          cache_conversation_id, position, type_code, role_code, parent_position,
-          record_offset, record_length, record_ordinal, sub_block_ordinal, model, client_intent_id, tool_evidence, activity_owner, action_start
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-      let priorCacheId: number | undefined;
-      if (priorVersionId) {
-        const prior = this.cachedConversation(manifest.conversation_id, priorVersionId, {
-          parserFormat: manifest.parser_format, parserVersion: manifest.parser_version,
-          normalizationVersion: manifest.normalization_version, redactionEpoch: manifest.redaction_epoch,
-        });
-        if (!prior) throw new Error("append structure generation is missing");
-        priorCacheId = prior.cache_id;
-        this.cache.prepare(`INSERT INTO cache_blocks SELECT ?, position, type_code, role_code, parent_position,
-          record_offset, record_length, record_ordinal, sub_block_ordinal, model, client_intent_id, tool_evidence, activity_owner, action_start FROM cache_blocks WHERE cache_conversation_id = ?`)
-          .run(cacheId, prior.cache_id);
-        this.cache.prepare("INSERT INTO cache_reading_scopes SELECT ?, start, end FROM cache_reading_scopes WHERE cache_conversation_id = ?").run(cacheId, prior.cache_id);
-        this.cache.prepare("INSERT INTO cache_tool_links SELECT ?, tool_key, position FROM cache_tool_links WHERE cache_conversation_id = ?")
-          .run(cacheId, prior.cache_id);
+  appendGeneration(cacheId:number,batch:{rows?:readonly Omit<SparseConversationBlockRow,'conversationId'|'sourceVersionId'|'parserFormat'|'parserVersion'|'normalizationVersion'|'redactionEpoch'>[];display?:DisplayIndexInput;tools?:ReadonlyMap<string,number>;toolKeys?:Array<{key:Uint8Array;position:number}>}):void {
+    this.cache.transaction(()=>{
+      const generation=this.cache.prepare('SELECT ready FROM cache_conversations WHERE cache_id=?').get(cacheId) as {ready:number}|undefined;
+      if(!generation||generation.ready)throw new Error('Index generation is not building');
+      const previousRow=this.cache.prepare('SELECT position,type_code,role_code,activity_owner,action_start FROM cache_blocks WHERE cache_conversation_id=? ORDER BY position DESC LIMIT 1').get(cacheId) as {position:number;type_code:number;role_code:number;activity_owner:number|null;action_start:number}|undefined;
+      let previous:ReadingContextState|null=previousRow?{position:previousRow.position,type:decodeType(previousRow.type_code),role:decodeRole(previousRow.role_code),activity_owner:previousRow.activity_owner,action_scope:{start:previousRow.action_start,end:previousRow.position}}:null;
+      const parent=this.cache.prepare('SELECT activity_owner FROM cache_blocks WHERE cache_conversation_id=? AND position=?');
+      const scope=this.cache.prepare('INSERT INTO cache_reading_scopes VALUES(?,?,?) ON CONFLICT(cache_conversation_id,start) DO UPDATE SET end=excluded.end');
+      const insert=this.cache.prepare('INSERT INTO cache_blocks(cache_conversation_id,position,type_code,role_code,parent_position,record_offset,record_length,record_ordinal,sub_block_ordinal,model,client_intent_id,activity_owner,action_start) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)');
+      const writeEvidence=providerEvidenceWriter(this.cache,cacheId);
+      for(const row of batch.rows??[]) {
+        const owner=row.parentPosition===null?null:parent.get(cacheId,row.parentPosition) as {activity_owner:number|null}|undefined;
+        previous=nextReadingContext(row,previous,owner?.activity_owner??null);
+        scope.run(cacheId,previous.action_scope.start,row.position);
+        writeEvidence(row.position,row.toolEvidence);
+        insert.run(cacheId,row.position,blockTypeCode(row.type),roleCode(row.role),row.parentPosition,row.recordOffset,row.recordLength,row.recordOrdinal,row.subBlockOrdinal,row.model??null,row.clientIntentId??null,previous.activity_owner,previous.action_scope.start);
       }
-      const previousRow = this.cache.prepare(`SELECT position, type_code, role_code, activity_owner, action_start
-        FROM cache_blocks WHERE cache_conversation_id = ? ORDER BY position DESC LIMIT 1`).get(cacheId) as
-        { position: number; type_code: number; role_code: number; activity_owner: number | null; action_start: number } | undefined;
-      let previous: ReadingContextState | null = previousRow ? { position: previousRow.position,
-        type: decodeType(previousRow.type_code), role: decodeRole(previousRow.role_code), activity_owner: previousRow.activity_owner,
-        action_scope: { start: previousRow.action_start, end: previousRow.position } } : null;
-      const parent = this.cache.prepare('SELECT activity_owner FROM cache_blocks WHERE cache_conversation_id = ? AND position = ?');
-      const scope = this.cache.prepare(`INSERT INTO cache_reading_scopes VALUES (?, ?, ?)
-        ON CONFLICT(cache_conversation_id, start) DO UPDATE SET end = excluded.end`);
-      for (const row of rows) {
-        const parentRow = row.parentPosition === null ? null : parent.get(cacheId, row.parentPosition) as { activity_owner: number | null } | undefined;
-        previous = nextReadingContext(row, previous, parentRow?.activity_owner ?? null);
-        scope.run(cacheId, previous.action_scope.start, row.position);
-        insert.run(
-          cacheId, row.position, blockTypeCode(row.type), roleCode(row.role), row.parentPosition,
-          row.recordOffset, row.recordLength, row.recordOrdinal, row.subBlockOrdinal, row.model ?? null, row.clientIntentId ?? null, row.toolEvidence ? JSON.stringify(row.toolEvidence) : null, previous.activity_owner, previous.action_scope.start,
-        );
+      if(batch.display)writeDisplayIndex(this.cache,cacheId,batch.display);
+      const insertTool=this.cache.prepare('INSERT INTO cache_tool_links VALUES(?,?,?) ON CONFLICT(cache_conversation_id,tool_key) DO UPDATE SET position=excluded.position');
+      for(const [key,position] of batch.tools??[])insertTool.run(cacheId,toolKey(key),position);
+      for(const {key,position} of batch.toolKeys??[])insertTool.run(cacheId,key,position);
+    })();
+  }
+
+  completeGeneration(cacheId:number):void {
+    this.cache.transaction(()=>{
+      const manifest=this.cache.prepare('SELECT * FROM cache_conversations WHERE cache_id=?').get(cacheId) as CacheConversationRow&{ready:number}|undefined;
+      if(!manifest)throw new Error('Index generation is missing');
+      if(manifest.ready)return;
+      const count=this.cache.prepare('SELECT COUNT(*) AS count,MIN(position) AS first,MAX(position) AS last FROM cache_blocks WHERE cache_conversation_id=?').get(cacheId) as {count:number;first:number|null;last:number|null};
+      if(count.count!==manifest.block_count||(count.count>0&&(count.first!==0||count.last!==count.count-1)))throw new Error('Prepared conversation structure is incomplete');
+      const invalid=this.cache.prepare(`SELECT 1 FROM cache_blocks b WHERE b.cache_conversation_id=? AND (b.record_offset<0 OR b.record_length<0 OR (b.parent_position IS NOT NULL AND NOT EXISTS(SELECT 1 FROM cache_blocks p WHERE p.cache_conversation_id=b.cache_conversation_id AND p.position=b.parent_position))) LIMIT 1`).get(cacheId);
+      if(invalid)throw new Error('Invalid source coordinates in index generation');
+      const fragments=this.cache.prepare('SELECT COUNT(*) AS count FROM cache_display_fragments WHERE cache_conversation_id=?').get(cacheId) as {count:number};
+      if(this.cache.prepare('SELECT 1 FROM cache_blocks WHERE cache_conversation_id=? AND revision IS NULL LIMIT 1').get(cacheId))throw new Error('Prepared presentation position facts are incomplete');
+      if(fragments.count) {
+
+        if(this.cache.prepare(`SELECT 1 FROM cache_display_aliases a WHERE a.cache_conversation_id=? AND (NOT EXISTS(SELECT 1 FROM cache_blocks b WHERE b.cache_conversation_id=a.cache_conversation_id AND b.position=a.position) OR NOT EXISTS(SELECT 1 FROM cache_display_fragments f WHERE f.cache_conversation_id=a.cache_conversation_id AND f.position=a.owner_position AND f.part_kind=a.owner_kind AND f.part_ordinal=a.owner_ordinal AND f.activity_kind=0)) LIMIT 1`).get(cacheId))throw new Error('Prepared presentation alias owner is missing');
       }
-      if (display) writeDisplayIndex(this.cache, cacheId, display, priorCacheId);
-      const count = this.cache.prepare("SELECT COUNT(*) AS count, MIN(position) AS first, MAX(position) AS last FROM cache_blocks WHERE cache_conversation_id = ?")
-        .get(cacheId) as { count: number; first: number | null; last: number | null };
-      if (count.count !== manifest.block_count || (count.count > 0 && (count.first !== 0 || count.last !== count.count - 1))) {
-        throw new Error("prepared conversation structure is incomplete");
+      this.cache.prepare('DELETE FROM cache_conversations WHERE conversation_id=? AND source_version_id=? AND parser_format=? AND parser_version=? AND normalization_version=? AND redaction_epoch=? AND cache_id!=? AND ready=1').run(manifest.conversation_id,manifest.source_version_id,manifest.parser_format,manifest.parser_version,manifest.normalization_version,manifest.redaction_epoch,cacheId);
+      this.cache.prepare('UPDATE cache_conversations SET ready=1 WHERE cache_id=?').run(cacheId);
+    })();
+  }
+
+  discardGeneration(cacheId:number):void {this.cache.prepare('DELETE FROM cache_conversations WHERE cache_id=? AND ready=0').run(cacheId);}
+
+  replaceRows(manifest:SourceManifestRow,rows:readonly Omit<SparseConversationBlockRow,'conversationId'|'sourceVersionId'|'parserFormat'|'parserVersion'|'normalizationVersion'|'redactionEpoch'>[],tools:ReadonlyMap<string,number>=new Map(),priorVersionId?:string,display?:DisplayIndexInput):void {
+    const id=this.beginGeneration(manifest,priorVersionId,{replaceReady:true});
+    try {
+      const size=512;
+      for(let offset=0;offset<rows.length;offset+=size) {
+        const part=rows.slice(offset,offset+size);const first=part[0].position,last=part[part.length-1].position;
+        this.appendGeneration(id,{rows:part,display:display?{positions:display.positions.filter(position=>position.position>=first&&position.position<=last),fragments:display.fragments.filter(fragment=>fragment.coordinate.position>=first&&fragment.coordinate.position<=last),aliases:display.aliases.filter(alias=>alias.position>=first&&alias.position<=last)}:undefined});
       }
-      const insertTool = this.cache.prepare(`INSERT INTO cache_tool_links VALUES (?, ?, ?)
-        ON CONFLICT(cache_conversation_id, tool_key) DO UPDATE SET position = excluded.position`);
-      for (const [id, position] of tools) insertTool.run(cacheId, toolKey(id), position);
-    });
-    write();
+      this.appendGeneration(id,{tools});this.completeGeneration(id);
+    } catch(error){this.discardGeneration(id);throw error;}
   }
 
   private cachedConversation(conversationId: string, sourceVersionId: string, epochs?: ConversationSourceEpochs): CacheConversationRow | null {
@@ -381,7 +340,7 @@ export class ConversationStructureCache {
       SELECT cache_id, conversation_id, source_version_id, parser_format, parser_version,
              normalization_version, redaction_epoch, block_count
         FROM cache_conversations
-       WHERE conversation_id = ? AND source_version_id = ? ${conditions}
+       WHERE ready = 1 AND conversation_id = ? AND source_version_id = ? ${conditions}
        ORDER BY cache_id DESC LIMIT 1
     `).get(conversationId, sourceVersionId, ...(epochs ? [epochs.parserFormat, epochs.parserVersion, epochs.normalizationVersion, epochs.redactionEpoch] : [])) as CacheConversationRow | undefined) ?? null;
   }
@@ -449,15 +408,17 @@ export class ConversationStructureCache {
       : options.prefix?.blockCount ?? conversation.block_count;
     const rows = this.cache.prepare(`
       SELECT position, type_code, role_code, parent_position, record_offset,
-             record_length, record_ordinal, sub_block_ordinal, model, client_intent_id, tool_evidence
+             record_length, record_ordinal, sub_block_ordinal, model, client_intent_id
         FROM cache_blocks WHERE ${where}
        ORDER BY position LIMIT ? OFFSET ?
     `).all(...params, options.limit, options.offset) as CacheBlockRow[];
+    const evidence=readProviderEvidence(this.cache,conversation.cache_id,rows.map(row=>row.position));
     return {
       rows: rows.map((row) => ({
         conversationId,
         sourceVersionId,
         position: row.position,
+        toolEvidence:evidence.get(row.position),
         type: decodeType(row.type_code),
         role: decodeRole(row.role_code),
         parentPosition: row.parent_position,
@@ -467,7 +428,6 @@ export class ConversationStructureCache {
         subBlockOrdinal: row.sub_block_ordinal,
         model: row.model,
         clientIntentId: row.client_intent_id,
-      toolEvidence: row.tool_evidence ? JSON.parse(row.tool_evidence) : undefined,
         parserFormat: conversation.parser_format,
         parserVersion: conversation.parser_version,
         normalizationVersion: conversation.normalization_version,
@@ -545,13 +505,17 @@ export class ConversationStructureCache {
     includeParents = false): SparseConversationBlockRow[] | null {
     const conversation = this.cachedConversation(conversationId, sourceVersionId, epochs);
     if (!conversation) return null;
-    const rows = this.cache.prepare(`WITH RECURSIVE requested AS (
-      SELECT * FROM cache_blocks WHERE position IN (SELECT value FROM json_each(?)) AND cache_conversation_id = ?
-    ), dependencies AS (SELECT * FROM requested UNION SELECT b.* FROM cache_blocks b JOIN dependencies d ON b.cache_conversation_id=d.cache_conversation_id AND (b.position=d.parent_position OR b.position=json_extract(d.tool_evidence,'$.display_tool_origin.position')) WHERE ?) SELECT * FROM dependencies ORDER BY position`).all(JSON.stringify([...new Set(positions)]), conversation.cache_id, includeParents ? 1 : 0) as CacheBlockRow[];
+    const rows = this.cache.prepare(`WITH RECURSIVE requested(position) AS (
+      SELECT value FROM json_each(?)
+      UNION SELECT b.parent_position FROM cache_blocks b JOIN requested r ON r.position=b.position WHERE b.cache_conversation_id=? AND ? AND b.parent_position IS NOT NULL
+      UNION SELECT e.origin_position FROM cache_provider_evidence e JOIN requested r ON r.position=e.position WHERE e.cache_conversation_id=? AND ? AND e.origin_position IS NOT NULL
+    ) SELECT b.* FROM cache_blocks b JOIN requested r ON r.position=b.position WHERE b.cache_conversation_id=? ORDER BY b.position`).all(JSON.stringify([...new Set(positions)]),conversation.cache_id,includeParents?1:0,conversation.cache_id,includeParents?1:0,conversation.cache_id) as CacheBlockRow[];
+    const evidence=readProviderEvidence(this.cache,conversation.cache_id,rows.map(row=>row.position));
     return rows.map(row => ({
       conversationId,
       sourceVersionId,
       position: row.position,
+      toolEvidence:evidence.get(row.position),
       type: decodeType(row.type_code),
       role: decodeRole(row.role_code),
       parentPosition: row.parent_position,
@@ -561,7 +525,6 @@ export class ConversationStructureCache {
       subBlockOrdinal: row.sub_block_ordinal,
       model: row.model,
       clientIntentId: row.client_intent_id,
-      toolEvidence: row.tool_evidence ? JSON.parse(row.tool_evidence) : undefined,
       parserFormat: conversation.parser_format,
       parserVersion: conversation.parser_version,
       normalizationVersion: conversation.normalization_version,
@@ -678,3 +641,13 @@ export function getConversationStructureCache(db: Db): ConversationStructureCach
   services.set(db, service);
   return service;
 }
+
+/** Exact ready generations only; projection and prefix copies share the ownership manifest. */
+export async function projectConversationCache(sourcePath:string,destinationPath:string,manifests:readonly SourceManifestRow[],options:{signal?:AbortSignal;maxBytes?:number;batchSize?:number;cooperate?:()=>Promise<void>}={}):Promise<{generations:number;rows:number}> {
+  if(path.resolve(sourcePath)===path.resolve(destinationPath))throw new Error('Cache projection requires a distinct destination');
+  const source=new ConversationStructureCache(undefined,{cachePath:sourcePath,readonly:true});
+  const suffix=`.v${CONVERSATION_STRUCTURE_CACHE_VERSION}`;
+  const destination=new ConversationStructureCache(undefined,{cachePath:destinationPath.endsWith(suffix)?destinationPath.slice(0,-suffix.length):destinationPath});
+  try{return await source.projectGenerationsTo(destination,manifests,options);}finally{destination.close();source.close();}
+}
+export { CONVERSATION_CACHE_FORMAT } from './index-storage.js';

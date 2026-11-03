@@ -10,7 +10,8 @@ export type IngestionWorkerCommand =
       priority?: boolean;
     }
   | { kind: "reconcile"; startupPasses?: boolean }
-  | { kind: "full-ingest" };
+  | { kind: "full-ingest" }
+  | { kind: "prepare-cache"; conversationId: string; priority?: boolean };
 
 export type IngestionWorkerRequest = IngestionWorkerCommand & { id: number };
 

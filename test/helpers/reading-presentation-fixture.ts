@@ -4,6 +4,8 @@ import { indexDisplayFragments } from '../../src/conversations/display-indexing'
 import { displayEventsFromBlocks } from '../../src/conversations/display-context';
 import { buildReadingManifest, planConversationReading } from '../../src/presentation/reading-manifest';
 import { prepareReadingMembers, materializePreparedReadingRows } from '../../src/presentation/reading';
+import { ConversationStructureCache } from '../../src/conversations/structure-cache';
+import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from '../../src/conversations/source-types';
 
 /** Fixtures supply complete source records; production planning and materialization serve the reader. */
 export function installReadingPresentationFixture(sourceFor: (id: string) => ConversationPositionWindow | undefined): void {
@@ -16,13 +18,21 @@ export function installReadingPresentationFixture(sourceFor: (id: string) => Con
     const payload = sourceFor(id);
     if (!payload || payload.blocks.length !== payload.total || payload.blocks.some((block, position) => block.position !== position)) throw new Error(`Complete reading source fixture missing for ${id}`);
     const blocks = payload.blocks.map(block => ({ ...block, metadata: JSON.parse(block.metadata_json) }));
-    const index = indexDisplayFragments(blocks, id, () => null);
+    const cache = new ConversationStructureCache(undefined, {cachePath:':memory:'});
+    let index;
+    try {
+      const epochs = CURRENT_CONVERSATION_SOURCE_EPOCHS;
+      cache.replaceRows({conversation_id:id,source_version_id:payload.source_version_id!,parser_format:epochs.parserFormat,parser_version:epochs.parserVersion,
+        normalization_version:epochs.normalizationVersion,redaction_epoch:epochs.redactionEpoch,block_count:payload.total},
+      blocks.map(block => ({position:block.position,type:block.type,role:block.role,parentPosition:null,recordOffset:0,recordLength:0,recordOrdinal:block.position,subBlockOrdinal:0})),
+      new Map(),undefined,indexDisplayFragments(blocks,id,()=>null));
+      index = cache.readPresentationIndex(id,payload.source_version_id!,epochs)!;
+    } finally { cache.close(); }
     const contexts = payload.reading_context!.positions.map(position => ({ position: position.position,
       activity_owner: position.activity_owner_position,
       action_scope: payload.reading_context!.speaker_runs.find(run => run.start === position.speaker_run_start)! }));
     const manifest = buildReadingManifest({ conversationId: id, positionSpaceId: payload.position_space_id!, sourceVersionId: payload.source_version_id!,
-      publicationRevision: payload.publication_revision, blockCount: payload.total, ...index, readingContext: contexts,
-      revisions: { members: Object.fromEntries(index.fragments.map(fragment => [fragment.id, index.positions.find(position => position.position === fragment.coordinate.position)!.revision])), runs: {} } });
+      publicationRevision: payload.publication_revision, blockCount: payload.total, ...index, readingContext: contexts });
     if (route[2] === 'manifest') return new Response(JSON.stringify({ status: 'source', manifest }));
     const request = JSON.parse(String(init?.body));
     if (request.positionSpaceId !== payload.position_space_id) return new Response(JSON.stringify({ status: 'position-space-changed', positionSpaceId: payload.position_space_id }));

@@ -353,6 +353,6 @@ export function ToolUseBlock(props: ToolUseBlockProps): JSX.Element {
   const operationName=context?.name ?? props.toolName;
   const operationInput=context && (typeof context.input==='string' || (context.input && typeof context.input==='object' && !Array.isArray(context.input))) ? context.input as string | Record<string,unknown> : props.input;
   const operationKind=context?.kind ?? props.toolKind;
-  const observation=toolObservation(operationName,operationInput,operationKind,props.result ? {text:props.result.fullText ?? extractResultText(props.result.content),content:props.result.content,frame:props.result.source?.toolFrame,native:props.result.presentation,failed:props.result.is_error} : undefined,props.header);
+  const observation=toolObservation(operationName,operationInput,operationKind,props.result ? {text:props.result.fullText ?? extractResultText(props.result.content),content:props.result.content,frame:props.result.source?.toolFrame,native:props.result.presentation,failed:props.result.is_error,unloaded:props.detailsAvailable} : undefined,props.header);
   return <ToolCard {...props} toolName={observation.name} toolKind={observation.kind} input={operationInput===undefined ? undefined : observation.input} header={observation.header} resultPresentation={observation.result} />;
 }

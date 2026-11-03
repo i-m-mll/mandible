@@ -22,6 +22,7 @@ export type ToolCallActivity = {
   header?: import('./tool-presentation.js').ToolPresentation;
   execution?: import('./execution-presentation.js').ExecutionFacts;
   operations?: import('./tool-presentation.js').ToolRunFact[];
+  observation?: import('./operation-observation.js').CompactOperationObservation;
   operationContext?: import('../parsers/types.js').ToolOperationContext;
   executionEvidence?: import('../parsers/types.js').ToolExecutionEvidence;
   result: ToolResultContentBlock | null;
@@ -282,6 +283,8 @@ export type RenderNodeUnmatchedToolResult = {
   result: ToolResultContentBlock;
 };
 
+export type InlineActivityIdentity = {turnId:string;source:string|number} & ({kind:'thinking'}|{kind:'provider-directive';ordinal:number});
+
 export type RenderNodeActivity = {
   kind: 'activity';
   key: string;
@@ -289,6 +292,7 @@ export type RenderNodeActivity = {
   item: DisplayActivityItem;
   source?: PersistedBlockSource;
   memberKey?: string;
+  inlineIdentity?: InlineActivityIdentity;
 };
 
 export type RenderNode = { kind: 'transcript_boundary'; key: string; entity: 'system' } | RenderNodeAssistantTurn | RenderNodeUserMessage | RenderNodeSemanticEvent | RenderNodeUnmatchedToolResult | RenderNodeActivity;

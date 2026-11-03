@@ -1,41 +1,15 @@
+import { chatItemIdentityRecipe, indexKeyString } from '../conversations/index-keys.js';
 import type { ProviderAdapterEvent, ProviderLiveProjection } from "./types.js";
-import type { ChatItem, ChatItemIdentity } from "../parsers/types.js";
+import type { ChatItem } from "../parsers/types.js";
 
 export function emptyProviderLiveProjection(conversationId: string): ProviderLiveProjection {
   return { conversation_id: conversationId, revision: 0, generation: 0, events: [] };
 }
 
-function itemKind(item: ChatItem): string {
-  if (item.type === "message") return `message:${item.role}`;
-  if (item.type === "activity") return `activity:${item.activity_kind}`;
-  if (item.type === "tool-call") return `tool-call:${item.phase}`;
-  return item.type;
-}
-
-/**
- * Return the only identity accepted for live reconciliation. Native provider
- * identity wins; verified transcript coordinates are a durable-only fallback.
- */
-export function chatItemIdentityKey(
-  item: ChatItem,
-  options: { allowTranscriptCoordinates?: boolean } = {},
-): string | null {
-  if (!item || typeof item !== "object" || !item.identity || !item.provenance) return null;
-  const identity: ChatItemIdentity = item.identity;
-  if (!identity.provider || !identity.session_id || !item.type) return null;
-  if (identity.native_content_index !== undefined
-      && (!Number.isInteger(identity.native_content_index) || identity.native_content_index < 0)) return null;
-  const prefix = [identity.provider, identity.session_id, itemKind(item)];
-  const content = identity.native_content_index ?? null;
-  const toolId = item.type === "tool-call" ? item.tool_id ?? identity.native_tool_id : undefined;
-  if (toolId) return JSON.stringify([...prefix, "tool", toolId, null]);
-  if (identity.native_item_id) return JSON.stringify([...prefix, "item", identity.native_item_id, content]);
-  if (identity.native_tool_id) return JSON.stringify([...prefix, "tool", identity.native_tool_id, content]);
-  if (identity.native_turn_id && identity.native_content_index !== undefined) return JSON.stringify([...prefix, "turn", identity.native_turn_id, content]);
-  if (!options.allowTranscriptCoordinates) return null;
-  if (!Number.isInteger(identity.source_record_ordinal) || identity.source_record_ordinal < 0
-      || !Number.isInteger(identity.source_sub_block_ordinal) || identity.source_sub_block_ordinal < 0) return null;
-  return JSON.stringify([...prefix, "record", identity.source_record_ordinal, identity.source_sub_block_ordinal]);
+/** Native identity wins; transcript coordinates are a durable-only fallback. */
+export function chatItemIdentityKey(item:ChatItem,options:{allowTranscriptCoordinates?:boolean}={}):string|null {
+  const recipe=chatItemIdentityRecipe(item,options);
+  return recipe?indexKeyString(recipe,''):null;
 }
 
 export function providerAdapterEventKey(event: ProviderAdapterEvent): string {

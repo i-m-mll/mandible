@@ -27,6 +27,7 @@ it.each(['bio.mll.mandible', 'bio.mll.mandible.fixture.private'])('qualifies exp
   let parentIdentifier = identifier;
   let gatewayExecutable: string | null = null;
   const observedTimeouts: number[] = [];
+  const launchctlOperations: string[] = [];
   vi.doMock('node:child_process', async original => ({ ...await original<typeof import('node:child_process')>(), spawnSync: (binary: string, args: string[], options: { timeout?: number } = {}) => {
     if (options.timeout !== undefined) observedTimeouts.push(options.timeout);
     if (binary === '/usr/bin/plutil') {
@@ -36,6 +37,7 @@ it.each(['bio.mll.mandible', 'bio.mll.mandible.fixture.private'])('qualifies exp
     if (binary === '/bin/ps') return { status: 0, stdout: args.at(-1) === 'lstart=' ? 'launch-start'
       : args[args.indexOf('-p') + 1] === '52' ? gatewayExecutable ?? executable : executable, stderr: '' };
     if (binary === '/bin/launchctl') {
+      launchctlOperations.push(args[0]);
       const service = args[1].endsWith(context.backendLabel) ? 'backend' : 'gateway';
       return { status: 0, stdout: `service = {\n program identifier = Contents/MacOS/mandible-service (mode: 2)\n parent bundle identifier = ${parentIdentifier}\n arguments = {\nmandible-service\nforeground\n${service}\n }\n pid = ${service === 'backend' ? 42 : 52}\n}`, stderr: '' };
     }
@@ -43,7 +45,7 @@ it.each(['bio.mll.mandible', 'bio.mll.mandible.fixture.private'])('qualifies exp
   } }));
   vi.resetModules();
   const { inspectServiceDefinitionsSync } = await import('../scripts/service-definitions.mjs');
-  for (executable of ['xpcproxy', '/usr/libexec/xpcproxy', 'mandible-service', path.join(bundleRoot, 'Contents/MacOS/mandible-service'), 'mandible-bun']) {
+  for (executable of ['xpcproxy', '/usr/libexec/xpcproxy', 'mandible-service', path.join(bundleRoot, 'Contents/MacOS/mandible-service'), 'mandible-bun', '(xpcproxy)', '(mandible-service)', '(mandible-bun)']) {
     const pending = inspectServiceDefinitionsSync(context);
     expect(pending).toMatchObject({ ok: false, refusal: { category: 'starting', evidence: { pid: 42, executable,
       service: 'backend', label: context.backendLabel, bundleProgram: 'Contents/MacOS/mandible-service', parentBundleIdentifier: identifier } } });
@@ -53,8 +55,15 @@ it.each(['bio.mll.mandible', 'bio.mll.mandible.fixture.private'])('qualifies exp
   expect(inspectServiceDefinitionsSync(context).ok).toBe(true);
   fs.writeFileSync(path.join(bundleRoot, 'Contents/Resources/release.json'), JSON.stringify({ native: { bun: '../MacOS/mandible-bun', caddy: '../MacOS/mandible-caddy' }, serviceExecutables: { backend: 'bun', gateway: 'caddy' } }));
   expect(inspectServiceDefinitionsSync(context)).toMatchObject({ ok: false, refusal: { service: 'gateway', category: 'starting' } });
+  for (gatewayExecutable of ['(xpcproxy)', '(mandible-service)', '(mandible-bun)', '(mandible-caddy)']) {
+    expect(inspectServiceDefinitionsSync(context)).toMatchObject({ ok: false, refusal: { service: 'gateway', category: 'starting' } });
+  }
+  for (gatewayExecutable of ['(foreign-gateway)', '/another/Mandible.app/Contents/MacOS/mandible-caddy']) {
+    expect(inspectServiceDefinitionsSync(context)).toMatchObject({ ok: false, refusal: { service: 'gateway', category: 'ownership_conflict' } });
+  }
   gatewayExecutable = path.join(bundleRoot, 'Contents/MacOS/mandible-caddy');
   expect(inspectServiceDefinitionsSync(context).ok).toBe(true);
+  expect(launchctlOperations.every(operation => operation === 'print')).toBe(true);
   const clock = vi.spyOn(Date, 'now').mockReturnValue(1000);
   try {
     const before = observedTimeouts.length;
