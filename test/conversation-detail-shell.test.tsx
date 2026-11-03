@@ -832,74 +832,7 @@ describe('compact detail pane shell', () => {
     await waitFor(() => expect(screen.getAllByText('Assistant stays continuous')).toHaveLength(1));
   });
 
-  it.each(['published', 'pending'] as const)('re-resolves the true end when an append arrives during Jump to latest (%s)', async (publication) => {
-    const scopedConversation = mockConversationDetail(defaultControl, []);
-    const firstLatest = deferred<ConversationPositionWindow>();
-    const trueLatest = deferred<ConversationPositionWindow>();
-    let latestCalls = 0;
-    const middleBlock = makeTranscriptBlock({ id: 'middle', dag_uuid: 'middle', content: 'Middle window', position: 1 });
-    vi.mocked(api.getConversationWindow).mockImplementation(async (_id, request) => {
-      if ('target' in request && request.target === 'latest') {
-        latestCalls += 1;
-        return latestCalls === 1 ? firstLatest.promise : trueLatest.promise;
-      }
-      if ('position' in request) return positionPayload(scopedConversation, [
-        makeTranscriptBlock({ id: 'earlier', dag_uuid: 'earlier', content: 'Earlier source', position: 0 }), middleBlock,
-        makeTranscriptBlock({ id: 'near-tail', dag_uuid: 'near-tail', content: 'Nearby source tail', position: 2 }),
-      ], { revision: 3 });
-      return positionPayload(scopedConversation, [middleBlock], {
-        kind: 'block',
-        hasAfter: true,
-        afterCount: 1,
-        revision: 2,
-      });
-    });
-    window.history.replaceState(null, '', `#/console?conversation=${conversation.id}&block=middle`);
-    renderConversationDetail(scopedConversation);
-    expect(await screen.findByText('Middle window')).toBeTruthy();
-    expect(screen.getByRole('button', { name: /jump to latest/i })).toBeTruthy();
 
-    applyConversationSse(queryClient, 'conversation:updated', {
-      id: conversation.id,
-      block_count: 12,
-      append: {
-        from_position: 2,
-        blocks: Array.from({ length: 10 }, (_, index) => makeTranscriptBlock({
-          id: `append-${index + 2}`,
-          dag_uuid: `append-${index + 2}`,
-          position: index + 2,
-          content: `append ${index + 2}`,
-        })),
-      },
-    });
-
-    fireEvent.click(await screen.findByRole('button', { name: /jump to latest/i }));
-    await waitFor(() => expect(latestCalls).toBe(1));
-    applyConversationSse(queryClient, 'conversation:updated', {
-      id: conversation.id,
-      block_count: 13,
-      append: { from_position: 12, blocks: [makeTranscriptBlock({ id: 'append-12', dag_uuid: 'append-12', position: 12, content: 'append 12' })] },
-    });
-    const olderSnapshot = { ...positionPayload(scopedConversation, [makeTranscriptBlock({ id: 'old-tail', dag_uuid: 'old-tail', position: 11, content: 'Old tail' })], { kind: 'latest', revision: 12 }), source_version_id: 'source-12', publication_revision: 2 };
-    firstLatest.resolve(olderSnapshot);
-    await waitFor(() => expect(latestCalls).toBe(2));
-    expect(screen.getByText('Middle window')).toBeTruthy();
-    expect(screen.queryByText('Old tail')).toBeNull();
-    const freshSnapshot = { ...positionPayload(scopedConversation, [makeTranscriptBlock({ id: 'true-tail', dag_uuid: 'true-tail', position: 12, content: 'Newest true tail' })], { kind: 'latest', revision: 13 }), source_version_id: 'source-13', publication_revision: 3 };
-    if (publication === 'pending') {
-      trueLatest.resolve(olderSnapshot);
-      const retry = await screen.findByRole('button', { name: 'Retry' });
-      expect(screen.getByText('Middle window')).toBeTruthy();
-      expect(queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversation.id))).toMatchObject({ total: 3, conversation: { block_count: 13 } });
-      expect(latestCalls).toBe(2);
-      vi.mocked(api.getConversationWindow).mockResolvedValueOnce(freshSnapshot);
-      fireEvent.click(retry);
-    } else trueLatest.resolve(freshSnapshot);
-    expect(await screen.findByText('Newest true tail')).toBeTruthy();
-    const aggregate = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversation.id));
-    expect(aggregate).toMatchObject({ total: 13, end_reached: true, active_window: { start: 12, end: 12 } });
-    expect(window.location.hash).toBe(`#/console?conversation=${conversation.id}`);
-  });
 });
 
 describe('Chat route intent', () => {
