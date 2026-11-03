@@ -1,6 +1,6 @@
 import { operationInputBody,operationResultBody,type OperationInputBody,type OperationResultBody } from './operation-body.js';
 import { extractToolResultText } from './model.js';
-import { operationDefinition, operationInputTargets, operationReceiptTargets } from './operation-registry.js';
+import { operationDefinition, operationInputTargets, operationReceiptTargets, operationReceiptSubject } from './operation-registry.js';
 import type { ToolResultContent } from './types.js';
 import { compactOperationObservation, type OperationObservation, type CompactOperationObservation } from './operation-observation.js';
 import type { ToolCallActivity } from './types.js';
@@ -37,7 +37,7 @@ export function toolObservation(name:string,input:Record<string,unknown> | strin
 function observedHeader(header:ToolPresentation,result?:ToolTransportResult,unloaded=false,inputBody?:OperationInputBody,resultBody?:OperationResultBody):ToolPresentation {
   if(unloaded || (!result && header.hasDetails!==undefined)) return header;
   const reports=result && header.resultAttribution!=='opaque' && header.operation==='thread-wait' ? threadReports(result.text) : null;
-  return {...header,hasDetails:Boolean(inputBody&&inputBody.kind!=='none'||resultBody&&resultBody.kind!=='none'),
+  return {...header,...(result?{target:operationReceiptSubject(header.operation??'',header.target,result.text)??header.target}:{}),hasDetails:Boolean(inputBody&&inputBody.kind!=='none'||resultBody&&resultBody.kind!=='none'),
     ...(result ? {observation:{...(result.wallTimeSeconds!==undefined ? {elapsedSeconds:result.wallTimeSeconds}:{}),...(reports?.length ? {report:reports.every(report=>report.final)?'final' as const:'update' as const}:{})}} : {})};
 }
 
@@ -101,7 +101,7 @@ export function observeOperationReceipt(current:CompactOperationObservation,rece
   const receiptFacts=current.resultAttribution==='opaque'?{operation:current.operation,targets:[]}:operationReceiptTargets(current.operation,result.text,receipt.scope??{},current.subject);
   const targets=[...current.targets,...receiptFacts.targets,...(receipt.targets??[]),...(reports??[]).map(report=>({kind:'thread' as const,provider:'codex' as const,sessionId:report.threadId}))];
   const uniqueTargets=new Map<string,ActivityTarget>();for(const target of targets)if(!uniqueTargets.has(activityTargetKey(target)))uniqueTargets.set(activityTargetKey(target),target);
-  return {...current,operation:receiptFacts.operation,execution:mergeOperationExecution(current.execution,receipt.execution,result.failed),
+  return {...current,subject:operationReceiptSubject(current.operation,current.subject,result.text),operation:receiptFacts.operation,execution:mergeOperationExecution(current.execution,receipt.execution,result.failed),
     payload:{state:current.payload.state==='unloaded'||substantiveToolResult(result)?'unloaded':'none'},
     targets:[...uniqueTargets.values()],
     ...(result.wallTimeSeconds===undefined?{}:{timing:{elapsedSeconds:result.wallTimeSeconds,scope:result.timingScope??'operation'}}),

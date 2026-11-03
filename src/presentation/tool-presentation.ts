@@ -108,7 +108,7 @@ export function presentTool(
   if(operation&&definition) {
     const ids=operation==='thread-read'||operation==='thread-send'?[object.threadId??object.thread_id]:operation==='thread-wait'?Array.isArray(object.targets)?object.targets.map(target=>target&&typeof target==='object'?(target as Record<string,unknown>).threadId:undefined):object.threadIds??object.thread_ids:[];
     const threadTargets=(Array.isArray(ids)?ids:[]).filter((id):id is string=>typeof id==='string'&&Boolean(id)).map(id=>({type:'session' as const,id}));
-    return {operation,category:definition.category,icon:definition.icon,phrase:definition.completed,target:'',...(threadTargets.length?{threadTargets,targetCount:threadTargets.length}:{}),...(definition.outputPolicy?{outputPolicy:definition.outputPolicy}:{})};
+    return {operation,category:definition.category,icon:definition.icon,phrase:definition.completed,target:operation.startsWith('web-')?toolTarget(toolName,object):'',...(threadTargets.length?{threadTargets,targetCount:threadTargets.length}:{}),...(definition.outputPolicy?{outputPolicy:definition.outputPolicy}:{})};
   }
   if(name==='apply_patch') {
     const patch = typeof inputValue==='string' ? inputValue : typeof object.patch==='string' ? object.patch : '';

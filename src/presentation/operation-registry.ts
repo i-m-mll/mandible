@@ -9,6 +9,9 @@ const operations:Readonly<Record<string,OperationDefinition>>={
   'file-write':definition('write','toolWrite','file write','Write file','Writing file','Wrote a file','Wrote some files','Write files','Writing files'),
   'file-delete':definition('delete','toolDelete','file removal','Remove file','Removing file','Removed a file','Removed some files','Remove files','Removing files'),
   'file-move':definition('move','toolMove','file move','Move file','Moving file','Moved a file','Moved some files','Move files','Moving files'),
+  'web-search':definition('search','toolSearch','web search','Search web','Searching web','Searched web','Searched web'),
+  'web-open':definition('browser','toolBrowser','web page opening','Open web page','Opening web page','Opened web page','Opened web pages'),
+  'web-click':definition('browser','toolBrowser','web link opening','Open web link','Opening web link','Opened web link','Opened web links'),
   search:definition('search','toolSearch','search','Search','Searching','Searched','Searched several times'),
   'tool-discovery':definition('search','toolSearch','tool check','Check available tools','Checking available tools','Checked available tools','Checked available tools'),
   'project-list':definition('search','toolSearch','project listing','List projects','Listing projects','Listed projects','Listed projects'),
@@ -31,6 +34,10 @@ const operations:Readonly<Record<string,OperationDefinition>>={
 export function operationDefinition(operation:string|undefined):OperationDefinition|undefined{return operation?operations[operation]:undefined;}
 export function registeredOperation(name:string,input:Record<string,unknown>):string|undefined {
   const normalized=name.trim().toLowerCase().replace(/^functions\./,'');
+  if(['web__run','mcp__web__run','web.run'].includes(normalized)){
+    const actions=['search_query','image_query','open','click','find','screenshot','finance','weather','sports','time'].filter(key=>Array.isArray(input[key])&&(input[key] as unknown[]).length);
+    if(actions.length===1)return actions[0]==='search_query'||actions[0]==='image_query'?'web-search':actions[0]==='open'?'web-open':actions[0]==='click'?'web-click':undefined;
+  }
   if(normalized==='__tool_discovery')return 'tool-discovery';
   const app=/^(?:mcp__)?codex_app__(list_projects|list_threads|read_thread|send_message_to_thread|create_thread|wait_threads)$/.exec(normalized);
   if(app)return ({list_projects:'project-list',list_threads:'thread-list',read_thread:'thread-read',send_message_to_thread:'thread-send',create_thread:'thread-create',wait_threads:'thread-wait'} as const)[app[1] as 'list_projects'];
@@ -66,4 +73,15 @@ export function operationReceiptTargets(operation:string,result:string,scope:{pr
   }
   if(operation==='subagent-create'&&scope.provider==='codex'&&scope.sessionId&&nonempty(fields.task_name))return {operation,targets:[{kind:'subagent',provider:'codex',parentSessionId:scope.sessionId,agentId:fields.task_name,...hint}]};
   return {operation,targets:[]};
+}
+
+/** Native web receipts carry the resolved page beside the exact request reference. */
+export function operationReceiptSubject(operation:string,subject:string|undefined,text:string):string|undefined {
+  if(!['web-open','web-click'].includes(operation))return subject;
+  const page=/^([^\n]+) \((https?:\/\/[^\n]+)\)\r?\n/.exec(text);
+  const source=/Source: (open|click)\((\{[^\n]+?\})\);/.exec(text);
+  if(!page||!source||source[1]!==operation.slice(4))return subject;
+  let request:unknown;try{request=JSON.parse(source[2]);}catch{return subject;}
+  if(!request||typeof request!=='object'||(request as Record<string,unknown>).ref_id!==subject)return subject;
+  return page[1]+' ('+page[2]+')';
 }
