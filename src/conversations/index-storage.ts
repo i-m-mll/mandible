@@ -15,8 +15,8 @@ export const CONVERSATION_CACHE_FORMAT = {
     CREATE TABLE cache_conversations (
       cache_id INTEGER PRIMARY KEY AUTOINCREMENT,conversation_id TEXT NOT NULL,source_version_id TEXT NOT NULL,
       parser_format TEXT NOT NULL,parser_version TEXT NOT NULL,normalization_version TEXT NOT NULL,redaction_epoch INTEGER NOT NULL,
-      block_count INTEGER NOT NULL,updated_at INTEGER NOT NULL,accessed_at INTEGER NOT NULL,ready INTEGER NOT NULL DEFAULT 0 CHECK(ready IN (0,1)),
-      UNIQUE(conversation_id,source_version_id,parser_format,parser_version,normalization_version,redaction_epoch));
+      block_count INTEGER NOT NULL,updated_at INTEGER NOT NULL,accessed_at INTEGER NOT NULL,ready INTEGER NOT NULL DEFAULT 0 CHECK(ready IN (0,1)));
+    CREATE INDEX idx_cache_tuple ON cache_conversations(conversation_id,source_version_id,parser_format,parser_version,normalization_version,redaction_epoch,ready,cache_id);
     CREATE TABLE cache_blocks (${generation}, position INTEGER NOT NULL,type_code INTEGER NOT NULL CHECK(type_code BETWEEN 0 AND 7),
       role_code INTEGER NOT NULL CHECK(role_code BETWEEN 0 AND 3),parent_position INTEGER,record_offset INTEGER NOT NULL,record_length INTEGER NOT NULL,
       record_ordinal INTEGER NOT NULL,sub_block_ordinal INTEGER NOT NULL,model TEXT,client_intent_id TEXT,activity_owner INTEGER,action_start INTEGER NOT NULL,
