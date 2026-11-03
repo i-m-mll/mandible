@@ -226,6 +226,9 @@ it("hydrates streamed Claude tool arguments and publishes exact result identitie
   stream({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "tool-1", name: "Bash", input: {} } });
   stream({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"command":' } });
   stream({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '"pwd"}' } });
+  native.emit({type:'assistant',session_id,message:{id:'assistant-message',stop_reason:null,content:[{type:'tool_use',id:'tool-1',name:'Bash',input:{command:'pwd'}}]}});
+  await until(()=>events.some(event=>event.kind==='provisional-content' && event.item.type==='tool-call' && event.item.phase==='call' && event.item.content_completion==='complete'));
+  expect(events.flatMap(event=>event.kind==='provisional-content' && event.item.type==='tool-call' && event.item.phase==='call' ? [event.item] : []).at(-1)).toMatchObject({content_completion:'complete',tool_id:'tool-1',input:{command:'pwd'}});
   native.emit({ type: "user", uuid: "result-message", session_id, message: { content: [{ type: "tool_result", tool_use_id: "tool-1", content: "/tmp" }] } });
   await until(() => events.some(event => event.kind === "provisional-content" && event.item.type === "tool-call" && event.item.phase === "result"));
   const items = events.flatMap(event => event.kind === "provisional-content" ? [event.item] : []);

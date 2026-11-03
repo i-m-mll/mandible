@@ -94,7 +94,7 @@ export function CompactActivityRow({
   const control = summaryContent ? <div className={rowClass} data-member-refs={memberRefs} onClick={event=>{
     if(!(event.target as Element).closest('a,button')) toggle(event);
   }}>{rowContent}<button ref={buttonRef} type="button" className="compact-activity__toggle" aria-label={displaySummary}
-    aria-expanded={isExpanded} aria-controls={bodyId} onClick={toggle}><DisclosureChevronIcon expanded={isExpanded} /></button></div>
+    aria-expanded={isExpanded} aria-controls={bodyId} onClick={event=>{event.stopPropagation();toggle(event);}}><DisclosureChevronIcon expanded={isExpanded} /></button></div>
     : <button ref={buttonRef} type="button" className={rowClass} data-member-refs={memberRefs} aria-expanded={isExpanded} aria-controls={bodyId} onClick={toggle}>{rowContent}</button>;
   return (
     <div className={rootClass} data-reading-disclosure>

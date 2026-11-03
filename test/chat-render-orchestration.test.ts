@@ -210,7 +210,7 @@ for (const provider of ['claude_code', 'codex'] as const) describe(`${provider} 
   });
 
   it('retains terminal-before-durable content and hydrates lazy tool inputs under the same identity', () => {
-    const tool = reconciliationItem('tool', 'tool', provider);
+    const tool = {...reconciliationItem('tool', 'tool', provider),content_completion:provider==='claude_code'?'complete':'streaming'} as ChatItem;
     const projected = projection([live(tool, 1)]);
     const lazy = saved({ ...tool, input: undefined } as ChatItem, 0); lazy.source!.detailsLoaded = false;
     const pending = reconcileProviderProjection([lazy], projected, new Map(), snapshot()) as CanonicalChatItemEvent[];
