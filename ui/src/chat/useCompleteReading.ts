@@ -9,11 +9,16 @@ import type { ReadingBodyDemand } from './readingBodyDemand';
 import type { MeasurementRow, MaterializedMeasurementBatch } from './readingMeasurement';
 import { activityTargetsFromReadingRows } from '../../../src/presentation/activity-presentation';
 import { activityTargetKey } from '../../../src/presentation/activity-targets';
-import { activityTargetOptions, useActivityTargetResolutions } from '../query/activityTargets';
+import { useActivityTargetResolutions } from '../query/activityTargets';
 import { activityTargetDisplayLabel, type ActivityTargetLabels } from '../components/shared/ActivityTargetLinks';
 
 export const readingPayloadKey = (row: MeasurementRow): string => JSON.stringify([row.key, row.revision, row.disclosureIdentity ?? '']);
 export const readingBodyKey = (row: MeasurementRow): string => JSON.stringify([row.key, row.revision, row.bodyIdentity ?? row.disclosureIdentity ?? '']);
+/** Decode an accepted offscreen snapshot only when its row is actually rendered. */
+export function readingTargetLabels(row?: MeasurementRow): ActivityTargetLabels | undefined {
+  if (!row || row.targetLabels) return row?.targetLabels;
+  return row.disclosureIdentity ? JSON.parse(JSON.parse(row.disclosureIdentity)[1]) : undefined;
+}
 
 export function useCompleteReading(input: {
   scope: string; space: string; events: readonly StreamEvent[]; sourceVersion?: string | null; total?: number;
@@ -137,9 +142,6 @@ export function useCompleteReading(input: {
         const byKey = new Map([...cachedByKey, ...[...composed.rows, ...input.extraRows].map(row => [row.key, row] as const)]);
         result = refs.map(ref => { const body = byKey.get(ref.key); if (!body) throw new Error('Requested presentation row is unavailable.'); return { ...body, revision: ref.revision }; });
       }
-      const keep = retainedKeys();
-      const targets = activityTargetsFromReadingRows(result.filter((_body,index) => keep.has(readingBodyKey(refs[index])))).filter(target => target.kind !== 'pending-thread');
-      await Promise.allSettled(targets.map(target => queryClient.fetchQuery(activityTargetOptions(target))));
       if (!signal.aborted) publishBodies(refs.map((ref, index) => ({ ref, body: result[index] })));
       return { bodies: result, release: () => lease?.release() };
     } catch (error) { lease?.release(); throw error; }
@@ -209,10 +211,7 @@ export function useCompleteReading(input: {
     pendingVector.current = null; custody.current.pending = new Set(); setDemandVersion(value => value + 1);
   }, []);
   return { rows, plan, membership: plan?.viewMembership ?? input.local.viewMembership, rowMembers, actionRuns: composition?.actionRuns ?? input.local.actionRuns, lastAssistantTurnId: composition?.lastAssistantTurnId ?? input.local.lastAssistantTurnId,
-    manifest: manifest.data, bodies, getBody: (ref: MeasurementRow) => {
-      const identity = snapshots.current.get(readingBodyKey(ref));
-      return !ref.targetLabels && identity !== undefined && identity !== '{}'
-        ? undefined : bodies.get(readingBodyKey(ref));
-    }, materialize, acquireMeasurement, onRange, retainMeasurement, retainGeometry, commitGeometry,
+    manifest: manifest.data, bodies, getBody: (ref: MeasurementRow) => bodies.get(readingBodyKey(ref)),
+    materialize, acquireMeasurement, onRange, retainMeasurement, retainGeometry, commitGeometry,
     protect: () => setDemandVersion(value => value + 1), error: manifest.error?.message ?? hydrationError, ready: !input.enabled || Boolean(plan), refresh: () => { failures.current.clear(); setHydrationError(null); setDemandVersion(value => value + 1); return manifest.refetch(); } };
 }

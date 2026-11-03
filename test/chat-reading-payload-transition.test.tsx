@@ -1,12 +1,15 @@
 // @vitest-environment jsdom
 import { act, cleanup, render, waitFor } from './helpers/dom';
 import { afterEach, expect, it, vi } from 'vitest';
-import { readingBodyKey, readingPayloadKey, useCompleteReading } from '../ui/src/chat/useCompleteReading';
+import { readingBodyKey, readingPayloadKey, readingTargetLabels, useCompleteReading } from '../ui/src/chat/useCompleteReading';
 import { queryClient } from '../ui/src/query/client';
 import { activityTargetOptions } from '../ui/src/query/activityTargets';
 import { activityTargetKey } from '../src/presentation/activity-targets';
-const boundary = vi.hoisted(() => ({ revision: 'old', release: null as null | (() => void), targets:false, reads:0 }));
-vi.mock('../ui/src/api', () => ({resolveActivityTargets: async (targets:any[]) => targets.map(target => ({key:activityTargetKey(target),status:'resolved',conversationId:'canonical-child',title:'Original title'}))}));
+const boundary = vi.hoisted(() => ({ revision: 'old', release: null as null | (() => void), targets:false, reads:0, resolveLabels:null as null | (()=>Promise<void>) }));
+vi.mock('../ui/src/api', () => ({resolveActivityTargets: async (targets:any[]) => {
+  await boundary.resolveLabels?.();
+  return targets.map(target => ({key:activityTargetKey(target),status:'resolved',conversationId:'canonical-child',title:'Original title'}));
+}}));
 vi.mock('../ui/src/query/readingPresentation', () => ({
   readingManifestOptions: () => ({ queryKey: ['payload-transition-manifest'], queryFn: async () => ({ revision: boundary.revision }) }),
   isReadingPublicationChanged: () => false,
@@ -30,7 +33,23 @@ function Harness() {
     enabled: true, initial: false, actionIdentity: '' });
   return null;
 }
-afterEach(() => { cleanup(); queryClient.clear(); boundary.revision = 'old'; boundary.release = null; boundary.targets = false; boundary.reads = 0; });
+afterEach(() => { cleanup(); queryClient.clear(); boundary.revision = 'old'; boundary.release = null; boundary.targets = false; boundary.reads = 0; boundary.resolveLabels=null; });
+
+it('publishes demanded source bodies without waiting for metadata resolution', async () => {
+  boundary.targets=true;
+  let finish!:()=>void;
+  boundary.resolveLabels=()=>new Promise<void>(resolve=>{finish=resolve;});
+  render(<Harness/>);
+  await waitFor(()=>expect(reading.rows[0] && reading.getBody(reading.rows[0])).toBeTruthy());
+  const row=reading.rows[0];
+  const body=reading.getBody(row);
+  const reads=boundary.reads;
+  await waitFor(()=>expect(finish).toBeTypeOf('function'));
+  await act(async()=>finish());
+  await waitFor(()=>expect(Object.values(reading.rows[0].targetLabels??{}).some(label=>label.selection)).toBe(true));
+  expect(reading.getBody(reading.rows[0])).toBe(body);
+  expect(boundary.reads).toBe(reads);
+});
 
 it('keeps the applied payload paintable until matching pending geometry replaces it', async () => {
   render(<Harness />);
@@ -85,6 +104,7 @@ it('changes only the retained target row layout on title reconciliation and reus
   expect(boundary.reads).toBe(offscreenReads);
   act(() => reading.onRange({vector:reading.rows,required:[offscreen],prefetch:[],start:0,end:100,height:100}));
   await waitFor(() => expect(reading.rows[0].targetLabels?.[key]?.label).toBe('Changed while offscreen'));
-  expect(reading.getBody(offscreen)).toBeUndefined();
+  expect(reading.getBody(offscreen)).toBeTruthy();
+  expect(readingTargetLabels(offscreen)?.[key]?.label).not.toBe(reading.rows[0].targetLabels?.[key]?.label);
   expect(reading.getBody(reading.rows[0])).toBeTruthy();
 });

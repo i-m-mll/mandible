@@ -152,7 +152,7 @@ export function useReadingGeometry(input: {
         startedScope.current = input.scope;
         const result = await service.measure({ rows, layouts: [layout], materialize: snapshot.materialize,
           renderBatch: createReadingRowBatchRenderer(snapshot.renderProps), reuse: facts.current,
-          signal: controller.signal, batchSize: 16, materializeBatchSize: 128, maxSynchronousMs: 8 });
+          signal: controller.signal, batchSize: 16, materializeBatchSize: 128, prefetchMaterialization: true, maxSynchronousMs: 8 });
         if (controller.signal.aborted || !layoutRef.current || measurementLayoutIdentity(layoutRef.current) !== identity) break;
         facts.current = result.measurements;
         if (result.status !== 'complete') {

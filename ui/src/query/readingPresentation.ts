@@ -38,7 +38,7 @@ export function readingManifestOptions(id: string, space: string) {
 }
 export type ReadingRowsLease = { rows: Array<import('../chat/readingProjection').ReadingRow & { revision: string }>; release: () => void };
 /** An acquired batch stays in Query custody until its bounded consumer releases it. */
-export async function acquirePresentationRows(id: string, request: ReadingRowBatchRequest, signal: AbortSignal): Promise<ReadingRowsLease> {
+async function acquireBatch(id: string, request: ReadingRowBatchRequest, signal: AbortSignal): Promise<ReadingRowsLease> {
   const queryKey = ['chat', 'conversation', id, 'reading-batch', ++batchRequestId, request] as const;
   let released = false;
   const children: ReadingRowsLease[] = [];
@@ -65,13 +65,58 @@ export async function acquirePresentationRows(id: string, request: ReadingRowBat
     if (result.status === 'resource-limit' && request.rows.length > 1) {
       queryClient.removeQueries({ queryKey, exact: true });
       const middle = Math.ceil(request.rows.length / 2);
-      const first = await acquirePresentationRows(id, { ...request, rows: request.rows.slice(0, middle) }, signal); children.push(first);
-      const second = await acquirePresentationRows(id, { ...request, rows: request.rows.slice(middle) }, signal); children.push(second);
+      const first = await acquireBatch(id, { ...request, rows: request.rows.slice(0, middle) }, signal); children.push(first);
+      const second = await acquireBatch(id, { ...request, rows: request.rows.slice(middle) }, signal); children.push(second);
       if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
       return { rows: [...first.rows, ...second.rows], release };
     }
     if (result.status === 'changed') void queryClient.invalidateQueries({ queryKey: readingManifestKey(id, request.positionSpaceId) });
     throw new ReadingPresentationError(result.status, result.status === 'position-space-changed' ? result.status : `${result.status}: ${result.reason}`);
+  } catch (error) { release(); throw error; }
+}
+type SharedRow = { owners: number; body: Promise<ReadingRowsLease['rows'][number]>; release: () => void };
+const acquiredRows = new Map<string, SharedRow>();
+
+/** Viewport and measurement share exact rows, while cancellation releases only its own custody. */
+export async function acquirePresentationRows(id: string, request: ReadingRowBatchRequest, signal: AbortSignal): Promise<ReadingRowsLease> {
+  if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
+  const key = (row: ReadingRowBatchRequest['rows'][number]) => JSON.stringify([id, request.positionSpaceId, row.key, row.revision]);
+  const missing = request.rows.filter(row => !acquiredRows.has(key(row)));
+  if (missing.length) {
+    const controller = new AbortController();
+    let lease: ReadingRowsLease | undefined;
+    const entries: SharedRow[] = [];
+    const releaseBatch = () => {
+      if (entries.some(entry => entry.owners > 0)) return;
+      controller.abort(); lease?.release();
+    };
+    const batch = acquireBatch(id, { ...request, rows: missing }, controller.signal).then(value => {
+      lease = value; releaseBatch(); return value;
+    });
+    for (const [index, row] of missing.entries()) {
+      const identity = key(row);
+      const entry: SharedRow = { owners: 0, body: batch.then(value => value.rows[index]), release: () => {
+        if (--entry.owners === 0 && acquiredRows.get(identity) === entry) acquiredRows.delete(identity);
+        releaseBatch();
+      } };
+      entries.push(entry); acquiredRows.set(identity, entry);
+    }
+  }
+  const entries = request.rows.map(row => acquiredRows.get(key(row))!);
+  for (const entry of entries) entry.owners++;
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true; signal.removeEventListener('abort', abort);
+    for (const entry of entries) entry.release();
+  };
+  let rejectAbort!: (reason: unknown) => void;
+  const abort = () => { release(); rejectAbort(new DOMException('Cancelled', 'AbortError')); };
+  const cancelled = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
+  signal.addEventListener('abort', abort, { once: true });
+  try {
+    const rows = await Promise.race([Promise.all(entries.map(entry => entry.body)), cancelled]);
+    return { rows, release };
   } catch (error) { release(); throw error; }
 }
 export async function readPresentationRows(id: string, request: ReadingRowBatchRequest, signal: AbortSignal): Promise<ReadingRowsLease['rows']> {

@@ -41,6 +41,8 @@ export type MeasurementRequest<Body> = {
   reuse?: readonly RowMeasurement[];
   batchSize?: number;
   materializeBatchSize?: number;
+  /** Acquire at most one next source buffer while the current buffer is measured. */
+  prefetchMaterialization?: boolean;
   maxSynchronousMs?: number;
   signal?: AbortSignal;
   /** Font/image durations overlap; readiness covers their join and the final document font barrier. */
@@ -134,6 +136,11 @@ export class ReadingMeasurementService {
     let host: HTMLDivElement | undefined;
     let rendered: RenderedMeasurementBatch | undefined;
     let materialized: MaterializedMeasurementBatch<Body> | undefined;
+    type Buffer = { rows: readonly MeasurementRow[]; work: ReturnType<typeof untilAbort<readonly Body[] | MaterializedMeasurementBatch<Body>>> };
+    let prefetched: Buffer | undefined;
+    const discard = (value: readonly Body[] | MaterializedMeasurementBatch<Body>) => {
+      if (!Array.isArray(value)) (value as MaterializedMeasurementBatch<Body>).release();
+    };
     const releaseMaterialized = () => { const batch = materialized; materialized = undefined; batch?.release(); };
     const release = () => {
       const batch = rendered; rendered = undefined;
@@ -141,6 +148,10 @@ export class ReadingMeasurementService {
     };
     let cleanupError: unknown;
     const cleanup = () => {
+      if (prefetched) {
+        void prefetched.work.then(result => { if (result.ready) discard(result.value); }, () => {});
+        prefetched = undefined;
+      }
       try { release(); } catch (error) { cleanupError = error; }
       finally { try { releaseMaterialized(); } catch (error) { cleanupError ??= error; } finally { host?.remove(); } }
     };
@@ -172,21 +183,35 @@ export class ReadingMeasurementService {
       host.dataset.readingMeasurementHost = '';
       Object.assign(host.style, { position: 'fixed', left: '0', top: '0', visibility: 'hidden', pointerEvents: 'none', zIndex: '-1' });
       this.parent.append(host);
-      for (let offset = 0; offset < request.rows.length;) {
+      let offset = 0;
+      const nextBuffer = (): Buffer | undefined => {
+        while (offset < request.rows.length && !signal.aborted) {
+          const end = Math.min(request.rows.length, offset + materializeBatchSize);
+          const rows = request.rows.slice(offset, end).filter(row => request.layouts.some(layout => !measurements.has(measurementKey(row, measurementLayoutIdentity(layout)))));
+          offset = end;
+          if (rows.length) {
+            const started = clock();
+            const work = untilAbort(request.materialize(rows, signal), signal, discard);
+            // Observe speculative failure now; the owning await still reports it.
+            void work.catch(() => {});
+            void work.then(() => observe('materialize', started, rows.length), () => {});
+            return { rows, work };
+          }
+        }
+      };
+      while (prefetched || offset < request.rows.length) {
         if (signal.aborted) return cancelled();
-        const end = Math.min(request.rows.length, offset + materializeBatchSize);
-        const bufferRows = request.rows.slice(offset, end).filter(row => request.layouts.some(layout => !measurements.has(measurementKey(row, measurementLayoutIdentity(layout)))));
-        offset = end;
-        if (!bufferRows.length) continue;
         phase = 'materialize';
-        const materializeStarted = clock();
-        const bodies = await untilAbort(request.materialize(bufferRows, signal), signal, value => {
-          if (!Array.isArray(value)) (value as MaterializedMeasurementBatch<Body>).release();
-        });
-        observe('materialize', materializeStarted, bufferRows.length);
+        const next = prefetched ?? nextBuffer();
+        if (!next) break;
+        prefetched = undefined;
+        const bodies = await next.work;
         if (!bodies.ready) return cancelled();
+        if (signal.aborted) { discard(bodies.value); return cancelled(); }
+        const bufferRows = next.rows;
         const buffer = Array.isArray(bodies.value) ? bodies.value as readonly Body[] : (materialized = bodies.value as MaterializedMeasurementBatch<Body>).bodies;
         if (buffer.length !== bufferRows.length) throw new Error('Materializer must return one body per requested row in order.');
+        if (request.prefetchMaterialization) prefetched = nextBuffer();
         for (let sliceOffset = 0; sliceOffset < bufferRows.length;) {
           const sliceEnd = Math.min(bufferRows.length, sliceOffset + activeBatchSize);
           const rows = bufferRows.slice(sliceOffset, sliceEnd);

@@ -80,6 +80,41 @@ it('acquires one bounded buffer independently of small DOM slices', async () => 
   service.dispose();
 });
 
+it('releases current and late speculative source custody when pipelined measurement is cancelled', async () => {
+  Object.defineProperty(document,'fonts',{configurable:true,value:{ready:Promise.resolve()}});
+  const parent=document.createElement('div'); document.body.append(parent);
+  const renderBatch:MeasurementRequest<MeasurementRow>['renderBatch']=(host,bodies)=>{
+    const elements=new Map(bodies.map(row=>{
+      const element=document.createElement('div'); host.append(element);
+      element.getBoundingClientRect=()=>({width:480,height:80}) as DOMRect;
+      return [row.key,element];
+    }));
+    return {elements,dispose:()=>host.replaceChildren()};
+  };
+  const service = new ReadingMeasurementService(parent);
+  const controller = new AbortController();
+  const rows = ['current','next','unrequested'].map(key=>({key,revision:'1'}));
+  const currentRelease=vi.fn(), lateRelease=vi.fn();
+  let finish!: (value:MaterializedMeasurementBatch<MeasurementRow>)=>void;
+  const materialize=vi.fn(async(batch:readonly MeasurementRow[]) => batch[0].key==='current'
+    ? {bodies:batch,release:currentRelease}
+    : new Promise<MaterializedMeasurementBatch<MeasurementRow>>(resolve=>{finish=resolve;}));
+  const work=service.measure({rows,layouts:[layout],batchSize:1,materializeBatchSize:1,prefetchMaterialization:true,
+    materialize,renderBatch,signal:controller.signal});
+  await waitUntil(()=>currentRelease.mock.calls.length,'current measured buffer released');
+  controller.abort();
+  const result=await work;
+  expect(result.status).toBe('cancelled');
+  expect(result.measurements).toHaveLength(1);
+  expect(materialize.mock.calls.flatMap(([batch])=>batch.map(row=>row.key))).toEqual(['current','next']);
+  finish({bodies:[rows[1]],release:lateRelease});
+  await waitUntil(()=>lateRelease.mock.calls.length,'speculative buffer released');
+  expect(currentRelease).toHaveBeenCalledOnce();
+  expect(lateRelease).toHaveBeenCalledOnce();
+  expect(parent.childElementCount).toBe(0);
+  service.dispose();
+});
+
 it('does not start another acquisition after cancellation during the final layout yield', async () => {
   Object.defineProperty(document, 'fonts', { configurable: true, value: { ready: Promise.resolve() } });
   const parent = document.createElement('div'); document.body.append(parent);

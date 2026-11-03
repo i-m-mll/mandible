@@ -27,9 +27,10 @@ it('does not let obsolete measurement cancel an overlapping visible row read', a
   await Promise.resolve();
   measurement.abort();
   await obsolete;
-  expect(transport.calls[1].signal.aborted).toBe(false);
+  expect(transport.calls).toHaveLength(1);
+  expect(transport.calls[0].signal.aborted).toBe(false);
   const row = { key: 'row', revision: 'same', kind: 'content' } as ReadingRow & { revision: string };
-  transport.calls[1].finish(new Response(JSON.stringify({ status: 'source', rows: [row] })));
+  transport.calls[0].finish(new Response(JSON.stringify({ status: 'source', rows: [row] })));
   const lease = await current;
   expect(lease.rows).toEqual([row]);
   expect(queryClient.getQueryCache().findAll({ queryKey: ['chat', 'conversation', 'conv', 'reading-batch'] })).toHaveLength(1);

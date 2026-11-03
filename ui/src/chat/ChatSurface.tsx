@@ -15,7 +15,7 @@ import { projectReadingRows, type ReadingRow, type ReadingProjection } from './r
 import { ReadingRowBody } from './ReadingRowView';
 import { MeasuredReadingBox, ReadingRowStrip } from './ReadingRowWindow';
 import { readingRowPrimaryActions, readingRowTurnId } from './readingRowActions';
-import { useCompleteReading, readingBodyKey } from './useCompleteReading';
+import { useCompleteReading, readingBodyKey, readingTargetLabels } from './useCompleteReading';
 import { useReadingGeometry } from './useReadingGeometry';
 import { getReadingResizeScale } from './readingResizeProfile';
 import { useReadingViewport, type ReadingSummaryTarget } from './useReadingViewport';
@@ -89,7 +89,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
   const [scrollNode, setScrollElement] = useState<HTMLDivElement | null>(null);
   const layoutChange = useRef<() => void>(() => {});
   const geometry = useReadingGeometry({ scope: `${scope}:${space}`, chrome: 32 + clearance, onLayoutChange: () => layoutChange.current(), rows: complete.rows, parent: appearance.ready && complete.ready && !initialDisclosurePending ? scrollNode : null,
-    materialize: complete.acquireMeasurement, membership: complete.membership, rowMembers: complete.rowMembers, onMeasuring: complete.retainMeasurement, onPrepared: complete.retainGeometry, renderProps: (row, ref) => ({ ...props, row, targetLabels: ref?.targetLabels, expandedBlocks, setBlockExpanded: () => {},
+    materialize: complete.acquireMeasurement, membership: complete.membership, rowMembers: complete.rowMembers, onMeasuring: complete.retainMeasurement, onPrepared: complete.retainGeometry, renderProps: (row, ref) => ({ ...props, row, targetLabels: readingTargetLabels(ref), expandedBlocks, setBlockExpanded: () => {},
       preparing: row.sources.some(source => expandedBlocks[`reveal:${source.position}`]), primaryActions: readingRowPrimaryActions({ copy: () => {}, open: () => {}, turnId: readingRowTurnId(row, complete.actionRuns), selectedMessageId: props.selectedMessageId, select: props.onSelectMessageInfo }),
       lastAssistantTurnId: complete.lastAssistantTurnId, onActivityGroupExpandedChange: () => {} }), scale: getReadingResizeScale });
   const latest = useRef({ scope, space, projection, transcript, props, complete, geometry }); latest.current = { scope, space, projection, transcript, props, complete, geometry };
