@@ -16,8 +16,10 @@ export function projectDisplayBlock(row: SourceBackedConversationBlock): SourceB
   const item = metadata.chat_item;
   const activity = item && typeof item === "object" && !Array.isArray(item)
     && (item as Record<string, unknown>).type === "activity";
-  const targeted = row.type === "tool_use" || row.type === "tool_result" || row.type === "thinking" || activity;
+  const commandOutput = (metadata.display_local_command as import('../parsers/types.js').BlockMetadata['display_local_command'])?.kind === 'output';
+  const targeted = row.type === "tool_use" || row.type === "tool_result" || row.type === "thinking" || activity || commandOutput;
   if (!targeted) return row;
+  if (commandOutput) metadata.display_has_body = (metadata.display_local_command as {hasBody:boolean}).hasBody;
   const reasoningSummary = row.type === "thinking" && metadata.source_event_type === "reasoning_summary";
   const reasoningLines = reasoningSummary
     ? row.content.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
@@ -39,7 +41,7 @@ export function projectDisplayBlock(row: SourceBackedConversationBlock): SourceB
       compactItem.parts = reasoningLines.length > 0 ? [{ type: "text", text: reasoningLines[0] }] : [];
     } else if (row.type === "thinking") {
       compactItem.parts = [];
-    } else if (row.type === "tool_use" || row.type === "tool_result" || activity) {
+    } else if (row.type === "tool_use" || row.type === "tool_result" || activity || commandOutput) {
       compactItem.parts = [];
     }
     metadata.chat_item = compactItem;

@@ -72,6 +72,8 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
       "Tool uses come from assistant content blocks with type tool_use.",
       "Tool results come from user content blocks with type tool_result and exact tool_use IDs establish terminal execution evidence. Missing results and assistant stop_reason tool_use alone do not prove current execution; absent result timestamps never establish duration.",
       "Chat retains native tool-result content/media and error facts as presentation-only evidence; canonical flattened content and parts are unchanged.",
+      "Exact historical user and system/local_command envelopes expose display-only invocation/output facts; native role, XML content and source identity remain unchanged. Output joins use parentUuid with optional commandRun, and stdout/stderr content is projected once.",
+      "Agent/Task operation hints distinguish create from resume/to; structured toolUseResult.agentId supplies scoped subagent targets with authored description labels, not guessed standalone session IDs.",
       "Messages, tools, thinking, progress, summaries, and informational records expose metadata.chat_item using the shared provider-neutral contract.",
       "Native content-block indexes preserve ordered siblings that share one Claude message identity.",
       "Task subagent transcripts under <parent>/subagents/agent-*.jsonl, and legacy sibling agent-*.jsonl sidechain transcripts, are sidechain conversations whose parent is the session they name.",

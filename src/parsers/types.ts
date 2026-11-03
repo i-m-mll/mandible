@@ -122,6 +122,8 @@ export interface ActivityItem extends ChatItemBase {
   tool_name?: string;
   tool_id?: string;
   related_tool_ids?: string[];
+  /** Display-only native local-command output discriminator. */
+  local_command?: { stream: 'stdout' | 'stderr' };
 }
 
 export type ChatItem = MessageItem | PlanItem | ToolCallItem | ActivityItem;
@@ -134,6 +136,12 @@ export interface BlockMetadata {
   display_tool_execution?: ToolExecutionEvidence;
   /** Hydrated only from the verified original call; never retained in the compact index. */
   display_tool_operation?: ToolOperationContext;
+  display_tool_targets?: import('../presentation/activity-targets.js').ActivityTarget[];
+  display_tool_operation_kind?: 'subagent-create' | 'subagent-resume';
+  /** Bounded native command facts; full output stays in canonical content. */
+  display_local_command?:
+    | { kind: 'invocation'; name: string; args: string }
+    | { kind: 'output'; stream: 'stdout' | 'stderr'; summary: string; hasBody: boolean; invocationUuid?: string; commandName?: string };
   execution_state?: "active" | "settled" | "unknown";
   tool_name?: string;
   tool_kind?: string;

@@ -1,6 +1,7 @@
 import { inlineActivityKey } from './reading-disclosures.js';
 import type { InlineActivityIdentity } from './types.js';
 import { projectNativeToolResult } from './tool-transport.js';
+import { claudeCommandOutput } from '../parsers/claude-local-command.js';
 import { splitProviderDirectives } from './provider-directives.js';
 import type { ToolCallActivity, ThinkingBlockActivity, ProviderDirectiveActivity } from './types.js';
 import { chatItemIdentityKey } from '../conversation-control/provider-live.js';
@@ -36,7 +37,14 @@ function chatItemText(item: MessageItem | PlanItem | ToolCallItem | ActivityItem
   return item.parts.map((part) => part.text).join('\n');
 }
 
-export function displayChatItem(item: ChatItem, metadata: Pick<BlockMetadata, 'display_completion_parts' | 'display_tool_content' | 'display_tool_error'>): ChatItem {
+export function displayChatItem(item: ChatItem, metadata: Pick<BlockMetadata, 'display_completion_parts' | 'display_tool_content' | 'display_tool_error' | 'display_local_command'>): ChatItem {
+  const command = metadata.display_local_command;
+  if (command?.kind === 'invocation') return { ...item, type: 'message', role: 'user', parts: [{type:'text', text: `${command.name}${command.args ? ` ${command.args}` : ''}`}] };
+  if (command?.kind === 'output') {
+    const output = claudeCommandOutput(chatItemText(item));
+    return { ...item, type: 'activity', role: 'system', activity_kind: 'information', local_command: {stream: command.stream},
+      parts: [{type:'text',text:command.summary}, ...(output?.body ? [{type:'text' as const,text:output.body}] : [])] };
+  }
   if(item.type==='tool-call' && item.phase==='result' && ('display_tool_content' in metadata || 'display_tool_error' in metadata)) return {...item,...(metadata.display_tool_content!==undefined ? {output:metadata.display_tool_content} : {}),...(metadata.display_tool_error ? {execution_outcome:'failed' as const} : {})};
   return item.type === 'activity' && item.provenance.source_event_type === 'task_complete' && metadata.display_completion_parts
     ? {...item, parts: metadata.display_completion_parts} : item;
