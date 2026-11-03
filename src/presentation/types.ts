@@ -277,6 +277,8 @@ export type RenderNodeUnmatchedToolResult = {
   result: ToolResultContentBlock;
 };
 
+export type InlineActivityIdentity = {turnId:string;source:string|number} & ({kind:'thinking'}|{kind:'provider-directive';ordinal:number});
+
 export type RenderNodeActivity = {
   kind: 'activity';
   key: string;
@@ -284,6 +286,7 @@ export type RenderNodeActivity = {
   item: DisplayActivityItem;
   source?: PersistedBlockSource;
   memberKey?: string;
+  inlineIdentity?: InlineActivityIdentity;
 };
 
 export type RenderNode = { kind: 'transcript_boundary'; key: string; entity: 'system' } | RenderNodeAssistantTurn | RenderNodeUserMessage | RenderNodeSemanticEvent | RenderNodeUnmatchedToolResult | RenderNodeActivity;

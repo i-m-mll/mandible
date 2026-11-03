@@ -7,7 +7,7 @@ import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from '../src/conversations/source-
 import { testRuntimeRoot } from './helpers/runtime-isolation';
 import type { ChatItem, ConversationBlock } from '../src/parsers/types';
 import { buildReadingManifest, planConversationReading } from '../src/presentation/reading-manifest';
-import { readingNodeDisclosures } from '../src/presentation/reading-disclosures';
+import { readingNodeDisclosures, readingDisclosureState } from '../src/presentation/reading-disclosures';
 import { projectDisplayFragments } from '../src/presentation/fragments';
 import { defaultDisplayEventsFromBlocks } from '../src/conversations/display-context';
 
@@ -70,5 +70,18 @@ it('retains exact source disclosure constructors and the system speaker of an un
     expect(stored.speaker).toBe('system');
     expect(stored.disclosures).toEqual(readingNodeDisclosures(visible.node));
     expect(planConversationReading(plan(cache,'orphan'),{}).rows[0].sourcePositions).toEqual([0]);
+    const message=(position:number,text:string)=>block(position,{type:'message',role:'assistant',identity:{...item(position).identity,native_turn_id:undefined,native_tool_id:undefined,native_item_id:`message-${position}`},
+      provenance:item(position).provenance,parts:[{type:'text',text}],content_completion:'complete'});
+    const messages=[message(0,'Earlier'),message(1,'<oai-mem-citation>\n<citation_entries>\nMEMORY.md:1|note=[source]\n</citation_entries>\n<rollout_ids>\nnative-rollout\n</rollout_ids>\n</oai-mem-citation>')];
+    const projected=projectDisplayFragments(defaultDisplayEventsFromBlocks(messages.map(value=>({...value,parentPosition:null})),'conv'),true);
+    cache.replaceRows(manifest('missing-native-turn',messages.length),rows(messages,()=>null),new Map(),undefined,indexDisplayFragments(messages,'conv',()=>null));
+    const directive=cache.readPresentationIndex('conv','missing-native-turn',epochs)!.fragments.find(fragment=>fragment.activity?.kind==='directive-memory')!;
+    const visibleDirective=projected.find(fragment=>fragment.node.kind==='activity'&&fragment.node.item.type==='provider-directive')!;
+    const expected=readingNodeDisclosures(visibleDirective.node);
+    expect(directive.disclosures).toEqual(expected);
+    expect(expected.keys).toEqual(['activity:provider-directive:cblk:conv:0:cblk:conv:1:0']);
+    const expanded={[expected.keys[0]]:true};
+    expect(readingDisclosureState(directive.disclosures,expanded)).toEqual([[expected.keys[0],true]]);
+
   } finally {cache.close();}
 });
