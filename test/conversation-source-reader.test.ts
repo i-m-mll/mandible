@@ -6,6 +6,7 @@ import path from "node:path";
 import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { normalizedPositionIdentity } from "../src/conversations/position-space.js";
 import { ConversationSourceReader } from "../src/conversations/source-reader.js";
 import { ConversationSourceStore } from "../src/conversations/source-store.js";
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../src/conversations/source-types.js";
@@ -84,7 +85,7 @@ describe("versioned conversation source reader", () => {
   it('keeps reused cell continuations bound to their exact exec origin across sparse windows and terminal reconciliation', async () => {
     const db=migratedMemoryDb();
     const file=rolloutPath();
-    const response=(payload:Record<string,unknown>)=>({type:'response_item',payload});
+    const response=(payload:Record<string,unknown>)=>({type:'response_item',payload:{...payload,internal_chat_message_metadata_passthrough:{turn_id:'turn-scope'}}});
     const exec=(id:string,script:string)=>response({type:'custom_tool_call',call_id:id,name:'exec',input:script});
     const wait=(id:string)=>response({type:'function_call',call_id:id,name:'wait',arguments:'{"cell_id":"106"}'});
     const result=(id:string,type:string,output:unknown)=>response({type,call_id:id,output});
@@ -101,6 +102,7 @@ describe("versioned conversation source reader", () => {
       await record(db,'cells',file);
       const origin=parsed.blocks[6].metadata.display_tool_origin;
       expect(origin?.native_tool_id).toBe('new');
+      expect(origin?.native_turn_id).toBe('turn-scope');
       expect(parsed.blocks[10].metadata.display_tool_origin).toBeUndefined();
       expect(parsed.blocks[5].metadata.display_tool_execution?.state).toBe('completed');
       const reader=new ConversationSourceReader(db);
@@ -118,6 +120,16 @@ describe("versioned conversation source reader", () => {
       const bounded=await new CodexParser().parseIncremental({filePath:file,raw:JSON.stringify(wait('late'))+'\n',baseBlockCount:11,baseRecordCount:12,sourceHash:'test',sourceMtime:0});
       expect(bounded).toBeNull();
     } finally {db.close();}
+  });
+
+  it('keeps id-less source identity independent of presentation-only passthrough turn hints', async () => {
+    const file=rolloutPath();
+    const payload={type:'message',role:'developer',content:[{type:'input_text',text:'Source-authored system record'}]};
+    writeRecords(file,[records()[0],{type:'response_item',payload}]);
+    const baseline=await parse(file);
+    writeRecords(file,[records()[0],{type:'response_item',payload:{...payload,internal_chat_message_metadata_passthrough:{turn_id:'display-scope'}}}]);
+    const scoped=await parse(file);
+    expect(normalizedPositionIdentity(scoped.blocks[0])).toBe(normalizedPositionIdentity(baseline.blocks[0]));
   });
 
   it('retains a historical yielded observation without inventing current execution from omitted output or results', async () => {

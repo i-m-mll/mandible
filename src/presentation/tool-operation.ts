@@ -18,6 +18,12 @@ export function patchFileChanges(patch: string): Array<{filePath:string;oldStrin
 }
 
 export type OperationState = 'ongoing' | 'completed' | 'failed' | 'cancelled' | 'unknown';
+/** Terminal failure/cancellation is more specific than settlement or historical progress. */
+export function operationState(evidence:OperationState | undefined,result?:{failed?:boolean;is_error?:boolean},active=false):OperationState {
+  if(evidence==='failed' || result?.failed || result?.is_error) return 'failed';
+  if(evidence==='cancelled') return 'cancelled';
+  return evidence ?? (result ? 'completed' : active ? 'ongoing' : 'unknown');
+}
 const neutral:Readonly<Record<string,string>>={read:'Read file',edit:'Edit file',write:'Write file',delete:'Remove file',move:'Move file',search:'Search',execute:'Run command',javascript:'Run JavaScript',fetch:'Fetch resource',browser:'Use browser',think:'Think',other:'Use tool'};
 const ongoing:Readonly<Record<string,string>>={read:'Reading file',edit:'Editing file',write:'Writing file',delete:'Removing file',move:'Moving file',search:'Searching',execute:'Running command',javascript:'Running JavaScript',fetch:'Fetching resource',browser:'Using browser',think:'Thinking',other:'Using tool'};
 export function operationPhrase(header:ToolPresentation,state:OperationState,result?:ToolTransportResult):string {
@@ -41,28 +47,38 @@ export function substantiveToolResult(result:ToolTransportResult):boolean {
   return Boolean(result.text.trim() || result.stderr?.trim() || result.failed || (Array.isArray(result.content) && result.content.some(block=>block.type!=='text' || block.text.trim())));
 }
 
-export type ThreadReport = {threadId:string;hostId?:string;text:string;final:boolean};
+export type ThreadReport = {threadId:string;hostId?:string;text:string;final:boolean;truncated?:boolean;originalChars?:number};
+const record=(value:unknown):value is Record<string,unknown>=>Boolean(value) && typeof value==='object' && !Array.isArray(value);
+const knownKeys=(value:Record<string,unknown>,keys:readonly string[]):boolean=>Object.keys(value).every(key=>keys.includes(key));
 /** Only the native thread-wait report envelope identifies a returned child report. */
 export function threadReports(text:string):ThreadReport[] | null {
   let value:unknown;
   try {value=JSON.parse(text);} catch{return null;}
   if(!value || typeof value!=='object' || Array.isArray(value)) return null;
   const envelope=value as Record<string,unknown>;
-  if(typeof envelope.timedOut!=='boolean' || !Array.isArray(envelope.polls) || envelope.error!=null) return null;
+  if(typeof envelope.timedOut!=='boolean' || !Array.isArray(envelope.polls) || !knownKeys(envelope,['timedOut','wake','polls'])) return null;
+  if(envelope.wake!=null && (!record(envelope.wake) || !knownKeys(envelope.wake,['reason','turnId','threadId','hostId']))) return null;
   const reports:ThreadReport[]=[];
   for(const entry of envelope.polls) {
     if(!entry || typeof entry!=='object') return null;
     const poll=entry as Record<string,unknown>;
+    if(!knownKeys(poll,['schemaVersion','cursor','revision','changed','thread','latestTurn','latestAssistantMessageId','latestAssistantMessage','latestToolMarkerId','latestToolMarker'])) return null;
     const turn=poll.latestTurn;
+    if(turn!=null && (!record(turn) || !knownKeys(turn,['id','status','error','startedAt','completedAt','durationMs']))) return null;
+    const marker=poll.latestToolMarker;
+    if(marker!=null && (!record(marker) || !knownKeys(marker,['id','turnId','type','name','status']))) return null;
     if(poll.error!=null || (turn && typeof turn==='object' && (turn as Record<string,unknown>).error!=null)) return null;
     const message=poll.latestAssistantMessage;
     const thread=poll.thread;
+    if(!record(thread) || !knownKeys(thread,['id','hostId','status']) || (thread.status!=null && (!record(thread.status) || !knownKeys(thread.status,['type'])))) return null;
     if(!message) continue;
-    if(typeof message!=='object' || !thread || typeof thread!=='object') return null;
+    if(typeof message!=='object') return null;
     const body=message as Record<string,unknown>;
     const target=thread as Record<string,unknown>;
-    if(typeof body.text!=='string' || typeof target.id!=='string') return null;
-    if(body.text.trim()) reports.push({threadId:target.id,...(typeof target.hostId==='string'?{hostId:target.hostId}:{}),text:body.text,final:body.phase==='final_answer'});
+    if(typeof body.text!=='string' || typeof target.id!=='string' || !knownKeys(body,['id','turnId','phase','text','truncated','originalChars']) || !knownKeys(target,['id','hostId','status'])
+      || (body.truncated!==undefined && typeof body.truncated!=='boolean') || (body.originalChars!==undefined && (typeof body.originalChars!=='number' || !Number.isSafeInteger(body.originalChars) || body.originalChars<0))
+      || (target.status!=null && (!record(target.status) || !knownKeys(target.status,['type'])))) return null;
+    if(body.text.trim()) reports.push({threadId:target.id,...(typeof target.hostId==='string'?{hostId:target.hostId}:{}),text:body.text,final:body.phase==='final_answer',...(typeof body.truncated==='boolean'?{truncated:body.truncated}:{}),...(typeof body.originalChars==='number'?{originalChars:body.originalChars}:{})});
   }
   return reports;
 }

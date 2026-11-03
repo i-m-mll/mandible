@@ -38,6 +38,7 @@ export type ToolContinuationOrigin = {
   provider: "codex";
   session_id: string;
   native_tool_id: string;
+  /** Presentation-only turn scope for continuation matching; never a canonical source identity. */
   native_turn_id?: string;
   position: number;
   source_record_ordinal: number;
@@ -126,6 +127,8 @@ export type ChatItem = MessageItem | PlanItem | ToolCallItem | ActivityItem;
 
 export interface BlockMetadata {
   /** Presentation dependencies never alter native parent links or transcript content. */
+  /** Presentation-only passthrough turn scope for verifying a continuation origin. */
+  display_tool_turn_id?: string;
   display_tool_origin?: ToolContinuationOrigin;
   display_tool_execution?: ToolExecutionEvidence;
   /** Hydrated only from the verified original call; never retained in the compact index. */

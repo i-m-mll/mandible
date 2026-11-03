@@ -1,6 +1,6 @@
 import type { ToolResultContent, ToolResultContentBlock } from '../../../../src/presentation/types';
 import { toolObservation } from '../../../../src/presentation/tool-observation';
-import { operationPhrase, operationResult, patchFileChanges, substantiveToolResult, threadReports, type ThreadReport, type OperationState } from '../../../../src/presentation/tool-operation';
+import { operationPhrase, operationState, operationResult, patchFileChanges, substantiveToolResult, threadReports, type ThreadReport } from '../../../../src/presentation/tool-operation';
 import { chatRouteHref } from '../../chat/messageLinks';
 import type { ToolOperationContext, ToolExecutionEvidence } from '../../../../src/parsers/types';
 import { ActivityPayloadBox } from '../shared/ActivityPayloadBox';
@@ -143,7 +143,7 @@ function ResultBody({ result, commandLike, projected, reports }: {
   const blocks=typeof content==='string' ? [{type:'text' as const,text:content}] : content;
   return (
     <div className={`tool-card__result${result.is_error || projected.failed ? ' tool-card__result--error' : ''}`}>
-      {reports?.length ? reports.map((report,index)=><div key={index}><a href={chatRouteHref({type:'session',id:report.threadId},window.location.hash)}>{report.threadId}</a>{report.hostId ? <small>{report.hostId}</small> : null}<OverflowFade lines={10}><pre>{report.text}</pre></OverflowFade></div>) : blocks.map((block,index)=>block.type==='text' ? (block.text ? <OverflowFade key={index} lines={10}>
+      {reports?.length ? reports.map((report,index)=><div key={index}><a href={chatRouteHref({type:'session',id:report.threadId},window.location.hash)}>{report.threadId}</a>{report.hostId ? <small>{report.hostId}</small> : null}<OverflowFade lines={10}><pre>{report.text}</pre></OverflowFade>{report.truncated ? <span className="tool-card__result-note">Truncated{report.originalChars!==undefined ? ` · ${report.originalChars.toLocaleString()} original chars` : ''}</span> : null}</div>) : blocks.map((block,index)=>block.type==='text' ? (block.text ? <OverflowFade key={index} lines={10}>
         <pre className={commandLike ? 'tool-card__terminal-output' : undefined}>{commandLike ? <AnsiText text={block.text} /> : block.text}</pre>
       </OverflowFade> : null) : <img key={index} className="tool-card__image" src={`data:${block.source.media_type};base64,${block.source.data}`} alt="Tool output" />)}
       {projected.stderr && <OverflowFade lines={10}><pre className="tool-card__terminal-output ansi-red">{projected.stderr}</pre></OverflowFade>}
@@ -222,7 +222,7 @@ export function ToolCard({
   const nestedProgram = Boolean(projectedChildren?.length);
   const executionFacts=execution?.facts ?? header?.execution;
   const displayTarget = visual.kind==='execute' ? visual.target : leftTruncateTarget(visual.target);
-  const state:OperationState = executionEvidence?.state ?? result?.source?.toolExecution?.state ?? (result ? projectedResult.failed || result.is_error ? 'failed' : 'completed' : active ? 'ongoing' : 'unknown');
+  const state = operationState(executionEvidence?.state ?? result?.source?.toolExecution?.state,result ? {failed:projectedResult.failed,is_error:result.is_error} : undefined,active);
   const phrase = operationPhrase(presentation,state,projectedResult);
   const reports = presentation.operation==='thread-wait' && !projectedResult.failed ? threadReports(projectedResult.text) : null;
   const semanticInput = !['thread-read','thread-wait','sleep','tool-discovery','execution-wait'].includes(presentation.operation ?? '');
@@ -334,7 +334,7 @@ export function ToolCard({
         summary={summary}
         expandedSummary={executionFacts?.kind === 'command' && executionFacts.count === 1 ? `${operationPhrase({...presentation,phrase:'Ran command'},state,projectedResult)}${state === 'failed' ? ' · Failed' : ''}` : undefined}
         metadata={headerMetadata}
-        actions={presentation.threadTargets?.map(target=><a key={target.id} href={chatRouteHref(target,window.location.hash)}>{target.id}</a>)}
+        summaryContent={presentation.threadTargets?.length ? <>{phrase.replace(/threads?$/, '')}{presentation.threadTargets.map((target,index)=><>{index ? ', ' : ''}<a key={target.id} href={chatRouteHref(target,window.location.hash)}>thread{presentation.threadTargets!.length>1 ? ` ${target.id}` : ''}</a></>)}{state==='failed' ? ' · Failed' : state==='cancelled' ? ' · Cancelled' : ''}</> : undefined}
         memberRefs={[memberRefs, result?.source?.blockId].filter(Boolean).join(' ')}
         disclosure={semanticInput || nestedProgram || (result && hasVisibleResult(result,projectedResult)) || (detailsAvailable && presentation.hasDetails!==false) ? {
           content: details,

@@ -1,5 +1,5 @@
 import { toolObservation } from './tool-observation.js';
-import { operationPhrase, substantiveToolResult } from './tool-operation.js';
+import { operationPhrase, operationState, substantiveToolResult } from './tool-operation.js';
 import type { ActivityItem, ActivityKind } from '../parsers/types.js';
 import type { DisplayActivityItem, ToolCallActivity } from './types.js';
 import { plainActivityHeader } from './activity-text.js';
@@ -36,7 +36,8 @@ export function activityState(item: DisplayActivityItem): string[] {
   if (item.type === 'provider-directive') return [];
   if (item.type === 'tool-call-activity') {
     const evidence=item.executionEvidence ?? item.result?.source?.toolExecution;
-    return [evidence?.state==='failed' || item.result?.is_error || item.result?.presentation?.failed ? 'Failed' : undefined,evidence ? evidence.state==='ongoing' ? 'Running' : undefined : item.executionActive ? 'Running' : undefined].filter((value):value is string=>Boolean(value));
+    const state=operationState(evidence?.state,item.result ? {failed:activityToolObservation(item).result?.failed,is_error:item.result.is_error} : undefined,item.executionActive);
+    return state==='failed' ? ['Failed'] : state==='cancelled' ? ['Cancelled'] : state==='ongoing' ? ['Running'] : [];
   }
   if (item.type === 'thinking-block-activity') return [];
   return [
@@ -79,7 +80,7 @@ function activitySummary(item: DisplayActivityItem, parts: readonly string[], st
   if (item.type === 'tool-call-activity') {
     const observation=activityToolObservation(item);
     if(item.operations && !observation.header.operation) {const label=summarizeToolRunFacts(item.operations).join('; ');return label.charAt(0).toUpperCase()+label.slice(1);}
-    return operationPhrase(observation.header,item.executionEvidence?.state ?? item.result?.source?.toolExecution?.state ?? (item.result ? item.result.is_error || observation.result?.failed ? 'failed':'completed' : item.executionActive ? 'ongoing':'unknown'),observation.result);
+    return operationPhrase(observation.header,operationState(item.executionEvidence?.state ?? item.result?.source?.toolExecution?.state,item.result ? {failed:observation.result?.failed,is_error:item.result.is_error} : undefined,item.executionActive),observation.result);
   }
   if (item.type === 'thinking-block-activity') return presentReasoning([item.content]).summary;
   if (item.activity_kind === 'thinking' || item.activity_kind === 'reasoning-summary') return presentReasoning(item.parts.map(part => part.text)).summary;
