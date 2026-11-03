@@ -4220,6 +4220,7 @@ export function ConversationsView({
             filterTrigger={{
               ariaLabel: 'Search and filter options',
               title: 'Search and filter options',
+              kind: 'menu',
               open: filterPanelOpen,
               active: activeFilterCount > 0,
               count: activeFilterCount,

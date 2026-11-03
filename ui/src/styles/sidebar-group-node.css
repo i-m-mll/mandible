@@ -265,7 +265,7 @@
 }
 
 .sidebar-group-node__show-more:hover {
-  color: var(--text-primary);
+  color: color-mix(in srgb, var(--text-chrome-muted) 50%, var(--text-primary) 50%);
 }
 
 .sidebar-group-node__show-more:focus-visible {
