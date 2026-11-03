@@ -1,3 +1,4 @@
+import { EXECUTION_CONTEXT_ARGUMENT } from "../claude-execution-context.js";
 import * as z from "zod";
 import { CHANNEL_EVENT_SCHEMA, DOMAIN_EVENT_SCHEMA, DOMAIN_EVENTS, type MandibleEvent } from "../contracts.js";
 import { execFile } from "node:child_process";
@@ -35,7 +36,7 @@ export function registerChannelRoutes(router: Router): void {
     const ctx = req.body as Context;
     res.json({ protocol: 1, instructions: INSTRUCTIONS, event_topics: [CHANNEL_EVENT_SCHEMA.shape.type.value],
       tools: tools(req, ctx).map(tool => ({ name: tool.name, description: tool.description,
-        inputSchema: z.toJSONSchema(tool.schema, { unrepresentable: "any" }) })) });
+        inputSchema: z.toJSONSchema(tool.schema.extend({ [EXECUTION_CONTEXT_ARGUMENT]: z.object({ provider: z.literal("claude"), agent_id: z.string().nullable(), session_id: z.string() }).optional() }), { unrepresentable: "any" }) })) });
   }, { operation: { id: "post:/api/channel/catalog", effects: ["ledger:read"], requestSchema: CHANNEL_CONTEXT_SCHEMA, reportingCategory: null }, fileRpc: "deny" });
   router.post("/api/channel/connect", async (req, res) => {
     const ctx = req.body as Context;

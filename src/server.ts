@@ -845,6 +845,10 @@ function requestOriginEnvelopeFromHeaders(headers: http.IncomingHttpHeaders): { 
 }
 
 function ambientIdentityFromHeaders(headers: http.IncomingHttpHeaders): AmbientProviderIdentity | null {
+  const context = headerValue(headers["x-mandible-execution-context"]);
+  if (context !== undefined) {
+    try { return normalizeAmbientProviderIdentity(JSON.parse(context)); } catch { return null; }
+  }
   const provider = headerValue(headers["x-mandible-ambient-provider"]);
   const providerSessionId = headerValue(headers["x-mandible-ambient-provider-session-id"]);
   return normalizeAmbientProviderIdentity({
@@ -854,7 +858,8 @@ function ambientIdentityFromHeaders(headers: http.IncomingHttpHeaders): AmbientP
 }
 
 function providerHeadersPresent(headers: http.IncomingHttpHeaders): boolean {
-  return headerValue(headers["x-mandible-ambient-provider"]) !== undefined
+  return headerValue(headers["x-mandible-execution-context"]) !== undefined
+    || headerValue(headers["x-mandible-ambient-provider"]) !== undefined
     || headerValue(headers["x-mandible-ambient-provider-session-id"]) !== undefined;
 }
 

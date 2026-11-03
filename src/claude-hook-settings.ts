@@ -64,6 +64,7 @@ const MANAGED_STATUSLINE_MARKER = "MANDIBLE_MANAGED_CLAUDE_STATUSLINE=1";
 const MANAGED_METADATA_KEY = "__mandible";
 const CLAUDE_INTEGRATION_KEY = "claudeIntegration";
 const HOOK_EVENTS = {
+  PreToolUse: "mandible-claude-pre-tool-use.sh",
   SessionStart: "mandible-claude-session-start.sh",
   SessionEnd: "mandible-claude-session-end.sh",
   SubagentStart: "mandible-claude-subagent-start.sh",
@@ -112,7 +113,7 @@ export function mergeMandibleClaudeHookSettingsWithMetadata(
       ? [...hooks[eventName] as unknown[]]
       : [];
     const matcher: ClaudeHookMatcher = {
-      matcher: "",
+      matcher: eventName === "PreToolUse" ? "Bash|mcp__mandible__.*" : "",
       hooks: [{ type: "command", command, timeout: HOOK_TIMEOUT_SECONDS }],
     };
     hooks[eventName] = appendHookMatcher(existingMatchers, matcher);

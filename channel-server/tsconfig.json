@@ -4,7 +4,7 @@
     "module": "Node16",
     "moduleResolution": "Node16",
     "outDir": "../dist/channel-server",
-    "rootDir": ".",
+    "rootDir": "..",
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,

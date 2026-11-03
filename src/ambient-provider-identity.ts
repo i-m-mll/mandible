@@ -1,101 +1,83 @@
+/** Claimed execution context; never authentication or approval authority. */
 export interface AmbientProviderIdentity {
   provider: string;
-  provider_session_id: string;
+  agent_id: string | null;
+  session_id: string | null;
 }
 
-interface AmbientProviderDescriptor {
-  provider: string;
-  envVar: string;
-}
+const PROVIDER_ENV = {
+  codex: ["CODEX_THREAD_ID", "CODEX_SESSION_ID"],
+  claude: ["CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID", "CLAUDE_AGENT_ID"],
+  gemini: ["GEMINI_SESSION_ID"],
+} as const;
 
-const PROVIDER_DESCRIPTORS: readonly AmbientProviderDescriptor[] = [
-  { provider: "codex", envVar: "CODEX_THREAD_ID" },
-  { provider: "codex", envVar: "CODEX_SESSION_ID" },
-  { provider: "claude", envVar: "CLAUDE_CODE_SESSION_ID" },
-  { provider: "claude", envVar: "CLAUDE_SESSION_ID" },
-  { provider: "gemini", envVar: "GEMINI_SESSION_ID" },
-];
-
-const ALLOWED_PROVIDERS = new Set(PROVIDER_DESCRIPTORS.map((descriptor) => descriptor.provider));
-
-/**
- * The canonical set of environment markers that identify a managed-agent
- * invocation context, mirroring `cli/api.sh`'s enrolment gate. It is the union
- * of the allowlisted provider session-env vars (above) and the two Mandible
- * markers a spawned managed client always carries (`MANDIBLE_MANAGED_CLIENT`,
- * `MANDIBLE_SESSION_ID`). Kept here as the single source of truth so process
- * lanes never duplicate the list (issue a64d2de).
- */
 export const MANAGED_SESSION_ENV_MARKERS: readonly string[] = [
-  "MANDIBLE_MANAGED_CLIENT",
-  "MANDIBLE_SESSION_ID",
-  ...PROVIDER_DESCRIPTORS.map((descriptor) => descriptor.envVar),
+  "MANDIBLE_MANAGED_CLIENT", "MANDIBLE_SESSION_ID", "MANDIBLE_EXECUTION_CONTEXT",
+  ...Object.values(PROVIDER_ENV).flat(),
 ];
 
-/**
- * True when the current process runs inside a managed-agent session, judged by
- * the presence of any managed-session env marker. A process lane that reaches
- * this in the affirmative must NOT assume the local operator: it is an agent
- * (or unknown) principal, not the human running a clean local shell.
- */
 export function inManagedSessionContext(env: NodeJS.ProcessEnv = process.env): boolean {
-  return MANAGED_SESSION_ENV_MARKERS.some((marker) => {
-    const value = env[marker];
-    return typeof value === "string" && value.trim().length > 0;
-  });
+  return MANAGED_SESSION_ENV_MARKERS.some(marker => Boolean(env[marker]?.trim()));
 }
 
-/** Stable binding keys for an allowlisted provider's ambient session env. */
 export function providerSessionEnvBindingValues(provider: string): string[] {
-  const normalized = provider.trim().toLowerCase();
-  return PROVIDER_DESCRIPTORS
-    .filter((descriptor) => descriptor.provider === normalized)
-    .map((descriptor) => descriptor.envVar);
+  return [...(PROVIDER_ENV[provider.trim().toLowerCase() as keyof typeof PROVIDER_ENV] ?? [])].filter(marker => marker !== "CLAUDE_AGENT_ID");
 }
 
-export function resolveAmbientProviderIdentity(
-  env: NodeJS.ProcessEnv = process.env,
-): AmbientProviderIdentity | null {
-  let resolved: AmbientProviderIdentity | null = null;
-  for (const descriptor of PROVIDER_DESCRIPTORS) {
-    if (descriptor.envVar === "CODEX_SESSION_ID" && normalizeProviderSessionId(env.CODEX_THREAD_ID)) continue;
-    const providerSessionId = normalizeProviderSessionId(env[descriptor.envVar]);
-    if (providerSessionId) {
-      if (resolved && (resolved.provider !== descriptor.provider || resolved.provider_session_id !== providerSessionId)) {
-        return null;
-      }
-      resolved = { provider: descriptor.provider, provider_session_id: providerSessionId };
-    }
-  }
-  return resolved;
+function id(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 && !/[\x00-\x1f\x7f]/.test(value) ? value : null;
 }
 
-/**
- * Normalize an ambient provider identity presented over the wire (the
- * `X-Mandible-Ambient-Provider` / `X-Mandible-Ambient-Provider-Session-Id`
- * headers, or a work-unit's provider fields).
- *
- * SECURITY: these headers are forgeable by any local process that can reach the
- * daemon — there is no cryptographic proof the caller owns the claimed session.
- * The `session_claim` evidence this signal ultimately produces is therefore
- * DELIBERATELY UNVERIFIED, and is further constrained to resolve only to an
- * `agent`-kind user (see `resolveSessionAttributionResult`) so a forged claim
- * can never impersonate a human/operator. Verified attribution closure is
- * strict client-auth mode with real bearer credentials (issue a9b485b); until a
- * request is authenticated, session_claim is a best-effort convenience, not a
- * trust boundary.
- */
 export function normalizeAmbientProviderIdentity(value: unknown): AmbientProviderIdentity | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
-  const provider = typeof record.provider === "string" ? record.provider.trim().toLowerCase() : "";
-  const providerSessionId = normalizeProviderSessionId(record.provider_session_id);
-  if (!ALLOWED_PROVIDERS.has(provider) || !providerSessionId) return null;
-  return { provider, provider_session_id: providerSessionId };
+  const provider = record.provider;
+  if (typeof provider !== "string" || !Object.hasOwn(PROVIDER_ENV, provider)) return null;
+  if (Object.hasOwn(record, "provider_session_id") && !Object.hasOwn(record, "agent_id") && !Object.hasOwn(record, "session_id")) {
+    const legacy = id(record.provider_session_id);
+    if (!legacy) return null;
+    return { provider, agent_id: provider === "claude" ? null : legacy, session_id: provider === "codex" ? null : legacy };
+  }
+  if (Object.hasOwn(record, "provider_session_id")) return null;
+  const agent_id = id(record.agent_id), session_id = id(record.session_id);
+  if ((record.agent_id != null && !agent_id) || (record.session_id != null && !session_id) || (!agent_id && !session_id)) return null;
+  if (provider === "claude" && agent_id && !session_id) return null;
+  return { provider, agent_id, session_id };
 }
 
-function normalizeProviderSessionId(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
+export function resolveAmbientProviderIdentity(env: NodeJS.ProcessEnv = process.env): AmbientProviderIdentity | null {
+  if (Object.hasOwn(env, "MANDIBLE_EXECUTION_CONTEXT")) {
+    try { return normalizeAmbientProviderIdentity(JSON.parse(env.MANDIBLE_EXECUTION_CONTEXT!)); }
+    catch { return null; }
+  }
+  const providers = Object.entries(PROVIDER_ENV).filter(([, markers]) => markers.some(marker => Boolean(env[marker])));
+  if (providers.length !== 1) return null;
+  const provider = providers[0][0];
+  if (provider === "codex") return normalizeAmbientProviderIdentity({ provider, agent_id: env.CODEX_THREAD_ID, session_id: env.CODEX_SESSION_ID });
+  if (provider === "gemini") return normalizeAmbientProviderIdentity({ provider, agent_id: env.GEMINI_SESSION_ID, session_id: env.GEMINI_SESSION_ID });
+  if (env.CLAUDE_CODE_SESSION_ID && env.CLAUDE_SESSION_ID && env.CLAUDE_CODE_SESSION_ID !== env.CLAUDE_SESSION_ID) return null;
+  return normalizeAmbientProviderIdentity({ provider, agent_id: env.CLAUDE_AGENT_ID, session_id: env.CLAUDE_CODE_SESSION_ID || env.CLAUDE_SESSION_ID });
+}
+
+/** Lossless scalar projection for exact executor aliases. */
+export function exactAgentRef(value: AmbientProviderIdentity | null): string | null {
+  const context = normalizeAmbientProviderIdentity(value);
+  if (!context?.agent_id) return null;
+  const agent = encodeId(context.agent_id);
+  return context.provider === "claude" ? `agent:claude:${encodeId(context.session_id!)}:${agent}` : `agent:${context.provider}:${agent}`;
+}
+
+export function parseExactAgentRef(value: string): AmbientProviderIdentity | null {
+  const parts = value.split(":");
+  if (parts[0] !== "agent" || !((parts[1] === "claude" && parts.length === 4) || (["codex", "gemini"].includes(parts[1]) && parts.length === 3))) return null;
+  try {
+    const provider = parts[1], agent_id = decodeURIComponent(parts.at(-1)!);
+    const session_id = provider === "claude" ? decodeURIComponent(parts[2]) : provider === "gemini" ? agent_id : null;
+    const context = normalizeAmbientProviderIdentity({ provider, agent_id, session_id });
+    return context && exactAgentRef(context) === value ? context : null;
+  } catch { return null; }
+}
+
+function encodeId(value: string): string {
+  return encodeURIComponent(value).replace(/[!'()*]/g, char => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
 }

@@ -1,3 +1,10 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import { normalizeAmbientProviderIdentity, resolveAmbientProviderIdentity, type AmbientProviderIdentity } from "../src/ambient-provider-identity.js";
+
+const executionContexts = new AsyncLocalStorage<AmbientProviderIdentity | null>();
+export function withChannelExecutionContext<T>(value: unknown, action: () => T): T {
+  return executionContexts.run(normalizeAmbientProviderIdentity(value), action);
+}
 import http from "node:http";
 import { resolveBaseUrl, resolveTransport } from "./base-url.js";
 
@@ -12,13 +19,9 @@ function launcherApp(): string | null {
 
 export function ambientHeaders(): Record<string, string> {
   const headers: Record<string, string> = { "X-Mandible-Managed-Client": "1" };
-  const codeId = process.env.CLAUDE_CODE_SESSION_ID;
-  const sessionId = process.env.CLAUDE_SESSION_ID;
-  const providerId = codeId && sessionId && codeId !== sessionId ? null : (codeId || sessionId);
-  if (providerId) {
-    headers["X-Mandible-Ambient-Provider"] = "claude";
-    headers["X-Mandible-Ambient-Provider-Session-Id"] = providerId;
-  }
+  const ambient = resolveAmbientProviderIdentity();
+  const context = executionContexts.getStore() ?? (ambient?.provider === "claude" ? { ...ambient, agent_id: null } : ambient);
+  if (context) headers["X-Mandible-Execution-Context"] = JSON.stringify(context);
   const managedApp = launcherApp();
   const managedSessionId = process.env.MANDIBLE_SESSION_ID;
   if (managedApp && managedSessionId && !/[\x00-\x1f\x7f]/.test(managedSessionId)) {
