@@ -10,6 +10,7 @@ import { backfillConversationLineageOnce } from "../src/conversations/lineage-ba
 import SqliteDatabase from "../src/sqlite.js";
 import { Router } from "../src/server.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
+import { resolveActivityTargets } from '../src/conversations/activity-targets.js';
 
 let tempDir = "";
 let db: Db;
@@ -86,6 +87,31 @@ afterEach(() => {
 });
 
 describe("conversation lineage", () => {
+  it('resolves activity navigation by provider and parent scope rather than coincident native IDs', () => {
+    const insert = db.prepare(`INSERT INTO conversations
+      (id, source, source_path, source_hash, source_mtime, started_at, session_id, title, agent_id, parent_source, parent_session_id)
+      VALUES (?, ?, ?, 'fixture', 1, '2026-11-03', ?, ?, ?, ?, ?)`);
+    insert.run('codex-parent', 'codex', '/codex', ROOT, 'Codex parent', null, null, null);
+    insert.run('claude-parent', 'claude_code', '/claude', ROOT, 'Claude parent', null, null, null);
+    insert.run('claude-child', 'claude_code', '/claude-child', ROOT, 'Claude child', 'shared-agent', 'claude_code', ROOT);
+    insert.run('other-child', 'claude_code', '/other-child', CHILD_B, 'Other child', 'shared-agent', 'claude_code', CHILD_B);
+    insert.run('codex-child', 'codex', '/codex-child', CHILD_A, 'Codex child', 'Leibniz', 'codex', ROOT);
+    const resolutions = resolveActivityTargets(db, [
+      { kind: 'thread', provider: 'claude_code', sessionId: ROOT },
+      { kind: 'thread', provider: 'codex', sessionId: ROOT },
+      { kind: 'subagent', provider: 'claude_code', parentSessionId: ROOT, agentId: 'shared-agent' },
+      { kind: 'subagent', provider: 'claude_code', parentSessionId: GRANDCHILD, agentId: 'shared-agent' },
+      { kind: 'subagent', provider: 'codex', parentSessionId: ROOT, agentId: CHILD_A },
+    ]);
+    expect(resolutions.map(result => result.status === 'resolved' ? result.conversationId : result.status))
+      .toEqual(['claude-parent', 'codex-parent', 'claude-child', 'not_found', 'codex-child']);
+    db.prepare("UPDATE conversations SET title = ? WHERE id = ?").run('Renamed child', 'claude-child');
+    expect(resolveActivityTargets(db, [{ kind: 'subagent', provider: 'claude_code', parentSessionId: ROOT, agentId: 'shared-agent' }])[0])
+      .toMatchObject({ status: 'resolved', title: 'Renamed child' });
+    insert.run('ambiguous-codex', 'codex', '/ambiguous', ROOT, 'Ambiguous', null, null, null);
+    expect(resolveActivityTargets(db, [{ kind: 'thread', provider: 'codex', sessionId: ROOT }])[0].status).toBe('ambiguous');
+  });
+
   it("links Codex subagents from rollout headers whichever of parent and child is ingested first", async () => {
     const childA = writeRollout(rolloutPath("sessions", CHILD_A), CHILD_A, { parent: ROOT, nickname: "Leibniz" });
     const grandchild = writeRollout(rolloutPath("sessions", GRANDCHILD), GRANDCHILD, { parent: CHILD_A, nickname: "Hume" });
