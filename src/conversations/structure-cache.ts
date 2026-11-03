@@ -250,11 +250,11 @@ export class ConversationStructureCache {
     this.cache.exec("DELETE FROM cache_reading_scopes; DELETE FROM cache_tool_links; DELETE FROM cache_blocks; DELETE FROM cache_conversations");
   }
 
-  beginGeneration(manifest: SourceManifestRow, priorVersionId?: string): number {
+  beginGeneration(manifest: SourceManifestRow, priorVersionId?: string, options:{replaceReady?:boolean}={}): number {
     return this.cache.transaction(() => {
       const tuple=[manifest.conversation_id,manifest.source_version_id,manifest.parser_format,manifest.parser_version,manifest.normalization_version,manifest.redaction_epoch];
       const existing=this.cache.prepare('SELECT cache_id,ready,block_count FROM cache_conversations WHERE conversation_id=? AND source_version_id=? AND parser_format=? AND parser_version=? AND normalization_version=? AND redaction_epoch=? ORDER BY ready DESC,cache_id DESC').get(...tuple) as {cache_id:number;ready:number;block_count:number}|undefined;
-      if(existing?.ready&&existing.block_count===manifest.block_count)return existing.cache_id;
+      if(existing?.ready&&existing.block_count===manifest.block_count&&!options.replaceReady)return existing.cache_id;
       this.cache.prepare('DELETE FROM cache_conversations WHERE conversation_id=? AND source_version_id=? AND parser_format=? AND parser_version=? AND normalization_version=? AND redaction_epoch=? AND ready=0').run(...tuple);
       const now=Date.now();
       const id=Number(this.cache.prepare('INSERT INTO cache_conversations(conversation_id,source_version_id,parser_format,parser_version,normalization_version,redaction_epoch,block_count,updated_at,accessed_at) VALUES(?,?,?,?,?,?,?,?,?)').run(...tuple,manifest.block_count,now,now).lastInsertRowid);
@@ -312,8 +312,7 @@ export class ConversationStructureCache {
   discardGeneration(cacheId:number):void {this.cache.prepare('DELETE FROM cache_conversations WHERE cache_id=? AND ready=0').run(cacheId);}
 
   replaceRows(manifest:SourceManifestRow,rows:readonly Omit<SparseConversationBlockRow,'conversationId'|'sourceVersionId'|'parserFormat'|'parserVersion'|'normalizationVersion'|'redactionEpoch'>[],tools:ReadonlyMap<string,number>=new Map(),priorVersionId?:string,display?:DisplayIndexInput):void {
-    if(this.hasCompleteConversation(manifest.conversation_id,manifest.source_version_id,manifest.block_count,{parserFormat:manifest.parser_format,parserVersion:manifest.parser_version,normalizationVersion:manifest.normalization_version,redactionEpoch:manifest.redaction_epoch}))return;
-    const id=this.beginGeneration(manifest,priorVersionId);
+    const id=this.beginGeneration(manifest,priorVersionId,{replaceReady:true});
     try {
       const size=512;
       for(let offset=0;offset<rows.length;offset+=size) {
