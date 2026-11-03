@@ -192,7 +192,7 @@ emit_group() {
   else
     printf '%s\n' "$response" | api_jq_human \
       '.group | "briefing-group:\(.id | mandible_short_id)  key=\(.key)  \(.name)\n  Base: \(
-        if .current == null then "none" else "\(.current.id | mandible_short_id)  \(if .current.name == \"Original\" then \"Base\" else .current.name end)" end
+        if .current == null then "none" else "\(.current.id | mandible_short_id)  \(if .current.name == "Original" then "Base" else .current.name end)" end
       )\n\([.updates[]? | "  proposal: \(.id | mandible_short_id)  \(.name)"] | join("\n"))\n  history: \((.history // []) | length)"'
   fi
 }
@@ -327,7 +327,7 @@ cmd_group_review() {
     || die "Failed to preview guarded Briefing group review." 1
   if (( json )); then printf '%s\n' "$response" | jq .; else
     printf '%s\n' "$response" | api_jq_human \
-      '.candidate | "ready=\(.ready)  binding=\(.binding_digest // \"none\")  layout_changed=\(.layout_changed)  destination_changes=\(.destination_changes | length)"'
+      '.candidate | "ready=\(.ready)  binding=\(.binding_digest // "none")  layout_changed=\(.layout_changed)  destination_changes=\(.destination_changes | length)"'
   fi
 }
 
