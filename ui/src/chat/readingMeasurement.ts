@@ -45,7 +45,7 @@ export type MeasurementRequest<Body> = {
   signal?: AbortSignal;
   /** Font/image durations overlap; readiness covers their join and the final document font barrier. */
   onPhase?: (event: MeasurementPhaseEvent) => void;
-  onMeasured?: (measurements: readonly RowMeasurement[]) => void;
+  onMeasured?: (measurements: readonly RowMeasurement[], elements: ReadonlyMap<string, HTMLElement>, bodies: readonly Body[]) => void;
   isCurrent?:()=>boolean;
 };
 export type MeasurementResult = { measurements: readonly RowMeasurement[] } & (
@@ -257,7 +257,7 @@ export class ReadingMeasurementService {
             synchronousMs += view.performance.now() - geometryStarted;
             if (signal.aborted) return cancelled();
             for (const box of boxes) measurements.set(measurementKey(box.row, identity), box);
-            request.onMeasured?.(boxes);
+            request.onMeasured?.(boxes, rendered!.elements, sliceBodies);
             const yieldStarted = clock();
             await yieldToBrowser(signal);
             observe('yield', yieldStarted, rows.length, identity);

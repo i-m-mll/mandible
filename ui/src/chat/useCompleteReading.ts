@@ -2,7 +2,7 @@ import { skipToken, useQuery } from '@tanstack/preact-query';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { queryClient } from '../query/client';
 import { readingManifestOptions, acquirePresentationRows, type ReadingRowsLease, isReadingPublicationChanged, ReadingPresentationError } from '../query/readingPresentation';
-import { composeConversationReading, readingCompositionRequests, materializeConversationReading } from '../../../src/presentation/reading-composition';
+import { composeConversationReading, readingCompositionRequests, materializeConversationReading, reprojectHydratedReadingRow, type ReadingComposition } from '../../../src/presentation/reading-composition';
 import type { StreamEvent } from '../components/stream-renderer/types';
 import type { ReadingProjection, ReadingRow } from './readingProjection';
 import type { ReadingBodyDemand } from './readingBodyDemand';
@@ -49,6 +49,8 @@ export function useCompleteReading(input: {
   const demand = useRef<ReadingBodyDemand | null>(null);
   const pendingVector = useRef<readonly MeasurementRow[] | null>(null);
   const custody = useRef({ applied: new Set<string>(), pending: new Set<string>(), measuring: new Set<string>() });
+  const measuredFrontier = useRef(new Set<string>());
+  const preparingRows = useRef(new Set<string>());
   const [demandVersion, setDemandVersion] = useState(0);
   const current = useRef({ input, plan }); current.current = { input, plan };
   const vectorIndices = useRef(new WeakMap<readonly MeasurementRow[], ReadonlyMap<string, number>>());
@@ -83,6 +85,7 @@ export function useCompleteReading(input: {
   const bodyQuery = useQuery({ queryKey: bodyKey, queryFn: skipToken, initialData: () => new Map<string, ReadingRow>(), enabled: false, gcTime: 0 }, queryClient);
   const bodies: ReadonlyMap<string, ReadingRow> = bodyQuery.data ?? new Map();
   const bodyRef = useRef(bodies); bodyRef.current = bodies;
+  const bodyProvenance = useRef(new WeakMap<ReadingRow, ReadingComposition>());
   const targetsByBody = useMemo(() => new Map([...bodies].map(([key, body]) => [key, activityTargetsFromReadingRows([body])])), [bodies]);
   const targets = useMemo(() => [...targetsByBody.values()].flat(), [targetsByBody]);
   const resolutions = useActivityTargetResolutions(targets);
@@ -109,7 +112,7 @@ export function useCompleteReading(input: {
   const liveRowKeys = new Set(bodyRows.map(readingBodyKey));
   for (const key of snapshots.current.keys()) if (!liveRowKeys.has(key)) snapshots.current.delete(key);
   const retainedKeys = useCallback(() => {
-    const keys = new Set([...latestWanted.current, ...custody.current.applied, ...custody.current.pending, ...custody.current.measuring]);
+    const keys = new Set([...latestWanted.current, ...custody.current.applied, ...custody.current.pending, ...custody.current.measuring, ...measuredFrontier.current, ...preparingRows.current]);
     const selection = document.getSelection();
     for (const node of [document.activeElement, selection?.anchorNode, selection?.focusNode]) {
       const element = node instanceof Element ? node : node?.parentElement;
@@ -129,9 +132,19 @@ export function useCompleteReading(input: {
     });
   }, [bodyKey, retainedKeys]);
   useEffect(() => () => { queryClient.removeQueries({ queryKey: bodyKey, exact: true }); }, [bodyKey]);
-  useEffect(() => { custody.current = { applied: new Set(), pending: new Set(), measuring: new Set() }; demand.current = null; setHydrationError(null); }, [input.scope, input.space]);
+  useEffect(() => { custody.current = { applied: new Set(), pending: new Set(), measuring: new Set() }; measuredFrontier.current.clear(); preparingRows.current.clear(); demand.current = null; setHydrationError(null); }, [input.scope, input.space]);
   const acquireMeasurement = useCallback(async (refs: readonly MeasurementRow[], signal: AbortSignal): Promise<MaterializedMeasurementBatch<ReadingRow>> => {
     const cached = refs.map(ref => bodyRef.current.get(readingBodyKey(ref)));
+    if(composition){
+      const retained=new Map([...bodyRef.current.values()].map(body=>[body.key,body]));
+      for(const [index,ref] of refs.entries())if(!cached[index]){
+        const body=retained.get(ref.key);
+        const previous=body&&bodyProvenance.current.get(body);
+        const projected=body&&previous&&reprojectHydratedReadingRow(previous,composition,ref,body);
+        if(projected){cached[index]=projected;bodyProvenance.current.set(projected,composition);}
+      }
+    }
+    if(cached.some(Boolean))publishBodies(refs.flatMap((ref,index)=>cached[index]?[{ref,body:cached[index]!}]:[]));
     if (cached.every((row): row is ReadingRow => row !== undefined)) return { bodies: cached, release: () => {} };
     const cachedByKey = new Map(refs.flatMap((ref, index) => cached[index] ? [[ref.key, cached[index]!] as const] : []));
     const missing = refs.filter(ref => !cachedByKey.has(ref.key));
@@ -155,7 +168,7 @@ export function useCompleteReading(input: {
           if(!ready.length)return;
           const composed=materializeConversationReading(composition,ready,[...received.values()]);
           if(composed.status!=='source')return;
-          const additions=ready.map((ref,index)=>{const body={...composed.rows[index],revision:ref.revision};partial.set(ref.key,body);return {ref,body};});
+          const additions=ready.map((ref,index)=>{const body={...composed.rows[index],revision:ref.revision};bodyProvenance.current.set(body,composition);partial.set(ref.key,body);return {ref,body};});
           publishBodies(additions);
         };
         const canonical = requests.length ? (lease = await acquirePresentationRows(input.scope, { positionSpaceId: input.space, rows: requests, expanded: input.expanded, streaming: input.streaming }, signal,acceptReady)).rows : [];
@@ -164,6 +177,7 @@ export function useCompleteReading(input: {
         const byKey = new Map([...cachedByKey, ...[...composed.rows, ...input.extraRows].map(row => [row.key, row] as const)]);
         result = refs.map(ref => { const body = partial.get(ref.key)??byKey.get(ref.key); if (!body) throw new Error('Requested presentation row is unavailable.'); return partial.has(ref.key)?body:{ ...body, revision: ref.revision }; });
       }
+      if(composition)for(const body of result)bodyProvenance.current.set(body,composition);
       if (!signal.aborted) publishBodies(refs.map((ref, index) => ({ ref, body: result[index] })));
       return { bodies: result, release: () => lease?.release() };
     } catch (error) { lease?.release(); throw error; }
@@ -174,6 +188,21 @@ export function useCompleteReading(input: {
   }, [acquireMeasurement]);
   const materializer = useRef(materialize); materializer.current = materialize;
   const [hydrationError, setHydrationError] = useState<string | null>(null);
+  const prepareRows = useCallback(async (refs: readonly MeasurementRow[], signal: AbortSignal): Promise<boolean> => {
+    const owned = new Set(refs.map(readingBodyKey));
+    preparingRows.current = owned;
+    try {
+      await materializer.current(refs, signal);
+      if (signal.aborted) return false;
+      setHydrationError(null);
+      return true;
+    } catch (error) {
+      if (!signal.aborted) setHydrationError(error instanceof Error ? error.message : String(error));
+      return false;
+    } finally {
+      if (signal.aborted && preparingRows.current === owned) preparingRows.current = new Set();
+    }
+  }, []);
   const currentKeys = useMemo(() => new Set(bodyRows.map(readingBodyKey)), [bodyRows]);
   const publication = queryClient.getQueryState(readingManifestOptions(input.scope).queryKey)?.dataUpdateCount ?? 0;
   const publicationBlocked = useRef<number | null>(null);
@@ -231,19 +260,25 @@ export function useCompleteReading(input: {
   }, []);
   const retainMeasurement = useCallback((vector: readonly MeasurementRow[]) => {
     custody.current.measuring = new Set(candidates(vector).map(readingBodyKey));
+    const valid = new Set(vector.map(readingBodyKey));
+    measuredFrontier.current = new Set([...measuredFrontier.current].filter(key => valid.has(key)));
   }, [candidates]);
+  const transferMeasured = useCallback((refs: readonly MeasurementRow[], bodies: readonly ReadingRow[], keep: readonly MeasurementRow[]) => {
+    measuredFrontier.current = new Set(keep.map(readingBodyKey));
+    publishBodies(refs.map((ref,index)=>({ref,body:bodies[index]})));
+  }, [publishBodies]);
   const retainGeometry = useCallback((vector: readonly MeasurementRow[]) => {
     pendingVector.current = vector;
     custody.current.pending = new Set([...custody.current.measuring,...candidates(vector).map(readingBodyKey)]); custody.current.measuring = new Set();
   }, [candidates]);
   const commitGeometry = useCallback((vector: readonly MeasurementRow[]) => {
     if (pendingVector.current !== vector) return;
-    pendingVector.current = null; custody.current.pending = new Set(); setDemandVersion(value => value + 1);
+    pendingVector.current = null; custody.current.pending = new Set(); measuredFrontier.current.clear(); preparingRows.current.clear(); setDemandVersion(value => value + 1);
   }, []);
   return { rows, plan,
     membership: plan?.viewMembership ?? input.local.viewMembership, rowMembers, actionRuns: composition?.actionRuns ?? input.local.actionRuns, lastAssistantTurnId: composition?.lastAssistantTurnId ?? input.local.lastAssistantTurnId,
     manifest: manifest.data, bodies,
     getBody: (ref: MeasurementRow) => bodies.get(readingBodyKey(ref)),
-    materialize, acquireMeasurement, onRange, retainMeasurement, retainGeometry, commitGeometry,
+    materialize, acquireMeasurement, prepareRows, transferMeasured, onRange, retainMeasurement, retainGeometry, commitGeometry,
     protect: () => setDemandVersion(value => value + 1), error: manifest.error?.message ?? hydrationError, ready: !input.enabled || Boolean(plan), refresh: () => { failures.current.clear(); setHydrationError(null); setDemandVersion(value => value + 1); return manifest.refetch(); } };
 }

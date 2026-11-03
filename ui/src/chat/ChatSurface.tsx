@@ -93,8 +93,10 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
   }, [requiredMember, requiredTarget, initialDisclosurePending]);
   const [scrollNode, setScrollElement] = useState<HTMLDivElement | null>(null);
   const layoutChange = useRef<() => void>(() => {});
+  const measureBoundary = useRef<(row: import('./readingMeasurement').MeasurementRow, element: HTMLElement) => number | undefined>(() => undefined);
+  const measurementCoverage = useRef<(rows: readonly import('./readingMeasurement').MeasurementRow[], sizes: readonly number[]) => readonly import('./readingMeasurement').MeasurementRow[]>(() => []);
   const geometry = useReadingGeometry({ scope: `${scope}:${space}`, chrome: 32 + clearance, onLayoutChange: () => layoutChange.current(), rows: complete.rows, parent: appearance.ready && complete.ready && !initialDisclosurePending ? scrollNode : null,
-    materialize: complete.acquireMeasurement, membership: complete.membership, rowMembers: complete.rowMembers, onMeasuring: complete.retainMeasurement, onPrepared: complete.retainGeometry, renderProps: (row, ref) => ({ ...props, row, targetLabels: readingTargetLabels(ref), expandedBlocks, setBlockExpanded: () => {},
+    materialize: complete.acquireMeasurement, measurementCoverage: (rows,sizes)=>measurementCoverage.current(rows,sizes), transferMeasured: complete.transferMeasured, measureBoundary: (row, element) => measureBoundary.current(row,element), membership: complete.membership, rowMembers: complete.rowMembers, onMeasuring: complete.retainMeasurement, onPrepared: complete.retainGeometry, renderProps: (row, ref) => ({ ...props, row, targetLabels: readingTargetLabels(ref), expandedBlocks, setBlockExpanded: () => {},
       preparing: row.sources.some(source => expandedBlocks[`reveal:${source.position}`]), primaryActions: readingRowPrimaryActions({ copy: () => {}, open: () => {}, turnId: readingRowTurnId(row, complete.actionRuns), selectedMessageId: props.selectedMessageId, select: props.onSelectMessageInfo }),
       lastAssistantTurnId: complete.lastAssistantTurnId, onActivityGroupExpandedChange: () => {} }), scale: getReadingResizeScale });
   const latest = useRef({ scope, space, projection, transcript, props, complete, geometry }); latest.current = { scope, space, projection, transcript, props, complete, geometry };
@@ -157,8 +159,10 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
       handled.current = queued.key; latest.current.props.onNavigationResult?.({ key: queued.key, status: 'cancelled' });
     } else if (!queued) handled.current = `initial:${scope}:${space}`;
     setInitialNavigationDone(true); latest.current.transcript?.cancelNavigation();
-  }, observeNavigation, commandToken: navigationTarget?.key, initializing: transcript?.navigationPending || !geometry.geometry, clearance, geometry: geometry.geometry, protectedKeys: protectedRows, disclosures, prepare, onApplied: complete.commitGeometry, onRange });
+  }, observeNavigation, commandToken: navigationTarget?.key, initializing: transcript?.navigationPending || !geometry.geometry, clearance, geometry: geometry.geometry, expectedRows: complete.rows, protectedKeys: protectedRows, disclosures, prepare, prepareRows: complete.prepareRows, onApplied: complete.commitGeometry, onRange });
   layoutChange.current = viewport.beginLayout;
+  measureBoundary.current = viewport.measureBoundary;
+  measurementCoverage.current = viewport.measurementCoverage;
   useEffect(() => { if (initialVisible) viewport.captureReaderAnchor(); }, [initialVisible, viewport.appliedGeometry]);
   appliedRows.current = viewport.appliedGeometry ? viewport.rows : [];
   useLayoutEffect(() => {
@@ -308,7 +312,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
       <OverflowTopFade scroller={scrollNode} enabled={initialVisible && viewport.rows.length > 0} contentStart={viewport.engine.options.paddingStart ?? 0} className="stream-renderer__top-fade" />
       {appearance.error && !appearance.ready && <DetailPaneNotice severity="error" density="compact" title="Appearance preferences unavailable" source="chat-appearance" actions={<button type="button" className="btn btn--ghost btn--sm" onClick={appearance.retry}>Retry</button>}>{appearance.error}</DetailPaneNotice>}
       {events.some(event => event.type === 'chat:item' && event.persistencePending) && <div role="status">Some content is awaiting confirmation from saved history.</div>}
-      {(notice || complete.error || geometry.error) && <div className="stream-renderer__history-error" role="alert">{notice ?? complete.error ?? geometry.error}<button type="button" onClick={() => { setNotice(null); geometry.retry(); void complete.refresh(); }}>Retry</button></div>}
+      {(notice || complete.error || geometry.error) && <div className="stream-renderer__history-error" role="alert">{notice ?? complete.error ?? geometry.error}<button type="button" onClick={() => { setNotice(null); geometry.retry(); viewport.retry(); void complete.refresh(); }}>Retry</button></div>}
       {viewport.showLatest && <button type="button" className="chat-circle-action stream-renderer__scroll-btn" aria-label="Jump to latest" title="Jump to latest" disabled={props.jumpingToLatest} aria-busy={props.jumpingToLatest ? "true" : "false"} onClick={jump}><Icon name="jumpToLatest" /></button>}
     </div>
   </MessageLinkContext.Provider>;

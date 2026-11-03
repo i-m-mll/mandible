@@ -15,7 +15,7 @@ import { ConversationSourceReader } from '../src/conversations/source-reader';
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from '../src/conversations/source-types';
 import { captureReadingPublication, readConversationReadingManifest, readReadingRowBatch } from '../src/conversations/reading-materialization';
 import { planConversationReading } from '../src/presentation/reading-manifest';
-import { composeConversationReading, materializeConversationReading, readingCompositionRequests } from '../src/presentation/reading-composition';
+import { composeConversationReading, materializeConversationReading, readingCompositionRequests, reprojectHydratedReadingRow } from '../src/presentation/reading-composition';
 import type { CanonicalChatItemEvent } from '../src/presentation/types';
 
 async function fixture(includeResult: boolean, native?: {provider:'codex'|'claude_code'; records:Record<string,unknown>[]}) {
@@ -49,6 +49,30 @@ it('stops cancelled row acquisition at the native source boundary',async()=>{
     expect((await readReadingRowBatch({db:f.db,reader:f.reader,conversationId:'composition',request})).status).toBe('source');
     const controller=new AbortController();controller.abort();
     expect((await readReadingRowBatch({db:f.db,reader:f.reader,conversationId:'composition',request,signal:controller.signal})).status).toBe('unavailable');
+  }finally{f.close();}
+});
+
+it('reprojects a complete retained payload across disclosure changes but rejects changed canonical dependencies',async()=>{
+  const f=await fixture(true);
+  try{
+    const groups=Object.fromEntries(Object.keys(f.manifest.runs).map(key=>[`group:${key}`,true]));
+    const expanded={...groups,...Object.fromEntries(f.manifest.members.flatMap(member=>(member.disclosures?.keys??[]).map(key=>[key,true])))};
+    const before=composeConversationReading({manifest:f.manifest,events:[],expanded});
+    const native=await readReadingRowBatch({db:f.db,reader:f.reader,conversationId:'composition',request:{positionSpaceId:f.manifest.positionSpaceId,rows:before.sourcePlan.rows,expanded}});
+    if(native.status!=='source')throw new Error(native.status);
+    const rendered=materializeConversationReading(before,before.plan.rows,native.rows);
+    if(rendered.status!=='source')throw new Error(rendered.reason);
+    const body=rendered.rows.find(row=>row.nodes.some(node=>node.kind==='activity'&&node.item.type==='tool-call-activity'))!;
+    const after=composeConversationReading({manifest:f.manifest,events:[],expanded:groups});
+    const ref=after.plan.rows.find(row=>row.key===body.key)!;
+    const reused=reprojectHydratedReadingRow(before,after,ref,body);
+    expect(reused).not.toBeNull();
+    expect(reused!.revision).toBe(ref.revision);
+    expect(reused!.nodes[0]).toBe(body.nodes[0]);
+    expect(ref.revision).not.toBe(before.plan.rows.find(row=>row.key===body.key)!.revision);
+    const changed=composeConversationReading({manifest:{...f.manifest,members:f.manifest.members.map(member=>({...member,dependencyRevision:`changed:${member.dependencyRevision}`}))},events:[],expanded:groups});
+    expect(reprojectHydratedReadingRow(before,changed,changed.plan.rows.find(row=>row.key===body.key)!,body)).toBeNull();
+    expect(reprojectHydratedReadingRow(before,after,ref,{...body,sources:body.sources.map(source=>({...source,detailsLoaded:false}))})).toBeNull();
   }finally{f.close();}
 });
 

@@ -8,7 +8,7 @@ import type { ReadingContentProps } from './ReadingContent';
 import { createReadingRowBatchRenderer } from './renderReadingMeasurementBatch';
 
 type GeometryMembership = ReadonlyMap<string, { rowKey: string; position?: number | null }>;
-export type ReadingGeometry = { membership: GeometryMembership; rowMembers: ReadonlyMap<string, readonly string[]>; scope: string; rows: readonly MeasurementRow[]; sizes: readonly number[]; layout: MeasurementLayout; exact: boolean; serial: number; renderProps: (row: ReadingRow, ref?: MeasurementRow) => ReadingContentProps };
+export type ReadingGeometry = { membership: GeometryMembership; rowMembers: ReadonlyMap<string, readonly string[]>; scope: string; rows: readonly MeasurementRow[]; sizes: readonly number[]; boundaryOffsets?: ReadonlyMap<string, number>; layout: MeasurementLayout; exact: boolean; serial: number; renderProps: (row: ReadingRow, ref?: MeasurementRow) => ReadingContentProps };
 /** One current width, one compatible complete basis, and reusable current-width facts. */
 export function useReadingGeometry(input: {
   scope: string; chrome: number; rows: readonly MeasurementRow[]; parent: HTMLElement | null;
@@ -18,6 +18,9 @@ export function useReadingGeometry(input: {
   onLayoutChange?: (layout: MeasurementLayout) => void;
   onMeasuring: (rows: readonly MeasurementRow[]) => void;
   onPrepared: (rows: readonly MeasurementRow[]) => void;
+  measureBoundary?: (row: MeasurementRow, element: HTMLElement) => number | undefined;
+  measurementCoverage?: (rows: readonly MeasurementRow[], sizes: readonly number[]) => readonly MeasurementRow[];
+  transferMeasured?: (rows: readonly MeasurementRow[], bodies: readonly ReadingRow[], keep: readonly MeasurementRow[]) => void;
   scale: (from: MeasurementLayout, to: MeasurementLayout) => number;
 }) {
   const latest = useRef(input); latest.current = input;
@@ -25,6 +28,7 @@ export function useReadingGeometry(input: {
   const [geometry, setGeometry] = useState<ReadingGeometry | null>(null);
   const [error, setError] = useState<string | null>(null);
   const facts = useRef<readonly RowMeasurement[]>([]);
+  const boundaryFacts = useRef(new Map<string, number>());
   const layoutRef = useRef<MeasurementLayout | null>(null);
   const queued = useRef<ReadingGeometry | null>(null);
   const prepared=useRef<ReadingGeometry|null>(null);
@@ -153,15 +157,25 @@ export function useReadingGeometry(input: {
         const byKey=new Map(rows.map(row=>[row.key,row]));
         const valid=(fact:RowMeasurement)=>{const row=byKey.get(fact.row.key);return row&&fact.layoutIdentity===identity&&row.revision===fact.row.revision&&row.disclosureIdentity===fact.row.disclosureIdentity;};
         const measured=new Map(facts.current.filter(valid).map(fact=>[fact.row.key,fact]));
+        const boundaryOffsets = new Map<string, number>(rows.flatMap(row => {
+          const key = JSON.stringify([identity,readingPayloadKey(row)]);
+          const value = boundaryFacts.current.get(key);
+          return value === undefined ? [] : [[readingPayloadKey(row),value] as const];
+        }));
+        boundaryFacts.current.clear();
+        for(const [key,value] of boundaryOffsets)boundaryFacts.current.set(JSON.stringify([identity,key]),value);
         snapshot.onMeasuring(rows);
         startedScope.current = input.scope;
         const result = await service.measure({ rows, layouts: [layout], materialize: snapshot.materialize,
           renderBatch: createReadingRowBatchRenderer(snapshot.renderProps), reuse: facts.current,
           signal: controller.signal, batchSize: 16, materializeBatchSize: 128,maxSynchronousMs: 8,
           isCurrent:()=>rows.length===latest.current.rows.length&&rows.every((row,index)=>row.key===latest.current.rows[index].key&&row.revision===latest.current.rows[index].revision&&row.disclosureIdentity===latest.current.rows[index].disclosureIdentity),
-          onMeasured:additions=>{
+          onMeasured:(additions,elements,bodies)=>{
             for(const fact of additions){measured.set(fact.row.key,fact);}
+            for(const fact of additions){const element=elements.get(fact.row.key);const offset=element&&latest.current.measureBoundary?.(fact.row,element);if(offset!==undefined){const key=readingPayloadKey(fact.row);boundaryOffsets.set(key,offset);boundaryFacts.current.set(JSON.stringify([identity,key]),offset);}}
             facts.current=[...measured.values()];
+            const keep=latest.current.measurementCoverage?.(rows,rows.map(row=>measured.get(row.key)?.height??0));
+            if(keep)latest.current.transferMeasured?.(additions.map(fact=>fact.row),bodies,keep);
           },
         });
         if (controller.signal.aborted || !layoutRef.current || measurementLayoutIdentity(layoutRef.current) !== identity) break;
@@ -180,7 +194,7 @@ export function useReadingGeometry(input: {
         if (vector.totalHeight + latest.current.chrome > capacity.totalHeight || vector.maxRowHeight > capacity.maxRowHeight) {
           setError(`This conversation exceeds this browser's native scroll capacity (${vector.totalHeight}px total; ${vector.maxRowHeight}px maximum row).`); break;
         }
-        const next = { scope: input.scope, membership: snapshot.membership, rowMembers: snapshot.rowMembers, rows, sizes: vector.heights, layout, exact: true, serial: ++serial.current, renderProps: snapshot.renderProps };
+        const next = { scope: input.scope, membership: snapshot.membership, rowMembers: snapshot.rowMembers, rows, sizes: vector.heights, boundaryOffsets, layout, exact: true, serial: ++serial.current, renderProps: snapshot.renderProps };
         basis.current = next; publish.current(next); setError(null); completedPlan = rows;
       }
       running = false;

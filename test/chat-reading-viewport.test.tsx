@@ -32,9 +32,9 @@ it('registers a merged native source alias on its visible event without matching
 const rows: ReadingRow[] = [{ key: 'exact-row', kind: 'content', isFinalResponse: false, protectedPositions: [42], items: [], nodes: [], sources: [{ blockId: 'cblk:conv:42', position: 42 }], actionGroup: { key: 'scope', start: 0, end: 99 }, disclosureOwner: null }];
 const geometry = { membership: new Map<string, { rowKey: string; position?: number | null }>([['exact-row', { rowKey: 'exact-row', position: 42 }]]), rowMembers: new Map<string, readonly string[]>([['exact-row', ['exact-row']]]), scope: 'conv:space', rows: rows.map(row => ({ key: row.key, revision: '1' })), sizes: [100], exact: true, serial: 1, layout: { width: 600, styleIdentity: 'test', fonts: [] }, renderProps: () => ({} as any) };
 const rect = (top: number, height: number) => ({ top, bottom: top + height, height, left: 0, right: 600, width: 600, x: 0, y: top, toJSON: () => ({}) } as DOMRect);
-function Harness({ prepare, space = 'space', scope = 'conv', initializing = false, vector = geometry, disclosures = {}, clearance = 123, onRange = () => {} }: { onRange?: Parameters<typeof useReadingViewport>[0]['onRange']; clearance?: number; disclosures?: Record<string, boolean>; vector?: typeof geometry; scope?: string; initializing?: boolean; prepare: Parameters<typeof useReadingViewport>[0]['prepare']; space?: string;  }) {
+function Harness({ prepare, prepareRows, space = 'space', scope = 'conv', initializing = false, vector = geometry, disclosures = {}, clearance = 123, onRange = () => {} }: { prepareRows?: Parameters<typeof useReadingViewport>[0]['prepareRows']; onRange?: Parameters<typeof useReadingViewport>[0]['onRange']; clearance?: number; disclosures?: Record<string, boolean>; vector?: typeof geometry; scope?: string; initializing?: boolean; prepare: Parameters<typeof useReadingViewport>[0]['prepare']; space?: string;  }) {
   viewport = useReadingViewport({ scope, initializing, positionSpaceId: space, geometry: vector, protectedKeys: new Set(),
-    disclosures, clearance, onInput: () => {}, onApplied: () => {}, onRange, prepare });
+    disclosures, clearance, onInput: () => {}, onApplied: () => {}, onRange, prepare, prepareRows });
   return <div ref={viewport.scrollRef} {...viewport.inputHandlers}><div data-target tabIndex={-1}>Exact target</div><input /></div>;
 }
 async function frame(): Promise<void> {
@@ -60,6 +60,7 @@ beforeEach(() => {
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frames.set(++nextFrame, callback); return nextFrame; });
   vi.stubGlobal('cancelAnimationFrame', (id: number) => frames.delete(id));
   boundary.engine = {
+    options: { overscan: 6 },
     measure: () => {}, getTotalSize: () => 1400, getOffsetForIndex: () => [300, 'start'], getVirtualItemForOffset: () => ({ index: 0,start:300,end:400,size:100,key:'exact-row' }),
     isScrolling: false, range: { startIndex: 0, endIndex: 0 },
     isAtEnd: () => viewport.scrollRef.current?.scrollTop === 1000,
@@ -72,6 +73,26 @@ beforeEach(() => {
   sessionStorage.clear();
 });
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); window.history.replaceState(null, '', '/'); });
+
+it('keeps the painted vector until its replacement mounted bodies are prepared', async () => {
+  const prepare = async () => ({status:'not-renderable' as const});
+  let ready!: (value:boolean)=>void;
+  const prepareRows = vi.fn(()=>new Promise<boolean>(resolve=>{ready=resolve;}));
+  const disclosures = {};
+  const view=render(<Harness prepare={prepare} prepareRows={prepareRows} disclosures={disclosures}/>);
+  const {scroller}=connect();
+  scroller.scrollTop=1000;
+  await frame();
+  boundary.engine.isScrolling=false;
+  act(()=>boundary.options.onChange(boundary.engine));
+  expect(viewport.appliedGeometry).not.toBeNull();
+  const replacement={...geometry,serial:2,rows:[{key:'exact-row',revision:'2'}],sizes:[300]};
+  view.rerender(<Harness prepare={prepare} prepareRows={prepareRows} disclosures={disclosures} vector={replacement}/>);
+  expect(prepareRows).toHaveBeenCalledOnce();
+  expect(viewport.rows).toBe(geometry.rows);
+  await act(async()=>{ready(true);await Promise.resolve();});
+  expect(viewport.rows).toBe(replacement.rows);
+});
 
 it('terminates failed alignment and preparation that never completes', async () => {
   const prepare = vi.fn(async () => ({ status: 'prepared' as const, rowKey: 'exact-row' }));
