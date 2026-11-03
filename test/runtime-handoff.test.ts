@@ -305,6 +305,7 @@ it('wakes cache cleanup on coverage and reader exit, preserves mismatched identi
       CREATE TABLE cache_conversations(cache_id INTEGER,conversation_id TEXT,source_version_id TEXT,parser_format TEXT,parser_version TEXT,normalization_version TEXT,redaction_epoch INTEGER,block_count INTEGER,ready INTEGER);`);
     cache.close();
   }
+  fs.writeFileSync(`${obsolete}-shm`, '');
   fs.writeFileSync(f.file, JSON.stringify(journal));
   fs.rmSync(binding.nativeApp, { recursive: true });
   expect(await cleanupRuntimeHandoff(f.file)).toEqual({ cleanup: 'pending' });
@@ -335,6 +336,15 @@ it('wakes cache cleanup on coverage and reader exit, preserves mismatched identi
   const heldWake = runtimeHandoffCleanupWake(held);
   readerAlive = false;
   expect(runtimeHandoffCleanupWake(held)).not.toBe(heldWake);
+  const unlink = fs.unlinkSync;
+  const interrupted = vi.spyOn(fs, 'unlinkSync').mockImplementation(file => {
+    if (file === `${obsolete}-shm`) throw new Error('interrupted after obsolete main deletion');
+    return unlink(file);
+  });
+  expect(await cleanupRuntimeHandoff(f.file)).toEqual({ cleanup: 'pending' });
+  expect(fs.existsSync(obsolete)).toBe(false);
+  expect(fs.existsSync(`${obsolete}-shm`)).toBe(true);
+  interrupted.mockRestore();
   expect(await cleanupRuntimeHandoff(f.file)).toEqual({ cleanup: 'complete' });
   expect(fs.existsSync(obsolete)).toBe(false);
   expect(fs.existsSync(current)).toBe(true);

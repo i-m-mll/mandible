@@ -849,7 +849,10 @@ async function retireConversationCache(journal) {
   if (!nextIdentity || nextIdentity.dev !== receipt.currentIdentity?.dev || nextIdentity.ino !== receipt.currentIdentity?.ino) {
     throw new Error('Completed conversation cache identity changed.');
   }
-  validateCacheTransitionCoverage(receipt);
+  const retirement = journal.conversationCacheRetirement;
+  const resuming = retirement?.state === 'removing' && retirement.bindingDigest === journal.bindingDigest
+    && retirement.receiptDigest === hash(bytes) && JSON.stringify(retirement.receipt) === JSON.stringify(receipt);
+  if (!resuming) validateCacheTransitionCoverage(receipt);
   for (const file of receipt.files) {
     const actual = cacheFileIdentity(`${obsolete}${file.suffix}`);
     if (actual && JSON.stringify(actual) !== JSON.stringify(file.identity)) throw new Error('Obsolete conversation cache changed after coverage.');
@@ -866,6 +869,8 @@ async function retireConversationCache(journal) {
   }
   assertObservationLease(journal);
   if (conversationCacheTransitionWake(journal) !== bytes) throw new Error('Conversation cache coverage receipt changed during retirement.');
+  if (!resuming) save(journal, { conversationCacheRetirement: { state: 'removing', bindingDigest: journal.bindingDigest,
+    receiptDigest: hash(bytes), receipt, qualifiedAt: Date.now() } });
   for (const file of receipt.files) {
     const actual = cacheFileIdentity(`${obsolete}${file.suffix}`);
     if (!actual) continue;
