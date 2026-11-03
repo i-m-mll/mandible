@@ -270,7 +270,7 @@ export function ToolCard({
   }
 
   function renderInputPanel(): JSX.Element {
-    if (projectedChildren) return <>{renderProgramChildren()}{program?.effectsComplete===false&&execution?<ExecutionInput execution={execution}/>:null}</>;
+    if (projectedChildren) return <>{renderProgramChildren()}{program?.effectsComplete===false&&execution?<ActivityPayloadBox><ExecutionInput execution={execution}/></ActivityPayloadBox>:null}</>;
     if(inputBody.kind==='prose')return <OverflowFade lines={10}><TextBlock content={inputBody.text}/></OverflowFade>;
     if(inputBody.kind==='code')return <ExecutionInput execution={{facts:{kind:'script',language:'javascript'},operations:[],script:inputBody.text}}/>;
     if (inputBody.kind==='unloaded') {
