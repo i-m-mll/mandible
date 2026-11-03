@@ -635,6 +635,7 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
           content_completion: completion,
           tool_id: block.tool_use_id,
           tool_kind: "claude_tool_result",
+          execution: {state:block.is_error===true ? 'failed' : 'completed',provenance:'paired-result'},
           ...(block.is_error === true ? {execution_outcome:"failed" as const} : {}),
           ...(output !== undefined ? { output } : {}),
         };

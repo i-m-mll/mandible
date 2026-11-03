@@ -98,6 +98,7 @@ export type ToolUseContentBlock = {
   input: Record<string, unknown> | string;
   contentKey?: string;
   executionActive?: boolean;
+  executionEvidence?: import('../parsers/types.js').ToolExecutionEvidence;
   sourceIdentity?: {
     provider: string;
     sessionId: string;

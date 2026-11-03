@@ -46,7 +46,7 @@ export function isRoutineActivityStatus(item: ActivityItem, hasBody = false, usa
     && (item.severity === undefined || item.severity === 'info')
     && (item.execution_outcome === undefined || item.execution_outcome === 'unknown')
     && item.parts.every((part) => part.text.trim() === '')
-    && !(item.provenance.source_event_type === 'task_complete' && (hasBody || usage
+    && !(['task_started','task_complete'].includes(item.provenance.source_event_type) && (hasBody || usage
       || item.elapsed_ms !== undefined || item.tool_name || item.tool_id || item.related_tool_ids?.length));
 }
 
@@ -72,7 +72,7 @@ export function toolValueText(value: unknown, fallback: string): string {
 function toolResultPresentation(item: ToolCallItem, fallback: string) {
   const result=projectNativeToolResult(item.output,fallback,item.tool_kind,item.tool_name,item.tool_id);
   return {...result, failed:result.failed || item.execution_outcome==='failed' || (item.exit_code!==undefined && item.exit_code!==0),
-    running:item.content_completion==='streaming',
+    running:item.execution ? item.execution.state==='ongoing' : item.content_completion==='streaming',
     ...(item.elapsed_ms!==undefined && Number.isFinite(item.elapsed_ms) && item.elapsed_ms>=0 ? {wallTimeSeconds:item.elapsed_ms/1000,timingScope:'operation' as const,decoded:true} : {}),
     metadata:[...result.metadata,...(item.exit_code!==undefined ? [{label:'exit_code',value:String(item.exit_code)}] : []),...(item.process_id ? [{label:'process_id',value:item.process_id}] : [])]};
 }
@@ -276,6 +276,7 @@ export function buildStreamState(events: StreamEvent[], standaloneItems = false)
             source,
             contentKey: key,
             executionActive: canonical.executionActive,
+            executionEvidence: toolItem.execution?.state==='ongoing' && !canonical.executionActive ? {state:'unknown',provenance:'managed-generation'} : toolItem.execution,
           });
           if (toolItem.output !== undefined) pendingResults.set(toolId, boundToolResultBlock({
             type: 'tool_result', tool_use_id: toolId, content: toolValueText(toolItem.output,''), presentation: toolResultPresentation(toolItem,''),
@@ -303,6 +304,7 @@ export function buildStreamState(events: StreamEvent[], standaloneItems = false)
         }
       } else if (item.type === 'activity') {
         if (isEmptyCompletionMetadata(item, source?.hasBody, canonical.usage)) continue;
+        if(item.provenance.source_event_type==='task_started' && isRoutineActivityStatus(item,source?.hasBody,canonical.usage)) continue;
         if (item.provenance.source_event_type !== 'task_complete' && isRoutineActivityStatus(item)) {
           if (source?.detailsLoaded !== false && !source?.defaultVisible) continue;
           if (source?.hasBody === false) continue;
@@ -562,6 +564,8 @@ export function expandInlineActivities(nodes: readonly RenderNode[]): RenderNode
             : node.turn.assistantEvent.message.id ?? node.turn.assistantEvent.uuid,
           sessionId: node.turn.assistantEvent.session_id,
           sourceIdentity: block.sourceIdentity,
+          operationContext: block.source?.toolOperation,
+          executionEvidence: node.turn.toolResults.get(block.id)?.source?.toolExecution ?? block.source?.toolExecution ?? block.executionEvidence,
           executionActive: block.executionActive && !node.turn.toolResults.has(block.id),
         };
         expanded.push({
