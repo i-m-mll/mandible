@@ -11,7 +11,7 @@ it('retains completed geometry on cancellation, releases the host, and reuses un
   const parent = document.createElement('div');
   document.body.append(parent);
   const service = new ReadingMeasurementService(parent);
-  const rows: MeasurementRow[] = [{ key: 'first', revision: '1' }, { key: 'second', revision: '1' }];
+  const rows: MeasurementRow[] = [{ key: 'first', revision: '1', targetLabels: {target:{label:'Accepted label'}} }, { key: 'second', revision: '1' }];
   const controller = new AbortController();
   let finishLate!: (value: MaterializedMeasurementBatch<MeasurementRow>) => void;
   const firstRelease = vi.fn(); const lateRelease = vi.fn();
@@ -44,9 +44,11 @@ it('retains completed geometry on cancellation, releases the host, and reuses un
   expect(lateRelease).toHaveBeenCalledOnce();
   expect(parent.childElementCount).toBe(0);
   const materialize = vi.fn(async (batch: readonly MeasurementRow[]) => batch);
-  const complete = await service.measure({ rows, layouts: [layout], reuse: partial.measurements, materialize, renderBatch });
+  const releasedLabels = [{key:'first',revision:'1'},rows[1]];
+  const complete = await service.measure({ rows:releasedLabels, layouts: [layout], reuse: partial.measurements, materialize, renderBatch });
   expect(complete.status).toBe('complete');
   expect(materialize.mock.calls.flatMap(([batch]) => batch.map(row => row.key))).toEqual(['second']);
+  expect(complete.measurements.find(measurement => measurement.row.key === 'first')!.row.targetLabels).toBeUndefined();
   const changed = vi.fn(async (batch: readonly MeasurementRow[]) => batch);
   await service.measure({ rows: [{ ...rows[0], disclosureIdentity: 'open' }, rows[1]], layouts: [layout], reuse: complete.measurements, materialize: changed, renderBatch });
   expect(changed.mock.calls.flatMap(([batch]) => batch.map(row => row.key))).toEqual(['first']);

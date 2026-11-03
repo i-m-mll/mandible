@@ -5,6 +5,7 @@ import { DISPLAY_CONTEXT_VERSION, type ConversationDisplayContext } from '../con
 import { readDisplayContext } from '../conversations/display-context-read.js';
 import type { ConversationSourceEpochs } from "../conversations/source-types.js";
 import { updateConversationMetadata } from "../conversations/metadata.js";
+import { activityTargetsSchema, resolveActivityTargets } from '../conversations/activity-targets.js';
 import { mapConversation, maskSourceBackedConversationRow } from "../conversations/response-mapping.js";
 import { parseSinceQuery, sourceFromQuery } from "../conversations/search-query.js";
 import type { LedgerReader } from "../ledger-reads/index.js";
@@ -250,6 +251,12 @@ export function registerConversationRoutes(
   };
 
   // --- Static routes MUST be registered before parameterized :id routes ---
+
+  server.post('/api/conversations/activity-targets', (req, res) => {
+    const parsed = activityTargetsSchema.safeParse(readBody<{ targets?: unknown }>(req)?.targets);
+    if (!parsed.success) return sendJson(res, 400, { error: 'Invalid activity targets' });
+    return sendJson(res, 200, { targets: resolveActivityTargets(db, parsed.data) });
+  }, { operation: { id: 'post:/api/conversations/activity-targets', effects: ['ledger:read'], requestSchema: null, reportingCategory: null }, fileRpc: 'allow' });
 
   server.get("/api/conversations/resolve-target", (req, res) => {
     const { conversation, session } = req.query;

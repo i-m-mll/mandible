@@ -5,6 +5,7 @@ import { TurnGroup } from '../components/message-blocks/TurnGroup';
 import { ReadingContent, type ReadingContentProps } from './ReadingContent';
 import type { ReadingRow } from './readingProjection';
 import { isCompactReadingRow } from './readingRowPresentation';
+import { ActivityTargetLabelsContext } from '../components/shared/ActivityTargetLinks';
 
 export type ReadingRowFrameProps = {
   row: Pick<ReadingRow, 'key' | 'turnStart' | 'turnEnd' | 'activityMember' | 'activityEnd' | 'activityGroup'> & Partial<Pick<ReadingRow, 'kind' | 'nodes'>>;
@@ -24,9 +25,9 @@ export function ReadingRowFrame({ row, index, busy, elementRef, children, style 
 
 const StableReadingContent = memo(ReadingContent);
 export function ReadingRowBody(props: ReadingContentProps) {
-  return props.row.kind === 'permission' && props.activePermissionRequest && props.onPermissionRespond
+  return <ActivityTargetLabelsContext.Provider value={props.targetLabels ?? {}}>{props.row.kind === 'permission' && props.activePermissionRequest && props.onPermissionRespond
     ? <TurnGroup speaker="system"><PermissionApprovalCard request={props.activePermissionRequest} backendType={props.permissionBackendType ?? 'sdk'} onRespond={props.onPermissionRespond} /></TurnGroup>
-    : <StableReadingContent {...props} />;
+    : <StableReadingContent {...props} />}</ActivityTargetLabelsContext.Provider>;
 }
 
 export function ReadingRowView(props: ReadingContentProps) {
