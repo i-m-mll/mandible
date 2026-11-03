@@ -225,7 +225,7 @@ export function ToolCard({
   const projectedResult = useMemo(() => operationResult(presentation,resultPresentation ?? projectToolResult(execution,originalResultText,result?.source?.toolFrame,result?.presentation,program)),[presentation,execution,originalResultText,result?.source?.toolFrame,result?.presentation,resultPresentation,program]);
   const operationResults = useMemo(() => program ? programResults(program,resultText) : null,[program,resultText]);
   const projectedChildren = program && (program.operations.length > 1 || !execution || execution.facts.kind !== 'command')
-    ? program.operations.map(operation=>({name:operation.name,input:operation.input,header:presentTool(operation.name,operation.input)}))
+    ? program.operations.map((operation,index)=>{const native=presentTool(operation.name,operation.input),child=observation?.children?.[index];return {name:operation.name,input:operation.input,header:child?{...native,...presentationForObservation(child),target:native.target}:native};})
     : header?.children?.map(child=>({...child,input:undefined}));
   const nestedProgram = Boolean(projectedChildren?.length);
   const executionFacts=execution?.facts ?? header?.execution;

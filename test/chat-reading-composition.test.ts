@@ -340,3 +340,24 @@ it('keeps sparse continuation input dependencies outside the rendered row topolo
     }
   }finally{f.close();}
 });
+
+it('keeps invalid native creation receipts distinct from verified thread identities through hydration',async()=>{
+  const script='const prompts=[{title:"first",prompt:"source first"},{title:"second",prompt:"source second"}];const results=await Promise.all(prompts.map(p=>tools.codex_app__create_thread({title:p.title,prompt:p.prompt})));results.forEach(text);';
+  const output='Script completed\nWall time 0.1 seconds\nOutput:\n\ncreate_thread received invalid arguments.\ncreate_thread received invalid arguments.';
+  const f=await fixture(false,{provider:'codex',records:[{type:'session_meta',payload:{id:'composition',cwd:'/tmp'}},
+    {type:'response_item',payload:{type:'custom_tool_call',call_id:'invalid-create',name:'exec',input:script}},
+    {type:'response_item',payload:{type:'custom_tool_call_output',call_id:'invalid-create',output}}]});
+  try{
+    const owner=f.manifest.members.find(member=>member.activityFacts?.observation?.children)!;
+    const compact=owner.activityFacts!.observation!;
+    expect(compact.children?.map(child=>({operation:child.operation,targets:child.targets,subject:child.subject}))).toEqual([
+      {operation:'thread-request',targets:[],subject:'first'},{operation:'thread-request',targets:[],subject:'second'}]);
+    const expanded=Object.fromEntries([...(owner.disclosures?.keys??[]),...(owner.activityRunId?[`group:${owner.activityRunId}`]:[])].map(key=>[key,true]));
+    const row=planConversationReading(f.manifest,expanded).rows.find(row=>row.key===owner.key)!;
+    const read=await readReadingRowBatch({db:f.db,reader:f.reader,conversationId:'composition',request:{positionSpaceId:f.manifest.positionSpaceId,rows:[row],expanded}});
+    if(read.status!=='source')throw Error(read.status);
+    const node=read.rows[0].nodes[0];if(node.kind!=='activity'||node.item.type!=='tool-call-activity')throw Error('Missing native creation owner');
+    expect(node.item.observation?.children?.map(child=>({operation:child.operation,targets:child.targets}))).toEqual([{operation:'thread-request',targets:[]},{operation:'thread-request',targets:[]}]);
+    expect(node.item.result?.fullText??node.item.result?.content).toBe(output);
+  }finally{f.close();}
+});

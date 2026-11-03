@@ -2,7 +2,7 @@ import { expect, it } from 'vitest';
 import { projectToolProgram } from '../src/presentation/tool-program';
 import { toolObservation,operationObservationForTool,presentationForObservation } from '../src/presentation/tool-observation';
 import { operationState, operationResult, substantiveToolResult, threadReports, threadWaitBody } from '../src/presentation/tool-operation';
-import { rawToolResult, codexResultFrame } from '../src/presentation/tool-transport';
+import { rawToolResult, codexResultFrame, programResults } from '../src/presentation/tool-transport';
 
 it('projects complete transparent wrappers while retaining arbitrary computation as source', () => {
   const input={threadId:'exact-provider-thread',hostId:'local'};
@@ -95,4 +95,19 @@ it('distinguishes awaited async batch callbacks from unresolved async data value
   expect(program?.operations.map(operation=>({name:operation.name,input:operation.input,collectionPath:operation.collectionPath}))).toEqual(targets.map(([,threadId],index)=>({name:'codex_app__read_thread',input:{threadId},collectionPath:[index,1]})));
   const unresolved=projectToolProgram('exec','const ids=["native-a"];text(await tools.codex_app__wait_threads({targets:ids.map(async threadId=>({threadId}))}));');
   expect(unresolved?.operations[0].input).toBeUndefined();
+});
+
+it('preserves eagerly constructed calls and keyed tuple results without treating object effects as tool calls',()=>{
+  const sends='const pending=[tools.codex_app__send_message_to_thread({threadId:"native-a",prompt:"first"}),tools.codex_app__send_message_to_thread({threadId:"native-b",prompt:"second"})];const results=await Promise.all(pending);results.forEach(text);';
+  const program=projectToolProgram('exec',sends)!;
+  expect(program.effectsComplete).toBeUndefined();
+  expect(program.operations.map(operation=>operation.input)).toEqual([{threadId:'native-a',prompt:'first'},{threadId:'native-b',prompt:'second'}]);
+  const commands='const cmds=[["a","pwd"],["b","ls"]];const out={};for(const [key,cmd]of cmds){const result=await tools.exec_command({cmd});out[key]=result.output;}text(JSON.stringify(out));';
+  const batch=projectToolProgram('exec',commands)!;
+  expect(batch.effectsComplete).toBeUndefined();
+  expect(batch.operations.map(operation=>operation.input)).toEqual([{cmd:'pwd'},{cmd:'ls'}]);
+  expect(programResults(batch,JSON.stringify({a:'native first output',b:'native second output'}))?.map(result=>result.text)).toEqual(['native first output','native second output']);
+  const unknown=projectToolProgram('exec',commands.replace('out[key]=result.output','out[resolveKey()]=result.output'))!;
+  expect(unknown.effectsComplete).toBe(false);
+  expect(unknown.outputAttributed).toBe(false);
 });

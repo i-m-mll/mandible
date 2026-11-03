@@ -14,6 +14,11 @@ function data(node: Ast, bindings = new Map<string, unknown>()): { value: unknow
   if (node.type === 'UnaryExpression' && ['-', '+'].includes(node.operator)) {
     const value = data(node.argument,bindings); return value && typeof value.value === 'number' ? {value: node.operator === '-' ? -value.value : value.value} : null;
   }
+  if(node.type==='MemberExpression'&&!node.optional){
+    const object=data(node.object,bindings),key=node.computed?data(node.property,bindings):identifier(node.property)?{value:node.property.name}:null;
+    if(!object||!object.value||typeof object.value!=='object'||!key||!['string','number'].includes(typeof key.value)||!Object.hasOwn(object.value,String(key.value)))return null;
+    return {value:(object.value as Record<string,unknown>)[String(key.value)]};
+  }
   if (node.type === 'ArrayExpression') {
     const values = node.elements.map((element: Ast | null) => element && data(element,bindings));
     return values.every((value): value is {value:unknown} => value!==null) ? {value: values.map(value => value.value)} : null;
@@ -111,6 +116,8 @@ function forwarding(statement: Ast, name: string, batch: boolean): {forwarding:'
   const call = statement.type === 'ExpressionStatement' && statement.expression;
   if (!call || call.type !== 'CallExpression' || call.optional || !member(call.callee,name,'forEach') || call.arguments.length !== 1) return null;
   const callback = call.arguments[0];
+  if(identifier(callback,'text'))return {forwarding:'result',encoding:'native'};
+  if(callback.type==='ArrowFunctionExpression'&&!callback.async&&callback.params.length===1&&identifier(callback.params[0])&&!GLOBAL_BINDINGS.has(callback.params[0].name)){const body=callback.body.type==='BlockStatement'&&callback.body.body.length===1?callback.body.body[0]:callback.body;const value=textValue(body);const mode=value&&forward(value,callback.params[0].name);if(mode)return mode;}
   if (callback.type !== 'ArrowFunctionExpression' || callback.async || callback.params.length !== 2 || !callback.params.every(p=>identifier(p))) return null;
   const [valueName,indexName] = callback.params.map(p => identifier(p) ? p.name : '');
   if (valueName === indexName || ['tools','text','JSON'].includes(valueName) || ['tools','text','JSON'].includes(indexName)) return null;
@@ -219,6 +226,7 @@ export function projectToolProgram(name:string,input:Record<string,unknown>|stri
   if(discoveryProgram(program.body))return {operations:[{name:'__tool_discovery',input:{},forwarding:'result',encoding:'literal'}]};
   const operations:ToolProgramOperation[]=[];
   let emissions=0,opaque=false;
+  const outputObjects=new Map<string,Map<string,{reference:ResultReference;forwarding:'result'|'stdout'}>>();
   const analyze=(statements:readonly Ast[],environment:{bindings:Map<string,unknown>;references:Map<string,ResultReference>;names:Set<string>;values:Set<string>;mutable:Set<string>}):boolean=>{
   const {bindings,references,names,values,mutable}=environment;
   const pure=(node:Ast,locals:ReadonlySet<string>=values):boolean=>{
@@ -246,6 +254,11 @@ export function projectToolProgram(name:string,input:Record<string,unknown>|stri
     return false;
   };
   const append=(node:Ast):ResultReference|null=>{
+    if(node.type==='AwaitExpression'&&identifier(node.argument)&&references.has(node.argument.name))return references.get(node.argument.name)!;
+    if(node.type==='AwaitExpression'&&node.argument.type==='CallExpression'&&member(node.argument.callee,'Promise','all')&&node.argument.arguments.length===1&&identifier(node.argument.arguments[0])){
+      const reference=references.get(node.argument.arguments[0].name);if(reference?.batch)return reference;
+    }
+
     const batch=calls(node,bindings,(entry,scope)=>pure(entry,new Set([...values,...(scope?.keys()??[])]))); if(!batch)return null;
     if(operations.length+batch.operations.length>256)return null;
     const indices=batch.operations.map(op=>{const index=operations.length;operations.push(op);return index;});
@@ -256,6 +269,7 @@ export function projectToolProgram(name:string,input:Record<string,unknown>|stri
       Object.assign(op,mode,{emission,resultPath:reference.batch?[...path,...(reference.paths?.[offset]??[offset])]:path});});
   };
   const output=(node:Ast,emission:number,path:Array<string|number>=[],encoding:ToolEmissionEncoding='native'):boolean=>{
+    if(identifier(node)&&outputObjects.has(node.name)){for(const [key,value]of outputObjects.get(node.name)!)assign(value.reference,emission,[...path,key],{encoding:'json',forwarding:value.forwarding});return true;}
     if(identifier(node)&&references.has(node.name)){assign(references.get(node.name)!,emission,path,{encoding,forwarding:'result'});return true;}
     if(node.type==='AwaitExpression'){const ref=append(node);if(ref){assign(ref,emission,path,{encoding,forwarding:'result'});return true;}return false;}
     if(node.type==='MemberExpression'&&!node.computed&&node.object.type==='AwaitExpression'&&identifier(node.property,'output')){const ref=append(node.object);if(!ref||ref.batch)return false;assign(ref,emission,path,{encoding:encoding==='json'?'json':'literal',forwarding:'stdout'});return true;}
@@ -290,13 +304,25 @@ export function projectToolProgram(name:string,input:Record<string,unknown>|stri
     const statement=statements[index] as Ast;
     if(statement.type==='FunctionDeclaration'&&statement.id&&!names.has(statement.id.name)){names.add(statement.id.name);continue;}
     if(statement.type==='ForOfStatement'&&!statement.await&&statement.left.type==='VariableDeclaration'&&statement.left.kind==='const'&&statement.left.declarations.length===1) {
+      const promiseCollection=identifier(statement.right)?references.get(statement.right.name):undefined;
+      if(promiseCollection?.batch&&identifier(statement.left.declarations[0].id)){
+        for(const operationIndex of promiseCollection.indices){
+          const scoped={bindings:new Map(bindings),references:new Map(references),names:new Set(names),values:new Set(values),mutable:new Set(mutable)};
+          const name=statement.left.declarations[0].id.name;scoped.references.set(name,{indices:[operationIndex],batch:false});scoped.names.add(name);scoped.values.add(name);
+          if(!analyze(statement.body.type==='BlockStatement'?statement.body.body:[statement.body],scoped))return false;
+        }
+        for(const [name,object]of outputObjects)if(object.size)bindings.delete(name);
+        continue;
+      }
       const collection=data(statement.right,bindings);
       if(collection&&Array.isArray(collection.value)&&collection.value.length<=256) {
         for(const value of collection.value){const scoped={bindings:new Map(bindings),references:new Map(references),names:new Set(names),values:new Set(values),mutable:new Set(mutable)};
           if(!bindPattern(statement.left.declarations[0].id,value,scoped.bindings))return false;
           for(const key of scoped.bindings.keys()){scoped.names.add(key);scoped.values.add(key);}
           if(!analyze(statement.body.type==='BlockStatement'?statement.body.body:[statement.body],scoped))return false;
-        }continue;
+        }
+        for(const [name,object]of outputObjects)if(object.size)bindings.delete(name);
+        continue;
       }
     }
     if(statement.type==='VariableDeclaration'&&['const','let'].includes(statement.kind)) {
@@ -305,11 +331,16 @@ export function projectToolProgram(name:string,input:Record<string,unknown>|stri
         const ids=identifier(declaration.id)?[declaration.id]:declaration.id.type==='ArrayPattern'?declaration.id.elements:[];
         if(!ids.length||ids.some((id:Ast|null)=>!id||!identifier(id)||names.has(id.name)))return false;
         const literal=data(declaration.init,bindings);
-        const ref=literal?null:append(declaration.init);
+        let ref=literal?null:append(declaration.init);
+        if(!literal&&!ref&&statement.kind==='const'&&declaration.init.type==='ArrayExpression'&&declaration.init.elements.length<=256){
+          const pending=declaration.init.elements.map((entry:Ast|null)=>entry&&operation(entry,bindings,(node,scope)=>pure(node,new Set([...values,...(scope?.keys()??[])]))));
+          if(pending.length&&pending.every((entry):entry is ToolProgramOperation=>Boolean(entry))&&operations.length+pending.length<=256){const indices=pending.map(entry=>{const index=operations.length;operations.push(entry);return index;});ref={indices,batch:true,paths:indices.map((_,index)=>[index])};}
+        }
+
         if(!literal&&!ref&&!pure(declaration.init))return false;
         if(ids.length>1&&(!ref?.batch||ids.length!==ref.indices.length))return false;
         ids.forEach((pattern,offset:number)=>{const id=pattern as Identifier;names.add(id.name);values.add(id.name);
-          if(literal&&statement.kind==='const')bindings.set(id.name,literal.value);
+          if(literal&&statement.kind==='const'){bindings.set(id.name,literal.value);if(declaration.init!.type==='ObjectExpression'&&!declaration.init.properties.length)outputObjects.set(id.name,new Map());}
           if(statement.kind==='let')mutable.add(id.name);
           if(ref)references.set(id.name,declaration.id.type==='ArrayPattern'?{indices:[ref.indices[offset]],batch:false}:ref);
           else if(identifier(declaration.init??undefined)&&references.has((declaration.init as Identifier).name))references.set(id.name,references.get((declaration.init as Identifier).name)!);
@@ -322,6 +353,17 @@ export function projectToolProgram(name:string,input:Record<string,unknown>|stri
       const emission=emissions++;
       if(!output(value,emission)){if(!pure(value))return false;opaque=true;}
       continue;
+    }
+    if(statement.type==='ExpressionStatement'&&statement.expression.type==='AssignmentExpression'&&statement.expression.operator==='='){
+      const {left,right}=statement.expression;
+      if(left.type==='MemberExpression'&&identifier(left.object)&&outputObjects.has(left.object.name)){
+        const key=left.computed?data(left.property,bindings):identifier(left.property)?{value:left.property.name}:null;
+        const stdout=right.type==='MemberExpression'&&!right.computed&&identifier(right.object)&&identifier(right.property,'output');
+        const reference=identifier(right)?references.get(right.name):right.type==='MemberExpression'&&identifier(right.object)&&stdout?references.get(right.object.name):undefined;
+        const object=outputObjects.get(left.object.name)!;
+        if(!key||!['string','number'].includes(typeof key.value)||!reference||reference.batch||object.has(String(key.value))||object.size>=256)return false;
+        object.set(String(key.value),{reference,forwarding:stdout?'stdout':'result'});bindings.delete(left.object.name);continue;
+      }
     }
     if(statement.type==='ExpressionStatement'&&statement.expression.type==='AwaitExpression') {if(!append(statement.expression))return false;continue;}
     let forwarded=false;
