@@ -10,6 +10,8 @@ it('projects complete transparent wrappers while retaining arbitrary computation
   const source=`const result=await tools.codex_app__read_thread(${JSON.stringify(input)});for(const part of (result?.content??[])) part.type==='image'?image(part):text(part.text??part);if(!result?.content)text(result);`;
   const wrapped=toolObservation('functions.exec',source,'custom_tool_call');
   expect(wrapped.header).toEqual(direct.header);
+  const media=[{type:'image' as const,source:{type:'base64',media_type:'image/png',data:'aW1hZ2U='}}];
+  expect(toolObservation('exec',source,undefined,{text:'',content:media}).result?.content).toEqual(media);
   expect(wrapped.header.threadTargets).toEqual([{type:'session',id:input.threadId}]);
   for(const computation of [source+'text("extra");',source.replace('text(part.text??part)','text(part.text.toUpperCase())'),`text(await tools.codex_app__read_thread(resolveTarget()))`]) {
     expect(projectToolProgram('functions.exec',computation,'custom_tool_call')).toBeNull();
@@ -31,4 +33,8 @@ it('suppresses only a known empty patch acknowledgement and retains reports, err
   expect(threadReports(value.result!.text)).toMatchObject([{threadId:'child',text:report.polls[0].latestAssistantMessage.text,final:true}]);
   expect(substantiveToolResult(value.result!)).toBe(true);
   expect(threadReports('arbitrary application output')).toBeNull();
+  const waiting=toolObservation('codex_app__wait_threads',{targets:[{threadId:'child',hostId:'local'}]},undefined,{text:JSON.stringify({timedOut:true,polls:[]})});
+  expect(waiting.header.hasDetails).toBe(false);
+  const diagnostic=toolObservation('codex_app__wait_threads',{},undefined,{text:JSON.stringify({timedOut:true,polls:[],error:'retained'})});
+  expect(substantiveToolResult(diagnostic.result!)).toBe(true);
 });

@@ -28,7 +28,7 @@ export function indexDisplayFragments(blocks: readonly Omit<ConversationBlock, '
       const name=operation?.name ?? activity.name, input=operation?.input as Record<string,unknown> | string | undefined ?? activity.input, kind=operation?.kind ?? activity.toolKind;
       const execution=projectExecution(name,input,kind);
       const result=activity.result;
-      const observation=toolObservation(name,input,kind,result ? {text:result.fullText ?? extractToolResultText(result.content),frame:result.source?.toolFrame,native:result.presentation,failed:result.is_error} : undefined);
+      const observation=toolObservation(name,input,kind,result ? {text:result.fullText ?? extractToolResultText(result.content),content:result.content,frame:result.source?.toolFrame,native:result.presentation,failed:result.is_error} : undefined);
       const projected=observation.result;
       const {children:_children,...header}=observation.header;
       header.target=['execute','javascript'].includes(header.category) || header.target.length>256 ? '' : header.target;

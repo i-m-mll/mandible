@@ -2,13 +2,14 @@ import type { ToolPresentation } from './tool-presentation.js';
 import type { ToolTransportResult } from './tool-transport.js';
 
 /** Patch contents contain only the source context supplied by the patch author. */
-export function patchFileChanges(patch: string): Array<{filePath:string;oldString:string;newString:string}> {
+export function patchFileChanges(patch: string): Array<{filePath:string;oldString:string;newString:string;kind:'edit'|'write'|'delete'|'move'}> {
   if (!patch.startsWith('*** Begin Patch\n') || !patch.trimEnd().endsWith('*** End Patch')) return [];
-  const files:Array<{filePath:string;oldString:string;newString:string}>=[];
-  let file: {filePath:string;oldString:string;newString:string}|undefined;
+  const files:Array<{filePath:string;oldString:string;newString:string;kind:'edit'|'write'|'delete'|'move'}>=[];
+  let file: {filePath:string;oldString:string;newString:string;kind:'edit'|'write'|'delete'|'move'}|undefined;
   for(const line of patch.split('\n').slice(1)) {
     const directive=/^\*\*\* (Update|Add|Delete) File: (.+)$/.exec(line);
-    if(directive) {file={filePath:directive[2],oldString:'',newString:''};files.push(file);continue;}
+    if(directive) {file={filePath:directive[2],oldString:'',newString:'',kind:directive[1]==='Add'?'write':directive[1]==='Delete'?'delete':'edit'};files.push(file);continue;}
+    if(file && line.startsWith('*** Move to: ')) {file.filePath+=' → '+line.slice(13);file.kind='move';continue;}
     if(line.startsWith('*** ') || line.startsWith('@@') || !file) continue;
     if(line.startsWith('-') || line.startsWith(' ')) file.oldString+=line.slice(1)+'\n';
     if(line.startsWith('+') || line.startsWith(' ')) file.newString+=line.slice(1)+'\n';
@@ -32,6 +33,7 @@ export function operationPhrase(header:ToolPresentation,state:OperationState,res
   return state==='ongoing' ? ongoing[header.category] ?? header.phrase : state==='unknown' ? neutral[header.category] ?? header.phrase : header.phrase;
 }
 export function operationResult(header:ToolPresentation,result:ToolTransportResult):ToolTransportResult {
+  if(!result.failed && !result.stderr && header.outputPolicy==='thread-wait' && emptyThreadWait(result.text) && (!Array.isArray(result.content) || result.content.every(block=>block.type==='text'))) return {...result,text:'',content:undefined};
   if(!result.failed && header.outputPolicy==='acknowledgement' && result.text.trim()==='{}' && !result.stderr && !result.content) return {...result,text:'',wallTimeSeconds:undefined};
   return result;
 }
@@ -63,4 +65,19 @@ export function threadReports(text:string):ThreadReport[] | null {
     if(body.text.trim()) reports.push({threadId:target.id,...(typeof target.hostId==='string'?{hostId:target.hostId}:{}),text:body.text,final:body.phase==='final_answer'});
   }
   return reports;
+}
+
+function emptyThreadWait(text:string):boolean {
+  let value:unknown;
+  try {value=JSON.parse(text);} catch{return false;}
+  const object=(entry:unknown):entry is Record<string,unknown>=>Boolean(entry) && typeof entry==='object' && !Array.isArray(entry);
+  const keys=(entry:Record<string,unknown>,allowed:string[])=>Object.keys(entry).every(key=>allowed.includes(key));
+  if(!object(value) || !keys(value,['timedOut','wake','polls']) || typeof value.timedOut!=='boolean' || !Array.isArray(value.polls)) return false;
+  if(value.wake!=null && (!object(value.wake) || !keys(value.wake,['reason','turnId','threadId','hostId']))) return false;
+  return value.polls.every(poll=>object(poll) && keys(poll,['schemaVersion','cursor','revision','changed','thread','latestTurn','latestAssistantMessageId','latestAssistantMessage','latestToolMarkerId','latestToolMarker'])
+    && poll.latestAssistantMessage==null
+    && object(poll.thread) && keys(poll.thread,['id','hostId','status'])
+    && object(poll.thread.status) && keys(poll.thread.status,['type'])
+    && (poll.latestTurn==null || (object(poll.latestTurn) && poll.latestTurn.error==null && keys(poll.latestTurn,['id','status','error','startedAt','completedAt','durationMs'])))
+    && (poll.latestToolMarker==null || (object(poll.latestToolMarker) && keys(poll.latestToolMarker,['id','turnId','type','name','status']))));
 }

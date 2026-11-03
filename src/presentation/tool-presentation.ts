@@ -111,8 +111,10 @@ export function presentTool(
   if(['wait'].includes(name)) return {operation:'execution-wait',category:'wait',icon:'history',phrase:'Wait for execution',target:''};
   if(name==='apply_patch') {
     const patch = typeof inputValue==='string' ? inputValue : typeof object.patch==='string' ? object.patch : '';
-    const files = patchFileChanges(patch).map(file=>file.filePath);
-    return {operation:'file-edit',category:'edit',icon:'toolEdit',phrase:files.length>1?'Edited files':'Edited file',target:files.join(', '),...(files.length ? {outputPolicy:'acknowledgement' as const} : {})};
+    const changes = patchFileChanges(patch);
+    const category = changes.length && changes.every(change=>change.kind===changes[0].kind) ? changes[0].kind : 'edit';
+    const definition=DEFINITIONS[category];
+    return {operation:`file-${category}`,category,icon:definition.icon,phrase:changes.length>1?definition.plural:definition.phrase,target:changes.map(file=>file.filePath).join(', '),...(changes.length ? {outputPolicy:'acknowledgement' as const} : {})};
   }
   const program = projectToolProgram(toolName, inputValue, toolKind);
   const children = program?.operations.map(operation=>({name:operation.name,header:presentTool(operation.name,operation.input)}));

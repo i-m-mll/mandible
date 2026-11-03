@@ -125,7 +125,7 @@ export type ActivityRunFacts = {
 function activityToolObservation(item:ToolCallActivity) {
   const context=item.operationContext ?? item.result?.source?.toolOperation;
   const input=context?.input;
-  return toolObservation(context?.name ?? item.name,typeof input==='string' || (input && typeof input==='object' && !Array.isArray(input)) ? input as Record<string,unknown> | string : item.input,context?.kind ?? item.toolKind,item.result ? {text:item.result.fullText ?? (typeof item.result.content==='string' ? item.result.content : item.result.content.filter(block=>block.type==='text').map(block=>block.text).join('\n')),frame:item.result.source?.toolFrame,native:item.result.presentation,failed:item.result.is_error} : undefined,item.header);
+  return toolObservation(context?.name ?? item.name,typeof input==='string' || (input && typeof input==='object' && !Array.isArray(input)) ? input as Record<string,unknown> | string : item.input,context?.kind ?? item.toolKind,item.result ? {text:item.result.fullText ?? (typeof item.result.content==='string' ? item.result.content : item.result.content.filter(block=>block.type==='text').map(block=>block.text).join('\n')),content:item.result.content,frame:item.result.source?.toolFrame,native:item.result.presentation,failed:item.result.is_error} : undefined,item.header);
 }
 function activityHasDetails(item:DisplayActivityItem):boolean {
   if(item.type==='thinking-block-activity') return presentReasoning([item.content]).hasBody;

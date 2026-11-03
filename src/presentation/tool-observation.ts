@@ -1,3 +1,4 @@
+import type { ToolResultContent } from './types.js';
 import { presentTool, type ToolPresentation } from './tool-presentation.js';
 import { projectToolProgram } from './tool-program.js';
 import { projectExecution } from './execution-presentation.js';
@@ -6,14 +7,15 @@ import { operationResult, substantiveToolResult, threadReports } from './tool-op
 
 /** Direct calls and fully recognized one-operation wrappers share the same operation. */
 export function toolObservation(name:string,input:Record<string,unknown> | string = {},kind?:string,
-  result?:{text:string;frame?:NativeResultFrame;native?:ToolTransportResult;failed?:boolean},header?:ToolPresentation) {
+  result?:{text:string;content?:ToolResultContent;frame?:NativeResultFrame;native?:ToolTransportResult;failed?:boolean},header?:ToolPresentation) {
   const program=projectToolProgram(name,input,kind);
   if(program?.operations.length===1) {
     const operation=program.operations[0];
     const presentation=presentTool(operation.name,operation.input);
     const framed=result ? framedToolResult(result.text,result.frame) : undefined;
-    const decoded=framed ? programResults(program,framed.text)?.[0] : undefined;
-    const projected=framed ? operationResult(presentation,{...framed,...decoded,wallTimeSeconds:decoded?.wallTimeSeconds ?? framed.wallTimeSeconds,failed:Boolean(result?.failed || framed.failed || decoded?.failed)}) : undefined;
+    const decoded=result?.native?.decoded ? result.native : framed ? programResults(program,framed.text)?.[0] : undefined;
+    const media=framed && !framed.decoded && Array.isArray(result?.content) && result.content.some(block=>block.type==='image') ? result.content : undefined;
+    const projected=framed ? operationResult(presentation,{...framed,...decoded,...(media && !decoded?.content ? {content:media}:{}),wallTimeSeconds:decoded?.wallTimeSeconds ?? framed.wallTimeSeconds,failed:Boolean(result?.failed || framed.failed || decoded?.failed)}) : undefined;
     return {name:operation.name,input:operation.input,kind:undefined,result:projected,header:observedHeader(presentation,projected)};
   }
   const presentation=header ?? presentTool(name,input,kind);
