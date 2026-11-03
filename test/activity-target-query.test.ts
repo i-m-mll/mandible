@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { activityTargetKey, type ActivityTarget } from '../src/presentation/activity-targets';
 import { activityTargetOptions } from '../ui/src/query/activityTargets';
 import { queryClient } from '../ui/src/query/client';
+import { activityTargetDisplayLabel } from '../ui/src/components/shared/ActivityTargetLinks';
 
 const transport = vi.hoisted(() => ({ batches: [] as ActivityTarget[][] }));
 vi.mock('../ui/src/api', () => ({ resolveActivityTargets: async (targets: ActivityTarget[]) => {
@@ -9,6 +10,16 @@ vi.mock('../ui/src/api', () => ({ resolveActivityTargets: async (targets: Activi
   return targets.map(target => ({key:activityTargetKey(target),status:'resolved',conversationId:`canonical:${activityTargetKey(target)}`,title:'Indexed title'}));
 } }));
 afterEach(() => { queryClient.clear(); transport.batches = []; });
+
+it('keeps authored subagent descriptions while persistent thread labels follow canonical titles',()=>{
+  const child:ActivityTarget={kind:'subagent',provider:'claude_code',parentSessionId:'parent',agentId:'agent',labelHint:'Source description'};
+  const thread:ActivityTarget={kind:'thread',provider:'codex',sessionId:'thread',labelHint:child.labelHint};
+  const title='Canonical conversation title';
+  expect(activityTargetDisplayLabel(child,title)).toBe(child.labelHint);
+  expect(activityTargetDisplayLabel(child,title+' changed')).toBe(child.labelHint);
+  expect(activityTargetDisplayLabel(thread,title)).toBe(title);
+  expect(activityTargetDisplayLabel({...child,labelHint:undefined},title)).toBe(title);
+});
 
 it('shares native target cache identities across authored labels and bounds metadata batches', async () => {
   const targets = Array.from({length:65}, (_,index):ActivityTarget => ({kind:'subagent',provider:'claude_code',parentSessionId:'parent',agentId:`agent-${index}`,labelHint:'Authored task'}));

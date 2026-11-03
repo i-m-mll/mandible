@@ -10,7 +10,7 @@ import type { MeasurementRow, MaterializedMeasurementBatch } from './readingMeas
 import { activityTargetsFromReadingRows } from '../../../src/presentation/activity-presentation';
 import { activityTargetKey } from '../../../src/presentation/activity-targets';
 import { activityTargetOptions, useActivityTargetResolutions } from '../query/activityTargets';
-import { activityTargetFallbackLabel, type ActivityTargetLabels } from '../components/shared/ActivityTargetLinks';
+import { activityTargetDisplayLabel, type ActivityTargetLabels } from '../components/shared/ActivityTargetLinks';
 
 export const readingPayloadKey = (row: MeasurementRow): string => JSON.stringify([row.key, row.revision, row.disclosureIdentity ?? '']);
 export const readingBodyKey = (row: MeasurementRow): string => JSON.stringify([row.key, row.revision, row.bodyIdentity ?? row.disclosureIdentity ?? '']);
@@ -84,7 +84,7 @@ export function useCompleteReading(input: {
     for (const target of targetsByBody.get(bodyKey) ?? []) {
       const key = activityTargetKey(target);
       const resolved = resolutions.get(key);
-      labels[key] = {label:resolved?.status === 'resolved' && resolved.title.trim() ? resolved.title : activityTargetFallbackLabel(target),
+      labels[key] = {label:activityTargetDisplayLabel(target,resolved?.status === 'resolved'?resolved.title:undefined),
         ...(resolved?.status === 'resolved' ? {selection:{type:'conversation' as const,id:resolved.conversationId}} : {})};
     }
     const identity = JSON.stringify(labels);

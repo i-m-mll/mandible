@@ -13,6 +13,11 @@ export function activityTargetFallbackLabel(target: ActivityTarget): string {
   return target.labelHint || nativeId.slice(0, 8);
 }
 
+export function activityTargetDisplayLabel(target:ActivityTarget,canonicalTitle?:string):string {
+  if(target.kind==='subagent' && target.labelHint)return target.labelHint;
+  return canonicalTitle?.trim() ? canonicalTitle : activityTargetFallbackLabel(target);
+}
+
 export function activityTargetLabel(target:ActivityTarget,labels:ActivityTargetLabels):string {
   return labels[activityTargetKey(target)]?.label || activityTargetFallbackLabel(target);
 }
