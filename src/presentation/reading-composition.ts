@@ -59,10 +59,20 @@ export function reprojectHydratedReadingRow(previous: RetainedReadingProvenance,
     if (!member || oldMembers.get(key) !== member.dependencyRevision || !payload) return null;
     const fullText = payload.node.kind === 'user_message' || payload.node.kind === 'assistant_turn' && payload.node.turn.assistantEvent.message.content.every(block=>block.type==='text');
     if (!fullText && (!payload.sources.length || payload.sources.some(source=>source.detailsLoaded!==true && source.hasBody!==false))) return null;
-    prepared.push({...member,...payload});
+    prepared.push(prepareCanonicalMember(current,member,payload));
   }
   return materializePreparedReadingRows([after],prepared)[0];
 }
+function prepareCanonicalMember(composition: ReadingComposition, member: ReadingPlanMember, payload: Pick<PreparedReadingMember,'node'|'event'|'sources'>): PreparedReadingMember {
+  let node=payload.node;
+  const overlay=composition.overlays.get(member.key);
+  if(overlay&&node.kind==='activity'&&node.item.type==='tool-call-activity'){
+    const observation=member.activityFacts?.observation??overlayObservation(operationObservationForTool(node.item),overlay);
+    node={...node,item:{...node.item,executionActive:overlay.executionActive,observation,executionEvidence:observation.execution,...(overlay.result?{result:overlay.result}:{})}};
+  }
+  return {...member,...payload,node};
+}
+
 const executionKey = (event: CanonicalChatItemEvent): string | null => {
   const item = event.item;
   if (item.type !== 'tool-call') return null;
@@ -225,12 +235,7 @@ export function materializeConversationReading(composition: ReadingComposition, 
   for (const member of members) {
     const payload = payloads.get(member.key);
     if (!payload) continue;
-    let node = payload.node;
-    const overlay = composition.overlays.get(member.key);
-    if (overlay && node.kind === 'activity' && node.item.type === 'tool-call-activity') node = { ...node, item: {
-      ...node.item, executionActive: overlay.executionActive, observation:member.activityFacts?.observation??overlayObservation(operationObservationForTool(node.item),overlay),executionEvidence:(member.activityFacts?.observation??overlayObservation(operationObservationForTool(node.item),overlay)).execution, ...(overlay.result ? {result: overlay.result} : {}),
-    } };
-    prepared.push({ ...member, ...payload, node });
+    prepared.push(prepareCanonicalMember(composition,member,payload));
   }
   const available = new Set(prepared.map(member => member.key));
   if (descriptors.some(row => row.kind === 'content' && row.memberKeys.some(key => !available.has(key)))) {

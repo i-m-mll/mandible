@@ -8,7 +8,7 @@ import type { ReadingContentProps } from './ReadingContent';
 import { createReadingRowBatchRenderer } from './renderReadingMeasurementBatch';
 
 type GeometryMembership = ReadonlyMap<string, { rowKey: string; position?: number | null }>;
-export type ReadingBoundaryMeasurement = { anchor: object; offset: number };
+export type ReadingBoundaryMeasurement = { anchor: number; offset: number };
 export type ReadingGeometry = { membership: GeometryMembership; rowMembers: ReadonlyMap<string, readonly string[]>; scope: string; rows: readonly MeasurementRow[]; sizes: readonly number[]; boundaryOffsets?: ReadonlyMap<string, ReadingBoundaryMeasurement>; layout: MeasurementLayout; exact: boolean; serial: number; renderProps: (row: ReadingRow, ref?: MeasurementRow) => ReadingContentProps };
 /** One current width, one compatible complete basis, and reusable current-width facts. */
 export function useReadingGeometry(input: {

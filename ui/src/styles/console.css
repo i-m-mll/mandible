@@ -896,6 +896,8 @@
 
 .stream-renderer__top-fade { height: 2.7em; z-index: 1; }
 
+.stream-renderer__scroll[data-reading-visual-commit] > .stream-renderer__virtual-canvas { opacity: 0 !important; }
+
 .stream-renderer__virtual-canvas {
   max-width: var(--chat-stream-max-width, none);
   margin-inline: auto;

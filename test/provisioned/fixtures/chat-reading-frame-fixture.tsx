@@ -48,6 +48,9 @@ let hydrate: () => void;
 let setCap: (width: number) => void;
 let appendTail: () => void;
 let beginLayout = noop;
+let holdPreparation = false;
+let releasePreparation: (() => void) | null = null;
+const fixtureDisclosures = {};
 const scrollWrites: Array<{ wanted: number; actual: number }> = [];
 
 function Harness() {
@@ -68,7 +71,10 @@ function Harness() {
       return wanted.map(row => { const body = bodies[Number(row.key.split(':')[1])]; return body.activityGroup ? { ...body, revision: row.revision, activityGroup: { ...body.activityGroup, expanded } } : body; });
     } });
   viewport = useReadingViewport({ scope: 'frame-fixture', positionSpaceId: 'space', onInput: noop, clearance: 16, geometry: geometry.geometry,
-    protectedKeys, disclosures: {}, prepare: async () => ({ status: 'not-renderable' }), onApplied: noop, onRange: noop });
+    protectedKeys, disclosures: fixtureDisclosures, prepareRows: async (_rows,signal) => {
+      if(holdPreparation)await new Promise<void>(resolve=>{const done=()=>{signal.removeEventListener('abort',done);releasePreparation=null;resolve();};releasePreparation=done;signal.addEventListener('abort',done,{once:true});});
+      return !signal.aborted;
+    }, prepare: async () => ({ status: 'not-renderable' }), onApplied: noop, onRange: noop });
   beginLayout = viewport.beginLayout;
   const connect = useCallback((node: HTMLDivElement | null) => {
     viewport.scrollRef.current = node; setParent(node);
@@ -82,7 +88,7 @@ function Harness() {
     <div className="stream-renderer__virtual-canvas" style={{ height: `${viewport.engine.getTotalSize()}px` }}>
       <ReadingRowStrip items={items} endOffset={counterfactual ? undefined : viewport.endOffset}>{item => {
         const ref = viewport.rows[item.index]; const body = bodies[Number(ref.key.split(':')[1])];
-        const row = body.activityGroup ? { ...body, revision: ref.revision, activityGroup: { ...body.activityGroup, expanded } } : body;
+        const row = body.activityGroup ? { ...body, revision: ref.revision, activityGroup: { ...body.activityGroup, expanded: ref.revision === 'true' } } : body;
         const pending = row.key === 'row:49' && !hydrated;
         const box = <MeasuredReadingBox key={row.key} row={pending ? undefined : row} index={item.index} pendingHeight={item.size} measurement={ref}
           reportHeight={geometry.reportHeight} register={viewport.register} registerRow={viewport.registerRow} scope="frame-fixture" space="space">
@@ -115,6 +121,7 @@ void (async () => {
   const scroller = viewport.scrollRef.current!;
   const pane = document.getElementById('root')!;
   const samples: Array<Record<string, unknown>> = [];
+  if(!counterfactual){
   scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
   viewport.engine.scrollToIndex(45, { align: 'start', behavior: 'auto' });
   await until(() => boxes().has('row:45'), 'disclosure parent');
@@ -122,19 +129,33 @@ void (async () => {
   await until(() => !viewport.engine.isScrolling, 'disclosure reader settlement');
   const parentHeader = boxes().get('row:45')!.querySelector<HTMLButtonElement>('.compact-activity__row')!;
   const disclosureBottom = () => { const key = viewport.rows.find(row => row.key === 'row:45')?.disclosureEnd ?? 'row:45'; const mounted = boxes().get(key); if (mounted) return mounted.getBoundingClientRect().bottom - scroller.getBoundingClientRect().top; const index = viewport.rows.findIndex(row => row.key === key); return 32 + viewport.appliedGeometry!.sizes.slice(0, index + 1).reduce((sum, value) => sum + value, 0) - scroller.scrollTop; };
+  const visualPositions=new WeakMap<Element,number>();
+  let visualMoved=false;
+  const observeVisual=()=>{const layer=scroller.querySelector('[data-reading-visual-overlay]');for(const element of layer?.children??[]){const top=element.getBoundingClientRect().top;const previous=visualPositions.get(element);if(previous!==undefined&&Math.abs(top-previous)>0.5)visualMoved=true;visualPositions.set(element,top);}return layer;};
   for (let turn = 0; turn < 6; turn++) {
     const expanded = turn % 2 === 1; const desiredBottom = disclosureBottom();
+    const previousRows=viewport.rows;const previousExtent=viewport.engine.getTotalSize();
+    if(turn===1)holdPreparation=true;
     const writesBefore = scrollWrites.length; parentHeader.focus({ preventScroll: true }); parentHeader.click();
+    if(turn===1){
+      await until(()=>releasePreparation!==null,'replacement disclosure source readiness');
+      if(viewport.rows!==previousRows||viewport.engine.getTotalSize()!==previousExtent)throw new Error('Disclosure reserved target geometry before its bodies were prepared');
+      holdPreparation=false;releasePreparation!();
+    }
     for (let count = 0; count < 120; count++) {
       await frame();
+      observeVisual();
       samples.push({ phase: 'disclosure', bottom: disclosureBottom(), desiredBottom, scrollTop: scroller.scrollTop, maxScroll: scroller.scrollHeight - scroller.clientHeight,
         adjacency: adjacency(), write: scrollWrites.length > writesBefore ? scrollWrites.at(-1) : undefined, count: viewport.rows.length });
       if (document.activeElement !== parentHeader) throw new Error(`Disclosure stole focus from its header turn=${turn} connected=${parentHeader.isConnected} active=${document.activeElement?.outerHTML.slice(0,200)} row=${boxes().has('row:45')}`);
       if (viewport.appliedGeometry?.exact && viewport.rows.length === (expanded ? 80 : 77) && !viewport.engine.isScrolling) break;
       if (count === 119) throw new Error('Disclosure transaction did not finish');
     }
+    if(turn===0)await until(()=>!observeVisual(),'disclosure visual completion');
   }
+  if(typeof Element.prototype.animate==='function'&&!matchMedia('(prefers-reduced-motion: reduce)').matches&&!visualMoved)throw new Error('Disclosure visual copies never moved');
   scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
+  if(observeVisual())throw new Error('Native input retained disclosure visual copies');
   hydrate(); viewport.engine.scrollToIndex(viewport.rows.findIndex(row => row.key === 'row:49'), { align: 'start', behavior: 'auto' });
   await until(() => !!boxes().get('row:49')?.querySelector('.user-bubble button[aria-expanded]'), 'bounded user message');
   await until(() => !viewport.engine.isScrolling, 'user disclosure reader settlement');
@@ -160,6 +181,7 @@ void (async () => {
     const actual = toolPayload().getBoundingClientRect().bottom - scroller.getBoundingClientRect().top;
     if (Math.abs(actual - desired) > 0.5) throw new Error(`Tool payload bottom moved ${actual - desired}`);
   }
+  }
   scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
   viewport.engine.scrollToIndex(50, { align: 'start', behavior: 'auto' });
   await until(() => boxes().has('row:50'), 'middle row');
@@ -181,6 +203,7 @@ void (async () => {
     if (capped) setCap(400 - (step < 60 ? step : 120 - step));
     else pane.style.width = `${500 - (step < 60 ? step : 120 - step)}.203125px`;
   }
+  if(counterfactual){document.title=btoa(JSON.stringify({counterfactual,capped,samples}));return;}
   await frame();
   if (boxes().get(anchor.key) !== original) throw new Error('Protected range change remounted the reader DOM');
   // Native input owns its new position; pending provisional work cannot restore the old glyph.

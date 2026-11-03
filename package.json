@@ -55,6 +55,7 @@
     "jose": "6.2.2",
     "lucide-preact": "1.63.0",
     "marked": "13.0.3",
+    "motion": "^14.9.0",
     "p-queue": "9.0.1",
     "remark-directive": "3.0.1",
     "remark-parse": "11.0.0",

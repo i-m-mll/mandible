@@ -229,7 +229,8 @@ export function ToolCard({
     : header?.children?.map(child=>({...child,input:undefined}));
   const nestedProgram = Boolean(projectedChildren?.length);
   const executionFacts=execution?.facts ?? header?.execution;
-  const displayTarget = visual.kind==='execute' ? visual.target : leftTruncateTarget(visual.target);
+  const authoredTitle = presentation.operation?.startsWith('thread-') || presentation.operation?.startsWith('subagent-');
+  const displayTarget = visual.kind==='execute' || authoredTitle ? visual.target : leftTruncateTarget(visual.target);
   const state = operationState(executionEvidence?.state ?? result?.source?.toolExecution?.state,result ? {failed:projectedResult.failed,is_error:result.is_error} : undefined,active);
   const phrase = operationPhrase(presentation,state,projectedResult);
   const targets = observation ? activityObservationTargets(observation) : (presentation.threadTargets??[]).flatMap((target):ActivityTarget[]=>target.type==='session'?[{kind:'thread',provider:'codex',sessionId:target.id}]:[]);

@@ -6,6 +6,7 @@ import type { ReadingBodyDemand } from './readingBodyDemand';
 import type { ReadingGeometry } from './useReadingGeometry';
 import { readingPayloadKey } from './useCompleteReading';
 import { readingPreparationIndices } from './readingPreparation';
+import { captureReadingDisclosureVisual, type ReadingDisclosureVisual } from './readingDisclosureAnimation';
 import { captureDisclosureDomAnchor, captureReadingDomAnchor, readingDomAnchorOffset, type ReadingDomAnchor } from './readingDomAnchor';
 import { writeReadingState, type ReadingState, type ReadingRestore } from './readingState';
 import type { ReadingNavigationObservation, ReadingNavigationObserver, ReadingNavigationOrigin } from './readingNavigationObservation';
@@ -59,8 +60,12 @@ export function useReadingViewport(input: {
   const indices = useMemo(() => new Map(rows.map((row, index) => [row.key, index])), [rows]);
   const pending = useRef<ReadingGeometry | null>(null);
   const preparation = useRef<{ geometry: ReadingGeometry; controller: AbortController; ready: boolean } | null>(null);
+  const visual = useRef<{ geometry: ReadingGeometry; animation: ReadingDisclosureVisual } | null>(null);
+  const suppressVisualClick = useRef(false);
   const restore = useRef<{ kind: 'end' } | { kind: 'row'; key: string; members: readonly string[]; offset: number } | null>(null);
   const readerPin = useRef<ReadingDomAnchor | null>(null);
+  const boundaryTokens = useRef(new WeakMap<ReadingDomAnchor, number>());
+  const boundarySequence = useRef(0);
   const disclosureKey = useRef<string | null>(null);
   const [pinKeys, setPinKeys] = useState<ReadonlySet<string>>(new Set());
   const capturePin = useRef<() => void>(() => {});
@@ -214,7 +219,7 @@ export function useReadingViewport(input: {
     active.finish({ token: active.token, status });
     requestAnimationFrame(() => capturePin.current());
   }, [engine]);
-  const cancel = useCallback(() => { completedTarget.current = null; finish('cancelled', 'cancelled'); engine.cancelScroll(); }, [finish, engine]);
+  const cancel = useCallback(() => { visual.current?.animation.complete();visual.current=null; completedTarget.current = null; finish('cancelled', 'cancelled'); engine.cancelScroll(); }, [finish, engine]);
   const alignRegistered = useCallback((active: Command, element: HTMLElement, scroller: HTMLElement) => {
     engine.cancelScroll();
     const pin = readerPin.current;
@@ -325,6 +330,7 @@ export function useReadingViewport(input: {
     return row && scroll ? row.getBoundingClientRect().top - scroll.getBoundingClientRect().top : undefined;
   }, []);
   const pinDisclosure = useCallback((key: string, trigger?: HTMLElement) => {
+    visual.current?.animation.complete(); visual.current=null;
     const row = rowBoxes.current.get(key); const scroller = scrollRef.current;
     if (!row || !scroller || !trigger || !row.contains(trigger) || !current.current.applied) return;
     cancel(); userScroll.current = false; restore.current = null;
@@ -393,7 +399,7 @@ export function useReadingViewport(input: {
         if (index >= 0 && pin) {
           const old = rowBoxes.current.get(pin.key);
           const measured = next.boundaryOffsets?.get(readingPayloadKey(next.rows[index]));
-          local = pin.disclosureEnd ? next.sizes[index] : measured?.anchor === pin ? measured.offset : old ? readingDomAnchorOffset(pin, old) : 0;
+          local = pin.disclosureEnd ? next.sizes[index] : measured && measured.anchor === boundaryTokens.current.get(pin) ? measured.offset : old ? readingDomAnchorOffset(pin, old) : 0;
           screen = pin.offset;
         } else {
           const first = firstVisible(engine);
@@ -422,6 +428,18 @@ export function useReadingViewport(input: {
       : null;
     pending.current = null;
     preparation.current = null;
+    const pin=readerPin.current;
+    if(applied&&next.exact&&scroller&&pin?.edge==='bottom'&&disclosureRevision(next.rows.find(row=>row.key===pin.key))!==pin.disclosureRevision){
+      visual.current?.animation.complete(); visual.current=null;
+      const affected=new Set<string>();
+      for(const vector of [applied,next]){
+        const start=vector.rows.findIndex(row=>row.key===pin.key);
+        const end=pin.disclosureEnd?vector.rows.findIndex(row=>row.key===(vector.rows[start]?.disclosureEnd??pin.key)):start;
+        for(let index=start;index>=0&&index<=end;index++)affected.add(vector.rows[index].key);
+      }
+      const animation=captureReadingDisclosureVisual(scroller,rowBoxes.current,affected,pin.offset);
+      if(animation)visual.current={geometry:next,animation};
+    }
     setApplied(next);
   };
   useLayoutEffect(() => { preparation.current?.controller.abort(); preparation.current=null; }, [input.disclosures]);
@@ -431,7 +449,7 @@ export function useReadingViewport(input: {
     if (!input.geometry) { setApplied(null); return; }
     applyPending.current();
   }, [input.geometry, input.clearance]);
-  useEffect(() => () => { preparation.current?.controller.abort(); preparation.current = null; }, [input.scope, input.positionSpaceId]);
+  useEffect(() => () => { preparation.current?.controller.abort(); preparation.current = null; visual.current?.animation.complete();visual.current=null; }, [input.scope, input.positionSpaceId]);
   useLayoutEffect(() => {
     if (!applied) { setIndexed(null); return; }
     engine.measure();
@@ -487,6 +505,7 @@ export function useReadingViewport(input: {
     }
     engine.getVirtualItems();
     snapshot.onApplied(ready.rows); setAcknowledged(ready);
+    if(visual.current?.geometry===ready)visual.current.animation.play();
     lastRange.current = '';
     publishDemand.current(engine);
     capturePin.current(); applyPending.current();
@@ -538,7 +557,7 @@ export function useReadingViewport(input: {
   }, [input.scope, engine, persist, cancel]);
   useEffect(() => { if (!engine.isScrolling) persist(engine); }, [input.disclosures, engine, persist]);
   useEffect(() => () => { if (frame.current !== null) cancelAnimationFrame(frame.current); if (persistFrame.current !== null) cancelAnimationFrame(persistFrame.current); }, []);
-  const inputCancel = useCallback(() => { preparation.current?.controller.abort(); preparation.current = null; current.current.onInput(); userScroll.current = true; restore.current = null; readerPin.current = null; disclosureKey.current = null; resumeTailAfter.current = null; setPinKeys(new Set()); cancel(); }, [cancel]);
+  const inputCancel = useCallback(() => { visual.current?.animation.complete();visual.current=null; preparation.current?.controller.abort(); preparation.current = null; current.current.onInput(); userScroll.current = true; restore.current = null; readerPin.current = null; disclosureKey.current = null; resumeTailAfter.current = null; setPinKeys(new Set()); cancel(); }, [cancel]);
   const onKeyDown = useCallback((event: KeyboardEvent) => {
     const target = event.target as HTMLElement;
     if (target.closest('input,textarea,select,[contenteditable]:not([contenteditable="false"])')) return;
@@ -548,6 +567,16 @@ export function useReadingViewport(input: {
     const el = scrollRef.current;
     if (el && (event.target === el || event.clientX >= el.getBoundingClientRect().left + el.clientWidth)) { drag.current = true; inputCancel(); }
   }, [inputCancel]);
+  const onPointerDownCapture = useCallback((event:PointerEvent)=>{
+    suppressVisualClick.current=false;
+    if(!visual.current?.animation.complete())return;
+    visual.current=null;
+    const scroller=scrollRef.current;
+    if(event.target===scroller||scroller&&event.clientX>=scroller.getBoundingClientRect().left+scroller.clientWidth)return;
+    suppressVisualClick.current=true;
+    event.preventDefault();event.stopPropagation();
+  },[]);
+  const onClickCapture = useCallback((event:MouseEvent)=>{const suppress=suppressVisualClick.current;suppressVisualClick.current=false;if(suppress&&event.detail>0){event.preventDefault();event.stopPropagation();}},[]);
   useEffect(() => { readerPin.current = null; disclosureKey.current = null; resumeTailAfter.current = null; readback.current = null; setPinKeys(new Set()); following.current = true; userScroll.current = false; return () => cancel(); }, [input.positionSpaceId, input.scope, cancel]);
   useEffect(() => {
     const release = () => { drag.current = false; applyPending.current(); };
@@ -566,12 +595,18 @@ export function useReadingViewport(input: {
     const index = refs.findIndex(row => row.key === key);
     const height = scroller.clientHeight + 32 + current.current.clearance;
     return readingPreparationIndices(sizes,index,0,height,2*height,0,engine.options.overscan).filter(index=>sizes[index]>0).map(index=>refs[index]);
-  }, measureBoundary: (row: import('./readingMeasurement').MeasurementRow, element: HTMLElement) => { const pin = readerPin.current; return pin?.key === row.key && pin.edge === 'bottom' && !pin.disclosureEnd ? {anchor:pin,offset:readingDomAnchorOffset(pin, element)} : undefined; }, captureReaderAnchor: () => capturePin.current(), beginLayout: () => capturePin.current(), pinDisclosure, engine, rows, endOffset, appliedGeometry: acknowledged === applied ? applied : null, focusTarget: (target: ConversationSourceCoordinate) => {
+  }, measureBoundary: (row: import('./readingMeasurement').MeasurementRow, element: HTMLElement) => {
+    const pin = readerPin.current;
+    if(pin?.key!==row.key||pin.edge!=='bottom'||pin.disclosureEnd)return undefined;
+    let anchor=boundaryTokens.current.get(pin);
+    if(anchor===undefined){anchor=++boundarySequence.current;boundaryTokens.current.set(pin,anchor);}
+    return {anchor,offset:readingDomAnchorOffset(pin,element)};
+  }, captureReaderAnchor: () => capturePin.current(), beginLayout: () => capturePin.current(), pinDisclosure, engine, rows, endOffset, appliedGeometry: acknowledged === applied ? applied : null, focusTarget: (target: ConversationSourceCoordinate) => {
     const owner = completedTarget.current;
     if (!owner || owner.coordinate.conversationId !== current.current.scope || owner.coordinate.positionSpaceId !== current.current.positionSpaceId
       || (current.current.commandToken !== undefined && owner.token !== current.current.commandToken)
       || targetCoordinateKey(owner.coordinate) !== targetCoordinateKey(target)) return;
     targets.current.get(targetRegistrationKey(target, owner.rowKey))?.element?.focus({ preventScroll: true });
   }, renderProps: applied?.renderProps, scrollRef, register, registerRow, rowOffset, reveal, cancel, showLatest,
-    inputHandlers: { onWheel: inputCancel, onTouchStart: () => { drag.current = true; inputCancel(); }, onTouchEnd: () => { drag.current = false; applyPending.current(); }, onTouchCancel: () => { drag.current = false; applyPending.current(); }, onKeyDown, onPointerDown } };
+    inputHandlers: { onPointerDownCapture, onClickCapture, onWheel: inputCancel, onTouchStart: () => { drag.current = true; inputCancel(); }, onTouchEnd: () => { drag.current = false; applyPending.current(); }, onTouchCancel: () => { drag.current = false; applyPending.current(); }, onKeyDown, onPointerDown } };
 }
