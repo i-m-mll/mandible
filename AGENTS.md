@@ -12,9 +12,7 @@ When asked to work on or annotate Mandible in the in-app browser, run this from 
 bun run iab-preview -- --json
 ```
 
-A non-protected branch previews its worktree in place. From the protected branch, the launcher selects and creates or reuses an integration preview worktree. A different `--branch integration/<name>` selects a separate integration worktree; newly created integration worktrees start from the protected branch. Use `--force-new` only when the user explicitly needs a separate instance; it does not carry the current feature branch's changes into the new worktree.
-
-The launcher infers ownership when the relevant branch has one unresolved delivery work unit; otherwise supply both `--owner-project` and `--owner-work-unit`. It creates or reuses an isolated preview database, verifies readiness, and reports the selected branch, worktree, ownership, and `freshUrl`. Open `freshUrl` in the IAB using the Codex Browser skill. Rerun the launcher to refresh the selected preview after source changes. Do not restart or replace an unrelated preview without an explicit request for that instance.
+Open the returned `freshUrl` in the IAB. Use `bun run iab-preview -- --help` for branch and ownership options. New integration worktrees start from the protected branch. Use `--force-new` only when the user explicitly needs a separate instance. Do not restart or replace an unrelated preview without an explicit request for that instance.
 
 The in-development theme is `codex`. During IAB review, theme feedback without another named target belongs in its shared tokens and components. Ask which theme only after `codex` is declared complete or the user names another theme.
 
