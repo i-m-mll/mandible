@@ -176,54 +176,7 @@ export function useReadingGeometry(input: {
         const byKey=new Map(rows.map((row,index)=>[row.key,{row,index}]));
         const valid=(fact:RowMeasurement)=>{const row=byKey.get(fact.row.key)?.row;return row&&fact.layoutIdentity===identity&&row.revision===fact.row.revision&&row.disclosureIdentity===fact.row.disclosureIdentity;};
         const measured=new Map(facts.current.filter(valid).map(fact=>[fact.row.key,fact]));
-        const style=getComputedStyle(parent);
-        let lineHeight=parseFloat(style.lineHeight);
-        if(!Number.isFinite(lineHeight)){
-          const probe=document.createElement('div');probe.textContent='M';parent.append(probe);lineHeight=probe.getBoundingClientRect().height;probe.remove();
-        }
-        const estimate=Math.max(1,4*lineHeight);
-        const previous=queued.current??prepared.current??published.current.geometry;
-        const previousRows=new Map(previous?.rows.map((row,index)=>[row.key,{row,size:previous.sizes[index]}])??[]);
-        const sizes=rows.map(row=>{
-          const fact=measured.get(row.key);if(fact)return fact.height;
-          const prior=previousRows.get(row.key);
-          return prior&&prior.row.revision===row.revision&&prior.row.disclosureIdentity===row.disclosureIdentity?prior.size:estimate;
-        });
-        const initialRegion=()=>{
-          const target=latest.current.initialTarget;
-          if(!target&&published.current.geometry?.scope===input.scope)return [];
-          const index=target?byKey.get(target.key)?.index:rows.length-1;
-          if(index===undefined||index<0)return [];
-          const selected=[rows[index]];
-          let covered=sizes[index];
-          if(target?.align==='start'){
-            let before=0;for(let at=index-1;at>=0&&before<Math.max(0,target.offset??0);at--){selected.push(rows[at]);before+=sizes[at];}
-            const height=parent.clientHeight+Math.max(0,-(target.offset??0));
-            for(let at=index+1;at<rows.length&&covered<height;at++){selected.push(rows[at]);covered+=sizes[at];}
-          }else for(let at=index-1;at>=0&&covered<parent.clientHeight;at--){selected.push(rows[at]);covered+=sizes[at];}
-          return selected;
-        };
-        const priority=()=>{
-          const first=initialRegion();
-          const requested=latest.current.priorityKeys??[];
-          const retained=[...new Set([...first.map(row=>row.key),...requested])];
-          const keys=[...retained];
-          for(const key of requested){const owner=byKey.get(key);const end=owner?.row.disclosureEnd?byKey.get(owner.row.disclosureEnd):undefined;
-            if(owner&&end)keys.push(...rows.slice(owner.index,end.index+1).map(row=>row.key));}
-          snapshot.onMeasuring(rows,retained.flatMap(key=>{const ref=byKey.get(key)?.row;return ref?[ref]:[];}));
-          return [...new Set(keys)];
-        };
-        const publishProgress=()=>{
-          const region=initialRegion();
-          if(region.some(row=>!measured.has(row.key)))return;
-          const capacity=nativeReadingCapacity(parent);
-          if(sizes.some(height=>height>capacity.maxRowHeight)||sizes.reduce((sum,height)=>sum+height,snapshot.chrome)>capacity.totalHeight)throw new Error('Conversation geometry exceeds this browser’s native scroll capacity.');
-          const next:ReadingGeometry={scope:input.scope,membership:snapshot.membership,rowMembers:snapshot.rowMembers,rows,sizes:[...sizes],layout,exact:measured.size===rows.length,
-            measured:new Set(measured.keys()),serial:++serial.current,renderProps:snapshot.renderProps};
-          if(next.exact)basis.current=next;
-          publish.current(next);
-        };
-        priority();publishProgress();
+        snapshot.onMeasuring(rows);
         startedScope.current = input.scope;
         const phaseStarted=performance.now();
         const phases:Partial<Record<MeasurementPhase,{ms:number;batches:number;rows:number}>>={};
@@ -231,11 +184,11 @@ export function useReadingGeometry(input: {
         if(traceEnabled&&trace.current.scope===input.scope&&trace.current.attempts.length<8)trace.current.attempts.push(attempt);
         const result = await service.measure({ rows, layouts: [layout], materialize: snapshot.materialize,
           renderBatch: createReadingRowBatchRenderer(snapshot.renderProps), reuse: facts.current,
-          signal: controller.signal, batchSize: 16, materializeBatchSize: 16,maxSynchronousMs: 8,
+          signal: controller.signal, batchSize: 16, materializeBatchSize: 128,maxSynchronousMs: 8,
           isCurrent:()=>rows.length===latest.current.rows.length&&rows.every((row,index)=>row.key===latest.current.rows[index].key&&row.revision===latest.current.rows[index].revision&&row.disclosureIdentity===latest.current.rows[index].disclosureIdentity),
-          prioritize:priority,onMeasured:additions=>{
-            for(const fact of additions){measured.set(fact.row.key,fact);sizes[byKey.get(fact.row.key)!.index]=fact.height;}
-            facts.current=[...measured.values()];publishProgress();
+          onMeasured:additions=>{
+            for(const fact of additions){measured.set(fact.row.key,fact);}
+            facts.current=[...measured.values()];
           },
           onPhase:traceEnabled?event=>{const total=phases[event.phase]??={ms:0,batches:0,rows:0};total.ms+=event.durationMs;total.batches++;total.rows+=event.rowCount;attempt.wallMs=performance.now()-phaseStarted;}:undefined });
         attempt.wallMs=performance.now()-phaseStarted;attempt.status=result.status;
