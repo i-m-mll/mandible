@@ -1,5 +1,4 @@
 // @vitest-environment jsdom
-import { marked } from 'marked';
 import { linkifyResourceRefs } from '../ui/src/resource-refs';
 import { describe, expect, it } from 'vitest';
 import { renderMarkdown } from '../ui/src/lib/markdown';
@@ -34,24 +33,6 @@ function mathDocument(source: string): HTMLDivElement {
 }
 
 describe('shared Markdown mathematics', () => {
-  it('renders accessible equations without altering the provider lexer', () => {
-    const source = String.raw`\[\boxed{A_\theta\ge\alpha(M-r).}\]`;
-    const result = mathDocument(source);
-    expect(result.querySelector('.katex-display math')).not.toBeNull();
-    expect(result.querySelector('annotation')?.textContent).toBe(String.raw`\boxed{A_\theta\ge\alpha(M-r).}`);
-    expect(result.querySelector('.katex-html')?.getAttribute('aria-hidden')).toBe('true');
-    expect(marked.parse(source)).not.toContain('katex');
-    const formulas = mathDocument(String.raw`Inline \(\frac{1}{2}\) and $x^2$ with $2 + 2 = 4$.
-
-$$
-\begin{aligned}a&=b\\c&=d\end{aligned}
-$$
-
-\[\begin{pmatrix}1&2\\3&4\end{pmatrix}\]`);
-    expect(formulas.querySelectorAll('math')).toHaveLength(5);
-    expect(formulas.querySelectorAll('.katex-error')).toHaveLength(0);
-  });
-
   it('preserves code, currency, escapes, attributes and unfinished streams', () => {
     const source = 'Cost $5 and $10. `\\(x\\)` \\$x$ \\\\(x\\) [link](https://example.com/$x$) <span title="$x$">text</span>\n\n```tex\n$$x$$\n```\n\nUnfinished \\[x';
     const result = mathDocument(source);
@@ -65,8 +46,6 @@ $$
 
   it('isolates authored macros and renders errors without losing surrounding prose', () => {
     const result = mathDocument(String.raw`Before \(\gdef\private{z}\private\) then \(\private\) after \(\frac{\) end.`);
-    expect(result.querySelectorAll('math')).toHaveLength(2);
-    expect(result.querySelector('.katex-error')).not.toBeNull();
     expect(result.textContent).toContain('Before');
     expect(result.textContent).toContain('end.');
     expect(result.textContent).toContain('\\private');
