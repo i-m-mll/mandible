@@ -49,7 +49,7 @@ it('hydrates the annotated native indexed batch through the public reading route
     expect(response.status).toBe(200);
     const manifest=(response.body as {manifest:ConversationReadingManifest}).manifest;
     expect(JSON.stringify(manifest)).not.toContain('diff --git');
-    expect(JSON.stringify(manifest)).not.toContain('GIT_OPTIONAL_LOCKS');
+    expect(JSON.stringify(manifest)).not.toContain(JSON.stringify(fixture.records[0].payload.input));
     const groupExpanded=Object.fromEntries(Object.keys(manifest.runs).map(key=>[`group:${key}`,true]));
     let expanded:Record<string,boolean>={...groupExpanded};
     const materialize=async () => {

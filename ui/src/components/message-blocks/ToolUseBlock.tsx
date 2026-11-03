@@ -225,7 +225,7 @@ export function ToolCard({
   const projectedResult = useMemo(() => operationResult(presentation,resultPresentation ?? projectToolResult(execution,originalResultText,result?.source?.toolFrame,result?.presentation,program)),[presentation,execution,originalResultText,result?.source?.toolFrame,result?.presentation,resultPresentation,program]);
   const operationResults = useMemo(() => program ? programResults(program,resultText) : null,[program,resultText]);
   const projectedChildren = program && (program.operations.length > 1 || !execution || execution.facts.kind !== 'command')
-    ? program.operations.map((operation,index)=>{const native=presentTool(operation.name,operation.input),child=observation?.children?.[index];return {name:operation.name,input:operation.input,header:child?{...native,...presentationForObservation(child),target:native.target}:native};})
+    ? program.operations.map((operation,index)=>{const native=presentTool(operation.name,operation.input),child=observation?.children?.[index];return {name:operation.name,input:operation.input,header:child?{...native,...presentationForObservation(child),...(!['command','thread-request'].includes(child.operation)?{target:native.target}:{})}:native};})
     : header?.children?.map(child=>({...child,input:undefined}));
   const nestedProgram = Boolean(projectedChildren?.length);
   const executionFacts=execution?.facts ?? header?.execution;
@@ -376,7 +376,7 @@ export function ToolUseBlock(props: ToolUseBlockProps): JSX.Element {
   const operationKind=context?.kind ?? props.toolKind;
   const observation=toolObservation(operationName,operationInput,operationKind,props.result ? {text:props.result.fullText ?? extractResultText(props.result.content),content:props.result.content,frame:props.result.source?.toolFrame,native:props.result.presentation,failed:props.result.is_error,unloaded:props.detailsAvailable} : undefined,props.header);
   const indexedHeader=props.observation?presentationForObservation(props.observation,operationKind):undefined;
-  const header=indexedHeader?{...observation.header,...indexedHeader,target:observation.header.target,children:indexedHeader.children}:observation.header;
+  const header=indexedHeader?{...observation.header,...indexedHeader,...(!['command','thread-request'].includes(props.observation!.operation)?{target:observation.header.target}:{}),children:indexedHeader.children}:observation.header;
   const sourceInputBody=operationInputBody(header,operationInput,{unloaded:props.detailsAvailable});
   return <ToolCard {...props} executionEvidence={props.observation?.execution??props.executionEvidence} toolName={observation.name} toolKind={observation.kind} input={operationInput===undefined ? undefined : observation.input} header={header} inputBody={sourceInputBody.kind==='unloaded'?sourceInputBody:observation.inputBody} resultBody={observation.resultBody} resultPresentation={observation.result&&props.observation?.timing?{...observation.result,wallTimeSeconds:props.observation.timing.elapsedSeconds}:observation.result} />;
 }
