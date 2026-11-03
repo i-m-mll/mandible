@@ -91,11 +91,11 @@ export function CompactActivityRow({
     disclosure.onExpandedChange?.(next, event.currentTarget as HTMLElement);
   };
 
-  const control = summaryContent ? <div className={rowClass} data-member-refs={memberRefs} onClick={event=>{
+  const control = summaryContent ? <div className={rowClass} data-disclosure-owner data-member-refs={memberRefs} onClick={event=>{
     if(!(event.target as Element).closest('a,button')) toggle(event);
-  }}>{rowContent}<button ref={buttonRef} type="button" className="compact-activity__toggle" aria-label={displaySummary}
+  }}>{rowContent}<button ref={buttonRef} type="button" className="compact-activity__toggle compact-activity__chevron" aria-label={displaySummary}
     aria-expanded={isExpanded} aria-controls={bodyId} onClick={event=>{event.stopPropagation();toggle(event);}}><DisclosureChevronIcon expanded={isExpanded} /></button></div>
-    : <button ref={buttonRef} type="button" className={rowClass} data-member-refs={memberRefs} aria-expanded={isExpanded} aria-controls={bodyId} onClick={toggle}>{rowContent}</button>;
+    : <button ref={buttonRef} type="button" className={rowClass} data-disclosure-owner data-member-refs={memberRefs} aria-expanded={isExpanded} aria-controls={bodyId} onClick={toggle}>{rowContent}</button>;
   return (
     <div className={rootClass} data-reading-disclosure>
       {compose(heading(control), isExpanded && (collection || disclosure.content != null) ? (

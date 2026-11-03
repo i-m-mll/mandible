@@ -923,10 +923,8 @@
   top: 0;
 }
 
-.stream-renderer__virtual-row--turn-start { padding-block-start: var(--space-2); }
-.stream-renderer__virtual-row--turn-end { padding-block-end: var(--space-2); }
-.stream-renderer__virtual-row--activity-leading { padding-block-start: var(--space-2); }
-.stream-renderer__virtual-row--activity-trailing { padding-block-end: var(--space-2); }
+.stream-renderer__virtual-row--item-start { padding-block-start: var(--space-2); }
+.stream-renderer__virtual-row--item-end { padding-block-end: var(--space-2); }
 .reading-compact-row { --chat-event-gap: 0px; }
 .reading-compact-row .turn-group__stats { display: inline; margin: 0; }
 
