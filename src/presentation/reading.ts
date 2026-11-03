@@ -220,7 +220,7 @@ export function preparedReadingMembersFromRows(rows: readonly ReadingRow[]): Map
         : node.kind === 'assistant_turn' ? node.turn.assistantEvent.message.content[0]?.source?.position
         : node.kind === 'user_message' ? node.persisted?.position : node.kind === 'semantic_event' ? node.event.source?.position
         : node.kind === 'unmatched_tool_result' ? node.result.source?.position : undefined)
-        || (node.kind === 'activity' && node.item.type === 'tool-call-activity' && source.position === node.item.result?.source?.position));
+        || (node.kind === 'activity' && (node.sourceAliases?.some(alias=>alias.blockId===source.blockId) || (node.item.type === 'tool-call-activity' && source.position === node.item.result?.source?.position))));
       members.set(key, {node, sources, event: row.items.find(event => event.source?.position === sources[0]?.position)});
     }
   }

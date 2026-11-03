@@ -279,6 +279,11 @@ it('keeps compact and hydrated wait chains identical without crossing semantic i
       expect(node.item.observation).toEqual(owner.activityFacts!.observation);
       expect(node.item.result?.fullText??node.item.result?.content).toContain(report.replaceAll('\n','\\n'));
       expect(new Set(read.rows[0].sources.map(source=>source.position))).toEqual(new Set(owner.sourcePositions));
+      const composition=composeConversationReading({manifest:f.manifest,events:[],expanded});
+      const composedDescriptor=composition.plan.rows.find(row=>row.key===owner.key)!;
+      const composed=materializeConversationReading(composition,[composedDescriptor],read.rows);
+      if(composed.status!=='source')throw Error(composed.reason);
+      expect(new Set(composed.rows[0].sources.map(source=>source.position))).toEqual(new Set(owner.sourcePositions));
       const nativeCalls=f.parsed.blocks.filter(block=>block.type==='tool_use');
       for(const call of nativeCalls.filter(call=>owner.sourcePositions.includes(call.position)))expect(plan.membership.get(call.position)?.memberKey).toBe(owner.key);
     }finally{f.close();}
