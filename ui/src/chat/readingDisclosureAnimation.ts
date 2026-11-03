@@ -18,7 +18,7 @@ export function captureReadingDisclosureVisual(scroller: HTMLElement, boxes: Rea
     const originals=[element,...element.querySelectorAll<HTMLElement>('*')];
     const copies=[copy,...copy.querySelectorAll<HTMLElement>('*')];
     for(const node of copies){
-      for(const attribute of [...node.attributes])if(attribute.name==='id'||attribute.name==='tabindex'||attribute.name.startsWith('data-'))node.removeAttribute(attribute.name);
+      for(const attribute of [...node.attributes])if(['id','tabindex','data-block-id','data-member-refs','data-index','data-id','data-dag-uuid'].includes(attribute.name)||attribute.name.startsWith('data-reading-'))node.removeAttribute(attribute.name);
     }
     Object.assign(copy.style,{position:'absolute',left:`${rect.left-viewport.left}px`,top:`${rect.top-viewport.top}px`,width:`${rect.width}px`,height:`${rect.height}px`,margin:'0',transform:'none'});
     overlay.append(copy);
