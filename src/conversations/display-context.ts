@@ -1,3 +1,4 @@
+import { adjacentReasoningGroups } from '../presentation/reasoning-equivalence.js';
 import type { ToolCallActivity } from '../presentation/types.js';
 import type { DisplayFragmentCoordinate } from '../presentation/fragments.js';
 import type { PresentationIcon } from '../presentation/tool-presentation.js';
@@ -16,6 +17,7 @@ export type DisplayFragmentDescriptor = {
   kind: 'content' | 'activity';
   activity_run_id: string | null;
   paired_source_positions: number[];
+  reasoningEquivalence?:string;
 };
 export type DisplayActivityRun = {
   id: string;
@@ -75,7 +77,12 @@ export function defaultDisplayEventsFromBlocks(blocks: Parameters<typeof display
   })), conversationId);
 }
 
+export function displaySemanticMembers(members:readonly IndexedDisplayFragment[]):IndexedDisplayFragment[] {
+  return adjacentReasoningGroups(members,member=>({equivalence:member.activity?.reasoningEquivalence,position:member.coordinate.position})).map(group=>group.first);
+}
+
 export function displaySummaryMembers(members: readonly IndexedDisplayFragment[]): readonly IndexedDisplayFragment[] {
-  const contributors = members.filter(member => member.summary_eligible !== false);
-  return contributors.length ? contributors : members;
+  const representatives=displaySemanticMembers(members);
+  const contributors = representatives.filter(member => member.summary_eligible !== false);
+  return contributors.length ? contributors : representatives;
 }

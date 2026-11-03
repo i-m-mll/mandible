@@ -132,6 +132,7 @@ export interface BlockMetadata {
   /** Presentation dependencies never alter native parent links or transcript content. */
   /** Presentation-only passthrough turn scope for verifying a continuation origin. */
   display_tool_turn_id?: string;
+  display_reasoning_turn_id?: string;
   display_tool_origin?: ToolContinuationOrigin;
   display_tool_execution?: ToolExecutionEvidence;
   /** Hydrated only from the verified original call; never retained in the compact index. */

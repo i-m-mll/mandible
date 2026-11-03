@@ -17,7 +17,7 @@ import { planConversationReading } from '../src/presentation/reading-manifest';
 import { composeConversationReading, materializeConversationReading, readingCompositionRequests } from '../src/presentation/reading-composition';
 import type { CanonicalChatItemEvent } from '../src/presentation/types';
 
-async function fixture(includeResult: boolean, native?: {provider:'claude_code'; records:Record<string,unknown>[]}) {
+async function fixture(includeResult: boolean, native?: {provider:'codex'|'claude_code'; records:Record<string,unknown>[]}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-reading-composition-'));
   const db = migratedMemoryDb();
   const provider = native?.provider ?? 'codex';
@@ -191,5 +191,36 @@ it('preserves the tool row and source positions when empty completion metadata a
     const retained = plan.rows.find(row => row.key === first.key)!;
     expect(retained.memberKeys).toEqual(first.memberKeys);
     expect(plan.membership.has(parsed.blocks.at(-1)!.position)).toBe(false);
+  } finally {f.close();}
+});
+
+it('coalesces only adjacent complete reasoning equivalents while retaining every native source alias',async()=>{
+  const text='**Planning retry**\n\nPreparing consultation';
+  const reasoning=(id:string,body:string)=>({type:'response_item',payload:{type:'reasoning',id,summary:[{type:'summary_text',text:body}],internal_chat_message_metadata_passthrough:{turn_id:'same-turn'}}});
+  const mirror={type:'event_msg',payload:{type:'item_completed',turn_id:'same-turn',item:{type:'Reasoning',id:'mirror'}}};
+  const f=await fixture(false,{provider:'codex',records:[{type:'session_meta',payload:{id:'composition',cwd:'/tmp'}},reasoning('first',text),mirror,mirror,reasoning('second',text),
+    {type:'event_msg',payload:{type:'task_started',turn_id:'same-turn'}},reasoning('after-status',text),reasoning('distinct-body','**Planning retry**\n\nDifferent consultation')]});
+  try {
+    const source=f.parsed.blocks.filter(block=>block.type==='thinking');
+    expect(source).toHaveLength(4);
+    const representatives=f.manifest.members.filter(member=>member.activityFacts?.reasoningEquivalence);
+    expect(representatives).toHaveLength(3);
+    expect(representatives[0].sourcePositions).toEqual(source.slice(0,2).map(block=>block.position));
+    expect(representatives[1].activityFacts?.reasoningEquivalence).toBe(representatives[0].activityFacts?.reasoningEquivalence);
+    expect(representatives[2].activityFacts?.reasoningEquivalence).not.toBe(representatives[0].activityFacts?.reasoningEquivalence);
+    const [first,second]=source;
+    const closed=planConversationReading(f.manifest,{});
+    expect(closed.membership.get(first.position)?.memberKey).toBe(closed.membership.get(second.position)?.memberKey);
+    expect(closed.membership.get(first.position)?.subtarget).not.toBe(closed.membership.get(second.position)?.subtarget);
+    const expanded={[representatives[0].disclosures!.keys[0]]:true,...(representatives[0].activityRunId?{[`group:${representatives[0].activityRunId}`]:true}:{})};
+    const open=planConversationReading(f.manifest,expanded);
+    const descriptor=open.rows.find(row=>row.key===representatives[0].key)!;
+    const read=await readReadingRowBatch({db:f.db,reader:f.reader,conversationId:'composition',request:{positionSpaceId:f.manifest.positionSpaceId,rows:[descriptor],expanded}});
+    if(read.status!=='source')throw Error(read.status);
+    expect(read.rows[0].nodes).toHaveLength(1);
+    expect(read.rows[0].sources.map(source=>source.position)).toEqual([first.position,second.position]);
+    const node=read.rows[0].nodes[0];
+    if(node.kind!=='activity')throw Error('Expected representative reasoning event');
+    expect(node.sourceAliases?.map(source=>source.position)).toEqual([second.position]);
   } finally {f.close();}
 });

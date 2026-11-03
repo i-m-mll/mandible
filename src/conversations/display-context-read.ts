@@ -1,4 +1,4 @@
-import { DISPLAY_CONTEXT_VERSION, displaySummaryMembers, defaultDisplayEventsFromBlocks, displayFragmentId, type ConversationDisplayContext } from './display-context.js';
+import { DISPLAY_CONTEXT_VERSION, displaySummaryMembers, displaySemanticMembers, defaultDisplayEventsFromBlocks, displayFragmentId, type ConversationDisplayContext } from './display-context.js';
 import type { DisplayContextPlan } from './display-index.js';
 import { ConversationSourceReader } from './source-reader.js';
 import type { SourceBackedConversationBlock, SourceReadResult } from './source-types.js';
@@ -31,7 +31,7 @@ export async function readDisplayContext(input: {
     const facts = semanticActivityRunFacts(items);
     facts.hasDetails ||= members.some(member => member.has_details);
     return { id, first: members[0].coordinate, last: members[members.length - 1].coordinate,
-      member_count: members.length, presentation: { ...presentActivityRunFacts(facts), facts } };
+      member_count: displaySemanticMembers(members).length, presentation: { ...presentActivityRunFacts(facts), facts } };
   });
   const owners: ConversationDisplayContext['owners'] = [];
   for (const owner of plan.ownerFragments) {

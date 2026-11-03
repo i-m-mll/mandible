@@ -11,6 +11,7 @@ export type OperationFacts = {category:ToolCategory;count:number;names:string[];
 
 /** Body-free semantic facts shared by ingestion, conversion and presentation. */
 export type ActivityFacts = {
+  reasoningEquivalence?:string;
   kind: 'tool' | 'thinking' | 'directive-memory' | 'directive-thread' | 'activity';
   activityKind?: ActivityKind;
   severity?: 'info' | 'warning' | 'error';

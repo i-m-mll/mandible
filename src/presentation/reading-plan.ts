@@ -8,6 +8,7 @@ export type ReadingActionGroup = { key: string; start: number | null; end: numbe
 export type ReadingPlanMember = {
   key: string;
   position?: number;
+  eventOrdinal?:number;
   part: string;
   kind: 'content' | 'activity';
   speaker: 'user' | 'assistant' | 'system';

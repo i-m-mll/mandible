@@ -44,7 +44,7 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
       "Subagent threads are sidechain conversations whose parent is the thread named in the rollout header's session_meta.source.subagent spawn record.",
       "Line 1 of the first user message is read for the lineage marker; a message delivered in a create_thread <codex_delegation> envelope is read from its <input>, and its <source_thread_id> is the thread's creator. thread_source = agent_created_thread marks a thread another agent created.",
       "Messages, plans, tools, and semantic activity expose metadata.chat_item using the shared provider-neutral contract.",
-      "Reasoning summary arrays preserve ordered provider-authored parts; readable reasoning content is separate and encrypted content is never normalized.",
+      "Reasoning summary arrays preserve ordered provider-authored parts; readable reasoning content is separate and encrypted content is never normalized. Native passthrough turn scope is display-only evidence for adjacent complete-payload reasoning equivalence and never changes canonical item identity.",
       "Tool names are stored in metadata.tool_name.",
       "Function call outputs without call identity are provider transport records and remain only in the source rollout; identified but unpaired outputs remain transcript diagnostics.",
       "Incremental ingestion parses complete appended JSONL records and falls back on cross-chunk tool links.",

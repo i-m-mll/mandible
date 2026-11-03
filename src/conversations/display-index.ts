@@ -24,7 +24,7 @@ export function fragmentPart(part:string):[number,number] {
 }
 const partName=(kind:number,ordinal:number):string=>{const value=PARTS[kind];if(!value)throw new Error('Invalid fragment kind');return `${value}:${ordinal}`;};
 type FragmentRow={position:number;part_kind:number;part_ordinal:number;ordinal:number;kind:number;run_position:number|null;run_kind:number|null;run_ordinal:number|null;
-  activity_kind:number|null;activity_subtype:number|null;severity:number|null;outcome:number|null;status:string|null;tool_name:string|null;tool_kind:string|null;turn_id:string|null;flags:number;execution_kind:number|null;execution_count:number|null;role_code:number};
+  activity_kind:number|null;activity_subtype:number|null;severity:number|null;outcome:number|null;status:string|null;tool_name:string|null;tool_kind:string|null;turn_id:string|null;flags:number;reasoning_equivalence:Uint8Array|null;execution_kind:number|null;execution_count:number|null;role_code:number};
 const speaker=(role:number):DisplayPositionFacts['speaker']=>role===0?'user':role===2?'system':'assistant';
 const fragmentSpeaker=(row:Pick<FragmentRow,'flags'|'role_code'>):DisplayPositionFacts['speaker']=>((row.flags>>6)&3)===1?'user':((row.flags>>6)&3)===2?'assistant':((row.flags>>6)&3)===3?'system':speaker(row.role_code);
 const fragmentSelect=`SELECT f.*,b.role_code FROM cache_display_fragments f JOIN cache_blocks b ON b.cache_conversation_id=f.cache_conversation_id AND b.position=f.position`;
@@ -46,7 +46,7 @@ export function writeDisplayIndex(db:SqliteDatabase,cacheId:number,input:Display
   const toolOwners=new Set(input.fragments.filter(fragment=>fragment.activity?.kind==='tool').map(fragment=>fragment.coordinate.position));
   const ownerExists=db.prepare('SELECT 1 FROM cache_display_fragments WHERE cache_conversation_id=? AND position=? AND activity_kind=0');
   const paired=new Set(input.aliases.filter(alias=>toolOwners.has(alias.owner_position)||ownerExists.get(cacheId,alias.owner_position)).map(alias=>alias.position));
-  const insert=db.prepare('INSERT INTO cache_display_fragments VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+  const insert=db.prepare('INSERT INTO cache_display_fragments VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
   const disclosure=db.prepare(`INSERT INTO cache_fragment_disclosures VALUES(?,?,?,?,?,?,?,${KEY_RECIPE_COLUMNS.split(',').map(()=>'?').join(',')})`);
   const roles=new Map((db.prepare('SELECT position,role_code FROM cache_blocks WHERE cache_conversation_id=? AND position IN (SELECT value FROM json_each(?))').all(cacheId,JSON.stringify(input.fragments.map(fragment=>fragment.coordinate.position))) as Array<{position:number;role_code:number}>).map(row=>[row.position,row.role_code]));
   const writeObservation=observationWriter(db,cacheId,conversationId(db,cacheId),encodeKey);
@@ -63,7 +63,7 @@ export function writeDisplayIndex(db:SqliteDatabase,cacheId:number,input:Display
       |(activity?.localCommandStream ? 256|(activity.localCommandStream==='stderr'?512:0) : 0);
     insert.run(cacheId,position,kind,partOrdinal,ordinal,fragment.kind==='activity'?1:0,...run,
       code(ACTIVITIES,activity?.kind),code(SUBTYPES,activity?.activityKind),code(SEVERITIES,activity?.severity),code(OUTCOMES,activity?.outcome),
-      activity?.status??null,activity?.toolName??null,activity?.toolKind??null,activity?.turnId??null,flags,
+      activity?.status??null,activity?.toolName??null,activity?.toolKind??null,activity?.turnId??null,flags,activity?.reasoningEquivalence?Buffer.from(activity.reasoningEquivalence,'hex'):null,
       activity?.execution ? activity.execution.kind==='command'?0:1 : null,activity?.execution?.kind==='command'?activity.execution.count:null);
     for(const [disclosureKind,keys] of [fragment.disclosureRecipes?.keys??[],fragment.disclosureRecipes?.prefixes??[],fragment.disclosureRecipes?.thinkingDefaults?.map(value=>value.key)??[]].entries())
       for(const [index,key] of keys.entries())disclosure.run(cacheId,position,kind,partOrdinal,disclosureKind,index,disclosureKind===2?fragment.disclosureRecipes?.thinkingDefaults?.[index]?.turnId??null:null,...encodeKey(key));
@@ -104,7 +104,7 @@ function decodeRows(db:SqliteDatabase,id:number,rows:FragmentRow[]):IndexedDispl
   return rows.map(row=>{
     const key=`${row.position}:${row.part_kind}:${row.part_ordinal}`;
     const activityKind=enumValue(ACTIVITIES,row.activity_kind);
-    const activity:ActivityFacts|null=activityKind ? {kind:activityKind,
+    const activity:ActivityFacts|null=activityKind ? {kind:activityKind,...(row.reasoning_equivalence?{reasoningEquivalence:Buffer.from(row.reasoning_equivalence).toString('hex')}:{}),
       ...(row.activity_subtype===null?{}:{activityKind:enumValue(SUBTYPES,row.activity_subtype)}),...(row.severity===null?{}:{severity:enumValue(SEVERITIES,row.severity)}),...(row.outcome===null?{}:{outcome:enumValue(OUTCOMES,row.outcome)}),
       ...(row.status===null?{}:{status:row.status}),...(row.tool_name===null?{}:{toolName:row.tool_name}),...(row.tool_kind===null?{}:{toolKind:row.tool_kind}),...(row.turn_id===null?{}:{turnId:row.turn_id}),
       ...(row.flags&32?{hasResult:true}:{}),...(row.flags&8?{failed:true}:{}),...(row.flags&16?{running:true}:{}),
@@ -137,7 +137,7 @@ export function readDisplayContextPlan(db:SqliteDatabase,id:number,positions:rea
   const ownerFragments=decoded.filter(fragment=>fragment.activity?.kind==='tool');for(const owner of ownerFragments)sourcePositions.add(owner.coordinate.position);
   const evidence=readProviderEvidence(db,id);
   for(const position of [...sourcePositions]){let origin=evidence.get(position)?.display_tool_origin?.position;const seen=new Set<number>();while(origin!==undefined&&!seen.has(origin)){seen.add(origin);sourcePositions.add(origin);origin=evidence.get(origin)?.display_tool_origin?.position;}}
-  return {fragments:decoded.map(({id,coordinate,kind,activity_run_id,paired_source_positions})=>({id,coordinate,kind,activity_run_id,paired_source_positions})),
+  return {fragments:decoded.map(({id,coordinate,kind,activity_run_id,paired_source_positions,activity})=>({id,coordinate,kind,activity_run_id,paired_source_positions,...(activity?.reasoningEquivalence?{reasoningEquivalence:activity.reasoningEquivalence}:{})})),
     aliases:aliasRows.map(alias=>({position:alias.position,fragment_id:displayFragmentId({position:alias.owner_position,part:partName(alias.owner_kind,alias.owner_ordinal)})})),runs,ownerFragments,sourcePositions:[...sourcePositions].sort((a,b)=>a-b)};
 }
 export function readCompleteDisplayIndex(db:SqliteDatabase,id:number):{fragments:IndexedDisplayFragment[];positions:DisplayPositionFacts[];aliases:DisplayContextPlan['aliases'];revisions:{members:Record<string,string>;runs:Record<string,string>}} {

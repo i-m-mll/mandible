@@ -30,7 +30,7 @@ export const CONVERSATION_CACHE_FORMAT = {
     CREATE TABLE cache_display_fragments (${generation},position INTEGER NOT NULL,part_kind INTEGER NOT NULL CHECK(part_kind BETWEEN 0 AND 3),part_ordinal INTEGER NOT NULL,
       ordinal INTEGER NOT NULL,kind INTEGER NOT NULL CHECK(kind IN (0,1)),run_position INTEGER,run_kind INTEGER,run_ordinal INTEGER,
       activity_kind INTEGER CHECK(activity_kind BETWEEN 0 AND 4),activity_subtype INTEGER,severity INTEGER,outcome INTEGER,status TEXT,tool_name TEXT,tool_kind TEXT,turn_id TEXT,
-      flags INTEGER NOT NULL,execution_kind INTEGER CHECK(execution_kind IN (0,1)),execution_count INTEGER,
+      flags INTEGER NOT NULL,reasoning_equivalence BLOB CHECK(reasoning_equivalence IS NULL OR length(reasoning_equivalence)=32),execution_kind INTEGER CHECK(execution_kind IN (0,1)),execution_count INTEGER,
       UNIQUE(cache_conversation_id,position,part_kind,part_ordinal));
     CREATE INDEX idx_display_runs ON cache_display_fragments(cache_conversation_id,run_position,run_kind,run_ordinal,position,ordinal);
     CREATE TABLE cache_display_aliases (${generation},position INTEGER NOT NULL,owner_position INTEGER NOT NULL,owner_kind INTEGER NOT NULL,owner_ordinal INTEGER NOT NULL,

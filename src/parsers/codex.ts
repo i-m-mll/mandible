@@ -933,6 +933,7 @@ export class CodexParser implements ConversationParser {
         const block = blocks[index];
         const nativeTurn=rec.type==='response_item' ? (rec.payload as CodexResponsePayload).internal_chat_message_metadata_passthrough?.turn_id : undefined;
         if(nativeTurn && block.type==='tool_use') block.metadata.display_tool_turn_id=nativeTurn;
+        if(nativeTurn && block.type==='thinking') block.metadata.display_reasoning_turn_id=nativeTurn;
         if(block.type==='tool_use' && ['wait','functions.wait'].includes(block.metadata.tool_name ?? '')) {
           const input=block.metadata.tool_input;
           const cell=input && typeof input==='object' && 'cell_id' in input ? String(input.cell_id) : undefined;

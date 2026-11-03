@@ -1,3 +1,5 @@
+import { coalesceAdjacentReasoningMembers, reasoningEquivalence } from './reasoning-equivalence.js';
+import { activitySemanticFacts } from './activity-presentation.js';
 import { assistantResponseMembership } from "../parsers/assistant-response.js";
 import { readingNodeDisclosures } from './reading-disclosures.js';
 import type { ReadingPlan, ReadingPlanMember, ReadingRowDescriptor } from './reading-plan.js';
@@ -128,6 +130,7 @@ export function prepareReadingMembers(input: ReadingPreparationInput): ReadingPr
     const next = fragments.findIndex(candidate => candidate.position !== undefined && candidate.position >= owner.coordinate.position);
     fragments.splice(next < 0 ? fragments.length : next, 0, fragment);
   }
+  const eventOrdinals=new Map(normalized.map((event,index)=>[event,index]));
   const byPosition = new Map(normalized.flatMap(event => event.source?.position === undefined ? [] : [[event.source.position, event] as const]));
   const byIdentity = new Map(normalized.flatMap(event => {
     const key = event.intentId ? `intent:${event.intentId}` : event.displayKey ?? chatItemIdentityKey(event.item);
@@ -154,20 +157,23 @@ export function prepareReadingMembers(input: ReadingPreparationInput): ReadingPr
       ? { key: `group:${input.conversationId}:${input.positionSpaceId}:${owner.action_scope.start}`, ...owner.action_scope }
       : { key: `local-run:${identity}`, start: null, end: null };
     const resultSource = node.kind === 'activity' && node.item.type === 'tool-call-activity' ? node.item.result?.source : undefined;
-    return { fragment, node, event, native, identity, key, canonicalRun, actionGroup,
+    const reasoning=node.kind==='activity'&&(node.item.type==='thinking-block-activity'||(node.item.type==='activity'&&['thinking','reasoning-summary'].includes(node.item.activity_kind)));
+    const equivalence=reasoning?(descriptor?.reasoningEquivalence??(event?reasoningEquivalence(event.item,node.item.type==='thinking-block-activity'?[node.item.content]:node.item.type==='activity'?node.item.parts.map(part=>part.text):[]):undefined)):undefined;
+    return { fragment, node, event, eventOrdinal:event?eventOrdinals.get(event):undefined, equivalence,native, identity, key, canonicalRun, actionGroup,
       sources: [source, resultSource].filter((value): value is PersistedBlockSource => Boolean(value)) };
   });
-  return { actionRuns, lastAssistantTurnId, members: prepared.map(entry => ({
-    key: entry.key, position: entry.fragment.position, part: entry.fragment.part,
+  return { actionRuns, lastAssistantTurnId, members: coalesceAdjacentReasoningMembers(prepared.map(entry => ({
+    key: entry.key,eventOrdinal:entry.eventOrdinal, position: entry.fragment.position, part: entry.fragment.part,
     kind: entry.node.kind === 'activity' ? 'activity' : 'content', speaker: entry.node.entity,
     actionGroup: entry.actionGroup, activity: entry.node.kind === 'activity' ? entry.node.item : null,
+    ...(entry.equivalence&&entry.node.kind==='activity'?{activityFacts:{...activitySemanticFacts(entry.node.item),reasoningEquivalence:entry.equivalence}}:{}),
     ...(entry.node.kind === 'assistant_turn' && entry.node.turn.assistantEvent.message.content[0]?.type === 'text' && entry.event
       ? { assistantResponse: assistantResponseMembership(entry.event.item) } : {}),
     run: entry.canonicalRun, dependencyRevision: JSON.stringify([entry.node, entry.event?.executionActive]),
     sourcePositions: [entry.fragment.position, ...entry.fragment.pairedSourcePositions].filter((position): position is number => position !== undefined),
     handoffKeys: [entry.identity, entry.native].filter((key): key is string => Boolean(key)), usage: entry.event?.usage,
     disclosures: readingNodeDisclosures(entry.node), node: entry.node, event: entry.event, sources: entry.sources,
-  })) };
+  }))) };
 }
 
 export function materializePreparedReadingRows(descriptors: readonly ReadingRowDescriptor[], members: readonly PreparedReadingMember[]): ReadingRow[] {

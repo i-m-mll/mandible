@@ -295,6 +295,8 @@ export type RenderNodeActivity = {
   item: DisplayActivityItem;
   source?: PersistedBlockSource;
   memberKey?: string;
+  sourceAliases?:readonly PersistedBlockSource[];
+  disclosureAliases?:readonly string[];
   inlineIdentity?: InlineActivityIdentity;
 };
 

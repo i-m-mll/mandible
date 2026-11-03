@@ -1,3 +1,4 @@
+import { reasoningEquivalence } from '../presentation/reasoning-equivalence.js';
 import { framedToolResult, projectNativeToolResult } from '../presentation/tool-transport.js';
 import { inlineActivityKeyParts } from '../presentation/reading-disclosures.js';
 import { chatItemIdentityRecipe } from './index-keys.js';
@@ -17,6 +18,7 @@ import type { ConversationBlock } from '../parsers/types.js';
 export function indexDisplayFragments(blocks: readonly Omit<ConversationBlock, 'id' | 'conversation_id'>[],
   conversationId: string, parentPosition: (position: number) => number | null): IndexWriteBatch {
   const events = defaultDisplayEventsFromBlocks(blocks.map(block => ({ ...block, parentPosition: parentPosition(block.position) })), conversationId);
+  const sourceByPosition=new Map(blocks.map(block=>[block.position,block]));
   const fragments = projectDisplayFragments(events, true).flatMap(fragment => {
     if (fragment.position === undefined) return [];
     const node = fragment.node;
@@ -41,10 +43,13 @@ export function indexDisplayFragments(blocks: readonly Omit<ConversationBlock, '
     else if (activity?.type === 'provider-directive') compact = { ...activity, directive: activity.directive.kind === 'memory-citation'
       ? { kind: 'memory-citation', citations: [], rolloutIds: [] } : { ...activity.directive } };
     else if (activity?.type === 'activity') compact = { ...activity, parts: [] };
+    const facts=compact?compactActivityFacts(compact):null;
+    const native=sourceByPosition.get(fragment.position);
+    if(facts&&native?.metadata.chat_item&&(activity?.type==='thinking-block-activity'||(activity?.type==='activity'&&['thinking','reasoning-summary'].includes(activity.activity_kind))))facts.reasoningEquivalence=reasoningEquivalence(native.metadata.chat_item,activity.type==='thinking-block-activity'?[activity.content]:activity.parts.map(part=>part.text),native.metadata.display_reasoning_turn_id);
     return [{ id: displayFragmentId(coordinate), coordinate, kind: activity ? 'activity' as const : 'content' as const,
       activity_run_id: null, paired_source_positions: fragment.pairedSourcePositions,
       summary_eligible: !(activity?.type === 'activity' && isRoutineActivityStatus(activity, node.kind === 'activity' && node.source?.hasBody)),
-      speaker: node.entity, disclosureRecipes: sourceDisclosures(node,fragment.position), activity: compact ? compactActivityFacts(compact) : null, summary_from_source: activity?.type === 'activity' && activity.parts.some(part => Boolean(part.text.trim())),
+      speaker: node.entity, disclosureRecipes: sourceDisclosures(node,fragment.position), activity:facts, summary_from_source: activity?.type === 'activity' && activity.parts.some(part => Boolean(part.text.trim())),
       has_details: activityDetailLines(presentations).length > 0 }];
   });
   const aliases = blocks.flatMap(block => {

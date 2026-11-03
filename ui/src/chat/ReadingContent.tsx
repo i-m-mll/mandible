@@ -91,7 +91,7 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
               headerMetadata={compact ? footer : undefined}
               unmatched={!source?.parentBlockId}
               expanded={preparing || expandedBlocks[disclosureKey]}
-              onExpandedChange={(next, trigger) => setBlockExpanded(disclosureKey, next, [source], trigger)}
+              onExpandedChange={(next, trigger) => setBlockExpanded(disclosureKey, next, [source,...(node.sourceAliases??[])], trigger)}
             />
             <MessageActions
               blockId={source?.blockId}
@@ -110,7 +110,7 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
           ?? (node.item.type === 'provider-directive' ? node.item.blockId ?? undefined : undefined);
         const disclosureKey = readingNodeDisclosures(node).keys[0];
         const defaultExpanded = node.item.type === 'thinking-block-activity' && readingThinkingDefaultExpanded(node.item.turnId, { streaming, lastAssistantTurnId });
-        const expanded = preparing || (expandedBlocks[disclosureKey] ?? defaultExpanded);
+        const expanded = preparing || (expandedBlocks[disclosureKey] ?? node.disclosureAliases?.map(key=>expandedBlocks[key]).find(value=>value!==undefined) ?? defaultExpanded);
         let activity: JSX.Element;
         if (node.item.type === 'tool-call-activity') {
           const resultSource = node.item.result?.source;
@@ -166,7 +166,7 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
           );
         }
         return (
-          <div key={node.key} className="message-block-wrapper" data-block-id={sourceBlockId} data-member-refs={memberRef}>
+          <div key={node.key} className="message-block-wrapper" data-block-id={sourceBlockId} data-member-refs={[memberRef,...(node.sourceAliases??[]).map(alias=>alias.blockId)].filter(Boolean).join(' ')}>
             {activity}
             <MessageActions
               blockId={source?.blockId}

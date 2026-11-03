@@ -11,6 +11,7 @@
         "@tanstack/react-virtual": "3.14.25",
         "acorn": "8.19.0",
         "chokidar": "4.0.3",
+        "fast-sha256": "1.3.0",
         "jose": "6.2.2",
         "lucide-preact": "1.63.0",
         "marked": "13.0.3",

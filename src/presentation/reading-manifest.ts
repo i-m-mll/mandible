@@ -1,4 +1,5 @@
-import {displaySummaryMembers} from '../conversations/display-context.js';
+import { coalesceAdjacentReasoningMembers } from './reasoning-equivalence.js';
+import {displaySummaryMembers,displaySemanticMembers} from '../conversations/display-context.js';
 import type { IndexedDisplayFragment, DisplayPositionFacts } from '../conversations/display-context.js';
 import type { ReadingContextEntry } from '../conversations/reading-context.js';
 import { semanticActivityRunFacts, semanticActivityUnified, presentActivityRunFacts } from './activity-presentation.js';
@@ -40,7 +41,7 @@ export function buildReadingManifest(input: {
       .map(member => member.coordinate.position);
     const facts = semanticActivityRunFacts(contributors.flatMap(member => member.activity ? [member.activity] : []));
     facts.hasDetails ||= members.some(member => member.has_details);
-    return [id, { id, revision: input.revisions.runs[id], member_count: members.length, presentation: { ...presentActivityRunFacts(facts), facts } }] as const;
+    return [id, { id, revision: input.revisions.runs[id], member_count: displaySemanticMembers(members).length, presentation: { ...presentActivityRunFacts(facts), facts } }] as const;
   }));
   const scopeUsages = new Map<number, Map<string, number>>();
   for (const position of input.positions) if (position.usage) {
@@ -78,7 +79,7 @@ export function buildReadingManifest(input: {
     };
   });
   return { conversationId: input.conversationId, positionSpaceId: input.positionSpaceId, sourceVersionId: input.sourceVersionId,
-    publicationRevision: input.publicationRevision, blockCount: input.blockCount, members, runs: Object.fromEntries(runPlans), summarySources, scopes,
+    publicationRevision: input.publicationRevision, blockCount: input.blockCount, members:coalesceAdjacentReasoningMembers(members), runs: Object.fromEntries(runPlans), summarySources, scopes,
     lastAssistantTurnId: [...input.fragments].reverse().flatMap(fragment => fragment.kind === 'content' && fragment.speaker === 'assistant'
       ? [positions.get(fragment.coordinate.position)?.turnId ?? `cblk:${input.conversationId}:${fragment.coordinate.position}`]
       : fragment.activity && fragment.activity.kind !== 'activity' ? [fragment.activity.turnId] : []).find((id): id is string => id !== undefined) };
