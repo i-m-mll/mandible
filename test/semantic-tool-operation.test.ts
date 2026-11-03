@@ -127,3 +127,13 @@ it('distinguishes an awaited prefix from unawaited promises when only the wrappe
   expect(awaited.children?.[0].execution.state).toBe('completed');
   expect(pending.children?.[0].execution.state).toBe('unknown');
 });
+
+
+it('keeps fork destination identity owned by its attributed receipt',()=>{
+  const invocation={type:'tool-call-activity' as const,id:'fork',name:'codex_app__fork_thread',input:{threadId:'native-source'},executionEvidence:{state:'completed' as const,provenance:'paired-result' as const}};
+  const requested=operationObservationForTool({...invocation,result:{type:'tool_result',tool_use_id:'fork',content:'fork_thread received invalid arguments.'}});
+  expect(requested.operation).toBe('thread-fork-request');
+  expect(requested.targets).toEqual([{kind:'thread',provider:'codex',sessionId:'native-source'}]);
+  const completed=operationObservationForTool({...invocation,result:{type:'tool_result',tool_use_id:'fork',content:JSON.stringify({sourceThreadId:'native-source',threadId:'native-fork',environment:{type:'same-directory'}})}});
+  expect(completed.targets).toEqual([{kind:'thread',provider:'codex',sessionId:'native-fork'}]);
+});

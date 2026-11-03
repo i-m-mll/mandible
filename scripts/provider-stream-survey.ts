@@ -105,12 +105,20 @@ async function main() {
     ? await scan(z.enum(['codex', 'claude_code']).parse(values.get('provider')), values.get('files')!)
     : { cases: bundleSchema.parse(JSON.parse(await fs.readFile(values.get('inputs')!, 'utf8'))).cases };
   const results = captured.cases.map(classify);
+  const firstPartyName=(name:string)=>name.replace(/^functions\./,'').replace(/^mcp__/,'');
+  const firstPartyCalls=results.flatMap(result=>result.operations.length?result.operations:[{name:result.name,operation:result.operation}])
+    .filter(operation=>firstPartyName(operation.name).startsWith('codex_app__'));
+  const firstPartyNames=[...new Set(firstPartyCalls.map(operation=>firstPartyName(operation.name)))].sort();
+  const projectedFirstParty={scope:'Proven projected calls and direct first-party frames only; generic wrapper computation is not a semantic-name inventory.',
+    calls:firstPartyCalls.length,unmapped:firstPartyCalls.filter(operation=>!operation.operation).length,
+    names:firstPartyNames.map(name=>{const calls=firstPartyCalls.filter(operation=>firstPartyName(operation.name)===name);return {name,calls:calls.length,
+      operations:count(calls.flatMap(operation=>operation.operation?[operation.operation]:[])),unmapped:calls.filter(operation=>!operation.operation).length};})};
   const report = {
     schema: 'mandible-provider-stream-survey@1', mode, runtime: {version: process.versions.bun, executable: process.execPath}, measuredAt: new Date().toISOString(), revision, dirty,
     epochs: CURRENT_CONVERSATION_SOURCE_EPOCHS, inputDigest: digest(JSON.stringify(captured.cases)),
     scope: mode === 'scan' ? 'Explicit native files through production normalization and tool recognition; read-only, not exhaustive.' : 'Frozen tool-input recognition replay only; no native normalization, output attribution or UI qualification.',
     ...('sources' in captured ? { sources: captured.sources, envelopeCounts: captured.envelopeCounts, unclassifiedInputs: captured.unclassifiedInputs } : {}),
-    summary: { cases: results.length, recognition: count(results.map(result => result.recognition)), categories: count(results.map(result => result.category)), toolNames: count(results.map(result => result.name)) },
+    summary: { cases: results.length, recognition: count(results.map(result => result.recognition)), categories: count(results.map(result => result.category)), toolNames: count(results.map(result => result.name)), projectedFirstParty },
     results, elapsedMs: performance.now() - started,
   };
   if (values.has('save-inputs')) await writeJson(values.get('save-inputs')!, { schema: 'mandible-provider-survey-inputs@1', cases: captured.cases });

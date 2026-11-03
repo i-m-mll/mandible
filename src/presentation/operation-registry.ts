@@ -18,6 +18,12 @@ const operations:Readonly<Record<string,OperationDefinition>>={
   'thread-list':definition('search','chat','thread listing','List threads','Listing threads','Listed threads','Listed threads'),
   'thread-read':definition('read','chat','thread read','Read thread','Reading thread','Read thread','Read threads','Read threads','Reading threads'),
   'thread-send':definition('other','chat','message','Send message to thread','Sending message to thread','Sent message to thread','Sent messages to threads','Send messages to threads','Sending messages to threads'),
+  'thread-archive':definition('other','chat','thread archival','Archive thread','Archiving thread','Archived thread','Archived threads','Archive threads','Archiving threads'),
+  'thread-unarchive':definition('other','chat','thread restoration','Unarchive thread','Unarchiving thread','Unarchived thread','Unarchived threads','Unarchive threads','Unarchiving threads'),
+  'thread-archive-state':definition('other','chat','thread archive update','Set thread archive state','Setting thread archive state','Set thread archive state','Set thread archive states'),
+  'thread-rename':definition('other','chat','thread rename','Rename thread','Renaming thread','Renamed thread','Renamed threads','Rename threads','Renaming threads'),
+  'thread-fork-request':definition('other','chat','thread fork request','Fork thread','Forking thread','Requested thread fork','Requested thread forks','Fork threads','Forking threads'),
+  'thread-fork':definition('other','chat','thread fork','Fork thread','Forking thread','Forked thread','Forked threads','Fork threads','Forking threads'),
   'thread-request':definition('other','chat','thread request','Create thread','Creating thread','Requested thread','Requested threads','Create threads','Creating threads'),
   'thread-create':definition('other','chat','thread creation','Create thread','Creating thread','Created thread','Created threads','Create threads','Creating threads'),
   'thread-queue':definition('other','chat','thread request','Queue thread','Queuing thread','Queued thread','Queued threads','Queue threads','Queuing threads'),
@@ -39,8 +45,9 @@ export function registeredOperation(name:string,input:Record<string,unknown>):st
     if(actions.length===1)return actions[0]==='search_query'||actions[0]==='image_query'?'web-search':actions[0]==='open'?'web-open':actions[0]==='click'?'web-click':undefined;
   }
   if(normalized==='__tool_discovery')return 'tool-discovery';
-  const app=/^(?:mcp__)?codex_app__(list_projects|list_threads|read_thread|send_message_to_thread|create_thread|wait_threads)$/.exec(normalized);
-  if(app)return ({list_projects:'project-list',list_threads:'thread-list',read_thread:'thread-read',send_message_to_thread:'thread-send',create_thread:'thread-create',wait_threads:'thread-wait'} as const)[app[1] as 'list_projects'];
+  const app=/^(?:mcp__)?codex_app__(list_projects|list_threads|read_thread|send_message_to_thread|create_thread|wait_threads|set_thread_archived|set_thread_title|fork_thread)$/.exec(normalized);
+  if(app?.[1]==='set_thread_archived')return input.archived===true?'thread-archive':input.archived===false?'thread-unarchive':'thread-archive-state';
+  if(app)return ({set_thread_title:'thread-rename',fork_thread:'thread-fork',list_projects:'project-list',list_threads:'thread-list',read_thread:'thread-read',send_message_to_thread:'thread-send',create_thread:'thread-create',wait_threads:'thread-wait'} as const)[app[1] as 'list_projects'];
   if(['clock.sleep','clock__sleep','mcp__clock__sleep','sleep'].includes(normalized))return 'sleep';
   if(normalized==='wait')return 'execution-wait';
   if(['spawn_agent','collaboration.spawn_agent'].includes(normalized))return 'subagent-create';
@@ -58,7 +65,7 @@ export function operationLabel(operation:string|undefined,state:ToolExecutionEvi
 
 const nonempty=(value:unknown):value is string=>typeof value==='string'&&Boolean(value.trim());
 export function operationInputTargets(operation:string|undefined,input:Record<string,unknown>,scope:{provider?:import('../parsers/types.js').ConversationSource;sessionId?:string}):import('./activity-targets.js').ActivityTarget[] {
-  if(['thread-read','thread-send'].includes(operation??''))return nonempty(input.threadId??input.thread_id)?[{kind:'thread',provider:'codex',sessionId:String(input.threadId??input.thread_id)}]:nonempty(input.clientThreadId)?[{kind:'pending-thread',provider:'codex',clientThreadId:input.clientThreadId}]:[];
+  if(['thread-read','thread-send','thread-archive','thread-unarchive','thread-archive-state','thread-rename','thread-fork','thread-fork-request'].includes(operation??''))return nonempty(input.threadId??input.thread_id)?[{kind:'thread',provider:'codex',sessionId:String(input.threadId??input.thread_id),...(operation==='thread-rename'&&nonempty(input.title)?{labelHint:input.title.slice(0,256)}:{})}]:nonempty(input.clientThreadId)?[{kind:'pending-thread',provider:'codex',clientThreadId:input.clientThreadId}]:[];
   if(operation==='thread-wait')return (Array.isArray(input.targets)?input.targets:[]).flatMap(target=>target&&typeof target==='object'&&nonempty(target.threadId)?[{kind:'thread' as const,provider:'codex' as const,sessionId:target.threadId}]:[]);
   if(operation==='subagent-resume'&&scope.provider==='claude_code'&&scope.sessionId&&nonempty(input.resume))return [{kind:'subagent',provider:'claude_code',parentSessionId:scope.sessionId,agentId:input.resume,...(nonempty(input.description)?{labelHint:input.description.slice(0,256)}:{})}];
   return [];
@@ -71,6 +78,7 @@ export function operationReceiptTargets(operation:string,result:string,scope:{pr
     if(nonempty(fields.threadId))return {operation:'thread-create',targets:[{kind:'thread',provider:'codex',sessionId:fields.threadId,...hint}]};
     if(nonempty(fields.clientThreadId))return {operation:'thread-queue',targets:[{kind:'pending-thread',provider:'codex',clientThreadId:fields.clientThreadId,...hint}]};
   }
+  if(['thread-fork','thread-fork-request'].includes(operation)&&nonempty(fields.threadId)&&nonempty(fields.sourceThreadId)&&fields.threadId!==fields.sourceThreadId)return {operation:'thread-fork',targets:[{kind:'thread',provider:'codex',sessionId:fields.threadId,...hint}]};
   if(operation==='subagent-create'&&scope.provider==='codex'&&scope.sessionId&&nonempty(fields.task_name))return {operation,targets:[{kind:'subagent',provider:'codex',parentSessionId:scope.sessionId,agentId:fields.task_name,...hint}]};
   return {operation,targets:[]};
 }

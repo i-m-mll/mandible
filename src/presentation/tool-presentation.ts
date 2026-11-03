@@ -1,4 +1,4 @@
-import { registeredOperation, operationDefinition, operationLabel } from './operation-registry.js';
+import { registeredOperation, operationDefinition, operationLabel, operationInputTargets } from './operation-registry.js';
 import type { ToolExecutionEvidence } from '../parsers/types.js';
 import { patchFileChanges } from './tool-operation.js';
 import { projectToolProgram } from './tool-program.js';
@@ -106,7 +106,7 @@ export function presentTool(
   const object = toolInputObject(inputValue);
   const operation=registeredOperation(toolName,object),definition=operationDefinition(operation);
   if(operation&&definition) {
-    const ids=operation==='thread-read'||operation==='thread-send'?[object.threadId??object.thread_id]:operation==='thread-wait'?Array.isArray(object.targets)?object.targets.map(target=>target&&typeof target==='object'?(target as Record<string,unknown>).threadId:undefined):object.threadIds??object.thread_ids:[];
+    const ids=operation==='thread-wait'?(Array.isArray(object.targets)?object.targets.map(target=>target&&typeof target==='object'?(target as Record<string,unknown>).threadId:undefined):object.threadIds??object.thread_ids):operationInputTargets(operation,object,{}).flatMap(target=>target.kind==='thread'?[target.sessionId]:[]);
     const threadTargets=(Array.isArray(ids)?ids:[]).filter((id):id is string=>typeof id==='string'&&Boolean(id)).map(id=>({type:'session' as const,id}));
     return {operation,category:definition.category,icon:definition.icon,phrase:definition.completed,target:operation.startsWith('web-')?toolTarget(toolName,object):'',...(threadTargets.length?{threadTargets,targetCount:threadTargets.length}:{}),...(definition.outputPolicy?{outputPolicy:definition.outputPolicy}:{})};
   }
