@@ -62,6 +62,10 @@ export class IngestionActor {
     return this.request({ kind: "ingest", paths, forceFull, bypassSameMtimeUnchanged, priority });
   }
 
+  prepareConversationCache(conversationId: string, priority = true): Promise<void> {
+    return this.request({ kind: "prepare-cache", conversationId, priority });
+  }
+
   reconcile(startupPasses = false): Promise<void> {
     return this.request({ kind: "reconcile", startupPasses });
   }

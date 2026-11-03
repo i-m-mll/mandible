@@ -1,5 +1,10 @@
+import { expandInlineActivities } from './model.js';
+import { activityTargetKey, activityObservationTargets } from './activity-targets.js';
 import { toolObservation } from './tool-observation.js';
 import { operationPhrase, operationState, substantiveToolResult } from './tool-operation.js';
+import type { ActivityFacts } from '../conversations/conversation-index.js';
+import { compactToolOperation, compactToolRunFacts } from './tool-presentation.js';
+import { operationObservationForTool, presentationForObservation } from './tool-observation.js';
 import type { ActivityItem, ActivityKind } from '../parsers/types.js';
 import type { DisplayActivityItem, ToolCallActivity } from './types.js';
 import { plainActivityHeader } from './activity-text.js';
@@ -137,6 +142,62 @@ function activityHasDetails(item:DisplayActivityItem):boolean {
   }
   return false;
 }
+export function activitySemanticFacts(item: DisplayActivityItem): ActivityFacts {
+  if(item.type==='tool-call-activity') {
+    const observation=operationObservationForTool(item);
+    return {kind:'tool',toolName:item.name,toolKind:item.toolKind,turnId:item.turnId,hasResult:Boolean(item.result),
+      failed:observation.execution.state==='failed',running:observation.execution.state==='ongoing',observation};
+  }
+  if (item.type === 'thinking-block-activity') return {kind:'thinking',turnId:item.turnId,summary:presentReasoning([item.content]).summary};
+  if (item.type === 'provider-directive') return {kind:item.directive.kind === 'memory-citation' ? 'directive-memory' : 'directive-thread',turnId:item.turnId};
+  return {kind:'activity',activityKind:item.activity_kind,severity:item.severity,outcome:item.execution_outcome,status:item.status,
+    summary:activitySummary(item,plainActivityParts(item),activityState(item))};
+}
+export function semanticActivityState(item: ActivityFacts): string[] {
+  return item.kind === 'tool' ? [item.observation?.execution.state==='cancelled'?'Cancelled':undefined,(item.observation?item.observation.execution.state==='failed':item.failed) ? 'Failed' : undefined,(item.observation?item.observation.execution.state==='ongoing':item.running) ? 'Running' : undefined].filter((value):value is string=>Boolean(value))
+    : item.kind === 'activity' ? [item.severity && item.severity !== 'info' ? item.severity : undefined,
+      item.outcome && item.outcome !== 'unknown' ? item.outcome : undefined,item.status].filter((value):value is string=>Boolean(value)) : [];
+}
+export function semanticToolOperations(item:ActivityFacts):NonNullable<ActivityFacts['operations']> {
+  return item.operations??toolRunFacts([{name:item.toolName??'',toolKind:item.toolKind,execution:item.execution}]).map(compactToolOperation);
+}
+export function semanticActivitySummary(item: ActivityFacts): string {
+  if(item.summary !== undefined)return item.summary;
+  if(item.kind==='tool'&&item.observation) return operationPhrase(presentationForObservation(item.observation,item.toolKind),item.observation.execution.state);
+  if(item.kind==='tool') {const text=summarizeToolRunFacts(compactToolRunFacts(semanticToolOperations(item))).join('; '); return text.charAt(0).toUpperCase()+text.slice(1);}
+  if(item.kind==='thinking')return 'Thought';
+  if(item.kind==='directive-memory')return 'Used memory';
+  if(item.kind==='directive-thread')return 'Created thread';
+  return [...new Set([ACTIVITY_LABELS[item.activityKind!],...semanticActivityState(item)])].join(' · ');
+}
+export function semanticActivityIcon(item: ActivityFacts): PresentationIcon {
+  if(item.kind==='tool'&&item.observation) return presentationForObservation(item.observation,item.toolKind).icon;
+  if(item.kind==='tool') return compactToolRunFacts(semanticToolOperations(item))[0]?.presentation.icon ?? 'monitor';
+  if(item.kind==='thinking')return 'thought';
+  if(item.kind==='directive-memory')return 'history';
+  if(item.kind==='directive-thread')return 'chat';
+  return item.activityKind==='thinking'||item.activityKind==='reasoning-summary' ? 'thought'
+    :item.activityKind==='tool-progress'||item.activityKind==='tool-summary' ? 'terminal'
+    :item.activityKind==='information' ? 'info' :item.activityKind==='diagnostic' ? 'issues' :'monitor';
+}
+export const semanticActivityUnified = (item: ActivityFacts): boolean => item.kind !== 'activity' || ['thinking','reasoning-summary'].includes(item.activityKind!);
+export function semanticActivityRunFacts(items: readonly ActivityFacts[]): ActivityRunFacts {
+  const labels = new Map<string,{key:string;label:string;count:number}>();
+  const add = (key:string,label:string) => { const prior=labels.get(key); if(prior) prior.count++; else labels.set(key,{key,label,count:1}); };
+  for(const item of items) {
+    if(item.kind==='tool')continue;
+    if(item.kind==='thinking'||(item.kind==='activity'&&['thinking','reasoning-summary'].includes(item.activityKind!)))add('thought','thought');
+    else if(item.kind==='directive-memory')add('memory','used memory');
+    else if(item.kind==='directive-thread')add('chat-reference','created thread');
+    else {const summary=semanticActivitySummary(item);add(item.activityKind+':'+summary.charAt(0).toLowerCase()+summary.slice(1),summary.charAt(0).toLowerCase()+summary.slice(1));}
+  }
+  const tools=items.filter(item=>item.kind==='tool');
+  return {memberCount:items.length,unified:items.some(semanticActivityUnified),firstSummary:items[0]?semanticActivitySummary(items[0]):'',
+    firstIcon:items[0]?semanticActivityIcon(items[0]):'monitor',states:[...new Set(items.flatMap(semanticActivityState))],
+    toolStates:[...new Set(tools.flatMap(semanticActivityState))],tools:tools.reduce<ToolRunFact[]>((facts,item)=>mergeToolRunFacts(facts,item.observation ? toolRunFacts((item.observation.children??[item.observation]).map(observation=>({name:observation.nativeName??item.toolName??'',header:presentationForObservation(observation,item.toolKind)}))) : compactToolRunFacts(semanticToolOperations(item))),[]),
+    hasThinkingTool:tools.some(item=>classifyTool(item.toolName ?? '')==='think'),labels:[...labels.values()],
+    hasDetails:items.some(semanticActivityUnified)||items.length>1};
+}
 export function activityRunFacts(items: readonly DisplayActivityItem[]): ActivityRunFacts {
   const presentations = presentActivityItems(items);
   const tools = items.filter((item):item is ToolCallActivity => item.type === 'tool-call-activity');
@@ -188,4 +249,21 @@ export function activityIconName(item: DisplayActivityItem): PresentationIcon {
   if (item.activity_kind === 'information') return 'info';
   if (item.activity_kind === 'diagnostic') return 'issues';
   return 'monitor';
+}
+
+/** Targets demanded by the same materialized production rows used for visible and measured bodies. */
+export function activityTargetsFromReadingRows(rows:readonly import('./reading.js').ReadingRow[]):import('./activity-targets.js').ActivityTarget[] {
+  const targets:import('./activity-targets.js').ActivityTarget[]=[];
+  for(const row of rows)for(const node of expandInlineActivities(row.activityGroup?.items??row.nodes)) {
+    if(node.kind!=='activity')continue;
+    const item=node.item;
+    if(item.type==='tool-call-activity')targets.push(...activityObservationTargets(operationObservationForTool(item)));
+    else if(item.type==='provider-directive') {
+      if(item.directive.kind==='created-thread')targets.push(item.directive.identity==='threadId'
+        ?{kind:'thread',provider:'codex',sessionId:item.directive.providerSessionId}
+        :{kind:'pending-thread',provider:'codex',clientThreadId:item.directive.providerSessionId});
+      else for(const sessionId of item.directive.rolloutIds)targets.push({kind:'thread',provider:'codex',sessionId});
+    }
+  }
+  return [...new Map(targets.map(target=>[activityTargetKey(target),target])).values()];
 }

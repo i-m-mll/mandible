@@ -1,5 +1,4 @@
-import type { ReadingDisclosures } from '../presentation/reading-disclosures.js';
-import type { DisplayActivityItem, ToolCallActivity } from '../presentation/types.js';
+import type { ToolCallActivity } from '../presentation/types.js';
 import type { DisplayFragmentCoordinate } from '../presentation/fragments.js';
 import type { PresentationIcon } from '../presentation/tool-presentation.js';
 import type { ToolPresentation } from '../presentation/tool-presentation.js';
@@ -42,25 +41,8 @@ export type ConversationDisplayContext = {
   aliases: Array<{ position: number; fragment_id: string }>;
   owners: DisplayOwnerShell[];
 };
-export type DisplayPositionFacts = {
-  position: number;
-  revision: string;
-  speaker: 'user' | 'assistant' | 'system';
-  handoffKeys: string[];
-  assistantResponse?: import("../parsers/assistant-response.js").AssistantResponseMembership;
-  executionKey?: string;
-  presentationDependencies?: number[];
-  turnId?: string;
-  usage?: { key: string; input: number; output: number };
-};
-export type IndexedDisplayFragment = DisplayFragmentDescriptor & {
-  disclosures?: ReadingDisclosures;
-  speaker: 'user' | 'assistant' | 'system';
-  activity: DisplayActivityItem | null;
-  summary_from_source: boolean;
-  summary_eligible?: boolean;
-  has_details: boolean;
-};
+export type { PositionFacts as DisplayPositionFacts, FragmentFacts as IndexedDisplayFragment } from './conversation-index.js';
+import type { FragmentFacts as IndexedDisplayFragment } from './conversation-index.js';
 export type IndexedDisplayContext = {
   fragments: IndexedDisplayFragment[];
   activity_runs: Array<Omit<DisplayActivityRun, 'presentation'> & { members: IndexedDisplayFragment[] }>;

@@ -114,6 +114,7 @@ describe("versioned conversation source reader", () => {
           const metadata=JSON.parse(block.metadata_json);
           expect(metadata.display_tool_origin).toEqual(parsed.blocks[block.position].metadata.display_tool_origin);
           expect(metadata.display_tool_execution).toEqual(parsed.blocks[block.position].metadata.display_tool_execution);
+          expect(metadata.display_tool_frame).toEqual(parsed.blocks[block.position].metadata.display_tool_frame);
           if(metadata.display_tool_origin) expect(metadata.display_tool_operation?.input).toBe('text(await tools.codex_app__wait_threads({targets:[]}));');
         }
       }

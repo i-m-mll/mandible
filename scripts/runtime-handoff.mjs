@@ -20,6 +20,7 @@ import { readAcceptedReleaseReceipt, disposeAcceptedRelease } from './accepted-r
 import { ownedRunReceipt, inspectRunConsumers } from './owned-run.mjs';
 import SqliteDatabase from '../src/sqlite.ts';
 import { verifyRuntimeHandoffAuthority } from '../src/runtime-handoff-proof.ts';
+import { cacheFileIdentity, cacheTransitionReceiptPath, OBSOLETE_CACHE_SUFFIXES, validateCacheTransitionCoverage } from '../src/conversations/cache-transition-receipt.ts';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -798,6 +799,85 @@ function clearOwnPointer(journal) {
   assertObservationLease(journal);
   fs.unlinkSync(active);
 }
+function conversationCacheTransitionPaths(journal) {
+  if (!journal.database) return null;
+  const base = `${path.resolve(journal.database)}.conversation-structure.db`;
+  return { obsolete: `${base}.v18`, current: `${base}.v19` };
+}
+function conversationCacheTransitionWake(journal) {
+  const paths = conversationCacheTransitionPaths(journal);
+  if (!paths) return null;
+  const { current } = paths;
+  try { return fs.readFileSync(cacheTransitionReceiptPath(current), 'utf8'); }
+  catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+}
+async function retireConversationCache(journal) {
+  assertObservationLease(journal);
+  const paths = conversationCacheTransitionPaths(journal);
+  if (!paths) return;
+  const { obsolete, current } = paths;
+  if (!OBSOLETE_CACHE_SUFFIXES.some(suffix => fs.existsSync(`${obsolete}${suffix}`))) return;
+  let drain = journal.attempt?.effects?.drain;
+  if (!drain?.completedAt || !drain.processes) {
+    const directory = path.join(path.dirname(journalFile(journal.binding)), 'attempts');
+    for (const name of fs.existsSync(directory) ? fs.readdirSync(directory).filter(name => /^[a-zA-Z0-9_-]{8,128}\.json$/.test(name)).sort().reverse() : []) {
+      const record = JSON.parse(fs.readFileSync(path.join(directory, name), 'utf8'));
+      if (record.schema !== 'mandible-runtime-attempt-history@1' || record.bindingDigest !== journal.bindingDigest
+          || `${record.attempt?.id}.json` !== name) throw new Error('Runtime drain attempt binding changed.');
+      const previous = record.attempt?.effects?.drain;
+      if (previous?.completedAt && previous.processes) { drain = previous; break; }
+    }
+  }
+  if (!drain?.completedAt || !drain.processes) throw new Error('Conversation cache retirement awaits completed runtime drain evidence.');
+  const identities = [journal.binding.oldProcess, ...Object.values(drain.processes)].filter(Boolean);
+  const live = identities.filter(identity => startedAt(identity.pid) === identity.startedAt);
+  if (live.length) {
+    const error = new Error('Conversation cache retirement awaits the previous runtime processes.');
+    error.processes = live;
+    throw error;
+  }
+  const bytes = conversationCacheTransitionWake(journal);
+  if (!bytes) throw new Error('Conversation cache conversion coverage is pending.');
+  const receipt = JSON.parse(bytes);
+  if (receipt.schema !== 'mandible-conversation-cache-transition@1' || receipt.state !== 'coverage-complete' || receipt.targetFormat !== 19
+      || receipt.ledger !== path.resolve(journal.database) || receipt.obsolete !== obsolete || receipt.current !== current
+      || !Array.isArray(receipt.files) || receipt.files.length !== OBSOLETE_CACHE_SUFFIXES.length
+      || receipt.files.some((file, index) => file.suffix !== OBSOLETE_CACHE_SUFFIXES[index])) {
+    throw new Error('Conversation cache transition receipt does not match this runtime ledger.');
+  }
+  const nextIdentity = cacheFileIdentity(current);
+  if (!nextIdentity || nextIdentity.dev !== receipt.currentIdentity?.dev || nextIdentity.ino !== receipt.currentIdentity?.ino) {
+    throw new Error('Completed conversation cache identity changed.');
+  }
+  const retirement = journal.conversationCacheRetirement;
+  const resuming = retirement?.state === 'removing' && retirement.bindingDigest === journal.bindingDigest
+    && retirement.receiptDigest === hash(bytes) && JSON.stringify(retirement.receipt) === JSON.stringify(receipt);
+  if (!resuming) validateCacheTransitionCoverage(receipt);
+  for (const file of receipt.files) {
+    const actual = cacheFileIdentity(`${obsolete}${file.suffix}`);
+    if (actual && JSON.stringify(actual) !== JSON.stringify(file.identity)) throw new Error('Obsolete conversation cache changed after coverage.');
+  }
+  const files = receipt.files.filter(file => fs.existsSync(`${obsolete}${file.suffix}`)).map(file => `${obsolete}${file.suffix}`);
+  if (files.length) {
+    const consumers = spawnSync('/usr/sbin/lsof', ['-t', ...files], { encoding: 'utf8', timeout: 2500 });
+    if (consumers.error || consumers.status !== 1 || consumers.stdout?.trim() || consumers.stderr?.trim()) {
+      const error = new Error('Obsolete conversation cache still has consumers or cannot be qualified.');
+      const pids = consumers.stdout?.trim().split('\n').map(Number).filter(Number.isSafeInteger) ?? [];
+      if (pids.length) error.processes = describeConsumers(pids);
+      throw error;
+    }
+  }
+  assertObservationLease(journal);
+  if (conversationCacheTransitionWake(journal) !== bytes) throw new Error('Conversation cache coverage receipt changed during retirement.');
+  if (!resuming) save(journal, { conversationCacheRetirement: { state: 'removing', bindingDigest: journal.bindingDigest,
+    receiptDigest: hash(bytes), receipt, qualifiedAt: Date.now() } });
+  for (const file of receipt.files) {
+    const actual = cacheFileIdentity(`${obsolete}${file.suffix}`);
+    if (!actual) continue;
+    if (JSON.stringify(actual) !== JSON.stringify(file.identity)) throw new Error('Obsolete conversation cache identity changed during retirement.');
+    fs.unlinkSync(`${obsolete}${file.suffix}`);
+  }
+}
 /**
  * A terminal delivery's cleanup is a set of independent obligations. Each one is
  * attempted every time and records its own blocker, so one that waits on a
@@ -807,6 +887,7 @@ async function cleanupHandoff(journal) {
   assertObservationLease(journal);
   const b = journal.binding;
   const obligations = [
+    ['conversation-cache', () => retireConversationCache(journal)],
     ...(!journal.helperFencedAt ? [['helper', async () => { await fenceHelper(journal); save(journal, { helperFencedAt: Date.now() }); }]] : []),
     ...(b.acceptedRelease ? [['previous-app', () => removePreviousApplication(journal)], ['superseded-release', () => disposeSupersededRelease(journal)]] : []),
     ...(b.legacyBridgeSha256 ? [['legacy-bridge', () => removeLegacyBridge(journal)]] : []),
@@ -846,7 +927,7 @@ export function runtimeHandoffCleanupWake(journal) {
     : { obligation: blocker.obligation, reason: blocker.reason }));
   // Every process a blocker waited on has exited, so that blocker has already changed.
   if (waits.some(wait => wait.live?.length === 0)) return `due:${randomBytes(8).toString('hex')}`;
-  return hash(JSON.stringify({ helperFenced: Boolean(journal.helperFencedAt), state: journal.cleanup?.state ?? null, waits }));
+  return hash(JSON.stringify({ helperFenced: Boolean(journal.helperFencedAt), state: journal.cleanup?.state ?? null, conversationCache: conversationCacheTransitionWake(journal), waits }));
 }
 export async function cleanupRuntimeHandoff(file) {
   const raw = validateJournal(JSON.parse(fs.readFileSync(file, 'utf8')));

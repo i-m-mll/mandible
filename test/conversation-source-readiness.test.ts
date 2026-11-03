@@ -1,3 +1,4 @@
+import { indexDisplayFragments } from '../src/conversations/display-indexing';
 import { migratedFileDb } from './helpers/ledger-fixtures.js';
 import fs from "node:fs";
 import os from "node:os";
@@ -105,7 +106,7 @@ describe("source metadata readiness and canonical ingestion repair", () => {
       parser_format: CURRENT_CONVERSATION_SOURCE_EPOCHS.parserFormat,
       parser_version: failure === "old-epochs" ? "old" : CURRENT_CONVERSATION_SOURCE_EPOCHS.parserVersion,
       normalization_version: CURRENT_CONVERSATION_SOURCE_EPOCHS.normalizationVersion,
-      redaction_epoch: CURRENT_CONVERSATION_SOURCE_EPOCHS.redactionEpoch, block_count: failure === "missing" ? 0 : rows.length }, failure === "missing" ? [] : rows);
+      redaction_epoch: CURRENT_CONVERSATION_SOURCE_EPOCHS.redactionEpoch, block_count: failure === "missing" ? 0 : rows.length }, failure === "missing" ? [] : rows,new Map(),undefined,indexDisplayFragments((failure==='missing'?[]:rows).map(value=>({...value,content:'',timestamp:null,metadata:{}})),id,position=>rows.find(value=>value.position===position)?.parentPosition??null));
     expect(readConversationSourceReadiness(db, id)).toMatchObject({ status: "repair_needed", reason: "projection_incomplete" });
     const mtime = fs.statSync(file).mtimeMs;
     const repaired = await repairConversationSourceReadiness(db, id);
@@ -127,7 +128,7 @@ describe("source metadata readiness and canonical ingestion repair", () => {
       first.replaceRows({ conversation_id: id, source_version_id: version,
         parser_format: CURRENT_CONVERSATION_SOURCE_EPOCHS.parserFormat, parser_version: CURRENT_CONVERSATION_SOURCE_EPOCHS.parserVersion,
         normalization_version: CURRENT_CONVERSATION_SOURCE_EPOCHS.normalizationVersion,
-        redaction_epoch: CURRENT_CONVERSATION_SOURCE_EPOCHS.redactionEpoch, block_count: rows.length }, rows);
+        redaction_epoch: CURRENT_CONVERSATION_SOURCE_EPOCHS.redactionEpoch, block_count: rows.length }, rows,new Map(),undefined,indexDisplayFragments(rows.map(value=>({...value,content:'',timestamp:null,metadata:{}})),id,position=>rows.find(value=>value.position===position)?.parentPosition??null));
       expect(second.readPage(id, version, { offset: 0, limit: 10 })).toBeNull();
     } finally {
       first.close(); second.close(); otherDb.close();
