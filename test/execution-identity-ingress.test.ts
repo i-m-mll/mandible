@@ -20,6 +20,11 @@ describe("exact execution ingress", () => {
     expect(resolveAmbientProviderIdentity({ CLAUDE_CODE_SESSION_ID: "root" })).toEqual({ provider: "claude", session_id: "root", agent_id: null });
     expect(resolveAmbientProviderIdentity({ CODEX_THREAD_ID: "child", CODEX_SESSION_ID: "enclosing" })).toEqual({ provider: "codex", agent_id: "child", session_id: "enclosing" });
     expect(exactAgentRef(resolveAmbientProviderIdentity({ CODEX_SESSION_ID: "enclosing" }))).toBeNull();
+    expect(resolveAmbientProviderIdentity({ CODEX_THREAD_ID: "child", CODEX_SESSION_ID: "", CLAUDE_CODE_SESSION_ID: "", GEMINI_SESSION_ID: "" }))
+      .toEqual({ provider: "codex", agent_id: "child", session_id: null });
+    expect(resolveAmbientProviderIdentity({ CLAUDE_CODE_SESSION_ID: "root", CLAUDE_AGENT_ID: "" }))
+      .toEqual({ provider: "claude", agent_id: null, session_id: "root" });
+    expect(normalizeAmbientProviderIdentity({ provider: "codex", agent_id: "child", session_id: "" })).toBeNull();
     expect(normalizeAmbientProviderIdentity({ provider: "claude", provider_session_id: "old" })).toEqual({ provider: "claude", agent_id: null, session_id: "old" });
   });
 
