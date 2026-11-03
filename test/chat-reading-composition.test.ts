@@ -100,6 +100,37 @@ it('retains Claude create/resume actions and parent-scoped targets in compact an
   } finally {f.close();}
 });
 
+it('projects only proven native task notifications and retains repeated reports and raw source',async()=>{
+  const summary='Agent "Inspect settings" finished';
+  const report='First finding\n\nSecond finding';
+  const envelope=`<task-notification>\n<task-id>same-agent</task-id>\n<tool-use-id>native-call</tool-use-id>\n<output-file>/private/tasks/same-agent.output</output-file>\n<status>completed</status>\n<summary>${summary}</summary>\n<note>The same task may notify after resuming.</note>\n<result>${report}</result>\n<usage><tool_uses>2</tool_uses></usage>\n</task-notification>`;
+  const producer={origin:{kind:'task-notification',producer:'session-task',runId:'native-run'},promptSource:'system',turnOrigin:'task_notification'};
+  const ids=['notification-one','notification-two','quoted-by-user'];
+  const records=ids.map((uuid,index)=>({uuid,type:'user',sessionId:'composition',timestamp:'2026-11-01T00:00:00Z',...(index<2?producer:{}),message:{role:'user',content:envelope}}));
+  const f=await fixture(false,{provider:'claude_code',records});
+  try {
+    const notifications=f.manifest.members.filter(member=>member.activityFacts?.activityKind==='tool-summary');
+    expect(notifications.map(member=>member.sourcePositions)).toEqual([[0],[1]]);
+    expect(new Set(notifications.map(member=>member.key)).size).toBe(2);
+    expect(f.manifest.members.find(member=>member.position===2)?.speaker).toBe('user');
+    const expanded={[`group:${notifications[0].activityRunId}`]:true,...Object.fromEntries(notifications.flatMap(member=>member.disclosures!.keys.map(key=>[key,true])))};
+    const plan=planConversationReading(f.manifest,expanded);
+    const rendered=await readReadingRowBatch({db:f.db,reader:f.reader,conversationId:'composition',request:{positionSpaceId:f.manifest.positionSpaceId,rows:plan.rows,expanded}});
+    expect(rendered.status).toBe('source');
+    if(rendered.status!=='source')throw new Error(rendered.status);
+    const nodes=rendered.rows.filter(row=>row.kind==='content').flatMap(row=>row.nodes);
+    const events=nodes.flatMap(node=>node.kind==='activity'&&node.item.type==='activity'?[node.item]:[]);
+    expect(events.map(item=>item.identity.native_item_id)).toEqual(ids.slice(0,2));
+    expect(events.map(item=>item.parts.map(part=>part.text))).toEqual([[summary,report],[summary,report]]);
+    expect(nodes.filter(node=>node.kind==='user_message')).toHaveLength(1);
+    const raw=await f.reader.readPositions('composition',[0,1]);
+    expect(raw.status).toBe('source');
+    if(raw.status!=='source')throw new Error(raw.status);
+    expect(raw.value.map(block=>[block.type,block.role,block.content])).toEqual([['user_message','user',envelope],['user_message','user',envelope]]);
+    expect(f.parsed.blocks.map(block=>block.metadata.chat_item!.identity.native_item_id)).toEqual(ids);
+  } finally {f.close();}
+});
+
 it('materializes exact disclosed call/result targets through the normal row source', async () => {
   const f = await fixture(true);
   try {

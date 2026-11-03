@@ -139,6 +139,8 @@ export interface BlockMetadata {
   display_tool_operation?: ToolOperationContext;
   display_tool_targets?: import('../presentation/activity-targets.js').ActivityTarget[];
   display_tool_operation_kind?: 'subagent-create' | 'subagent-resume';
+  /** Proven session-task notification; bookkeeping and report remain in native content. */
+  display_task_notification?: {summary:string;hasBody:boolean};
   /** Bounded native command facts; full output stays in canonical content. */
   display_local_command?:
     | { kind: 'invocation'; name: string; args: string }

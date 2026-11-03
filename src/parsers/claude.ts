@@ -1,5 +1,6 @@
 import { claudeAssistantResponse } from "./assistant-response.js";
 import { claudeCommandInvocation, claudeCommandOutput } from './claude-local-command.js';
+import { claudeTaskNotification } from './claude-task-notification.js';
 // Parser for Claude Code JSONL conversation files.
 // Format: ~/.claude/projects/<encoded-path>/<uuid>.jsonl
 
@@ -83,6 +84,9 @@ interface ClaudeRecord {
   prevent_continuation?: boolean;
   commandRun?: { command?: string; args?: string };
   toolUseResult?: { agentId?: string; description?: string };
+  origin?: {kind?:string;producer?:string;runId?:string};
+  promptSource?: string;
+  turnOrigin?: string;
   data?: {
     type?: string;
     message?: unknown;
@@ -627,6 +631,11 @@ export class ClaudeParser implements ConversationParser {
         blocks[index].metadata.source_record_ordinal = options.baseRecordCount + recordIndex;
         blocks[index].metadata.source_sub_block_ordinal = index - firstRecordBlock;
         const block = blocks[index];
+        if(rec.type==='user' && rec.origin?.kind==='task-notification' && rec.origin.producer==='session-task'
+          && rec.promptSource==='system' && rec.turnOrigin==='task_notification') {
+          const notification=claudeTaskNotification(block.content);
+          if(notification)block.metadata.display_task_notification={summary:notification.summary,hasBody:Boolean(notification.result)};
+        }
         // Only the provider's complete command envelopes gain presentation facts.
         // Raw role/content and every native/source coordinate remain authoritative.
         if ((rec.type === 'user' && !rec.isMeta) || (rec.type === 'system' && rec.subtype === 'local_command')) {

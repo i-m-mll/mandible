@@ -73,6 +73,7 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
       "Tool results come from user content blocks with type tool_result and exact tool_use IDs establish terminal execution evidence. Missing results and assistant stop_reason tool_use alone do not prove current execution; absent result timestamps never establish duration.",
       "Chat retains native tool-result content/media and error facts as presentation-only evidence; canonical flattened content and parts are unchanged.",
       "Exact historical user and system/local_command envelopes expose display-only invocation/output facts; native role, XML content and source identity remain unchanged. Output joins use parentUuid with optional commandRun, and stdout/stderr content is projected once.",
+      "User task-notification envelopes require native session-task origin, system promptSource and task_notification turnOrigin before Chat projects authored summary/result as an unlinked tool-summary event. Raw role, content, UUID and source positions stay unchanged; repeated native notifications remain distinct.",
       "Agent/Task operation hints distinguish create from resume/to; structured toolUseResult.agentId supplies scoped subagent targets with authored description labels, not guessed standalone session IDs.",
       "Messages, tools, thinking, progress, summaries, and informational records expose metadata.chat_item using the shared provider-neutral contract.",
       "Native content-block indexes preserve ordered siblings that share one Claude message identity.",

@@ -2,6 +2,7 @@ import { inlineActivityKey } from './reading-disclosures.js';
 import type { InlineActivityIdentity } from './types.js';
 import { projectNativeToolResult } from './tool-transport.js';
 import { claudeCommandOutput } from '../parsers/claude-local-command.js';
+import { claudeTaskNotification } from '../parsers/claude-task-notification.js';
 import { splitProviderDirectives } from './provider-directives.js';
 import type { ToolCallActivity, ThinkingBlockActivity, ProviderDirectiveActivity } from './types.js';
 import { chatItemIdentityKey } from '../conversation-control/provider-live.js';
@@ -37,7 +38,12 @@ function chatItemText(item: MessageItem | PlanItem | ToolCallItem | ActivityItem
   return item.parts.map((part) => part.text).join('\n');
 }
 
-export function displayChatItem(item: ChatItem, metadata: Pick<BlockMetadata, 'display_completion_parts' | 'display_tool_content' | 'display_tool_error' | 'display_local_command'>): ChatItem {
+export function displayChatItem(item: ChatItem, metadata: Pick<BlockMetadata, 'display_completion_parts' | 'display_tool_content' | 'display_tool_error' | 'display_local_command' | 'display_task_notification'>): ChatItem {
+  if(metadata.display_task_notification) {
+    const notification=claudeTaskNotification(chatItemText(item));
+    return {...item,type:'activity',role:'system',activity_kind:'tool-summary',parts:[{type:'text',text:metadata.display_task_notification.summary},
+      ...(notification?.result ? [{type:'text' as const,text:notification.result}] : [])]};
+  }
   const command = metadata.display_local_command;
   if (command?.kind === 'invocation') return { ...item, type: 'message', role: 'user', parts: [{type:'text', text: `${command.name}${command.args ? ` ${command.args}` : ''}`}] };
   if (command?.kind === 'output') {
