@@ -1,3 +1,4 @@
+import { decodeReasoningFingerprint } from '../presentation/reasoning-equivalence.js';
 import { observeOperationReceipt } from '../presentation/tool-observation.js';
 import { observationWriter, readObservations } from './index-observations.js';
 import { readProviderEvidence } from './index-provider-evidence.js';
@@ -57,6 +58,7 @@ export function writeDisplayIndex(db:SqliteDatabase,cacheId:number,input:Display
     const run=fragment.kind==='activity' ? previous?.kind===1&&fragmentSpeaker(previous)===fragment.speaker
       ? [previous.run_position!,previous.run_kind!,previous.run_ordinal!] : [position,kind,partOrdinal] : [null,null,null];
     const activity=fragment.activity;
+    if(activity?.reasoningEquivalence)decodeReasoningFingerprint(activity.reasoningEquivalence);
     const sourceRole=roles.get(position)!;
     const speakerOverride=speaker(sourceRole)===fragment.speaker?0:(fragment.speaker==='user'?1:fragment.speaker==='assistant'?2:3)<<6;
     const flags=speakerOverride|(fragment.summary_from_source?1:0)|(fragment.has_details&&!activity?.observation?2:0)|(fragment.summary_eligible===false?4:0)|(activity?.failed&&!activity.observation?8:0)|(activity?.running&&!activity.observation?16:0)|(activity?.hasResult?32:0)
@@ -104,7 +106,9 @@ function decodeRows(db:SqliteDatabase,id:number,rows:FragmentRow[]):IndexedDispl
   return rows.map(row=>{
     const key=`${row.position}:${row.part_kind}:${row.part_ordinal}`;
     const activityKind=enumValue(ACTIVITIES,row.activity_kind);
-    const activity:ActivityFacts|null=activityKind ? {kind:activityKind,...(row.reasoning_equivalence?{reasoningEquivalence:Buffer.from(row.reasoning_equivalence).toString('hex')}:{}),
+    const reasoningFingerprint=row.reasoning_equivalence?Buffer.from(row.reasoning_equivalence).toString('hex'):undefined;
+    if(reasoningFingerprint)decodeReasoningFingerprint(reasoningFingerprint);
+    const activity:ActivityFacts|null=activityKind ? {kind:activityKind,...(reasoningFingerprint?{reasoningEquivalence:reasoningFingerprint}:{}),
       ...(row.activity_subtype===null?{}:{activityKind:enumValue(SUBTYPES,row.activity_subtype)}),...(row.severity===null?{}:{severity:enumValue(SEVERITIES,row.severity)}),...(row.outcome===null?{}:{outcome:enumValue(OUTCOMES,row.outcome)}),
       ...(row.status===null?{}:{status:row.status}),...(row.tool_name===null?{}:{toolName:row.tool_name}),...(row.tool_kind===null?{}:{toolKind:row.tool_kind}),...(row.turn_id===null?{}:{turnId:row.turn_id}),
       ...(row.flags&32?{hasResult:true}:{}),...(row.flags&8?{failed:true}:{}),...(row.flags&16?{running:true}:{}),

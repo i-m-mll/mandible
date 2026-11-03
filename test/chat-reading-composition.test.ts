@@ -239,7 +239,7 @@ it('coalesces only adjacent complete reasoning equivalents while retaining every
   const text='**Planning retry**\n\nPreparing consultation';
   const reasoning=(id:string,body:string)=>({type:'response_item',payload:{type:'reasoning',id,summary:[{type:'summary_text',text:body}],internal_chat_message_metadata_passthrough:{turn_id:'same-turn'}}});
   const mirror={type:'event_msg',payload:{type:'item_completed',turn_id:'same-turn',item:{type:'Reasoning',id:'mirror'}}};
-  const f=await fixture(false,{provider:'codex',records:[{type:'session_meta',payload:{id:'composition',cwd:'/tmp'}},reasoning('first',text),mirror,mirror,reasoning('second',text),
+  const f=await fixture(false,{provider:'codex',records:[{type:'session_meta',payload:{id:'composition',cwd:'/tmp'}},reasoning('first',text),mirror,mirror,reasoning('second',text+'\n\nSecond complete source line'),
     {type:'event_msg',payload:{type:'task_started',turn_id:'same-turn'}},reasoning('after-status',text),reasoning('distinct-body','**Planning retry**\n\nDifferent consultation')]});
   try {
     const source=f.parsed.blocks.filter(block=>block.type==='thinking');
@@ -247,7 +247,8 @@ it('coalesces only adjacent complete reasoning equivalents while retaining every
     const representatives=f.manifest.members.filter(member=>member.activityFacts?.reasoningEquivalence);
     expect(representatives).toHaveLength(3);
     expect(representatives[0].sourcePositions).toEqual(source.slice(0,2).map(block=>block.position));
-    expect(representatives[1].activityFacts?.reasoningEquivalence).toBe(representatives[0].activityFacts?.reasoningEquivalence);
+    expect(representatives[0].position).toBe(source[1].position);
+    expect(representatives[1].sourcePositions).toEqual([source[2].position]);
     expect(representatives[2].activityFacts?.reasoningEquivalence).not.toBe(representatives[0].activityFacts?.reasoningEquivalence);
     const [first,second]=source;
     const closed=planConversationReading(f.manifest,{});
@@ -262,7 +263,10 @@ it('coalesces only adjacent complete reasoning equivalents while retaining every
     expect(read.rows[0].sources.map(source=>source.position)).toEqual([first.position,second.position]);
     const node=read.rows[0].nodes[0];
     if(node.kind!=='activity')throw Error('Expected representative reasoning event');
-    expect(node.sourceAliases?.map(source=>source.position)).toEqual([second.position]);
+    expect(node.source?.position).toBe(second.position);
+    expect(node.sourceAliases?.map(source=>source.position)).toEqual([first.position]);
+    if(node.item.type!=='activity')throw Error('Missing source reasoning');
+    expect(node.item.parts).toEqual(second.metadata.chat_item!.parts);
   } finally {f.close();}
 });
 
