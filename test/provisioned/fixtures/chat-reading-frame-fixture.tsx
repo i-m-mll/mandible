@@ -136,7 +136,7 @@ void (async () => {
   }
   scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
   hydrate(); viewport.engine.scrollToIndex(viewport.rows.findIndex(row => row.key === 'row:49'), { align: 'start', behavior: 'auto' });
-  await until(() => !!boxes().get('row:49')?.querySelector('.user-bubble__disclosure'), 'bounded user message');
+  await until(() => !!boxes().get('row:49')?.querySelector('.user-bubble button[aria-expanded]'), 'bounded user message');
   await until(() => !viewport.engine.isScrolling, 'user disclosure reader settlement');
   const userBubble = () => boxes().get('row:49')!.querySelector<HTMLElement>('.user-bubble')!;
   const foldedHeight = userBubble().getBoundingClientRect().height;
@@ -228,7 +228,7 @@ void (async () => {
   if (measuredAsset.status !== 'complete') throw new Error(`Asset measurement failed: ${measuredAsset.status}`);
   const visibleAsset = document.createElement('div'); visibleAsset.style.width = `${assetLayout.width}px`; scroller.append(visibleAsset);
   render(<ReadingRowView {...props(assetRow)} />, visibleAsset);
-  await until(() => !!visibleAsset.querySelector<HTMLImageElement>('img')?.complete && !!visibleAsset.querySelector('.user-bubble__disclosure'), 'asset crosses user preview bound');
+  await until(() => !!visibleAsset.querySelector<HTMLImageElement>('img')?.complete && !!visibleAsset.querySelector('.user-bubble button[aria-expanded]'), 'asset crosses user preview bound');
   const settledAssetHeight = visibleAsset.querySelector<HTMLElement>('[data-reading-key]')!.getBoundingClientRect().height;
   const assetCap = 18 * parseFloat(getComputedStyle(document.documentElement).fontSize);
   if (initialAssetHeight >= assetCap || visibleAsset.querySelector('.user-bubble__content')!.getBoundingClientRect().height <= assetCap) throw new Error('Image did not cross the folded preview boundary');
