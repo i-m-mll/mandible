@@ -1,8 +1,5 @@
 import { toolObservation } from '../presentation/tool-observation.js';
-import { projectToolProgram } from '../presentation/tool-program.js';
-import { projectToolResult } from '../presentation/tool-transport.js';
 import { extractToolResultText } from '../presentation/model.js';
-import { presentTool } from '../presentation/tool-presentation.js';
 import { projectExecution } from '../presentation/execution-presentation.js';
 import { assistantResponseMembership } from "../parsers/assistant-response.js";
 import {isRoutineActivityStatus} from '../presentation/model.js';
