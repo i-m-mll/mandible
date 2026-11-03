@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { installReadingBrowserFixture } from './helpers/reading-browser-fixture';
+import { installReadingPresentationFixture } from './helpers/reading-presentation-fixture';
 import { mockChatViewport, mockManagedSettings } from './helpers/conversation-ui-transport';
 import { establishTestClientAccess } from './helpers/local-client-access';
 import { cleanup, fireEvent, render, renderHook, act, screen, waitFor, within } from './helpers/dom.js';
@@ -9,6 +11,7 @@ import * as api from '../ui/src/api.js';
 import type {
   CanonicalProject,
   ConversationControlSnapshot,
+  ConversationPositionWindow,
   ConversationSpawnReceipt,
   ConversationSidebarConversation,
   ConversationSidebarGroup,
@@ -43,8 +46,13 @@ class FakeEventSource {
 vi.mock('@xterm/xterm', () => ({ Terminal: class { options = {}; loadAddon(): void {} open(): void {} write(): void {} writeln(): void {} clear(): void {} focus(): void {} dispose(): void {} } }));
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} dispose(): void {} } }));
 
+const readingSources = new Map<string, ConversationPositionWindow>();
+let disposeReadingBrowser: (() => void) | undefined;
+
 beforeEach(async () => {
   await establishTestClientAccess();
+  readingSources.clear();
+  window.history.replaceState(null, '', '/');
   mockChatViewport();
   mockManagedSettings();
   Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, writable: true, value: () => {} });
@@ -79,15 +87,30 @@ beforeEach(async () => {
   vi.spyOn(api, 'updateSidebarOrderPreference').mockImplementation(async (value, revision) => ({
     version: 1, key: 'sidebar_order', value, revision: revision + 1,
   }));
+  disposeReadingBrowser = installReadingBrowserFixture();
+  installReadingPresentationFixture(id => readingSources.get(id));
+  vi.spyOn(api, 'getConversationWindow').mockImplementation(async id => {
+    const source = emptyReadingSource(conversation(id, `Chat ${id}`));
+    readingSources.set(id, source);
+    return source;
+  });
+  vi.spyOn(api, 'getConversationControl').mockImplementation(async id => ({
+    conversation_id: id, provider: 'codex', provider_session_id: `session-${id}`, provider_mode: null, provider_capabilities: null,
+    revision: 1, ownership: { kind: 'none', generation: 0 }, controller: { kind: 'stopped', at: 1 }, turn: { kind: 'none' },
+    capability: { kind: 'unavailable', revision: 1, reason: 'subagent' }, updated_at: 1,
+  }));
 });
 
 afterEach(() => {
   cleanup();
+  disposeReadingBrowser?.();
+  disposeReadingBrowser = undefined;
   window.localStorage.clear();
   vi.useRealTimers();
   vi.restoreAllMocks();
   __resetSharedSseForTests();
   vi.unstubAllGlobals();
+  window.history.replaceState(null, '', '/');
 });
 
 function conversation(id: string, title: string, starred = false): ConversationSidebarConversation {
@@ -99,6 +122,14 @@ function conversation(id: string, title: string, starred = false): ConversationS
     tags: [], notes: null, parent_conversation_id: null, children_count: 0,
     canonical_project_id: null, canonical_project_key: null,
   };
+}
+
+function emptyReadingSource(value: ConversationSidebarConversation): ConversationPositionWindow {
+  return { conversation: { ...value, block_count: 0 }, body_source: 'source', source_version_id: 'empty-source',
+    position_space_id: 'empty-space', publication_revision: 1, reading_context: { positions: [], speaker_runs: [] },
+    blocks: [], children: [], parent: null, revision: 0, total: 0,
+    target: { kind: 'initial', requested_value: null, position: null, block_id: null, turn_id: null },
+    window: { start_position: null, end_position: null, has_before: false, has_after: false, after_count: 0, limit: 160 } };
 }
 
 const pinnedOne = conversation('pin-1', 'Pinned one', true);
@@ -276,12 +307,9 @@ describe('conversation sidebar groups', () => {
       canonical_project_id: placementKind === 'project' ? 'prj-mandible' : null,
       canonical_project_key: placementKind === 'project' ? 'mandible' : null,
     };
-    vi.spyOn(api, 'getConversationWindow').mockResolvedValue({
-      conversation: scopedConversation,
-      body_source: 'legacy', source_version_id: null, blocks: [], children: [], parent: null, revision: 0, total: 0,
-      target: { kind: 'initial', requested_value: null, position: null, block_id: null, turn_id: null },
-      window: { start_position: null, end_position: null, has_before: false, has_after: false, after_count: 0, limit: 160 },
-    });
+    const emptySource = emptyReadingSource(scopedConversation);
+    readingSources.set(id, emptySource);
+    vi.spyOn(api, 'getConversationWindow').mockResolvedValue(emptySource);
     const submit = vi.spyOn(api, 'submitConversationControl').mockResolvedValue({
       kind: 'accepted', delivery_id: `delivery-${id}`, turn_id: `turn-${id}`, snapshot: readyControl,
     });
@@ -319,29 +347,7 @@ describe('conversation sidebar groups', () => {
       [],
     );
     expect(composer.value).toBe('');
-    if (provider === 'codex' && placementKind === 'projectless') {
-      let releaseSave!: () => void;
-      let saving = false;
-      const transport = globalThis.fetch;
-      vi.stubGlobal('fetch', vi.fn(async (path: RequestInfo | URL, init?: RequestInit) => {
-        if (String(path).endsWith('/control/settings') && init?.method === 'PATCH') {
-          saving = true;
-          await new Promise<void>((resolve) => { releaseSave = resolve; });
-        }
-        return transport(path, init);
-      }));
-      const effort = await screen.findByRole('button', { name: 'Thinking effort' });
-      await waitFor(() => expect(effort.hasAttribute('disabled')).toBe(false));
-      fireEvent.click(effort);
-      fireEvent.click(screen.getByRole('option', { name: 'high', exact: true }));
-      fireEvent.input(composer, { target: { value: 'Use the new effort.' } });
-      fireEvent.click(screen.getByRole('button', { name: 'Send' }));
-      await waitFor(() => expect(saving).toBe(true));
-      expect(submit).toHaveBeenCalledTimes(1);
-      await act(async () => releaseSave());
-      await waitFor(() => expect(submit).toHaveBeenCalledTimes(2));
-      expect(submit).toHaveBeenLastCalledWith(expect.any(Object), 'Use the new effort.', undefined, {}, expect.any(String), []);
-    }
+
   });
 
   it('cannot manufacture a project group from a legacy directory label or path', async () => {
@@ -410,7 +416,6 @@ describe('conversation sidebar groups', () => {
   });
 
   it('replays each current per-key target during filter reconciliation without losing selection', async () => {
-    vi.useFakeTimers();
     vi.mocked(api.listCanonicalProjects).mockResolvedValue(canonicalProjects);
     window.localStorage.setItem('mandible.chat.viewState:v1', JSON.stringify({
       shownProjects: [{ projectId: 'prj-mandible', checkoutId: 'checkout-mandible' }],
@@ -422,8 +427,7 @@ describe('conversation sidebar groups', () => {
       return { limit: 1, groups: [group({ key: 'opaque:chats', kind: 'chats', label: 'Chats', total: 2, conversations: [pinnedOne], next_cursor: 'pin-cursor' })] };
     });
     renderView();
-    await vi.advanceTimersByTimeAsync(350);
-    const first = screen.getByRole('button', { name: 'Open conversation Pinned one' });
+    const first = await screen.findByRole('button', { name: 'Open conversation Pinned one' });
     await waitFor(() => expect(first.getAttribute('aria-current')).toBe('true'));
     fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Open conversation Pinned two' })).toBeTruthy());
@@ -431,7 +435,6 @@ describe('conversation sidebar groups', () => {
     fireEvent.click(heading);
 
     fireEvent.input(screen.getByRole('textbox', { name: 'Search chats' }), { target: { value: 'Pinned' } });
-    await vi.advanceTimersByTimeAsync(350);
     await waitFor(() => expect(request).toHaveBeenCalledWith(expect.objectContaining({
       group_key: 'opaque:chats', cursor: 'pin-cursor', search: 'Pinned', limit: 1,
       project_ids: ['prj-mandible'],

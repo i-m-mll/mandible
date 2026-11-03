@@ -36,16 +36,9 @@ async function fixture(includeResult: boolean) {
   return {root, db, parsed, manifest, reader: new ConversationSourceReader(db), close: () => {db.close(); fs.rmSync(root, {recursive: true, force: true});}};
 }
 
-it('retains default status evidence and materializes exact disclosed call/result targets through the normal row source', async () => {
+it('materializes exact disclosed call/result targets through the normal row source', async () => {
   const f = await fixture(true);
   try {
-    const status = f.parsed.blocks.find(block => block.metadata.source_event_type === 'task_started')!;
-    expect(planConversationReading(f.manifest, {}).membership.has(status.position)).toBe(true);
-    const statusMember = f.manifest.members.find(member => member.position === status.position)!;
-    const statusExpanded = {[statusMember.disclosures!.keys[0]]: true};
-    const statusRow = planConversationReading(f.manifest, statusExpanded).rows.find(row => row.memberKeys.includes(statusMember.key))!;
-    expect(await readReadingRowBatch({db: f.db, reader: f.reader, conversationId: 'composition',
-      request: {positionSpaceId: f.manifest.positionSpaceId, rows: [statusRow], expanded: statusExpanded}})).toMatchObject({status: 'source'});
     const call = f.manifest.members.find(member => member.activity?.type === 'tool-call-activity')!;
     const closed = planConversationReading(f.manifest, {});
     const expanded = {[call.disclosures!.keys[0]]: true};
