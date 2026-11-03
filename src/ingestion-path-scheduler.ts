@@ -24,7 +24,7 @@ interface PathDemand {
   path: string;
   pending?: PathPass;
   running?: PathPass;
-  job: () => Promise<void>;
+  job: (cooperate: () => Promise<void>) => Promise<void>;
 }
 
 function strengthen(target: IngestionPathRequirements, incoming: IngestionPathRequirements): void {
@@ -46,7 +46,7 @@ export class IngestionPathScheduler {
   ) => Promise<void>>((job, cooperate) => job(cooperate));
 
   constructor(
-    private readonly execute: (filePath: string, requirements: IngestionPathRequirements, withinPass: boolean) => Promise<void>,
+    private readonly execute: (filePath: string, requirements: IngestionPathRequirements, withinPass: boolean, cooperate: () => Promise<void>) => Promise<void>,
     private readonly needsFollowup: (filePath: string) => Promise<boolean>,
   ) {}
 
@@ -58,17 +58,17 @@ export class IngestionPathScheduler {
     if (failures.length) throw new AggregateError(failures, `Failed to ingest ${failures.length} source(s)`);
   }
 
-  background(operation: (cooperate: () => Promise<void>) => Promise<void>): Promise<void> {
-    return this.queue.enqueue(operation);
+  background(operation: (cooperate: () => Promise<void>) => Promise<void>, priority = false): Promise<void> {
+    return this.queue.enqueue(operation, priority);
   }
 
-  async inline(filePath: string, forceFull = false): Promise<void> {
+  async inline(filePath: string, forceFull = false, cooperate?: () => Promise<void>): Promise<void> {
     const key = canonicalSourcePath(path.resolve(filePath));
     const completed = this.request(key, { forceFull, bypassSameMtimeUnchanged: false, priority: false }, true);
     const demand = this.demands.get(key)!;
     while (demand.pending) {
       this.queue.remove(demand.job);
-      await this.run(demand);
+      await this.run(demand, cooperate);
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
     await completed;
@@ -77,7 +77,7 @@ export class IngestionPathScheduler {
   private request(filePath: string, requirements: IngestionPathRequirements, withinPass = false): Promise<void> {
     let demand = this.demands.get(filePath);
     if (!demand) {
-      demand = { path: filePath, job: () => this.run(demand!) };
+      demand = { path: filePath, job: (cooperate) => this.run(demand!, cooperate) };
       this.demands.set(filePath, demand);
     }
     const current = demand;
@@ -100,13 +100,13 @@ export class IngestionPathScheduler {
     });
   }
 
-  private async run(demand: PathDemand): Promise<void> {
+  private async run(demand: PathDemand, cooperate: () => Promise<void> = () => new Promise(resolve => setImmediate(resolve))): Promise<void> {
     const pass = demand.pending;
     if (!pass) return;
     demand.pending = undefined;
     demand.running = pass;
     try {
-      await this.execute(demand.path, pass.requirements, pass.withinPass);
+      await this.execute(demand.path, pass.requirements, pass.withinPass, cooperate);
       const verifiedGeneration = pass.generation;
       const stale = verifiedGeneration > 0 && await this.needsFollowup(demand.path);
       if (stale || pass.generation !== verifiedGeneration) {

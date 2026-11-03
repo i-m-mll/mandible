@@ -1,5 +1,7 @@
+import type { ActivityFacts } from '../conversations/conversation-index.js';
+import { compactToolRunFacts, compactToolOperation } from './tool-presentation.js';
 import type { ActivityItem, ActivityKind } from '../parsers/types.js';
-import type { DisplayActivityItem, ToolCallActivity } from './types.js';
+import type { DisplayActivityItem } from './types.js';
 import { plainActivityHeader } from './activity-text.js';
 import { classifyTool, presentTool, toolRunFacts, mergeToolRunFacts, summarizeToolRunFacts, type ToolRunFact, type PresentationIcon } from './tool-presentation.js';
 
@@ -120,22 +122,64 @@ export type ActivityRunFacts = {
   states: string[]; toolStates: string[]; tools: ToolRunFact[]; hasThinkingTool: boolean;
   labels: Array<{key:string;label:string;count:number}>; hasDetails: boolean;
 };
-export function activityRunFacts(items: readonly DisplayActivityItem[]): ActivityRunFacts {
-  const presentations = presentActivityItems(items);
-  const tools = items.filter((item):item is ToolCallActivity => item.type === 'tool-call-activity');
+export function activitySemanticFacts(item: DisplayActivityItem): ActivityFacts {
+  if (item.type === 'tool-call-activity') return {kind:'tool',toolName:item.name,toolKind:item.toolKind,turnId:item.turnId,
+    execution:item.execution ?? presentTool(item.name,item.input,item.toolKind).execution,
+    operations:toolRunFacts([{name:item.name,toolKind:item.toolKind,input:item.input,execution:item.execution,operations:item.operations}])
+      .map(compactToolOperation),
+    hasResult:Boolean(item.result),failed:item.result?.is_error || item.result?.presentation?.failed,running:item.result?.running || item.result?.presentation?.running};
+  if (item.type === 'thinking-block-activity') return {kind:'thinking',turnId:item.turnId,summary:presentReasoning([item.content]).summary};
+  if (item.type === 'provider-directive') return {kind:item.directive.kind === 'memory-citation' ? 'directive-memory' : 'directive-thread',turnId:item.turnId};
+  return {kind:'activity',activityKind:item.activity_kind,severity:item.severity,outcome:item.execution_outcome,status:item.status,
+    summary:activitySummary(item,plainActivityParts(item),activityState(item))};
+}
+export function semanticActivityState(item: ActivityFacts): string[] {
+  return item.kind === 'tool' ? [item.failed ? 'Failed' : undefined,item.running ? 'Running' : undefined].filter((value):value is string=>Boolean(value))
+    : item.kind === 'activity' ? [item.severity && item.severity !== 'info' ? item.severity : undefined,
+      item.outcome && item.outcome !== 'unknown' ? item.outcome : undefined,item.status].filter((value):value is string=>Boolean(value)) : [];
+}
+export function semanticToolOperations(item:ActivityFacts):NonNullable<ActivityFacts['operations']> {
+  return item.operations??toolRunFacts([{name:item.toolName??'',toolKind:item.toolKind,execution:item.execution}]).map(compactToolOperation);
+}
+export function semanticActivitySummary(item: ActivityFacts): string {
+  if(item.summary !== undefined)return item.summary;
+  if(item.kind==='tool') {const text=summarizeToolRunFacts(compactToolRunFacts(semanticToolOperations(item))).join('; '); return text.charAt(0).toUpperCase()+text.slice(1);}
+  if(item.kind==='thinking')return 'Thought';
+  if(item.kind==='directive-memory')return 'Used memory';
+  if(item.kind==='directive-thread')return 'Created chat';
+  return [...new Set([ACTIVITY_LABELS[item.activityKind!],...semanticActivityState(item)])].join(' · ');
+}
+export function semanticActivityIcon(item: ActivityFacts): PresentationIcon {
+  if(item.kind==='tool') return compactToolRunFacts(semanticToolOperations(item))[0]?.presentation.icon ?? 'monitor';
+  if(item.kind==='thinking')return 'thought';
+  if(item.kind==='directive-memory')return 'history';
+  if(item.kind==='directive-thread')return 'chat';
+  return item.activityKind==='thinking'||item.activityKind==='reasoning-summary' ? 'thought'
+    :item.activityKind==='tool-progress'||item.activityKind==='tool-summary' ? 'terminal'
+    :item.activityKind==='information' ? 'info' :item.activityKind==='diagnostic' ? 'issues' :'monitor';
+}
+export const semanticActivityUnified = (item: ActivityFacts): boolean => item.kind !== 'activity' || ['thinking','reasoning-summary'].includes(item.activityKind!);
+export function semanticActivityRunFacts(items: readonly ActivityFacts[]): ActivityRunFacts {
   const labels = new Map<string,{key:string;label:string;count:number}>();
   const add = (key:string,label:string) => { const prior=labels.get(key); if(prior) prior.count++; else labels.set(key,{key,label,count:1}); };
-  items.forEach((item,index)=>{
-    if(item.type==='tool-call-activity')return;
-    if(item.type==='thinking-block-activity'||(item.type==='activity'&&['thinking','reasoning-summary'].includes(item.activity_kind)))add('thought','thought');
-    else if(item.type==='provider-directive')add(item.directive.kind==='memory-citation'?'memory':'chat-reference',item.directive.kind==='memory-citation'?'used memory':'created chat');
-    else { const summary=presentations[index].summary; const label=summary.charAt(0).toLowerCase()+summary.slice(1); add(item.activity_kind+':'+label,label); }
-  });
-  return {memberCount:items.length, unified:items.some(item=>item.type!=='activity'||['thinking','reasoning-summary'].includes(item.activity_kind)),
-    firstSummary:presentations[0]?.summary??'',firstIcon:items[0]?activityIconName(items[0]):'monitor',
-    states:[...new Set(items.flatMap(activityState))], toolStates:[...new Set(tools.flatMap(activityState))],tools:toolRunFacts(tools.map(item=>({name:item.name,toolKind:item.toolKind,input:item.input,execution:item.execution,operations:item.operations}))),
-    hasThinkingTool:tools.some(item=>classifyTool(item.name)==='think'),labels:[...labels.values()],
-    hasDetails:items.some(item=>item.type!=='activity'||['thinking','reasoning-summary'].includes(item.activity_kind))||activityDetailLines(presentations).length>0};
+  for(const item of items) {
+    if(item.kind==='tool')continue;
+    if(item.kind==='thinking'||(item.kind==='activity'&&['thinking','reasoning-summary'].includes(item.activityKind!)))add('thought','thought');
+    else if(item.kind==='directive-memory')add('memory','used memory');
+    else if(item.kind==='directive-thread')add('chat-reference','created chat');
+    else {const summary=semanticActivitySummary(item);add(item.activityKind+':'+summary.charAt(0).toLowerCase()+summary.slice(1),summary.charAt(0).toLowerCase()+summary.slice(1));}
+  }
+  const tools=items.filter(item=>item.kind==='tool');
+  return {memberCount:items.length,unified:items.some(semanticActivityUnified),firstSummary:items[0]?semanticActivitySummary(items[0]):'',
+    firstIcon:items[0]?semanticActivityIcon(items[0]):'monitor',states:[...new Set(items.flatMap(semanticActivityState))],
+    toolStates:[...new Set(tools.flatMap(semanticActivityState))],tools:tools.reduce<ToolRunFact[]>((facts,item)=>mergeToolRunFacts(facts,compactToolRunFacts(semanticToolOperations(item))),[]),
+    hasThinkingTool:tools.some(item=>classifyTool(item.toolName ?? '')==='think'),labels:[...labels.values()],
+    hasDetails:items.some(semanticActivityUnified)||items.length>1};
+}
+export function activityRunFacts(items: readonly DisplayActivityItem[]): ActivityRunFacts {
+  const facts=semanticActivityRunFacts(items.map(activitySemanticFacts));
+  facts.hasDetails ||= activityDetailLines(presentActivityItems(items)).length>0;
+  return facts;
 }
 export function mergeActivityRunFacts(left:ActivityRunFacts,right:ActivityRunFacts):ActivityRunFacts {
   if(!left.memberCount)return right;if(!right.memberCount)return left;

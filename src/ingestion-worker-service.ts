@@ -2,7 +2,8 @@ import { IngestionPathScheduler, type IngestionPathRequirements } from "./ingest
 import type { IngestionWorkerCommand } from "./ingestion-worker-protocol.js";
 
 interface IngestionWorkerOperations {
-  ingest: (filePath: string, requirements: IngestionPathRequirements, withinPass: boolean) => Promise<void>;
+  prepareCache?: (conversationId: string | undefined, cooperate: () => Promise<void>) => Promise<void>;
+  ingest: (filePath: string, requirements: IngestionPathRequirements, withinPass: boolean, cooperate: () => Promise<void>) => Promise<void>;
   needsFollowup: (filePath: string) => Promise<boolean>;
   reconcile: (startup: boolean, cooperate: () => Promise<void>, ingest: (filePath: string) => Promise<void>) => Promise<void>;
   fullIngest: (cooperate: () => Promise<void>, ingest: (filePath: string) => Promise<void>) => Promise<unknown>;
@@ -17,6 +18,12 @@ export class IngestionWorkerService {
   }
 
   async execute(request: IngestionWorkerCommand): Promise<unknown> {
+    if (request.kind === "prepare-cache") {
+      await this.paths.background(async (cooperate) => {
+        await this.operations.prepareCache?.(request.conversationId, cooperate);
+      }, request.priority === true);
+      return;
+    }
     if (request.kind === "ingest") {
       await this.paths.ingest(request.paths, {
         forceFull: request.forceFull === true,
@@ -27,11 +34,12 @@ export class IngestionWorkerService {
     }
     let value: unknown;
     await this.paths.background(async (cooperate) => {
+      await this.operations.prepareCache?.(undefined, cooperate);
       if (request.kind === "reconcile") {
         await this.operations.reconcile(request.startupPasses === true, cooperate,
-          (filePath) => this.paths.inline(filePath));
+          (filePath) => this.paths.inline(filePath, false, cooperate));
       } else {
-        value = await this.operations.fullIngest(cooperate, (filePath) => this.paths.inline(filePath, true));
+        value = await this.operations.fullIngest(cooperate, (filePath) => this.paths.inline(filePath, true, cooperate));
       }
     });
     return value;

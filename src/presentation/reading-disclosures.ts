@@ -1,4 +1,12 @@
-import type { ContentBlock, RenderNode } from './types.js';
+import type { ContentBlock, RenderNode, InlineActivityIdentity } from './types.js';
+
+export function inlineActivityKeyParts(identity:InlineActivityIdentity):{prefix:string;suffix:string} {
+  return {prefix:`${identity.kind}:${identity.turnId}:`,suffix:identity.kind==='provider-directive'?`:${identity.ordinal}`:''};
+}
+export function inlineActivityKey(identity:InlineActivityIdentity):string {
+  const {prefix,suffix}=inlineActivityKeyParts(identity);
+  return `${prefix}${identity.source}${suffix}`;
+}
 
 export function readingContentBlockDisclosureKey(turnId: string, block: ContentBlock, index: number): string {
   return block.contentKey ?? (block.type === 'tool_use' ? `tool:${block.id}` : `${turnId}:${block.type}:${index}`);
@@ -15,7 +23,7 @@ export function readingNodeDisclosures(node: RenderNode): ReadingDisclosures {
   switch (node.kind) {
     case 'activity': {
       if (node.item.type === 'provider-directive' && node.item.directive.kind === 'created-thread') return { keys: [], prefixes: [] };
-      const key = `activity:${node.key}`;
+      const key = `activity:${node.inlineIdentity ? inlineActivityKey(node.inlineIdentity) : node.key}`;
       return { keys: [key], prefixes: node.item.type==='tool-call-activity' ? [`${key}:operation:`] : [], ...(node.item.type === 'thinking-block-activity' ? { thinkingDefaults: [{ key, turnId: node.item.turnId }] } : {}) };
     }
     case 'semantic_event': return { keys: [`semantic:${node.key}`], prefixes: [] };

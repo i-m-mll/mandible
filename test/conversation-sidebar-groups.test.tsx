@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { installReadingBrowserFixture } from './helpers/reading-browser-fixture';
 import { mockChatViewport, mockManagedSettings } from './helpers/conversation-ui-transport';
 import { establishTestClientAccess } from './helpers/local-client-access';
 import { cleanup, fireEvent, render, renderHook, act, screen, waitFor, within } from './helpers/dom.js';
@@ -43,6 +44,7 @@ class FakeEventSource {
 vi.mock('@xterm/xterm', () => ({ Terminal: class { options = {}; loadAddon(): void {} open(): void {} write(): void {} writeln(): void {} clear(): void {} focus(): void {} dispose(): void {} } }));
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} dispose(): void {} } }));
 
+let disposeReadingBrowser:(()=>void)|undefined;
 beforeEach(async () => {
   await establishTestClientAccess();
   mockChatViewport();
@@ -56,6 +58,7 @@ beforeEach(async () => {
     unobserve(): void {}
     disconnect(): void {}
   });
+  disposeReadingBrowser=installReadingBrowserFixture();
   const rows = new Map<string, string>();
   const storage = {
     get length() { return rows.size; },
@@ -83,6 +86,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   cleanup();
+  disposeReadingBrowser?.();disposeReadingBrowser=undefined;
   window.localStorage.clear();
   vi.useRealTimers();
   vi.restoreAllMocks();
