@@ -53,10 +53,10 @@ function bindPattern(pattern:Ast,value:unknown,bindings:Map<string,unknown>):boo
   if(pattern.type==='ObjectPattern'&&value&&typeof value==='object')return pattern.properties.every((entry:Ast)=>entry.type==='Property'&&!entry.computed&&entry.kind==='init'&&identifier(entry.key)&&Object.hasOwn(value,entry.key.name)&&bindPattern(entry.value,(value as Record<string,unknown>)[entry.key.name],bindings));
   return false;
 }
-function mappedEntries(node:Ast,bindings:Map<string,unknown>):Array<{node:Ast;bindings:Map<string,unknown>}>|null {
+function mappedEntries(node:Ast,bindings:Map<string,unknown>,allowAsync=false):Array<{node:Ast;bindings:Map<string,unknown>}>|null {
   if(node.type!=='CallExpression'||node.optional||node.callee.type!=='MemberExpression'||node.callee.computed||node.callee.optional||!identifier(node.callee.property,'map')||node.arguments.length!==1)return null;
   const items=data(node.callee.object,bindings),callback=node.arguments[0];
-  if(!items||!Array.isArray(items.value)||items.value.length>256||callback.type!=='ArrowFunctionExpression'||callback.async||callback.params.length!==1)return null;
+  if(!items||!Array.isArray(items.value)||items.value.length>256||callback.type!=='ArrowFunctionExpression'||(!allowAsync&&callback.async)||callback.params.length!==1)return null;
   const body=callback.body.type==='BlockStatement'&&callback.body.body.length===1&&callback.body.body[0].type==='ReturnStatement'?callback.body.body[0].argument:callback.body;
   if(!body)return null;
   const entries:Array<{node:Ast;bindings:Map<string,unknown>}>=[];
@@ -71,7 +71,7 @@ function calls(node:Ast,bindings=new Map<string,unknown>(),pure?:(node:Ast,scope
     const collection=call.arguments[0];
     const entries:Array<{node:Ast;bindings:Map<string,unknown>}> = [];
     if(collection.type==='ArrayExpression'){for(const entry of collection.elements){if(!entry)return null;entries.push({node:entry,bindings});}}
-    else {const mapped=mappedEntries(collection,bindings);if(!mapped)return null;entries.push(...mapped);}
+    else {const mapped=mappedEntries(collection,bindings,true);if(!mapped)return null;entries.push(...mapped);}
     const operations:ToolProgramOperation[]=[];
     const returned=(node:Ast,scope:Map<string,unknown>,path:Array<string|number>):boolean=>{
       const op=operation(node,scope,pure);

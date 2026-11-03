@@ -86,3 +86,13 @@ it('preserves semantic buckets and phases when operation facts arrive in separat
   const tools=[{name:'exec_command',input:{cmd:'pwd'},state:'completed' as const},{name:'functions.exec_command',input:{cmd:'ls'},state:'completed' as const},{name:'exec_command',input:{cmd:'tail'},state:'ongoing' as const}];
   expect(mergeToolRunFacts(toolRunFacts(tools.slice(0,1)),toolRunFacts(tools.slice(1)))).toEqual(toolRunFacts(tools));
 });
+
+
+it('distinguishes awaited async batch callbacks from unresolved async data values',()=>{
+  const targets=[['first','native-a'],['second','native-b']];
+  const batch=`const ids=${JSON.stringify(targets)};const results=await Promise.all(ids.map(async ([label,id])=>[label,await tools.codex_app__read_thread({threadId:id})]));text(results);`;
+  const program=projectToolProgram('exec',batch);
+  expect(program?.operations.map(operation=>({name:operation.name,input:operation.input,collectionPath:operation.collectionPath}))).toEqual(targets.map(([,threadId],index)=>({name:'codex_app__read_thread',input:{threadId},collectionPath:[index,1]})));
+  const unresolved=projectToolProgram('exec','const ids=["native-a"];text(await tools.codex_app__wait_threads({targets:ids.map(async threadId=>({threadId}))}));');
+  expect(unresolved?.operations[0].input).toBeUndefined();
+});
