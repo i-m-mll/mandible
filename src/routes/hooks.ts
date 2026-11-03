@@ -1,3 +1,4 @@
+import { readLatestPersistedUsage } from '../conversations/persisted-usage.js';
 import { SessionExecutionStore } from "../session-execution.js";
 import { raiseHookNotificationAttention } from "../claude-hook-attention.js";
 import { getDb } from "../db.js";
@@ -54,7 +55,7 @@ export function registerHookRoutes(server: RouteRegistrar): void {
     sendJson(res, 200, { observation: new SessionExecutionStore(getDb()).read(provider, id) });
   }, { operation: { id: "get:/api/hooks/session-execution", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
-  server.get("/api/hooks/statusline", (req, res) => {
+  server.get("/api/hooks/statusline", async (req, res) => {
     const sessionRef =
       normalizeText(req.query.sessionRef) ??
       normalizeText(req.query.session_id) ??
@@ -67,7 +68,9 @@ export function registerHookRoutes(server: RouteRegistrar): void {
       return;
     }
     const telemetry = readLatestStatuslineTelemetry(sessionRef, transcriptPath);
-    sendJson(res, 200, { telemetry: telemetry ? serializeTelemetry(telemetry) : null });
+    if(telemetry)return sendJson(res,200,{telemetry:serializeTelemetry(telemetry)});
+    const usage=await readLatestPersistedUsage(getDb(),sessionRef,transcriptPath,req.signal);
+    sendJson(res,200,{telemetry:usage?{usage_telemetry:usage,provider_session_id:sessionRef,transcript_path:transcriptPath}:null});
   }, { operation: { id: "get:/api/hooks/statusline", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.post("/api/hooks/ingest-nudge", async (req, res) => {

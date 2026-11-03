@@ -1,3 +1,4 @@
+import { mockConversationMetadataTransport } from './helpers/conversation-ui-transport';
 // @vitest-environment jsdom
 import { establishTestClientAccess } from './helpers/local-client-access';
 import { act, cleanup, fireEvent, render, screen, within } from "./helpers/dom.js";
@@ -34,6 +35,7 @@ beforeEach(async () => {
   queryClient.clear();
   window.localStorage.clear();
   await establishTestClientAccess();
+  mockConversationMetadataTransport();
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
   vi.spyOn(api, 'getConversationWindow').mockImplementation(() => new Promise(() => {}));
   vi.spyOn(api, 'getConversationStructure').mockImplementation(() => new Promise(() => {}));

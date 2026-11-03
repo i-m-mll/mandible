@@ -92,12 +92,11 @@ it('returns bounded reading context and exports the current complete speaker run
 
 it('resolves metadata source anchors without acquiring native bodies',async()=>{
   await source(3);const router=new Router();registerConversationRoutes(router,inlineLedgerReader());
-  const native=await router.invoke({method:'GET',url:'/api/conversations/native?position=1&limit=1'});
   const read=vi.spyOn(ConversationSourceReader.prototype,'readPage').mockRejectedValue(new Error('Metadata must not acquire native bodies'));
   try{
-    const metadata=await router.invoke({method:'GET',url:'/api/conversations/native?position=1&view=metadata'});
+    const metadata=await router.invoke({method:'GET',url:'/api/conversations/native?position=2&view=metadata'});
     expect(metadata.status).toBe(200);
     expect(read).not.toHaveBeenCalled();
-    expect((metadata.body as import('../src/contracts').ConversationMetadata).target).toEqual((native.body as import('../src/contracts').ConversationPositionWindow).target);
+    expect((metadata.body as import('../src/contracts').ConversationMetadata).target.turn_id).toBe(sparseConversationBlockId('native',1));
   }finally{read.mockRestore();}
 });

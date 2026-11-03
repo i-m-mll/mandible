@@ -28,8 +28,11 @@ export function useCompleteReading(input: {
   expanded: Readonly<Record<string, boolean>>; disclosureRevisions: Readonly<Record<string, number>>;
   streaming?: boolean; local: ReadingProjection; enabled: boolean;
 }) {
-  const manifest = useQuery({ ...readingManifestOptions(input.scope, input.space), enabled: input.enabled && Boolean(input.space) }, queryClient);
-  useEffect(() => { if (input.enabled) void queryClient.invalidateQueries({ queryKey: readingManifestOptions(input.scope, input.space).queryKey }); }, [input.scope, input.space, input.sourceVersion, input.total, input.enabled]);
+  const manifest = useQuery({ ...readingManifestOptions(input.scope), enabled: input.enabled }, queryClient);
+  useEffect(()=>{
+    const cached=manifest.data;
+    if(input.enabled&&cached&&((input.space&&cached.positionSpaceId!==input.space)||(input.sourceVersion&&cached.sourceVersionId!==input.sourceVersion)||(input.total!==undefined&&cached.blockCount!==input.total)))void queryClient.invalidateQueries({queryKey:readingManifestOptions(input.scope).queryKey});
+  },[input.scope,input.space,input.sourceVersion,input.total,input.enabled,manifest.data]);
   const composition = useMemo(() => manifest.data ? composeConversationReading({ manifest: manifest.data, events: input.events, expanded: input.expanded, streaming: input.streaming }) : null,
     [manifest.data, input.events, input.expanded, input.streaming]);
   const plan = composition?.plan ?? null;
@@ -177,7 +180,7 @@ export function useCompleteReading(input: {
   const materializer = useRef(materialize); materializer.current = materialize;
   const [hydrationError, setHydrationError] = useState<string | null>(null);
   const currentKeys = useMemo(() => new Set(bodyRows.map(readingBodyKey)), [bodyRows]);
-  const publication = queryClient.getQueryState(readingManifestOptions(input.scope, input.space).queryKey)?.dataUpdateCount ?? 0;
+  const publication = queryClient.getQueryState(readingManifestOptions(input.scope).queryKey)?.dataUpdateCount ?? 0;
   const publicationBlocked = useRef<number | null>(null);
   const active = useRef<{ controller: AbortController; refs: readonly MeasurementRow[]; scope: string; space: string; publication: number } | null>(null);
   const failures = useRef(new Map<string, string>());

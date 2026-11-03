@@ -35,3 +35,11 @@ export function mockManagedSettings(runtime_options: api.ConversationRuntimeOpti
 export function changeNativeSelect(element: HTMLSelectElement, value: string): void {
   act(() => nativeEvent.change(element, { target: { value } }));
 }
+
+/** Existing native window fixtures also supply the separate body-free metadata projection. */
+export function mockConversationMetadataTransport():void {
+  vi.spyOn(api,'getConversationMetadata').mockImplementation(async(id,request)=>{
+    const payload=await api.getConversationWindow(id,request);
+    return {projection:'metadata',conversation:payload.conversation,children:payload.children,parent:payload.parent,total:payload.total,target:payload.target,source_version_id:payload.source_version_id,position_space_id:payload.position_space_id,publication_revision:payload.publication_revision};
+  });
+}

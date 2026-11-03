@@ -69,7 +69,7 @@ it('publishes ready visible source rows while another shared group remains pendi
 it.each(['manifest', 'rows'] as const)('keeps source bytes out of uncancelled malformed %s errors', async kind => {
   const controller = new AbortController();
   const request = {positionSpaceId: 'space', rows: [{key: 'row', revision: 'same'}], expanded: {}};
-  const result = (kind === 'manifest' ? queryClient.fetchQuery(readingManifestOptions('conv', 'space'))
+  const result = (kind === 'manifest' ? queryClient.fetchQuery(readingManifestOptions('conv'))
     : acquirePresentationRows('conv', request, controller.signal)).catch(error => error);
   await Promise.resolve();
   const body = '{"status":"source","private":"CONTENT MUST NOT APPEAR"';
@@ -82,6 +82,7 @@ it.each(['manifest', 'rows'] as const)('keeps source bytes out of uncancelled ma
 
 it('keeps abandoned partial bodies out of the visible error and preserves a current malformed response alert', async () => {
   const empty: [] = []; const expanded = {}; const disclosures = {};
+  const publication=(revision:string)=>({conversationId:'consumer',positionSpaceId:'space',sourceVersionId:'fixture-source',blockCount:1,revision});
   const local = {rows: [], membership: new Map(), viewMembership: new Map(), actionRuns: new Map()};
   function Harness() {
     const reading = useCompleteReading({scope: 'consumer', space: 'space', events: empty, extraRows: empty, expanded,
@@ -92,13 +93,13 @@ it('keeps abandoned partial bodies out of the visible error and preserves a curr
   }
   const view = render(h(Harness, {}));
   await waitFor(() => expect(transport.calls).toHaveLength(1));
-  await act(async () => transport.calls[0].finish(new Response(JSON.stringify({status: 'source', manifest: {revision: 'obsolete'}}))));
+  await act(async () => transport.calls[0].finish(new Response(JSON.stringify({status: 'source', manifest: publication('obsolete')}))));
   await waitFor(() => expect(transport.calls).toHaveLength(2));
   let partial!: ReadableStreamDefaultController<Uint8Array>;
   await act(async () => transport.calls[1].finish(new Response(new ReadableStream<Uint8Array>({
     start(controller) {partial = controller; controller.enqueue(new TextEncoder().encode('{"status":'));},
   }))));
-  await act(async () => queryClient.setQueryData(readingManifestKey('consumer', 'space'), {revision: 'current'}));
+  await act(async () => queryClient.setQueryData(readingManifestKey('consumer'), publication('current')));
   await waitFor(() => expect(transport.calls).toHaveLength(3));
   const row = {key: 'row', revision: 'current', kind: 'content', nodes: [], items: [], sources: []};
   await act(async () => transport.calls[2].finish(new Response(JSON.stringify({status: 'source', rows: [row]}))));
@@ -106,7 +107,7 @@ it('keeps abandoned partial bodies out of the visible error and preserves a curr
   await act(async () => partial.close());
   expect(view.queryByRole('alert')).toBeNull();
   expect(view.container.textContent).toBe('current');
-  await act(async () => queryClient.setQueryData(readingManifestKey('consumer', 'space'), {revision: 'malformed'}));
+  await act(async () => queryClient.setQueryData(readingManifestKey('consumer'), publication('malformed')));
   await waitFor(() => expect(transport.calls).toHaveLength(4));
   await act(async () => transport.calls[3].finish(new Response('{"status":', {headers: {'content-type': 'application/json'}})));
   await waitFor(() => expect(view.getByRole('alert')).toBeTruthy());

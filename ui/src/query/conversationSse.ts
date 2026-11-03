@@ -87,6 +87,10 @@ export function applyConversationSse(
     });
   }
 
+  for(const [key,cached]of client.getQueriesData<import('../api').ConversationMetadata>({queryKey:conversationKeys.metadatas(data.id)}))if(cached){
+    client.setQueryData(key,{...cached,conversation:{...cached.conversation,...data,block_count:Math.max(cached.conversation.block_count,data.block_count??0)}});
+    if(typeof data.block_count==='number')void client.invalidateQueries({queryKey:key,exact:true});
+  }
   const appendBlocks = data.append?.blocks ?? [];
   if (typeof data.block_count === 'number' && appendBlocks.length === 0) {
     void client.invalidateQueries({ queryKey: conversationKeys.windows(data.id) });

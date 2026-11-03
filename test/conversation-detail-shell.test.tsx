@@ -1,5 +1,6 @@
+import { sparseConversationBlockId } from '../src/conversations/structure-cache';
 // @vitest-environment jsdom
-import { mockChatViewport, mockManagedSettings } from './helpers/conversation-ui-transport';
+import { mockChatViewport, mockManagedSettings, mockConversationMetadataTransport } from './helpers/conversation-ui-transport';
 import { installReadingBrowserFixture } from './helpers/reading-browser-fixture';
 import { establishTestClientAccess } from './helpers/local-client-access';
 import { act, cleanup, fireEvent, screen, waitFor } from './helpers/dom.js';
@@ -53,6 +54,7 @@ beforeEach(async () => {
   vi.spyOn(api, 'resolveChatRouteTarget').mockImplementation(async (target) => ({ status: 'resolved', selection: target }));
   mockChatViewport();
   mockManagedSettings({ model: conversation.model!, effort: 'medium', permission_mode: 'agent' });
+  mockConversationMetadataTransport();
   vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(600);
   vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(2400);
   vi.stubGlobal('WebSocket', class { static OPEN = 1; readyState = 0; addEventListener(): void {} removeEventListener(): void {} send(): void {} close(): void {} });
@@ -210,7 +212,7 @@ function serveReadingPresentation(payload: ConversationPositionWindow): void {
     positions: blocks.map(block => ({ position: block.position, activity_owner_position: null, speaker_run_start: block.position })),
     speaker_runs: blocks.map(block => ({ start: block.position, end: block.position })),
   } });
-  void queryClient.invalidateQueries({ queryKey: readingManifestKey(id, payload.position_space_id!), exact: true });
+  void queryClient.invalidateQueries({ queryKey: readingManifestKey(id), exact: true });
 }
 
 function renderConversationDetail(scopedConversation: Conversation, consoleSessions: ConsoleSession[] = []): void {
@@ -272,6 +274,17 @@ function positionPayload(
   return payload;
 }
 
+async function visibleSource(block:ConversationBlock):Promise<HTMLElement>{
+  let source:HTMLElement|null=null;
+  await waitFor(()=>{
+    const canvas=document.querySelector<HTMLElement>('.stream-renderer__virtual-canvas');
+    source=canvas?[...canvas.querySelectorAll<HTMLElement>('[data-block-id]')].find(node=>node.dataset.blockId===sparseConversationBlockId(block.conversation_id,block.position))??null:null;
+    expect(canvas&&getComputedStyle(canvas).visibility).toBe('visible');
+    expect(source).not.toBeNull();
+  });
+  return source!;
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason: unknown) => void;
@@ -301,28 +314,22 @@ describe('compact detail pane shell', () => {
       retention_native_reason: archived ? 'desktop_writer_owned' : null,
     }));
     renderConversationDetail(selected);
-    await screen.findByText(transcriptBlock.content);
-    const aggregate = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(selected.id))!;
+    const originalSource=await visibleSource(transcriptBlock);
     fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Archive' }));
     await screen.findByRole('button', { name: 'Restore' });
-    expect(screen.getByText(transcriptBlock.content)).toBeTruthy();
-    expect(queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(selected.id))?.blocks).toBe(aggregate.blocks);
+    expect(document.contains(originalSource)).toBe(true);
     act(() => applyConversationSse(queryClient, 'conversation:updated', {
       id: selected.id, retention_native_status: 'failed', retention_native_reason: 'native archive unavailable',
     }));
-    expect(queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(selected.id))?.conversation.archived_at).toBe(42);
-    expect(queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(selected.id))?.conversation.retention_native_status).toBe('failed');
     act(() => applyConversationSse(queryClient, 'conversation:updated', {
       id: selected.id, retention_native_status: 'archived', retention_native_reason: null,
     }));
-    await waitFor(() => expect(queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(selected.id))?.conversation.retention_native_status).toBe('archived'));
-    const restore = screen.getByRole('button', { name: 'Restore' });
-    await waitFor(() => expect((restore as HTMLButtonElement).disabled).toBe(false));
-    fireEvent.click(restore);
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Restore' }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
     await waitFor(() => expect(archive).toHaveBeenLastCalledWith(selected.id, false));
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Restore' })).toBeNull());
-    expect(screen.getByText(transcriptBlock.content)).toBeTruthy();
+    expect(document.contains(originalSource)).toBe(true);
   });
 
   it('does not turn an obsolete transcript request into a visible Chat error', () => {
@@ -497,12 +504,11 @@ describe('compact detail pane shell', () => {
     const lateInitial = makeTranscriptBlock({ content: 'Late initial loses' });
     positionPayload(scopedConversation, [lateInitial, exactBlock], { revision: 2 });
     exact.resolve(positionPayload(scopedConversation, [exactBlock], { kind: 'block', hasBefore: true, revision: 2 }));
-    expect(await screen.findByText('Exact anchor wins')).toBeTruthy();
+    const exactSource=await visibleSource(exactBlock);
 
     initial.resolve(positionPayload(scopedConversation, [lateInitial], { revision: 2, hasAfter: true, afterCount: 1 }));
     await Promise.resolve();
-    expect(queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(scopedConversation.id))?.reading_command?.target?.position).toBe(exactBlock.position);
-    expect(screen.getByText('Exact anchor wins')).toBeTruthy();
+    expect(document.contains(exactSource)).toBe(true);
   });
 
   it('replaces a loaded same-chat window when a scoped hash target changes', async () => {
@@ -521,17 +527,15 @@ describe('compact detail pane shell', () => {
     const params = (block: string) => ({ conversation: scopedConversation.id, block, position_space: 'fixture-space' });
     window.history.replaceState(null, '', `#/console?${new URLSearchParams(params(tail.id))}`);
     const view = render(<ConversationsView {...props} routeParams={params(tail.id)} />);
-    expect(await screen.findByText('Previously loaded tail')).toBeTruthy();
+    const retainedSource=await visibleSource(tail);
 
     window.history.replaceState(null, '', `#/console?${new URLSearchParams(params(exactBlock.id))}`);
     view.rerender(<ConversationsView {...props} routeParams={params(exactBlock.id)} />);
     await waitFor(() => expect(api.getConversationWindow).toHaveBeenCalledWith(scopedConversation.id,
       expect.objectContaining({ block: exactBlock.id, expected_position_space_id: 'fixture-space' })));
-    expect(screen.getByText('Previously loaded tail')).toBeTruthy();
+    expect(document.contains(retainedSource)).toBe(true);
     await act(async () => exact.resolve(positionPayload(scopedConversation, [exactBlock], { kind: 'block', revision: 2, hasBefore: true, hasAfter: true })));
-    const targetKey = conversationKeys.window(scopedConversation.id, normalizeWindowTarget({ block: exactBlock.id, expected_position_space_id: 'fixture-space', view: 'display' }));
-    await waitFor(() => expect(queryClient.getQueryData<ConversationPositionWindow>(targetKey)?.target.block_id).toBe(exactBlock.id));
-    expect(await screen.findByText('New same-chat exact target')).toBeTruthy();
+    await visibleSource(exactBlock);
   });
 
   it('cold-opens and copies the exact message link instead of a saved tail selection', async () => {
@@ -905,4 +909,19 @@ describe('open transcript liveness follows the active view', () => {
     expect(screen.getByText(/Earlier turn/)).toBe(row);
     expect(screen.getByText(/Hidden follow-up/)).toBeTruthy();
   });
+});
+
+
+it('reads complete visible source context independently of the bootstrap receipt',async()=>{
+  const earlier=makeTranscriptBlock({id:'earlier-source',position:0,content:'Earlier authored source body',dag_uuid:'earlier-source'});
+  const tail=makeTranscriptBlock({id:'tail-source',position:1,type:'assistant_message',role:'assistant',content:'Final authored source body',dag_uuid:'tail-source'});
+  const scoped=mockConversationDetail(defaultControl,[earlier,tail]);
+  const full=positionPayload(scoped,[earlier,tail]);
+  const receipt={...full,blocks:[tail],reading_context:{positions:full.reading_context!.positions.filter(position=>position.position===tail.position),speaker_runs:full.reading_context!.speaker_runs.filter(run=>run.start===tail.position)},window:{...full.window,start_position:tail.position,has_before:true}};
+  vi.mocked(api.getConversationWindow).mockResolvedValue(receipt);
+  renderConversationDetail(scoped);
+  await visibleSource(earlier);
+  await visibleSource(tail);
+  const aggregate=queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(scoped.id));
+  expect(aggregate).toBeUndefined();
 });

@@ -1,3 +1,4 @@
+import { readLatestPersistedUsage } from '../src/conversations/persisted-usage';
 import { testRuntimeRoot } from './helpers/runtime-isolation';
 import {chatItemIdentityKey} from '../src/conversation-control/provider-live';
 import fs from 'node:fs';
@@ -298,4 +299,16 @@ it('keeps compact and hydrated wait chains identical without crossing semantic i
       for(const call of nativeCalls.filter(call=>owner.sourcePositions.includes(call.position)))expect(plan.membership.get(call.position)?.memberKey).toBe(owner.key);
     }finally{f.close();}
   }
+});
+
+
+it('retains native normalized usage independently of reader window bodies',async()=>{
+  const f=await fixture(false,{provider:'codex',records:[{type:'session_meta',payload:{id:'composition',cwd:'/tmp'}},
+    {type:'event_msg',payload:{type:'token_count',info:{model_context_window:100000,total_token_usage:{input_tokens:41000,output_tokens:2000,total_tokens:43000}}}}]});
+  try{
+    const native=f.parsed.blocks.find(block=>block.metadata.usage_telemetry)?.metadata.usage_telemetry;
+    expect(native).toBeDefined();
+    const usage=await readLatestPersistedUsage(f.db,'composition',path.join(f.root,'.codex/sessions/composition.jsonl'));
+    expect(usage).toEqual(native);
+  }finally{f.close();}
 });

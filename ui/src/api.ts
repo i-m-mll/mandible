@@ -2273,11 +2273,12 @@ export async function getConsoleSessionUsage<T = Record<string, unknown>>(
 export async function getStatuslineTelemetry<T = Record<string, unknown>>(params: {
   sessionRef?: string | null;
   transcriptPath?: string | null;
+  signal?:AbortSignal;
 }): Promise<T | null> {
   const query = new URLSearchParams();
   if (params.sessionRef) query.set('sessionRef', params.sessionRef);
   if (params.transcriptPath) query.set('transcriptPath', params.transcriptPath);
-  const response = await apiGet(`/api/hooks/statusline?${query.toString()}`);
+  const response = await apiGet(`/api/hooks/statusline?${query.toString()}`,{signal:params.signal});
   const payload = await parseMaybeJson(response) as { telemetry?: T | null };
   return payload.telemetry ?? null;
 }

@@ -27,10 +27,10 @@ async function decodeReadingResponse<T>(response: Response, operation: string, s
 
 let batchRequestId = 0;
 
-export const readingManifestKey = (id: string, space: string) => ['chat', 'conversation', id, 'reading-manifest', space] as const;
-export function readingManifestOptions(id: string, space: string) {
-  return { queryKey: readingManifestKey(id, space), queryFn: async ({ signal }: { signal: AbortSignal }) => {
-    const endpoint = `/api/conversations/${encodeURIComponent(id)}/reading-manifest?expected_position_space_id=${encodeURIComponent(space)}`;
+export const readingManifestKey = (id: string) => ['chat', 'conversation', id, 'reading-manifest'] as const;
+export function readingManifestOptions(id: string) {
+  return { queryKey: readingManifestKey(id), staleTime:Infinity, queryFn: async ({ signal }: { signal: AbortSignal }) => {
+    const endpoint = `/api/conversations/${encodeURIComponent(id)}/reading-manifest`;
     const response = await browserSessionFetch(endpoint, { signal });
     const result = await decodeReadingResponse<{ status: string; manifest?: ConversationReadingManifest; reason?: string }>(response, `GET ${endpoint}`, signal);
     if (result.status !== 'source' || !result.manifest) throw new Error(result.reason ?? result.status);
@@ -71,7 +71,7 @@ async function acquireBatch(id: string, request: ReadingRowBatchRequest, signal:
       if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
       return { rows: [...first.rows, ...second.rows], release };
     }
-    if (result.status === 'changed') void queryClient.invalidateQueries({ queryKey: readingManifestKey(id, request.positionSpaceId) });
+    if (result.status === 'changed') void queryClient.invalidateQueries({ queryKey: readingManifestKey(id) });
     throw new ReadingPresentationError(result.status, result.status === 'position-space-changed' ? result.status : `${result.status}: ${result.reason}`);
   } catch (error) { release(); throw error; }
 }
