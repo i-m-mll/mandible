@@ -72,4 +72,3 @@ it('opens a measured long chat when mounted body demand extends beyond the retai
   await waitFor(() => expect(getComputedStyle(view.container.querySelector('.stream-renderer__virtual-canvas')!).visibility).toBe('visible'));
   expect(view.container.querySelectorAll('[data-reading-key][aria-busy="true"]')).toHaveLength(0);
 });
-

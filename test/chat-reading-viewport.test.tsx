@@ -60,7 +60,7 @@ beforeEach(() => {
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frames.set(++nextFrame, callback); return nextFrame; });
   vi.stubGlobal('cancelAnimationFrame', (id: number) => frames.delete(id));
   boundary.engine = {
-    measure: () => {}, getTotalSize: () => 1400, getOffsetForIndex: () => [300, 'start'], getVirtualItemForOffset: () => ({ index: 0 }),
+    measure: () => {}, getTotalSize: () => 1400, getOffsetForIndex: () => [300, 'start'], getVirtualItemForOffset: () => ({ index: 0,start:300,end:400,size:100,key:'exact-row' }),
     isScrolling: false, range: { startIndex: 0, endIndex: 0 },
     isAtEnd: () => viewport.scrollRef.current?.scrollTop === 1000,
     getVirtualItems: () => [{ key: 'exact-row', index: 0, size: 100, start: 300, end: 400 }],
@@ -303,21 +303,26 @@ it.each([false, true])('reveals and focuses the prepared message owner when an i
   expect(focusedMemory).not.toHaveBeenCalled();
 });
 
-it('fetches a native viewport ahead through variable-height geometry without widening mounted demand', () => {
+it('prefetches five native viewports on each side and favors nearby source in the movement direction without widening mounted demand', () => {
   const onRange = vi.fn();
   const vector = { ...geometry, serial: 2, rows: Array.from({ length: 30 }, (_, index) => ({ key: `row:${index}`, revision: '1' })),
     sizes: Array.from({ length: 30 }, (_, index) => index < 10 ? 20 : 200) };
   const offsets = vector.sizes.map((_, index) => vector.sizes.slice(0, index).reduce((sum, size) => sum + size, 0));
-  boundary.engine.getVirtualItemForOffset = (offset: number) => ({ index: Math.max(0, offsets.findLastIndex(start => start <= offset)) });
-  boundary.engine.getVirtualItems = () => [{ key: 'row:11', index: 11, start: 400, end: 600, size: 200 }];
-  boundary.engine.range = { startIndex: 11, endIndex: 11 };
+  const item=(index:number)=>({index,key:vector.rows[index].key,start:offsets[index],end:offsets[index]+vector.sizes[index],size:vector.sizes[index]});
+  boundary.engine.getVirtualItemForOffset = (offset: number) => item(Math.max(0, offsets.findLastIndex(start => start <= offset)));
+  boundary.engine.getVirtualItems = () => [11,12,13].map(item);
+  boundary.engine.range = { startIndex: 11, endIndex: 13 };
+  boundary.engine.scrollDirection='forward';
   boundary.engine.getTotalSize = () => 4200;
   render(<Harness vector={vector} onRange={onRange} prepare={async () => ({ status: 'not-renderable' })} />);
   const { scroller } = connect();
   scroller.scrollTop = 500;
   act(() => boundary.options.onChange(boundary.engine));
-  expect(onRange.mock.lastCall![0].prefetch.map((row: any) => row.key)).toContain('row:5');
-  expect(onRange.mock.lastCall![0].prefetch.map((row: any) => row.key)).toContain('row:15');
+  const prefetched=onRange.mock.lastCall![0].prefetch.map((row:any)=>row.key);
+  expect(prefetched).toContain('row:0');
+  expect(prefetched).toContain('row:23');
+  expect(prefetched.indexOf('row:14')).toBeLessThan(prefetched.indexOf('row:10'));
+  expect(prefetched.indexOf('row:10')).toBeLessThan(prefetched.indexOf('row:5'));
   const published = onRange.mock.calls.length;
   scroller.scrollTop = 501;
   act(() => boundary.options.onChange(boundary.engine));
@@ -325,7 +330,7 @@ it('fetches a native viewport ahead through variable-height geometry without wid
   scroller.scrollTop = 550;
   act(() => boundary.options.onChange(boundary.engine));
   expect(onRange.mock.calls.length).toBe(published + 1);
-  expect(onRange.mock.lastCall![0].required).toEqual([vector.rows[11]]);
+  expect(onRange.mock.lastCall![0].required).toEqual([vector.rows[11],vector.rows[12],vector.rows[13]]);
   Object.defineProperty(scroller, 'clientHeight', { value: 600, configurable: true });
   act(() => boundary.options.onChange(boundary.engine));
 });

@@ -6,7 +6,7 @@ import { queryClient } from '../ui/src/query/client';
 
 const boundary = vi.hoisted(() => ({ refresh: null as null | (() => Promise<{ revision: string }>), calls: [] as { refs: any[]; signal: AbortSignal; resolve: () => void; reject: (error: Error) => void }[] }));
 vi.mock('../ui/src/query/readingPresentation', () => ({
-  readingManifestOptions: (scope: string) => ({ queryKey: ['prefetch-manifest', scope], queryFn: async () => boundary.refresh ? boundary.refresh() : ({ revision: '1' }) }),
+  readingManifestOptions: (scope: string) => ({ queryKey: ['prefetch-manifest', scope], queryFn: async () => ({positionSpaceId:'space',...(boundary.refresh ? await boundary.refresh() : {revision:'1'})}) }),
   isReadingPublicationChanged: (error: Error) => error.name === 'PublicationChanged',
   ReadingPresentationError: class extends Error {},
   acquirePresentationRows: (_scope: string, request: any, signal: AbortSignal) => new Promise((resolve, reject) => {
@@ -91,7 +91,7 @@ it('cancels a stale revision and a prior scope while keeping required failures e
   act(() => demand([0], [1, 2]));
   await act(async () => boundary.calls[0].resolve());
   await waitFor(() => expect(boundary.calls).toHaveLength(2));
-  await act(async () => queryClient.setQueryData(['prefetch-manifest', 'conv'], { revision: '2' }));
+  await act(async () => queryClient.setQueryData(['prefetch-manifest', 'conv'], { positionSpaceId:'space',revision: '2' }));
   await waitFor(() => expect(boundary.calls).toHaveLength(3));
   expect(boundary.calls[1].signal.aborted).toBe(true);
   expect(boundary.calls[2].refs).toMatchObject([{ key: 'row:0', revision: '2' }]);

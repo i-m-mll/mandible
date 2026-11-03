@@ -452,14 +452,28 @@ export function useReadingViewport(input: {
     if (!vector || vector.scope !== snapshot.geometry?.scope || vector !== snapshot.indexed || readback.current || !scroller || !instance.range) return;
     const height = scroller.clientHeight;
     if (height <= 0) return;
-    const start = Math.max(0, scroller.scrollTop - height);
-    const end = Math.min(instance.getTotalSize(), scroller.scrollTop + 2 * height);
-    const first = instance.getVirtualItemForOffset(start)?.index;
+    const start = Math.max(0, scroller.scrollTop - 5 * height);
+    const end = Math.min(instance.getTotalSize(), scroller.scrollTop + 6 * height);
+    const firstItem = instance.getVirtualItemForOffset(start);
+    const first = firstItem?.index;
     const last = instance.getVirtualItemForOffset(end)?.index;
     const items=instance.getVirtualItems();
     const required = items.map(item => vector.rows[item.index]).filter(Boolean);
     const visible=items.filter(item=>item.end>scroller.scrollTop&&item.start<scroller.scrollTop+height).map(item=>vector.rows[item.index]).filter(Boolean);
-    const prefetch = first === undefined || last === undefined ? [] : vector.rows.slice(first, last + 1);
+    const ranked:Array<{row:typeof vector.rows[number];index:number;distance:number;side:number}>=[];
+    if(first!==undefined&&last!==undefined&&firstItem){
+      // Rank only this bounded source window; native geometry remains the engine's.
+      let rowStart=firstItem.start;
+      for(let index=first;index<=last;index++){
+        const rowEnd=rowStart+vector.sizes[index];
+        const side=rowEnd<=scroller.scrollTop?-1:rowStart>=scroller.scrollTop+height?1:0;
+        ranked.push({row:vector.rows[index],index,distance:Math.max(0,scroller.scrollTop-rowEnd,rowStart-scroller.scrollTop-height),side});
+        rowStart=rowEnd;
+      }
+    }
+    const direction=instance.scrollDirection==='forward'?1:instance.scrollDirection==='backward'?-1:0;
+    ranked.sort((left,right)=>left.distance-right.distance||direction*(right.side-left.side)||left.index-right.index);
+    const prefetch=ranked.map(item=>item.row);
     const identity = JSON.stringify([snapshot.scope, snapshot.positionSpaceId, vector.serial, first, last, height, required, prefetch]);
     if (identity === lastRange.current) return;
     lastRange.current = identity;
