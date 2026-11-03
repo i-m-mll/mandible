@@ -86,6 +86,7 @@ interface StructuralRow {
   normalization_checkpoint_id: string | null;
   normalization_model?: string | null;
   client_intent_id?: string | null;
+  tool_evidence?: import("../parsers/types.js").BlockMetadata;
   parser_format: string;
   parser_version: string;
   normalization_version: string;
@@ -574,6 +575,10 @@ export class ConversationSourceReader {
         && typeof parentBlock?.metadata.tool_name === "string"
         ? parentBlock.metadata.tool_name
         : null;
+      block.metadata={...block.metadata,...row.tool_evidence};
+      const origin=block.metadata.display_tool_origin;
+      const originCall=origin ? parsedByPosition.get(origin.position) : undefined;
+      if(origin && originCall?.type==='tool_use' && originCall.metadata.tool_id===origin.native_tool_id && originCall.metadata.tool_kind==='custom_tool_call' && ['exec','functions.exec'].includes(originCall.metadata.tool_name ?? '') && (!origin.native_turn_id || originCall.metadata.provider_turn_id===origin.native_turn_id) && originCall.metadata.chat_item?.identity.session_id===origin.session_id && originCall.metadata.source_record_ordinal===origin.source_record_ordinal && originCall.metadata.source_sub_block_ordinal===origin.source_sub_block_ordinal && originCall.metadata.tool_name && originCall.metadata.tool_kind) block.metadata.display_tool_operation={origin,name:originCall.metadata.tool_name,kind:originCall.metadata.tool_kind,input:originCall.metadata.tool_input};
       const withBoundedLinkage = linkedToolName
         ? {
             ...block,
@@ -638,6 +643,7 @@ export class ConversationSourceReader {
       normalization_checkpoint_id: null,
       normalization_model: row.model,
       client_intent_id: row.clientIntentId,
+      tool_evidence: row.toolEvidence,
       parser_format: row.parserFormat,
       parser_version: row.parserVersion,
       normalization_version: row.normalizationVersion,
@@ -663,15 +669,15 @@ export class ConversationSourceReader {
     }
     const sourceVersionId = rows[0].sourceVersionId;
     const parentPositions = [...new Set(rows
-      .map((row) => row.parentPosition)
+      .flatMap((row) => [row.parentPosition,row.toolEvidence?.display_tool_origin?.position ?? null])
       .filter((position): position is number => position !== null))];
     const parents = admittedParents ?? session.navigationCache.readPositions(conversationId,
-      session.navigationVersion ?? sourceVersionId, parentPositions, session.pinnedVersion) ?? [];
+      session.navigationVersion ?? sourceVersionId, parentPositions, session.pinnedVersion, true) ?? [];
     const allRows = new Map([...rows, ...parents].map(row => [row.position, row]));
     if (parentPositions.some(position => !allRows.has(position)) || parents.some(row => !this.withinAdmittedPrefix(row, session))) {
       throw new SourceObservationError('parent context is outside admitted navigation', 'changed');
     }
-    const sparseParents = parentPositions.map(position => this.structuralRowFromSparse({...allRows.get(position)!, sourceVersionId}));
+    const sparseParents = [...allRows.values()].filter(row=>!rows.some(requested=>requested.position===row.position)).map(row=>this.structuralRowFromSparse({...row,sourceVersionId}));
     return this.readStructuralRows(
       conversationId,
       rows.map((row) => this.structuralRowFromSparse(row)),

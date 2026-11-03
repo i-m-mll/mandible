@@ -120,7 +120,7 @@ export function readCompleteDisplayIndex(db: SqliteDatabase, cacheId: number): {
   const hash = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex');
   const memberRevisions = Object.fromEntries(fragments.map(fragment => [fragment.id, hash([
     fragment.coordinate, fragment.kind, fragment.speaker, fragment.activity?.type === 'tool-call-activity' ? fragment.activity.execution : undefined,
-    [fragment.coordinate.position, ...fragment.paired_source_positions].map(position => [position, byPosition.get(position)?.revision]),
+    [fragment.coordinate.position, ...fragment.paired_source_positions].flatMap(position => [position,...(byPosition.get(position)?.presentationDependencies ?? [])]).map(position => [position, byPosition.get(position)?.revision]),
   ])]));
   const runs = new Map<string, string[]>();
   for (const fragment of fragments) if (fragment.activity_run_id) {

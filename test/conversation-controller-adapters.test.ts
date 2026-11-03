@@ -140,6 +140,7 @@ describe("structured conversation controller adapters", () => {
       && event.item.content_completion === "complete"));
 
     const items = events.flatMap((event) => event.kind === "provisional-content" ? [event.item] : []);
+    expect(items.find(item=>item.type==='tool-call' && item.identity.native_item_id==='command-rich' && item.content_completion==='streaming')).toMatchObject({execution:{state:'ongoing',provenance:'provider-item'}});
     expect(items.find((item) => item.type === "activity" && item.activity_kind === "reasoning-summary"
       && item.content_completion === "complete")).toMatchObject({
       parts: [{ text: "first", native_index: 0 }, { text: "second", native_index: 1 }],
@@ -152,7 +153,7 @@ describe("structured conversation controller adapters", () => {
     });
     expect(items.find((item) => item.type === "tool-call" && item.identity.native_item_id === "command-rich"
       && item.content_completion === "complete")).toMatchObject({
-      tool_kind: "commandExecution", input: "true", output: "ok", execution_outcome: "succeeded",
+      tool_kind: "commandExecution", input: "true", output: "ok", execution_outcome: "succeeded", execution:{state:'completed',provenance:'provider-item'},
     });
     const fragments = projectDisplayFragments(items.filter(item => item.content_completion === 'complete').map(item => ({type: 'chat:item' as const, item})), true);
     const tools = fragments.flatMap(fragment => fragment.node.kind === 'activity' && fragment.node.item.type === 'tool-call-activity' ? [fragment.node.item] : []);

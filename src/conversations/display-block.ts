@@ -28,6 +28,7 @@ export function projectDisplayBlock(row: SourceBackedConversationBlock): SourceB
   }
   delete metadata.display_completion_parts;
   delete metadata.display_tool_content;
+  delete metadata.display_tool_operation;
   delete metadata.tool_input;
   delete metadata.tool_output;
   if (item && typeof item === "object" && !Array.isArray(item)) {

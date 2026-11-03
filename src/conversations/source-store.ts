@@ -567,6 +567,7 @@ export class ConversationSourceStore {
           recordOffset: range.offset, recordLength: range.length, recordOrdinal: range.ordinal, subBlockOrdinal,
           model: typeof metadata.model === "string" ? metadata.model : null,
           clientIntentId: typeof metadata.client_intent_id === "string" ? metadata.client_intent_id : null,
+          toolEvidence: metadata.display_tool_origin || metadata.display_tool_execution ? {display_tool_origin:metadata.display_tool_origin,display_tool_execution:metadata.display_tool_execution} as import("../parsers/types.js").BlockMetadata : undefined,
         };
       });
       const priorCount = priorId ? cache.blockCount(input.conversationId, priorId, input) : 0;

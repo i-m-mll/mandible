@@ -116,6 +116,8 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
           activity = (
             <ToolUseBlock
               toolName={node.item.name}
+              operationContext={node.item.operationContext}
+              executionEvidence={node.item.executionEvidence}
               headerMetadata={compact ? footer : undefined}
               toolKind={node.item.toolKind}
               toolUseId={node.item.id}

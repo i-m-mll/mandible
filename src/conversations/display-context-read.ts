@@ -41,7 +41,7 @@ export async function readDisplayContext(input: {
     const { input: toolInput, result: _result, ...item } = fragment.node.item;
     owners.push({ fragment_id: owner.id, memberKey: fragment.memberKey, coordinate: owner.coordinate, item,
       source: { ...fragment.node.source!, detailsLoaded: false },
-      header: presentTool(item.name, toolInput, item.toolKind), action_scope: input.actionScope(owner.coordinate.position) });
+      header: item.operationContext ? presentTool(item.operationContext.name,item.operationContext.input as Record<string,unknown> | string,item.operationContext.kind) : presentTool(item.name, toolInput, item.toolKind), action_scope: input.actionScope(owner.coordinate.position) });
   }
   return { status: 'source', sourceVersionId, value: { version: DISPLAY_CONTEXT_VERSION,
     fragments: plan.fragments, aliases: plan.aliases, activity_runs, owners } };

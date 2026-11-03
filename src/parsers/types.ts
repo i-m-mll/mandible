@@ -38,6 +38,7 @@ export type ToolContinuationOrigin = {
   provider: "codex";
   session_id: string;
   native_tool_id: string;
+  native_turn_id?: string;
   position: number;
   source_record_ordinal: number;
   source_sub_block_ordinal: number;

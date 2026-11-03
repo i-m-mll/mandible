@@ -84,6 +84,8 @@ export function MessageGroup({
           <ToolUseBlock
             key={`tool-${block.id}`}
             toolName={block.name}
+            operationContext={block.source?.toolOperation}
+            executionEvidence={result?.source?.toolExecution ?? block.source?.toolExecution ?? block.executionEvidence}
             headerMetadata={index === blocks.length - 1 ? headerMetadata : undefined}
             toolKind={block.toolKind}
             toolUseId={block.id}
