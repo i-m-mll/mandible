@@ -29,7 +29,7 @@ it('moves a Board card on delivery changes and preserves its column when respons
     const router = new Router({ clientAuth: { authenticate: () => ({ user_id: agent.id, slug: agent.slug,
       method: 'api_token', source: 'in_process', credential_id: credential.id, effect_ceiling: PRODUCTION_EFFECTS }),
       mode: () => 'strict', recordUnattributedWrite: () => undefined } });
-    const call = (request: Parameters<Router['invoke']>[0]) => router.invoke({ ...request, credential: 'own' });
+    const call = (request: Parameters<Router['invoke']>[0]) => router.invoke({ ...request, credential: 'own', ambient_identity: { provider: 'codex', agent_id: 'board-worker', session_id: null } });
     registerSpacesRoutes(router);
     registerWorkUnitRoutes(router, {} as SessionManager);
     const space = await call({ method: 'POST', url: '/api/spaces', body: { title: 'Board', project_id: project.id } });
