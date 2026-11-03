@@ -1821,7 +1821,14 @@ export function registerIssueRoutes(
       kind?: LedgerIssueKind;
       priority?: LedgerPriority;
     } = {};
-    if (typeof body.title === "string") patch.title = body.title;
+    if (body.title !== undefined) {
+      const title = typeof body.title === "string" ? body.title.trim() : "";
+      if (!title) {
+        sendJson(res, 400, { error: "title must be a non-empty string" });
+        return;
+      }
+      patch.title = title;
+    }
     if (typeof body.body === "string") {
       const markdownPolicy = applyMarkdownBodyPolicy(res, db, body.body);
       if (!markdownPolicy.ok) return;

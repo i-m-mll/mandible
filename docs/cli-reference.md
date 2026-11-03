@@ -5,7 +5,7 @@
 mandible issue new -t <title> -m <body> --kind bug|feature|umbrella|maintenance|experiment|tracker [--priority low|normal|high|urgent] [--label <label>]...
 mandible issue list [--status open|closed|all] [--repo R]  # NO --json, NO --limit
 mandible issue show <id>                                      # NO --json
-mandible issue title <id> [--json] [--graceful]
+mandible issue title <id> [--set <title>] [--json] [--graceful]
 mandible issue report <id> [--json]                          # exit 3 = NOT from this CLI (curl -sf exits 22 on HTTP err)
 mandible umbrella status <id> [--deep] [--json]
 mandible umbrella adopt <umbrella> <children...> [--json]
@@ -69,7 +69,7 @@ mandible work-unit abandon --id WU --expected-generation N --reason T [--gracefu
 mandible work-unit release --repo R --branch B --expected-generation N --reason T [--graceful]
 mandible work-unit custody-assume --id WU --expected-generation N --reason T [--session S]
 mandible work-unit custody-check --repo R --branch B [--issue I] [--json]   # exit 0 held or initially claimable, 4 explicit assumption required
-mandible issue title <id> [--json] [--graceful]
+mandible issue title <id> [--set <title>] [--json] [--graceful]
 mandible issue-file path [cwd]
 mandible issue-file read [cwd]
 mandible issue-file write [--cwd P] I...
