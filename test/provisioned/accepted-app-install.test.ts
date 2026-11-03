@@ -83,7 +83,7 @@ it('replaces retained signed bundles through real native service startup, qualif
     try {
       const timeout = until - Date.now() - 500;
       if (timeout <= 0) throw new Error(`Native replacement termination allowance exhausted before ${phase}.`);
-      await runSupervisedCommand(runtime!, args, { cwd: process.cwd(), env: { ...process.env, HOME: accountHome, MANDIBLE_HOME: home, MANDIBLE_DB: database },
+      await runSupervisedCommand(runtime!, args, { cwd: process.cwd(), env: { ...process.env, MANDIBLE_HOME: home, MANDIBLE_DB: database },
         stdio: ['ignore', log, log], timeout, graceMs: 100 });
       checkDeadline(phase, until);
     } catch (error) {
@@ -115,6 +115,8 @@ it('replaces retained signed bundles through real native service startup, qualif
     if (!runtime) throw new Error('Run through the pinned provisioned test runner.');
     fs.mkdirSync(home, { recursive: true });
     migratedFileDb(database).close();
+    await supervised(['--eval', `import Database from ${JSON.stringify(new URL('../../src/sqlite.ts', import.meta.url).href)};
+      const db = new Database(process.env.MANDIBLE_DB, { fileMustExist: true }); db.close();`], 'private ledger verifier environment');
     sourceRevision = run('git', ['rev-parse', 'HEAD'], 'source revision').trim();
     if (run('git', ['status', '--porcelain', '--untracked-files=all'], 'source checkout check').trim()) throw new Error('Native qualification requires a clean committed source checkout.');
     const candidateApp = process.env.MANDIBLE_NATIVE_PROOF_APP;
@@ -361,7 +363,7 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
     } finally {
       // An unconfirmed service stop retains its exact app and evidence.
       if (cleaned) fs.rmSync(root, { recursive: true, force: true });
-      console.info('native_bundle_replacement_proof', JSON.stringify({ scope: 'private SMAppService replacement; no product daemon, GUI, ledger or approval API',
+      console.info('native_bundle_replacement_proof', JSON.stringify({ scope: 'private SMAppService replacement; no product daemon, GUI, production ledger or approval API',
         source_revision: sourceRevision, candidate_app: process.env.MANDIBLE_NATIVE_PROOF_APP, candidate_executables: candidateExecutables,
         predecessor_app: process.env.MANDIBLE_NATIVE_PROOF_PREDECESSOR_APP,
         predecessor_executable: predecessorExecutable,
