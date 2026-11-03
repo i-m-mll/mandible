@@ -1,7 +1,7 @@
 import {displaySummaryMembers} from '../conversations/display-context.js';
 import type { IndexedDisplayFragment, DisplayPositionFacts } from '../conversations/display-context.js';
 import type { ReadingContextEntry } from '../conversations/reading-context.js';
-import { activityRunFacts, presentActivityRunFacts } from './activity-presentation.js';
+import { semanticActivityRunFacts, semanticActivityUnified, presentActivityRunFacts } from './activity-presentation.js';
 import { planReadingLayout, readingSourceKey, type ReadingPlan, type ReadingPlanMember } from './reading-plan.js';
 
 export type ConversationReadingManifest = {
@@ -34,12 +34,11 @@ export function buildReadingManifest(input: {
   const summarySources: Record<string, number[]> = {};
   const runPlans = new Map([...runs].map(([id, members]) => {
     const contributors = displaySummaryMembers(members);
-    const unified = contributors.some(member => member.activity && (member.activity.type !== 'activity'
-      || ['thinking', 'reasoning-summary'].includes(member.activity.activity_kind)));
+    const unified = contributors.some(member => member.activity && semanticActivityUnified(member.activity));
     summarySources[id] = contributors.filter((member, index) => member.summary_from_source && (contributors.length === 1 || (!unified && index === 0)
-      || (unified && member.activity?.type === 'activity' && !['thinking', 'reasoning-summary'].includes(member.activity.activity_kind))))
+      || (unified && member.activity?.kind === 'activity' && !semanticActivityUnified(member.activity))))
       .map(member => member.coordinate.position);
-    const facts = activityRunFacts(contributors.flatMap(member => member.activity ? [member.activity] : []));
+    const facts = semanticActivityRunFacts(contributors.flatMap(member => member.activity ? [member.activity] : []));
     facts.hasDetails ||= members.some(member => member.has_details);
     return [id, { id, revision: input.revisions.runs[id], member_count: members.length, presentation: { ...presentActivityRunFacts(facts), facts } }] as const;
   }));
@@ -70,7 +69,7 @@ export function buildReadingManifest(input: {
     return { key: readingSourceKey(input.conversationId, input.positionSpaceId, position, fragment.coordinate.part),
       position, part: fragment.coordinate.part, kind: fragment.kind, speaker: fragment.speaker,
       actionGroup: { key: `group:${input.conversationId}:${input.positionSpaceId}:${context.action_scope.start}`, ...context.action_scope },
-      activity: fragment.activity, disclosures: fragment.disclosures, executionKey: facts.executionKey, activityRunId: fragment.activity_run_id,
+      activity: null, activityFacts: fragment.activity ?? undefined, disclosures: fragment.disclosures, executionKey: facts.executionKey, activityRunId: fragment.activity_run_id,
       ...(fragment.kind === "content" && fragment.speaker === "assistant" && fragment.coordinate.part.startsWith("content:")
         ? { assistantResponse: facts.assistantResponse } : {}),
       dependencyRevision, sourcePositions,
@@ -82,7 +81,7 @@ export function buildReadingManifest(input: {
     publicationRevision: input.publicationRevision, blockCount: input.blockCount, members, runs: Object.fromEntries(runPlans), summarySources, scopes,
     lastAssistantTurnId: [...input.fragments].reverse().flatMap(fragment => fragment.kind === 'content' && fragment.speaker === 'assistant'
       ? [positions.get(fragment.coordinate.position)?.turnId ?? `cblk:${input.conversationId}:${fragment.coordinate.position}`]
-      : fragment.activity && fragment.activity.type !== 'activity' ? [fragment.activity.turnId] : []).find((id): id is string => id !== undefined) };
+      : fragment.activity && fragment.activity.kind !== 'activity' ? [fragment.activity.turnId] : []).find((id): id is string => id !== undefined) };
 }
 
 export function planConversationReading(manifest: ConversationReadingManifest, expanded: Readonly<Record<string, boolean>>, streaming = false): ReadingPlan {

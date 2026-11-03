@@ -3,7 +3,7 @@ import type { DisplayContextPlan } from './display-index.js';
 import { ConversationSourceReader } from './source-reader.js';
 import type { SourceBackedConversationBlock, SourceReadResult } from './source-types.js';
 import { projectDisplayFragments } from '../presentation/fragments.js';
-import { activityRunFacts, presentActivityRunFacts } from '../presentation/activity-presentation.js';
+import { activitySemanticFacts, semanticActivityRunFacts, presentActivityRunFacts } from '../presentation/activity-presentation.js';
 import { presentTool } from '../presentation/tool-presentation.js';
 import { sparseConversationBlockPosition } from './structure-cache.js';
 
@@ -24,10 +24,10 @@ export async function readDisplayContext(input: {
   const activity_runs = [...plan.runs].map(([id, members]) => {
     const items = displaySummaryMembers(members).flatMap(member => {
       const hydrated = actual.get(member.id)?.node;
-      const item = hydrated?.kind === 'activity' && member.summary_from_source ? hydrated.item : member.activity;
+      const item = hydrated?.kind === 'activity' && member.summary_from_source ? activitySemanticFacts(hydrated.item) : member.activity;
       return item ? [item] : [];
     });
-    const facts = activityRunFacts(items);
+    const facts = semanticActivityRunFacts(items);
     facts.hasDetails ||= members.some(member => member.has_details);
     return { id, first: members[0].coordinate, last: members[members.length - 1].coordinate,
       member_count: members.length, presentation: { ...presentActivityRunFacts(facts), facts } };

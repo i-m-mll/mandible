@@ -46,7 +46,7 @@ it('retains default status evidence and materializes exact disclosed call/result
     const statusRow = planConversationReading(f.manifest, statusExpanded).rows.find(row => row.memberKeys.includes(statusMember.key))!;
     expect(await readReadingRowBatch({db: f.db, reader: f.reader, conversationId: 'composition',
       request: {positionSpaceId: f.manifest.positionSpaceId, rows: [statusRow], expanded: statusExpanded}})).toMatchObject({status: 'source'});
-    const call = f.manifest.members.find(member => member.activity?.type === 'tool-call-activity')!;
+    const call = f.manifest.members.find(member => member.activityFacts?.kind === 'tool')!;
     const closed = planConversationReading(f.manifest, {});
     const expanded = {[call.disclosures!.keys[0]]: true};
     const open = planConversationReading(f.manifest, expanded);
@@ -76,7 +76,7 @@ it('composes a live result and live suffix with the canonical owner through one 
     const suffix: CanonicalChatItemEvent = {type: 'chat:item', item: {...call, tool_id: 'second-call', tool_name: 'edit', input: '{"file_path":"/tmp/new"}',
       identity: {...call.identity, native_item_id: 'second-call', native_tool_id: 'second-call'}, provenance: {...call.provenance, source: 'live-provider-event'}} as CanonicalChatItemEvent['item']};
     const composed = composeConversationReading({manifest: f.manifest, events: [result, suffix], expanded: {}});
-    const owner = f.manifest.members.find(member => member.activity?.type === 'tool-call-activity')!;
+    const owner = f.manifest.members.find(member => member.activityFacts?.kind === 'tool')!;
     const summary = composed.plan.rows.find(row => row.kind === 'activity-summary')!;
     expect(summary.memberKeys).toHaveLength(2);
     expect(composed.actionRuns.get(summary.actionGroup.key)?.events).toContain(result);
@@ -115,7 +115,7 @@ it('accepts a captured row snapshot when publication freshness advances without 
 it('preserves the tool row and source positions when empty completion metadata appends', async () => {
   const f = await fixture(false);
   try {
-    const call = f.manifest.members.find(member => member.activity?.type === 'tool-call-activity')!;
+    const call = f.manifest.members.find(member => member.activityFacts?.kind === 'tool')!;
     const first = planConversationReading(f.manifest, {}).rows.find(row => row.key === call.key)!;
     const file = path.join(f.root, '.codex/sessions/composition.jsonl');
     fs.appendFileSync(file, JSON.stringify({type: 'event_msg', payload: {type: 'task_complete', turn_id: 'turn'}}) + '\n');
