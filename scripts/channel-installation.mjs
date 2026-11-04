@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { installedFileIdentity, readInstalledRelease, releaseFile } from './installed-release.mjs';
+import { installedFileIdentity, leaveInstalledRuntime, readInstalledRelease, releaseFile } from './installed-release.mjs';
 import { withInstallationGatewayLock } from './lifecycle-lock.mjs';
 import { inspectRunConsumers } from './owned-run.mjs';
 
@@ -145,10 +145,9 @@ export async function ensureChannelInstallation(options) {
 
 /** Retain logical caller context, remove every bundle-derived loader/runtime reference. */
 export function channelEnvironment(active, environment = process.env, cwd = process.cwd()) {
-  const result = { ...environment, CLAUDE_CWD: environment.CLAUDE_CWD ?? cwd,
+  const result = { ...leaveInstalledRuntime(environment), CLAUDE_CWD: environment.CLAUDE_CWD ?? cwd,
     MANDIBLE_CHANNEL_ACTIVE: active.active, MANDIBLE_CHANNEL_GENERATION: active.generation };
-  for (const key of ['MANDIBLE_RELEASE_ROOT', 'MANDIBLE_RUNTIME', 'MANDIBLE_SQLITE_LIBRARY', 'MANDIBLE_SQLITE_LIBRARY_ARCHIVE',
-    'MANDIBLE_CADDY', 'MANDIBLE_CA_TRUST_HELPER', 'MANDIBLE_CLI_DIR', 'MANDIBLE_RUNTIME_ARCHIVE', 'NODE_PATH', 'NODE_OPTIONS', 'BUN_OPTIONS', 'DYLD_LIBRARY_PATH', 'DYLD_FALLBACK_LIBRARY_PATH', 'DYLD_INSERT_LIBRARIES']) delete result[key];
+  for (const key of ['MANDIBLE_SQLITE_LIBRARY_ARCHIVE', 'MANDIBLE_RUNTIME_ARCHIVE', 'NODE_PATH', 'NODE_OPTIONS', 'BUN_OPTIONS', 'DYLD_LIBRARY_PATH', 'DYLD_FALLBACK_LIBRARY_PATH', 'DYLD_INSERT_LIBRARIES']) delete result[key];
   result.PATH = (result.PATH ?? '').split(path.delimiter).filter(entry => !entry.includes('.app/Contents/')).join(path.delimiter);
   return result;
 }

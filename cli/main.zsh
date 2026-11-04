@@ -90,6 +90,7 @@ case "${1:-}" in
     shift 3
     export MANDIBLE_EXECUTION_CONTEXT="$(api_execution_context_json)"
     export MANDIBLE_AGENT_REF="$(api_current_agent_ref)"
+    mandible_leave_installed_runtime
     exec "$@" ;;
   settings)
     if [[ $# != 2 || "${2:-}" != read ]]; then

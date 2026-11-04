@@ -1,5 +1,5 @@
 import { claudePreToolUseProjection } from "../claude-execution-context.js";
-import { installedResourceRoot, readInstalledRelease, releaseFile } from "../../scripts/installed-release.mjs";
+import { installedResourceRoot, leaveInstalledRuntime, readInstalledRelease, releaseFile } from "../../scripts/installed-release.mjs";
 import { publicCommand } from "../product-resources.js";
 import { RUNTIME_SETTING_FIELDS } from "./types.js";
 import { managedQuestions, validQuestionAnswers } from "./questions.js";
@@ -64,7 +64,7 @@ export class ClaudeSdkTransport {
     const providerId = request.kind === "start" ? randomUUID() : request.provider_session_id;
     this.reservedId = providerId;
     const settings = request.runtime_options ?? {};
-    const env = { ...process.env };
+    const env = leaveInstalledRuntime(process.env);
     projectManagedProviderIdentity(env, "claude", providerId, request.conversation_id);
     delete env.CLAUDECODE;
     delete env.MANDIBLE_TOKEN;
