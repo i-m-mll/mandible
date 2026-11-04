@@ -100,7 +100,7 @@ import { startTrashGcScheduler, stopTrashGcScheduler } from "./trash-service.js"
 import { registerWorkflowRoutes } from "./routes/workflows.js";
 import { registerDashboardRoutes } from "./routes/dashboard.js";
 import { attachDashboardBadgePublisher, readDashboardBadgeCounts } from "./dashboard-badges.js";
-import { startIngestion, stopIngestionGracefully, triggerTargetedIngest } from "./ingestion.js";
+import { startIngestion, startBackgroundIngestion, stopIngestionGracefully, triggerTargetedIngest } from "./ingestion.js";
 import { ensureExactConversationFresh } from "./conversations/freshness.js";
 import { WorkUnitReconciler } from "./work-unit-reconciler.js";
 import { ChildRetentionScheduler } from "./conversations/retention.js";
@@ -140,7 +140,7 @@ export interface StartOptions {
   clientAuthDir?: string;
 }
 
-export function startIngestionAfterStartupWorkScan(
+export function startBackgroundIngestionAfterStartupWorkScan(
   scan: Promise<unknown>,
   start: () => void,
   logger: Logger,
@@ -579,6 +579,11 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // discovery) run after this point and intentionally do NOT gate readiness.
   await ledgerWarm;
   const ledgerWarmTimer = instance.role === "main" ? startLedgerWarmTimer(db.name, logger) : null;
+  startIngestion(logger, {
+    dbPath,
+    background:false,
+    getBackgroundBackoffMs:()=>eventLoopDiagnostics.snapshot().backgroundBackoffMs,
+  });
   setDaemonReady(true);
   readyRestartGeneration = restartAvailability?.markReady() ?? null;
   logger("info", "daemon_ready", { port: actualPort });
@@ -592,24 +597,17 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     : null;
   const startInstanceIngestion = () => {
     try {
-      startIngestion(logger, {
-        dbPath,
-        background: instance.role !== "preview",
-        // Read the last periodic sample so ingestion backoff does not reset the
-        // shared lag histogram between batches. Issue: 0d81726.
-        getBackgroundBackoffMs: () => eventLoopDiagnostics.snapshot().backgroundBackoffMs,
-      });
+      startBackgroundIngestion();
     } catch (error) {
       logger("warn", "ingestion_start_failed", { error: String(error) });
     }
   };
   const cancelStartupIngestion = startupWorkScan
-    ? startIngestionAfterStartupWorkScan(startupWorkScan, startInstanceIngestion, logger)
+    ? startBackgroundIngestionAfterStartupWorkScan(startupWorkScan, startInstanceIngestion, logger)
     : () => undefined;
   if (!startupWorkScan) {
     startupWorkScanComplete = true;
     updateWarmReadiness();
-    if (instance.role === "preview") startInstanceIngestion();
   }
 
   // Resolve the startup epoch after critical readiness. A slow git process must

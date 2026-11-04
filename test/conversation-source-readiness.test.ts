@@ -81,6 +81,24 @@ async function seed(provider: Parameters<typeof source>[0] = "codex") {
 }
 
 describe("source metadata readiness and canonical ingestion repair", () => {
+  it('leaves an unchanged cold cache for selected demand while reconciliation still indexes source changes',async()=>{
+    const {file,id}=await seed();
+    const cache=getConversationStructureCache(db);
+    cache.clear();
+    await actor.reconcile();
+    expect(readConversationSourceReadiness(db,id)).toMatchObject({status:'repair_needed',reason:'projection_incomplete'});
+    expect((await repairConversationSourceReadiness(db,id)).status).toBe('ready');
+    db.prepare('UPDATE conversation_sources SET position_space_id=NULL WHERE conversation_id=?').run(id);
+    await actor.reconcile();
+    expect(readConversationSourceReadiness(db,id).status).toBe('ready');
+    cache.clear();
+    fs.appendFileSync(file,row({type:'response_item',timestamp:'2026-10-01T00:00:02Z',payload:{type:'message',role:'assistant',content:[{type:'output_text',text:'changed native source'}]}}));
+    await actor.reconcile();
+    expect(readConversationSourceReadiness(db,id).status).toBe('ready');
+    const read=await new ConversationSourceReader(db).readAll(id);
+    expect(read.status).toBe('source');
+    if(read.status==='source') expect(read.value.some(block=>block.content==='changed native source')).toBe(true);
+  });
   it.each(["codex", "claude", "gemini-jsonl", "gemini-json"] as const)("repairs unchanged %s epochs during reconciliation", async (provider) => {
     const { file, id } = await seed(provider);
     const beforeMtime = fs.statSync(file).mtimeMs;
