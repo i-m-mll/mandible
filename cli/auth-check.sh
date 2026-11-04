@@ -25,6 +25,8 @@ usage() {
 
 binding=$(mandible_bind_main_arguments "auth.check" '{"branch":[{"option":"branch"},{"position":0}],"repo":{"option":"repo"},"target_override":{"option":["target","base"]},"cwd_override":{"option":"cwd"},"json":{"option":"json","constant":"1"}}' "$@") || exit $?
 eval "$binding"
+# The daemon resolves a relative path against its own working directory.
+[[ -z "$cwd_override" ]] || cwd_override=$(api_resolve_user_path "$cwd_override")
 
 detect_protected_branch() {
   if git show-ref --verify --quiet refs/heads/develop 2>/dev/null; then

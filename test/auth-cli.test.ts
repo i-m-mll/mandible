@@ -5,6 +5,8 @@
  * `auth check` frames a stale queue entry as remediation; and every
  * staged-action mutation carries integer CAS guards or never leaves the client.
  */
+import { realpathSync } from "node:fs";
+
 import { afterEach, describe, expect, it } from "vitest";
 
 import { fileRpc, runCli, scratchDir, startStubDaemon, type StubHandler } from "./helpers/cli-process.js";
@@ -41,6 +43,22 @@ describe("auth list", () => {
 });
 
 describe("auth check", () => {
+  it("sends a relative --cwd as an absolute path (a763056)", async () => {
+    const bodies: unknown[] = [];
+    const stub = await daemon(({ method, url, body }) => {
+      if (method !== "POST" || url !== "/api/auth/check") return undefined;
+      bodies.push(body);
+      return { body: { check: { status: "clean", repo: "repo", base_branch: "main", head_branch: "feature/live", checked_requests: 0, conflicts: [] } } };
+    });
+    const cwd = scratchDir("auth-check-relative-cwd");
+
+    const result = await runCli(["auth", "check", "--repo", "repo", "--branch", "feature/live", "--cwd", "."], { cwd, env: stub.env });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(bodies).toHaveLength(1);
+    expect(realpathSync((bodies[0] as { cwd: string }).cwd)).toBe(realpathSync(cwd));
+  });
+
   it("keeps a publication-blocked candidate mergeable and names the blocker", async () => {
     const stub = await daemon(({ method, url }) => method === "POST" && url === "/api/auth/check"
       ? {
