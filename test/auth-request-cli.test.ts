@@ -212,7 +212,7 @@ describe("action-specific request preparation", () => {
     try {
       const result = await runAsync([
         "auth", "request", "--type", "config-change", "--command", command,
-        "--cwd", executionDir, "--repo", "example", "--title", "Apply reviewed settings",
+        "--cwd", ".", "--repo", "example", "--title", "Apply reviewed settings",
         "--issue", "settings123", "--message", "Apply the reviewed settings without changing application data.",
         "--depends-on", "source123", "--depends-on", "validation123", "--no-watch",
       ], executionDir, { MANDIBLE_BASE: `http://127.0.0.1:${server.port}` });
