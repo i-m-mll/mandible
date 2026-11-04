@@ -19,6 +19,7 @@ import {
 import { readExactCodexTitleAuthority } from "./codex-title-authority.js";
 import { getConversationStructureCache } from "./structure-cache.js";
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "./source-types.js";
+import { readConversationSourceReadiness } from './source-readiness.js';
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 
@@ -429,7 +430,7 @@ async function converge(
         throw error;
       }
       const extentFacts = currentFacts(db, activePinned, extent.path);
-      if (matchesIndexedExtent(extentFacts, extent)) {
+      if (matchesIndexedExtent(extentFacts, extent) && readConversationSourceReadiness(db,activePinned.conversationId).status==='ready') {
         const titleChanged = convergeProviderMetadata(db, activePinned, extentFacts, extent.fileMtimeMs);
         return {
           conversationId: activePinned.conversationId,
@@ -447,7 +448,7 @@ async function converge(
       throw error;
     }
     const beforeFacts = currentFacts(db, activePinned, before.path);
-    if (matchesIndexed(beforeFacts, before)) {
+    if (matchesIndexed(beforeFacts, before) && readConversationSourceReadiness(db,activePinned.conversationId).status==='ready') {
       const titleChanged = convergeProviderMetadata(db, activePinned, beforeFacts, before.fileMtimeMs);
       return {
         conversationId: activePinned.conversationId,
@@ -469,7 +470,7 @@ async function converge(
       throw error;
     }
     const afterFacts = currentFacts(db, activePinned, after.path);
-    if (matchesIndexed(afterFacts, after)) {
+    if (matchesIndexed(afterFacts, after) && readConversationSourceReadiness(db,activePinned.conversationId).status==='ready') {
       const titleChanged = convergeProviderMetadata(db, activePinned, afterFacts, after.fileMtimeMs);
       return {
         conversationId: activePinned.conversationId,
@@ -516,7 +517,8 @@ export async function ensureExactConversationFresh(
       || epochs.redaction_epoch !== CURRENT_CONVERSATION_SOURCE_EPOCHS.redactionEpoch
     );
     const parserEpochOutdated = Boolean(outdated);
-    let sourceNeedsRefresh = Boolean(outdated);
+    const publicationIncomplete=readConversationSourceReadiness(db,pinned.conversationId).reason==='projection_incomplete';
+    let sourceNeedsRefresh = Boolean(outdated) || publicationIncomplete;
     if (!sourceNeedsRefresh && pinned.sourcePath) {
       try {
         const extent = await observePinnedExtent(db, pinned, options.sourceReadInstrumentation);
@@ -531,7 +533,7 @@ export async function ensureExactConversationFresh(
     if (sourceNeedsRefresh && pinned.sourcePath) {
       try {
         if ((options.scheduleReparse ?? scheduleExactPathReparse)(pinned.sourcePath, pinned.sourceId, pinned.conversationId)) {
-          if (!parserEpochOutdated && !options.indexedOnly) {
+          if (!parserEpochOutdated && !publicationIncomplete && !options.indexedOnly) {
             // Let the selected source reader prove its requested page against
             // the sealed indexed prefix. This keeps an active append from
             // blocking historical pages; the reader still rejects a rewrite,

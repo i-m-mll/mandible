@@ -13,6 +13,7 @@ export type ConversationSourceReadinessReason =
   | "epochs_outdated"
   | "version_unsealed"
   | "projection_incomplete"
+  | "position_space_missing"
   | "unsupported_representation"
   | "conversation_not_found"
   | "repair_failed"
@@ -49,7 +50,7 @@ export function readConversationSourceReadiness(db: Db, conversationId: string):
   const needsRepair = (reason: ConversationSourceReadinessReason) =>
     result(repairable ? "repair_needed" : "unavailable", reason);
   if (!source) return needsRepair("source_not_indexed");
-  if (!source.positionSpaceId) return needsRepair("projection_incomplete");
+  if (!source.positionSpaceId) return needsRepair("position_space_missing");
   if (source.availability === "missing" || version?.availability === "missing") {
     return result("unavailable", "source_unavailable");
   }

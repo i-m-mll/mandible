@@ -753,7 +753,7 @@ export function startIngestion(log: Logger, options: StartIngestionOptions = {})
   requestedReparseFailures.clear();
   eventPublisher = broadcast;
   backgroundBackoffMs = options.getBackgroundBackoffMs ?? (() => 0);
-  backgroundIngestionEnabled = options.background !== false;
+  backgroundIngestionEnabled = false;
   ingestionActive = true;
   ingestionRunToken++;
   if (options.dbPath && canUseDefaultIngestionWorker()) {
@@ -766,10 +766,19 @@ export function startIngestion(log: Logger, options: StartIngestionOptions = {})
   } else if (options.dbPath) {
     logger("debug", "ingestion_worker_unavailable_in_source_runtime");
   }
-  if (!backgroundIngestionEnabled) {
+  if (options.background===false) {
     logger("info", "ingestion_selected_source_only");
     return;
   }
+
+  startBackgroundIngestion();
+}
+
+/** Broad discovery starts independently of the already available exact-path actor. */
+export function startBackgroundIngestion():void {
+  if(!ingestionActive) throw new Error('Cannot start background ingestion before the exact-path actor');
+  if(backgroundIngestionEnabled) return;
+  backgroundIngestionEnabled=true;
 
   logger("info", "ingestion_starting", { watch_paths: WATCH_CONFIGS.map((c) => c.base) });
 
@@ -2654,7 +2663,7 @@ async function ingestFilePass(
   if (
     !options.forceFull
     && !options.bypassSameMtimeUnchanged
-    && !structureCacheNeedsRebuild
+    && (!structureCacheNeedsRebuild || options.withinPass)
     && !sourceEpochNeedsRebuild
     && !sourceGenerationChanged
     && !appendCheckpointNeedsFullParse
@@ -3499,8 +3508,10 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
 
       // Check if file needs ingestion
       try {
-        const needsMetadataRepair = (conversationsAtPath.all(filePath) as Array<{ id: string }>).some((row) =>
-          readConversationSourceReadiness(db, row.id).status !== "ready");
+        const needsMetadataRepair = (conversationsAtPath.all(filePath) as Array<{ id: string }>).some((row) => {
+          const readiness=readConversationSourceReadiness(db,row.id);
+          return readiness.status!=='ready' && readiness.reason!=='projection_incomplete';
+        });
         const indexed = indexedPhysicalSources.get(filePath);
         if (indexed && !needsMetadataRepair
             && appendStates.get(filePath)?.byte_offset === indexed.byte_length) {

@@ -3,7 +3,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { startDaemon, startIngestionAfterStartupWorkScan, type DaemonHandle } from "../src/index.js";
+import { startDaemon, startBackgroundIngestionAfterStartupWorkScan, type DaemonHandle } from "../src/index.js";
+import { getConversationStructureCache } from '../src/conversations/structure-cache.js';
+import { planConversationReading, type ConversationReadingManifest } from '../src/presentation/reading-manifest.js';
 import { WorkScanner } from '../src/work-scanner.js';
 import { mintApiToken } from '../src/client-auth/tokens.js';
 import { setupOperator } from '../src/users/store.js';
@@ -14,7 +16,7 @@ import { waitUntil } from './helpers/wait-until.js';
 import { createAuthCheckRepo } from './helpers/auth-queue-fixtures.js';
 
 describe("startup ingestion ordering", () => {
-  it('serves authenticated ledger reads and mutations while the startup scan is pending, then scans and ingests normally', async () => {
+  it('serves selected cold-source rows through the real actor before the startup scan finishes', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'readiness-scan-'));
     fs.cpSync(createAuthCheckRepo(), path.join(root, 'repo'), { recursive: true });
     const transcriptDir = path.join(getUserHome(), '.claude/projects/readiness');
@@ -51,6 +53,25 @@ describe("startup ingestion ordering", () => {
       expect(written.status).toBe(200);
       expect(await (await fetch(`${origin}/api/settings/readiness_fixture`, { headers })).json()).toMatchObject({ value: 'served' });
       expect(daemon.db.prepare('SELECT id FROM conversations').get()).toBeUndefined();
+      const seeded=await fetch(origin+'/api/hooks/ingest-nudge',{method:'POST',headers,body:JSON.stringify({transcriptPath:transcript})});
+      expect(seeded.status).toBe(202);
+      const conversation=daemon.db.prepare('SELECT id,session_id FROM conversations WHERE source_path=?').get(transcript) as {id:string;session_id:string};
+      expect(conversation.session_id).toBe('readiness-session');
+      getConversationStructureCache(daemon.db).clear();
+      const manifestUrl=origin+'/api/conversations/'+conversation.id+'/reading-manifest';
+      const pending=await fetch(manifestUrl,{headers});
+      expect(pending.status,JSON.stringify(await pending.clone().json())).toBe(503);
+      expect((await pending.json()).code).toBe('freshness_pending');
+      const manifest=await waitUntil(async()=>{
+        const result=await fetch(manifestUrl,{headers});
+        return result.status===200 ? (await result.json()).manifest as ConversationReadingManifest : null;
+      },'selected source presentation rebuild while startup scan is gated');
+      const plan=planConversationReading(manifest,{});
+      const rows=await fetch(origin+'/api/conversations/'+conversation.id+'/reading-rows',{method:'POST',headers,body:JSON.stringify({positionSpaceId:manifest.positionSpaceId,rows:plan.rows.map(row=>({key:row.key,revision:row.revision})),expanded:{}})});
+      expect(rows.status).toBe(200);
+      const materialized=await rows.json();
+      expect(materialized.rows.flatMap((row:{items:Array<{item:{identity:{session_id:string};parts:Array<{text:string}>}}>})=>row.items).some((event:{item:{identity:{session_id:string};parts:Array<{text:string}>}})=>event.item.identity.session_id==='readiness-session' && event.item.parts.some(part=>part.text==='Ready before repository scanning finishes.'))).toBe(true);
+      expect(await (await fetch(origin+'/api/health')).json()).toMatchObject({ready:true,warm:false});
       release();
       await expect(scan).resolves.toMatchObject({ scanned_repos: 1, missing_repos: [] });
       await waitUntil(() => daemon!.db.prepare('SELECT id FROM conversations').get(), 'startup conversation ingestion after the work scan');
@@ -72,12 +93,12 @@ describe("startup ingestion ordering", () => {
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
   });
 
-  it("starts ingestion only after the initial work scan settles, including failure", async () => {
+  it("starts background ingestion only after the initial work scan settles, including failure", async () => {
     let resolveScan: (() => void) | undefined;
     const scan = new Promise<void>((resolve) => { resolveScan = resolve; });
     const start = vi.fn();
     const logger = vi.fn();
-    startIngestionAfterStartupWorkScan(scan, start, logger);
+    startBackgroundIngestionAfterStartupWorkScan(scan, start, logger);
     expect(start).not.toHaveBeenCalled();
 
     resolveScan?.();
@@ -87,7 +108,7 @@ describe("startup ingestion ordering", () => {
     const failure = new Error("scanner unavailable");
     const failedStart = vi.fn();
     const failedLogger = vi.fn();
-    startIngestionAfterStartupWorkScan(Promise.reject(failure), failedStart, failedLogger);
+    startBackgroundIngestionAfterStartupWorkScan(Promise.reject(failure), failedStart, failedLogger);
     await Promise.resolve();
     await Promise.resolve();
     expect(failedStart).toHaveBeenCalledOnce();
@@ -96,11 +117,11 @@ describe("startup ingestion ordering", () => {
     });
   });
 
-  it("does not start ingestion after daemon shutdown cancels the pending scan", async () => {
+  it("does not start background ingestion after daemon shutdown cancels the pending scan", async () => {
     let resolveScan: (() => void) | undefined;
     const scan = new Promise<void>((resolve) => { resolveScan = resolve; });
     const start = vi.fn();
-    const cancel = startIngestionAfterStartupWorkScan(scan, start, vi.fn());
+    const cancel = startBackgroundIngestionAfterStartupWorkScan(scan, start, vi.fn());
 
     cancel();
     resolveScan?.();
