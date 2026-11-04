@@ -23,7 +23,8 @@ import {
   type BlockType,
 } from '../../../../src/spaces/serialize';
 import type { SpaceBlock } from '../../api';
-import { leadingMarkdownFrontmatter, renderMarkdownFrontmatter } from '../../lib/markdownFrontmatter';
+import { leadingMarkdownFrontmatter } from '../../../../src/markdown-frontmatter';
+import { renderMarkdownFrontmatter } from '../../lib/markdownFrontmatter';
 import './DocumentRenderer.css';
 
 // Ensure the C6 shared parser recognizes `spaces-doc.v1` directive refs so the

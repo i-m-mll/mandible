@@ -3,7 +3,7 @@ import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 
 import type { BriefingDirectiveItem } from '../../api';
-import { leadingMarkdownFrontmatter, type MarkdownFrontmatter } from '../../lib/markdownFrontmatter';
+import { leadingMarkdownFrontmatter, type MarkdownFrontmatter } from '../../../../src/markdown-frontmatter';
 
 export type BriefingMarkdownEntityKind = 'frontmatter' | 'heading' | 'paragraph' | 'list-item' | 'table' | 'block-quote' | 'fenced-code';
 
