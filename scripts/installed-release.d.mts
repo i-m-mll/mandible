@@ -24,3 +24,4 @@ export function readInstalledRelease(root: string): InstalledRelease;
 export function verifyInstalledRelease(root: string): InstalledRelease;
 export function verifyApplicationRelease(app: string): { release: InstalledRelease; digest: string };
 export function installedRuntimeEnvironment(root: string, environment?: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
+export function leaveInstalledRuntime(environment?: NodeJS.ProcessEnv): NodeJS.ProcessEnv;

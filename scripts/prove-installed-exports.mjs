@@ -87,6 +87,12 @@ try {
   db.prepare('INSERT INTO settings (key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run('claude_notifications_enabled', 'false', Date.now());
   assert.equal(JSON.parse(success(await run(['settings', 'read'], '', { CLAUDE_CODE_SESSION_ID: 'child-native' }))).claude_notifications_enabled, 'false');
 
+  for (const launch of [['identity', 'exec', '--'], ['wrap', '--app', 'launch-proof', '--id', 'launch-proof', '--']]) {
+    const launched = new Map(success(await run([...launch, '/usr/bin/env'])).trim().split('\n').map(line => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
+    assert.deepEqual([...env.MANDIBLE_INSTALLED_KEYS.split(' '), 'MANDIBLE_INSTALLED_KEYS'].filter(key => launched.has(key)), []);
+    assert.equal(launched.get('PATH'), [path.join(resources, 'bin'), '/usr/bin', '/bin', '/usr/sbin', '/sbin'].join(':'));
+  }
+
   const envFile = path.join(scratch, 'claude-env.sh');
   const session = 'lifecycle-native';
   const hookEnv = { MANDIBLE_SESSION_ID: 'stale-parent', CLAUDE_CODE_SESSION_ID: 'parent-native', CODEX_THREAD_ID: 'inherited-codex',
@@ -129,7 +135,7 @@ try {
   assert.deepEqual(db.prepare('SELECT pid,conversation_id FROM sessions WHERE id=?').get('stale-parent'), { pid: 999999999, conversation_id: 'parent-native' });
   assert.notEqual(db.prepare('SELECT status FROM sessions WHERE id=?').get('stale-parent').status, 'ended');
   process.stdout.write(`${JSON.stringify({ passed: true, commit: release.provenance.commit, source_digest: release.provenance.source_digest,
-    evidence: ['identity exec retains PID, argument boundaries, stdin/stdout/stderr and exit status while removing stale managed identity',
+    evidence: ['identity exec and wrap launch their command outside the installed runtime', 'identity exec retains PID, argument boundaries, stdin/stdout/stderr and exit status while removing stale managed identity',
       'concurrent installed per-call Claude child/root projections and exact identity exec refs', 'settings read over authenticated private socket', 'lifecycle native ID environment projection, process attachment, navigation and filtered inbox',
       'subagent registration/end and session end preserve parent ownership', 'checkout, developer stores and ambient developer tools denied'], scratch }, null, 2)}\n`);
 } finally { await closeSocket(); db.close(); }

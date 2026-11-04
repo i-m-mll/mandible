@@ -6,6 +6,7 @@ import type { TerminalBackend, BackendMetaUpdate, BackendStatusEvent } from "../
 import type { ConsoleSession, ConsoleStreamEvent, Logger } from "../types.js";
 import { RingBuffer } from "../ring-buffer.js";
 import { projectManagedProviderIdentity } from "./mandible-transport.js";
+import { leaveInstalledRuntime } from "../../scripts/installed-release.mjs";
 
 export class PTYBackend extends EventEmitter implements TerminalBackend {
   readonly id: string;
@@ -23,7 +24,7 @@ export class PTYBackend extends EventEmitter implements TerminalBackend {
   start(): void {
     if (this.destroyed) throw new Error("Terminal has been destroyed");
     if (this.process) throw new Error("Terminal is already running");
-    const env = { ...process.env, ...this.meta.env };
+    const env = { ...leaveInstalledRuntime(process.env), ...this.meta.env };
     projectManagedProviderIdentity(env, "shell");
     delete env.MANDIBLE_TOKEN;
     delete env.CLAUDECODE;

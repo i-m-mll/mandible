@@ -228,4 +228,5 @@ spawn_watcher() {
 
 register_session
 spawn_watcher
+mandible_leave_installed_runtime
 exec "$@"

@@ -15,6 +15,18 @@ fi
 
 api_is_local_socket() { [[ "$MANDIBLE_LOCAL_SOCKET" == 1 ]]; }
 
+# Call before exec'ing a command on the caller's behalf. Counterpart of
+# leaveInstalledRuntime in scripts/installed-release.mjs, which sets the key list.
+mandible_leave_installed_runtime() {
+  [[ -n "${MANDIBLE_INSTALLED_KEYS:-}" ]] || return 0
+  local key natives="${MANDIBLE_RUNTIME%/*}" entries=":$PATH:"
+  entries="${entries//:"$natives":/:}"
+  entries="${entries#:}"
+  export PATH="${entries%:}"
+  for key in $(printf '%s' "$MANDIBLE_INSTALLED_KEYS"); do unset "$key"; done
+  unset MANDIBLE_INSTALLED_KEYS
+}
+
 # Run a jq filter with the shared human-facing identity contract loaded. JSON
 # output deliberately bypasses this helper so exact API authority is preserved.
 api_jq_human() {
