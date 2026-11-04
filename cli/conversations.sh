@@ -307,8 +307,6 @@ conversation_search_read() (
 conversation_search_failure_text() {
   jq -r '
     {
-      source_changed: "a transcript changed while its results were being read. Run the search again.",
-      source_unavailable: "a transcript disappeared while its results were being read. Run the search again.",
       redaction_changed: "credential redaction changed during the search. Run the search again.",
       snapshot_expired: "the search snapshot expired. Run the search again.",
       worker_restarted: "the daemon worker restarted during the search. Run the search again.",
@@ -331,7 +329,7 @@ conversation_search_coverage_warning() {
       repair_failed: "transcript could not be indexed",
       repair_unavailable: "transcript could not be indexed"
     } as $text
-    | select(.coverage.complete == false)
+    | select(.coverage.complete == false and .coverage.stopped == null)
     | "Searched \(.coverage.scanned) of \(.coverage.eligible) conversations. Not searched:",
       (.coverage.unread | to_entries[] | "  \(.value.count) \($text[.key] // "transcript not indexed yet") (\(.key)), e.g. \(.value.examples | join(", "))")'
 }

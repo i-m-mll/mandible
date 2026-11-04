@@ -404,29 +404,54 @@ export async function inspectSourceRepresentation(filename: string): Promise<{
 
 const ASCII_LOWERCASE = Uint8Array.from({ length: 256 }, (_, byte) => byte >= 65 && byte <= 90 ? byte + 32 : byte);
 /** U+212A and U+0130 lowercase into ASCII, so raw bytes containing them cannot rule out a match. */
-const ASCII_CASE_FOLD_SOURCES = ["\u212a", "\u0130", "\\u212a", "\\u0130"].map(text => Buffer.from(text));
+const ASCII_CASE_FOLD_SOURCES = ["\u212a", "\u0130", "\\u212a", "\\u212A", "\\u0130"].map(text => Buffer.from(text));
 const ASCII_JSON_ESCAPE = Buffer.from("\\u00");
 const RAW_SCAN_CHUNK_BYTES = 1024 * 1024;
 
-function escapesLiteralByte(lowercased: Buffer, literal: Buffer): boolean {
-  for (let at = lowercased.indexOf(ASCII_JSON_ESCAPE); at >= 0 && at + 6 <= lowercased.length; at = lowercased.indexOf(ASCII_JSON_ESCAPE, at + 4)) {
-    const code = Number.parseInt(lowercased.toString("latin1", at + 4, at + 6), 16);
+function escapesLiteralByte(bytes: Buffer, literal: Buffer): boolean {
+  for (let at = bytes.indexOf(ASCII_JSON_ESCAPE); at >= 0 && at + 6 <= bytes.length; at = bytes.indexOf(ASCII_JSON_ESCAPE, at + 4)) {
+    const code = Number.parseInt(bytes.toString("latin1", at + 4, at + 6), 16);
     if (literal.includes(ASCII_LOWERCASE[code] ?? -1)) return true;
   }
   return false;
 }
 
+function lowercaseInPlace(bytes: Buffer): Buffer {
+  for (let index = 0; index < bytes.length; index++) bytes[index] = ASCII_LOWERCASE[bytes[index]!]!;
+  return bytes;
+}
+
+const COMMON_FIRST = " etaoinsrhldcumfpgwybvkxjqz";
+
+/** Every case spelling of the literal's rarest three bytes; any match contains one, so a chunk without any needs no lowercasing. */
+function caseVariantAnchors(literal: Buffer): Buffer[] {
+  let anchor = literal.subarray(0, 3);
+  let rarity = -1;
+  for (let start = 0; start + 3 <= literal.length; start++) {
+    const window = literal.subarray(start, start + 3);
+    const score = [...window].reduce((sum, byte) => {
+      const rank = COMMON_FIRST.indexOf(String.fromCharCode(byte));
+      return sum + (rank < 0 ? COMMON_FIRST.length : rank);
+    }, 0);
+    if (score > rarity) { anchor = window; rarity = score; }
+  }
+  return [...anchor].reduce<number[][]>((spellings, byte) => spellings.flatMap(prefix => {
+    const upper = byte >= 97 && byte <= 122 ? byte - 32 : byte;
+    return upper === byte ? [[...prefix, byte]] : [[...prefix, byte], [...prefix, upper]];
+  }), [[]]).map(bytes => Buffer.from(bytes));
+}
+
 function rawLiteralScanner(lowercaseAsciiLiteral: string): (chunk: Buffer) => boolean {
   const literal = Buffer.from(lowercaseAsciiLiteral);
-  const sought = [literal, ...ASCII_CASE_FOLD_SOURCES];
+  const anchors = caseVariantAnchors(literal);
   const overlap = Math.max(literal.length - 1, ASCII_JSON_ESCAPE.length + 1);
-  const found = (bytes: Buffer) => sought.some(item => bytes.includes(item)) || escapesLiteralByte(bytes, literal);
+  const unprovable = (bytes: Buffer) => ASCII_CASE_FOLD_SOURCES.some(item => bytes.includes(item)) || escapesLiteralByte(bytes, literal);
   let tail = Buffer.alloc(0);
   return chunk => {
-    for (let index = 0; index < chunk.length; index++) chunk[index] = ASCII_LOWERCASE[chunk[index]!]!;
-    if (found(chunk) || found(Buffer.concat([tail, chunk.subarray(0, overlap)]))) return true;
+    const seam = Buffer.concat([tail, chunk.subarray(0, overlap)]);
     tail = Buffer.concat([tail, chunk.subarray(-overlap)]).subarray(-overlap);
-    return false;
+    if (unprovable(chunk) || unprovable(seam) || lowercaseInPlace(seam).includes(literal)) return true;
+    return anchors.some(anchor => chunk.includes(anchor)) && lowercaseInPlace(chunk).includes(literal);
   };
 }
 
@@ -453,9 +478,9 @@ export async function logicalSourceMayContain(filename: string, lowercaseAsciiLi
         || (compressed ? !unchanged : size < version.byteLength || (size === version.byteLength && !unchanged))) return true;
     const found = rawLiteralScanner(lowercaseAsciiLiteral);
     if (compressed) {
-      const createZstdDecompress = (zlib as typeof zlib & { createZstdDecompress: () => Transform }).createZstdDecompress;
-      const provider = handle.createReadStream({ start: 0, autoClose: false });
-      const decoded = provider.pipe(createZstdDecompress());
+      const createZstdDecompress = (zlib as typeof zlib & { createZstdDecompress: (options: { chunkSize: number }) => Transform }).createZstdDecompress;
+      const provider = handle.createReadStream({ start: 0, autoClose: false, highWaterMark: RAW_SCAN_CHUNK_BYTES });
+      const decoded = provider.pipe(createZstdDecompress({ chunkSize: RAW_SCAN_CHUNK_BYTES }));
       provider.on("error", error => decoded.destroy(error));
       try {
         for await (const chunk of decoded) if (found(chunk as Buffer)) return true;

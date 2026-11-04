@@ -183,63 +183,45 @@ async function publishAppend(file: string, rewrite = false) {
 }
 describe("conversation full-text API parity", () => {
   it("bounds retained source fingerprints and scaled native snapshot metadata while detecting publication",async()=>{
-    const paths=await appendFixturePair("oldneedle A","oldneedle B");const store=new ConversationSourceStore(db);const version=store.resolveConversation("append-a")!.currentVersionId!;const versions=new Map([["append-a",version]]);
-    const authority=store.searchSnapshotAuthorities(["append-a"],versions).get("append-a")!;
+    const paths=await appendFixturePair("oldneedle A","oldneedle B");
     const observed=readConversationSourceGenerations(db,["append-a"]).get("append-a")!;
-    expect(Buffer.byteLength(authority)).toBeLessThanOrEqual(64);expect(Buffer.byteLength(observed)).toBeLessThanOrEqual(64);expect(readConversationSourceGeneration(db,"append-a")).toBe(observed);
+    expect(Buffer.byteLength(observed)).toBeLessThanOrEqual(64);expect(readConversationSourceGeneration(db,"append-a")).toBe(observed);
     const router=new Router();registerConversationRoutes(router,inlineLedgerReader());const result=await settled(router,{method:"GET",url:"/api/conversations?search=oldneedle&full_text=true&since=2026-08-18"});expect(result.status).toBe(200);
     const snapshot=result.body as {coverage:{eligible:number};search_metrics:{snapshot_pin_bytes:number;snapshot_metadata_bytes:number}};
     const scale=15_346/snapshot.coverage.eligible;const scaledPins=Math.ceil(snapshot.search_metrics.snapshot_pin_bytes*scale);const scaledMetadata=Math.ceil(snapshot.search_metrics.snapshot_metadata_bytes*scale);
     expect(scaledMetadata).toBeLessThanOrEqual(32*1024*1024);console.info("native snapshot metadata capacity",{eligible:15346,scaled_pin_bytes:scaledPins,scaled_metadata_bytes:scaledMetadata});
-    await publishAppend(paths.get("append-a")!);expect(store.searchSnapshotAuthorities(["append-a"],versions).get("append-a")).toBe(authority);const next=readConversationSourceGeneration(db,"append-a");expect(Buffer.byteLength(next)).toBeLessThanOrEqual(64);expect(next).not.toBe(observed);
+    await publishAppend(paths.get("append-a")!);const next=readConversationSourceGeneration(db,"append-a");expect(Buffer.byteLength(next)).toBeLessThanOrEqual(64);expect(next).not.toBe(observed);
   });
 
-  it.each(["before-scan", "after-negative", "rewrite-after-negative"])("keeps admitted coverage across canonical publication: %s", async (boundary) => {
+  it.each(["before-scan", "after-negative", "rewrite-after-negative"])("answers from each transcript as scanned across canonical publication: %s", async (boundary) => {
     const paths = await appendFixturePair("oldbody A", "tailneedle old B");
     const store = new ConversationSourceStore(db);
     const old = store.resolveConversation("append-a")!.currentVersionId;
     const cache = getConversationSearchCache(db);
     const search = cache.search.bind(cache);
-    let aDone!: () => void;
-    const aFinished = new Promise<void>(resolve => { aDone = resolve; });
-    let published = false;
-    const publish = async () => { if (published)
-      return; published = true; await publishAppend(paths.get("append-a")!, boundary === "rewrite-after-negative"); expect(store.resolveConversation("append-a")!.currentVersionId).not.toBe(old); };
-    const scan = vi.spyOn(cache, "search").mockImplementation(async (input) => {
-      const id = input.conversationIds[0];
-      if (id === "append-a") {
-        if (boundary === "before-scan")
-          await publish();
-        try { return await search(input); }
-        finally { aDone(); }
-      }
-      if (id === "append-b" && boundary !== "before-scan") {
-        await aFinished;
-        await publish();
-      }
-      return search(input);
+    const publish = async () => { await publishAppend(paths.get("append-a")!, boundary === "rewrite-after-negative"); expect(store.resolveConversation("append-a")!.currentVersionId).not.toBe(old); };
+    const scan = vi.spyOn(cache, "search").mockImplementationOnce(async (input) => {
+      if (boundary === "before-scan") await publish();
+      const result = await search(input);
+      if (boundary !== "before-scan") await publish();
+      return result;
     });
     const router = new Router();
     registerConversationRoutes(router, inlineLedgerReader());
+    const url = "/api/conversations?search=tailneedle&full_text=true&since=2026-08-18";
     try {
-      const result = await settled(router, { method: "GET", url: "/api/conversations?search=tailneedle&full_text=true&since=2026-08-18" });
-      if (boundary === "rewrite-after-negative") {
-        expect(result.status).toBe(200);
-        expect(result.body).toMatchObject({ total: 1, conversations: [{ id: "append-b" }], coverage: { complete: false, unread: { source_changed: { count: 1, examples: ["append-a"] } } } });
-      }
-      else {
-        expect(result.status).toBe(200);
-        expect(result.body).toMatchObject({ total: 1, conversations: [{ id: "append-b" }] });
-        scan.mockRestore();
-        const fresh = await settled(router, { method: "GET", url: "/api/conversations?search=tailneedle&full_text=true&since=2026-08-18" });
-        expect(fresh.status).toBe(200);
-        expect(fresh.body).toMatchObject({ total: 2 });
-      }
+      const result = await settled(router, { method: "GET", url });
+      expect(result.status).toBe(200);
+      expect(result.body).toMatchObject({ total: 1, conversations: [{ id: "append-b" }], coverage: { complete: true } });
+      const fresh = await settled(router, { method: "GET", url });
+      expect(fresh.status).toBe(200);
+      expect(fresh.body).toMatchObject({ total: 2 });
     }
     finally {
       scan.mockRestore();
     }
   });
+
   it("hydrates an existing dedicated snapshot with admitted version and normalization context after published append", async () => {
     const paths = await appendFixturePair("oldneedle A", "oldneedle B");
     const old = new ConversationSourceStore(db).resolveConversation("append-a")!.currentVersionId;
@@ -266,7 +248,7 @@ describe("conversation full-text API parity", () => {
       }).search_id;
       const page = await settled(router, { method: "GET", url: `${url}&search_id=${id}` });
       expect(page.status).toBe(200);
-      expect(page.body).toMatchObject({ total: 2, results: [{ conversation: { id: "append-a", model: "old-model" }, block: { position: 0, timestamp: "2026-08-18T00:00:01Z", locator:null } }] });
+      expect(page.body).toMatchObject({ total: 1, results: [{ conversation: { id: "append-a", model: "old-model" }, block: { position: 0, timestamp: "2026-08-18T00:00:01Z", locator:null } }] });
       expect((page.body as {results:Array<{block:unknown}>}).results[0].block).toEqual({...admittedBlock.value,content:""});
       expect(new ConversationSourceStore(db).resolveConversation("append-a")!.currentVersionId).not.toBe(old);
     }

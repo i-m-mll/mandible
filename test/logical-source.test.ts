@@ -214,6 +214,8 @@ describe("logicalSourceMayContain", () => {
   it.each([
     ["ignoring case", "the Second BRAIN note", true],
     ["across a read boundary", `${"x".repeat(1024 * 1024 - 4)}second brain`, true],
+    ["in mixed case across a read boundary", `${"x".repeat(1024 * 1024 - 4)}SeCoNd BrAiN`, true],
+    ["when an escaped Unicode case fold uses uppercase hex", "the \\u212Aelvin sign", true],
     ["when a Unicode case fold could produce the match", "the \u212aelvin sign", true],
     ["when a JSON escape could produce the match", "s\\u0065cond", true],
     ["when a JSON escape spans a read boundary", `${"x".repeat(1024 * 1024 - 3)}\\u0065`, true],

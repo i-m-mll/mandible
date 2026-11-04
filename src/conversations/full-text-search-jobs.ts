@@ -1,7 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readSnapshot } from "../ledger-reads/snapshot.js";
-import { readConversationSourceGenerations } from "./source-generation.js";
-import { ConversationSourceStore } from "./source-store.js";
 import { ConversationSourceReader } from "./source-reader.js";
 import type { SourceReadFailureKind } from "./source-types.js";
 import type { Db } from "../db.js";
@@ -11,7 +9,11 @@ import { FULL_TEXT_SEARCH_OBSERVER_LEASE_MS, FULL_TEXT_SEARCH_RETRY_MS, unsettle
 export type SearchQuery = Record<string, string | undefined>;
 export type SearchRoute = "conversation_list" | "conversation_sidebar" | "conversation_search";
 export class SearchSnapshotProjectionError extends Error {
-  constructor(readonly reason: "query_mismatch" | "source_changed") { super(reason); }
+  constructor(readonly reason: "query_mismatch") { super(reason); }
+}
+/** Rendered matches whose sources can no longer be read; serving drops them and renders again. */
+export class SearchSourcesLostError extends Error {
+  constructor(readonly lost: ReadonlyMap<string, FullTextSearchUnreadReason>) { super("search sources lost"); }
 }
 export type SearchMatchFact = Omit<ConversationSearchMatch, "snippet"> & {
   source_version_id: string;
@@ -23,6 +25,8 @@ export interface SearchPlan {
   needle: string;
   blockType?: string | null;
   metadataBytes: number;
+  /** Ends the scan once this many matches are held, for routes that need no exact total. */
+  stopAfterMatches?: number;
   render(matches: readonly SearchMatchFact[], query: SearchQuery, searchId: string): Promise<unknown> | unknown;
 }
 export type SearchUpdate = FullTextSearchPending | FullTextSearchTerminal | {
@@ -42,6 +46,10 @@ export function isFullTextSearch(route: string, query: SearchQuery): route is Se
       && (query.full_text === "true" || query.full_text === "1") && Boolean(query.search?.trim());
 }
 const PAGE_FIELDS = new Set(["search_id", "observer_token", "cancel", "limit", "page", "offset", "cursor", "group_key", "snapshot_id"]);
+/** The matches a `conversation_search` page needs; the job scans no further than this. */
+export function conversationSearchMatchLimit(query: SearchQuery): number {
+  return Math.min(100, Math.max(1, parseInt(query.limit || "20", 10) || 20)) + Math.max(0, parseInt(query.offset || "0", 10) || 0);
+}
 export function fullTextQueryKey(route: string, query: SearchQuery): string {
   const normalizedQuery: SearchQuery = { ...query };
   const booleanFields = new Set(["full_text", "starred", "exclude_subagents", "group", "title"]);
@@ -51,6 +59,7 @@ export function fullTextQueryKey(route: string, query: SearchQuery): string {
   if (route === "conversation_search") {
     normalizedQuery.q = (query.q || query.query || "").trim().toLowerCase();
     normalizedQuery.source = query.source || query.provider;
+    normalizedQuery.stop_after = String(conversationSearchMatchLimit(query));
     delete normalizedQuery.query;
     delete normalizedQuery.provider;
     delete normalizedQuery.title;
@@ -79,7 +88,8 @@ function recordUnread(coverage: FullTextSearchCoverage, conversationId: string, 
   if (entry.examples.length < MAX_UNREAD_EXAMPLES) entry.examples.push(conversationId);
   coverage.failed++;
 }
-const UNREAD_FOR_FAILURE: Record<Exclude<SourceReadFailureKind, "cancelled">, FullTextSearchUnreadReason> = {
+export const UNREAD_FOR_FAILURE: Record<SourceReadFailureKind, FullTextSearchUnreadReason> = {
+  cancelled: "source_changed",
   stale: "source_changed",
   unavailable: "source_unavailable",
   unsupported: "unsupported_representation",
@@ -88,10 +98,8 @@ const UNREAD_FOR_FAILURE: Record<Exclude<SourceReadFailureKind, "cancelled">, Fu
 interface Pin {
   id: string;
   version: string;
-  authority?: string;
-  observed?: string;
-  blockCount?: number;
-  model?: string | null;
+  blockCount: number;
+  model: string | null;
 }
 interface Job {
   id: string;
@@ -119,6 +127,7 @@ interface Job {
   };
 }
 const MAX_METADATA = 32 * 1024 * 1024;
+const SCAN_WINDOW = 256;
 const yieldTurn = () => new Promise<void>(resolve => setImmediate(resolve));
 function renderedConversationIds(value: unknown): Set<string> {
   const body = value as {
@@ -242,26 +251,32 @@ export class FullTextSearchJobs {
       return this.response(job.terminal);
     if (!job.complete)
       return this.response({ ...job.pending, observer_token: observer });
-    if (!(await this.validate(job, new Set())))
+    if (!this.redactionCurrent(job))
       return this.response(job.terminal!);
     const pagingStarted = performance.now();
-    let result: unknown;
-    try {
-      result = await job.plan!.render(job.matches, query, job.id);
-    }
-    catch (error) {
-      const reason = error instanceof SearchSnapshotProjectionError ? error.reason : "source_changed";
-      if (reason === "source_changed") {
-        this.fail(job, reason, "superseded");
-        return this.response(job.terminal!);
+    for (;;) {
+      let result: unknown;
+      let lost: ReadonlyMap<string, FullTextSearchUnreadReason>;
+      try {
+        result = await job.plan!.render(job.matches, query, job.id);
+        lost = await this.proveRendered(job, renderedConversationIds(result));
       }
-      return this.response(terminal(job.id, reason, job.coverage, "superseded"));
+      catch (error) {
+        if (error instanceof SearchSnapshotProjectionError)
+          return this.response(terminal(job.id, error.reason, job.coverage, "superseded"));
+        if (!(error instanceof SearchSourcesLostError))
+          return this.response(terminal(job.id, "internal_error", job.coverage, "incomplete", error instanceof Error ? error.message : String(error)));
+        lost = error.lost;
+      }
+      if (lost.size > 0) {
+        this.forgetLost(job, lost);
+        continue;
+      }
+      if (!this.redactionCurrent(job))
+        return this.response(job.terminal!);
+      job.metrics.paging_ms += performance.now() - pagingStarted;
+      return this.response({ ...result as object, search_metrics: { ...job.metrics,snapshot_metadata_bytes:job.bytes }, state: "complete", search_id: job.id, snapshot_id: job.id, coverage: job.coverage });
     }
-    const rendered = renderedConversationIds(result);
-    if (!(await this.validate(job, rendered)))
-      return this.response(job.terminal!);
-    job.metrics.paging_ms += performance.now() - pagingStarted;
-    return this.response({ ...result as object, search_metrics: { ...job.metrics,snapshot_metadata_bytes:job.bytes }, state: "complete", search_id: job.id, snapshot_id: job.id, coverage: job.coverage });
   }
   private response(body: FullTextSearchResponse<Record<string, unknown>>): {
     status: number;
@@ -269,76 +284,42 @@ export class FullTextSearchJobs {
   } {
     return { status: body.state === "pending" ? 202 : body.state === "complete" ? 200 : 409, json: JSON.stringify(body) };
   }
-  /** A served snapshot is all-or-nothing; a settling one only loses the sources that changed under it. */
-  private async validate(job: Job, physicalIds?: ReadonlySet<string>, settling = false): Promise<boolean> {
+  private redactionCurrent(job: Job): boolean {
     if (job.terminal)
       return false;
-    const lost = new Map<string, FullTextSearchUnreadReason>();
-    const lose = (pin: Pin, reason: "source_changed" | "source_unavailable"): boolean => {
-      if (settling) {
-        lost.set(pin.id, reason);
-        return true;
-      }
-      this.fail(job, reason, "superseded");
-      return false;
-    };
-    const ids = job.pins.map(pin => pin.id);
-    const versions = new Map(job.pins.map(pin => [pin.id, pin.version]));
-    const metadata = () => readSnapshot(this.db, () => ({
-      redaction: new SourceBackedConversationSearchSourceAdapter(this.db).redactionEpoch(),
-      authorities:new ConversationSourceStore(this.db).searchSnapshotAuthorities(ids,versions),
-      observed:readConversationSourceGenerations(this.db,ids),
-      aliased: new Set((this.db.prepare("SELECT alias_id FROM conversation_identity_aliases WHERE alias_id IN (SELECT value FROM json_each(?))").all(JSON.stringify(ids)) as Array<{ alias_id: string }>).map(row => row.alias_id)),
-    }));
-    const before = metadata();
-    if (before.redaction !== job.redaction) {
-      this.fail(job, "redaction_changed", "superseded");
-      return false;
-    }
-    for (const pin of job.pins)
-      if ((before.aliased.has(pin.id) || before.authorities.get(pin.id) !== pin.authority) && !lose(pin, "source_changed"))
-        return false;
-    const started = performance.now();
-    for (let index = 0; index < job.pins.length; index++) {
-      if (job.terminal)
-        return false;
-      const pin = job.pins[index];
-      if (lost.has(pin.id))
-        continue;
-      const current=before.observed.get(pin.id);
-      if (!physicalIds || physicalIds.has(pin.id) || current !== pin.observed) {
-        const proof = await this.reader.verifyVersion(pin.id, pin.version, job.controller.signal);
-        if (job.terminal)
-          return false;
-        if (proof.status !== "source" && !lose(pin, proof.status === "unavailable" ? "source_unavailable" : "source_changed"))
-          return false;
-      }
-      if (index % 32 === 31)
-        await yieldTurn();
-    }
-    if (job.terminal)
-      return false;
-    const after = metadata();
-    if (after.redaction !== job.redaction) {
-      this.fail(job, "redaction_changed", "superseded");
-      return false;
-    }
-    for (const pin of job.pins)
-      if ((after.aliased.has(pin.id) || after.authorities.get(pin.id) !== pin.authority || after.observed.get(pin.id) !== before.observed.get(pin.id)) && !lost.has(pin.id) && !lose(pin, "source_changed"))
-        return false;
-    this.dropPins(job, lost);
-    for (const pin of job.pins)
-      pin.observed = after.observed.get(pin.id);
-    job.metrics.source_verification_ms += performance.now() - started;
-    return !job.terminal;
+    if (new SourceBackedConversationSearchSourceAdapter(this.db).redactionEpoch() === job.redaction)
+      return true;
+    this.fail(job, "redaction_changed", "superseded");
+    return false;
   }
-  private dropPins(job: Job, lost: ReadonlyMap<string, FullTextSearchUnreadReason>): void {
-    if (lost.size === 0)
-      return;
+  /** Matches answer for their transcripts as scanned, so only what this page shows must still be readable. */
+  private async proveRendered(job: Job, rendered: ReadonlySet<string>): Promise<ReadonlyMap<string, FullTextSearchUnreadReason>> {
+    const lost = new Map<string, FullTextSearchUnreadReason>();
+    const pins = job.pins.filter(pin => rendered.has(pin.id));
+    if (pins.length === 0)
+      return lost;
+    const started = performance.now();
+    const aliased = new Set((this.db.prepare("SELECT alias_id FROM conversation_identity_aliases WHERE alias_id IN (SELECT value FROM json_each(?))").all(JSON.stringify(pins.map(pin => pin.id))) as Array<{ alias_id: string }>).map(row => row.alias_id));
+    for (const pin of pins) {
+      if (aliased.has(pin.id)) {
+        lost.set(pin.id, "source_changed");
+        continue;
+      }
+      const proof = await this.reader.verifyVersion(pin.id, pin.version, job.controller.signal);
+      if (proof.status !== "source")
+        lost.set(pin.id, UNREAD_FOR_FAILURE[proof.status]);
+    }
+    job.metrics.source_verification_ms += performance.now() - started;
+    return lost;
+  }
+  private forgetLost(job: Job, lost: ReadonlyMap<string, FullTextSearchUnreadReason>): void {
     for (const [id, reason] of lost)
       recordUnread(job.coverage, id, reason);
     job.pins = job.pins.filter(pin => !lost.has(pin.id));
     job.matches = job.matches.filter(match => !lost.has(match.conversation_id));
+    job.coverage.scanned -= lost.size;
+    job.coverage.matched = job.matches.length;
+    job.coverage.complete = false;
   }
   private async pump(): Promise<void> {
     if (this.active)
@@ -404,8 +385,6 @@ export class FullTextSearchJobs {
       return {
         plan: refreshed,
         sources: refreshed.ids.map(id => readConversationSourceReadiness(this.db, id)),
-        authorities:new ConversationSourceStore(this.db).searchSnapshotAuthorities(refreshed.ids),
-        observed:readConversationSourceGenerations(this.db,refreshed.ids),
         normalization: this.db.prepare("SELECT id,block_count,model FROM conversations WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify(refreshed.ids)) as Array<{
           id: string;
           block_count: number;
@@ -420,7 +399,7 @@ export class FullTextSearchJobs {
     job.pins = [];
     for (const source of snapshot.sources) {
       if (source.status === "ready")
-        job.pins.push({ id: source.conversationId, version: source.sourceVersionId!, authority:snapshot.authorities.get(source.conversationId),observed:snapshot.observed.get(source.conversationId), blockCount: normalization.get(source.conversationId)!.block_count, model: normalization.get(source.conversationId)!.model });
+        job.pins.push({ id: source.conversationId, version: source.sourceVersionId!, blockCount: normalization.get(source.conversationId)!.block_count, model: normalization.get(source.conversationId)!.model });
       else
         recordUnread(job.coverage, source.conversationId, source.reason as FullTextSearchUnreadReason);
     }
@@ -440,32 +419,35 @@ export class FullTextSearchJobs {
     this.publish(job);
     const cache = getConversationSearchCache(this.db);
     const pinned = job.pins;
-    const lost = new Map<string, FullTextSearchUnreadReason>();
-    for (let index = 0; index < pinned.length; index += 4) {
+    const stopAfter = plan.stopAfterMatches ?? Infinity;
+    for (let index = 0; index < pinned.length && job.matches.length < stopAfter; index += SCAN_WINDOW) {
       if (job.terminal)
         return;
-      const batch = pinned.slice(index, index + 4);
-      const results = await Promise.all(batch.map(pin => cache.search({ conversationIds: [pin.id], needle: plan.needle, blockType: plan.blockType, limit: 1, signal: job.controller.signal, expectedSourceVersions: { [pin.id]: pin.version }, expectedBlockCounts: { [pin.id]: pin.blockCount! }, expectedModels: { [pin.id]: pin.model ?? null } })));
+      const window = pinned.slice(index, index + SCAN_WINDOW);
+      const result = await cache.search({
+        conversationIds: window.map(pin => pin.id), needle: plan.needle, blockType: plan.blockType,
+        limit: Math.min(window.length, stopAfter - job.matches.length), signal: job.controller.signal,
+        expectedSourceVersions: Object.fromEntries(window.map(pin => [pin.id, pin.version])),
+        expectedBlockCounts: Object.fromEntries(window.map(pin => [pin.id, pin.blockCount])),
+        expectedModels: Object.fromEntries(window.map(pin => [pin.id, pin.model])),
+      });
       if (job.terminal)
         return;
-      for (const [position, result] of results.entries()) {
-        const pin = batch[position];
-        job.metrics.source_verification_ms += result.metrics.source_verification_ms;
-        const failure = result.failures[0];
-        if (failure) {
-          if (failure.status === "cancelled") {
-            this.fail(job, "cancelled");
-            return;
-          }
-          const reason = UNREAD_FOR_FAILURE[failure.status];
-          lost.set(pin.id, reason);
-          continue;
-        }
-        job.coverage.scanned = ++job.pending.progress.scanned;
-        const facts = result.matches.map(({ snippet: _snippet, ...match }) => ({ ...match, source_version_id: pin.version, source_block_count: pin.blockCount!, source_model: pin.model ?? null }));
-        job.matches.push(...facts);
-        job.bytes += Buffer.byteLength(JSON.stringify(facts));
+      job.metrics.source_verification_ms += result.metrics.source_verification_ms;
+      if (result.failures.some(failure => failure.status === "cancelled")) {
+        this.fail(job, "cancelled");
+        return;
       }
+      for (const failure of result.failures)
+        recordUnread(job.coverage, failure.conversation_id, UNREAD_FOR_FAILURE[failure.status]);
+      job.coverage.scanned = job.pending.progress.scanned += result.metrics.examined_conversations - result.failures.length;
+      const pins = new Map(window.map(pin => [pin.id, pin]));
+      const facts = result.matches.map(({ snippet: _snippet, ...match }) => {
+        const pin = pins.get(match.conversation_id)!;
+        return { ...match, source_version_id: pin.version, source_block_count: pin.blockCount, source_model: pin.model };
+      });
+      job.matches.push(...facts);
+      job.bytes += Buffer.byteLength(JSON.stringify(facts));
       job.coverage.matched = job.pending.progress.matched = job.matches.length;
       if (!this.evict()) {
         this.fail(job, "metadata_limit");
@@ -474,14 +456,18 @@ export class FullTextSearchJobs {
       this.publish(job);
       await yieldTurn();
     }
-    this.dropPins(job, lost);
-    if (!(await this.validate(job, new Set(), true)))
+    if (!this.redactionCurrent(job))
       return;
-    job.coverage.matched = job.pending.progress.matched = job.matches.length;
-    job.coverage.scanned = job.pending.progress.scanned = job.pins.length;
+    const matched = new Set(job.matches.map(match => match.conversation_id));
+    job.pins = pinned.filter(pin => matched.has(pin.id));
+    const pinBytes = Buffer.byteLength(JSON.stringify(job.pins));
+    job.bytes += pinBytes - job.metrics.snapshot_pin_bytes;
+    job.metrics.snapshot_pin_bytes = pinBytes;
     job.metrics.scan_ms = performance.now() - scanningStarted;
+    if (job.matches.length >= stopAfter && job.coverage.scanned + job.coverage.failed < job.coverage.eligible)
+      job.coverage.stopped = "match_limit";
+    job.coverage.complete = job.coverage.failed === 0 && !job.coverage.stopped;
     job.complete = true;
-    job.coverage.complete = job.coverage.failed === 0;
     this.publish(job);
   }
 }

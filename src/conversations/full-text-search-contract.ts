@@ -15,10 +15,11 @@ export interface FullTextSearchUnread {
   examples: string[];
 }
 
-/** complete is true only when every eligible conversation was read; unread names the rest. */
+/** complete is true only when every eligible conversation was read; unread names those that could not be, stopped those not needed. */
 export interface FullTextSearchCoverage extends FullTextSearchProgress {
   failed: number;
   unread: Partial<Record<FullTextSearchUnreadReason, FullTextSearchUnread>>;
+  stopped?: "match_limit";
   complete: boolean;
 }
 
@@ -27,7 +28,7 @@ export function unsettledCoverage(progress: FullTextSearchProgress = { eligible:
 }
 
 export type FullTextSearchReason =
-  | "source_unavailable" | "source_changed" | "redaction_changed"
+  | "redaction_changed"
   | "cancelled" | "observer_expired" | "snapshot_expired"
   | "query_mismatch" | "admission_full" | "metadata_limit" | "worker_restarted" | "internal_error";
 
