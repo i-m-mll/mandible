@@ -14,6 +14,7 @@ export type CompactActivityDisclosure = {
 export type CompactActivityRowProps = {
   icon?: JSX.Element;
   summary: string;
+  summaryContent?: ComponentChildren;
   expandedSummary?: string;
   href?: string;
   disclosure?: CompactActivityDisclosure;
@@ -28,6 +29,7 @@ export type CompactActivityRowProps = {
 export function CompactActivityRow({
   icon,
   summary,
+  summaryContent,
   expandedSummary,
   href,
   disclosure,
@@ -50,7 +52,7 @@ export function CompactActivityRow({
 
   useEffect(() => {
     if (restoreFocusAfterCollapse) {
-      buttonRef.current?.focus();
+      buttonRef.current?.focus({ preventScroll: true });
     }
     previousExpanded.current = isExpanded;
   }, [isExpanded, restoreFocusAfterCollapse]);
@@ -60,9 +62,9 @@ export function CompactActivityRow({
   const rowContent = (
     <>
       {icon ? <span className="compact-activity__icon" aria-hidden="true">{icon}</span> : null}
-      <span className="compact-activity__summary" title={displaySummary}>{displaySummary}</span>
+      <span className="compact-activity__summary" title={displaySummary}>{summaryContent ?? displaySummary}</span>
       {metadata ? <span className="compact-activity__metadata">{metadata}</span> : null}
-      {disclosure ? (
+      {disclosure && !summaryContent ? (
         <span className="compact-activity__chevron" aria-hidden="true">
           <DisclosureChevronIcon expanded={isExpanded} />
         </span>
@@ -89,19 +91,14 @@ export function CompactActivityRow({
     disclosure.onExpandedChange?.(next, event.currentTarget as HTMLElement);
   };
 
+  const control = summaryContent ? <div className={rowClass} data-disclosure-owner data-member-refs={memberRefs} onClick={event=>{
+    if(!(event.target as Element).closest('a,button')) toggle(event);
+  }}>{rowContent}<button ref={buttonRef} type="button" className="compact-activity__toggle compact-activity__chevron" aria-label={displaySummary}
+    aria-expanded={isExpanded} aria-controls={bodyId} onClick={event=>{event.stopPropagation();toggle(event);}}><DisclosureChevronIcon expanded={isExpanded} /></button></div>
+    : <button ref={buttonRef} type="button" className={rowClass} data-disclosure-owner data-member-refs={memberRefs} aria-expanded={isExpanded} aria-controls={bodyId} onClick={toggle}>{rowContent}</button>;
   return (
-    <div className={rootClass}>
-      {compose(heading(<button
-        ref={buttonRef}
-        type="button"
-        className={rowClass}
-        data-member-refs={memberRefs}
-        aria-expanded={isExpanded}
-        aria-controls={bodyId}
-        onClick={toggle}
-      >
-        {rowContent}
-      </button>), isExpanded && (collection || disclosure.content != null) ? (
+    <div className={rootClass} data-reading-disclosure>
+      {compose(heading(control), isExpanded && (collection || disclosure.content != null) ? (
         <div ref={bodyRef} id={bodyId} role="region" aria-label={disclosure.regionLabel} className="compact-activity__details">
           {disclosure.content}
         </div>

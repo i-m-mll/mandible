@@ -1,3 +1,4 @@
+import { adjacentReasoningGroups } from '../presentation/reasoning-equivalence.js';
 import type { ToolCallActivity } from '../presentation/types.js';
 import type { DisplayFragmentCoordinate } from '../presentation/fragments.js';
 import type { PresentationIcon } from '../presentation/tool-presentation.js';
@@ -16,6 +17,7 @@ export type DisplayFragmentDescriptor = {
   kind: 'content' | 'activity';
   activity_run_id: string | null;
   paired_source_positions: number[];
+  reasoningEquivalence?:string;
 };
 export type DisplayActivityRun = {
   id: string;
@@ -63,7 +65,7 @@ export function displayEventsFromBlocks(blocks: readonly {
       ? !isEmptyCompletionMetadata(item, false, usage ?? block.metadata.usage_telemetry) : undefined);
     return [{ type: 'chat:item' as const, item, ...(intentId ? { intentId, displayKey: `intent:${intentId}` } : {}),
       ...(usage && Number.isFinite(usage.input) && Number.isFinite(usage.output) ? { usage: { key: typeof block.metadata.provider_message_id === 'string' ? block.metadata.provider_message_id : `record:${item.identity.source_record_ordinal}`, input: usage.input, output: usage.output } } : {}),
-      source: { ...(block.metadata.display_tool_frame ? {toolFrame:block.metadata.display_tool_frame} : {}), ...(block.details_loaded === undefined ? {} : { detailsLoaded: block.details_loaded, defaultVisible: true }), ...(hasBody === undefined ? {} : { hasBody }), ...(block.timestamp ? { timestamp: block.timestamp } : {}), ...(block.dag_uuid ? { dagUuid: block.dag_uuid } : {}), blockId: `cblk:${conversationId}:${block.position}`, position: block.position,
+      source: { ...(block.metadata.display_tool_targets ? {toolTargets:block.metadata.display_tool_targets} : {}), ...(block.metadata.display_tool_operation_kind ? {toolOperationKind:block.metadata.display_tool_operation_kind} : {}), ...(block.metadata.display_tool_operation ? {toolOperation:block.metadata.display_tool_operation} : {}), ...(block.metadata.display_tool_execution ? {toolExecution:block.metadata.display_tool_execution} : {}), ...(block.metadata.display_tool_frame ? {toolFrame:block.metadata.display_tool_frame} : {}), ...(block.details_loaded === undefined ? {} : { detailsLoaded: block.details_loaded, defaultVisible: true }), ...(hasBody === undefined ? {} : { hasBody }), ...(block.timestamp ? { timestamp: block.timestamp } : {}), ...(block.dag_uuid ? { dagUuid: block.dag_uuid } : {}), blockId: `cblk:${conversationId}:${block.position}`, position: block.position,
         ...(block.parentPosition === null ? {} : { parentBlockId: `cblk:${conversationId}:${block.parentPosition}` }) } }];
   });
 }
@@ -75,7 +77,12 @@ export function defaultDisplayEventsFromBlocks(blocks: Parameters<typeof display
   })), conversationId);
 }
 
+export function displaySemanticMembers(members:readonly IndexedDisplayFragment[]):IndexedDisplayFragment[] {
+  return adjacentReasoningGroups(members,member=>({equivalence:member.activity?.reasoningEquivalence,position:member.coordinate.position})).map(group=>group.first);
+}
+
 export function displaySummaryMembers(members: readonly IndexedDisplayFragment[]): readonly IndexedDisplayFragment[] {
-  const contributors = members.filter(member => member.summary_eligible !== false);
-  return contributors.length ? contributors : members;
+  const representatives=displaySemanticMembers(members);
+  const contributors = representatives.filter(member => member.summary_eligible !== false);
+  return contributors.length ? contributors : representatives;
 }

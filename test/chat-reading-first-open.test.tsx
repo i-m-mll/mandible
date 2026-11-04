@@ -4,22 +4,18 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { ChatSurface } from '../ui/src/chat/ChatSurface';
 import { queryClient } from '../ui/src/query/client';
 import type { ConversationTranscriptConsumer } from '../ui/src/query/conversationData';
+import { readingAcquisitionFixture } from './helpers/reading-acquisition-fixture';
 
-const boundary = vi.hoisted(() => ({ options: null as any, engine: null as any, acquired: [] as number[] }));
+const boundary = vi.hoisted(() => ({ options: null as any, engine: null as any }));
+const source=readingAcquisitionFixture('conv','source',Array.from({length:30},(_,index)=>`row:${index}`));
 vi.mock('../ui/src/chat/readingResizeProfile', () => ({ getReadingResizeScale: () => 1 }));
 vi.mock('../ui/src/query/readingPresentation', () => ({
-  readingManifestOptions: () => ({ queryKey: ['first-open-manifest'], queryFn: async () => ({}) }),
+  readingManifestOptions: () => ({ queryKey: ['first-open-manifest'], queryFn: async () => source.manifest }),
   isReadingPublicationChanged: () => false,
   ReadingPresentationError: class extends Error {},
   acquirePresentationRows: async (_scope: string, request: any) => {
-    boundary.acquired.push(...request.rows.map((ref: any) => Number(ref.key.split(':')[1])));
-    return { rows: request.rows.map((ref: any) => ({ ...ref, kind: 'content', isFinalResponse: false, protectedPositions: [], sources: [], nodes: [], items: [], actionGroup: { key: 'turn', start: 0, end: 30 }, disclosureOwner: null })), release: () => {} };
+    return { rows:source.materialize(request), release: () => {} };
   },
-}));
-vi.mock('../src/presentation/reading-composition', () => ({
-  composeConversationReading: () => ({ plan: { rows: Array.from({ length: 30 }, (_, index) => ({ key: `row:${index}`, revision: '1', sourcePositions: [], memberKeys: [`row:${index}`] })), membership: new Map(), viewMembership: new Map() }, actionRuns: new Map() }),
-  readingCompositionRequests: (_composition: any, refs: any) => refs,
-  materializeConversationReading: (_composition: any, _refs: any, rows: any) => ({ status: 'source', rows }),
 }));
 vi.mock('../ui/src/chat/useReadingGeometry', async () => {
   const { useMemo, useLayoutEffect } = await import('preact/hooks');
@@ -39,7 +35,7 @@ async function flushFrames() {
   await act(async () => { const pending = [...frames.values()]; frames.clear(); pending.forEach(callback => callback(0)); });
 }
 beforeEach(() => {
-  boundary.acquired = []; frames = new Map(); nextFrame = 0;
+  frames = new Map(); nextFrame = 0;
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frames.set(++nextFrame, callback); return nextFrame; });
   vi.stubGlobal('cancelAnimationFrame', (id: number) => frames.delete(id));
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
@@ -53,6 +49,7 @@ beforeEach(() => {
       const row = boundary.options.count - 10 + index; return { key: boundary.options.getItemKey(row), index: row, size: 100, start: row * 100, end: (row + 1) * 100 };
     }),
     getVirtualItemForOffset: (offset: number) => ({ index: Math.min(29, Math.floor(offset / 100)) }),
+    getOffsetForIndex:(index:number)=>[index*100,'start'],
     isAtEnd: () => boundary.options.getScrollElement()?.scrollTop === 2600,
     scrollToEnd: () => { boundary.options.getScrollElement().scrollTop = 2600; },
     scrollToOffset: (offset: number) => { boundary.options.getScrollElement().scrollTop = offset; },
@@ -60,14 +57,11 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); queryClient.clear(); localStorage.clear(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
-it('opens a measured long chat when mounted body demand extends beyond the retained initial tail', async () => {
+it('preserves demanded source identities when the initial mounted range extends beyond the retained tail', async () => {
   const transcript = { conversationId: 'conv', positionSpaceId: 'space', sourceVersionId: 'source', total: 30,
     readingContext: new Map(), command: null } as unknown as ConversationTranscriptConsumer;
   const view = render(<ChatSurface events={[]} streaming={false} transcript={transcript} />);
-  await waitFor(() => expect(boundary.options.count).toBe(30));
-  await flushFrames();
-  await flushFrames();
-  expect(boundary.acquired).toContain(20);
-  await waitFor(() => expect(getComputedStyle(view.container.querySelector('.stream-renderer__virtual-canvas')!).visibility).toBe('visible'));
+  await waitFor(async () => {await flushFrames();expect(getComputedStyle(view.container.querySelector('.stream-renderer__virtual-canvas')!).visibility).toBe('visible');});
+  expect(view.container.querySelector('.stream-renderer__virtual-canvas [data-block-id="cblk:conv:20"]')).not.toBeNull();
   expect(view.container.querySelectorAll('[data-reading-key][aria-busy="true"]')).toHaveLength(0);
 });

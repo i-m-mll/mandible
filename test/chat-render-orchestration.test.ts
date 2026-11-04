@@ -210,12 +210,16 @@ for (const provider of ['claude_code', 'codex'] as const) describe(`${provider} 
   });
 
   it('retains terminal-before-durable content and hydrates lazy tool inputs under the same identity', () => {
-    const tool = reconciliationItem('tool', 'tool', provider);
+    const tool = {...reconciliationItem('tool', 'tool', provider),content_completion:provider==='claude_code'?'complete':'streaming'} as ChatItem;
     const projected = projection([live(tool, 1)]);
     const lazy = saved({ ...tool, input: undefined } as ChatItem, 0); lazy.source!.detailsLoaded = false;
     const pending = reconcileProviderProjection([lazy], projected, new Map(), snapshot()) as CanonicalChatItemEvent[];
     expect(pending[0].item).toMatchObject({ input: { command: 'pwd' } });
     expect(pending[0].executionActive).toBe(true);
+    const newer=snapshot();
+    newer.ownership={kind:'mandible',generation:2};
+    const obsolete=reconcileProviderProjection([],projected,new Map(),newer) as CanonicalChatItemEvent[];
+    expect(obsolete.some(event=>event.executionActive)).toBe(false);
     for (const terminal of ['completed', 'cancelled', 'failed', 'unknown']) {
       const events = reconcileProviderProjection([], projected, new Map(), snapshot(terminal)) as CanonicalChatItemEvent[];
       expect(events).toHaveLength(1);

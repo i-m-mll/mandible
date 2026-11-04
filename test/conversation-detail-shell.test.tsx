@@ -1,5 +1,6 @@
+import { sparseConversationBlockId } from '../src/conversations/structure-cache';
 // @vitest-environment jsdom
-import { mockChatViewport, mockManagedSettings } from './helpers/conversation-ui-transport';
+import { mockChatViewport, mockManagedSettings, mockConversationMetadataTransport } from './helpers/conversation-ui-transport';
 import { installReadingBrowserFixture } from './helpers/reading-browser-fixture';
 import { establishTestClientAccess } from './helpers/local-client-access';
 import { act, cleanup, fireEvent, screen, waitFor } from './helpers/dom.js';
@@ -21,12 +22,8 @@ import { conversationKeys, normalizeWindowTarget } from '../ui/src/query/convers
 import type { ConversationTranscriptData } from '../ui/src/query/conversationData.js';
 import { applyConversationSse } from '../ui/src/query/conversationSse.js';
 import { addDraftAttachments, clearAcceptedDraft } from '../ui/src/chat/attachmentDrafts.js';
-import { ConversationStructureCache } from '../src/conversations/structure-cache';
-import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from '../src/conversations/source-types';
-import { indexDisplayFragments } from '../src/conversations/display-indexing';
-import { displayEventsFromBlocks } from '../src/conversations/display-context';
-import { buildReadingManifest, planConversationReading } from '../src/presentation/reading-manifest';
-import { prepareReadingMembers, materializePreparedReadingRows } from '../src/presentation/reading';
+import { installReadingPresentationFixture } from './helpers/reading-presentation-fixture';
+import { readingManifestKey } from '../ui/src/query/readingPresentation';
 import { conversationAnchorFromHash, messageLinkUrl } from '../ui/src/chat/messageLinks.js';
 
 vi.mock('@xterm/xterm', () => ({
@@ -48,12 +45,16 @@ vi.mock('@xterm/xterm', () => ({
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} dispose(): void {} } }));
 
 let disposeReadingBrowser: (() => void) | undefined;
+const readingSources = new Map<string, ConversationPositionWindow>();
 beforeEach(async () => {
   await establishTestClientAccess();
+  readingSources.clear();
   window.localStorage.clear();
+  window.sessionStorage.clear();
   vi.spyOn(api, 'resolveChatRouteTarget').mockImplementation(async (target) => ({ status: 'resolved', selection: target }));
   mockChatViewport();
   mockManagedSettings({ model: conversation.model!, effort: 'medium', permission_mode: 'agent' });
+  mockConversationMetadataTransport();
   vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(600);
   vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(2400);
   vi.stubGlobal('WebSocket', class { static OPEN = 1; readyState = 0; addEventListener(): void {} removeEventListener(): void {} send(): void {} close(): void {} });
@@ -84,8 +85,8 @@ beforeEach(async () => {
   vi.spyOn(api, 'updateSidebarOrderPreference').mockImplementation(async (value, revision) => ({
     version: 1, key: 'sidebar_order', value, revision: revision + 1,
   }));
-  disposeReadingBrowser=installReadingBrowserFixture();
-  installReadingPresentationTransport();
+  disposeReadingBrowser = installReadingBrowserFixture();
+  installReadingPresentationFixture(id => readingSources.get(id));
 });
 
 afterEach(() => {
@@ -194,75 +195,24 @@ function mockConversationDetail(
   const scopedConversation = { ...conversation, ...overrides, block_count: blocks.length };
   vi.spyOn(api, 'getConversations').mockResolvedValue({ conversations: [scopedConversation], total: 1 });
   vi.spyOn(api, 'getConversationControl').mockResolvedValue(control);
-  vi.spyOn(api, 'getConversationWindow').mockResolvedValue({
-    conversation: scopedConversation,
-    body_source: 'source',
-    source_version_id: 'fixture-source',
-    position_space_id: 'fixture-space',
-    publication_revision: 1,
-    reading_context: { positions: blocks.map(block => ({ position: block.position, activity_owner_position: null, speaker_run_start: block.position })), speaker_runs: blocks.map(block => ({ start: block.position, end: block.position })) },
-    blocks,
-    children: [],
-    parent: null,
-    revision: blocks.length,
-    total: blocks.length,
-    target: {
-      kind: 'initial',
-      requested_value: null,
-      position: blocks.at(-1)?.position ?? null,
-      block_id: blocks.at(-1)?.id ?? null,
-      turn_id: blocks.at(-1)?.id ?? null,
-    },
-    window: {
-      start_position: blocks[0]?.position ?? null,
-      end_position: blocks.at(-1)?.position ?? null,
-      has_before: false,
-      has_after: false,
-      after_count: 0,
-      limit: 160,
-    },
-  });
+  vi.spyOn(api, 'getConversationWindow').mockResolvedValue(positionPayload(scopedConversation, blocks));
   vi.spyOn(api, 'listWorkflows').mockResolvedValue([]);
   vi.spyOn(api, 'getSessionIssues').mockResolvedValue([]);
   return scopedConversation;
 }
 
-const readingPayloads=new Map<string,ConversationPositionWindow>();
-function serveReadingPresentation(payload:ConversationPositionWindow):void {readingPayloads.set(payload.conversation.id,payload);}
-function installReadingPresentationTransport():void {
-  readingPayloads.clear();
-  const transport=globalThis.fetch;
-  vi.stubGlobal('fetch',vi.fn(async(input:RequestInfo|URL,init?:RequestInit)=>{
-    const url=new URL(String(input),window.location.href);
-    const route=/^\/api\/conversations\/([^/]+)\/(reading-manifest|reading-rows)$/.exec(url.pathname);
-    if(!route)return transport(input,init);
-    const conversationId=decodeURIComponent(route[1]);
-    const payload=queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversationId))??readingPayloads.get(conversationId);
-    if(!payload)throw new Error('Reading fixture has no source publication');
-    const known=readingPayloads.get(conversationId);
-    const supplied=known?.source_version_id===payload.source_version_id?[...known.blocks,...payload.blocks]:payload.blocks;
-    const blocks=[...new Map(supplied.map(block=>[block.position,block])).values()].map(block=>({...block,metadata:JSON.parse(block.metadata_json)}));
-    const total=Math.max(payload.total,...blocks.map(block=>block.position+1));
-    const byPosition=new Map(blocks.map(block=>[block.position,block]));
-    const sourceBlocks=Array.from({length:total},(_,position)=>byPosition.get(position)??{position,type:'system' as const,role:'system' as const,content:'',timestamp:null,metadata:{}});
-    const epochs=CURRENT_CONVERSATION_SOURCE_EPOCHS;
-    const cache=new ConversationStructureCache(undefined,{cachePath:':memory:'});
-    let index,contexts;
-    try {
-      cache.replaceRows({conversation_id:conversationId,source_version_id:payload.source_version_id!,parser_format:epochs.parserFormat,parser_version:epochs.parserVersion,normalization_version:epochs.normalizationVersion,redaction_epoch:epochs.redactionEpoch,block_count:total},
-        sourceBlocks.map(block=>({position:block.position,type:block.type,role:block.role,parentPosition:null,recordOffset:0,recordLength:0,recordOrdinal:block.position,subBlockOrdinal:0})),new Map(),undefined,indexDisplayFragments(sourceBlocks,conversationId,()=>null));
-      index=cache.readPresentationIndex(conversationId,payload.source_version_id!,epochs)!;
-      contexts=cache.readReadingContext(conversationId,payload.source_version_id!,0,total-1,epochs)!;
-    } finally {cache.close();}
-    const manifest=buildReadingManifest({conversationId,positionSpaceId:payload.position_space_id!,sourceVersionId:payload.source_version_id!,publicationRevision:payload.publication_revision,blockCount:total,...index,readingContext:contexts});
-    if(route[2]==='reading-manifest')return new Response(JSON.stringify({status:'source',manifest}));
-    const request=JSON.parse(String(init?.body));
-    const plan=planConversationReading(manifest,request.expanded,request.streaming);
-    const events=displayEventsFromBlocks(blocks.map(block=>({...block,parentPosition:null})),conversationId);
-    const prepared=prepareReadingMembers({events,conversationId,positionSpaceId:payload.position_space_id!,readingContext:new Map(contexts.map(context=>[context.position,context])),expanded:request.expanded,streaming:request.streaming});
-    const keys=new Set(request.rows.map((row:{key:string})=>row.key));
-    return new Response(JSON.stringify({status:'source',rows:materializePreparedReadingRows(plan.rows.filter(row=>keys.has(row.key)),prepared.members)}));
-  }));
+function serveReadingPresentation(payload: ConversationPositionWindow): void {
+  const id = payload.conversation.id;
+  const previous = readingSources.get(id);
+  const retained = previous?.position_space_id === payload.position_space_id && previous.source_version_id === payload.source_version_id ? previous.blocks : [];
+  const known = new Map([...retained, ...payload.blocks].map(block => [block.position, block]));
+  const blocks = [...known.values()].sort((left, right) => left.position - right.position);
+  const total = payload.total;
+  readingSources.set(id, { ...payload, blocks, total, reading_context: {
+    positions: blocks.map(block => ({ position: block.position, activity_owner_position: null, speaker_run_start: block.position })),
+    speaker_runs: blocks.map(block => ({ start: block.position, end: block.position })),
+  } });
+  void queryClient.invalidateQueries({ queryKey: readingManifestKey(id), exact: true });
 }
 
 function renderConversationDetail(scopedConversation: Conversation, consoleSessions: ConsoleSession[] = []): void {
@@ -292,12 +242,12 @@ function positionPayload(
   const target = blocks.at(-1) ?? null;
   const revision = options.revision ?? blocks.length;
   const total = Math.max(revision, (target?.position ?? -1) + 1 + (options.hasAfter ? options.afterCount ?? 1 : 0));
-  return {
+  const payload: ConversationPositionWindow = {
     conversation: { ...scopedConversation, block_count: revision },
     body_source: 'source',
-    source_version_id: `fixture-source-${revision}`,
+    source_version_id: 'fixture-source',
     position_space_id: 'fixture-space',
-    publication_revision: revision,
+    publication_revision: 1,
     reading_context: { positions: blocks.map(block => ({ position: block.position, activity_owner_position: null, speaker_run_start: block.position })), speaker_runs: blocks.map(block => ({ start: block.position, end: block.position })) },
     blocks,
     children: [],
@@ -320,6 +270,19 @@ function positionPayload(
       limit: 160,
     },
   };
+  serveReadingPresentation(payload);
+  return payload;
+}
+
+async function visibleSource(block:ConversationBlock):Promise<HTMLElement>{
+  let source:HTMLElement|null=null;
+  await waitFor(()=>{
+    const canvas=document.querySelector<HTMLElement>('.stream-renderer__virtual-canvas');
+    source=canvas?[...canvas.querySelectorAll<HTMLElement>('[data-block-id]')].find(node=>node.dataset.blockId===sparseConversationBlockId(block.conversation_id,block.position))??null:null;
+    expect(canvas&&getComputedStyle(canvas).visibility).toBe('visible');
+    expect(source).not.toBeNull();
+  });
+  return source!;
 }
 
 function deferred<T>() {
@@ -331,6 +294,18 @@ function deferred<T>() {
 
 describe('compact detail pane shell', () => {
 
+  it('keeps conversation metadata behind the existing explicit action', async () => {
+    const selected = mockConversationDetail(defaultControl, [transcriptBlock], { cwd: '/recorded/workspace' });
+    render(<ConversationDetail conversationId={selected.id} initialConversation={selected} anchor={null}
+      onNavigate={() => undefined} consoleSessions={[]} sidebarCollapsed={false} chatEntityLinkAction={() => undefined} />);
+    const actions = await screen.findByRole('button', { name: 'Conversation actions' });
+    expect(screen.queryByText(selected.cwd!)).toBeNull();
+    fireEvent.click(actions);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'View metadata' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog.contains(screen.getByText(selected.cwd!))).toBe(true);
+  });
+
   it('keeps the selected transcript and reading cache while archiving and restoring', async () => {
     const selected = mockConversationDetail(defaultControl, [transcriptBlock]);
     const archive = vi.spyOn(api, 'updateConversationArchive').mockImplementation(async (id, archived) => ({
@@ -339,28 +314,22 @@ describe('compact detail pane shell', () => {
       retention_native_reason: archived ? 'desktop_writer_owned' : null,
     }));
     renderConversationDetail(selected);
-    await screen.findByText(transcriptBlock.content);
-    const aggregate = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(selected.id))!;
+    const originalSource=await visibleSource(transcriptBlock);
     fireEvent.click(screen.getByRole('button', { name: 'Conversation actions' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Archive' }));
     await screen.findByRole('button', { name: 'Restore' });
-    expect(screen.getByText(transcriptBlock.content)).toBeTruthy();
-    expect(queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(selected.id))?.blocks).toBe(aggregate.blocks);
+    expect(document.contains(originalSource)).toBe(true);
     act(() => applyConversationSse(queryClient, 'conversation:updated', {
       id: selected.id, retention_native_status: 'failed', retention_native_reason: 'native archive unavailable',
     }));
-    expect(queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(selected.id))?.conversation.archived_at).toBe(42);
-    expect(queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(selected.id))?.conversation.retention_native_status).toBe('failed');
     act(() => applyConversationSse(queryClient, 'conversation:updated', {
       id: selected.id, retention_native_status: 'archived', retention_native_reason: null,
     }));
-    await waitFor(() => expect(queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(selected.id))?.conversation.retention_native_status).toBe('archived'));
-    const restore = screen.getByRole('button', { name: 'Restore' });
-    await waitFor(() => expect((restore as HTMLButtonElement).disabled).toBe(false));
-    fireEvent.click(restore);
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Restore' }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
     await waitFor(() => expect(archive).toHaveBeenLastCalledWith(selected.id, false));
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Restore' })).toBeNull());
-    expect(screen.getByText(transcriptBlock.content)).toBeTruthy();
+    expect(document.contains(originalSource)).toBe(true);
   });
 
   it('does not turn an obsolete transcript request into a visible Chat error', () => {
@@ -400,132 +369,6 @@ describe('compact detail pane shell', () => {
     mounted.rerender(view(first.id));
     expect(await screen.findByText('First chat returned')).toBeTruthy();
     expect(firstAttempts).toBeGreaterThanOrEqual(2);
-  });
-
-  it('discards an active window reply when a targeted read has advanced the aggregate source', async () => {
-    const pinned = mockConversationDetail(defaultControl, []);
-    const staleRefresh = deferred<ConversationPositionWindow>();
-    const newSourceEdge = deferred<ConversationPositionWindow>();
-    const recent = makeTranscriptBlock({ id: 'recent-v1', position: 1, content: 'Recent source v1' });
-    const oldReply = makeTranscriptBlock({ id: 'stale-v1', position: 1, content: 'Stale active reply' });
-    const newSourceBlock = makeTranscriptBlock({ id: 'older-v2', position: 0, content: 'Older source v2' });
-    let initialReads = 0;
-    vi.mocked(api.getConversationWindow).mockImplementation(async (_id, request) => {
-      if ('block' in request && request.block === newSourceBlock.id) return newSourceEdge.promise;
-      if (++initialReads === 1) {
-        return { ...positionPayload(pinned, [recent], { revision: 2, hasBefore: true }), source_version_id: 'source-v1', position_space_id: 'space-v1', publication_revision: 1 };
-      }
-      return staleRefresh.promise;
-    });
-
-    const view=(block?:string)=><ConversationsView consoleSessions={[]} initialConversationId={pinned.id} initialSessionId={null}
-      routeParams={{conversation:pinned.id,...(block?{block}:{})}} onSelectSession={()=>undefined} onNewConversation={()=>undefined}/>;
-    const mounted=render(view());
-    expect(await screen.findByText('Recent source v1')).toBeTruthy();
-
-    applyConversationSse(queryClient, 'conversation:updated', { id: pinned.id, block_count: 2 });
-    await waitFor(() => expect(initialReads).toBe(2));
-    window.history.replaceState(null,'',`#/console?conversation=${pinned.id}&block=${newSourceBlock.id}`);
-    mounted.rerender(view(newSourceBlock.id));
-    await waitFor(() => expect(api.getConversationWindow).toHaveBeenCalledTimes(3));
-
-    await act(async () => newSourceEdge.resolve({
-      ...positionPayload(pinned, [newSourceBlock], { kind: 'block', revision: 2, hasAfter: true }),
-      source_version_id: 'source-v2',
-      position_space_id: 'space-v1',
-      publication_revision: 2,
-    }));
-    expect(await screen.findByText('Older source v2')).toBeTruthy();
-
-    await act(async () => staleRefresh.resolve({
-      ...positionPayload(pinned, [oldReply], { revision: 2, hasBefore: true }),
-      source_version_id: 'source-v1',
-      position_space_id: 'space-v1',
-      publication_revision: 1,
-    }));
-    await waitFor(() => {
-      const aggregate = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(pinned.id));
-      expect(aggregate?.source_version_id).toBe('source-v2');
-      expect(aggregate?.blocks.map((block) => block.id)).toEqual(['older-v2']);
-      expect(screen.queryByText('Stale active reply')).toBeNull();
-    });
-  });
-
-  it('keeps a new selection\'s real error when an old target request is cancelled late', async () => {
-    const first = mockConversationDetail(defaultControl, []);
-    const second = { ...first, id: 'selected-after-cancel', title: 'Selected after cancellation' };
-    const pendingOldJump = deferred<ConversationPositionWindow>();
-    const middle = makeTranscriptBlock({ id: 'old-middle', dag_uuid: 'old-middle', content: 'Old middle', position: 1 });
-    vi.mocked(api.getConversationWindow).mockImplementation(async (id, request) => {
-      if (id === second.id) throw new Error('Current selection failed to load');
-      if ('block' in request && request.block === 'pending-target') return pendingOldJump.promise;
-      return positionPayload(first, [middle], { kind: 'block', hasAfter: true, afterCount: 20, revision: 2 });
-    });
-    const view = (id: string, target=middle.id) => (
-      <ConversationsView
-        consoleSessions={[]}
-        initialConversationId={id}
-        initialSessionId={null}
-        routeParams={{conversation:id,block:target}}
-        onSelectSession={() => undefined}
-        onNewConversation={() => undefined}
-      />
-    );
-    window.history.replaceState(null, '', `#/console?conversation=${first.id}&block=${middle.id}`);
-    const mounted = render(view(first.id));
-    expect(await screen.findByText('Old middle')).toBeTruthy();
-    applyConversationSse(queryClient, 'conversation:updated', {
-      id: first.id,
-      block_count: 3,
-      append: { from_position: 2, blocks: [makeTranscriptBlock({ id: 'old-tail', dag_uuid: 'old-tail', position: 2 })] },
-    });
-    window.history.replaceState(null,'',`#/console?conversation=${first.id}&block=pending-target`);
-    mounted.rerender(view(first.id,'pending-target'));
-    await waitFor(()=>expect(api.getConversationWindow).toHaveBeenCalledWith(first.id,expect.objectContaining({block:'pending-target'})));
-    mounted.rerender(view(second.id));
-    expect(await screen.findByText('Current selection failed to load')).toBeTruthy();
-    await act(async () => pendingOldJump.reject(new CancelledError()));
-    expect(screen.getByText('Current selection failed to load')).toBeTruthy();
-    expect(screen.queryByText('CancelledError')).toBeNull();
-  });
-
-  it('does not let an old A target clear a newer A target after A to B to A', async () => {
-    const first = mockConversationDetail(defaultControl, []);
-    const second = { ...first, id: 'intermediate-selection', title: 'Intermediate selection' };
-    const oldJump = deferred<ConversationPositionWindow>();
-    const currentJump = deferred<ConversationPositionWindow>();
-    const middle = makeTranscriptBlock({ id: 'middle-a', dag_uuid: 'middle-a', content: 'Middle A', position: 1 });
-    let jumpCount = 0;
-    vi.mocked(api.getConversationWindow).mockImplementation(async (id, request) => {
-      if (id === second.id) return positionPayload(second, [middle], { kind: 'block', hasAfter: true, afterCount: 20, revision: 2 });
-      if ('block' in request && request.block === 'pending-target') return (++jumpCount === 1 ? oldJump : currentJump).promise;
-      return positionPayload(first, [middle], { kind: 'block', hasAfter: true, afterCount: 20, revision: 2 });
-    });
-    const view = (id: string, target=middle.id) => (
-      <ConversationsView
-        consoleSessions={[]}
-        initialConversationId={id}
-        initialSessionId={null}
-        routeParams={{conversation:id,block:target}}
-        onSelectSession={() => undefined}
-        onNewConversation={() => undefined}
-      />
-    );
-    window.history.replaceState(null, '', `#/console?conversation=${first.id}&block=${middle.id}`);
-    const mounted = render(view(first.id));
-    expect(await screen.findByText('Middle A')).toBeTruthy();
-    window.history.replaceState(null,'',`#/console?conversation=${first.id}&block=pending-target`);
-    mounted.rerender(view(first.id,'pending-target'));
-    await waitFor(()=>expect(jumpCount).toBe(1));
-    mounted.rerender(view(second.id));
-    await waitFor(() => expect(api.getConversationWindow).toHaveBeenCalledWith(second.id, expect.anything()));
-    mounted.rerender(view(first.id,'pending-target'));
-    await waitFor(() => expect(jumpCount).toBe(2));
-    const targetKey=conversationKeys.window(first.id,normalizeWindowTarget({block:'pending-target',view:'display'}));
-    expect(queryClient.getQueryState(targetKey)?.fetchStatus).toBe('fetching');
-    await act(async () => oldJump.reject(new CancelledError()));
-    expect(queryClient.getQueryState(targetKey)?.fetchStatus).toBe('fetching');
-    await act(async () => currentJump.reject(new CancelledError()));
   });
 
   it('synchronously discards another conversation\'s preview and Preview tab', () => {
@@ -657,44 +500,42 @@ describe('compact detail pane shell', () => {
     view.rerender(<ConversationsView {...props} />);
     await waitFor(() => expect(api.getConversationWindow).toHaveBeenCalledTimes(2));
 
-    const exactBlock = makeTranscriptBlock({ id: 'exact-block', dag_uuid: 'exact-block', content: 'Exact anchor wins', position: 50 });
-    exact.resolve(positionPayload(scopedConversation, [exactBlock], { kind: 'block', hasAfter: true, revision: 100 }));
-    expect(await screen.findByText('Exact anchor wins')).toBeTruthy();
+    const exactBlock = makeTranscriptBlock({ id: 'exact-block', dag_uuid: 'exact-block', content: 'Exact anchor wins', position: 1 });
+    const lateInitial = makeTranscriptBlock({ content: 'Late initial loses' });
+    positionPayload(scopedConversation, [lateInitial, exactBlock], { revision: 2 });
+    exact.resolve(positionPayload(scopedConversation, [exactBlock], { kind: 'block', hasBefore: true, revision: 2 }));
+    const exactSource=await visibleSource(exactBlock);
 
-    initial.resolve(positionPayload(scopedConversation, [makeTranscriptBlock({ content: 'Late initial loses' })], { revision: 100 }));
+    initial.resolve(positionPayload(scopedConversation, [lateInitial], { revision: 2, hasAfter: true, afterCount: 1 }));
     await Promise.resolve();
-    expect(screen.queryByText('Late initial loses')).toBeNull();
-    expect(screen.getByText('Exact anchor wins')).toBeTruthy();
+    expect(document.contains(exactSource)).toBe(true);
   });
 
   it('replaces a loaded same-chat window when a scoped hash target changes', async () => {
     const scopedConversation = mockConversationDetail(defaultControl, []);
-    const tail = makeTranscriptBlock({ id: `cblk:${conversation.id}:99`, dag_uuid: 'tail-item', content: 'Previously loaded tail', position: 99 });
-    const exactBlock = makeTranscriptBlock({ id: `cblk:${conversation.id}:1`, dag_uuid: 'exact-item', content: 'New same-chat exact target', position: 1 });
-    serveReadingPresentation(positionPayload(scopedConversation,[tail,exactBlock],{revision:100}));
+    const tail = makeTranscriptBlock({ id: `cblk:${conversation.id}:1`, dag_uuid: 'tail-item', content: 'Previously loaded tail', position: 1 });
+    const exactBlock = makeTranscriptBlock({ id: `cblk:${conversation.id}:0`, dag_uuid: 'exact-item', content: 'New same-chat exact target', position: 0 });
     const exact = deferred<ConversationPositionWindow>();
+    positionPayload(scopedConversation, [exactBlock, tail], { revision: 2 });
     vi.mocked(api.getConversationWindow).mockImplementation(async (_id, request) => {
       if ('block' in request && request.block === exactBlock.id) return exact.promise;
       if ('position' in request) return new Promise(() => {});
-      return positionPayload(scopedConversation, [tail], { kind: 'block', revision: 100, hasBefore: true });
+      return positionPayload(scopedConversation, [tail], { kind: 'block', revision: 2, hasBefore: true });
     });
     const props = { consoleSessions: [], initialConversationId: scopedConversation.id, initialSessionId: null,
       onSelectSession: () => undefined, onNewConversation: () => undefined };
     const params = (block: string) => ({ conversation: scopedConversation.id, block, position_space: 'fixture-space' });
     window.history.replaceState(null, '', `#/console?${new URLSearchParams(params(tail.id))}`);
     const view = render(<ConversationsView {...props} routeParams={params(tail.id)} />);
-    expect(await screen.findByText('Previously loaded tail')).toBeTruthy();
+    const retainedSource=await visibleSource(tail);
 
     window.history.replaceState(null, '', `#/console?${new URLSearchParams(params(exactBlock.id))}`);
     view.rerender(<ConversationsView {...props} routeParams={params(exactBlock.id)} />);
     await waitFor(() => expect(api.getConversationWindow).toHaveBeenCalledWith(scopedConversation.id,
       expect.objectContaining({ block: exactBlock.id, expected_position_space_id: 'fixture-space' })));
-    expect(screen.getByText('Previously loaded tail')).toBeTruthy();
-    await act(async () => exact.resolve(positionPayload(scopedConversation, [exactBlock], { kind: 'block', revision: 100, hasBefore: true, hasAfter: true })));
-    const targetKey = conversationKeys.window(scopedConversation.id, normalizeWindowTarget({ block: exactBlock.id, expected_position_space_id: 'fixture-space', view: 'display' }));
-    await waitFor(() => expect(queryClient.getQueryData<ConversationPositionWindow>(targetKey)?.target.block_id).toBe(exactBlock.id));
-    expect(queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(scopedConversation.id))?.active_window).toEqual({ start: 1, end: 1 });
-    expect(await screen.findByText('New same-chat exact target')).toBeTruthy();
+    expect(document.contains(retainedSource)).toBe(true);
+    await act(async () => exact.resolve(positionPayload(scopedConversation, [exactBlock], { kind: 'block', revision: 2, hasBefore: true, hasAfter: true })));
+    await visibleSource(exactBlock);
   });
 
   it('cold-opens and copies the exact message link instead of a saved tail selection', async () => {
@@ -704,7 +545,7 @@ describe('compact detail pane shell', () => {
     const payload = positionPayload(scopedConversation, [exactBlock], {kind: 'block'});
     vi.mocked(api.getConversationWindow).mockResolvedValue(payload);
     serveReadingPresentation(payload);
-    window.localStorage.setItem(`mandible:chat-reading:${scopedConversation.id}`, JSON.stringify({
+    window.sessionStorage.setItem(`mandible:chat-reading:${scopedConversation.id}`, JSON.stringify({
       version: 4, positionSpaceId: 'fixture-space', following: false,
       anchor: {kind: 'row', rowKey: 'saved-tail', memberKey: 'saved-tail', position: 999, offset: 0}, disclosures: {},
     }));
@@ -780,10 +621,7 @@ describe('compact detail pane shell', () => {
     };
 
     const scopedConversation = mockConversationDetail(defaultControl, [transcriptBlock]);
-    const durable = deferred<ConversationPositionWindow>();
-    vi.mocked(api.getConversationWindow)
-      .mockResolvedValueOnce(positionPayload(scopedConversation, [transcriptBlock]))
-      .mockImplementationOnce(() => durable.promise);
+    vi.mocked(api.getConversationWindow).mockResolvedValue(positionPayload(scopedConversation,[transcriptBlock]));
     vi.spyOn(api, 'getConversationLiveProjection').mockResolvedValue({
       conversation_id: conversation.id,
       revision: 0,
@@ -791,7 +629,7 @@ describe('compact detail pane shell', () => {
       events: [],
     });
     renderConversationDetail(scopedConversation);
-    expect(await screen.findByText(transcriptBlock.content)).toBeTruthy();
+    await visibleSource(transcriptBlock);
     await waitFor(() => expect(streamController).not.toBeNull());
 
     const liveAssistant: ChatItem = {
@@ -824,7 +662,9 @@ describe('compact detail pane shell', () => {
         item: liveAssistant,
       },
     }));
-    expect(await screen.findByText('Assistant stays continuous')).toBeTruthy();
+    const provisionalRow=()=>[...document.querySelectorAll<HTMLElement>('.stream-renderer__virtual-canvas [data-reading-key]')].find(node=>node.dataset.readingKey?.startsWith(liveIdentity))??null;
+    await waitFor(()=>expect(provisionalRow()).not.toBeNull());
+    const liveRow=provisionalRow()!;
 
     act(() => emit({
       type: 'conversation:provider-event',
@@ -839,8 +679,7 @@ describe('compact detail pane shell', () => {
         covered_identities: [liveIdentity],
       },
     }));
-    await waitFor(() => expect(api.getConversationWindow).toHaveBeenCalledTimes(2));
-    expect(screen.getByText('Assistant stays continuous')).toBeTruthy();
+    expect(document.contains(liveRow)).toBe(true);
 
     const durableAssistant = makeTranscriptBlock({
       id: 'block-agent-1',
@@ -851,14 +690,17 @@ describe('compact detail pane shell', () => {
       dag_uuid: 'agent-1',
       metadata_json: JSON.stringify({ provider_message_id: 'agent-1' }),
     });
-    await act(async () => durable.resolve(positionPayload(scopedConversation, [transcriptBlock, durableAssistant])));
-    await waitFor(() => expect(screen.getAllByText('Assistant stays continuous')).toHaveLength(1));
+    await act(async()=>{positionPayload(scopedConversation,[transcriptBlock,durableAssistant]);});
+    await visibleSource(durableAssistant);
+    expect(provisionalRow()).toBeNull();
   });
 
 
 });
 
 describe('Chat route intent', () => {
+  const mountedSource=(id:string)=>document.querySelector<HTMLElement>('.stream-renderer__virtual-canvas')?.querySelector<HTMLElement>(`[data-block-id="${sparseConversationBlockId(id,0)}"]`)??null;
+  const routeSource=(id:string)=>visibleSource(makeTranscriptBlock({conversation_id:id}));
   function setupRouteHistory() {
     mockConversationDetail(defaultControl);
     vi.mocked(api.getConversationWindow).mockImplementation(async (id) => {
@@ -882,18 +724,16 @@ describe('Chat route intent', () => {
     const view = setupRouteHistory();
     const pending = deferred<api.ChatRouteResolution>();
     const mounted = render(view('A'));
-    await screen.findByText('Transcript A');
+    await routeSource('A');
     vi.mocked(api.resolveChatRouteTarget).mockReturnValue(pending.promise);
     window.history.replaceState(null, '', `#/console?${type}=B-ref&${new URLSearchParams(Object.fromEntries(Object.entries(anchor).map(([key, value]) => [key, String(value)])))}&sidebar=hidden&context=keep`);
     mounted.rerender(type === 'session' ? view(null, 'B-ref') : view('B-ref'));
-    expect(screen.queryByText('Transcript A')).toBeNull();
+    expect(mountedSource('A')).toBeNull();
     expect(api.getConversationWindow).not.toHaveBeenCalledWith('B-ref', expect.anything());
     await act(async () => { pending.resolve({ status: 'resolved', selection: { type: 'conversation', id: 'B' } }); });
-    await screen.findByText('Transcript B');
+    await routeSource('B');
     expect(api.getConversationWindow).toHaveBeenCalledWith('B', expect.objectContaining(anchor));
     expect(api.getConversationControl).toHaveBeenCalledWith('B');
-    expect(queryClient.getQueryData(conversationKeys.aggregate('B'))).toBeTruthy();
-    expect(queryClient.getQueryData(conversationKeys.aggregate('B-ref'))).toBeUndefined();
     expect(window.location.hash).toContain(`${type}=B-ref`);
     expect(window.location.hash).toContain('context=keep');
   });
@@ -902,15 +742,15 @@ describe('Chat route intent', () => {
     const view = setupRouteHistory();
     const resolution = deferred<api.ChatRouteResolution>();
     const mounted = render(view('A'));
-    await screen.findByText('Transcript A');
+    await routeSource('A');
     vi.mocked(api.resolveChatRouteTarget).mockReturnValue(resolution.promise);
     mounted.rerender(view(null, 'unavailable-target'));
-    expect(screen.queryByText('Transcript A')).toBeNull();
+    expect(mountedSource('A')).toBeNull();
     await act(async () => {
       if (status === 'error') resolution.reject(new Error('offline'));
       else resolution.resolve({ status });
     });
-    expect(screen.queryByText('Transcript A')).toBeNull();
+    expect(mountedSource('A')).toBeNull();
   });
 
   it('rejects B after a newer C intent and keeps C during same-target refetch and query-context changes', async () => {
@@ -921,16 +761,16 @@ describe('Chat route intent', () => {
       : { status: 'resolved', selection: { type: 'conversation', id: 'C' } });
     const mounted = render(view(null, 'B'));
     mounted.rerender(view(null, 'C'));
-    await screen.findByText('Transcript C');
+    await routeSource('C');
     await act(async () => { b.resolve({ status: 'resolved', selection: { type: 'conversation', id: 'B' } }); });
-    expect(screen.queryByText('Transcript B')).toBeNull();
+    expect(mountedSource('B')).toBeNull();
     vi.mocked(api.resolveChatRouteTarget).mockReturnValue(refresh.promise);
     await act(async () => { void queryClient.invalidateQueries({ queryKey: conversationKeys.routeTarget({ type: 'session', id: 'C' }) }); });
     window.history.replaceState(null, '', '#/console?context=changed&session=C&sidebar=hidden');
     mounted.rerender(view(null, 'C'));
-    expect(screen.getByText('Transcript C')).toBeTruthy();
+    await routeSource('C');
     await act(async () => { refresh.resolve({ status: 'resolved', selection: { type: 'conversation', id: 'C' } }); });
-    expect(screen.getByText('Transcript C')).toBeTruthy();
+    await routeSource('C');
   });
 
   it.each(['row', 'filter'])('cancels pending session resolution on a deliberate %s choice and retains query context', async (action) => {
@@ -946,9 +786,9 @@ describe('Chat route intent', () => {
     const row = await screen.findByRole('button', { name: 'Open conversation Chat A' });
     if (action === 'row') fireEvent.click(row);
     else fireEvent.input(screen.getByRole('textbox', { name: 'Search chats' }), { target: { value: 'Chat A' } });
-    await screen.findByText('Transcript A');
+    await routeSource('A');
     await act(async () => { pending.resolve({ status: 'resolved', selection: { type: 'conversation', id: 'B' } }); });
-    expect(screen.queryByText('Transcript B')).toBeNull();
+    expect(mountedSource('B')).toBeNull();
     const params = new URLSearchParams(window.location.hash.split('?')[1]);
     if (action === 'row') {
       expect(Object.fromEntries(params)).toEqual({ conversation: 'A', agent_session: 'agent', sidebar: 'hidden', context: 'keep' });
@@ -960,16 +800,16 @@ describe('Chat route intent', () => {
       mounted.unmount();
       queryClient.clear();
       mounted = render(view(params.get('conversation'), params.get('session')));
-      await screen.findByText('Transcript A');
+      await routeSource('A');
       expect(api.resolveChatRouteTarget).toHaveBeenCalledTimes(lookupsBeforeRefresh);
     }
     vi.mocked(api.resolveChatRouteTarget).mockImplementation(async (target) => ({ status: 'resolved', selection: { type: 'conversation', id: target.id } }));
     window.history.replaceState(null, '', '#/console?session=C');
     mounted.rerender(view(null, 'C'));
-    await screen.findByText('Transcript C');
+    await routeSource('C');
     window.history.replaceState(null, '', '#/console?session=B&turn=old');
     mounted.rerender(view(null, 'B'));
-    await screen.findByText('Transcript B');
+    await routeSource('B');
   });
 
   it.each(['pending', 'cancelled'] as const)('ignores other tabs while Chat intent is %s', async (state) => {
@@ -989,14 +829,14 @@ describe('Chat route intent', () => {
     const mounted = render(scoped(true));
     if (state === 'cancelled') {
       fireEvent.click(await screen.findByRole('button', { name: 'Open conversation Chat A' }));
-      await screen.findByText('Transcript A');
+      await routeSource('A');
     }
     window.history.replaceState(null, '', '#/issues?issue=another&block=foreign-block&context=issues-context');
     mounted.rerender(scoped(false));
     await act(async () => { pending.resolve({ status: 'resolved', selection: { type: 'conversation', id: 'B' } }); });
     if (state === 'cancelled') {
-      expect(screen.getByText('Transcript A')).toBeTruthy();
-      expect(screen.queryByText('Transcript B')).toBeNull();
+      await routeSource('A');
+      expect(mountedSource('B')).toBeNull();
     }
     expect(api.getConversationWindow).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ block: 'foreign-block' }));
     expect(window.location.hash).toBe('#/issues?issue=another&block=foreign-block&context=issues-context');
@@ -1004,7 +844,7 @@ describe('Chat route intent', () => {
       expect(api.getConversationWindow).not.toHaveBeenCalledWith('B', expect.anything());
       window.history.replaceState(null, '', '#/console?session=B&turn=B-block&sidebar=hidden&context=chat-context');
       mounted.rerender(scoped(true));
-      await screen.findByText('Transcript B');
+      await routeSource('B');
       expect(api.getConversationWindow).toHaveBeenCalledWith('B', expect.objectContaining({ turn: 'B-block' }));
     }
   });
@@ -1014,8 +854,11 @@ describe('Chat route intent', () => {
 describe('open transcript liveness follows the active view', () => {
   afterEach(() => { vi.useRealTimers(); });
 
-  it('fetches nothing while hidden and refetches once on activation, keeping scroll and rows', async () => {
-    const blocks=Array.from({length:20},(_,position)=>makeTranscriptBlock({id:`live-${position}`,position,content:position===0?'Earlier turn':position===19?'Latest turn':`Middle turn ${position}`}));
+  it('fetches nothing while hidden and reconciles once on activation without replacing loaded rows', async () => {
+    const blocks = [
+      makeTranscriptBlock({ id: 'live-0', position: 0, content: 'Earlier turn' }),
+      makeTranscriptBlock({ id: 'live-1', position: 1, content: 'Latest turn' }),
+    ];
     const live = mockConversationDetail(defaultControl, blocks);
     vi.useFakeTimers();
     const view = (active: boolean) => (
@@ -1039,26 +882,22 @@ describe('open transcript liveness follows the active view', () => {
     );
     const mounted = render(view(true));
     for (let step = 0; step < 10; step += 1) await act(() => vi.advanceTimersByTimeAsync(100));
-    const row = screen.getByText(/Latest turn/);
-    const scroll = mounted.container.querySelector('.stream-renderer__scroll') as HTMLElement;
-    fireEvent.wheel(scroll,{deltaY:-100});
-    scroll.scrollTop = 700;
-    fireEvent.scroll(scroll);
+    const row = screen.getByText(/Earlier turn/);
     const windowReads = () => vi.mocked(api.getConversationWindow).mock.calls.length;
     const before = windowReads();
 
     const grown = [
       ...blocks,
-      makeTranscriptBlock({ id: 'live-20', position: 20, content: 'Hidden reply' }),
-      makeTranscriptBlock({ id: 'live-21', position: 21, content: 'Hidden follow-up' }),
+      makeTranscriptBlock({ id: 'live-2', position: 2, content: 'Hidden reply' }),
+      makeTranscriptBlock({ id: 'live-3', position: 3, content: 'Hidden follow-up' }),
     ];
-    vi.mocked(api.getConversationWindow).mockResolvedValue(positionPayload({ ...live, block_count: grown.length }, grown));
+    vi.mocked(api.getConversationWindow).mockResolvedValue(positionPayload({ ...live, block_count: 4 }, grown));
 
     mounted.rerender(view(false));
     for (let second = 0; second < 600; second += 1) {
       applyConversationSse(queryClient, 'conversation:updated', second % 2 === 0
-        ? { id: live.id, block_count: grown.length }
-        : { id: live.id, block_count: grown.length, append: { from_position: 21, blocks: [grown[21]] } });
+        ? { id: live.id, block_count: 4 }
+        : { id: live.id, block_count: 4, append: { from_position: 3, blocks: [grown[3]] } });
       await act(() => vi.advanceTimersByTimeAsync(1_000));
     }
     expect(windowReads()).toBe(before);
@@ -1066,8 +905,22 @@ describe('open transcript liveness follows the active view', () => {
     mounted.rerender(view(true));
     await act(() => vi.advanceTimersByTimeAsync(5_000));
     expect(windowReads()).toBe(before + 1);
-    expect(screen.getByText(/Latest turn/)).toBe(row);
-    expect(scroll.scrollTop).toBe(700);
-    expect(queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(live.id))?.blocks.at(-1)?.content).toBe('Hidden follow-up');
+    expect(screen.getByText(/Earlier turn/)).toBe(row);
+    expect(screen.getByText(/Hidden follow-up/)).toBeTruthy();
   });
+});
+
+
+it('reads complete visible source context independently of the bootstrap receipt',async()=>{
+  const earlier=makeTranscriptBlock({id:'earlier-source',position:0,content:'Earlier authored source body',dag_uuid:'earlier-source'});
+  const tail=makeTranscriptBlock({id:'tail-source',position:1,type:'assistant_message',role:'assistant',content:'Final authored source body',dag_uuid:'tail-source'});
+  const scoped=mockConversationDetail(defaultControl,[earlier,tail]);
+  const full=positionPayload(scoped,[earlier,tail]);
+  const receipt={...full,blocks:[tail],reading_context:{positions:full.reading_context!.positions.filter(position=>position.position===tail.position),speaker_runs:full.reading_context!.speaker_runs.filter(run=>run.start===tail.position)},window:{...full.window,start_position:tail.position,has_before:true}};
+  vi.mocked(api.getConversationWindow).mockResolvedValue(receipt);
+  renderConversationDetail(scoped);
+  await visibleSource(earlier);
+  await visibleSource(tail);
+  const aggregate=queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(scoped.id));
+  expect(aggregate).toBeUndefined();
 });

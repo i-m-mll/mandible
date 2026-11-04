@@ -8,6 +8,7 @@ import { UserBubble } from '../components/message-blocks/UserBubble';
 import { SemanticEventBlock, UnmatchedToolResultBlock } from '../components/message-blocks/SemanticEventBlock';
 import { ActivityGroup, ActivityRow } from '../components/message-blocks/ActivityBlock';
 import { ThinkingBlock } from '../components/message-blocks/ThinkingBlock';
+import { operationObservationForTool } from '../../../src/presentation/tool-observation';
 import { ToolUseBlock } from '../components/message-blocks/ToolUseBlock';
 import type { ReadingRow } from './readingProjection';
 import type { ChatSurfaceProps } from './ChatSurface';
@@ -15,6 +16,7 @@ import { isCompactReadingRow } from './readingRowPresentation';
 
 export type ReadingContentProps = ChatSurfaceProps & {
   row: ReadingRow;
+  targetLabels?: import('../components/shared/ActivityTargetLinks').ActivityTargetLabels;
   expandedBlocks: Readonly<Record<string, boolean>>;
   setBlockExpanded: (id: string, expanded: boolean, sources?: readonly (PersistedBlockSource | undefined)[], trigger?: HTMLElement) => void;
   preparing: boolean;
@@ -109,13 +111,16 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
           ?? (node.item.type === 'provider-directive' ? node.item.blockId ?? undefined : undefined);
         const disclosureKey = readingNodeDisclosures(node).keys[0];
         const defaultExpanded = node.item.type === 'thinking-block-activity' && readingThinkingDefaultExpanded(node.item.turnId, { streaming, lastAssistantTurnId });
-        const expanded = preparing || (expandedBlocks[disclosureKey] ?? defaultExpanded);
+        const expanded = preparing || (expandedBlocks[disclosureKey] ?? node.disclosureAliases?.map(key=>expandedBlocks[key]).find(value=>value!==undefined) ?? defaultExpanded);
         let activity: JSX.Element;
         if (node.item.type === 'tool-call-activity') {
           const resultSource = node.item.result?.source;
           activity = (
             <ToolUseBlock
               toolName={node.item.name}
+              operationContext={node.item.operationContext}
+              executionEvidence={node.item.executionEvidence}
+              observation={node.item.observation??operationObservationForTool(node.item)}
               headerMetadata={compact ? footer : undefined}
               toolKind={node.item.toolKind}
               toolUseId={node.item.id}
@@ -127,9 +132,9 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
               defaultExpanded={false}
               withinCollection={row.activityMember}
               getDisclosureExpanded={(key,defaultExpanded)=>expandedBlocks[`${disclosureKey}:${key}`] ?? (preparing || defaultExpanded)}
-              onDisclosureExpandedChange={(key,next,trigger)=>setBlockExpanded(`${disclosureKey}:${key}`,next,[source,resultSource],trigger)}
+              onDisclosureExpandedChange={(key,next,trigger)=>setBlockExpanded(`${disclosureKey}:${key}`,next,[source,resultSource,...(node.sourceAliases??[])],trigger)}
               expanded={expanded}
-              onExpandedChange={(next, trigger) => setBlockExpanded(disclosureKey, next, [source, resultSource], trigger)}
+              onExpandedChange={(next, trigger) => setBlockExpanded(disclosureKey, next, [source, resultSource,...(node.sourceAliases??[])], trigger)}
               resultSelected={resultSource ? selectedBlockIds?.has(resultSource.blockId) : false}
               selectMode={selectMode}
               onToggleResultSelect={resultSource && onToggleBlockSelect
@@ -147,7 +152,7 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
               defaultCollapsed={!defaultExpanded}
               expanded={expanded}
               detailsAvailable={source?.detailsLoaded === false}
-              onExpandedChange={(next, trigger) => setBlockExpanded(disclosureKey, next, [source], trigger)}
+              onExpandedChange={(next, trigger) => setBlockExpanded(disclosureKey, next, [source,...(node.sourceAliases??[])], trigger)}
             />
           );
         } else {
@@ -157,12 +162,12 @@ export function ReadingContent({ row, expandedBlocks, setBlockExpanded, preparin
               headerMetadata={compact ? footer : undefined}
               expanded={expanded}
               detailsAvailable={source?.detailsLoaded === false && source.hasBody !== false}
-              onExpandedChange={(next, trigger) => setBlockExpanded(disclosureKey, next, [source], trigger)}
+              onExpandedChange={(next, trigger) => setBlockExpanded(disclosureKey, next, [source,...(node.sourceAliases??[])], trigger)}
             />
           );
         }
         return (
-          <div key={node.key} className="message-block-wrapper" data-block-id={sourceBlockId} data-member-refs={memberRef}>
+          <div key={node.key} className="message-block-wrapper" data-block-id={sourceBlockId} data-member-refs={[memberRef,...(node.sourceAliases??[]).map(alias=>alias.blockId)].filter(Boolean).join(' ')}>
             {activity}
             <MessageActions
               blockId={source?.blockId}

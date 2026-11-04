@@ -3,16 +3,16 @@ import { MessageLinkContext } from '../components/shared/MessageActions';
 import { ReadingRowView } from './ReadingRowView';
 import type { ReadingContentProps } from './ReadingContent';
 import type { ReadingRow } from './readingProjection';
-import type { MeasurementRequest } from './readingMeasurement';
+import type { MeasurementRequest, MeasurementRow } from './readingMeasurement';
 
 /** Uses the same frame/content as visible Chat; callers supply the same rendering props. */
 export function createReadingRowBatchRenderer(
-  props: (row: ReadingRow) => ReadingContentProps,
+  props: (row: ReadingRow, ref?: MeasurementRow) => ReadingContentProps,
 ): MeasurementRequest<ReadingRow>['renderBatch'] {
-  return (host, rows) => {
+  return (host, rows, _layout, refs) => {
     try {
-      render(<>{rows.map(row => {
-        const rowProps = props(row);
+      render(<>{rows.map((row, index) => {
+        const rowProps = props(row, refs[index]);
         return <MessageLinkContext.Provider key={row.key} value={rowProps.onCopyMessageLink ?? null}><ReadingRowView {...rowProps} row={row} /></MessageLinkContext.Provider>;
       })}</>, host);
     } catch (error) {

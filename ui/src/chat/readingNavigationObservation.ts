@@ -36,7 +36,6 @@ export type ReadingNavigationObservation = {
   };
 };
 export type ReadingNavigationObserver = (observation: ReadingNavigationObservation) => void;
-
 /** Explicit, bounded diagnostics for observing the public reading-target lifecycle. */
 export function readingNavigationObserver(): ReadingNavigationObserver | undefined {
   if (new URLSearchParams(window.location.search).get('reading_trace') !== '1') return;

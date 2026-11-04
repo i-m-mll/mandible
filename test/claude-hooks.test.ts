@@ -6,19 +6,18 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Options } from "@anthropic-ai/claude-agent-sdk";
 import {
-  extractSettingsPath,
   getUserClaudeIntegrationStatus,
-  injectMandibleClaudeHookSettingsArgs,
   installUserClaudeIntegration,
   mergeMandibleClaudeHookSettings,
-  stripSettingsArgs,
   uninstallUserClaudeIntegration,
 } from "../src/claude-hook-settings.js";
 import {
   getHookNotificationAttention,
   resetHookNotificationAttentionForTests,
 } from "../src/claude-hook-attention.js";
+import { ClaudeSdkTransport } from "../src/conversation-control/claude-sdk-transport.js";
 import { setDb, type Db } from "../src/db.js";
 import { listOperationalIncidents } from "../src/operational-incidents.js";
 import { runCli, scratchDir } from "./helpers/cli-process.js";
@@ -44,6 +43,7 @@ beforeEach(() => {
 afterEach(() => {
   setSseManager(null);
   vi.useRealTimers();
+  vi.unstubAllEnvs();
   db.close();
   resetHookNotificationAttentionForTests();
 });
@@ -348,7 +348,7 @@ describe("Claude hook routes", () => {
 });
 
 describe("Claude hook settings", () => {
-  it("appends Mandible hooks after the user's own, directly and through a replaced --settings argument", () => {
+  it("appends Mandible hooks after the user's own", () => {
     const merged = mergeMandibleClaudeHookSettings({
       theme: "dark",
       hooks: {
@@ -364,37 +364,111 @@ describe("Claude hook settings", () => {
     expect(merged.theme).toBe("dark");
     expect(merged.hooks.PostToolUse).toHaveLength(2);
     expect(merged.hooks.PostToolUse[0].hooks[0].command).toBe("npm run format");
+  });
 
-    const baseSettingsPath = path.join(tempDir, "base-settings.json");
-    fs.writeFileSync(
-      baseSettingsPath,
-      JSON.stringify({
-        hooks: {
-          Notification: [
-            {
-              matcher: "permission_prompt",
-              hooks: [{ type: "command", command: "say attention", timeout: 2 }],
-            },
-          ],
-        },
-      }),
-      "utf8",
-    );
-    const settingsDir = path.join(tempDir, "generated");
+  describe("existing PreToolUse handler", () => {
+    const publicHook = '"${MANDIBLE_APP_PATH:-/Applications/Mandible.app}/Contents/Resources/bin/mandible" hook pre-tool-use';
+    const chain = `"$HOME"/.dotfiles/bin/claude-hook-chain '"$HOME"/.dotfiles/bin/agent-bash-guard --claude' '${publicHook}'`;
+    const withPreToolUse = (...commands: string[]) => ({
+      hooks: { PreToolUse: [{ matcher: "Bash|mcp__mandible__.*", hooks: commands.map((command) => ({ type: "command", command, timeout: 5 })) }] },
+    });
+    const preToolUseCommands = (settings: unknown) => (
+      (settings as { hooks: { PreToolUse?: Array<{ hooks: Array<{ command: string }> }> } }).hooks.PreToolUse ?? []
+    ).flatMap((entry) => entry.hooks.map((hook) => hook.command));
 
-    const args = injectMandibleClaudeHookSettingsArgs(
-      ["--model", "sonnet", "--settings", baseSettingsPath],
-      { sessionRef: "session-1", settingsDir },
-    );
-    const generatedPath = extractSettingsPath(args);
-
-    expect(stripSettingsArgs(args)).toEqual(["--model", "sonnet"]);
-    expect(generatedPath).toBe(path.join(settingsDir, "session-1.settings.json"));
-    const generated = JSON.parse(fs.readFileSync(generatedPath!, "utf8")) as {
-      hooks: Record<string, Array<{ matcher: string; hooks: Array<{ command: string }> }>>;
+    const sdkHooks = async (cwd: string, sources?: readonly ("user" | "project" | "local")[]) => {
+      let options: Options | undefined;
+      const transport = new ClaudeSdkTransport({
+        kind: "start", conversation_id: "c", generation: 1, controller_instance_id: "i", cwd,
+        ...(sources ? { runtime_options: { setting_sources: [...sources] } } : {}),
+      }, { startup: async (input) => { options = input.options; throw new Error("fixture startup stopped"); } });
+      await expect(transport.start()).rejects.toThrow("fixture startup stopped");
+      return options?.hooks ?? {};
     };
-    expect(generated.hooks.Notification).toHaveLength(2);
-    expect(generated.hooks.Notification[0].hooks[0].command).toBe("say attention");
+
+    it.each([
+      chain,
+      publicHook,
+      "mandible hook pre-tool-use",
+      "'/opt/My App/bin/mandible' 'hook' 'pre-tool-use'",
+      String.raw`claude-hook-chain guard ''\''/opt/bin/mandible'\'' '\''hook'\'' '\''pre-tool-use'\'''`,
+    ])("leaves PreToolUse alone for %s and still adds the other events", (command) => {
+      const merged = mergeMandibleClaudeHookSettings(withPreToolUse(command), "s") as { hooks: Record<string, unknown[]> };
+
+      expect(preToolUseCommands(merged)).toEqual([command]);
+      expect(merged.hooks.Stop).toHaveLength(1);
+      expect(merged.hooks.SubagentStart).toHaveLength(1);
+    });
+
+    it.each([
+      "agent-bash-guard --claude",
+      "mandible hook session-start",
+      "not-mandible hook pre-tool-use",
+      "mandible hook pre-tool-use-probe",
+    ])("adds the managed PreToolUse beside %s", (command) => {
+      const commands = preToolUseCommands(mergeMandibleClaudeHookSettings(withPreToolUse(command), "s"));
+
+      expect(commands).toHaveLength(2);
+      expect(commands[1]).toContain("MANDIBLE_MANAGED_CLAUDE_HOOK=1");
+    });
+
+    it("adds one managed PreToolUse to bare settings and removes it once a chain arrives", () => {
+      const bare = mergeMandibleClaudeHookSettings({}, "s") as { hooks: { PreToolUse: Array<{ matcher: string; hooks: Array<{ command: string }> }> } };
+      expect(preToolUseCommands(bare)).toHaveLength(1);
+
+      bare.hooks.PreToolUse.push(withPreToolUse(chain).hooks.PreToolUse[0]);
+      expect(preToolUseCommands(mergeMandibleClaudeHookSettings(bare, "s"))).toEqual([chain]);
+    });
+
+    it.each([
+      { name: "user settings", sources: undefined, file: "config/settings.json", omitted: true },
+      { name: "project settings", sources: undefined, file: "project/.claude/settings.json", omitted: true },
+      { name: "local settings", sources: undefined, file: "project/.claude/settings.local.json", omitted: true },
+      { name: "user settings when only project and local load", sources: ["project", "local"] as const, file: "config/settings.json", omitted: false },
+      { name: "project settings when only user loads", sources: ["user"] as const, file: "project/.claude/settings.json", omitted: false },
+      { name: "project settings when no source loads", sources: [] as const, file: "project/.claude/settings.json", omitted: false },
+    ])("gates the SDK PreToolUse callback on $name", async ({ sources, file, omitted }) => {
+      vi.stubEnv("CLAUDE_CONFIG_DIR", path.join(tempDir, "config"));
+      const settingsFile = path.join(tempDir, file);
+      fs.mkdirSync(path.dirname(settingsFile), { recursive: true });
+      fs.writeFileSync(settingsFile, JSON.stringify(withPreToolUse(chain)), "utf8");
+      const cwd = path.join(tempDir, "project");
+      fs.mkdirSync(cwd, { recursive: true });
+
+      expect(Object.keys(await sdkHooks(cwd, sources)).includes("PreToolUse")).toBe(!omitted);
+    });
+
+    it("keeps the SDK PreToolUse callback when loaded settings do not run the hook", async () => {
+      vi.stubEnv("CLAUDE_CONFIG_DIR", path.join(tempDir, "config"));
+      fs.mkdirSync(path.join(tempDir, "config"), { recursive: true });
+      fs.writeFileSync(path.join(tempDir, "config", "settings.json"), JSON.stringify(withPreToolUse("agent-bash-guard --claude")), "utf8");
+
+      expect(await sdkHooks(tempDir)).toHaveProperty("PreToolUse");
+    });
+
+    it("round-trips install, status, and uninstall around a chain", () => {
+      const settingsPath = path.join(tempDir, ".claude", "settings.json");
+      fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+      const originalText = `${JSON.stringify(withPreToolUse(chain), null, 2)}\n`;
+      fs.writeFileSync(settingsPath, originalText, "utf8");
+
+      installUserClaudeIntegration({ settingsPath });
+      expect(preToolUseCommands(JSON.parse(fs.readFileSync(settingsPath, "utf8")))).toEqual([chain]);
+      expect(getUserClaudeIntegrationStatus({ settingsPath })).toMatchObject({ status: "installed", details: [] });
+
+      expect(uninstallUserClaudeIntegration({ settingsPath }).status).toBe("uninstalled");
+      expect(fs.readFileSync(settingsPath, "utf8")).toBe(originalText);
+    });
+
+    it("reports a missing PreToolUse hook when no handler runs it", () => {
+      const settingsPath = path.join(tempDir, ".claude", "settings.json");
+      installUserClaudeIntegration({ settingsPath });
+      const installed = JSON.parse(fs.readFileSync(settingsPath, "utf8")) as { hooks: Record<string, unknown> };
+      installed.hooks.PreToolUse = withPreToolUse("agent-bash-guard --claude").hooks.PreToolUse;
+      fs.writeFileSync(settingsPath, JSON.stringify(installed), "utf8");
+
+      expect(getUserClaudeIntegrationStatus({ settingsPath })).toMatchObject({ status: "drifted", details: ["hook_missing:PreToolUse"] });
+    });
   });
 
   it("installs, reports, and uninstalls user-level Claude integration idempotently", () => {

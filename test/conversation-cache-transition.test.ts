@@ -2,102 +2,84 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import SqliteDatabase from '../src/sqlite.js';
-import { ConversationCacheTransition, projectLegacyConversationCache } from '../src/conversations/cache-transition.js';
-import { getConversationStructureCache, projectConversationCache } from '../src/conversations/structure-cache.js';
+import { getConversationStructureCache } from '../src/conversations/structure-cache.js';
+import { assertCacheTransitionFileIdentities, cacheFileIdentity, OBSOLETE_CACHE_SUFFIXES, publishCacheInvalidationReceipt, sourceGenerationDigest,
+  validateCacheInvalidationReceipt, validateCacheTransitionCoverage, type ConvertedCacheTransitionReceipt } from '../src/conversations/cache-transition-receipt.js';
+import { assertNoCacheConsumers } from '../scripts/runtime-handoff.mjs';
+import { migratedFileDb } from './helpers/ledger-fixtures.js';
 import { testRuntimeRoot } from './helpers/runtime-isolation.js';
 
 const cleanups: Array<() => void> = [];
 afterEach(() => { for (const close of cleanups.splice(0).reverse()) close(); });
-function fixture(count = 3) {
-  const root = fs.mkdtempSync(path.join(testRuntimeRoot, 'cache-transition-'));
+function fixture(sourceFormat: 18 | 19) {
+  const root = fs.mkdtempSync(path.join(testRuntimeRoot, 'cache-invalidation-'));
   cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
-  const ledger = new SqliteDatabase(path.join(root, 'ledger.db'));
+  const ledger = migratedFileDb(path.join(root, 'ledger.db'));
   cleanups.push(() => ledger.close());
-  ledger.exec(`CREATE TABLE conversations(id TEXT, block_count INTEGER);
-    CREATE TABLE conversation_sources(conversation_id TEXT,current_version_id TEXT,parser_format TEXT,parser_version TEXT,
-      normalization_version TEXT,redaction_epoch INTEGER,availability TEXT,position_space_id TEXT);
-    CREATE TABLE conversation_source_versions(id TEXT,availability TEXT,generation TEXT);
-    INSERT INTO conversations VALUES('selected',${count});
-    INSERT INTO conversation_sources VALUES('selected','version','provider-jsonl','2','2',0,'available','space');
-    INSERT INTO conversation_source_versions VALUES('version','available','sealed_sha256');`);
-  const transition = new ConversationCacheTransition(ledger);
   const cache = getConversationStructureCache(ledger);
   cleanups.push(() => cache.close());
-  const old = new SqliteDatabase(transition.obsoletePath!);
-  cleanups.push(() => old.close());
-  old.pragma('journal_mode = WAL');
-  old.exec(fs.readFileSync(new URL('./fixtures/conversation-cache-v18.sql', import.meta.url), 'utf8'));
-  old.prepare(`INSERT INTO cache_conversations VALUES(1,'selected','version','provider-jsonl','2','2',0,?,0,0)`).run(count);
-  old.transaction(() => {
-    for (let position = 0; position < count; position++) {
-      old.prepare('INSERT INTO cache_blocks VALUES(1,?,0,0,NULL,?,1,?,0,NULL,NULL,NULL,?)').run(position, position, position, position);
-      old.prepare('INSERT INTO cache_display_positions VALUES(1,?,?)').run(position, JSON.stringify({ position, revision: 'a'.repeat(64), speaker: 'user', handoffKeys: [] }));
-      old.prepare("INSERT INTO cache_display_fragments VALUES(1,?,'content:0',?,'content','user',NULL,?)").run(position, position,
-        JSON.stringify({ activity: null, summary_from_source: false, has_details: false, paired_source_positions: [] }));
-    }
-  })();
-  const manifest = { conversation_id: 'selected', source_version_id: 'version', parser_format: 'provider-jsonl', parser_version: '2', normalization_version: '2', redaction_epoch: 0, block_count: count };
-  const ready = () => cache.hasCompleteConversation('selected', 'version', count, { parserFormat: 'provider-jsonl', parserVersion: '2', normalizationVersion: '2', redactionEpoch: 0 });
-  return { root, ledger, transition, cache, old, manifest, ready };
+  const obsolete = `${ledger.name}.conversation-structure.db.v${sourceFormat}`;
+  const old = new SqliteDatabase(obsolete);
+  try {
+    old.exec(fs.readFileSync(new URL(`./fixtures/conversation-cache-v${sourceFormat}.sql`, import.meta.url), 'utf8'));
+    old.prepare(`INSERT INTO cache_conversations
+      (cache_id,conversation_id,source_version_id,parser_format,parser_version,normalization_version,redaction_epoch,block_count,updated_at,accessed_at)
+      VALUES(1,'selected','version','provider-jsonl','2','2',0,1,0,0)`).run();
+  } finally { old.close(); }
+  return { root, ledger, cache, obsolete, sourceFormat };
 }
 
-it('keeps interrupted generations unreadable, retries idempotently and projects only selected ready tuples', async () => {
-  const f = fixture(600);
-  let interrupted = false;
-  await expect(f.transition.prepare('selected', async () => {
-    expect(f.ready()).toBe(false);
-    interrupted = true;
-    throw new Error('interrupted');
-  })).rejects.toThrow('interrupted');
-  expect(interrupted).toBe(true);
-  expect(f.ready()).toBe(false);
-  await f.transition.prepare('selected', async () => {});
-  expect(f.ready()).toBe(true);
-  await f.transition.prepare(undefined, async () => {});
-  expect(f.cache.stats().blocks).toBe(600);
-  const projected = path.join(f.root, 'projection.v19');
-  await projectConversationCache(f.cache.cachePath, projected, [f.manifest]);
-  const read = new SqliteDatabase(projected, { readonly: true });
+it('records incompatibility without converting old facts or changing source custody', () => {
+  for (const format of [18, 19] as const) {
+    const f = fixture(format);
+    const native = path.join(f.root, 'transcript.jsonl');
+    fs.writeFileSync(native, 'native source is retained\n');
+    const before = [f.obsolete, f.ledger.name, native].map(file => fs.readFileSync(file));
+    const receipt = publishCacheInvalidationReceipt(f.ledger.name, f.obsolete, f.cache.cachePath, format);
+    expect(receipt.mode).toBe('invalidated');
+    expect(receipt).not.toHaveProperty('sourceGenerationDigest');
+    expect(f.cache.stats().conversations).toBe(0);
+    [f.obsolete, f.ledger.name, native].forEach((file, index) => expect(fs.readFileSync(file)).toEqual(before[index]));
+    assertCacheTransitionFileIdentities(receipt);
+    fs.renameSync(f.obsolete, `${f.obsolete}.replaced`);
+    fs.copyFileSync(`${f.obsolete}.replaced`, f.obsolete);
+    expect(() => assertCacheTransitionFileIdentities(receipt)).toThrow();
+  }
+});
+
+it('preserves unknown schemas and distinguishes recorded covered conversion from invalidation', () => {
+  const f = fixture(18);
+  const old = new SqliteDatabase(f.obsolete, { readonly: true });
+  const current19 = `${f.ledger.name}.conversation-structure.db.v19`;
+  const target = new SqliteDatabase(current19);
+  let digest: string;
   try {
-    expect(read.prepare('SELECT count(*) AS count FROM cache_blocks').get().count).toBe(600);
-    expect(read.pragma('foreign_key_check')).toEqual([]);
-  } finally { read.close(); }
-  expect(fs.existsSync(f.transition.obsoletePath!)).toBe(true);
+    target.exec(fs.readFileSync(new URL('./fixtures/conversation-cache-v19.sql', import.meta.url), 'utf8'));
+    digest = sourceGenerationDigest(old);
+  } finally { target.close(); old.close(); }
+  const identity = cacheFileIdentity(current19)!;
+  const converted: ConvertedCacheTransitionReceipt = {
+    schema: 'mandible-conversation-cache-transition@1', revision: 'recorded', state: 'coverage-complete', targetFormat: 19,
+    sourceGenerationDigest: digest, ledger: f.ledger.name, obsolete: f.obsolete, current: current19,
+    currentIdentity: { dev: identity.dev, ino: identity.ino },
+    files: OBSOLETE_CACHE_SUFFIXES.map(suffix => ({ suffix, identity: cacheFileIdentity(`${f.obsolete}${suffix}`) })),
+  };
+  expect(() => validateCacheTransitionCoverage(converted)).not.toThrow();
+  expect(() => validateCacheInvalidationReceipt(converted as never)).toThrow();
+  const foreign = path.join(f.root, 'foreign.db');
+  const db = new SqliteDatabase(foreign);
+  db.exec('CREATE TABLE unrelated(content TEXT)'); db.close();
+  const before = fs.readFileSync(foreign);
+  fs.renameSync(f.obsolete, `${f.obsolete}.preserved`);
+  fs.copyFileSync(foreign, f.obsolete);
+  expect(() => publishCacheInvalidationReceipt(f.ledger.name, f.obsolete, f.cache.cachePath, 18)).toThrow();
+  expect(fs.readFileSync(f.obsolete)).toEqual(before);
 });
 
-it('gives selected conversion priority over a paused background conversion without stale publication', async () => {
-  const f = fixture(600);
-  let selected = false;
-  await f.transition.prepare(undefined, async () => {
-    if (selected) return;
-    selected = true;
-    await f.transition.prepare('selected', async () => {});
-    expect(f.ready()).toBe(true);
-  });
-  expect(f.ready()).toBe(true);
-  expect(f.cache.stats().blocks).toBe(600);
-});
-
-it('discards a conversion whose source pointer was superseded while yielding', async () => {
-  const f = fixture(600);
-  await f.transition.prepare('selected', async () => {
-    f.ledger.prepare("UPDATE conversation_sources SET current_version_id = 'newer'").run();
-  });
-  expect(f.ready()).toBe(false);
-  expect(f.cache.stats().blocks).toBe(0);
-  expect(f.ledger.prepare('SELECT current_version_id FROM conversation_sources').get().current_version_id).toBe('newer');
-});
-
-it('projects warmed v18 generations into isolated v19 before the production transition', async () => {
-  const f = fixture();
-  const projected = path.join(f.root, 'legacy-projection.v19');
-  const before = fs.readFileSync(f.transition.obsoletePath!);
-  await projectLegacyConversationCache(f.transition.obsoletePath!, projected, f.ledger.name);
-  expect(fs.readFileSync(f.transition.obsoletePath!)).toEqual(before);
-  const read = new SqliteDatabase(projected, { readonly: true });
-  try {
-    expect(read.prepare('SELECT count(*) AS count FROM cache_blocks').get().count).toBe(3);
-    expect(read.prepare('SELECT count(*) AS count FROM cache_conversations WHERE ready = 1').get().count).toBe(1);
-  } finally { read.close(); }
-  expect(f.ready()).toBe(false);
+it('refuses retirement while the exact obsolete cache has an open reader', () => {
+  const f = fixture(19);
+  const fd = fs.openSync(f.obsolete, 'r');
+  try { expect(() => assertNoCacheConsumers(f.obsolete)).toThrow(); }
+  finally { fs.closeSync(fd); }
+  expect(() => assertNoCacheConsumers(f.obsolete)).not.toThrow();
 });

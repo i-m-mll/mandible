@@ -1,3 +1,4 @@
+import { presentActivityRunFacts } from '../presentation/activity-presentation.js';
 import { readingDisclosureState } from '../presentation/reading-disclosures.js';
 import { buildReadingManifest, planConversationReading, type ConversationReadingManifest } from '../presentation/reading-manifest.js';
 import { projectReadingRows, type ReadingRow } from '../presentation/reading.js';
@@ -19,7 +20,7 @@ export function captureReadingPublication(db: Db, conversationId: string): Readi
     FROM conversation_sources WHERE conversation_id = ? AND current_version_id IS NOT NULL AND position_space_id IS NOT NULL
     ORDER BY CASE availability WHEN 'available' THEN 0 ELSE 1 END, updated_at DESC LIMIT 1`).get(conversationId) as ReadingPublication | null;
 }
-type PresentationCache = { publicationKey: string; manifest: ConversationReadingManifest; membersByKey: ReadonlyMap<string, ConversationReadingManifest['members'][number]>; plans: Map<string, { plan: ReadingPlan; byKey: Map<string, ReadingRowDescriptor> }> };
+type PresentationCache = { positionsByPosition:ReadonlyMap<number,import('./conversation-index.js').PositionFacts>;publicationKey: string; manifest: ConversationReadingManifest; membersByKey: ReadonlyMap<string, ConversationReadingManifest['members'][number]>; plans: Map<string, { plan: ReadingPlan; byKey: Map<string, ReadingRowDescriptor> }> };
 const presentationCache = new WeakMap<Db, PresentationCache>();
 
 export function readConversationReadingManifest(db: Db, conversationId: string, source: ReadingPublication): ConversationReadingManifest | null {
@@ -34,7 +35,7 @@ export function readConversationReadingManifest(db: Db, conversationId: string, 
   if (!context || context.length !== count) return null;
   const manifest = buildReadingManifest({ ...index, conversationId, positionSpaceId: source.position_space_id,
     sourceVersionId: source.current_version_id, publicationRevision: source.publication_revision, blockCount: count, readingContext: context });
-  presentationCache.set(db, { publicationKey, manifest, membersByKey: new Map(manifest.members.map(member => [member.key, member])), plans: new Map() });
+  presentationCache.set(db, { positionsByPosition:new Map(index.positions.map(position=>[position.position,position])),publicationKey, manifest, membersByKey: new Map(manifest.members.map(member => [member.key, member])), plans: new Map() });
   return manifest;
 }
 export type ReadingRowRequest = { key: string; revision: string };
@@ -52,7 +53,7 @@ export type ReadingRowBatchResult =
 
 /** A newer publication may satisfy older descriptors, but only after proving every requested dependency unchanged. */
 export async function readReadingRowBatch(input: {
-  db: Db; conversationId: string; reader: ConversationSourceReader; request: ReadingRowBatchRequest;
+  db: Db; conversationId: string; reader: ConversationSourceReader; request: ReadingRowBatchRequest; signal?:AbortSignal;
 }): Promise<ReadingRowBatchResult> {
   const { db, conversationId, reader, request } = input;
   const source = captureReadingPublication(db, conversationId);
@@ -87,11 +88,11 @@ export async function readReadingRowBatch(input: {
   const context = cache.readReadingContextPositions(conversationId, source.current_version_id, allPositions, source);
   if (!context) return {status: 'changed', reason: 'Presentation publication changed before the source read.'};
   const blocks = await reader.readPositions(conversationId, allPositions,
-    { expectedSourceVersionId: source.current_version_id, expectedBlockCount: manifest.blockCount });
+    { expectedSourceVersionId: source.current_version_id, expectedBlockCount: manifest.blockCount,signal:input.signal });
   if (blocks.status !== 'source') return { status: blocks.status === 'stale' ? 'changed' : 'unavailable', reason: blocks.reason };
   const byPosition = new Map(context.map(entry => [entry.position, entry]));
   const display = await readDisplayContext({ plan: displayPlan, conversationId, sourceVersionId: source.current_version_id,
-    blockCount: manifest.blockCount, reader, sourceBlocks: blocks.value, actionScope: position => {
+    blockCount: manifest.blockCount, reader, sourceBlocks: blocks.value,signal:input.signal,actionScope: position => {
       const scope = byPosition.get(position)?.action_scope;
       if (!scope) throw new Error('Display owner omitted its source action scope.');
       return scope;
@@ -111,13 +112,19 @@ export async function readReadingRowBatch(input: {
     const member = retained.membersByKey.get(key);
     return member && readingDisclosureState(member.disclosures, request.expanded, { streaming: request.streaming, lastAssistantTurnId: manifest.lastAssistantTurnId }).some(([, expanded]) => expanded) ? [...member.sourcePositions] : [];
   })));
+  for(const row of requested)if(row.kind==='activity-summary'&&row.disclosureOwner)for(const position of manifest.summarySources[row.disclosureOwner]??[])if(row.sourcePositions.includes(position))details.add(position);
   const events = displayEventsFromBlocks(blocks.value.map(block => {
     const projected = details.has(block.position) ? { ...block, details_loaded: true as const } : projectDisplayBlock(block);
     return { ...projected, metadata: JSON.parse(projected.metadata_json),
       parentPosition: block.parent_id ? Number(block.parent_id.slice(block.parent_id.lastIndexOf(':') + 1)) : null };
   }), conversationId);
   const hydrated = projectReadingRows({ events, conversationId, positionSpaceId: source.position_space_id,
-    readingContext: byPosition, displayContext: display.value,
+    readingContext: byPosition,positionFacts:retained.positionsByPosition, displayContext:{...display.value,activity_runs:display.value.activity_runs.map(run=>{
+      const indexed=manifest.runs[run.id];if(!indexed)return run;
+      const facts={...indexed.presentation.facts,labels:run.presentation.facts.labels,
+        ...(manifest.summarySources[run.id]?.includes(run.first.position)?{firstSummary:run.presentation.facts.firstSummary}:{})};
+      return {...run,...indexed,presentation:{...presentActivityRunFacts(facts),facts}};
+    })},
     expanded: request.expanded, streaming: request.streaming });
   const hydratedByKey = new Map(hydrated.rows.map(row => [row.key, row]));
   const rows: Array<ReadingRow & { revision: string }> = [];

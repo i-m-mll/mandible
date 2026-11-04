@@ -158,30 +158,16 @@ export type ConversationTranscriptData = {
   readingContext: ReadonlyMap<number, import('../../../src/conversations/reading-context').ReadingContextEntry>;
 };
 
-type PersistedReadingSource = { blockId: string; position?: number; detailsLoaded?: boolean };
 
 export type ConversationTranscriptConsumer = {
-  displayContext: import('../../../src/conversations/display-context').ConversationDisplayContext;
-  conversationId: string;
-  positionSpaceId: string | null;
-  command: ConversationNavigationCommand | null;
-  navigationPending: boolean;
-  prepareDetails: (sources: readonly PersistedReadingSource[], signal: AbortSignal) => Promise<void>;
-  activeWindow: ConversationLoadedInterval | null;
-  protect: (regions: readonly ConversationLoadedInterval[]) => void;
-  cancelNavigation: () => void;
-  replaceAround: (target: ConversationSourceCoordinate, signal?: AbortSignal, token?: string) => Promise<ConversationHistoryLoadResult>;
-  sourceVersionId: string | null;
-  historyLoading: boolean;
-  total: number;
-  readingContext: ReadonlyMap<number, import('../../../src/conversations/reading-context').ReadingContextEntry>;
-  loadedIntervals: readonly ConversationLoadedInterval[];
-  hasOlder: boolean;
-  hasNewer: boolean;
-  unmaterializedAfterCount: number;
-  loadOlder: () => ConversationHistoryLoadResult | Promise<ConversationHistoryLoadResult>;
-  loadNewer: () => ConversationHistoryLoadResult | Promise<ConversationHistoryLoadResult>;
-  loadAround: (position: number, limit: number, signal?: AbortSignal) => ConversationHistoryLoadResult | Promise<ConversationHistoryLoadResult>;
+  conversationId:string;
+  positionSpaceId:string|null;
+  sourceVersionId:string|null;
+  total:number;
+  command:ConversationNavigationCommand|null;
+  navigationPending:boolean;
+  cancelNavigation:()=>void;
+
 };
 
 export type ConversationHistoryLoadResult = 'loaded' | 'covered' | 'busy' | 'cancelled' | 'failed' | 'position-space-changed';

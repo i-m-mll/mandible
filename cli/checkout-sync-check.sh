@@ -8,7 +8,8 @@
 # covers skip-worktree and assume-unchanged entries that `git status` hides,
 # and untracked files the target would overwrite. Exit 0: the sync would
 # succeed. Exit 1: it would not; stdout names each blocking path, why it
-# blocks, and how to clear it. Nothing in the checkout is changed.
+# blocks, and how to clear it. The tracked index stat cache may be refreshed;
+# checkout files and tracked content are not changed.
 set -u
 set -o pipefail
 
@@ -17,6 +18,13 @@ checkout=$1
 base=$2
 target=$3
 g() { GIT_OPTIONAL_LOCKS=0 git -C "$checkout" "$@"; }
+
+# read-tree treats stale stat data as a local edit even when the file still
+# matches the index. Refresh tracked stat data before asking it for a verdict.
+if ! refresh_output=$(g update-index -q --refresh 2>&1); then
+  printf 'Checkout %s index refresh failed: %s\n' "$checkout" "$refresh_output"
+  exit 1
+fi
 
 if dry_run=$(g read-tree -m -u -n "$base" "$target" 2>&1); then
   exit 0

@@ -30,6 +30,22 @@ export type ActivityKind =
 export type ChatContentCompletion = "streaming" | "complete";
 export type ChatExecutionOutcome = "succeeded" | "failed" | "cancelled" | "unknown";
 
+export type ToolExecutionEvidence = {
+  state: "ongoing" | "completed" | "failed" | "cancelled" | "unknown";
+  provenance: "provider-item" | "paired-result" | "native-wrapper" | "managed-generation";
+};
+export type ToolContinuationOrigin = {
+  provider: "codex";
+  session_id: string;
+  native_tool_id: string;
+  /** Presentation-only turn scope for continuation matching; never a canonical source identity. */
+  native_turn_id?: string;
+  position: number;
+  source_record_ordinal: number;
+  source_sub_block_ordinal: number;
+};
+export type ToolOperationContext = { origin: ToolContinuationOrigin; name: string; kind: string; input: unknown };
+
 export interface ChatContentPart {
   type: "text";
   text: string;
@@ -83,6 +99,7 @@ export interface ToolCallItem extends ChatItemBase {
   type: "tool-call";
   role: "assistant" | "tool";
   phase: "call" | "result";
+  /** Producer tool name; native MCP server namespaces are retained as mcp__<server>__<tool>. */
   tool_name?: string;
   tool_kind?: string;
   tool_id?: string;
@@ -92,6 +109,7 @@ export interface ToolCallItem extends ChatItemBase {
   elapsed_ms?: number;
   exit_code?: number;
   process_id?: string;
+  execution?: ToolExecutionEvidence;
 }
 
 export interface ActivityItem extends ChatItemBase {
@@ -104,11 +122,29 @@ export interface ActivityItem extends ChatItemBase {
   tool_name?: string;
   tool_id?: string;
   related_tool_ids?: string[];
+  /** Display-only native local-command output discriminator. */
+  local_command?: { stream: 'stdout' | 'stderr' };
 }
 
 export type ChatItem = MessageItem | PlanItem | ToolCallItem | ActivityItem;
 
 export interface BlockMetadata {
+  /** Presentation dependencies never alter native parent links or transcript content. */
+  /** Presentation-only passthrough turn scope for verifying a continuation origin. */
+  display_tool_turn_id?: string;
+  display_reasoning_turn_id?: string;
+  display_tool_origin?: ToolContinuationOrigin;
+  display_tool_execution?: ToolExecutionEvidence;
+  /** Hydrated only from the verified original call; never retained in the compact index. */
+  display_tool_operation?: ToolOperationContext;
+  display_tool_targets?: import('../presentation/activity-targets.js').ActivityTarget[];
+  display_tool_operation_kind?: 'subagent-create' | 'subagent-resume';
+  /** Proven session-task notification; bookkeeping and report remain in native content. */
+  display_task_notification?: {summary:string;hasBody:boolean};
+  /** Bounded native command facts; full output stays in canonical content. */
+  display_local_command?:
+    | { kind: 'invocation'; name: string; args: string }
+    | { kind: 'output'; stream: 'stdout' | 'stderr'; summary: string; hasBody: boolean; invocationUuid?: string; commandName?: string };
   execution_state?: "active" | "settled" | "unknown";
   tool_name?: string;
   tool_kind?: string;

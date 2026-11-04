@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'preact/hooks';
+import { DisclosureFooter } from '../shared/DisclosureFooter';
 
 export type DiffLineKind = 'context' | 'add' | 'remove';
 
@@ -29,6 +30,8 @@ export type FileEditBlockProps = {
   oldString: string;
   newString: string;
   compactLineLimit?: number;
+  expanded?: boolean;
+  onExpandedChange?: (expanded:boolean,trigger:HTMLElement)=>void;
 };
 
 type DiffOp = {
@@ -174,7 +177,6 @@ function DiffRows({ diff, compactLineLimit }: {
 }): JSX.Element {
   let rendered = 0;
   const limit = compactLineLimit ?? Number.POSITIVE_INFINITY;
-  const hiddenLines = diff.hunks.reduce((sum, hunk) => sum + hunk.lines.length, 0) - limit;
 
   return (
     <div className="diff-view" role="table" aria-label={`Diff for ${diff.filePath}`}>
@@ -205,11 +207,6 @@ function DiffRows({ diff, compactLineLimit }: {
           </div>
         );
       })}
-      {hiddenLines > 0 && (
-        <div className="diff-view__truncated">
-          {hiddenLines} more diff lines
-        </div>
-      )}
     </div>
   );
 }
@@ -219,49 +216,24 @@ export function FileEditBlock({
   oldString,
   newString,
   compactLineLimit = 18,
+  expanded: controlledExpanded,
+  onExpandedChange,
 }: FileEditBlockProps): JSX.Element {
-  const [reviewOpen, setReviewOpen] = useState(false);
+  const [localExpanded, setLocalExpanded] = useState(false);
+  const expanded=controlledExpanded??localExpanded;
   const diff = useMemo(
     () => computeStructuredDiff(filePath, oldString, newString),
     [filePath, oldString, newString],
   );
 
   return (
-    <div className="file-edit-block">
-      <DiffRows diff={diff} compactLineLimit={compactLineLimit} />
-      <button
-        type="button"
-        className="tool-card__secondary-action"
-        onClick={(event) => {
-          event.stopPropagation();
-          setReviewOpen(true);
-        }}
-      >
-        Expand diff
-      </button>
-      {reviewOpen && (
-        <div className="diff-review" role="dialog" aria-modal="true" aria-label={`Full diff for ${filePath}`}>
-          <div className="diff-review__panel">
-            <div className="diff-review__header">
-              <div className="diff-review__title">{filePath}</div>
-              <div className="tool-card__stat-chip">
-                +{diff.additions} / -{diff.deletions}
-              </div>
-              <button
-                type="button"
-                className="diff-review__close"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  setReviewOpen(false);
-                }}
-              >
-                Close
-              </button>
-            </div>
-            <DiffRows diff={diff} />
-          </div>
-        </div>
-      )}
+    <div className="file-edit-block" data-reading-disclosure>
+      <DiffRows diff={diff} compactLineLimit={expanded?undefined:compactLineLimit} />
+      {diff.hunks.reduce((count,hunk)=>count+hunk.lines.length,0)>compactLineLimit &&
+        <DisclosureFooter expanded={expanded} onExpandedChange={(next,trigger)=>{
+          if(controlledExpanded===undefined)setLocalExpanded(next);
+          onExpandedChange?.(next,trigger);
+        }}/>}
     </div>
   );
 }

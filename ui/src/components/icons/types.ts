@@ -2,8 +2,7 @@ import type { ComponentType, JSX } from 'preact';
 import type { mandibleSet } from './mandible-set';
 import type { lucideSet } from './lucide-set';
 
-/** Sources use a 16px SVG default; glyph artwork keeps inherited text metrics.
- * Adapters own drawing attributes and forward presentation/accessibility props.
+/** SVG sources use a 16px default. Adapters own drawing attributes and forward presentation/accessibility props.
  */
 export type IconSourceProps = {
   size?: number;

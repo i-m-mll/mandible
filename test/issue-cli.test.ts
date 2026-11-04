@@ -288,6 +288,28 @@ describe("issue CLI", () => {
     expect(responder.requests).toMatchObject([{ method: "PATCH", path: "/api/ledger/comments/raw-comment-id" }]);
   });
 
+  it("reads a title by default, replaces it with --set, and passes an empty --set to the daemon to refuse", async () => {
+    const { env, responder } = spool((request) => request.method === "PATCH" && (request.body as { title: string }).title === ""
+      ? { status: 400, body: { error: "title must be a non-empty string" } }
+      : { status: 200, body: { id: "issue-1", display_id: "abc", title: request.method === "PATCH" ? (request.body as { title: string }).title : "Current" } });
+
+    const read = await runCli(["issue", "title", "abc"], { env });
+    const set = await runCli(["issue", "title", "abc", "--set", "Renamed", "--json"], { env });
+    const blank = await runCli(["issue", "title", "abc", "--set", ""], { env });
+
+    expect(read.status, read.stderr).toBe(0);
+    expect(read.stdout.trim()).toBe("Current");
+    expect(set.status, set.stderr).toBe(0);
+    expect(JSON.parse(set.stdout)).toEqual({ id: "abc", title: "Renamed" });
+    expect(blank.status).toBe(1);
+    expect(blank.stderr).toContain("non-empty");
+    expect(responder.requests.map(({ method, path: url, body }) => ({ method, url, title: (body as { title?: string } | null)?.title }))).toEqual([
+      { method: "GET", url: "/api/ledger/issues/abc", title: undefined },
+      { method: "PATCH", url: "/api/ledger/issues/abc", title: "Renamed" },
+      { method: "PATCH", url: "/api/ledger/issues/abc", title: "" },
+    ]);
+  });
+
   it("prints a missing project's suggestions to stderr and exits non-zero", async () => {
     const { env } = spool(() => ({ status: 404, body: { error: "project not found", suggestions: ["feedbax"] } }));
 

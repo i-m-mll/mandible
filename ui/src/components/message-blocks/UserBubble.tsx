@@ -5,7 +5,11 @@ import { NativeDisclosureIcon } from '../icons/NativeDisclosureIcon';
 
 // Bug: bce7370 — User message bubble
 
-import { useMemo } from 'preact/hooks';
+import type { ComponentChildren } from 'preact';
+import { useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { DisclosureFooter } from '../shared/DisclosureFooter';
+import { registerReadingLayoutReadiness } from '../shared/readingLayoutReadiness';
+import { flushSync } from 'preact/compat';
 import { renderMarkdown } from '../../lib/markdown';
 import { linkifyResourceRefs } from '../../resource-refs';
 import { codexUserMessageParts } from './codexUserMessage';
@@ -16,6 +20,33 @@ export type UserBubbleProps = {
   getDisclosureExpanded?: (key: string) => boolean | undefined;
   onDisclosureExpandedChange?: (key: string, expanded: boolean, trigger?: HTMLElement) => void;
 };
+
+const previewRem = 18;
+
+function BoundedUserBubble({ children, className = '', getDisclosureExpanded, onDisclosureExpandedChange }: Omit<UserBubbleProps, 'text' | 'provider'> & { children: ComponentChildren; className?: string }): JSX.Element {
+  const [localExpanded, setLocalExpanded] = useState(false);
+  const [overflow, setOverflow] = useState(false);
+  const content = useRef<HTMLDivElement>(null);
+  const expanded = getDisclosureExpanded?.('message') ?? localExpanded;
+  useLayoutEffect(() => {
+    const element = content.current;
+    if (!element) return;
+    const measure = () => setOverflow(element.getBoundingClientRect().height > previewRem * parseFloat(getComputedStyle(document.documentElement).fontSize) + 0.5);
+    measure();
+    const dispose = registerReadingLayoutReadiness(element, () => flushSync(measure));
+    const observer = new ResizeObserver(measure); observer.observe(element);
+    return () => { observer.disconnect(); dispose(); };
+  }, [children]);
+  return <div className={`user-bubble user-bubble--bounded${className ? ` ${className}` : ''}`} data-reading-disclosure>
+    <div className={`user-bubble__viewport${overflow && !expanded ? ' user-bubble__viewport--folded' : ''}`} style={{ maxHeight: expanded ? undefined : `${previewRem}rem`, overflow: expanded ? undefined : 'hidden' }}>
+      <div ref={content} className="user-bubble__content">{children}</div>
+    </div>
+    {overflow && <DisclosureFooter expanded={expanded} onExpandedChange={(next,trigger) => {
+      if (!getDisclosureExpanded) setLocalExpanded(next);
+      onDisclosureExpandedChange?.('message', next, trigger);
+    }}/>}
+  </div>;
+}
 
 type QuestionReply = { question: string; answer: string };
 
@@ -60,32 +91,37 @@ export function userMessageVisibleText(text: string, provider?: string): string 
 }
 
 export function UserBubble({ text, provider, getDisclosureExpanded, onDisclosureExpandedChange }: UserBubbleProps): JSX.Element {
+  const [localInstructionsExpanded, setLocalInstructionsExpanded] = useState(false);
   const requestDisclosure = (key: string, event: MouseEvent) => {
-    if (!onDisclosureExpandedChange || !getDisclosureExpanded) return;
+    if (!getDisclosureExpanded && key !== 'instructions') return;
     event.preventDefault();
     const trigger = event.currentTarget as HTMLElement;
-    onDisclosureExpandedChange(key, !(trigger.parentElement as HTMLDetailsElement).open, trigger);
+    const next = !(trigger.parentElement as HTMLDetailsElement).open;
+    if (!getDisclosureExpanded && key === 'instructions') setLocalInstructionsExpanded(next);
+    onDisclosureExpandedChange?.(key, next, trigger);
   };
   const instruction = getInstructionMessageMeta(text);
+  const instructionsExpanded = getDisclosureExpanded?.('instructions') ?? localInstructionsExpanded;
   const replies = useMemo(() => provider === 'codex' ? codexQuestionReplies(text) : null, [provider, text]);
   const parts = useMemo(() => provider === 'codex' && !replies ? codexUserMessageParts(text) : null, [provider, replies, text]);
   const html = useMemo(() => {
-    return linkifyResourceRefs(renderMarkdown(text));
-  }, [text]);
+    return instruction && !instructionsExpanded ? '' : linkifyResourceRefs(renderMarkdown(text));
+  }, [text, Boolean(instruction), instructionsExpanded]);
+  const bounded = (children: ComponentChildren, className = '') => <BoundedUserBubble className={className} getDisclosureExpanded={getDisclosureExpanded} onDisclosureExpandedChange={onDisclosureExpandedChange}>{children}</BoundedUserBubble>;
 
   if (replies) {
-    return <div className="user-bubble user-bubble--question-replies">
+    return bounded(<>
       {replies.map(({ question, answer }, index) => <div className="user-bubble__question-reply" key={index}>
         <div className="user-bubble__question rendered-markdown"
           dangerouslySetInnerHTML={{ __html: linkifyResourceRefs(renderMarkdown(question)) }} />
         <div className="user-bubble__text rendered-markdown"
           dangerouslySetInnerHTML={{ __html: linkifyResourceRefs(renderMarkdown(answer)) }} />
       </div>)}
-    </div>;
+    </>, 'user-bubble--question-replies');
   }
 
   if (parts) {
-    return <div className="user-bubble user-bubble--browser-comments">
+    return bounded(<>
       {parts.map((part, index) => part.kind === 'text' ? (
         <div key={index} className="user-bubble__text rendered-markdown"
           dangerouslySetInnerHTML={{ __html: linkifyResourceRefs(renderMarkdown(part.text)) }} />
@@ -103,28 +139,26 @@ export function UserBubble({ text, provider, getDisclosureExpanded, onDisclosure
           </section>)}
         </div>
       ))}
-    </div>;
+    </>, 'user-bubble--browser-comments');
   }
 
   if (instruction) {
     return (
-      <details className="instruction-message-block" open={getDisclosureExpanded?.("instructions")} onToggle={event => { if (!getDisclosureExpanded) onDisclosureExpandedChange?.('instructions', event.currentTarget.open); }}>
+      <details className="instruction-message-block" open={instructionsExpanded}>
         <summary className="instruction-message-block__summary" onClick={event => requestDisclosure('instructions', event)}>
           <NativeDisclosureIcon />
           <span className="instruction-message-block__label">{instruction.scope} {instruction.filename}</span>
           <span className="instruction-message-block__path">{instruction.path}</span>
         </summary>
-        <div className="instruction-message-block__body user-bubble__text rendered-markdown" dangerouslySetInnerHTML={{ __html: html }} />
+        {instructionsExpanded && <div className="instruction-message-block__body user-bubble__text rendered-markdown" dangerouslySetInnerHTML={{ __html: html }} />}
       </details>
     );
   }
 
-  return (
-    <div className="user-bubble">
+  return bounded(
       <div
         className="user-bubble__text rendered-markdown"
         dangerouslySetInnerHTML={{ __html: html }}
       />
-    </div>
   );
 }

@@ -25,8 +25,8 @@ export function useStatuslineTelemetry(ref: TelemetryRef): StatuslineTelemetry |
       setTelemetry(null);
       return undefined;
     }
-    let active = true;
-    void getStatuslineTelemetry<StatuslineTelemetry>({ sessionRef, transcriptPath })
+    let active = true;const controller=new AbortController();
+    void getStatuslineTelemetry<StatuslineTelemetry>({ sessionRef, transcriptPath,signal:controller.signal })
       .then((next) => {
         if (active) setTelemetry(next);
       })
@@ -34,7 +34,7 @@ export function useStatuslineTelemetry(ref: TelemetryRef): StatuslineTelemetry |
         if (active) setTelemetry(null);
       });
     return () => {
-      active = false;
+      active = false;controller.abort();
     };
   }, [sessionRef, transcriptPath]);
 

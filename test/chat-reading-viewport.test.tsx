@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { useReadingViewport } from '../ui/src/chat/useReadingViewport';
 import type { ReadingRow, ReadingRevealResult } from '../ui/src/chat/readingProjection';
 import { readReadingState } from '../ui/src/chat/readingState';
+import { MeasuredReadingBox } from '../ui/src/chat/ReadingRowWindow';
 
 const boundary = vi.hoisted(() => ({ options: null as any, engine: null as any, calls: [] as string[] }));
 vi.mock('@tanstack/react-virtual', () => ({ useVirtualizer: (options: any) => {
@@ -14,12 +15,26 @@ let viewport: ReturnType<typeof useReadingViewport>;
 let frames = new Map<number, FrameRequestCallback>();
 let nextFrame = 0;
 const coordinate = { conversationId: 'conv', positionSpaceId: 'space', position: 42 };
+
+it('registers a merged native source alias on its visible event without matching unrelated source text',()=>{
+  vi.stubGlobal('ResizeObserver',class{observe(){} disconnect(){}});
+  const registered=new Map<number,HTMLElement|null>();
+  const row:ReadingRow={...rows[0],sources:[{blockId:'call',position:0},{blockId:'result-alias',position:1},{blockId:'unrelated',position:2}]};
+  const view=render(<MeasuredReadingBox row={row} index={0} measurement={{key:row.key,revision:'1'}} pendingHeight={100}
+    reportHeight={()=>{}} registerRow={()=>()=>{}} scope="conv" space="space"
+    register={target=>{registered.set(target.coordinate.position,target.element);return ()=>{};}}>
+    <div data-block-id="call" data-member-refs="call result-alias">unrelated</div>
+  </MeasuredReadingBox>);
+  expect(registered.get(0)).toBe(view.container.querySelector('[data-block-id]'));
+  expect(registered.get(1)).toBe(registered.get(0));
+  expect(registered.get(2)).toBeNull();
+});
 const rows: ReadingRow[] = [{ key: 'exact-row', kind: 'content', isFinalResponse: false, protectedPositions: [42], items: [], nodes: [], sources: [{ blockId: 'cblk:conv:42', position: 42 }], actionGroup: { key: 'scope', start: 0, end: 99 }, disclosureOwner: null }];
 const geometry = { membership: new Map<string, { rowKey: string; position?: number | null }>([['exact-row', { rowKey: 'exact-row', position: 42 }]]), rowMembers: new Map<string, readonly string[]>([['exact-row', ['exact-row']]]), scope: 'conv:space', rows: rows.map(row => ({ key: row.key, revision: '1' })), sizes: [100], exact: true, serial: 1, layout: { width: 600, styleIdentity: 'test', fonts: [] }, renderProps: () => ({} as any) };
 const rect = (top: number, height: number) => ({ top, bottom: top + height, height, left: 0, right: 600, width: 600, x: 0, y: top, toJSON: () => ({}) } as DOMRect);
-function Harness({ prepare, space = 'space', scope = 'conv', initializing = false, vector = geometry, disclosures = {}, clearance = 123, onRange = () => {} }: { onRange?: Parameters<typeof useReadingViewport>[0]['onRange']; clearance?: number; disclosures?: Record<string, boolean>; vector?: typeof geometry; scope?: string; initializing?: boolean; prepare: Parameters<typeof useReadingViewport>[0]['prepare']; space?: string;  }) {
+function Harness({ prepare, prepareRows, space = 'space', scope = 'conv', initializing = false, vector = geometry, disclosures = {}, clearance = 123, onRange = () => {} }: { prepareRows?: Parameters<typeof useReadingViewport>[0]['prepareRows']; onRange?: Parameters<typeof useReadingViewport>[0]['onRange']; clearance?: number; disclosures?: Record<string, boolean>; vector?: typeof geometry; scope?: string; initializing?: boolean; prepare: Parameters<typeof useReadingViewport>[0]['prepare']; space?: string;  }) {
   viewport = useReadingViewport({ scope, initializing, positionSpaceId: space, geometry: vector, protectedKeys: new Set(),
-    disclosures, clearance, onInput: () => {}, onApplied: () => {}, onRange, prepare });
+    disclosures, clearance, onInput: () => {}, onApplied: () => {}, onRange, prepare, prepareRows });
   return <div ref={viewport.scrollRef} {...viewport.inputHandlers}><div data-target tabIndex={-1}>Exact target</div><input /></div>;
 }
 async function frame(): Promise<void> {
@@ -45,7 +60,8 @@ beforeEach(() => {
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frames.set(++nextFrame, callback); return nextFrame; });
   vi.stubGlobal('cancelAnimationFrame', (id: number) => frames.delete(id));
   boundary.engine = {
-    measure: () => {}, getTotalSize: () => 1400, getOffsetForIndex: () => [300, 'start'], getVirtualItemForOffset: () => ({ index: 0 }),
+    options: { overscan: 6 },
+    measure: () => {}, getTotalSize: () => 1400, getOffsetForIndex: () => [300, 'start'], getVirtualItemForOffset: () => ({ index: 0,start:300,end:400,size:100,key:'exact-row' }),
     isScrolling: false, range: { startIndex: 0, endIndex: 0 },
     isAtEnd: () => viewport.scrollRef.current?.scrollTop === 1000,
     getVirtualItems: () => [{ key: 'exact-row', index: 0, size: 100, start: 300, end: 400 }],
@@ -54,9 +70,29 @@ beforeEach(() => {
     scrollToEnd: () => { boundary.calls.push('end'); viewport.scrollRef.current!.scrollTop = 1000; boundary.engine.isScrolling = true; },
     scrollToOffset: (offset: number) => { boundary.calls.push('offset'); viewport.scrollRef.current!.scrollTop = offset; boundary.engine.isScrolling = true; },
   };
-  localStorage.clear();
+  sessionStorage.clear();
 });
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); window.history.replaceState(null, '', '/'); });
+
+it('keeps the painted vector until its replacement mounted bodies are prepared', async () => {
+  const prepare = async () => ({status:'not-renderable' as const});
+  let ready!: (value:boolean)=>void;
+  const prepareRows = vi.fn(()=>new Promise<boolean>(resolve=>{ready=resolve;}));
+  const disclosures = {};
+  const view=render(<Harness prepare={prepare} prepareRows={prepareRows} disclosures={disclosures}/>);
+  const {scroller}=connect();
+  scroller.scrollTop=1000;
+  await frame();
+  boundary.engine.isScrolling=false;
+  act(()=>boundary.options.onChange(boundary.engine));
+  expect(viewport.appliedGeometry).not.toBeNull();
+  const replacement={...geometry,serial:2,rows:[{key:'exact-row',revision:'2'}],sizes:[300]};
+  view.rerender(<Harness prepare={prepare} prepareRows={prepareRows} disclosures={disclosures} vector={replacement}/>);
+  expect(prepareRows).toHaveBeenCalledOnce();
+  expect(viewport.rows).toBe(geometry.rows);
+  await act(async()=>{ready(true);await Promise.resolve();});
+  expect(viewport.rows).toBe(replacement.rows);
+});
 
 it('terminates failed alignment and preparation that never completes', async () => {
   const prepare = vi.fn(async () => ({ status: 'prepared' as const, rowKey: 'exact-row' }));
@@ -155,12 +191,12 @@ it('keeps old-scope cleanup from overwriting the next conversation during restor
   const view = render(<Harness prepare={prepare} />); connect();
   boundary.engine.isScrolling = true; act(() => boundary.options.onChange(boundary.engine));
   boundary.engine.isScrolling = false; act(() => boundary.options.onChange(boundary.engine));
-  const previous = localStorage.getItem('mandible:chat-reading:conv');
+  const previous = sessionStorage.getItem('mandible:chat-reading:conv');
   const next = JSON.stringify({ version: 2, positionSpaceId: 'other-space', following: false, anchor: { conversationId: 'other', positionSpaceId: 'other-space', position: 9, subtarget: 'summary', offset: 20 }, disclosures: ['owner:9'] });
-  localStorage.setItem('mandible:chat-reading:other', next);
+  sessionStorage.setItem('mandible:chat-reading:other', next);
   view.rerender(<Harness prepare={prepare} scope="other" space="other-space" initializing />);
-  expect(localStorage.getItem('mandible:chat-reading:conv')).toBe(previous);
-  expect(localStorage.getItem('mandible:chat-reading:other')).toBe(next);
+  expect(sessionStorage.getItem('mandible:chat-reading:conv')).toBe(previous);
+  expect(sessionStorage.getItem('mandible:chat-reading:other')).toBe(next);
 });
 
 
@@ -288,21 +324,26 @@ it.each([false, true])('reveals and focuses the prepared message owner when an i
   expect(focusedMemory).not.toHaveBeenCalled();
 });
 
-it('fetches a native viewport ahead through variable-height geometry without widening mounted demand', () => {
+it('prefetches five native viewports on each side and favors nearby source in the movement direction without widening mounted demand', () => {
   const onRange = vi.fn();
   const vector = { ...geometry, serial: 2, rows: Array.from({ length: 30 }, (_, index) => ({ key: `row:${index}`, revision: '1' })),
     sizes: Array.from({ length: 30 }, (_, index) => index < 10 ? 20 : 200) };
   const offsets = vector.sizes.map((_, index) => vector.sizes.slice(0, index).reduce((sum, size) => sum + size, 0));
-  boundary.engine.getVirtualItemForOffset = (offset: number) => ({ index: Math.max(0, offsets.findLastIndex(start => start <= offset)) });
-  boundary.engine.getVirtualItems = () => [{ key: 'row:11', index: 11, start: 400, end: 600, size: 200 }];
-  boundary.engine.range = { startIndex: 11, endIndex: 11 };
+  const item=(index:number)=>({index,key:vector.rows[index].key,start:offsets[index],end:offsets[index]+vector.sizes[index],size:vector.sizes[index]});
+  boundary.engine.getVirtualItemForOffset = (offset: number) => item(Math.max(0, offsets.findLastIndex(start => start <= offset)));
+  boundary.engine.getVirtualItems = () => [11,12,13].map(item);
+  boundary.engine.range = { startIndex: 11, endIndex: 13 };
+  boundary.engine.scrollDirection='forward';
   boundary.engine.getTotalSize = () => 4200;
   render(<Harness vector={vector} onRange={onRange} prepare={async () => ({ status: 'not-renderable' })} />);
   const { scroller } = connect();
   scroller.scrollTop = 500;
   act(() => boundary.options.onChange(boundary.engine));
-  expect(onRange.mock.lastCall![0].prefetch.map((row: any) => row.key)).toContain('row:5');
-  expect(onRange.mock.lastCall![0].prefetch.map((row: any) => row.key)).toContain('row:15');
+  const prefetched=onRange.mock.lastCall![0].prefetch.map((row:any)=>row.key);
+  expect(prefetched).toContain('row:0');
+  expect(prefetched).toContain('row:23');
+  expect(prefetched.indexOf('row:14')).toBeLessThan(prefetched.indexOf('row:10'));
+  expect(prefetched.indexOf('row:10')).toBeLessThan(prefetched.indexOf('row:5'));
   const published = onRange.mock.calls.length;
   scroller.scrollTop = 501;
   act(() => boundary.options.onChange(boundary.engine));
@@ -310,7 +351,7 @@ it('fetches a native viewport ahead through variable-height geometry without wid
   scroller.scrollTop = 550;
   act(() => boundary.options.onChange(boundary.engine));
   expect(onRange.mock.calls.length).toBe(published + 1);
-  expect(onRange.mock.lastCall![0].required).toEqual([vector.rows[11]]);
+  expect(onRange.mock.lastCall![0].required).toEqual([vector.rows[11],vector.rows[12],vector.rows[13]]);
   Object.defineProperty(scroller, 'clientHeight', { value: 600, configurable: true });
   act(() => boundary.options.onChange(boundary.engine));
 });

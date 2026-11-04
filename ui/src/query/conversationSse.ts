@@ -7,6 +7,7 @@ import {
 } from './conversationData';
 import { conversationKeys, type ConversationSidebarFilters } from './conversationKeys';
 import { markSidebarListsStale } from './conversationSidebarRefresh';
+import { invalidateActivityTargets } from './activityTargets';
 
 const MEMBERSHIP_FIELDS = new Set([
   'starred',
@@ -37,6 +38,7 @@ export function applyConversationSse(
   type: 'conversation:new' | 'conversation:updated',
   data: ConversationAppendPayload,
 ): void {
+  invalidateActivityTargets(client, type === 'conversation:updated' ? data.id : undefined);
   if (type === 'conversation:new' || !data.id) {
     void client.invalidateQueries({ queryKey: conversationKeys.routeTargets() });
     markSidebarListsStale(client);
@@ -85,6 +87,10 @@ export function applyConversationSse(
     });
   }
 
+  for(const [key,cached]of client.getQueriesData<import('../api').ConversationMetadata>({queryKey:conversationKeys.metadata(data.id)}))if(cached){
+    client.setQueryData(key,{...cached,conversation:{...cached.conversation,...data,block_count:Math.max(cached.conversation.block_count,data.block_count??0)}});
+    if(typeof data.block_count==='number')void client.invalidateQueries({queryKey:key,exact:true});
+  }
   const appendBlocks = data.append?.blocks ?? [];
   if (typeof data.block_count === 'number' && appendBlocks.length === 0) {
     void client.invalidateQueries({ queryKey: conversationKeys.windows(data.id) });

@@ -6,6 +6,7 @@
 }
 
 button:is(:hover, :focus-visible) [data-disclosure-chevron='right'],
+[data-disclosure-owner]:is(:hover, :focus-within):not(:has(a:is(:hover, :focus-visible))) [data-disclosure-chevron='right'],
 .sidebar-group-node__header:is(:hover, :focus-within) [data-disclosure-chevron='right'] {
   opacity: 1;
 }

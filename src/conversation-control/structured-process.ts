@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptionsWithoutStdio } from "node:child_process";
 import path from "node:path";
+import { leaveInstalledRuntime } from "../../scripts/installed-release.mjs";
 
 export type StructuredProcessSpawner = (
   command: string,
@@ -21,7 +22,7 @@ function wait(ms: number): Promise<void> {
 }
 
 export function providerEnvironment(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
+  const env = leaveInstalledRuntime(process.env);
   delete env.MANDIBLE_EXECUTION_OBSERVER_SESSION_FILE;
   delete env.MANDIBLE_EXECUTION_OBSERVER_ID;
   delete env.MANDIBLE_EXECUTION_OBSERVER_SESSION_ID;

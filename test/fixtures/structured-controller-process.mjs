@@ -88,7 +88,8 @@ lines.on("line", (line) => {
       send({ method: "item/completed", params: { threadId: request.params.threadId, turnId: activeTurnId, completedAtMs: Date.now(), item: {
         id: "command-rich", type: "commandExecution", command: "true", status: "completed", aggregatedOutput: "ok",
       } } });
-      send({method:"item/completed",params:{threadId:request.params.threadId,turnId:activeTurnId,item:{id:"mcp-rich",type:"mcpToolCall",tool:"unrelated_name",arguments:{},status:"completed",result:{content:[{type:"text",text:'{"output":"application JSON"}'}],structuredContent:null,_meta:null}}}});
+      send({method:"item/completed",params:{threadId:request.params.threadId,turnId:activeTurnId,item:{id:"mcp-rich",type:"mcpToolCall",server:"fixture",tool:"unrelated_name",arguments:{},status:"completed",result:{content:[{type:"text",text:'{"output":"application JSON"}'}],structuredContent:null,_meta:null}}}});
+      send({method:"item/completed",params:{threadId:request.params.threadId,turnId:activeTurnId,item:{id:"mcp-thread",type:"mcpToolCall",server:"codex_app",tool:"wait_threads",arguments:{targets:[{threadId:"exact-child-thread",hostId:"local"}]},status:"completed",result:{content:[{type:"text",text:JSON.stringify({timedOut:false,polls:[{thread:{id:"exact-child-thread",hostId:"local"},latestAssistantMessage:{phase:"final_answer",text:"Retained child report"}}]})}]}}}});
       send({method:"item/completed",params:{threadId:request.params.threadId,turnId:activeTurnId,item:{id:"dynamic-rich",type:"dynamicToolCall",tool:"custom_dynamic",arguments:{},status:"failed",success:false,contentItems:[{type:"inputText",text:"native dynamic failure"}]}}});
     }
     if (request.params.input[0]?.text === "permission") {

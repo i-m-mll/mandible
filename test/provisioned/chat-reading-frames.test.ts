@@ -22,7 +22,7 @@ it('keeps consecutive mounted events adjacent in every resize frame and preserve
       '--loader:.css=empty', '--minify', '--log-level=silent',
     ], { encoding: 'utf8', timeout: 10000 });
     expect(bundled.status, bundled.stderr).toBe(0);
-    const styles = ['tokens', 'base', 'contextual-action', 'message-blocks', 'console']
+    const styles = ['tokens', 'base', 'contextual-action', 'message-blocks', 'collapsible-panel', 'console']
       .map(name => readFileSync(resolve(`ui/src/styles/${name}.css`), 'utf8')).join('\n');
     const file = join(directory, 'fixture.html');
     writeFileSync(file, `<!doctype html><html data-theme="codex"><head><style>${styles}
@@ -62,7 +62,8 @@ it('keeps consecutive mounted events adjacent in every resize frame and preserve
       const readers = result.samples.filter((sample: any) => sample.phase === 'reader');
       expect(new Set(readers.map((sample: any) => sample.rowHeight)).size, 'one-pixel widths never reflowed the prose').toBeGreaterThan(1);
       const disclosure = result.samples.filter((sample: any) => sample.phase === 'disclosure');
-      expect(Math.max(...disclosure.map((sample: any) => Math.abs(sample.header - sample.desiredHeader - ((sample.write?.wanted ?? 0) - (sample.write?.actual ?? 0)))))).toBeLessThanOrEqual(0.05);
+      const disclosureDrift = (sample: any) => { const bottom = sample.bottom + sample.scrollTop; const attainable = Math.max(bottom - sample.maxScroll, Math.min(sample.desiredBottom, bottom)); return Math.abs(sample.bottom - attainable - ((sample.write?.wanted ?? 0) - (sample.write?.actual ?? 0))); };
+      expect(Math.max(...disclosure.map(disclosureDrift)), JSON.stringify(disclosure.filter((sample: any) => disclosureDrift(sample) > 0.05))).toBeLessThanOrEqual(0.05);
       const residual = readers.map((sample: any) => (sample.glyph - sample.desired) - ((sample.write?.wanted ?? 0) - (sample.write?.actual ?? 0)));
       expect(Math.max(...residual.map(Math.abs)), `mode=${mode}; bad frames=${JSON.stringify(readers.filter((sample: any, index: number) => Math.abs(residual[index]) > 1).map(({ adjacency, ...sample }: any) => sample))}`).toBeLessThanOrEqual(0.05);
       expect(result.afterNative).toBe(result.nativeTop);

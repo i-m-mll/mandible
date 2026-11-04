@@ -9,6 +9,8 @@ vi.mock("../src/sse", () => ({ broadcast: vi.fn() }));
 
 import type { Db } from "../src/db.js";
 import { checkoutPathCoverage } from "../src/checkout-relocation.js";
+import { createCanonicalProjectResolver } from '../src/conversations/sidebar-projection.js';
+import { loadSidebarProjects } from '../src/ledger-reads/conversations.js';
 import { getArtifactCurrentSource } from "../src/artifact-source.js";
 import { addOrUpdateCheckout, addProject } from "../src/ledger/project-registry.js";
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
@@ -94,6 +96,9 @@ it("moves every root and path under the old root in one step, and a repeat chang
   const moved = await relocate(f.old, `${next}/`);
   expect(moved.status, JSON.stringify(moved.body)).toBe(200);
   expect(moved.body).toMatchObject({ status: "relocated", old_root: f.old, new_root: next });
+  const historical=createCanonicalProjectResolver(loadSidebarProjects(db));
+  expect(historical({id:'history',source:'codex',cwd:path.join(f.worktree,'src'),project_path:null,starred:0,started_at:'2026-10-01',block_count:1})?.id).toBe(f.project.id);
+  expect(db.prepare('SELECT root FROM ledger_project_historical_roots ORDER BY root').all()).toEqual([{root:f.old},{root:f.worktree}]);
 
   const checkouts = db.prepare("SELECT id, root, work_repo_id FROM ledger_project_checkouts ORDER BY root").all();
   expect(checkouts).toEqual([

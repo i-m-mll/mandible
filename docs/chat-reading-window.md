@@ -252,13 +252,7 @@ triggers font discovery before readiness; authoritative border boxes are read
 after font/image settlement. Failed images retain the renderer's terminal
 failed/alt presentation. Late font loads advance the layout generation.
 
-`useReadingGeometry` retains one compatible complete exact basis and reusable
-current-layout facts. First display waits for complete exact geometry, initial
-disclosure preparation, navigation and initial payload hydration. Loading,
-confirmed empty and source/render failure remain distinct. There is no cold
-row-count estimate or guaranteed first-open deadline. Source appends retain
-unchanged measurements and replace only new or changed dependencies; ongoing
-publication does not restart a completed prefix. Obsolete width work is stopped.
+`useReadingGeometry` retains one compatible complete exact basis and reusable current-layout facts. First display waits for complete exact geometry, initial disclosure preparation, navigation and initial payload hydration. The native scrollbar reflects the full measured stream from first visible content. No cold row-count estimate or partial extent is published. Source appends retain unchanged measurements and replace only new or changed dependencies; completed valid facts survive cancellation. Loading, confirmed empty and source/render failure remain distinct. Obsolete width work is stopped.
 
 A width change scales the last compatible complete vector by the frozen global
 resize profile while exact work proceeds. Lookup uses actual common-row width,

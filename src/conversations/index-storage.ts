@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import SqliteDatabase from '../sqlite.js';
 import { CONVERSATION_STRUCTURE_CACHE_VERSION } from './structure-cache-path.js';
 
@@ -8,7 +9,7 @@ export const CONVERSATION_CACHE_FORMAT = {
   tables: [
     'cache_blocks','cache_reading_scopes','cache_tool_links','cache_native_scopes',
     'cache_position_identities','cache_display_fragments','cache_display_aliases','cache_fragment_disclosures',
-    'cache_fragment_operations','cache_operation_names','cache_execution_steps',
+    'cache_fragment_operations','cache_operation_targets','cache_execution_steps','cache_provider_evidence',
   ] as const,
   schema: `
     CREATE TABLE cache_meta (key TEXT PRIMARY KEY,value TEXT NOT NULL) WITHOUT ROWID;
@@ -29,14 +30,25 @@ export const CONVERSATION_CACHE_FORMAT = {
     CREATE TABLE cache_display_fragments (${generation},position INTEGER NOT NULL,part_kind INTEGER NOT NULL CHECK(part_kind BETWEEN 0 AND 3),part_ordinal INTEGER NOT NULL,
       ordinal INTEGER NOT NULL,kind INTEGER NOT NULL CHECK(kind IN (0,1)),run_position INTEGER,run_kind INTEGER,run_ordinal INTEGER,
       activity_kind INTEGER CHECK(activity_kind BETWEEN 0 AND 4),activity_subtype INTEGER,severity INTEGER,outcome INTEGER,status TEXT,tool_name TEXT,tool_kind TEXT,turn_id TEXT,
-      flags INTEGER NOT NULL,execution_kind INTEGER CHECK(execution_kind IN (0,1)),execution_count INTEGER,
+      flags INTEGER NOT NULL,reasoning_equivalence BLOB CHECK(reasoning_equivalence IS NULL OR (length(reasoning_equivalence) BETWEEN 67 AND 8227 AND (length(reasoning_equivalence)-35)%32=0 AND hex(substr(reasoning_equivalence,1,1))='01')),execution_kind INTEGER CHECK(execution_kind IN (0,1)),execution_count INTEGER,
       UNIQUE(cache_conversation_id,position,part_kind,part_ordinal));
     CREATE INDEX idx_display_runs ON cache_display_fragments(cache_conversation_id,run_position,run_kind,run_ordinal,position,ordinal);
     CREATE TABLE cache_display_aliases (${generation},position INTEGER NOT NULL,owner_position INTEGER NOT NULL,owner_kind INTEGER NOT NULL,owner_ordinal INTEGER NOT NULL,
       PRIMARY KEY(cache_conversation_id,position)) WITHOUT ROWID;
     CREATE TABLE cache_fragment_disclosures (${generation},position INTEGER NOT NULL,part_kind INTEGER NOT NULL,part_ordinal INTEGER NOT NULL,kind INTEGER NOT NULL CHECK(kind BETWEEN 0 AND 2),ordinal INTEGER NOT NULL,turn_id TEXT,${recipe},UNIQUE(cache_conversation_id,position,part_kind,part_ordinal,kind,ordinal));
-    CREATE TABLE cache_fragment_operations (${generation},position INTEGER NOT NULL,part_kind INTEGER NOT NULL,part_ordinal INTEGER NOT NULL,ordinal INTEGER NOT NULL,category INTEGER NOT NULL,count INTEGER NOT NULL,native_name TEXT,other_kind INTEGER CHECK(other_kind IN (0,1)),UNIQUE(cache_conversation_id,position,part_kind,part_ordinal,ordinal));
-    CREATE TABLE cache_operation_names (${generation},position INTEGER NOT NULL,part_kind INTEGER NOT NULL,part_ordinal INTEGER NOT NULL,operation INTEGER NOT NULL,ordinal INTEGER NOT NULL,name TEXT NOT NULL,UNIQUE(cache_conversation_id,position,part_kind,part_ordinal,operation,ordinal));
+    CREATE TABLE cache_fragment_operations (${generation},position INTEGER NOT NULL,part_kind INTEGER NOT NULL,part_ordinal INTEGER NOT NULL,
+      ordinal INTEGER NOT NULL,parent_ordinal INTEGER,operation TEXT NOT NULL,native_name TEXT,subject TEXT,
+      execution_state INTEGER NOT NULL CHECK(execution_state BETWEEN 0 AND 4),execution_provenance INTEGER NOT NULL CHECK(execution_provenance BETWEEN 0 AND 3),
+      payload_state INTEGER NOT NULL CHECK(payload_state IN(0,1)),result_attribution INTEGER NOT NULL CHECK(result_attribution IN(0,1)),elapsed_seconds REAL,timing_scope INTEGER CHECK(timing_scope IN(0,1)),report_kind INTEGER CHECK(report_kind IN(0,1)),
+      UNIQUE(cache_conversation_id,position,part_kind,part_ordinal,ordinal));
+    CREATE TABLE cache_operation_targets (${generation},position INTEGER NOT NULL,part_kind INTEGER NOT NULL,part_ordinal INTEGER NOT NULL,
+      operation_ordinal INTEGER NOT NULL,ordinal INTEGER NOT NULL,kind INTEGER NOT NULL CHECK(kind BETWEEN 0 AND 2),scope_id INTEGER,native_id TEXT,label_hint TEXT,
+      UNIQUE(cache_conversation_id,position,part_kind,part_ordinal,operation_ordinal,ordinal));
+    CREATE TABLE cache_provider_evidence (${generation},position INTEGER NOT NULL,
+      execution_state INTEGER CHECK(execution_state BETWEEN 0 AND 4),execution_provenance INTEGER CHECK(execution_provenance BETWEEN 0 AND 3),
+      frame_start INTEGER,frame_end INTEGER,frame_state INTEGER CHECK(frame_state BETWEEN 0 AND 2),frame_cell TEXT,frame_seconds REAL,
+      origin_session TEXT,origin_tool TEXT,origin_turn TEXT,origin_position INTEGER,origin_record INTEGER,origin_sub_block INTEGER,
+      PRIMARY KEY(cache_conversation_id,position)) WITHOUT ROWID;
     CREATE TABLE cache_execution_steps (${generation},position INTEGER NOT NULL,part_kind INTEGER NOT NULL,part_ordinal INTEGER NOT NULL,ordinal INTEGER NOT NULL,shell TEXT,forwarding INTEGER NOT NULL CHECK(forwarding BETWEEN 0 AND 2),UNIQUE(cache_conversation_id,position,part_kind,part_ordinal,ordinal));
   `,
 };
@@ -51,4 +63,12 @@ export function copyIndexGeneration(db: SqliteDatabase, sourceId: number, target
     count+=Number(result.changes);
   }
   return count;
+}
+
+export const conversationCacheSchemaIdentity=createHash('sha256').update(CONVERSATION_CACHE_FORMAT.schema.replace(/\s+/g,' ').trim()).digest('hex');
+let columnInventory:ReadonlyMap<string,string>|undefined;
+export function validateConversationCacheColumns(db:SqliteDatabase):void {
+  const signature=(database:SqliteDatabase,table:string)=>JSON.stringify(database.prepare(`PRAGMA table_info(${table})`).all());
+  if(!columnInventory){const reference=new SqliteDatabase(':memory:');try{reference.exec(CONVERSATION_CACHE_FORMAT.schema);columnInventory=new Map(['cache_meta','cache_conversations',...CONVERSATION_CACHE_FORMAT.tables].map(table=>[table,signature(reference,table)]));}finally{reference.close();}}
+  for(const [table,expected] of columnInventory)if(signature(db,table)!==expected)throw new Error('Conversation cache column contract mismatch');
 }

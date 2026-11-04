@@ -1,3 +1,7 @@
+import { coalesceTransportWaitMembers } from './wait-chain.js';
+import { operationObservationForTool } from './tool-observation.js';
+import { coalesceAdjacentReasoningMembers, reasoningEquivalence } from './reasoning-equivalence.js';
+import { activitySemanticFacts } from './activity-presentation.js';
 import { assistantResponseMembership } from "../parsers/assistant-response.js";
 import { readingNodeDisclosures } from './reading-disclosures.js';
 import type { ReadingPlan, ReadingPlanMember, ReadingRowDescriptor } from './reading-plan.js';
@@ -70,6 +74,7 @@ export type ReadingPreparationInput = {
   readingContext: ReadonlyMap<number, import('../conversations/reading-context.js').ReadingContextEntry>;
   expanded: Readonly<Record<string, boolean>>;
   streaming?: boolean;
+  positionFacts?:ReadonlyMap<number,import('../conversations/conversation-index.js').PositionFacts>;
   displayContext?: import('../conversations/display-context.js').ConversationDisplayContext;
 };
 
@@ -111,8 +116,8 @@ export function prepareReadingMembers(input: ReadingPreparationInput): ReadingPr
   for (const owner of owners.values()) {
     const existing = fragments.find(fragment => fragment.position === owner.coordinate.position && fragment.part === owner.coordinate.part);
     if (existing) {
-      if (existing.node.kind === 'activity' && existing.node.item.type === 'tool-call-activity' && existing.node.source?.detailsLoaded === false) {
-        existing.node = { ...existing.node, item: { ...existing.node.item, header: owner.header } };
+      if (existing.node.kind === 'activity' && existing.node.item.type === 'tool-call-activity') {
+        existing.node = { ...existing.node, item: { ...existing.node.item, observation:owner.item.observation,executionEvidence:owner.item.executionEvidence,...(existing.node.source?.detailsLoaded===false?{header:owner.header}:{}) } };
       }
       continue;
     }
@@ -128,6 +133,7 @@ export function prepareReadingMembers(input: ReadingPreparationInput): ReadingPr
     const next = fragments.findIndex(candidate => candidate.position !== undefined && candidate.position >= owner.coordinate.position);
     fragments.splice(next < 0 ? fragments.length : next, 0, fragment);
   }
+  const eventOrdinals=new Map(normalized.map((event,index)=>[event,index]));
   const byPosition = new Map(normalized.flatMap(event => event.source?.position === undefined ? [] : [[event.source.position, event] as const]));
   const byIdentity = new Map(normalized.flatMap(event => {
     const key = event.intentId ? `intent:${event.intentId}` : event.displayKey ?? chatItemIdentityKey(event.item);
@@ -137,7 +143,7 @@ export function prepareReadingMembers(input: ReadingPreparationInput): ReadingPr
   const canonicalRuns = new Map(input.displayContext?.activity_runs.map(run => [run.id, run]));
   const lastAssistantTurnId = [...fragments].reverse().flatMap(({ node }) => node.kind === 'assistant_turn' ? [node.turn.id]
     : node.kind === 'activity' && node.item.type !== 'activity' ? [node.item.turnId] : []).find((id): id is string => id !== undefined);
-  const prepared = fragments.map(fragment => {
+  const prepared = fragments.filter(fragment=>!input.displayContext||fragment.position===undefined||descriptorByCoordinate.has(`${fragment.position}:${fragment.part}`)).map(fragment => {
     const node = fragment.node;
     const event = fragment.position === undefined ? byIdentity.get(fragment.memberKey) : byPosition.get(fragment.position);
     const source = node.kind === 'activity' ? node.source : node.kind === 'assistant_turn'
@@ -154,20 +160,38 @@ export function prepareReadingMembers(input: ReadingPreparationInput): ReadingPr
       ? { key: `group:${input.conversationId}:${input.positionSpaceId}:${owner.action_scope.start}`, ...owner.action_scope }
       : { key: `local-run:${identity}`, start: null, end: null };
     const resultSource = node.kind === 'activity' && node.item.type === 'tool-call-activity' ? node.item.result?.source : undefined;
-    return { fragment, node, event, native, identity, key, canonicalRun, actionGroup,
+    const reasoning=node.kind==='activity'&&(node.item.type==='thinking-block-activity'||(node.item.type==='activity'&&['thinking','reasoning-summary'].includes(node.item.activity_kind)));
+    const equivalence=reasoning?(descriptor?.reasoningEquivalence??(event?reasoningEquivalence(event.item,node.item.type==='thinking-block-activity'?[node.item.content]:node.item.type==='activity'?node.item.parts.map(part=>part.text):[]):undefined)):undefined;
+    return { fragment, node, event, eventOrdinal:event?eventOrdinals.get(event):undefined, equivalence,native, identity, key, canonicalRun, actionGroup,
       sources: [source, resultSource].filter((value): value is PersistedBlockSource => Boolean(value)) };
   });
-  return { actionRuns, lastAssistantTurnId, members: prepared.map(entry => ({
-    key: entry.key, position: entry.fragment.position, part: entry.fragment.part,
+  function transportSegment(entry:typeof prepared[number]):Pick<ReadingPlanMember,'transportSegment'> {
+    if(entry.node.kind!=='activity'||entry.node.item.type!=='tool-call-activity'||!entry.event)return {};
+    const position=entry.fragment.position;
+    const facts=position===undefined?undefined:input.positionFacts?.get(position);
+    const positions=[position,...entry.fragment.pairedSourcePositions].filter((value):value is number=>value!==undefined);
+    const frame=entry.node.item.result?.source?.toolFrame;
+    const origin=entry.node.item.operationContext?.origin??entry.node.item.result?.source?.toolOperation?.origin;
+    const key=facts?.executionChainKey??JSON.stringify([origin?JSON.stringify([origin.provider,origin.session_id,origin.native_tool_id]):toolExecutionKey(entry.event),origin?.position??position]);
+    const seconds=positions.map(position=>input.positionFacts?.get(position)?.wrapperSegmentSeconds).find(value=>value!==undefined)??frame?.wallTimeSeconds;
+    const start=facts?.eventOrdinal??entry.eventOrdinal;
+    const end=Math.max(...positions.flatMap(position=>input.positionFacts?.get(position)?.eventOrdinal??(byPosition.get(position)?eventOrdinals.get(byPosition.get(position)!)??[]:[])));
+    return seconds!==undefined&&start!==undefined&&end===start+1?{transportSegment:{chainKey:key,seconds,start,end}}:{};
+  }
+  return { actionRuns, lastAssistantTurnId, members: coalesceTransportWaitMembers(coalesceAdjacentReasoningMembers(prepared.map(entry => ({
+    key: entry.key,eventOrdinal:entry.eventOrdinal, position: entry.fragment.position, part: entry.fragment.part,
     kind: entry.node.kind === 'activity' ? 'activity' : 'content', speaker: entry.node.entity,
     actionGroup: entry.actionGroup, activity: entry.node.kind === 'activity' ? entry.node.item : null,
+    ...(entry.node.kind==='activity'&&entry.node.item.type==='tool-call-activity'?{activityFacts:activitySemanticFacts({...entry.node.item,observation:operationObservationForTool(entry.node.item)})}:{}),
+    ...transportSegment(entry),
+    ...(entry.equivalence&&entry.node.kind==='activity'?{activityFacts:{...activitySemanticFacts(entry.node.item),reasoningEquivalence:entry.equivalence}}:{}),
     ...(entry.node.kind === 'assistant_turn' && entry.node.turn.assistantEvent.message.content[0]?.type === 'text' && entry.event
       ? { assistantResponse: assistantResponseMembership(entry.event.item) } : {}),
     run: entry.canonicalRun, dependencyRevision: JSON.stringify([entry.node, entry.event?.executionActive]),
     sourcePositions: [entry.fragment.position, ...entry.fragment.pairedSourcePositions].filter((position): position is number => position !== undefined),
     handoffKeys: [entry.identity, entry.native].filter((key): key is string => Boolean(key)), usage: entry.event?.usage,
     disclosures: readingNodeDisclosures(entry.node), node: entry.node, event: entry.event, sources: entry.sources,
-  })) };
+  })))) };
 }
 
 export function materializePreparedReadingRows(descriptors: readonly ReadingRowDescriptor[], members: readonly PreparedReadingMember[]): ReadingRow[] {
@@ -196,7 +220,7 @@ export function preparedReadingMembersFromRows(rows: readonly ReadingRow[]): Map
         : node.kind === 'assistant_turn' ? node.turn.assistantEvent.message.content[0]?.source?.position
         : node.kind === 'user_message' ? node.persisted?.position : node.kind === 'semantic_event' ? node.event.source?.position
         : node.kind === 'unmatched_tool_result' ? node.result.source?.position : undefined)
-        || (node.kind === 'activity' && node.item.type === 'tool-call-activity' && source.position === node.item.result?.source?.position));
+        || (node.kind === 'activity' && (node.sourceAliases?.some(alias=>alias.blockId===source.blockId) || (node.item.type === 'tool-call-activity' && source.position === node.item.result?.source?.position))));
       members.set(key, {node, sources, event: row.items.find(event => event.source?.position === sources[0]?.position)});
     }
   }

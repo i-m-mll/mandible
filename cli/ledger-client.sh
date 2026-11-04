@@ -359,16 +359,23 @@ mandible_trash_gc() {
 }
 
 mandible_issue_title() {
-  local issue_id="" json=0 graceful="${MANDIBLE_LEDGER_GRACEFUL:-0}"
+  local issue_id="" json=0 graceful="${MANDIBLE_LEDGER_GRACEFUL:-0}" new_title
+  # Unset distinguishes a read from `--set ""`, which the daemon must refuse. zsh's `local` alone assigns empty.
+  unset new_title
   local binding
-  binding=$(mandible_bind_arguments "issue.title" '{"json":{"option":"json","constant":"1"},"graceful":{"option":"graceful","constant":"1"},"issue_id":{"position":0}}' "$@") || return $?
+  binding=$(mandible_bind_arguments "issue.title" '{"json":{"option":"json","constant":"1"},"graceful":{"option":"graceful","constant":"1"},"new_title":{"option":"set"},"issue_id":{"position":0}}' "$@") || return $?
   eval "$binding"
 
   [[ -n "$issue_id" ]] || mandible_ledger_die "Usage: $(mandible_command_syntax issue.title)" 2 || return $?
   mandible_ledger_require_tools || return $?
 
-  local response
-  response=$(mandible_ledger_request GET "/api/ledger/issues/$(mandible_ledger_urlencode "$issue_id")" "" "$graceful") || return $?
+  local response request_path
+  request_path="/api/ledger/issues/$(mandible_ledger_urlencode "$issue_id")"
+  if [[ -n "${new_title+x}" ]]; then
+    response=$(mandible_ledger_request PATCH "$request_path" "$(jq -n --arg title "$new_title" '{title:$title}')" "$graceful") || return $?
+  else
+    response=$(mandible_ledger_request GET "$request_path" "" "$graceful") || return $?
+  fi
   if [[ -z "$response" ]]; then
     return 0
   fi

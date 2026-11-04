@@ -4,7 +4,10 @@ import type { ConversationSourceCoordinate } from '../query/conversationData';
 import type { ReadingRevealCommand, ReadingRevealResult, ReadingTargetRegistration } from './readingProjection';
 import type { ReadingBodyDemand } from './readingBodyDemand';
 import type { ReadingGeometry } from './useReadingGeometry';
-import { captureReadingDomAnchor, readingDomAnchorOffset, type ReadingDomAnchor } from './readingDomAnchor';
+import { readingPayloadKey } from './useCompleteReading';
+import { readingPreparationIndices } from './readingPreparation';
+import { captureReadingDisclosureVisual, type ReadingDisclosureVisual } from './readingDisclosureAnimation';
+import { captureDisclosureDomAnchor, captureReadingDomAnchor, readingDomAnchorOffset, type ReadingDomAnchor } from './readingDomAnchor';
 import { writeReadingState, type ReadingState, type ReadingRestore } from './readingState';
 import type { ReadingNavigationObservation, ReadingNavigationObserver, ReadingNavigationOrigin } from './readingNavigationObservation';
 
@@ -13,6 +16,7 @@ const targetCoordinateKey = (target: ConversationSourceCoordinate): string => JS
 ]);
 const targetRegistrationKey = (target: ConversationSourceCoordinate, rowKey: string): string => JSON.stringify([rowKey, targetCoordinateKey(target)]);
 const attainableRowOffset = (offset: number, size: number, viewport: number) => Math.max(1 - size, Math.min(offset, Math.max(0, viewport - 1)));
+const disclosureRevision = (row: import('./readingMeasurement').MeasurementRow | undefined) => JSON.stringify([row?.revision, row?.disclosureIdentity, row?.disclosureEnd]);
 type Engine = Virtualizer<HTMLDivElement, HTMLDivElement>;
 export type ReadingSummaryTarget = { rowKey: string; disclosureOwner: string };
 type Command = {
@@ -40,12 +44,14 @@ export function useReadingViewport(input: {
   initializing?: boolean;
   clearance: number;
   geometry: ReadingGeometry | null;
+  expectedRows?: ReadingGeometry['rows'];
   protectedKeys: ReadonlySet<string>;
   disclosures: Readonly<Record<string, boolean>>;
   prepare: (target: ConversationSourceCoordinate, signal: AbortSignal, token: string, summary?: ReadingSummaryTarget) => Promise<
     { status: 'prepared'; rowKey: string } | { status: 'source-unavailable' | 'position-space-changed' | 'not-renderable' }>;
   onApplied: (rows: readonly import('./readingMeasurement').MeasurementRow[]) => void;
   onRange: (demand: ReadingBodyDemand) => void;
+  prepareRows?: (rows: ReadingGeometry['rows'], signal: AbortSignal) => Promise<boolean>;
 }) {
   const [applied, setApplied] = useState<ReadingGeometry | null>(null);
   const [indexed, setIndexed] = useState<ReadingGeometry | null>(null);
@@ -53,14 +59,21 @@ export function useReadingViewport(input: {
   const rows = input.geometry && applied?.scope === input.geometry.scope ? applied.rows : [];
   const indices = useMemo(() => new Map(rows.map((row, index) => [row.key, index])), [rows]);
   const pending = useRef<ReadingGeometry | null>(null);
+  const preparation = useRef<{ geometry: ReadingGeometry; controller: AbortController; ready: boolean } | null>(null);
+  const visual = useRef<{ geometry: ReadingGeometry; animation: ReadingDisclosureVisual } | null>(null);
+  const suppressVisualClick = useRef(false);
   const restore = useRef<{ kind: 'end' } | { kind: 'row'; key: string; members: readonly string[]; offset: number } | null>(null);
   const readerPin = useRef<ReadingDomAnchor | null>(null);
+  const boundaryTokens = useRef(new WeakMap<ReadingDomAnchor, number>());
+  const boundarySequence = useRef(0);
+  const disclosureKey = useRef<string | null>(null);
   const [pinKeys, setPinKeys] = useState<ReadonlySet<string>>(new Set());
   const capturePin = useRef<() => void>(() => {});
   const acknowledge = useRef<() => void>(() => {});
   const readback = useRef<ReadingGeometry | null>(null);
   const drag = useRef(false);
   const following = useRef(true);
+  const resumeTailAfter = useRef<ReadingGeometry | null>(null);
   const chromePending = useRef(false);
   const previousClearance = useRef(input.clearance);
   const viewportHeight = useRef<number | null>(null);
@@ -72,6 +85,31 @@ export function useReadingViewport(input: {
   const completed = useRef<string | undefined>();
   const completedTarget = useRef<{ coordinate: ConversationSourceCoordinate; rowKey: string; token: string } | null>(null);
   const rowBoxes = useRef(new Map<string, HTMLElement>());
+  const pinPosition = useCallback((pin: ReadingDomAnchor): number | undefined => {
+    const snapshot = current.current.applied; const scroller = scrollRef.current;
+    if (!snapshot || !scroller) return;
+    if (pin.disclosureEnd) {
+      const key = snapshot.rows.find(row => row.key === pin.key)?.disclosureEnd ?? pin.key;
+      const mounted = rowBoxes.current.get(key);
+      if (mounted) return mounted.getBoundingClientRect().bottom - scroller.getBoundingClientRect().top;
+      const index = snapshot.rows.findIndex(row => row.key === key);
+      if (index < 0) return;
+      let low = 0; let high = engine.getTotalSize();
+      let offset = engine.getOffsetForIndex(index, 'start')?.[0] ?? 0;
+      while (high - low > 0.05) {
+        const item = engine.getVirtualItemForOffset(offset);
+        if (!item) return;
+        if (item.index === index) return item.key === key ? item.end - scroller.scrollTop : undefined;
+        if (item.index < index) low = Math.max(offset, item.end);
+        else high = Math.min(offset, item.start);
+        offset = (low + high) / 2;
+      }
+      const item = engine.getVirtualItemForOffset(low);
+      return item?.key === key ? item.end - scroller.scrollTop : undefined;
+    }
+    const row = rowBoxes.current.get(pin.key);
+    return row ? row.getBoundingClientRect().top - scroller.getBoundingClientRect().top + readingDomAnchorOffset(pin, row) : undefined;
+  }, []);
   const correctLocal = useRef<() => void>(() => {});
   const localObserver = useRef<ResizeObserver | null>(null);
   const lifecycleState = useRef<{ scope: string; value: ReadingState } | null>(null);
@@ -101,7 +139,7 @@ export function useReadingViewport(input: {
     const memberKey = first ? snapshot.applied?.rowMembers.get(String(first.key))?.[0] ?? String(first.key) : null;
     const membership = memberKey ? snapshot.applied?.membership.get(memberKey) : undefined;
     const state: ReadingState = {
-      version: 4, positionSpaceId: snapshot.positionSpaceId, following: engine.isAtEnd(1),
+      version: 4, positionSpaceId: snapshot.positionSpaceId, following: following.current,
       anchor: first && memberKey ? { kind: 'row', rowKey: String(first.key), memberKey, position: membership?.position ?? null, offset: (mountedStart(String(first.key)) ?? first.start) - scrollRef.current.scrollTop } : null,
       disclosures: Object.fromEntries(Object.entries(snapshot.disclosures).slice(-100)),
     };
@@ -112,6 +150,7 @@ export function useReadingViewport(input: {
   const estimateSize = useCallback((index: number) => applied!.sizes[index], [applied?.sizes]);
   const rangeExtractor = useCallback((range: Parameters<typeof defaultRangeExtractor>[0]) => {
     const keys = new Set([...input.protectedKeys, ...pinKeys]);
+    if (disclosureKey.current) keys.add(disclosureKey.current);
     for (const member of readerPin.current?.members ?? []) {
       const key = applied?.membership.get(member)?.rowKey;
       if (key) keys.add(key);
@@ -180,7 +219,7 @@ export function useReadingViewport(input: {
     active.finish({ token: active.token, status });
     requestAnimationFrame(() => capturePin.current());
   }, [engine]);
-  const cancel = useCallback(() => { completedTarget.current = null; finish('cancelled', 'cancelled'); engine.cancelScroll(); }, [finish, engine]);
+  const cancel = useCallback(() => { visual.current?.animation.complete();visual.current=null; completedTarget.current = null; finish('cancelled', 'cancelled'); engine.cancelScroll(); }, [finish, engine]);
   const alignRegistered = useCallback((active: Command, element: HTMLElement, scroller: HTMLElement) => {
     engine.cancelScroll();
     const pin = readerPin.current;
@@ -231,7 +270,7 @@ export function useReadingViewport(input: {
     });
   };
   const reveal = useCallback(async (request: ((ReadingRevealCommand & { preserveReaderPin?: boolean; summary?: ReadingSummaryTarget }) | { token: string; restore: ReadingRestore }) & { origin?: ReadingNavigationOrigin }): Promise<ReadingRevealResult> => {
-    cancel(); if (!('preserveReaderPin' in request && request.preserveReaderPin)) { readerPin.current = null; setPinKeys(new Set()); }
+    cancel(); if (!('preserveReaderPin' in request && request.preserveReaderPin)) { readerPin.current = null; disclosureKey.current = null; resumeTailAfter.current = null; setPinKeys(new Set()); }
     return new Promise(resolve => {
       const active: Command = { ...request, scope: current.current.scope, positionSpaceId: current.current.positionSpaceId, controller: new AbortController(), phase: 'prepare', finish: resolve };
       command.current = active;
@@ -291,16 +330,21 @@ export function useReadingViewport(input: {
     return row && scroll ? row.getBoundingClientRect().top - scroll.getBoundingClientRect().top : undefined;
   }, []);
   const pinDisclosure = useCallback((key: string, trigger?: HTMLElement) => {
+    visual.current?.animation.complete(); visual.current=null;
     const row = rowBoxes.current.get(key); const scroller = scrollRef.current;
     if (!row || !scroller || !trigger || !row.contains(trigger) || !current.current.applied) return;
-    cancel(); following.current = false; userScroll.current = false; restore.current = null;
-    const header = trigger;
+    cancel(); userScroll.current = false; restore.current = null;
+    const boundary = trigger.closest<HTMLElement>('[data-reading-disclosure],details') ?? trigger;
     const visible = captureReadingDomAnchor(scroller, rowBoxes.current, current.current.applied.rowMembers, current.current.clearance);
     const protectedKeys = new Set([...(visible?.protectedKeys ?? []), key]);
-    readerPin.current = { key, members: current.current.applied.rowMembers.get(key) ?? [key], point: null, element: header,
-      offset: header.getBoundingClientRect().top - scroller.getBoundingClientRect().top, protectedKeys };
-    setPinKeys(protectedKeys); setShowLatest(true);
-  }, [cancel]);
+    const pin = captureDisclosureDomAnchor(key, row, boundary, scroller, current.current.applied.rowMembers.get(key) ?? [key], protectedKeys);
+    pin.disclosureEnd = Boolean(current.current.applied.rows.find(row => row.key === key)?.disclosureEnd);
+    pin.disclosureRevision = disclosureRevision(current.current.applied.rows.find(row => row.key === key));
+    pin.offset = pinPosition(pin) ?? pin.offset;
+    readerPin.current = pin;
+    disclosureKey.current = key;
+    setPinKeys(protectedKeys);
+  }, [cancel, pinPosition]);
   capturePin.current = () => {
     const snapshot = current.current; const scroller = scrollRef.current;
     if (!scroller || !snapshot.applied || command.current || readback.current || userScroll.current || drag.current || engine.isScrolling || following.current || readerPin.current) return;
@@ -310,13 +354,15 @@ export function useReadingViewport(input: {
   correctLocal.current = () => {
     const scroller = scrollRef.current;
     if (!scroller || !current.current.applied || userScroll.current || drag.current || (command.current && command.current.phase !== 'end' && !command.current.preserveReaderPin)) return;
-    if (following.current) {
+    if (following.current && readerPin.current?.edge !== 'bottom') {
+      if (resumeTailAfter.current === current.current.applied) return;
+      resumeTailAfter.current = null;
       if (Math.abs(scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop) > 0.05) engine.scrollToEnd({ behavior: 'auto' });
       return;
     }
     const pin = readerPin.current; const row = pin && rowBoxes.current.get(pin.key);
     if (!pin || !row) return;
-    const delta = row.getBoundingClientRect().top - scroller.getBoundingClientRect().top + readingDomAnchorOffset(pin, row) - pin.offset;
+    const delta = (pinPosition(pin) ?? pin.offset) - pin.offset;
     if (Math.abs(delta) > 0.05) engine.scrollToOffset(scroller.scrollTop + delta, { align: 'start', behavior: 'auto' });
   };
   useLayoutEffect(() => { correctLocal.current(); capturePin.current(); });
@@ -330,6 +376,9 @@ export function useReadingViewport(input: {
   applyPending.current = () => {
     const next = pending.current;
     if (engine.isScrolling || drag.current || readback.current || (applied && applied !== indexed)) return;
+    if (next && input.expectedRows && (next.rows.length !== input.expectedRows.length || next.rows.some((row,index)=>{
+      const wanted=input.expectedRows![index];return row.key!==wanted.key||row.revision!==wanted.revision||row.disclosureIdentity!==wanted.disclosureIdentity;
+    }))) return;
     if (!next || next === applied) {
       if (chromePending.current && !command.current) { chromePending.current = false; if (following.current) engine.scrollToEnd({ behavior: 'auto' }); }
       return;
@@ -337,20 +386,70 @@ export function useReadingViewport(input: {
     chromePending.current = false;
     const scroller = scrollRef.current;
     capturePin.current();
+    if (applied && scroller && input.prepareRows && next.rows !== applied.rows) {
+      if (preparation.current?.geometry !== next) {
+        preparation.current?.controller.abort();
+        const pin = readerPin.current;
+        const anchorKey = pin && (next.rows.some(row => row.key === pin.key) ? pin.key : pin.members.flatMap(member => next.membership.get(member)?.rowKey ?? [])[0]);
+        const owner = next.rows.find(row => row.key === anchorKey);
+        const endpoint = pin?.disclosureEnd ? owner?.disclosureEnd ?? anchorKey : anchorKey;
+        let index = endpoint ? next.rows.findIndex(row => row.key === endpoint) : -1;
+        let local: number;
+        let screen: number;
+        if (index >= 0 && pin) {
+          const old = rowBoxes.current.get(pin.key);
+          const measured = next.boundaryOffsets?.get(readingPayloadKey(next.rows[index]));
+          local = pin.disclosureEnd ? next.sizes[index] : measured && measured.anchor === boundaryTokens.current.get(pin) ? measured.offset : old ? readingDomAnchorOffset(pin, old) : 0;
+          screen = pin.offset;
+        } else {
+          const first = firstVisible(engine);
+          index = following.current ? next.rows.length - 1 : next.rows.findIndex(row => row.key === String(first?.key));
+          if (index < 0) index = 0;
+          local = following.current ? next.sizes[index] : 0;
+          screen = following.current ? scroller.clientHeight - input.clearance : first ? (mountedStart(String(first.key)) ?? first.start) - scroller.scrollTop : 0;
+        }
+        const selected = new Set(readingPreparationIndices(next.sizes, index, local, screen, scroller.clientHeight, 32 + input.clearance, engine.options.overscan));
+        for (const key of [...input.protectedKeys, ...pinKeys]) { const index = next.rows.findIndex(row => row.key === key); if (index >= 0) selected.add(index); }
+        const stage = { geometry: next, controller: new AbortController(), ready: false };
+        preparation.current = stage;
+        void input.prepareRows([...selected].sort((left,right)=>left-right).map(index=>next.rows[index]), stage.controller.signal).then(ready => {
+          if (stage.controller.signal.aborted || preparation.current !== stage || pending.current !== next || !ready) return;
+          stage.ready = true;
+          applyPending.current();
+        });
+        return;
+      }
+      if (!preparation.current.ready) return;
+    }
     const first = firstVisible(engine);
     restore.current = applied && applied.scope === next.scope
       ? following.current ? { kind: 'end' }
         : first && scroller ? { kind: 'row', key: String(first.key), members: applied.rowMembers.get(String(first.key)) ?? [String(first.key)], offset: (mountedStart(String(first.key)) ?? first.start) - scroller.scrollTop } : null
       : null;
     pending.current = null;
+    preparation.current = null;
+    const pin=readerPin.current;
+    if(applied&&next.exact&&scroller&&pin?.edge==='bottom'&&disclosureRevision(next.rows.find(row=>row.key===pin.key))!==pin.disclosureRevision){
+      visual.current?.animation.complete(); visual.current=null;
+      const affected=new Set<string>();
+      for(const vector of [applied,next]){
+        const start=vector.rows.findIndex(row=>row.key===pin.key);
+        const end=pin.disclosureEnd?vector.rows.findIndex(row=>row.key===(vector.rows[start]?.disclosureEnd??pin.key)):start;
+        for(let index=start;index>=0&&index<=end;index++)affected.add(vector.rows[index].key);
+      }
+      const animation=captureReadingDisclosureVisual(scroller,rowBoxes.current,affected,pin.offset);
+      if(animation)visual.current={geometry:next,animation};
+    }
     setApplied(next);
   };
+  useLayoutEffect(() => { preparation.current?.controller.abort(); preparation.current=null; }, [input.disclosures]);
   useLayoutEffect(() => {
     if (previousClearance.current !== input.clearance) { previousClearance.current = input.clearance; chromePending.current = true; }
     pending.current = input.geometry;
     if (!input.geometry) { setApplied(null); return; }
     applyPending.current();
   }, [input.geometry, input.clearance]);
+  useEffect(() => () => { preparation.current?.controller.abort(); preparation.current = null; visual.current?.animation.complete();visual.current=null; }, [input.scope, input.positionSpaceId]);
   useLayoutEffect(() => {
     if (!applied) { setIndexed(null); return; }
     engine.measure();
@@ -362,7 +461,10 @@ export function useReadingViewport(input: {
     if (!applied || indexed !== applied) return;
     const saved = restore.current; restore.current = null;
     readback.current = applied;
-    if (following.current && (command.current?.phase === 'end' || (saved?.kind === 'end' && !command.current))) engine.scrollToEnd({ behavior: 'auto' });
+    if (readerPin.current?.edge === 'bottom' && !command.current && scrollRef.current) {
+      const pin = readerPin.current;
+      engine.scrollToOffset(scrollRef.current.scrollTop + (pinPosition(pin) ?? pin.offset) - pin.offset, { align: 'start', behavior: 'auto' });
+    } else if (following.current && resumeTailAfter.current !== applied && (command.current?.phase === 'end' || (saved?.kind === 'end' && !command.current))) engine.scrollToEnd({ behavior: 'auto' });
     else if (saved?.kind === 'row' && !command.current) {
       const pin = readerPin.current;
       const anchor = pin ?? saved;
@@ -386,8 +488,24 @@ export function useReadingViewport(input: {
       || (engine.scrollOffset !== null && Math.abs(engine.scrollOffset - scroller.scrollTop) > 1)) return;
     // The native offset has been observed: only now may custody follow the new range.
     readback.current = null;
+    const pin = readerPin.current;
+    if (ready.exact && pin?.edge === 'bottom' && disclosureRevision(ready.rows.find(row => row.key === pin.key)) !== pin.disclosureRevision) {
+      const position = pinPosition(pin);
+      if (position !== undefined) {
+        const wanted = Math.max(0, Math.min(scroller.scrollHeight - scroller.clientHeight, scroller.scrollTop + position - pin.offset));
+        if (Math.abs(wanted - scroller.scrollTop) > 0.5) {
+          readback.current = ready;
+          engine.scrollToOffset(wanted, { align: 'start', behavior: 'auto' });
+          return;
+        }
+      }
+      readerPin.current = following.current ? null : captureReadingDomAnchor(scroller, rowBoxes.current, ready.rowMembers, snapshot.clearance);
+      if (following.current) resumeTailAfter.current = ready;
+      setPinKeys(new Set([...(readerPin.current?.protectedKeys ?? []), pin.key]));
+    }
     engine.getVirtualItems();
     snapshot.onApplied(ready.rows); setAcknowledged(ready);
+    if(visual.current?.geometry===ready)visual.current.animation.play();
     lastRange.current = '';
     publishDemand.current(engine);
     capturePin.current(); applyPending.current();
@@ -399,16 +517,32 @@ export function useReadingViewport(input: {
     if (!vector || vector.scope !== snapshot.geometry?.scope || vector !== snapshot.indexed || readback.current || !scroller || !instance.range) return;
     const height = scroller.clientHeight;
     if (height <= 0) return;
-    const start = Math.max(0, scroller.scrollTop - height);
-    const end = Math.min(instance.getTotalSize(), scroller.scrollTop + 2 * height);
-    const first = instance.getVirtualItemForOffset(start)?.index;
+    const start = Math.max(0, scroller.scrollTop - 10 * height);
+    const end = Math.min(instance.getTotalSize(), scroller.scrollTop + 11 * height);
+    const firstItem = instance.getVirtualItemForOffset(start);
+    const first = firstItem?.index;
     const last = instance.getVirtualItemForOffset(end)?.index;
-    const required = instance.getVirtualItems().map(item => vector.rows[item.index]).filter(Boolean);
-    const prefetch = first === undefined || last === undefined ? [] : vector.rows.slice(first, last + 1);
+    const items=instance.getVirtualItems();
+    const required = items.map(item => vector.rows[item.index]).filter(Boolean);
+    const visible=items.filter(item=>item.end>scroller.scrollTop&&item.start<scroller.scrollTop+height).map(item=>vector.rows[item.index]).filter(Boolean);
+    const ranked:Array<{row:typeof vector.rows[number];index:number;distance:number;side:number}>=[];
+    if(first!==undefined&&last!==undefined&&firstItem){
+      // Rank only this bounded source window; native geometry remains the engine's.
+      let rowStart=firstItem.start;
+      for(let index=first;index<=last;index++){
+        const rowEnd=rowStart+vector.sizes[index];
+        const side=rowEnd<=scroller.scrollTop?-1:rowStart>=scroller.scrollTop+height?1:0;
+        ranked.push({row:vector.rows[index],index,distance:Math.max(0,scroller.scrollTop-rowEnd,rowStart-scroller.scrollTop-height),side});
+        rowStart=rowEnd;
+      }
+    }
+    const direction=instance.scrollDirection==='forward'?1:instance.scrollDirection==='backward'?-1:0;
+    ranked.sort((left,right)=>left.distance-right.distance||direction*(right.side-left.side)||left.index-right.index);
+    const prefetch=ranked.map(item=>item.row);
     const identity = JSON.stringify([snapshot.scope, snapshot.positionSpaceId, vector.serial, first, last, height, required, prefetch]);
     if (identity === lastRange.current) return;
     lastRange.current = identity;
-    snapshot.onRange({ vector: vector.rows, required, prefetch, start, end, height });
+    snapshot.onRange({ vector: vector.rows, required, visible, prefetch, start, end, height });
   };
   useLayoutEffect(() => { publishDemand.current(engine); }, [input.protectedKeys, pinKeys, indexed, applied, engine]);
   useEffect(() => {
@@ -423,7 +557,7 @@ export function useReadingViewport(input: {
   }, [input.scope, engine, persist, cancel]);
   useEffect(() => { if (!engine.isScrolling) persist(engine); }, [input.disclosures, engine, persist]);
   useEffect(() => () => { if (frame.current !== null) cancelAnimationFrame(frame.current); if (persistFrame.current !== null) cancelAnimationFrame(persistFrame.current); }, []);
-  const inputCancel = useCallback(() => { current.current.onInput(); userScroll.current = true; restore.current = null; readerPin.current = null; setPinKeys(new Set()); cancel(); }, [cancel]);
+  const inputCancel = useCallback(() => { visual.current?.animation.complete();visual.current=null; preparation.current?.controller.abort(); preparation.current = null; current.current.onInput(); userScroll.current = true; restore.current = null; readerPin.current = null; disclosureKey.current = null; resumeTailAfter.current = null; setPinKeys(new Set()); cancel(); }, [cancel]);
   const onKeyDown = useCallback((event: KeyboardEvent) => {
     const target = event.target as HTMLElement;
     if (target.closest('input,textarea,select,[contenteditable]:not([contenteditable="false"])')) return;
@@ -433,7 +567,17 @@ export function useReadingViewport(input: {
     const el = scrollRef.current;
     if (el && (event.target === el || event.clientX >= el.getBoundingClientRect().left + el.clientWidth)) { drag.current = true; inputCancel(); }
   }, [inputCancel]);
-  useEffect(() => { readerPin.current = null; readback.current = null; setPinKeys(new Set()); following.current = true; userScroll.current = false; return () => cancel(); }, [input.positionSpaceId, input.scope, cancel]);
+  const onPointerDownCapture = useCallback((event:PointerEvent)=>{
+    suppressVisualClick.current=false;
+    if(!visual.current?.animation.complete())return;
+    visual.current=null;
+    const scroller=scrollRef.current;
+    if(event.target===scroller||scroller&&event.clientX>=scroller.getBoundingClientRect().left+scroller.clientWidth)return;
+    suppressVisualClick.current=true;
+    event.preventDefault();event.stopPropagation();
+  },[]);
+  const onClickCapture = useCallback((event:MouseEvent)=>{const suppress=suppressVisualClick.current;suppressVisualClick.current=false;if(suppress&&event.detail>0){event.preventDefault();event.stopPropagation();}},[]);
+  useEffect(() => { readerPin.current = null; disclosureKey.current = null; resumeTailAfter.current = null; readback.current = null; setPinKeys(new Set()); following.current = true; userScroll.current = false; return () => cancel(); }, [input.positionSpaceId, input.scope, cancel]);
   useEffect(() => {
     const release = () => { drag.current = false; applyPending.current(); };
     window.addEventListener('pointerup', release); window.addEventListener('pointercancel', release); window.addEventListener('keyup', release); window.addEventListener('blur', release);
@@ -442,12 +586,27 @@ export function useReadingViewport(input: {
   const mounted = engine.getVirtualItems();
   const last = mounted[mounted.length - 1];
   const endOffset = last?.index === rows.length - 1 ? engine.getTotalSize() - last.end : undefined;
-  return { captureReaderAnchor: () => capturePin.current(), beginLayout: () => capturePin.current(), pinDisclosure, engine, rows, endOffset, appliedGeometry: acknowledged === applied ? applied : null, focusTarget: (target: ConversationSourceCoordinate) => {
+  return { retry: () => { preparation.current?.controller.abort(); preparation.current=null; applyPending.current(); }, measurementCoverage: (refs: ReadingGeometry['rows'], sizes: readonly number[]) => {
+    const pin = readerPin.current;
+    const scroller = scrollRef.current;
+    if (!pin || pin.edge !== 'bottom' || !scroller) return [];
+    const owner = refs.find(row => row.key === pin.key);
+    const key = pin.disclosureEnd ? owner?.disclosureEnd ?? pin.key : pin.key;
+    const index = refs.findIndex(row => row.key === key);
+    const height = scroller.clientHeight + 32 + current.current.clearance;
+    return readingPreparationIndices(sizes,index,0,height,2*height,0,engine.options.overscan).filter(index=>sizes[index]>0).map(index=>refs[index]);
+  }, measureBoundary: (row: import('./readingMeasurement').MeasurementRow, element: HTMLElement) => {
+    const pin = readerPin.current;
+    if(pin?.key!==row.key||pin.edge!=='bottom'||pin.disclosureEnd)return undefined;
+    let anchor=boundaryTokens.current.get(pin);
+    if(anchor===undefined){anchor=++boundarySequence.current;boundaryTokens.current.set(pin,anchor);}
+    return {anchor,offset:readingDomAnchorOffset(pin,element)};
+  }, captureReaderAnchor: () => capturePin.current(), beginLayout: () => capturePin.current(), pinDisclosure, engine, rows, endOffset, appliedGeometry: acknowledged === applied ? applied : null, focusTarget: (target: ConversationSourceCoordinate) => {
     const owner = completedTarget.current;
     if (!owner || owner.coordinate.conversationId !== current.current.scope || owner.coordinate.positionSpaceId !== current.current.positionSpaceId
       || (current.current.commandToken !== undefined && owner.token !== current.current.commandToken)
       || targetCoordinateKey(owner.coordinate) !== targetCoordinateKey(target)) return;
     targets.current.get(targetRegistrationKey(target, owner.rowKey))?.element?.focus({ preventScroll: true });
   }, renderProps: applied?.renderProps, scrollRef, register, registerRow, rowOffset, reveal, cancel, showLatest,
-    inputHandlers: { onWheel: inputCancel, onTouchStart: () => { drag.current = true; inputCancel(); }, onTouchEnd: () => { drag.current = false; applyPending.current(); }, onTouchCancel: () => { drag.current = false; applyPending.current(); }, onKeyDown, onPointerDown } };
+    inputHandlers: { onPointerDownCapture, onClickCapture, onWheel: inputCancel, onTouchStart: () => { drag.current = true; inputCancel(); }, onTouchEnd: () => { drag.current = false; applyPending.current(); }, onTouchCancel: () => { drag.current = false; applyPending.current(); }, onKeyDown, onPointerDown } };
 }

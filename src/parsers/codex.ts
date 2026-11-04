@@ -23,6 +23,7 @@ import type {
   ParserSourceSnapshot,
   ParseResult,
   TranscriptOpening,
+  ToolContinuationOrigin,
 } from "./types.js";
 import type { ConversationParent } from "../conversation-lineage.js";
 import { readOpeningLine } from "../lineage-marker.js";
@@ -500,7 +501,14 @@ export class CodexParser implements ConversationParser {
   }
 
   async parseIncremental(input: IncrementalParseInput): Promise<ParseResult | null> {
-    return this.parseRecords(input.filePath, parseJsonlStringRecords<CodexRecord>(input.raw), {
+    // Continuation bindings and terminal receipts can revise an earlier cell's observations.
+    // Ingestion needs that source-order history; isolated verified reads supply its indexed evidence.
+    const records=parseJsonlStringRecords<CodexRecord>(input.raw);
+    if(!input.nativeSessionId && input.baseBlockCount>0) {
+      const calls=new Set(records.flatMap(record=>record.type==='response_item' && ['custom_tool_call','function_call'].includes((record.payload as CodexResponsePayload).type) ? [(record.payload as CodexResponsePayload).call_id] : []));
+      if(records.some(record=>{if(record.type!=='response_item') return false;const payload=record.payload as CodexResponsePayload;return (payload.type==='function_call' && ['wait','functions.wait'].includes(payload.name ?? '')) || (['custom_tool_call_output','function_call_output'].includes(payload.type) && !calls.has(payload.call_id) && /^Script (?:running|completed|terminated)/.test(codexToolOutputText(payload.output)));})) return null;
+    }
+    return this.parseRecords(input.filePath, records, {
       baseBlockCount: input.baseBlockCount,
       baseRecordCount: input.baseRecordCount ?? 0,
       nativeSessionId: input.nativeSessionId,
@@ -632,6 +640,7 @@ export class CodexParser implements ConversationParser {
     // Map call_id → position for linking function outputs to calls
     const callMap = new Map<string, {position:number;name?:string;kind:string}>();
     const displayToolCalls=new Map(options.displayToolCalls?.map(call=>[call.id,call]));
+    const cells = new Map<string, {origin:ToolContinuationOrigin; observations:typeof blocks}>();
     const chatPartsByBlock = new Map<number, ChatContentPart[]>();
     let pendingUserBlockIndex: number | null = null;
 
@@ -922,6 +931,42 @@ export class CodexParser implements ConversationParser {
           }
         }
         const block = blocks[index];
+        const nativeTurn=rec.type==='response_item' ? (rec.payload as CodexResponsePayload).internal_chat_message_metadata_passthrough?.turn_id : undefined;
+        if(nativeTurn && block.type==='tool_use') block.metadata.display_tool_turn_id=nativeTurn;
+        if(nativeTurn && block.type==='thinking') block.metadata.display_reasoning_turn_id=nativeTurn;
+        if(block.type==='tool_use' && ['wait','functions.wait'].includes(block.metadata.tool_name ?? '')) {
+          const input=block.metadata.tool_input;
+          const cell=input && typeof input==='object' && 'cell_id' in input ? String(input.cell_id) : undefined;
+          const binding=cell ? cells.get(cell) : undefined;
+          if(binding && (!nativeTurn || !binding.origin.native_turn_id || nativeTurn===binding.origin.native_turn_id)) block.metadata.display_tool_origin=binding.origin;
+        }
+        if(block.type==='tool_result') {
+          const call=block.parent_id===null ? undefined : blocks[Number(block.parent_id)-options.baseBlockCount];
+          const frame=block.metadata.display_tool_frame;
+          block.metadata.display_tool_origin=call?.metadata.display_tool_origin;
+          block.metadata.display_tool_execution={state:frame?.state==='running' ? 'ongoing' : frame?.state==='terminated' ? 'cancelled' : 'completed',provenance:frame ? 'native-wrapper' : 'paired-result'};
+          if(call) call.metadata.display_tool_execution=block.metadata.display_tool_execution;
+          if(frame && call) {
+            const origin=call.metadata.display_tool_origin ?? (call.metadata.tool_id && call.metadata.tool_kind==='custom_tool_call' && ['exec','functions.exec'].includes(call.metadata.tool_name ?? '') ? {provider:'codex' as const,session_id:sessionId,native_tool_id:call.metadata.tool_id,...(call.metadata.display_tool_turn_id ? {native_turn_id:call.metadata.display_tool_turn_id} : {}),position:call.position,source_record_ordinal:call.metadata.source_record_ordinal!,source_sub_block_ordinal:call.metadata.source_sub_block_ordinal!} : undefined);
+            const input=call.metadata.tool_input;
+            const waitedCell=input && typeof input==='object' && 'cell_id' in input ? String(input.cell_id) : undefined;
+            if(waitedCell && call.metadata.display_tool_origin && frame.state!=='running') {
+              const binding=cells.get(waitedCell);
+              if(binding) for(const observed of binding.observations) {
+                observed.metadata.display_tool_execution={state:frame.state==='terminated' ? 'cancelled' : 'completed',provenance:'native-wrapper'};
+                const observedCall=observed.parent_id===null ? undefined : blocks[Number(observed.parent_id)-options.baseBlockCount];
+                if(observedCall) observedCall.metadata.display_tool_execution=observed.metadata.display_tool_execution;
+              }
+              cells.delete(waitedCell);
+            }
+            if(frame.cellID && origin) {
+              const existing=waitedCell===frame.cellID ? cells.get(frame.cellID) : undefined;
+              const binding=existing ?? {origin,observations:[]};
+              binding.observations.push(block);
+              cells.set(frame.cellID,binding);
+            }
+          }
+        }
         const sourceEventType = block.metadata.source_event_type
           ?? (block.type === "user_message" ? "user" : block.type);
         const activityKind: ActivityKind | undefined = sourceEventType === "reasoning_summary"
@@ -950,6 +995,17 @@ export class CodexParser implements ConversationParser {
           });
         }
       }
+    }
+
+    for(const binding of cells.values()) for(const observed of binding.observations) {
+      observed.metadata.display_tool_execution={state:'unknown',provenance:'native-wrapper'};
+      const call=blocks.find(candidate=>candidate.type==='tool_use' && String(candidate.position)===observed.parent_id);
+      if(call) call.metadata.display_tool_execution=observed.metadata.display_tool_execution;
+    }
+    for(const block of blocks) {
+      const origin=block.metadata.display_tool_origin;
+      const call=origin ? blocks[origin.position-options.baseBlockCount] : undefined;
+      if(origin && call?.metadata.tool_name && call.metadata.tool_kind) block.metadata.display_tool_operation={origin,name:call.metadata.tool_name,kind:call.metadata.tool_kind,input:call.metadata.tool_input};
     }
 
     // Fallback title

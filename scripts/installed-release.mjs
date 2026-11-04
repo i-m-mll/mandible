@@ -126,6 +126,8 @@ export function verifyApplicationRelease(app) {
   return { release, digest };
 }
 
+const installedRuntimeKeys = ['MANDIBLE_RELEASE_ROOT', 'MANDIBLE_RUNTIME', 'MANDIBLE_SQLITE_LIBRARY', 'MANDIBLE_CADDY', 'MANDIBLE_CA_TRUST_HELPER', 'MANDIBLE_CLI_DIR'];
+
 export function installedRuntimeEnvironment(root, environment = process.env) {
   root = fs.realpathSync(root);
   const release = readInstalledRelease(root);
@@ -133,9 +135,28 @@ export function installedRuntimeEnvironment(root, environment = process.env) {
   const result = { ...environment, MANDIBLE_RELEASE_ROOT: root, MANDIBLE_RUNTIME: native.bun,
     MANDIBLE_SQLITE_LIBRARY: native.sqlite, MANDIBLE_CADDY: native.caddy,
     MANDIBLE_CA_TRUST_HELPER: native.trustHelper, MANDIBLE_CLI_DIR: path.join(root, 'cli'),
+    MANDIBLE_INSTALLED_KEYS: installedRuntimeKeys.join(' '),
     PATH: [...new Set([path.dirname(native.bun), path.join(root, 'bin'), ...(environment.PATH ?? '').split(path.delimiter)])].join(path.delimiter),
   };
   delete result.MANDIBLE_SQLITE_LIBRARY_ARCHIVE;
   delete result.MANDIBLE_RUNTIME_ARCHIVE;
+  return result;
+}
+
+/**
+ * The environment for a process Mandible launches on someone's behalf, such as
+ * an agent or a terminal. Mandible's own runtime selection stays behind: a
+ * source checkout reads MANDIBLE_RELEASE_ROOT as selecting the installed
+ * release. The public command directory stays on PATH; it locates its own
+ * release. cli/api.sh mandible_leave_installed_runtime is the shell counterpart.
+ */
+export function leaveInstalledRuntime(environment = process.env) {
+  const result = { ...environment };
+  if (result.MANDIBLE_RUNTIME && result.PATH) {
+    const natives = path.dirname(result.MANDIBLE_RUNTIME);
+    result.PATH = result.PATH.split(path.delimiter).filter(entry => entry !== natives).join(path.delimiter);
+  }
+  for (const key of installedRuntimeKeys) delete result[key];
+  delete result.MANDIBLE_INSTALLED_KEYS;
   return result;
 }

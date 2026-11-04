@@ -66,7 +66,9 @@ it('keeps canonical run and exact member identity through window edges and discl
   });
   const optimistic = { ...item('prompt'), displayKey: 'intent:exact' };
   const durable = { ...item('prompt', 3), intentId: 'exact' };
-  expect(project([durable]).viewMembership.get(project([optimistic]).rows[0].key)?.memberKey).toBe(project([durable]).rows[0].key);
+  const durableContext:ConversationDisplayContext={...displayContext,fragments:[{id:'3:activity:0',coordinate:{position:3,part:'activity:0'},kind:'activity',paired_source_positions:[]}],activity_runs:[]};
+  const persisted=projectReadingRows({events:[durable],conversationId:'conv',positionSpaceId:'space',readingContext:context,displayContext:durableContext,expanded:{}});
+  expect(persisted.viewMembership.get(project([optimistic]).rows[0].key)?.memberKey).toBe(persisted.rows[0].key);
 });
 
 it.each([false, true])('keeps a live system diagnostic outside assistant activity (saved prefix: %s)', saved => {

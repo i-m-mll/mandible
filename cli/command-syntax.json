@@ -43,6 +43,7 @@
         "kind": "sequence",
         "items": [
           {"kind": "argument","name": "id","value": {"type": "string"}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--set"],"values": [{"kind": "argument","name": "title","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--graceful"],"values": []}]}}
         ]
@@ -1494,6 +1495,19 @@
           {"kind": "argument","name": "old-root","value": {"type": "string"}},
           {"kind": "argument","name": "new-root","value": {"type": "string"}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
+        ]
+      }
+    },
+    "project.historical-root": {
+      "route": ["project", "historical-root"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind":"argument","name":"ref","value":{"type":"string"}},
+          {"kind":"argument","name":"root","value":{"type":"string"}},
+          {"kind":"option","names":["--evidence"],"values":[{"kind":"argument","name":"reference","value":{"type":"string"}}]},
+          {"kind":"optional","item":{"kind":"sequence","items":[{"kind":"option","names":["--apply"],"values":[]}]}},
+          {"kind":"optional","item":{"kind":"sequence","items":[{"kind":"option","names":["--json"],"values":[]}]}}
         ]
       }
     },

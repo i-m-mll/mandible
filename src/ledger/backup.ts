@@ -8,6 +8,7 @@ import { ISSUE_SEARCH_SCHEMA_SQL } from "./issue-search.js";
 const LEDGER_BACKUP_TABLES = [
   "ledger_projects",
   "ledger_project_checkouts",
+  "ledger_project_historical_roots",
   "ledger_issues",
   "ledger_issue_aliases",
   "issue_branches",

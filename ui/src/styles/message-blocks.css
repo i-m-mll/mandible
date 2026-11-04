@@ -1,6 +1,6 @@
 :root {
   --reading-responsive-variant: wide;
-  --reading-renderer-version: event-context-footer-math-v6;
+  --reading-renderer-version: event-observation-row-boundaries-v9;
   --compact-activity-header-min-height: 22px;
   --compact-activity-header-line-height: 1.15;
   --compact-activity-header-icon-size: 16px;
@@ -17,7 +17,6 @@
   box-sizing: border-box;
   display: flex;
   width: 100%;
-  padding-block-end: var(--chat-event-gap);
   position: relative;
 }
 
@@ -63,6 +62,15 @@
   display: flex;
   flex-direction: column;
 }
+
+.user-bubble--bounded { background: #222222; border-radius: var(--radius-chat-surface); overflow: hidden; }
+.user-bubble__content { display: flex; flex-direction: column; gap: inherit; }
+.user-bubble__viewport { display: flex; flex-direction: column; gap: inherit; }
+.user-bubble--bounded .user-bubble__text { background: transparent; }
+.user-bubble__viewport--folded { mask-image: linear-gradient(to bottom, #000 calc(100% - 2rem), transparent); }
+.reading-disclosure-footer { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); width: 100%; padding: var(--space-2) var(--space-3); border: 0; background: transparent; color: var(--text-muted); cursor: pointer; font: inherit; font-size: var(--text-sm); }
+.reading-disclosure-footer:is(:hover, :focus-visible) > .reading-disclosure-footer__label { color: var(--text-primary); }
+:root[data-theme='light'] .user-bubble--bounded { background: #F3F3F4; }
 
 .user-bubble__text {
   background: #222222;
@@ -262,6 +270,15 @@
   color: var(--text-primary);
 }
 
+.compact-activity__row[data-disclosure-owner]:has(a:is(:hover, :focus-visible)) {
+  color: var(--tool-activity-text);
+}
+
+.compact-activity__summary a:is(:hover, :focus-visible) {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+
 .compact-activity__row--inert {
   cursor: default;
 }
@@ -297,6 +314,16 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.compact-activity__toggle {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
 }
 
 .compact-activity__details {
@@ -482,6 +509,7 @@
   height: 1.35em;
   opacity: 0;
   pointer-events: none;
+  z-index: 1;
   transition: opacity 120ms ease;
 }
 
@@ -539,22 +567,6 @@
   background: linear-gradient(to left, var(--overflow-fade-color, var(--surface-app)), transparent);
 }
 
-.tool-card__secondary-action,
-.diff-review__close {
-  border: 1px solid var(--neutral-alpha-10);
-  border-radius: 6px;
-  background: var(--neutral-alpha-04);
-  color: var(--text-primary);
-  font-size: 12px;
-  padding: 5px 9px;
-  cursor: pointer;
-}
-
-.tool-card__secondary-action:hover,
-.diff-review__close:hover {
-  background: var(--neutral-alpha-08);
-}
-
 .tool-card__image {
   max-width: 100%;
   border-radius: 6px;
@@ -588,8 +600,7 @@
   border-top: 1px solid var(--neutral-alpha-08);
 }
 
-.diff-view__hunk-header,
-.diff-view__truncated {
+.diff-view__hunk-header {
   padding: 5px 10px;
   background: var(--neutral-alpha-06);
   color: var(--text-muted);
@@ -633,53 +644,6 @@
 .diff-view__line--remove .diff-view__prefix,
 .diff-view__line--remove .diff-view__text {
   color: var(--diff-removed-fg);
-}
-
-.diff-review {
-  position: fixed;
-  inset: 0;
-  z-index: 90;
-  display: flex;
-  justify-content: center;
-  align-items: stretch;
-  padding: 4vh 4vw;
-  background: var(--scrim-modal);
-}
-
-.diff-review__panel {
-  width: min(1180px, 100%);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  border: 1px solid var(--neutral-alpha-12);
-  border-radius: 8px;
-  background: var(--surface-card);
-  box-shadow: var(--shadow-soft);
-}
-
-.diff-review__header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--neutral-alpha-08);
-}
-
-.diff-review__title {
-  min-width: 0;
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--font-mono);
-  font-size: 13px;
-}
-
-.diff-review .diff-view {
-  flex: 1;
-  overflow: auto;
-  border: 0;
-  border-radius: 0;
 }
 
 .plan-card {

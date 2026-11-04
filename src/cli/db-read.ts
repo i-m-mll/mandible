@@ -58,7 +58,7 @@ function main(): void {
         }
         if (result.truncated) {
           process.stderr.write(
-            `-- truncated at ${args.limit} rows; pass --limit 0 to read them all\n`,
+            `-- truncated at ${args.limit} rows; pass a larger positive --limit to read more\n`,
           );
         }
         break;

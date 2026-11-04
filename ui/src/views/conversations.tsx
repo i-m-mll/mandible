@@ -1,3 +1,4 @@
+import { readingManifestOptions } from '../query/readingPresentation';
 import { NativeSelect } from '../components/shared/NativeSelect';
 import { Icon } from '../components/icons/Icon';
 import { navigateAppHash } from '../app-history';
@@ -39,6 +40,7 @@ import {
   forkConversation,
   getConsoleSessionUsage,
   getConversationWindow,
+  getConversationMetadata,
   exportConversationBlocks,
   getConversationControl,
   getConversationLiveProjection,
@@ -470,22 +472,11 @@ async function warmSelectedConversationWindow(
   }
   if (!conversationId) return;
 
-  const target = normalizeWindowTarget({ target: 'initial', limit: 500, view: 'display' });
-  const aggregateKey = conversationKeys.aggregate(conversationId);
-  const aggregateAtStart = appQueryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
-  const window = await appQueryClient.fetchQuery({
-    queryKey: conversationKeys.window(conversationId, target),
-    queryFn: ({ signal }) => readConversationWindowWhenReady(conversationId, windowRequest(target, signal)),
-    staleTime: ROUTE_DATA_FRESH_MS, gcTime: WARMED_QUERY_GC_TIME_MS,
-  });
-  const current = appQueryClient.getQueryData<ConversationTranscriptData>(aggregateKey);
-  if (current && current.publication_revision > window.publication_revision) return;
-  const aggregateAdvanced = current !== undefined
-    && (aggregateAtStart === undefined || current.publication_revision !== aggregateAtStart.publication_revision);
-  if (aggregateAdvanced && (current.position_space_id !== window.position_space_id || current.publication_revision > window.publication_revision)) return;
-  appQueryClient.setQueryData(aggregateKey, {
-    ...reconcileConversationWindow(current, window),
-  });
+  const target=normalizeWindowTarget({target:'initial'});
+  await Promise.all([
+    appQueryClient.fetchQuery({...readingManifestOptions(conversationId),gcTime:WARMED_QUERY_GC_TIME_MS}),
+    appQueryClient.fetchQuery({queryKey:conversationKeys.metadata(conversationId),queryFn:({signal})=>readConversationMetadataWhenReady(conversationId,windowRequest(target,signal)),staleTime:ROUTE_DATA_FRESH_MS,gcTime:WARMED_QUERY_GC_TIME_MS}),
+  ]);
 }
 
 export async function warmInitialData(
@@ -806,14 +797,13 @@ function waitForConversationSourceUpdate(id: string, signal: AbortSignal | undef
   });
 }
 
-async function readConversationWindowWhenReady(
-  id: string,
-  request: ReturnType<typeof windowRequest>,
-): Promise<ConversationPositionWindow> {
+async function readConversationWhenReady<T>(
+  id:string,request:ReturnType<typeof windowRequest>,acquire:(id:string,request:ReturnType<typeof windowRequest>)=>Promise<T>,
+):Promise<T>{
   const deadline = Date.now() + CONVERSATION_WINDOW_PENDING_LIMIT_MS;
   for (;;) {
     try {
-      return await getConversationWindow(id, request);
+      return await acquire(id, request);
     } catch (error) {
       if (!(error instanceof ApiError) || error.code !== 'freshness_pending') throw error;
       const remaining = deadline - Date.now();
@@ -826,6 +816,9 @@ async function readConversationWindowWhenReady(
 }
 
 
+
+const readConversationWindowWhenReady=(id:string,request:ReturnType<typeof windowRequest>)=>readConversationWhenReady(id,request,getConversationWindow);
+const readConversationMetadataWhenReady=(id:string,request:ReturnType<typeof windowRequest>)=>readConversationWhenReady(id,request,getConversationMetadata);
 
 function reconcileControlSnapshot(
   current: ConversationControlSnapshot | null,
@@ -1139,6 +1132,8 @@ function ConversationMetadataModal({
   open,
   conversation,
   linkedConsoleSession,
+  control,
+  spawn,
   issueLinks,
   headerRef,
   onClose,
@@ -1146,10 +1141,21 @@ function ConversationMetadataModal({
   open: boolean;
   conversation: Conversation & { blocks: ConversationBlock[]; children: ConversationChild[] };
   linkedConsoleSession: ConsoleSession | null;
+  control: ConversationControlSnapshot | null;
+  spawn: ConversationSpawnReceipt | null;
   issueLinks: Array<{ issue_id: string; repo_id: string }>;
   headerRef: { current: HTMLElement | null };
   onClose: () => void;
 }): JSX.Element {
+  const matchingControl = control?.conversation_id === conversation.id ? control : null;
+  const failure = spawn?.error?.message ?? (
+    matchingControl?.turn.kind === 'failed' ? chatControlFailureNotice(matchingControl.turn.error).detail
+      : matchingControl?.controller.kind === 'failed' ? chatControlFailureNotice(matchingControl.controller.error).detail : null
+  );
+  const status = spawn?.state === 'failed' ? 'Failed'
+    : spawn && (spawn.state === 'reserved' || spawn.state === 'starting') && (!matchingControl || matchingControl.turn.kind === 'none') ? spawn.state
+    : matchingControl ? matchingControl.turn.kind === 'none' ? matchingControl.controller.kind : matchingControl.turn.kind
+      : spawn?.state ?? null;
   return (
     <DetailPaneModal
       open={open}
@@ -1164,8 +1170,12 @@ function ConversationMetadataModal({
       panelClassName="conv-detail__metadata-panel"
     >
       <div className="conv-info-grid">
+          <div><span className="conv-info-grid__label">Conversation</span><span>{conversation.title}</span></div>
+          {status && <div><span className="conv-info-grid__label">Status</span><span>{status}</span></div>}
+          {conversation.cwd && <div><span className="conv-info-grid__label">Cwd</span><span className="conv-info-grid__mono">{conversation.cwd}</span></div>}
+          {failure && <div role="alert"><span className="conv-info-grid__label">Failure</span><span>{failure}</span></div>}
           <div>
-            <span className="conv-info-grid__label">Agent</span>
+            <span className="conv-info-grid__label">Provider</span>
             <span>{SOURCE_LABELS[conversation.source] ?? conversation.source}</span>
           </div>
           <div>
@@ -1185,7 +1195,7 @@ function ConversationMetadataModal({
             <span>{conversation.branch || 'unknown'}</span>
           </div>
           <div>
-            <span className="conv-info-grid__label">Model</span>
+            <span className="conv-info-grid__label">{conversation.source_path?.startsWith('mandible://') ? 'Requested model' : 'Recorded model'}</span>
             <span>{conversation.model || parseModelFromArgs(linkedConsoleSession?.args) || 'default'}</span>
           </div>
           <div>
@@ -1424,10 +1434,24 @@ export function ConversationDetail({
   const windowQuery = useQuery({
     queryKey: conversationRequestKey,
     queryFn: fetchConversationDetail,
-    enabled: transcriptLive,
+    enabled: false,
     staleTime: ROUTE_DATA_FRESH_MS,
   }, queryClient);
-  const windowRefreshing = windowQuery.isFetching;
+  const metadataTarget=useMemo(()=>normalizeWindowTarget(effectiveAnchor??{target:'initial'}),[windowTargetJson]);
+  const metadataQuery=useQuery({queryKey:conversationKeys.metadata(conversationId),queryFn:({signal})=>{
+    const pending=readConversationMetadataWhenReady(conversationId,windowRequest(metadataTarget,signal));registerInitialRouteLoad(pending);return pending;
+  },enabled:transcriptLive,staleTime:ROUTE_DATA_FRESH_MS},queryClient);
+  const readingQuery=useQuery({...readingManifestOptions(conversationId),enabled:transcriptLive},queryClient);
+  const metadataMatchesTarget=metadataQuery.data?.target.kind===metadataTarget.kind&&metadataQuery.data.target.requested_value===metadataTarget.value;
+  const metadataRequest=useRef({conversationId,generation:requestGeneration});
+  useEffect(()=>{
+    const previous=metadataRequest.current;metadataRequest.current={conversationId,generation:requestGeneration};
+    if(previous.conversationId!==conversationId||(previous.generation===requestGeneration&&(!metadataQuery.data||metadataMatchesTarget)))return;
+    void queryClient.cancelQueries({queryKey:conversationKeys.metadata(conversationId),exact:true}).then(()=>{
+      if(selectionRef.current.conversationId===conversationId&&routeGeneration.current.generation===requestGeneration)return metadataQuery.refetch();
+    });
+  },[conversationId,requestGeneration,metadataTarget]);
+  const windowRefreshing = windowQuery.isFetching||metadataQuery.isFetching;
   const aggregateQuery = useQuery<ConversationTranscriptData>({
     queryKey: conversationKeys.aggregate(conversationId),
     queryFn: () => Promise.reject(new Error('Conversation transcript aggregate has no direct transport.')),
@@ -1534,9 +1558,9 @@ export function ConversationDetail({
   const conversation = useMemo(() => (
     aggregateQuery.data
       ? flattenConversationTranscript(aggregateQuery.data)
-      : initialConversation ? conversationShell(initialConversation) : null
-  ), [aggregateQuery.data, initialConversation]);
-  const loading = windowQuery.isFetching;
+      : metadataQuery.data?{...conversationShell(metadataQuery.data.conversation),children:metadataQuery.data.children,parent:metadataQuery.data.parent}:initialConversation ? conversationShell(initialConversation) : null
+  ), [aggregateQuery.data, metadataQuery.data,initialConversation]);
+  const loading = metadataQuery.isFetching||windowQuery.isFetching;
   const handleArchive = async () => {
     if (!conversation || archiveBusy) return;
     const generation = selectionRef.current.generation;
@@ -1555,11 +1579,12 @@ export function ConversationDetail({
   };
   useEffect(() => { setArchiveBusy(false); setArchiveError(null); }, [conversationId]);
   const targetRequest = effectiveAnchor !== null;
-  const notFound = !targetRequest && isApiErrorStatus(windowQuery.error, 404) && !creationReceipt;
+  const initialQueryError=metadataQuery.error??readingQuery.error??windowQuery.error;
+  const notFound = !targetRequest && isApiErrorStatus(initialQueryError, 404) && !creationReceipt;
   const error = navigationError ?? (
-    windowQuery.error && !notFound
+    initialQueryError && !notFound
       ? conversationLoadFailure(
-        windowQuery.error,
+        initialQueryError,
         Boolean(aggregateQuery.data),
         targetRequest ? 'target' : aggregateQuery.data ? 'refresh' : 'initial',
       )
@@ -1649,40 +1674,12 @@ export function ConversationDetail({
     }
   }, [conversationId, fetchAndReconcileWindow, queryClient, selectionGeneration, transcriptLive, windowRefreshing]);
 
-  const transcriptConsumer = useMemo<ConversationTranscriptConsumer | undefined>(() => {
-    const aggregate = aggregateQuery.data;
-    if (!aggregate) return undefined;
-    return {
-      conversationId: aggregate.conversation.id,
-      positionSpaceId: aggregate.position_space_id,
-      command: aggregate.reading_command,
-      navigationPending: handledAnchorKeyRef.current !== incomingAnchorKey,
-      prepareDetails: hydrateConversationDetails,
-      activeWindow: aggregate.active_window,
-      protect: regions => { protectedReading.current = regions; },
-      cancelNavigation: () => {
-        handledAnchorKeyRef.current = incomingAnchorKey;
-        navigationRead.current?.abort();
-        if (windowQuery.isFetching) void queryClient.cancelQueries({ queryKey: conversationRequestKey, exact: true });
-      },
-      replaceAround: async (target, signal, token) => {
-        if (target.positionSpaceId !== aggregate.position_space_id) return 'position-space-changed';
-        return loadTranscriptAround(target.position, 500, signal, token ? { key: token, target, kind: 'position', blockId: null, turnId: null, smooth: false } : undefined);
-      },
-      sourceVersionId: aggregate.source_version_id,
-      historyLoading: edgeLoading !== null,
-      total: aggregate.total,
-      readingContext: aggregate.readingContext,
-      displayContext: aggregate.displayContext,
-      loadedIntervals: aggregate.loaded_intervals,
-      hasOlder: !aggregate.start_reached,
-      hasNewer: !aggregate.end_reached,
-      unmaterializedAfterCount: aggregate.after_count,
-      loadOlder: () => loadTranscriptEdge('older'),
-      loadNewer: () => loadTranscriptEdge('newer'),
-      loadAround: loadTranscriptAround,
-    };
-  }, [aggregateQuery.data, loadTranscriptAround, loadTranscriptEdge, hydrateConversationDetails, conversationRequestKey, windowQuery.isFetching, queryClient, incomingAnchorKey]);
+  const transcriptConsumer=useMemo<ConversationTranscriptConsumer|undefined>(()=>{
+    const publication=readingQuery.data;if(!publication)return undefined;
+    return {conversationId:publication.conversationId,positionSpaceId:publication.positionSpaceId,sourceVersionId:publication.sourceVersionId,total:publication.blockCount,
+      command:aggregateQuery.data?.reading_command??navigationTarget,navigationPending:handledAnchorKeyRef.current!==incomingAnchorKey,
+      cancelNavigation:()=>{handledAnchorKeyRef.current=incomingAnchorKey;navigationRead.current?.abort();}};
+  },[readingQuery.data,aggregateQuery.data?.reading_command,navigationTarget,incomingAnchorKey]);
 
   useEffect(() => {
     if (notFound) onUnavailable?.(conversationId);
@@ -1710,7 +1707,7 @@ export function ConversationDetail({
     restoredScope.current = conversationId;
     setEffectiveAnchor(anchor ?? (initialSelection && restoredAnchor && restoredAnchor.position !== null ? { position: restoredAnchor.position, expected_position_space_id: savedReading!.positionSpaceId } : null));
     handledAnchorKeyRef.current = null;
-    setNavigationTarget(null);
+    if(initialSelection)setNavigationTarget(null);
     setNavigationError(null);
   }, [conversationId, incomingAnchorKey]);
 
@@ -1734,19 +1731,20 @@ export function ConversationDetail({
     placement: 'top-end',
   });
 
-  useEffect(() => {
-    const payload = windowQuery.data;
-    if (!payload) return;
-    const pendingReconciliations = pendingDurableReconciliationsRef.current
-      .splice(0)
-      .filter((event) => event.conversation_id === conversationId);
-    const materialized = new Set(payload.blocks.flatMap((block) => {
-      if (block.details_loaded === false) return [];
-      try {
-        const item = (JSON.parse(block.metadata_json) as { chat_item?: ChatItem }).chat_item;
-        return item ? [chatItemIdentityKey(item, { allowTranscriptCoordinates: true })] : [];
-      } catch { return []; }
-    }));
+  useEffect(()=>{
+    const receipt=metadataQuery.data,publication=readingQuery.data;
+    if(!receipt||!publication||!metadataMatchesTarget||handledAnchorKeyRef.current===incomingAnchorKey)return;
+    if(receipt.position_space_id!==publication.positionSpaceId||receipt.source_version_id!==publication.sourceVersionId||receipt.publication_revision!==publication.publicationRevision){void Promise.allSettled([metadataQuery.refetch(),readingQuery.refetch()]);return;}
+    handledAnchorKeyRef.current=incomingAnchorKey;
+    queryClient.setQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversationId),current=>current?.reading_command?{...current,reading_command:null}:current);
+    setNavigationTarget({key:`${conversationId}:${metadataTarget.kind}:${String(metadataTarget.value)}:${receipt.publication_revision}:${crypto.randomUUID()}`,kind:metadataTarget.kind,turnId:receipt.target.turn_id,blockId:receipt.target.block_id,smooth:false,
+      target:receipt.target.position!==null?{conversationId:publication.conversationId,positionSpaceId:publication.positionSpaceId,position:receipt.target.position,...(restoredAnchor?.kind==='source'&&metadataTarget.kind==='position'&&metadataTarget.value===restoredAnchor.position?{offset:restoredAnchor.offset,subtarget:restoredAnchor.subtarget}:{})}:undefined});
+  },[metadataQuery.data,readingQuery.data,incomingAnchorKey,metadataMatchesTarget]);
+
+  useEffect(()=>{
+    const publication=readingQuery.data;if(!publication)return;
+    const pendingReconciliations=pendingDurableReconciliationsRef.current.splice(0).filter(event=>event.conversation_id===conversationId);
+    const materialized=new Set(publication.members.flatMap(member=>member.handoffKeys));
     if (pendingReconciliations.length > 0) {
       pendingDurableReconciliationsRef.current.push(...pendingReconciliations.flatMap((event) => {
         const uncovered = event.covered_identities.filter((identity) => !materialized.has(identity));
@@ -1759,6 +1757,10 @@ export function ConversationDetail({
         current,
       ));
     }
+  },[conversationId,readingQuery.data]);
+
+  useEffect(() => {
+    const payload=windowQuery.data;if(!payload)return;
     if (handledAnchorKeyRef.current !== incomingAnchorKey) {
       const current = queryClient.getQueryData<ConversationTranscriptData>(conversationKeys.aggregate(conversationId));
       if (current && (current.position_space_id !== payload.position_space_id || current.publication_revision !== payload.publication_revision)) {
@@ -2436,7 +2438,7 @@ export function ConversationDetail({
       void runMarkdownAction(exportIntent);
       return;
     }
-    void windowQuery.refetch();
+    void metadataQuery.refetch();void readingQuery.refetch();
   }, [error, exportIntent, loadTranscriptAround, loadTranscriptEdge, runMarkdownAction, windowQuery, handleJumpToLatest]);
 
   const loadErrorNotice = error ? (
@@ -2810,6 +2812,8 @@ export function ConversationDetail({
         open={infoOpen}
         conversation={conversation}
         linkedConsoleSession={linkedConsoleSession}
+        control={control}
+        spawn={creationReceipt ?? null}
         issueLinks={sessionIssueLinks}
         headerRef={headerRef}
         onClose={() => setInfoOpen(false)}
@@ -2856,7 +2860,7 @@ export function ConversationDetail({
                 : 'No messages yet'}
             transcript={transcriptConsumer}
             readingRestore={restoredAnchor?.kind === 'row' ? { positionSpaceId: savedReading!.positionSpaceId, anchor: restoredAnchor } : undefined}
-            unmaterializedAfterCount={transcriptConsumer?.unmaterializedAfterCount ?? 0}
+            unmaterializedAfterCount={0}
             onJumpToLatest={() => {
               setEffectiveAnchor(null);
               setNavigationError(null);
@@ -2869,7 +2873,7 @@ export function ConversationDetail({
             onExpandDetails={handleExpandConversationDetails}
             onCopyMessageLink={async (blockId) => {
               try {
-                await navigator.clipboard.writeText(messageLinkUrl(window.location.href, conversationId, blockId, conversation.position_window.position_space_id ?? undefined));
+                await navigator.clipboard.writeText(messageLinkUrl(window.location.href, conversationId, blockId, transcriptConsumer?.positionSpaceId ?? undefined));
                 setToast({ type: 'info', message: 'Message link copied.' });
               } catch {
                 setToast({ type: 'error', message: 'Could not copy the message link.' });
@@ -3127,6 +3131,7 @@ export function ConversationsView({
     retry: false,
   }, queryClient);
   const resolvedRouteSelection = routeResolution.data?.status === 'resolved' ? routeResolution.data.selection : null;
+  const routeFailure = routeResolution.isError ? conversationLoadFailure(routeResolution.error, false, 'initial') : null;
   const selection = routeIntentActive ? resolvedRouteSelection : manualSelection;
   const selectionIntent = useRef({ routeIntentKey, routeTarget, routeParams, selection });
   selectionIntent.current = { routeIntentKey, routeTarget, routeParams, selection };
@@ -4215,6 +4220,7 @@ export function ConversationsView({
             filterTrigger={{
               ariaLabel: 'Search and filter options',
               title: 'Search and filter options',
+              kind: 'menu',
               open: filterPanelOpen,
               active: activeFilterCount > 0,
               count: activeFilterCount,
@@ -4561,17 +4567,22 @@ export function ConversationsView({
           />
         ) : (
           <ChatDetailFrame
-            state={routeIntentActive && routeResolution.isPending ? 'loading' : 'no-selection'}
+            state={routeIntentActive && routeResolution.isPending ? 'loading' : routeIntentActive && routeFailure ? 'error' : 'no-selection'}
             header={<DetailPaneHeader variant="compact" title="Chat" />}
+            notice={routeIntentActive && routeFailure ? (
+              <DetailPaneNotice severity="error" density="compact" actions={routeFailure.retryable ? (
+                <button type="button" className="btn btn--ghost btn--sm" disabled={routeResolution.isFetching} onClick={() => { void routeResolution.refetch(); }}>Retry</button>
+              ) : undefined}>{routeFailure.message}</DetailPaneNotice>
+            ) : undefined}
           >
             <div className="chat-history-detail__empty">
               {routeIntentActive
-                ? routeResolution.isError ? 'Could not open the requested chat.'
+                ? routeResolution.isError ? null
                   : routeResolution.data?.status === 'ambiguous' ? 'This reference matches several chats. Select an exact chat.'
                   : routeResolution.data?.status === 'not_found' ? 'The requested chat was not found.'
                   : selection?.type === 'session' ? 'The requested session is unavailable.'
-                  : 'Opening the requested chat…'
-                : loading ? 'Searching chats…'
+                  : null
+                : loading ? null
                   : searchError ? 'Select a chat or retry the search.'
                   : sidebarLoaded && totalVisibleEntries === 0 && !showingPriorResults ? 'No chats in this view'
                   : 'Select a chat'}

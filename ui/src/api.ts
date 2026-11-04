@@ -2273,11 +2273,12 @@ export async function getConsoleSessionUsage<T = Record<string, unknown>>(
 export async function getStatuslineTelemetry<T = Record<string, unknown>>(params: {
   sessionRef?: string | null;
   transcriptPath?: string | null;
+  signal?:AbortSignal;
 }): Promise<T | null> {
   const query = new URLSearchParams();
   if (params.sessionRef) query.set('sessionRef', params.sessionRef);
   if (params.transcriptPath) query.set('transcriptPath', params.transcriptPath);
-  const response = await apiGet(`/api/hooks/statusline?${query.toString()}`);
+  const response = await apiGet(`/api/hooks/statusline?${query.toString()}`,{signal:params.signal});
   const payload = await parseMaybeJson(response) as { telemetry?: T | null };
   return payload.telemetry ?? null;
 }
@@ -2367,6 +2368,14 @@ export async function updateBackupSettings(settings: {
 // ── Conversations API ──
 
 export type ChatRouteTarget = { type: 'conversation' | 'session'; id: string };
+export async function resolveActivityTargets(targets: readonly import('../../src/presentation/activity-targets').ActivityTarget[], signal?: AbortSignal): Promise<import('../../src/presentation/activity-targets').ActivityTargetResolution[]> {
+  const endpoint = '/api/conversations/activity-targets';
+  const response = await browserSessionFetch(endpoint, { method: 'POST',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ targets }), signal });
+  if (!response.ok) await throwOnError(response, 'POST', endpoint);
+  const result = await parseMaybeJson(response) as { targets: import('../../src/presentation/activity-targets').ActivityTargetResolution[] };
+  return result.targets;
+}
 export type ChatRouteResolution =
   | { status: 'resolved'; selection: ChatRouteTarget }
   | { status: 'not_found' | 'ambiguous' };
@@ -2510,10 +2519,7 @@ export async function getConversationStructure(id: string, signal?: AbortSignal,
   return (await parseMaybeJson(resp)) as ConversationStructure;
 }
 
-export async function getConversationWindow(
-  id: string,
-  request: ConversationWindowRequest = {},
-): Promise<ConversationPositionWindow> {
+function conversationWindowSuffix(request:ConversationWindowRequest):string {
   const query = new URLSearchParams();
   if ('target' in request && request.target) query.set('target', request.target);
   if ('block' in request) query.set('block', request.block);
@@ -2522,11 +2528,21 @@ export async function getConversationWindow(
   if (request.limit) query.set('limit', String(request.limit));
   if (request.view) query.set('view', request.view);
   if (request.expected_position_space_id) query.set('expected_position_space_id', request.expected_position_space_id);
-  const suffix = query.size > 0 ? `?${query.toString()}` : '';
-  const resp = await apiGet(`/api/conversations/${encodeURIComponent(id)}${suffix}`, {
-    signal: request.signal,
-  });
-  const payload = (await parseMaybeJson(resp)) as ConversationPositionWindow;
+  return query.size > 0 ? `?${query.toString()}` : '';
+}
+
+export type ConversationMetadata=import('../../src/contracts').ConversationMetadata;
+async function readConversationProjection<T extends ConversationPositionWindow|ConversationMetadata>(id:string,request:ConversationWindowRequest,projection:'window'|'metadata'):Promise<T>{
+  const query=new URLSearchParams(conversationWindowSuffix(request).slice(1));if(projection==='metadata')query.set('view','metadata');
+  const response=await apiGet(`/api/conversations/${encodeURIComponent(id)}${query.size?'?'+query.toString():''}`,{signal:request.signal});
+  const payload=await parseMaybeJson(response) as T;
+  return payload;
+}
+export function getConversationMetadata(id:string,request:ConversationWindowRequest={}):Promise<ConversationMetadata>{
+  return readConversationProjection(id,request,'metadata');
+}
+export async function getConversationWindow(id:string,request:ConversationWindowRequest={}):Promise<ConversationPositionWindow>{
+  const payload=await readConversationProjection<ConversationPositionWindow>(id,request,'window');
   if (!payload.reading_context || payload.reading_context.positions.length !== payload.blocks.length) {
     throw new ApiError('Source reading context is incomplete.', 409, 'freshness_pending');
   }
@@ -2830,6 +2846,7 @@ export type NativeHost = {
   kind: 'tauri';
   platform: string;
   framePresentation: 'macos-overlay' | 'system';
+  sessionId: string;
 };
 
 export type WindowHost = NativeHost | { kind: 'browser'; framePresentation: 'system' };

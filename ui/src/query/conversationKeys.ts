@@ -66,6 +66,7 @@ export const conversationKeys = {
   bySession: (sessionId: string) => ['chat', 'conversation', 'session', sessionId] as const,
   conversation: (id: string) => ['chat', 'conversation', id] as const,
   aggregate: (id: string) => ['chat', 'conversation', id, 'aggregate'] as const,
+  metadata: (id:string)=>['chat','conversation',id,'metadata'] as const,
   windows: (id: string) => ['chat', 'conversation', id, 'window'] as const,
   window: (id: string, target: ConversationWindowTarget) => (
     ['chat', 'conversation', id, 'window', target] as const

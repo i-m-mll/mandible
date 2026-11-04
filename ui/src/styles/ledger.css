@@ -464,7 +464,7 @@
 
 .ledger-comment-card {
   border: 1px solid var(--neutral-alpha-06);
-  border-radius: 8px;
+  border-radius: var(--radius-panel);
   background: var(--surface-content);
   padding: 10px;
 }

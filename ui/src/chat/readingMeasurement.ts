@@ -1,5 +1,12 @@
+import { readingMeasurementKey as measurementKey } from './readingRowKeys';
+import { settleReadingLayout } from '../components/shared/readingLayoutReadiness';
+
 /** Exact DOM geometry only; source ownership and viewport policy stay with callers. */
-export type MeasurementRow = { key: string; revision: string; disclosureIdentity?: string };
+export type MeasurementRow = { key: string; revision: string; disclosureIdentity?: string; disclosureEnd?: string;
+  /** Source-body admission excludes current metadata labels. */
+  bodyIdentity?: string;
+  targetLabels?: import('../components/shared/ActivityTargetLinks').ActivityTargetLabels;
+};
 export type MeasurementLayout = {
   width: number;
   styleIdentity: string;
@@ -39,6 +46,8 @@ export type MeasurementRequest<Body> = {
   signal?: AbortSignal;
   /** Font/image durations overlap; readiness covers their join and the final document font barrier. */
   onPhase?: (event: MeasurementPhaseEvent) => void;
+  onMeasured?: (measurements: readonly RowMeasurement[], elements: ReadonlyMap<string, HTMLElement>, bodies: readonly Body[]) => void;
+  isCurrent?:()=>boolean;
 };
 export type MeasurementResult = { measurements: readonly RowMeasurement[] } & (
   | { status: 'complete'; vectors: readonly { layoutIdentity: string; heights: readonly number[]; totalHeight: number; maxRowHeight: number }[] }
@@ -50,9 +59,7 @@ export type MeasurementResult = { measurements: readonly RowMeasurement[] } & (
 export function measurementLayoutIdentity(layout: MeasurementLayout): string {
   return JSON.stringify([layout.width, layout.styleIdentity, layout.fonts, layout.responsiveVariant]);
 }
-function measurementKey(row: MeasurementRow, layoutIdentity: string): string {
-  return JSON.stringify([row.key, row.revision, row.disclosureIdentity ?? '', layoutIdentity]);
-}
+
 function untilAbort<T>(promise: Promise<T>, signal: AbortSignal, discard?: (value: T) => void): Promise<{ ready: true; value: T } | { ready: false }> {
   return new Promise((resolve, reject) => {
     const abort = () => { signal.removeEventListener('abort', abort); resolve({ ready: false }); };
@@ -128,6 +135,10 @@ export class ReadingMeasurementService {
     let host: HTMLDivElement | undefined;
     let rendered: RenderedMeasurementBatch | undefined;
     let materialized: MaterializedMeasurementBatch<Body> | undefined;
+    type Buffer = { rows: readonly MeasurementRow[]; work: ReturnType<typeof untilAbort<readonly Body[] | MaterializedMeasurementBatch<Body>>> };
+    const discard = (value: readonly Body[] | MaterializedMeasurementBatch<Body>) => {
+      if (!Array.isArray(value)) (value as MaterializedMeasurementBatch<Body>).release();
+    };
     const releaseMaterialized = () => { const batch = materialized; materialized = undefined; batch?.release(); };
     const release = () => {
       const batch = rendered; rendered = undefined;
@@ -154,10 +165,11 @@ export class ReadingMeasurementService {
         || new Set(request.layouts.map(measurementLayoutIdentity)).size !== request.layouts.length) {
         return { status: 'error', reason: 'invalid-request', detail: 'Require unique rows/layouts, positive finite widths and a batch size from 1 to 256.', measurements: [] };
       }
-      const wanted = new Set(request.layouts.flatMap(layout => request.rows.map(row => measurementKey(row, measurementLayoutIdentity(layout)))));
+      const wanted = new Map(request.layouts.flatMap(layout => request.rows.map(row => [measurementKey(row, measurementLayoutIdentity(layout)),row] as const)));
       for (const value of request.reuse ?? []) {
         const key = measurementKey(value.row, value.layoutIdentity);
-        if (wanted.has(key) && Number.isFinite(value.height) && value.height > 0) measurements.set(key, value);
+        const row = wanted.get(key);
+        if (row && Number.isFinite(value.height) && value.height > 0) measurements.set(key, {...value,row});
       }
       host = doc.createElement('div');
       host.inert = true;
@@ -165,19 +177,32 @@ export class ReadingMeasurementService {
       host.dataset.readingMeasurementHost = '';
       Object.assign(host.style, { position: 'fixed', left: '0', top: '0', visibility: 'hidden', pointerEvents: 'none', zIndex: '-1' });
       this.parent.append(host);
-      for (let offset = 0; offset < request.rows.length;) {
+      let offset = 0;
+      const nextBuffer = (): Buffer | undefined => {
+        const missing=(row:MeasurementRow)=>request.layouts.some(layout=>!measurements.has(measurementKey(row,measurementLayoutIdentity(layout))));
+        const acquire=(rows:readonly MeasurementRow[]):Buffer=>{
+          const started=clock();
+          const work=untilAbort(request.materialize(rows,signal),signal,discard);
+          void work.catch(()=>{});
+          void work.then(()=>observe('materialize',started,rows.length),()=>{});
+          return {rows,work};
+        };
+        while (offset < request.rows.length && !signal.aborted) {
+          const end = Math.min(request.rows.length, offset + materializeBatchSize);
+          const rows = request.rows.slice(offset, end).filter(missing);
+          offset = end;
+          if (rows.length)return acquire(rows);
+        }
+      };
+      while (offset < request.rows.length) {
         if (signal.aborted) return cancelled();
-        const end = Math.min(request.rows.length, offset + materializeBatchSize);
-        const bufferRows = request.rows.slice(offset, end).filter(row => request.layouts.some(layout => !measurements.has(measurementKey(row, measurementLayoutIdentity(layout)))));
-        offset = end;
-        if (!bufferRows.length) continue;
         phase = 'materialize';
-        const materializeStarted = clock();
-        const bodies = await untilAbort(request.materialize(bufferRows, signal), signal, value => {
-          if (!Array.isArray(value)) (value as MaterializedMeasurementBatch<Body>).release();
-        });
-        observe('materialize', materializeStarted, bufferRows.length);
+        const next = nextBuffer();
+        if (!next) break;
+        const bodies = await next.work;
         if (!bodies.ready) return cancelled();
+        if (signal.aborted) { discard(bodies.value); return cancelled(); }
+        const bufferRows = next.rows;
         const buffer = Array.isArray(bodies.value) ? bodies.value as readonly Body[] : (materialized = bodies.value as MaterializedMeasurementBatch<Body>).bodies;
         if (buffer.length !== bufferRows.length) throw new Error('Materializer must return one body per requested row in order.');
         for (let sliceOffset = 0; sliceOffset < bufferRows.length;) {
@@ -217,6 +242,7 @@ export class ReadingMeasurementService {
             const ready = await untilAbort(Promise.all([fonts, images]).then(() => doc.fonts.ready), signal);
             observe('readiness', readinessStarted, rows.length, identity);
             if (!ready.ready) return cancelled();
+            settleReadingLayout(host);
             phase = 'geometry';
             const geometryStarted = view.performance.now();
             const boxes = rows.map(row => {
@@ -230,6 +256,7 @@ export class ReadingMeasurementService {
             synchronousMs += view.performance.now() - geometryStarted;
             if (signal.aborted) return cancelled();
             for (const box of boxes) measurements.set(measurementKey(box.row, identity), box);
+            request.onMeasured?.(boxes, rendered!.elements, sliceBodies);
             const yieldStarted = clock();
             await yieldToBrowser(signal);
             observe('yield', yieldStarted, rows.length, identity);
@@ -241,6 +268,7 @@ export class ReadingMeasurementService {
             synchronousMs > request.maxSynchronousMs ? Math.floor(activeBatchSize * request.maxSynchronousMs / synchronousMs) : activeBatchSize * 2));
         }
         releaseMaterialized();
+        if(request.isCurrent?.()===false)return cancelled();
       }
       if (signal.aborted) return cancelled();
       const vectors = request.layouts.map(layout => {
@@ -252,6 +280,8 @@ export class ReadingMeasurementService {
     } catch (error) {
       return signal.aborted ? cancelled() : { status: 'error', reason: phase, detail: error instanceof Error ? error.message : String(error), cause: error, measurements: partial() };
     } finally {
+      // Retire any remaining asset/readiness callbacks owned by this job.
+      controller.abort();
       cleanup();
       signal.removeEventListener('abort', cleanup);
       request.signal?.removeEventListener('abort', abort);

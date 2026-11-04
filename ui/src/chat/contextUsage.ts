@@ -52,6 +52,7 @@ export type ChatUsageSummary = {
 };
 
 export type StatuslineTelemetry = {
+  usage_telemetry?:NormalizedUsageTelemetry;
   telemetry_key?: string;
   console_session_id?: string | null;
   provider_session_id?: string | null;
@@ -159,7 +160,7 @@ export function deriveChatUsageSummary(input: {
 }
 
 function normalizedFromTelemetry(telemetry: StatuslineTelemetry | null | undefined): NormalizedUsageTelemetry | undefined {
-  return telemetry ? normalizeClaudeStatusline(telemetry) : undefined;
+  return telemetry ? normalizeClaudeStatusline(telemetry)??normalizePersistedUsage(telemetry.usage_telemetry) : undefined;
 }
 
 function normalizedFromEvents(events: StreamEvent[]): NormalizedUsageTelemetry | undefined {

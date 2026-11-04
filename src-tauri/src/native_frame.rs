@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 pub const HEADER_HEIGHT: f64 = 42.0;
 
@@ -12,9 +12,15 @@ pub fn presentation() -> &'static str {
 }
 
 pub fn host_initialization_script() -> String {
+    static SESSION_ID: OnceLock<String> = OnceLock::new();
+    let session_id = SESSION_ID.get_or_init(|| {
+        format!("{}-{}", std::process::id(), std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).expect("system time precedes Unix epoch").as_nanos())
+    });
     let host = serde_json::json!({
         "kind": "tauri", "platform": std::env::consts::OS,
         "framePresentation": presentation(),
+        "sessionId": session_id,
     });
     format!("Object.defineProperty(window, '__MANDIBLE_NATIVE_HOST__', {{ value: Object.freeze({host}) }});")
 }

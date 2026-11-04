@@ -15,7 +15,7 @@ import { projectReadingRows, type ReadingRow, type ReadingProjection } from './r
 import { ReadingRowBody } from './ReadingRowView';
 import { MeasuredReadingBox, ReadingRowStrip } from './ReadingRowWindow';
 import { readingRowPrimaryActions, readingRowTurnId } from './readingRowActions';
-import { useCompleteReading, readingPayloadKey } from './useCompleteReading';
+import { useCompleteReading, readingBodyKey, readingTargetLabels } from './useCompleteReading';
 import { useReadingGeometry } from './useReadingGeometry';
 import { getReadingResizeScale } from './readingResizeProfile';
 import { useReadingViewport, type ReadingSummaryTarget } from './useReadingViewport';
@@ -60,10 +60,12 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
   const clearance = Math.max(16, overlay?.scrollClearance ?? 0);
   const handled = useRef<string | null>(null);
   const restoredRow = useRef(false);
-  const pendingDisclosure = useRef<{ position: number; offset: number; summary: ReadingSummaryTarget; next: boolean; token: string } | null>(null);
   const appliedRows = useRef<readonly import('./readingMeasurement').MeasurementRow[]>([]);
   const focusAfterInitial = useRef<ConversationSourceCoordinate | null>(null);
   const initialState = useMemo(() => readReadingState(scope), [scope]);
+  const initialIntent=useMemo(()=>({active:true,
+    restore:!navigationTarget||navigationTarget.kind==='initial'?props.readingRestore:undefined,
+    target:navigationTarget?.target}),[scope,space,navigationTarget?.key]);
   const [expandedBlocks, setExpandedBlocks] = useState<Record<string, boolean>>(() => initialState?.positionSpaceId === space ? initialState.disclosures : {});
   const [protectedRows, setProtectedRows] = useState<ReadonlySet<string>>(new Set());
   const [disclosureRevisions, setDisclosureRevisions] = useState<Record<string, number>>({});
@@ -75,8 +77,10 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
     expanded: expandedBlocks, streaming: props.streaming }), [events, scope, space, Boolean(transcript), expandedBlocks, props.streaming]);
   const extraRows = useMemo<Array<ReadingRow & { revision: string }>>(() => props.activePermissionRequest && props.onPermissionRespond
     ? [{ key: `permission:${props.activePermissionRequest.id}`, revision: JSON.stringify(props.activePermissionRequest), kind: 'permission', isFinalResponse: false, protectedPositions: [], items: [], nodes: [], sources: [], actionGroup: { key: 'permission', start: null, end: null }, disclosureOwner: null, turnStart: true, turnEnd: true }] : [], [props.activePermissionRequest, props.onPermissionRespond]);
-  const localRestore = !restoredRow.current ? props.readingRestore : undefined;
-  const complete = useCompleteReading({ scope, space, events, initial: !initialVisible, targetPosition: localRestore?.anchor.position ?? navigationTarget?.target?.position, targetRowKey: localRestore?.anchor.rowKey, targetMemberKey: localRestore?.anchor.memberKey, targetSummary: navigationTarget?.target?.subtarget === 'summary', sourceVersion: transcript?.sourceVersionId, total: transcript?.total,
+  const localRestore = !restoredRow.current&&(!navigationTarget||navigationTarget.kind==='initial') ? props.readingRestore : undefined;
+  const bodyRestore=!initialVisible&&initialIntent.active?initialIntent.restore:localRestore;
+  const bodyTarget=!initialVisible&&initialIntent.active?initialIntent.target:navigationTarget?.target;
+  const complete = useCompleteReading({ scope, space, events, initial: !initialVisible&&initialIntent.active, targetPosition: bodyRestore?.anchor.position ?? bodyTarget?.position, targetRowKey: bodyRestore?.anchor.rowKey, targetMemberKey: bodyRestore?.anchor.memberKey, targetSummary: bodyTarget?.subtarget === 'summary', sourceVersion: transcript?.sourceVersionId, total: transcript?.total,
     actionIdentity: JSON.stringify([Boolean(props.onSelectMessageInfo), Boolean(props.onCopyMessageLink)]), selectMode: props.selectMode, selectedBlockIds: props.selectedBlockIds, extraRows, expanded: expandedBlocks, disclosureRevisions, streaming: props.streaming, local: projection, enabled: Boolean(transcript) });
   const requiredTarget = localRestore ? undefined : navigationTarget?.target;
   const requiredMember = requiredTarget && requiredTarget.positionSpaceId === space ? complete.plan?.membership.get(requiredTarget.position) : undefined;
@@ -89,8 +93,10 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
   }, [requiredMember, requiredTarget, initialDisclosurePending]);
   const [scrollNode, setScrollElement] = useState<HTMLDivElement | null>(null);
   const layoutChange = useRef<() => void>(() => {});
+  const measureBoundary = useRef<(row: import('./readingMeasurement').MeasurementRow, element: HTMLElement) => import('./useReadingGeometry').ReadingBoundaryMeasurement | undefined>(() => undefined);
+  const measurementCoverage = useRef<(rows: readonly import('./readingMeasurement').MeasurementRow[], sizes: readonly number[]) => readonly import('./readingMeasurement').MeasurementRow[]>(() => []);
   const geometry = useReadingGeometry({ scope: `${scope}:${space}`, chrome: 32 + clearance, onLayoutChange: () => layoutChange.current(), rows: complete.rows, parent: appearance.ready && complete.ready && !initialDisclosurePending ? scrollNode : null,
-    materialize: complete.acquireMeasurement, membership: complete.membership, rowMembers: complete.rowMembers, onMeasuring: complete.retainMeasurement, onPrepared: complete.retainGeometry, renderProps: row => ({ ...props, row, expandedBlocks, setBlockExpanded: () => {},
+    materialize: complete.acquireMeasurement, measurementCoverage: (rows,sizes)=>measurementCoverage.current(rows,sizes), transferMeasured: complete.transferMeasured, measureBoundary: (row, element) => measureBoundary.current(row,element), membership: complete.membership, rowMembers: complete.rowMembers, onMeasuring: complete.retainMeasurement, onPrepared: complete.retainGeometry, renderProps: (row, ref) => ({ ...props, row, targetLabels: readingTargetLabels(ref), expandedBlocks, setBlockExpanded: () => {},
       preparing: row.sources.some(source => expandedBlocks[`reveal:${source.position}`]), primaryActions: readingRowPrimaryActions({ copy: () => {}, open: () => {}, turnId: readingRowTurnId(row, complete.actionRuns), selectedMessageId: props.selectedMessageId, select: props.onSelectMessageInfo }),
       lastAssistantTurnId: complete.lastAssistantTurnId, onActivityGroupExpandedChange: () => {} }), scale: getReadingResizeScale });
   const latest = useRef({ scope, space, projection, transcript, props, complete, geometry }); latest.current = { scope, space, projection, transcript, props, complete, geometry };
@@ -146,14 +152,17 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
   const onRange = useCallback((demand: import('./readingBodyDemand').ReadingBodyDemand) => latest.current.complete.onRange(demand), []);
   const disclosures = expandedBlocks;
   const viewport = useReadingViewport({ scope, positionSpaceId: space, onInput: () => {
-    pendingDisclosure.current = null; focusAfterInitial.current = null; restoredRow.current = true;
+    initialIntent.active=false;
+    focusAfterInitial.current = null; restoredRow.current = true;
     const queued = latest.current.transcript?.command ?? latest.current.props.navigationTarget;
     if (queued && handled.current !== queued.key) {
       handled.current = queued.key; latest.current.props.onNavigationResult?.({ key: queued.key, status: 'cancelled' });
     } else if (!queued) handled.current = `initial:${scope}:${space}`;
     setInitialNavigationDone(true); latest.current.transcript?.cancelNavigation();
-  }, observeNavigation, commandToken: navigationTarget?.key, initializing: transcript?.navigationPending || !geometry.geometry, clearance, geometry: geometry.geometry, protectedKeys: protectedRows, disclosures, prepare, onApplied: complete.commitGeometry, onRange });
+  }, observeNavigation, commandToken: navigationTarget?.key, initializing: transcript?.navigationPending || !geometry.geometry, clearance, geometry: geometry.geometry, expectedRows: complete.rows, protectedKeys: protectedRows, disclosures, prepare, prepareRows: complete.prepareRows, onApplied: complete.commitGeometry, onRange });
   layoutChange.current = viewport.beginLayout;
+  measureBoundary.current = viewport.measureBoundary;
+  measurementCoverage.current = viewport.measurementCoverage;
   useEffect(() => { if (initialVisible) viewport.captureReaderAnchor(); }, [initialVisible, viewport.appliedGeometry]);
   appliedRows.current = viewport.appliedGeometry ? viewport.rows : [];
   useLayoutEffect(() => {
@@ -216,10 +225,10 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
 
   useEffect(() => {
     const token = `initial:${scope}:${space}`;
-    if (navigationTarget || !geometry.geometry || !viewport.appliedGeometry || initialNavigationDone || handled.current === token) return;
+    if (transcript?.navigationPending || navigationTarget || !geometry.geometry || !viewport.appliedGeometry || initialNavigationDone || handled.current === token) return;
     handled.current = token;
     void viewport.reveal({ token, end: true, origin: 'initial' }).then(() => setInitialNavigationDone(true));
-  }, [navigationTarget, geometry.geometry, viewport.appliedGeometry, initialNavigationDone, scope, space, viewport.reveal]);
+  }, [transcript?.navigationPending,navigationTarget, geometry.geometry, viewport.appliedGeometry, initialNavigationDone, scope, space, viewport.reveal]);
   useEffect(() => {
     if (initialVisible || !geometry.geometry || !viewport.appliedGeometry || !initialNavigationDone) return;
     const items = viewport.engine.getVirtualItems();
@@ -228,7 +237,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
       const body = ref && complete.getBody(ref);
       return body && (!('revision' in body) || body.revision === ref.revision);
     });
-    if (hydrated && (!viewport.rows.length || items.length > 0)) setInitialVisible(true);
+    if (hydrated && (!viewport.rows.length || items.length > 0)) {initialIntent.active=false;setInitialVisible(true);}
   }, [initialVisible, initialNavigationDone, navigationTarget, geometry.geometry, viewport.appliedGeometry, complete.bodies, viewport.rows, viewport.engine]);
 
   useEffect(() => {
@@ -268,24 +277,10 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
   })])), [complete.bodies, complete.actionRuns, exportRow, props.onSelectMessageInfo, props.selectedMessageId]);
   const revealDisclosure = (row: ReadingRow, next: boolean, trigger?: HTMLElement) => {
     viewport.pinDisclosure(row.key, trigger);
-    const position = row.sources[0]?.position;
-    const offset = trigger && viewport.scrollRef.current ? trigger.getBoundingClientRect().top - viewport.scrollRef.current.getBoundingClientRect().top : viewport.rowOffset(row.key) ?? 0;
-    if (position !== undefined && row.disclosureOwner !== null) pendingDisclosure.current = { position, offset, summary: { rowKey: row.key, disclosureOwner: row.disclosureOwner }, next, token: `disclosure:${crypto.randomUUID()}` };
     setExpandedBlocks(current => boundDisclosures({ ...current, [`group:${row.disclosureOwner}`]: next }));
   };
-  useEffect(() => {
-    const pending = pendingDisclosure.current;
-    if (!pending || expandedBlocks[`group:${pending.summary.disclosureOwner}`] !== pending.next) return;
-    const summary = (complete.plan?.rows ?? projection.rows).find(row => row.key === pending.summary.rowKey && row.kind === 'activity-summary' && row.disclosureOwner === pending.summary.disclosureOwner);
-    if (summary?.activityGroup?.expanded !== pending.next) return;
-    pendingDisclosure.current = null;
-    const target: ConversationSourceCoordinate = { conversationId: scope, positionSpaceId: space, position: pending.position, offset: pending.offset, subtarget: 'summary' };
-    void viewport.reveal({ token: pending.token, origin: 'disclosure-pin', preserveReaderPin: true, target, summary: pending.summary }).then(result => {
-      if (result.status !== 'revealed' && result.status !== 'cancelled') { observeNotice('disclosure-pin', result, target); setNotice(readingNavigationFailureMessage(result.status)); }
-    });
-  }, [expandedBlocks, complete.plan, projection, viewport.reveal, scope, space]);
   const jump = () => {
-    restoredRow.current = true; pendingDisclosure.current = null; focusAfterInitial.current = null;
+    restoredRow.current = true; focusAfterInitial.current = null;
     void viewport.reveal({ token: `latest:${crypto.randomUUID()}`, end: true, origin: 'latest' }).then(result => { if (result.status === 'revealed') void latest.current.props.onJumpToLatest?.(); });
   };
   return <MessageLinkContext.Provider value={props.onCopyMessageLink ?? null}>
@@ -297,9 +292,9 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
             if (!ref) return null;
             const row = complete.getBody(ref);
             if (!row || ('revision' in row && row.revision !== ref.revision)) return <MeasuredReadingBox key={ref.key} index={item.index} pendingHeight={item.size} measurement={ref} reportHeight={geometry.reportHeight} register={viewport.register} registerRow={viewport.registerRow} scope={scope} space={space} />;
-            const bodyProps = viewport.renderProps?.(row);
+            const bodyProps = viewport.renderProps?.(row, ref);
             const primaryActions = (bodyProps?.primaryActions ?? []).map(action => action.id === 'select-group' ? action
-              : { ...action, onAction: actions.get(readingPayloadKey(ref))?.find(current => current.id === action.id)?.onAction ?? action.onAction });
+              : { ...action, onAction: actions.get(readingBodyKey(ref))?.find(current => current.id === action.id)?.onAction ?? action.onAction });
             return <MeasuredReadingBox key={row.key} row={row} index={item.index} pendingHeight={item.size} measurement={ref} reportHeight={geometry.reportHeight} register={viewport.register} registerRow={viewport.registerRow} scope={scope} space={space}>
               <MessageLinkContext.Provider value={bodyProps?.onCopyMessageLink ?? null}><ReadingRowBody {...(bodyProps ?? props)} row={row} expandedBlocks={bodyProps?.expandedBlocks ?? expandedBlocks} setBlockExpanded={(key, next, sources, trigger) => {
                   viewport.pinDisclosure(row.key, trigger);
@@ -317,7 +312,7 @@ export function ChatSurface(props: ChatSurfaceProps): JSX.Element {
       <OverflowTopFade scroller={scrollNode} enabled={initialVisible && viewport.rows.length > 0} contentStart={viewport.engine.options.paddingStart ?? 0} className="stream-renderer__top-fade" />
       {appearance.error && !appearance.ready && <DetailPaneNotice severity="error" density="compact" title="Appearance preferences unavailable" source="chat-appearance" actions={<button type="button" className="btn btn--ghost btn--sm" onClick={appearance.retry}>Retry</button>}>{appearance.error}</DetailPaneNotice>}
       {events.some(event => event.type === 'chat:item' && event.persistencePending) && <div role="status">Some content is awaiting confirmation from saved history.</div>}
-      {(notice || complete.error || geometry.error) && <div className="stream-renderer__history-error" role="alert">{notice ?? complete.error ?? geometry.error}<button type="button" onClick={() => { setNotice(null); geometry.retry(); void complete.refresh(); }}>Retry</button></div>}
+      {(notice || complete.error || geometry.error) && <div className="stream-renderer__history-error" role="alert">{notice ?? complete.error ?? geometry.error}<button type="button" onClick={() => { setNotice(null); geometry.retry(); viewport.retry(); void complete.refresh(); }}>Retry</button></div>}
       {viewport.showLatest && <button type="button" className="chat-circle-action stream-renderer__scroll-btn" aria-label="Jump to latest" title="Jump to latest" disabled={props.jumpingToLatest} aria-busy={props.jumpingToLatest ? "true" : "false"} onClick={jump}><Icon name="jumpToLatest" /></button>}
     </div>
   </MessageLinkContext.Provider>;

@@ -5,6 +5,7 @@ import { DISPLAY_CONTEXT_VERSION, type ConversationDisplayContext } from '../con
 import { readDisplayContext } from '../conversations/display-context-read.js';
 import type { ConversationSourceEpochs } from "../conversations/source-types.js";
 import { updateConversationMetadata } from "../conversations/metadata.js";
+import { activityTargetsSchema, resolveActivityTargets } from '../conversations/activity-targets.js';
 import { mapConversation, maskSourceBackedConversationRow } from "../conversations/response-mapping.js";
 import { parseSinceQuery, sourceFromQuery } from "../conversations/search-query.js";
 import type { LedgerReader } from "../ledger-reads/index.js";
@@ -249,6 +250,12 @@ export function registerConversationRoutes(
   };
 
   // --- Static routes MUST be registered before parameterized :id routes ---
+
+  server.post('/api/conversations/activity-targets', (req, res) => {
+    const parsed = activityTargetsSchema.safeParse(readBody<{ targets?: unknown }>(req)?.targets);
+    if (!parsed.success) return sendJson(res, 400, { error: 'Invalid activity targets' });
+    return sendJson(res, 200, { targets: resolveActivityTargets(db, parsed.data) });
+  }, { operation: { id: 'post:/api/conversations/activity-targets', effects: ['ledger:read'], requestSchema: null, reportingCategory: null }, fileRpc: 'allow' });
 
   server.get("/api/conversations/resolve-target", (req, res) => {
     const { conversation, session } = req.query;
@@ -610,7 +617,7 @@ export function registerConversationRoutes(
       if (sendFreshnessError(res, error)) return;
       return sendJson(res, 503, { status: 'unavailable', reason: error instanceof Error ? error.message : String(error) });
     }
-    const result = await readReadingRowBatch({ db, conversationId: id, reader: sourceReader, request });
+    const result = await readReadingRowBatch({ db, conversationId: id, reader: sourceReader, request,signal:req.signal });
     return sendJson(res, result.status === 'source' ? 200 : result.status === 'resource-limit' ? 413 : 409, result);
   }, { operation: { id: 'post:/api/conversations/:id/reading-rows', effects: ['ledger:read'], requestSchema: null, reportingCategory: null },
     fileRpc: 'allow', refs: { params: { id: entityRefs.conversation } } });
@@ -645,11 +652,12 @@ export function registerConversationRoutes(
 
     const query = req.query ?? {};
     const displayView = query.view === "display";
-    if (query.view !== undefined && !displayView) {
-      sendJson(res, 400, { error: "view must be display when provided" });
+    const metadataView = query.view === "metadata";
+    if (query.view !== undefined && !displayView && !metadataView) {
+      sendJson(res, 400, { error: "view must be display or metadata when provided" });
       return;
     }
-    if (displayView) trackSelectedConversation(id);
+    if (displayView || metadataView) trackSelectedConversation(id);
 
     const requestedLimit = Math.max(1, parseInt(query.limit || "160", 10) || 160);
     let limit = Math.min(500, requestedLimit);
@@ -683,7 +691,7 @@ export function registerConversationRoutes(
     let windowOffset = 0;
     let readableBlocks: Array<SourceBackedConversationBlock> = [];
     let bodySource: "source" = "source";
-    let resolvedBlock: SourceBackedConversationBlock | null = null;
+    let resolvedBlock: Pick<SourceBackedConversationBlock,'id'|'position'|'type'> | null = null;
     let resolvedTurnId: string | null = null;
     let sourceVersionId: string | null = null;
     let positionSpaceId: string | null = null;
@@ -740,6 +748,15 @@ export function registerConversationRoutes(
         : targetKind === "initial" || targetKind === "latest"
         ? Math.max(0, retainedTotal - limit)
         : Math.max(0, anchorPosition! - Math.floor((limit - 1) / 2));
+      if(metadataView){
+        if(targetKind==='initial'||targetKind==='latest')anchorPosition=total>0?total-1:null;
+        const row=anchorPosition!==null&&source?structureCache.readPosition(id,source.current_version_id,anchorPosition,source):null;
+        if(total>0&&!row)return sendJson(res,409,{error:'freshness_pending',code:'freshness_pending'});
+        resolvedBlock=row?{id:sparseConversationBlockId(id,row.position),position:row.position,type:row.type}:null;
+        const turnPosition=anchorPosition!==null&&source?structureCache.turnPosition(id,source.current_version_id,anchorPosition,source):null;
+        resolvedTurnId=turnPosition===null?null:sparseConversationBlockId(id,turnPosition);
+        if(targetKind==='turn'&&resolvedTurnId!==requestedValue)return sendJson(res,404,{error:'Turn anchor not found'});
+      }else{
       const sourcePage = await (displayView && source ? displaySourceReader : sourceReader)
         .readPage(id, { offset: windowOffset, limit, expectedSourceVersionId: sourceVersionId ?? undefined });
       if (sourcePage.status !== "source") {
@@ -825,7 +842,7 @@ export function registerConversationRoutes(
       } else if (resolvedBlock?.type === "user_message") {
         resolvedTurnId = resolvedBlock.id;
       } else if (anchorPosition !== null) {
-        const preceding = readableBlocks.filter((block) => block.position <= anchorPosition);
+        const preceding = readableBlocks.filter((block) => block.position <= anchorPosition!);
         const previousUser = [...preceding].reverse()
           .find((block) => block.type === "user_message")?.position ?? -1;
         resolvedTurnId = preceding.find((block) =>
@@ -835,6 +852,7 @@ export function registerConversationRoutes(
       if (targetKind === "turn" && resolvedTurnId !== requestedValue) {
         sendJson(res, 404, { error: "Turn anchor not found" });
         return;
+      }
       }
     }
 
@@ -900,6 +918,10 @@ export function registerConversationRoutes(
     mapped.children_count = children.length;
     const hasBefore = startPosition !== null && startPosition > 0;
     const afterCount = endPosition === null ? 0 : Math.max(0, total - endPosition - 1);
+
+    if(metadataView)return sendJson(res,200,{projection:'metadata',conversation:mapped,children:childrenWithDuration,parent:parent??null,
+      source_version_id:sourceVersionId,position_space_id:positionSpaceId,publication_revision:publicationRevision,total,
+      target:{kind:targetKind,requested_value:requestedValue,position:resolvedBlock?.position??null,block_id:resolvedBlock?.id??null,turn_id:resolvedTurnId}});
 
     sendJson(res, 200, {
       conversation: mapped,

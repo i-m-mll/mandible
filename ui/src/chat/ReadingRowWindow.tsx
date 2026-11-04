@@ -4,7 +4,7 @@ import type { VirtualItem } from '@tanstack/react-virtual';
 import type { ReadingRow, ReadingTargetRegistration } from './readingProjection';
 import type { MeasurementRow } from './readingMeasurement';
 import { ReadingRowFrame } from './ReadingRowView';
-import { readingPayloadKey } from './useCompleteReading';
+import { readingBodyKey, readingPayloadKey } from './useCompleteReading';
 
 /** Consecutive mounted rows share browser flow; only absent index ranges need geometry gaps. */
 export function ReadingRowStrip({ items, endOffset, children }: { items: readonly VirtualItem[]; endOffset?: number; children: (item: VirtualItem) => ComponentChildren }) {
@@ -26,7 +26,9 @@ export function MeasuredReadingBox({ row, index, measurement, pendingHeight, rep
   scope: string; space: string; children?: ComponentChildren;
 }) {
   const element = useRef<HTMLDivElement | null>(null);
-  const setNode = useCallback((node: HTMLDivElement | null) => { element.current = node; if (node) node.dataset.readingPayload = readingPayloadKey(measurement); }, [measurement]);
+  const payloadKey = readingPayloadKey(measurement);
+  const bodyKey = readingBodyKey(measurement);
+  const setNode = useCallback((node: HTMLDivElement | null) => { element.current = node; if (node) { node.dataset.readingPayload = payloadKey; node.dataset.readingBody = bodyKey; } }, [payloadKey,bodyKey]);
   useLayoutEffect(() => {
     const box = element.current;
     if (!box) return;
@@ -35,7 +37,8 @@ export function MeasuredReadingBox({ row, index, measurement, pendingHeight, rep
     const observer = new ResizeObserver(() => { const rect = box.getBoundingClientRect(); reportHeight(measurement, rect.height, rect.width); }); observer.observe(box);
     const dispose = row.sources.map(source => {
       if (source.position === undefined) return () => {};
-      const exact = row.kind === 'activity-summary' ? box : [...box.querySelectorAll<HTMLElement>('[data-block-id]')].find(node => node.dataset.blockId === source.blockId) ?? null;
+      const exact = row.kind === 'activity-summary' ? box : [...box.querySelectorAll<HTMLElement>('[data-block-id],[data-member-refs]')]
+        .find(node => node.dataset.blockId === source.blockId || node.dataset.memberRefs?.split(' ').includes(source.blockId)) ?? null;
       if (exact && !exact.hasAttribute('tabindex')) exact.tabIndex = -1;
       const coordinate = { conversationId: scope, positionSpaceId: space, position: source.position };
       const clearDefault = row.activityGroup?.expanded ? () => {} : register({ rowKey: row.key, coordinate, element: exact });
@@ -43,6 +46,6 @@ export function MeasuredReadingBox({ row, index, measurement, pendingHeight, rep
       return () => { clearDefault(); clearSubtarget(); };
     });
     return () => { observer.disconnect(); disposeRow(); dispose.forEach(dispose => dispose()); };
-  }, [row, scope, space, register, registerRow, children, measurement, reportHeight]);
+  }, [row, scope, space, register, registerRow, payloadKey, reportHeight]);
   return <ReadingRowFrame row={row ?? measurement} index={index} busy={!row} style={row ? undefined : { height: `${pendingHeight}px` }} elementRef={setNode}>{children}</ReadingRowFrame>;
 }

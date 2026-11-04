@@ -876,6 +876,8 @@ export type ConversationPositionWindow = ConversationSourceSnapshot & {
   blocks: StoredConversationBlock[];
 };
 
+export type ConversationMetadata = ConversationSourceSnapshot & Pick<ConversationPositionWindow,'conversation'|'children'|'parent'|'total'|'target'> & {projection:'metadata'};
+
 export type ConversationStructure = ConversationSourceSnapshot & {
   conversation_id: string;
   source_version_id: string | null;

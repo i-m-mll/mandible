@@ -9,6 +9,7 @@ import { useChromeAppearancePreview } from './hooks/useChromeAppearancePreview';
 import type { ChromeAppearanceTheme } from './chrome-appearance';
 import { useNativeWindowPresentation } from './native-window-presentation';
 import { browserResourceKeys, refreshBrowserResources } from './query/browserResources';
+import { invalidateActivityTargets } from './query/activityTargets';
 import { BRIEFING_EVENT_VALUES, DASHBOARD_BADGE_COUNTS } from '../../src/contracts';
 import { render, type ComponentChildren } from 'preact';
 import { lazy, Suspense } from 'preact/compat';
@@ -1653,6 +1654,7 @@ function App(): JSX.Element {
       if (!reconnected) return;
       // Events may have been missed while disconnected: no cached read is fresh any more.
       invalidateDashboardCaches();
+      invalidateActivityTargets(queryClient);
       lastDashboardSseAtRef.current = Date.now();
       void loadVisibleRouteDataRef.current(routeTabRef.current);
       void loadDashboardBadges();
@@ -1690,6 +1692,7 @@ function App(): JSX.Element {
       }
       // Without a live stream no event invalidates cached reads, so the poll reads the network.
       invalidateDashboardCaches();
+      invalidateActivityTargets(queryClient);
       void loadVisibleRouteData(route.tab);
       void refreshRailOrder();
       void refreshAppearance();

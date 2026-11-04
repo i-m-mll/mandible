@@ -2,6 +2,7 @@ import { indexKeyString, legacyIndexKeyRecipe } from './index-keys.js';
 import { activitySemanticFacts, semanticToolOperations } from '../presentation/activity-presentation.js';
 import type { ActivityKind } from '../parsers/types.js';
 import type { ExecutionFacts } from '../presentation/execution-presentation.js';
+import type { CompactOperationObservation } from '../presentation/operation-observation.js';
 import type { ToolCategory } from '../presentation/tool-presentation.js';
 import type { ReadingDisclosures } from '../presentation/reading-disclosures.js';
 import type { AssistantResponseMembership } from '../parsers/assistant-response.js';
@@ -10,11 +11,13 @@ export type OperationFacts = {category:ToolCategory;count:number;names:string[];
 
 /** Body-free semantic facts shared by ingestion, conversion and presentation. */
 export type ActivityFacts = {
+  reasoningEquivalence?:string;
   kind: 'tool' | 'thinking' | 'directive-memory' | 'directive-thread' | 'activity';
   activityKind?: ActivityKind;
   severity?: 'info' | 'warning' | 'error';
   outcome?: 'succeeded' | 'failed' | 'cancelled' | 'unknown';
   status?: string;
+  localCommandStream?: 'stdout' | 'stderr';
   /** Ephemeral authored summary, supplied only after source hydration. */
   summary?: string;
   toolName?: string;
@@ -26,10 +29,12 @@ export type ActivityFacts = {
   running?: boolean;
   execution?: ExecutionFacts;
   operations?: OperationFacts[];
+  observation?: CompactOperationObservation;
 };
 export type PositionFacts = {
-  position: number; revision: string; speaker: 'user' | 'assistant' | 'system'; handoffKeys: string[];
+  position: number; revision: string; presentationDependencies?: number[]; speaker: 'user' | 'assistant' | 'system'; handoffKeys: string[];
   assistantResponse?: AssistantResponseMembership; executionKey?: string; turnId?: string;
+  eventOrdinal?:number;executionChainKey?:string;wrapperSegmentSeconds?:number;
   usage?: { key: string; input: number; output: number };
 };
 export type FragmentFacts = {
@@ -56,6 +61,7 @@ export function legacyDisplayIndexBatch(input: {positions: PositionFacts[];fragm
 
 export function compactActivityFacts(item: import('../presentation/types.js').DisplayActivityItem): ActivityFacts {
   const {summary: _summary,...facts}=activitySemanticFacts(item);
+  if(facts.kind==='tool'&&facts.observation) {const {operations:_operations,...observed}=facts;return observed;}
   if(facts.kind==='tool'&&JSON.stringify(facts.operations)===JSON.stringify(semanticToolOperations({...facts,operations:undefined}))) {const {operations:_operations,...derived}=facts;return derived;}
   return facts;
 }
@@ -74,4 +80,4 @@ export type IndexWritePosition = Omit<PositionFacts,'handoffKeys'|'assistantResp
 export type IndexWriteFragment = Omit<FragmentFacts,'disclosures'> & {disclosureRecipes?: {
   keys:IndexKeyRecipe[];prefixes:IndexKeyRecipe[];thinkingDefaults?:Array<{key:IndexKeyRecipe;turnId?:string}>;
 }};
-export type IndexWriteBatch = {positions:IndexWritePosition[];fragments:IndexWriteFragment[];aliases:PresentationIndexBatch['aliases']};
+export type IndexWriteBatch = {positions:IndexWritePosition[];fragments:IndexWriteFragment[];aliases:Array<PresentationIndexBatch['aliases'][number]&{receipt?:import('../presentation/tool-observation.js').OperationReceipt}>};

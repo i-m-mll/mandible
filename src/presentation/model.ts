@@ -1,6 +1,8 @@
 import { inlineActivityKey } from './reading-disclosures.js';
 import type { InlineActivityIdentity } from './types.js';
 import { projectNativeToolResult } from './tool-transport.js';
+import { claudeCommandOutput } from '../parsers/claude-local-command.js';
+import { claudeTaskNotification } from '../parsers/claude-task-notification.js';
 import { splitProviderDirectives } from './provider-directives.js';
 import type { ToolCallActivity, ThinkingBlockActivity, ProviderDirectiveActivity } from './types.js';
 import { chatItemIdentityKey } from '../conversation-control/provider-live.js';
@@ -36,7 +38,19 @@ function chatItemText(item: MessageItem | PlanItem | ToolCallItem | ActivityItem
   return item.parts.map((part) => part.text).join('\n');
 }
 
-export function displayChatItem(item: ChatItem, metadata: Pick<BlockMetadata, 'display_completion_parts' | 'display_tool_content' | 'display_tool_error'>): ChatItem {
+export function displayChatItem(item: ChatItem, metadata: Pick<BlockMetadata, 'display_completion_parts' | 'display_tool_content' | 'display_tool_error' | 'display_local_command' | 'display_task_notification'>): ChatItem {
+  if(metadata.display_task_notification) {
+    const notification=claudeTaskNotification(chatItemText(item));
+    return {...item,type:'activity',role:'system',activity_kind:'tool-summary',parts:[{type:'text',text:metadata.display_task_notification.summary},
+      ...(notification?.result ? [{type:'text' as const,text:notification.result}] : [])]};
+  }
+  const command = metadata.display_local_command;
+  if (command?.kind === 'invocation') return { ...item, type: 'message', role: 'user', parts: [{type:'text', text: `${command.name}${command.args ? ` ${command.args}` : ''}`}] };
+  if (command?.kind === 'output') {
+    const output = claudeCommandOutput(chatItemText(item));
+    return { ...item, type: 'activity', role: 'system', activity_kind: 'information', local_command: {stream: command.stream},
+      parts: [{type:'text',text:command.summary}, ...(output?.body ? [{type:'text' as const,text:output.body}] : [])] };
+  }
   if(item.type==='tool-call' && item.phase==='result' && ('display_tool_content' in metadata || 'display_tool_error' in metadata)) return {...item,...(metadata.display_tool_content!==undefined ? {output:metadata.display_tool_content} : {}),...(metadata.display_tool_error ? {execution_outcome:'failed' as const} : {})};
   return item.type === 'activity' && item.provenance.source_event_type === 'task_complete' && metadata.display_completion_parts
     ? {...item, parts: metadata.display_completion_parts} : item;
@@ -48,7 +62,7 @@ export function isRoutineActivityStatus(item: ActivityItem, hasBody = false, usa
     && (item.severity === undefined || item.severity === 'info')
     && (item.execution_outcome === undefined || item.execution_outcome === 'unknown')
     && item.parts.every((part) => part.text.trim() === '')
-    && !(item.provenance.source_event_type === 'task_complete' && (hasBody || usage
+    && !(['task_started','task_complete'].includes(item.provenance.source_event_type) && (hasBody || usage
       || item.elapsed_ms !== undefined || item.tool_name || item.tool_id || item.related_tool_ids?.length));
 }
 
@@ -74,7 +88,7 @@ export function toolValueText(value: unknown, fallback: string): string {
 function toolResultPresentation(item: ToolCallItem, fallback: string) {
   const result=projectNativeToolResult(item.output,fallback,item.tool_kind,item.tool_name,item.tool_id);
   return {...result, failed:result.failed || item.execution_outcome==='failed' || (item.exit_code!==undefined && item.exit_code!==0),
-    running:item.content_completion==='streaming',
+    running:item.execution ? item.execution.state==='ongoing' : item.content_completion==='streaming',
     ...(item.elapsed_ms!==undefined && Number.isFinite(item.elapsed_ms) && item.elapsed_ms>=0 ? {wallTimeSeconds:item.elapsed_ms/1000,timingScope:'operation' as const,decoded:true} : {}),
     metadata:[...result.metadata,...(item.exit_code!==undefined ? [{label:'exit_code',value:String(item.exit_code)}] : []),...(item.process_id ? [{label:'process_id',value:item.process_id}] : [])]};
 }
@@ -278,6 +292,7 @@ export function buildStreamState(events: StreamEvent[], standaloneItems = false)
             source,
             contentKey: key,
             executionActive: canonical.executionActive,
+            executionEvidence: toolItem.execution?.state==='ongoing' && !canonical.executionActive ? {state:'unknown',provenance:'managed-generation'} : toolItem.execution,
           });
           if (toolItem.output !== undefined) pendingResults.set(toolId, boundToolResultBlock({
             type: 'tool_result', tool_use_id: toolId, content: toolValueText(toolItem.output,''), presentation: toolResultPresentation(toolItem,''),
@@ -305,12 +320,13 @@ export function buildStreamState(events: StreamEvent[], standaloneItems = false)
         }
       } else if (item.type === 'activity') {
         if (isEmptyCompletionMetadata(item, source?.hasBody, canonical.usage)) continue;
+        if(item.provenance.source_event_type==='task_started' && isRoutineActivityStatus(item,source?.hasBody,canonical.usage)) continue;
         if (item.provenance.source_event_type !== 'task_complete' && isRoutineActivityStatus(item)) {
           if (source?.detailsLoaded !== false && !source?.defaultVisible) continue;
           if (source?.hasBody === false) continue;
         }
         flushPendingTurn();
-        nodes.push({ kind: 'activity', key, entity: item.activity_kind === 'diagnostic' || item.severity === 'error' || item.execution_outcome === 'failed' ? item.role : 'assistant', item, source });
+        nodes.push({ kind: 'activity', key, entity: item.local_command || item.activity_kind === 'diagnostic' || item.severity === 'error' || item.execution_outcome === 'failed' ? item.role : 'assistant', item, source });
       }
     } else if (event.type === 'transcript:boundary') {
       flushPendingTurn();
@@ -512,6 +528,15 @@ export type ActivityDisplayEntry =
   | { kind: 'node'; node: RenderNode }
   | { kind: 'activity-group'; key: string; nodes: Array<Extract<RenderNode, { kind: 'activity' }>> };
 
+export function toolCallActivity(block:import('./types.js').ToolUseContentBlock,turn:RenderedTurn):ToolCallActivity {
+  const result=turn.toolResults.get(block.id)??null;
+  return {type:'tool-call-activity',id:block.id,name:block.name,toolKind:block.toolKind,input:block.input,result,
+    turnId:block.sourceIdentity?block.sourceIdentity.turnId:turn.assistantEvent.message.id??turn.assistantEvent.uuid,
+    sessionId:turn.assistantEvent.session_id,sourceIdentity:block.sourceIdentity,operationContext:block.source?.toolOperation,callSource:block.source,
+    executionEvidence:result?.source?.toolExecution??block.source?.toolExecution??block.executionEvidence,
+    executionActive:block.executionActive&&!result};
+}
+
 export function expandInlineActivities(nodes: readonly RenderNode[]): RenderNode[] {
   const expanded: RenderNode[] = [];
   for (const node of nodes) {
@@ -552,20 +577,7 @@ export function expandInlineActivities(nodes: readonly RenderNode[]): RenderNode
     blocks.forEach((block, blockIndex) => {
       if (block.type === 'tool_use') {
         flushFragment();
-        const item: ToolCallActivity = {
-          type: 'tool-call-activity',
-          id: block.id,
-          name: block.name,
-          toolKind: block.toolKind,
-          input: block.input,
-          result: node.turn.toolResults.get(block.id) ?? null,
-          turnId: block.sourceIdentity
-            ? block.sourceIdentity.turnId
-            : node.turn.assistantEvent.message.id ?? node.turn.assistantEvent.uuid,
-          sessionId: node.turn.assistantEvent.session_id,
-          sourceIdentity: block.sourceIdentity,
-          executionActive: block.executionActive && !node.turn.toolResults.has(block.id),
-        };
+        const item=toolCallActivity(block,node.turn);
         expanded.push({
           kind: 'activity',
           key: block.contentKey ?? `tool-call:${block.id}`,

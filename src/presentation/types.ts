@@ -22,6 +22,10 @@ export type ToolCallActivity = {
   header?: import('./tool-presentation.js').ToolPresentation;
   execution?: import('./execution-presentation.js').ExecutionFacts;
   operations?: import('./tool-presentation.js').ToolRunFact[];
+  observation?: import('./operation-observation.js').CompactOperationObservation;
+  operationContext?: import('../parsers/types.js').ToolOperationContext;
+  callSource?: PersistedBlockSource;
+  executionEvidence?: import('../parsers/types.js').ToolExecutionEvidence;
   result: ToolResultContentBlock | null;
   turnId?: string;
   sessionId: string;
@@ -47,6 +51,10 @@ export type DisplayActivityItem = ActivityItem | ProviderDirectiveActivity | Too
 export type PersistedBlockSource = {
   blockId: string;
   toolFrame?: import('./tool-transport.js').NativeResultFrame;
+  toolOperation?: import('../parsers/types.js').ToolOperationContext;
+  toolTargets?: import('./activity-targets.js').ActivityTarget[];
+  toolOperationKind?: 'subagent-create'|'subagent-resume';
+  toolExecution?: import('../parsers/types.js').ToolExecutionEvidence;
   position?: number;
   /** False when a display projection omitted expandable block payload. */
   detailsLoaded?: boolean;
@@ -94,6 +102,7 @@ export type ToolUseContentBlock = {
   input: Record<string, unknown> | string;
   contentKey?: string;
   executionActive?: boolean;
+  executionEvidence?: import('../parsers/types.js').ToolExecutionEvidence;
   sourceIdentity?: {
     provider: string;
     sessionId: string;
@@ -286,6 +295,8 @@ export type RenderNodeActivity = {
   item: DisplayActivityItem;
   source?: PersistedBlockSource;
   memberKey?: string;
+  sourceAliases?:readonly PersistedBlockSource[];
+  disclosureAliases?:readonly string[];
   inlineIdentity?: InlineActivityIdentity;
 };
 

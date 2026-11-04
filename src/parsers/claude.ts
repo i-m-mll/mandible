@@ -1,4 +1,6 @@
 import { claudeAssistantResponse } from "./assistant-response.js";
+import { claudeCommandInvocation, claudeCommandOutput } from './claude-local-command.js';
+import { claudeTaskNotification } from './claude-task-notification.js';
 // Parser for Claude Code JSONL conversation files.
 // Format: ~/.claude/projects/<encoded-path>/<uuid>.jsonl
 
@@ -80,6 +82,11 @@ interface ClaudeRecord {
   tool_name?: string;
   elapsed_time_seconds?: number;
   prevent_continuation?: boolean;
+  commandRun?: { command?: string; args?: string };
+  toolUseResult?: { agentId?: string; description?: string };
+  origin?: {kind?:string;producer?:string;runId?:string};
+  promptSource?: string;
+  turnOrigin?: string;
   data?: {
     type?: string;
     message?: unknown;
@@ -348,6 +355,8 @@ export class ClaudeParser implements ConversationParser {
     // Map tool_use UUIDs to block positions for parent_id linking
     const toolUseMap = new Map<string, number>();
     const toolNameMap = new Map<string, string>();
+    const agentCalls = new Map<string, {metadata:BlockMetadata; description?:string}>();
+    const commands = new Map<string, string>();
     const chatPartsByBlock = new Map<number, ChatContentPart[]>();
 
     for (let recordIndex = 0; recordIndex < records.length; recordIndex += 1) {
@@ -402,6 +411,13 @@ export class ClaudeParser implements ConversationParser {
                   : "";
               // Find matching tool_use position for parent_id
               const parentPos = block.tool_use_id ? toolUseMap.get(block.tool_use_id) : undefined;
+              const agentCall = block.tool_use_id ? agentCalls.get(block.tool_use_id) : undefined;
+              const agentResult = rec.toolUseResult;
+              const targets = typeof agentResult?.agentId === 'string' && agentResult.agentId
+                ? [{kind:'subagent' as const, provider:'claude_code' as const, parentSessionId:sessionId, agentId:agentResult.agentId,
+                  ...(agentResult.description || agentCall?.description ? {labelHint:agentResult.description || agentCall?.description} : {})}]
+                : undefined;
+              if (agentCall && targets) agentCall.metadata.display_tool_targets = targets;
               blocks.push({
                 type: "tool_result",
                 role: "tool",
@@ -413,6 +429,9 @@ export class ClaudeParser implements ConversationParser {
                   tool_id: block.tool_use_id || undefined,
                   tool_name: block.tool_use_id ? toolNameMap.get(block.tool_use_id) : undefined,
                   tool_kind: "claude_tool_result",
+                  display_tool_execution: {state:block.is_error===true ? 'failed' : 'completed',provenance:'paired-result'},
+                  ...(targets ? {display_tool_targets:targets} : {}),
+                  ...(agentCall?.metadata.display_tool_operation_kind ? {display_tool_operation_kind:agentCall.metadata.display_tool_operation_kind} : {}),
                   ...(Array.isArray(block.content) ? {display_tool_content:block.content} : {}),
                   ...(block.is_error === true ? {display_tool_error:true} : {}),
                   tool_output: toolOutput.length > 1000 ? undefined : toolOutput,
@@ -529,6 +548,14 @@ export class ClaudeParser implements ConversationParser {
               dag_uuid: rec.uuid,
               dag_parent_uuid: rec.parentUuid ?? null,
             });
+            if ((block.name === 'Agent' || block.name === 'Task') && block.id) {
+              const metadata = blocks[blocks.length - 1].metadata;
+              const input = block.input && typeof block.input === 'object' ? block.input as Record<string, unknown> : {};
+              metadata.display_tool_operation_kind = input.resume || input.to ? 'subagent-resume' : 'subagent-create';
+              if (typeof input.resume === 'string' && input.resume) metadata.display_tool_targets = [{kind:'subagent', provider:'claude_code', parentSessionId:sessionId, agentId:input.resume,
+                ...(typeof input.description === 'string' ? {labelHint:input.description} : {})}];
+              agentCalls.set(block.id, {metadata, ...(typeof input.description === 'string' ? {description:input.description} : {})});
+            }
           }
         }
       } else if (rec.type === "progress" || rec.type === "tool_progress") {
@@ -604,6 +631,25 @@ export class ClaudeParser implements ConversationParser {
         blocks[index].metadata.source_record_ordinal = options.baseRecordCount + recordIndex;
         blocks[index].metadata.source_sub_block_ordinal = index - firstRecordBlock;
         const block = blocks[index];
+        if(rec.type==='user' && rec.origin?.kind==='task-notification' && rec.origin.producer==='session-task'
+          && rec.promptSource==='system' && rec.turnOrigin==='task_notification') {
+          const notification=claudeTaskNotification(block.content);
+          if(notification)block.metadata.display_task_notification={summary:notification.summary,hasBody:Boolean(notification.result)};
+        }
+        // Only the provider's complete command envelopes gain presentation facts.
+        // Raw role/content and every native/source coordinate remain authoritative.
+        if ((rec.type === 'user' && !rec.isMeta) || (rec.type === 'system' && rec.subtype === 'local_command')) {
+          const invocation = claudeCommandInvocation(block.content);
+          const output = claudeCommandOutput(block.content);
+          if (invocation) {
+            block.metadata.display_local_command = {kind:'invocation', ...invocation};
+            commands.set(rec.uuid, invocation.name);
+          } else if (output) {
+            const commandName = rec.commandRun?.command || (rec.parentUuid ? commands.get(rec.parentUuid) : undefined);
+            block.metadata.display_local_command = {kind:'output', stream:output.stream, summary:output.summary, hasBody:!!output.body,
+              ...(rec.parentUuid ? {invocationUuid:rec.parentUuid} : {}), ...(commandName ? {commandName} : {})};
+          }
+        }
         const sourceEventType = block.metadata.source_event_type
           ?? (block.type === "user_message" ? "user" : block.type);
         const progress = sourceEventType.startsWith("progress.");

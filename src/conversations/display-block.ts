@@ -16,8 +16,12 @@ export function projectDisplayBlock(row: SourceBackedConversationBlock): SourceB
   const item = metadata.chat_item;
   const activity = item && typeof item === "object" && !Array.isArray(item)
     && (item as Record<string, unknown>).type === "activity";
-  const targeted = row.type === "tool_use" || row.type === "tool_result" || row.type === "thinking" || activity;
+  const commandOutput = (metadata.display_local_command as import('../parsers/types.js').BlockMetadata['display_local_command'])?.kind === 'output';
+  const notification = metadata.display_task_notification as import('../parsers/types.js').BlockMetadata['display_task_notification'];
+  const targeted = row.type === "tool_use" || row.type === "tool_result" || row.type === "thinking" || activity || commandOutput || Boolean(notification);
   if (!targeted) return row;
+  if (commandOutput) metadata.display_has_body = (metadata.display_local_command as {hasBody:boolean}).hasBody;
+  if (notification) metadata.display_has_body = notification.hasBody;
   const reasoningSummary = row.type === "thinking" && metadata.source_event_type === "reasoning_summary";
   const reasoningLines = reasoningSummary
     ? row.content.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
@@ -28,6 +32,7 @@ export function projectDisplayBlock(row: SourceBackedConversationBlock): SourceB
   }
   delete metadata.display_completion_parts;
   delete metadata.display_tool_content;
+  delete metadata.display_tool_operation;
   delete metadata.tool_input;
   delete metadata.tool_output;
   if (item && typeof item === "object" && !Array.isArray(item)) {
@@ -38,7 +43,7 @@ export function projectDisplayBlock(row: SourceBackedConversationBlock): SourceB
       compactItem.parts = reasoningLines.length > 0 ? [{ type: "text", text: reasoningLines[0] }] : [];
     } else if (row.type === "thinking") {
       compactItem.parts = [];
-    } else if (row.type === "tool_use" || row.type === "tool_result" || activity) {
+    } else if (row.type === "tool_use" || row.type === "tool_result" || activity || commandOutput || notification) {
       compactItem.parts = [];
     }
     metadata.chat_item = compactItem;

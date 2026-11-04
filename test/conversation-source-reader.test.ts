@@ -6,6 +6,7 @@ import path from "node:path";
 import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { normalizedPositionIdentity } from "../src/conversations/position-space.js";
 import { ConversationSourceReader } from "../src/conversations/source-reader.js";
 import { ConversationSourceStore } from "../src/conversations/source-store.js";
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from "../src/conversations/source-types.js";
@@ -81,6 +82,92 @@ async function record(db: SqliteDatabase, id: string, filePath: string): Promise
 }
 
 describe("versioned conversation source reader", () => {
+  it('retains split native wrapper output without inventing a payload for an emission outside the receipt',async()=>{
+    const db=migratedMemoryDb(),file=rolloutPath();
+    const script='const sent=await tools.mcp__codex_app__send_message_to_thread({threadId:"child",text:"inspect"});text(sent);const report=await tools.mcp__codex_app__wait_threads({targets:[{threadId:"child"}]});text(report);';
+    const sent=JSON.stringify({queued:true});
+    const report=JSON.stringify({timedOut:false,polls:[{thread:{id:'child'},latestAssistantMessage:{phase:'final_answer',text:'actual returned report'}}]});
+    const yielded=`Script running with cell ID 7\nWall time 10 seconds\nOutput:\n${sent}`;
+    const completed=`Script completed\nWall time 2 seconds\nOutput:\n${report}`;
+    try {
+      writeRecords(file,[records()[0],
+        {type:'response_item',payload:{type:'custom_tool_call',call_id:'split',name:'exec',input:script}},
+        {type:'response_item',payload:{type:'custom_tool_call_output',call_id:'split',output:yielded}},
+        {type:'response_item',payload:{type:'function_call',call_id:'continuation',name:'wait',arguments:'{"cell_id":"7"}'}},
+        {type:'response_item',payload:{type:'function_call_output',call_id:'continuation',output:completed}},
+      ]);
+      const parsed=await parse(file);insertConversation(db,'split-output',file,parsed);
+      await record(db,'split-output',file);
+      const reader=new ConversationSourceReader(db);
+      const read=await reader.readPositions('split-output',[1,3],{maxBatchBytes:1});
+      if(read.status!=='source')throw Error(read.reason);
+      expect(read.value.map(block=>block.content)).toEqual([yielded,completed]);
+    } finally {db.close();}
+  });
+
+  it('keeps reused cell continuations bound to their exact exec origin across sparse windows and terminal reconciliation', async () => {
+    const db=migratedMemoryDb();
+    const file=rolloutPath();
+    const response=(payload:Record<string,unknown>)=>({type:'response_item',payload:{...payload,internal_chat_message_metadata_passthrough:{turn_id:'turn-scope'}}});
+    const exec=(id:string,script:string)=>response({type:'custom_tool_call',call_id:id,name:'exec',input:script});
+    const wait=(id:string)=>response({type:'function_call',call_id:id,name:'wait',arguments:'{"cell_id":"106"}'});
+    const result=(id:string,type:string,output:unknown)=>response({type,call_id:id,output});
+    const running='Script running with cell ID 106\nWall time 31.0 seconds\nOutput:\n';
+    const completed=[{type:'input_text',text:'Script completed\nWall time 12.3 seconds\nOutput:\n'},{type:'input_text',text:'{"report":"child finished"}'}];
+    try {
+      writeRecords(file,[records()[0],exec('old','text(await tools.old());'),result('old','custom_tool_call_output',running),
+        wait('old-wait'),result('old-wait','function_call_output',completed),
+        exec('new','text(await tools.codex_app__wait_threads({targets:[]}));'),result('new','custom_tool_call_output',running),
+        wait('new-wait'),result('new-wait','function_call_output',running),
+        wait('terminal'),result('terminal','function_call_output',completed),wait('retired')]);
+      const parsed=await parse(file);
+      insertConversation(db,'cells',file,parsed);
+      await record(db,'cells',file);
+      const origin=parsed.blocks[6].metadata.display_tool_origin;
+      expect(origin?.native_tool_id).toBe('new');
+      expect(origin?.native_turn_id).toBe('turn-scope');
+      expect(parsed.blocks[10].metadata.display_tool_origin).toBeUndefined();
+      expect(parsed.blocks[5].metadata.display_tool_execution?.state).toBe('completed');
+      const reader=new ConversationSourceReader(db);
+      for(const positions of [[6],[7],[9],[5,6,7,8,9]]) {
+        const read=await reader.readPositions('cells',positions,{maxBatchBytes:1});
+        expect(read.status).toBe('source');
+        if(read.status!=='source') throw Error(read.reason);
+        for(const block of read.value) {
+          const metadata=JSON.parse(block.metadata_json);
+          expect(metadata.display_tool_origin).toEqual(parsed.blocks[block.position].metadata.display_tool_origin);
+          expect(metadata.display_tool_execution).toEqual(parsed.blocks[block.position].metadata.display_tool_execution);
+          expect(metadata.display_tool_frame).toEqual(parsed.blocks[block.position].metadata.display_tool_frame);
+          if(metadata.display_tool_origin) expect(metadata.display_tool_operation?.input).toBe('text(await tools.codex_app__wait_threads({targets:[]}));');
+        }
+      }
+      const bounded=await new CodexParser().parseIncremental({filePath:file,raw:JSON.stringify(wait('late'))+'\n',baseBlockCount:11,baseRecordCount:12,sourceHash:'test',sourceMtime:0});
+      expect(bounded).toBeNull();
+    } finally {db.close();}
+  });
+
+  it('keeps id-less source identity independent of presentation-only passthrough turn hints', async () => {
+    const file=rolloutPath();
+    const payload={type:'message',role:'developer',content:[{type:'input_text',text:'Source-authored system record'}]};
+    writeRecords(file,[records()[0],{type:'response_item',payload}]);
+    const baseline=await parse(file);
+    writeRecords(file,[records()[0],{type:'response_item',payload:{...payload,internal_chat_message_metadata_passthrough:{turn_id:'display-scope'}}}]);
+    const scoped=await parse(file);
+    expect(normalizedPositionIdentity(scoped.blocks[0])).toBe(normalizedPositionIdentity(baseline.blocks[0]));
+  });
+
+  it('retains a historical yielded observation without inventing current execution from omitted output or results', async () => {
+    const file=rolloutPath();
+    writeRecords(file,[records()[0],
+      {type:'response_item',payload:{type:'custom_tool_call',call_id:'yielded',name:'exec',input:'text(await tools.work());'}},
+      {type:'response_item',payload:{type:'custom_tool_call_output',call_id:'yielded',output:'Script running with cell ID 7\nWall time 0.0 seconds\nOutput:\n'}},
+      {type:'response_item',payload:{type:'function_call',call_id:'historical-unpaired',name:'other',arguments:'{}'}}]);
+    const parsed=await parse(file);
+    expect(parsed.blocks[1].metadata.display_tool_frame).toMatchObject({state:'running',wallTimeSeconds:0});
+    expect(parsed.blocks[1].metadata.display_tool_execution?.state).toBe('unknown');
+    expect(parsed.blocks[2].metadata.display_tool_execution?.state).not.toBe('ongoing');
+  });
+
   it('hydrates overlapping subitems and unrequested tool parents once, returning only ordered unique requested positions', async () => {
     const db = migratedMemoryDb();
     const nativeSessionId = '11111111-1111-4111-8111-111111111111';

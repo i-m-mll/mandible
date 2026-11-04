@@ -1,5 +1,6 @@
+import { installReadingPresentationFixture } from './helpers/reading-presentation-fixture';
 // @vitest-environment jsdom
-import { mockChatViewport, mockManagedSettings } from './helpers/conversation-ui-transport';
+import { mockChatViewport, mockManagedSettings, mockConversationMetadataTransport } from './helpers/conversation-ui-transport';
 import { establishTestClientAccess } from './helpers/local-client-access';
 
 import { cleanup, fireEvent, render, screen, waitFor, within } from './helpers/dom.js';
@@ -28,12 +29,16 @@ vi.mock('@xterm/xterm', () => ({
 
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} dispose(): void {} } }));
 
+const readingSources=new Map<string,api.ConversationPositionWindow>();
 beforeEach(async () => {
+  readingSources.clear();
   await establishTestClientAccess();
   vi.stubGlobal('ResizeObserver', class { observe(): void {} unobserve(): void {} disconnect(): void {} });
   mockChatViewport();
   vi.spyOn(api, 'resolveChatRouteTarget').mockImplementation(async (target) => ({ status: 'resolved', selection: target }));
   mockManagedSettings();
+  mockConversationMetadataTransport();
+  installReadingPresentationFixture(id=>readingSources.get(id));
   Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, writable: true, value: () => {} });
   vi.spyOn(HTMLElement.prototype, 'scrollTo').mockImplementation(() => {});
   queryClient.clear();
@@ -120,19 +125,11 @@ function sidebarResponse(rows: ConversationSidebarConversation[], pinnedIds?: st
   return { groups, limit: 5 };
 }
 
-function positionWindow(row: Conversation) {
-  return {
-    conversation: row,
-    body_source: 'legacy' as const,
-    source_version_id: null,
-    blocks: [],
-    children: [],
-    parent: null,
-    revision: row.block_count,
-    total: row.block_count,
-    target: { kind: 'initial' as const, requested_value: null, position: null, block_id: null, turn_id: null },
-    window: { start_position: null, end_position: null, has_before: false, has_after: false, after_count: 0, limit: 160 },
-  };
+function positionWindow(row: Conversation):api.ConversationPositionWindow {
+  const payload:api.ConversationPositionWindow={conversation:{...row,block_count:0},body_source:'source',source_version_id:'empty-source',position_space_id:'empty-space',publication_revision:1,
+    blocks:[],children:[],parent:null,revision:0,total:0,reading_context:{positions:[],speaker_runs:[]},display_context:{version:1,fragments:[],activity_runs:[],aliases:[],owners:[]},
+    target:{kind:'initial',requested_value:null,position:null,block_id:null,turn_id:null},window:{start_position:null,end_position:null,has_before:false,has_after:false,after_count:0,limit:160}};
+  readingSources.set(row.id,payload);return payload;
 }
 
 describe('conversation sidebar labeled-item rows', () => {

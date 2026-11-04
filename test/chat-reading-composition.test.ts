@@ -1,24 +1,30 @@
+import { readLatestPersistedUsage } from '../src/conversations/persisted-usage';
+import { testRuntimeRoot } from './helpers/runtime-isolation';
 import {chatItemIdentityKey} from '../src/conversation-control/provider-live';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { expect, it, vi } from 'vitest';
 import { migratedMemoryDb } from './helpers/ledger-fixtures';
 import { CodexParser } from '../src/parsers/codex';
+import { ClaudeParser } from '../src/parsers/claude';
+import { activitySemanticFacts, semanticActivityIcon, presentActivityItems } from '../src/presentation/activity-presentation';
+import { activityObservationTargets } from '../src/presentation/activity-targets';
+import { operationObservationForTool } from '../src/presentation/tool-observation';
 import { ConversationSourceStore } from '../src/conversations/source-store';
 import { ConversationSourceReader } from '../src/conversations/source-reader';
 import { CURRENT_CONVERSATION_SOURCE_EPOCHS } from '../src/conversations/source-types';
 import { captureReadingPublication, readConversationReadingManifest, readReadingRowBatch } from '../src/conversations/reading-materialization';
 import { planConversationReading } from '../src/presentation/reading-manifest';
-import { composeConversationReading, materializeConversationReading, readingCompositionRequests } from '../src/presentation/reading-composition';
+import { composeConversationReading, materializeConversationReading, readingCompositionRequests, reprojectHydratedReadingRow, retainedReadingProvenance } from '../src/presentation/reading-composition';
 import type { CanonicalChatItemEvent } from '../src/presentation/types';
 
-async function fixture(includeResult: boolean) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-reading-composition-'));
+async function fixture(includeResult: boolean, native?: {provider:'codex'|'claude_code'; records:Record<string,unknown>[]}) {
+  const root = fs.mkdtempSync(path.join(testRuntimeRoot, 'mandible-reading-composition-'));
   const db = migratedMemoryDb();
-  const file = path.join(root, '.codex/sessions/composition.jsonl');
+  const provider = native?.provider ?? 'codex';
+  const file = path.join(root, provider === 'codex' ? '.codex/sessions/composition.jsonl' : '.claude/projects/-tmp/composition.jsonl');
   fs.mkdirSync(path.dirname(file), {recursive: true});
-  const records = [
+  const records = native?.records ?? [
     {type: 'session_meta', payload: {id: 'composition', cwd: '/tmp'}},
     {type: 'event_msg', payload: {type: 'task_started', turn_id: 'turn'}},
     {type: 'response_item', payload: {type: 'message', role: 'user', content: [{type: 'input_text', text: 'inspect'}]}},
@@ -26,26 +32,142 @@ async function fixture(includeResult: boolean) {
     ...(includeResult ? [{type: 'response_item', payload: {type: 'function_call_output', call_id: 'call', output: 'EXACT RESULT BODY'}}] : []),
   ];
   fs.writeFileSync(file, records.map(record => JSON.stringify(record)).join('\n') + '\n');
-  const parsed = await new CodexParser().parse(file);
+  const parsed = await (provider === 'codex' ? new CodexParser() : new ClaudeParser()).parse(file);
   if (!parsed) throw new Error('Native composition fixture did not parse.');
   db.prepare(`INSERT INTO conversations(id,source,source_path,source_hash,source_mtime,session_id,block_count,started_at)
-    VALUES('composition','codex',?,?,?,'composition',?,'2026-11-01')`).run(file, parsed.conversation.source_hash, parsed.conversation.source_mtime, parsed.blocks.length);
-  await new ConversationSourceStore(db).recordConversation({conversationId: 'composition', provider: 'codex', nativeSessionId: 'composition',
+    VALUES('composition',?,?,?,?,'composition',?,'2026-11-01')`).run(provider, file, parsed.conversation.source_hash, parsed.conversation.source_mtime, parsed.blocks.length);
+  await new ConversationSourceStore(db).recordConversation({conversationId: 'composition', provider, nativeSessionId: 'composition',
     filePath: file, blocks: parsed.blocks, sourceSnapshot: parsed.sourceSnapshot, ...CURRENT_CONVERSATION_SOURCE_EPOCHS});
   const manifest = readConversationReadingManifest(db, 'composition', captureReadingPublication(db, 'composition')!)!;
   return {root, db, parsed, manifest, reader: new ConversationSourceReader(db), close: () => {db.close(); fs.rmSync(root, {recursive: true, force: true});}};
 }
 
-it('retains default status evidence and materializes exact disclosed call/result targets through the normal row source', async () => {
+it('stops cancelled row acquisition at the native source boundary',async()=>{
+  const f=await fixture(true);
+  try{
+    const request={positionSpaceId:f.manifest.positionSpaceId,rows:planConversationReading(f.manifest,{}).rows,expanded:{}};
+    expect((await readReadingRowBatch({db:f.db,reader:f.reader,conversationId:'composition',request})).status).toBe('source');
+    const controller=new AbortController();controller.abort();
+    expect((await readReadingRowBatch({db:f.db,reader:f.reader,conversationId:'composition',request,signal:controller.signal})).status).toBe('unavailable');
+  }finally{f.close();}
+});
+
+it('reprojects a complete retained payload across disclosure changes but rejects changed canonical dependencies',async()=>{
+  const f=await fixture(true);
+  try{
+    const groups=Object.fromEntries(Object.keys(f.manifest.runs).map(key=>[`group:${key}`,true]));
+    const expanded={...groups,...Object.fromEntries(f.manifest.members.flatMap(member=>(member.disclosures?.keys??[]).map(key=>[key,true])))};
+    const before=composeConversationReading({manifest:f.manifest,events:[],expanded});
+    const native=await readReadingRowBatch({db:f.db,reader:f.reader,conversationId:'composition',request:{positionSpaceId:f.manifest.positionSpaceId,rows:before.sourcePlan.rows,expanded}});
+    if(native.status!=='source')throw new Error(native.status);
+    const rendered=materializeConversationReading(before,before.plan.rows,native.rows);
+    if(rendered.status!=='source')throw new Error(rendered.reason);
+    const body=rendered.rows.find(row=>row.nodes.some(node=>node.kind==='activity'&&node.item.type==='tool-call-activity'))!;
+    const after=composeConversationReading({manifest:f.manifest,events:[],expanded:groups});
+    const ref=after.plan.rows.find(row=>row.key===body.key)!;
+    const provenance=retainedReadingProvenance(before,body);
+    const reused=reprojectHydratedReadingRow(provenance,after,ref,body);
+    expect(reused).not.toBeNull();
+    expect(reused!.revision).toBe(ref.revision);
+    expect(ref.revision).not.toBe(before.plan.rows.find(row=>row.key===body.key)!.revision);
+    const changed=composeConversationReading({manifest:{...f.manifest,members:f.manifest.members.map(member=>({...member,dependencyRevision:`changed:${member.dependencyRevision}`}))},events:[],expanded:groups});
+    expect(reprojectHydratedReadingRow(provenance,changed,changed.plan.rows.find(row=>row.key===body.key)!,body)).toBeNull();
+    expect(reprojectHydratedReadingRow(provenance,after,ref,{...body,sources:body.sources.map(source=>({...source,detailsLoaded:false}))})).toBeNull();
+  }finally{f.close();}
+});
+
+it('keeps Claude command roles and stream facts through typed indexing and folded source materialization', async () => {
+  const invocation = '<command-name>/memory</command-name>\n<command-message>memory</command-message>\n<command-args>project</command-args>';
+  const output = 'Updated memory\nDETAIL ONLY IN SOURCE';
+  const records = [
+    {uuid:'old-invocation',type:'user',message:{role:'user',content:invocation}},
+    {uuid:'old-output',parentUuid:'old-invocation',type:'user',message:{role:'user',content:`<local-command-stdout>${output}</local-command-stdout>`}},
+    {uuid:'new-invocation',type:'system',subtype:'local_command',content:invocation},
+    {uuid:'new-output',parentUuid:'new-invocation',type:'system',subtype:'local_command',commandRun:{command:'memory',args:'project'},content:'<local-command-stderr>Permission denied</local-command-stderr>'},
+  ].map(record => ({sessionId:'composition',timestamp:'2026-11-01T00:00:00Z',...record}));
+  const f = await fixture(false,{provider:'claude_code',records});
+  try {
+    expect(f.manifest.members.map(member => [member.speaker,member.sourcePositions])).toEqual([['user',[0]],['system',[1]],['user',[2]],['system',[3]]]);
+    const outputs = f.manifest.members.filter(member => member.activityFacts?.localCommandStream);
+    expect(outputs.map(member => member.activityFacts!.localCommandStream)).toEqual(['stdout','stderr']);
+    expect(Object.values(f.manifest.summarySources).flat()).toEqual(expect.arrayContaining([1,3]));
+    expect(JSON.stringify(f.manifest)).not.toContain('DETAIL ONLY IN SOURCE');
+    const headers: unknown[] = [];
+    for (const expanded of [{}, Object.fromEntries(outputs.flatMap(member => member.disclosures!.keys.map(key => [key,true])))]) {
+      const plan = planConversationReading(f.manifest,expanded);
+      const result = await readReadingRowBatch({db:f.db,reader:f.reader,conversationId:'composition',request:{positionSpaceId:f.manifest.positionSpaceId,rows:plan.rows,expanded}});
+      expect(result.status).toBe('source');
+      if(result.status !== 'source')throw new Error(result.status);
+      const nodes = result.rows.flatMap(row => row.activityGroup?.items ?? row.nodes);
+      expect(nodes.filter(node => node.kind === 'user_message')).toHaveLength(2);
+      const activities = nodes.flatMap(node => node.kind === 'activity' && node.item.type === 'activity' && node.item.local_command ? [node.item] : []);
+      expect(activities.map(item => item.local_command!.stream)).toEqual(['stdout','stderr']);
+      headers.push(activities.map(item => ({presentation:presentActivityItems([item]).map(value => value.summary),icon:semanticActivityIcon(activitySemanticFacts(item))})));
+    }
+    expect(headers[1]).toEqual(headers[0]);
+    expect(f.parsed.blocks[0].content).toBe(invocation);
+    expect(f.parsed.blocks[1].role).toBe('user');
+  } finally {f.close();}
+});
+
+it('retains Claude create/resume actions and parent-scoped targets in compact and materialized owners', async () => {
+  const descriptions = ['Inspect settings','Continue inspection'];
+  const records = descriptions.flatMap((description,index) => [
+    {uuid:`call-${index}`,type:'assistant',message:{role:'assistant',content:[{type:'tool_use',id:`agent-${index}`,name:index?'Task':'Agent',input:{description,prompt:'Inspect',...(index?{resume:'native-agent'}:{})}}]}},
+    {uuid:`result-${index}`,parentUuid:`call-${index}`,type:'user',toolUseResult:{agentId:'native-agent',...(index?{}:{description}),status:index?'completed':'async_launched'},message:{role:'user',content:[{type:'tool_result',tool_use_id:`agent-${index}`,content:'Agent result'}]}},
+  ]).map(record => ({sessionId:'composition',timestamp:'2026-11-01T00:00:00Z',...record}));
+  const f = await fixture(false,{provider:'claude_code',records});
+  try {
+    const members = f.manifest.members.filter(member => member.activityFacts?.kind === 'tool');
+    expect(members).toHaveLength(2);
+    expect(members.map(member => member.activityFacts!.observation!.operation)).toEqual(['subagent-create','subagent-resume']);
+    const expected = descriptions.map(labelHint => [{kind:'subagent',provider:'claude_code',parentSessionId:'composition',agentId:'native-agent',labelHint}]);
+    expect(members.map(member => activityObservationTargets(member.activityFacts!.observation!))).toEqual(expected);
+    const expanded = {[`group:${members[0].activityRunId}`]:true};
+    const plan = planConversationReading(f.manifest,expanded);
+    const result = await readReadingRowBatch({db:f.db,reader:f.reader,conversationId:'composition',request:{positionSpaceId:f.manifest.positionSpaceId,rows:plan.rows,expanded}});
+    expect(result.status).toBe('source');
+    if(result.status !== 'source')throw new Error(result.status);
+    const observed = result.rows.filter(row => row.kind === 'content').flatMap(row => row.nodes).flatMap(node => node.kind === 'activity' && node.item.type === 'tool-call-activity' ? [operationObservationForTool(node.item)] : []);
+    expect(observed.map(item => item.operation)).toEqual(['subagent-create','subagent-resume']);
+    expect(observed.map(activityObservationTargets)).toEqual(expected);
+  } finally {f.close();}
+});
+
+it('projects only proven native task notifications and retains repeated reports and raw source',async()=>{
+  const summary='Agent "Inspect settings" finished';
+  const report='First finding\n\nSecond finding';
+  const envelope=`<task-notification>\n<task-id>same-agent</task-id>\n<tool-use-id>native-call</tool-use-id>\n<output-file>/private/tasks/same-agent.output</output-file>\n<status>completed</status>\n<summary>${summary}</summary>\n<note>The same task may notify after resuming.</note>\n<result>${report}</result>\n<usage><tool_uses>2</tool_uses></usage>\n</task-notification>`;
+  const producer={origin:{kind:'task-notification',producer:'session-task',runId:'native-run'},promptSource:'system',turnOrigin:'task_notification'};
+  const ids=['notification-one','notification-two','quoted-by-user'];
+  const records=ids.map((uuid,index)=>({uuid,type:'user',sessionId:'composition',timestamp:'2026-11-01T00:00:00Z',...(index<2?producer:{}),message:{role:'user',content:envelope}}));
+  const f=await fixture(false,{provider:'claude_code',records});
+  try {
+    const notifications=f.manifest.members.filter(member=>member.activityFacts?.activityKind==='tool-summary');
+    expect(notifications.map(member=>member.sourcePositions)).toEqual([[0],[1]]);
+    expect(new Set(notifications.map(member=>member.key)).size).toBe(2);
+    expect(f.manifest.members.find(member=>member.position===2)?.speaker).toBe('user');
+    const expanded={[`group:${notifications[0].activityRunId}`]:true,...Object.fromEntries(notifications.flatMap(member=>member.disclosures!.keys.map(key=>[key,true])))};
+    const plan=planConversationReading(f.manifest,expanded);
+    const rendered=await readReadingRowBatch({db:f.db,reader:f.reader,conversationId:'composition',request:{positionSpaceId:f.manifest.positionSpaceId,rows:plan.rows,expanded}});
+    expect(rendered.status).toBe('source');
+    if(rendered.status!=='source')throw new Error(rendered.status);
+    const nodes=rendered.rows.filter(row=>row.kind==='content').flatMap(row=>row.nodes);
+    const events=nodes.flatMap(node=>node.kind==='activity'&&node.item.type==='activity'?[node.item]:[]);
+    expect(events.map(item=>item.identity.native_item_id)).toEqual(ids.slice(0,2));
+    expect(events.map(item=>item.parts.map(part=>part.text))).toEqual([[summary,report],[summary,report]]);
+    expect(nodes.filter(node=>node.kind==='user_message')).toHaveLength(1);
+    const raw=await f.reader.readPositions('composition',[0,1]);
+    expect(raw.status).toBe('source');
+    if(raw.status!=='source')throw new Error(raw.status);
+    expect(raw.value.map(block=>[block.type,block.role,block.content])).toEqual([['user_message','user',envelope],['user_message','user',envelope]]);
+    expect(f.parsed.blocks.map(block=>block.metadata.chat_item!.identity.native_item_id)).toEqual(ids);
+  } finally {f.close();}
+});
+
+it('materializes exact disclosed call/result targets through the normal row source', async () => {
   const f = await fixture(true);
   try {
-    const status = f.parsed.blocks.find(block => block.metadata.source_event_type === 'task_started')!;
-    expect(planConversationReading(f.manifest, {}).membership.has(status.position)).toBe(true);
-    const statusMember = f.manifest.members.find(member => member.position === status.position)!;
-    const statusExpanded = {[statusMember.disclosures!.keys[0]]: true};
-    const statusRow = planConversationReading(f.manifest, statusExpanded).rows.find(row => row.memberKeys.includes(statusMember.key))!;
-    expect(await readReadingRowBatch({db: f.db, reader: f.reader, conversationId: 'composition',
-      request: {positionSpaceId: f.manifest.positionSpaceId, rows: [statusRow], expanded: statusExpanded}})).toMatchObject({status: 'source'});
     const call = f.manifest.members.find(member => member.activityFacts?.kind === 'tool')!;
     const closed = planConversationReading(f.manifest, {});
     const expanded = {[call.disclosures!.keys[0]]: true};
@@ -78,6 +200,7 @@ it('composes a live result and live suffix with the canonical owner through one 
     const composed = composeConversationReading({manifest: f.manifest, events: [result, suffix], expanded: {}});
     const owner = f.manifest.members.find(member => member.activityFacts?.kind === 'tool')!;
     const summary = composed.plan.rows.find(row => row.kind === 'activity-summary')!;
+    expect(composed.members.find(member=>member.key===owner.key)?.activityFacts?.observation?.execution.state).toBe('completed');
     expect(summary.memberKeys).toHaveLength(2);
     expect(composed.actionRuns.get(summary.actionGroup.key)?.events).toContain(result);
     expect(composed.plan.membership.get(owner.position!)?.rowKey).toBe(summary.key);
@@ -90,6 +213,9 @@ it('composes a live result and live suffix with the canonical owner through one 
     if (hydrated.status !== 'source') throw new Error(hydrated.reason);
     expect(hydrated.rows[0].activityGroup?.items.find(node => node.source?.position === owner.position)?.item).toMatchObject({result: {content: 'LIVE RESULT'}});
     expect(hydrated.rows[0].activityGroup?.items.find(node => !node.source)?.item).toMatchObject({name: 'edit'});
+    const hydratedOwner=hydrated.rows[0].activityGroup!.items.find(node=>node.source?.position===owner.position)!;
+    if(hydratedOwner.item.type!=='tool-call-activity')throw Error('Expected the exact tool owner');
+    expect(hydratedOwner.item.observation).toEqual(composed.members.find(member=>member.key===owner.key)?.activityFacts?.observation);
     expect(JSON.stringify(refs)).not.toContain('LIVE RESULT');
   } finally {f.close();}
 });
@@ -131,4 +257,156 @@ it('preserves the tool row and source positions when empty completion metadata a
     expect(retained.memberKeys).toEqual(first.memberKeys);
     expect(plan.membership.has(parsed.blocks.at(-1)!.position)).toBe(false);
   } finally {f.close();}
+});
+
+it('coalesces only adjacent complete reasoning equivalents while retaining every native source alias',async()=>{
+  const text='**Planning retry**\n\nPreparing consultation';
+  const reasoning=(id:string,body:string)=>({type:'response_item',payload:{type:'reasoning',id,summary:[{type:'summary_text',text:body}],internal_chat_message_metadata_passthrough:{turn_id:'same-turn'}}});
+  const mirror={type:'event_msg',payload:{type:'item_completed',turn_id:'same-turn',item:{type:'Reasoning',id:'mirror'}}};
+  const f=await fixture(false,{provider:'codex',records:[{type:'session_meta',payload:{id:'composition',cwd:'/tmp'}},reasoning('first',text),mirror,mirror,reasoning('second',text+'\n\nSecond complete source line'),
+    {type:'event_msg',payload:{type:'task_started',turn_id:'same-turn'}},reasoning('after-status',text),reasoning('distinct-body','**Planning retry**\n\nDifferent consultation')]});
+  try {
+    const source=f.parsed.blocks.filter(block=>block.type==='thinking');
+    expect(source).toHaveLength(4);
+    const representatives=f.manifest.members.filter(member=>member.activityFacts?.reasoningEquivalence);
+    expect(representatives).toHaveLength(3);
+    expect(representatives[0].sourcePositions).toEqual(source.slice(0,2).map(block=>block.position));
+    expect(representatives[0].position).toBe(source[1].position);
+    expect(representatives[1].sourcePositions).toEqual([source[2].position]);
+    expect(representatives[2].activityFacts?.reasoningEquivalence).not.toBe(representatives[0].activityFacts?.reasoningEquivalence);
+    const [first,second]=source;
+    const closed=planConversationReading(f.manifest,{});
+    expect(closed.membership.get(first.position)?.memberKey).toBe(closed.membership.get(second.position)?.memberKey);
+    expect(closed.membership.get(first.position)?.subtarget).not.toBe(closed.membership.get(second.position)?.subtarget);
+    const expanded={[representatives[0].disclosures!.keys[0]]:true,...(representatives[0].activityRunId?{[`group:${representatives[0].activityRunId}`]:true}:{})};
+    const open=planConversationReading(f.manifest,expanded);
+    const descriptor=open.rows.find(row=>row.key===representatives[0].key)!;
+    const read=await readReadingRowBatch({db:f.db,reader:f.reader,conversationId:'composition',request:{positionSpaceId:f.manifest.positionSpaceId,rows:[descriptor],expanded}});
+    if(read.status!=='source')throw Error(read.status);
+    expect(read.rows[0].nodes).toHaveLength(1);
+    expect(read.rows[0].sources.map(source=>source.position)).toEqual([first.position,second.position]);
+    const node=read.rows[0].nodes[0];
+    if(node.kind!=='activity')throw Error('Expected representative reasoning event');
+    expect(node.source?.position).toBe(second.position);
+    expect(node.sourceAliases?.map(source=>source.position)).toEqual([first.position]);
+    if(node.item.type!=='activity')throw Error('Missing source reasoning');
+    expect(node.item.parts).toEqual(second.metadata.chat_item!.parts);
+  } finally {f.close();}
+});
+
+it('keeps compact and hydrated wait chains identical without crossing semantic interruptions',async()=>{
+  const report='## Native child report\n\nPreserve this result exactly.';
+  const response=(payload:Record<string,unknown>)=>({type:'response_item',payload});
+  const run=(id:string)=>response({type:'custom_tool_call',call_id:id,name:'exec',input:'text(await tools.codex_app__wait_threads({targets:[{threadId:"child"}]}));'});
+  const wait=(id:string)=>response({type:'function_call',call_id:id,name:'wait',arguments:'{"cell_id":"106"}'});
+  const yielded=(id:string,type:string,seconds:number)=>response({type,call_id:id,output:`Script running with cell ID 106\nWall time ${seconds} seconds\nOutput:\n`});
+  const terminal=response({type:'function_call_output',call_id:'terminal',output:[{type:'input_text',text:'Script completed\nWall time 12.3 seconds\nOutput:\n'},{type:'input_text',text:JSON.stringify({timedOut:false,polls:[{thread:{id:'child'},latestAssistantMessage:{phase:'final_answer',text:report}}]})}]});
+  for(const interrupted of [false,true]){
+    const f=await fixture(false,{provider:'codex',records:[{type:'session_meta',payload:{id:'composition',cwd:'/tmp'}},run('origin'),yielded('origin','custom_tool_call_output',31),
+      {type:'event_msg',payload:{type:'token_count'}},...(interrupted?[{type:'event_msg',payload:{type:'task_started',turn_id:'turn'}}]:[]),wait('continuation'),yielded('continuation','function_call_output',61),wait('terminal'),terminal]});
+    try{
+      const members=f.manifest.members.filter(member=>member.activityFacts?.observation?.operation==='thread-wait');
+      expect(members).toHaveLength(interrupted?2:1);
+      const owner=members.at(-1)!;
+      const expanded=Object.fromEntries([...(owner.disclosures?.keys??[]),...(owner.activityRunId?[`group:${owner.activityRunId}`]:[])].map(key=>[key,true]));
+      const plan=planConversationReading(f.manifest,expanded);
+      const descriptor=plan.rows.find(row=>row.key===owner.key)!;
+      const read=await readReadingRowBatch({db:f.db,reader:f.reader,conversationId:'composition',request:{positionSpaceId:f.manifest.positionSpaceId,rows:[descriptor],expanded}});
+      if(read.status!=='source')throw Error(read.status);
+      const node=read.rows[0].nodes[0];
+      if(node.kind!=='activity'||node.item.type!=='tool-call-activity')throw Error('Missing wait owner');
+      expect(node.item.observation).toEqual(owner.activityFacts!.observation);
+      expect(node.item.result?.fullText??node.item.result?.content).toContain(report.replaceAll('\n','\\n'));
+      expect(new Set(read.rows[0].sources.map(source=>source.position))).toEqual(new Set(owner.sourcePositions));
+      const composition=composeConversationReading({manifest:f.manifest,events:[],expanded});
+      const composedDescriptor=composition.plan.rows.find(row=>row.key===owner.key)!;
+      const composed=materializeConversationReading(composition,[composedDescriptor],read.rows);
+      if(composed.status!=='source')throw Error(composed.reason);
+      expect(new Set(composed.rows[0].sources.map(source=>source.position))).toEqual(new Set(owner.sourcePositions));
+      const nativeCalls=f.parsed.blocks.filter(block=>block.type==='tool_use');
+      for(const call of nativeCalls.filter(call=>owner.sourcePositions.includes(call.position)))expect(plan.membership.get(call.position)?.memberKey).toBe(owner.key);
+    }finally{f.close();}
+  }
+});
+
+
+it('retains native normalized usage independently of reader window bodies',async()=>{
+  const f=await fixture(false,{provider:'codex',records:[{type:'session_meta',payload:{id:'composition',cwd:'/tmp'}},
+    {type:'event_msg',payload:{type:'token_count',info:{model_context_window:100000,total_token_usage:{input_tokens:41000,output_tokens:2000,total_tokens:43000}}}}]});
+  try{
+    const native=f.parsed.blocks.find(block=>block.metadata.usage_telemetry)?.metadata.usage_telemetry;
+    expect(native).toBeDefined();
+    const usage=await readLatestPersistedUsage(f.db,'composition',path.join(f.root,'.codex/sessions/composition.jsonl'));
+    expect(usage).toEqual(native);
+  }finally{f.close();}
+});
+
+
+it('keeps sparse continuation input dependencies outside the rendered row topology',async()=>{
+  const output=JSON.stringify({message:'Wait interrupted by new input.',timedOut:false});
+  const targetIds=['019ff710-516a-7813-8d5f-5de3ce39de6c','019ff682-703a-7c32-825a-fbba35ca4fad'];
+  const response=(payload:Record<string,unknown>)=>({type:'response_item',payload});
+  const f=await fixture(false,{provider:'codex',records:[{type:'session_meta',payload:{id:'composition',cwd:'/tmp'}},
+    response({type:'custom_tool_call',call_id:'origin',name:'exec',input:`const ids=${JSON.stringify(targetIds)};text(await tools.codex_app__wait_threads({targets:ids.map(threadId=>({threadId}))}));`}),
+    response({type:'custom_tool_call_output',call_id:'origin',output:'Script running with cell ID 128\nWall time 11 seconds\nOutput:\n'}),
+    response({type:'message',role:'assistant',content:[{type:'output_text',text:'Intervening authored event'}]}),
+    response({type:'function_call',call_id:'continuation',name:'wait',arguments:'{"cell_id":"128"}'}),
+    response({type:'function_call_output',call_id:'continuation',output:'Script completed\nWall time 0 seconds\nOutput:\n'+output})]});
+  try{
+    const member=f.manifest.members.find(member=>member.position===3)!;
+    const targets=targetIds.map(sessionId=>({kind:'thread',provider:'codex',sessionId}));
+    expect(member.activityFacts?.observation?.targets).toEqual(targets);
+    for(const expanded of [{},Object.fromEntries(member.disclosures!.keys.map(key=>[key,true]))]){
+      const plan=planConversationReading(f.manifest,expanded),descriptor=plan.rows.find(row=>row.key===member.key)!;
+      const read=await readReadingRowBatch({db:f.db,reader:f.reader,conversationId:'composition',request:{positionSpaceId:f.manifest.positionSpaceId,rows:[descriptor],expanded}});
+      if(read.status!=='source')throw Error(read.reason??read.status);
+      expect(read.rows[0].key).toBe(descriptor.key);
+      expect(read.rows[0].sources.map(source=>source.position)).toEqual(member.sourcePositions);
+      const node=read.rows[0].nodes[0];if(node.kind!=='activity'||node.item.type!=='tool-call-activity')throw Error('Missing continuation owner');
+      expect(node.item.observation?.targets).toEqual(targets);
+      if(Object.values(expanded).some(Boolean))expect(node.item.operationContext?.origin.position).toBe(0);
+    }
+  }finally{f.close();}
+});
+
+it('keeps invalid native creation receipts distinct from verified thread identities through hydration',async()=>{
+  const script='const prompts=[{title:"first",prompt:"source first"},{title:"second",prompt:"source second"}];const results=await Promise.all(prompts.map(p=>tools.codex_app__create_thread({title:p.title,prompt:p.prompt})));results.forEach(text);';
+  const output='Script completed\nWall time 0.1 seconds\nOutput:\n\ncreate_thread received invalid arguments.\ncreate_thread received invalid arguments.';
+  const f=await fixture(false,{provider:'codex',records:[{type:'session_meta',payload:{id:'composition',cwd:'/tmp'}},
+    {type:'response_item',payload:{type:'custom_tool_call',call_id:'invalid-create',name:'exec',input:script}},
+    {type:'response_item',payload:{type:'custom_tool_call_output',call_id:'invalid-create',output}}]});
+  try{
+    const owner=f.manifest.members.find(member=>member.activityFacts?.observation?.children)!;
+    const compact=owner.activityFacts!.observation!;
+    expect(compact.children?.map(child=>({operation:child.operation,targets:child.targets,subject:child.subject}))).toEqual([
+      {operation:'thread-request',targets:[],subject:'first'},{operation:'thread-request',targets:[],subject:'second'}]);
+    const expanded=Object.fromEntries([...(owner.disclosures?.keys??[]),...(owner.activityRunId?[`group:${owner.activityRunId}`]:[])].map(key=>[key,true]));
+    const row=planConversationReading(f.manifest,expanded).rows.find(row=>row.key===owner.key)!;
+    const read=await readReadingRowBatch({db:f.db,reader:f.reader,conversationId:'composition',request:{positionSpaceId:f.manifest.positionSpaceId,rows:[row],expanded}});
+    if(read.status!=='source')throw Error(read.status);
+    const node=read.rows[0].nodes[0];if(node.kind!=='activity'||node.item.type!=='tool-call-activity')throw Error('Missing native creation owner');
+    expect(node.item.observation?.children?.map(child=>({operation:child.operation,targets:child.targets}))).toEqual([{operation:'thread-request',targets:[]},{operation:'thread-request',targets:[]}]);
+    expect(node.item.result?.fullText??node.item.result?.content).toBe(output);
+  }finally{f.close();}
+});
+
+it('retains a mixed native unarchive receipt once without promoting opaque child effects',async()=>{
+  const ids=['019ff70a-c65a-7e91-9ac2-27389b82a658','019ff70b-6348-7432-8ce9-bb6891bd4362'];
+  const script=`const ids=${JSON.stringify(ids)};for(const threadId of ids)text(await tools.codex_app__set_thread_archived({threadId,hostId:"local",archived:false}));`;
+  const output='Script completed\nWall time 0.1 seconds\nOutput:\n\n'+JSON.stringify({threadId:ids[0],archived:false})+'\nno archived rollout found for thread id '+ids[1];
+  const f=await fixture(false,{provider:'codex',records:[{type:'session_meta',payload:{id:'composition',cwd:'/tmp'}},
+    {type:'response_item',payload:{type:'custom_tool_call',call_id:'unarchive-mixed',name:'exec',input:script}},
+    {type:'response_item',payload:{type:'custom_tool_call_output',call_id:'unarchive-mixed',output}}]});
+  try{
+    const owner=f.manifest.members.find(member=>member.activityFacts?.observation?.children)!;
+    expect(owner.activityFacts!.observation!.children?.map(child=>({operation:child.operation,state:child.execution.state}))).toEqual([
+      {operation:'thread-unarchive-request',state:'completed'},{operation:'thread-unarchive-request',state:'completed'}]);
+    const expanded=Object.fromEntries([...(owner.disclosures?.keys??[]),...(owner.activityRunId?[`group:${owner.activityRunId}`]:[])].map(key=>[key,true]));
+    const row=planConversationReading(f.manifest,expanded).rows.find(row=>row.key===owner.key)!;
+    const read=await readReadingRowBatch({db:f.db,reader:f.reader,conversationId:'composition',request:{positionSpaceId:f.manifest.positionSpaceId,rows:[row],expanded}});
+    if(read.status!=='source')throw Error(read.status);
+    const node=read.rows[0].nodes[0];if(node.kind!=='activity'||node.item.type!=='tool-call-activity')throw Error('Missing native mutation owner');
+    expect(node.item.result?.fullText??node.item.result?.content).toBe(output);
+    expect(node.item.observation?.children?.map(child=>child.operation)).toEqual(['thread-unarchive-request','thread-unarchive-request']);
+  }finally{f.close();}
 });

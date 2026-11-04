@@ -24,7 +24,7 @@ export function readingNodeDisclosures(node: RenderNode): ReadingDisclosures {
     case 'activity': {
       if (node.item.type === 'provider-directive' && node.item.directive.kind === 'created-thread') return { keys: [], prefixes: [] };
       const key = `activity:${node.inlineIdentity ? inlineActivityKey(node.inlineIdentity) : node.key}`;
-      return { keys: [key], prefixes: node.item.type==='tool-call-activity' ? [`${key}:operation:`] : [], ...(node.item.type === 'thinking-block-activity' ? { thinkingDefaults: [{ key, turnId: node.item.turnId }] } : {}) };
+      return { keys: [key,...(node.disclosureAliases??[])], prefixes: node.item.type==='tool-call-activity' ? [`${key}:operation:`] : [], ...(node.item.type === 'thinking-block-activity' ? { thinkingDefaults: [{ key, turnId: node.item.turnId }] } : {}) };
     }
     case 'semantic_event': return { keys: [`semantic:${node.key}`], prefixes: [] };
     case 'unmatched_tool_result': return { keys: [`unmatched-tool-result:${node.key}`], prefixes: [] };
