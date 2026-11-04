@@ -182,9 +182,9 @@ Mandible has a contract and a policy layer. The contract (`cli/instructions-cont
 ### Claude Code
 
 - **Lifecycle hooks** in `hooks/` (`session-start`, `session-end`, `subagent-start`, `subagent-stop`) attach the running process to its session so the app can navigate to its Zellij or tmux pane and kill it. Wire them into Claude Code's hook settings.
-- **`mandible claude-integration install`** adds the managed Stop and Notification hooks and chains the status line in `~/.claude/settings.json`, so the daemon ingests a turn as soon as it ends, relays Claude's notifications, and shows usage and context in Chat; `status` detects drift and `uninstall` restores the prior settings.
+- **`mandible claude-integration install`** adds the managed Stop and Notification hooks and chains the status line in `~/.claude/settings.json`, so the daemon ingests a turn as soon as it ends, relays Claude's notifications, and shows usage and context in Chat. It adds no managed PreToolUse hook when the settings already run `mandible hook pre-tool-use`, because Claude Code keeps only one of two parallel input rewrites; `status` detects drift and `uninstall` restores the prior settings.
 - **Channel server**: register `dist/channel-server/index.js` as the MCP server `mandible` and start `claude --channels server:mandible`. The session gets `mandible_check_inbox`, `mandible_report_status`, `mandible_submit_auth`, `mandible_get_issues`, and `mandible_request_work`, and receives approval results, inbox items, and work-unit assignments as notifications.
-- **Chat** drives Claude through `@anthropic-ai/claude-agent-sdk`. The session reports whether it bills to an API key found in the daemon environment or to the local Claude Code credentials.
+- **Chat** drives Claude through `@anthropic-ai/claude-agent-sdk`. It registers its in-process PreToolUse projection only when no settings source it loads already runs `mandible hook pre-tool-use`. The session reports whether it bills to an API key found in the daemon environment or to the local Claude Code credentials.
 - **`mandible wrap -- claude`** registers a process attachment around any command with full TTY passthrough.
 
 ### Codex
@@ -253,7 +253,7 @@ Everything stays on the machine: state is SQLite under `~/.mandible`, the daemon
 | Root | Contract | Contents |
 |---|---|---|
 | `~/.mandible` | durable; losing it is data loss | `mandible.db` with its `-wal`/`-shm` sidecars, `backups/`, `config/`, `artifacts/`, `conversation-custody/`, `runtime/` |
-| `~/.cache/mandible` | disposable | the local API socket, `agent-rpc/`, previews, the Cowork CLI mirror, hook staging, logs, `daemon.pid` |
+| `~/.cache/mandible` | disposable | the local API socket, `agent-rpc/`, previews, the Cowork CLI mirror, logs, `daemon.pid` |
 
 `MANDIBLE_HOME` relocates the durable root. Pinned Bun runtimes live under `~/.local/share/mandible/runtimes/`.
 

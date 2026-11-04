@@ -1,6 +1,7 @@
 import { claudePreToolUseProjection } from "../claude-execution-context.js";
 import { installedResourceRoot, leaveInstalledRuntime, readInstalledRelease, releaseFile } from "../../scripts/installed-release.mjs";
 import { publicCommand } from "../product-resources.js";
+import { loadedSettingsDeliverPreToolUseProjection } from "../claude-hook-settings.js";
 import { RUNTIME_SETTING_FIELDS } from "./types.js";
 import { managedQuestions, validQuestionAnswers } from "./questions.js";
 import { spawn } from "node:child_process";
@@ -86,6 +87,7 @@ export class ClaudeSdkTransport {
       else this.buffered.push(record);
       return {};
     };
+    const settingSources = settings.setting_sources ?? ["user", "project", "local"];
     const installed = installedResourceRoot();
     const release = installed ? readInstalledRelease(installed) : null;
     const options: Options = {
@@ -102,7 +104,7 @@ export class ClaudeSdkTransport {
       // behavior, and mandatory native questions/ask rules stay intact.
       allowDangerouslySkipPermissions: true,
       systemPrompt: withMandibleInstructionsFragment(settings.system_prompt),
-      settingSources: settings.setting_sources ?? ["user", "project", "local"],
+      settingSources,
       allowedTools: settings.allowed_tools,
       maxTurns: settings.max_turns,
       maxBudgetUsd: settings.max_cost_usd,
@@ -113,7 +115,10 @@ export class ClaudeSdkTransport {
         env: Object.fromEntries(Object.entries({ ...env, MANDIBLE_MANAGED_APP: "claude", MANDIBLE_SESSION_ID: providerId, MANDIBLE_SESSION_CWD: request.cwd ?? "", MANDIBLE_PROVIDER_SESSION_ID: providerId }).filter((entry): entry is [string, string] => typeof entry[1] === "string")),
       } },
       hooks: { ...Object.fromEntries(["SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "SessionEnd"].map((name) => [name, [{ hooks: [executionHook] }]])),
-        PreToolUse: [{ matcher: "Bash|mcp__mandible__.*", hooks: [async event => claudePreToolUseProjection(event as unknown as Record<string, unknown>)] }],
+        // A second rewriter would race with a loaded settings handler; Claude Code keeps only one updatedInput.
+        ...(loadedSettingsDeliverPreToolUseProjection(settingSources, request.cwd ?? process.cwd()) ? {} : {
+          PreToolUse: [{ matcher: "Bash|mcp__mandible__.*", hooks: [async event => claudePreToolUseProjection(event as unknown as Record<string, unknown>)] }],
+        }),
       },
       spawnClaudeCodeProcess: ({ command, args, cwd, env, signal }) => {
         const child = spawn(command, args, { cwd, env, signal, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
