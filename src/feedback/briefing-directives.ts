@@ -3,6 +3,7 @@ import { unified } from "unified";
 import remarkDirective from "remark-directive";
 import remarkParse from "remark-parse";
 import { parseAuthoredReferences } from "../ledger/authored-references.js";
+import { leadingMarkdownFrontmatter } from "../markdown-frontmatter.js";
 
 export const BRIEFING_PROFILE = "mandible-briefing.v2" as const;
 export const BRIEFING_PROFILE_V3 = "mandible-briefing.v3" as const;
@@ -164,13 +165,17 @@ function directiveBody(
   return { start: bodyStart, end: bodyEnd, body, options, variants: [] };
 }
 
-/** Parses the deliberately small, inert briefing directive grammar. Offsets are JS UTF-16 code units. */
+/**
+ * Parses the deliberately small, inert briefing directive grammar. Offsets are
+ * JS UTF-16 code units. Leading frontmatter is document metadata, outside the
+ * grammar.
+ */
 export function parseBriefingDirectives(
   source: string,
   profile: BriefingProfile = BRIEFING_PROFILE,
   options: { allowEmpty?: boolean } = {},
 ): BriefingDirective[] {
-  const directiveSource = maskAuthoredReferenceColons(source);
+  const directiveSource = maskAuthoredReferenceColons(blankLeadingFrontmatter(source));
   const tree = unified().use(remarkParse).use(remarkDirective).parse(directiveSource) as unknown as Node;
   const directives: BriefingDirective[] = [];
   const seen = new Set<string>();
@@ -227,6 +232,12 @@ export function parseBriefingDirectives(
     throw new BriefingDirectiveError("briefing document has no spec-item directives");
   }
   return directives;
+}
+
+function blankLeadingFrontmatter(source: string): string {
+  const frontmatter = leadingMarkdownFrontmatter(source);
+  if (!frontmatter) return source;
+  return frontmatter.raw.replace(/[^\r\n]/g, " ") + source.slice(frontmatter.end);
 }
 
 function maskAuthoredReferenceColons(source: string): string {
