@@ -8,6 +8,7 @@ const { ownershipConflict } = createRequire(import.meta.url)("../cli/integration
 
 type ClaudeSettings = Record<string, unknown>;
 type ClaudeStatusLine = Record<string, unknown>;
+export type ClaudeSettingSource = "user" | "project" | "local";
 
 interface ClaudeHookHandler {
   type: "command";
@@ -18,19 +19,6 @@ interface ClaudeHookHandler {
 interface ClaudeHookMatcher {
   matcher: string;
   hooks: ClaudeHookHandler[];
-}
-
-export interface ClaudeHookSettingsOptions {
-  sessionRef: string;
-  settingsDir?: string;
-  baseSettingsPath?: string | null;
-  baseSettings?: ClaudeSettings | null;
-}
-
-export interface ClaudeHookSettingsResult {
-  settingsPath: string;
-  settings: ClaudeSettings;
-  chainedStatusLine: string | null;
 }
 
 export interface ClaudeIntegrationInstallOptions {
@@ -74,22 +62,7 @@ const HOOK_EVENTS = {
   Notification: "mandible-claude-notification.sh",
 } as const;
 
-const SETTINGS_ARG_NAMES = new Set(["--settings"]);
-
-export function writeMandibleClaudeHookSettings(
-  options: ClaudeHookSettingsOptions,
-): ClaudeHookSettingsResult {
-  const settingsDir = options.settingsDir ?? defaultHookSettingsDir();
-  fs.mkdirSync(settingsDir, { recursive: true, mode: 0o700 });
-  const baseSettingsPath = options.baseSettingsPath ?? defaultClaudeUserSettingsPath();
-  const baseSettings =
-    options.baseSettings ??
-    (baseSettingsPath ? readJsonObject(baseSettingsPath) : {});
-  const merge = mergeMandibleClaudeHookSettingsWithMetadata(baseSettings, options.sessionRef);
-  const settingsPath = path.join(settingsDir, `${safeFileSegment(options.sessionRef)}.settings.json`);
-  fs.writeFileSync(settingsPath, `${JSON.stringify(merge.settings, null, 2)}\n`, { mode: 0o600 });
-  return { settingsPath, settings: merge.settings, chainedStatusLine: merge.chainedStatusLine };
-}
+const PUBLIC_PRE_TOOL_USE_INVOCATION = /(?<![\w.-])mandible\s+hook\s+pre-tool-use(?![\w.-])/;
 
 export function mergeMandibleClaudeHookSettings(
   baseSettings: ClaudeSettings | null | undefined,
@@ -98,7 +71,7 @@ export function mergeMandibleClaudeHookSettings(
   return mergeMandibleClaudeHookSettingsWithMetadata(baseSettings, sessionRef).settings;
 }
 
-export function mergeMandibleClaudeHookSettingsWithMetadata(
+function mergeMandibleClaudeHookSettingsWithMetadata(
   baseSettings: ClaudeSettings | null | undefined,
   sessionRef: string,
 ): { settings: ClaudeSettings; chainedStatusLine: string | null } {
@@ -108,6 +81,9 @@ export function mergeMandibleClaudeHookSettingsWithMetadata(
   const hooks: Record<string, unknown> = removeManagedHooks(baseHooks);
 
   for (const [eventName, scriptName] of Object.entries(HOOK_EVENTS)) {
+    // Claude Code runs an event's hooks in parallel and keeps only one updatedInput,
+    // so a managed copy beside a handler composing this hook would race with it.
+    if (eventName === "PreToolUse" && settingsDeliverPreToolUseProjection(base)) continue;
     const command = mandibleHookCommand(scriptName, sessionRef, MANAGED_HOOK_MARKER);
     const existingMatchers = Array.isArray(hooks[eventName])
       ? [...hooks[eventName] as unknown[]]
@@ -125,40 +101,20 @@ export function mergeMandibleClaudeHookSettingsWithMetadata(
   return { settings: next, chainedStatusLine: statusLineMerge.chainedStatusLine };
 }
 
-export function injectMandibleClaudeHookSettingsArgs(
-  args: string[],
-  options: ClaudeHookSettingsOptions,
-): string[] {
-  const existingSettingsPath = options.baseSettingsPath ?? extractSettingsPath(args);
-  const stripped = stripSettingsArgs(args);
-  const { settingsPath } = writeMandibleClaudeHookSettings({
-    ...options,
-    baseSettingsPath: existingSettingsPath,
-  });
-  return [...stripped, "--settings", settingsPath];
+export function settingsDeliverPreToolUseProjection(settings: ClaudeSettings): boolean {
+  return hookCommands(settings.hooks, "PreToolUse").some((command) => (
+    !isManagedHookCommand(command)
+    && PUBLIC_PRE_TOOL_USE_INVOCATION.test(command.replace(/['"\\]/g, ""))
+  ));
 }
 
-export function stripSettingsArgs(args: string[]): string[] {
-  const next: string[] = [];
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-    if (SETTINGS_ARG_NAMES.has(arg)) {
-      i += 1;
-      continue;
-    }
-    next.push(arg);
-  }
-  return next;
-}
-
-export function extractSettingsPath(args: string[]): string | null {
-  for (let i = 0; i < args.length; i += 1) {
-    if (SETTINGS_ARG_NAMES.has(args[i])) {
-      const value = args[i + 1];
-      return typeof value === "string" && value.trim() ? value : null;
-    }
-  }
-  return null;
+export function loadedSettingsDeliverPreToolUseProjection(sources: readonly ClaudeSettingSource[], cwd: string): boolean {
+  const files: Record<ClaudeSettingSource, string> = {
+    user: defaultClaudeUserSettingsPath(),
+    project: path.join(cwd, ".claude", "settings.json"),
+    local: path.join(cwd, ".claude", "settings.local.json"),
+  };
+  return sources.some((source) => settingsDeliverPreToolUseProjection(readJsonObject(files[source])));
 }
 
 export function installUserClaudeIntegration(
@@ -234,7 +190,9 @@ export function getUserClaudeIntegrationStatus(
     return { status: "absent", settingsPath, details: ["metadata_missing"], chainedStatusLine: null };
   }
   for (const [eventName, scriptName] of Object.entries(HOOK_EVENTS)) {
-    if (!hasManagedHook(settings.hooks, eventName, scriptName)) {
+    const satisfied = hasManagedHook(settings.hooks, eventName, scriptName)
+      || (eventName === "PreToolUse" && settingsDeliverPreToolUseProjection(settings));
+    if (!satisfied) {
       details.push(`hook_missing:${eventName}`);
     }
   }
@@ -332,10 +290,6 @@ function hookInvocation(scriptName: string): string {
 
 function hasHookInvocation(command: string, scriptName: string): boolean {
   return command.includes(scriptName) || command.includes(hookInvocation(scriptName));
-}
-
-function defaultHookSettingsDir(): string {
-  return path.join(os.homedir(), ".cache", "mandible", "claude-hooks");
 }
 
 function defaultClaudeUserSettingsPath(): string {
@@ -449,20 +403,21 @@ function removeManagedHooksFromMatcher(entry: unknown): unknown | null {
   return { ...entry, hooks };
 }
 
-function hasManagedHook(hooksValue: unknown, eventName: string, scriptName: string): boolean {
-  const hooks = isRecord(hooksValue) ? hooksValue[eventName] : null;
-  if (!Array.isArray(hooks)) {
-    return false;
+function hookCommands(hooksValue: unknown, eventName: string): string[] {
+  const matchers = isRecord(hooksValue) ? hooksValue[eventName] : null;
+  if (!Array.isArray(matchers)) {
+    return [];
   }
-  return hooks.some((entry) => (
-    isRecord(entry) &&
-    Array.isArray(entry.hooks) &&
-    entry.hooks.some((hook) => (
-      isRecord(hook) &&
-      typeof hook.command === "string" &&
-      hook.command.includes(MANAGED_HOOK_MARKER) &&
-      hasHookInvocation(hook.command, scriptName)
-    ))
+  return matchers.flatMap((entry) => (
+    isRecord(entry) && Array.isArray(entry.hooks)
+      ? entry.hooks.flatMap((hook) => (isRecord(hook) && typeof hook.command === "string" ? [hook.command] : []))
+      : []
+  ));
+}
+
+function hasManagedHook(hooksValue: unknown, eventName: string, scriptName: string): boolean {
+  return hookCommands(hooksValue, eventName).some((command) => (
+    command.includes(MANAGED_HOOK_MARKER) && hasHookInvocation(command, scriptName)
   ));
 }
 
@@ -504,10 +459,6 @@ function restoreExactBackupIfUnchanged(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function safeFileSegment(value: string): string {
-  return value.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 120) || "session";
 }
 
 function shellQuote(value: string): string {
