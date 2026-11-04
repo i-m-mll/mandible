@@ -111,10 +111,9 @@ it("reuses facts without rescanning, rejects stale query cursors and invalidates
   expect(mismatch.status).toBe(409);
   expect(mismatch.body).not.toHaveProperty("total");
   fs.unlinkSync(source);
-  const invalid = await finish(router, `/api/conversations?search=needle&full_text=true&search_id=${searchId}`);
-  expect(invalid.status).toBe(409);
-  expect(invalid.body).toMatchObject({ state: "superseded" });
-  expect(invalid.body).not.toHaveProperty("total");
+  const removed = await finish(router, `/api/conversations?search=needle&full_text=true&search_id=${searchId}`);
+  expect(removed.status).toBe(200);
+  expect(removed.body).toMatchObject({ total: 1, conversations: [{ id: "b" }], coverage: { complete: false, failed: 1 } });
   scan.mockRestore();
 });
 it("shares observers without cancelling a sibling and bounds queued corpus keys before preparation", async () => {
@@ -160,16 +159,14 @@ it("discards a replaced match rather than publish it, and names a corrupt source
   const router = new Router();
   registerConversationRoutes(router, inlineLedgerReader());
   const changed = await finish(router, "/api/conversations?search=needle&full_text=true");
-  expect(changed.status).toBe(409);
-  expect(changed.body).toMatchObject({ state: "superseded", coverage: { complete: false } });
-  expect(changed.body).not.toHaveProperty("conversations");
-  expect(changed.body).not.toHaveProperty("total");
+  expect(changed.status).toBe(200);
+  expect(changed.body).toMatchObject({ total: 0, conversations: [], coverage: { complete: false, failed: 1, unread: { source_changed: { count: 1, examples: ["a"] } } } });
   scan.mockRestore();
   const corrupt = await finish(router, "/api/conversations/search?q=transcript");
   expect(corrupt.status).toBe(200);
   expect(corrupt.body).toMatchObject({ results: [], total: 0, coverage: { complete: false, failed: 1 } });
 });
-it("drops only the source that changed during the scan", async () => {
+it("drops only the rendered match whose source became unreadable", async () => {
   await conversation("a");
   await conversation("b");
   const cache = getConversationSearchCache(db);
@@ -184,8 +181,22 @@ it("drops only the source that changed during the scan", async () => {
   const result = await finish(router, "/api/conversations?search=needle&full_text=true");
   expect(result.status).toBe(200);
   expect(result.body).toMatchObject({ total: 1, conversations: [{ id: "b" }],
-    coverage: { complete: false, eligible: 2, scanned: 1, matched: 1, failed: 1, unread: { source_changed: { count: 1, examples: ["a"] } } } });
+    coverage: { complete: false, eligible: 2, scanned: 1, matched: 1, failed: 1, unread: { source_unavailable: { count: 1, examples: ["a"] } } } });
   scan.mockRestore();
+});
+it("stops a dedicated search at its limit, newest first, and scans separately for a larger limit", async () => {
+  for (const id of ["a", "b", "c", "d", "e", "f"])
+    await conversation(id);
+  const router = new Router();
+  registerConversationRoutes(router, inlineLedgerReader());
+  const limited = await finish(router, "/api/conversations/search?q=needle&limit=1");
+  expect(limited.status).toBe(200);
+  expect(limited.body).toMatchObject({ total: 1, results: [{ conversation: { id: "a" } }], coverage: { complete: false, stopped: "match_limit", failed: 0 } });
+  expect((limited.body as { coverage: { scanned: number } }).coverage.scanned).toBeLessThan(6);
+  const all = await finish(router, "/api/conversations/search?q=needle&limit=6");
+  expect(all.status).toBe(200);
+  expect(all.body).toMatchObject({ total: 6, coverage: { complete: true, scanned: 6 } });
+  expect((all.body as { results: Array<{ conversation: { id: string } }> }).results.map(row => row.conversation.id)).toEqual(["a", "b", "c", "d", "e", "f"]);
 });
 it("skips transcripts gone from disk without repairing them, and still returns the rest", async () => {
   await conversation("gone");
@@ -373,7 +384,7 @@ it("keeps frozen filter and sort fields when live display metadata changes", asy
   expect(fresh.status).toBe(200);
   expect(fresh.body).toMatchObject({ total: 1, conversations: [{ id: "b" }] });
 });
-it("invalidates an undisplayed source when canonical alias availability changes", async () => {
+it("leaves a page alone when an undisplayed source changes, and drops that source from its own page", async () => {
   await conversation("a");
   await conversation("b");
   const router = new Router();
@@ -385,10 +396,12 @@ it("invalidates an undisplayed source when canonical alias availability changes"
     search_id: string;
   }).search_id;
   db.prepare("UPDATE conversation_source_aliases SET availability='missing' WHERE source_id IN (SELECT id FROM conversation_sources WHERE conversation_id='b')").run();
-  const invalid = await finish(router, `${url}&search_id=${id}`);
-  expect(invalid.status).toBe(409);
-  expect(invalid.body).toMatchObject({ state: "superseded" });
-  expect(invalid.body).not.toHaveProperty("total");
+  const page = await finish(router, `${url}&search_id=${id}`);
+  expect(page.status).toBe(200);
+  expect(page.body).toMatchObject({ total: 2, conversations: [{ id: "a" }] });
+  const second = await finish(router, `${url}&page=2&search_id=${id}`);
+  expect(second.status).toBe(200);
+  expect(second.body).toMatchObject({ total: 1, conversations: [], coverage: { complete: false, failed: 1 } });
 });
 
 it("preserves group-mode child navigation counts in the full-text projection",async()=>{

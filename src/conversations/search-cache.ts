@@ -92,6 +92,8 @@ export interface ConversationSearchMetrics {
   fts_shortlist: number;
   cold_shortlist: number;
   exact_verified_blocks: number;
+  /** Inputs decided before any limit ended the search; failed ones included. */
+  examined_conversations: number;
   max_cold_parse_concurrency: number;
   /** Includes logical open/decode and sealed-version proof; excludes parsing. */
   source_verification_ms: number;
@@ -184,8 +186,11 @@ export class SourceBackedConversationSearchSourceAdapter implements Conversation
     this.reader = new ConversationSourceReader(db);
   }
   describe(conversationIds: readonly string[]): SearchConversationSource[] {
-    return [...this.store.latestSources(conversationIds)].flatMap(([conversationId, source]) =>
-      source.currentVersionId ? [{ conversationId, sourceVersionId: source.currentVersionId }] : []);
+    const latest = this.store.latestSources(conversationIds);
+    return conversationIds.flatMap(conversationId => {
+      const sourceVersionId = latest.get(conversationId)?.currentVersionId;
+      return sourceVersionId ? [{ conversationId, sourceVersionId }] : [];
+    });
   }
   async readMaskedBlocks(conversationId: string): Promise<SearchBlockSource[] | null> {
     const result = await this.reader.readAll(conversationId);
@@ -589,6 +594,7 @@ export class ConversationSearchCache {
       fts_shortlist: 0,
       cold_shortlist: 0,
       exact_verified_blocks: 0,
+      examined_conversations: 0,
       max_cold_parse_concurrency: 0,
       source_verification_ms: 0,
       elapsed_ms: 0,
@@ -607,9 +613,10 @@ export class ConversationSearchCache {
         await budget.yieldIfDue();
         const work: Array<{ item: SearchConversationSource; hot: Checkpoint | null }> = [];
         const coldIds: string[] = [];
-        const window = this.source.describe(input.conversationIds.slice(windowStart, windowStart + COLD_PROBE_BATCH_SIZE));
+        const windowIds = input.conversationIds.slice(windowStart, windowStart + COLD_PROBE_BATCH_SIZE);
+        const window = this.source.describe(windowIds);
         const described = new Set(window.map(item => item.conversationId));
-        for (const conversationId of input.conversationIds.slice(windowStart, windowStart + COLD_PROBE_BATCH_SIZE)) {
+        for (const conversationId of windowIds) {
           if (!described.has(conversationId)) failures.push({ conversation_id: conversationId, status: "not_found", reason: "conversation source was not found" });
         }
         for (const describedItem of window) {
@@ -638,9 +645,11 @@ export class ConversationSearchCache {
         const pending = work.filter(({ item, hot }) =>
           hot !== null || coldShortlist === null || coldShortlist.has(item.conversationId));
 
+        let decided = windowIds.length - pending.length;
         for (let batchStart = 0;
           batchStart < pending.length && matches.length < input.limit;
           batchStart += this.maxConcurrentColdParses) {
+          decided += Math.min(this.maxConcurrentColdParses, pending.length - batchStart);
           const batch = pending.slice(batchStart, batchStart + this.maxConcurrentColdParses);
           const batchMatches = await mapConcurrent(batch, this.maxConcurrentColdParses, async ({ item, hot }) => {
             const matchBlock = (block: SearchBlockSource): ConversationSearchMatch | null => {
@@ -746,6 +755,7 @@ export class ConversationSearchCache {
             if (matches.length >= input.limit) break;
           }
         }
+        metrics.examined_conversations += decided;
       }
     } finally {
       this.scheduleMaintenance();
