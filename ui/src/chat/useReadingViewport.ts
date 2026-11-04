@@ -557,7 +557,26 @@ export function useReadingViewport(input: {
   }, [input.scope, engine, persist, cancel]);
   useEffect(() => { if (!engine.isScrolling) persist(engine); }, [input.disclosures, engine, persist]);
   useEffect(() => () => { if (frame.current !== null) cancelAnimationFrame(frame.current); if (persistFrame.current !== null) cancelAnimationFrame(persistFrame.current); }, []);
-  const inputCancel = useCallback(() => { visual.current?.animation.complete();visual.current=null; preparation.current?.controller.abort(); preparation.current = null; current.current.onInput(); userScroll.current = true; restore.current = null; readerPin.current = null; disclosureKey.current = null; resumeTailAfter.current = null; setPinKeys(new Set()); cancel(); }, [cancel]);
+  const inputCancel = useCallback(() => {
+    visual.current?.animation.complete();
+    visual.current = null;
+    preparation.current?.controller.abort();
+    preparation.current = null;
+    current.current.onInput();
+    userScroll.current = true;
+    restore.current = null;
+    readerPin.current = null;
+    disclosureKey.current = null;
+    resumeTailAfter.current = null;
+    setPinKeys(keys => keys.size ? new Set() : keys);
+    cancel();
+  }, [cancel]);
+  useLayoutEffect(() => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    scroller.addEventListener('wheel', inputCancel, { passive: true });
+    return () => scroller.removeEventListener('wheel', inputCancel);
+  }, [inputCancel]);
   const onKeyDown = useCallback((event: KeyboardEvent) => {
     const target = event.target as HTMLElement;
     if (target.closest('input,textarea,select,[contenteditable]:not([contenteditable="false"])')) return;
@@ -608,5 +627,5 @@ export function useReadingViewport(input: {
       || targetCoordinateKey(owner.coordinate) !== targetCoordinateKey(target)) return;
     targets.current.get(targetRegistrationKey(target, owner.rowKey))?.element?.focus({ preventScroll: true });
   }, renderProps: applied?.renderProps, scrollRef, register, registerRow, rowOffset, reveal, cancel, showLatest,
-    inputHandlers: { onPointerDownCapture, onClickCapture, onWheel: inputCancel, onTouchStart: () => { drag.current = true; inputCancel(); }, onTouchEnd: () => { drag.current = false; applyPending.current(); }, onTouchCancel: () => { drag.current = false; applyPending.current(); }, onKeyDown, onPointerDown } };
+    inputHandlers: { onPointerDownCapture, onClickCapture, onTouchStart: () => { drag.current = true; inputCancel(); }, onTouchEnd: () => { drag.current = false; applyPending.current(); }, onTouchCancel: () => { drag.current = false; applyPending.current(); }, onKeyDown, onPointerDown } };
 }
