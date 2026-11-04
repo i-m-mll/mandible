@@ -20,6 +20,7 @@ import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 import { preparedGitFixture } from "./helpers/prepared-git-fixture.js";
 
 const AUTH_MERGE = path.join(process.cwd(), "cli", "auth-merge.sh");
+const CHECKOUT_SYNC_CHECK = path.join(process.cwd(), "cli", "checkout-sync-check.sh");
 
 it("persists independently parseable prepared and applied checkpoint lines", () => {
   const prepared = { merge_sha: "a".repeat(40), base_sha: "b".repeat(40), head_sha: "c".repeat(40), tree_sha: "d".repeat(40) };
@@ -410,6 +411,24 @@ describe("atomic auth merge", () => {
     expect(result.stderr).toContain(`update-index --no-skip-worktree -- '${shared}'`);
     expect(result.stderr).toContain("Merge not applied");
     expect(result.stderr).not.toContain("MANDIBLE_MERGE_PREPARED");
+  });
+
+  it("allows a byte-identical tracked file with stale index stat data to sync", () => {
+    const base = git(["rev-parse", "main"]);
+    const shared = git(["ls-tree", "--name-only", "main"]).split("\n")[0]!;
+    git(["checkout", "-q", "feature/atomic"]);
+    write(shared, "changed by the merge\n");
+    const head = commit("change a shared file");
+    git(["checkout", "-q", "main"]);
+
+    const trackedFile = path.join(repo, shared);
+    const original = fs.readFileSync(trackedFile);
+    const future = new Date(Date.now() + 10_000);
+    fs.utimesSync(trackedFile, future, future);
+    expect(fs.readFileSync(trackedFile).equals(original)).toBe(true);
+
+    const result = spawnSync("bash", [CHECKOUT_SYNC_CHECK, repo, base, head], { encoding: "utf8" });
+    expect(result.status, result.stdout + result.stderr).toBe(0);
   });
 
   it("restores the ref when the checkout changes between the preflight and the ref advance", () => {
