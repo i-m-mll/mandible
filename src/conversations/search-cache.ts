@@ -12,6 +12,7 @@ import { ConversationSourceReader, type SourceScanProgress } from "./source-read
 import type { SourceReadResult, SourceReadFailureKind } from "./source-types.js";
 import { ConversationSourceStore } from "./source-store.js";
 import { readConversationSourceReadiness } from "./source-readiness.js";
+import { logicalSourceMayContain } from "./logical-source.js";
 
 export const CONVERSATION_SEARCH_EPOCHS = Object.freeze({
   parser: "source-reader-v2",
@@ -102,6 +103,14 @@ function rawLiteralCanShortlist(needle: string): boolean {
   // characters, and Unicode case folds use the parser-exact path so this
   // accelerator cannot create false negatives.
   return needle.length >= 3 && /^[A-Za-z0-9 _./:@-]+$/.test(needle);
+}
+
+const RAW_VERBATIM_RUNS = /[A-Za-z0-9 _.:@-]+/g;
+
+/** The longest needle fragment provider JSON stores verbatim; any match must contain it. */
+export function rawShortlistLiteral(needle: string): string | null {
+  const longest = (needle.match(RAW_VERBATIM_RUNS) ?? []).reduce((best, run) => run.length > best.length ? run : best, "");
+  return longest.length >= 3 ? longest.toLowerCase() : null;
 }
 
 export interface ConversationSearchMatch {
@@ -201,6 +210,19 @@ export class SourceBackedConversationSearchSourceAdapter implements Conversation
       id: block.id, conversationId: block.conversation_id, type: block.type,
       role: block.role, position: block.position, content: maskUnverifiedCandidates(block.content).text,
     }), options);
+  }
+  async shortlistMaskedBlocks(conversationIds: readonly string[], needle: string): Promise<ReadonlySet<string> | null> {
+    const literal = rawShortlistLiteral(needle);
+    if (!literal) return null;
+    const shortlisted = new Set<string>();
+    for (const conversationId of conversationIds) {
+      const { sourcePath, sourceVersionId } = readConversationSourceReadiness(this.db, conversationId);
+      const version = sourceVersionId ? this.store.resolveVersion(sourceVersionId) : null;
+      // An unreadable source stays listed: only the exact scan can report why.
+      const mayMatch = !sourcePath || !version || await logicalSourceMayContain(sourcePath, literal, version).catch(() => true);
+      if (mayMatch) shortlisted.add(conversationId);
+    }
+    return shortlisted;
   }
   verifySource(conversationId: string, sourceVersionId: string, signal?: AbortSignal, onVerification?: (milliseconds: number) => void): Promise<SourceReadResult<void>> {
     return this.reader.verifyVersion(conversationId, sourceVersionId, signal, onVerification);

@@ -50,10 +50,10 @@ export function readConversationSourceReadiness(db: Db, conversationId: string):
   const needsRepair = (reason: ConversationSourceReadinessReason) =>
     result(repairable ? "repair_needed" : "unavailable", reason);
   if (!source) return needsRepair("source_not_indexed");
-  if (!source.positionSpaceId) return needsRepair("position_space_missing");
   if (source.availability === "missing" || version?.availability === "missing") {
     return result("unavailable", "source_unavailable");
   }
+  if (!source.positionSpaceId) return needsRepair("position_space_missing");
   if (!version || version.sourceId !== source.sourceId) return needsRepair("version_not_indexed");
   const epochs = CURRENT_CONVERSATION_SOURCE_EPOCHS;
   if (!conversationSourceEpochsMatch(source, epochs) || !conversationSourceEpochsMatch(version, epochs)) {

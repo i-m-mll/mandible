@@ -7,7 +7,7 @@ const pending: FullTextSearchPending = {
   state: 'pending', search_id: 'search-a', observer_token: 'observer-a',
   phase: 'scanning', progress, retry_after_ms: 400,
 };
-const coverage = { ...progress, scanned: 4, failed: 0, complete: true as const };
+const coverage = { ...progress, scanned: 4, failed: 0, unread: {}, complete: true };
 const complete = { state: 'complete' as const, search_id: 'search-a', snapshot_id: 'search-a',
   coverage, rows: ['exact match'] };
 

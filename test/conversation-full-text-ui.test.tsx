@@ -69,7 +69,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-const coverage = { eligible: 2, prepared: 2, scanned: 2, matched: 2, failed: 0, complete: true as const };
+const coverage = { eligible: 2, prepared: 2, scanned: 2, matched: 2, failed: 0, unread: {}, complete: true };
 const events: FixtureHandler = { name: 'idle events', method: 'POST', path: '/api/events/subscribe', respond: () => PENDING_RESPONSE };
 const detail: FixtureHandler = { name: 'pending detail reads', method: 'GET', path: /^\/api\/(?!conversations\/sidebar$)/, respond: () => PENDING_RESPONSE };
 function row(id: string): api.ConversationSidebarConversation {
@@ -190,7 +190,7 @@ describe('completed search snapshots in Chat', () => {
       name: 'sidebar union', respond: ({ url }) => {
         if (url.searchParams.has('cancel')) return jsonFixture({ released: true });
         if (!url.searchParams.has('search')) return PENDING_RESPONSE;
-        if (retry) return jsonFixture({ ...complete([]), coverage: { eligible: 0, prepared: 0, scanned: 0, matched: 0, failed: 0, complete: true } });
+        if (retry) return jsonFixture({ ...complete([]), coverage: { eligible: 0, prepared: 0, scanned: 0, matched: 0, failed: 0, unread: {}, complete: true } });
         if (!url.searchParams.has('search_id')) return jsonFixture(pending(), 202);
         return jsonFixture({ state: 'incomplete', search_id: 'search-1', reason: 'source_unavailable',
           coverage: { ...coverage, failed: 1, complete: false } }, 409);

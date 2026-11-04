@@ -303,6 +303,38 @@ conversation_search_read() (
   done
 )
 
+conversation_search_failure_text() {
+  jq -r '
+    {
+      source_changed: "a transcript changed while its results were being read. Run the search again.",
+      source_unavailable: "a transcript disappeared while its results were being read. Run the search again.",
+      redaction_changed: "credential redaction changed during the search. Run the search again.",
+      snapshot_expired: "the search snapshot expired. Run the search again.",
+      worker_restarted: "the daemon worker restarted during the search. Run the search again.",
+      observer_expired: "the search stopped because no client was polling it. Run the search again.",
+      query_mismatch: "the search ID belongs to a different query. Run the search again.",
+      cancelled: "the search was cancelled.",
+      admission_full: "the daemon is already running too many searches. Try again shortly.",
+      metadata_limit: "the search outgrew the daemon'"'"'s snapshot limit. Narrow it with --since or --provider."
+    } as $text
+    | "Search \(.state) (\(.reason)): \(if .detail then "the daemon failed: \(.detail)" else $text[.reason] end)"'
+}
+
+conversation_search_coverage_warning() {
+  jq -r '
+    {
+      source_unavailable: "transcript no longer on disk",
+      source_changed: "transcript changed during the search",
+      unsupported_representation: "transcript format not supported",
+      conversation_not_found: "conversation no longer exists",
+      repair_failed: "transcript could not be indexed",
+      repair_unavailable: "transcript could not be indexed"
+    } as $text
+    | select(.coverage.complete == false)
+    | "Searched \(.coverage.scanned) of \(.coverage.eligible) conversations. Not searched:",
+      (.coverage.unread | to_entries[] | "  \(.value.count) \($text[.key] // "transcript not indexed yet") (\(.key)), e.g. \(.value.examples | join(", "))")'
+}
+
 conversation_search() {
   local query="" provider="all" role="" since="" limit=20 title=0 json=0 source request response
   local binding
@@ -319,9 +351,10 @@ conversation_search() {
   state=$(printf '%s\n' "$response" | jq -r '.state // "complete"')
   if [[ "$state" != complete ]]; then
     if (( json )); then printf '%s\n' "$response" | jq .; fi
-    printf 'Search %s (%s). Run the search again to refresh the snapshot.\n' "$state" "$(printf '%s\n' "$response" | jq -r '.reason')" >&2
+    printf '%s\n' "$response" | conversation_search_failure_text >&2
     return 1
   fi
+  printf '%s\n' "$response" | conversation_search_coverage_warning >&2
   printf '%s\n' "$response" | jq -r --argjson requested "$limit" \
     'select(.limit < $requested) | "Warning: --limit \($requested) exceeds the server cap; at most \(.limit) hits are returned."' >&2
   if (( json )); then

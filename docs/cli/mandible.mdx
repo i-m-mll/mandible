@@ -501,6 +501,8 @@ Use `conversations` commands for Mandible's normalized SQLite index, UI/export/s
 
 `conversations search` asks the daemon's search route on every transport. `--title` matches titles only. The daemon returns at most 100 hits, and a larger `--limit` warns on stderr. `--json` prints the route's response: `results[]`, each with `conversation` (including `id`, `session_id`, `source`), `block` (including `role` and timestamps; empty for `--title`) and `snippet`, plus `total` and `limit`.
 
+A conversation whose transcript can't be read doesn't stop the search. The search returns matches from everything it could read, and `coverage` says what it covered: `coverage.complete` is false when anything was skipped, and `coverage.unread` counts the skipped conversations by reason, with up to three example IDs each. The text output prints the same breakdown on stderr. The command exits 1 only when the search itself didn't finish, and its message says why.
+
 ```bash
 mandible conversations search "auth request" --provider claude --since 7d
 mandible conversations search "training loss" --role assistant --limit 5 --json
