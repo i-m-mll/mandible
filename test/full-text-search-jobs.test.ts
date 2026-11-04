@@ -148,7 +148,7 @@ it("shares observers without cancelling a sibling and bounds queued corpus keys 
   release();
   await new Promise<void>(resolve => setImmediate(resolve));
 });
-it("discards unpublished matches after replacement and settles corrupt coverage without exact totals", async () => {
+it("discards a replaced match rather than publish it, and names a corrupt source it could not read", async () => {
   const source = await conversation("a");
   const cache = getConversationSearchCache(db);
   const original = cache.search.bind(cache);
@@ -165,10 +165,51 @@ it("discards unpublished matches after replacement and settles corrupt coverage 
   expect(changed.body).not.toHaveProperty("conversations");
   expect(changed.body).not.toHaveProperty("total");
   scan.mockRestore();
-  const corrupt = await finish(router, "/api/conversations/search?q=another");
-  expect(corrupt.status).toBe(409);
-  expect(corrupt.body).toMatchObject({ coverage: { complete: false } });
-  expect(corrupt.body).not.toHaveProperty("results");
+  const corrupt = await finish(router, "/api/conversations/search?q=transcript");
+  expect(corrupt.status).toBe(200);
+  expect(corrupt.body).toMatchObject({ results: [], total: 0, coverage: { complete: false, failed: 1 } });
+});
+it("drops only the source that changed during the scan", async () => {
+  await conversation("a");
+  await conversation("b");
+  const cache = getConversationSearchCache(db);
+  const original = cache.search.bind(cache);
+  const scan = vi.spyOn(cache, "search").mockImplementationOnce(async (input) => {
+    const result = await original(input);
+    db.prepare("UPDATE conversation_sources SET availability='stale' WHERE conversation_id='a'").run();
+    return result;
+  });
+  const router = new Router();
+  registerConversationRoutes(router, inlineLedgerReader());
+  const result = await finish(router, "/api/conversations?search=needle&full_text=true");
+  expect(result.status).toBe(200);
+  expect(result.body).toMatchObject({ total: 1, conversations: [{ id: "b" }],
+    coverage: { complete: false, eligible: 2, scanned: 1, matched: 1, failed: 1, unread: { source_changed: { count: 1, examples: ["a"] } } } });
+  scan.mockRestore();
+});
+it("skips transcripts gone from disk without repairing them, and still returns the rest", async () => {
+  await conversation("gone");
+  await conversation("kept");
+  db.prepare("UPDATE conversation_sources SET availability='missing', position_space_id=NULL WHERE conversation_id='gone'").run();
+  const repair = vi.fn(async () => {});
+  configureSearchJobRuntime(db, { publish() { }, repair });
+  const router = new Router();
+  registerConversationRoutes(router, inlineLedgerReader());
+  const result = await finish(router, "/api/conversations/search?q=needle");
+  expect(result.status).toBe(200);
+  expect(result.body).toMatchObject({ state: "complete", total: 1, results: [{ conversation: { id: "kept" } }],
+    coverage: { complete: false, eligible: 2, scanned: 1, failed: 1, unread: { source_unavailable: { count: 1, examples: ["gone"] } } } });
+  expect(repair).not.toHaveBeenCalled();
+});
+it("reports a daemon failure as itself, not as an unavailable source", async () => {
+  await conversation("a");
+  vi.spyOn(getConversationSearchCache(db), "search").mockRejectedValueOnce(new Error("scan exploded"));
+  const router = new Router();
+  registerConversationRoutes(router, inlineLedgerReader());
+  const result = await finish(router, "/api/conversations?search=needle&full_text=true");
+  expect(result.status).toBe(409);
+  expect(result.body).toMatchObject({ state: "incomplete", reason: "internal_error", detail: "scan exploded" });
+  vi.restoreAllMocks();
 });
 it("expires idle snapshots explicitly and evicts the oldest completed snapshot after four", async () => {
   await conversation("a", "needle0 needle1 needle2 needle3 needle4");
@@ -307,11 +348,11 @@ it("captures a new snapshot when no ID is supplied after an undisplayed source c
   expect(pinned.status).toBe(200);
   expect(pinned.body).toMatchObject({ total: 2, conversations: [{ id: "a" }] });
   const refreshed = await finish(router, url);
-  expect(refreshed.status).toBe(409);
+  expect(refreshed.status).toBe(200);
   expect((refreshed.body as {
     search_id: string;
   }).search_id).not.toBe(id);
-  expect(refreshed.body).not.toHaveProperty("total");
+  expect(refreshed.body).toMatchObject({ total: 1, coverage: { complete: false, failed: 1 } });
 });
 it("keeps frozen filter and sort fields when live display metadata changes", async () => {
   await conversation("a");

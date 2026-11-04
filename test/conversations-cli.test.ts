@@ -107,14 +107,29 @@ describe("conversations CLI", () => {
     expect(paths[2]).toContain('cancel=true');
   });
 
-  it('reports incomplete search as a failed command with coverage, never as an empty result', async () => {
-    const terminal = { state: 'incomplete', search_id: 'search-1', reason: 'source_unavailable',
-      coverage: { eligible: 2, prepared: 1, scanned: 1, matched: 0, failed: 1, complete: false } };
+  it('reports a search that did not finish as a failed command that says why', async () => {
+    const terminal = { state: 'incomplete', search_id: 'search-1', reason: 'metadata_limit',
+      coverage: { eligible: 2, prepared: 1, scanned: 1, matched: 0, failed: 0, unread: {}, complete: false } };
     const { env, responder } = spool(() => ({ status: 409, body: terminal }));
     const result = await runCli(['conversations', 'search', 'RPC', '--json'], { env });
     expect(result.status).toBe(1);
     expect(JSON.parse(result.stdout)).toEqual(terminal);
+    expect(result.stderr).toContain('Search incomplete (metadata_limit)');
+    expect(result.stderr).toContain('--since');
     expect(responder.requests).toHaveLength(1);
+  });
+
+  it('prints matches and names unsearched conversations when coverage is partial', async () => {
+    const partial = { state: 'complete', search_id: 'search-1', snapshot_id: 'search-1', total: 1, limit: 20,
+      results: [{ conversation: { id: 'c1', source: 'codex', started_at: '2026-11-01T00:00:00Z', title: 'Kept' }, block: { role: 'assistant' }, snippet: 'the needle' }],
+      coverage: { eligible: 3, prepared: 3, scanned: 1, matched: 1, failed: 2, complete: false,
+        unread: { source_unavailable: { count: 2, examples: ['gone-1', 'gone-2'] } } } };
+    const { env } = spool(() => ({ status: 200, body: partial }));
+    const result = await runCli(['conversations', 'search', 'needle'], { env });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('the needle');
+    expect(result.stderr).toContain('Searched 1 of 3 conversations');
+    expect(result.stderr).toContain('2 transcript no longer on disk (source_unavailable), e.g. gone-1, gone-2');
   });
 
   it("lists through the daemon with provider, tag, and limit filters", async () => {

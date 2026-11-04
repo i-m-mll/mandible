@@ -402,6 +402,75 @@ export async function inspectSourceRepresentation(filename: string): Promise<{
   } finally { await handle.close(); }
 }
 
+const ASCII_LOWERCASE = Uint8Array.from({ length: 256 }, (_, byte) => byte >= 65 && byte <= 90 ? byte + 32 : byte);
+/** U+212A and U+0130 lowercase into ASCII, so raw bytes containing them cannot rule out a match. */
+const ASCII_CASE_FOLD_SOURCES = ["\u212a", "\u0130", "\\u212a", "\\u0130"].map(text => Buffer.from(text));
+const ASCII_JSON_ESCAPE = Buffer.from("\\u00");
+const RAW_SCAN_CHUNK_BYTES = 1024 * 1024;
+
+function escapesLiteralByte(lowercased: Buffer, literal: Buffer): boolean {
+  for (let at = lowercased.indexOf(ASCII_JSON_ESCAPE); at >= 0 && at + 6 <= lowercased.length; at = lowercased.indexOf(ASCII_JSON_ESCAPE, at + 4)) {
+    const code = Number.parseInt(lowercased.toString("latin1", at + 4, at + 6), 16);
+    if (literal.includes(ASCII_LOWERCASE[code] ?? -1)) return true;
+  }
+  return false;
+}
+
+function rawLiteralScanner(lowercaseAsciiLiteral: string): (chunk: Buffer) => boolean {
+  const literal = Buffer.from(lowercaseAsciiLiteral);
+  const sought = [literal, ...ASCII_CASE_FOLD_SOURCES];
+  const overlap = Math.max(literal.length - 1, ASCII_JSON_ESCAPE.length + 1);
+  const found = (bytes: Buffer) => sought.some(item => bytes.includes(item)) || escapesLiteralByte(bytes, literal);
+  let tail = Buffer.alloc(0);
+  return chunk => {
+    for (let index = 0; index < chunk.length; index++) chunk[index] = ASCII_LOWERCASE[chunk[index]!]!;
+    if (found(chunk) || found(Buffer.concat([tail, chunk.subarray(0, overlap)]))) return true;
+    tail = Buffer.concat([tail, chunk.subarray(-overlap)]).subarray(-overlap);
+    return false;
+  };
+}
+
+export interface LogicalSourceGeneration {
+  byteLength: number;
+  filesystemInode: string | null;
+  filesystemCtimeNs: string | null;
+}
+
+/**
+ * Case-insensitive raw scan: false proves the version has no match, true only
+ * means a parser must look. Bytes that are not this version or an append to it
+ * prove nothing about it, so they also answer true. Compressed sources are
+ * decoded as a stream, because a corpus scan must not churn the seekable cache.
+ */
+export async function logicalSourceMayContain(filename: string, lowercaseAsciiLiteral: string, version: LogicalSourceGeneration): Promise<boolean> {
+  const { handle, physicalPath } = await openProvider(filename);
+  try {
+    const stat = await handle.stat({ bigint: true });
+    const size = Number(stat.size);
+    const unchanged = String(stat.ctimeNs) === version.filesystemCtimeNs;
+    const compressed = physicalPath !== canonicalSourcePath(physicalPath);
+    if (String(stat.ino) !== version.filesystemInode
+        || (compressed ? !unchanged : size < version.byteLength || (size === version.byteLength && !unchanged))) return true;
+    const found = rawLiteralScanner(lowercaseAsciiLiteral);
+    if (compressed) {
+      const createZstdDecompress = (zlib as typeof zlib & { createZstdDecompress: () => Transform }).createZstdDecompress;
+      const provider = handle.createReadStream({ start: 0, autoClose: false });
+      const decoded = provider.pipe(createZstdDecompress());
+      provider.on("error", error => decoded.destroy(error));
+      try {
+        for await (const chunk of decoded) if (found(chunk as Buffer)) return true;
+        return false;
+      } finally { decoded.destroy(); provider.destroy(); }
+    }
+    const chunk = Buffer.allocUnsafe(Math.max(1, Math.min(RAW_SCAN_CHUNK_BYTES, size)));
+    for (;;) {
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);
+      if (bytesRead === 0) return false;
+      if (found(chunk.subarray(0, bytesRead))) return true;
+    }
+  } finally { await handle.close(); }
+}
+
 export async function readLogicalSourcePrefix(filename: string, maxBytes = 256 * 1024): Promise<Buffer> {
   const { handle, physicalPath } = await openProvider(filename);
   try {

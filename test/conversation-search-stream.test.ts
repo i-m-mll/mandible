@@ -117,7 +117,7 @@ describe("verified conversation scans", () => {
     const source = await fixture(["retained content"]);
     const cache = new ConversationSearchCache(new SourceBackedConversationSearchSourceAdapter(db), { cachePath: ":memory:" });
     caches.push(cache);
-    await cache.search({ conversationIds: [source.id], needle: "absent", limit: 1 });
+    await cache.search({ conversationIds: [source.id], needle: "session_meta", limit: 1 });
     await cache.whenIdle();
     const bodies = vi.spyOn(cache as unknown as { hotBodies: (...args: unknown[]) => unknown }, "hotBodies");
     const warm = await cache.search({ conversationIds: [source.id], needle: "absent", limit: 1 });
@@ -216,7 +216,7 @@ describe("verified conversation scans", () => {
     const adapter = new SourceBackedConversationSearchSourceAdapter(db);
     const hot = new ConversationSearchCache(adapter, { cachePath: ":memory:" });
     caches.push(hot);
-    await hot.search({ conversationIds: [source.id], needle: "new snapshot only", limit: 1, ...pins });
+    await hot.search({ conversationIds: [source.id], needle: "session_meta", limit: 1, ...pins });
     await hot.whenIdle();
     await publishAppend(source, tail.slice(partial.length) + "\n");
     const oldHot = await hot.search({ conversationIds: [source.id], needle: "new snapshot only", limit: 1, ...pins });
@@ -237,7 +237,7 @@ describe("verified conversation scans", () => {
     const cache = new ConversationSearchCache(new SourceBackedConversationSearchSourceAdapter(db), { cachePath: ":memory:" });
     caches.push(cache);
     const pins = { expectedSourceVersions: { [source.id]: version }, expectedBlockCounts: { [source.id]: 1 }, expectedModels: { [source.id]: null } };
-    await cache.search({ conversationIds: [source.id], needle: "absent", limit: 1, ...pins });
+    await cache.search({ conversationIds: [source.id], needle: "session_meta", limit: 1, ...pins });
     await cache.whenIdle();
     if (mutation === "rewrite") fs.writeFileSync(source.filePath, source.bytes.toString().replace("original", "modified"));
     else { fs.renameSync(source.filePath, `${source.filePath}.old`); fs.writeFileSync(source.filePath, source.bytes); }

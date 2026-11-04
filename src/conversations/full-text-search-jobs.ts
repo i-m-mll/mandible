@@ -3,10 +3,11 @@ import { readSnapshot } from "../ledger-reads/snapshot.js";
 import { readConversationSourceGenerations } from "./source-generation.js";
 import { ConversationSourceStore } from "./source-store.js";
 import { ConversationSourceReader } from "./source-reader.js";
+import type { SourceReadFailureKind } from "./source-types.js";
 import type { Db } from "../db.js";
 import { getConversationSearchCache, SourceBackedConversationSearchSourceAdapter, type ConversationSearchMatch } from "./search-cache.js";
 import { readConversationSourceReadiness } from "./source-readiness.js";
-import { FULL_TEXT_SEARCH_OBSERVER_LEASE_MS, FULL_TEXT_SEARCH_RETRY_MS, type FullTextSearchCoverage, type FullTextSearchPending, type FullTextSearchReason, type FullTextSearchResponse, type FullTextSearchTerminal } from "./full-text-search-contract.js";
+import { FULL_TEXT_SEARCH_OBSERVER_LEASE_MS, FULL_TEXT_SEARCH_RETRY_MS, unsettledCoverage, type FullTextSearchCoverage, type FullTextSearchPending, type FullTextSearchReason, type FullTextSearchResponse, type FullTextSearchTerminal, type FullTextSearchUnreadReason } from "./full-text-search-contract.js";
 export type SearchQuery = Record<string, string | undefined>;
 export type SearchRoute = "conversation_list" | "conversation_sidebar" | "conversation_search";
 export class SearchSnapshotProjectionError extends Error {
@@ -68,9 +69,22 @@ export function fullTextQueryKey(route: string, query: SearchQuery): string {
 export function pendingSearch(searchId: string, observer: string): FullTextSearchPending {
   return { state: "pending", search_id: searchId, observer_token: observer, phase: "queued", progress: { eligible: 0, prepared: 0, scanned: 0, matched: 0 }, retry_after_ms: FULL_TEXT_SEARCH_RETRY_MS };
 }
-function terminal(searchId: string, reason: FullTextSearchReason, coverage: FullTextSearchCoverage, state: FullTextSearchTerminal["state"] = "incomplete"): FullTextSearchTerminal {
-  return { state, search_id: searchId, reason, coverage: { ...coverage, complete: false } };
+function terminal(searchId: string, reason: FullTextSearchReason, coverage: FullTextSearchCoverage, state: FullTextSearchTerminal["state"] = "incomplete", detail?: string): FullTextSearchTerminal {
+  return { state, search_id: searchId, reason, ...(detail ? { detail } : {}), coverage: { ...coverage, complete: false } };
 }
+const MAX_UNREAD_EXAMPLES = 3;
+function recordUnread(coverage: FullTextSearchCoverage, conversationId: string, reason: FullTextSearchUnreadReason): void {
+  const entry = coverage.unread[reason] ??= { count: 0, examples: [] };
+  entry.count++;
+  if (entry.examples.length < MAX_UNREAD_EXAMPLES) entry.examples.push(conversationId);
+  coverage.failed++;
+}
+const UNREAD_FOR_FAILURE: Record<Exclude<SourceReadFailureKind, "cancelled">, FullTextSearchUnreadReason> = {
+  stale: "source_changed",
+  unavailable: "source_unavailable",
+  unsupported: "unsupported_representation",
+  not_found: "conversation_not_found",
+};
 interface Pin {
   id: string;
   version: string;
@@ -148,10 +162,10 @@ export class FullTextSearchJobs {
   private publish(job: Job): void {
     this.runtime.publish(job.terminal ?? (job.complete ? { state: "complete", search_id: job.id } : { ...job.pending, progress: { ...job.pending.progress } }));
   }
-  private fail(job: Job, reason: FullTextSearchReason, state?: FullTextSearchTerminal["state"]): void {
+  private fail(job: Job, reason: FullTextSearchReason, state?: FullTextSearchTerminal["state"], detail?: string): void {
     if (job.terminal)
       return;
-    job.terminal = terminal(job.id, reason, job.coverage, state);
+    job.terminal = terminal(job.id, reason, job.coverage, state, detail);
     job.matches = [];
     job.plan = undefined;
     job.pins = [];
@@ -191,14 +205,14 @@ export class FullTextSearchJobs {
     const key = fullTextQueryKey(route, query);
     let job = query.search_id ? this.jobs.get(query.search_id) : [...this.jobs.values()].find(candidate => candidate.key === key && !candidate.complete && !candidate.terminal);
     if (!job && query.search_id && !start)
-      return this.response(terminal(query.search_id, "snapshot_expired", { eligible: 0, prepared: 0, scanned: 0, matched: 0, failed: 0, complete: false }, "expired"));
+      return this.response(terminal(query.search_id, "snapshot_expired", unsettledCoverage(), "expired"));
     if (!job) {
       const id = query.search_id || randomUUID();
       const queued = [...this.jobs.values()].filter(candidate => !candidate.complete && !candidate.terminal).length;
       if (queued >= 9)
-        return this.response(terminal(id, "admission_full", { eligible: 0, prepared: 0, scanned: 0, matched: 0, failed: 0, complete: false }));
+        return this.response(terminal(id, "admission_full", unsettledCoverage()));
       const observer = query.observer_token || randomUUID();
-      job = { id, key, pending: pendingSearch(id, observer), coverage: { eligible: 0, prepared: 0, scanned: 0, matched: 0, failed: 0, complete: false }, observers: new Map(), controller: new AbortController(), pins: [], matches: [], redaction: "", complete: false, accessed: Date.now(), bytes: 0, prepare, metrics: { preparation_ms: 0, scan_ms: 0, projection_ms: 0, paging_ms: 0, source_verification_ms: 0,snapshot_pin_bytes:0 } };
+      job = { id, key, pending: pendingSearch(id, observer), coverage: unsettledCoverage(), observers: new Map(), controller: new AbortController(), pins: [], matches: [], redaction: "", complete: false, accessed: Date.now(), bytes: 0, prepare, metrics: { preparation_ms: 0, scan_ms: 0, projection_ms: 0, paging_ms: 0, source_verification_ms: 0,snapshot_pin_bytes:0 } };
       if (this.jobs.size >= 128)
         for (const [oldId, item] of this.jobs)
           if (item.terminal) {
@@ -247,7 +261,7 @@ export class FullTextSearchJobs {
     if (!(await this.validate(job, rendered)))
       return this.response(job.terminal!);
     job.metrics.paging_ms += performance.now() - pagingStarted;
-    return this.response({ ...result as object, search_metrics: { ...job.metrics,snapshot_metadata_bytes:job.bytes }, state: "complete", search_id: job.id, snapshot_id: job.id, coverage: { ...job.coverage, complete: true } });
+    return this.response({ ...result as object, search_metrics: { ...job.metrics,snapshot_metadata_bytes:job.bytes }, state: "complete", search_id: job.id, snapshot_id: job.id, coverage: job.coverage });
   }
   private response(body: FullTextSearchResponse<Record<string, unknown>>): {
     status: number;
@@ -255,39 +269,49 @@ export class FullTextSearchJobs {
   } {
     return { status: body.state === "pending" ? 202 : body.state === "complete" ? 200 : 409, json: JSON.stringify(body) };
   }
-  private async validate(job: Job, physicalIds?: ReadonlySet<string>): Promise<boolean> {
+  /** A served snapshot is all-or-nothing; a settling one only loses the sources that changed under it. */
+  private async validate(job: Job, physicalIds?: ReadonlySet<string>, settling = false): Promise<boolean> {
     if (job.terminal)
       return false;
+    const lost = new Map<string, FullTextSearchUnreadReason>();
+    const lose = (pin: Pin, reason: "source_changed" | "source_unavailable"): boolean => {
+      if (settling) {
+        lost.set(pin.id, reason);
+        return true;
+      }
+      this.fail(job, reason, "superseded");
+      return false;
+    };
+    const ids = job.pins.map(pin => pin.id);
     const versions = new Map(job.pins.map(pin => [pin.id, pin.version]));
     const metadata = () => readSnapshot(this.db, () => ({
       redaction: new SourceBackedConversationSearchSourceAdapter(this.db).redactionEpoch(),
-      authorities:new ConversationSourceStore(this.db).searchSnapshotAuthorities(job.plan!.ids,versions),
-      observed:readConversationSourceGenerations(this.db,job.plan!.ids),
-      aliased: Boolean(this.db.prepare("SELECT 1 FROM conversation_identity_aliases WHERE alias_id IN (SELECT value FROM json_each(?)) LIMIT 1").get(JSON.stringify(job.plan!.ids))),
+      authorities:new ConversationSourceStore(this.db).searchSnapshotAuthorities(ids,versions),
+      observed:readConversationSourceGenerations(this.db,ids),
+      aliased: new Set((this.db.prepare("SELECT alias_id FROM conversation_identity_aliases WHERE alias_id IN (SELECT value FROM json_each(?))").all(JSON.stringify(ids)) as Array<{ alias_id: string }>).map(row => row.alias_id)),
     }));
     const before = metadata();
     if (before.redaction !== job.redaction) {
       this.fail(job, "redaction_changed", "superseded");
       return false;
     }
-    if (before.aliased || job.pins.some(pin => before.authorities.get(pin.id) !== pin.authority)) {
-      this.fail(job, "source_changed", "superseded");
-      return false;
-    }
+    for (const pin of job.pins)
+      if ((before.aliased.has(pin.id) || before.authorities.get(pin.id) !== pin.authority) && !lose(pin, "source_changed"))
+        return false;
     const started = performance.now();
     for (let index = 0; index < job.pins.length; index++) {
       if (job.terminal)
         return false;
       const pin = job.pins[index];
+      if (lost.has(pin.id))
+        continue;
       const current=before.observed.get(pin.id);
       if (!physicalIds || physicalIds.has(pin.id) || current !== pin.observed) {
         const proof = await this.reader.verifyVersion(pin.id, pin.version, job.controller.signal);
         if (job.terminal)
           return false;
-        if (proof.status !== "source") {
-          this.fail(job, proof.status === "unavailable" ? "source_unavailable" : "source_changed", "superseded");
+        if (proof.status !== "source" && !lose(pin, proof.status === "unavailable" ? "source_unavailable" : "source_changed"))
           return false;
-        }
       }
       if (index % 32 === 31)
         await yieldTurn();
@@ -299,16 +323,22 @@ export class FullTextSearchJobs {
       this.fail(job, "redaction_changed", "superseded");
       return false;
     }
-    if (after.aliased || job.pins.some(pin => {
-      return after.authorities.get(pin.id)!==pin.authority||after.observed.get(pin.id)!==before.observed.get(pin.id);
-    })) {
-      this.fail(job, "source_changed", "superseded");
-      return false;
-    }
+    for (const pin of job.pins)
+      if ((after.aliased.has(pin.id) || after.authorities.get(pin.id) !== pin.authority || after.observed.get(pin.id) !== before.observed.get(pin.id)) && !lost.has(pin.id) && !lose(pin, "source_changed"))
+        return false;
+    this.dropPins(job, lost);
     for (const pin of job.pins)
       pin.observed = after.observed.get(pin.id);
     job.metrics.source_verification_ms += performance.now() - started;
     return !job.terminal;
+  }
+  private dropPins(job: Job, lost: ReadonlyMap<string, FullTextSearchUnreadReason>): void {
+    if (lost.size === 0)
+      return;
+    for (const [id, reason] of lost)
+      recordUnread(job.coverage, id, reason);
+    job.pins = job.pins.filter(pin => !lost.has(pin.id));
+    job.matches = job.matches.filter(match => !lost.has(match.conversation_id));
   }
   private async pump(): Promise<void> {
     if (this.active)
@@ -322,9 +352,8 @@ export class FullTextSearchJobs {
         try {
           await this.run(job);
         }
-        catch {
-          if (!job.terminal)
-            this.fail(job, "source_unavailable");
+        catch (error) {
+          this.fail(job, "internal_error", "incomplete", error instanceof Error ? error.message : String(error));
         }
       }
     }
@@ -352,8 +381,7 @@ export class FullTextSearchJobs {
     for (const id of plan.ids) {
       if (job.terminal)
         return;
-      let ready = readConversationSourceReadiness(this.db, id);
-      if (ready.status === "repair_needed") {
+      if (readConversationSourceReadiness(this.db, id).status === "repair_needed") {
         let stop!: () => void;
         const abort = new Promise<void>(resolve => { stop = resolve; job.controller.signal.addEventListener("abort", stop, { once: true }); });
         try {
@@ -364,19 +392,6 @@ export class FullTextSearchJobs {
         }
         if (job.terminal)
           return;
-        ready = readConversationSourceReadiness(this.db, id);
-      }
-      if (ready.status !== "ready" || !ready.sourceVersionId || !ready.sourcePath) {
-        job.coverage.failed++;
-        this.fail(job, "source_unavailable");
-        return;
-      }
-      const pin = { id, version: ready.sourceVersionId };
-      job.pins.push(pin);
-      job.bytes += Buffer.byteLength(JSON.stringify(pin));
-      if (!this.evict()) {
-        this.fail(job, "metadata_limit");
-        return;
       }
       job.coverage.prepared = ++job.pending.progress.prepared;
       if (job.pending.progress.prepared % 32 === 0) {
@@ -399,19 +414,18 @@ export class FullTextSearchJobs {
         redaction: new SourceBackedConversationSearchSourceAdapter(this.db).redactionEpoch(),
       };
     });
-    const prepared = new Map(job.pins.map(pin => [pin.id, pin]));
-    if (snapshot.plan.ids.some(id => !prepared.has(id)) || snapshot.sources.some(source => source.status !== "ready" || !source.sourceVersionId)) {
-      this.fail(job, "source_changed", "superseded");
-      return;
-    }
     plan = snapshot.plan;
     job.plan = plan;
     const normalization = new Map(snapshot.normalization.map(row => [row.id, row]));
-    job.pins = snapshot.sources.map(source => ({ id: source.conversationId, version: source.sourceVersionId!, authority:snapshot.authorities.get(source.conversationId),observed:snapshot.observed.get(source.conversationId), blockCount: normalization.get(source.conversationId)!.block_count, model: normalization.get(source.conversationId)!.model }));
-    for (const pin of job.pins)
-      prepared.set(pin.id, pin);
-    job.coverage.eligible = plan.ids.length;
-    job.coverage.prepared = plan.ids.length;
+    job.pins = [];
+    for (const source of snapshot.sources) {
+      if (source.status === "ready")
+        job.pins.push({ id: source.conversationId, version: source.sourceVersionId!, authority:snapshot.authorities.get(source.conversationId),observed:snapshot.observed.get(source.conversationId), blockCount: normalization.get(source.conversationId)!.block_count, model: normalization.get(source.conversationId)!.model });
+      else
+        recordUnread(job.coverage, source.conversationId, source.reason as FullTextSearchUnreadReason);
+    }
+    job.coverage.eligible = job.pending.progress.eligible = plan.ids.length;
+    job.coverage.prepared = job.pending.progress.prepared = plan.ids.length;
     job.metrics.snapshot_pin_bytes=Buffer.byteLength(JSON.stringify(job.pins));
     job.bytes = plan.metadataBytes + job.metrics.snapshot_pin_bytes;
     job.prepare = () => { throw new Error("search plan already pinned"); };
@@ -425,26 +439,33 @@ export class FullTextSearchJobs {
     job.pending.phase = "scanning";
     this.publish(job);
     const cache = getConversationSearchCache(this.db);
-    for (let index = 0; index < plan.ids.length; index += 4) {
+    const pinned = job.pins;
+    const lost = new Map<string, FullTextSearchUnreadReason>();
+    for (let index = 0; index < pinned.length; index += 4) {
       if (job.terminal)
         return;
-      const ids = plan.ids.slice(index, index + 4);
-      const results = await Promise.all(ids.map(id => cache.search({ conversationIds: [id], needle: plan.needle, blockType: plan.blockType, limit: 1, signal: job.controller.signal, expectedSourceVersions: { [id]: prepared.get(id)!.version }, expectedBlockCounts: { [id]: prepared.get(id)!.blockCount! }, expectedModels: { [id]: prepared.get(id)!.model ?? null } })));
+      const batch = pinned.slice(index, index + 4);
+      const results = await Promise.all(batch.map(pin => cache.search({ conversationIds: [pin.id], needle: plan.needle, blockType: plan.blockType, limit: 1, signal: job.controller.signal, expectedSourceVersions: { [pin.id]: pin.version }, expectedBlockCounts: { [pin.id]: pin.blockCount! }, expectedModels: { [pin.id]: pin.model ?? null } })));
       if (job.terminal)
         return;
-      for (const result of results) {
+      for (const [position, result] of results.entries()) {
+        const pin = batch[position];
         job.metrics.source_verification_ms += result.metrics.source_verification_ms;
-        if (result.failures.length) {
-          job.coverage.failed += result.failures.length;
-          const changed = result.failures.some(failure => failure.status === "stale");
-          this.fail(job, changed ? "source_changed" : "source_unavailable", changed ? "superseded" : "incomplete");
-          return;
+        const failure = result.failures[0];
+        if (failure) {
+          if (failure.status === "cancelled") {
+            this.fail(job, "cancelled");
+            return;
+          }
+          const reason = UNREAD_FOR_FAILURE[failure.status];
+          lost.set(pin.id, reason);
+          continue;
         }
-        const facts = result.matches.map(({ snippet: _snippet, ...match }) => ({ ...match, source_version_id: prepared.get(match.conversation_id)!.version, source_block_count: prepared.get(match.conversation_id)!.blockCount!, source_model: prepared.get(match.conversation_id)!.model ?? null }));
+        job.coverage.scanned = ++job.pending.progress.scanned;
+        const facts = result.matches.map(({ snippet: _snippet, ...match }) => ({ ...match, source_version_id: pin.version, source_block_count: pin.blockCount!, source_model: pin.model ?? null }));
         job.matches.push(...facts);
         job.bytes += Buffer.byteLength(JSON.stringify(facts));
       }
-      job.coverage.scanned = job.pending.progress.scanned += ids.length;
       job.coverage.matched = job.pending.progress.matched = job.matches.length;
       if (!this.evict()) {
         this.fail(job, "metadata_limit");
@@ -453,11 +474,14 @@ export class FullTextSearchJobs {
       this.publish(job);
       await yieldTurn();
     }
-    if (!(await this.validate(job, new Set())))
+    this.dropPins(job, lost);
+    if (!(await this.validate(job, new Set(), true)))
       return;
+    job.coverage.matched = job.pending.progress.matched = job.matches.length;
+    job.coverage.scanned = job.pending.progress.scanned = job.pins.length;
     job.metrics.scan_ms = performance.now() - scanningStarted;
     job.complete = true;
-    job.coverage.complete = true;
+    job.coverage.complete = job.coverage.failed === 0;
     this.publish(job);
   }
 }

@@ -224,8 +224,8 @@ describe("conversation full-text API parity", () => {
     try {
       const result = await settled(router, { method: "GET", url: "/api/conversations?search=tailneedle&full_text=true&since=2026-08-18" });
       if (boundary === "rewrite-after-negative") {
-        expect(result.status).toBe(409);
-        expect(result.body).not.toHaveProperty("total");
+        expect(result.status).toBe(200);
+        expect(result.body).toMatchObject({ total: 1, conversations: [{ id: "append-b" }], coverage: { complete: false, unread: { source_changed: { count: 1, examples: ["append-a"] } } } });
       }
       else {
         expect(result.status).toBe(200);
@@ -351,10 +351,8 @@ describe("conversation full-text API parity", () => {
     registerConversationRoutes(router, inlineLedgerReader());
     for (const url of ["/api/conversations/search?q=Unavailable%20Needle", "/api/conversations?search=Unavailable%20Needle&full_text=true"]) {
       const response = await settled(router,{ method: "GET", url });
-      expect(response.status).toBe(409);
-      expect(response.body).toMatchObject({coverage:{complete:false}});
-      expect((response.body as {state:string}).state).toMatch(/^(incomplete|superseded)$/);
-      expect(response.body).not.toHaveProperty("total");
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({ state: "complete", total: 1, coverage: { complete: false, failed: 2 } });
     }
     await getConversationSearchCache(db).whenIdle();
     for (const [sourcePath, bytes] of originals) fs.writeFileSync(sourcePath, bytes);

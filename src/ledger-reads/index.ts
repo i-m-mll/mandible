@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { fullTextQueryKey, isFullTextSearch, pendingSearch, type SearchUpdate, type SearchQuery } from "../conversations/full-text-search-jobs.js";
-import { FULL_TEXT_SEARCH_OBSERVER_LEASE_MS, type FullTextSearchPending, type FullTextSearchProgress } from "../conversations/full-text-search-contract.js";
+import { FULL_TEXT_SEARCH_OBSERVER_LEASE_MS, unsettledCoverage, type FullTextSearchPending, type FullTextSearchProgress } from "../conversations/full-text-search-contract.js";
 import { repairConversationSourceReadiness } from "../ingestion.js";
 import { Worker } from "node:worker_threads";
 import { getDb, type Db } from "../db.js";
@@ -150,7 +150,7 @@ export function workerLedgerReaderPool(dbPath: string, { size }: {
       slot.worker = null;
       if (slot === conversationSlot)
         for (const [searchId, mirror] of searches) {
-          mirror.update = { state: "expired", search_id: searchId, reason: "worker_restarted", coverage: { ...mirror.progress, failed: 0, complete: false } };
+          mirror.update = { state: "expired", search_id: searchId, reason: "worker_restarted", coverage: unsettledCoverage(mirror.progress) };
         }
       rejectPending(slot, new Error(`ledger reader worker exited with code ${code}`));
     });
@@ -176,7 +176,7 @@ export function workerLedgerReaderPool(dbPath: string, { size }: {
         if (!mirror && !requested) {
           const active = [...searches.values()].filter(item => item.update.state === "pending").length;
           if (active >= 9)
-            return Promise.resolve(mirrorResult({ state: "incomplete", search_id: searchId, reason: "admission_full", coverage: { eligible: 0, prepared: 0, scanned: 0, matched: 0, failed: 0, complete: false } }) as LedgerReadResult<K>);
+            return Promise.resolve(mirrorResult({ state: "incomplete", search_id: searchId, reason: "admission_full", coverage: unsettledCoverage() }) as LedgerReadResult<K>);
           if (searches.size >= 128)
             for (const [id, item] of searches)
               if (item.update.state !== "pending") {
@@ -199,23 +199,23 @@ export function workerLedgerReaderPool(dbPath: string, { size }: {
               mirror.update = body;
           }, () => {
             if (mirror)
-              mirror.update = { state: "expired", search_id: searchId, reason: "worker_restarted", coverage: { ...mirror.progress, failed: 0, complete: false } };
+              mirror.update = { state: "expired", search_id: searchId, reason: "worker_restarted", coverage: unsettledCoverage(mirror.progress) };
           });
         }
         if (!mirror && requested)
-          return Promise.resolve(mirrorResult({ state: "expired", search_id: searchId, reason: "snapshot_expired", coverage: { eligible: 0, prepared: 0, scanned: 0, matched: 0, failed: 0, complete: false } }) as LedgerReadResult<K>);
+          return Promise.resolve(mirrorResult({ state: "expired", search_id: searchId, reason: "snapshot_expired", coverage: unsettledCoverage() }) as LedgerReadResult<K>);
         if (mirror) {
           mirror.accessed = Date.now();
           if (mirror.key !== key)
-            return Promise.resolve(mirrorResult({ state: "superseded", search_id: searchId, reason: "query_mismatch", coverage: { eligible: 0, prepared: 0, scanned: 0, matched: 0, failed: 0, complete: false } }) as LedgerReadResult<K>);
+            return Promise.resolve(mirrorResult({ state: "superseded", search_id: searchId, reason: "query_mismatch", coverage: unsettledCoverage() }) as LedgerReadResult<K>);
           if (query.cancel === "true") {
             releaseObserver(searchId, observer);
-            return Promise.resolve(mirrorResult({ state: "incomplete", search_id: searchId, reason: "cancelled", coverage: { ...mirror.progress, failed: 0, complete: false } }) as LedgerReadResult<K>);
+            return Promise.resolve(mirrorResult({ state: "incomplete", search_id: searchId, reason: "cancelled", coverage: unsettledCoverage(mirror.progress) }) as LedgerReadResult<K>);
           }
           else {
             if (mirror.update.state === "pending") {
               if (!mirror.observers.has(observer) && mirror.observers.size >= 128)
-                return Promise.resolve(mirrorResult({ state: "incomplete", search_id: searchId, reason: "admission_full", coverage: { eligible: 0, prepared: 0, scanned: 0, matched: 0, failed: 0, complete: false } }) as LedgerReadResult<K>);
+                return Promise.resolve(mirrorResult({ state: "incomplete", search_id: searchId, reason: "admission_full", coverage: unsettledCoverage() }) as LedgerReadResult<K>);
               mirror.observers.set(observer, Date.now() + FULL_TEXT_SEARCH_OBSERVER_LEASE_MS);
             }
             if (options?.signal?.aborted)

@@ -6,9 +6,9 @@ import { pipeline } from "node:stream/promises";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import * as zlib from "node:zlib";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  discoverLogicalSources, openLogicalSource, readLogicalSourcePrefix,
+  discoverLogicalSources, logicalSourceMayContain, openLogicalSource, readLogicalSourcePrefix,
 } from "../src/conversations/logical-source.js";
 
 const zstd = zlib as typeof zlib & {
@@ -199,4 +199,44 @@ it("streams a 211MB cold rollout once for concurrent readers and seeks warm tail
   await warm.close();
   expect((await readLogicalSourcePrefix(source, header.length)).toString()).toBe(header.toString());
   console.info("logical-source performance", { logicalLength, decoded, peakRssDelta: peakRss - initialRss, eventLoopTurns: turns });
+});
+
+describe("logicalSourceMayContain", () => {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "raw-scan-"));
+  const contains = (name: string, content: string, literal: string, recordedExtra = 0) => {
+    const file = path.join(scratch, name);
+    fs.writeFileSync(file, content);
+    const stat = fs.statSync(file, { bigint: true });
+    return logicalSourceMayContain(file, literal, { byteLength: Number(stat.size) + recordedExtra, filesystemInode: String(stat.ino), filesystemCtimeNs: String(stat.ctimeNs) });
+  };
+  afterAll(() => fs.rmSync(scratch, { recursive: true, force: true }));
+
+  it.each([
+    ["ignoring case", "the Second BRAIN note", true],
+    ["across a read boundary", `${"x".repeat(1024 * 1024 - 4)}second brain`, true],
+    ["when a Unicode case fold could produce the match", "the \u212aelvin sign", true],
+    ["when a JSON escape could produce the match", "s\\u0065cond", true],
+    ["when a JSON escape spans a read boundary", `${"x".repeat(1024 * 1024 - 3)}\\u0065`, true],
+    ["ignoring a JSON escape of a byte outside the literal", "\\u003c \\u001b", false],
+    ["absent", "nothing relevant here", false],
+    ["empty", "", false],
+  ])("%s", async (_name, content, expected) => {
+    expect(await contains(`${_name}.jsonl`, content, "second brain")).toBe(expected);
+  });
+
+  it("reads compressed sources without filling the seekable cache", async () => {
+    vi.stubEnv("XDG_CACHE_HOME", cacheRoot);
+    const padding = "x".repeat(4 * 1024 * 1024);
+    fs.writeFileSync(`${source}.zst`, zstd.zstdCompressSync(Buffer.from(`${padding}second BRAIN${padding}`)));
+    const stat = fs.statSync(`${source}.zst`, { bigint: true });
+    const version = { byteLength: 1, filesystemInode: String(stat.ino), filesystemCtimeNs: String(stat.ctimeNs) };
+    expect(await logicalSourceMayContain(source, "second brain", version)).toBe(true);
+    expect(await logicalSourceMayContain(source, "third brain", version)).toBe(false);
+    expect(fs.existsSync(cacheRoot)).toBe(false);
+    vi.unstubAllEnvs();
+  });
+
+  it("does not rule out a match in bytes shorter than the recorded version", async () => {
+    expect(await contains("replaced.jsonl", "nothing relevant here", "second brain", 1)).toBe(true);
+  });
 });
