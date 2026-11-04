@@ -37,6 +37,65 @@ cmd_archive_state() {
   fi
 }
 
+show_view() {
+  jq '
+    .selected_round as $round
+    | ($round.selected_submission_overlay // {}) as $frozen
+    | {
+        briefing: (.briefing | {id, title, description, latest_round_id, round_count}),
+        round: ($round | {id, ordinal, artifact_version_id, created_at}),
+        submission: $round.selected_submission_overlay,
+        unsubmitted: {
+          answers: [$round.answers[]
+            | select(.response_event_id as $id | [$frozen.answers[]?.response_event_id] | index($id) | not)],
+          annotations: [$round.annotations[]
+            | select(.annotation_event_id as $id | [$frozen.annotations[]?.annotation_event_id] | index($id) | not)]
+        }
+      }'
+}
+
+cmd_show() {
+  local briefing_ref="" round="" json=0 response encoded submission round_id query=""
+  local binding
+  binding=$(mandible_bind_arguments "briefing.show" '{"round":{"option":"round"},"json":{"option":"json","constant":"1"},"briefing_ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
+  [[ -n "$briefing_ref" ]] || die "Usage: $(mandible_command_syntax briefing.show)" 2
+  command -v jq >/dev/null 2>&1 || die "jq not found" 1
+  encoded="$(urlencode "$briefing_ref")"
+  [[ -z "$round" ]] || query="?round=$(urlencode "$round")"
+  response="$(api_get "/api/briefings/$encoded$query")" || die "Failed to read Briefing." 1
+  printf '%s\n' "$response" | jq -e '.selected_round.binding.status == "valid"' >/dev/null \
+    || die "Briefing round is unreadable: $(printf '%s\n' "$response" | jq -r '.selected_round.binding.reason // "no round"')" 1
+  submission="$(printf '%s\n' "$response" | jq -r '.selected_round.latest_submission.id // empty')"
+  if [[ -n "$submission" ]]; then
+    round_id="$(printf '%s\n' "$response" | jq -r '.selected_round.id')"
+    response="$(api_get "/api/briefings/$encoded?round=$(urlencode "$round_id")&submission=$(urlencode "$submission")")" \
+      || die "Failed to read Briefing submission." 1
+  fi
+  if (( json )); then
+    printf '%s\n' "$response" | show_view
+  else
+    printf '%s\n' "$response" | show_view | api_jq_human '
+      def indented: gsub("\n"; "\n      ");
+      def annotation_lines: "  \(.annotation_kind) \(.start_offset)-\(.end_offset)",
+        "    quote: \(.quote | indented)",
+        (.body // empty | "    body: \(indented)"),
+        (.replacement_text // empty | "    replacement: \(indented)");
+      def answer_line: "  \(.directive_key): \(.value | tojson)";
+      def response_lines: (.answers[] | answer_line), (.annotations[] | annotation_lines);
+      "\(.briefing.id | mandible_briefing_ref)  \(.briefing.title)",
+      "round \(.round.ordinal) of \(.briefing.round_count)  \(.round.id | mandible_short_id)  \(.round.artifact_version_id | mandible_typed_short_ref)",
+      (if .submission == null then "submission: none" else
+        (.submission | "submission \(.ordinal)  \(.id | mandible_short_id)  \(.actor.slug)  \(.created_at / 1000 | floor | todate)  annotations=\(.annotations | length)  answers=\(.answers | length)",
+          response_lines)
+      end),
+      (if (.unsubmitted.answers + .unsubmitted.annotations | length) == 0 then empty else
+        "unsubmitted  annotations=\(.unsubmitted.annotations | length)  answers=\(.unsubmitted.answers | length)",
+        (.unsubmitted | response_lines)
+      end)'
+  fi
+}
+
 cmd_rename() {
   local briefing_ref="" title="" json=0 response payload
   local binding
@@ -577,6 +636,7 @@ subcommand="$1"
 shift
 case "$subcommand" in
   create) cmd_create "$@" ;;
+  show) cmd_show "$@" ;;
   rename) cmd_rename "$@" ;;
   describe) cmd_describe "$@" ;;
   archive) cmd_archive_state archive "$@" ;;

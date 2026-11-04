@@ -19,7 +19,7 @@ import {
   updateBriefingDescription,
   updateBriefingTitle,
 } from "../feedback/briefings.js";
-import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
+import type { RequestLike, ResolvedClientIdentity, ResponseLike, RouteRegistrar } from "../server.js";
 import { broadcast } from "../sse.js";
 import { getOperator, getUserById } from "../users/store.js";
 import { publisherMayIngest } from "../briefing.js";
@@ -286,24 +286,12 @@ function briefingLayoutViewer(db: Db, req: RequestLike): {
   userId: string; operator: boolean; humanReviewOperator: boolean;
 } {
   const identity = requireIdentity(req);
-  const socketAgent = localAgent(db, req);
-  if (identity.method === "local_socket" && !isLocalHumanRequest(req) && !socketAgent) {
+  if (isActiveAgent(db, identity)) return { ...operatorViewer(db), humanReviewOperator: false };
+  if (identity.method === "local_socket" && !isLocalHumanRequest(req)) {
     throw new ClientAuthzError(403, "briefing_layout_operator_required",
       "Operator-visible Briefing layout reads require an authenticated publisher.");
   }
   const caller = getUserById(db, identity.user_id);
-  if ((identity.method === "api_token" || socketAgent)
-      && caller?.status === "active" && caller.kind === "agent") {
-    if (!socketAgent) requireAgentPublisher(db, req, {
-      agentCode: "briefing_layout_publisher_agent_required",
-      agentMessage: "Operator-visible Briefing layout reads require an active agent identity.",
-    });
-    return { userId: configuredHumanOperator(
-      db,
-      "briefing_layout_operator_required",
-      "Operator-visible Briefing layout reads require a configured active human operator.",
-    ).id, operator: true, humanReviewOperator: false };
-  }
   const operator = isOperator(db, identity);
   return {
     userId: identity.user_id,
@@ -312,14 +300,21 @@ function briefingLayoutViewer(db: Db, req: RequestLike): {
   };
 }
 
-export function briefingReadViewer(db: Db, req: RequestLike) {
-  if (!localAgent(db, req)) {
-    const actor = activeHuman(db, req);
-    return { userId: actor.user.id, operator: actor.operator };
-  }
+function isActiveAgent(db: Db, identity: ResolvedClientIdentity): boolean {
+  const user = getUserById(db, identity.user_id);
+  return user?.status === "active" && user.kind === "agent";
+}
+
+function operatorViewer(db: Db) {
   const operator = configuredHumanOperator(db, "briefing_layout_operator_required",
     "Agent Briefing reads require a configured active human responder.");
   return { userId: operator.id, operator: true };
+}
+
+export function briefingReadViewer(db: Db, req: RequestLike) {
+  if (isActiveAgent(db, requireIdentity(req))) return operatorViewer(db);
+  const actor = activeHuman(db, req);
+  return { userId: actor.user.id, operator: actor.operator };
 }
 
 function publicationPrincipalAndResponder(db: Db, req: RequestLike): {
@@ -1164,9 +1159,9 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
 
   server.get("/api/briefings/:briefingId/rounds/:roundId/submissions/:submissionId/export", (req, res) => {
     try {
-      const actor = activeHuman(db, req);
+      const viewer = briefingReadViewer(db, req);
       sendJson(res, 200, exportBriefingSubmissionMarkdown(db, req.params.briefingId, req.params.roundId,
-        req.params.submissionId, actor.user.id));
+        req.params.submissionId, viewer.userId));
     } catch (error) {
       handleError(res, error);
     }

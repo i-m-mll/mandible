@@ -12,6 +12,7 @@ vi.mock("../src/client-auth/operator-presence.js", () => ({
 }));
 
 import { setSetting } from "../src/client-auth/settings-kv.js";
+import { FileRpcTransport } from "../src/file-rpc-transport.js";
 import { type Db } from "../src/db.js";
 import { resolveInstanceInfo } from "../src/instance-policy.js";
 import { registerBriefingRoutes } from "../src/routes/briefing.js";
@@ -530,10 +531,6 @@ describe("plural Briefing routes", () => {
     expect(vi.mocked(broadcast).mock.calls.filter(([event]) => event === "briefing:created")).toHaveLength(2);
 
     const ids = createdIds;
-    expect(await router.invoke({ method: "GET", url: `/api/briefings/${ids.briefing_id}`,
-      credential: "agent-schedule" })).toMatchObject({
-      status: 403, body: { code: "human_responder_required" },
-    });
     expect(await router.invoke({ method: "POST",
       url: `/api/briefings/${ids.briefing_id}/rounds/${ids.round_id}/answers`,
       credential: "agent-schedule", body: { answers: [] } })).toMatchObject({
@@ -547,11 +544,6 @@ describe("plural Briefing routes", () => {
     expect(await router.invoke({ method: "POST",
       url: `/api/briefings/${ids.briefing_id}/rounds/${ids.round_id}/submit`,
       credential: "agent-schedule", body: {} })).toMatchObject({
-      status: 403, body: { code: "human_responder_required" },
-    });
-    expect(await router.invoke({ method: "GET",
-      url: `/api/briefings/${ids.briefing_id}/rounds/${ids.round_id}/submissions/unknown/export`,
-      credential: "agent-schedule" })).toMatchObject({
       status: 403, body: { code: "human_responder_required" },
     });
 
@@ -771,8 +763,6 @@ describe("plural Briefing routes", () => {
     const published = await router.invoke({ method: "POST", url: "/api/briefings/runs", body: payload(), credential: "agent-schedule" });
     const ids = published.body as { briefing_id: string; round_id: string };
     expect(await router.invoke({ method: "GET", url: "/api/briefings" })).toMatchObject({ status: 401 });
-    expect(await router.invoke({ method: "GET", url: "/api/briefings", credential: "agent-schedule" }))
-      .toMatchObject({ status: 403, body: { code: "human_responder_required" } });
     const list = await router.invoke({ method: "GET", url: "/api/briefings", credential: "human" });
     expect(list.body).toMatchObject({ briefings: [{
       id: ids.briefing_id, latest_round_id: ids.round_id, round_count: 1, unanswered_directive_count: 1,
@@ -926,6 +916,52 @@ describe("plural Briefing routes", () => {
         quote: "Daily", body: "Final IAB acceptance annotation.", replacement_text: null }] },
     });
     expect(annotation).toMatchObject({ status: 200, body: { annotation_event_ids: [expect.any(String)] } });
+  });
+
+  it("lets active agents read as the operator on every credential, while responses stay human", async () => {
+    setSetting(db, "user.operator_id", humanId);
+    const published = await router.invoke({ method: "POST", url: "/api/briefings/runs", body: payload(), credential: "agent-schedule" });
+    const ids = published.body as { briefing_id: string; round_id: string };
+    const roundUrl = `/api/briefings/${ids.briefing_id}/rounds/${ids.round_id}`;
+    const detailUrl = `/api/briefings/${ids.briefing_id}`;
+    const annotation = await router.invoke({ method: "POST", url: `${roundUrl}/annotations`, credential: "human",
+      body: { annotations: [{ operation: "set", kind: "comment", start_offset: 2, end_offset: 7, quote: "Daily", body: "Reviewed", replacement_text: null }] } });
+    const annotationId = (annotation.body as { annotation_event_ids: string[] }).annotation_event_ids[0];
+    const answer = await router.invoke({ method: "POST", url: `${roundUrl}/answers`, credential: "human",
+      body: { answers: [{ directive_key: "paper", operation: "set", expected_response_event_id: null, value: { verdict: "keep" } }] } });
+    const answerId = (answer.body as { answers: Array<{ response_event_id: string }> }).answers[0].response_event_id;
+    const submitted = await router.invoke({ method: "POST", url: `${roundUrl}/submit`, credential: "human", body: {
+      answers: [{ directive_key: "paper", response_event_id: answerId }], annotation_event_ids: [annotationId], supersedes_submission_id: null,
+    } });
+    const submissionId = (submitted.body as { submission_id: string }).submission_id;
+
+    const human = await router.invoke({ method: "GET", url: `${detailUrl}?submission=${submissionId}`, credential: "human" });
+    expect(human).toMatchObject({ status: 200, body: { selected_round: {
+      latest_submission: { id: submissionId },
+      selected_submission_overlay: { annotations: [{ annotation_event_id: annotationId }], answers: [{ response_event_id: answerId }] },
+    } } });
+    for (const credential of ["agent-schedule", "session:agent-schedule"]) {
+      expect(await router.invoke({ method: "GET", url: `${detailUrl}?submission=${submissionId}`, credential })).toEqual(human);
+      expect(await router.invoke({ method: "GET", url: "/api/briefings", credential }))
+        .toMatchObject({ status: 200, body: { briefings: [{ id: ids.briefing_id }] } });
+      expect((await router.invoke({ method: "GET", url: `${roundUrl}/submissions/${submissionId}/export`, credential })).status)
+        .toBe((await router.invoke({ method: "GET", url: `${roundUrl}/submissions/${submissionId}/export`, credential: "human" })).status);
+      expect(await router.invoke({ method: "POST", url: `${roundUrl}/annotations`, credential, body: { annotations: [] } }))
+        .toMatchObject({ status: 403, body: { code: "human_responder_required" } });
+    }
+
+    const spool = new FileRpcTransport({ router, dir: path.join(root, "rpc") });
+    fs.mkdirSync(spool.dir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(spool.dir, "read.request.json"), JSON.stringify({
+      id: "read", method: "GET", path: `${detailUrl}?submission=${submissionId}`, capability_token: "agent-schedule",
+    }));
+    await spool.processOnce();
+    expect(JSON.parse(fs.readFileSync(path.join(spool.dir, "read.response.json"), "utf8"))).toMatchObject({ status: 200, body: human.body });
+
+    createUser(db, { slug: "retired-agent", kind: "agent", display_name: "Retired" });
+    db.prepare("UPDATE users SET status = 'retired' WHERE slug = 'retired-agent'").run();
+    expect(await router.invoke({ method: "GET", url: detailUrl, credential: "retired-agent" })).toMatchObject({ status: 403 });
+    expect(await router.invoke({ method: "GET", url: detailUrl })).toMatchObject({ status: 401 });
   });
 
   it("keeps isolated-copy response authority bound to an authenticated active human", async () => {

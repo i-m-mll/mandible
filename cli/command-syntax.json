@@ -1084,6 +1084,17 @@
         ]
       }
     },
+    "briefing.show": {
+      "route": ["briefing", "show"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "argument","name": "briefing-ref","value": {"type": "string"}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--round"],"values": [{"kind": "argument","name": "round-ref","value": {"type": "string"}}]}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
+        ]
+      }
+    },
     "briefing.rename": {
       "route": ["briefing", "rename"],
       "grammar": {

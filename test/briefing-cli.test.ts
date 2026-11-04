@@ -82,4 +82,42 @@ describe("briefing CLI", () => {
     expect(review.status, review.stderr).toBe(0);
     expect(review.stdout).toContain("binding=none");
   });
+
+  it("separates a round's frozen submission from later changes", async () => {
+    const annotation = { annotation_event_id: "a1", annotation_kind: "comment", start_offset: 3, end_offset: 8, quote: "one\ntwo", body: "Why?", replacement_text: null, created_at: 1 };
+    const later = { ...annotation, annotation_event_id: "a2", body: "Later" };
+    const answer = { directive_key: "paper", response_event_id: "e1", value: { verdict: "keep" } };
+    const briefing = { id: "b6b44e92-ebb4-4a51-ad0f-e27cbcbe7f5e", title: "Policy", description: null, latest_round_id: "r", round_count: 2 };
+    const round = { id: "97975c20-14e4-4d0e-a26a-e62c65f69064", ordinal: 1, artifact_version_id: "artifact-version:64274315d469994cb729604b1adddcb7", created_at: 1,
+      binding: { status: "valid" }, document: { source: "the whole document" } };
+    const submission = { id: "cfaf63dc-e391-4887-96ef-218d7869cf9c", ordinal: 1, actor: { slug: "mll" }, created_at: 1787579983246, answers: [answer], annotations: [annotation] };
+    const projection = (url: string) => url.startsWith("/api/briefings/invalid")
+      ? { briefing, rounds: [], selected_round: { ...round, binding: { status: "invalid", reason: "bytes changed" }, answers: [], annotations: [], latest_submission: null, selected_submission_overlay: null } }
+      : url.startsWith("/api/briefings/draft")
+      ? { briefing, rounds: [], selected_round: { ...round, answers: [], annotations: [later], latest_submission: null, selected_submission_overlay: null } }
+      : { briefing, rounds: [], selected_round: { ...round, answers: [answer], annotations: [later], latest_submission: { id: submission.id },
+        selected_submission_overlay: url.includes("submission=") ? submission : null } };
+    const { env, responder } = spool((request) => ({ status: 200, body: projection(request.path) }));
+
+    const [human, json, draft, invalid] = await Promise.all([
+      runCli(["briefing", "show", "b6b44e92", "--round", "97975c20"], { env }),
+      runCli(["briefing", "show", "b6b44e92", "--json"], { env }),
+      runCli(["briefing", "show", "draft", "--json"], { env }),
+      runCli(["briefing", "show", "invalid"], { env }),
+    ]);
+
+    expect(human.status, human.stderr).toBe(0);
+    expect(human.stdout).toMatch(/round 1 of 2 {2}97975c20/);
+    expect(human.stdout).toMatch(/submission 1 {2}cfaf63dc {2}mll {2}\S+ {2}annotations=1 {2}answers=1\n {2}paper: \{"verdict":"keep"\}\n {2}comment 3-8\n {4}quote: one\n {6}two\n {4}body: Why\?\n/);
+    expect(human.stdout).toMatch(/unsubmitted {2}annotations=1 {2}answers=0\n {2}comment 3-8\n[^]*body: Later/);
+    expect(JSON.parse(json.stdout)).toMatchObject({ submission: { id: submission.id }, unsubmitted: { answers: [], annotations: [{ annotation_event_id: "a2" }] } });
+    expect(json.stdout).not.toContain("the whole document");
+    expect(JSON.parse(draft.stdout)).toMatchObject({ submission: null, unsubmitted: { annotations: [{ annotation_event_id: "a2" }] } });
+    expect(invalid.status).toBe(1);
+    expect(invalid.stderr).toContain("bytes changed");
+    expect(responder.requests.map((request) => request.path)).toEqual(expect.arrayContaining([
+      "/api/briefings/b6b44e92?round=97975c20",
+      `/api/briefings/b6b44e92?round=${round.id}&submission=${submission.id}`,
+    ]));
+  });
 });
