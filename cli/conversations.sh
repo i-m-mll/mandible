@@ -264,9 +264,10 @@ file_rpc_warn_truncated_blocks() {
   fi
 }
 
+# The body is a subshell, so its variables are already private. They must not be
+# `local`: `exit` from the signal traps pops function scope before the EXIT trap runs.
 conversation_search_read() (
-  local request="$1" output_file status response state search_id="" observer_token="" cancel_request
-  local previous_progress="" progress unchanged=0 retry_ms delay
+  request="$1" search_id="" observer_token="" previous_progress="" unchanged=0
   output_file=$(api_temp_file)
   release_search() {
     if [[ -n "$observer_token" ]]; then
@@ -278,7 +279,7 @@ conversation_search_read() (
   trap release_search EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  local current_request="$request"
+  current_request="$request"
   while true; do
     status=$(api_send_capture GET "$current_request" "" "$output_file")
     response=$(cat "$output_file")
