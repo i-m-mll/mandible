@@ -132,6 +132,18 @@ describe("conversations CLI", () => {
     expect(result.stderr).toContain('2 transcript no longer on disk (source_unavailable), e.g. gone-1, gone-2');
   });
 
+  it('adds no coverage warning when a search stopped because it found enough', async () => {
+    const stopped = { state: 'complete', search_id: 'search-1', snapshot_id: 'search-1', total: 1, limit: 1,
+      results: [{ conversation: { id: 'c1', source: 'codex', started_at: '2026-11-01T00:00:00Z', title: 'Kept' }, block: { role: 'assistant' }, snippet: 'the needle' }],
+      coverage: { eligible: 3, prepared: 3, scanned: 1, matched: 1, failed: 1, stopped: 'match_limit', complete: false,
+        unread: { source_unavailable: { count: 1, examples: ['gone-1'] } } } };
+    const { env } = spool(() => ({ status: 200, body: stopped }));
+    const result = await runCli(['conversations', 'search', 'needle', '--limit', '1'], { env });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('the needle');
+    expect(result.stderr).not.toContain('Searched');
+  });
+
   it("lists through the daemon with provider, tag, and limit filters", async () => {
     const db = migratedMemoryDb();
     const insert = db.prepare(`

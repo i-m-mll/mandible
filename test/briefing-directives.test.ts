@@ -3,6 +3,33 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { BRIEFING_PROFILE_V3, BriefingDirectiveError, parseBriefingDirectives } from "../src/feedback/briefing-directives.js";
 
+describe("leading frontmatter", () => {
+  const opener = ':::spec-item{key="ship" type="verdict" required="false"}';
+  const directive = `${opener}\nShip it?\n:::`;
+
+  it.each([
+    ["a source id that reads as a text directive", "---\nsources:\n- document:cf719a140a0614bad693fe24\n---\n"],
+    ["a directive-shaped block", '---\nnote: x\n:::spec-item{key="fake" type="verdict" required="false"}\nFake\n:::\n---\n'],
+    ["an unclosed code fence", "---\nsnippet: |\n  ```\n---\n"],
+    ["a thematic-rule closer in a CRLF document", "---\r\nsources:\r\n- document:cf719a\r\n---\r\n"],
+    ["a YAML document-end closer", "---\nsources:\n- document:cf719a\n...\n"],
+    ["a byte order mark and astral text", "\uFEFF---\ntitle: 😀 document:cf719a\n---\n"],
+  ])("is never read as directives: %s", (_shape, frontmatter) => {
+    const source = `${frontmatter}\n${directive}\n`;
+    const parsed = parseBriefingDirectives(source, BRIEFING_PROFILE_V3);
+    expect(parsed.map((item) => item.key)).toEqual(["ship"]);
+    expect(source.slice(parsed[0].start_offset, parsed[0].end_offset)).toBe(directive);
+    expect(source.slice(parsed[0].body_start_offset, parsed[0].body_end_offset)).toBe("Ship it?");
+  });
+
+  it.each([
+    ["an unterminated opening fence", `---\n\n${directive}\n`],
+    ["rules after the first line", `Intro\n\n---\n\n${directive}\n\n---\n`],
+  ])("does not hide directives behind %s", (_shape, source) => {
+    expect(parseBriefingDirectives(source, BRIEFING_PROFILE_V3).map((item) => item.key)).toEqual(["ship"]);
+  });
+});
+
 describe("mandible-briefing.v2 directives", () => {
   it("keeps canonical typed references out of the directive grammar", () => {
     const references = [

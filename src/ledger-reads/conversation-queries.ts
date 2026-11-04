@@ -5,7 +5,8 @@ import { readSnapshot } from "./snapshot.js";
 import { childrenOfConversationSql } from "../conversation-lineage.js";
 import { resolveConversationId } from "../conversations/identity.js";
 import type { Db } from "../db.js";
-import { getFullTextSearchJobs, isFullTextSearch, SearchSnapshotProjectionError, type SearchPlan, type SearchQuery } from "../conversations/full-text-search-jobs.js";
+import { conversationSearchMatchLimit, getFullTextSearchJobs, isFullTextSearch, SearchSnapshotProjectionError, SearchSourcesLostError, UNREAD_FOR_FAILURE, type SearchPlan, type SearchQuery } from "../conversations/full-text-search-jobs.js";
+import type { FullTextSearchUnreadReason } from "../conversations/full-text-search-contract.js";
 import { ConversationSidebarCursorError, buildConversationSidebar, type ConversationSidebarRow } from "../conversations/sidebar-projection.js";
 import { projectConversationExternalNavigation } from "../conversation-external-navigation.js";
 import { mapConversation, mapSearchConversation, mapSidebarConversation } from "../conversations/response-mapping.js";
@@ -146,24 +147,31 @@ export async function conversationSearch(db: Db, input: {
     const candidates = readSnapshot(db, () => conversationSearchCandidates(db, { source, since, titleOnly: false, needle, limit }));
     const frozen = frozenSearchMetadata(db, candidates.ids);
     return {
-      ids: candidates.ids, needle, blockType, metadataBytes: Buffer.byteLength(JSON.stringify([...frozen.values()])),
+      ids: candidates.ids, needle, blockType, metadataBytes: Buffer.byteLength(JSON.stringify([...frozen.values()])), stopAfterMatches: conversationSearchMatchLimit(query),
       async render(matches, pageQuery) {
         const pageLimit = Math.min(100, Math.max(1, parseInt(pageQuery.limit || "20", 10) || 20));
         const offset = Math.max(0, parseInt(pageQuery.offset || "0", 10) || 0);
         const selected = matches.slice(offset, offset + pageLimit);
         const rows = readSnapshot(db, () => conversationSearchRows(db, { ids: selected.map(match => match.conversation_id) }));
         const results = [];
+        const lost = new Map<string, FullTextSearchUnreadReason>();
         const reader = new ConversationSourceReader(db);
         for (const match of selected) {
           const conversation = rows.get(match.conversation_id);
           const read = await reader.readBlock(match.block_id, { expectedSourceVersionId: match.source_version_id, expectedBlockCount: match.source_block_count, expectedModel: match.source_model});
-          if (!conversation || read.status !== "source" || read.sourceVersionId !== match.source_version_id)
-            throw new SearchSnapshotProjectionError("source_changed");
+          if (read.status !== "source") {
+            lost.set(match.conversation_id, UNREAD_FOR_FAILURE[read.status]);
+            continue;
+          }
           const snippet = snippetFor(maskUnverifiedCandidates(read.value.content).text, needle);
-          if (snippet === null)
-            throw new SearchSnapshotProjectionError("source_changed");
+          if (!conversation || read.sourceVersionId !== match.source_version_id || snippet === null) {
+            lost.set(match.conversation_id, "source_changed");
+            continue;
+          }
           results.push({ conversation: mapSearchConversation({ ...conversation, ...frozen.get(match.conversation_id) }), block: { ...read.value, content: "" }, snippet });
         }
+        if (lost.size > 0)
+          throw new SearchSourcesLostError(lost);
         return { results, total: matches.length, limit: pageLimit };
       },
     };
@@ -265,7 +273,7 @@ function prepareListSearch(db: Db, input: {
       const hydrated = hydrateSidebarConversations(db, { ids: pageIds });
       const conversations = pageIds.map(id => hydrated.get(id)).filter((row): row is ProjectedConversationRow => Boolean(row));
       if (conversations.length !== pageIds.length)
-        throw new Error("Snapshot conversation unavailable");
+        throw new SearchSourcesLostError(new Map(pageIds.filter(id => !hydrated.has(id)).map(id => [id, "conversation_not_found" as const])));
       return { conversations: conversations.map(row => mapSearchConversation({ ...row, ...frozen.get(row.id) })), total: ids.length, page, limit, pages: Math.ceil(ids.length / limit) };
     },
   };

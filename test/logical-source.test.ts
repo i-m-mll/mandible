@@ -214,7 +214,10 @@ describe("logicalSourceMayContain", () => {
   it.each([
     ["ignoring case", "the Second BRAIN note", true],
     ["across a read boundary", `${"x".repeat(1024 * 1024 - 4)}second brain`, true],
-    ["when a Unicode case fold could produce the match", "the \u212aelvin sign", true],
+    ["in mixed case across a read boundary", `${"x".repeat(1024 * 1024 - 4)}SeCoNd BrAiN`, true],
+    ["when an escaped Unicode case fold could produce a letter of the literal", "the \\u0130 sign", true],
+    ["when a Unicode case fold could produce a letter of the literal", "the \u0130 sign", true],
+    ["ignoring a Unicode case fold of a letter outside the literal", "the \u212a sign", false],
     ["when a JSON escape could produce the match", "s\\u0065cond", true],
     ["when a JSON escape spans a read boundary", `${"x".repeat(1024 * 1024 - 3)}\\u0065`, true],
     ["ignoring a JSON escape of a byte outside the literal", "\\u003c \\u001b", false],
@@ -234,6 +237,10 @@ describe("logicalSourceMayContain", () => {
     expect(await logicalSourceMayContain(source, "third brain", version)).toBe(false);
     expect(fs.existsSync(cacheRoot)).toBe(false);
     vi.unstubAllEnvs();
+  });
+
+  it.each([["raw", "the \u212aelvin sign"], ["escaped", "the \\u212aelvin sign"], ["escaped in uppercase hex", "the \\u212Aelvin sign"]])("keeps a K-sign spelling of kelvin: %s", async (name, content) => {
+    expect(await contains(`kelvin-${name}.jsonl`, content, "kelvin")).toBe(true);
   });
 
   it("does not rule out a match in bytes shorter than the recorded version", async () => {

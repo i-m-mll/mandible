@@ -334,24 +334,6 @@ export class ConversationSourceStore {
     return new Map([...this.resolveConversations(conversationIds)].map(([id,source])=>[id,{sourceId:source.sourceId,currentVersionId:source.currentVersionId}]));
   }
 
-  /** Canonical identity, availability and epochs plus the immutable admitted version facts. */
-  searchSnapshotAuthorities(conversationIds:readonly string[],pinnedVersions?:ReadonlyMap<string,string>):Map<string,string> {
-    const latest=this.latestSources(conversationIds);
-    if(latest.size===0)return new Map();
-    const sourceFields=["id","provider","native_session_id","availability","parser_format","parser_version","normalization_version","redaction_epoch"];
-    const versionFields=["id","source_id","availability","generation","parser_format","parser_version","normalization_version","redaction_epoch","content_sha256","byte_length","filesystem_device","filesystem_inode","filesystem_ctime_ns"];
-    const currentFields=["source_id","availability","generation","parser_format","parser_version","normalization_version","redaction_epoch"];
-    const selected=[...latest].map(([id,source])=>({source_id:source.sourceId,version_id:pinnedVersions?.get(id)||source.currentVersionId}));
-    const columns=[...sourceFields.map(field=>`s.${field} AS source_${field}`),...versionFields.map(field=>`p.${field} AS pinned_${field}`),...currentFields.map(field=>`c.${field} AS current_${field}`)].join(",");
-    const rows=this.db.prepare(`SELECT ${columns} FROM json_each(?) pin
-      JOIN conversation_sources s ON s.id=json_extract(pin.value,'$.source_id')
-      LEFT JOIN conversation_source_versions p ON p.id=json_extract(pin.value,'$.version_id') AND p.source_id=s.id
-      LEFT JOIN conversation_source_versions c ON c.id=s.current_version_id AND c.source_id=s.id
-    `).all(JSON.stringify(selected)) as Array<Record<string,unknown>&{source_id:string}>;
-    const bySource=new Map(rows.map(row=>[row.source_id,createHash("sha256").update(JSON.stringify(row)).digest("hex")]));
-    return new Map([...latest].flatMap(([id,source])=>{const authority=bySource.get(source.sourceId);return authority?[[id,authority] as const]:[];}));
-  }
-
   resolveVersion(versionId:string):ConversationSourceVersion|null {
     return this.resolveVersions([versionId]).get(versionId)??null;
   }

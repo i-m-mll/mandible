@@ -264,9 +264,10 @@ file_rpc_warn_truncated_blocks() {
   fi
 }
 
+# The body is a subshell, so its variables are already private. They must not be
+# `local`: `exit` from the signal traps pops function scope before the EXIT trap runs.
 conversation_search_read() (
-  local request="$1" output_file status response state search_id="" observer_token="" cancel_request
-  local previous_progress="" progress unchanged=0 retry_ms delay
+  request="$1" search_id="" observer_token="" previous_progress="" unchanged=0
   output_file=$(api_temp_file)
   release_search() {
     if [[ -n "$observer_token" ]]; then
@@ -278,7 +279,7 @@ conversation_search_read() (
   trap release_search EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  local current_request="$request"
+  current_request="$request"
   while true; do
     status=$(api_send_capture GET "$current_request" "" "$output_file")
     response=$(cat "$output_file")
@@ -306,8 +307,6 @@ conversation_search_read() (
 conversation_search_failure_text() {
   jq -r '
     {
-      source_changed: "a transcript changed while its results were being read. Run the search again.",
-      source_unavailable: "a transcript disappeared while its results were being read. Run the search again.",
       redaction_changed: "credential redaction changed during the search. Run the search again.",
       snapshot_expired: "the search snapshot expired. Run the search again.",
       worker_restarted: "the daemon worker restarted during the search. Run the search again.",
@@ -330,7 +329,7 @@ conversation_search_coverage_warning() {
       repair_failed: "transcript could not be indexed",
       repair_unavailable: "transcript could not be indexed"
     } as $text
-    | select(.coverage.complete == false)
+    | select(.coverage.complete == false and .coverage.stopped == null)
     | "Searched \(.coverage.scanned) of \(.coverage.eligible) conversations. Not searched:",
       (.coverage.unread | to_entries[] | "  \(.value.count) \($text[.key] // "transcript not indexed yet") (\(.key)), e.g. \(.value.examples | join(", "))")'
 }
