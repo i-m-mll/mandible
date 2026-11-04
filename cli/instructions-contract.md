@@ -10,7 +10,7 @@ This section is Mandible's interface contract. It describes daemon and CLI behav
 
 - {{command changes}} - Read the bounded project-scoped ledger change feed. Omit --cursor only to establish a controlled resync point, then persist and reuse next_cursor. Retention gaps, truncation, schema mismatch, and inconsistent cursors fail closed.
 - {{command issue.report}} - Print deterministic issue context for handoff and planning.
-- {{command issue.title}} - Resolve an issue title for caller-supplied commit-message defaults. --graceful makes daemon-unreachable failures non-fatal.
+- {{command issue.title}} - Print an issue's title, or replace it with --set (last write wins, with no stale-base check); every prior title stays in the issue's event history. --graceful makes daemon-unreachable failures non-fatal.
 - {{command issue.list}} - List issues in the current checkout's registered repo, or --repo, as id, status, repo, and title.
 - {{command issue.triage}} - Read-only issue filter with tab-separated or JSON rows, least recently updated first, capped at 50 unless --limit is given.
 - {{command issue.search}} - Keyword search over issue titles, bodies, and comments across all readable projects, best match first. Each word must match a word prefix in the issue text or in one comment. Rows carry id, status, project, title, and a matched excerpt.
