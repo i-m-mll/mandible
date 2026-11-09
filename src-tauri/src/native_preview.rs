@@ -42,7 +42,7 @@ impl NativePreview {
 
     pub fn initial_url(&self) -> Result<tauri::Url, String> {
         let base = tauri::Url::parse(&self.origin).map_err(|e| e.to_string())?;
-        let path = self.initial_path.as_deref().unwrap_or("/#/overview");
+        let path = self.initial_path.as_deref().unwrap_or("/overview");
         if !path.starts_with('/')
             || path.starts_with("//")
             || path.contains('\\')
@@ -54,24 +54,17 @@ impl NativePreview {
         if !self.permits(&url) {
             return Err("Native preview initialPath must retain the approved origin".into());
         }
-        let mut fragment = url.fragment().unwrap_or("/overview").to_string();
         if let Some(session) = &self.agent_session {
-            let (route, query) = fragment.split_once('?').unwrap_or((&fragment, ""));
-            let mut binding = url.clone();
-            binding.set_query(Some(query));
-            let pairs: Vec<_> = binding
+            let pairs: Vec<_> = url
                 .query_pairs()
                 .filter(|(key, _)| key != "agent_session")
                 .map(|(key, value)| (key.into_owned(), value.into_owned()))
                 .collect();
-            binding.set_query(None);
-            binding
-                .query_pairs_mut()
+            url.set_query(None);
+            url.query_pairs_mut()
                 .extend_pairs(pairs)
                 .append_pair("agent_session", session);
-            fragment = format!("{}?{}", route, binding.query().unwrap());
         }
-        url.set_fragment(Some(&fragment));
         Ok(url)
     }
 
@@ -364,21 +357,19 @@ mod tests {
         assert!(config.permits(&config.initial_url().unwrap()));
         assert!(!config.permits(&tauri::Url::parse(crate::PRODUCTION_ORIGIN).unwrap()));
         assert!(!config.permits(&tauri::Url::parse("https://example.com").unwrap()));
-        assert!(config
-            .initial_url()
-            .unwrap()
-            .fragment()
-            .unwrap()
-            .contains("agent_session=session+%26+other"));
+        assert_eq!(
+            config.initial_url().unwrap().as_str(),
+            format!("{origin}/overview?agent_session=session+%26+other")
+        );
         let mut selected = config.clone();
-        selected.initial_path = Some("/dist/proofs/3434b09/splash.html?reason=starting#/overview?keep=yes&agent_session=wrong".into());
+        selected.initial_path =
+            Some("/dist/proofs/3434b09/splash.html?reason=starting&agent_session=wrong".into());
         let selected_url = selected.initial_url().unwrap();
         assert_eq!(selected_url.origin().ascii_serialization(), origin);
         assert_eq!(selected_url.path(), "/dist/proofs/3434b09/splash.html");
-        assert_eq!(selected_url.query(), Some("reason=starting"));
         assert_eq!(
-            selected_url.fragment(),
-            Some("/overview?keep=yes&agent_session=session+%26+other")
+            selected_url.query(),
+            Some("reason=starting&agent_session=session+%26+other")
         );
         for path in [
             "https://example.com/",
