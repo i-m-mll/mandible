@@ -1,3 +1,4 @@
+import { servedBackendGeneration } from './boot-instance';
 import type { AuthRequest } from './views/auth';
 import type { InboxData } from './views/inbox';
 import type { IssueRepoSummary } from './views/issues';
@@ -730,8 +731,9 @@ function loadCachedState(): Partial<AppState> {
     if (typeof window === 'undefined') return {};
     const raw = window.localStorage.getItem(CACHE_KEY);
     if (!raw) return {};
-    const parsed = JSON.parse(raw) as { v: number; state: Partial<AppState> };
-    if (parsed.v !== CACHE_VERSION) return {};
+    const parsed = JSON.parse(raw) as { v: number; generation?: unknown; state: Partial<AppState> };
+    const generation = servedBackendGeneration();
+    if (parsed.v !== CACHE_VERSION || parsed.generation !== generation) return {};
     const cached = parsed.state;
     // The authenticated user_settings row is the only writable-instance rail
     // authority. Quarantine legacy global/browser cache bytes on hydration.
@@ -801,7 +803,7 @@ function saveCachedState(state: AppState): void {
       consoleSessions: state.consoleSessions,
       settings: withoutLegacyAppRailOrder(state.settings),
     };
-    window.localStorage.setItem(CACHE_KEY, JSON.stringify({ v: CACHE_VERSION, state: toCache }));
+    window.localStorage.setItem(CACHE_KEY, JSON.stringify({ v: CACHE_VERSION, generation: servedBackendGeneration(), state: toCache }));
   } catch {
     // Ignore storage quota errors (private browsing, etc.)
   }

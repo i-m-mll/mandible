@@ -1,3 +1,5 @@
+import { servedBackendGeneration } from './boot-instance';
+
 // Browser-local detail cache keys. Refetchable data never moves between origins.
 const DETAIL_CACHE_INDEX_KEY = "mandible:detail-cache:v2";
 const DETAIL_CACHE_ENTRY_KEY_PREFIX = `${DETAIL_CACHE_INDEX_KEY}:e:`;
@@ -30,6 +32,7 @@ type IndexEntry = {
 
 type CacheIndex = {
   version: number;
+  generation: string | null;
   nextId: number;
   entries: IndexEntry[];
 };
@@ -101,7 +104,7 @@ function purgeAll(storage: Storage): void {
 }
 
 function emptyIndex(): CacheIndex {
-  return { version: CACHE_VERSION, nextId: 1, entries: [] };
+  return { version: CACHE_VERSION, generation: servedBackendGeneration(), nextId: 1, entries: [] };
 }
 
 function isIndexEntry(entry: unknown): entry is IndexEntry {
@@ -132,7 +135,8 @@ function readIndex(storage: Storage): CacheIndex {
   if (!raw) return emptyIndex();
   try {
     const parsed = JSON.parse(raw) as Partial<CacheIndex>;
-    if (parsed.version !== CACHE_VERSION || !Array.isArray(parsed.entries)) {
+    const generation = servedBackendGeneration();
+    if (parsed.version !== CACHE_VERSION || parsed.generation !== generation || !Array.isArray(parsed.entries)) {
       purgeAll(storage);
       return emptyIndex();
     }
@@ -144,7 +148,7 @@ function readIndex(storage: Storage): CacheIndex {
     const nextId = typeof parsed.nextId === 'number' && parsed.nextId > maxId
       ? parsed.nextId
       : maxId + 1;
-    return { version: CACHE_VERSION, nextId, entries };
+    return { version: CACHE_VERSION, generation, nextId, entries };
   } catch {
     purgeAll(storage);
     return emptyIndex();

@@ -54,6 +54,7 @@ import {
   type InstanceInfo,
   type DashboardBadgeCounts,
 } from './api';
+import { readBootInstanceInfo } from './boot-instance';
 import {
   AppearanceSettingsContext,
   DEFAULT_APPEARANCE_SETTINGS,
@@ -347,32 +348,6 @@ const INACTIVE_APP_SHELL_CONTEXT: AppShellContextValue = {
   viewSidebarWidth: null,
   active: false,
 };
-
-type MandibleBootstrapData = {
-  instance?: InstanceInfo | null;
-};
-
-declare global {
-  interface Window {
-    __MANDIBLE_BOOTSTRAP__?: MandibleBootstrapData;
-  }
-}
-
-function readBootInstanceInfo(): InstanceInfo | null {
-  if (typeof window === 'undefined' || typeof document === 'undefined') return null;
-  const globalInstance = window.__MANDIBLE_BOOTSTRAP__?.instance;
-  const normalizedGlobalInstance = normalizeInstanceInfo(globalInstance);
-  if (normalizedGlobalInstance) return normalizedGlobalInstance;
-  const script = document.getElementById('mandible-bootstrap');
-  const raw = script?.textContent?.trim();
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as MandibleBootstrapData;
-    return normalizeInstanceInfo(parsed.instance);
-  } catch {
-    return null;
-  }
-}
 
 function getRepoId(repo: WorkRepo): string {
   return repo.id || repo.name || '';
