@@ -7,7 +7,6 @@ import { SPACE_EVENTS, SPACE_EVENT_VALUES } from "./spaces/events.js";
 // The transcript vocabularies belong to the parser contract; re-export them so
 // daemon and UI read one definition.
 import type { BlockType, ConversationSource, Role } from "./parsers/types.js";
-import type { EntityKind } from "./app-routes.js";
 
 export type { BlockType, ConversationSource, Role };
 
@@ -1565,7 +1564,16 @@ export type SpaceFactPacket = {
 export type ResolverRefKind = 'issue' | 'comment' | 'auth' | 'briefing' | 'artifact' | 'mandible' | 'repo' | 'submission' | 'unknown';
 
 /** One candidate of an ambiguous ref: its shortest unambiguous ref, which opens it at `/<kind>/<ref>`. */
-export type ResolverMatch = { kind: EntityKind; ref: string; title: string | null; updated_at: number };
+/**
+ * One candidate of an ambiguous ref, with the facets its kind's list row shows
+ * so a reader can tell same-prefix candidates apart.
+ */
+export type ResolverMatch = { ref: string; title: string | null; updated_at: number } & (
+  | { kind: "issue"; project: string | null; status: string; resolution: string | null }
+  | { kind: "auth"; repo: string | null; type: string | null; status: string }
+  | { kind: "artifact"; role: string | null }
+  | { kind: "briefing" }
+);
 
 export const RESOLVER_MATCH_LIMIT = 50;
 

@@ -65,6 +65,7 @@ import {
   SPACE_OCCURRENCE_RENDERERS,
   SPACE_RENDERERS,
   type ArtifactIdentityCandidate,
+  type ResolverMatch,
   type ResolverRefKind,
   type ResolverResult,
   RESOLVER_MATCH_LIMIT,
@@ -260,23 +261,22 @@ function notFound(ref: string, kind: ResolverRefKind, error?: string, detail?: R
 type MatchRow = { id: string; title: string | null; updated_at: number };
 
 /** Candidate rows of `ids` from one table, newest first, at most the match limit. */
-function newestMatchRows(db: Db, select: string, ids: readonly string[]): MatchRow[] {
+function newestMatchRows<Row extends MatchRow>(db: Db, select: string, ids: readonly string[]): Row[] {
   return db.prepare(`SELECT * FROM (${select}) WHERE id IN (SELECT value FROM json_each(?))
-    ORDER BY updated_at DESC, id LIMIT ${RESOLVER_MATCH_LIMIT}`).all(JSON.stringify(ids)) as MatchRow[];
+    ORDER BY updated_at DESC, id LIMIT ${RESOLVER_MATCH_LIMIT}`).all(JSON.stringify(ids)) as Row[];
 }
 
-function ambiguous(
+function ambiguous<Row extends MatchRow>(
   ref: string,
   kind: ResolverRefKind,
-  entityKind: EntityKind,
   total: number,
-  rows: readonly MatchRow[],
-  shortRefOf: (id: string) => string,
+  rows: readonly Row[],
+  toMatch: (row: Row) => ResolverMatch,
 ): ResolverResult {
   const matches = [...rows]
     .sort((a, b) => b.updated_at - a.updated_at || a.id.localeCompare(b.id))
     .slice(0, RESOLVER_MATCH_LIMIT)
-    .map((row) => ({ kind: entityKind, ref: shortRefOf(row.id), title: row.title, updated_at: row.updated_at }));
+    .map(toMatch);
   return { ref, kind, status: "ambiguous", entity: null, matches, total };
 }
 
@@ -379,8 +379,13 @@ function resolveIssueRef(
   if (!operational.ok) {
     if (operational.error !== "ambiguous") return notFound(ref, "issue", "not_found");
     const ids = operational.matches ?? [];
-    return ambiguous(ref, "issue", "issue", ids.length,
-      newestMatchRows(db, "SELECT id, title, updated_at FROM ledger_issues", ids), (id) => issueShortRef(db, id));
+    return ambiguous(ref, "issue", ids.length,
+      newestMatchRows<MatchRow & { project_id: string; status: string; resolution: string | null }>(
+        db, "SELECT id, title, updated_at, project_id, status, resolution FROM ledger_issues", ids),
+      (row) => ({
+        kind: "issue", ref: issueShortRef(db, row.id), title: row.title, updated_at: row.updated_at,
+        project: projectRouteRef(db, row.project_id), status: row.status, resolution: row.resolution,
+      }));
   }
   if (target?.ordinal) return resolveCommentOrdinal(store, operational.issue_id, String(target.ordinal), ref);
   const issue = store.getIssue(operational.issue_id);
@@ -417,9 +422,13 @@ function resolveAuthRef(db: Db, refValue: string, ref: string): ResolverResult {
   const resolved = resolveId(db, "auth_request", refValue.trim(), { allMatches: true });
   if (!resolved.ok) {
     return resolved.error === "ambiguous"
-      ? ambiguous(ref, "auth", "auth", resolved.matches.length,
-        newestMatchRows(db, "SELECT id, title, updated_at FROM auth_requests", resolved.matches),
-        (id) => shortRef(db, "auth_request", id))
+      ? ambiguous(ref, "auth", resolved.matches.length,
+        newestMatchRows<MatchRow & { repo: string | null; type: string | null; status: string }>(
+          db, "SELECT id, title, updated_at, repo, type, status FROM auth_requests", resolved.matches),
+        (row) => ({
+          kind: "auth", ref: shortRef(db, "auth_request", row.id), title: row.title, updated_at: row.updated_at,
+          repo: row.repo?.trim() || null, type: row.type, status: row.status,
+        }))
       : notFound(ref, "auth", "not_found");
   }
   const request = db.prepare(
@@ -439,9 +448,11 @@ function resolveBriefingRef(db: Db, req: RequestLike, refValue: string, ref: str
   const resolved = lookupBriefingId(db, refValue, briefingReadViewer(db, req), { allMatches: true });
   if (!resolved.ok) {
     return resolved.error === "ambiguous"
-      ? ambiguous(ref, "briefing", "briefing", resolved.matches.length,
+      ? ambiguous(ref, "briefing", resolved.matches.length,
         newestMatchRows(db, "SELECT id, title, updated_at FROM briefings", resolved.matches),
-        (id) => shortBriefingRef(db, id).slice("briefing:".length))
+        (row) => ({
+          kind: "briefing", ref: shortBriefingRef(db, row.id).slice("briefing:".length), title: row.title, updated_at: row.updated_at,
+        }))
       : notFound(ref, "briefing", "not_found");
   }
   const briefing = db.prepare(
@@ -481,16 +492,17 @@ function resolveArtifactResult(
 
 const ARTIFACT_MATCH_SOURCES = {
   artifact: {
-    select: "SELECT id, COALESCE(title, logical_name) AS title, updated_at FROM artifact",
+    select: `SELECT a.id, COALESCE(a.title, a.logical_name) AS title, a.updated_at, b.role
+      FROM artifact a LEFT JOIN artifact_version v ON v.id = a.latest_version_id LEFT JOIN artifact_blob b ON b.id = v.blob_id`,
     shortRef: canonicalLogicalArtifactShortRef,
   },
   artifact_version: {
-    select: `SELECT v.id, COALESCE(a.title, a.logical_name) AS title, v.created_at AS updated_at
-      FROM artifact_version v LEFT JOIN artifact a ON a.id = v.artifact_id`,
+    select: `SELECT v.id, COALESCE(a.title, a.logical_name) AS title, v.created_at AS updated_at, b.role
+      FROM artifact_version v LEFT JOIN artifact a ON a.id = v.artifact_id LEFT JOIN artifact_blob b ON b.id = v.blob_id`,
     shortRef: canonicalArtifactVersionShortRef,
   },
   artifact_blob: {
-    select: "SELECT id, NULL AS title, created_at AS updated_at FROM artifact_blob",
+    select: "SELECT id, NULL AS title, created_at AS updated_at, role FROM artifact_blob",
     shortRef: canonicalArtifactBlobShortRef,
   },
 } as const;
@@ -498,10 +510,12 @@ const ARTIFACT_MATCH_SOURCES = {
 function ambiguousArtifact(db: Db, ref: string, kind: ResolverRefKind, candidates: readonly ArtifactIdentityCandidate[]): ResolverResult {
   const types = Object.keys(ARTIFACT_MATCH_SOURCES) as Array<keyof typeof ARTIFACT_MATCH_SOURCES>;
   const typeOf = new Map(candidates.map((candidate) => [candidate.id, candidate.target_type]));
-  const rows = types.flatMap((type) => newestMatchRows(db, ARTIFACT_MATCH_SOURCES[type].select,
+  const rows = types.flatMap((type) => newestMatchRows<MatchRow & { role: string | null }>(db, ARTIFACT_MATCH_SOURCES[type].select,
     candidates.filter((candidate) => candidate.target_type === type).map((candidate) => candidate.id)));
-  return ambiguous(ref, kind, "artifact", candidates.length, rows,
-    (id) => ARTIFACT_MATCH_SOURCES[typeOf.get(id)!].shortRef(db, id));
+  return ambiguous(ref, kind, candidates.length, rows, (row) => ({
+    kind: "artifact", ref: ARTIFACT_MATCH_SOURCES[typeOf.get(row.id)!].shortRef(db, row.id), title: row.title, updated_at: row.updated_at,
+    role: row.role,
+  }));
 }
 
 // --- route registration ------------------------------------------------------
