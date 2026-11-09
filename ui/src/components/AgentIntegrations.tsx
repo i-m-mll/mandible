@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import { getOptionalIntegrations, updateOptionalIntegration, canPerformOperation, type InstanceInfo } from '../api';
 import type { OptionalIntegrations, OptionalIntegration } from '../../../src/optional-integrations';
+import { viewHref } from '../routing';
 
 export function AgentIntegrations({ instance }: { instance?: InstanceInfo | null }): JSX.Element {
   const [state, setState] = useState<OptionalIntegrations | null>(null);
@@ -54,7 +55,7 @@ export function IntegrationIntroduction({ settings, onSave }: {
   if (settings['integrations.setup']) return null;
   return <div className="daemon-toast daemon-toast--introduction" role="region" aria-label="Welcome to Mandible">
     <span>Mandible keeps your agent work together. You can optionally connect external agents and the command line.</span>
-    <a className="daemon-toast__link" href="#/settings?section=settings-integrations">Choose integrations</a>
+    <a className="daemon-toast__link" href={viewHref('settings', { section: 'settings-integrations' })}>Choose integrations</a>
     <button className="btn btn--sm" aria-label="Skip optional integrations" disabled={busy} onClick={() => {
       setBusy(true);
       void onSave('integrations.setup', 'skipped').catch(error => setError(String(error))).finally(() => setBusy(false));

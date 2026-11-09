@@ -14,7 +14,7 @@ import { LedgerIssueDetail, type LedgerIssueCloseResolution } from '../component
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { readPersistedViewState, usePersistedViewState } from '../hooks/usePersistedViewState';
-import { navigateTo, routeWithParams, shortRouteId } from '../routing';
+import { navigateTo, routeWithParams, shortRouteId, viewHref } from '../routing';
 import { appPath } from '../../../src/app-routes';
 import { rememberEntityRoute } from '../query/entityRoute';
 import { useEntityRoute } from '../hooks/useEntityRoute';
@@ -880,7 +880,7 @@ export function IssuesView({
       const units = visibleLedgerIssueDetail?.work_units.filter(unit => unit.assigned_session_id && ['open', 'committed'].includes(unit.state)) ?? [];
       if (units.length !== 1) throw new Error('Select an exact assigned work unit in Inbox before resuming.');
       const result = await spawnIssueAgent(selectedRepoId, selectedIssueId, units[0]);
-      navigateTo(`/console?conversation=${encodeURIComponent(result.conversation_id)}`);
+      navigateTo(viewHref('console', { conversation: result.conversation_id }));
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -895,11 +895,11 @@ export function IssuesView({
       return;
     }
     if (type === 'session') {
-      navigateTo(`/console?session=${encodeURIComponent(id.replace(/^session:/, ''))}`);
+      navigateTo(viewHref('console', { session: id.replace(/^session:/, '') }));
       return;
     }
     if (type === 'conversation') {
-      navigateTo(`/console?session=${encodeURIComponent(id.replace(/^session:/, ''))}`);
+      navigateTo(viewHref('console', { session: id.replace(/^session:/, '') }));
       return;
     }
     if (type === 'auth_request') {

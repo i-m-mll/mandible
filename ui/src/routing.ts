@@ -4,6 +4,8 @@ import { compactLongIdSegments } from './resource-refs';
 import {
   appHref,
   ENTITY_TAB,
+  entityHref,
+  viewHref,
   parseAppPath,
   patchRouteQuery,
   type AppRoute,
@@ -13,6 +15,7 @@ import {
 } from '../../src/app-routes';
 
 export type { AppRoute, EntityKind, ParsedAppPath, ViewTab };
+export { entityHref, viewHref };
 
 export type EntityTarget = { kind: EntityKind; ref: string };
 
@@ -89,6 +92,11 @@ export function navigateTo(href: string, state: unknown = null): void {
 /** Replace the current entry, keeping this tab's agent session binding. */
 export function replaceRoute(href: string, state: unknown = window.history.state, notify = true): void {
   appHistory().replace(withAgentSession(href, getAgentPageBinding()), state, notify);
+}
+
+/** Call `listener` after every in-app navigation, including back and forward. */
+export function subscribeRouteChanges(listener: () => void): () => void {
+  return appHistory().subscribe(listener);
 }
 
 export function isViewSidebarHidden(route: Route): boolean {

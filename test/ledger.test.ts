@@ -301,7 +301,7 @@ describe("ledger store", () => {
       "Ignore #feedbee, bare feedbee1, and issue_legacy_alias in normal text.",
       "Inline `020a65b` and commit `7714da1` are plain code/text.",
       "Current commit is f026c06, superseding the earlier 7714da1.",
-      "Skip [`abc1234`](#/issues?repo=x&issue=abc1234), `#badcafe`, and ```#deadbee```.",
+      "Skip `#badcafe` and ```#deadbee```.",
     ].join("\n"));
 
     expect(refs.map((ref) => [ref.kind, ref.project ?? "", ref.issueRef, ref.commentRef ?? ""]))

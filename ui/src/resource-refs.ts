@@ -13,7 +13,7 @@
 //   - comment:<issue>#<comment>     (legacy Mandible comment refs)
 //   - auth:<id-or-prefix>           (Mandible auth request refs)
 //   - briefing:<id-or-prefix>       (Mandible Briefing refs)
-//   - mandible://<repo>/issue/<id>  (app-route entity refs)
+//   - mandible:///<kind>/<ref>      (app-route entity refs)
 //
 // It drives an unresolved-reference UI: every recognized ref is linkified with a
 // visible placeholder and a resolve affordance instead of being silently
@@ -26,6 +26,7 @@
 
 import type { ResolverRefKind, ResolverResult } from '../../src/contracts';
 import { parseCommentRefTarget, parseIssueRefTarget } from '../../src/ledger/authored-references';
+import { entityHref, parseAppPath } from '../../src/app-routes';
 
 // --- ref grammar -------------------------------------------------------------
 
@@ -153,7 +154,7 @@ function recognizeBuiltin(candidate: string): ParsedResourceRef | null {
     return { raw, canonical: raw, kind: 'submission', display: compactSubmissionRef(raw) };
   }
 
-  // mandible://<repo>/issue/<id> and other mandible app-route refs.
+  // mandible:///<kind>/<ref> and other mandible app-route refs.
   if (raw.startsWith('mandible://')) {
     return { raw, canonical: raw, kind: 'mandible', display: raw };
   }
@@ -275,39 +276,39 @@ export function displayResourceRef(ref: string): string {
 
 /** App route for an issue, optionally scoped to its project and a comment ordinal. */
 export function issueRouteHref(issue: string, repo?: string | null, comment?: string | null): string {
-  const params = new URLSearchParams({ issue });
-  if (repo) params.set('repo', repo);
-  if (comment) params.set('comment', comment);
-  return `#/issues?${params.toString()}`;
+  return entityHref('issue', repo ? `${repo}/${issue}` : issue, { comment });
 }
 
-export function resourceRefHref(ref: string): string {
-  const issue = issueAuthorityFromResourceRef(ref) ?? commentAuthorityFromResourceRef(ref);
+/** The in-app href a resource ref opens; undefined for a ref with no page (submissions). */
+export function resourceRefHref(ref: string): string | undefined {
+  const trimmed = ref.trim();
+  if (SUBMISSION_REF.test(trimmed)) return undefined;
+  const issue = issueAuthorityFromResourceRef(trimmed) ?? commentAuthorityFromResourceRef(trimmed);
   if (issue) return issueRouteHref(issue.ref, issue.repoId, issue.comment);
-  const auth = AUTH_REF.exec(ref.trim());
-  if (auth) {
-    // The auth view resolves prefixes; inbound refs pass through untouched so a
-    // full id keeps its power to disambiguate.
-    return `#/auth?request=${encodeURIComponent(auth[1])}`;
+  // Auth and Briefing refs pass through untouched so a full id keeps its power
+  // to disambiguate; the resolver owns prefixes and legacy id spellings.
+  const auth = AUTH_REF.exec(trimmed);
+  if (auth) return entityHref('auth', auth[1]);
+  if (BRIEFING_REF.test(trimmed)) return entityHref('briefing', trimmed);
+  if (trimmed.startsWith('mandible://')) return mandibleAppHref(trimmed) ?? trimmed;
+  return artifactDetailHref(trimmed);
+}
+
+/**
+ * The in-app href a `mandible:` URL names: `mandible:///<path>` deep links and
+ * Spaces item refs `mandible://<kind>/<ref>` both read as `/<kind>/<ref>`. Null
+ * when the URL names no app route, as for native-shell links.
+ */
+function mandibleAppHref(value: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
   }
-  if (BRIEFING_REF.test(ref.trim())) {
-    // The web link route resolves typed refs and legacy prefixed ids to the
-    // canonical id before opening the Briefing view.
-    return `/briefing/${encodeURIComponent(ref.trim())}`;
-  }
-  if (SUBMISSION_REF.test(ref.trim())) {
-    return `/r/submission/${encodeURIComponent(ref.trim())}`;
-  }
-  const series = ARTIFACT_SERIES_REF.exec(ref.trim());
-  if (series) {
-    const seriesRef = `artifact-series:${series[1]}`;
-    const selector = series[3]?.toLowerCase();
-    if (selector && selector !== 'latest' && /^\d+$/.test(selector)) {
-      return versionDetailHref(seriesRef, Number(selector));
-    }
-    return seriesDetailHref(selector === 'latest' ? `${seriesRef}@latest` : seriesRef);
-  }
-  return `#/artifacts?ref=${encodeURIComponent(ref)}`;
+  if (url.protocol !== 'mandible:') return null;
+  const path = url.host ? `/${url.host}${url.pathname}` : url.pathname;
+  return parseAppPath(path).kind === 'not_found' ? null : `${path}${url.search}`;
 }
 
 type IssueAuthority = { ref: string; repoId?: string; comment?: string };
@@ -335,105 +336,69 @@ function commentAuthorityFromResourceRef(value: string): IssueAuthority | null {
   };
 }
 
+/** The issue an app path names, with its `comment` selector. */
+function issueAuthorityFromPath(url: Pick<URL, 'pathname' | 'search'>): IssueAuthority | null {
+  const path = parseAppPath(url.pathname);
+  if (path.kind !== 'entity' || path.entity !== 'issue') return null;
+  const authority = issueParts(path.ref);
+  if (!authority) return null;
+  const comment = new URLSearchParams(url.search).get('comment');
+  return comment ? { ...authority, comment } : authority;
+}
+
 /** Resolve every canonical issue resource form through the shared grammar. */
 export function issueAuthorityFromResourceRef(value: string): IssueAuthority | null {
   const parsed = parseResourceRef(value);
   if (!parsed) return null;
   if (parsed.kind === 'issue') return issueParts(parsed.canonical);
   if (parsed.kind !== 'mandible') return null;
-  try {
-    const url = new URL(parsed.canonical);
-    const route = `${url.hostname}${url.pathname}`.replace(/^\/+/, '');
-    const entityMatch = route.match(/^([^/]+)\/issue\/([^/]+)$/);
-    if (entityMatch) {
-      return {
-        repoId: decodeURIComponent(entityMatch[1]),
-        ref: decodeURIComponent(entityMatch[2]),
-      };
-    }
-    if (route !== 'issues') return null;
-    const ref = url.searchParams.get('issue');
-    if (!ref) return null;
-    return { ref, repoId: url.searchParams.get('repo') ?? undefined };
-  } catch {
-    return null;
-  }
+  const href = mandibleAppHref(parsed.canonical);
+  return href ? issueAuthorityFromPath(new URL(href, 'http://app.invalid')) : null;
 }
 
 /**
  * Resolve a rendered anchor to a previewable resource without introducing a
  * second link grammar. The resource wrapper is authoritative when present;
- * ordinary issue-route anchors are admitted through the same issue authority.
+ * ordinary same-app entity anchors are admitted by their path.
  */
 export function previewableResourceFromAnchor(anchor: HTMLAnchorElement): PreviewableResourceRef | null {
+  const href = anchor.getAttribute('href') ?? '';
+  const text = anchor.textContent?.trim() ?? '';
   const wrapped = anchor.closest<HTMLElement>('[data-resource-ref]')?.dataset.resourceRef;
   if (wrapped) {
     const parsed = parseResourceRef(wrapped);
-    const href = anchor.getAttribute('href') ?? anchor.href;
-    const label = anchor.textContent?.trim() || parsed?.display || wrapped;
+    const label = text || parsed?.display || wrapped;
     const wrappedIssue = issueAuthorityFromResourceRef(wrapped);
     if (wrappedIssue) return { kind: 'issue', ...wrappedIssue, href, label };
     if (parsed?.kind === 'artifact') return { kind: 'artifact', ref: parsed.canonical, href, label };
   }
 
-  const rawHref = anchor.getAttribute('href') ?? '';
-  const directIssue = issueAuthorityFromResourceRef(rawHref);
-  if (directIssue) {
-    return {
-      kind: 'issue',
-      ...directIssue,
-      href: rawHref,
-      label: anchor.textContent?.trim() || directIssue.ref,
-    };
-  }
+  const directIssue = issueAuthorityFromResourceRef(href);
+  if (directIssue) return { kind: 'issue', ...directIssue, href, label: text || directIssue.ref };
+
+  let url: URL;
   try {
-    const url = new URL(rawHref, window.location.href);
-    const [path, query = ''] = url.hash.replace(/^#/, '').split('?');
-    const route = path.replace(/^\//, '');
-    const params = new URLSearchParams(query);
-    if (route === 'issues') {
-      const ref = params.get('issue');
-      if (!ref) return null;
-      return {
-        kind: 'issue',
-        ref,
-        repoId: params.get('repo') ?? undefined,
-        href: rawHref,
-        label: anchor.textContent?.trim() || ref,
-      };
-    }
-    if (route !== 'artifacts') return null;
-    const ref = params.get('ref') ?? params.get('series') ?? params.get('artifact');
-    if (!ref) return null;
-    return {
-      kind: 'artifact',
-      ref,
-      href: rawHref,
-      label: anchor.textContent?.trim() || displayResourceRef(ref),
-    };
+    url = new URL(href, window.location.href);
   } catch {
     return null;
   }
+  if (url.origin !== window.location.origin) return null;
+  const issue = issueAuthorityFromPath(url);
+  if (issue) return { kind: 'issue', ...issue, href, label: text || issue.ref };
+  const path = parseAppPath(url.pathname);
+  if (path.kind !== 'entity' || path.entity !== 'artifact') return null;
+  return { kind: 'artifact', ref: path.ref, href, label: text || displayResourceRef(path.ref) };
 }
 
+/** App route for an artifact ref, logical id, series, version or blob. */
 export function artifactDetailHref(id: string): string {
   const trimmed = id.trim();
   const oldHash = /^artifact:sha256:([0-9a-f]{64})$/i.exec(trimmed)?.[1];
-  if (oldHash) return resourceRefHref(`artifact-blob:${oldHash}`);
-  if (/^artifact(?:-version|-blob)?:/i.test(trimmed)) return resourceRefHref(trimmed);
-  return `#/artifacts?artifact=${encodeURIComponent(trimmed)}`;
-}
-
-export function seriesDetailHref(ref: string): string {
-  return `#/artifacts?series=${encodeURIComponent(ref)}`;
+  return entityHref('artifact', oldHash ? `artifact-blob:${oldHash}` : trimmed);
 }
 
 export function versionDetailHref(ref: string, versionNo: number): string {
-  const params = new URLSearchParams({
-    series: ref,
-    version: String(versionNo),
-  });
-  return `#/artifacts?${params.toString()}`;
+  return artifactDetailHref(`${ref}@${versionNo}`);
 }
 
 // --- C2 resolver -------------------------------------------------------------
@@ -495,7 +460,7 @@ function unwrapBracketRef(ref: string): string {
  *
  * Safety: all anchors/affordances are built with DOM APIs and `textContent` /
  * `setAttribute`, never by injecting raw ref text as HTML, and hrefs are always
- * internal `#/artifacts?ref=` hashes. No untrusted markup is produced.
+ * in-app paths. No untrusted markup is produced.
  */
 export function linkifyResourceRefs(html: string): string {
   if (typeof document === 'undefined' || !html) return html;
@@ -520,9 +485,9 @@ function buildRefElement(parsed: ParsedResourceRef, labelOverride?: string): HTM
 
   const anchor = document.createElement('a');
   anchor.className = 'artifact-xref resource-ref__link';
-  // Canonical href authority is the resolver-nav hash; the visible label may
-  // differ but the href is the authority.
-  anchor.href = resourceRefHref(parsed.canonical);
+  // The href is the authority; the visible label may differ.
+  const href = resourceRefHref(parsed.canonical);
+  if (href) anchor.href = href;
   anchor.textContent = labelOverride && labelOverride.trim() ? labelOverride : parsed.display;
   anchor.title = `Resource reference ${parsed.canonical} (unresolved)`;
   wrapper.appendChild(anchor);

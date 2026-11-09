@@ -4,7 +4,7 @@ import { acquireSharedSse } from "../sse-shared";
 // Session Overview: one page per agent session, for every provider. The page
 // is keyed on any session alias (a provider session id, a Claude subagent id,
 // a `sessions.id`, a console session id) or a prefix of one: the explicit
-// #/overview?session=<ref> selection, else the tab-local agent_session
+// /overview?session=<ref> selection, else the tab-local agent_session
 // binding. A prefix naming several sessions lists them to pick from. The
 // binding is display/navigation-only: it is never attached to a mutation.
 import type { ComponentChildren } from 'preact';
@@ -28,7 +28,7 @@ import {
   type SessionOverviewWorkUnit,
   type SessionSummary,
 } from '../api';
-import { currentRoute, replaceRoute, routeWithParams, shortRouteId } from '../routing';
+import { currentRoute, replaceRoute, routeWithParams, shortRouteId, viewHref } from '../routing';
 import { resourceRefHref } from '../resource-refs';
 import type { SessionRecord } from '../types/session';
 import { CollapsiblePanel } from '../components/shared/CollapsiblePanel';
@@ -89,15 +89,15 @@ function shortUuid(value: string): string {
   return value.length > 13 ? `${value.slice(0, 13)}…` : value;
 }
 
-/** Update the #/overview session param in place so refreshes keep the selection. */
-function writeSessionParamToHash(sessionId: string | null): void {
+/** Update the /overview session param in place so refreshes keep the selection. */
+function writeSessionParam(sessionId: string | null): void {
   if (typeof window === 'undefined') return;
   if (currentRoute().tab !== 'overview') return;
   replaceRoute(routeWithParams({ kind: 'view', tab: 'overview' }, { session: sessionId ? shortRouteId(sessionId) : null }));
 }
 
 function overviewHref(sessionId: string): string {
-  return `#/overview?session=${encodeURIComponent(shortRouteId(sessionId))}`;
+  return viewHref('overview', { session: shortRouteId(sessionId) });
 }
 
 function ExecutionObservation({ session }: { session: SessionSummary }): JSX.Element {
@@ -180,7 +180,7 @@ function ConversationRow({ conversation }: { conversation: SessionOverviewConver
   return (
     <tr>
       <td className="session-overview__cell-grow">
-        <a href={`#/console?conversation=${encodeURIComponent(conversation.id)}`}>
+        <a href={viewHref('console', { conversation: conversation.id })}>
           {conversation.title || shortUuid(conversation.id)}
         </a>
       </td>
@@ -407,7 +407,7 @@ export function SessionOverviewView({
       .then((payload) => {
         if (signal.aborted) return;
         show(payload);
-        if (payload.status !== 'ambiguous' && !embedded && !initialSessionId) writeSessionParamToHash(payload.session.id);
+        if (payload.status !== 'ambiguous' && !embedded && !initialSessionId) writeSessionParam(payload.session.id);
       })
       .catch((err: unknown) => {
         if (refreshAbandoned(signal)) return;
@@ -433,12 +433,12 @@ export function SessionOverviewView({
 
   const handleSelect = useCallback((sessionId: string) => {
     setSelectedRef(sessionId);
-    writeSessionParamToHash(sessionId);
+    writeSessionParam(sessionId);
   }, [routeRef]);
 
   const handleClearSelection = useCallback(() => {
     setSelectedRef(null);
-    writeSessionParamToHash(null);
+    writeSessionParam(null);
   }, [routeRef]);
 
   const session = state.kind === 'resolved' ? state.overview.session : null;

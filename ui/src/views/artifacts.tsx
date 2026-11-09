@@ -25,10 +25,9 @@ import { queryClient } from "../query/client";
 import { detailKeys } from "../query/detailKeys";
 import { artifactListOptions, artifactResolutionOptions, artifactVersionsOptions, artifactRecordOptions, artifactContentOptions, artifactBackrefsOptions, queryErrorMessage } from "../query/details";
 import { useArtifactDetail } from "../hooks/useArtifactDetail";
-import { navigateTo, routeWithParams, shortRouteId } from '../routing';
+import { entityHref, navigateTo, routeWithParams, shortRouteId, viewHref } from '../routing';
 import { useEntityRoute, type EntityRouteResolution } from '../hooks/useEntityRoute';
 import { EntityRouteState, isUnopenedEntityRoute } from '../components/shared/EntityRouteState';
-import { PRODUCTION_ORIGIN } from '../../../src/canonical-origin';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
 import {
@@ -59,7 +58,7 @@ import {
   artifactDetailHref,
   compactArtifactBlobRef,
   displayResourceRef,
-  seriesDetailHref,
+  issueRouteHref,
   versionDetailHref,
 } from '../resource-refs';
 import { renderDocumentText } from './spaces/DocumentRenderer';
@@ -1299,7 +1298,7 @@ export function ArtifactDetail({
               <div className="artifact-detail__list">
                 {artifact.links.map((link) => (
                   <div key={link.id} className="artifact-detail__list-item artifact-detail__list-item--artifact-link">
-                    <a className="artifact-detail__entity-link" href={entityHref(link.entity_type, link.entity_id, link.repo_id)}>
+                    <a className="artifact-detail__entity-link" href={linkedEntityHref(link.entity_type, link.entity_id, link.repo_id)}>
                       <code>{link.entity_type}:{link.entity_id}</code>
                     </a>
                     <span className="artifact-detail__link-meta">
@@ -1760,7 +1759,6 @@ export function UnresolvedArtifact({ resolution }: { resolution: ArtifactResolve
 }
 
 export function UnsupportedArtifactBlob({ resolution }: { resolution: ArtifactResolveResult }): JSX.Element {
-  const issueUrl = `${PRODUCTION_ORIGIN}/#/issues?repo=mandible&issue=7da339a&sidebar=hidden`;
   return (
     <article className="artifact-detail">
       <header className="artifact-detail__header">
@@ -1773,7 +1771,7 @@ export function UnsupportedArtifactBlob({ resolution }: { resolution: ArtifactRe
         <h3>Direct blob view unavailable</h3>
         <p>
           Artifact blobs identify bytes, not logical artifacts or versions. Direct viewing is not supported yet;
-          see issue <a href={issueUrl}>7da339a</a>.
+          see issue <a href={issueRouteHref('7da339a', 'mandible')}>7da339a</a>.
         </p>
       </section>
     </article>
@@ -1868,7 +1866,7 @@ function artifactLinkKind(link: ArtifactLinkRecord): 'pinned' | 'living' {
 function artifactLinkBadgeHref(link: ArtifactLinkRecord): string {
   const seriesRef = link.series_ref ? normalizeSeriesRef(link.series_ref) : link.series_id ? canonicalArtifactSeriesRef(link.series_id) : null;
   if (link.link_kind === 'living') {
-    return seriesRef ? seriesDetailHref(seriesRef) : artifactDetailHref(link.artifact_id);
+    return artifactDetailHref(seriesRef ?? link.artifact_id);
   }
   return seriesRef && typeof link.resolved_version_no === 'number'
     ? versionDetailHref(seriesRef, link.resolved_version_no)
@@ -2226,16 +2224,12 @@ function formatTime(value: number): string {
   return new Date(value).toLocaleString();
 }
 
-function entityHref(type: string, id: string, repoId: string | null): string {
-  if (type === 'issue') {
-    const params = new URLSearchParams({ issue: id });
-    if (repoId) params.set('repo', repoId);
-    return `#/issues?${params.toString()}`;
-  }
-  if (type === 'auth_request') return `#/auth?request=${encodeURIComponent(shortRouteId(id))}`;
-  if (type === 'session') return `#/sessions?session=${encodeURIComponent(id)}`;
-  if (type === 'provider_manifest') return `#/graph?mode=provider-lineage&focus=${encodeURIComponent(id)}`;
-  return `#/graph?focus=${encodeURIComponent(id)}`;
+function linkedEntityHref(type: string, id: string, repoId: string | null): string {
+  if (type === 'issue') return issueRouteHref(id, repoId);
+  if (type === 'auth_request') return entityHref('auth', shortRouteId(id));
+  if (type === 'session') return viewHref('console', { session: id });
+  if (type === 'provider_manifest') return viewHref('graph', { mode: 'provider-lineage', focus: id });
+  return viewHref('graph', { focus: id });
 }
 
 async function warmArtifactDetail(artifactId: string): Promise<void> {

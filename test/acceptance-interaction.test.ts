@@ -19,13 +19,13 @@ function interaction() {
   let blockBody = false;
   const fetches: string[] = [];
   const page = async () => {
-    const dom = new JSDOM(`<a aria-label="Settings" href="#/settings">Settings</a>
+    const dom = new JSDOM(`<a aria-label="Settings" href="/settings">Settings</a>
       <select id="settings-app-theme"><option>dark</option><option>light</option></select>
       <button aria-label="Complete optional integrations">Complete</button>
       ${state.setup === undefined ? '<div role="region" aria-label="Welcome to Mandible"><button aria-label="Skip optional integrations">Skip</button></div>' : ''}`);
     const document = dom.window.document;
-    const location = { hash: '#/', href: 'https://app.mandible.localhost:60408/#/settings', reload: () => { reloads += 1; } };
-    document.querySelector('a')!.addEventListener('click', event => { event.preventDefault(); location.hash = '#/settings'; });
+    const location = { pathname: '/', href: 'https://app.mandible.localhost:60408/settings', reload: () => { reloads += 1; } };
+    document.querySelector('a')!.addEventListener('click', event => { event.preventDefault(); location.pathname = '/settings'; });
     const theme = document.querySelector('select')!;
     theme.value = state.theme;
     theme.addEventListener('change', () => { state.theme = theme.value; state.revision += 1; });

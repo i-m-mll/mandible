@@ -1,5 +1,6 @@
 import { Icon } from '../components/icons/Icon';
-import { navigateTo } from '../routing';
+import { navigateTo, viewHref } from '../routing';
+import { issueRouteHref } from '../resource-refs';
 // Inbox tab — sidebar+detail panel layout with chip filters and unified item list.
 // Bug: 4fa87d9 — inbox sidebar redesign
 
@@ -610,7 +611,7 @@ function AuthResultDetail({
       )}
       <div className="inbox-detail__actions">
         <a
-          href="#/auth"
+          href={viewHref('auth')}
           style={{ fontSize: '13px', color: 'var(--accent-blue)', textDecoration: 'underline' }}
         >
           View in Approvals
@@ -646,7 +647,7 @@ function WorkUnitContinuationDetail({
     setSpawning(true);
     try {
       const result = await spawnIssueAgent(item.repo_id, item.issue_id, item);
-      navigateTo(`/console?conversation=${encodeURIComponent(result.conversation_id)}`);
+      navigateTo(viewHref('console', { conversation: result.conversation_id }));
     } catch (error) {
       setResumeError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -703,7 +704,7 @@ function WorkUnitContinuationDetail({
         </button>
         {item.issue_id && item.repo_id && (
           <a
-            href={`#/issues?repo=${encodeURIComponent(item.repo_id)}&issue=${encodeURIComponent(item.issue_id)}`}
+            href={issueRouteHref(item.issue_id, item.repo_id)}
             className="btn btn--ghost"
           >
             View Issue
@@ -794,7 +795,7 @@ function CredentialLeakDetail({ item }: { item: InboxWebhookEvent }): JSX.Elemen
       <div className="inbox-detail__actions">
         {leak.conversation_id && (
           <a
-            href={`#/conversations?id=${encodeURIComponent(leak.conversation_id)}`}
+            href={viewHref('console', { conversation: leak.conversation_id })}
             className="btn btn--ghost"
           >
             View conversation <Icon name="openLink" />
@@ -806,9 +807,7 @@ function CredentialLeakDetail({ item }: { item: InboxWebhookEvent }): JSX.Elemen
 }
 
 function IssueDetail({ item }: { item: InboxIssue }): JSX.Element {
-  const href = item.repo_id
-    ? `#/issues?repo=${encodeURIComponent(item.repo_id)}&issue=${encodeURIComponent(item.id)}`
-    : '#/issues';
+  const href = issueRouteHref(item.id, item.repo_id);
   return (
     <div className="inbox-detail__content">
       <div className="inbox-detail__header">
@@ -926,7 +925,7 @@ function ManagedReminderOccurrenceDetail({
       </div>
       <div className="inbox-detail__actions">
         <a
-          href={`#/tasks?task=${encodeURIComponent(`mandible-reminder:${item.task_id}`)}`}
+          href={viewHref('tasks', { task: `mandible-reminder:${item.task_id}` })}
           className="btn btn--ghost"
         >
           View in Tasks <Icon name="openLink" />

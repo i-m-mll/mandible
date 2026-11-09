@@ -149,7 +149,7 @@ import {
 import { useAppRightSidebarState } from '../right-sidebar-state';
 import type { ChatEntityClickAction } from '../../../src/contracts';
 import { subscribeClientAccessState } from '../client-auth-token';
-import { currentRoute, navigateTo, replaceRoute, routeWithParams } from '../routing';
+import { currentRoute, navigateTo, replaceRoute, routeWithParams, viewHref } from '../routing';
 import { conversationAnchorFromSearch, messageLinkUrl, type ConversationAnchor } from '../chat/messageLinks';
 import {
   flattenConversationTranscript,
@@ -2406,10 +2406,7 @@ export function ConversationDetail({
 
   const navigateToGraph = useCallback(() => {
     const sessionId = linkedConsoleSession?.id ?? conversation?.session_id;
-    const focus = sessionId ? `session:${sessionId}` : undefined;
-    const params = new URLSearchParams({ mode: 'activity' });
-    if (focus) params.set('focus', focus);
-    navigateTo(`/graph?${params.toString()}`);
+    navigateTo(viewHref('graph', { mode: 'activity', focus: sessionId ? `session:${sessionId}` : null }));
   }, [conversation?.session_id, linkedConsoleSession?.id]);
 
   const retryLoad = useCallback(() => {
@@ -2597,7 +2594,7 @@ export function ConversationDetail({
                     type="button"
                     role="menuitem"
                     onClick={() => {
-                      navigateTo(`/console?session=${encodeURIComponent(linkedConsoleSession.id)}`);
+                      navigateTo(viewHref('console', { session: linkedConsoleSession.id }));
                       setActionsOpen(false);
                     }}
                   >

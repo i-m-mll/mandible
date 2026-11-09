@@ -64,9 +64,9 @@ it('automatically shows and refreshes pending instructions through auth updates 
   expect(screen.getByRole('button', { name: 'Description' }).getAttribute('aria-expanded')).toBe('false');
   body.scrollTop = 73;
   fireEvent.scroll(body);
-  const hash = window.location.hash;
+  const href = window.location.href;
   const verifySelection = () => {
-    expect(window.location.hash).toBe(hash);
+    expect(window.location.href).toBe(href);
     expect(document.querySelector('.auth-detail__body')).toBe(body);
     expect(body.scrollTop).toBe(73);
     expect(screen.getByRole('heading', { name: 'Verify installed update' })).toBeTruthy();

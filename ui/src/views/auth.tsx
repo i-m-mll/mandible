@@ -25,6 +25,7 @@ import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFil
 import { IconTabList, type IconTab } from '../components/shared/IconTabList';
 
 import { linkifyResourceRefs as linkifyArtifactRefs } from '../resource-refs';
+import { entityHref } from '../routing';
 import { formatRelativeTime } from '../lib/format';
 import { createCoalescedRefresh } from '../lib/coalesced-refresh';
 import { renderInlineMarkdown, renderMarkdown } from '../lib/markdown';
@@ -209,7 +210,7 @@ function AuthPrerequisites({ request, onSelect }: { request: AuthRequest; onSele
         {prerequisites.map(({ id, dependency, state }) => {
           const reference = dependency?.request_id ?? id;
           return <li key={id}>
-            <a href={`#/auth?request=${encodeURIComponent(reference)}`} onClick={event => {
+            <a href={entityHref('auth', reference)} onClick={event => {
               if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
               event.preventDefault();
               onSelect(reference);
