@@ -3286,6 +3286,7 @@
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "repeat","item": {"kind": "option","names": ["--repo"],"values": [{"kind": "argument","name": "ref","value": {"type": "string"}}]},"min": 1}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "repeat","item": {"kind": "option","names": ["--project"],"values": [{"kind": "argument","name": "ref","value": {"type": "string"}}]},"min": 1}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "repeat","item": {"kind": "option","names": ["--comment"],"values": [{"kind": "argument","name": "id","value": {"type": "string"}}]},"min": 1}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "repeat","item": {"kind": "option","names": ["--rule"],"values": [{"kind": "argument","name": "rule","value": {"type": "enum","values": ["escaped-newlines","app-links"]}}]},"min": 1}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--db"],"values": [{"kind": "argument","name": "path","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
         ]
@@ -3302,6 +3303,7 @@
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "repeat","item": {"kind": "option","names": ["--repo"],"values": [{"kind": "argument","name": "ref","value": {"type": "string"}}]},"min": 1}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "repeat","item": {"kind": "option","names": ["--project"],"values": [{"kind": "argument","name": "ref","value": {"type": "string"}}]},"min": 1}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "repeat","item": {"kind": "option","names": ["--comment"],"values": [{"kind": "argument","name": "id","value": {"type": "string"}}]},"min": 1}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "repeat","item": {"kind": "option","names": ["--rule"],"values": [{"kind": "argument","name": "rule","value": {"type": "enum","values": ["escaped-newlines","app-links"]}}]},"min": 1}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--db"],"values": [{"kind": "argument","name": "path","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
         ]
