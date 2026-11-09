@@ -54,42 +54,41 @@ export class RuntimeHealthObservationError extends RuntimeObservationError {
     message: string,
     evidence: unknown,
   ) {
-    super(code, message, evidence, ['observation_deadline', 'stale_diagnostics'].includes(code) ? 'pending' : 'failed');
+    super(code, message, evidence, code === 'stale_diagnostics' ? 'pending' : 'failed');
     this.name = "RuntimeHealthObservationError";
   }
 }
 
+/**
+ * Watch the live production collectors from `live.startedAt` until a probe
+ * that started after `live.through()` answers with a current sample at or
+ * after it. A probe that answers without a newer current sample ends the
+ * observation as stale, so it never waits on diagnostics that stopped.
+ */
 export async function observeRuntimeHealthCoverage<T>(options: {
-  probe: (deadline: number, signal: AbortSignal) => Promise<T>;
+  probe: () => Promise<T>;
   healthOf: (value: T) => RuntimeHealthSnapshot;
   validate?: (value: T, initial: T) => void;
   now?: () => number;
   wait?: (milliseconds: number) => Promise<void>;
-  observationMs?: number;
-  deadlineMs?: number;
   pollMs?: number;
-  live?: { startedAt: number; through: () => number | null };
+  live: { startedAt: number; through: () => number | null };
 }): Promise<{
   value: T;
-  observation: { startedAt: number; mustCover: number; completedAt: number; deadline: number };
+  observation: { startedAt: number; mustCover: number; completedAt: number };
   samples: { initial: RuntimeHealthSnapshot; last: RuntimeHealthSnapshot };
   performance: RuntimePerformanceRecord;
 }> {
   const now = options.now ?? Date.now;
   const wait = options.wait ?? (milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)));
-  const enteredAt = now();
-  const startedAt = options.live?.startedAt ?? enteredAt;
-  const mustCover = startedAt + (options.observationMs ?? 31_000);
-  // Without a deadline the observation is unbounded; a live observation then
-  // fails as stale once a probe answers without a newer current sample.
-  const deadline = options.deadlineMs === undefined ? Infinity : enteredAt + options.deadlineMs;
-  let probeStartedAt = enteredAt;
+  const { startedAt } = options.live;
+  let probeStartedAt = now();
   let value: T;
   try {
-    value = await probeByDeadline(options.probe, deadline, now);
+    value = await options.probe();
   } catch (error) {
     if (error instanceof RuntimeObservationError) throw error;
-    throw Object.assign(new RuntimeHealthObservationError("probe_failed", `Runtime health probe failed: ${error instanceof Error ? error.message : String(error)}`, { startedAt, mustCover, deadline, lastSample: null }), { cause: error });
+    throw Object.assign(new RuntimeHealthObservationError("probe_failed", `Runtime health probe failed: ${error instanceof Error ? error.message : String(error)}`, { startedAt, lastSample: null }), { cause: error });
   }
   const initial = value;
   const firstHealth = options.healthOf(value);
@@ -100,20 +99,20 @@ export async function observeRuntimeHealthCoverage<T>(options: {
 
   for (;;) {
     const health = options.healthOf(value);
-    for (const name of ["eventLoop", "memory"] as const) updateIntervalCoverage(trackers[name], health[name], name, startedAt, now());
-    if (options.live) validateCurrentCoverage(health, previousCurrent, startedAt, now());
-    if (options.live && !Number.isFinite(deadline) && previousCurrent && health.current!.observedAt <= previousCurrent.observedAt) {
-      throw new RuntimeHealthObservationError("stale_diagnostics", "Runtime diagnostics answered without a newer current sample, so they are no longer fresh.", { startedAt, mustCover, deadline, initialSample: firstHealth, lastSample: health });
+    for (const name of ["eventLoop", "memory"] as const) updateIntervalCoverage(trackers[name], health[name], name, now());
+    validateCurrentCoverage(health, previousCurrent, startedAt, now());
+    if (previousCurrent && health.current!.observedAt <= previousCurrent.observedAt) {
+      throw new RuntimeHealthObservationError("stale_diagnostics", "Runtime diagnostics answered without a newer current sample, so they are no longer fresh.", { startedAt, initialSample: firstHealth, lastSample: health });
     }
-    const assessments = [assessRuntimeHealth(health), ...(options.live ? [assessRuntimeHealth(health.current!)] : [])];
+    const assessments = [assessRuntimeHealth(health), assessRuntimeHealth(health.current!)];
     const assessment = { defects: assessments.flatMap(value => value.defects), performance: assessments.flatMap(value => value.performance) };
     if (assessment.defects.length) throw new RuntimeHealthObservationError("invalid_diagnostics", assessment.defects[0]!.message, {
-      startedAt, mustCover, deadline, defects: assessment.defects, initialSample: firstHealth, lastSample: health,
+      startedAt, defects: assessment.defects, initialSample: firstHealth, lastSample: health,
     });
     try { options.validate?.(value, initial); }
     catch (error) {
       if (error instanceof RuntimeObservationError) throw error;
-      throw Object.assign(new RuntimeHealthObservationError("observation_changed", error instanceof Error ? error.message : String(error), { startedAt, mustCover, deadline, initial, current: value }), { cause: error });
+      throw Object.assign(new RuntimeHealthObservationError("observation_changed", error instanceof Error ? error.message : String(error), { startedAt, initial, current: value }), { cause: error });
     }
     for (const finding of assessment.performance) {
       const sample = finding.sample as DiagnosticInterval;
@@ -123,26 +122,18 @@ export async function observeRuntimeHealthCoverage<T>(options: {
       if (performance.findings.length < MAX_RETAINED_PERFORMANCE_FINDINGS) performance.findings.push(finding);
       else performance.omitted++;
     }
-    if (now() > deadline) throw new RuntimeHealthObservationError("observation_deadline", "Runtime health observation exceeded its fixed deadline.", { startedAt, mustCover, deadline, initialSample: firstHealth, lastSample: health });
-    const through = options.live?.through();
-    const target = options.live ? through : mustCover;
-    const covered = options.live
-      ? target != null && probeStartedAt >= target && health.current!.observedAt >= target
-      : now() >= mustCover && trackers.eventLoop.coveredUntil >= mustCover && trackers.memory.coveredUntil >= mustCover;
-    if (covered) {
-      return { value, observation: { startedAt, mustCover: target!, completedAt: now(), deadline }, samples: { initial: firstHealth, last: health }, performance };
+    const through = options.live.through();
+    if (through != null && probeStartedAt >= through && health.current!.observedAt >= through) {
+      return { value, observation: { startedAt, mustCover: through, completedAt: now() }, samples: { initial: firstHealth, last: health }, performance };
     }
-    if (options.live) previousCurrent = health.current;
-    if (now() >= deadline) throw new RuntimeHealthObservationError("stale_diagnostics", "Runtime diagnostics did not produce contiguous fresh samples covering the observation.", { startedAt, mustCover, deadline, initialSample: firstHealth, lastSample: health });
+    previousCurrent = health.current;
     await wait(options.pollMs ?? RUNTIME_HEALTH_PROBE_INTERVAL_MS);
-    if (now() > deadline) throw new RuntimeHealthObservationError("observation_deadline", "Runtime health observation exceeded its fixed deadline.", { startedAt, mustCover, deadline, initialSample: firstHealth, lastSample: health });
-    if (now() === deadline) throw new RuntimeHealthObservationError("stale_diagnostics", "Runtime diagnostics did not produce contiguous fresh samples covering the observation.", { startedAt, mustCover, deadline, initialSample: firstHealth, lastSample: health });
     try {
       probeStartedAt = now();
-      value = await probeByDeadline(options.probe, deadline, now);
+      value = await options.probe();
     } catch (error) {
       if (error instanceof RuntimeObservationError) throw error;
-      throw Object.assign(new RuntimeHealthObservationError("probe_failed", `Runtime health probe failed: ${error instanceof Error ? error.message : String(error)}`, { startedAt, mustCover, deadline, initialSample: firstHealth, lastSample: health }), { cause: error });
+      throw Object.assign(new RuntimeHealthObservationError("probe_failed", `Runtime health probe failed: ${error instanceof Error ? error.message : String(error)}`, { startedAt, initialSample: firstHealth, lastSample: health }), { cause: error });
     }
   }
 }
@@ -168,30 +159,6 @@ function validateCurrentCoverage(health: RuntimeHealthSnapshot, previous: Curren
     if (prior && open.sequence === prior.sequence && open.intervalStartedAt !== prior.intervalStartedAt) invalid(`${name} current window changed without a periodic rollover.`);
     if (prior && open.sequence !== prior.sequence && (completed.intervalStartedAt !== prior.intervalStartedAt
       || completed.intervalEndedAt < prior.intervalEndedAt)) invalid(`${name} periodic rollover lost part of the observed workload.`);
-  }
-}
-
-async function probeByDeadline<T>(
-  probe: (deadline: number, signal: AbortSignal) => Promise<T>,
-  deadline: number,
-  now: () => number,
-): Promise<T> {
-  if (!Number.isFinite(deadline)) return probe(deadline, new AbortController().signal);
-  const remaining = deadline - now();
-  if (remaining <= 0) throw new RuntimeHealthObservationError("observation_deadline", "Runtime health observation exceeded its fixed deadline.", { deadline });
-  const controller = new AbortController();
-  let timer: ReturnType<typeof setTimeout>;
-  const expired = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => {
-      const error = new RuntimeHealthObservationError("observation_deadline", "Runtime health probe exceeded the observation deadline.", { deadline });
-      controller.abort(error);
-      reject(error);
-    }, remaining);
-  });
-  try {
-    return await Promise.race([probe(deadline, controller.signal), expired]);
-  } finally {
-    clearTimeout(timer!);
   }
 }
 
@@ -235,14 +202,13 @@ function validInterval(value: unknown): value is DiagnosticInterval {
 }
 
 function intervalTracker() {
-  return { sequence: 0, snapshot: "", intervalEndedAt: -1, coveredUntil: -1 };
+  return { sequence: 0, snapshot: "", intervalEndedAt: -1 };
 }
 
 function updateIntervalCoverage(
   tracker: ReturnType<typeof intervalTracker>,
   interval: unknown,
   name: "eventLoop" | "memory",
-  observationStartedAt: number,
   observedAt: number,
 ): void {
   if (!validInterval(interval)) throw new RuntimeHealthObservationError("invalid_diagnostics", `${name} diagnostics are missing or invalid.`, { sample: interval });
@@ -258,8 +224,6 @@ function updateIntervalCoverage(
   tracker.sequence = interval.sequence;
   tracker.snapshot = snapshot;
   tracker.intervalEndedAt = interval.intervalEndedAt;
-  if (interval.intervalStartedAt <= observationStartedAt && interval.intervalEndedAt >= observationStartedAt) tracker.coveredUntil = Math.max(tracker.coveredUntil, interval.intervalEndedAt);
-  else if (tracker.coveredUntil >= observationStartedAt && interval.intervalStartedAt <= tracker.coveredUntil) tracker.coveredUntil = Math.max(tracker.coveredUntil, interval.intervalEndedAt);
 }
 
 function finiteNonnegative(value: unknown): value is number {

@@ -214,8 +214,6 @@ export async function observeAcceptanceHealth({
   probe,
   now = Date.now,
   wait = delay,
-  observationMs = 0,
-  deadlineMs,
   onEvidence = () => {},
   live,
 }) {
@@ -228,11 +226,9 @@ export async function observeAcceptanceHealth({
     now,
     wait,
     pollMs: 500,
-    observationMs,
-    deadlineMs,
     live,
   });
-  onEvidence({ mode: live ? 'live production collectors through actual packaged interaction completion' : 'completed periodic intervals', observation: result.observation, samples: result.samples, performance: result.performance,
+  onEvidence({ mode: 'live production collectors through actual packaged interaction completion', observation: result.observation, samples: result.samples, performance: result.performance,
     periodic_windows_completed: Math.max(0, (result.samples.last.eventLoop?.sequence ?? 0) - (result.samples.initial.eventLoop?.sequence ?? 0)) });
   // A performance finding on the owned fixture fails acceptance.
   const [finding] = result.performance.findings;
@@ -647,9 +643,9 @@ async function main(startedAt) {
         try { await abortableDelay(ms, undefined, { signal: AbortSignal.any([passiveController.signal, interactionWake.signal]) }); }
         catch (error) { if (passiveController.signal.aborted || !interactionWake.signal.aborted) throw error; }
       },
-      probe: async (_deadline, signal) => {
+      probe: async () => {
         if (passiveController.signal.aborted) throw passiveController.signal.reason;
-        const current = await probe(AbortSignal.any([signal, passiveController.signal]));
+        const current = await probe(passiveController.signal);
         if (current.startup_epoch !== health.startup_epoch) throw restarted();
         if (desktop && (desktop.exitCode !== null || desktop.signalCode !== null)) throw acceptanceFailure('either', `The packaged app closed (${exit(desktop)}) before acceptance finished watching it, which usually means it crashed.`, { exit_code: desktop.exitCode, signal: desktop.signalCode });
         return current;

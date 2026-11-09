@@ -49,7 +49,7 @@ it("retains live workload stalls and current memory across periodic rollover wit
     let time = ready.current.observedAt;
     let guiCompletedAt: number | null = null;
     const result = await observeRuntimeHealthCoverage({
-      live: { startedAt: time, through: () => guiCompletedAt }, observationMs: 0, deadlineMs: 2000,
+      live: { startedAt: time, through: () => guiCompletedAt },
       now: () => time, healthOf: value => value, probe: async () => points[index],
       wait: async () => { index++; time = points[index].current.observedAt; if (index === 2) guiCompletedAt = time - 1; },
     });

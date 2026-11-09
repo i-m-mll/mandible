@@ -126,21 +126,23 @@ it('retains an exact recorded primary failure through response loss without acce
   } finally { fs.rmSync(cache, { recursive: true, force: true }); }
 });
 
-it('zero-soak acceptance still requires a fresh interval covering the completed interaction', async () => {
-  let time = 100;
-  const health = (sequence: number, start: number, end: number) => ({ startup_epoch: 'epoch',
-    eventLoop: { sequence, intervalStartedAt: start, intervalEndedAt: end, warning: false, maxMs: 0 },
+it('watches live health until the interaction is covered, and fails on stale, stalled or skipped diagnostics', async () => {
+  const sample = (sequence: number, start: number, end: number, observedAt: number, maxMs = 0) => ({ startup_epoch: 'epoch',
+    eventLoop: { sequence, intervalStartedAt: start, intervalEndedAt: end, warning: false, maxMs },
     memory: { sequence, intervalStartedAt: start, intervalEndedAt: end, warning: false },
-  });
-  let probes = 0;
-  await expect(observeAcceptanceHealth({ observationMs: 0, deadlineMs: 20, now: () => time,
-    wait: async () => { time += 5; }, probe: async () => ++probes === 1 ? health(1, 80, 90) : health(2, 90, 105),
-  })).resolves.toEqual(health(2, 90, 105));
-  expect(probes).toBe(2);
-  time = 100;
-  await expect(observeAcceptanceHealth({ observationMs: 0, deadlineMs: 20, now: () => time,
-    wait: async () => { time += 5; }, probe: async () => health(1, 80, 90),
-  })).rejects.toMatchObject({ code: 'stale_diagnostics' });
+    current: { observedAt, collectorTurnMs: 1,
+      eventLoop: { sequence, intervalStartedAt: end, intervalEndedAt: observedAt, warning: false, maxMs: 0 },
+      memory: { sequence, intervalStartedAt: end, intervalEndedAt: observedAt, warning: false, rssFraction: 0.1, warningThresholdFraction: 0.9 } } });
+  const observe = (second: ReturnType<typeof sample>) => {
+    let time = 100;
+    let probes = 0;
+    return observeAcceptanceHealth({ live: { startedAt: 100, through: () => 105 }, now: () => time,
+      wait: async () => { time += 10; }, probe: async () => ++probes === 1 ? sample(1, 80, 90, 100) : second });
+  };
+  await expect(observe(sample(1, 80, 90, 110))).resolves.toEqual(sample(1, 80, 90, 110));
+  await expect(observe(sample(1, 80, 90, 100))).rejects.toMatchObject({ code: 'stale_diagnostics' });
+  await expect(observe(sample(2, 90, 105, 110, 300))).rejects.toMatchObject({ code: 'event_loop_stall' });
+  await expect(observe(sample(3, 105, 108, 110))).rejects.toMatchObject({ code: 'diagnostics_gap' });
 });
 
 describe('production acceptance evidence', () => {
@@ -222,40 +224,6 @@ describe('production acceptance evidence', () => {
       } finally { clearTimeout(safety); if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); }
     }));
   });
-});
-
-it('requires a fresh clean diagnostics interval covering acceptance', async () => {
-  let time = 100;
-  const health = (sequence: number, intervalStartedAt: number, intervalEndedAt: number, maxMs = 0) => ({
-    startup_epoch: 'epoch',
-    eventLoop: { sequence, intervalStartedAt, intervalEndedAt, warning: false, maxMs },
-    memory: { sequence, intervalStartedAt, intervalEndedAt, warning: false },
-  });
-  const initial = health(1, 80, 90);
-  const fresh = health(2, 90, 110);
-  let probes = 0;
-  await expect(observeAcceptanceHealth({
-    observationMs: 10,
-    deadlineMs: 20,
-    now: () => time,
-    wait: async () => { time += 10; },
-    probe: async () => ++probes === 1 ? initial : fresh,
-  })).resolves.toEqual(fresh);
-  time = 100;
-  probes = 0;
-  await expect(observeAcceptanceHealth({
-    observationMs: 10, deadlineMs: 20, now: () => time,
-    wait: async () => { time += 10; },
-    probe: async () => ++probes === 1 ? initial : health(2, 90, 110, 250),
-  })).rejects.toMatchObject({ code: 'event_loop_stall' });
-
-  time = 100;
-  probes = 0;
-  await expect(observeAcceptanceHealth({
-    observationMs: 10, deadlineMs: 20, now: () => time,
-    wait: async () => { time += 15; },
-    probe: async () => ++probes === 1 ? initial : health(3, 105, 115),
-  })).rejects.toMatchObject({ code: 'diagnostics_gap' });
 });
 
 it('routes only the exact private HTTPS dashboard and retains certificate validation', async () => {
