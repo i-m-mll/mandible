@@ -1,4 +1,4 @@
-import type { Route } from './routing';
+import type { ViewTab } from '../../src/app-routes';
 
 export type ViewSidebarGeometry = {
   storageKey: string;
@@ -22,14 +22,14 @@ export const VIEW_SIDEBAR_GEOMETRY = {
   tasks: { storageKey: 'sidebar-width:tasks', defaultWidth: 340, minWidth: 240 },
   timeline: { storageKey: 'mandible_timeline_sidebar_width:v1', defaultWidth: 320, minWidth: 260 },
   work: { storageKey: 'sidebar-width:work', defaultWidth: 340, minWidth: 280 },
-} as const satisfies Partial<Record<Route['tab'], ViewSidebarGeometry>>;
+} as const satisfies Partial<Record<ViewTab, ViewSidebarGeometry>>;
 
 export type ViewSidebarRoute = keyof typeof VIEW_SIDEBAR_GEOMETRY;
 
 export type ViewSidebarWidths = Partial<Record<ViewSidebarRoute, number>>;
 
-export function viewSidebarGeometryForRoute(tab: Route['tab']): ViewSidebarGeometry | null {
-  return tab in VIEW_SIDEBAR_GEOMETRY
+export function viewSidebarGeometryForRoute(tab: ViewTab | null): ViewSidebarGeometry | null {
+  return tab !== null && tab in VIEW_SIDEBAR_GEOMETRY
     ? VIEW_SIDEBAR_GEOMETRY[tab as ViewSidebarRoute]
     : null;
 }

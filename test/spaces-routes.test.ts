@@ -546,11 +546,11 @@ describe("unified ref resolver", () => {
       VALUES (?, 'true', 'Merge feature/x', 'spaces-test', 1, 1, 9999999999999)`);
     ids.forEach(id => insert.run(id));
     const resolve = async (ref: string) => (await checkedResolve(`/api/refs/resolve?ref=${encodeURIComponent(ref)}`)).resolution;
-    expect(await resolve(`auth:${ids[0]}`)).toMatchObject({ kind: "auth", status: "resolved", entity: { id: "2257522a-3", title: "Merge feature/x" } });
-    expect(await resolve("auth:2257522a-4")).toMatchObject({ status: "resolved", entity: { id: "2257522a-4" } });
+    expect(await resolve(`auth:${ids[0]}`)).toMatchObject({ kind: "auth", status: "resolved", entity: { id: ids[0], short_id: "2257522a-3", title: "Merge feature/x" } });
+    expect(await resolve("auth:2257522a-4")).toMatchObject({ status: "resolved", entity: { short_id: "2257522a-4" } });
     expect(await resolve("auth:2257522a")).toMatchObject({ kind: "auth", status: "ambiguous", entity: null });
     expect(await resolve("auth:ffffffff")).toMatchObject({ kind: "auth", status: "not_found", entity: null });
-    expect(await resolve(`mandible:///auth/${ids[0]}`)).toMatchObject({ kind: "auth", status: "resolved", entity: { id: "2257522a-3" } });
+    expect(await resolve(`mandible:///auth/${ids[0]}`)).toMatchObject({ kind: "auth", status: "resolved", entity: { short_id: "2257522a-3" } });
     expect(await resolve(`mandible:///auth/${ids[0]}?issue=missing`)).toMatchObject({ kind: "auth", status: "resolved" });
     const refs = parseAuthoredReferences("See [auth:2257522a-3], not [auth:spaces-test/2257522a-4], `[auth:2257522a-4]`, or \n```\n[auth:2257522a-4]\n```\n[link](https://example.test/[auth:2257522a-4]).");
     expect(refs.map(ref => [ref.kind, ref.target])).toEqual([["auth", "2257522a-3"]]);
@@ -603,17 +603,17 @@ describe("unified ref resolver", () => {
     db.prepare(`INSERT INTO auth_requests (id, command, title, created_at, updated_at, expires_at)
       VALUES (?, 'true', 'Hidden metadata', 1, 1, 9999999999999)`).run(id);
     const resolve = async () => (await checkedResolve(`/api/spaces/resolve?ref=auth:${id}`)).resolution;
-    expect(await resolve()).toMatchObject({ status: "resolved", entity: { id: "2257522a", title: "Hidden metadata" } });
+    expect(await resolve()).toMatchObject({ status: "resolved", entity: { short_id: "2257522a", title: "Hidden metadata" } });
     db.prepare("UPDATE auth_requests SET repo = 'unknown-project'").run();
-    expect(await resolve()).toMatchObject({ status: "resolved", entity: { id: "2257522a", title: "Hidden metadata" } });
+    expect(await resolve()).toMatchObject({ status: "resolved", entity: { short_id: "2257522a", title: "Hidden metadata" } });
     db.prepare("UPDATE ledger_projects SET display_name = 'Shared'").run();
     db.prepare("UPDATE auth_requests SET repo = 'Shared'").run();
-    expect(await resolve()).toMatchObject({ status: "resolved", entity: { id: "2257522a", title: "Hidden metadata" } });
+    expect(await resolve()).toMatchObject({ status: "resolved", entity: { short_id: "2257522a", title: "Hidden metadata" } });
     db.prepare("UPDATE auth_requests SET repo = ?, target_repo_root = ?").run(PROJECT_ID, OTHER_PROJECT_ID);
-    expect(await resolve()).toMatchObject({ status: "resolved", entity: { id: "2257522a", title: "Hidden metadata" } });
+    expect(await resolve()).toMatchObject({ status: "resolved", entity: { short_id: "2257522a", title: "Hidden metadata" } });
     addOrUpdateCheckout(db, PROJECT_ID, { root: "/fixture/approval-checkout", name: "Approval checkout", default_branch: "main" });
     db.prepare("UPDATE auth_requests SET repo = NULL, target_repo_root = ?").run("/fixture/approval-checkout");
-    expect(await resolve()).toMatchObject({ status: "resolved", entity: { id: "2257522a" } });
+    expect(await resolve()).toMatchObject({ status: "resolved", entity: { short_id: "2257522a" } });
   });
 });
 

@@ -28,7 +28,7 @@ import {
   type SessionOverviewWorkUnit,
   type SessionSummary,
 } from '../api';
-import { parseRouteFromHash, replaceRouteHash, routeHashWithParams, shortRouteId } from '../routing';
+import { currentRoute, replaceRoute, routeWithParams, shortRouteId } from '../routing';
 import { resourceRefHref } from '../resource-refs';
 import type { SessionRecord } from '../types/session';
 import { CollapsiblePanel } from '../components/shared/CollapsiblePanel';
@@ -92,8 +92,8 @@ function shortUuid(value: string): string {
 /** Update the #/overview session param in place so refreshes keep the selection. */
 function writeSessionParamToHash(sessionId: string | null): void {
   if (typeof window === 'undefined') return;
-  if (parseRouteFromHash(window.location.hash).tab !== 'overview') return;
-  replaceRouteHash(routeHashWithParams(window.location.hash, 'overview', { session: sessionId ? shortRouteId(sessionId) : null }));
+  if (currentRoute().tab !== 'overview') return;
+  replaceRoute(routeWithParams({ kind: 'view', tab: 'overview' }, { session: sessionId ? shortRouteId(sessionId) : null }));
 }
 
 function overviewHref(sessionId: string): string {

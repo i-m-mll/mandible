@@ -18,6 +18,7 @@ import { AuthChangeBreakdown } from '../ui/src/views/AuthChangeBreakdown';
 import type { AuthChangeReport } from '../src/contracts';
 import type { AuthRequestAction, InstanceInfo } from '../ui/src/api';
 import { __resetBrowserSessionForTests } from '../ui/src/client-auth-token';
+import { rememberEntityRoute } from '../ui/src/query/entityRoute';
 
 // jsdom in this build ships a localStorage stub whose setItem throws; install a
 // working in-memory localStorage so the sidebar-width persistence round-trips.
@@ -621,8 +622,9 @@ for (const history of [false, true]) {
       depends_on_ids: ids, dependencies };
     const onNavigateRequest = vi.fn();
     const onSelectAuth = vi.fn();
-    const props = { outputs: {}, selectedAuthId: 'req-1', initialRequestId: 'req-1', daemonReady: true, instance: authMainInstance,
+    const props = { outputs: {}, selectedAuthId: 'req-1', entityRef: 'req-1', daemonReady: true, instance: authMainInstance,
       onNavigateRequest, onSelectAuth };
+    rememberEntityRoute('auth', 'req-1', { id: 'req-1' });
     const view = render(<AuthQueueView {...props} queue={history ? [] : [request]} historyQueue={history ? [request] : []} />);
     const prerequisites = () => within(screen.getByRole('region', { name: 'Request prerequisites' }));
     const rows = prerequisites().getAllByRole('listitem');

@@ -533,7 +533,7 @@ describe('conversation sidebar groups', () => {
     expect(indexedRow).toBe(provisionalRow);
     expect(indexedRow.getAttribute('aria-current')).toBe('true');
     expect(screen.getAllByRole('button', { name: 'Open conversation Reserved chat' })).toHaveLength(1);
-    await waitFor(() => expect(window.location.hash).toContain('conversation=indexed-reserved'));
+    await waitFor(() => expect(window.location.search).toContain('conversation=indexed-reserved'));
     expect(within(chatsSection).getByRole('button', { name: 'Open session Unscoped chat' })).toBeTruthy();
   });
 });

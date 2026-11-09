@@ -1,8 +1,10 @@
 import { useAppHistory } from '../../ui/src/hooks/useAppHistory';
-import { useCallback, useRef, useState } from 'preact/hooks';
+import { useCallback, useMemo, useRef, useState } from 'preact/hooks';
 import { AppShellProvider } from '../../ui/src/app-shell';
 import { AuthQueueView, type AuthRequest } from '../../ui/src/views/auth';
-import { parseRouteFromHash } from '../../ui/src/routing';
+import { entityRouteKey, rememberEntityRoute } from '../../ui/src/query/entityRoute';
+import { queryClient } from '../../ui/src/query/client';
+import { routeFromUrl, shortRouteId } from '../../ui/src/routing';
 import { authBreakdownFixture } from './auth-breakdown-fixture';
 
 export const navigationRequestId = 'file-navigation-request';
@@ -30,8 +32,15 @@ export const navigationRequest: AuthRequest = {
 };
 
 export function RoutedAuthReview({ requests = [navigationRequest], active = true, sidebarHidden = true }: { requests?: AuthRequest[]; active?: boolean; sidebarHidden?: boolean }) {
+  // Stands in for the resolver: every request the fixture serves opens by its entity path.
+  useMemo(() => {
+    for (const request of requests) {
+      const ref = shortRouteId(request.id);
+      if (!queryClient.getQueryData(entityRouteKey('auth', ref))) rememberEntityRoute('auth', ref, { id: request.id });
+    }
+  }, [requests]);
   const navigation = useAppHistory();
-  const route = parseRouteFromHash(new URL(navigation.href).hash);
+  const route = routeFromUrl(new URL(navigation.href));
   const authRoute = useRef(route);
   if (route.tab === 'auth') authRoute.current = route;
   const [noticeHost, setNoticeHost] = useState<HTMLElement | null>(null);
@@ -41,7 +50,7 @@ export function RoutedAuthReview({ requests = [navigationRequest], active = true
   }, []);
   return <AppShellProvider value={{ active: true, noticeHost, registerMainNoticeHost, rightSidebar: null, registerRightSidebar: () => () => undefined,
     registerInitialRouteLoad: () => undefined, updateRightSidebar: () => undefined }}>
-    <AuthQueueView queue={requests} historyQueue={[]} outputs={{}} initialRequestId={authRoute.current.params.request}
+    <AuthQueueView queue={requests} historyQueue={[]} outputs={{}} entityRef={authRoute.current.entity?.ref ?? null}
       reviewRouteParams={authRoute.current.params} reviewRouteActive={active} sidebarHidden={sidebarHidden} onApprove={() => undefined} onReject={() => undefined} onRetry={() => undefined} />
   </AppShellProvider>;
 }

@@ -623,7 +623,7 @@ it('keeps mounted explicit targets authoritative and records deliberate row sele
     stubInventory(inventory);
     const first = inventory.tasks[0].key;
     const second = inventory.tasks[1].key;
-    window.history.replaceState(null, '', '#/tasks?sidebar=hidden&agent_session=bound&sentinel=a%26b%2Bc');
+    window.history.replaceState(null, '', '/tasks?sidebar=hidden&agent_session=bound&sentinel=a%26b%2Bc');
     window.localStorage.setItem('mandible.tasks.selection:v1', JSON.stringify({ selectedKey: first }));
     const view = render(<TasksView initialTaskKey={first} />);
     await screen.findByRole('button', { name: 'Select Second task' });
@@ -636,7 +636,7 @@ it('keeps mounted explicit targets authoritative and records deliberate row sele
     await waitFor(() => expect(document.querySelector('.tasks-detail__empty')?.textContent).toContain('missing-target'));
     fireEvent.click(screen.getByRole('button', { name: 'Select Daily digest' }));
     await waitFor(() => expect(document.querySelector('.tasks-detail .detail-pane-header')?.textContent).toContain('Daily digest'));
-    const params = new URLSearchParams(window.location.hash.split('?')[1]);
+    const params = new URLSearchParams(window.location.search);
     expect(params.get('task')).toBe(first);
     expect(params.get('sidebar')).toBe('hidden');
     expect(params.get('agent_session')).toBe('bound');

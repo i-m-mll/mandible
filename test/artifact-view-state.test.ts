@@ -7,6 +7,13 @@ import { screen, fireEvent, waitFor, act, within } from './helpers/dom.js';
 import { describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 import { ArtifactsView } from '../ui/src/views/artifacts';
+import { rememberEntityRoute } from '../ui/src/query/entityRoute';
+
+function routedArtifact(ref: string, versionNo: number | null = null): { entityRef: string } {
+  const entityRef = versionNo === null ? ref : `${ref}@${versionNo}`;
+  rememberEntityRoute('artifact', entityRef, {});
+  return { entityRef };
+}
 
 const selectedTitle = () => screen.queryByRole('heading', { level: 2 });
 
@@ -23,7 +30,7 @@ describe('ArtifactsView', () => {
       ));
       return Promise.reject(new Error(`unexpected fetch ${url}`));
     }));
-    render(h(ArtifactsView, { initialSeriesRef: 'artifact-series:removed' }));
+    render(h(ArtifactsView, routedArtifact('artifact-series:removed')));
     expect(await screen.findByText('Explicit series is missing')).toBeTruthy();
     expect(screen.queryByRole('heading', { name: 'available.md' })).toBeNull();
   });
@@ -56,7 +63,7 @@ describe('ArtifactsView', () => {
         if (url.includes(encodeURIComponent(artifact.id))) return recordRead;
         return Promise.reject(new Error(`unexpected fetch ${url}`));
       }));
-      render(h(ArtifactsView, { initialSeriesRef: series.summary.ref }));
+      render(h(ArtifactsView, routedArtifact(series.summary.ref)));
       expect(screen.queryByText('Wrong cached record')).toBeNull();
       expect(screen.queryByText('Wrong cached content')).toBeNull();
       if (cacheCase === 'valid' || cacheCase === 'wrong fetched identity') {
@@ -253,7 +260,7 @@ describe('ArtifactsView', () => {
       return Promise.reject(new Error(`unexpected fetch ${url}`));
     }));
 
-    render(h(ArtifactsView, { initialRef: ref }));
+    render(h(ArtifactsView, routedArtifact(ref)));
 
     await waitFor(() => expect(selectedTitle()?.textContent).toBe('deep-link.md'));
     expect(await screen.findByText('sidebar-first.md')).toBeTruthy();
@@ -262,7 +269,7 @@ describe('ArtifactsView', () => {
     expect(within(screen.getByRole('dialog', { name: 'Artifact metadata' })).getByText(ref)).toBeTruthy();
   });
 
-  it('pins legacy artifact deep links to the exact resolved version', async () => {
+  it('pins an artifact path to the exact resolved version', async () => {
     const v1 = makeArtifactFixture('8', 'report-v1.md');
     const v2 = makeArtifactFixture('9', 'report-v2.md');
     const artifactSeries = makeArtifactSeries('report-series', [v1, v2], 'report.md');
@@ -312,7 +319,7 @@ describe('ArtifactsView', () => {
       return Promise.reject(new Error(`unexpected fetch ${url}`));
     }));
 
-    render(h(ArtifactsView, { initialArtifactId: v1.id }));
+    render(h(ArtifactsView, routedArtifact(v1.id)));
 
     await waitFor(() => expect(selectedTitle()?.textContent).toBe('report-v1.md'));
     const versionSelect = screen.getByRole('combobox', { name: 'Artifact version' }) as HTMLSelectElement;
@@ -326,28 +333,6 @@ describe('ArtifactsView', () => {
     expect(versionRefs).not.toContain(`artifact-series:${artifactSeries.summary.ref}`);
     fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
     expect(within(screen.getByRole('dialog', { name: 'Artifact metadata' })).getByText(artifactSeries.summary.ref)).toBeTruthy();
-  });
-
-  it.each([
-    `artifact-blob:${'b'.repeat(64)}`,
-    'artifact-version:version-1',
-    `artifact:sha256:${'c'.repeat(64)}`,
-  ])('rejects immutable typed refs supplied through series= without loading version history: %s', async (invalidSeriesRef) => {
-    const versionRequests: string[] = [];
-    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
-      const url = String(input);
-      if (url.startsWith('/api/artifacts/series?')) return jsonResponse({ series: [] });
-      if (url.startsWith('/api/artifacts/versions?')) {
-        versionRequests.push(url);
-        return Promise.reject(new Error(`unexpected versions request ${url}`));
-      }
-      return Promise.reject(new Error(`unexpected fetch ${url}`));
-    }));
-
-    render(h(ArtifactsView, { initialSeriesRef: invalidSeriesRef, initialVersionNo: 1 }));
-
-    await waitFor(() => expect(screen.getByText((text) => text.includes(invalidSeriesRef))).toBeTruthy());
-    expect(versionRequests).toEqual([]);
   });
 
   it('ignores delayed version history after navigation clears the selected series', async () => {
@@ -368,12 +353,10 @@ describe('ArtifactsView', () => {
       return Promise.reject(new Error(`unexpected fetch ${url}`));
     }));
 
-    const { rerender } = render(h(ArtifactsView, { initialSeriesRef: artifactSeries.summary.ref }));
+    const { rerender } = render(h(ArtifactsView, routedArtifact(artifactSeries.summary.ref)));
     await waitFor(() => expect(versionRequests).toHaveLength(1));
 
-    const invalidSeriesRef = `artifact-blob:${artifact.content_hash}`;
-    rerender(h(ArtifactsView, { initialSeriesRef: invalidSeriesRef }));
-    await waitFor(() => expect(screen.getByText((text) => text.includes(invalidSeriesRef))).toBeTruthy());
+    rerender(h(ArtifactsView, {}));
 
     resolveHistory(new Response(JSON.stringify({ history: artifactSeries.history }), {
       headers: { 'content-type': 'application/json' },
@@ -383,7 +366,6 @@ describe('ArtifactsView', () => {
     });
 
     expect(selectedTitle()).toBeNull();
-    expect(screen.getByText((text) => text.includes(invalidSeriesRef))).toBeTruthy();
   });
 
   it('keeps pinned version and open history stable when the series sidebar refetches with a newer latest', async () => {
@@ -422,7 +404,7 @@ describe('ArtifactsView', () => {
       return Promise.reject(new Error(`unexpected fetch ${url}`));
     }));
 
-    render(h(ArtifactsView, { initialSeriesRef: 'artifact-series:pinned-series', initialVersionNo: 1 }));
+    render(h(ArtifactsView, routedArtifact('artifact-series:pinned-series', 1)));
 
     await waitFor(() => expect(selectedTitle()?.textContent).toBe('pinned-report.md'));
     fireEvent.click(screen.getByRole('button', { name: 'Artifact actions' }));
@@ -441,7 +423,7 @@ describe('ArtifactsView', () => {
     expect(pinnedRow.textContent).not.toContain('v3');
   });
 
-  it('ignores self-written series hash updates but reconciles external series changes', async () => {
+  it('ignores self-written series path updates but reconciles external series changes', async () => {
     const firstArtifact = makeArtifactFixture('f', 'hash-self-v1.md');
     const secondArtifact = makeArtifactFixture('0', 'hash-self-v2.md', {
       id: `artifact:sha256:${'10'.repeat(32)}`,
@@ -491,15 +473,15 @@ describe('ArtifactsView', () => {
     await waitFor(() => expect(selectedTitle()?.textContent).toBe('hash-self-v1.md'));
     fireEvent.click(screen.getByRole('button', { name: /hash-self-v2\.md/ }));
     await waitFor(() => expect(selectedTitle()?.textContent).toBe('hash-self-v2.md'));
-    expect(new URLSearchParams(window.location.hash.split('?')[1]).get('series')).toBe(secondSeries.summary.ref);
+    expect(window.location.pathname).toBe(`/artifact/${secondSeries.summary.ref}`);
 
     await act(async () => {
-      rerender(h(ArtifactsView, { initialSeriesRef: secondSeries.summary.ref }));
+      rerender(h(ArtifactsView, routedArtifact(secondSeries.summary.ref)));
     });
 
     expect(selectedTitle()?.textContent).toBe('hash-self-v2.md');
 
-    rerender(h(ArtifactsView, { initialSeriesRef: firstSeries.summary.ref, initialVersionNo: 1 }));
+    rerender(h(ArtifactsView, routedArtifact(firstSeries.summary.ref, 1)));
 
     await waitFor(() => expect(selectedTitle()?.textContent).toBe('hash-self-v1.md'));
     await waitFor(() => expect((screen.getByRole('combobox', { name: 'Artifact version' }) as HTMLSelectElement).value).toBe('1'));
@@ -530,10 +512,10 @@ it('clears mounted ref detail during resolution, ignores stale targets and prese
     }) });
     const { rerender } = render(h(ArtifactsView, {}));
     expect(await screen.findByRole('heading', { name: 'Selected A.md' })).toBeTruthy();
-    rerender(h(ArtifactsView, { initialRef: 'artifact:pending-b' }));
+    rerender(h(ArtifactsView, routedArtifact('artifact:pending-b')));
     expect(screen.queryByRole('heading', { name: 'Selected A.md' })).toBeNull();
     await waitFor(() => expect(waiting.has('artifact:pending-b')).toBe(true));
-    rerender(h(ArtifactsView, { initialRef: 'artifact:missing-c' }));
+    rerender(h(ArtifactsView, routedArtifact('artifact:missing-c')));
     await waitFor(() => expect(waiting.has('artifact:missing-c')).toBe(true));
     await act(async () => waiting.get('artifact:missing-c')!(new Response(JSON.stringify({ error: 'Target C missing' }), {
       status: 404, headers: { 'content-type': 'application/json' },
@@ -544,12 +526,12 @@ it('clears mounted ref detail during resolution, ignores stale targets and prese
       artifact_version: series.history.versions[0], target_type: 'artifact_version', warnings: [],
     }) }), { headers: { 'content-type': 'application/json' } })));
     expect(screen.queryByRole('heading', { name: 'Selected A.md' })).toBeNull();
-    window.history.replaceState(null, '', '#/artifacts?ref=artifact:missing-c&artifact=old&version=9&sidebar=hidden&agent_session=agent&sentinel=a%2Bb%26c');
+    window.history.replaceState(null, '', '/artifact/artifact:missing-c?sidebar=hidden&agent_session=agent&sentinel=a%2Bb%26c');
     fireEvent.click(screen.getByRole('button', { name: /Selected A.md/ }));
     expect(await screen.findByRole('heading', { name: 'Selected A.md' })).toBeTruthy();
-    const params = new URLSearchParams(window.location.hash.split('?')[1]);
-    expect(Object.fromEntries(params)).toEqual({ series: series.summary.ref, sidebar: 'hidden', agent_session: 'agent', sentinel: 'a+b&c' });
-    rerender(h(ArtifactsView, { initialRef: 'artifact:pending-d' }));
+    expect(window.location.pathname).toBe(`/artifact/${series.summary.ref}`);
+    expect(Object.fromEntries(new URLSearchParams(window.location.search))).toEqual({ sidebar: 'hidden', agent_session: 'agent', sentinel: 'a+b&c' });
+    rerender(h(ArtifactsView, routedArtifact('artifact:pending-d')));
     await waitFor(() => expect(waiting.has('artifact:pending-d')).toBe(true));
     fireEvent.click(screen.getByRole('button', { name: /Selected A.md/ }));
     expect(await screen.findByRole('heading', { name: 'Selected A.md' })).toBeTruthy();
@@ -558,8 +540,8 @@ it('clears mounted ref detail during resolution, ignores stale targets and prese
     }) }), { headers: { 'content-type': 'application/json' } })));
     expect(screen.getByRole('heading', { name: 'Selected A.md' })).toBeTruthy();
     changeSelect(screen.getByRole('combobox', { name: 'Artifact version' }), '1');
-    await waitFor(() => expect(new URLSearchParams(window.location.hash.split('?')[1]).get('version')).toBe('1'));
-    expect(new URLSearchParams(window.location.hash.split('?')[1]).get('sentinel')).toBe('a+b&c');
+    await waitFor(() => expect(window.location.pathname).toBe(`/artifact/${series.summary.ref}@1`));
+    expect(new URLSearchParams(window.location.search).get('sentinel')).toBe('a+b&c');
   });
 
 describe('authoritative series references', () => {
@@ -593,7 +575,7 @@ describe('authoritative series references', () => {
         requests.push(requested);
         return jsonResponse({ history: series.history });
       });
-      render(h(ArtifactsView, { initialSeriesRef: ref, initialVersionNo: pin }));
+      render(h(ArtifactsView, routedArtifact(ref, pin)));
       expect(await screen.findByRole('heading', { name: 'Resolved series' })).toBeTruthy();
       expect((screen.getByRole('combobox', { name: 'Artifact version' }) as HTMLSelectElement).value).toBe(pin === null ? '' : '1');
       expect(document.querySelector('.artifact-detail')?.textContent).toContain(pin === null ? 'Latest.md' : 'First.md');
@@ -612,7 +594,7 @@ describe('authoritative series references', () => {
         requests.push(requested);
         return new Promise<Response>((resolve) => { finish = resolve; });
       });
-      render(h(ArtifactsView, { initialSeriesRef: ref }));
+      render(h(ArtifactsView, routedArtifact(ref)));
       await waitFor(() => expect(document.querySelector('.artifact-detail')).toBeTruthy());
       expect(requests).toEqual([ref]);
       await act(async () => finish(new Response(JSON.stringify({ error: `Authoritative ${status}` }), {
@@ -633,9 +615,9 @@ describe('authoritative series references', () => {
         if (ref === currentSeries.summary.ref) return jsonResponse({ history: currentSeries.history });
         return new Promise<Response>((resolve) => pending.set(ref, resolve));
       });
-      const { rerender } = render(h(ArtifactsView, { initialSeriesRef: 'artifact-series:aaaaaaa', initialVersionNo: 1 }));
+      const { rerender } = render(h(ArtifactsView, routedArtifact('artifact-series:aaaaaaa', 1)));
       await waitFor(() => expect(pending.has('artifact-series:aaaaaaa')).toBe(true));
-      rerender(h(ArtifactsView, { initialSeriesRef: 'artifact-series:bbbbbbb', initialVersionNo: 1 }));
+      rerender(h(ArtifactsView, routedArtifact('artifact-series:bbbbbbb', 1)));
       await waitFor(() => expect(pending.has('artifact-series:bbbbbbb')).toBe(true));
       await act(async () => pending.get('artifact-series:aaaaaaa')!(new Response(JSON.stringify({ history: oldSeries.history }), {
         headers: { 'content-type': 'application/json' },

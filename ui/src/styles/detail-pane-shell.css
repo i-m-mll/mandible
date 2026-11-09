@@ -476,3 +476,24 @@
   gap: 6px;
   flex-shrink: 0;
 }
+
+.entity-route-state__body {
+  padding: 18px var(--detail-content-inline-inset) 24px;
+}
+
+.entity-route-state__content {
+  max-width: 720px;
+  overflow-wrap: anywhere;
+}
+
+.entity-route-state__content > :first-child {
+  margin-top: 0;
+}
+
+.entity-route-state__matches li > a {
+  text-decoration: none;
+}
+
+.entity-route-state__matches li > a:hover code {
+  text-decoration: underline;
+}

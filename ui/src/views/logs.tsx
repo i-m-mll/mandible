@@ -5,7 +5,7 @@ import { getLogs, invalidateApiGetCache, type LogEntry, type LogEntityFacetValue
 import { type SSEPayload } from '../sse-client';
 import { acquireSharedSse, type SseHandle } from '../sse-shared';
 import { artifactDetailHref, parseResourceRef, resourceRefHref } from '../resource-refs';
-import { parseRouteFromHash, replaceRouteHash, routeHashWithParams, shortRouteId } from '../routing';
+import { currentRoute, replaceRoute, routeWithParams, shortRouteId } from '../routing';
 import { AppOperationalNoticeOutlet, useLiveLoad, useViewActive } from '../app-shell';
 import { refreshAbandoned } from '../lib/coalesced-refresh';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
@@ -96,9 +96,8 @@ function rowId(entry: LogEntry, index: number): string {
   return entry.id || `${entry.time || ''}:${entry.event || entry.message || ''}:${index}`;
 }
 
-export function parseLogsHash(hash = window.location.hash): LogFilters {
-  const queryIndex = hash.indexOf('?');
-  const params = new URLSearchParams(queryIndex >= 0 ? hash.slice(queryIndex + 1) : '');
+export function parseLogsSearch(search = window.location.search): LogFilters {
+  const params = new URLSearchParams(search);
   const rawLevels = params.get('levels');
   const levels = rawLevels
     ? rawLevels.split(',').filter((level): level is LogLevel => LEVEL_LABELS.includes(level as LogLevel))
@@ -114,8 +113,8 @@ export function parseLogsHash(hash = window.location.hash): LogFilters {
   };
 }
 
-function filtersToHash(filters: LogFilters): string {
-  return routeHashWithParams(window.location.hash, 'logs', {
+function filtersToHref(filters: LogFilters): string {
+  return routeWithParams({ kind: 'view', tab: 'logs' }, {
     ...filters,
     levels: sameLevels(filters.levels, DEFAULT_FILTERS.levels) ? null : filters.levels.join(','),
   });
@@ -125,9 +124,9 @@ function sameLevels(a: LogLevel[], b: LogLevel[]): boolean {
   return a.length === b.length && a.every((level) => b.includes(level));
 }
 
-function updateHash(filters: LogFilters): void {
-  if (parseRouteFromHash(window.location.hash).tab !== 'logs') return;
-  replaceRouteHash(filtersToHash(filters));
+function updateRoute(filters: LogFilters): void {
+  if (currentRoute().tab !== 'logs') return;
+  replaceRoute(filtersToHref(filters));
 }
 
 function entityHref(type: LogEntityFacetValue['type'], id: string, repoId?: string | null): string {
@@ -298,8 +297,7 @@ export async function warmInitialData(params: Record<string, string>): Promise<v
     const value = params[key];
     if (value) query.set(key, value);
   }
-  const routeHash = `#/logs${query.size > 0 ? `?${query.toString()}` : ''}`;
-  await getLogs(filterParam(parseLogsHash(routeHash)));
+  await getLogs(filterParam(parseLogsSearch(query.toString())));
 }
 
 function mergeLogEntries(current: LogEntry[], incoming: LogEntry[]): LogEntry[] {
@@ -320,7 +318,7 @@ function facetLabel(facet: LogEntityFacetValue): string {
 
 export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: LogsViewProps): JSX.Element {
   const [entries, setEntries] = useState<LogEntry[]>([]);
-  const [filters, setFilters] = useState<LogFilters>(() => parseLogsHash());
+  const [filters, setFilters] = useState<LogFilters>(() => parseLogsSearch());
   const [facets, setFacets] = useState<LogsResponse['facets'] | null>(null);
   const [source, setSource] = useState<LogsResponse['source'] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -419,7 +417,7 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
   const refreshLogs = useLiveLoad((signal) => {
     if (loadedFiltersRef.current === filters) return fetchLogs(false, signal);
     loadedFiltersRef.current = filters;
-    updateHash(filters);
+    updateRoute(filters);
     hasLoadedRef.current = false;
     setEntries([]);
     setOlderCursor(null);
@@ -437,8 +435,8 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
 
   useEffect(() => {
     const onHashChange = () => {
-      const next = parseLogsHash();
-      setFilters((current) => filtersToHash(current) === filtersToHash(next) ? current : next);
+      const next = parseLogsSearch();
+      setFilters((current) => filtersToHref(current) === filtersToHref(next) ? current : next);
     };
     window.addEventListener('hashchange', onHashChange);
     return () => window.removeEventListener('hashchange', onHashChange);

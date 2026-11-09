@@ -427,9 +427,8 @@ function resolveAuthRef(db: Db, refValue: string, ref: string): ResolverResult {
             created_at, approved_at, resolved_at, exit_code
        FROM auth_requests WHERE id = ?`,
   ).get(resolved.id) as Record<string, unknown>;
-  const id = shortRef(db, "auth_request", request.id as string);
   const { target_repo_root: _root, ...entity } = request;
-  return { ref, kind: "auth", status: "resolved", entity: { ...entity, id } };
+  return { ref, kind: "auth", status: "resolved", entity: { ...entity, short_id: shortRef(db, "auth_request", request.id as string) } };
 }
 
 // A Briefing ref, with or without its `briefing:` prefix, resolves through the

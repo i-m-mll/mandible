@@ -1,12 +1,12 @@
-import { getAgentPageBinding, hashWithAgentSession } from '../agent-page-binding';
-import { routeHashWithParams } from '../routing';
+import { getAgentPageBinding, withAgentSession } from '../agent-page-binding';
+import { routeWithParams } from '../routing';
 import type { ChatRouteTarget } from '../api';
 
 export type ConversationAnchor = { expected_position_space_id?: string } & ({ block: string } | { turn: string } | { position: number });
 
-export function conversationAnchorFromHash(hash: string): ConversationAnchor | null {
-  const query = hash.includes('?') ? hash.slice(hash.indexOf('?') + 1) : '';
-  const params = new URLSearchParams(query);
+/** The message anchor a Chat query ("?conversation=…&block=…") names. */
+export function conversationAnchorFromSearch(search: string): ConversationAnchor | null {
+  const params = new URLSearchParams(search);
   const block = params.get('block');
   const turn = params.get('turn');
   const position = params.get('position');
@@ -22,24 +22,23 @@ export function conversationAnchorFromHash(hash: string): ConversationAnchor | n
 export function conversationAnchorHref(
   conversationId: string,
   anchor: ConversationAnchor,
-  currentHash = '',
+  currentSearch = '',
 ): string {
-  return routeHashWithParams(currentHash, 'console', {
+  return routeWithParams({ kind: 'view', tab: 'console' }, {
     conversation: conversationId,
     ...('position' in anchor ? { position: String(anchor.position) } : 'block' in anchor ? { block: anchor.block } : { turn: anchor.turn }),
     position_space: anchor.expected_position_space_id,
-  }, ['conversation', 'session', 'block', 'turn', 'position', 'position_space']);
+  }, ['conversation', 'session', 'block', 'turn', 'position', 'position_space'], currentSearch);
 }
 
 export function messageLinkUrl(currentUrl: string, conversationId: string, blockId: string, positionSpaceId?: string): string {
   const url = new URL(currentUrl);
-  url.hash = hashWithAgentSession(
-    conversationAnchorHref(conversationId, { block: blockId, expected_position_space_id: positionSpaceId }, url.hash), getAgentPageBinding(),
-  );
-  return url.href;
+  return new URL(withAgentSession(
+    conversationAnchorHref(conversationId, { block: blockId, expected_position_space_id: positionSpaceId }, url.search), getAgentPageBinding(),
+  ), url).href;
 }
 
-export function chatRouteHref(target: ChatRouteTarget, currentHash = ''): string {
-  return routeHashWithParams(currentHash, 'console', { [target.type]: target.id },
-    ['conversation', 'session', 'block', 'turn', 'position', 'position_space']);
+export function chatRouteHref(target: ChatRouteTarget, currentSearch = ''): string {
+  return routeWithParams({ kind: 'view', tab: 'console' }, { [target.type]: target.id },
+    ['conversation', 'session', 'block', 'turn', 'position', 'position_space'], currentSearch);
 }

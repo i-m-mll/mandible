@@ -8,7 +8,8 @@ import { projectionKeys } from './query/projectionKeys';
 import { readRestartSnapshot, writeRestartSnapshot } from './query/snapshots';
 import { browserResourceKeys, browserResourceKeysForEvent, refreshBrowserResources } from './query/browserResources';
 import { LIST_ENVELOPE_KEYS } from '../../src/contracts';
-import type { SessionDescendant, SessionSummary } from '../../src/contracts';
+import type { ResolveRefResponse, SessionDescendant, SessionSummary } from '../../src/contracts';
+import type { EntityKind } from '../../src/app-routes';
 export type { SessionDescendant, SessionSummary } from '../../src/contracts';
 import { browserSessionFetch } from './client-auth-token';
 import { ROUTE_DATA_FRESH_MS } from './query/policy';
@@ -1022,6 +1023,12 @@ export type { DashboardBadgeCounts };
 export async function getDashboardBadges(): Promise<DashboardBadgeCounts> {
   const response = await apiGet('/api/dashboard/badges');
   return DASHBOARD_BADGE_COUNTS.parse(await response.json());
+}
+
+/** Resolve the ref an entity path names; the resolver reports resolved, not_found or ambiguous. */
+export async function resolveEntityRoute(kind: EntityKind, ref: string, signal?: AbortSignal): Promise<ResolverResult> {
+  const response = await apiGet(`/api/refs/resolve?${new URLSearchParams({ kind, ref }).toString()}`, { signal });
+  return ((await response.json()) as ResolveRefResponse).resolution;
 }
 
 // Bug: 0de95bf — history list rows omit diff/spec/output body blobs; the

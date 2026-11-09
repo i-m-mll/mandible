@@ -1,6 +1,6 @@
 import { NativeSelect } from '../components/shared/NativeSelect';
 import { Icon } from '../components/icons/Icon';
-import { navigateAppHash } from '../app-history';
+import { navigateTo, routeWithParams } from '../routing';
 import { Fragment, type ComponentChildren } from 'preact';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 
@@ -420,22 +420,12 @@ function writeTimelineProjectStorageAliases(
   }
 }
 
-function syncFilterRowsToHash(projectRef: string, filterRows: readonly TimelineFilterRowSpec[]): void {
+function syncFilterRowsToRoute(projectRef: string, filterRows: readonly TimelineFilterRowSpec[]): void {
   if (typeof window === 'undefined') return;
-  const hash = window.location.hash || '#/timeline';
-  const [, queryPart] = hash.replace(/^#/, '').split('?');
-  const params = new URLSearchParams(queryPart ?? '');
-  if (projectRef) params.set('project', projectRef);
-  const serializedRows = serializeFilterRows(filterRows);
-  if (serializedRows) {
-    params.set(FILTER_ROW_URL_PARAM, serializedRows);
-  } else {
-    params.delete(FILTER_ROW_URL_PARAM);
-  }
-  const nextHash = `#/timeline${params.toString() ? `?${params.toString()}` : ''}`;
-  if (window.location.hash !== nextHash) {
-    navigateAppHash(nextHash);
-  }
+  navigateTo(routeWithParams({ kind: 'view', tab: 'timeline' }, {
+    ...(projectRef ? { project: projectRef } : {}),
+    [FILTER_ROW_URL_PARAM]: serializeFilterRows(filterRows) || null,
+  }));
 }
 
 function projectionRowSpecFromFilterRow(row: TimelineFilterRowSpec): TimelineRowSpecInput {
@@ -871,7 +861,7 @@ export function TimelineView({ repos, params, sidebarHidden = false, refreshToke
 
   useEffect(() => {
     if (!active) return;
-    syncFilterRowsToHash(projectRef, viewState.filterRows);
+    syncFilterRowsToRoute(projectRef, viewState.filterRows);
   }, [active, projectRef, viewState.filterRows]);
 
   const lastRefreshTokenRef = useRef(refreshToken);
