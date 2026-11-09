@@ -69,6 +69,7 @@ import { AuthChangeBreakdown } from './AuthChangeBreakdown';
 import { useEntityRoute } from '../hooks/useEntityRoute';
 import { EntityRouteState, isUnopenedEntityRoute } from '../components/shared/EntityRouteState';
 import { authChangeBreakdownStorageKey } from './auth-change-breakdown-state';
+import { AUTH_TYPE_META, authStatusPillClass, isFailedLikeStatus } from './auth-presentation';
 import { navigateAuthFile, navigateAuthReviewView, useAuthReviewNavigation, type AuthActionViewState, type AuthInfoSnapshot, type AuthReviewNavigation } from './auth-review-navigation';
 
 const RETAINED_FINALIZED_AUTH_KEY = 'mandible.auth.retained-finalized-selection';
@@ -286,15 +287,6 @@ function getAuthType(request: AuthRequest): AuthRequestType {
   return request.type ?? 'merge';
 }
 
-const AUTH_TYPE_META: Record<AuthRequestType, { label: string; cssClass: string }> = {
-  'merge':          { label: 'Merge',       cssClass: 'type-badge--merge' },
-  'commit':         { label: 'Commit',      cssClass: 'type-badge--commit' },
-  'force-push':     { label: 'Force Push',  cssClass: 'type-badge--force-push' },
-  'branch-delete':  { label: 'Delete',      cssClass: 'type-badge--branch-delete' },
-  'config-change':  { label: 'Config',      cssClass: 'type-badge--config-change' },
-  'data-delete':    { label: 'Delete Data', cssClass: 'type-badge--data-delete' },
-  'custody-transfer': { label: 'Custody',   cssClass: 'type-badge--custody-transfer' },
-};
 
 const AUTH_DIFF_VIEW_CLASS_NAMES: DiffViewClassNames = {
   toolbar: 'auth-detail__diff-toolbar',
@@ -375,10 +367,6 @@ function getResolvedAtMs(request: AuthRequest): number {
 function visibleExecutionAttempts(request: AuthRequest): AuthExecutionAttempt[] {
   const attempts = request.execution_attempts ?? [];
   return attempts.length > 1 || attempts.some((attempt) => attempt.result === 'failed') ? attempts : [];
-}
-
-function isFailedLikeStatus(status: string): boolean {
-  return status === 'failed' || status === 'needs_rebase' || status === 'expired';
 }
 
 function isHistoryStatus(status: string): boolean {
@@ -498,11 +486,7 @@ const ACCEPTANCE_PILLS: Record<CandidateAcceptanceProjection['state'], [string, 
 const ACCEPTANCE_SCOPE = 'Checks the packaged app in an isolated instance. Installed upgrade qualification is separate.';
 
 function getStatusClass(request: AuthRequest): string {
-  const status = getAuthStatus(request);
-  if (isFailedLikeStatus(status)) {
-    return 'status-pill status-pill--failed';
-  }
-  return `status-pill status-pill--${status.toLowerCase()}`;
+  return authStatusPillClass(getAuthStatus(request));
 }
 
 function getInlineActionList(request: AuthRequest): AuthRequestAction[] | undefined {

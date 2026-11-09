@@ -31,6 +31,7 @@ import { DetailPaneMenuTrigger } from '../shared/DetailPaneMenuTrigger';
 import { DetailPaneModal } from '../shared/DetailPaneModal';
 import { DetailPaneShell, type DetailPanePresentation } from '../shared/DetailPaneShell';
 import { CollapsiblePanel } from '../shared/CollapsiblePanel';
+import { StatusPill } from './StatusPill';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 import {
   LEDGER_ISSUE_RESOLUTIONS,
@@ -1028,35 +1029,6 @@ function timelineRank(entry: RenderTimelineEntry): number {
   if (entry.kind === 'auth') return 2;
   if (entry.kind === 'checkpoint') return 3;
   return 4;
-}
-
-function StatusPill({
-  status,
-  resolution,
-  linkedAuth,
-  onOpenAuth,
-  size = 'lg',
-}: {
-  status: string;
-  resolution: string | null;
-  linkedAuth?: LedgerIssueDetailAuthRequest;
-  onOpenAuth?: (auth: LedgerIssueDetailAuthRequest) => void;
-  // The header pill is the pane's headline status and stays large. Inline row
-  // pills (the umbrella children shelf) take the base size so a row keeps the
-  // same height as every other ledger row.
-  size?: 'sm' | 'lg';
-}): JSX.Element {
-  const label = status === 'closed' && resolution ? `${status}: ${resolution}` : status;
-  const cls = status === 'open' ? 'status-pill--success' : resolution === 'delivered' ? 'status-pill--merged' : 'status-pill--dismissed';
-  const sizeCls = size === 'lg' ? ' status-pill--lg' : '';
-  if (linkedAuth && onOpenAuth) {
-    return (
-      <button type="button" className={`status-pill${sizeCls} ledger-status-button ${cls}`} onClick={() => onOpenAuth(linkedAuth)}>
-        {label}
-      </button>
-    );
-  }
-  return <span className={`status-pill${sizeCls} ${cls}`}>{label}</span>;
 }
 
 function TimelineEntryCard({
