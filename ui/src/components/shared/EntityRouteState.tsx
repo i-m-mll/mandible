@@ -98,19 +98,22 @@ export function EntityRouteState({ kind, resolution }: { kind: EntityKind; resol
       return (
         <RouteStatePane>
           <RouteStateCard heading={<>{label} ID <code>{resolution.ref}</code> is ambiguous. Please choose one of the following:</>}>
-            <ul className="ledger-child-list">
+            <div className="ledger-child-list" role="list">
               {resolution.matches.map((match) => (
-                <li key={`${match.kind}:${match.ref}`}>
-                  <a className="ledger-dependency-row" href={routeWithParams({ kind: 'entity', entity: match.kind, ref: match.ref })}>
-                    <code>{match.ref}</code>
-                    {match.kind === 'issue' && match.title
-                      ? <strong dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(match.title) }} />
-                      : <strong>{match.title}</strong>}
-                    <MatchFacets match={match} />
-                  </a>
-                </li>
+                <a
+                  key={`${match.kind}:${match.ref}`}
+                  role="listitem"
+                  className="ledger-dependency-row"
+                  href={routeWithParams({ kind: 'entity', entity: match.kind, ref: match.ref })}
+                >
+                  <code>{match.ref}</code>
+                  {match.kind === 'issue' && match.title
+                    ? <strong dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(match.title) }} />
+                    : <strong>{match.title}</strong>}
+                  <MatchFacets match={match} />
+                </a>
               ))}
-            </ul>
+            </div>
             {more > 0 ? <p className="text-muted">and {more} more</p> : null}
           </RouteStateCard>
         </RouteStatePane>
