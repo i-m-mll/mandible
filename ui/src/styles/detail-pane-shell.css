@@ -486,14 +486,3 @@
   overflow-wrap: anywhere;
 }
 
-.entity-route-state__content > :first-child {
-  margin-top: 0;
-}
-
-.entity-route-state__matches li > a {
-  text-decoration: none;
-}
-
-.entity-route-state__matches li > a:hover code {
-  text-decoration: underline;
-}
