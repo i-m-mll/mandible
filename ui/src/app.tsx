@@ -2,7 +2,6 @@ import { IntegrationIntroduction } from './components/AgentIntegrations';
 import { Icon, type IconName } from './components/icons/Icon';
 import { AppHoverTips, appTip } from './components/shared/AppHoverTips';
 import { NativeTopBarBand } from './components/NativeTopBarBand';
-import { pushAppHistory, replaceAppHistory } from './app-history';
 import { useAppHistory } from './hooks/useAppHistory';
 import { AppFrame } from './app-frame';
 import { useChromeAppearancePreview } from './hooks/useChromeAppearancePreview';
@@ -90,18 +89,23 @@ import {
 } from './daemon-readiness';
 import { installTauriDeepLinkHandler } from './deep-links';
 import {
-  hashWithViewSidebarHidden,
-  hashWithViewSidebarVisible,
+  currentRoute,
+  hrefWithViewSidebar,
   isViewSidebarHidden,
-  parseArtifactVersionParam,
-  parseRouteFromHash,
-  replaceRouteHash,
-  routeHashWithParams,
+  navigateTo,
+  replaceRoute,
+  routeFromUrl,
+  routeWithParams,
   shortRouteId,
-  spacesRouteFromHash,
+  spacesRoute,
   type SpacesRouteTarget,
   type Route,
+  type ViewTab,
+  viewHref,
 } from './routing';
+import { appPath } from '../../src/app-routes';
+import { replaceAuthRequestRoute } from './views/auth-review-navigation';
+import { RouteNotFound } from './components/shared/EntityRouteState';
 import {
   AppShellProvider,
   APP_RAIL_WIDTHS,
@@ -152,10 +156,10 @@ import {
 } from './view-sidebar-geometry';
 
 import {
-  adoptAgentSessionFragment,
+  adoptAgentSessionFromLocation,
   getAgentPageBinding,
-  hashWithAgentSession,
   subscribeAgentPageBinding,
+  withAgentSession,
 } from './agent-page-binding';
 import { normalizeSidebarGroupLimit } from './components/shared/sidebar-group-settings';
 import { queryClient } from './query/client';
@@ -205,7 +209,7 @@ const THEME_COLOR_BY_RESOLVED_THEME = {
   dark: '#181818',
   light: '#FFFFFF',
 } as const;
-type RenderableTab = Exclude<Route['tab'], 'chat-history'>;
+type RenderableTab = ViewTab;
 type RouteInitialDataContext = {
   settings: Record<string, string>;
   instanceInfo: InstanceInfo | null;
@@ -451,8 +455,7 @@ function updateRootAppTheme(settings: Record<string, string>, previewTheme?: Chr
 }
 
 type NavItem = {
-  tab: Route['tab'];
-  href: string;
+  tab: ViewTab;
   label: string;
   title: string;
   badge?: number;
@@ -477,7 +480,7 @@ const APP_RAIL_DRAG_THRESHOLD_PX = 6;
 
 // Tabs that use the shared resize-rail layout (<ViewSidebar>) and therefore want
 // full-bleed content (no .app-content gutters). Issue e29a8c5.
-const RESIZE_RAIL_TABS = new Set<Route['tab']>([
+const RESIZE_RAIL_TABS = new Set<ViewTab | null>([
   'auth',
   'artifacts',
   'briefing',
@@ -491,14 +494,7 @@ const RESIZE_RAIL_TABS = new Set<Route['tab']>([
   'work',
 ]);
 
-function parseHashRoute(): Route {
-  if (typeof window === 'undefined') {
-    return { tab: 'spaces', params: {} };
-  }
-  return parseRouteFromHash(window.location.hash || '#/spaces');
-}
-
-function isRenderableTab(tab: Route['tab']): tab is RenderableTab {
+function isRenderableTab(tab: ViewTab | null): tab is RenderableTab {
   return RENDERABLE_TABS.includes(tab as RenderableTab);
 }
 
@@ -507,7 +503,9 @@ function routeForTab(
   activeRoute: Route,
   snapshots: Partial<Record<RenderableTab, Route>>,
 ): Route {
-  return activeRoute.tab === tab ? activeRoute : snapshots[tab] ?? { tab, params: {} };
+  return activeRoute.tab === tab
+    ? activeRoute
+    : snapshots[tab] ?? { path: { kind: 'view', tab }, tab, entity: null, params: {} };
 }
 
 // Bug: 326a3e2 — rebuilding/restarting splash on self-merge
@@ -594,9 +592,12 @@ function App(): JSX.Element {
     ...loadCachedState(),
   }));
   const navigation = useAppHistory();
-  const route = useMemo(() => parseRouteFromHash(hashWithAgentSession(new URL(navigation.href).hash || '#/spaces', getAgentPageBinding())), [navigation.href, navigation.revision]);
+  const route = useMemo(() => {
+    const url = new URL(navigation.href);
+    return routeFromUrl(new URL(withAgentSession(`${url.pathname}${url.search}`, getAgentPageBinding()), url));
+  }, [navigation.href, navigation.revision]);
   const [startupDestinationPending, setStartupDestinationPending] = useState(() =>
-    typeof window !== 'undefined' && !hasExplicitStartupDestination(window.location.hash));
+    typeof window !== 'undefined' && !hasExplicitStartupDestination(window.location.pathname));
   const [startupSettingsReady, setStartupSettingsReady] = useState(false);
   const [hostAppTheme, setHostAppTheme] = useState<'system' | 'light' | 'dark' | null>(null);
   const hostAppThemeRevisionRef = useRef(0);
@@ -653,15 +654,14 @@ function App(): JSX.Element {
     return () => observer.disconnect();
   }, [fallbackNoticeHost]);
   const [visitedTabs, setVisitedTabs] = useState<Set<RenderableTab>>(() => {
-    const initial = parseHashRoute();
-    return new Set<RenderableTab>([isRenderableTab(initial.tab) ? initial.tab : 'spaces']);
+    const initial = typeof window === 'undefined' ? null : currentRoute();
+    return new Set<RenderableTab>(initial && isRenderableTab(initial.tab) ? [initial.tab] : []);
   });
   const [tabRouteSnapshots, setTabRouteSnapshots] = useState<Partial<Record<RenderableTab, Route>>>(() => {
-    const initial = parseHashRoute();
-    const tab = isRenderableTab(initial.tab) ? initial.tab : 'spaces';
-    return { [tab]: initial };
+    const initial = typeof window === 'undefined' ? null : currentRoute();
+    return initial && isRenderableTab(initial.tab) ? { [initial.tab]: initial } : {};
   });
-  const settingsReturnHashRef = useRef<string | null>(null);
+  const settingsReturnPathRef = useRef<string | null>(null);
   // Bug: 326a3e2 — rebuilding splash triggered by mandible:rebuilding SSE event
   const [rebuilding, setRebuilding] = useState(false);
   // Bug: 645f8a8 — splash for a page loaded mid-startup (or while the daemon is
@@ -873,45 +873,38 @@ function App(): JSX.Element {
     setTabRouteSnapshots((current) => ({ ...current, [tab]: route }));
   }, [route]);
 
-  const navigateToHash = useCallback((hash: string) => {
+  const navigate = useCallback((path: string) => {
     if (typeof window === 'undefined') {
       return;
     }
-    const boundHash = hashWithAgentSession(hash, getAgentPageBinding());
-    if (window.location.hash !== boundHash) {
-      pushAppHistory(boundHash, null);
-    }
+    navigateTo(path);
     setStartupDestinationPending(false);
   }, []);
 
   const navigateToSettings = useCallback(() => {
-    if (typeof window !== 'undefined') {
-      const currentRoute = parseHashRoute();
-      const currentHash = window.location.hash || '#/spaces';
-      if (currentRoute.tab !== 'settings') {
-        settingsReturnHashRef.current = currentHash;
-      }
+    if (typeof window !== 'undefined' && currentRoute().tab !== 'settings') {
+      settingsReturnPathRef.current = `${window.location.pathname}${window.location.search}`;
     }
-    navigateToHash('#/settings');
-  }, [navigateToHash]);
+    navigate(viewHref('settings'));
+  }, [navigate]);
 
   const showViewSidebar = useCallback(() => {
     if (typeof window === 'undefined') {
       return;
     }
-    navigateToHash(hashWithViewSidebarVisible(window.location.hash || '#/spaces'));
-  }, [navigateToHash]);
+    navigate(hrefWithViewSidebar(false));
+  }, [navigate]);
 
   const hideViewSidebar = useCallback(() => {
     if (typeof window === 'undefined') {
       return;
     }
-    navigateToHash(hashWithViewSidebarHidden(window.location.hash || '#/spaces'));
-  }, [navigateToHash]);
+    navigate(hrefWithViewSidebar(true));
+  }, [navigate]);
 
   const handleSettingsClose = useCallback(() => {
-    navigateToHash(settingsReturnHashRef.current ?? '#/console');
-  }, [navigateToHash]);
+    navigate(settingsReturnPathRef.current ?? viewHref('console'));
+  }, [navigate]);
 
   // Spaces home navigation: open a typed-primary Space, or preserve an explicit
   // legacy renderer override when supplied by a deep link / compatibility affordance.
@@ -920,10 +913,10 @@ function App(): JSX.Element {
   const navigateToSpace = useCallback(
     (target: SpacesRouteTarget) => {
       if (typeof window === 'undefined') return;
-      if (parseHashRoute().tab !== 'spaces') return;
-      navigateToHash(spacesRouteFromHash(window.location.hash || '#/spaces', target));
+      if (currentRoute().tab !== 'spaces') return;
+      navigate(spacesRoute(target));
     },
-    [navigateToHash],
+    [navigate],
   );
 
   useEffect(() => {
@@ -937,12 +930,11 @@ function App(): JSX.Element {
 
   useEffect(() => {
     const handleChange = () => {
-      const hash = window.location.hash || '#/spaces';
-      const boundHash = hashWithAgentSession(hash, getAgentPageBinding());
-      if (boundHash !== hash) {
-        replaceAppHistory(boundHash, window.history.state, false);
+      const href = `${window.location.pathname}${window.location.search}`;
+      if (withAgentSession(href, getAgentPageBinding()) !== href) {
+        replaceRoute(href, window.history.state, false);
       }
-      if (hasExplicitStartupDestination(window.location.hash)) setStartupDestinationPending(false);
+      if (hasExplicitStartupDestination(window.location.pathname)) setStartupDestinationPending(false);
     };
     handleChange();
   }, [navigation.revision]);
@@ -978,7 +970,7 @@ function App(): JSX.Element {
     let disposed = false;
     let removeListener: (() => void) | undefined;
 
-    installTauriDeepLinkHandler(navigateToHash)
+    installTauriDeepLinkHandler(navigate)
       .then((cleanup) => {
         if (disposed) {
           cleanup();
@@ -994,13 +986,13 @@ function App(): JSX.Element {
       disposed = true;
       removeListener?.();
     };
-  }, [navigateToHash]);
+  }, [navigate]);
 
   useEffect(() => {
     if (typeof window === 'undefined' || route.tab === 'settings') {
       return;
     }
-    settingsReturnHashRef.current = window.location.hash || `#/${route.tab}`;
+    settingsReturnPathRef.current = `${window.location.pathname}${window.location.search}`;
   }, [route]);
 
   useEffect(() => {
@@ -1038,29 +1030,29 @@ function App(): JSX.Element {
   // Settings UI for key bindings is deferred — Bug: 9082b2c
   useEffect(() => {
     const tabRoutes: Record<string, string> = {
-      '1': 'console',
-      '2': 'graph',
-      '3': 'auth',
-      '4': 'issues',
-      '5': 'inbox',
-      '6': 'work',
-      '7': 'artifacts?role=instructions',
-      '9': 'settings',
-      '0': 'logs',
+      '1': viewHref('console'),
+      '2': viewHref('graph'),
+      '3': viewHref('auth'),
+      '4': viewHref('issues'),
+      '5': viewHref('inbox'),
+      '6': viewHref('work'),
+      '7': viewHref('artifacts', { role: 'instructions' }),
+      '9': viewHref('settings'),
+      '0': viewHref('logs'),
     };
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.ctrlKey && !e.metaKey && !e.altKey && tabRoutes[e.key]) {
         e.preventDefault();
-        if (tabRoutes[e.key] === 'settings') {
+        if (e.key === '9') {
           navigateToSettings();
         } else {
-          navigateToHash(`#/${tabRoutes[e.key]}`);
+          navigate(tabRoutes[e.key]);
         }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [navigateToHash, navigateToSettings]);
+  }, [navigate, navigateToSettings]);
 
   // The daemon pushes `dashboard:badges` on every change; this GET resyncs only
   // on mount and SSE reconnect. A push that lands while it is in flight is newer.
@@ -1120,7 +1112,6 @@ function App(): JSX.Element {
           ]);
           return;
         case 'console':
-        case 'chat-history':
           await Promise.all([
             getConsoleSessions<ConsoleSessionPayload>().then((sessions) => dispatch({
               type: 'setConsoleSessions',
@@ -1904,8 +1895,7 @@ function App(): JSX.Element {
   const handleToastDismiss = () => dispatch({ type: 'setDaemonReload', reload: null });
   const handleSelectAuth = (id: string | null) => dispatch({ type: 'setSelectedAuthId', id });
   const handleNavigateAuthRequest = (id: string | null) => {
-    if (routeRef.current.tab !== 'auth') return;
-    replaceRouteHash(routeHashWithParams(window.location.hash, 'auth', { request: id, view: null, diff_old: null, diff_new: null }));
+    if (routeRef.current.tab === 'auth') replaceAuthRequestRoute(id);
   };
 
   useEffect(() => {
@@ -2097,37 +2087,29 @@ function App(): JSX.Element {
         const parts = id.split(':');
         const humanId = parts[2] ?? id;
         const resolvedRepoId = repoId ?? parts[1];
-        const params = new URLSearchParams({ issue: humanId });
-        if (resolvedRepoId) params.set('repo', resolvedRepoId);
-        navigateToHash(`#/issues?${params.toString()}`);
+        navigate(appPath({ kind: 'entity', entity: 'issue', ref: resolvedRepoId ? `${resolvedRepoId}/${humanId}` : humanId }));
         break;
       }
       case 'session':
-        navigateToHash(`#/console?session=${encodeURIComponent(id.replace(/^session:/, ''))}`);
+        navigate(viewHref('console', { session: id.replace(/^session:/, '') }));
         break;
       case 'auth_request':
-        // Issue f59b5bd — emit the short form; the auth view resolves prefixes.
-        navigateToHash(`#/auth?request=${encodeURIComponent(shortRouteId(id.replace(/^auth_request:/, '')))}`);
+        navigate(appPath({ kind: 'entity', entity: 'auth', ref: shortRouteId(id.replace(/^auth_request:/, '')) }));
         break;
       case 'artifact':
-      case 'report': {
-        const key = id.startsWith('artifact:') ? 'artifact' : 'ref';
-        const params = new URLSearchParams({ [key]: id });
-        if (repoId) params.set('repo', repoId);
-        navigateToHash(`#/artifacts?${params.toString()}`);
+      case 'report':
+        navigate(routeWithParams({ kind: 'entity', entity: 'artifact', ref: id }, { repo: repoId ?? null }, [], ''));
         break;
-      }
       default:
         break;
     }
-  }, [navigateToHash]);
+  }, [navigate]);
 
   // Issue 037fa85 — first conditional nav item: the Session Overview shortcut
   // appears when a page-local agent_session binding was delivered at boot.
-  // The view itself stays reachable for any session via #/overview deep links.
+  // The view itself stays reachable for any session via /overview links.
   const sessionOverviewNavItem: NavItem = {
     tab: 'overview',
-    href: '#/overview',
     label: 'Session',
     title: 'Session Overview',
     icon: 'sessionOverview',
@@ -2138,7 +2120,6 @@ function App(): JSX.Element {
     ...(showSessionOverviewNav ? [sessionOverviewNavItem] : []),
     {
       tab: 'console',
-      href: '#/console',
       label: 'Chat',
       title: 'Chat',
       badge: badges.console,
@@ -2146,14 +2127,12 @@ function App(): JSX.Element {
     },
     {
       tab: 'timeline',
-      href: '#/timeline',
       label: 'Timeline',
       title: 'Timeline',
       icon: 'timeline',
     },
     {
       tab: 'auth',
-      href: '#/auth',
       label: 'Approvals',
       title: 'Approvals',
       badge: badges.auth,
@@ -2162,35 +2141,30 @@ function App(): JSX.Element {
     },
     {
       tab: 'issues',
-      href: '#/issues',
       label: 'Issues',
       title: 'Issues',
       icon: 'issues',
     },
     {
       tab: 'artifacts',
-      href: '#/artifacts',
       label: 'Artifacts',
       title: 'Artifacts',
       icon: 'artifacts',
     },
     {
       tab: 'spaces',
-      href: '#/spaces',
       label: 'Spaces',
       title: 'Spaces',
       icon: 'spaces',
     },
     {
       tab: 'briefing',
-      href: '#/briefing',
       label: 'Briefing',
       title: 'Briefing',
       icon: 'briefing',
     },
     {
       tab: 'inbox',
-      href: '#/inbox',
       label: 'Inbox',
       title: 'Inbox',
       badge: badges.inbox,
@@ -2201,7 +2175,6 @@ function App(): JSX.Element {
   const remainingUpperNavItems: NavItem[] = [
     {
       tab: 'work',
-      href: '#/work',
       label: 'Projects',
       title: 'Projects',
       badge: badges.work,
@@ -2209,14 +2182,12 @@ function App(): JSX.Element {
     },
     {
       tab: 'graph',
-      href: '#/graph',
       label: 'Graph',
       title: 'Graph',
       icon: 'graph',
     },
     {
       tab: 'tasks',
-      href: '#/tasks',
       label: 'Tasks',
       title: 'Tasks',
       badge: badges.tasks,
@@ -2226,7 +2197,6 @@ function App(): JSX.Element {
   ];
   const logsNavItem: NavItem = {
     tab: 'logs',
-    href: '#/logs',
     label: 'Logs',
     title: 'Logs',
     icon: 'logs',
@@ -2237,10 +2207,10 @@ function App(): JSX.Element {
     ? previewRailOrder
     : parseAppRailOrderSetting(railOrderSetting);
 
-  const experimentalTabs = new Set<Route['tab']>(['timeline', 'graph', 'spaces']);
+  const experimentalTabs = new Set<ViewTab>(['timeline', 'graph', 'spaces']);
   const canonicalRailItems = [...primaryNavItems, ...remainingUpperNavItems];
   const canonicalPrimaryRailItems = canonicalRailItems.filter((item) => !experimentalTabs.has(item.tab));
-  const experimentalOrder: Route['tab'][] = ['timeline', 'graph', 'spaces'];
+  const experimentalOrder: ViewTab[] = ['timeline', 'graph', 'spaces'];
   const canonicalExperimentalRailItems = experimentalOrder
     .map((tab) => canonicalRailItems.find((item) => item.tab === tab))
     .filter((item): item is NavItem => Boolean(item));
@@ -2257,25 +2227,24 @@ function App(): JSX.Element {
   const orderedRailItems = (experimental: boolean): NavItem[] => {
     const byId = new Map(canonicalRailItems.map((item) => [item.tab, item]));
     return visibleRailOrder
-      .map((id) => byId.get(id as Route['tab']))
+      .map((id) => byId.get(id as ViewTab))
       .filter((item): item is NavItem => Boolean(item) && experimentalTabs.has(item!.tab) === experimental);
   };
 
   useEffect(() => {
     if (!startupDestinationPending || !railOrderReady || !startupSettingsReady) return;
-    if (hasExplicitStartupDestination(window.location.hash)) {
+    if (hasExplicitStartupDestination(window.location.pathname)) {
       setStartupDestinationPending(false);
       return;
     }
     const destination = startupRailDestination(
-      window.location.hash,
+      window.location.pathname,
       orderedRailItems(false).map((item) => item.tab),
       orderedRailItems(true).map((item) => item.tab),
       state.settings.show_experimental_features !== 'false',
     );
     if (destination) {
-      const hash = hashWithAgentSession(destination, getAgentPageBinding());
-      replaceAppHistory(hash, window.history.state);
+      replaceRoute(`${destination}${window.location.search}`);
       setStartupDestinationPending(false);
     }
   }, [startupDestinationPending, railOrderReady, startupSettingsReady, railOrderSetting, previewRailOrder, state.settings.show_experimental_features, agentPageBinding]);
@@ -2304,8 +2273,8 @@ function App(): JSX.Element {
     const preference: AppRailOrderPreference = {
       version: DEFAULT_APP_RAIL_ORDER.version,
       groups: {
-        primary: order.filter((id) => !experimentalTabs.has(id as Route['tab'])),
-        secondary: order.filter((id) => experimentalTabs.has(id as Route['tab'])),
+        primary: order.filter((id) => !experimentalTabs.has(id as ViewTab)),
+        secondary: order.filter((id) => experimentalTabs.has(id as ViewTab)),
       },
     };
     const value = serializeAppRailOrderSetting(preference);
@@ -2459,7 +2428,7 @@ function App(): JSX.Element {
 
     event.preventDefault();
     const itemIsExperimental = experimentalTabs.has(item.tab);
-    const ids = visibleRailOrder.filter((id) => experimentalTabs.has(id as Route['tab']) === itemIsExperimental);
+    const ids = visibleRailOrder.filter((id) => experimentalTabs.has(id as ViewTab) === itemIsExperimental);
     const index = ids.indexOf(item.tab);
     const targetIndex = Math.max(0, Math.min(ids.length - 1, index + (event.key === 'ArrowUp' ? -1 : 1)));
     if (index === targetIndex) {
@@ -2467,7 +2436,7 @@ function App(): JSX.Element {
       return;
     }
     const nextGroupIds = moveAppRailItem(ids, item.tab, ids[targetIndex]);
-    const otherIds = visibleRailOrder.filter((id) => experimentalTabs.has(id as Route['tab']) !== itemIsExperimental);
+    const otherIds = visibleRailOrder.filter((id) => experimentalTabs.has(id as ViewTab) !== itemIsExperimental);
     const nextIds = itemIsExperimental ? [...otherIds, ...nextGroupIds] : [...nextGroupIds, ...otherIds];
     void persistRailOrder(
       nextIds,
@@ -2483,7 +2452,7 @@ function App(): JSX.Element {
     return (
       <a
         key={item.tab}
-        href={hashWithAgentSession(item.href, agentPageBinding)}
+        href={withAgentSession(viewHref(item.tab), agentPageBinding)}
         className={`app-rail__item${active ? ' app-rail__item--active' : ''}${dragging ? ' app-rail__item--dragging' : ''}${dropTarget ? ' app-rail__item--drop-target' : ''}`}
         aria-current={active ? 'page' : undefined}
         {...appTip(railDisplayMode !== 'both' ? item.label : undefined, 'right')}
@@ -2513,7 +2482,7 @@ function App(): JSX.Element {
           if (item.tab === 'settings') {
             navigateToSettings();
           } else {
-            navigateToHash(item.href);
+            navigate(viewHref(item.tab));
           }
         }}
       >
@@ -2643,8 +2612,8 @@ function App(): JSX.Element {
             <a
               href={
                 state.daemonReload.bugRefs.length === 1
-                  ? `#/issues?repo=${encodeURIComponent(state.daemonReload.bugRefs[0].repo_id)}&issue=${encodeURIComponent(state.daemonReload.bugRefs[0].issue_id)}`
-                  : '#/issues'
+                  ? appPath({ kind: 'entity', entity: 'issue', ref: `${state.daemonReload.bugRefs[0].repo_id}/${state.daemonReload.bugRefs[0].issue_id}` })
+                  : viewHref('issues')
               }
               className="daemon-toast__link"
             >
@@ -2731,7 +2700,6 @@ function App(): JSX.Element {
                 />
                 {renderRailItem({
                   tab: 'settings',
-                  href: '#/settings',
                   label: 'Settings',
                   title: 'Settings',
                   icon: 'settings',
@@ -2792,7 +2760,7 @@ function App(): JSX.Element {
               outputs={state.authOutputs}
               branchesByRepo={authBranchesByRepo}
               selectedAuthId={state.selectedAuthId}
-              initialRequestId={tabRoute.params.request}
+              entityRef={tabRoute.entity?.ref ?? null}
               reviewRouteParams={tabRoute.params}
               reviewRouteActive={route.tab === 'auth'}
               sidebarHidden={isViewSidebarHidden(tabRoute)}
@@ -2830,8 +2798,7 @@ function App(): JSX.Element {
             <LazyIssuesView
               repos={state.issueRepos}
               onRescan={handleIssueRescan}
-              initialRepoId={tabRoute.params.repo}
-              initialIssueId={tabRoute.params.issue}
+              entityRef={tabRoute.entity?.ref ?? null}
               initialCommentId={tabRoute.params.comment}
               defaultFilter={state.settings['issues.default_filter']}
               sidebarHidden={isViewSidebarHidden(tabRoute)}
@@ -2842,10 +2809,7 @@ function App(): JSX.Element {
           const tabRoute = routeForTab('artifacts', route, tabRouteSnapshots);
           return (
             <LazyArtifactsView
-              initialArtifactId={tabRoute.params.artifact}
-              initialRef={tabRoute.params.ref}
-              initialSeriesRef={tabRoute.params.series}
-              initialVersionNo={parseArtifactVersionParam(tabRoute.params.version)}
+              entityRef={tabRoute.entity?.ref ?? null}
               initialRepo={tabRoute.params.repo}
               initialRole={tabRoute.params.role}
               sidebarHidden={isViewSidebarHidden(tabRoute)}
@@ -2937,8 +2901,8 @@ function App(): JSX.Element {
             <LazyBriefingView
               instance={instanceInfo}
               keepSubmittedAnnotations={keepSubmittedBriefingAnnotations(state.settings)}
-              initialBriefingId={tabRoute.params.briefing ?? null}
-              initialGroupId={tabRoute.params.group ?? null}
+              entityRef={tabRoute.entity?.ref ?? null}
+              initialGroupKey={tabRoute.params.group ?? null}
               initialRoundId={tabRoute.params.round ?? null}
               sidebarHidden={isViewSidebarHidden(tabRoute)}
             />
@@ -2967,6 +2931,7 @@ function App(): JSX.Element {
             />
           );
         })())}
+        {route.path.kind === 'not_found' && accessEverReady ? <RouteNotFound path={route.path.path} /> : null}
         </main>
           {rightSidebar ? (
             <AppRightSidebarSurface
@@ -2987,9 +2952,9 @@ function App(): JSX.Element {
 const mountNode = typeof document !== 'undefined' ? document.getElementById('app') : null;
 if (mountNode) {
   // Adopt the page-local binding before the first route parse. The parameter
-  // deliberately remains in the hash and is preserved through navigation.
-  adoptAgentSessionFragment();
-  const initialRoute = parseHashRoute();
+  // deliberately remains in the query and is preserved through navigation.
+  adoptAgentSessionFromLocation();
+  const initialRoute = currentRoute();
   if (isRenderableTab(initialRoute.tab)) {
     void ROUTE_CHUNK_LOADERS[initialRoute.tab]?.();
   }

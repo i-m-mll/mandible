@@ -110,7 +110,7 @@ describe("daemon write boundary", () => {
     expect(response.body).toMatchObject({ error: "forbidden", reason: "cross_site_fetch" });
   });
 
-  it("admits only a top-level document navigation from another app origin", async () => {
+  it("admits only a top-level document navigation to a page path from another app origin", async () => {
     const navigation = {
       Host: "app.mandible.localhost:19420",
       "Sec-Fetch-Site": "cross-site",
@@ -118,6 +118,7 @@ describe("daemon write boundary", () => {
       "Sec-Fetch-Dest": "document",
     };
     expect(await requestStatus("GET", "/", navigation)).toBe(200);
+    expect(await requestStatus("GET", "/issue/x", navigation)).toBe(200);
     expect((await requestJson("GET", "/api/read", undefined, navigation)).body)
       .toMatchObject({ reason: "cross_site_fetch" });
     expect(await requestStatus("GET", "/", { ...navigation, "Sec-Fetch-Dest": "iframe" })).toBe(403);

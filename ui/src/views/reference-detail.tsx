@@ -1,4 +1,3 @@
-import { navigateAppHash } from '../app-history';
 import { useEffect, useMemo, useState } from "preact/hooks";
 import { useViewActive } from "../app-shell";
 import { useProjectionQuery } from '../query/useProjectionQuery';
@@ -6,7 +5,7 @@ import { issueDetailOptions, queryErrorMessage, detailQueryData } from "../query
 import { useArtifactDetail } from "../hooks/useArtifactDetail";
 import { LedgerIssueDetail } from "../components/ledger/IssueDetail";
 import { parseResourceRef, type ParsedResourceRef } from "../resource-refs";
-import { shortRouteId } from "../routing";
+import { entityHref, navigateTo, shortRouteId, viewHref } from "../routing";
 import { ArtifactDetail, UnsupportedArtifactBlob, UnresolvedArtifact } from "./artifacts";
 import { LoadingSkeleton } from "../components/LoadingSkeleton";
 import type { DetailPanePresentation } from "../components/shared/DetailPaneShell";
@@ -92,13 +91,11 @@ export function IssueReferenceDetail({
       hydrating={loading}
       onOpenEntity={(type, id, repoId) => {
         if (type === 'issue') {
-          const params = new URLSearchParams({ issue: id });
-          if (repoId) params.set('repo', repoId);
-          navigateAppHash(`#/issues?${params.toString()}`);
+          navigateTo(entityHref('issue', repoId ? `${repoId}/${id}` : id));
         } else if (type === 'auth_request') {
-          navigateAppHash(`#/auth?request=${encodeURIComponent(shortRouteId(id))}`);
+          navigateTo(entityHref('auth', shortRouteId(id)));
         } else if (type === 'session') {
-          navigateAppHash(`#/console?session=${encodeURIComponent(id)}`);
+          navigateTo(viewHref('console', { session: id }));
         }
       }}
     />

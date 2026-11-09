@@ -1,18 +1,39 @@
-import { replaceAppHistory } from './app-history';
+import { appHistory } from './app-history';
+import { getAgentPageBinding, withAgentSession } from './agent-page-binding';
 import { compactLongIdSegments } from './resource-refs';
-import { BRIEFING_ROUTE_SELECTORS, patchRouteQuery } from '../../src/route-query';
+import {
+  appHref,
+  ENTITY_TAB,
+  entityHref,
+  viewHref,
+  parseAppPath,
+  patchRouteQuery,
+  type AppRoute,
+  type EntityKind,
+  type ParsedAppPath,
+  type ViewTab,
+} from '../../src/app-routes';
 
-export { ARTIFACT_ROUTE_SELECTORS, BRIEFING_ROUTE_SELECTORS } from '../../src/route-query';
+export type { AppRoute, EntityKind, ParsedAppPath, ViewTab };
+export { entityHref, viewHref };
 
+export type EntityTarget = { kind: EntityKind; ref: string };
+
+/**
+ * The app's location as the shell reads it. `tab` is the rail tab the path
+ * opens (null for the startup path and for a path outside the route table),
+ * `entity` the entity an entity path names, and `params` the query, which is
+ * view state carried through every navigation.
+ */
 export type Route = {
-  tab: 'auth' | 'artifacts' | 'chat-history' | 'work' | 'issues' | 'settings' | 'inbox' | 'console' | 'logs' | 'graph' | 'timeline' | 'spaces' | 'overview' | 'briefing' | 'tasks';
+  path: ParsedAppPath;
+  tab: ViewTab | null;
+  entity: EntityTarget | null;
   params: Record<string, string>;
 };
 
 export const VIEW_SIDEBAR_QUERY_PARAM = 'sidebar';
 export const VIEW_SIDEBAR_HIDDEN_VALUE = 'hidden';
-export const ARTIFACT_SERIES_QUERY_PARAM = 'series';
-export const ARTIFACT_VERSION_QUERY_PARAM = 'version';
 
 // Issue f59b5bd — short-form IDs in generated URLs. Deterministically emitted
 // in-app links carry compact refs instead of full internal identities;
@@ -30,6 +51,67 @@ export function shortRouteId(id: string): string {
   return TYPED_LONG_HEX_REF_RE.test(id) ? compactLongIdSegments(id) : id;
 }
 
+/** Read a URL (or the current location) into the shell's route. */
+export function routeFromUrl(url: Pick<URL, 'pathname' | 'search'>): Route {
+  const path = parseAppPath(url.pathname);
+  const params = Object.fromEntries(new URLSearchParams(url.search).entries());
+  switch (path.kind) {
+    case 'view':
+      return { path, tab: path.tab, entity: null, params };
+    case 'entity':
+      return { path, tab: ENTITY_TAB[path.entity], entity: { kind: path.entity, ref: path.ref }, params };
+    default:
+      return { path, tab: null, entity: null, params };
+  }
+}
+
+export function currentRoute(): Route {
+  return routeFromUrl(window.location);
+}
+
+/**
+ * Build the href of `route` from the current query: `updates` set or delete
+ * individual parameters, and `ownedParams` are cleared first, so a view can
+ * replace its own selector family while every other parameter carries through.
+ */
+export function routeWithParams(
+  route: AppRoute,
+  updates: Record<string, string | null | undefined> = {},
+  ownedParams: readonly string[] = [],
+  search: string = typeof window === 'undefined' ? '' : window.location.search,
+): string {
+  return appHref(route, patchRouteQuery(new URLSearchParams(search), updates, ownedParams));
+}
+
+/** Push an in-app navigation, keeping this tab's agent session binding. */
+export function navigateTo(href: string, state: unknown = null): void {
+  const target = withAgentSession(href, getAgentPageBinding());
+  if (new URL(target, window.location.href).href !== window.location.href) appHistory().push(target, state);
+}
+
+/** Replace the current entry, keeping this tab's agent session binding. */
+export function replaceRoute(href: string, state: unknown = window.history.state, notify = true): void {
+  appHistory().replace(withAgentSession(href, getAgentPageBinding()), state, notify);
+}
+
+/** Call `listener` after every in-app navigation, including back and forward. */
+export function subscribeRouteChanges(listener: () => void): () => void {
+  return appHistory().subscribe(listener);
+}
+
+export function isViewSidebarHidden(route: Route): boolean {
+  return route.params[VIEW_SIDEBAR_QUERY_PARAM] === VIEW_SIDEBAR_HIDDEN_VALUE;
+}
+
+/** The current location with the view sidebar shown or hidden. */
+export function hrefWithViewSidebar(hidden: boolean): string {
+  const params = new URLSearchParams(window.location.search);
+  if (hidden) params.set(VIEW_SIDEBAR_QUERY_PARAM, VIEW_SIDEBAR_HIDDEN_VALUE);
+  else params.delete(VIEW_SIDEBAR_QUERY_PARAM);
+  const search = params.toString();
+  return `${window.location.pathname}${search ? `?${search}` : ''}`;
+}
+
 export type SpacesRouteTarget = {
   projectId?: string | null;
   projectKey?: string | null;
@@ -39,131 +121,15 @@ export type SpacesRouteTarget = {
 };
 
 /** Build a generated Spaces route while preserving all unrelated view state. */
-export function spacesRouteFromHash(hashValue: string, target: SpacesRouteTarget): string {
-  const queryPart = (hashValue || '#/spaces').replace(/^#/, '').split('?')[1] ?? '';
-  const params = new URLSearchParams(queryPart);
-  const setOrDelete = (key: string, value: string | null | undefined) => {
-    if (value === undefined) return;
-    if (value === null || value === '') params.delete(key);
-    else params.set(key, value);
-  };
+export function spacesRoute(target: SpacesRouteTarget, search: string = window.location.search): string {
   const projectRef = target.projectKey?.trim() || (
     target.projectId === undefined || target.projectId === null
       ? target.projectId
       : shortRouteId(target.projectId)
   );
-  setOrDelete('project', projectRef);
-  setOrDelete('space', target.spaceId && !target.preserveSpaceId ? shortRouteId(target.spaceId) : target.spaceId);
-  setOrDelete('renderer', target.renderer);
-  const query = params.toString();
-  return `#/spaces${query ? `?${query}` : ''}`;
-}
-
-export function routeHashWithParams(
-  hashValue: string,
-  tab: Route['tab'],
-  updates: Record<string, string | null | undefined>,
-  ownedParams: readonly string[] = [],
-): string {
-  const query = hashValue.split('?')[1] ?? '';
-  const params = patchRouteQuery(new URLSearchParams(query), updates, ownedParams);
-  return `#/${tab}${params.size ? `?${params.toString()}` : ''}`;
-}
-
-/** Keep the mounted router synchronized with a selection written without a history entry. */
-export function replaceRouteHash(hash: string): void {
-  if (window.location.hash === hash) return;
-  replaceAppHistory(hash, window.history.state);
-}
-
-export function briefingRoute(briefingId: string, roundId?: string | null, hashValue = ''): string {
-  return `/${routeHashWithParams(hashValue, 'briefing', {
-    briefing: shortRouteId(briefingId), round: roundId ? shortRouteId(roundId) : null,
-  }, BRIEFING_ROUTE_SELECTORS)}`;
-}
-
-export function briefingGroupRoute(groupKey: string, hashValue = ''): string {
-  return `/${routeHashWithParams(hashValue, 'briefing', { group: groupKey }, BRIEFING_ROUTE_SELECTORS)}`;
-}
-
-export function parseArtifactVersionParam(value: string | undefined): number | null {
-  if (!value) return null;
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
-}
-
-export function normalizeArtifactRouteParams(params: Record<string, string>): Record<string, string> {
-  const normalized = { ...params };
-  const series = params.series?.trim();
-  const ref = params.ref?.trim();
-  const artifact = params.artifact?.trim();
-  delete normalized.series;
-  delete normalized.ref;
-  delete normalized.artifact;
-  delete normalized.version;
-
-  if (series) {
-    normalized.series = series;
-    const version = parseArtifactVersionParam(params.version);
-    if (version !== null) normalized.version = String(version);
-  } else if (ref) {
-    normalized.ref = ref;
-  } else if (artifact) {
-    normalized.artifact = artifact;
-  }
-  return normalized;
-}
-
-export function isViewSidebarHidden(route: Route): boolean {
-  return route.params[VIEW_SIDEBAR_QUERY_PARAM] === VIEW_SIDEBAR_HIDDEN_VALUE;
-}
-
-function hashWithSidebarParam(hashValue: string, value: string | null): string {
-  const hash = hashValue || '#/spaces';
-  const [pathPart, queryPart] = hash.replace(/^#/, '').split('?');
-  const params = new URLSearchParams(queryPart ?? '');
-  if (value === null) {
-    params.delete(VIEW_SIDEBAR_QUERY_PARAM);
-  } else {
-    params.set(VIEW_SIDEBAR_QUERY_PARAM, value);
-  }
-  const query = params.toString();
-  return `#${pathPart || '/spaces'}${query ? `?${query}` : ''}`;
-}
-
-export function hashWithViewSidebarHidden(hashValue: string): string {
-  return hashWithSidebarParam(hashValue, VIEW_SIDEBAR_HIDDEN_VALUE);
-}
-
-export function hashWithViewSidebarVisible(hashValue: string): string {
-  return hashWithSidebarParam(hashValue, null);
-}
-
-export function parseRouteFromHash(hashValue: string): Route {
-  const hash = hashValue || '#/spaces';
-  const [pathPart, queryPart] = hash.replace('#', '').split('?');
-  const path = pathPart.replace(/^\//, '') || 'spaces';
-  const params: Record<string, string> = {};
-  if (queryPart) {
-    const search = new URLSearchParams(queryPart);
-    search.forEach((value, key) => {
-      params[key] = value;
-    });
-  }
-  // Support legacy history and monitor routes as aliases for the unified Chat workspace.
-  const normalizedPath = (
-    path === 'conversations' ||
-    path === 'chats' ||
-    path === 'chat-history' ||
-    path === 'sessions'
-  ) ? 'console' : path;
-  const retiredReviewPath = normalizedPath === 'review' ? 'work' : normalizedPath;
-  const retiredPresetsPath = retiredReviewPath === 'presets' ? 'artifacts' : retiredReviewPath;
-  if (retiredReviewPath === 'presets' && !params.role) {
-    params.role = 'instructions';
-  }
-  const tab = ['auth', 'artifacts', 'chat-history', 'work', 'issues', 'settings', 'inbox', 'console', 'logs', 'graph', 'timeline', 'spaces', 'overview', 'briefing', 'tasks'].includes(retiredPresetsPath)
-    ? (retiredPresetsPath as Route['tab'])
-    : 'spaces';
-  return { tab, params: tab === 'artifacts' ? normalizeArtifactRouteParams(params) : params };
+  return routeWithParams({ kind: 'view', tab: 'spaces' }, {
+    project: projectRef,
+    space: target.spaceId && !target.preserveSpaceId ? shortRouteId(target.spaceId) : target.spaceId,
+    renderer: target.renderer,
+  }, [], search);
 }

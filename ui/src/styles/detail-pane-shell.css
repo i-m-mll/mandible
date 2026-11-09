@@ -476,3 +476,13 @@
   gap: 6px;
   flex-shrink: 0;
 }
+
+.entity-route-state__body {
+  padding: 18px var(--detail-content-inline-inset) 24px;
+}
+
+.entity-route-state__content {
+  max-width: 720px;
+  overflow-wrap: anywhere;
+}
+

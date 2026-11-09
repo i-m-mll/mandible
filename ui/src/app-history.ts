@@ -5,11 +5,15 @@ type Segment = { version: 1; id: string; index: number; entries: Entry[] };
 type Marker = { segment: string; entry: string; position: number };
 const STATE_KEY = '__mandibleAppHistory';
 const STORAGE_KEY = 'mandible.app-history.v1';
+/** Same-origin paths the app serves itself; `/api`, `/dist` and the `/r` handoff are not app pages. */
+export function isAppPath(pathname: string): boolean {
+  return !/^\/(?:api|dist|r)(?:\/|$)/.test(pathname);
+}
 const object = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
 export function createAppHistory(host: Window) {
   const listeners = new Set<() => void>();
-  const sameDocument = (url: URL) => url.origin === host.location.origin && url.pathname === host.location.pathname && url.search === host.location.search;
+  const sameDocument = (url: URL) => url.origin === host.location.origin && isAppPath(url.pathname);
   let segment: Segment;
   let revision = 0;
   let traversalPending = false;
@@ -92,13 +96,13 @@ export function createAppHistory(host: Window) {
     const anchor = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>('a[href]') : null;
     if (!anchor || anchor.hasAttribute('download') || (anchor.target && anchor.target !== '_self')) return;
     const url = new URL(anchor.href, host.location.href);
-    if (!sameDocument(url) || !url.hash.startsWith('#/')) return;
+    if (!sameDocument(url)) return;
+    if (url.hash && url.pathname === host.location.pathname && url.search === host.location.search) return;
     event.preventDefault();
     if (url.href !== host.location.href) push(url.href);
   };
   restore(); updateSnapshot();
   host.addEventListener('popstate', reconcile);
-  host.addEventListener('hashchange', reconcile);
   host.document.addEventListener('click', click);
   return {
     host,
@@ -108,7 +112,7 @@ export function createAppHistory(host: Window) {
     push, replace,
     back() { reconcile(); if (!traversalPending && snapshot.canBack) { traversalPending = true; host.history.back(); } },
     forward() { reconcile(); if (!traversalPending && snapshot.canForward) { traversalPending = true; host.history.forward(); } },
-    dispose() { host.removeEventListener('popstate', reconcile); host.removeEventListener('hashchange', reconcile); host.document.removeEventListener('click', click); listeners.clear(); },
+    dispose() { host.removeEventListener('popstate', reconcile); host.document.removeEventListener('click', click); listeners.clear(); },
   };
 }
 
@@ -118,8 +122,3 @@ export function appHistory(): ReturnType<typeof createAppHistory> {
   owner.reconcile();
   return owner;
 }
-export function pushAppHistory(hash: string, state?: unknown): void { appHistory().push(hash, state); }
-export function navigateAppHash(hash: string): void {
-  if (new URL(hash, window.location.href).href !== window.location.href) pushAppHistory(hash);
-}
-export function replaceAppHistory(hash: string, state?: unknown, notify = true): void { appHistory().replace(hash, state, notify); }

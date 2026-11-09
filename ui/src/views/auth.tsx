@@ -25,6 +25,7 @@ import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFil
 import { IconTabList, type IconTab } from '../components/shared/IconTabList';
 
 import { linkifyResourceRefs as linkifyArtifactRefs } from '../resource-refs';
+import { entityHref } from '../routing';
 import { formatRelativeTime } from '../lib/format';
 import { createCoalescedRefresh } from '../lib/coalesced-refresh';
 import { renderInlineMarkdown, renderMarkdown } from '../lib/markdown';
@@ -65,7 +66,10 @@ import {
   type ProtectedBaseAudit,
 } from '../../../src/contracts';
 import { AuthChangeBreakdown } from './AuthChangeBreakdown';
+import { useEntityRoute } from '../hooks/useEntityRoute';
+import { EntityRouteState, isUnopenedEntityRoute } from '../components/shared/EntityRouteState';
 import { authChangeBreakdownStorageKey } from './auth-change-breakdown-state';
+import { AUTH_TYPE_META, authStatusPillClass, isFailedLikeStatus } from './auth-presentation';
 import { navigateAuthFile, navigateAuthReviewView, useAuthReviewNavigation, type AuthActionViewState, type AuthInfoSnapshot, type AuthReviewNavigation } from './auth-review-navigation';
 
 const RETAINED_FINALIZED_AUTH_KEY = 'mandible.auth.retained-finalized-selection';
@@ -206,7 +210,7 @@ function AuthPrerequisites({ request, onSelect }: { request: AuthRequest; onSele
         {prerequisites.map(({ id, dependency, state }) => {
           const reference = dependency?.request_id ?? id;
           return <li key={id}>
-            <a href={`#/auth?request=${encodeURIComponent(reference)}`} onClick={event => {
+            <a href={entityHref('auth', reference)} onClick={event => {
               if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
               event.preventDefault();
               onSelect(reference);
@@ -228,8 +232,8 @@ export type AuthQueueViewProps = {
   /** Known branch names per repo — used to detect stale entries whose branch was merged & deleted. */
   branchesByRepo?: Record<string, string[]>;
   selectedAuthId?: string | null;
-  /** Deep-link: select and scroll to a specific request on mount (from graph node click). */
-  initialRequestId?: string;
+  /** The ref of an `/auth/<ref>` path: the view selects and scrolls to the request it names. */
+  entityRef?: string | null;
   reviewRouteParams?: Record<string, string>;
   reviewRouteActive?: boolean;
   sidebarHidden?: boolean;
@@ -283,15 +287,6 @@ function getAuthType(request: AuthRequest): AuthRequestType {
   return request.type ?? 'merge';
 }
 
-const AUTH_TYPE_META: Record<AuthRequestType, { label: string; cssClass: string }> = {
-  'merge':          { label: 'Merge',       cssClass: 'type-badge--merge' },
-  'commit':         { label: 'Commit',      cssClass: 'type-badge--commit' },
-  'force-push':     { label: 'Force Push',  cssClass: 'type-badge--force-push' },
-  'branch-delete':  { label: 'Delete',      cssClass: 'type-badge--branch-delete' },
-  'config-change':  { label: 'Config',      cssClass: 'type-badge--config-change' },
-  'data-delete':    { label: 'Delete Data', cssClass: 'type-badge--data-delete' },
-  'custody-transfer': { label: 'Custody',   cssClass: 'type-badge--custody-transfer' },
-};
 
 const AUTH_DIFF_VIEW_CLASS_NAMES: DiffViewClassNames = {
   toolbar: 'auth-detail__diff-toolbar',
@@ -372,10 +367,6 @@ function getResolvedAtMs(request: AuthRequest): number {
 function visibleExecutionAttempts(request: AuthRequest): AuthExecutionAttempt[] {
   const attempts = request.execution_attempts ?? [];
   return attempts.length > 1 || attempts.some((attempt) => attempt.result === 'failed') ? attempts : [];
-}
-
-function isFailedLikeStatus(status: string): boolean {
-  return status === 'failed' || status === 'needs_rebase' || status === 'expired';
 }
 
 function isHistoryStatus(status: string): boolean {
@@ -492,14 +483,44 @@ const ACCEPTANCE_PILLS: Record<CandidateAcceptanceProjection['state'], [string, 
   failed: ['Package/runtime acceptance failed', 'status-pill--failed'],
   stale: ['Package/runtime acceptance stale', 'status-pill--expired'],
 };
+const ACCEPTANCE_SLOW_PILL: [string, string] = ['Package/runtime acceptance passed, slower than expected', 'status-pill--warning'];
 const ACCEPTANCE_SCOPE = 'Checks the packaged app in an isolated instance. Installed upgrade qualification is separate.';
 
+function acceptancePill(acceptance: CandidateAcceptanceProjection): [string, string] {
+  return acceptance.state === 'passed' && acceptance.warnings.length > 0 ? ACCEPTANCE_SLOW_PILL : ACCEPTANCE_PILLS[acceptance.state];
+}
+
+const acceptanceSeconds = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
+
+/** The run's warnings and per-stage timings, for a run in progress, a failure, or a slow pass. */
+function AcceptanceTimings({ acceptance }: { acceptance: CandidateAcceptanceProjection }) {
+  return (
+    <>
+      {acceptance.warnings.length > 0 && (
+        <ul className="auth-acceptance__warnings">
+          {acceptance.warnings.map(warning => <li key={warning}>{warning}</li>)}
+        </ul>
+      )}
+      {acceptance.phases.length > 0 && (
+        <table className="auth-acceptance__phases">
+          <tbody>
+            {acceptance.phases.map(phase => (
+              <tr key={phase.name} className={phase.status === 'failed' ? 'auth-acceptance__phase--failed' : undefined}>
+                <th scope="row">{phase.name.replaceAll('_', ' ')}</th>
+                <td>{phase.status}</td>
+                <td>{phase.elapsed_ms === null ? '' : acceptanceSeconds(phase.elapsed_ms)}</td>
+                <td>{phase.expected_ms === null ? '' : `expected ${acceptanceSeconds(phase.expected_ms)}`}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </>
+  );
+}
+
 function getStatusClass(request: AuthRequest): string {
-  const status = getAuthStatus(request);
-  if (isFailedLikeStatus(status)) {
-    return 'status-pill status-pill--failed';
-  }
-  return `status-pill status-pill--${status.toLowerCase()}`;
+  return authStatusPillClass(getAuthStatus(request));
 }
 
 function getInlineActionList(request: AuthRequest): AuthRequestAction[] | undefined {
@@ -982,7 +1003,9 @@ function AuthRequestDetail({
   const statusClass = getStatusClass(request);
   const publicationBlocker = request.publication_blocker ?? null;
   const acceptance = status === 'pending' ? request.candidate_acceptance ?? null : null;
-  const [acceptanceLabel, acceptancePill] = acceptance ? ACCEPTANCE_PILLS[acceptance.state] : [];
+  const [acceptanceLabel, acceptancePillClass] = acceptance ? acceptancePill(acceptance) : [];
+  const acceptanceDetail = acceptance && (acceptance.state === 'failed' || acceptance.state === 'stale' || acceptance.state === 'running'
+    || (acceptance.state === 'passed' && acceptance.warnings.length > 0));
   const baseAudit = status === 'pending' ? request.base_audit ?? null : null;
   const failedLike = isFailedLikeStatus(status);
   const executionCallout = getAuthExecutionCallout(status, consoleText);
@@ -1211,7 +1234,7 @@ function AuthRequestDetail({
                 {statusLabel}
               </span>
               {acceptance && (
-                <span className={`status-pill ${acceptancePill}`} title={`${ACCEPTANCE_SCOPE}${acceptance.reason ? ` ${acceptance.reason}` : ''}`}>
+                <span className={`status-pill ${acceptancePillClass}`} title={[ACCEPTANCE_SCOPE, acceptance.reason, ...acceptance.warnings].filter(Boolean).join(' ')}>
                   {acceptanceLabel}
                 </span>
               )}
@@ -1355,12 +1378,13 @@ function AuthRequestDetail({
             <p className="auth-failure__summary">{publicationBlocker.message}</p>
           </div>
         )}
-        {acceptance && (acceptance.state === 'failed' || acceptance.state === 'stale') && (
+        {acceptance && acceptanceDetail && (
           <div className={`auth-failure${acceptance.state === 'failed' ? '' : ' auth-failure--expired'}`}>
             <div className="auth-failure__header">
               <span className="auth-failure__title">{acceptanceLabel}</span>
             </div>
             {acceptance.reason && <p className="auth-failure__summary">{acceptance.reason}</p>}
+            <AcceptanceTimings acceptance={acceptance} />
           </div>
         )}
 
@@ -2054,7 +2078,7 @@ export function AuthQueueView({
   outputs,
   branchesByRepo,
   selectedAuthId: externalSelectedId,
-  initialRequestId,
+  entityRef = null,
   reviewRouteParams = {},
   reviewRouteActive = true,
   onSelectAuth,
@@ -2071,6 +2095,9 @@ export function AuthQueueView({
   retainFinalizedSelection = true,
 }: AuthQueueViewProps): JSX.Element {
   const reviewNavigation = useAuthReviewNavigation(reviewRouteParams, reviewRouteActive);
+  const routeResolution = useEntityRoute('auth', entityRef);
+  const initialRequestId = routeResolution.status === 'resolved' && typeof routeResolution.entity.id === 'string'
+    ? routeResolution.entity.id : undefined;
   const actionViewStateRef = useRef<AuthActionViewState>({ expanded: true, actionIds: [] });
   // Sidebar filter: Active (default) | All | Historical
   const [filterMode, setFilterMode] = useState<AuthFilterMode>('active');
@@ -2097,7 +2124,7 @@ export function AuthQueueView({
   if (deepLinkRef.current.route !== initialRequestId) {
     deepLinkRef.current = { route: initialRequestId, selection: initialRequestId ?? null };
   }
-  const selectedId = deepLinkRef.current.selection
+  const selectedId = entityRef && !initialRequestId ? null : deepLinkRef.current.selection
     ?? (externalSelectedId !== undefined ? externalSelectedId : localSelectedId);
 
   // Bug: 0de95bf — history list rows omit the diff/spec/output body blobs. The
@@ -2142,9 +2169,7 @@ export function AuthQueueView({
 
   useEffect(() => {
     if (!selectedId || !retainedFinalizedId) return;
-    const sameRequest = selectedId === retainedFinalizedId
-      || retainedFinalizedId.startsWith(selectedId);
-    if (!sameRequest) clearRetainedFinalized();
+    if (selectedId !== retainedFinalizedId) clearRetainedFinalized();
   }, [clearRetainedFinalized, retainedFinalizedId, selectedId]);
 
   const handleSelect = useCallback((id: string) => {
@@ -2165,10 +2190,8 @@ export function AuthQueueView({
   }, [initialRequestId]);
 
   // Bug: bdcc1f5 / review D2 (issue f59b5bd) — scroll the deep-linked row into
-  // view keyed on the CURRENT selection: a short-form deep link only matches a
-  // sidebar row (keyed by full id) after the canonical-id upgrade below, so
-  // this re-arms when the selection upgrades, and each re-run cancels the
-  // stale timer so a superseded selection can never scroll.
+  // view keyed on the current selection; each re-run cancels the stale timer so
+  // a superseded selection can never scroll.
   useEffect(() => {
     if (!selectedId || deepLinkRef.current.selection !== selectedId) return;
     const timer = setTimeout(() => {
@@ -2736,13 +2759,8 @@ export function AuthQueueView({
     return items;
   }, [sidebarItems, authSearch, typeFilter, repoFilter, branchFilter]);
 
-  // Find the selected request from whichever loaded list contains it — exact
-  // id matches ONLY. Review C1 (issue f59b5bd): a short prefix must never be
-  // resolved against the loaded lists, because a second matching request can
-  // exist outside the loaded slice and the loaded lists cannot prove global
-  // uniqueness. Every shortened route id canonicalizes through
-  // GET /api/auth/request/:id below, which resolves unambiguous prefixes and
-  // reports ambiguity honestly as 409.
+  // Find the selected request from whichever loaded list contains it. The
+  // selection is always a full id: an `/auth/<ref>` path resolves to one first.
   const selectedListRequest = useMemo((): AuthRequest | null => {
     if (!selectedId) return null;
     return (
@@ -2752,15 +2770,13 @@ export function AuthQueueView({
     );
   }, [selectedId, queue, historyQueue]);
 
-  // Bug: 2cddba2 — a deep-linked request (`#/auth?request=<id>`) that resolved
-  // outside the loaded history slice matches neither list. Fetch it from the
-  // detail route so the pane can render it; a 404 is cached as 'not_found' so
-  // the pane shows an honest missing-request state instead of the placeholder.
-  // Issue f59b5bd — the detail route also resolves unambiguous short prefixes;
-  // a 409 (ambiguous prefix) is cached as 'ambiguous' and surfaced honestly.
+  // Bug: 2cddba2 — a deep-linked request outside the loaded history slice
+  // matches neither list. Fetch it from the detail route so the pane can render
+  // it; a 404 is cached as 'not_found' so the pane shows an honest
+  // missing-request state instead of the placeholder.
   // Review D1 — any other failure is cached as 'error' and rendered with an
   // explicit retry affordance instead of an eternal "Loading request…".
-  const [fetchedRequests, setFetchedRequests] = useState<Record<string, AuthRequest | 'not_found' | 'ambiguous' | 'error'>>({});
+  const [fetchedRequests, setFetchedRequests] = useState<Record<string, AuthRequest | 'not_found' | 'error'>>({});
   useEffect(() => {
     if (!selectedId || selectedListRequest || fetchedRequests[selectedId]) return;
     const id = selectedId;
@@ -2778,8 +2794,6 @@ export function AuthQueueView({
         if (!active) return;
         if (isApiErrorStatus(error, 404)) {
           setFetchedRequests((prev) => ({ ...prev, [id]: 'not_found' }));
-        } else if (isApiErrorStatus(error, 409)) {
-          setFetchedRequests((prev) => ({ ...prev, [id]: 'ambiguous' }));
         } else {
           setFetchedRequests((prev) => ({ ...prev, [id]: 'error' }));
         }
@@ -2802,31 +2816,12 @@ export function AuthQueueView({
 
   const selectedFetched = selectedId ? fetchedRequests[selectedId] : undefined;
   const selectedNotFound = Boolean(selectedId) && !selectedListRequest && selectedFetched === 'not_found';
-  const selectedAmbiguous = Boolean(selectedId) && !selectedListRequest && selectedFetched === 'ambiguous';
   const selectedFetchFailed = Boolean(selectedId) && !selectedListRequest && selectedFetched === 'error';
   const selectedRequestRaw = useMemo((): AuthRequest | null => {
     const detail = selectedFetched && typeof selectedFetched === 'object' ? selectedFetched : undefined;
     if (selectedListRequest) return retainKnownAuthBody(selectedListRequest, detail);
     return detail ?? null;
   }, [selectedListRequest, selectedFetched]);
-
-  // Issue f59b5bd — once a short-prefix selection resolves to a concrete
-  // record, upgrade the selection to the full id so sidebar highlighting,
-  // action lookups, and caches all key on the canonical id. The deep-link hold
-  // moves with it so sidebar reconciliation cannot steal the selection.
-  useEffect(() => {
-    if (!selectedId || !selectedRequestRaw) return;
-    if (initialRequestId && (deepLinkRef.current.route !== initialRequestId
-      || deepLinkRef.current.selection !== selectedId)) return;
-    const fullId = getAuthId(selectedRequestRaw);
-    if (!fullId || fullId === selectedId || !fullId.startsWith(selectedId)) return;
-    if (deepLinkRef.current.selection === selectedId) deepLinkRef.current.selection = fullId;
-    setFetchedRequests((prev) => (
-      prev[selectedId] && !prev[fullId] ? { ...prev, [fullId]: prev[selectedId] } : prev
-    ));
-    setLocalSelectedId(fullId);
-    onSelectAuth?.(fullId);
-  }, [selectedId, selectedRequestRaw, initialRequestId, onSelectAuth]);
 
   // Bug: 0de95bf — a list row from the history projection carries no body
   // blobs (diff_summary/spec_content/output are undefined, not null). Fetch the
@@ -2920,7 +2915,7 @@ export function AuthQueueView({
   // present in the sidebar (e.g. all items completed/dismissed and queue empties),
   // so the orphaned detail card does not remain visible with an empty sidebar.
   useEffect(() => {
-    if (deepLinkRef.current.selection) return;
+    if (deepLinkRef.current.selection || (entityRef && !initialRequestId)) return;
     if (
       selectedId &&
       filteredSidebarItems.length === 0
@@ -3272,18 +3267,18 @@ export function AuthQueueView({
         className="auth-detail"
         style={{ position: 'relative' }}
       >
-        {!selectedRequest ? (
+        {isUnopenedEntityRoute(routeResolution) && (routeResolution.status !== 'resolving' || !selectedRequest) ? (
+          <EntityRouteState kind="auth" resolution={routeResolution} />
+        ) : !selectedRequest ? (
           <div className="auth-detail__empty">
             <p className="text-muted">
               {selectedId && selectedNotFound
                 ? `Approval request ${selectedId.slice(0, 8)} was not found — it may have been deleted or expired.`
-                : selectedId && selectedAmbiguous
-                  ? `Approval request reference ${selectedId.slice(0, 8)} is ambiguous — it matches multiple requests. Use a longer id.`
-                  : selectedId && selectedFetchFailed
-                    ? `Failed to load approval request ${selectedId.slice(0, 8)} — the daemon may be unavailable.`
-                    : selectedId && !selectedListRequest
-                      ? 'Loading request…'
-                      : 'No requests in this view'}
+                : selectedId && selectedFetchFailed
+                  ? `Failed to load approval request ${selectedId.slice(0, 8)} — the daemon may be unavailable.`
+                  : selectedId && !selectedListRequest
+                    ? 'Loading request…'
+                    : 'No requests in this view'}
             </p>
             {selectedId && selectedFetchFailed ? (
               <button type="button" onClick={retrySelectedFetch}>

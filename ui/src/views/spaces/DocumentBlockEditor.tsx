@@ -1,4 +1,5 @@
 import { Icon } from '../../components/icons/Icon';
+import { parseAppPath } from '../../../../src/app-routes';
 import { useProjectionQuery } from '../../query/useProjectionQuery';
 import { useViewActive } from '../../app-shell';
 import { queryClient } from '../../query/client';
@@ -156,15 +157,10 @@ function wrappedSelection(
   };
 }
 
+/** The artifact ref an `/artifact/<ref>` href names. */
 function refFromHref(href: string): string | null {
-  try {
-    const url = new URL(href, window.location.href);
-    return url.hash.includes('?')
-      ? new URLSearchParams(url.hash.slice(url.hash.indexOf('?') + 1)).get('ref')
-      : url.searchParams.get('ref');
-  } catch {
-    return null;
-  }
+  const path = parseAppPath(new URL(href, window.location.href).pathname);
+  return path.kind === 'entity' && path.entity === 'artifact' ? path.ref : null;
 }
 
 function blockEndPosition(view: EditorView): number {

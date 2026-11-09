@@ -11,13 +11,16 @@ if (new URLSearchParams(window.location.search).has('small')) {
   style.textContent = '.auth-detail__body{flex:none;height:463px}';
   document.head.append(style);
 }
-if (!window.location.hash) {
+if (!window.location.pathname.startsWith('/auth/')) {
   window.localStorage.clear();
   if (diagnostic || canonical) {
     window.localStorage.setItem(`auth-review-tab:${requestId}`, JSON.stringify('diff'));
     window.localStorage.setItem(`auth-review-scroll:${requestId}:diff`, '6758.5');
   }
-  window.history.replaceState({ fixtureState: 'preserved' }, '', `#/auth?request=${canonical ? canonicalId.slice(0, 8) : navigationRequestId}&sidebar=hidden&agent_session=fixture-agent`);
+  const query = new URLSearchParams(window.location.search);
+  query.set('sidebar', 'hidden');
+  query.set('agent_session', 'fixture-agent');
+  window.history.replaceState({ fixtureState: 'preserved' }, '', `/auth/${canonical ? canonicalId.slice(0, 8) : navigationRequestId}?${query}`);
 }
 const root = document.getElementById('root')!;
 const actionLayout = new URLSearchParams(location.search).has('action-layout');
@@ -35,8 +38,8 @@ if (actionLayout) {
   const json = (value: unknown) => new Response(JSON.stringify(value), { headers: { 'Content-Type': 'application/json' } });
   window.fetch = input => {
     const path = String(input);
-    if (path.startsWith('/api/spaces/resolve')) return Promise.resolve(json({ resolved: true,
-      entity: { id: 'abcdef1', short_id: 'abcdef1', project_ref: request.repo, title: issueTitle }, detail: { same_project: true } }));
+    if (path.startsWith('/api/spaces/resolve')) return Promise.resolve(json({ status: 'resolved',
+      entity: { id: 'abcdef1', short_id: 'abcdef1', project_key: request.repo, title: issueTitle }, detail: { same_project: true } }));
     if (path.endsWith('/actions')) return Promise.resolve(json({ actions: request.actions }));
     if (path.startsWith('/api/auth/request/')) return Promise.resolve(json(request));
     return Promise.reject(new Error('Offline layout fixture: ' + path));

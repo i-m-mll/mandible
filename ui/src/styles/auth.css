@@ -946,6 +946,37 @@
   color: var(--accent-yellow);
 }
 
+.auth-acceptance__warnings {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+
+.auth-acceptance__phases {
+  margin-top: 8px;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.auth-acceptance__phases th,
+.auth-acceptance__phases td {
+  padding: 2px 12px 2px 0;
+  text-align: left;
+  font-weight: normal;
+}
+
+.auth-acceptance__phases th {
+  color: var(--text-muted);
+}
+
+.auth-acceptance__phase--failed td {
+  color: var(--accent-red);
+}
+
 .auth-failure__code {
   font-family: var(--font-mono);
   color: var(--text-primary);
@@ -1020,6 +1051,12 @@
 .status-pill--expired {
   background: rgba(245, 194, 92, 0.2);
   color: var(--accent-yellow);
+}
+
+.status-pill--warning {
+  background: var(--status-warning-bg);
+  color: var(--status-warning-fg);
+  border: 1px solid var(--status-warning-border);
 }
 
 .status-pill--merged {

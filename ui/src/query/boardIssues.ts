@@ -87,7 +87,7 @@ export function useBoardIssueFacts(model: SpaceViewModel | null) {
     const byItem: IssueFactsByItemId = {};
     items.forEach((item, index) => {
       const result = byKey.get(hashKey(identities[index]));
-      if (result?.resolved && result.kind === 'issue') byItem[item.id] = issueFactsFromEntity(item.id, result.entity);
+      if (result?.status === 'resolved' && result.kind === 'issue') byItem[item.id] = issueFactsFromEntity(item.id, result.entity);
     });
     return byItem;
   }, [model, verified.join(','), ...results.map((result) => result.data)]);

@@ -574,6 +574,10 @@
   font-size: 12px;
 }
 
+.ledger-comment-card__header:last-child {
+  margin-bottom: 0;
+}
+
 .ledger-comment-card__header span {
   color: var(--text-primary);
   font-weight: 600;

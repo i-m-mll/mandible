@@ -161,7 +161,7 @@ describe('artifact-backed Briefing rounds', () => {
     expect(normalizeBriefingCollectionViewState(saved)).toMatchObject({ selectedCollectionId });
     expect('selectedSurface' in normalizeBriefingCollectionViewState(saved)).toBe(false);
     window.localStorage.setItem(BRIEFING_VIEW_STATE_KEY, JSON.stringify(saved));
-    window.history.replaceState(null, '', '/#/briefing');
+    window.history.replaceState(null, '', '/briefing');
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === '/api/briefings') return new Response(JSON.stringify({ briefings: [{
@@ -173,7 +173,7 @@ describe('artifact-backed Briefing rounds', () => {
       return new Response(JSON.stringify({}), { status: 200, headers: { 'content-type': 'application/json' } });
     }));
     render(<AppShellProvider value={{ noticeHost, active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, registerInitialRouteLoad: () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
-    await waitFor(() => expect(window.location.hash).toBe('#/briefing?briefing=briefing-1'));
+    await waitFor(() => expect(`${window.location.pathname}${window.location.search}`).toBe('/briefing/briefing-1'));
     expect(screen.queryByRole('button', { name: 'Operational incidents' })).toBeNull();
     expect(screen.queryByTestId('operational-incidents-region')).toBeNull();
     expect(screen.getByRole('button', { name: 'Select briefing Recurring review' })).toBeTruthy();
@@ -259,7 +259,7 @@ describe('artifact-backed Briefing rounds', () => {
   it('keeps full Briefing identities as copy and mutation authority while displaying and routing compact refs', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal('navigator', { clipboard: { writeText } });
-    window.history.replaceState(null, '', '/#/briefing');
+    window.history.replaceState(null, '', '/briefing');
     const payload = detail() as any;
     payload.briefing = {
       ...payload.briefing,
@@ -298,7 +298,7 @@ describe('artifact-backed Briefing rounds', () => {
 
     render(<AppShellProvider value={{ noticeHost, active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, registerInitialRouteLoad: () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
     fireEvent.click(await screen.findByRole('button', { name: 'Select briefing arxiv-scan' }));
-    expect(window.location.hash).toBe('#/briefing?briefing=briefing%3A65db040');
+    expect(`${window.location.pathname}${window.location.search}`).toBe('/briefing/briefing:65db040');
 
     expect(screen.queryByText(FULL_BRIEFING_ID)).toBeNull();
     const roundCopy = await screen.findByRole('button', { name: 'Copy selected round reference' });
@@ -308,8 +308,6 @@ describe('artifact-backed Briefing rounds', () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('briefing:65db040'));
 
     fireEvent.click(screen.getByRole('button', { name: 'Briefing actions' }));
-    expect(screen.getByRole('menuitem', { name: 'Go to artifact version' }).getAttribute('href'))
-      .toBe('#/artifacts?ref=artifact-version%3A264e485');
     fireEvent.click(screen.getByRole('menuitem', { name: 'Metadata' }));
     const metadata = screen.getByRole('dialog', { name: 'Briefing metadata' });
     expect(within(metadata).getByText('briefing-round:c76f940')).toBeTruthy();

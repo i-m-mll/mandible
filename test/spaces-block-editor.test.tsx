@@ -179,7 +179,7 @@ function makeBackend(initial: SpaceBlock[], exports: SpaceExport[] = [], items: 
       return json({ detached });
     }
     if (url.includes('/api/spaces/resolve')) {
-      return json({ resolution: { ref: 'x', kind: 'artifact', resolved: false, entity: null } });
+      return json({ resolution: { ref: 'x', kind: 'artifact', status: 'not_found', entity: null } });
     }
     if (issueDetail && method === 'GET') {
       return json(makeIssueDetail(issueDetail[1]));

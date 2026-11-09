@@ -119,7 +119,7 @@ function stubFetch(opts: {
       });
     }
     if (url.includes('/api/spaces/resolve') || url.includes('/api/refs/resolve')) {
-      return new Response(JSON.stringify({ resolution: { ref: 'x', kind: 'issue', resolved: false, entity: null } }), {
+      return new Response(JSON.stringify({ resolution: { ref: 'x', kind: 'issue', status: 'not_found', entity: null } }), {
         headers: { 'content-type': 'application/json' },
       });
     }

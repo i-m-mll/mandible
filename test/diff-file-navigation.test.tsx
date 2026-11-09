@@ -2,8 +2,10 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from './helpers/dom';
 import { DiffView, parseUnifiedDiffSections } from '../ui/src/components/DiffView';
-import { authReviewHash } from '../ui/src/views/auth-review-navigation';
-import { parseRouteFromHash } from '../ui/src/routing';
+import { authReviewHref } from '../ui/src/views/auth-review-navigation';
+import { routeFromUrl } from '../ui/src/routing';
+
+const routeOf = (href: string) => routeFromUrl(new URL(href, window.location.origin));
 
 afterEach(cleanup);
 
@@ -33,13 +35,14 @@ it('round-trips exact identities and routing context for every Git file shape', 
     ['café\tname', 'café\tname'], ['mode only', 'mode only'], ['dir b/name', 'dir b/name'],
   ];
   expect(sections.map(section => [section.oldPath, section.newPath])).toEqual(expected);
+  window.history.replaceState(null, '', '/auth?sidebar=hidden&agent_session=abc&filter=mine');
   sections.forEach((section, index) => {
-    const hash = authReviewHash('#/auth?sidebar=hidden&agent_session=abc&filter=mine', 'request-1', 'diff', section);
-    const route = parseRouteFromHash(hash);
-    expect(route.params).toMatchObject({ request: 'request-1', view: 'diff', sidebar: 'hidden', agent_session: 'abc', filter: 'mine' });
+    const route = routeOf(authReviewHref('request-1', 'diff', section));
+    expect(route).toMatchObject({ entity: { kind: 'auth', ref: 'request-1' }, params: { view: 'diff', sidebar: 'hidden', agent_session: 'abc', filter: 'mine' } });
     expect([route.params.diff_old ?? null, route.params.diff_new ?? null]).toEqual(expected[index]);
   });
-  const manual = parseRouteFromHash(authReviewHash('#/auth?diff_old=old&diff_new=new&sidebar=hidden', 'request-2', 'console'));
+  window.history.replaceState(null, '', '/auth/request-1?diff_old=old&diff_new=new&sidebar=hidden');
+  const manual = routeOf(authReviewHref('request-2', 'console'));
   expect(manual.params.diff_old).toBeUndefined();
   expect(manual.params.diff_new).toBeUndefined();
 });

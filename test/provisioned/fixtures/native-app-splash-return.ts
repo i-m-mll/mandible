@@ -1,4 +1,4 @@
-export function appendNativeSplashReturnLink(canonical = new URL('/' + (location.hash || '#/overview'), location.href)): HTMLAnchorElement {
+export function appendNativeSplashReturnLink(canonical = new URL('/overview', location.href)): HTMLAnchorElement {
   const restore = document.createElement('a');
   restore.href = canonical.href; restore.textContent = 'Return to Mandible';
   restore.addEventListener('click', event => {

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef } from 'preact/hooks';
 
 import { parseCommentRefTarget, parseIssueRefTarget } from '../../../../src/ledger/authored-references';
 import { renderMarkdown } from '../../lib/markdown';
-import { linkifyResourceRefs, attachResourceRefResolution } from '../../resource-refs';
+import { attachResourceRefResolution, issueRouteHref, linkifyResourceRefs } from '../../resource-refs';
 
 export type LedgerRenderedBodyContext = {
   id: string;
@@ -127,7 +127,7 @@ function refLink(match: RegExpExecArray, detail: LedgerRenderedBodyContext): HTM
     const anchor = document.createElement('a');
     anchor.className = 'ledger-xref';
     anchor.textContent = `#${ordinalCommentRef}`;
-    anchor.href = issueHref(currentProjectRef(detail), detail.display_id, ordinalCommentRef);
+    anchor.href = issueRouteHref(detail.display_id, currentProjectRef(detail), ordinalCommentRef);
     anchor.title = `Open comment #${ordinalCommentRef}`;
     return anchor;
   }
@@ -140,7 +140,7 @@ function refLink(match: RegExpExecArray, detail: LedgerRenderedBodyContext): HTM
     const parsed = parseCommentRef(ref, detail);
     if (!parsed) return null;
     anchor.textContent = commentRefLabel(parsed, detail);
-    anchor.href = issueHref(parsed.repo, parsed.issue, parsed.comment);
+    anchor.href = issueRouteHref(parsed.issue, parsed.repo, parsed.comment);
     anchor.title = `Open comment ${parsed.comment}`;
     return anchor;
   }
@@ -149,13 +149,13 @@ function refLink(match: RegExpExecArray, detail: LedgerRenderedBodyContext): HTM
   if (!parsedIssue) return null;
   if (parsedIssue.ordinal === undefined) {
     anchor.textContent = issueRefLabel(parsedIssue, detail);
-    anchor.href = issueHref(parsedIssue.repo, parsedIssue.issue);
+    anchor.href = issueRouteHref(parsedIssue.issue, parsedIssue.repo);
     anchor.title = `Open issue ${parsedIssue.issue}`;
     return anchor;
   }
   const comment = String(parsedIssue.ordinal);
   anchor.textContent = commentRefLabel({ ...parsedIssue, comment }, detail);
-  anchor.href = issueHref(parsedIssue.repo, parsedIssue.issue, comment);
+  anchor.href = issueRouteHref(parsedIssue.issue, parsedIssue.repo, comment);
   anchor.title = parsedIssue.ordinal === 0
     ? `Open the description of issue ${parsedIssue.issue}`
     : `Open comment #${comment} on issue ${parsedIssue.issue}`;
@@ -179,7 +179,7 @@ function parseIssueRef(
   ref: string,
   detail: LedgerRenderedBodyContext,
 ): { repo: string; issue: string; ordinal?: number } | null {
-  const target = parseIssueRefTarget(ref.replace(/^#/, ''));
+  const target = parseIssueRefTarget(ref.startsWith('#') ? ref.slice(1) : ref);
   if (!target) return null;
   return {
     repo: target.project ?? currentProjectRef(detail),
@@ -209,8 +209,4 @@ function currentProjectRef(detail: LedgerRenderedBodyContext): string {
   );
 }
 
-function issueHref(repo: string, issue: string, comment?: string): string {
-  const params = new URLSearchParams({ repo, issue });
-  if (comment) params.set('comment', comment);
-  return `#/issues?${params.toString()}`;
-}
+

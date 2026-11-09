@@ -127,7 +127,7 @@ describe('message action cards', () => {
 
 
 it('opens explicit chat references directly and retains group disclosure and native link actions', () => {
-  window.history.replaceState(null, '', '#/console?conversation=old&block=old-block&turn=old-turn&position=9&position_space=old-space&sidebar=hidden&agent_session=reader&preview=copy');
+  window.history.replaceState(null, '', '/console?conversation=old&block=old-block&turn=old-turn&position=9&position_space=old-space&sidebar=hidden&agent_session=reader&preview=copy');
   const directive = (identity: 'threadId' | 'clientThreadId', id: string): DisplayActivityItem => ({
     type: 'provider-directive', directive: { kind: 'created-thread', identity, providerSessionId: id }, sessionId: 'source',
   });
@@ -140,7 +140,7 @@ it('opens explicit chat references directly and retains group disclosure and nat
   expect(links).toHaveLength(1);
   for (const link of links) {
     const route = new URL(link.getAttribute('href')!, 'https://example.test/');
-    const params = new URLSearchParams(route.hash.split('?')[1]);
+    const params = route.searchParams;
     expect(params.get('session')).toBe('server-child');
     for (const stale of ['conversation', 'block', 'turn', 'position', 'position_space']) expect(params.has(stale)).toBe(false);
     expect(params.get('sidebar')).toBe('hidden');

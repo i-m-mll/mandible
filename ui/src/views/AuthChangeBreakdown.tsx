@@ -1,6 +1,6 @@
 import { createContext, type ComponentChildren } from 'preact';
 import { useContext } from 'preact/hooks';
-import { authReviewHash } from './auth-review-navigation';
+import { authReviewHref } from './auth-review-navigation';
 import type { DiffFileIdentity } from '../components/diff-file-identity';
 import { useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 
@@ -206,7 +206,7 @@ function ChangeFileRow({ file, totalLines }: { file: AuthChangeFile; totalLines:
   const description = [fullPath(file), ...metadata].join(' · ');
   return (
     <li>
-      <a className="auth-change-file" href={authReviewHash(window.location.hash, navigation.requestId, 'diff', identity)}
+      <a className="auth-change-file" href={authReviewHref(navigation.requestId, 'diff', identity)}
         onClick={event => {
           if (!navigation.activate || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
           event.preventDefault();

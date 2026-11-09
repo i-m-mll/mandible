@@ -805,16 +805,16 @@ These are umbrella-wide ACs; each child's own AC list cites the ones that apply.
     board (C8, C9a, C14b, C17 register into it).
   **This child does NOT change the default route** and does NOT demote the graph —
   that is C18 (late).
-- **Owned surfaces:** `ui/src/routing.ts` (union `:2` + allow-array `:52` — the
-  `'spaces'` ADDITIONS only, not the `'graph'` defaults); `ui/src/app.tsx`
+- **Owned surfaces:** `src/app-routes.ts` (the `'spaces'` entry in `VIEW_TABS`
+  only, not the startup destination); `ui/src/app.tsx`
   (`primaryNavItems` Spaces ADD at `:990`, `VIEW_SIDEBAR_TABS` Spaces ADD at
   `:160-168`, content-class Spaces ADD at `:1285`, the new `route.tab === 'spaces'`
   render branch near `:1375-1391` — **disjoint ADD regions, co-owned with C18 via
   §5 region split**); new `ui/src/views/spaces/SpacesViewShell.tsx` (+ `*.css`);
   routing/nav/shell tests.
 - **Acceptance criteria:**
-  - `'spaces'` is a valid `Route['tab']`; both the union (`:2`) and the runtime
-    allow-array (`:52`) include it; a routing test asserts `#/spaces` parses.
+  - `'spaces'` is a `VIEW_TABS` entry in `src/app-routes.ts`; a routing test
+    asserts `/spaces` parses as the Spaces view.
   - A top-level `Spaces` nav item is present in `primaryNavItems` and routes to a
     **rendering `SpacesViewShell`** (the `route.tab === 'spaces'` branch renders it).
   - The shell exposes mount points consumed by the renderer children; a smoke test
@@ -1340,26 +1340,21 @@ These are umbrella-wide ACs; each child's own AC list cites the ones that apply.
 - **Scope:** The **late** nav work: demote the global auto-graph from an always-on
   primary tab to an on-demand drill-down, keeping its debugging perspectives intact
   (`src/routes/graph.ts:31-73`), and **change the default route away from `graph`**
-  to Spaces — **only after Spaces is useful** (collection + canvas landed). Per the
-  codex correction, the default-`graph` fallbacks are spread across several
-  `routing.ts` sites, not a single `:35`:
-  - `hashWithSidebarParam` default `'#/graph'` / `'/graph'` (`ui/src/routing.ts:14`
-    and `:23`);
-  - `parseRouteFromHash` default `'#/graph'` (`:35`), `path ... || 'graph'` (`:37`),
-    and the final `: 'graph'` fallback after the allow-array (`:54`).
-  - Demote Graph in `primaryNavItems` (`ui/src/app.tsx:990-1044`).
-  The nav item + route union already exist (C10); this child flips **all** the
-  default fallbacks and demotes the Graph nav item.
-- **Owned surfaces:** `ui/src/routing.ts` (the default-`graph` fallbacks at `:14`,
-  `:23`, `:35`, `:37`, `:54` — flipped to the Spaces default; **disjoint from C10's
-  `'spaces'` union/allow-array ADDs**); `ui/src/app.tsx` (demote the Graph
+  to Spaces — **only after Spaces is useful** (collection + canvas landed). The
+  startup path `/` opens the rail's first tab (`startupRailDestination` in
+  `ui/src/app.tsx`); a path outside the route table renders the not-found view,
+  so there is no per-path default to flip.
+  - Demote Graph in `primaryNavItems` (`ui/src/app.tsx`).
+  The nav item and `VIEW_TABS` entry already exist (C10); this child changes the
+  startup destination and demotes the Graph nav item.
+- **Owned surfaces:** `ui/src/app.tsx` (`startupRailDestination`, the startup
+  destination; **disjoint from C10's `VIEW_TABS` ADD**); `ui/src/app.tsx` (demote the Graph
   `primaryNavItems` entry at `:990-1044` — **disjoint from C10's Spaces nav ADD**);
   graph entry-point demotion in `ui/src/views/graph.tsx` (nav/positioning only —
   **sequences after C7c**, which adds the graph "Add to Space" action); routing tests.
 - **Acceptance criteria:**
   - Default route changes to Spaces **only after** collection + canvas exist
-    (sequenced last among UI lanes); all of `routing.ts:14/23/35/37/54` reflect the
-    new default; a routing test asserts empty/unknown hash → Spaces.
+    (sequenced last among UI lanes); a test asserts that `/` opens Spaces.
   - Graph demoted to on-demand drill-down in `primaryNavItems`; debugging
     perspectives preserved.
   - The default-route flip is a final, separable commit so it can be held back if

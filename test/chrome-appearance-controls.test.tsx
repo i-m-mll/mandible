@@ -94,7 +94,7 @@ describe('preview chrome appearance controls', () => {
     stubChromeSettingsFetch();
     stubEventSource();
     window.__MANDIBLE_BOOTSTRAP__ = { instance: previewInstance };
-    window.history.replaceState(null, '', '#/settings');
+    window.history.replaceState(null, '', '/settings');
     let regular = true;
     let refresh!: () => void;
     vi.spyOn(api, 'getNativeWindowCapabilities').mockImplementation(async () => ({ framePresentation: 'macos-overlay', liquidGlassRegular: regular, topBarHeight: 42, trafficLightReservation: 88 }));
@@ -206,7 +206,7 @@ describe('preview chrome appearance controls', () => {
     stubChromeSettingsFetch();
     const events = stubEventSource();
     window.__MANDIBLE_BOOTSTRAP__ = { instance: previewInstance };
-    window.history.replaceState(null, '', '#/settings');
+    window.history.replaceState(null, '', '/settings');
     const { container } = render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'Preview appearance' }));
     const select = await screen.findByLabelText('Preview theme');
@@ -228,7 +228,7 @@ describe('preview chrome appearance controls', () => {
     stubChromeSettingsFetch();
     stubEventSource();
     window.__MANDIBLE_BOOTSTRAP__ = { instance: mainInstance };
-    window.history.replaceState(null, '', '#/settings');
+    window.history.replaceState(null, '', '/settings');
     const { container } = render(<App />);
     await screen.findByRole('heading', { name: 'Appearance' });
     expect(screen.queryByRole('button', { name: 'Preview appearance' })).toBeNull();

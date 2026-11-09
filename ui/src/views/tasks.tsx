@@ -62,7 +62,7 @@ import { formatAbsoluteTime, formatRelativeTime } from '../lib/format';
 import { readPersistedViewState, usePersistedViewState } from '../hooks/usePersistedViewState';
 import { useLiveLoad } from '../app-shell';
 import { refreshAbandoned } from '../lib/coalesced-refresh';
-import { parseRouteFromHash, replaceRouteHash, routeHashWithParams } from '../routing';
+import { currentRoute, replaceRoute, routeWithParams } from '../routing';
 
 const TASKS_SELECTION_STATE_KEY = 'mandible.tasks.selection:v1';
 
@@ -1332,8 +1332,8 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
               ariaCurrent={selected?.key === item.key ? 'true' : undefined}
               onSelect={() => {
                 setSelectedKey(item.key);
-                if (parseRouteFromHash(window.location.hash).tab === 'tasks') {
-                  replaceRouteHash(routeHashWithParams(window.location.hash, 'tasks', { task: item.key }));
+                if (currentRoute().tab === 'tasks') {
+                  replaceRoute(routeWithParams({ kind: 'view', tab: 'tasks' }, { task: item.key }));
                 }
               }}
               badges={item.source_kind === 'mandible' ? (

@@ -22,7 +22,7 @@ import {
 } from "./briefing-directives.js";
 import { resolveGroupDisplayComparisonBase } from "./briefing-groups.js";
 import { canonicalJson } from "../canonical-json.js";
-import { resolveId, shortRef } from "../entity-refs.js";
+import { resolveId, shortRef, type RefResolution } from "../entity-refs.js";
 import { isEvidenceMethod, type EvidenceMethod } from "../users/types.js";
 
 export const BRIEFING_RUN_SCHEMA = "mandible-briefing-run@1" as const;
@@ -885,10 +885,15 @@ export type BriefingViewer = { userId: string; operator: boolean };
  * can return. A leading `briefing:` is the typed-ref prefix; legacy rows also
  * store it in their id, and the shared resolver matches both spellings.
  */
-export function resolveBriefingId(db: Db, briefingRef: string, viewer: BriefingViewer): string {
+/** Resolve a Briefing ref the viewer may read; an ambiguity names its matches. */
+export function lookupBriefingId(db: Db, briefingRef: string, viewer: BriefingViewer, options: { allMatches?: boolean } = {}): RefResolution {
   const key = bareBriefingId(briefingRef.trim());
   if (!key) throw new BriefingStoreError("Briefing reference must be nonblank");
-  const resolved = resolveId(db, "briefing", key, viewer.operator ? {} : { reader: viewer.userId });
+  return resolveId(db, "briefing", key, { ...(viewer.operator ? {} : { reader: viewer.userId }), ...options });
+}
+
+export function resolveBriefingId(db: Db, briefingRef: string, viewer: BriefingViewer): string {
+  const resolved = lookupBriefingId(db, briefingRef, viewer);
   if (!resolved.ok) {
     throw resolved.error === "ambiguous"
       ? new BriefingStoreError("Briefing reference is ambiguous", 409, "ambiguous_ref")

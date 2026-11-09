@@ -79,11 +79,11 @@ it('shows ambiguity for the current explicit target and preserves context on a d
   vi.mocked(getSessionOverview).mockImplementation(async (ref) => ref === 'amb'
     ? { status: 'ambiguous', as_of: 1, truncated: false, candidates: [overview('candidate').session] }
     : overview(ref));
-  window.history.replaceState(null, '', '#/overview?session=amb&sidebar=hidden&agent_session=bound&sentinel=a%26b%2Bc');
+  window.history.replaceState(null, '', '/overview?session=amb&sidebar=hidden&agent_session=bound&sentinel=a%26b%2Bc');
   render(<SessionOverviewView initialSessionId="amb" agentBinding="bound" />);
   fireEvent.click(await screen.findByRole('button', { name: /candidate/ }));
   await screen.findByText('Session candidate');
-  const params = new URLSearchParams(window.location.hash.split('?')[1]);
+  const params = new URLSearchParams(window.location.search);
   expect(params.get('session')).toBe('candidate');
   expect(params.get('sidebar')).toBe('hidden');
   expect(params.get('agent_session')).toBe('bound');

@@ -17,13 +17,13 @@ describe('app shell', () => {
     installMemoryLocalStorage();
     stubRailSettingsFetch();
     stubEventSource();
-    window.history.replaceState(null, '', '#/spaces');
+    window.history.replaceState(null, '', '/spaces');
     render(h(App, {}));
     const settings = await screen.findByRole('link', { name: 'Settings' });
     settings.focus();
     fireEvent.click(settings);
     await waitFor(() => expect(settings.getAttribute('aria-current')).toBe('page'));
-    expect(window.location.hash).toContain('/settings');
+    expect(window.location.pathname).toBe('/settings');
     expect(document.activeElement).toBe(settings);
   });
 
@@ -39,7 +39,7 @@ describe('app shell', () => {
     });
     const settings = stubRailSettingsFetch(firstOrder);
     const events = stubEventSource();
-    window.history.replaceState(null, '', '#/spaces');
+    window.history.replaceState(null, '', '/spaces');
 
     const { container } = render(h(App, {}));
     await waitFor(() => expect(railGroupLinks(container, 'primary')[0]?.dataset.railItem).toBe('issues'));
@@ -76,7 +76,7 @@ describe('app shell', () => {
       }
       return fetchDefault(input, init);
     }));
-    const events = stubEventSource(); window.history.replaceState(null, '', '#/spaces');
+    const events = stubEventSource(); window.history.replaceState(null, '', '/spaces');
     const shells = [render(h(App, {})).container, render(h(App, {})).container];
     const widths = () => shells.map(shell => shell.querySelector<HTMLElement>('.app-shell')!.style.getPropertyValue('--chat-stream-max-width'));
     await waitFor(() => expect(reads).toBe(2));
@@ -104,7 +104,7 @@ describe('app shell', () => {
     });
     const settings = stubRailSettingsFetch(firstOrder);
     const events = stubEventSource();
-    window.history.replaceState(null, '', '#/spaces');
+    window.history.replaceState(null, '', '/spaces');
     const shells = [render(h(App, {})).container, render(h(App, {})).container];
 
     await waitFor(() => {
@@ -139,7 +139,7 @@ describe('app shell', () => {
     });
     const settings = stubRailSettingsFetch(firstOrder);
     stubEventSource();
-    window.history.replaceState(null, '', '#/spaces');
+    window.history.replaceState(null, '', '/spaces');
     const { container } = render(h(App, {}));
 
     await waitFor(() => expect(railGroupLinks(container, 'primary')[0]?.dataset.railItem).toBe('issues'));
@@ -200,7 +200,7 @@ describe('app shell', () => {
       }));
     }));
     const events = stubEventSource();
-    window.history.replaceState(null, '', '#/spaces');
+    window.history.replaceState(null, '', '/spaces');
     const { container } = render(h(App, {}));
     await railReorderReady();
 
@@ -284,7 +284,7 @@ describe('app shell', () => {
       return Promise.resolve(new Response(JSON.stringify([])));
     }));
     stubEventSource();
-    window.history.replaceState(null, '', '#/spaces');
+    window.history.replaceState(null, '', '/spaces');
     render(h(App, {}));
 
     expect(screen.queryByRole('button', { name: 'Reorder navigation' })).toBeNull();
@@ -318,7 +318,7 @@ describe('app shell', () => {
     )));
     vi.stubGlobal('fetch', fetchMock);
     stubEventSource();
-    window.history.replaceState(null, '', '#/spaces');
+    window.history.replaceState(null, '', '/spaces');
     render(h(App, {}));
 
     const spaces = await screen.findByRole('link', { name: 'Spaces' });
@@ -358,7 +358,7 @@ describe('app shell', () => {
       }));
     }));
     stubEventSource();
-    window.history.replaceState(null, '', '#/spaces');
+    window.history.replaceState(null, '', '/spaces');
     const { container } = render(h(App, {}));
 
     await waitFor(() => expect(railGroupLinks(container, 'primary')[0]?.dataset.railItem).toBe('console'));
@@ -381,7 +381,7 @@ describe('app shell', () => {
     };
     const settings = stubRailSettingsFetch();
     stubEventSource();
-    window.history.replaceState(null, '', '#/spaces');
+    window.history.replaceState(null, '', '/spaces');
     const mounted = render(h(App, {}));
     await railReorderReady();
     const primary = railGroupLinks(mounted.container, 'primary');
@@ -417,12 +417,12 @@ describe('app shell', () => {
       .map((link) => link.dataset.railItem)).toEqual(['work', 'auth', 'console']));
 
     fireEvent.click(screen.getByRole('link', { name: 'Approvals' }));
-    await waitFor(() => expect(window.location.hash).toBe('#/auth'));
+    await waitFor(() => expect(window.location.pathname).toBe('/auth'));
     expect(railGroupLinks(mounted.container, 'primary').slice(0, 3)
       .map((link) => link.dataset.railItem)).toEqual(['work', 'auth', 'console']);
 
     mounted.unmount();
-    window.history.replaceState(null, '', '#/spaces');
+    window.history.replaceState(null, '', '/spaces');
     const remounted = render(h(App, {}));
     await waitFor(() => expect(railGroupLinks(remounted.container, 'primary').slice(0, 3)
       .map((link) => link.dataset.railItem)).toEqual(['work', 'auth', 'console']));
@@ -448,7 +448,7 @@ describe('app shell', () => {
     });
     const settings = stubRailSettingsFetch(serverOrder);
     stubEventSource();
-    window.history.replaceState(null, '', '#/spaces');
+    window.history.replaceState(null, '', '/spaces');
     const { container } = render(h(App, {}));
 
     await waitFor(() => expect(railGroupLinks(container, 'primary')[0]?.dataset.railItem).toBe('console'));
@@ -462,7 +462,7 @@ describe('app shell', () => {
     installMemoryLocalStorage();
     const settings = stubRailSettingsFetch(undefined, true);
     stubEventSource();
-    window.history.replaceState(null, '', '#/spaces');
+    window.history.replaceState(null, '', '/spaces');
     const { container } = render(h(App, {}));
     await railReorderReady();
     const original = railGroupLinks(container, 'secondary').map((link) => link.dataset.railItem);
@@ -486,7 +486,7 @@ describe('app shell', () => {
     window.history.replaceState(
       null,
       '',
-      '#/issues?repo=mandible&issue=4c26383&sidebar=hidden',
+      '/issue/mandible/4c26383?sidebar=hidden',
     );
     const fetchCalls: string[] = [];
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
@@ -494,6 +494,11 @@ describe('app shell', () => {
       fetchCalls.push(url);
       if (url === '/api/issues') {
         return new Promise<Response>(() => undefined);
+      }
+      if (url.startsWith('/api/refs/resolve?')) {
+        return Promise.resolve(Response.json({ resolution: {
+          kind: 'issue', ref: 'mandible/4c26383', status: 'resolved', entity: { project_key: 'mandible', short_id: '4c26383' },
+        } }));
       }
       if (
         url === '/api/issues/mandible/4c26383/ledger-detail?stage=initial' ||
@@ -578,7 +583,7 @@ describe('app shell', () => {
         }),
       );
     }));
-    window.history.replaceState(null, '', '#/graph');
+    window.history.replaceState(null, '', '/graph');
 
     render(h(App, {}));
 

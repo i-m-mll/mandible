@@ -22,6 +22,7 @@ import type { EventLoopLagSnapshot } from "./daemon-event-loop.js";
 import { OperatorNotConfiguredError } from "./identity/resolver.js";
 import { ClientAuthzError } from "./client-auth/authz.js";
 import { requestOriginForRequest, withRequestOrigin } from "./request-origin.js";
+import { ENTITY_TAB, parseAppPath } from "./app-routes.js";
 
 const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
@@ -268,9 +269,9 @@ interface RouteMatch {
 
 function compileRoute(pattern: string): { regex: RegExp; paramNames: string[] } {
   const paramNames: string[] = [];
-  const regexStr = pattern.replace(/:([^/]+)/g, (_match, name: string) => {
-    paramNames.push(name);
-    return "([^/]+)";
+  const regexStr = pattern.replace(/:([^/]+)|\*([^/]+)$/g, (_match, name: string | undefined, rest: string | undefined) => {
+    paramNames.push(name ?? rest!);
+    return name ? "([^/]+)" : "(.+)";
   });
   return { regex: new RegExp(`^${regexStr}$`), paramNames };
 }
@@ -1048,7 +1049,7 @@ export function createServer(options: ServerOptions, transport: "http" | "local-
     });
 
     const boundary = transport === "http"
-      ? validateDaemonWriteBoundary(req, method, pathname, isApi, instance)
+      ? validateDaemonWriteBoundary(req, method, isApi, instance)
       : { ok: true } as const;
     if (!boundary.ok) {
       logger("warn", "request_forbidden", { method, pathname, reason: boundary.reason });
@@ -1283,11 +1284,11 @@ async function handleStaticRequest(
   instance: InstanceInfo,
   distDir: string,
 ): Promise<boolean> {
-  const filePath = resolveStaticPath(pathname, distDir);
-  if (!filePath) {
+  const target = resolveStaticPath(pathname, distDir);
+  if (!target) {
     return false;
   }
-  return sendFile(req, res, filePath, method, instance, distDir);
+  return sendFile(req, res, target, method, instance, distDir);
 }
 
 const PWA_FILES = new Set([
@@ -1299,21 +1300,23 @@ const PWA_FILES = new Set([
   "/icon-512.png",
 ]);
 
-function resolveStaticPath(pathname: string, distDir: string): string | null {
-  if (pathname === "/") {
-    return UI_INDEX_PATH;
-  }
+type StaticTarget = { kind: "shell"; status: 200 | 404 } | { kind: "file"; path: string };
+
+/** Every page path serves the app shell; paths outside the route table carry 404. */
+function resolveStaticPath(pathname: string, distDir: string): StaticTarget | null {
   if (PWA_FILES.has(pathname)) {
-    return resolveSafePath(UI_DIR, pathname.slice(1));
+    const file = resolveSafePath(UI_DIR, pathname.slice(1));
+    return file ? { kind: "file", path: file } : null;
   }
-  if (pathname.startsWith("/dist/")) {
+  if (pathname === "/dist" || pathname.startsWith("/dist/")) {
     const requestPath = pathname.slice("/dist/".length);
-    if (!requestPath) {
-      return null;
-    }
-    return resolveSafePath(distDir, requestPath);
+    const file = requestPath ? resolveSafePath(distDir, requestPath) : null;
+    return file ? { kind: "file", path: file } : null;
   }
-  return null;
+  if (pathname === "/r" || pathname.startsWith("/r/")) {
+    return null;
+  }
+  return { kind: "shell", status: parseAppPath(pathname).kind === "not_found" ? 404 : 200 };
 }
 
 function resolveSafePath(baseDir: string, requestPath: string): string | null {
@@ -1335,21 +1338,22 @@ function resolveSafePath(baseDir: string, requestPath: string): string | null {
 async function sendFile(
   req: http.IncomingMessage,
   res: http.ServerResponse,
-  filePath: string,
+  target: StaticTarget,
   method: string,
   instance: InstanceInfo,
   distDir: string,
 ): Promise<boolean> {
+  const filePath = target.kind === "shell" ? UI_INDEX_PATH : target.path;
   try {
     const stat = await fs.promises.stat(filePath);
     if (!stat.isFile()) {
       return false;
     }
-    if (filePath === UI_INDEX_PATH) {
+    if (target.kind === "shell") {
       const raw = await fs.promises.readFile(filePath, "utf8");
       const manifest = await readUiAssetManifest(distDir);
       const body = injectBootstrapData(injectAssetPreloads(raw, manifest), instance);
-      res.writeHead(200, {
+      res.writeHead(target.status, {
         "Content-Type": getContentType(filePath),
         "Content-Length": Buffer.byteLength(body),
         "Cache-Control": "no-cache",
@@ -1436,7 +1440,8 @@ function injectAssetPreloads(html: string, manifest: UiAssetManifest | null): st
     ">": "\\u003e",
     "&": "\\u0026",
   })[char] ?? char);
-  const routePreload = `    <script>(function(){var r=${routeJson},p=(location.hash||\"#/spaces\").replace(/^#\\/?/,\"\").split(\"?\")[0]||\"spaces\";if([\"conversations\",\"chats\",\"chat-history\",\"sessions\"].includes(p))p=\"console\";if(p===\"review\")p=\"work\";if(p===\"presets\")p=\"artifacts\";var h=r[p]||r.spaces;if(h){var l=document.createElement(\"link\");l.rel=\"modulepreload\";l.href=h;document.head.appendChild(l)}})();</script>`;
+  const entityTabJson = JSON.stringify(ENTITY_TAB);
+  const routePreload = `    <script>(function(){var r=${routeJson},p=location.pathname.split("/")[1]||"spaces",t=${entityTabJson}[p]||p,h=r[t]||r.spaces;if(h){var l=document.createElement("link");l.rel="modulepreload";l.href=h;document.head.appendChild(l)}})();</script>`;
   const injected = [entryLinks, routePreload].filter(Boolean).join("\n");
   return html.replace(/\s*<\/head>/, `\n${injected}\n  </head>`);
 }
@@ -1470,7 +1475,7 @@ function injectBootstrapData(html: string, instance: InstanceInfo): string {
   if (UI_BOOTSTRAP_SCRIPT_RE.test(html)) {
     return html.replace(UI_BOOTSTRAP_SCRIPT_RE, script);
   }
-  return html.replace(/<script\s+type="module"\s+src="\.\/dist\/app\.js"><\/script>/, `${script}\n    $&`);
+  return html.replace(/<script\s+type="module"\s+src="\/dist\/app\.js"><\/script>/, `${script}\n    $&`);
 }
 
 function getContentType(filePath: string): string {
@@ -1494,7 +1499,6 @@ type WriteBoundaryResult = { ok: true } | { ok: false; reason: string };
 function validateDaemonWriteBoundary(
   req: http.IncomingMessage,
   method: string,
-  pathname: string,
   isApi: boolean,
   instance: InstanceInfo,
 ): WriteBoundaryResult {
@@ -1504,7 +1508,7 @@ function validateDaemonWriteBoundary(
   }
   return validateDaemonBrowserBoundary(
     req, instance, isApi && UNSAFE_METHODS.has(normalizedMethod),
-    normalizedMethod === "GET" && pathname === "/",
+    normalizedMethod === "GET" && !isApi,
   );
 }
 

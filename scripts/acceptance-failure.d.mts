@@ -8,6 +8,7 @@ export interface AcceptanceFailureDescription {
   values?: Record<string, unknown>;
 }
 export function sentence(text: string): string;
+export function stageActivity(stage: AcceptanceStage): string;
 export class AcceptanceFailure extends Error {
   constructor(fault: AcceptanceFault, message: string, values?: Record<string, unknown>);
   readonly acceptanceFault: AcceptanceFault;

@@ -22,6 +22,8 @@ export type RefResolution =
 /** A bound resolver for one route input, given the authenticated caller. */
 export type RefResolver = (ref: string, caller: ResolvedClientIdentity | null) => RefResolution;
 
+export type RefLookupOptions = { scope?: string; reader?: string; allMatches?: boolean };
+
 const NOT_FOUND = { ok: false, error: "not_found" } as const;
 const MIN_PREFIX_LENGTH = 4;
 const MATCH_SAMPLE = 5;
@@ -120,10 +122,10 @@ type RowFilter = readonly [predicate: string, param: string];
 type Needle = readonly [key: string, low: string, high: string | null];
 
 /**
- * The ids each needle names in one source, at most `MATCH_SAMPLE` per needle
- * in value order, from one statement for every needle.
+ * The ids each needle names in one source, at most `limit` per needle in value
+ * order (every one when `limit` is null), from one statement for every needle.
  */
-function sourceMatches(db: Db, source: IdSource, needles: readonly Needle[], filters: readonly RowFilter[], into: Map<string, Set<string>>): void {
+function sourceMatches(db: Db, source: IdSource, needles: readonly Needle[], filters: readonly RowFilter[], limit: number | null, into: Map<string, Set<string>>): void {
   if (needles.length === 0) return;
   const exact = needles[0][2] === null;
   const match = exact
@@ -139,7 +141,7 @@ function sourceMatches(db: Db, source: IdSource, needles: readonly Needle[], fil
          SELECT DISTINCT n.mandible_ref_key, ${source.yields ?? source.column} AS value
            FROM n JOIN ${source.table} ON ${match}${filtered}
        )
-     ) WHERE rank <= ${MATCH_SAMPLE}`,
+     )${limit === null ? "" : ` WHERE rank <= ${limit}`}`,
   ).all(JSON.stringify(needles), ...filters.map(([, param]) => param)) as Array<{ key: string; value: string }>;
   for (const row of rows) {
     let ids = into.get(row.key);
@@ -148,21 +150,21 @@ function sourceMatches(db: Db, source: IdSource, needles: readonly Needle[], fil
   }
 }
 
-function kindMatches(db: Db, spec: IdKindSpec, keys: readonly string[], prefix: boolean, filters: readonly RowFilter[]): Map<string, string[]> {
+function kindMatches(db: Db, spec: IdKindSpec, keys: readonly string[], prefix: boolean, filters: readonly RowFilter[], limit: number | null): Map<string, string[]> {
   const found = new Map<string, Set<string>>();
   for (const source of spec.sources) {
     const needles = keys.map((key): Needle => {
       const needle = source.spell ? source.spell(key) : key;
       return [key, needle, prefix ? prefixUpperBound(needle) : null];
     });
-    sourceMatches(db, source, needles, filters, found);
+    sourceMatches(db, source, needles, filters, limit, found);
   }
   return new Map([...found].map(([key, ids]) => [key, [...ids].sort()]));
 }
 
-function decide(ids: readonly string[] | undefined): RefResolution {
+function decide(ids: readonly string[] | undefined, limit: number | null): RefResolution {
   if (!ids || ids.length === 0) return NOT_FOUND;
-  if (ids.length > 1) return { ok: false, error: "ambiguous", matches: ids.slice(0, MATCH_SAMPLE) };
+  if (ids.length > 1) return { ok: false, error: "ambiguous", matches: limit === null ? [...ids] : ids.slice(0, limit) };
   return { ok: true, id: ids[0] };
 }
 
@@ -171,12 +173,13 @@ function decide(ids: readonly string[] | undefined): RefResolution {
  * with a scope column resolves within `options.scope` when one is given; a
  * kind with a read predicate resolves among the rows `options.reader` (a user
  * id) may read when one is given, so a refusal never names another's rows.
+ * An ambiguity names a sample of its matches, or every match with `allMatches`.
  */
 export function resolveId(
   db: Db,
   kind: IdKind,
   ref: string,
-  options: { scope?: string; reader?: string } = {},
+  options: RefLookupOptions = {},
 ): RefResolution {
   return resolveIds(db, kind, [ref], options).get(ref.trim()) ?? NOT_FOUND;
 }
@@ -189,7 +192,7 @@ export function resolveIds(
   db: Db,
   kind: IdKind,
   refs: readonly string[],
-  options: { scope?: string; reader?: string } = {},
+  options: RefLookupOptions = {},
 ): Map<string, RefResolution> {
   const spec: IdKindSpec = ID_KINDS[kind];
   if (options.scope !== undefined && !spec.scope) throw new Error(`${kind} references have no scope`);
@@ -200,10 +203,11 @@ export function resolveIds(
   const keys = [...new Set(refs.map((ref) => ref.trim()))];
   const resolved = new Map<string, RefResolution>(keys.map((key) => [key, NOT_FOUND]));
   const nonEmpty = keys.filter(Boolean);
-  const exact = kindMatches(db, spec, nonEmpty, false, filters);
-  for (const [key, ids] of exact) resolved.set(key, decide(ids));
+  const limit = options.allMatches ? null : MATCH_SAMPLE;
+  const exact = kindMatches(db, spec, nonEmpty, false, filters, limit);
+  for (const [key, ids] of exact) resolved.set(key, decide(ids, limit));
   const prefixKeys = nonEmpty.filter((key) => !exact.has(key) && key.length >= (spec.minPrefix ?? MIN_PREFIX_LENGTH));
-  for (const [key, ids] of kindMatches(db, spec, prefixKeys, true, filters)) resolved.set(key, decide(ids));
+  for (const [key, ids] of kindMatches(db, spec, prefixKeys, true, filters, limit)) resolved.set(key, decide(ids, limit));
   return resolved;
 }
 
@@ -359,7 +363,7 @@ function resolveConversationAliasRef(db: Db, ref: string): RefResolution {
   const key = ref.trim();
   const exact = db.prepare("SELECT id FROM conversations WHERE id = ?").get(key) as { id: string } | undefined;
   if (exact) return { ok: true, id: resolveConversationId(db, exact.id) };
-  if (kindMatches(db, { sources: CONVERSATION_ALIASES }, [key], false, []).has(key)) return { ok: true, id: key };
+  if (kindMatches(db, { sources: CONVERSATION_ALIASES }, [key], false, [], MATCH_SAMPLE).has(key)) return { ok: true, id: key };
   if (key.length < MIN_PREFIX_LENGTH) return NOT_FOUND;
   const conversations = new Set<string>();
   const aliases = new Set<string>();
@@ -375,7 +379,7 @@ function resolveConversationAliasRef(db: Db, ref: string): RefResolution {
   }
   if (conversations.size === 1) return { ok: true, id: [...conversations][0] };
   if (aliases.size === 1) return { ok: true, id: [...aliases][0] };
-  return decide([...aliases].sort());
+  return decide([...aliases].sort(), MATCH_SAMPLE);
 }
 
 const bind = (kind: IdKind): RefResolver => (ref) => resolveId(getDb(), kind, ref);

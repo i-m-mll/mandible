@@ -4,9 +4,9 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { nativePreviewInitialPath } from './native-preview.mjs';
 
-test('native launch paths preserve local queries and fragments and default to overview', () => {
-  assert.equal(nativePreviewInitialPath(), '/#/overview');
-  const selected = '/dist/proofs/3434b09/splash.html?reason=rebuilding#/overview?pane=detail';
+test('native launch paths preserve local queries and default to overview', () => {
+  assert.equal(nativePreviewInitialPath(), '/overview');
+  const selected = '/dist/proofs/3434b09/splash.html?reason=rebuilding';
   assert.equal(nativePreviewInitialPath(selected), selected);
   for (const input of ['https://foreign.invalid/', '//foreign.invalid/', '/\\foreign.invalid/', 'relative', '/\n/foreign.invalid/', '', null]) {
     assert.throws(() => nativePreviewInitialPath(input), /root-relative path/);

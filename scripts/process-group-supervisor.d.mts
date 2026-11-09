@@ -1,4 +1,5 @@
 import type { ChildProcess, StdioOptions } from 'node:child_process';
+import type { ProgressWatch } from './acceptance-progress.mjs';
 export interface SupervisedCommandResult {
   code: number | null;
   signal: NodeJS.Signals | null;
@@ -21,11 +22,15 @@ export interface SupervisedCommandFailure extends Error {
   timedOut: boolean;
   aborted: boolean;
   processGroupSettled: boolean;
+  hung?: true;
+  idleMs?: number;
+  silentMs?: number;
+  lastOutputAt?: number;
 }
 export function runSupervisedCommand(binary: string, args: readonly string[], options?: {
-  cwd?: string; env?: NodeJS.ProcessEnv; stdio?: StdioOptions; timeout?: number; graceMs?: number;
+  cwd?: string; env?: NodeJS.ProcessEnv; stdio?: StdioOptions; log?: number; timeout?: number; idleMs?: number; watch?: ProgressWatch; graceMs?: number;
   deadline?: number; signal?: AbortSignal; capture?: boolean; maxBuffer?: number;
-  onSpawn?: (child: ChildProcess) => void;
+  onSpawn?: (child: ChildProcess) => void; onOutput?: (chunk: Buffer, stream: 'stdout' | 'stderr') => void;
 }): Promise<SupervisedCommandResult>;
 export class ProcessGroupSupervisor {
   constructor(options?: { graceMs?: number; deadline?: number; handleSignals?: boolean });

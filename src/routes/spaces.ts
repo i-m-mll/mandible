@@ -5,7 +5,11 @@ import { entityRefs, resolveCommentRef, resolveId, shortRef } from "../entity-re
 import { parseIssueRefTarget } from "../ledger/authored-references.js";
 import { batchLabelsByIssue } from "../ledger/issue-projection.js";
 import { LedgerStore } from "../ledger/store.js";
+import { ENTITY_KINDS, parseAppPath, type EntityKind } from "../app-routes.js";
 import {
+  canonicalArtifactBlobShortRef,
+  canonicalArtifactVersionShortRef,
+  canonicalLogicalArtifactShortRef,
   projectArtifactPublicValue,
   resolveArtifactIdentity,
   resolvedArtifactRecord,
@@ -60,8 +64,11 @@ import {
   SPACE_ITEM_REF_TYPES,
   SPACE_OCCURRENCE_RENDERERS,
   SPACE_RENDERERS,
+  type ArtifactIdentityCandidate,
+  type ResolverMatch,
   type ResolverRefKind,
   type ResolverResult,
+  RESOLVER_MATCH_LIMIT,
   type Space,
   type SpaceFactPacket,
   type SpaceItemRefType,
@@ -71,7 +78,7 @@ import {
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import type { TimelineIssuePredicate } from "../types.js";
 import { bodyRecord, sendJson } from "./http.js";
-import { BriefingStoreError, resolveBriefingId, shortBriefingRef } from "../feedback/briefings.js";
+import { lookupBriefingId, shortBriefingRef } from "../feedback/briefings.js";
 import { ClientAuthzError } from "../client-auth/authz.js";
 import { briefingReadViewer } from "./briefing.js";
 import { resolveProjectRef } from "../ledger/project-registry.js";
@@ -247,32 +254,54 @@ function validateItemRef(
 
 // --- unified ref resolver ----------------------------------------------------
 
+function notFound(ref: string, kind: ResolverRefKind, error?: string, detail?: Record<string, unknown>): ResolverResult {
+  return { ref, kind, status: "not_found", entity: null, ...(error ? { error } : {}), ...(detail ? { detail } : {}) };
+}
+
+type MatchRow = { id: string; title: string | null; updated_at: number };
+
+/** Candidate rows of `ids` from one table, newest first, at most the match limit. */
+function newestMatchRows<Row extends MatchRow>(db: Db, select: string, ids: readonly string[]): Row[] {
+  return db.prepare(`SELECT * FROM (${select}) WHERE id IN (SELECT value FROM json_each(?))
+    ORDER BY updated_at DESC, id LIMIT ${RESOLVER_MATCH_LIMIT}`).all(JSON.stringify(ids)) as Row[];
+}
+
+function ambiguous<Row extends MatchRow>(
+  ref: string,
+  kind: ResolverRefKind,
+  total: number,
+  rows: readonly Row[],
+  toMatch: (row: Row) => ResolverMatch,
+): ResolverResult {
+  const matches = [...rows]
+    .sort((a, b) => b.updated_at - a.updated_at || a.id.localeCompare(b.id))
+    .slice(0, RESOLVER_MATCH_LIMIT)
+    .map(toMatch);
+  return { ref, kind, status: "ambiguous", entity: null, matches, total };
+}
+
 /**
  * `context` names the project the ref was written in (a project or repo ref).
  * A bare issue ref resolves there first, and the result says whether the issue
- * belongs to it.
+ * belongs to it. `kind` names the entity kind of an app path, whose ref is
+ * resolved as that kind without reading a prefix.
  */
-function resolveUnifiedRef(db: Db, req: RequestLike, rawRef: string, context?: string): ResolverResult {
+function resolveUnifiedRef(db: Db, req: RequestLike, rawRef: string, context?: string, kind?: EntityKind): ResolverResult {
   const ref = rawRef.trim();
   const store = new LedgerStore(db);
+  if (kind) return resolveEntityRef(db, req, store, kind, ref, context);
 
-  // mandible:// app-route refs (e.g. mandible:///issues?issue=...) — parse the
-  // embedded entity ref where present, otherwise report as an app route.
   if (ref.startsWith("mandible://")) {
-    return resolveMandibleRef(db, store, ref);
+    return resolveMandibleRef(db, req, store, ref);
   }
 
   // repo:// refs are repo-relative artifact/file refs — defer to the artifact
   // resolver, which understands repo-relative custody refs.
   if (ref.startsWith("repo://")) {
     const resolution = resolveArtifactIdentity(db, ref, "surface");
-    return {
-      ref,
-      kind: "repo",
-      resolved: resolvedArtifactRecord(resolution) !== null,
-      entity: resolvedArtifactRecord(resolution) as Record<string, unknown> | null,
-      detail: { resolution: projectArtifactResolution(db, resolution) },
-    };
+    const entity = resolvedArtifactRecord(resolution) as Record<string, unknown> | null;
+    const detail = { resolution: projectArtifactResolution(db, resolution) };
+    return entity ? { ref, kind: "repo", status: "resolved", entity, detail } : notFound(ref, "repo", undefined, detail);
   }
 
   // Typed entity prefixes.
@@ -283,7 +312,7 @@ function resolveUnifiedRef(db: Db, req: RequestLike, rawRef: string, context?: s
     if (prefix === "issue") return resolveIssueRef(db, store, rest, ref, context);
     if (prefix === "comment") return resolveCommentResult(db, rest, ref);
     if (prefix === "auth") return resolveAuthRef(db, rest, ref);
-    if (prefix === "briefing") return resolveBriefingRef(db, req, ref);
+    if (prefix === "briefing") return resolveBriefingRef(db, req, ref, ref);
     if (prefix === "artifact") return resolveArtifactResult(db, ref);
     if (prefix === "uri" && rest) return resolveArtifactResult(db, rest);
   }
@@ -300,30 +329,38 @@ function resolveUnifiedRef(db: Db, req: RequestLike, rawRef: string, context?: s
   return resolveArtifactResult(db, ref);
 }
 
-function resolveMandibleRef(db: Db, store: LedgerStore, ref: string): ResolverResult {
+function resolveEntityRef(db: Db, req: RequestLike, store: LedgerStore, kind: EntityKind, ref: string, context?: string, displayRef = ref): ResolverResult {
+  switch (kind) {
+    case "issue":
+      return resolveIssueRef(db, store, ref, displayRef, context);
+    case "auth":
+      return resolveAuthRef(db, ref, displayRef);
+    case "briefing":
+      return resolveBriefingRef(db, req, ref, displayRef);
+    case "artifact":
+      return resolveArtifactResult(db, ref, "artifact", displayRef);
+  }
+}
+
+/**
+ * `mandible:///<kind>/<ref>` deep links and Spaces item refs
+ * `mandible://<type>/<id>` both name `<kind>/<ref>` once host and path are
+ * joined. Any other app path is reported as a route, not an entity.
+ */
+function resolveMandibleRef(db: Db, req: RequestLike, store: LedgerStore, ref: string): ResolverResult {
   let url: URL;
   try {
     url = new URL(ref);
   } catch {
-    return { ref, kind: "mandible", resolved: false, entity: null, error: "invalid mandible ref" };
+    return notFound(ref, "mandible", "invalid mandible ref");
   }
-  const issueParam = url.searchParams.get("issue");
-  const requestParam = url.searchParams.get("request");
-  const artifactParam = url.searchParams.get("ref");
-  const route = url.pathname.replace(/^\/+/, "");
-  if (requestParam && route === "auth") return resolveAuthRef(db, requestParam, ref);
-  if (issueParam) return resolveIssueRef(db, store, issueParam, ref, url.searchParams.get("repo") ?? undefined);
-  if (artifactParam) return resolveArtifactResult(db, artifactParam, "mandible", ref);
-  return {
-    ref,
-    kind: "mandible",
-    resolved: false,
-    entity: null,
-    detail: {
-      route: url.pathname.replace(/^\/+/, ""),
-      params: Object.fromEntries(url.searchParams.entries()),
-    },
-  };
+  const pathname = `/${url.host}${url.pathname}`.replace(/^\/+/, "/");
+  const route = parseAppPath(pathname);
+  if (route.kind === "entity") return resolveEntityRef(db, req, store, route.entity, route.ref, undefined, ref);
+  return notFound(ref, "mandible", undefined, {
+    route: pathname.slice(1),
+    params: Object.fromEntries(url.searchParams.entries()),
+  });
 }
 
 function resolveIssueRef(
@@ -338,95 +375,101 @@ function resolveIssueRef(
   const issueRef = target
     ? `${target.project ? `${target.project}/` : ""}${target.issue}`
     : refValue.trim();
-  const operational = resolveOperationalIssueRef(db, issueRef, context);
-  const resolved = operational.ok
-    ? { ok: true as const, id: operational.issue_id }
-    : operational.error === "ambiguous"
-      ? { ok: false as const, error: "ambiguous" as const, matches: operational.matches ?? [] }
-      : { ok: false as const, error: "not_found" as const };
-  if (!resolved.ok) {
-    return {
-      ref,
-      kind: "issue",
-      resolved: false,
-      entity: null,
-      error: resolved.error,
-      ...(resolved.error === "ambiguous"
-        ? { detail: { matches: resolved.matches } }
-        : {}),
-    };
+  const operational = resolveOperationalIssueRef(db, issueRef, context, { allMatches: true });
+  if (!operational.ok) {
+    if (operational.error !== "ambiguous") return notFound(ref, "issue", "not_found");
+    const ids = operational.matches ?? [];
+    return ambiguous(ref, "issue", ids.length,
+      newestMatchRows<MatchRow & { project_id: string; status: string; resolution: string | null }>(
+        db, "SELECT id, title, updated_at, project_id, status, resolution FROM ledger_issues", ids),
+      (row) => ({
+        kind: "issue", ref: issueShortRef(db, row.id), title: row.title, updated_at: row.updated_at,
+        project: projectRouteRef(db, row.project_id), status: row.status, resolution: row.resolution,
+      }));
   }
-  if (target?.ordinal) return resolveCommentOrdinal(store, resolved.id, String(target.ordinal), ref);
-  try {
-    const issue = store.getIssue(resolved.id);
-    const entity = {
-      ...issue,
-      worker_status: effectiveWorkerStatus(db, issue.id),
-      labels: batchLabelsByIssue(db, [issue.id]).get(issue.id) ?? [],
-      project_ref: projectRouteRef(db, issue.project_id),
-    };
-    return {
-      ref,
-      kind: "issue",
-      resolved: true,
-      entity: entity as unknown as Record<string, unknown>,
-      ...(context ? { detail: { same_project: candidateProjectIds(db, context).includes(issue.project_id) } } : {}),
-    };
-  } catch (error) {
-    return { ref, kind: "issue", resolved: false, entity: null, error: String(error) };
-  }
+  if (target?.ordinal) return resolveCommentOrdinal(store, operational.issue_id, String(target.ordinal), ref);
+  const issue = store.getIssue(operational.issue_id);
+  const entity = {
+    ...issue,
+    worker_status: effectiveWorkerStatus(db, issue.id),
+    labels: batchLabelsByIssue(db, [issue.id]).get(issue.id) ?? [],
+    project_key: projectRouteRef(db, issue.project_id),
+  };
+  return {
+    ref,
+    kind: "issue",
+    status: "resolved",
+    entity: entity as unknown as Record<string, unknown>,
+    ...(context ? { detail: { same_project: candidateProjectIds(db, context).includes(issue.project_id) } } : {}),
+  };
+}
+
+/** An issue's short id, qualified by its project when the short id alone names another issue too. */
+function issueShortRef(db: Db, id: string): string {
+  const row = db.prepare("SELECT short_id, project_id FROM ledger_issues WHERE id = ?").get(id) as { short_id: string; project_id: string };
+  const global = resolveId(db, "issue", row.short_id);
+  return global.ok && global.id === id ? row.short_id : `${projectRouteRef(db, row.project_id)}/${row.short_id}`;
 }
 
 function resolveCommentOrdinal(store: LedgerStore, issueId: string, selector: string, ref: string): ResolverResult {
   const comment = /^\d+$/.test(selector) ? store.findCommentByOrdinal(issueId, Number(selector)) : null;
   return comment
-    ? { ref, kind: "comment", resolved: true, entity: comment as unknown as Record<string, unknown> }
-    : { ref, kind: "comment", resolved: false, entity: null, error: "comment not found" };
+    ? { ref, kind: "comment", status: "resolved", entity: comment as unknown as Record<string, unknown> }
+    : notFound(ref, "comment", "comment not found");
 }
 
 function resolveAuthRef(db: Db, refValue: string, ref: string): ResolverResult {
-  const resolved = resolveId(db, "auth_request", refValue.trim());
+  const resolved = resolveId(db, "auth_request", refValue.trim(), { allMatches: true });
   if (!resolved.ok) {
-    return { ref, kind: "auth", resolved: false, entity: null, error: resolved.error };
+    return resolved.error === "ambiguous"
+      ? ambiguous(ref, "auth", resolved.matches.length,
+        newestMatchRows<MatchRow & { repo: string | null; type: string | null; status: string }>(
+          db, "SELECT id, title, updated_at, repo, type, status FROM auth_requests", resolved.matches),
+        (row) => ({
+          kind: "auth", ref: shortRef(db, "auth_request", row.id), title: row.title, updated_at: row.updated_at,
+          repo: row.repo?.trim() || null, type: row.type, status: row.status,
+        }))
+      : notFound(ref, "auth", "not_found");
   }
   const request = db.prepare(
     `SELECT id, type, title, status, repo, target_repo_root, base_branch, head_branch,
             created_at, approved_at, resolved_at, exit_code
        FROM auth_requests WHERE id = ?`,
   ).get(resolved.id) as Record<string, unknown>;
-  const id = shortRef(db, "auth_request", request.id as string);
   const { target_repo_root: _root, ...entity } = request;
-  return { ref, kind: "auth", resolved: true, entity: { ...entity, id } };
+  return { ref, kind: "auth", status: "resolved", entity: { ...entity, short_id: shortRef(db, "auth_request", request.id as string) } };
 }
 
-// `briefing:<id-or-prefix>` resolves through the shared Briefing resolver, which
-// also matches legacy ids stored with a `briefing:` prefix. Agents read
-// Briefings as the configured operator, using the retained human responder identity.
-function resolveBriefingRef(db: Db, req: RequestLike, ref: string): ResolverResult {
-  const viewer = briefingReadViewer(db, req);
-  let briefingId: string;
-  try {
-    briefingId = resolveBriefingId(db, ref, viewer);
-  } catch (error) {
-    if (!(error instanceof BriefingStoreError)) throw error;
-    const reason = error.code === "ambiguous_ref" ? "ambiguous" : error.code === "not_found" ? "not_found" : error.message;
-    return { ref, kind: "briefing", resolved: false, entity: null, error: reason };
+// A Briefing ref, with or without its `briefing:` prefix, resolves through the
+// shared Briefing resolver, which also matches legacy ids stored with the
+// prefix. Agents read Briefings as the configured operator, using the retained
+// human responder identity.
+function resolveBriefingRef(db: Db, req: RequestLike, refValue: string, ref: string): ResolverResult {
+  const resolved = lookupBriefingId(db, refValue, briefingReadViewer(db, req), { allMatches: true });
+  if (!resolved.ok) {
+    return resolved.error === "ambiguous"
+      ? ambiguous(ref, "briefing", resolved.matches.length,
+        newestMatchRows(db, "SELECT id, title, updated_at FROM briefings", resolved.matches),
+        (row) => ({
+          kind: "briefing", ref: shortBriefingRef(db, row.id).slice("briefing:".length), title: row.title, updated_at: row.updated_at,
+        }))
+      : notFound(ref, "briefing", "not_found");
   }
   const briefing = db.prepare(
     `SELECT id, title, description, logical_artifact_id, archived_at, created_at, updated_at
        FROM briefings WHERE id = ?`,
-  ).get(briefingId) as Record<string, unknown> & { logical_artifact_id: string | null };
-  const short = shortBriefingRef(db, briefingId);
-  return { ref, kind: "briefing", resolved: true, entity: { ...briefing, id: short.slice("briefing:".length), ref: short } };
+  ).get(resolved.id) as Record<string, unknown>;
+  const short = shortBriefingRef(db, resolved.id);
+  return { ref, kind: "briefing", status: "resolved", entity: { ...briefing, id: short.slice("briefing:".length), ref: short } };
 }
 
 function resolveCommentResult(db: Db, refValue: string, ref: string): ResolverResult {
   const resolved = resolveCommentRef(db, refValue);
   if (!resolved.ok) {
-    return { ref, kind: "comment", resolved: false, entity: null, error: resolved.error === "ambiguous" ? "ambiguous" : "comment not found" };
+    return notFound(ref, "comment", resolved.error === "ambiguous" ? "ambiguous" : "comment not found");
   }
   const comment = new LedgerStore(db).getComment(resolved.id);
-  return { ref, kind: "comment", resolved: true, entity: comment as unknown as Record<string, unknown> };
+  return { ref, kind: "comment", status: "resolved", entity: comment as unknown as Record<string, unknown> };
 }
 
 function resolveArtifactResult(
@@ -436,17 +479,43 @@ function resolveArtifactResult(
   displayRef?: string,
 ): ResolverResult {
   const trimmed = refValue.trim();
+  const ref = displayRef ?? refValue;
   const resolution = /^artifact:sha256:[0-9a-f]{64}$/i.test(trimmed)
     ? resolveArtifactIdentity(db, trimmed, "strict-read")
     : resolveArtifactIdentity(db, trimmed, "surface");
+  if (resolution.status === "ambiguous") return ambiguousArtifact(db, ref, kind, resolution.candidates);
   const publicResolution = projectArtifactPublicValue(db, projectArtifactResolution(db, resolution)) as ReturnType<typeof projectArtifactResolution>;
-  return {
-    ref: displayRef ?? refValue,
-    kind,
-    resolved: resolvedArtifactRecord(resolution) !== null,
-    entity: publicResolution.artifact as Record<string, unknown> | null,
-    detail: { resolution: publicResolution },
-  };
+  const detail = { resolution: publicResolution };
+  const entity = resolvedArtifactRecord(resolution) ? publicResolution.artifact as Record<string, unknown> | null : null;
+  return entity ? { ref, kind, status: "resolved", entity, detail } : notFound(ref, kind, resolution.status, detail);
+}
+
+const ARTIFACT_MATCH_SOURCES = {
+  artifact: {
+    select: `SELECT a.id, COALESCE(a.title, a.logical_name) AS title, a.updated_at, b.role
+      FROM artifact a LEFT JOIN artifact_version v ON v.id = a.latest_version_id LEFT JOIN artifact_blob b ON b.id = v.blob_id`,
+    shortRef: canonicalLogicalArtifactShortRef,
+  },
+  artifact_version: {
+    select: `SELECT v.id, COALESCE(a.title, a.logical_name) AS title, v.created_at AS updated_at, b.role
+      FROM artifact_version v LEFT JOIN artifact a ON a.id = v.artifact_id LEFT JOIN artifact_blob b ON b.id = v.blob_id`,
+    shortRef: canonicalArtifactVersionShortRef,
+  },
+  artifact_blob: {
+    select: "SELECT id, NULL AS title, created_at AS updated_at, role FROM artifact_blob",
+    shortRef: canonicalArtifactBlobShortRef,
+  },
+} as const;
+
+function ambiguousArtifact(db: Db, ref: string, kind: ResolverRefKind, candidates: readonly ArtifactIdentityCandidate[]): ResolverResult {
+  const types = Object.keys(ARTIFACT_MATCH_SOURCES) as Array<keyof typeof ARTIFACT_MATCH_SOURCES>;
+  const typeOf = new Map(candidates.map((candidate) => [candidate.id, candidate.target_type]));
+  const rows = types.flatMap((type) => newestMatchRows<MatchRow & { role: string | null }>(db, ARTIFACT_MATCH_SOURCES[type].select,
+    candidates.filter((candidate) => candidate.target_type === type).map((candidate) => candidate.id)));
+  return ambiguous(ref, kind, candidates.length, rows, (row) => ({
+    kind: "artifact", ref: ARTIFACT_MATCH_SOURCES[typeOf.get(row.id)!].shortRef(db, row.id), title: row.title, updated_at: row.updated_at,
+    role: row.role,
+  }));
 }
 
 // --- route registration ------------------------------------------------------
@@ -458,8 +527,12 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     try {
       const ref = queryString(req, "ref") ?? queryString(req, "uri");
       if (!ref) throw new HttpError(400, "ref query parameter required");
+      const kind = queryString(req, "kind");
+      if (kind !== undefined && !(ENTITY_KINDS as readonly string[]).includes(kind)) {
+        throw new HttpError(400, `kind must be one of: ${ENTITY_KINDS.join(", ")}`);
+      }
       const db = getDb();
-      sendJson(res, 200, { resolution: resolveUnifiedRef(db, req, ref, queryString(req, "project")) });
+      sendJson(res, 200, { resolution: resolveUnifiedRef(db, req, ref, queryString(req, "project"), kind as EntityKind | undefined) });
     } catch (error) {
       handleError(res, error);
     }

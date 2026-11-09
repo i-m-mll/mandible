@@ -1,4 +1,3 @@
-import { pushAppHistory, navigateAppHash } from '../app-history';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import {
   addLedgerIssueComment,
@@ -15,7 +14,11 @@ import { LedgerIssueDetail, type LedgerIssueCloseResolution } from '../component
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { readPersistedViewState, usePersistedViewState } from '../hooks/usePersistedViewState';
-import { routeHashWithParams, shortRouteId } from '../routing';
+import { navigateTo, routeWithParams, shortRouteId, viewHref } from '../routing';
+import { appPath } from '../../../src/app-routes';
+import { rememberEntityRoute } from '../query/entityRoute';
+import { useEntityRoute } from '../hooks/useEntityRoute';
+import { EntityRouteState, isUnopenedEntityRoute } from '../components/shared/EntityRouteState';
 import { renderInlineMarkdown } from '../lib/markdown';
 import { hashKey } from "@tanstack/preact-query";
 import { queryClient } from "../query/client";
@@ -76,47 +79,11 @@ function pathBasename(value: string | null | undefined): string {
   return parts[parts.length - 1] ?? normalized;
 }
 
-export function resolveIssueRepoDeepLink(
-  repos: IssueRepoSummary[],
-  rawRepoId: string | null | undefined,
-): string | null {
-  if (!rawRepoId) return null;
-  const trimmed = rawRepoId.trim();
-  if (!trimmed) return null;
-  const basename = pathBasename(trimmed);
-
-  const repoMatches = (repo: IssueRepoSummary, value: string, ignoreCase: boolean): boolean => {
-    const candidates = [
-      repo.project_key,
-      repo.repo_id,
-      repo.repo_name,
-      repo.repo_root,
-      pathBasename(repo.repo_root),
-    ]
-      .filter((candidate): candidate is string => typeof candidate === 'string' && candidate.trim() !== '');
-    return candidates.some((candidate) => (
-      ignoreCase
-        ? candidate.toLowerCase() === value.toLowerCase()
-        : candidate === value
-    ));
-  };
-
-  const exact = repos.find((repo) => repoMatches(repo, trimmed, false));
-  if (exact) return exact.project_key || exact.repo_id;
-  const basenameMatch = repos.find((repo) => repoMatches(repo, basename, false));
-  if (basenameMatch) return basenameMatch.project_key || basenameMatch.repo_id;
-  const insensitive = repos.find((repo) => (
-    repoMatches(repo, trimmed, true) || repoMatches(repo, basename, true)
-  ));
-  if (insensitive) return insensitive.project_key || insensitive.repo_id;
-  return trimmed;
-}
-
 export type IssuesViewProps = {
   repos: IssueRepoSummary[];
   onRescan: () => Promise<void>;
-  initialRepoId?: string;
-  initialIssueId?: string;
+  /** The ref of an `/issue/<ref>` path. */
+  entityRef?: string | null;
   initialCommentId?: string;
   defaultFilter?: string;
   sidebarHidden?: boolean;
@@ -397,10 +364,11 @@ function synthesizeLedgerIssueDetail(
   };
 }
 
-function issueRouteHash(repoId: string, issueId: string, commentId?: string | null): string {
-  return routeHashWithParams(window.location.hash, 'issues', {
-    repo: repoId, issue: issueId, comment: commentId ?? null,
-  });
+/** The path of an issue in the list: its short id, qualified by project only when another listed issue shares it. */
+function issueRouteRef(repos: IssueRepoSummary[], repoId: string, issueId: string): string {
+  const shared = repos.some((repo) => repo.repo_id !== repoId && repo.project_key !== repoId
+    && repo.issues.some((issue) => issue.id === issueId));
+  return shared ? `${repoId}/${issueId}` : issueId;
 }
 
 // --- Flat list item types ---
@@ -481,8 +449,7 @@ function normalizeIssuesViewState(value: unknown, defaults: Readonly<IssuesViewS
 export function IssuesView({
   repos,
   onRescan,
-  initialRepoId,
-  initialIssueId,
+  entityRef = null,
   initialCommentId,
   defaultFilter,
   sidebarHidden = false,
@@ -511,12 +478,18 @@ export function IssuesView({
       .find(parent => parent.parent_id === parentFilter || parent.parent_ref === parentFilter)?.parent_ref
       ?? 'selected issue'
     : '';
+  const routeResolution = useEntityRoute('issue', entityRef);
+  const routeIssue = routeResolution.status === 'resolved' ? routeResolution.entity : null;
+  const initialRepoId = typeof routeIssue?.project_key === 'string' ? routeIssue.project_key : undefined;
+  const initialIssueId = typeof routeIssue?.short_id === 'string' ? routeIssue.short_id : undefined;
   // Local state
+  // An entity path owns the selection from the start: nothing is selected until it resolves.
+  const routeTargeted = Boolean(entityRef);
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(
-    initialIssueId ? resolveIssueRepoDeepLink(repos, initialRepoId) : viewState.selectedRepoId,
+    routeTargeted ? initialRepoId ?? null : viewState.selectedRepoId,
   );
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(
-    initialIssueId ?? viewState.selectedIssueId,
+    routeTargeted ? initialIssueId ?? null : viewState.selectedIssueId,
   );
   const [filterMenuOpen, setFilterMenuOpen] = useState(false);
   type SortField = 'created_at';
@@ -524,7 +497,7 @@ export function IssuesView({
   const [actionInFlight, setActionInFlight] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  const routeKey = JSON.stringify([initialRepoId, initialIssueId]);
+  const routeKey = JSON.stringify([routeTargeted, initialRepoId, initialIssueId]);
   const [appliedRouteKey, setAppliedRouteKey] = useState(routeKey);
   const lastScrolledCommentRef = useRef<string | null>(null);
   const selectedIssueKeyRef = useRef<string | null>(null);
@@ -534,8 +507,8 @@ export function IssuesView({
   const lastRestoredScrollKeyRef = useRef<string | null>(null);
   if (appliedRouteKey !== routeKey) {
     setAppliedRouteKey(routeKey);
-    const nextRepoId = initialIssueId ? resolveIssueRepoDeepLink(repos, initialRepoId) : viewState.selectedRepoId;
-    const nextIssueId = initialIssueId ?? viewState.selectedIssueId;
+    const nextRepoId = routeTargeted ? initialRepoId ?? null : viewState.selectedRepoId;
+    const nextIssueId = routeTargeted ? initialIssueId ?? null : viewState.selectedIssueId;
     if (nextRepoId !== selectedRepoId || nextIssueId !== selectedIssueId) {
       setSelectedRepoId(nextRepoId);
       setSelectedIssueId(nextIssueId);
@@ -593,10 +566,6 @@ export function IssuesView({
   const setParentFilter = useCallback((parentFilterValue: string | null) => {
     setViewState((current) => ({ ...current, parentFilter: parentFilterValue }));
   }, [setViewState]);
-
-  const resolveRepoId = useCallback((rawRepoId: string | null | undefined): string | null => {
-    return resolveIssueRepoDeepLink(repos, rawRepoId);
-  }, [repos]);
 
   useEffect(() => {
     if (!ledgerIssueDetail || !initialCommentId || ledgerIssueDetail.timeline_partial) return;
@@ -661,7 +630,7 @@ export function IssuesView({
     if (!selectedIssueId) return null;
     const resolved = ledgerDetailMatchesSelection(ledgerIssueDetail, selectedRepoId, selectedIssueId)
       ? ledgerIssueDetail : null;
-    const repoId = resolveRepoId(selectedRepoId) ?? resolved?.project.project_key;
+    const repoId = selectedRepoId ?? resolved?.project.project_key;
     if (!repoId) return null;
     const repo = repos.find((candidate) => (
       candidate.repo_id === repoId || candidate.project_key === repoId
@@ -670,7 +639,7 @@ export function IssuesView({
     const issue = repo.issues.find((candidate) => candidate.id === selectedIssueId
       || Boolean(resolved && (candidate.id === resolved.id || candidate.id === resolved.display_id)));
     return issue ? { repo, issue } : null;
-  }, [repos, selectedRepoId, selectedIssueId, resolveRepoId, ledgerIssueDetail]);
+  }, [repos, selectedRepoId, selectedIssueId, ledgerIssueDetail]);
 
   const synthesizedLedgerIssueDetail = useMemo(
     () => (!initialIssueId || selectedIssueId !== initialIssueId) && !identityInvalid && selectedIssueSummary
@@ -748,15 +717,14 @@ export function IssuesView({
   ]);
 
   // Fetch canonical ledger detail when selection changes.
-  const selectIssue = useCallback((repoId: string, issueId: string) => {
-    const nextHash = issueRouteHash(repoId, issueId);
-    if (typeof window !== 'undefined' && window.location.hash !== nextHash) {
-      pushAppHistory(nextHash, null);
-      window.dispatchEvent(new PopStateEvent('popstate'));
-    }
+  const selectIssue = useCallback((repo: IssueRepoSummary, issueId: string) => {
+    const repoId = repo.project_key || repo.repo_id;
+    const ref = issueRouteRef(repos, repoId, issueId);
+    rememberEntityRoute('issue', ref, { project_key: repoId, short_id: issueId });
+    navigateTo(routeWithParams({ kind: 'entity', entity: 'issue', ref }, {}, ['comment']));
     setSelectedRepoId(repoId);
     setSelectedIssueId(issueId);
-  }, []);
+  }, [repos]);
 
   useEffect(() => {
     if (!selectedRepoId || !selectedIssueId) return;
@@ -768,17 +736,17 @@ export function IssuesView({
   }, [selectedIssueId, selectedRepoId, setViewState]);
 
   useEffect(() => {
-    if (!appShell.active || initialIssueId || selectedIssueSummary || items.length === 0) return;
+    if (!appShell.active || entityRef || selectedIssueSummary || items.length === 0) return;
     const first = items[0];
     setSelectedRepoId(first.repo.repo_id);
     setSelectedIssueId(first.issue.id);
-  }, [appShell.active, initialIssueId, items, selectedIssueSummary]);
+  }, [appShell.active, entityRef, items, selectedIssueSummary]);
 
   const issueListNavigation = useSidebarListNavigation({
     items,
     getKey: (item) => `${item.repo.repo_id}:${item.issue.id}`,
     selectedKey: selectedIssueSummary ? `${selectedIssueSummary.repo.repo_id}:${selectedIssueSummary.issue.id}` : null,
-    onSelect: (item) => selectIssue(item.repo.repo_id, item.issue.id),
+    onSelect: (item) => selectIssue(item.repo, item.issue.id),
   });
 
   const handleIssueActionFailure = useCallback(async (
@@ -912,7 +880,7 @@ export function IssuesView({
       const units = visibleLedgerIssueDetail?.work_units.filter(unit => unit.assigned_session_id && ['open', 'committed'].includes(unit.state)) ?? [];
       if (units.length !== 1) throw new Error('Select an exact assigned work unit in Inbox before resuming.');
       const result = await spawnIssueAgent(selectedRepoId, selectedIssueId, units[0]);
-      navigateAppHash(`#/console?conversation=${encodeURIComponent(result.conversation_id)}`);
+      navigateTo(viewHref('console', { conversation: result.conversation_id }));
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -922,26 +890,22 @@ export function IssuesView({
 
   const handleOpenLedgerEntity = useCallback((type: 'issue' | 'session' | 'auth_request' | 'conversation', id: string, repoId?: string) => {
     if (type === 'issue') {
-      if (repoId) {
-        selectIssue(repoId, id);
-      } else if (selectedRepoId) {
-        selectIssue(selectedRepoId, id);
-      }
+      const project = repoId ?? selectedRepoId;
+      navigateTo(appPath({ kind: 'entity', entity: 'issue', ref: project ? `${project}/${id}` : id }));
       return;
     }
     if (type === 'session') {
-      navigateAppHash(`#/sessions?session=${encodeURIComponent(id.replace(/^session:/, ''))}`);
+      navigateTo(viewHref('console', { session: id.replace(/^session:/, '') }));
       return;
     }
     if (type === 'conversation') {
-      navigateAppHash(`#/history?session=${encodeURIComponent(id.replace(/^session:/, ''))}`);
+      navigateTo(viewHref('console', { session: id.replace(/^session:/, '') }));
       return;
     }
     if (type === 'auth_request') {
-      // Issue f59b5bd — emit the short form; the auth view resolves prefixes.
-      navigateAppHash(`#/auth?request=${encodeURIComponent(shortRouteId(id.replace(/^auth_request:/, '')))}`);
+      navigateTo(appPath({ kind: 'entity', entity: 'auth', ref: shortRouteId(id.replace(/^auth_request:/, '')) }));
     }
-  }, [selectedRepoId, selectIssue]);
+  }, [selectedRepoId]);
 
   return (
     <div className="issues-view">
@@ -1103,7 +1067,7 @@ export function IssuesView({
                       : ''
                   }`}
                   onKeyDown={navigation.onKeyDown}
-                  onClick={() => selectIssue(item.repo.repo_id, item.issue.id)}
+                  onClick={() => selectIssue(item.repo, item.issue.id)}
                 >
                   <span
                     className={`issue-status-dot issue-status-dot--${getVisualState(item.issue)}`}
@@ -1124,7 +1088,9 @@ export function IssuesView({
 
       {/* Right detail panel */}
       <div className="issues-detail">
-        {!selectedIssueId ? (
+        {isUnopenedEntityRoute(routeResolution) && (routeResolution.status !== 'resolving' || !visibleLedgerIssueDetail) ? (
+          <EntityRouteState kind="issue" resolution={routeResolution} />
+        ) : !selectedIssueId ? (
           <div className="issues-detail__empty">
             <p className="text-muted">No issues in this view</p>
           </div>
@@ -1174,7 +1140,7 @@ export function IssuesView({
 type IssueWarmupContext = { settings?: Record<string, string> };
 
 export async function warmInitialData(
-  params: Record<string, string>,
+  _params: Record<string, string>,
   context: IssueWarmupContext = {},
 ): Promise<void> {
   const repos = await getIssueRepos<IssueRepoSummary>();
@@ -1193,11 +1159,9 @@ export async function warmInitialData(
     defaults,
   );
 
-  let repoId = params.issue && !params.repo ? null : params.repo ?? viewState.selectedRepoId;
-  let issueId = params.issue ?? viewState.selectedIssueId;
-  if (issueId && repoId) {
-    repoId = resolveIssueRepoDeepLink(repos, repoId) ?? repoId;
-  } else if (!issueId) {
+  let repoId = viewState.selectedRepoId;
+  let issueId = viewState.selectedIssueId;
+  if (!issueId) {
     const first = buildIssueItems(filterIssueReposForView(repos, viewState.filter, viewState.parentFilter))[0];
     if (first) {
       repoId = first.repo.repo_id;

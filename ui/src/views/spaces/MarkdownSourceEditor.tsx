@@ -279,7 +279,7 @@ class RefWidget extends WidgetType {
   constructor(
     readonly ref: string,
     readonly label: string,
-    readonly href: string,
+    readonly href: string | undefined,
     readonly onOpen: (ref: string) => void,
   ) {
     super();
@@ -297,7 +297,7 @@ class RefWidget extends WidgetType {
 
     const anchor = document.createElement('a');
     anchor.className = 'artifact-xref resource-ref__link spaces-markdown-source__ref-link';
-    anchor.href = this.href;
+    if (this.href) anchor.href = this.href;
     anchor.textContent = this.label;
     anchor.title = `Resource reference ${this.ref}`;
     anchor.addEventListener('mousedown', (event) => {

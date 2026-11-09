@@ -8,6 +8,7 @@ import { render, mainInstance, stubRailSettingsFetch } from './helpers/ui-worksp
 import { jsonFixture } from './helpers/strict-ui-fixture';
 import { __resetSharedSseForTests } from '../ui/src/sse-shared';
 import { queryClient } from '../ui/src/query/client';
+import { rememberEntityRoute } from '../ui/src/query/entityRoute';
 
 const id = '12345678-1234-4123-8123-123456789abc';
 const desktopReason = 'Backend is at the expected build; the updated desktop has not been observed. Quit and reopen the installed Mandible app; verification will resume.';
@@ -49,10 +50,11 @@ it('automatically shows and refreshes pending instructions through auth updates 
     { name: 'selected auth queue', method: 'GET', path: '/api/auth/queue', respond: () => { reads(); return jsonFixture([current, other]); } },
     { name: 'auth history', method: 'GET', path: '/api/auth/history', respond: () => jsonFixture([]) },
     actionsFixture,
+    { name: 'resolve route', method: 'GET', path: '/api/refs/resolve', respond: () => jsonFixture({ resolution: { kind: 'auth', ref: id.slice(0, 8), status: 'resolved', entity: { id } } }) },
   ]);
   __resetSharedSseForTests(FixtureStream);
   window.__MANDIBLE_BOOTSTRAP__ = { instance: mainInstance };
-  window.history.replaceState(null, '', `#/auth?request=${id}&view=info`);
+  window.history.replaceState(null, '', `/auth/${id.slice(0, 8)}?view=info`);
   const view = render(<App />);
   await screen.findByRole('heading', { name: 'Verify installed update' });
   await waitFor(() => expect(FixtureStream.instances).toHaveLength(1));
@@ -62,9 +64,9 @@ it('automatically shows and refreshes pending instructions through auth updates 
   expect(screen.getByRole('button', { name: 'Description' }).getAttribute('aria-expanded')).toBe('false');
   body.scrollTop = 73;
   fireEvent.scroll(body);
-  const hash = window.location.hash;
+  const href = window.location.href;
   const verifySelection = () => {
-    expect(window.location.hash).toBe(hash);
+    expect(window.location.href).toBe(href);
     expect(document.querySelector('.auth-detail__body')).toBe(body);
     expect(body.scrollTop).toBe(73);
     expect(screen.getByRole('heading', { name: 'Verify installed update' })).toBeTruthy();
@@ -108,9 +110,10 @@ it('automatically shows and refreshes pending instructions through auth updates 
 });
 
 it('clears the notice from an omitted pending projection even while convergence remains pending', () => {
-  const props = { historyQueue: [], outputs: {}, selectedAuthId: id, initialRequestId: id, daemonReady: true, instance: mainInstance,
+  const props = { historyQueue: [], outputs: {}, selectedAuthId: id, entityRef: id.slice(0, 8), daemonReady: true, instance: mainInstance,
     onApprove: vi.fn(), onReject: vi.fn(), onRetry: vi.fn(), onSelectAuth: vi.fn() };
   stubRailSettingsFetch(undefined, false, [actionsFixture]);
+  rememberEntityRoute('auth', id.slice(0, 8), { id });
   const view = render(<AuthQueueView {...props} queue={[request(pending())]} />);
   expect(screen.getByText(desktopReason)).toBeTruthy();
   const selections = [...props.onSelectAuth.mock.calls];

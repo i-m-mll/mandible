@@ -81,8 +81,8 @@ export type SpacesViewShellProps = {
   /** Current Mandible instance metadata from the app-level health probe. */
   instance?: InstanceInfo | null;
   /**
-   * Navigate the URL hash to open a space or a legacy renderer override. The
-   * host (app.tsx) rebuilds `#/spaces?...`, preserving `?sidebar=`.
+   * Navigate to open a space or a renderer override. The host (app.tsx)
+   * rebuilds the `/spaces` query, preserving `sidebar`.
    */
   onNavigate?: (target: SpacesRouteTarget) => void;
   /** Injected selected-Space fact packet loader for tests; defaults to the real API client. */

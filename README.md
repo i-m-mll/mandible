@@ -46,7 +46,7 @@ The daemon's loopback backend port is `29420`; browsers and the desktop reach it
 
 ## The ledger
 
-Entities are referenced by short id with a kind prefix, as in `issue:58e452e`, `auth:bb4c211`, or `artifact-version:1a2b3c4d`. In authored Markdown, `[issue:<id>]`, `[issue:<id>#<n>]`, `[auth:<id>]`, `[briefing:<id>]`, and the artifact forms resolve to links; only `[issue:...]` references are recorded as relationships. Every entity has a web link, `https://app.mandible.localhost:19420/<kind>/<ref>`; links with `/r` before the kind redirect to the desktop app.
+Entities are referenced by short id with a kind prefix, as in `issue:58e452e`, `auth:bb4c211`, or `artifact-version:1a2b3c4d`. In authored Markdown, `[issue:<id>]`, `[issue:<id>#<n>]`, `[auth:<id>]`, `[briefing:<id>]`, and the artifact forms resolve to links; only `[issue:...]` references are recorded as relationships. Every entity has a web link, `https://app.mandible.localhost:19420/<kind>/<ref>`; the same link with `/r` before the kind hands that path to the desktop app.
 
 ### Issues
 

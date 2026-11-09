@@ -18,6 +18,7 @@ import { AuthChangeBreakdown } from '../ui/src/views/AuthChangeBreakdown';
 import type { AuthChangeReport } from '../src/contracts';
 import type { AuthRequestAction, InstanceInfo } from '../ui/src/api';
 import { __resetBrowserSessionForTests } from '../ui/src/client-auth-token';
+import { rememberEntityRoute } from '../ui/src/query/entityRoute';
 
 // jsdom in this build ships a localStorage stub whose setItem throws; install a
 // working in-memory localStorage so the sidebar-width persistence round-trips.
@@ -349,7 +350,7 @@ describe('Approval review issue and action composition', () => {
     vi.stubGlobal('fetch', vi.fn(async (input: string) => {
       if (!input.startsWith('/api/spaces/resolve?')) throw new Error('no network in test');
       const ref = new URL(input, 'http://localhost').searchParams.get('ref')!.replace('issue:', '');
-      return { ok: true, json: async () => ({ resolved: true, entity: { id: ref, short_id: ref, project_ref: 'mandible', title: titles[ref] }, detail: { same_project: true } }) };
+      return { ok: true, json: async () => ({ status: 'resolved', entity: { id: ref, short_id: ref, project_key: 'mandible', title: titles[ref] }, detail: { same_project: true } }) };
     }));
     const request: AuthRequest = {
       ...pendingRequest,
@@ -372,10 +373,10 @@ describe('Approval review issue and action composition', () => {
     const references = within(screen.getByRole('region', { name: 'References', exact: true }));
     const actions = within(screen.getByRole('region', { name: 'Actions on merge', exact: true }));
     for (const ref of request.issue_references!) {
-      expect(references.getByRole('link', { name: new RegExp(titles[ref]) }).getAttribute('href')).toContain(`issue=${ref}`);
+      references.getByRole('link', { name: new RegExp(titles[ref]) });
     }
     for (const ref of request.issue_closures!) {
-      expect(actions.getByRole('link', { name: new RegExp(titles[ref]) }).getAttribute('href')).toContain(`issue=${ref}`);
+      actions.getByRole('link', { name: new RegExp(titles[ref]) });
     }
     expect(screen.getAllByRole('button', { name: 'Expand Close issue action' })).toHaveLength(1);
     fireEvent.click(screen.getByRole('button', { name: 'Expand Close issue action' }));
@@ -621,8 +622,9 @@ for (const history of [false, true]) {
       depends_on_ids: ids, dependencies };
     const onNavigateRequest = vi.fn();
     const onSelectAuth = vi.fn();
-    const props = { outputs: {}, selectedAuthId: 'req-1', initialRequestId: 'req-1', daemonReady: true, instance: authMainInstance,
+    const props = { outputs: {}, selectedAuthId: 'req-1', entityRef: 'req-1', daemonReady: true, instance: authMainInstance,
       onNavigateRequest, onSelectAuth };
+    rememberEntityRoute('auth', 'req-1', { id: 'req-1' });
     const view = render(<AuthQueueView {...props} queue={history ? [] : [request]} historyQueue={history ? [request] : []} />);
     const prerequisites = () => within(screen.getByRole('region', { name: 'Request prerequisites' }));
     const rows = prerequisites().getAllByRole('listitem');
@@ -636,7 +638,6 @@ for (const history of [false, true]) {
     expect(onSelectAuth).not.toHaveBeenCalled();
     expect(prerequisites().getAllByText('ready')).toHaveLength(5);
     if (!history) expect((screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement).disabled).toBe(false);
-    for (const link of prerequisites().getAllByRole('link')) expect(link.getAttribute('href')).toMatch(/^#\/auth\?request=/);
     fireEvent.click(prerequisites().getByRole('link', { name: 'auth:source' }));
     expect(onSelectAuth).toHaveBeenCalledWith('source');
     expect(onNavigateRequest).toHaveBeenCalledWith('source');

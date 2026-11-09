@@ -42,14 +42,14 @@ it("keeps file content out of provider prose while delivering annotation text an
   const attachments = store.resolve([
     { kind: "file", file },
     { kind: "annotation", id: "a1", ordinal: 1, text: "Make this clearer", target: {
-      url: "http://localhost:19420/#/chat", rect: { x: 1, y: 2, width: 3, height: 4 }, viewport: { width: 800, height: 600 }, element_text: "Send",
+      url: "http://localhost:19420/console", rect: { x: 1, y: 2, width: 3, height: 4 }, viewport: { width: 800, height: 600 }, element_text: "Send",
       element: "button", selector: "main > button.send", source_file: "ui/src/views/conversations.tsx",
       react_components: "ChatComposer", selected_text: "Send", css_classes: "send primary", computed_styles: "padding: 8px",
     }, screenshot },
   ]);
   const context = attachmentProviderContext("Review", attachments, dbPath);
   expect(context.text).toContain("Make this clearer");
-  expect(context.text).toContain("Page URL: http://localhost:19420/#/chat");
+  expect(context.text).toContain("Page URL: http://localhost:19420/console");
   expect(context.text).toContain("Location: main > button.send");
   expect(context.text).toContain("React: ChatComposer");
   expect(context.text).toContain("Computed styles: padding: 8px");

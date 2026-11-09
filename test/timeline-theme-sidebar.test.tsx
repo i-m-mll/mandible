@@ -34,7 +34,7 @@ describe('Timeline theme switching preserves sidebar intent', () => {
     ]);
     const events = stubEventSource();
     window.__MANDIBLE_BOOTSTRAP__ = { instance: previewInstance };
-    window.history.replaceState(null, '', '#/timeline?project=mandible&unknown=keep');
+    window.history.replaceState(null, '', '/timeline?project=mandible&unknown=keep');
     const view = render(<App />);
     if (width < 700) {
       await screen.findByRole('button', { name: 'Show view sidebar' });
@@ -43,29 +43,29 @@ describe('Timeline theme switching preserves sidebar intent', () => {
     await screen.findByRole('button', { name: 'Hide view sidebar' });
     await screen.findByRole('complementary', { name: 'Timeline controls' });
     await screen.findByRole('button', { name: 'App theme: Light. Switch to Dark' });
-    const hash = location.hash;
+    const hash = `${location.pathname}${location.search}`;
     const sidebar = screen.getByRole('complementary', { name: 'Timeline controls' });
     for (const [mode, label] of [['dark', 'Dark. Switch to System'], ['system', 'System. Switch to Light'], ['light', 'Light. Switch to Dark']]) {
       fireEvent.click(screen.getByRole('button', { name: /^App theme:/ }));
       await waitFor(() => expect(document.documentElement.dataset.themeMode).toBe(mode));
       await screen.findByRole('button', { name: `App theme: ${label}` });
-      expect(location.hash).toBe(hash);
+      expect(`${location.pathname}${location.search}`).toBe(hash);
       expect(screen.getByRole('complementary', { name: 'Timeline controls' })).toBe(sidebar);
       expect(screen.getByRole('button', { name: 'Hide view sidebar' })).toBeTruthy();
       act(() => events.emit({ type: 'settings:updated', data: { settings: { app_theme: mode } } }));
-      expect(location.hash).toBe(hash);
+      expect(`${location.pathname}${location.search}`).toBe(hash);
     }
     if (width > 700) {
       setViewportWidth(640);
       await screen.findByRole('button', { name: 'Show view sidebar' });
-      expect(location.hash).toBe(hash + '&sidebar=hidden');
+      expect(`${location.pathname}${location.search}`).toBe(hash + '&sidebar=hidden');
       expect(screen.queryByRole('complementary', { name: 'Timeline controls' })).toBeNull();
       fireEvent.click(screen.getByRole('button', { name: 'Show view sidebar' }));
       await screen.findByRole('button', { name: 'Hide view sidebar' });
       setViewportWidth(640);
       fireEvent.click(screen.getByRole('button', { name: /^App theme:/ }));
       await screen.findByRole('button', { name: 'App theme: Dark. Switch to System' });
-      expect(location.hash).toBe(hash);
+      expect(`${location.pathname}${location.search}`).toBe(hash);
       expect(screen.getByRole('complementary', { name: 'Timeline controls' })).toBeTruthy();
     }
     view.unmount();

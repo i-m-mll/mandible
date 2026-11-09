@@ -8,6 +8,12 @@ import { bindAuthUiOperations } from './helpers/auth-ui-fixture';
 
 beforeEach(() => bindAuthUiOperations(mainInstance));
 import { AuthQueueView } from '../ui/src/views/auth';
+import { rememberEntityRoute } from '../ui/src/query/entityRoute';
+
+function routedAuth(id: string): string {
+  rememberEntityRoute('auth', id, { id });
+  return id;
+}
 
 describe('AuthQueueView', () => {
 
@@ -23,12 +29,12 @@ describe('AuthQueueView', () => {
       diff_summary: '', spec_content: '', output: '',
     };
     const view = render(h(AuthQueueView, {
-      queue: [completed, pending], outputs: {}, initialRequestId: completed.id,
+      queue: [completed, pending], outputs: {}, entityRef: routedAuth(completed.id),
       onApprove: () => undefined, onReject: () => undefined,
     }));
     await waitFor(() => expect(document.querySelector('[data-request-id="req-retained-final"]')?.getAttribute('aria-current')).toBe('true'));
     view.rerender(h(AuthQueueView, {
-      queue: [{ ...completed, status: 'completed' }, pending], outputs: {}, initialRequestId: completed.id,
+      queue: [{ ...completed, status: 'completed' }, pending], outputs: {}, entityRef: routedAuth(completed.id),
       onApprove: () => undefined, onReject: () => undefined,
     }));
 
@@ -43,17 +49,17 @@ describe('AuthQueueView', () => {
     const finalized = { id: 'req-deep-final', title: 'Deep final', repo: 'mandible', status: 'pending' };
     const next = { id: 'req-deep-next', title: 'Deep next', repo: 'mandible', status: 'pending' };
     const view = render(h(AuthQueueView, {
-      queue: [finalized, next], outputs: {}, initialRequestId: finalized.id,
+      queue: [finalized, next], outputs: {}, entityRef: routedAuth(finalized.id),
       onApprove: () => undefined, onReject: () => undefined,
     }));
     view.rerender(h(AuthQueueView, {
-      queue: [{ ...finalized, status: 'completed' }, next], outputs: {}, initialRequestId: finalized.id,
+      queue: [{ ...finalized, status: 'completed' }, next], outputs: {}, entityRef: routedAuth(finalized.id),
       onApprove: () => undefined, onReject: () => undefined,
     }));
     await waitFor(() => expect(window.sessionStorage.getItem('mandible.auth.retained-finalized-selection')).toBe(finalized.id));
 
     view.rerender(h(AuthQueueView, {
-      queue: [{ ...finalized, status: 'completed' }, next], outputs: {}, initialRequestId: next.id,
+      queue: [{ ...finalized, status: 'completed' }, next], outputs: {}, entityRef: routedAuth(next.id),
       onApprove: () => undefined, onReject: () => undefined,
     }));
 
@@ -65,13 +71,13 @@ describe('AuthQueueView', () => {
     const finalized = { id: 'req-filter-final', title: 'Filter final', repo: 'mandible', status: 'pending' };
     const next = { id: 'req-filter-next', title: 'Filter next', repo: 'mandible', status: 'pending' };
     const view = render(h(AuthQueueView, {
-      queue: [finalized, next], historyQueue: [], outputs: {}, initialRequestId: finalized.id,
+      queue: [finalized, next], historyQueue: [], outputs: {}, entityRef: routedAuth(finalized.id),
       onApprove: () => undefined, onReject: () => undefined,
     }));
     view.rerender(h(AuthQueueView, {
       queue: [{ ...finalized, status: 'completed' }, next],
       historyQueue: [{ ...finalized, status: 'completed' }],
-      outputs: {}, initialRequestId: finalized.id,
+      outputs: {}, entityRef: routedAuth(finalized.id),
       onApprove: () => undefined, onReject: () => undefined,
     }));
     await waitFor(() => expect(window.sessionStorage.getItem('mandible.auth.retained-finalized-selection')).toBe(finalized.id));

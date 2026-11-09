@@ -9,9 +9,9 @@ import {
   compactArtifactRef,
   displayResourceRef,
   resourceRefHref,
-  seriesDetailHref,
   versionDetailHref,
 } from '../../resource-refs';
+import { viewHref } from '../../routing';
 import type {
   LedgerIssueDetailAssociatedArtifact,
   LedgerIssueDetailArtifactLink,
@@ -31,6 +31,7 @@ import { DetailPaneMenuTrigger } from '../shared/DetailPaneMenuTrigger';
 import { DetailPaneModal } from '../shared/DetailPaneModal';
 import { DetailPaneShell, type DetailPanePresentation } from '../shared/DetailPaneShell';
 import { CollapsiblePanel } from '../shared/CollapsiblePanel';
+import { StatusPill } from './StatusPill';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 import {
   LEDGER_ISSUE_RESOLUTIONS,
@@ -642,7 +643,7 @@ function artifactLinkHref(
   artifact: LedgerIssueDetailAssociatedArtifact,
   link: LedgerIssueDetailArtifactLink | null,
   authoredRef: string | null,
-): string {
+): string | undefined {
   if (authoredRef) return resourceRefHref(authoredRef);
   if (!link) return artifact.ref ? resourceRefHref(artifact.ref) : artifactDetailHref(artifact.id);
   if (link.target_id) return resourceRefHref(link.target_id);
@@ -653,7 +654,7 @@ function artifactLinkHref(
       ? logicalArtifactRefFromSeriesId(link.series_id)
       : null;
   if (link.link_kind === 'living') {
-    return seriesRef ? seriesDetailHref(seriesRef) : artifactDetailHref(artifact.id);
+    return artifactDetailHref(seriesRef ?? artifact.id);
   }
 
   return seriesRef && typeof link.resolved_version_no === 'number'
@@ -789,7 +790,7 @@ function IssueActionsMenu({
             <a
               className="ledger-issue-actions-menu__item"
               role="menuitem"
-              href={`#/console?session=${encodeURIComponent(liveSession.id)}`}
+              href={viewHref('console', { session: liveSession.id })}
               onClick={onClose}
             >
               Open Console
@@ -1028,35 +1029,6 @@ function timelineRank(entry: RenderTimelineEntry): number {
   if (entry.kind === 'auth') return 2;
   if (entry.kind === 'checkpoint') return 3;
   return 4;
-}
-
-function StatusPill({
-  status,
-  resolution,
-  linkedAuth,
-  onOpenAuth,
-  size = 'lg',
-}: {
-  status: string;
-  resolution: string | null;
-  linkedAuth?: LedgerIssueDetailAuthRequest;
-  onOpenAuth?: (auth: LedgerIssueDetailAuthRequest) => void;
-  // The header pill is the pane's headline status and stays large. Inline row
-  // pills (the umbrella children shelf) take the base size so a row keeps the
-  // same height as every other ledger row.
-  size?: 'sm' | 'lg';
-}): JSX.Element {
-  const label = status === 'closed' && resolution ? `${status}: ${resolution}` : status;
-  const cls = status === 'open' ? 'status-pill--success' : resolution === 'delivered' ? 'status-pill--merged' : 'status-pill--dismissed';
-  const sizeCls = size === 'lg' ? ' status-pill--lg' : '';
-  if (linkedAuth && onOpenAuth) {
-    return (
-      <button type="button" className={`status-pill${sizeCls} ledger-status-button ${cls}`} onClick={() => onOpenAuth(linkedAuth)}>
-        {label}
-      </button>
-    );
-  }
-  return <span className={`status-pill${sizeCls} ${cls}`}>{label}</span>;
 }
 
 function TimelineEntryCard({

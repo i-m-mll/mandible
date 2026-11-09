@@ -383,11 +383,22 @@ export type AuthRequestType = (typeof AUTH_REQUEST_TYPES)[number];
  * Issue 7d83fe5 — candidate acceptance of a runtime self-update request's
  * current candidate. `stale`: the latest run was for a different candidate.
  */
+/** One stage of a candidate acceptance run; a running stage's elapsed time is up to now. */
+export interface CandidateAcceptancePhase {
+  name: string;
+  status: string;
+  elapsed_ms: number | null;
+  expected_ms: number | null;
+}
+
 export interface CandidateAcceptanceProjection {
   state: "none" | "running" | "passed" | "failed" | "stale";
   reason: string | null;
   started_at: number | null;
   finished_at: number | null;
+  /** Stages over their expected duration, and a run over its expected total; never a failure. */
+  warnings: string[];
+  phases: CandidateAcceptancePhase[];
 }
 
 /** Issue 117ba80 — one protected-base commit that is neither a recorded Mandible merge nor operator-signed. */
@@ -1167,6 +1178,9 @@ export type ResolvedArtifactIdentity = ArtifactIdentityBase & { status: "resolve
       logical_artifact: null; artifact_version: null; artifact_blob: ArtifactBlobRecord }
 );
 
+/** A target an ambiguous artifact ref could name. */
+export type ArtifactIdentityCandidate = { target_type: CanonicalArtifactTargetType; id: string };
+
 export interface FailedArtifactIdentity extends ArtifactIdentityBase {
   status: "unresolved" | "ambiguous" | "unsupported";
   kind: "unresolved" | "ambiguous" | "unsupported";
@@ -1176,6 +1190,7 @@ export interface FailedArtifactIdentity extends ArtifactIdentityBase {
   logical_artifact: ArtifactIdentityRecord | null;
   artifact_version: null;
   artifact_blob: null;
+  candidates: ArtifactIdentityCandidate[];
 }
 
 export type ArtifactIdentityResolution = ResolvedArtifactIdentity | FailedArtifactIdentity;
@@ -1559,14 +1574,28 @@ export type SpaceFactPacket = {
 
 export type ResolverRefKind = 'issue' | 'comment' | 'auth' | 'briefing' | 'artifact' | 'mandible' | 'repo' | 'submission' | 'unknown';
 
-export type ResolverResult = {
-  ref: string;
-  kind: ResolverRefKind;
-  resolved: boolean;
-  entity: Record<string, unknown> | null;
-  detail?: Record<string, unknown> | null;
-  error?: string;
-};
+/** One candidate of an ambiguous ref: its shortest unambiguous ref, which opens it at `/<kind>/<ref>`. */
+/**
+ * One candidate of an ambiguous ref, with the facets its kind's list row shows
+ * so a reader can tell same-prefix candidates apart.
+ */
+export type ResolverMatch = { ref: string; title: string | null; updated_at: number } & (
+  | { kind: "issue"; project: string | null; status: string; resolution: string | null }
+  | { kind: "auth"; repo: string | null; type: string | null; status: string }
+  | { kind: "artifact"; role: string | null }
+  | { kind: "briefing" }
+);
+
+export const RESOLVER_MATCH_LIMIT = 50;
+
+type ResolverResultBase = { ref: string; kind: ResolverRefKind; detail?: Record<string, unknown> | null };
+
+export type ResolverResult = ResolverResultBase & (
+  | { status: "resolved"; entity: Record<string, unknown> }
+  | { status: "not_found"; entity: null; error?: string }
+  /** The most recently updated candidates, at most `RESOLVER_MATCH_LIMIT`, of `total`. */
+  | { status: "ambiguous"; entity: null; matches: ResolverMatch[]; total: number }
+);
 
 export type ResolveRefResponse = { resolution: ResolverResult };
 

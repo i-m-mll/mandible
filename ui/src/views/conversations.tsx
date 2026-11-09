@@ -1,7 +1,6 @@
 import { readingManifestOptions } from '../query/readingPresentation';
 import { NativeSelect } from '../components/shared/NativeSelect';
 import { Icon } from '../components/icons/Icon';
-import { navigateAppHash } from '../app-history';
 import type { ComponentChildren, Ref } from 'preact';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { CancelledError, isCancelledError, useQuery, useQueryClient } from '@tanstack/preact-query';
@@ -150,8 +149,8 @@ import {
 import { useAppRightSidebarState } from '../right-sidebar-state';
 import type { ChatEntityClickAction } from '../../../src/contracts';
 import { subscribeClientAccessState } from '../client-auth-token';
-import { parseRouteFromHash, replaceRouteHash, routeHashWithParams } from '../routing';
-import { conversationAnchorFromHash, messageLinkUrl, type ConversationAnchor } from '../chat/messageLinks';
+import { currentRoute, navigateTo, replaceRoute, routeWithParams, viewHref } from '../routing';
+import { conversationAnchorFromSearch, messageLinkUrl, type ConversationAnchor } from '../chat/messageLinks';
 import {
   flattenConversationTranscript,
   reconcileConversationWindow,
@@ -833,12 +832,12 @@ function reconcileControlSnapshot(
   return incoming;
 }
 
-export { conversationAnchorFromHash, conversationAnchorHref } from '../chat/messageLinks';
+export { conversationAnchorFromSearch, conversationAnchorHref } from '../chat/messageLinks';
 export type { ConversationAnchor } from '../chat/messageLinks';
 
-export function conversationLatestHref(currentHash: string, conversationId: string): string {
-  return routeHashWithParams(currentHash, 'console', { conversation: conversationId },
-    ['conversation', 'session', 'block', 'turn', 'position']);
+export function conversationLatestHref(conversationId: string, currentSearch = window.location.search): string {
+  return routeWithParams({ kind: 'view', tab: 'console' }, { conversation: conversationId },
+    ['conversation', 'session', 'block', 'turn', 'position'], currentSearch);
 }
 
 // ── Props ──
@@ -1951,7 +1950,7 @@ export function ConversationDetail({
       if (selectionRef.current.generation !== selectionGeneration) return;
       setEffectiveAnchor(null);
       if (windowTarget.kind === 'initial') queryClient.setQueryData(conversationRequestKey, latest);
-      replaceRouteHash(conversationLatestHref(window.location.hash, conversationId));
+      replaceRoute(conversationLatestHref(conversationId));
 
     } catch (err) {
       if (controller.signal.aborted) return;
@@ -2407,10 +2406,7 @@ export function ConversationDetail({
 
   const navigateToGraph = useCallback(() => {
     const sessionId = linkedConsoleSession?.id ?? conversation?.session_id;
-    const focus = sessionId ? `session:${sessionId}` : undefined;
-    const params = new URLSearchParams({ mode: 'activity' });
-    if (focus) params.set('focus', focus);
-    navigateAppHash(`#/graph?${params.toString()}`);
+    navigateTo(viewHref('graph', { mode: 'activity', focus: sessionId ? `session:${sessionId}` : null }));
   }, [conversation?.session_id, linkedConsoleSession?.id]);
 
   const retryLoad = useCallback(() => {
@@ -2598,7 +2594,7 @@ export function ConversationDetail({
                     type="button"
                     role="menuitem"
                     onClick={() => {
-                      navigateAppHash(`#/console?session=${encodeURIComponent(linkedConsoleSession.id)}`);
+                      navigateTo(viewHref('console', { session: linkedConsoleSession.id }));
                       setActionsOpen(false);
                     }}
                   >
@@ -2864,7 +2860,7 @@ export function ConversationDetail({
             onJumpToLatest={() => {
               setEffectiveAnchor(null);
               setNavigationError(null);
-              replaceRouteHash(conversationLatestHref(window.location.hash, conversationId));
+              replaceRoute(conversationLatestHref(conversationId));
             }}
             jumpingToLatest={jumpingToLatest}
             navigationTarget={navigationTarget}
@@ -3103,9 +3099,9 @@ export function ConversationsView({
   [initialConversationId, initialSessionId]);
   const routeAnchorRef = useRef<ConversationAnchor | null>(null);
   if (routeParams) {
-    routeAnchorRef.current = conversationAnchorFromHash(`?${new URLSearchParams(routeParams)}`);
-  } else if (chatViewActive && parseRouteFromHash(window.location.hash).tab === 'console') {
-    routeAnchorRef.current = conversationAnchorFromHash(window.location.hash);
+    routeAnchorRef.current = conversationAnchorFromSearch(new URLSearchParams(routeParams).toString());
+  } else if (chatViewActive && currentRoute().tab === 'console') {
+    routeAnchorRef.current = conversationAnchorFromSearch(window.location.search);
   }
   const routeAnchor = routeAnchorRef.current;
   const routeIdentity = JSON.stringify([routeTarget, routeAnchor]);
@@ -3141,17 +3137,17 @@ export function ConversationsView({
   }, []);
   const navigateChatRoute = useCallback((target: { type: 'conversation' | 'session'; id: string } | null, anchor?: ConversationAnchor, replace = false) => {
     const anchorParams = anchor && 'position' in anchor ? { position: String(anchor.position) } : anchor;
-    const nextHash = routeHashWithParams(window.location.hash, 'console', {
+    const nextHref = routeWithParams({ kind: 'view', tab: 'console' }, {
       ...(target ? { [target.type]: target.id } : {}),
       ...(anchorParams ?? {}),
     }, ['conversation', 'session', 'block', 'turn', 'position']);
-    // The hash changes before the app publishes new target props. Keep that
+    // The URL changes before the app publishes new target props. Keep that
     // intermediate render inside the deliberate row action's intent.
     if (!selectionIntent.current.routeParams) {
       routeIntent.current.identity = JSON.stringify([selectionIntent.current.routeTarget, anchor ?? null]);
     }
-    if (replace) replaceRouteHash(nextHash);
-    else if (window.location.hash !== nextHash) navigateAppHash(nextHash);
+    if (replace) replaceRoute(nextHref);
+    else navigateTo(nextHref);
   }, []);
   const overrideRouteWithFilter = useCallback(() => {
     setSelection(selectionIntent.current.selection);

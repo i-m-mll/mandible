@@ -4,7 +4,7 @@ export const DEFAULT_ARTIFACT_ID_PREFIX_LENGTH = 12;
 
 export type ArtifactResolutionMode = "strict-read" | "surface" | "link";
 export type {
-  CanonicalArtifactTargetType, ArtifactIdentityKind, ArtifactRequestedKind,
+  CanonicalArtifactTargetType, ArtifactIdentityCandidate, ArtifactIdentityKind, ArtifactRequestedKind,
   ResolvedArtifactIdentity, FailedArtifactIdentity, ArtifactIdentityResolution,
   ArtifactCustody, ArtifactMaterializationTarget, ArtifactMaterializationError, ArtifactMaterializationResult,
 } from "./contracts.js";
