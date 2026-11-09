@@ -7,8 +7,8 @@ pub struct CandidateAcceptance {
     pub origin: String,
     pub nonce: String,
     pub home: PathBuf,
-    #[serde(rename = "workUntil")]
-    pub work_until: u64,
+    #[serde(rename = "stepIdleMs")]
+    pub step_idle_ms: u64,
 }
 
 fn accepts_origin(url: &tauri::Url, origin: &str) -> bool {
@@ -28,8 +28,8 @@ pub fn configuration() -> Result<Option<CandidateAcceptance>, String> {
     let url = tauri::Url::parse(&config.origin).map_err(|e| e.to_string())?;
     if !accepts_origin(&url, &config.origin)
         || config.nonce.len() != 64
-        || config.work_until == 0
-        || config.work_until > 9_007_199_254_740_991
+        || config.step_idle_ms == 0
+        || config.step_idle_ms > 600_000
         || !config.home.is_absolute()
         || config.home != crate::mandible_home()
         || !crate::isolated_home_selected()
@@ -102,8 +102,8 @@ pub fn page_loaded(
     let script = include_str!("acceptance-interaction.js")
         .replace("__MANDIBLE_ACCEPTANCE_NONCE__", &nonce)
         .replace(
-            "__MANDIBLE_ACCEPTANCE_WORK_UNTIL__",
-            &config.work_until.to_string(),
+            "__MANDIBLE_ACCEPTANCE_STEP_IDLE_MS__",
+            &config.step_idle_ms.to_string(),
         );
     if let Err(error) = webview.eval(&script) {
         eprintln!("candidate_acceptance_eval_failed: {error}");

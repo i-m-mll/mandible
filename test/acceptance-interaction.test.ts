@@ -7,7 +7,7 @@ import { expect, it } from 'vitest';
 const source = fs.readFileSync(new URL('../src-tauri/src/acceptance-interaction.js', import.meta.url), 'utf8');
 
 function interaction() {
-  const workUntil = 1000;
+  const stepIdleMs = 1000;
   let now = 100;
   let reloads = 0;
   const state = { setup: undefined as string | undefined, theme: 'dark', revision: 1 };
@@ -37,7 +37,7 @@ function interaction() {
     });
     try {
       await vm.runInNewContext(source.replace('__MANDIBLE_ACCEPTANCE_NONCE__', JSON.stringify('nonce'))
-        .replace('__MANDIBLE_ACCEPTANCE_WORK_UNTIL__', String(workUntil)), {
+        .replace('__MANDIBLE_ACCEPTANCE_STEP_IDLE_MS__', String(stepIdleMs)), {
         window: { __TAURI__: { core: { invoke: async (_command: string, { evidence }: { evidence: Record<string, unknown> }) => { reports.push(evidence); } } } },
         document, location, Event: dom.window.Event, AbortController,
         sessionStorage: { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value) },
@@ -60,12 +60,12 @@ function interaction() {
       });
     } finally { dom.window.close(); }
   };
-  return { page, reports, state, timers, fetches, bodyEntered, workUntil,
+  return { page, reports, state, timers, fetches, bodyEntered,
     get reloads() { return reloads; }, set now(value: number) { now = value; },
     blockBody: () => { blockBody = true; } };
 }
 
-it('preserves the persistence checks while both reloads retain the owned absolute deadline', async () => {
+it('preserves the persistence checks across both reloads', async () => {
   const complete = interaction();
   await complete.page();
   await complete.page();
@@ -75,30 +75,18 @@ it('preserves the persistence checks while both reloads retain the owned absolut
   expect(complete.reports).toMatchObject([{ passed: true, rendered: true,
     edit: { before: 'dark', after: 'light', revision: 2 },
     setup: { skipped: 'skipped', completed: 'complete', reloads: 2, promptDismissedAfterReload: true, integrationsUnchanged: true } }]);
-  for (const reload of [1, 2]) {
-    const expired = interaction();
-    for (let page = 0; page < reload; page += 1) await expired.page();
-    const requests = expired.fetches.length;
-    expired.now = expired.workUntil;
-    await expired.page();
-    expect(expired.reloads).toBe(reload);
-    expect(expired.fetches).toHaveLength(requests);
-    expect(expired.reports).toMatchObject([{ passed: false, error: expect.stringContaining('deadline exceeded') }]);
-  }
 });
 
-it('bounds an unfinished response body by the same remaining work budget', async () => {
+// 'step hung' is the marker candidate-acceptance.mjs classifies as a hang rather than a branch failure.
+it('aborts a response body that never arrives and reports the step as hung', async () => {
   const f = interaction();
-  f.now = 975;
   f.blockBody();
   const page = f.page();
   const signal = await f.bodyEntered.promise;
-  expect([...f.timers.values()].map(timer => timer.delay)).toEqual([25]);
-  f.now = f.workUntil;
-  [...f.timers.values()][0].callback();
+  for (const timer of [...f.timers.values()]) timer.callback();
   await page;
   expect(signal.aborted).toBe(true);
-  expect(f.reports).toMatchObject([{ passed: false, error: expect.stringContaining('deadline exceeded') }]);
+  expect(f.reports).toMatchObject([{ passed: false, error: expect.stringContaining('step hung') }]);
   expect(f.timers.size).toBe(0);
   expect(f.reloads).toBe(0);
 });

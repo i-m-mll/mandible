@@ -338,3 +338,25 @@ it("counts parent RSS only when requested and reports failed ps samples", () => 
     process.env.PATH = previousPath;
   }
 });
+
+it('lets a slow command that keeps printing finish, and stops a silent one with its descendants', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-idle-'));
+  temporaryRoots.push(root);
+  const slow = await runSupervisedCommand(process.execPath, ['-e', `
+    let n = 0; const timer = setInterval(() => { process.stdout.write('.'); if (++n === 10) clearInterval(timer); }, 100);
+  `], { capture: true, idleMs: 300, graceMs: 100 });
+  expect(slow).toMatchObject({ code: 0, processGroupSettled: true });
+  expect(slow.durationMs).toBeGreaterThan(300);
+
+  const childFile = path.join(root, 'child');
+  const silent = await runSupervisedCommand(process.execPath, ['-e', `
+    const ticker = setInterval(() => { process.stdout.write('.'); if (require('node:fs').existsSync(${JSON.stringify(childFile)})) clearInterval(ticker); }, 50);
+    require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(`
+      require('node:fs').writeFileSync(${JSON.stringify(childFile)}, String(process.pid));
+      setInterval(() => {}, 1000);
+    `)}], { stdio: 'ignore' });
+    setInterval(() => {}, 1000);
+  `], { capture: true, idleMs: 300, graceMs: 100 }).then(() => { throw new Error('Silent command unexpectedly succeeded'); }, error => error);
+  expect(silent).toMatchObject({ code: 'HUNG', processGroupSettled: true });
+  expect(isAlive(Number(fs.readFileSync(childFile, 'utf8')))).toBe(false);
+});

@@ -80,7 +80,9 @@ export async function observeRuntimeHealthCoverage<T>(options: {
   const enteredAt = now();
   const startedAt = options.live?.startedAt ?? enteredAt;
   const mustCover = startedAt + (options.observationMs ?? 31_000);
-  const deadline = enteredAt + (options.deadlineMs ?? 62_000);
+  // Without a deadline the observation is unbounded; a live observation then
+  // fails as stale once a probe answers without a newer current sample.
+  const deadline = options.deadlineMs === undefined ? Infinity : enteredAt + options.deadlineMs;
   let probeStartedAt = enteredAt;
   let value: T;
   try {
@@ -100,6 +102,9 @@ export async function observeRuntimeHealthCoverage<T>(options: {
     const health = options.healthOf(value);
     for (const name of ["eventLoop", "memory"] as const) updateIntervalCoverage(trackers[name], health[name], name, startedAt, now());
     if (options.live) validateCurrentCoverage(health, previousCurrent, startedAt, now());
+    if (options.live && !Number.isFinite(deadline) && previousCurrent && health.current!.observedAt <= previousCurrent.observedAt) {
+      throw new RuntimeHealthObservationError("stale_diagnostics", "Runtime diagnostics answered without a newer current sample, so they are no longer fresh.", { startedAt, mustCover, deadline, initialSample: firstHealth, lastSample: health });
+    }
     const assessments = [assessRuntimeHealth(health), ...(options.live ? [assessRuntimeHealth(health.current!)] : [])];
     const assessment = { defects: assessments.flatMap(value => value.defects), performance: assessments.flatMap(value => value.performance) };
     if (assessment.defects.length) throw new RuntimeHealthObservationError("invalid_diagnostics", assessment.defects[0]!.message, {
@@ -171,6 +176,7 @@ async function probeByDeadline<T>(
   deadline: number,
   now: () => number,
 ): Promise<T> {
+  if (!Number.isFinite(deadline)) return probe(deadline, new AbortController().signal);
   const remaining = deadline - now();
   if (remaining <= 0) throw new RuntimeHealthObservationError("observation_deadline", "Runtime health observation exceeded its fixed deadline.", { deadline });
   const controller = new AbortController();

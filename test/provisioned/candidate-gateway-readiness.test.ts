@@ -7,6 +7,7 @@ import net from 'node:net';
 import { execFileSync, spawn } from 'node:child_process';
 import { expect, it } from 'vitest';
 import { acceptanceGatewayConfig, acceptanceHealth, awaitAcceptanceGatewayReadiness, awaitReadiness, copyAcceptanceCa, loopbackListening } from '../../scripts/candidate-acceptance.mjs';
+import { ProgressWatch } from '../../scripts/acceptance-progress.mjs';
 import { pinnedCaddyBinary } from '../../scripts/pinned-caddy.mjs';
 import { STATE_DEADLINE_MS } from '../helpers/wait-until.js';
 
@@ -36,12 +37,12 @@ it.each(['cold', 'cached'])('validates the private HTTPS gateway with a %s leaf 
       env: { ...process.env, HOME: home, MANDIBLE_HOME: home }, stdio: ['ignore', fd, fd],
     });
     await awaitReadiness(() => loopbackListening(publicPort), () => true,
-      { timeout: STATE_DEADLINE_MS, interval: 1, description: 'Private gateway bind' });
+      { watch: new ProgressWatch({ stage: 'Private gateway bind', idleMs: STATE_DEADLINE_MS }), interval: 1, description: 'Private gateway bind' });
     const errors: Array<{ code: string }> = [];
     await expect(awaitAcceptanceGatewayReadiness(async () => {
       if (gateway!.exitCode !== null || gateway!.signalCode !== null) throw new Error('Private gateway exited.');
       return acceptanceHealth(origin, ca.rootCert);
-    }, value => value.ready, { timeout: STATE_DEADLINE_MS, interval: 1, description: 'Private gateway readiness',
+    }, value => value.ready, { watch: new ProgressWatch({ stage: 'Private gateway readiness', idleMs: STATE_DEADLINE_MS }), interval: 1, description: 'Private gateway readiness',
       onInitialTlsError: error => errors.push(error) })).resolves.toEqual({ ready: true });
     expect(errors.every(error => error.code === 'ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR')).toBe(true);
   } finally {

@@ -8,16 +8,15 @@ import net from 'node:net';
 import { spawn, spawnSync } from 'node:child_process';
 import { acceptanceApplicationPolicy, acceptanceSummary, compactAcceptanceResult, acceptanceScope, acceptanceOwnedOutputs, createAcceptanceHome, acceptanceGatewayConfig, acceptanceHealth, acceptanceFailureLogs, assessAcceptanceLogs, awaitAcceptanceGatewayReadiness, awaitReadiness, loopbackListening, observeAcceptanceHealth, stopOwned, finalizeAcceptance, interactionCompletion, verifyPackagedExports } from '../scripts/candidate-acceptance.mjs';
 import { acceptanceFailure, describeAcceptanceFailure } from '../scripts/acceptance-failure.mjs';
-import { acceptanceBudgetExhausted } from '../scripts/acceptance-deadline.mjs';
+import { acceptanceBackstop, acceptancePhases, ProgressWatch } from '../scripts/acceptance-progress.mjs';
 import { RuntimeHealthObservationError } from '../src/runtime-health-contract.ts';
 import { createHash } from 'node:crypto';
 import { createOwnedRun, saveOwnedMetadata, withOwnedRunLock } from '../scripts/owned-run.mjs';
 import { runSupervisedCommand } from '../scripts/process-group-supervisor.mjs';
 import { createAuthCheckRepo, createMigratedDb, insertSiblingMergeRequest } from './helpers/auth-queue-fixtures.js';
 import { readCandidateAcceptanceEvidence } from './helpers/candidate-acceptance-evidence.js';
-import { CandidateAcceptanceRuns, candidateAcceptanceOutcome } from '../src/candidate-acceptance.js';
+import { CandidateAcceptanceRuns, acceptanceScriptWatch, candidateAcceptanceOutcome, runAcceptanceCommand } from '../src/candidate-acceptance.js';
 import { STATE_DEADLINE_MS } from './helpers/wait-until.js';
-import { acceptanceDeadline } from '../scripts/acceptance-deadline.mjs';
 import { acceptanceResultPath, readAcceptanceFailure } from '../scripts/acceptance-result.mjs';
 
 it.skipIf(process.platform !== 'darwin')('self-execs once per PID while preserving argv, process group and the original candidate clock', () => {
@@ -29,18 +28,16 @@ it.skipIf(process.platform !== 'darwin')('self-execs once per PID while preservi
     import fs from 'node:fs';
     import { spawnSync } from 'node:child_process';
     import { acceptanceApplicationPolicy } from ${JSON.stringify(policyModule)};
-    const record = (event, budget) => {
+    const record = (event, startedAt) => {
       const group = spawnSync('/bin/ps', ['-o', 'pgid=', '-p', String(process.pid)], {encoding:'utf8',timeout:1000});
       if (group.status !== 0) throw Error(group.stderr);
       fs.appendFileSync(process.argv[2], JSON.stringify({event,pid:process.pid,pgid:group.stdout.trim(),
         execArgv:process.execArgv,argv:process.argv.slice(2),sentinel:process.env.ENTRY_FIXTURE_VALUE,
         marker:process.env.MANDIBLE_ACCEPTANCE_APPLICATION_POLICY_PID,
-        started:process.env.MANDIBLE_ACCEPTANCE_STARTED_AT,deadline:process.env.MANDIBLE_ACCEPTANCE_DEADLINE,
-        budget:budget?.reading()})+'\\n');
+        started:process.env.MANDIBLE_ACCEPTANCE_STARTED_AT,startedAt})+'\\n');
     };
     record('entry');
-    const budget = acceptanceApplicationPolicy();
-    record('ready', budget);
+    record('ready', acceptanceApplicationPolicy());
     if (process.argv[3] === 'parent') {
       const child = spawnSync(process.execPath, [...process.execArgv, import.meta.path, process.argv[2], 'child', ...process.argv.slice(4)],
         {env:process.env,encoding:'utf8',timeout:5000});
@@ -49,8 +46,6 @@ it.skipIf(process.platform !== 'darwin')('self-execs once per PID while preservi
   `);
   const env = { ...process.env, ENTRY_FIXTURE_VALUE: 'spaces and $literal', MANDIBLE_ACCEPTANCE_APPLICATION_POLICY_PID: 'stale-parent' };
   delete env.MANDIBLE_ACCEPTANCE_STARTED_AT;
-  delete env.MANDIBLE_ACCEPTANCE_DEADLINE;
-  delete env.MANDIBLE_ACCEPTANCE_CLOCK_SCOPE;
   try {
     const runtime = process.env.MANDIBLE_RUNTIME;
     if (!runtime) throw new Error('Candidate entry fixture requires the qualified Bun runtime');
@@ -72,24 +67,8 @@ it.skipIf(process.platform !== 'darwin')('self-execs once per PID while preservi
       expect(entries[1].execArgv).toEqual(['--smol', '--no-install']);
       expect(entries[1].sentinel).toBe('spaces and $literal');
     }
-    expect(ready[0].budget.deadline - ready[0].budget.started_at).toBe(60_000);
-    expect(ready[1].budget).toMatchObject({ started_at: ready[0].budget.started_at, deadline: ready[0].budget.deadline,
-      scope: 'candidate-script; installed executor preparation excluded' });
-    expect(ready[0].budget.scope).toBe(ready[1].budget.scope);
+    expect(ready[1].startedAt).toBe(ready[0].startedAt);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
-});
-
-it('rejects malformed or expired entry clocks before attempting resource normalization', () => {
-  const exec = vi.spyOn(process, 'execve');
-  try {
-    vi.stubEnv('MANDIBLE_ACCEPTANCE_STARTED_AT', 'invalid');
-    vi.stubEnv('MANDIBLE_ACCEPTANCE_DEADLINE', 'invalid');
-    expect(() => acceptanceApplicationPolicy()).toThrow('Invalid acceptance deadline');
-    vi.stubEnv('MANDIBLE_ACCEPTANCE_STARTED_AT', String(Date.now() - 60_000));
-    vi.stubEnv('MANDIBLE_ACCEPTANCE_DEADLINE', String(Date.now() - 1));
-    expect(() => acceptanceApplicationPolicy()).toThrow(expect.objectContaining({ code: 'acceptance_budget_exhausted', phase: 'total' }));
-    expect(exec).not.toHaveBeenCalled();
-  } finally { exec.mockRestore(); vi.unstubAllEnvs(); }
 });
 
 it('accepts an app completion written in the same millisecond as the check, and records the compared values when outside', () => {
@@ -106,8 +85,7 @@ it('attributes every acceptance failure to the branch, the environment, or eithe
   const verdicts = new Map([['candidate', 'points at the branch'], ['environment', 'not the branch'], ['either', 'can come from the branch or from the acceptance environment']]);
   for (const [error, stage, fault] of [
     [branch, 'package_verification', 'candidate'],
-    [acceptanceBudgetExhausted('preparation'), 'package_build', 'either'],
-    [Object.assign(new Error('bun run exceeded its stage deadline.'), { timedOut: true }), 'package_build', 'either'],
+    [Object.assign(new Error('bun run was stopped because it made no progress'), { code: 'HUNG' }), 'package_build', 'either'],
     [new Error('rm failed'), 'finalization', 'environment'],
     [new Error('git failed'), 'startup', 'environment'],
     [Object.assign(new Error('lock lost'), { code: 'PROCESS_LOCK_LOST' }), 'readiness', 'environment'],
@@ -120,32 +98,10 @@ it('attributes every acceptance failure to the branch, the environment, or eithe
   expect(describeAcceptanceFailure(new Error('HTTP 502'), 'readiness').text).toContain('HTTP 502');
 });
 
-it('inherits the preparation deadline without renewing its cleanup reserve', () => {
-  let now = 1000;
-  const executor = acceptanceDeadline({}, () => now);
-  now += 12_000;
-  const script = acceptanceDeadline(executor.env, () => now);
-  expect(script.deadline).toBe(executor.deadline);
-  expect(script.remaining()).toBe(43_000);
-  now = executor.deadline - 5000;
-  expect(() => script.remaining()).toThrow(expect.objectContaining({ code: 'acceptance_budget_exhausted', phase: 'work' }));
-  expect(script.remaining('report')).toBe(3000);
-  expect(script.remaining('total')).toBe(5000);
-  expect(script.reading().scope).toContain('executor');
-  expect(script.cutoffs).toEqual({ preparation: 46_000, readiness: 51_000, work: 56_000, report: 59_000, total: 61_000 });
-  now = script.cutoffs.preparation;
-  expect(() => script.remaining('preparation')).toThrow(expect.objectContaining({ code: 'acceptance_budget_exhausted', phase: 'preparation' }));
-  expect(script.remaining('readiness')).toBe(5000);
-  expect(script.remaining()).toBe(10_000);
-  now = executor.deadline;
-  expect(() => script.remaining('total')).toThrow(expect.objectContaining({ code: 'acceptance_budget_exhausted', phase: 'total' }));
-  expect(() => acceptanceDeadline({ MANDIBLE_ACCEPTANCE_DEADLINE: '90000', MANDIBLE_ACCEPTANCE_STARTED_AT: '1' }, () => 1)).toThrow('Invalid acceptance deadline');
-});
-
 it('retains an exact recorded primary failure through response loss without accepting stale or passing checkpoints', () => {
   const cache = fs.mkdtempSync(path.join(os.tmpdir(), 'acceptance-primary-'));
   const binding = { recordId: 'exact-run', requestId: 'request', projectId: 'project', workUnitId: 'unit',
-    pin_sha: 'p'.repeat(40), tree_sha: 't'.repeat(40), base_sha: 'b'.repeat(40), head_sha: 'h'.repeat(40), started_at: 1000, deadline: 61_000 };
+    pin_sha: 'p'.repeat(40), tree_sha: 't'.repeat(40), base_sha: 'b'.repeat(40), head_sha: 'h'.repeat(40), started_at: 1000 };
   const file = acceptanceResultPath(cache, binding.recordId);
   const primary = { schema: 'mandible-candidate-acceptance@1', status: 'failed', candidate: binding.pin_sha,
     binding: { ...binding, runId: binding.recordId }, error: 'Preparation consumed the reserved desktop budget.',
@@ -154,19 +110,19 @@ it('retains an exact recorded primary failure through response loss without acce
     failure: 'Candidate exceeded its stage deadline.', diagnostics: { code: 'STAGE_DEADLINE', timed_out: true, process_group_settled: true } };
   try {
     fs.mkdirSync(path.dirname(file)); saveOwnedMetadata(file, primary);
-    const result = candidateAcceptanceOutcome(binding.pin_sha, completion, readAcceptanceFailure(cache, binding), true);
+    const result = candidateAcceptanceOutcome(binding.pin_sha, completion, readAcceptanceFailure(cache, binding));
     expect(result).toMatchObject({ status: 'failed', error: primary.error, result: { error: primary.error, phases: primary.phases,
       subprocess: completion.diagnostics, secondary_errors: expect.arrayContaining([completion.failure, 'Lifecycle ownership lock was lost; stopping effects.']) } });
     const stale = readAcceptanceFailure(cache, { ...binding, tree_sha: 'another-tree' });
     expect(stale.result).toBeNull();
-    expect(candidateAcceptanceOutcome(binding.pin_sha, completion, stale, false)).toMatchObject({ status: 'failed',
+    expect(candidateAcceptanceOutcome(binding.pin_sha, completion, stale)).toMatchObject({ status: 'failed',
       error: 'Lifecycle ownership lock was lost; stopping effects.' });
-    expect(candidateAcceptanceOutcome(binding.pin_sha, { ...completion, failure: null, stderr: '{"incomplete":true}' }, readAcceptanceFailure(cache, binding), false).error).toBe(primary.error);
+    expect(candidateAcceptanceOutcome(binding.pin_sha, { ...completion, failure: null, stderr: '{"incomplete":true}' }, readAcceptanceFailure(cache, binding)).error).toBe(primary.error);
     saveOwnedMetadata(file, { ...primary, error: { message: primary.error } });
     expect(readAcceptanceFailure(cache, binding).result).toBeNull();
     saveOwnedMetadata(file, { ...primary, status: 'passed', error: null });
     expect(readAcceptanceFailure(cache, binding).result).toBeNull();
-    expect(candidateAcceptanceOutcome(binding.pin_sha, completion, readAcceptanceFailure(cache, binding), false).status).toBe('failed');
+    expect(candidateAcceptanceOutcome(binding.pin_sha, completion, readAcceptanceFailure(cache, binding)).status).toBe('failed');
   } finally { fs.rmSync(cache, { recursive: true, force: true }); }
 });
 
@@ -185,35 +141,6 @@ it('zero-soak acceptance still requires a fresh interval covering the completed 
   await expect(observeAcceptanceHealth({ observationMs: 0, deadlineMs: 20, now: () => time,
     wait: async () => { time += 5; }, probe: async () => health(1, 80, 90),
   })).rejects.toMatchObject({ code: 'stale_diagnostics' });
-});
-
-it.each(['before', 'during', 'within'] as const)('includes retained-package binding in the acceptance-row deadline (%s)', async stage => {
-  const db = createMigratedDb();
-  const repo = createAuthCheckRepo();
-  let now = 1000;
-  let bound = false;
-  try {
-    insertSiblingMergeRequest(db, repo, 'deadline-request', 'main');
-    const original = db.prepare("SELECT title FROM auth_requests WHERE id = 'deadline-request'").get();
-    const runs = new CandidateAcceptanceRuns(db, async input => {
-      expect(input.env.MANDIBLE_ACCEPTANCE_STARTED_AT).toBe('1000');
-      expect(input.env.MANDIBLE_ACCEPTANCE_DEADLINE).toBe('61000');
-      now = stage === 'before' ? 61000 : 59000;
-      return { status: 'passed', result: { status: 'passed' }, error: null };
-    }, () => now, () => {}, () => () => {
-      bound = true;
-      db.prepare("UPDATE auth_requests SET title = 'bound' WHERE id = 'deadline-request'").run();
-      now = stage === 'during' ? 61000 : 60000;
-    });
-    runs.enqueue('deadline-request', { pin_sha: 'pin', tree_sha: 'tree', base_sha: 'base', head_sha: 'head' },
-      () => ({ repoRoot: repo, pinSha: 'pin', projectId: 'project', workUnitId: 'unit', env: {} }));
-    await runs.idle();
-    const row = db.prepare("SELECT status, finished_at, error FROM auth_candidate_acceptances WHERE auth_request_id = 'deadline-request'").get() as any;
-    expect(row.status).toBe(stage === 'within' ? 'passed' : 'failed');
-    expect(row.finished_at).toBe(now);
-    expect(bound).toBe(stage !== 'before');
-    expect(db.prepare("SELECT title FROM auth_requests WHERE id = 'deadline-request'").get()).toEqual(stage === 'within' ? { title: 'bound' } : original);
-  } finally { db.close(); fs.rmSync(repo, { recursive: true, force: true }); }
 });
 
 describe('production acceptance evidence', () => {
@@ -280,20 +207,18 @@ describe('production acceptance evidence', () => {
     expect(assessAcceptanceLogs([runningError, text, closedDatabase].join('\n'), context).failures).toEqual([runningError, closedDatabase]);
   });
 
-  it('lets owned children finish beyond one second within the cleanup budget and force-stops an unresponsive child', async () => {
+  it('lets owned children finish beyond one second and force-stops an unresponsive child', async () => {
     await Promise.all([1100, null].map(async finishAfter => {
       const child = spawn(process.execPath, ['--eval',
         `process.on('SIGTERM', () => ${finishAfter === null ? '{}' : `setTimeout(() => process.exit(0), ${finishAfter})`}); process.stdout.write('ready'); setInterval(() => {}, 1000);`],
       { stdio: ['ignore', 'pipe', 'pipe'] });
-      const safety = setTimeout(() => child.kill('SIGKILL'), 3000);
+      const safety = setTimeout(() => child.kill('SIGKILL'), 6000);
       try {
         await new Promise<void>((resolve, reject) => { child.stdout.once('data', () => resolve()); child.once('error', reject); child.once('exit', () => reject(new Error('Child exited before readiness'))); });
-        const deadline = Date.now() + (finishAfter === null ? 1000 : 3000);
-        const remaining = () => Math.max(1, deadline - Date.now());
         if (finishAfter === null) {
-          await expect(stopOwned(child, remaining)).rejects.toThrow('did not exit after acceptance asked it to stop');
+          await expect(stopOwned(child)).rejects.toMatchObject({ acceptanceFault: 'either' });
           expect(child.signalCode).toBe('SIGKILL');
-        } else expect(await stopOwned(child, remaining)).toMatchObject({ pid: child.pid, signal: 'SIGTERM', exitCode: 0, exitSignal: null });
+        } else expect(await stopOwned(child)).toMatchObject({ pid: child.pid, signal: 'SIGTERM', exitCode: 0, exitSignal: null });
       } finally { clearTimeout(safety); if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); }
     }));
   });
@@ -331,30 +256,7 @@ it('requires a fresh clean diagnostics interval covering acceptance', async () =
     wait: async () => { time += 15; },
     probe: async () => ++probes === 1 ? initial : health(3, 105, 115),
   })).rejects.toMatchObject({ code: 'diagnostics_gap' });
-
-  time = 100;
-  probes = 0;
-  await expect(observeAcceptanceHealth({
-    observationMs: 10, deadlineMs: 20, now: () => time,
-    wait: async () => { time += 25; },
-    probe: async () => ++probes === 1 ? initial : health(2, 90, 125),
-  })).rejects.toMatchObject({ code: 'observation_deadline' });
 });
-
-it('aborts an acceptance probe that never answers at the fixed deadline', async () => {
-  let aborted = false;
-  const started = Date.now();
-  await expect(observeAcceptanceHealth({
-    observationMs: 5,
-    deadlineMs: 20,
-    probe: async (_deadline, signal) => new Promise((_resolve, reject) => {
-      signal.addEventListener('abort', () => { aborted = true; reject(signal.reason); }, { once: true });
-    }),
-  })).rejects.toMatchObject({ code: 'observation_deadline' });
-  expect(aborted).toBe(true);
-  expect(Date.now() - started).toBeLessThan(100);
-});
-
 
 it('routes only the exact private HTTPS dashboard and retains certificate validation', async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-acceptance-tls-'));
@@ -395,7 +297,7 @@ it('routes only the exact private HTTPS dashboard and retains certificate valida
 });
 
 
-it('waits for a late bind, and fails at once on a gateway status or at the deadline naming the last observation', async () => {
+it('waits for a late bind, and fails at once on a gateway status', async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-acceptance-ready-'));
   let server: https.Server | undefined;
   let late: import('node:net').Server | undefined;
@@ -418,12 +320,9 @@ it('waits for a late bind, and fails at once on a gateway status or at the deadl
     const bound = awaitReadiness(async () => {
       if (++probes === 3) { late = net.createServer(); late.listen(port, '127.0.0.1'); }
       return loopbackListening(port);
-    }, () => true, { timeout: STATE_DEADLINE_MS, description: 'Bind', interval: 5 });
+    }, () => true, { watch: new ProgressWatch({ stage: 'Bind', idleMs: STATE_DEADLINE_MS }), description: 'Bind', interval: 5 });
     await expect(bound).resolves.toBe(true);
     expect(probes).toBeGreaterThanOrEqual(3);
-    const unbound = await freePort();
-    await expect(awaitReadiness(() => loopbackListening(unbound), () => true, { timeout: 100, description: 'Bind', interval: 5 }))
-      .rejects.toThrow(/^Bind \(waited 100 ms; last observation: .*ECONNREFUSED/);
 
     // The gateway: any non-200 answer, 502 included, ends the wait at once.
     let statuses: number[] = [];
@@ -434,7 +333,7 @@ it('waits for a late bind, and fails at once on a gateway status or at the deadl
     await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve));
     const origin = `https://app.mandible.localhost:${(server.address() as net.AddressInfo).port}`;
     const health = () => awaitReadiness(() => acceptanceHealth(origin, path.join(home, 'root.crt')), (value: { ready?: boolean }) => value.ready === true,
-      { timeout: STATE_DEADLINE_MS, description: 'Readiness', interval: 1 });
+      { watch: new ProgressWatch({ stage: 'Readiness', idleMs: STATE_DEADLINE_MS }), description: 'Readiness', interval: 1 });
     await expect(health()).resolves.toEqual({ ready: true });
     statuses = [502];
     await expect(health()).rejects.toThrow('answered HTTP 502');
@@ -478,14 +377,14 @@ it('waits through the initial certificate alert but rejects the same alert after
   await expect(awaitAcceptanceGatewayReadiness(async () => {
     if (++probes === 1) throw alert;
     return { ready: true };
-  }, value => value.ready, { timeout: STATE_DEADLINE_MS, interval: 1, description: 'Gateway',
+  }, value => value.ready, { watch: new ProgressWatch({ stage: 'Gateway', idleMs: STATE_DEADLINE_MS }), interval: 1, description: 'Gateway',
     onInitialTlsError: error => initialErrors.push(error) })).resolves.toEqual({ ready: true });
   expect(initialErrors).toEqual([{ code: alert.code, message: alert.message }]);
   probes = 0;
   await expect(awaitAcceptanceGatewayReadiness(async () => {
     if (++probes === 1) return { ready: false };
     throw alert;
-  }, value => value.ready, { timeout: STATE_DEADLINE_MS, interval: 1, description: 'Gateway' })).rejects.toBe(alert);
+  }, value => value.ready, { watch: new ProgressWatch({ stage: 'Gateway', idleMs: STATE_DEADLINE_MS }), interval: 1, description: 'Gateway' })).rejects.toBe(alert);
   expect(probes).toBe(2);
 });
 
@@ -494,8 +393,8 @@ it('bounds persistent certificate startup and keeps unrelated gateway failures f
   await expect(awaitAcceptanceGatewayReadiness(async () => {
     probes++;
     throw Object.assign(new Error('still missing the leaf'), { code: 'ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR' });
-  }, () => true, { timeout: 15, interval: 1, description: 'Gateway' }))
-    .rejects.toThrow('last observation: still missing the leaf');
+  }, () => true, { watch: new ProgressWatch({ stage: 'Gateway', idleMs: 15 }), interval: 1, description: 'Gateway' }))
+    .rejects.toMatchObject({ code: 'HUNG' });
   expect(probes).toBeGreaterThan(1);
   for (const error of [
     Object.assign(new Error('untrusted certificate'), { code: 'CERT_HAS_EXPIRED' }),
@@ -505,7 +404,7 @@ it('bounds persistent certificate startup and keeps unrelated gateway failures f
   ]) {
     probes = 0;
     await expect(awaitAcceptanceGatewayReadiness(async () => { probes++; throw error; }, () => true,
-      { timeout: STATE_DEADLINE_MS, interval: 1, description: 'Gateway' })).rejects.toBe(error);
+      { watch: new ProgressWatch({ stage: 'Gateway', idleMs: STATE_DEADLINE_MS }), interval: 1, description: 'Gateway' })).rejects.toBe(error);
     expect(probes).toBe(1);
   }
 });
@@ -579,15 +478,14 @@ it("keeps large shipped inventories in the full receipt and returns bounded fina
   const ownership = createOwnedRun({ root: run, instanceId: "finalization-test", project: "project", workUnit: "unit", disposable: true, outputs: acceptanceOwnedOutputs });
   const metadataFile = path.join(run, "metadata.json");
   saveOwnedMetadata(metadataFile, { ownership });
-  const budget = acceptanceDeadline({});
   const provenance = { shipped: { files: Object.fromEntries(Array.from({ length: 10_000 }, (_, index) => [
     `dist/module-${index}.js`, { sha256: "a".repeat(64), size: 42 },
   ])) } };
   expect(Buffer.byteLength(JSON.stringify(provenance))).toBeGreaterThan(1024 * 1024);
   try {
-    const finalized = await withOwnedRunLock(run, () => finalizeAcceptance({ metadataFile, run, cache, ownership, deadlineEnv: budget.env,
-      result: { status: "failed", candidate: "candidate", scope: acceptanceScope, error: "request failed", provenance, checks: { health_coverage: { mode: "live production collectors" } }, phases: { finalization: { status: "running", started_at: Date.now() } }, budget: { ...budget.reading(), scope: "candidate-script" } },
-    }));
+    const acceptance = { status: "failed", candidate: "candidate", scope: acceptanceScope, error: "request failed", provenance, checks: { health_coverage: { mode: "live production collectors" } } };
+    const finalized = await withOwnedRunLock(run, () => finalizeAcceptance({ metadataFile, run, cache, ownership,
+      result: acceptance, phases: acceptancePhases(acceptance, { write: () => {} }) }));
     const result = compactAcceptanceResult(finalized);
     expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(60 * 1024);
     expect(result.truncated).toBe(true);
@@ -598,7 +496,7 @@ it("keeps large shipped inventories in the full receipt and returns bounded fina
     expect(result.checks.cleanup).toMatchObject({ action: "delete-owned", remaining: [] });
     expect(fs.existsSync(path.join(run, "home", "fixture"))).toBe(false);
     const receipt = JSON.parse(fs.readFileSync(result.receipt, "utf8"));
-    expect(receipt.acceptance).toMatchObject({ status: "failed", budget: { scope: "candidate-script" }, phases: { finalization: { status: "passed" } } });
+    expect(receipt.acceptance).toMatchObject({ status: "failed", phases: { finalization: { status: "passed" } } });
     expect(Object.keys(receipt.acceptance.provenance.shipped.files)).toHaveLength(10_000);
   } finally { fs.rmSync(cache, { recursive: true, force: true }); }
 });
@@ -620,29 +518,57 @@ const mode = process.env.PROOF_FIXTURE_MODE;
 if (mode === 'failed') { process.stderr.write('hook execution failed'); process.exit(1); }
 process.stdout.write(mode === 'malformed' ? 'bad JSON' : JSON.stringify({passed:mode !== 'not-passed',commit:mode === 'mismatch' ? 'other' : 'candidate',source_digest:'source'}));
 `, { mode: 0o755 });
-  const budget = acceptanceDeadline({});
   try {
     for (const mode of ['passed', 'failed', 'malformed', 'not-passed', 'mismatch']) {
       const fixtureHome = path.join(home, mode);
       fs.mkdirSync(fixtureHome, { mode: 0o700 });
       const proof = verifyPackagedExports({ resources: path.join(cache, 'verified-resources'), runtime,
         environment: { ...process.env, PROOF_FIXTURE_MODE: mode }, home: fixtureHome,
-        provenance: { commit: 'candidate', source_digest: 'source' }, budget });
+        provenance: { commit: 'candidate', source_digest: 'source' } });
       if (mode === 'passed') await expect(proof).resolves.toMatchObject({ passed: true, commit: 'candidate', source_digest: 'source' });
       else await expect(proof).rejects.toMatchObject({ acceptanceFault: 'candidate' });
       expect(fs.existsSync(path.join(fixtureHome, 'exports', 'fixture-evidence'))).toBe(true);
       expect(fs.statSync(path.join(fixtureHome, 'exports')).mode & 0o777).toBe(0o700);
     }
-    const expiredHome = path.join(home, 'expired');
-    fs.mkdirSync(expiredHome, { mode: 0o700 });
-    await expect(verifyPackagedExports({ resources: path.join(cache, 'verified-resources'), runtime,
-      environment: process.env, home: expiredHome, provenance: { commit: 'candidate', source_digest: 'source' },
-      budget: { ...budget, remaining: () => { throw acceptanceBudgetExhausted('preparation'); } },
-    })).rejects.toMatchObject({ code: 'acceptance_budget_exhausted' });
-    expect(fs.readdirSync(path.join(expiredHome, 'exports'))).toEqual([]);
-    const finalized = await withOwnedRunLock(run, () => finalizeAcceptance({ metadataFile, run, cache, ownership, deadlineEnv: budget.env,
-      result: { status: 'failed', candidate: 'candidate', scope: acceptanceScope, budget: budget.reading(), checks: {}, phases: { finalization: { status: 'running', started_at: Date.now() } } } }));
+    const acceptance = { status: 'failed', candidate: 'candidate', scope: acceptanceScope, checks: {} };
+    const finalized = await withOwnedRunLock(run, () => finalizeAcceptance({ metadataFile, run, cache, ownership,
+      result: acceptance, phases: acceptancePhases(acceptance, { write: () => {} }) }));
     expect(finalized.checks.cleanup).toMatchObject({ action: 'delete-owned', remaining: [] });
     expect(fs.existsSync(home)).toBe(false);
   } finally { fs.rmSync(cache, { recursive: true, force: true }); }
+});
+
+it('lets the acceptance script stay quiet for as long as its current phase may', () => {
+  let now = 0;
+  const { watch, onOutput } = acceptanceScriptWatch(() => {}, () => now);
+  const line = (text: string) => { const chunk = Buffer.from(`${text}\n`); watch.output(chunk.length); onOutput(chunk, 'stderr'); };
+  line('[acceptance] package_build started');
+  now += 90_000;
+  expect(() => watch.assert()).not.toThrow();
+  line('[acceptance] package_build passed in 90000 ms (expected 36000 ms)');
+  line('[acceptance] package_verification started');
+  now += 90_000;
+  expect(() => watch.assert()).toThrow(expect.objectContaining({ code: 'HUNG' }));
+  watch.close();
+});
+
+it('fails a run that is still printing at the backstop, and reaps its command', async () => {
+  const backstop = acceptanceBackstop(new AbortController().signal, { backstopMs: 500, stage: 'package_build' });
+  let pid = 0;
+  try {
+    await expect(runAcceptanceCommand(backstop, signal => runSupervisedCommand(process.execPath, ['-e', "setInterval(() => process.stdout.write('.'), 50)"],
+      { capture: true, idleMs: 300, graceMs: 100, signal, onSpawn: child => { pid = child.pid!; } })))
+      .rejects.toMatchObject({ code: 'BACKSTOP', acceptanceFault: 'either' });
+  } finally { backstop.close(); }
+  expect(() => process.kill(-pid, 0)).toThrow();
+});
+
+it('passes a stage that runs past its expected duration, with a warning', async () => {
+  let now = 0;
+  const result: { phases?: Record<string, { status: string }>; warnings?: string[] } = {};
+  const phases = acceptancePhases(result, { startedAt: 0, now: () => now, write: () => {} });
+  await phases.run('readiness', watch => { for (let step = 0; step < 10; step++) { now += 1_000; watch.advance(`step ${step}`); watch.assert(); } });
+  phases.timing();
+  expect(result.phases!.readiness!.status).toBe('passed');
+  expect(result.warnings).toHaveLength(1);
 });

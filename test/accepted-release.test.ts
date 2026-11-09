@@ -10,7 +10,9 @@ import { installedFileIdentity, verifyApplicationRelease } from '../scripts/inst
 import { createOwnedRun, withOwnedRunLock, saveOwnedMetadata } from '../scripts/owned-run.mjs';
 import { CandidateAcceptanceRuns } from '../src/candidate-acceptance.js';
 import { diagnosticReplayPackage, finalizeAcceptance, acceptanceOwnedOutputs } from '../scripts/candidate-acceptance.mjs';
-import { acceptanceDeadline } from '../scripts/acceptance-deadline.mjs';
+import { acceptancePhases } from '../scripts/acceptance-progress.mjs';
+
+const finalized = (result: Record<string, unknown>) => ({ result, phases: acceptancePhases(result, { write: () => {} }) });
 import { acceptedReleaseSelection } from '../src/accepted-release-selection.js';
 import { createAuthCheckRepo, insertSiblingMergeRequest } from './helpers/auth-queue-fixtures.js';
 import { createMigratedDb } from './helpers/ledger-fixtures.js';
@@ -125,12 +127,11 @@ it('seals the exercised app in place after scratch disposal and refuses changed 
       saveOwnedMetadata(metadata, { ownership });
       await expect(retainAcceptedRelease({ pending, candidate, shipped, acceptance: { record_id: null, request_id: null },
         evidence: { receipt: evidence, sha256: installedFileIdentity(evidence).sha256 }, expectedDigest: '0'.repeat(64) })).rejects.toThrow('changed during acceptance');
-      const budget = acceptanceDeadline({});
       fs.mkdirSync(path.join(root, '.receipts'), { recursive: true });
       saveOwnedMetadata(path.join(root, '.receipts', `${ownership.runId}-acceptance.json`), { status: 'passed', provenance: { shipped } });
       const result = await finalizeAcceptance({ metadataFile: metadata, run: scratch, cache: root, ownership, pendingPackage: pending,
-        candidateBinding: candidate, testedPackageDigest: digest, deadlineEnv: budget.env,
-        result: { status: 'passed', provenance: { shipped }, checks: {}, phases: {}, budget: budget.reading() } });
+        candidateBinding: candidate, testedPackageDigest: digest,
+        ...finalized({ status: 'passed', provenance: { shipped }, checks: {} }) });
       expect(result.status).toBe('passed');
       expect(result.checks.cleanup).toMatchObject({ action: 'delete-owned', remaining: [] });
       reference = result.receipt;
@@ -269,10 +270,8 @@ it('cleans disposable scratch independently when a failed pending package is dis
       fs.writeFileSync(path.join(scratch, 'build.log'), 'scratch');
       const metadataFile = path.join(scratch, 'metadata.json');
       saveOwnedMetadata(metadataFile, { ownership });
-      const budget = acceptanceDeadline({});
       const result = await finalizeAcceptance({ metadataFile, run: scratch, cache: root, ownership, pendingPackage: pending,
-        testedPackageDigest: digest, deadlineEnv: budget.env,
-        result: { status: 'failed', provenance: {}, checks: {}, phases: {}, budget: budget.reading() } });
+        testedPackageDigest: digest, ...finalized({ status: 'failed', provenance: {}, checks: {} }) });
       expect(result.status).toBe('failed');
       expect(result.checks.cleanup).toMatchObject({ action: 'delete-owned', remaining: [] });
       expect(fs.existsSync(scratch)).toBe(false);
