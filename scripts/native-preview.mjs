@@ -91,7 +91,7 @@ async function until(predicate, message, deadlineMs = 15_000) {
   throw new Error(message);
 }
 
-export function nativePreviewInitialPath(initialPath = '/#/overview') {
+export function nativePreviewInitialPath(initialPath = '/overview') {
   if (typeof initialPath !== 'string' || !initialPath.startsWith('/') || initialPath.startsWith('//')
     || initialPath.includes('\\') || /[\u0000-\u001f\u007f-\u009f]/u.test(initialPath)) {
     throw new Error('Native initial path must be a root-relative path on the selected preview origin');

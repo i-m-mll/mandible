@@ -48,7 +48,7 @@
     let progress = JSON.parse(sessionStorage.getItem(checkpoint) || 'null');
     await until(() => document.querySelector('a[aria-label="Settings"]'));
     document.querySelector('a[aria-label="Settings"]').click();
-    await until(() => location.hash.startsWith('#/settings') && theme() && !theme().disabled && complete());
+    await until(() => location.pathname === '/settings' && theme() && !theme().disabled && complete());
 
     if (!progress) {
       const settings = await read('/api/settings');
