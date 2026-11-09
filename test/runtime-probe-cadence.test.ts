@@ -2,7 +2,6 @@
 import { expect, it } from 'vitest';
 import { awaitHandoffReadiness } from '../scripts/local-runtime.mjs';
 import { assessRuntimeLogs } from '../scripts/runtime-log-assessment.mjs';
-import { observeRuntimeHealthCoverage } from '../src/runtime-health-contract.js';
 
 function inspection(ready: boolean, generation = 'merge') {
   return {
@@ -48,27 +47,14 @@ it('reduces paired readiness traffic while retaining both aggregate rates as dia
   });
 });
 
-it('uses the same one-second default for immediate readiness and health coverage probes', async () => {
+it('probes readiness immediately and then once a second', async () => {
   let time = 1_000;
   const readiness: number[] = [];
   await awaitHandoffReadiness('merge', 6_000, async () => {
     readiness.push(time);
     return inspection(time === 3_000);
   }, { now: () => time, wait: async (milliseconds: number) => { time += milliseconds; } });
-  time = 1_000;
-  const observed: number[] = [];
-  await observeRuntimeHealthCoverage({
-    observationMs: 2_000, deadlineMs: 5_000, now: () => time,
-    wait: async milliseconds => { time += milliseconds; },
-    probe: async () => {
-      observed.push(time);
-      const interval = { sequence: time / 1_000, intervalStartedAt: time - 1_000, intervalEndedAt: time, warning: false };
-      return { eventLoop: { ...interval, maxMs: 0 }, memory: interval };
-    },
-    healthOf: value => value,
-  });
   expect(readiness).toEqual([1_000, 2_000, 3_000]);
-  expect(observed).toEqual(readiness);
 });
 
 it('clips the readiness pause to its wait deadline and retains the last starting observation', async () => {

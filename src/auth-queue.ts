@@ -83,6 +83,7 @@ import {
   type CandidateAcceptanceInput,
 } from "./candidate-acceptance.js";
 import type { AuthPublicationBlocker, CandidateAcceptanceProjection, ProtectedBaseAudit } from "./contracts.js";
+import { ACCEPTANCE_EXPECTED_TOTAL_MS } from "../scripts/acceptance-progress.mjs";
 import { AUTH_HOOK_ENV_ALLOWLIST, AuthHookManager, authHookPath, formatHookExecutionResult, MANDIBLE_REBUILD_HOOK_ID, type RuntimeCleanupDebt, type RuntimeVerificationResult } from "./auth-hooks.js";
 import { getMandibleHome, getUserHome } from "./platform-paths.js";
 import {
@@ -883,7 +884,8 @@ export class AuthQueue {
     if (!(stored ? stored.applies : this.candidateAcceptanceApplies(request))) return null;
     const candidate = this.acceptanceCandidate(request);
     const open = Boolean(candidate && this.acceptanceRuns?.isOpen(request.id, candidate.pin_sha));
-    return candidateAcceptanceProjection(stored ? stored.latest : latestCandidateAcceptance(this.db, request.id), candidate, open);
+    return candidateAcceptanceProjection(stored ? stored.latest : latestCandidateAcceptance(this.db, request.id), candidate, open,
+      open ? this.acceptanceRuns!.livePhases(request.id) : []);
   }
 
   /**
@@ -966,8 +968,10 @@ export class AuthQueue {
     if (!request) return;
     const acceptance = this.candidateAcceptanceForRequest(request);
     if (acceptance?.state === "passed" || acceptance?.state === "failed") {
-      authLog(acceptance.state === "passed" ? "info" : "warn", "auth_candidate_acceptance_finished", {
+      const elapsed = acceptance.started_at !== null && acceptance.finished_at !== null ? acceptance.finished_at - acceptance.started_at : null;
+      authLog(acceptance.state === "passed" && acceptance.warnings.length === 0 ? "info" : "warn", "auth_candidate_acceptance_finished", {
         subsystem: "auth", auth_request_id: requestId, state: acceptance.state, reason: acceptance.reason,
+        elapsed_ms: elapsed, expected_ms: ACCEPTANCE_EXPECTED_TOTAL_MS, phases: acceptance.phases, warnings: acceptance.warnings,
       });
     }
     this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: { ...request, candidate_acceptance: acceptance } } });

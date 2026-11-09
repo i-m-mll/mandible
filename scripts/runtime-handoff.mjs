@@ -155,7 +155,7 @@ const launchctl = args => run('/bin/launchctl', args);
 async function runStage(binary, args, { cwd, env, timeout, log }) {
   const fd = fs.openSync(log, 'a', 0o600);
   try {
-    await runSupervisedCommand(binary, args, { cwd, env: { ...env, GIT_OPTIONAL_LOCKS: '0' }, timeout, stdio: ['ignore', fd, fd] });
+    await runSupervisedCommand(binary, args, { cwd, env: { ...env, GIT_OPTIONAL_LOCKS: '0' }, timeout, log: fd });
   } finally { fs.closeSync(fd); }
 }
 const startedAt = pid => {
@@ -1022,7 +1022,7 @@ export async function scheduleRuntimeHandoffCleanup(journal) {
     await runSupervisedCommand(runtime, [helper, 'cleanup', journalFile(journal.binding)], {
       cwd: path.dirname(journalFile(journal.binding)),
       env: installedRuntimeEnvironment(resources, { ...process.env, MANDIBLE_HOME: journal.binding.home }),
-      stdio: ['ignore', log, log], timeout: 30_000, graceMs: 250,
+      log, timeout: 30_000, graceMs: 250,
     });
     const current = readRuntimeHandoff(journal.binding.home, journal.binding.requestId, journal.binding.executionId);
     if (!current || current.bindingDigest !== journal.bindingDigest || current.attempt?.receiptDigest !== journal.attempt.receiptDigest) throw new Error('Cleanup result no longer belongs to its terminal receipt.');

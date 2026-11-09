@@ -1,35 +1,57 @@
 import process from "node:process";
+import fs from 'node:fs';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
+import { ProgressWatch } from './acceptance-progress.mjs';
 
 const inspectProcesses = promisify(execFile);
 
-export async function runSupervisedCommand(binary, args, { cwd, env, stdio, timeout, graceMs = 1_500, deadline, signal, capture = false, maxBuffer = 1024 * 1024, onSpawn } = {}) {
+/**
+ * Run one command in its own process group and join the whole group. Output
+ * is captured (`capture`), written straight to a log file descriptor (`log`),
+ * or routed by `stdio`. `idleMs` stops the command once it has produced no
+ * output for that long: bytes on its captured pipes, or growth of its log.
+ * A caller's own `watch` does the same with the caller's threshold, and also
+ * counts the caller's other progress.
+ */
+export async function runSupervisedCommand(binary, args, { cwd, env, stdio, log, timeout, idleMs, watch: callerWatch, graceMs = 1_500, deadline, signal, capture = false, maxBuffer = 1024 * 1024, onSpawn, onOutput } = {}) {
   const startedAt = Date.now();
   const hardDeadline = deadline ?? (Number.isFinite(timeout) ? startedAt + timeout + 2 * graceMs : Infinity);
   const supervisor = new ProcessGroupSupervisor({ graceMs, deadline: hardDeadline, handleSignals: !signal });
-  let timer; let timedOut = false; let aborted = false; let failure; let settled = false; let launched = false; let child;
+  let timer; let poll; let timedOut = false; let aborted = false; let hung; let failure; let settled = false; let launched = false; let child;
   let result = { code: null, signal: null };
   const streams = { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
   const truncated = { stdout: false, stderr: false };
+  const ownWatch = idleMs === undefined ? null : new ProgressWatch({ stage: `${binary} ${args[0] ?? ''}`.trim(), idleMs });
+  const watch = callerWatch ?? ownWatch;
+  let cancelHung;
   const collect = name => chunk => {
     const bytes = Buffer.concat([streams[name], Buffer.from(chunk)]);
     if (bytes.length > maxBuffer) truncated[name] = true;
     streams[name] = bytes.subarray(Math.max(0, bytes.length - maxBuffer));
+    watch?.output(chunk.length);
+    onOutput?.(Buffer.from(chunk), name);
   };
   const abort = () => { aborted = true; void supervisor.stopActive().catch(() => {}); };
   try {
     if (!Number.isSafeInteger(maxBuffer) || maxBuffer <= 0 || !Number.isFinite(graceMs) || graceMs < 0
-      || deadline !== undefined && !Number.isFinite(deadline) || timeout !== undefined && (!Number.isFinite(timeout) || timeout <= 0)) throw new Error('Invalid supervised command bounds.');
+      || deadline !== undefined && !Number.isFinite(deadline) || timeout !== undefined && (!Number.isFinite(timeout) || timeout <= 0)
+      || log !== undefined && (!Number.isSafeInteger(log) || capture || stdio !== undefined)
+      || (idleMs !== undefined || callerWatch) && (idleMs !== undefined && callerWatch || !capture && log === undefined)
+      || onOutput && !capture) throw new Error('Invalid supervised command bounds.');
     if (signal?.aborted) { aborted = true; throw new Error('Command aborted before spawn.'); }
     const workMs = Math.min(timeout ?? Infinity, hardDeadline - startedAt - 2 * graceMs);
     if (workMs <= 0) { timedOut = true; throw new Error('Command deadline has no remaining execution and cleanup budget.'); }
-    child = spawn(binary, args, { cwd, env, detached: true, stdio: capture ? ['ignore', 'pipe', 'pipe'] : stdio });
+    child = spawn(binary, args, { cwd, env, detached: true, stdio: capture ? ['ignore', 'pipe', 'pipe'] : log !== undefined ? ['ignore', log, log] : stdio });
     launched = Boolean(child.pid);
     const closed = new Promise(resolve => child.once('close', resolve));
     if (capture) {
       child.stdout.on('data', collect('stdout'));
       child.stderr.on('data', collect('stderr'));
+    } else if (log !== undefined && watch) {
+      const watched = `log ${log}`;
+      watch.size(watched, fs.fstatSync(log).size);
+      poll = setInterval(() => watch.size(watched, fs.fstatSync(log).size), 250);
     }
     if (!child.pid) await waitForExit(child);
     supervisor.attach(child);
@@ -37,9 +59,12 @@ export async function runSupervisedCommand(binary, args, { cwd, env, stdio, time
     signal?.addEventListener('abort', abort, { once: true });
     if (signal?.aborted) abort();
     if (Number.isFinite(workMs)) timer = setTimeout(() => { timedOut = true; void supervisor.stopActive().catch(() => {}); }, workMs);
+    cancelHung = watch?.onHung(error => { hung = error; void supervisor.stopActive().catch(() => {}); });
     result = await supervisor.settle(child);
+    cancelHung?.();
     await beforeDeadline(closed, hardDeadline, 'joining command output');
     settled = true;
+    if (hung) throw new Error(`${binary} ${args[0]} was stopped because ${hung.message}`);
     if (timedOut || Date.now() >= hardDeadline) { timedOut = true; throw new Error(`${binary} ${args[0]} exceeded its stage deadline.`); }
     if (aborted) throw new Error(`${binary} ${args[0]} was aborted.`);
     if (result.code !== 0) throw new Error(`${binary} ${args[0]} failed: ${result.signal || result.code}; inspect the retained build log.`);
@@ -47,6 +72,9 @@ export async function runSupervisedCommand(binary, args, { cwd, env, stdio, time
     failure = error;
   } finally {
     clearTimeout(timer);
+    clearInterval(poll);
+    cancelHung?.();
+    ownWatch?.close();
     signal?.removeEventListener('abort', abort);
     try { await supervisor.close(); }
     catch (error) { failure = new AggregateError([...(failure ? [failure] : []), error], 'Command process group cleanup failed.'); settled = false; }
@@ -54,8 +82,9 @@ export async function runSupervisedCommand(binary, args, { cwd, env, stdio, time
   const completed = { code: child?.exitCode ?? result.code, signal: child?.signalCode ?? result.signal, stdout: streams.stdout.toString('utf8'), stderr: streams.stderr.toString('utf8'),
     stdoutTruncated: truncated.stdout, stderrTruncated: truncated.stderr,
     durationMs: Date.now() - startedAt, processGroupSettled: !launched || settled };
-  if (failure) throw Object.assign(failure, { ...completed, code: timedOut ? 'STAGE_DEADLINE' : aborted ? 'ABORT_ERR' : failure.code,
-    exitCode: completed.code, timedOut, aborted });
+  if (failure) throw Object.assign(failure, { ...completed, code: hung ? 'HUNG' : timedOut ? 'STAGE_DEADLINE' : aborted ? 'ABORT_ERR' : failure.code,
+    exitCode: completed.code, timedOut, aborted,
+    ...(hung ? { hung: true, idleMs: hung.idleMs, silentMs: hung.silentMs, lastOutputAt: hung.lastProgressAt } : {}) });
   return completed;
 }
 

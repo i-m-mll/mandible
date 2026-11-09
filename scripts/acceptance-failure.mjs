@@ -21,7 +21,8 @@ const stages = {
   finalization: ['Cleaning up after the checks and keeping the tested package', 'environment'],
 };
 
-const slowRun = 'A busy machine or a cold build cache usually causes this, though a branch that makes the build or startup much slower can too.';
+/** What acceptance was doing in `stage`, as a sentence subject. */
+export const stageActivity = stage => (stages[stage] ?? stages.startup)[0];
 
 export const sentence = text => {
   const trimmed = String(text).trim();
@@ -58,8 +59,8 @@ export function describeAcceptanceFailure(error, stage = 'startup') {
     return described('environment', 'Acceptance lost exclusive ownership of its scratch directory and stopped. Another acceptance run, or a cleanup of acceptance scratch, probably took it over.');
   }
   const [activity, fault] = stages[stage] ?? stages.startup;
-  if (error?.code === 'acceptance_budget_exhausted' || error?.code === 'observation_deadline' || error?.timedOut === true) {
-    return described('either', `${activity} did not finish in time: ${sentence(detail)} ${slowRun}`);
+  if (error?.code === 'HUNG') {
+    return described('either', `${activity} stopped making progress: ${sentence(detail)} A stuck build tool, a dead network connection or a deadlocked process causes this, and so can a branch that hangs.`);
   }
   return described(fault, `${activity} failed: ${sentence(detail)}`);
 }

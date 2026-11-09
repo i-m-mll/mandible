@@ -483,7 +483,41 @@ const ACCEPTANCE_PILLS: Record<CandidateAcceptanceProjection['state'], [string, 
   failed: ['Package/runtime acceptance failed', 'status-pill--failed'],
   stale: ['Package/runtime acceptance stale', 'status-pill--expired'],
 };
+const ACCEPTANCE_SLOW_PILL: [string, string] = ['Package/runtime acceptance passed, slower than expected', 'status-pill--warning'];
 const ACCEPTANCE_SCOPE = 'Checks the packaged app in an isolated instance. Installed upgrade qualification is separate.';
+
+function acceptancePill(acceptance: CandidateAcceptanceProjection): [string, string] {
+  return acceptance.state === 'passed' && acceptance.warnings.length > 0 ? ACCEPTANCE_SLOW_PILL : ACCEPTANCE_PILLS[acceptance.state];
+}
+
+const acceptanceSeconds = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
+
+/** The run's warnings and per-stage timings, for a run in progress, a failure, or a slow pass. */
+function AcceptanceTimings({ acceptance }: { acceptance: CandidateAcceptanceProjection }) {
+  return (
+    <>
+      {acceptance.warnings.length > 0 && (
+        <ul className="auth-acceptance__warnings">
+          {acceptance.warnings.map(warning => <li key={warning}>{warning}</li>)}
+        </ul>
+      )}
+      {acceptance.phases.length > 0 && (
+        <table className="auth-acceptance__phases">
+          <tbody>
+            {acceptance.phases.map(phase => (
+              <tr key={phase.name} className={phase.status === 'failed' ? 'auth-acceptance__phase--failed' : undefined}>
+                <th scope="row">{phase.name.replaceAll('_', ' ')}</th>
+                <td>{phase.status}</td>
+                <td>{phase.elapsed_ms === null ? '' : acceptanceSeconds(phase.elapsed_ms)}</td>
+                <td>{phase.expected_ms === null ? '' : `expected ${acceptanceSeconds(phase.expected_ms)}`}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </>
+  );
+}
 
 function getStatusClass(request: AuthRequest): string {
   return authStatusPillClass(getAuthStatus(request));
@@ -969,7 +1003,9 @@ function AuthRequestDetail({
   const statusClass = getStatusClass(request);
   const publicationBlocker = request.publication_blocker ?? null;
   const acceptance = status === 'pending' ? request.candidate_acceptance ?? null : null;
-  const [acceptanceLabel, acceptancePill] = acceptance ? ACCEPTANCE_PILLS[acceptance.state] : [];
+  const [acceptanceLabel, acceptancePillClass] = acceptance ? acceptancePill(acceptance) : [];
+  const acceptanceDetail = acceptance && (acceptance.state === 'failed' || acceptance.state === 'stale' || acceptance.state === 'running'
+    || (acceptance.state === 'passed' && acceptance.warnings.length > 0));
   const baseAudit = status === 'pending' ? request.base_audit ?? null : null;
   const failedLike = isFailedLikeStatus(status);
   const executionCallout = getAuthExecutionCallout(status, consoleText);
@@ -1198,7 +1234,7 @@ function AuthRequestDetail({
                 {statusLabel}
               </span>
               {acceptance && (
-                <span className={`status-pill ${acceptancePill}`} title={`${ACCEPTANCE_SCOPE}${acceptance.reason ? ` ${acceptance.reason}` : ''}`}>
+                <span className={`status-pill ${acceptancePillClass}`} title={[ACCEPTANCE_SCOPE, acceptance.reason, ...acceptance.warnings].filter(Boolean).join(' ')}>
                   {acceptanceLabel}
                 </span>
               )}
@@ -1342,12 +1378,13 @@ function AuthRequestDetail({
             <p className="auth-failure__summary">{publicationBlocker.message}</p>
           </div>
         )}
-        {acceptance && (acceptance.state === 'failed' || acceptance.state === 'stale') && (
+        {acceptance && acceptanceDetail && (
           <div className={`auth-failure${acceptance.state === 'failed' ? '' : ' auth-failure--expired'}`}>
             <div className="auth-failure__header">
               <span className="auth-failure__title">{acceptanceLabel}</span>
             </div>
             {acceptance.reason && <p className="auth-failure__summary">{acceptance.reason}</p>}
+            <AcceptanceTimings acceptance={acceptance} />
           </div>
         )}
 

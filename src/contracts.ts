@@ -383,11 +383,22 @@ export type AuthRequestType = (typeof AUTH_REQUEST_TYPES)[number];
  * Issue 7d83fe5 — candidate acceptance of a runtime self-update request's
  * current candidate. `stale`: the latest run was for a different candidate.
  */
+/** One stage of a candidate acceptance run; a running stage's elapsed time is up to now. */
+export interface CandidateAcceptancePhase {
+  name: string;
+  status: string;
+  elapsed_ms: number | null;
+  expected_ms: number | null;
+}
+
 export interface CandidateAcceptanceProjection {
   state: "none" | "running" | "passed" | "failed" | "stale";
   reason: string | null;
   started_at: number | null;
   finished_at: number | null;
+  /** Stages over their expected duration, and a run over its expected total; never a failure. */
+  warnings: string[];
+  phases: CandidateAcceptancePhase[];
 }
 
 /** Issue 117ba80 — one protected-base commit that is neither a recorded Mandible merge nor operator-signed. */
