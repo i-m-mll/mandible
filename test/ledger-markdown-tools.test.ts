@@ -114,46 +114,6 @@ describe("ledger escaped Markdown audit and normalization", () => {
       ]);
   });
 
-  it("rewrites hash-form app links to path routes once, leaving code and path forms alone", () => {
-    const project = createProject();
-    const store = new LedgerStore(db);
-    const body = [
-      "- [i](http://localhost:19420/#/issues?repo=dotfiles&issue=e70757d&sidebar=hidden)",
-      "- [i2](https://app.mandible.localhost:19420/#/issues?issue=abc1234&comment=3)",
-      "- [a](http://127.0.0.1:19420/#/auth?request=7e5d7c0a&sidebar=hidden)",
-      "- [s](http://localhost:19420/#/artifacts?series=artifact-series%3A044feafc&version=2&sidebar=hidden)",
-      "- [r](http://localhost:19420/#/artifacts?ref=artifact-version%3A93aa73ed332a)",
-      "- [b](http://localhost:19420/#/artifacts?artifact=artifact-blob%3Adf4dfc1c&sidebar=hidden)",
-      "- [f](http://localhost:19420/#/briefing?briefing=9105d191&agent_session=bde91858)",
-      "- [g](http://localhost:19420/#/briefing?group=study&agent_session=bde91858)",
-      "- bare http://localhost:19420/#/auth?request=5c5c3abd. Then mandible:///issues?repo=mandible&issue=59181bf",
-      "- kept: `http://localhost:19420/#/issues?issue=e70757d` mandible:///auth/7e5d7c0a http://localhost:19420/r/issue/abc",
-    ].join("\n");
-    const issue = store.createIssue({ ...SYSTEM_ACTOR, project_id: project.id, title: "Links", body, created_at: 1000 });
-
-    const apply = () => normalizeEscapedMarkdownBodies(db, {
-      apply: true,
-      actor: SYSTEM_ACTOR,
-      normalize_all_matches: true,
-      rules: ["app-links"],
-    });
-
-    expect(apply().normalized).toBe(1);
-    expect(store.getIssue(issue.id).body).toBe([
-      "- [i](https://app.mandible.localhost:19420/issue/dotfiles/e70757d?sidebar=hidden)",
-      "- [i2](https://app.mandible.localhost:19420/issue/abc1234?comment=3)",
-      "- [a](https://app.mandible.localhost:19420/auth/7e5d7c0a?sidebar=hidden)",
-      "- [s](https://app.mandible.localhost:19420/artifact/artifact-series:044feafc@2?sidebar=hidden)",
-      "- [r](https://app.mandible.localhost:19420/artifact/artifact-version:93aa73ed332a)",
-      "- [b](https://app.mandible.localhost:19420/artifact/artifact-blob:df4dfc1c?sidebar=hidden)",
-      "- [f](https://app.mandible.localhost:19420/briefing/9105d191?agent_session=bde91858)",
-      "- [g](https://app.mandible.localhost:19420/briefing?group=study&agent_session=bde91858)",
-      "- bare https://app.mandible.localhost:19420/auth/5c5c3abd. Then mandible:///issue/mandible/59181bf",
-      "- kept: `http://localhost:19420/#/issues?issue=e70757d` mandible:///auth/7e5d7c0a http://localhost:19420/r/issue/abc",
-    ].join("\n"));
-    expect(apply().normalized).toBe(0);
-  });
-
   it("refuses apply without explicit target scope or all-matches opt-in", () => {
     expect(() => normalizeEscapedMarkdownBodies(db, { apply: true, actor: SYSTEM_ACTOR })).toThrow(
       /requires explicit targets/,

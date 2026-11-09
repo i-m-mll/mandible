@@ -2,8 +2,6 @@ import type { Db } from "../db.js";
 import { LedgerStore } from "./store.js";
 import type { LedgerActorInput } from "./types.js";
 import { resolveProjectIds } from "./project-registry.js";
-import { rewriteHashAppLinks, type AppLinkRewrite } from "./app-link-rewrite.js";
-import { resolveId, shortRef } from "../entity-refs.js";
 
 export const MARKDOWN_BODY_ESCAPE_POLICY_SETTING = "ledger.markdown_body_escape_policy";
 export const DEFAULT_MARKDOWN_BODY_ESCAPE_POLICY: MarkdownBodyEscapePolicy = "warn";
@@ -18,9 +16,6 @@ export interface MarkdownBodyEscapeDetection {
 }
 
 export type MarkdownBodyAuditEntityType = "issue" | "comment";
-
-export const MARKDOWN_NORMALIZATION_RULES = ["escaped-newlines", "app-links"] as const;
-export type MarkdownNormalizationRule = typeof MARKDOWN_NORMALIZATION_RULES[number];
 
 export interface MarkdownBodyAuditScope {
   issue_refs?: string[];
@@ -39,7 +34,6 @@ export interface MarkdownBodyAuditFinding {
   title: string;
   ordinal: number | null;
   detection: MarkdownBodyEscapeDetection;
-  link_rewrites: AppLinkRewrite[];
   normalized_body: string;
   changed: boolean;
 }
@@ -56,7 +50,6 @@ export interface MarkdownBodyAuditResult {
 
 interface NormalizeMarkdownBodyBaseOptions {
   scope?: MarkdownBodyAuditScope;
-  rules?: readonly MarkdownNormalizationRule[];
   normalize_all_matches?: boolean;
 }
 
@@ -146,20 +139,14 @@ export function normalizeEscapedMarkdownBody(body: string): string {
 export function auditEscapedMarkdownBodies(
   db: Db,
   scope: MarkdownBodyAuditScope = {},
-  rules: readonly MarkdownNormalizationRule[] = MARKDOWN_NORMALIZATION_RULES,
 ): MarkdownBodyAuditResult {
   const findings: MarkdownBodyAuditFinding[] = [];
-  const ruleSet = new Set(rules);
-  const shortAuthRef = (ref: string): string => {
-    const resolved = resolveId(db, "auth_request", ref);
-    return resolved.ok ? shortRef(db, "auth_request", resolved.id) : ref;
-  };
   const issueIds = resolveMarkdownBodyAuditIssueIds(db, scope);
   const includeComments = scope.include_comments ?? true;
   const commentIds = new Set(scope.comment_ids ?? []);
 
   for (const row of listIssueBodyRows(db, issueIds)) {
-    addFinding(findings, ruleSet, shortAuthRef, {
+    addFinding(findings, {
       entity_type: "issue",
       entity_id: row.id,
       issue_id: row.id,
@@ -173,7 +160,7 @@ export function auditEscapedMarkdownBodies(
 
   if (includeComments || commentIds.size > 0) {
     for (const row of listCommentBodyRows(db, issueIds, commentIds)) {
-      addFinding(findings, ruleSet, shortAuthRef, {
+      addFinding(findings, {
         entity_type: "comment",
         entity_id: row.id,
         issue_id: row.issue_id,
@@ -203,7 +190,7 @@ export function normalizeEscapedMarkdownBodies(
   options: NormalizeMarkdownBodyOptions = {},
 ): NormalizeMarkdownBodyResult {
   const scope = options.scope ?? {};
-  const audit = auditEscapedMarkdownBodies(db, scope, options.rules);
+  const audit = auditEscapedMarkdownBodies(db, scope);
   if (!options.apply) {
     return { ...audit, applied: false, normalized: 0, event_ids: [] };
   }
@@ -230,7 +217,6 @@ export function normalizeEscapedMarkdownBodies(
         literal_newline_count: finding.detection.literal_newline_count,
         actual_newline_count: finding.detection.actual_newline_count,
         reason: finding.detection.reason,
-        link_rewrites: finding.link_rewrites.length,
       },
       actor,
       occurred_at: now,
@@ -267,8 +253,6 @@ function replaceOutsideMarkdownCode(body: string, replace: (segment: string) => 
 
 function addFinding(
   findings: MarkdownBodyAuditFinding[],
-  rules: ReadonlySet<MarkdownNormalizationRule>,
-  shortAuthRef: (ref: string) => string,
   row: {
     entity_type: MarkdownBodyAuditEntityType;
     entity_id: string;
@@ -281,17 +265,8 @@ function addFinding(
   },
 ): void {
   const detection = detectAccidentalEscapedMarkdown(row.body);
-  const unescape = rules.has("escaped-newlines") && detection.suspicious;
-  const unescaped = unescape ? normalizeEscapedMarkdownBody(row.body) : row.body;
-  const linkRewrites: AppLinkRewrite[] = [];
-  const normalized = rules.has("app-links")
-    ? replaceOutsideMarkdownCode(unescaped, (segment) => {
-      const rewritten = rewriteHashAppLinks(segment, shortAuthRef);
-      linkRewrites.push(...rewritten.rewrites);
-      return rewritten.text;
-    })
-    : unescaped;
-  if (!unescape && linkRewrites.length === 0) return;
+  if (!detection.suspicious) return;
+  const normalized = normalizeEscapedMarkdownBody(row.body);
   findings.push({
     entity_type: row.entity_type,
     entity_id: row.entity_id,
@@ -301,7 +276,6 @@ function addFinding(
     title: row.title,
     ordinal: row.ordinal,
     detection,
-    link_rewrites: linkRewrites,
     normalized_body: normalized,
     changed: normalized !== row.body,
   });

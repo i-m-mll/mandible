@@ -4,9 +4,7 @@ import { getDbPath, openDb } from "../db.js";
 import {
   auditEscapedMarkdownBodies,
   normalizeEscapedMarkdownBodies,
-  MARKDOWN_NORMALIZATION_RULES,
   type MarkdownBodyAuditScope,
-  type MarkdownNormalizationRule,
 } from "../ledger/markdown-body.js";
 import { localProcessDefaultAttribution } from "../identity/resolver.js";
 import {
@@ -23,7 +21,6 @@ interface ParsedArgs {
   allMatches: boolean;
   outDir: string;
   scope: MarkdownBodyAuditScope;
-  rules: MarkdownNormalizationRule[];
 }
 
 function main(argv: string[]): number {
@@ -36,7 +33,7 @@ function main(argv: string[]): number {
   const db = openDb(args.dbPath);
   try {
     if (args.command === "audit") {
-      const result = auditEscapedMarkdownBodies(db, args.scope, args.rules);
+      const result = auditEscapedMarkdownBodies(db, args.scope);
       printResult(result, args.json);
       return 0;
     }
@@ -45,7 +42,6 @@ function main(argv: string[]): number {
         ? normalizeEscapedMarkdownBodies(db, {
             apply: true,
             scope: args.scope,
-            rules: args.rules,
             normalize_all_matches: args.allMatches,
             // Legacy actor tuple frozen to base ('mandible_user' + "Mandible CLI").
             // Real identity in the parallel columns is the local operator only in
@@ -60,7 +56,6 @@ function main(argv: string[]): number {
         : normalizeEscapedMarkdownBodies(db, {
             apply: false,
             scope: args.scope,
-            rules: args.rules,
             normalize_all_matches: args.allMatches,
           });
       printResult(result, args.json);
@@ -95,7 +90,6 @@ function parseArgs(argv: string[]): ParsedArgs {
     allMatches: false,
     outDir: "",
     scope: {},
-    rules: [...MARKDOWN_NORMALIZATION_RULES],
   };
 
   const input = parseCommand(["issue", "markdown"], argv);
@@ -105,8 +99,6 @@ function parseArgs(argv: string[]): ParsedArgs {
   parsed.outDir = stringOption(input, "out-dir") ?? "";
   parsed.scope = { issue_refs: repeatedOption(input, "issue"), project_refs: repeatedOption(input, "project"),
     repo_refs: repeatedOption(input, "repo"), comment_ids: repeatedOption(input, "comment") };
-  const rules = repeatedOption(input, "rule") as MarkdownNormalizationRule[] | undefined;
-  if (rules?.length) parsed.rules = rules;
 
   if (parsed.command === "export" && !parsed.allConfigured && !parsed.outDir.trim()) {
     throw new Error("markdown export requires --out-dir unless --all-configured is used");
@@ -132,8 +124,7 @@ function printResult(result: unknown, json: boolean): void {
     for (const finding of result.findings) {
       process.stdout.write(
         `${finding.issue_display_id}\t${finding.entity_type}\t${finding.entity_id}\t`
-          + `literal_newlines=${finding.detection.literal_newline_count}\tlink_rewrites=${finding.link_rewrites.length}\t`
-          + `${finding.title}\n`,
+          + `literal_newlines=${finding.detection.literal_newline_count}\t${finding.title}\n`,
       );
     }
     return;
@@ -152,7 +143,6 @@ function isAuditResult(value: unknown): value is {
     entity_type: string;
     entity_id: string;
     detection: { literal_newline_count: number };
-    link_rewrites: unknown[];
     title: string;
   }>;
   counts: { issue_bodies: number; comments: number };
