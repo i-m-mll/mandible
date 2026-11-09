@@ -7,7 +7,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from './helpers/dom.
 import { ApiError, listSpacesGrouped, type Space, type SpaceFactPacket } from '../ui/src/api';
 import { AppShellProvider } from '../ui/src/app-shell';
 import { clearPersistedDetailCache } from '../ui/src/detail-cache';
-import { parseRouteFromHash, replaceRouteHash, spacesRouteFromHash, type SpacesRouteTarget } from '../ui/src/routing';
+import { currentRoute, replaceRoute, routeFromUrl, spacesRoute, type SpacesRouteTarget } from '../ui/src/routing';
 import { SpacesViewShell, type SpaceRendererMountProps } from '../ui/src/views/spaces/SpacesViewShell';
 import { readSpacesLastView, savedSpacesSelection, writeSpacesLastView } from '../ui/src/views/spaces/last-view';
 
@@ -45,7 +45,7 @@ function Harness({ load, active = true, navigated }: {
   load: (id: string) => Promise<SpaceFactPacket>; active?: boolean; navigated: (target: SpacesRouteTarget) => void;
 }) {
   const navigation = useAppHistory();
-  const route = parseRouteFromHash(new URL(navigation.href).hash);
+  const route = routeFromUrl(new URL(navigation.href));
   const [noticeHost, setNoticeHost] = useState<HTMLElement | null>(null);
   useEffect(() => {
     if (active && route.tab === 'spaces' && route.params.space) {
@@ -53,9 +53,9 @@ function Harness({ load, active = true, navigated }: {
     }
   }, [active, route]);
   const navigate = useCallback((target: SpacesRouteTarget) => {
-    if (!active || parseRouteFromHash(window.location.hash).tab !== 'spaces') return;
+    if (!active || currentRoute().tab !== 'spaces') return;
     navigated(target);
-    replaceRouteHash(spacesRouteFromHash(window.location.hash, target));
+    replaceRoute(spacesRoute(target));
   }, [active, navigated]);
   return <AppShellProvider value={{ active, noticeHost, rightSidebar: null,
     registerRightSidebar: registerSidebar, updateRightSidebar: register, registerInitialRouteLoad: register }}>
@@ -67,7 +67,7 @@ function Harness({ load, active = true, navigated }: {
 }
 
 function expectContext() {
-  const params = new URLSearchParams(window.location.hash.split('?')[1]);
+  const params = new URLSearchParams(window.location.search);
   expect(params.get('sidebar')).toBe('hidden');
   expect(params.get('agent_session')).toBe('bound');
   expect(params.get('sentinel')).toBe('a&b+c');
@@ -91,7 +91,7 @@ beforeEach(() => {
   clearPersistedDetailCache();
   mountedTargets.length = 0;
   writeSpacesLastView({ projectId: null, spaceId: 'A' });
-  window.history.replaceState(null, '', `#/spaces?${context}`);
+  window.history.replaceState(null, '', `/spaces?${context}`);
   vi.mocked(listSpacesGrouped).mockResolvedValue([{ project_id: null, project_key: null, project_name: null, spaces: [space('B'), space('C')] }]);
 });
 
@@ -106,7 +106,7 @@ it('validates an unlisted saved space before URL promotion without mounting the 
   expect(screen.getByRole('button', { name: 'Space B (Document)' })).toBeTruthy();
   expect(navigated).not.toHaveBeenCalled();
   expect(expectContext().get('space')).toBeNull();
-  await act(async () => replaceRouteHash('#/spaces?sentinel=a%26b%2Bc&agent_session=bound&sidebar=hidden'));
+  await act(async () => replaceRoute('/spaces?sentinel=a%26b%2Bc&agent_session=bound&sidebar=hidden'));
   expect(load).toHaveBeenCalledTimes(1);
   await act(async () => a.resolve(packet('A')));
   await waitFor(() => expect(screen.getByLabelText('Opened space').textContent).toBe('A'));
@@ -126,7 +126,7 @@ it('discards a deleted saved space after 404, selects the first eligible space a
   expect(expectContext().get('space')).toBe('B');
   await waitFor(() => expect(readSpacesLastView()?.spaceId).toBe('B'));
   view.unmount();
-  window.history.replaceState(null, '', `#/spaces?${context}`);
+  window.history.replaceState(null, '', `/spaces?${context}`);
   render(<Harness load={load} navigated={navigated} />);
   await waitFor(() => expect(screen.getByLabelText('Opened space').textContent).toBe('B'));
   expect(expectContext().get('space')).toBe('B');
@@ -160,7 +160,7 @@ it.each(['row', 'default'])('preserves a known full UUID selected by %s when ano
   const prefix = '12345678';
   vi.mocked(listSpacesGrouped).mockResolvedValue([{ project_id: null, project_key: null, project_name: null, spaces: [space(fullA), space(fullB)] }]);
   writeSpacesLastView({ projectId: null, spaceId: 'deleted' });
-  if (choice === 'row') window.history.replaceState(null, '', `#/spaces?space=C&${context}`);
+  if (choice === 'row') window.history.replaceState(null, '', `/spaces?space=C&${context}`);
   const load = vi.fn(async (id: string) => {
     if (id === 'deleted') throw new ApiError('saved space deleted', 404);
     if (id === prefix) throw new ApiError('ambiguous space ref', 409);
@@ -190,7 +190,7 @@ it('leaves a genuine empty collection after a deleted saved target is authoritat
 });
 
 it.each([404, 409])('retains an explicit unavailable target with status %s instead of selecting an eligible row', async (status) => {
-  window.history.replaceState(null, '', `#/spaces?space=A&${context}`);
+  window.history.replaceState(null, '', `/spaces?space=A&${context}`);
   const navigated = vi.fn();
   const load = vi.fn(async () => { throw new ApiError(status === 409 ? 'ambiguous space ref' : 'explicit space missing', status); });
   render(<Harness load={load} navigated={navigated} />);
@@ -206,7 +206,7 @@ it.each(['link', 'row'])('lets a later %s selection supersede pending saved rest
   const navigated = vi.fn();
   render(<Harness load={load} navigated={navigated} />);
   if (choice === 'row') fireEvent.click(await screen.findByRole('button', { name: 'Space C (Document)' }));
-  else await act(async () => replaceRouteHash(`#/spaces?space=C&${context}`));
+  else await act(async () => replaceRoute(`/spaces?space=C&${context}`));
   await waitFor(() => expect(screen.getByLabelText('Opened space').textContent).toBe('C'));
   await act(async () => a.resolve(packet('A')));
   expect(screen.getByLabelText('Opened space').textContent).toBe('C');
@@ -235,12 +235,12 @@ it('does not navigate from an inactive view after a pending saved result', async
   const navigated = vi.fn();
   const view = render(<Harness load={load} navigated={navigated} />);
   await waitFor(() => expect(load).toHaveBeenCalledWith('A', expect.objectContaining({ signal: expect.any(AbortSignal) })));
-  window.history.replaceState(null, '', `#/tasks?${context}`);
+  window.history.replaceState(null, '', `/tasks?${context}`);
   view.rerender(<Harness load={load} navigated={navigated} active={false} />);
   await act(async () => {
     a.resolve(packet('A'));
   });
   expect(navigated).not.toHaveBeenCalled();
-  expect(window.location.hash.startsWith('#/tasks?')).toBe(true);
+  expect(window.location.pathname).toBe('/tasks');
   expectContext();
 });

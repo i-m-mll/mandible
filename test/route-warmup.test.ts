@@ -255,10 +255,10 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function navigate(hash: string): void {
+function navigate(path: string): void {
   act(() => {
-    window.history.pushState(null, '', hash);
-    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    window.history.pushState(null, '', path);
+    window.dispatchEvent(new PopStateEvent('popstate'));
   });
 }
 
@@ -279,7 +279,7 @@ describe('startup route warmup', () => {
       if (delay === 10_000 && typeof handler === 'function') poll = () => handler(...args);
       return interval(handler, delay, ...args);
     });
-    window.history.replaceState(null, '', '#/graph');
+    window.history.replaceState(null, '', '/graph');
     render(h(App, {}));
     await harness.settle(false);
     expect((await screen.findAllByText('Warm graph node', { exact: false })).length).toBeGreaterThan(0);
@@ -303,7 +303,7 @@ describe('startup route warmup', () => {
     const harness = new Harness();
     harness.install();
     harness.health = health;
-    window.history.replaceState(null, '', '#/settings');
+    window.history.replaceState(null, '', '/settings');
     render(h(App, {}));
     await harness.settle(false);
     const activeRequests = harness.routeRequests();
@@ -316,7 +316,7 @@ describe('startup route warmup', () => {
     const harness = new Harness();
     harness.install();
     const intervals = vi.spyOn(window, 'setInterval');
-    window.history.replaceState(null, '', '#/settings');
+    window.history.replaceState(null, '', '/settings');
     render(h(App, {}));
     await harness.settle();
     writePersistedDetail('timeline', 'poll-test', { rows: [] });
@@ -333,7 +333,7 @@ describe('startup route warmup', () => {
   it('revalidates a visible Timeline after issue and comment SSE events', async () => {
     const harness = new Harness();
     harness.install();
-    window.history.replaceState(null, '', '#/timeline');
+    window.history.replaceState(null, '', '/timeline');
     render(h(App, {}));
     await harness.settle();
     const timelineReads = () => harness.requested.filter((request) => request === 'POST /api/timeline/project').length;
@@ -349,7 +349,7 @@ describe('startup route warmup', () => {
     await Promise.all(Object.values(viewModules).map((load) => load()));
     const harness = new Harness();
     harness.install();
-    window.history.replaceState(null, '', '#/settings');
+    window.history.replaceState(null, '', '/settings');
     render(h(App, {}));
     await harness.settle();
     expect(harness.routeRequests()).not.toEqual([]);
@@ -368,14 +368,14 @@ describe('startup route warmup', () => {
     const harness = new Harness();
     harness.install();
 
-    globalThis.window.history.replaceState(null, '', `#/${tab}`);
+    globalThis.window.history.replaceState(null, '', `/${tab}`);
     render(h(App, {}));
     await harness.settle(false);
     const activation = harness.routeRequests();
     resetBrowserState();
 
     const beforeWarm = harness.requested.length;
-    globalThis.window.history.replaceState(null, '', '#/settings');
+    globalThis.window.history.replaceState(null, '', '/settings');
     render(h(App, {}));
     await harness.settle();
     const warm = harness.routeRequests(beforeWarm).filter(request => activation.includes(request));
@@ -391,7 +391,7 @@ describe('startup route warmup', () => {
     }
     harness.hang = true;
     const beforeSwitch = harness.requested.length;
-    navigate(`#/${tab}`);
+    navigate(`/${tab}`);
     await harness.settle(false);
     if(tab==='console'){
       expect(warmedChat!.isActive()).toBe(true);

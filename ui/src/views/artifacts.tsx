@@ -1,6 +1,5 @@
 import { NativeSelect } from '../components/shared/NativeSelect';
 import { Icon } from '../components/icons/Icon';
-import { navigateAppHash } from '../app-history';
 import { resolvedArtifactRecord } from "../../../src/artifact-identity.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import hljs from 'highlight.js/lib/core';
@@ -26,7 +25,9 @@ import { queryClient } from "../query/client";
 import { detailKeys } from "../query/detailKeys";
 import { artifactListOptions, artifactResolutionOptions, artifactVersionsOptions, artifactRecordOptions, artifactContentOptions, artifactBackrefsOptions, queryErrorMessage } from "../query/details";
 import { useArtifactDetail } from "../hooks/useArtifactDetail";
-import { ARTIFACT_ROUTE_SELECTORS, routeHashWithParams, parseArtifactVersionParam, shortRouteId } from '../routing';
+import { navigateTo, routeWithParams, shortRouteId } from '../routing';
+import { useEntityRoute, type EntityRouteResolution } from '../hooks/useEntityRoute';
+import { EntityRouteState, isUnopenedEntityRoute } from '../components/shared/EntityRouteState';
 import { PRODUCTION_ORIGIN } from '../../../src/canonical-origin';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
@@ -76,13 +77,10 @@ import { useViewActive, useRegisterInitialRouteLoad } from '../app-shell';
 import { artifactLinkBadgeLabel } from '../lib/format';
 import { useSidebarListNavigation } from '../hooks/useSidebarListNavigation';
 import { readPersistedViewState, usePersistedViewState } from '../hooks/usePersistedViewState';
-import { briefingRoute } from '../routing';
 
 type ArtifactsViewProps = {
-  initialArtifactId?: string;
-  initialRef?: string;
-  initialSeriesRef?: string;
-  initialVersionNo?: number | null;
+  /** The typed ref of an `/artifact/<ref>` path. */
+  entityRef?: string | null;
   initialRepo?: string;
   initialRole?: string;
   sidebarHidden?: boolean;
@@ -156,32 +154,36 @@ function normalizeArtifactListViewState(value: unknown): ArtifactListViewState {
 }
 
 type ArtifactRouteSelection = {
-  artifactId?: string;
   ref?: string;
   seriesRef: string | null;
   versionNo: number | null;
   hasDeepLink: boolean;
-  hasInvalidSeries: boolean;
 };
 
-function artifactRouteSelection(input: {
-  artifactId?: string;
-  ref?: string;
-  seriesRef?: string;
-  versionNo?: number | null;
-}): ArtifactRouteSelection {
-  const artifactId = input.artifactId?.trim() || undefined;
-  const ref = input.ref?.trim() || undefined;
-  const rawSeriesRef = input.seriesRef?.trim() || undefined;
-  const seriesRef = rawSeriesRef ? normalizeInitialSeriesRef(rawSeriesRef) : null;
-  return {
-    artifactId,
-    ref,
-    seriesRef,
-    versionNo: input.versionNo ?? null,
-    hasDeepLink: Boolean(artifactId || ref || rawSeriesRef),
-    hasInvalidSeries: Boolean(rawSeriesRef && !seriesRef),
-  };
+const ARTIFACT_SERIES_ROUTE_REF = /^(artifact-series:[^@]+)(?:@(\d+))?$/i;
+
+/**
+ * The selection a resolved `/artifact/<ref>` path names: a series, pinned to a
+ * version by `@<n>`, or any other typed ref.
+ */
+function artifactRouteSelection(ref: string | null, hasDeepLink: boolean): ArtifactRouteSelection {
+  const series = ref ? ARTIFACT_SERIES_ROUTE_REF.exec(ref) : null;
+  if (series) return { seriesRef: series[1], versionNo: series[2] ? Number(series[2]) : null, hasDeepLink };
+  return { ...(ref ? { ref } : {}), seriesRef: null, versionNo: null, hasDeepLink };
+}
+
+function artifactRoutePath(seriesRefValue: string, versionNo: number | null): string {
+  return routeWithParams({
+    kind: 'entity', entity: 'artifact', ref: versionNo === null ? seriesRefValue : `${seriesRefValue}@${versionNo}`,
+  });
+}
+
+/** Hand the resolver's artifact resolution to the detail read, so the path is resolved once. */
+function seedArtifactRouteResolution(resolution: EntityRouteResolution): void {
+  if (resolution.status !== 'resolved' || ARTIFACT_SERIES_ROUTE_REF.test(resolution.ref)) return;
+  const detail = resolution.detail?.resolution;
+  const { queryKey } = artifactResolutionOptions(resolution.ref);
+  if (detail && queryClient.getQueryData(queryKey) === undefined) queryClient.setQueryData(queryKey, detail as unknown as ArtifactResolveResult);
 }
 
 function artifactSeriesListRequest(filters: ArtifactFilters): ArtifactQueryParams {
@@ -225,7 +227,7 @@ type ArtifactPreview =
   | { kind: 'binary'; value: string }
   | { kind: 'bundle'; manifestText: string; name: string; members: BundleMemberPreview[] };
 
-type LastWrittenHashRef = {
+type LastWrittenRouteRef = {
   current: { seriesRef: string; versionNo: number | null } | null;
 };
 
@@ -239,21 +241,20 @@ function isAbortError(error: unknown): boolean {
 }
 
 export function ArtifactsView({
-  initialArtifactId,
-  initialRef,
-  initialSeriesRef,
-  initialVersionNo = null,
+  entityRef = null,
   initialRepo,
   initialRole,
   sidebarHidden = false,
 }: ArtifactsViewProps): JSX.Element {
-  const routeSelection = artifactRouteSelection({
-    artifactId: initialArtifactId,
-    ref: initialRef,
-    seriesRef: initialSeriesRef,
-    versionNo: initialVersionNo,
-  });
+  const routeResolution = useEntityRoute('artifact', entityRef);
+  seedArtifactRouteResolution(routeResolution);
+  const routeSelection = artifactRouteSelection(
+    routeResolution.status === 'resolved' ? routeResolution.ref : null,
+    Boolean(entityRef),
+  );
+  const initialRef = routeSelection.ref;
   const initialSeriesSelection = routeSelection.seriesRef;
+  const initialVersionNo = routeSelection.versionNo;
   const [listViewState, setListViewState] = usePersistedViewState(
     ARTIFACT_LIST_STATE_KEY,
     normalizeArtifactListViewState,
@@ -262,27 +263,27 @@ export function ArtifactsView({
   const { filters, sortField, sortDirection } = listViewState;
   const active = useViewActive();
   const [selection, setSelection] = useState(() => ({
-    reference: initialArtifactId ?? initialRef ?? null,
+    reference: initialRef ?? null,
     seriesRef: initialSeriesSelection ?? (routeSelection.hasDeepLink ? null : listViewState.selectedSeriesRef),
     versionNo: initialSeriesSelection ? initialVersionNo : listViewState.selectedVersionNo,
   }));
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
   const [detailMetadataOpen, setDetailMetadataOpen] = useState(false);
-  const lastWrittenHashRef = useRef<{ seriesRef: string; versionNo: number | null } | null>(null);
-  const routeKey = JSON.stringify([initialArtifactId, initialRef, initialSeriesRef, initialVersionNo]);
+  const lastWrittenRouteRef = useRef<{ seriesRef: string; versionNo: number | null } | null>(null);
+  const routeKey = JSON.stringify([initialRef, initialSeriesSelection, initialVersionNo]);
   const [appliedRouteKey, setAppliedRouteKey] = useState(routeKey);
   if (appliedRouteKey !== routeKey) {
     setAppliedRouteKey(routeKey);
-    const ownWrite = lastWrittenHashRef.current;
+    const ownWrite = lastWrittenRouteRef.current;
     if (!(ownWrite && ownWrite.seriesRef === initialSeriesSelection && ownWrite.versionNo === initialVersionNo)) {
       setSelection({
-        reference: initialArtifactId ?? initialRef ?? null,
+        reference: initialRef ?? null,
         seriesRef: initialSeriesSelection ?? (routeSelection.hasDeepLink ? null : listViewState.selectedSeriesRef),
         versionNo: initialSeriesSelection ? initialVersionNo : null,
       });
     }
-    lastWrittenHashRef.current = null;
+    lastWrittenRouteRef.current = null;
   }
   useEffect(() => {
     setListViewState((current) => {
@@ -304,7 +305,7 @@ export function ArtifactsView({
     if (active) registerInitialRead(queryClient.fetchQuery(artifactListOptions(artifactSeriesListRequest(filters))));
   }, [active, registerInitialRead]);
 
-  const defaultSeriesRef = !selection.reference && !routeSelection.hasDeepLink && !routeSelection.hasInvalidSeries && series[0]
+  const defaultSeriesRef = !selection.reference && !routeSelection.hasDeepLink && series[0]
     ? seriesRef(series[0]) : null;
   useEffect(() => {
     if (!defaultSeriesRef) return;
@@ -330,8 +331,7 @@ export function ArtifactsView({
   const knowledgeLoading = detail.backrefsLoading;
   const knowledgeError = detail.backrefsError;
   const contentError = detail.contentError;
-  const detailError = routeSelection.hasInvalidSeries ? `Invalid series reference: ${initialSeriesRef}`
-    : detail.error ?? queryErrorMessage(listQuery.error);
+  const detailError = detail.error ?? queryErrorMessage(listQuery.error);
   const requestDetailLoading = detail.loading;
 
   useEffect(() => {
@@ -343,7 +343,7 @@ export function ArtifactsView({
   const selectSeries = useCallback((entry: ArtifactSeriesSummary) => {
     const ref = seriesRef(entry);
     setSelection({ reference: null, seriesRef: ref, versionNo: null });
-    writeArtifactHash(ref, null, lastWrittenHashRef);
+    writeArtifactRoute(ref, null, lastWrittenRouteRef);
   }, []);
   const artifactListNavigation = useSidebarListNavigation({
     items: series, getKey: seriesRef, selectedKey: selectedSeriesRef, onSelect: selectSeries,
@@ -351,13 +351,13 @@ export function ArtifactsView({
   const selectVersion = (versionNo: number | null) => {
     if (!selectedSeriesRef) return;
     setSelection({ reference: null, seriesRef: selectedSeriesRef, versionNo });
-    writeArtifactHash(selectedSeriesRef, versionNo, lastWrittenHashRef);
+    writeArtifactRoute(selectedSeriesRef, versionNo, lastWrittenRouteRef);
   };
   const handleVersionPublished = useCallback((published: ArtifactDraftPublishResult) => {
     const ref = canonicalArtifactSeriesRef(published.result.logical_artifact.id);
     const versionNo = published.result.artifact_version.version_no;
     setSelection({ reference: null, seriesRef: ref, versionNo });
-    writeArtifactHash(ref, versionNo, lastWrittenHashRef);
+    writeArtifactRoute(ref, versionNo, lastWrittenRouteRef);
     void queryClient.invalidateQueries({ queryKey: detailKeys.artifacts });
   }, []);
 
@@ -467,6 +467,9 @@ export function ArtifactsView({
               })}
       </ViewSidebar>
       <main className={`artifacts-detail${coherentSelectedArtifact && detailMetadataOpen ? ' artifacts-detail--metadata-open' : ''}`}>
+        {isUnopenedEntityRoute(routeResolution) && (routeResolution.status !== 'resolving' || !coherentSelectedArtifact) ? (
+          <EntityRouteState kind="artifact" resolution={routeResolution} />
+        ) : <>
         {detailError && !coherentSelectedArtifact && <DetailPaneNotice severity="error" title="Artifacts could not be loaded">{detailError}</DetailPaneNotice>}
         {requestDetailLoading && !coherentSelectedArtifact && !resolution && (
           <LoadingSkeleton variant="detail" label="Loading artifact..." />
@@ -503,6 +506,7 @@ export function ArtifactsView({
             knowledgeError={knowledgeError}
           />
         )}
+        </>}
       </main>
     </div>
   );
@@ -819,7 +823,9 @@ export function ArtifactDetail({
         return;
       }
       if (typeof window !== 'undefined') {
-        navigateAppHash(briefingRoute(receipt.briefing_id, receipt.round_id).slice(1));
+        navigateTo(routeWithParams({ kind: 'entity', entity: 'briefing', ref: shortRouteId(receipt.briefing_id) }, {
+          round: receipt.round_id ? shortRouteId(receipt.round_id) : null,
+        }, [], ''));
       }
     } catch (error) {
       setBriefingError(error instanceof Error ? error.message : String(error));
@@ -1875,26 +1881,16 @@ function normalizeSeriesRef(ref: string): string {
   return canonicalArtifactSeriesRef(trimmed);
 }
 
-function normalizeInitialSeriesRef(ref: string): string | null {
-  const trimmed = ref.trim();
-  if (/^(artifact-blob:|artifact-version:|artifact:sha256:)/i.test(trimmed)) return null;
-  return normalizeSeriesRef(trimmed);
-}
 
 
-function writeArtifactHash(
+function writeArtifactRoute(
   seriesRefValue: string,
   versionNo: number | null,
-  lastWrittenHashRef: LastWrittenHashRef,
+  lastWrittenRouteRef: LastWrittenRouteRef,
 ): void {
   if (typeof window === 'undefined') return;
-  const nextHash = routeHashWithParams(window.location.hash, 'artifacts', {
-    series: seriesRefValue, version: versionNo === null ? null : String(versionNo),
-  }, ARTIFACT_ROUTE_SELECTORS);
-  if (typeof window !== 'undefined' && window.location.hash !== nextHash) {
-    lastWrittenHashRef.current = { seriesRef: seriesRefValue, versionNo };
-    navigateAppHash(nextHash);
-  }
+  lastWrittenRouteRef.current = { seriesRef: seriesRefValue, versionNo };
+  navigateTo(artifactRoutePath(seriesRefValue, versionNo));
 }
 
 function seriesTitle(series: ArtifactSeriesSummary): string {
@@ -2252,12 +2248,6 @@ async function warmArtifactDetail(artifactId: string): Promise<void> {
 
 /** Warm the Artifacts list and only its explicit, saved, or default selection. */
 export async function warmInitialData(params: Record<string, string>): Promise<void> {
-  const selection = artifactRouteSelection({
-    artifactId: params.artifact,
-    ref: params.ref,
-    seriesRef: params.series,
-    versionNo: parseArtifactVersionParam(params.version),
-  });
   const viewState = readPersistedViewState(
     ARTIFACT_LIST_STATE_KEY,
     normalizeArtifactListViewState,
@@ -2274,34 +2264,9 @@ export async function warmInitialData(params: Record<string, string>): Promise<v
     viewState.sortDirection,
   );
 
-  let selectedSeriesRef: string | null = null;
-  let selectedVersionNo: number | null = null;
+  const selectedSeriesRef = viewState.selectedSeriesRef ?? (ordered[0] ? seriesRef(ordered[0]) : null);
+  const selectedVersionNo = viewState.selectedSeriesRef ? viewState.selectedVersionNo : null;
   let selectedArtifactId: string | null = null;
-
-  if (selection.artifactId || selection.ref) {
-    const resolution = await queryClient.fetchQuery(artifactResolutionOptions(selection.artifactId ?? selection.ref ?? null));
-    if (resolution.target_type === 'artifact_blob') return;
-    selectedSeriesRef = resolution.logical_artifact
-      ? canonicalArtifactSeriesRef(resolution.logical_artifact.id)
-      : null;
-    const forcePinned = Boolean(selection.artifactId) && !/^artifact-series:/i.test(resolution.ref);
-    const latestTracking = resolution.warnings?.includes('series_latest_not_pinned') && !forcePinned;
-    selectedVersionNo = resolution.artifact_version && !latestTracking
-      ? resolution.artifact_version.version_no
-      : null;
-    selectedArtifactId = resolvedArtifactRecord(resolution)?.id ?? resolution.artifact_version?.id ?? null;
-
-  } else if (selection.hasInvalidSeries) {
-    return;
-  } else {
-    selectedSeriesRef = selection.seriesRef
-      ?? viewState.selectedSeriesRef
-      ?? (selection.hasDeepLink ? null : (ordered[0] ? seriesRef(ordered[0]) : null));
-    selectedVersionNo = selection.seriesRef
-      ? selection.versionNo
-      : viewState.selectedSeriesRef ? viewState.selectedVersionNo : null;
-  }
-
   if (selectedSeriesRef) {
     const loadedHistory = await queryClient.fetchQuery(artifactVersionsOptions(selectedSeriesRef));
     const selectedVersion = selectedVersionNo === null

@@ -1,7 +1,7 @@
-import { pushAppHistory, replaceAppHistory } from '../app-history';
 import { useRef } from 'preact/hooks';
 import type { DiffFileIdentity } from '../components/diff-file-identity';
-import { routeHashWithParams, shortRouteId } from '../routing';
+import { navigateTo, replaceRoute, routeWithParams, shortRouteId } from '../routing';
+import { rememberEntityRoute } from '../query/entityRoute';
 import { DEFAULT_AUTH_CHANGE_BREAKDOWN_VIEW_STATE, normalizeAuthChangeBreakdownViewState, type AuthChangeBreakdownViewState } from './auth-change-breakdown-state';
 
 export type AuthReviewView = 'info' | 'diff' | 'console';
@@ -20,6 +20,16 @@ export type AuthInfoSnapshot = {
 type ReviewHistory = { version: 1; entryId: string; info?: AuthInfoSnapshot };
 const HISTORY_KEY = 'mandibleAuthReview';
 export const AUTH_REVIEW_SELECTORS = ['view', 'diff_old', 'diff_new'] as const;
+
+/** Replace the current Approvals route with the request the view selected, or with the bare view. */
+export function replaceAuthRequestRoute(id: string | null): void {
+  if (id) rememberEntityRoute('auth', shortRouteId(id), { id });
+  replaceRoute(routeWithParams(
+    id ? { kind: 'entity', entity: 'auth', ref: shortRouteId(id) } : { kind: 'view', tab: 'auth' },
+    {},
+    AUTH_REVIEW_SELECTORS,
+  ));
+}
 
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -55,21 +65,22 @@ function historyState(review: ReviewHistory): Record<string, unknown> {
   return { ...record(window.history.state), [HISTORY_KEY]: review };
 }
 
-export function authReviewHash(hash: string, requestId: string, view: AuthReviewView, file?: DiffFileIdentity): string {
-  return routeHashWithParams(hash, 'auth', {
-    request: shortRouteId(requestId), view,
-    diff_old: file?.oldPath ?? null, diff_new: file?.newPath ?? null,
+export function authReviewHref(requestId: string, view: AuthReviewView, file?: DiffFileIdentity): string {
+  return routeWithParams({ kind: 'entity', entity: 'auth', ref: shortRouteId(requestId) }, {
+    view, diff_old: file?.oldPath ?? null, diff_new: file?.newPath ?? null,
   }, AUTH_REVIEW_SELECTORS);
 }
 
 export function navigateAuthFile(requestId: string, file: DiffFileIdentity, info: AuthInfoSnapshot): void {
+  rememberEntityRoute('auth', shortRouteId(requestId), { id: requestId });
   const origin = reviewHistory();
-  replaceAppHistory(authReviewHash(window.location.hash, requestId, 'info'), historyState({ version: 1, entryId: origin?.entryId ?? crypto.randomUUID(), info }));
-  pushAppHistory(authReviewHash(window.location.hash, requestId, 'diff', file), historyState({ version: 1, entryId: crypto.randomUUID() }));
+  replaceRoute(authReviewHref(requestId, 'info'), historyState({ version: 1, entryId: origin?.entryId ?? crypto.randomUUID(), info }));
+  navigateTo(authReviewHref(requestId, 'diff', file), historyState({ version: 1, entryId: crypto.randomUUID() }));
 }
 
 export function navigateAuthReviewView(requestId: string, view: AuthReviewView): void {
-  pushAppHistory(authReviewHash(window.location.hash, requestId, view), historyState({ version: 1, entryId: crypto.randomUUID() }));
+  rememberEntityRoute('auth', shortRouteId(requestId), { id: requestId });
+  navigateTo(authReviewHref(requestId, view), historyState({ version: 1, entryId: crypto.randomUUID() }));
 }
 
 export type AuthReviewNavigation = {

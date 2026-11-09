@@ -27,7 +27,7 @@ export function ActivityTargetLink({ target }: { target: ActivityTarget }): JSX.
   const resolved = labels[activityTargetKey(target)];
   const label = activityTargetLabel(target,labels);
   const selection = resolved?.selection ?? (target.kind === 'thread' ? { type: 'session' as const, id: target.sessionId } : undefined);
-  return selection ? <a href={chatRouteHref(selection, window.location.hash)}>{label}</a> : <span>{label}</span>;
+  return selection ? <a href={chatRouteHref(selection, window.location.search)}>{label}</a> : <span>{label}</span>;
 }
 
 export function ActivityTargetLinks({ targets }: { targets: readonly ActivityTarget[] }): JSX.Element {

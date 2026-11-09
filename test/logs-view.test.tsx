@@ -2,19 +2,19 @@
 import { cleanup, fireEvent, render, screen, waitFor } from './helpers/dom.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { LogsView, parseLogsHash } from '../ui/src/views/logs';
+import { LogsView, parseLogsSearch } from '../ui/src/views/logs';
 import type { LogsResponse } from '../ui/src/api';
 import type { SSEClient, SSEHandler, SSEPayload } from '../ui/src/sse-client';
 
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
-  window.location.hash = '';
+  window.history.replaceState(null, '', '/');
 });
 
 describe('LogsView', () => {
-  it('parses shareable hash filters', () => {
-    expect(parseLogsHash('#/logs?levels=error,warn&subsystem=auth&event=auth_failure&q=needle&related=issue:abc')).toMatchObject({
+  it('parses shareable query filters', () => {
+    expect(parseLogsSearch('?levels=error,warn&subsystem=auth&event=auth_failure&q=needle&related=issue:abc')).toMatchObject({
       levels: ['error', 'warn'],
       subsystem: 'auth',
       event: 'auth_failure',
@@ -80,13 +80,13 @@ describe('LogsView', () => {
     expect((screen.getByRole('checkbox', { name: 'Auto-scroll' }) as HTMLInputElement).checked).toBe(false);
   });
   it('preserves unrelated route context while changing log filters', async () => {
-    window.history.replaceState(null, '', '#/logs?levels=error,warn&q=needle&sidebar=hidden&agent_session=bound&sentinel=a%26b%2Bc');
+    window.history.replaceState(null, '', '/logs?levels=error,warn&q=needle&sidebar=hidden&agent_session=bound&sentinel=a%26b%2Bc');
     const loadLogs = vi.fn(async (): Promise<LogsResponse> => ({ entries: [], limit: 100, offset: 0,
       log_file: '', exists: true, source: 'daemon_log', older_cursor: null, has_older: false }));
     render(<LogsView loadLogs={loadLogs} createSse={() => ({ connect: () => undefined, close: () => undefined, on: () => () => undefined })} />);
     fireEvent.input(screen.getByPlaceholderText('message, field, or id'), { target: { value: 'changed' } });
-    await waitFor(() => expect(parseLogsHash().q).toBe('changed'));
-    const context = new URLSearchParams(window.location.hash.split('?')[1]);
+    await waitFor(() => expect(parseLogsSearch().q).toBe('changed'));
+    const context = new URLSearchParams(window.location.search);
     expect(context.get('sidebar')).toBe('hidden');
     expect(context.get('agent_session')).toBe('bound');
     expect(context.get('sentinel')).toBe('a&b+c');

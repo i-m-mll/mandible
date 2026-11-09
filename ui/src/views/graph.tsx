@@ -39,7 +39,7 @@ import { invalidateProjectionQueries } from "../query/projectionRefresh";
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { DetailPaneShell, type DetailPanePresentation } from '../components/shared/DetailPaneShell';
-import { parseRouteFromHash, replaceRouteHash, routeHashWithParams, shortRouteId } from '../routing';
+import { currentRoute, replaceRoute, routeWithParams, shortRouteId } from '../routing';
 
 type ReactFlowNode = {
   id: string
@@ -1264,8 +1264,8 @@ export function GraphView({
               onNodeClick={(_event, node) => {
                 const id = (node.data as { node: GraphNode }).node.id;
                 setSelection({ focus: routeFocus, id });
-                if (parseRouteFromHash(window.location.hash).tab === 'graph') {
-                  replaceRouteHash(routeHashWithParams(window.location.hash, 'graph', { focus: id }));
+                if (currentRoute().tab === 'graph') {
+                  replaceRoute(routeWithParams({ kind: 'view', tab: 'graph' }, { focus: id }));
                 }
                 setDetailPanelOpen(true);
               }}

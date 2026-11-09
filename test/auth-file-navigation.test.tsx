@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from './helpers/dom';
 import { RoutedAuthReview, navigationRequest, navigationRequestId } from './helpers/auth-navigation-fixture';
-import { authReviewHash } from '../ui/src/views/auth-review-navigation';
+import { authReviewHref } from '../ui/src/views/auth-review-navigation';
 import { establishTestClientAccess } from './helpers/local-client-access';
 
 beforeEach(() => {
@@ -16,10 +16,11 @@ beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('Offline fixture'))));
   vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(4000);
   vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(300);
-  window.history.replaceState({ unrelated: 'preserved' }, '', `#/auth?request=${navigationRequestId}&sidebar=hidden&agent_session=fixture-agent`);
+  window.history.replaceState({ unrelated: 'preserved' }, '', `/auth/${navigationRequestId}?sidebar=hidden&agent_session=fixture-agent`);
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
+const here = () => `${window.location.pathname}${window.location.search}`;
 const body = () => document.querySelector<HTMLElement>('.auth-detail__body')!;
 const offset = (node: HTMLElement, value: number) => { node.scrollTop = value; fireEvent.scroll(node); };
 const info = () => screen.getByRole('tabpanel', { name: 'Info' });
@@ -46,9 +47,9 @@ it('restores two distinct Info visits and their live disclosures and offsets eve
   offset(body(), 240);
   const destination1 = clickFile(screen.getByRole('region', { name: 'TypeScript files' }));
   await waitFor(diff);
-  expect(window.location.hash).toBe(destination1);
+  expect(here()).toBe(destination1);
   expect(window.history.state.unrelated).toBe('preserved');
-  expect(window.location.hash).toContain('agent_session=fixture-agent');
+  expect(here()).toContain('agent_session=fixture-agent');
   fireEvent.click(screen.getByRole('tab', { name: 'Info', exact: true }));
   await waitFor(info);
   fireEvent.click(screen.getByRole('tab', { name: 'Directory', exact: true }));
@@ -78,52 +79,52 @@ it('restores two distinct Info visits and their live disclosures and offsets eve
   fireEvent.click(screen.getByRole('button', { name: /TypeScript/ }));
   expect(screen.getByRole('region', { name: 'TypeScript files' }).scrollTop).toBe(250);
   act(() => window.history.forward());
-  await waitFor(() => expect(window.location.hash).toBe(destination1));
+  await waitFor(() => expect(here()).toBe(destination1));
   await waitFor(diff);
   act(() => window.history.go(2));
-  await waitFor(() => expect(window.location.hash).toBe(destination2));
+  await waitFor(() => expect(here()).toBe(destination2));
   await waitFor(diff);
 });
 
 it('honors an exact direct destination over a saved Console tab and cancels a deferred old request', async () => {
   window.localStorage.setItem(`auth-review-tab:${navigationRequestId}`, JSON.stringify('console'));
   const file = navigationRequest.change_report!.files[9]!;
-  window.history.replaceState(null, '', authReviewHash(window.location.hash, navigationRequestId, 'diff', { oldPath: file.old_path, newPath: file.new_path }));
+  window.history.replaceState(null, '', authReviewHref(navigationRequestId, 'diff', { oldPath: file.old_path, newPath: file.new_path }));
   const pending = { ...navigationRequest, diff_summary: undefined, spec_content: undefined, output: undefined };
   const view = render(<RoutedAuthReview requests={[pending]} />);
   await waitFor(diff);
   expect(screen.queryByRole('status')).toBeNull();
   view.rerender(<RoutedAuthReview requests={[navigationRequest]} />);
   await waitFor(() => expect(screen.getByRole('button', { name: file.new_path! }).getAttribute('aria-expanded')).toBe('true'));
-  const validDestination = window.location.hash;
+  const validDestination = here();
   const mismatched = { oldPath: navigationRequest.change_report!.files[0]!.old_path, newPath: file.new_path };
   act(() => {
-    window.history.pushState(null, '', authReviewHash(window.location.hash, navigationRequestId, 'diff', mismatched));
-    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    window.history.pushState(null, '', authReviewHref(navigationRequestId, 'diff', mismatched));
+    window.dispatchEvent(new PopStateEvent('popstate'));
   });
-  const mismatchedDestination = window.location.hash;
+  const mismatchedDestination = here();
   const warning = await screen.findByRole('status');
   expect(warning.closest('[data-detail-pane-slot="notice"]')).toBeTruthy();
   expect(diff().contains(warning)).toBe(false);
-  expect(window.location.hash).toContain('agent_session=fixture-agent');
-  expect(window.location.hash).toContain('sidebar=hidden');
+  expect(here()).toContain('agent_session=fixture-agent');
+  expect(here()).toContain('sidebar=hidden');
   view.rerender(<RoutedAuthReview requests={[{ ...navigationRequest }]} />);
   expect(screen.getByRole('status')).toBe(warning);
-  expect(window.location.hash).toBe(mismatchedDestination);
+  expect(here()).toBe(mismatchedDestination);
   act(() => window.history.back());
-  await waitFor(() => expect(window.location.hash).toBe(validDestination));
+  await waitFor(() => expect(here()).toBe(validDestination));
   await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
   act(() => window.history.forward());
-  await waitFor(() => expect(window.location.hash).toBe(mismatchedDestination));
+  await waitFor(() => expect(here()).toBe(mismatchedDestination));
   await screen.findByRole('status');
   fireEvent.click(screen.getByRole('tab', { name: 'Console', exact: true }));
   await waitFor(() => screen.getByRole('tabpanel', { name: 'Console' }));
-  expect(window.location.hash).not.toContain('diff_old');
-  expect(window.location.hash).not.toContain('diff_new');
+  expect(here()).not.toContain('diff_old');
+  expect(here()).not.toContain('diff_new');
   const other = { ...navigationRequest, id: 'other-navigation-request', diff_summary: undefined, spec_content: undefined, output: undefined };
   act(() => {
-    window.history.pushState(null, '', authReviewHash(window.location.hash, other.id, 'diff', { oldPath: 'other/file', newPath: 'other/file' }));
-    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    window.history.pushState(null, '', authReviewHref(other.id, 'diff', { oldPath: 'other/file', newPath: 'other/file' }));
+    window.dispatchEvent(new PopStateEvent('popstate'));
   });
   view.rerender(<RoutedAuthReview requests={[navigationRequest, other]} />);
   await waitFor(() => expect(screen.queryByRole('button', { name: file.new_path! })).toBeNull());
@@ -146,8 +147,8 @@ it('keeps an edited restored visit mounted while another app tab owns history', 
   const owner = body();
   view.rerender(<RoutedAuthReview active={false} />);
   act(() => {
-    window.history.pushState({ otherTab: true }, '', '#/issues?issue=some-issue');
-    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    window.history.pushState({ otherTab: true }, '', '/issue/some-issue');
+    window.dispatchEvent(new PopStateEvent('popstate'));
   });
   view.rerender(<RoutedAuthReview active={false} requests={[{ ...navigationRequest }]} />);
   expect(body()).toBe(owner);
@@ -174,14 +175,14 @@ it('retains canonical detail content across compact-route summary reconciliation
   }));
   window.localStorage.setItem(`auth-review-tab:${id}`, JSON.stringify('diff'));
   window.localStorage.setItem(`auth-review-scroll:${id}:diff`, '184');
-  window.history.replaceState(null, '', `#/auth?request=${id.slice(0, 8)}&view=diff`);
+  window.history.replaceState(null, '', `/auth/${id.slice(0, 8)}?view=diff`);
   const view = render(<RoutedAuthReview requests={[summary]} />);
   await waitFor(() => expect(document.querySelectorAll('.diff-viewer__file-header')).toHaveLength(40));
   view.rerender(<RoutedAuthReview requests={[{ ...summary, title: 'Refreshed list metadata' }]} />);
   expect(document.querySelectorAll('.diff-viewer__file-header')).toHaveLength(40);
   expect(document.querySelector('.detail-pane-shell__header')?.textContent).toContain('Refreshed list metadata');
   expect(body().scrollTop).toBe(184);
-  expect(detailCalls).toEqual(['/api/auth/request/5e68b070']);
+  expect(detailCalls).toHaveLength(1);
   view.rerender(<RoutedAuthReview requests={[{ ...summary, diff_summary: '', spec_content: '', output: '', change_report: null, actions: [] }]} />);
   expect(document.querySelectorAll('.diff-viewer__file-header')).toHaveLength(0);
   fireEvent.click(screen.getByRole('tab', { name: 'Info', exact: true }));

@@ -181,7 +181,7 @@ it('renders ordered native text and media and keeps image-only Gemini responses 
 });
 
 it('keeps inline thread navigation independent of report disclosure', () => {
-  window.history.replaceState(null,'','#/console?conversation=stale&position=9');
+  window.history.replaceState(null,'','/console?conversation=stale&position=9');
   const changed=vi.fn();
   const target='exact-provider-thread';
   const reference:ActivityTarget={kind:'thread',provider:'codex',sessionId:target};
@@ -191,7 +191,7 @@ it('keeps inline thread navigation independent of report disclosure', () => {
     result={{type:'tool_result',tool_use_id:'wait',content:JSON.stringify(report)}} /></ActivityTargetLabelsContext.Provider>);
   const link=view.getByRole('link');
   const route=new URL(link.getAttribute('href')!,'https://example.test');
-  const params=new URLSearchParams(route.hash.split('?')[1]);
+  const params=route.searchParams;
   expect(params.get('conversation')).toBe('canonical-report-owner');
   expect(params.has('session')).toBe(false);
   expect(params.has('position')).toBe(false);

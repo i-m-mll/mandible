@@ -64,7 +64,7 @@ describe("visible-first dashboard boot", () => {
       window.localStorage.removeItem("mandible_state_cache");
       window.localStorage.removeItem("mandible.spaces.lastView:v1");
     }
-    window.history.replaceState(null, "", "#/issues");
+    window.history.replaceState(null, "", "/issues");
   });
 
   afterEach(() => {
@@ -110,8 +110,8 @@ describe("visible-first dashboard boot", () => {
     expect(requests).not.toContain("/api/inbox/global");
     expect(requests).not.toContain("/api/console/sessions");
 
-    window.location.hash = "#/work";
-    window.dispatchEvent(new HashChangeEvent("hashchange"));
+    window.history.pushState(null, "", "/work");
+    window.dispatchEvent(new PopStateEvent("popstate"));
     await waitFor(() => expect(requests).toContain("/api/work/repos"));
   });
 

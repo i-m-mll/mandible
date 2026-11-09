@@ -1,7 +1,8 @@
 // @provisioned chromium
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { buildSync } from 'esbuild';
 import { expect, it } from 'vitest';
 import { spawnChromium } from '../helpers/chromium';
@@ -67,11 +68,18 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
   </style><div id="root"></div><script>${bundled.outputFiles[0]!.text.replaceAll('</script', '<\\/script')}</script>`);
   const navigationBundle = buildSync({ entryPoints: [resolve('test/provisioned/fixtures/auth-file-navigation-fixture.tsx')], outdir: join(directory, 'navigation-assets'),
     bundle: true, write: false, format: 'iife', platform: 'browser', target: 'es2020', jsx: 'automatic', jsxImportSource: 'preact' });
-  const navigationStyles = buildSync({ entryPoints: [resolve('ui/src/style.css')], bundle: true, write: false }).outputFiles[0]!.text.replace(/@import[^;]+;/g, '');
+  const navigationStyles = buildSync({ entryPoints: [resolve('ui/src/style.css')], bundle: true, write: false, loader: { '.woff': 'empty', '.woff2': 'empty', '.ttf': 'empty' } }).outputFiles[0]!.text.replace(/@import[^;]+;/g, '');
   const navigationHtml = join(directory, 'navigation.html');
   writeFileSync(navigationHtml, `<!doctype html><style>${navigationStyles}${navigationBundle.outputFiles.filter(file => file.path.endsWith('.css')).map(file => file.text).join('\n')}
     html,body,#root,.auth-sidebar-layout{height:100%;margin:0}#root{display:flex;flex-direction:column}
   </style><div id="root"></div><script>${navigationBundle.outputFiles.find(file => file.path.endsWith('.js'))!.text.replaceAll('</script', '<\\/script')}</script>`);
+  // The layout page has its own path; every other path is an app path and serves the review fixture, as the daemon does.
+  const server = createServer((request, response) => {
+    response.writeHead(200, { 'content-type': 'text/html' });
+    response.end(readFileSync(new URL(request.url ?? '/', 'http://fixture').pathname === '/layout' ? html : navigationHtml));
+  });
+  await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
+  const fixtureOrigin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const child = spawnChromium(['--remote-debugging-port=0', `--user-data-dir=${join(directory, 'profile')}`, 'about:blank'], { stdio: ['ignore', 'pipe', 'pipe'] });
   let session: ChromeSession | undefined;
   try {
@@ -101,7 +109,7 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
       await session.send('Emulation.setDeviceMetricsOverride', { width, height: 1128, deviceScaleFactor: 1, mobile: false });
       const rightEdges: number[] = [];
       for (const completed of [false, true]) {
-        await session.navigate(pathToFileURL(navigationHtml).href + `?action-layout=1${completed ? '&completed=1' : ''}`);
+        await session.navigate(`${fixtureOrigin}/` + `?action-layout=1${completed ? '&completed=1' : ''}`);
         await session.evaluate(`new Promise((resolve, reject) => {
           const timer=setTimeout(()=>{observer.disconnect();reject(new Error('Issue titles did not resolve'))},2500);
           const ready=()=>{if(document.querySelectorAll('.auth-action-row .issue-pill__title').length===2){clearTimeout(timer);observer.disconnect();resolve(true)}};
@@ -149,7 +157,7 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
     }
     for (const [width, height] of [[877, 1128], [360, 720]]) {
       await session.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
-      await session.navigate(pathToFileURL(html).href + `?width=${width}`);
+      await session.navigate(`${fixtureOrigin}/layout` + `?width=${width}`);
       await session.evaluate(`new Promise(resolve => {
         const ready = () => { if(document.querySelector('.auth-change-group__row')) { observer.disconnect(); resolve(true); } };
         const observer = new MutationObserver(ready); observer.observe(document,{subtree:true,childList:true}); ready();
@@ -237,7 +245,7 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
     }
     for (const [width, height] of [[877, 1128], [360, 720]]) {
       await session.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
-      await session.navigate(pathToFileURL(navigationHtml).href + `?width=${width}`);
+      await session.navigate(`${fixtureOrigin}/` + `?width=${width}`);
       const waitFor = (expression: string) => session!.evaluate(`new Promise((resolve,reject)=>{
         const timer=setTimeout(()=>{observer.disconnect();reject(new Error('Missing browser state: '+${JSON.stringify(expression)}))},2500);
         const ready=()=>{if(${expression}){clearTimeout(timer);observer.disconnect();resolve(true)}};
@@ -260,7 +268,7 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
       await waitFor("document.querySelector('#auth-detail-panel-diff .diff-viewer__file-header')"); await frames();
       const destination = await session.evaluate('window.location.href');
       const alignment = () => session!.evaluate(`(() => {
-        const params=new URLSearchParams(location.hash.split('?')[1]);const path=params.get('diff_new')??params.get('diff_old');
+        const params=new URLSearchParams(location.search);const path=params.get('diff_new')??params.get('diff_old');
         const title=[...document.querySelectorAll('.diff-viewer__file-path')].find(node=>node.title===path);
         const heading=title.closest('button'),body=document.querySelector('.auth-detail__body'),header=document.querySelector('.detail-pane-shell__header');
         return {visible:heading.getBoundingClientRect().top>=body.getBoundingClientRect().top-1
@@ -286,7 +294,7 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
       expect(await alignment()).toMatchObject({ visible: true, anchored: true, expanded: 'true' });
     }
     await session.send('Emulation.setDeviceMetricsOverride', { width: 877, height: 1128, deviceScaleFactor: 1, mobile: false });
-    const deferredUrl = pathToFileURL(navigationHtml).href + '?diagnostic=1';
+    const deferredUrl = `${fixtureOrigin}/` + '?diagnostic=1';
     const scrollState = () => session!.evaluate(`(() => { const node=document.querySelector('.auth-detail__body');
       return {top:node?.scrollTop,saved:localStorage.getItem('auth-review-scroll:'+window.scrollDiagnostic.requestId+':diff'),
         detailCalls:window.scrollDiagnostic.detailCalls};})()`);
@@ -306,7 +314,7 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
     await session.evaluate('window.scrollDiagnostic.hydrate();true'); await frames();
     const remounted = await scrollState();
     expect(remounted.top).toBe(hydrated.top); expect(Number(remounted.saved)).toBe(hydrated.top);
-    await session.navigate(pathToFileURL(navigationHtml).href + '?partial=1&small=1'); await frames();
+    await session.navigate(`${fixtureOrigin}/` + '?partial=1&small=1'); await frames();
     await session.evaluate("document.querySelector('.auth-change-group__row').click();true"); await frames();
     const partialOrigin = await session.evaluate(`(() => {
       const body=document.querySelector('.auth-detail__body'); body.scrollTop=601.5;
@@ -321,13 +329,13 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
     const missing = await session.evaluate(`(() => {
       const notice=document.querySelector('[role=status][data-severity=warning]');const body=document.querySelector('.auth-detail__body');
       const header=document.querySelector('.detail-pane-shell__header');const rect=notice.getBoundingClientRect();
-      return {hash:location.hash,visible:rect.height>0&&rect.top>=header.getBoundingClientRect().bottom-1
+      return {href:location.pathname+location.search,visible:rect.height>0&&rect.top>=header.getBoundingClientRect().bottom-1
         &&rect.bottom<=body.getBoundingClientRect().top+1&&rect.bottom<=innerHeight};})()`);
-    expect(missing.hash).toBe(partialOrigin.href);
+    expect(missing.href).toBe(partialOrigin.href);
     expect(missing.visible).toBe(true);
     await session.evaluate('history.back();true'); await frames();
     expect(await session.evaluate("document.querySelector('.auth-detail__body').scrollTop")).toBe(partialOrigin.top);
-    await session.navigate(pathToFileURL(navigationHtml).href + '?canonical=1&small=1'); await frames();
+    await session.navigate(`${fixtureOrigin}/` + '?canonical=1&small=1'); await frames();
     await session.evaluate('window.scrollDiagnostic.resolveDetail();true'); await frames();
     const canonical = await scrollState();
     expect(Math.abs(canonical.top - 6758.5)).toBeLessThanOrEqual(1);
@@ -342,6 +350,7 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
         child.once('exit', () => { clearTimeout(timer); resolve(); });
       });
     }
+    server.close();
     rmSync(directory, { recursive: true, force: true });
   }
 });

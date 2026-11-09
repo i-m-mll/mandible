@@ -10,6 +10,7 @@ import { ArtifactsView } from '../ui/src/views/artifacts';
 import { invalidateDashboardApiCacheForEvent, invalidateDashboardCaches } from '../ui/src/api';
 import { writePersistedDetail } from '../ui/src/detail-cache';
 import { detailKeys } from '../ui/src/query/detailKeys';
+import { rememberEntityRoute } from '../ui/src/query/entityRoute';
 
 function json(value: unknown, status = 200) {
   return new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } });
@@ -169,7 +170,8 @@ describe('live artifact detail ownership', () => {
       if (url.pathname === `/api/artifacts/${encodeURIComponent(old ? first.id : second.id)}`) return old ? oldRecord.promise : newRecord.promise;
       return Promise.reject(new Error(`Unexpected cold-restart request: ${url.pathname}`));
     }));
-    render(<ArtifactsView initialSeriesRef={original.summary.ref} />);
+    rememberEntityRoute('artifact', original.summary.ref, {});
+    render(<ArtifactsView entityRef={original.summary.ref} />);
     expect(screen.getByText('Restored preview')).toBeTruthy();
     const body = document.querySelector('.artifact-detail .detail-pane-shell__body') as HTMLElement;
     body.scrollTop = 59;

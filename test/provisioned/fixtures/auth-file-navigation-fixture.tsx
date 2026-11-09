@@ -11,13 +11,16 @@ if (new URLSearchParams(window.location.search).has('small')) {
   style.textContent = '.auth-detail__body{flex:none;height:463px}';
   document.head.append(style);
 }
-if (!window.location.hash) {
+if (!window.location.pathname.startsWith('/auth/')) {
   window.localStorage.clear();
   if (diagnostic || canonical) {
     window.localStorage.setItem(`auth-review-tab:${requestId}`, JSON.stringify('diff'));
     window.localStorage.setItem(`auth-review-scroll:${requestId}:diff`, '6758.5');
   }
-  window.history.replaceState({ fixtureState: 'preserved' }, '', `#/auth?request=${canonical ? canonicalId.slice(0, 8) : navigationRequestId}&sidebar=hidden&agent_session=fixture-agent`);
+  const query = new URLSearchParams(window.location.search);
+  query.set('sidebar', 'hidden');
+  query.set('agent_session', 'fixture-agent');
+  window.history.replaceState({ fixtureState: 'preserved' }, '', `/auth/${canonical ? canonicalId.slice(0, 8) : navigationRequestId}?${query}`);
 }
 const root = document.getElementById('root')!;
 const actionLayout = new URLSearchParams(location.search).has('action-layout');

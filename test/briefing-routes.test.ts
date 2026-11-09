@@ -29,7 +29,6 @@ import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
 import { addProject } from "../src/ledger/project-registry.js";
 import { addGrant } from "../src/permissions/store.js";
 import { PRODUCTION_EFFECTS } from "../src/security/effect-policy.js";
-import { briefingRoute, parseRouteFromHash } from "../ui/src/routing.js";
 import { normalizeBriefings, normalizeBriefingProjection } from "../ui/src/api.js";
 
 class SlugGate implements ClientAuthGate {
@@ -768,8 +767,7 @@ describe("plural Briefing routes", () => {
       id: ids.briefing_id, latest_round_id: ids.round_id, round_count: 1, unanswered_directive_count: 1,
     }] });
     const listed = normalizeBriefings(list.body).briefings[0];
-    const route = parseRouteFromHash(briefingRoute(listed.collectionId, listed.latestRoundId).slice(1));
-    const detailUrl = `/api/briefings/${route.params.briefing}?round=${route.params.round}`;
+    const detailUrl = `/api/briefings/${listed.collectionId}?round=${listed.latestRoundId}`;
     const detail = await router.invoke({ method: "GET", url: detailUrl, credential: "human" });
     expect(detail).toMatchObject({ status: 200, body: { selected_round: {
       id: ids.round_id, binding: { status: "valid" }, items: [{ directive_key: "paper" }],

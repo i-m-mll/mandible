@@ -65,6 +65,8 @@ import {
   type ProtectedBaseAudit,
 } from '../../../src/contracts';
 import { AuthChangeBreakdown } from './AuthChangeBreakdown';
+import { useEntityRoute } from '../hooks/useEntityRoute';
+import { EntityRouteState, isUnopenedEntityRoute } from '../components/shared/EntityRouteState';
 import { authChangeBreakdownStorageKey } from './auth-change-breakdown-state';
 import { navigateAuthFile, navigateAuthReviewView, useAuthReviewNavigation, type AuthActionViewState, type AuthInfoSnapshot, type AuthReviewNavigation } from './auth-review-navigation';
 
@@ -228,8 +230,8 @@ export type AuthQueueViewProps = {
   /** Known branch names per repo — used to detect stale entries whose branch was merged & deleted. */
   branchesByRepo?: Record<string, string[]>;
   selectedAuthId?: string | null;
-  /** Deep-link: select and scroll to a specific request on mount (from graph node click). */
-  initialRequestId?: string;
+  /** The ref of an `/auth/<ref>` path: the view selects and scrolls to the request it names. */
+  entityRef?: string | null;
   reviewRouteParams?: Record<string, string>;
   reviewRouteActive?: boolean;
   sidebarHidden?: boolean;
@@ -2054,7 +2056,7 @@ export function AuthQueueView({
   outputs,
   branchesByRepo,
   selectedAuthId: externalSelectedId,
-  initialRequestId,
+  entityRef = null,
   reviewRouteParams = {},
   reviewRouteActive = true,
   onSelectAuth,
@@ -2071,6 +2073,9 @@ export function AuthQueueView({
   retainFinalizedSelection = true,
 }: AuthQueueViewProps): JSX.Element {
   const reviewNavigation = useAuthReviewNavigation(reviewRouteParams, reviewRouteActive);
+  const routeResolution = useEntityRoute('auth', entityRef);
+  const initialRequestId = routeResolution.status === 'resolved' && typeof routeResolution.entity.id === 'string'
+    ? routeResolution.entity.id : undefined;
   const actionViewStateRef = useRef<AuthActionViewState>({ expanded: true, actionIds: [] });
   // Sidebar filter: Active (default) | All | Historical
   const [filterMode, setFilterMode] = useState<AuthFilterMode>('active');
@@ -2097,7 +2102,7 @@ export function AuthQueueView({
   if (deepLinkRef.current.route !== initialRequestId) {
     deepLinkRef.current = { route: initialRequestId, selection: initialRequestId ?? null };
   }
-  const selectedId = deepLinkRef.current.selection
+  const selectedId = entityRef && !initialRequestId ? null : deepLinkRef.current.selection
     ?? (externalSelectedId !== undefined ? externalSelectedId : localSelectedId);
 
   // Bug: 0de95bf — history list rows omit the diff/spec/output body blobs. The
@@ -2142,9 +2147,7 @@ export function AuthQueueView({
 
   useEffect(() => {
     if (!selectedId || !retainedFinalizedId) return;
-    const sameRequest = selectedId === retainedFinalizedId
-      || retainedFinalizedId.startsWith(selectedId);
-    if (!sameRequest) clearRetainedFinalized();
+    if (selectedId !== retainedFinalizedId) clearRetainedFinalized();
   }, [clearRetainedFinalized, retainedFinalizedId, selectedId]);
 
   const handleSelect = useCallback((id: string) => {
@@ -2165,10 +2168,8 @@ export function AuthQueueView({
   }, [initialRequestId]);
 
   // Bug: bdcc1f5 / review D2 (issue f59b5bd) — scroll the deep-linked row into
-  // view keyed on the CURRENT selection: a short-form deep link only matches a
-  // sidebar row (keyed by full id) after the canonical-id upgrade below, so
-  // this re-arms when the selection upgrades, and each re-run cancels the
-  // stale timer so a superseded selection can never scroll.
+  // view keyed on the current selection; each re-run cancels the stale timer so
+  // a superseded selection can never scroll.
   useEffect(() => {
     if (!selectedId || deepLinkRef.current.selection !== selectedId) return;
     const timer = setTimeout(() => {
@@ -2736,13 +2737,8 @@ export function AuthQueueView({
     return items;
   }, [sidebarItems, authSearch, typeFilter, repoFilter, branchFilter]);
 
-  // Find the selected request from whichever loaded list contains it — exact
-  // id matches ONLY. Review C1 (issue f59b5bd): a short prefix must never be
-  // resolved against the loaded lists, because a second matching request can
-  // exist outside the loaded slice and the loaded lists cannot prove global
-  // uniqueness. Every shortened route id canonicalizes through
-  // GET /api/auth/request/:id below, which resolves unambiguous prefixes and
-  // reports ambiguity honestly as 409.
+  // Find the selected request from whichever loaded list contains it. The
+  // selection is always a full id: an `/auth/<ref>` path resolves to one first.
   const selectedListRequest = useMemo((): AuthRequest | null => {
     if (!selectedId) return null;
     return (
@@ -2752,15 +2748,13 @@ export function AuthQueueView({
     );
   }, [selectedId, queue, historyQueue]);
 
-  // Bug: 2cddba2 — a deep-linked request (`#/auth?request=<id>`) that resolved
-  // outside the loaded history slice matches neither list. Fetch it from the
-  // detail route so the pane can render it; a 404 is cached as 'not_found' so
-  // the pane shows an honest missing-request state instead of the placeholder.
-  // Issue f59b5bd — the detail route also resolves unambiguous short prefixes;
-  // a 409 (ambiguous prefix) is cached as 'ambiguous' and surfaced honestly.
+  // Bug: 2cddba2 — a deep-linked request outside the loaded history slice
+  // matches neither list. Fetch it from the detail route so the pane can render
+  // it; a 404 is cached as 'not_found' so the pane shows an honest
+  // missing-request state instead of the placeholder.
   // Review D1 — any other failure is cached as 'error' and rendered with an
   // explicit retry affordance instead of an eternal "Loading request…".
-  const [fetchedRequests, setFetchedRequests] = useState<Record<string, AuthRequest | 'not_found' | 'ambiguous' | 'error'>>({});
+  const [fetchedRequests, setFetchedRequests] = useState<Record<string, AuthRequest | 'not_found' | 'error'>>({});
   useEffect(() => {
     if (!selectedId || selectedListRequest || fetchedRequests[selectedId]) return;
     const id = selectedId;
@@ -2778,8 +2772,6 @@ export function AuthQueueView({
         if (!active) return;
         if (isApiErrorStatus(error, 404)) {
           setFetchedRequests((prev) => ({ ...prev, [id]: 'not_found' }));
-        } else if (isApiErrorStatus(error, 409)) {
-          setFetchedRequests((prev) => ({ ...prev, [id]: 'ambiguous' }));
         } else {
           setFetchedRequests((prev) => ({ ...prev, [id]: 'error' }));
         }
@@ -2802,31 +2794,12 @@ export function AuthQueueView({
 
   const selectedFetched = selectedId ? fetchedRequests[selectedId] : undefined;
   const selectedNotFound = Boolean(selectedId) && !selectedListRequest && selectedFetched === 'not_found';
-  const selectedAmbiguous = Boolean(selectedId) && !selectedListRequest && selectedFetched === 'ambiguous';
   const selectedFetchFailed = Boolean(selectedId) && !selectedListRequest && selectedFetched === 'error';
   const selectedRequestRaw = useMemo((): AuthRequest | null => {
     const detail = selectedFetched && typeof selectedFetched === 'object' ? selectedFetched : undefined;
     if (selectedListRequest) return retainKnownAuthBody(selectedListRequest, detail);
     return detail ?? null;
   }, [selectedListRequest, selectedFetched]);
-
-  // Issue f59b5bd — once a short-prefix selection resolves to a concrete
-  // record, upgrade the selection to the full id so sidebar highlighting,
-  // action lookups, and caches all key on the canonical id. The deep-link hold
-  // moves with it so sidebar reconciliation cannot steal the selection.
-  useEffect(() => {
-    if (!selectedId || !selectedRequestRaw) return;
-    if (initialRequestId && (deepLinkRef.current.route !== initialRequestId
-      || deepLinkRef.current.selection !== selectedId)) return;
-    const fullId = getAuthId(selectedRequestRaw);
-    if (!fullId || fullId === selectedId || !fullId.startsWith(selectedId)) return;
-    if (deepLinkRef.current.selection === selectedId) deepLinkRef.current.selection = fullId;
-    setFetchedRequests((prev) => (
-      prev[selectedId] && !prev[fullId] ? { ...prev, [fullId]: prev[selectedId] } : prev
-    ));
-    setLocalSelectedId(fullId);
-    onSelectAuth?.(fullId);
-  }, [selectedId, selectedRequestRaw, initialRequestId, onSelectAuth]);
 
   // Bug: 0de95bf — a list row from the history projection carries no body
   // blobs (diff_summary/spec_content/output are undefined, not null). Fetch the
@@ -2920,7 +2893,7 @@ export function AuthQueueView({
   // present in the sidebar (e.g. all items completed/dismissed and queue empties),
   // so the orphaned detail card does not remain visible with an empty sidebar.
   useEffect(() => {
-    if (deepLinkRef.current.selection) return;
+    if (deepLinkRef.current.selection || (entityRef && !initialRequestId)) return;
     if (
       selectedId &&
       filteredSidebarItems.length === 0
@@ -3272,18 +3245,18 @@ export function AuthQueueView({
         className="auth-detail"
         style={{ position: 'relative' }}
       >
-        {!selectedRequest ? (
+        {isUnopenedEntityRoute(routeResolution) && (routeResolution.status !== 'resolving' || !selectedRequest) ? (
+          <EntityRouteState kind="auth" resolution={routeResolution} />
+        ) : !selectedRequest ? (
           <div className="auth-detail__empty">
             <p className="text-muted">
               {selectedId && selectedNotFound
                 ? `Approval request ${selectedId.slice(0, 8)} was not found — it may have been deleted or expired.`
-                : selectedId && selectedAmbiguous
-                  ? `Approval request reference ${selectedId.slice(0, 8)} is ambiguous — it matches multiple requests. Use a longer id.`
-                  : selectedId && selectedFetchFailed
-                    ? `Failed to load approval request ${selectedId.slice(0, 8)} — the daemon may be unavailable.`
-                    : selectedId && !selectedListRequest
-                      ? 'Loading request…'
-                      : 'No requests in this view'}
+                : selectedId && selectedFetchFailed
+                  ? `Failed to load approval request ${selectedId.slice(0, 8)} — the daemon may be unavailable.`
+                  : selectedId && !selectedListRequest
+                    ? 'Loading request…'
+                    : 'No requests in this view'}
             </p>
             {selectedId && selectedFetchFailed ? (
               <button type="button" onClick={retrySelectedFetch}>

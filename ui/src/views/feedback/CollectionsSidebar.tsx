@@ -14,7 +14,8 @@ import {
   type SidebarItemOverflowAction,
 } from '../../components/shared/SidebarItemRow';
 import { useSidebarListNavigation } from '../../hooks/useSidebarListNavigation';
-import { briefingRoute } from '../../routing';
+import { appPath } from '../../../../src/app-routes';
+import { shortRouteId } from '../../routing';
 import {
   filterFeedbackCollections,
   orderFeedbackCollections,
@@ -239,7 +240,7 @@ export function CollectionsSidebar({
   };
 
   const copyBriefingLink = (briefingId: string) => {
-    const target = new URL(briefingRoute(briefingId), window.location.origin).href;
+    const target = new URL(appPath({ kind: 'entity', entity: 'briefing', ref: shortRouteId(briefingId) }), window.location.origin).href;
     navigator.clipboard?.writeText(target).catch(() => {});
   };
 

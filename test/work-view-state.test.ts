@@ -199,22 +199,22 @@ it('preserves mounted compound targets, absent projects and branches, and unrela
       return new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } });
     }));
     const props = { repos, branchesByRepo, instance: mainInstance, onRescan: () => undefined };
-    window.history.replaceState(null, '', '#/work?repo=missing&branch=gone&commit=pinned&compare=old..new&mode=range&sidebar=hidden&agent_session=bound&sentinel=a%26b%2Bc');
+    window.history.replaceState(null, '', '/work?repo=missing&branch=gone&commit=pinned&compare=old..new&mode=range&sidebar=hidden&agent_session=bound&sentinel=a%26b%2Bc');
     const view = render(h(WorkOverviewView, { ...props, params: { repo: 'missing', branch: 'gone', commit: 'pinned', compare: 'old..new', mode: 'range' } }));
-    expect(new URLSearchParams(window.location.hash.split('?')[1]).get('repo')).toBe('missing');
+    expect(new URLSearchParams(window.location.search).get('repo')).toBe('missing');
     view.rerender(h(WorkOverviewView, { ...props, params: { repo: 'r1', branch: 'gone', commit: 'pinned', compare: 'old..new', mode: 'range' } }));
     expect(screen.queryByRole('list', { name: 'main commits' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Select project Repo Two' }));
     await screen.findByRole('list', { name: 'other commits' });
-    const context = new URLSearchParams(window.location.hash.split('?')[1]);
+    const context = new URLSearchParams(window.location.search);
     expect(context.get('repo')).toBe('r2');
     expect(context.get('branch')).toBe('other');
     expect(context.get('commit')).toBeNull();
     expect(context.get('sidebar')).toBe('hidden');
     expect(context.get('agent_session')).toBe('bound');
     expect(context.get('sentinel')).toBe('a&b+c');
-    window.history.replaceState(null, '', '#/tasks?sentinel=retained');
+    window.history.replaceState(null, '', '/tasks?sentinel=retained');
     view.rerender(h(WorkOverviewView, { ...props, params: {} }));
-    await waitFor(() => expect(window.location.hash).toBe('#/tasks?sentinel=retained'));
+    await waitFor(() => expect(`${window.location.pathname}${window.location.search}`).toBe('/tasks?sentinel=retained'));
   });
 

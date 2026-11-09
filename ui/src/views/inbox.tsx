@@ -1,5 +1,5 @@
 import { Icon } from '../components/icons/Icon';
-import { navigateAppHash } from '../app-history';
+import { navigateTo } from '../routing';
 // Inbox tab — sidebar+detail panel layout with chip filters and unified item list.
 // Bug: 4fa87d9 — inbox sidebar redesign
 
@@ -646,7 +646,7 @@ function WorkUnitContinuationDetail({
     setSpawning(true);
     try {
       const result = await spawnIssueAgent(item.repo_id, item.issue_id, item);
-      navigateAppHash(`#/console?conversation=${encodeURIComponent(result.conversation_id)}`);
+      navigateTo(`/console?conversation=${encodeURIComponent(result.conversation_id)}`);
     } catch (error) {
       setResumeError(error instanceof Error ? error.message : String(error));
     } finally {

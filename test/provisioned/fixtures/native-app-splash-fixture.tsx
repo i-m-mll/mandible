@@ -1,7 +1,7 @@
 import { render } from 'preact';
 import { QueryClientProvider } from '@tanstack/preact-query';
 import { App } from '../../../ui/src/app';
-import { adoptAgentSessionFragment } from '../../../ui/src/agent-page-binding';
+import { adoptAgentSessionFromLocation } from '../../../ui/src/agent-page-binding';
 import { queryClient } from '../../../ui/src/query/client';
 import { installNativeDragDiagnostics } from './native-drag-diagnostics';
 import { controlledReadinessFetch } from './native-app-splash-transport';
@@ -21,6 +21,6 @@ class FixtureEvents {
 window.EventSource = FixtureEvents as unknown as typeof EventSource;
 if ('__TAURI__' in window || '__TAURI_INTERNALS__' in window) document.body.classList.add('tauri-window');
 installNativeDragDiagnostics();
-adoptAgentSessionFragment();
+adoptAgentSessionFromLocation();
 render(<QueryClientProvider client={queryClient}><App /></QueryClientProvider>, document.getElementById('proof-root')!);
 appendNativeSplashReturnLink();

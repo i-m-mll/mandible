@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { boundToolResultBlock, buildStreamState, conversationBlocksToStreamEvents } from '../ui/src/chat';
 import { ChatSurface } from '../ui/src/chat/ChatSurface';
-import { conversationAnchorFromHash, messageLinkUrl } from '../ui/src/chat/messageLinks';
+import { conversationAnchorFromSearch, messageLinkUrl } from '../ui/src/chat/messageLinks';
 import { __resetAgentPageBindingForTests, adoptAgentSessionBinding } from '../ui/src/agent-page-binding';
 import { MessageActions, MessageLinkContext } from '../ui/src/components/shared/MessageActions';
 import { installReadingBrowserFixture } from './helpers/reading-browser-fixture';
@@ -81,7 +81,7 @@ afterEach(() => {
 });
 
 it.each(['user', 'assistant', 'system'] as const)('copies an exact %s message link after live content gains durable identity', async (role) => {
-  window.history.replaceState(null, '', '/preview?instance=copy-test#/console?session=old-session&turn=old-turn&sidebar=hidden');
+  window.history.replaceState(null, '', '/console?instance=copy-test&session=old-session&turn=old-turn&sidebar=hidden');
   adoptAgentSessionBinding('copy-agent');
   const item = canonicalItem({ type: 'message', role, parts: [{ type: 'text', text: 'Live message' }], ordinal: 0 });
   const copyMessageLink = (blockId: string) => { void navigator.clipboard.writeText(messageLinkUrl(window.location.href, 'copy-conversation', blockId)); };
@@ -97,11 +97,9 @@ it.each(['user', 'assistant', 'system'] as const)('copies an exact %s message li
   await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledOnce());
   const url = new URL(vi.mocked(navigator.clipboard.writeText).mock.calls[0][0]);
   expect(url.origin).toBe(window.location.origin);
-  expect(url.pathname).toBe('/preview');
-  expect(url.searchParams.get('instance')).toBe('copy-test');
-  const params = new URLSearchParams(url.hash.split('?')[1]);
-  expect(Object.fromEntries(params)).toEqual({ sidebar: 'hidden', conversation: 'copy-conversation', block: 'cblk:copy-conversation:42', agent_session: 'copy-agent' });
-  expect(conversationAnchorFromHash(url.hash)).toEqual({ block: 'cblk:copy-conversation:42' });
+  expect(url.pathname).toBe('/console');
+  expect(Object.fromEntries(url.searchParams)).toEqual({ instance: 'copy-test', sidebar: 'hidden', conversation: 'copy-conversation', block: 'cblk:copy-conversation:42', agent_session: 'copy-agent' });
+  expect(conversationAnchorFromSearch(url.search)).toEqual({ block: 'cblk:copy-conversation:42' });
 });
 
 it.each(['Copy link', 'Fork', 'Resume', 'Info'])('executes %s from the event context menu and restores focus', (label) => {

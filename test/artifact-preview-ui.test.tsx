@@ -170,7 +170,7 @@ describe('artifact preview helpers', () => {
       return Promise.reject(new Error(`unexpected fetch ${url}`));
     });
     vi.stubGlobal('fetch', mockFetch);
-    window.location.hash = '#/artifacts';
+    window.history.replaceState(null, '', '/artifacts');
     renderArtifactDetail(content({ kind: 'markdown', media_type: 'text/markdown' }), {
       artifact: artifact({ metadata: { filename: 'AGENTS.review.md' }, media_type: 'text/markdown' }),
       versions: [selected],
@@ -180,7 +180,7 @@ describe('artifact preview helpers', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Artifact actions' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Create briefing' }));
-    await waitFor(() => expect(window.location.hash).toBe('#/briefing?briefing=briefing-full&round=round-full'));
+    await waitFor(() => expect(`${window.location.pathname}${window.location.search}`).toBe('/briefing/briefing-full?round=round-full'));
     expect(mockFetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
   });
 

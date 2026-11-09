@@ -1,4 +1,5 @@
 import { moveSidebarItem, reconcileSidebarOrder } from './components/shared/sidebar-order';
+import { parseAppPath } from '../../src/app-routes';
 
 export const APP_RAIL_ORDER_SETTING_KEY = 'app_rail_order';
 export const APP_RAIL_ORDER_VERSION = 1 as const;
@@ -19,19 +20,20 @@ export const DEFAULT_APP_RAIL_ORDER: AppRailOrderPreference = {
   },
 };
 
-export function hasExplicitStartupDestination(hash: string): boolean {
-  return /^#\/[^/?#]+/.test(hash);
+/** Every path but `/` names its own destination; `/` opens the rail's first tab. */
+export function hasExplicitStartupDestination(pathname: string): boolean {
+  return parseAppPath(pathname).kind !== 'startup';
 }
 
 export function startupRailDestination(
-  hash: string,
+  pathname: string,
   primary: readonly string[],
   secondary: readonly string[],
   showSecondary: boolean,
 ): string | null {
-  if (hasExplicitStartupDestination(hash)) return null;
+  if (hasExplicitStartupDestination(pathname)) return null;
   const first = primary[0] ?? (showSecondary ? secondary[0] : undefined);
-  return first ? `#/${first}` : null;
+  return first ? `/${first}` : null;
 }
 
 function isStringArray(value: unknown): value is string[] {

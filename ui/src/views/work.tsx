@@ -31,7 +31,7 @@ import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { formatRelativeTime } from '../lib/format';
 import { browserSessionFetch } from '../client-auth-token';
-import { isViewSidebarHidden, parseRouteFromHash, replaceRouteHash, routeHashWithParams } from '../routing';
+import { VIEW_SIDEBAR_HIDDEN_VALUE, VIEW_SIDEBAR_QUERY_PARAM, currentRoute, replaceRoute, routeWithParams } from '../routing';
 import { useViewActive } from '../app-shell';
 import { WORK_SCAN_SKIP_WINDOW_MS } from '../../../src/contracts';
 
@@ -283,8 +283,8 @@ function updateWorkHash(params: Record<string, string | null | undefined>): void
   if (typeof window === 'undefined') {
     return;
   }
-  if (parseRouteFromHash(window.location.hash).tab !== 'work') return;
-  replaceRouteHash(routeHashWithParams(window.location.hash, 'work', params));
+  if (currentRoute().tab !== 'work') return;
+  replaceRoute(routeWithParams({ kind: 'view', tab: 'work' }, params));
 }
 
 // --- Context menu component ---
@@ -788,7 +788,7 @@ export function WorkOverviewView({
   instance,
   params = {},
 }: WorkOverviewProps): JSX.Element {
-  const sidebarHidden = isViewSidebarHidden({ tab: 'work', params });
+  const sidebarHidden = params[VIEW_SIDEBAR_QUERY_PARAM] === VIEW_SIDEBAR_HIDDEN_VALUE;
   // The shared operation check stays closed until instance metadata is known.
   const capabilityReason = !instance
     ? 'Waiting for instance capabilities.'

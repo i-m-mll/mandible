@@ -16,7 +16,10 @@ import {
 } from '../api';
 
 import { useAppShell, useRouteLoad, useViewActive } from '../app-shell';
-import { briefingGroupRoute, briefingRoute, replaceRouteHash } from '../routing';
+import { replaceRoute, routeWithParams, shortRouteId } from '../routing';
+import { rememberEntityRoute } from '../query/entityRoute';
+import { useEntityRoute } from '../hooks/useEntityRoute';
+import { EntityRouteState, isUnopenedEntityRoute } from '../components/shared/EntityRouteState';
 import { readPersistedViewState } from '../hooks/usePersistedViewState';
 import { BriefingDocumentRenderer } from './feedback/BriefingDocumentRenderer';
 import { BriefingGroupDetail } from './feedback/BriefingGroupDetail';
@@ -38,19 +41,26 @@ import {
 
 export type BriefingViewProps = {
   instance: InstanceInfo | null;
-  initialBriefingId?: string | null;
+  /** The ref of a `/briefing/<ref>` path. */
+  entityRef?: string | null;
   initialRoundId?: string | null;
   initialGroupId?: string | null;
   sidebarHidden?: boolean;
   keepSubmittedAnnotations?: boolean;
 };
 
+const BRIEFING_ROUTE_PARAMS = ['group', 'round'] as const;
+
 function replaceBriefingRoute(briefingId: string, roundId?: string | null): void {
-  replaceRouteHash(briefingRoute(briefingId, roundId, window.location.hash).slice(1));
+  const ref = shortRouteId(briefingId);
+  rememberEntityRoute('briefing', ref, { id: briefingId });
+  replaceRoute(routeWithParams({ kind: 'entity', entity: 'briefing', ref }, {
+    round: roundId ? shortRouteId(roundId) : null,
+  }, BRIEFING_ROUTE_PARAMS));
 }
 
 function replaceBriefingGroupRoute(groupKey: string): void {
-  replaceRouteHash(briefingGroupRoute(groupKey, window.location.hash).slice(1));
+  replaceRoute(routeWithParams({ kind: 'view', tab: 'briefing' }, { group: groupKey }, BRIEFING_ROUTE_PARAMS));
 }
 
 function briefingTargetQuery(ref: string, roundId: string | null) {
@@ -149,8 +159,11 @@ export function InvalidBriefingsNotice({ rows }: { rows: readonly InvalidBriefin
   );
 }
 
-export function BriefingView({ instance, initialBriefingId, initialRoundId, initialGroupId, sidebarHidden = false, keepSubmittedAnnotations = false }: BriefingViewProps): JSX.Element {
+export function BriefingView({ instance, entityRef = null, initialRoundId, initialGroupId, sidebarHidden = false, keepSubmittedAnnotations = false }: BriefingViewProps): JSX.Element {
   const appShell = useAppShell();
+  const routeResolution = useEntityRoute('briefing', entityRef);
+  const initialBriefingId = routeResolution.status === 'resolved' && typeof routeResolution.entity.id === 'string'
+    ? routeResolution.entity.id : null;
   const viewActive = useViewActive();
   const [viewState, setViewState] = useBriefingCollectionViewState();
   const sidebarQuery = useQuery({
@@ -179,10 +192,9 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
     if (initialBriefingId && explicitBriefingQuery.isStale) register(explicitBriefingQuery.refetch({ cancelRefetch: false }));
   }, [initialBriefingId, initialRoundId]);
 
-  const hasExplicitTarget = Boolean(initialBriefingId || initialGroupId);
+  const hasExplicitTarget = Boolean(entityRef || initialGroupId);
   const explicitError = explicitBriefingQuery.error;
-  const identityRejected = explicitError instanceof ApiError && (explicitError.code === 'ambiguous_ref' || explicitError.status === 404);
-  const projection = initialBriefingId && !identityRejected ? explicitBriefingQuery.data : undefined;
+  const projection = initialBriefingId ? explicitBriefingQuery.data : undefined;
   const explicitBriefing: FeedbackCollection | null = projection
     ? briefings.find((entry) => entry.collectionId === projection.briefing_id) ?? {
       id: feedbackCollectionIdentity(projection.briefing_id), collectionId: projection.briefing_id,
@@ -191,11 +203,10 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
     } : null;
   const selection = initialBriefingId
     ? { briefing: explicitBriefing, group: null, roundId: initialRoundId ?? null, status: explicitBriefing ? 'resolved' : 'not-found' }
+    : entityRef ? { briefing: null, group: null, roundId: null, status: 'empty' as const }
     : resolveBriefingSelection(sidebar, viewState, { group: initialGroupId });
   const routeStatus = initialBriefingId
-    ? explicitBriefing ? 'resolved' : explicitError instanceof ApiError && explicitError.code === 'ambiguous_ref' ? 'ambiguous'
-      : explicitError instanceof ApiError && explicitError.status === 404 ? 'not-found'
-        : explicitError ? 'error' : 'resolving'
+    ? explicitBriefing ? 'resolved' : explicitError ? 'error' : 'resolving'
     : hasExplicitTarget && selection.status !== 'resolved'
     ? sidebarQuery.error ? 'error' : !sidebarLoaded || sidebarQuery.isFetching ? 'resolving' : selection.status
     : selection.status;
@@ -312,7 +323,9 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
       ) : null}
       <InvalidBriefingsNotice rows={invalidBriefings} />
     </>}>
-      {hasExplicitTarget && routeStatus !== 'resolved' ? (
+      {isUnopenedEntityRoute(routeResolution) && (routeResolution.status !== 'resolving' || !selected) ? (
+        <EntityRouteState kind="briefing" resolution={routeResolution} />
+      ) : hasExplicitTarget && routeStatus !== 'resolved' ? (
         <div role={routeStatus === 'resolving' ? 'status' : 'alert'} data-route-state={routeStatus}>
           {routeStatus === 'resolving' ? 'Resolving Briefing link…'
             : routeStatus === 'ambiguous' ? 'This Briefing reference matches more than one item. Open a link with a longer reference.'
@@ -350,10 +363,6 @@ export function BriefingView({ instance, initialBriefingId, initialRoundId, init
 const WARMED_QUERY_GC_TIME_MS = Number.POSITIVE_INFINITY;
 
 export async function warmInitialData(params: Record<string, string>): Promise<void> {
-  if (params.briefing) {
-    await queryClient.fetchQuery({ ...briefingTargetQuery(params.briefing, params.round || null), gcTime: WARMED_QUERY_GC_TIME_MS });
-    return;
-  }
   const sidebar = await queryClient.fetchQuery({
     queryKey: browserResourceKeys.briefingSidebar,
     queryFn: ({ signal }) => getBriefingSidebarSnapshot(signal),

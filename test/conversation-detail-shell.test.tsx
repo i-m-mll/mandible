@@ -24,7 +24,7 @@ import { applyConversationSse } from '../ui/src/query/conversationSse.js';
 import { addDraftAttachments, clearAcceptedDraft } from '../ui/src/chat/attachmentDrafts.js';
 import { installReadingPresentationFixture } from './helpers/reading-presentation-fixture';
 import { readingManifestKey } from '../ui/src/query/readingPresentation';
-import { conversationAnchorFromHash, messageLinkUrl } from '../ui/src/chat/messageLinks.js';
+import { conversationAnchorFromSearch, messageLinkUrl } from '../ui/src/chat/messageLinks.js';
 
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
@@ -97,7 +97,7 @@ afterEach(() => {
   __resetSharedSseForTests();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
-  window.history.replaceState(null, '', '#/');
+  window.history.replaceState(null, '', '/');
 });
 
 const conversation: Conversation = {
@@ -375,7 +375,7 @@ describe('compact detail pane shell', () => {
     const target = {
       kind: 'issue' as const,
       ref: 'old-issue',
-      href: '#/issues?issue=old-issue',
+      href: '/issue/old-issue',
       label: 'old-issue',
     };
     const scoped = scopeConversationRightSidebar(
@@ -485,7 +485,7 @@ describe('compact detail pane shell', () => {
     vi.mocked(api.getConversationWindow).mockImplementation(async (_id, request) => (
       'block' in request ? exact.promise : initial.promise
     ));
-    window.history.replaceState(null, '', `#/console?conversation=${conversation.id}`);
+    window.history.replaceState(null, '', `/console?conversation=${conversation.id}`);
     const props = {
       consoleSessions: [],
       initialConversationId: scopedConversation.id,
@@ -496,7 +496,7 @@ describe('compact detail pane shell', () => {
     const view = render(<ConversationsView {...props} />);
     await waitFor(() => expect(api.getConversationWindow).toHaveBeenCalledTimes(1));
 
-    window.history.replaceState(null, '', `#/console?conversation=${conversation.id}&block=exact-block`);
+    window.history.replaceState(null, '', `/console?conversation=${conversation.id}&block=exact-block`);
     view.rerender(<ConversationsView {...props} />);
     await waitFor(() => expect(api.getConversationWindow).toHaveBeenCalledTimes(2));
 
@@ -525,11 +525,11 @@ describe('compact detail pane shell', () => {
     const props = { consoleSessions: [], initialConversationId: scopedConversation.id, initialSessionId: null,
       onSelectSession: () => undefined, onNewConversation: () => undefined };
     const params = (block: string) => ({ conversation: scopedConversation.id, block, position_space: 'fixture-space' });
-    window.history.replaceState(null, '', `#/console?${new URLSearchParams(params(tail.id))}`);
+    window.history.replaceState(null, '', `/console?${new URLSearchParams(params(tail.id))}`);
     const view = render(<ConversationsView {...props} routeParams={params(tail.id)} />);
     const retainedSource=await visibleSource(tail);
 
-    window.history.replaceState(null, '', `#/console?${new URLSearchParams(params(exactBlock.id))}`);
+    window.history.replaceState(null, '', `/console?${new URLSearchParams(params(exactBlock.id))}`);
     view.rerender(<ConversationsView {...props} routeParams={params(exactBlock.id)} />);
     await waitFor(() => expect(api.getConversationWindow).toHaveBeenCalledWith(scopedConversation.id,
       expect.objectContaining({ block: exactBlock.id, expected_position_space_id: 'fixture-space' })));
@@ -561,8 +561,8 @@ describe('compact detail pane shell', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Copy link' }));
     expect(await screen.findByRole('alert')).toBeTruthy();
     const copied = new URL(vi.mocked(navigator.clipboard.writeText).mock.calls[0][0]);
-    expect(conversationAnchorFromHash(copied.hash)).toEqual({block: exactBlock.id, expected_position_space_id: 'fixture-space'});
-    expect(new URLSearchParams(copied.hash.split('?')[1]).get('conversation')).toBe(scopedConversation.id);
+    expect(conversationAnchorFromSearch(copied.search)).toEqual({block: exactBlock.id, expected_position_space_id: 'fixture-space'});
+    expect(copied.searchParams.get('conversation')).toBe(scopedConversation.id);
   });
 
   it('keeps loaded source content mounted while a same-conversation reconciliation is pending', async () => {
@@ -726,7 +726,7 @@ describe('Chat route intent', () => {
     const mounted = render(view('A'));
     await routeSource('A');
     vi.mocked(api.resolveChatRouteTarget).mockReturnValue(pending.promise);
-    window.history.replaceState(null, '', `#/console?${type}=B-ref&${new URLSearchParams(Object.fromEntries(Object.entries(anchor).map(([key, value]) => [key, String(value)])))}&sidebar=hidden&context=keep`);
+    window.history.replaceState(null, '', `/console?${type}=B-ref&${new URLSearchParams(Object.fromEntries(Object.entries(anchor).map(([key, value]) => [key, String(value)])))}&sidebar=hidden&context=keep`);
     mounted.rerender(type === 'session' ? view(null, 'B-ref') : view('B-ref'));
     expect(mountedSource('A')).toBeNull();
     expect(api.getConversationWindow).not.toHaveBeenCalledWith('B-ref', expect.anything());
@@ -734,8 +734,8 @@ describe('Chat route intent', () => {
     await routeSource('B');
     expect(api.getConversationWindow).toHaveBeenCalledWith('B', expect.objectContaining(anchor));
     expect(api.getConversationControl).toHaveBeenCalledWith('B');
-    expect(window.location.hash).toContain(`${type}=B-ref`);
-    expect(window.location.hash).toContain('context=keep');
+    expect(window.location.search).toContain(`${type}=B-ref`);
+    expect(window.location.search).toContain('context=keep');
   });
 
   it.each(['not_found', 'ambiguous', 'error'] as const)('keeps unrelated saved content hidden on %s', async (status) => {
@@ -766,7 +766,7 @@ describe('Chat route intent', () => {
     expect(mountedSource('B')).toBeNull();
     vi.mocked(api.resolveChatRouteTarget).mockReturnValue(refresh.promise);
     await act(async () => { void queryClient.invalidateQueries({ queryKey: conversationKeys.routeTarget({ type: 'session', id: 'C' }) }); });
-    window.history.replaceState(null, '', '#/console?context=changed&session=C&sidebar=hidden');
+    window.history.replaceState(null, '', '/console?context=changed&session=C&sidebar=hidden');
     mounted.rerender(view(null, 'C'));
     await routeSource('C');
     await act(async () => { refresh.resolve({ status: 'resolved', selection: { type: 'conversation', id: 'C' } }); });
@@ -781,7 +781,7 @@ describe('Chat route intent', () => {
       key: 'chats', kind: 'chats', label: 'Chats', total: 1, next_cursor: null,
       conversations: [{ ...conversation, id: 'A', title: 'Chat A', block_count: 1, canonical_project_id: null, canonical_project_key: null }],
     }] });
-    window.history.replaceState(null, '', '#/console?session=B&turn=old&agent_session=agent&sidebar=hidden&context=keep');
+    window.history.replaceState(null, '', '/console?session=B&turn=old&agent_session=agent&sidebar=hidden&context=keep');
     let mounted = render(view(null, 'B'));
     const row = await screen.findByRole('button', { name: 'Open conversation Chat A' });
     if (action === 'row') fireEvent.click(row);
@@ -789,7 +789,7 @@ describe('Chat route intent', () => {
     await routeSource('A');
     await act(async () => { pending.resolve({ status: 'resolved', selection: { type: 'conversation', id: 'B' } }); });
     expect(mountedSource('B')).toBeNull();
-    const params = new URLSearchParams(window.location.hash.split('?')[1]);
+    const params = new URLSearchParams(window.location.search);
     if (action === 'row') {
       expect(Object.fromEntries(params)).toEqual({ conversation: 'A', agent_session: 'agent', sidebar: 'hidden', context: 'keep' });
     } else {
@@ -804,10 +804,10 @@ describe('Chat route intent', () => {
       expect(api.resolveChatRouteTarget).toHaveBeenCalledTimes(lookupsBeforeRefresh);
     }
     vi.mocked(api.resolveChatRouteTarget).mockImplementation(async (target) => ({ status: 'resolved', selection: { type: 'conversation', id: target.id } }));
-    window.history.replaceState(null, '', '#/console?session=C');
+    window.history.replaceState(null, '', '/console?session=C');
     mounted.rerender(view(null, 'C'));
     await routeSource('C');
-    window.history.replaceState(null, '', '#/console?session=B&turn=old');
+    window.history.replaceState(null, '', '/console?session=B&turn=old');
     mounted.rerender(view(null, 'B'));
     await routeSource('B');
   });
@@ -825,13 +825,13 @@ describe('Chat route intent', () => {
       rightSidebar: null, registerRightSidebar: () => () => undefined, updateRightSidebar: () => undefined,
       registerInitialRouteLoad: () => undefined, setViewSidebarWidth: () => undefined,
     }}>{view(null, 'B', routeParams)}</AppShellProvider>;
-    window.history.replaceState(null, '', '#/console?session=B&turn=B-block&sidebar=hidden&context=chat-context');
+    window.history.replaceState(null, '', '/console?session=B&turn=B-block&sidebar=hidden&context=chat-context');
     const mounted = render(scoped(true));
     if (state === 'cancelled') {
       fireEvent.click(await screen.findByRole('button', { name: 'Open conversation Chat A' }));
       await routeSource('A');
     }
-    window.history.replaceState(null, '', '#/issues?issue=another&block=foreign-block&context=issues-context');
+    window.history.replaceState(null, '', '/issues?issue=another&block=foreign-block&context=issues-context');
     mounted.rerender(scoped(false));
     await act(async () => { pending.resolve({ status: 'resolved', selection: { type: 'conversation', id: 'B' } }); });
     if (state === 'cancelled') {
@@ -839,10 +839,10 @@ describe('Chat route intent', () => {
       expect(mountedSource('B')).toBeNull();
     }
     expect(api.getConversationWindow).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ block: 'foreign-block' }));
-    expect(window.location.hash).toBe('#/issues?issue=another&block=foreign-block&context=issues-context');
+    expect(`${window.location.pathname}${window.location.search}`).toBe('/issues?issue=another&block=foreign-block&context=issues-context');
     if (state === 'pending') {
       expect(api.getConversationWindow).not.toHaveBeenCalledWith('B', expect.anything());
-      window.history.replaceState(null, '', '#/console?session=B&turn=B-block&sidebar=hidden&context=chat-context');
+      window.history.replaceState(null, '', '/console?session=B&turn=B-block&sidebar=hidden&context=chat-context');
       mounted.rerender(scoped(true));
       await routeSource('B');
       expect(api.getConversationWindow).toHaveBeenCalledWith('B', expect.objectContaining({ turn: 'B-block' }));
