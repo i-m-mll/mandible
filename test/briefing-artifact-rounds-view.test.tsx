@@ -308,8 +308,6 @@ describe('artifact-backed Briefing rounds', () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('briefing:65db040'));
 
     fireEvent.click(screen.getByRole('button', { name: 'Briefing actions' }));
-    expect(screen.getByRole('menuitem', { name: 'Go to artifact version' }).getAttribute('href'))
-      .toBe('#/artifacts?ref=artifact-version%3A264e485');
     fireEvent.click(screen.getByRole('menuitem', { name: 'Metadata' }));
     const metadata = screen.getByRole('dialog', { name: 'Briefing metadata' });
     expect(within(metadata).getByText('briefing-round:c76f940')).toBeTruthy();

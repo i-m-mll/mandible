@@ -52,7 +52,7 @@ function RoutedView() {
   const navigation = useAppHistory();
   const route = routeFromUrl(new URL(navigation.href));
   return <BriefingView instance={null} entityRef={route.entity?.ref ?? null}
-    initialGroupId={route.params.group} initialRoundId={route.params.round} />;
+    initialGroupKey={route.params.group} initialRoundId={route.params.round} />;
 }
 
 beforeEach(() => {
@@ -100,13 +100,11 @@ describe('Briefing route intent', () => {
     expect(screen.getByTestId('document').getAttribute('data-round')).toBe('linked-round');
   });
 
-  it('resolves group keys and ID prefixes, and lets the Briefing identity own conflicting group context', async () => {
+  it('resolves group keys, and lets the Briefing identity own conflicting group context', async () => {
     query.data = snapshot(); query.isFetching = false;
-    const view = render(<BriefingView instance={null} initialGroupId="policy-health" />);
+    const view = render(<BriefingView instance={null} initialGroupKey="policy-health" />);
     expect(screen.getByTestId('group').getAttribute('data-group')).toBe('group-uuid');
-    view.rerender(<BriefingView instance={null} initialGroupId="group-u" />);
-    expect(screen.getByTestId('group').getAttribute('data-group')).toBe('group-uuid');
-    view.rerender(<BriefingView instance={null} initialGroupId="policy-health" entityRef="target-one" />);
+    view.rerender(<BriefingView instance={null} initialGroupKey="policy-health" entityRef="target-one" />);
     expect(screen.queryByTestId('group')).toBeNull();
     await waitFor(() => expect(screen.getByTestId('document').getAttribute('data-briefing')).toBe('target-one'));
     expect(screen.getByTestId('document').getAttribute('data-round')).toBe('latest');

@@ -9,9 +9,9 @@ import {
   compactArtifactRef,
   displayResourceRef,
   resourceRefHref,
-  seriesDetailHref,
   versionDetailHref,
 } from '../../resource-refs';
+import { viewHref } from '../../routing';
 import type {
   LedgerIssueDetailAssociatedArtifact,
   LedgerIssueDetailArtifactLink,
@@ -642,7 +642,7 @@ function artifactLinkHref(
   artifact: LedgerIssueDetailAssociatedArtifact,
   link: LedgerIssueDetailArtifactLink | null,
   authoredRef: string | null,
-): string {
+): string | undefined {
   if (authoredRef) return resourceRefHref(authoredRef);
   if (!link) return artifact.ref ? resourceRefHref(artifact.ref) : artifactDetailHref(artifact.id);
   if (link.target_id) return resourceRefHref(link.target_id);
@@ -653,7 +653,7 @@ function artifactLinkHref(
       ? logicalArtifactRefFromSeriesId(link.series_id)
       : null;
   if (link.link_kind === 'living') {
-    return seriesRef ? seriesDetailHref(seriesRef) : artifactDetailHref(artifact.id);
+    return artifactDetailHref(seriesRef ?? artifact.id);
   }
 
   return seriesRef && typeof link.resolved_version_no === 'number'
@@ -789,7 +789,7 @@ function IssueActionsMenu({
             <a
               className="ledger-issue-actions-menu__item"
               role="menuitem"
-              href={`#/console?session=${encodeURIComponent(liveSession.id)}`}
+              href={viewHref('console', { session: liveSession.id })}
               onClick={onClose}
             >
               Open Console

@@ -44,7 +44,7 @@ export type BriefingViewProps = {
   /** The ref of a `/briefing/<ref>` path. */
   entityRef?: string | null;
   initialRoundId?: string | null;
-  initialGroupId?: string | null;
+  initialGroupKey?: string | null;
   sidebarHidden?: boolean;
   keepSubmittedAnnotations?: boolean;
 };
@@ -90,9 +90,7 @@ function resolveBriefingSelection(
   params: Record<string, string | null | undefined>,
 ): { status: 'resolved' | 'not-found' | 'ambiguous' | 'empty'; briefing: FeedbackCollection | null; group: BriefingGroup | null; roundId: string | null } {
   if (params.group) {
-    const groupRef = params.group;
-    const exact = sidebar.groups.filter((group) => group.id === groupRef || group.key === groupRef);
-    const matches = exact.length ? exact : sidebar.groups.filter((group) => group.id.startsWith(groupRef));
+    const matches = sidebar.groups.filter((group) => group.key === params.group);
     return { status: matches.length > 1 ? 'ambiguous' : matches.length ? 'resolved' : 'not-found',
       briefing: null, group: matches.length === 1 ? matches[0] : null, roundId: null };
   }
@@ -159,7 +157,7 @@ export function InvalidBriefingsNotice({ rows }: { rows: readonly InvalidBriefin
   );
 }
 
-export function BriefingView({ instance, entityRef = null, initialRoundId, initialGroupId, sidebarHidden = false, keepSubmittedAnnotations = false }: BriefingViewProps): JSX.Element {
+export function BriefingView({ instance, entityRef = null, initialRoundId, initialGroupKey, sidebarHidden = false, keepSubmittedAnnotations = false }: BriefingViewProps): JSX.Element {
   const appShell = useAppShell();
   const routeResolution = useEntityRoute('briefing', entityRef);
   const initialBriefingId = routeResolution.status === 'resolved' && typeof routeResolution.entity.id === 'string'
@@ -192,7 +190,7 @@ export function BriefingView({ instance, entityRef = null, initialRoundId, initi
     if (initialBriefingId && explicitBriefingQuery.isStale) register(explicitBriefingQuery.refetch({ cancelRefetch: false }));
   }, [initialBriefingId, initialRoundId]);
 
-  const hasExplicitTarget = Boolean(entityRef || initialGroupId);
+  const hasExplicitTarget = Boolean(entityRef || initialGroupKey);
   const explicitError = explicitBriefingQuery.error;
   const projection = initialBriefingId ? explicitBriefingQuery.data : undefined;
   const explicitBriefing: FeedbackCollection | null = projection
@@ -204,7 +202,7 @@ export function BriefingView({ instance, entityRef = null, initialRoundId, initi
   const selection = initialBriefingId
     ? { briefing: explicitBriefing, group: null, roundId: initialRoundId ?? null, status: explicitBriefing ? 'resolved' : 'not-found' }
     : entityRef ? { briefing: null, group: null, roundId: null, status: 'empty' as const }
-    : resolveBriefingSelection(sidebar, viewState, { group: initialGroupId });
+    : resolveBriefingSelection(sidebar, viewState, { group: initialGroupKey });
   const routeStatus = initialBriefingId
     ? explicitBriefing ? 'resolved' : explicitError ? 'error' : 'resolving'
     : hasExplicitTarget && selection.status !== 'resolved'

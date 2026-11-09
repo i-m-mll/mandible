@@ -1,6 +1,6 @@
 import { NativeSelect } from '../components/shared/NativeSelect';
 import { Icon } from '../components/icons/Icon';
-import { navigateTo, routeWithParams } from '../routing';
+import { entityHref, navigateTo, routeWithParams } from '../routing';
 import { Fragment, type ComponentChildren } from 'preact';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 
@@ -2296,7 +2296,7 @@ function TimelineInspector({
             ) : expandableLinks.length > 0 ? (
               <button type="button" onClick={() => onExpandEvent(selectedEvent.id)}>Expand refs</button>
             ) : null}
-            <a href={`#/issues?issue=${encodeURIComponent(selectedEvent.issue.display_id)}`}>Open issue</a>
+            <a href={entityHref('issue', selectedEvent.issue.display_id)}>Open issue</a>
           </div>
           {selectedEventDetail ? (
             <LedgerRenderedBody
@@ -2348,7 +2348,7 @@ function TimelineInspector({
               <button type="button" onClick={() => onRemovePromotedRow(selectedRow)}>Remove promoted root</button>
             ) : null}
             {selectedRow.issue ? (
-              <a href={`#/issues?issue=${encodeURIComponent(selectedRow.issue.display_id)}`}>Open issue</a>
+              <a href={entityHref('issue', selectedRow.issue.display_id)}>Open issue</a>
             ) : null}
           </div>
           <div className="timeline-list-fallback">

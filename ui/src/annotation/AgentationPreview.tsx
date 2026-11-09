@@ -1,5 +1,5 @@
 import { Agentation, type Annotation } from 'agentation';
-import { navigateTo } from '../routing';
+import { navigateTo, viewHref } from '../routing';
 import { highlightDraftAttachments } from '../chat/attachmentDrafts';
 import { stageAgentationAnnotations } from './agentationAdapter';
 
@@ -9,7 +9,7 @@ export function AgentationPreview(): JSX.Element {
       width: window.innerWidth, height: window.innerHeight,
     });
     highlightDraftAttachments(target, addedIds);
-    navigateTo(`/console?conversation=${encodeURIComponent(target)}`);
+    navigateTo(viewHref('console', { conversation: target }));
   };
 
   return <Agentation appName="Mandible" onSubmit={handleSubmit} />;

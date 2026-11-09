@@ -28,6 +28,9 @@ export type AppRoute =
 
 export type ParsedAppPath = AppRoute | { kind: "not_found"; path: string };
 
+/** View-state query parameters; empty values are dropped. */
+export type RouteQuery = URLSearchParams | Record<string, string | null | undefined>;
+
 const isEntityKind = (value: string): value is EntityKind => (ENTITY_KINDS as readonly string[]).includes(value);
 const isViewTab = (value: string): value is ViewTab => (VIEW_TABS as readonly string[]).includes(value);
 
@@ -62,10 +65,7 @@ export function appPath(route: AppRoute): string {
 }
 
 /** Build a path with view-state query parameters; empty values are dropped. */
-export function appHref(
-  route: AppRoute,
-  query: URLSearchParams | Record<string, string | null | undefined> = {},
-): string {
+export function appHref(route: AppRoute, query: RouteQuery = {}): string {
   const params = new URLSearchParams();
   const entries = query instanceof URLSearchParams ? [...query.entries()] : Object.entries(query);
   for (const [key, value] of entries) {
@@ -73,6 +73,16 @@ export function appHref(
   }
   const search = params.toString();
   return `${appPath(route)}${search ? `?${search}` : ""}`;
+}
+
+/** The href of a view, with view-state query parameters. */
+export function viewHref(tab: ViewTab, query: RouteQuery = {}): string {
+  return appHref({ kind: "view", tab }, query);
+}
+
+/** The href of an entity, with view-state query parameters. */
+export function entityHref(entity: EntityKind, ref: string, query: RouteQuery = {}): string {
+  return appHref({ kind: "entity", entity, ref }, query);
 }
 
 function encodeRef(ref: string): string {

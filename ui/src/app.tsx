@@ -101,6 +101,7 @@ import {
   type SpacesRouteTarget,
   type Route,
   type ViewTab,
+  viewHref,
 } from './routing';
 import { appPath } from '../../src/app-routes';
 import { replaceAuthRequestRoute } from './views/auth-review-navigation';
@@ -455,7 +456,6 @@ function updateRootAppTheme(settings: Record<string, string>, previewTheme?: Chr
 
 type NavItem = {
   tab: ViewTab;
-  href: string;
   label: string;
   title: string;
   badge?: number;
@@ -885,7 +885,7 @@ function App(): JSX.Element {
     if (typeof window !== 'undefined' && currentRoute().tab !== 'settings') {
       settingsReturnPathRef.current = `${window.location.pathname}${window.location.search}`;
     }
-    navigate('/settings');
+    navigate(viewHref('settings'));
   }, [navigate]);
 
   const showViewSidebar = useCallback(() => {
@@ -903,7 +903,7 @@ function App(): JSX.Element {
   }, [navigate]);
 
   const handleSettingsClose = useCallback(() => {
-    navigate(settingsReturnPathRef.current ?? '/console');
+    navigate(settingsReturnPathRef.current ?? viewHref('console'));
   }, [navigate]);
 
   // Spaces home navigation: open a typed-primary Space, or preserve an explicit
@@ -1030,20 +1030,20 @@ function App(): JSX.Element {
   // Settings UI for key bindings is deferred — Bug: 9082b2c
   useEffect(() => {
     const tabRoutes: Record<string, string> = {
-      '1': '/console',
-      '2': '/graph',
-      '3': '/auth',
-      '4': '/issues',
-      '5': '/inbox',
-      '6': '/work',
-      '7': '/artifacts?role=instructions',
-      '9': '/settings',
-      '0': '/logs',
+      '1': viewHref('console'),
+      '2': viewHref('graph'),
+      '3': viewHref('auth'),
+      '4': viewHref('issues'),
+      '5': viewHref('inbox'),
+      '6': viewHref('work'),
+      '7': viewHref('artifacts', { role: 'instructions' }),
+      '9': viewHref('settings'),
+      '0': viewHref('logs'),
     };
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.ctrlKey && !e.metaKey && !e.altKey && tabRoutes[e.key]) {
         e.preventDefault();
-        if (tabRoutes[e.key] === '/settings') {
+        if (e.key === '9') {
           navigateToSettings();
         } else {
           navigate(tabRoutes[e.key]);
@@ -2091,7 +2091,7 @@ function App(): JSX.Element {
         break;
       }
       case 'session':
-        navigate(`/console?session=${encodeURIComponent(id.replace(/^session:/, ''))}`);
+        navigate(viewHref('console', { session: id.replace(/^session:/, '') }));
         break;
       case 'auth_request':
         navigate(appPath({ kind: 'entity', entity: 'auth', ref: shortRouteId(id.replace(/^auth_request:/, '')) }));
@@ -2110,7 +2110,6 @@ function App(): JSX.Element {
   // The view itself stays reachable for any session via /overview links.
   const sessionOverviewNavItem: NavItem = {
     tab: 'overview',
-    href: '/overview',
     label: 'Session',
     title: 'Session Overview',
     icon: 'sessionOverview',
@@ -2121,7 +2120,6 @@ function App(): JSX.Element {
     ...(showSessionOverviewNav ? [sessionOverviewNavItem] : []),
     {
       tab: 'console',
-      href: '/console',
       label: 'Chat',
       title: 'Chat',
       badge: badges.console,
@@ -2129,14 +2127,12 @@ function App(): JSX.Element {
     },
     {
       tab: 'timeline',
-      href: '/timeline',
       label: 'Timeline',
       title: 'Timeline',
       icon: 'timeline',
     },
     {
       tab: 'auth',
-      href: '/auth',
       label: 'Approvals',
       title: 'Approvals',
       badge: badges.auth,
@@ -2145,35 +2141,30 @@ function App(): JSX.Element {
     },
     {
       tab: 'issues',
-      href: '/issues',
       label: 'Issues',
       title: 'Issues',
       icon: 'issues',
     },
     {
       tab: 'artifacts',
-      href: '/artifacts',
       label: 'Artifacts',
       title: 'Artifacts',
       icon: 'artifacts',
     },
     {
       tab: 'spaces',
-      href: '/spaces',
       label: 'Spaces',
       title: 'Spaces',
       icon: 'spaces',
     },
     {
       tab: 'briefing',
-      href: '/briefing',
       label: 'Briefing',
       title: 'Briefing',
       icon: 'briefing',
     },
     {
       tab: 'inbox',
-      href: '/inbox',
       label: 'Inbox',
       title: 'Inbox',
       badge: badges.inbox,
@@ -2184,7 +2175,6 @@ function App(): JSX.Element {
   const remainingUpperNavItems: NavItem[] = [
     {
       tab: 'work',
-      href: '/work',
       label: 'Projects',
       title: 'Projects',
       badge: badges.work,
@@ -2192,14 +2182,12 @@ function App(): JSX.Element {
     },
     {
       tab: 'graph',
-      href: '/graph',
       label: 'Graph',
       title: 'Graph',
       icon: 'graph',
     },
     {
       tab: 'tasks',
-      href: '/tasks',
       label: 'Tasks',
       title: 'Tasks',
       badge: badges.tasks,
@@ -2209,7 +2197,6 @@ function App(): JSX.Element {
   ];
   const logsNavItem: NavItem = {
     tab: 'logs',
-    href: '/logs',
     label: 'Logs',
     title: 'Logs',
     icon: 'logs',
@@ -2465,7 +2452,7 @@ function App(): JSX.Element {
     return (
       <a
         key={item.tab}
-        href={withAgentSession(item.href, agentPageBinding)}
+        href={withAgentSession(viewHref(item.tab), agentPageBinding)}
         className={`app-rail__item${active ? ' app-rail__item--active' : ''}${dragging ? ' app-rail__item--dragging' : ''}${dropTarget ? ' app-rail__item--drop-target' : ''}`}
         aria-current={active ? 'page' : undefined}
         {...appTip(railDisplayMode !== 'both' ? item.label : undefined, 'right')}
@@ -2495,7 +2482,7 @@ function App(): JSX.Element {
           if (item.tab === 'settings') {
             navigateToSettings();
           } else {
-            navigate(item.href);
+            navigate(viewHref(item.tab));
           }
         }}
       >
@@ -2626,7 +2613,7 @@ function App(): JSX.Element {
               href={
                 state.daemonReload.bugRefs.length === 1
                   ? appPath({ kind: 'entity', entity: 'issue', ref: `${state.daemonReload.bugRefs[0].repo_id}/${state.daemonReload.bugRefs[0].issue_id}` })
-                  : '/issues'
+                  : viewHref('issues')
               }
               className="daemon-toast__link"
             >
@@ -2713,7 +2700,6 @@ function App(): JSX.Element {
                 />
                 {renderRailItem({
                   tab: 'settings',
-                  href: '/settings',
                   label: 'Settings',
                   title: 'Settings',
                   icon: 'settings',
@@ -2916,7 +2902,7 @@ function App(): JSX.Element {
               instance={instanceInfo}
               keepSubmittedAnnotations={keepSubmittedBriefingAnnotations(state.settings)}
               entityRef={tabRoute.entity?.ref ?? null}
-              initialGroupId={tabRoute.params.group ?? null}
+              initialGroupKey={tabRoute.params.group ?? null}
               initialRoundId={tabRoute.params.round ?? null}
               sidebarHidden={isViewSidebarHidden(tabRoute)}
             />

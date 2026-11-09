@@ -46,7 +46,7 @@ afterEach(() => {
   setDocumentVisibility('visible');
   vi.useRealTimers();
   vi.restoreAllMocks();
-  window.location.hash = '';
+  window.history.replaceState(null, '', '/');
 });
 
 it('loads a view while active and abandons the load on hide', () => {

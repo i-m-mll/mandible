@@ -2,6 +2,7 @@ import { Icon } from '../../components/icons/Icon';
 import { useCallback, useMemo } from 'preact/hooks';
 
 import {
+  artifactDetailHref,
   parseResourceRef,
   resourceRefHref,
   displayResourceRef,
@@ -140,7 +141,7 @@ const LEGACY_ARTIFACT_HASH_REF_PATTERN = /artifact:sha256:[0-9a-f]{64}/gi;
 function legacyArtifactHashAnchor(ref: string): HTMLAnchorElement {
   const anchor = document.createElement('a');
   anchor.className = 'artifact-xref resource-ref__link';
-  anchor.href = resourceRefHref(ref);
+  anchor.href = artifactDetailHref(ref);
   anchor.textContent = ref;
   anchor.title = `Resource reference ${ref} (legacy artifact hash)`;
   return anchor;

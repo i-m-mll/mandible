@@ -1,5 +1,6 @@
 import { parseChatStreamMaxWidthPx } from '../../../src/contracts';
 import { AgentIntegrations } from '../components/AgentIntegrations';
+import { currentRoute, subscribeRouteChanges, viewHref } from '../routing';
 import { NativeSelect } from '../components/shared/NativeSelect';
 import { Icon } from '../components/icons/Icon';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
@@ -1185,7 +1186,7 @@ function DesktopDaemonSection(props: { section: SettingsSectionDefinition; insta
               >
                 {action === 'stop' ? '...' : 'Stop'}
               </button>
-              <a href="#/logs" className="btn btn--sm">
+              <a href={viewHref('logs')} className="btn btn--sm">
                 View logs
               </a>
             </div>
@@ -2146,12 +2147,12 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
 
   useEffect(() => {
     const navigate = () => {
-      const section = new URLSearchParams(window.location.hash.split('?')[1] ?? '').get('section');
+      const route = currentRoute();
+      const section = route.tab === 'settings' ? route.params.section : undefined;
       if (section && Object.values(SETTINGS_SECTIONS).some(value => value.id === section)) handleSectionNavigation(section);
     };
     navigate();
-    window.addEventListener('hashchange', navigate);
-    return () => window.removeEventListener('hashchange', navigate);
+    return subscribeRouteChanges(navigate);
   }, [handleSectionNavigation]);
 
   useEffect(() => {

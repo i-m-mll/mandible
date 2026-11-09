@@ -4,8 +4,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { getLogs, invalidateApiGetCache, type LogEntry, type LogEntityFacetValue, type LogsResponse } from '../api';
 import { type SSEPayload } from '../sse-client';
 import { acquireSharedSse, type SseHandle } from '../sse-shared';
-import { artifactDetailHref, parseResourceRef, resourceRefHref } from '../resource-refs';
-import { currentRoute, replaceRoute, routeWithParams, shortRouteId } from '../routing';
+import { artifactDetailHref, issueRouteHref, parseResourceRef, resourceRefHref } from '../resource-refs';
+import { currentRoute, entityHref, replaceRoute, routeWithParams, shortRouteId, subscribeRouteChanges, viewHref } from '../routing';
 import { AppOperationalNoticeOutlet, useLiveLoad, useViewActive } from '../app-shell';
 import { refreshAbandoned } from '../lib/coalesced-refresh';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
@@ -129,16 +129,12 @@ function updateRoute(filters: LogFilters): void {
   replaceRoute(filtersToHref(filters));
 }
 
-function entityHref(type: LogEntityFacetValue['type'], id: string, repoId?: string | null): string {
-  if (type === 'issue') {
-    const params = new URLSearchParams({ issue: id });
-    if (repoId) params.set('repo', repoId);
-    return `#/issues?${params.toString()}`;
-  }
-  if (type === 'auth_request') return `#/auth?request=${encodeURIComponent(shortRouteId(id))}`;
+function logEntityHref(type: LogEntityFacetValue['type'], id: string, repoId?: string | null): string {
+  if (type === 'issue') return issueRouteHref(id, repoId);
+  if (type === 'auth_request') return entityHref('auth', shortRouteId(id));
   if (type === 'artifact') return artifactDetailHref(id);
-  if (type === 'session') return `#/sessions?session=${encodeURIComponent(id)}`;
-  return `#/graph?focus=${encodeURIComponent(id)}`;
+  if (type === 'session') return viewHref('console', { session: id });
+  return viewHref('graph', { focus: id });
 }
 
 function entityTypeFromKey(key: string): LogEntityFacetValue['type'] | null {
@@ -154,25 +150,22 @@ function entityTypeFromKey(key: string): LogEntityFacetValue['type'] | null {
 function hrefForValue(key: string, value: string, repoId?: string | null): string | null {
   const entityType = entityTypeFromKey(key);
   if (entityType) {
-    return entityHref(entityType, value, repoId);
+    return logEntityHref(entityType, value, repoId);
   }
   const parsed = parseResourceRef(value);
   if (!parsed) {
     return null;
   }
   if (parsed.kind === 'issue') {
-    return entityHref('issue', parsed.canonical.replace(/^issue:/i, ''), repoId);
+    return logEntityHref('issue', parsed.canonical.replace(/^issue:/i, ''), repoId);
   }
   if (parsed.kind === 'comment') {
     const target = parsed.canonical.replace(/^comment:/i, '');
     const [issue, comment] = target.split('#');
-    const params = new URLSearchParams({ issue });
-    if (comment) params.set('comment', comment);
-    if (repoId) params.set('repo', repoId);
-    return `#/issues?${params.toString()}`;
+    return issueRouteHref(issue, repoId, comment);
   }
   if (parsed.kind === 'artifact' || parsed.kind === 'repo' || parsed.kind === 'mandible') {
-    return resourceRefHref(parsed.canonical);
+    return resourceRefHref(parsed.canonical) ?? null;
   }
   return null;
 }
@@ -434,12 +427,11 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
   }, [entries]);
 
   useEffect(() => {
-    const onHashChange = () => {
+    return subscribeRouteChanges(() => {
+      if (currentRoute().tab !== 'logs') return;
       const next = parseLogsSearch();
       setFilters((current) => filtersToHref(current) === filtersToHref(next) ? current : next);
-    };
-    window.addEventListener('hashchange', onHashChange);
-    return () => window.removeEventListener('hashchange', onHashChange);
+    });
   }, []);
 
   const viewActive = useViewActive();

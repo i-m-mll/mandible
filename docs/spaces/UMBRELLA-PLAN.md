@@ -67,11 +67,11 @@ These are decided. Encode them; do not reopen.
    `Spaces` nav item. Change the default route away from graph **only after**
    Spaces is useful. Keep the graph's debugging perspectives (activity, issue,
    work, provider-lineage, artifact-lineage, provenance —
-   `src/routes/graph.ts:31-73`) intact. The default route is `graph` for
-   empty/unknown hashes today via several fallbacks — `hashWithSidebarParam`
-   (`ui/src/routing.ts:14,23`) and `parseRouteFromHash` (`:35,:37`, allow-array
-   `:52`, final `: 'graph'` at `:54`); the new `Spaces` nav item joins the `Route`
-   tab union (`ui/src/routing.ts:2`) and `primaryNavItems` (`ui/src/app.tsx:990-1044`).
+   `src/routes/graph.ts:31-73`) intact. The startup path `/` opens the rail's
+   first tab (`startupRailDestination` in `ui/src/app.tsx`), and a path outside
+   the route table renders the not-found view; the new `Spaces` nav item joins
+   `VIEW_TABS` in the shared route table (`src/app-routes.ts`) and
+   `primaryNavItems` in `ui/src/app.tsx`.
 
 4. **Layout durability.** Occurrences (node positions), items, and edges are
    **durable, DB-backed canonical project state** (single user; agents place nodes
