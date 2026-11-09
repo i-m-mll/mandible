@@ -35,8 +35,8 @@ if (actionLayout) {
   const json = (value: unknown) => new Response(JSON.stringify(value), { headers: { 'Content-Type': 'application/json' } });
   window.fetch = input => {
     const path = String(input);
-    if (path.startsWith('/api/spaces/resolve')) return Promise.resolve(json({ resolved: true,
-      entity: { id: 'abcdef1', short_id: 'abcdef1', project_ref: request.repo, title: issueTitle }, detail: { same_project: true } }));
+    if (path.startsWith('/api/spaces/resolve')) return Promise.resolve(json({ status: 'resolved',
+      entity: { id: 'abcdef1', short_id: 'abcdef1', project_key: request.repo, title: issueTitle }, detail: { same_project: true } }));
     if (path.endsWith('/actions')) return Promise.resolve(json({ actions: request.actions }));
     if (path.startsWith('/api/auth/request/')) return Promise.resolve(json(request));
     return Promise.reject(new Error('Offline layout fixture: ' + path));

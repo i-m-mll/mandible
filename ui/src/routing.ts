@@ -1,8 +1,9 @@
 import { replaceAppHistory } from './app-history';
 import { compactLongIdSegments } from './resource-refs';
-import { BRIEFING_ROUTE_SELECTORS, patchRouteQuery } from '../../src/route-query';
+import { patchRouteQuery } from '../../src/app-routes';
 
-export { ARTIFACT_ROUTE_SELECTORS, BRIEFING_ROUTE_SELECTORS } from '../../src/route-query';
+export const ARTIFACT_ROUTE_SELECTORS = ['series', 'version', 'ref', 'artifact'] as const;
+export const BRIEFING_ROUTE_SELECTORS = ['group', 'briefing', 'round'] as const;
 
 export type Route = {
   tab: 'auth' | 'artifacts' | 'chat-history' | 'work' | 'issues' | 'settings' | 'inbox' | 'console' | 'logs' | 'graph' | 'timeline' | 'spaces' | 'overview' | 'briefing' | 'tasks';

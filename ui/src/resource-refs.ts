@@ -630,10 +630,10 @@ export function attachResourceRefResolution(
     wrapper.setAttribute('data-ref-state', 'resolving');
     try {
       const result = await resolve(ref);
-      if (result.resolved) {
+      if (result.status === 'resolved') {
         markWrapperState(wrapper, 'resolved', `Resolved ${ref} (${result.kind})`);
       } else {
-        markWrapperState(wrapper, 'error', result.error ? `Unresolved: ${result.error}` : `Unresolved: ${ref}`);
+        markWrapperState(wrapper, 'error', `Unresolved: ${result.status === 'ambiguous' ? 'ambiguous' : result.error ?? ref}`);
       }
     } catch (error) {
       wrapper.setAttribute('data-ref-state', 'unresolved');

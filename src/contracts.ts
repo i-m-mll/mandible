@@ -7,6 +7,7 @@ import { SPACE_EVENTS, SPACE_EVENT_VALUES } from "./spaces/events.js";
 // The transcript vocabularies belong to the parser contract; re-export them so
 // daemon and UI read one definition.
 import type { BlockType, ConversationSource, Role } from "./parsers/types.js";
+import type { EntityKind } from "./app-routes.js";
 
 export type { BlockType, ConversationSource, Role };
 
@@ -1167,6 +1168,9 @@ export type ResolvedArtifactIdentity = ArtifactIdentityBase & { status: "resolve
       logical_artifact: null; artifact_version: null; artifact_blob: ArtifactBlobRecord }
 );
 
+/** A target an ambiguous artifact ref could name. */
+export type ArtifactIdentityCandidate = { target_type: CanonicalArtifactTargetType; id: string };
+
 export interface FailedArtifactIdentity extends ArtifactIdentityBase {
   status: "unresolved" | "ambiguous" | "unsupported";
   kind: "unresolved" | "ambiguous" | "unsupported";
@@ -1176,6 +1180,7 @@ export interface FailedArtifactIdentity extends ArtifactIdentityBase {
   logical_artifact: ArtifactIdentityRecord | null;
   artifact_version: null;
   artifact_blob: null;
+  candidates: ArtifactIdentityCandidate[];
 }
 
 export type ArtifactIdentityResolution = ResolvedArtifactIdentity | FailedArtifactIdentity;
@@ -1559,14 +1564,19 @@ export type SpaceFactPacket = {
 
 export type ResolverRefKind = 'issue' | 'comment' | 'auth' | 'briefing' | 'artifact' | 'mandible' | 'repo' | 'submission' | 'unknown';
 
-export type ResolverResult = {
-  ref: string;
-  kind: ResolverRefKind;
-  resolved: boolean;
-  entity: Record<string, unknown> | null;
-  detail?: Record<string, unknown> | null;
-  error?: string;
-};
+/** One candidate of an ambiguous ref: its shortest unambiguous ref, which opens it at `/<kind>/<ref>`. */
+export type ResolverMatch = { kind: EntityKind; ref: string; title: string | null; updated_at: number };
+
+export const RESOLVER_MATCH_LIMIT = 50;
+
+type ResolverResultBase = { ref: string; kind: ResolverRefKind; detail?: Record<string, unknown> | null };
+
+export type ResolverResult = ResolverResultBase & (
+  | { status: "resolved"; entity: Record<string, unknown> }
+  | { status: "not_found"; entity: null; error?: string }
+  /** The most recently updated candidates, at most `RESOLVER_MATCH_LIMIT`, of `total`. */
+  | { status: "ambiguous"; entity: null; matches: ResolverMatch[]; total: number }
+);
 
 export type ResolveRefResponse = { resolution: ResolverResult };
 

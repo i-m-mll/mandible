@@ -500,7 +500,7 @@ Unit tests:
 
 Integration/browser checks:
 
-- current Mandible `#/timeline?project=mandible` dense May 30 region;
+- current Mandible `/timeline?project=mandible` dense May 30 region;
 - collapsed and expanded transient rows;
 - inspector open/closed and resized;
 - diagnostics panel open/closed;

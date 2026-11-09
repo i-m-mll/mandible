@@ -73,6 +73,7 @@ export function resolveOperationalIssueRef(
   db: Db,
   issueRef: string,
   repoRef?: string | null,
+  options: { allMatches?: boolean } = {},
 ): ResolveOperationalIssueResult {
   if (!tableExists(db, "ledger_issues") || !tableExists(db, "ledger_issue_aliases")) {
     return { ok: false, error: "unavailable" };
@@ -81,10 +82,10 @@ export function resolveOperationalIssueRef(
   if (!trimmed) return { ok: false, error: "not_found" };
 
   const store = new LedgerStore(db);
-  const scoped = resolveInProjects(db, store, trimmed, candidateProjectIds(db, repoRef));
+  const scoped = resolveInProjects(db, store, trimmed, candidateProjectIds(db, repoRef), options);
   if (scoped.ok || scoped.error === "ambiguous") return scoped;
 
-  return withProject(db, store.resolveIssueRef(trimmed));
+  return withProject(db, store.resolveIssueRef(trimmed, options));
 }
 
 /**
@@ -97,10 +98,11 @@ function resolveInProjects(
   store: LedgerStore,
   ref: string,
   projectIds: string[],
+  options: { allMatches?: boolean },
 ): ResolveOperationalIssueResult {
   const matches = new Set<string>();
   for (const projectId of projectIds) {
-    const resolved = store.resolveIssueRef(ref, { project_id: projectId });
+    const resolved = store.resolveIssueRef(ref, { ...options, project_id: projectId });
     if (resolved.ok) {
       matches.add(resolved.id);
     } else if (resolved.error === "ambiguous") {

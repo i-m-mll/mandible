@@ -25,9 +25,9 @@ function resolveIssue(issueRef: string, context: string | undefined): Promise<Re
   if (!pending) {
     pending = resolveResourceRef(`issue:${issueRef}`, { project: context })
       .then((result) => {
-        const entity = result.resolved ? result.entity : null;
+        const entity = result.status === 'resolved' ? result.entity : null;
         if (!entity || typeof entity.id !== 'string') return null;
-        const projectRef = typeof entity.project_ref === 'string' ? entity.project_ref : '';
+        const projectRef = typeof entity.project_key === 'string' ? entity.project_key : '';
         return {
           shortId: typeof entity.short_id === 'string' && entity.short_id ? entity.short_id : entity.id.slice(0, 7),
           projectRef,

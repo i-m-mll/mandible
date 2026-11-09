@@ -137,8 +137,8 @@ describe("cross-project item resolution on a top-level Space (issue 812df41)", (
       `/api/spaces/resolve?ref=${encodeURIComponent(`issue:${issueA.id}`)}`,
     );
     expect(resolvedIssue.status).toBe(200);
-    const issueResolution = (resolvedIssue.body as { resolution: { resolved: boolean; kind: string; entity: { id: string } | null } }).resolution;
-    expect(issueResolution.resolved).toBe(true);
+    const issueResolution = (resolvedIssue.body as { resolution: { status: string; kind: string; entity: { id: string } | null } }).resolution;
+    expect(issueResolution.status).toBe('resolved');
     expect(issueResolution.kind).toBe("issue");
     expect(issueResolution.entity?.id).toBe(issueA.id);
 
@@ -147,8 +147,8 @@ describe("cross-project item resolution on a top-level Space (issue 812df41)", (
       `/api/spaces/resolve?ref=${encodeURIComponent(artifactRef)}`,
     );
     expect(resolvedArtifact.status).toBe(200);
-    const artifactResolution = (resolvedArtifact.body as { resolution: { resolved: boolean; entity: { content_hash: string } | null } }).resolution;
-    expect(artifactResolution.resolved).toBe(true);
+    const artifactResolution = (resolvedArtifact.body as { resolution: { status: string; entity: { content_hash: string } | null } }).resolution;
+    expect(artifactResolution.status).toBe('resolved');
     expect(artifactResolution.entity?.content_hash).toBe(artifact.artifact.content_hash);
   });
 

@@ -674,7 +674,7 @@ cmd_format() {
   [[ -n "$ref" ]] || die "Usage: $(mandible_command_syntax artifact.format)" 2
   case "$format" in id|ref|url|markdown|full) ;; *) die "Unknown --as format: $format" 2 ;; esac
   require_tools
-  local response identity full_id encoded_ref web_base url markdown result target_type series_ref version_no
+  local response identity full_id encoded_ref web_base url markdown result target_type
   response="$(api_get "/api/artifacts/resolve?ref=$(urlencode "$ref")")" \
     || die "${RED}Failed to resolve artifact ref.${RESET}" 1
   identity="$(printf '%s\n' "$response" | jq -er --arg input_ref "$ref" '
@@ -696,18 +696,8 @@ cmd_format() {
   target_type="$(printf '%s\n' "$response" | jq -r --arg input_ref "$ref" '
     if ($input_ref | test("^artifact-series:"; "i")) then "artifact_series" else .resolution.target_type end')"
   web_base="${MANDIBLE_WEB_BASE:-$MANDIBLE_CANONICAL_ORIGIN}"
-  if [[ "$target_type" == "artifact_series" ]]; then
-    series_ref="${identity%@*}"
-    version_no=""
-    [[ "$identity" == *@* ]] && version_no="${identity##*@}"
-    encoded_ref="$(jq -nr --arg value "$series_ref" '$value | @uri')"
-    url="${web_base}/#/artifacts?series=${encoded_ref}"
-    [[ -n "$version_no" ]] && url+="&version=${version_no}"
-    url+="&sidebar=hidden"
-  else
-    encoded_ref="$(jq -nr --arg value "$identity" '$value | @uri')"
-    url="${web_base}/#/artifacts?ref=${encoded_ref}&sidebar=hidden"
-  fi
+  encoded_ref="$(jq -nr --arg value "$identity" '$value | @uri | gsub("%3A"; ":") | gsub("%40"; "@") | gsub("%2F"; "/")')"
+  url="${web_base}/artifact/${encoded_ref}?sidebar=hidden"
   [[ -n "$label" ]] || label="$identity"
   markdown="[${label}](${url})"
   result="$(jq -n \

@@ -8,7 +8,7 @@ export function boardIssueAffectedByEvent(key: readonly unknown[], resolution: R
     && typeof payload.event_type === 'string' && /^(issue\.(created|updated|closed|reopened|worker_status\.updated)|label\.updated)$/.test(payload.event_type);
   if (!genericIssue && !/^ledger:issue:(created|updated|closed|reopened)$/.test(type) && type !== 'ledger:label:updated') return false;
   const id = genericIssue ? payload.entity_id : payload.issue_id;
-  const canonical = resolution?.resolved ? resolution.entity?.id : undefined;
+  const canonical = resolution?.status === 'resolved' ? resolution.entity.id : undefined;
   const ref = typeof key[1] === 'string' ? key[1] : '';
   const requested = parseIssueRefTarget(ref.replace(/^issue:/i, ''))?.issue;
   if (typeof id !== 'string') return true;
