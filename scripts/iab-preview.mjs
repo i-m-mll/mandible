@@ -394,7 +394,7 @@ async function createOrReusePreview(options) {
     worktree,
     protectedBranch,
     port,
-    url: `${instanceEnv.MANDIBLE_PUBLIC_ORIGIN}/#/timeline`,
+    url: `${instanceEnv.MANDIBLE_PUBLIC_ORIGIN}/timeline`,
     db: dbCopy,
     sourceDb,
     projection,
@@ -1301,7 +1301,7 @@ export async function healthyExistingPreview(branch, expected = {}) {
   return {
     ...metadata,
     health,
-    freshUrl: `${metadata.instanceEnv.MANDIBLE_PUBLIC_ORIGIN}/?fresh=${Date.now()}#/timeline`,
+    freshUrl: `${metadata.instanceEnv.MANDIBLE_PUBLIC_ORIGIN}/timeline?fresh=${Date.now()}`,
   };
 }
 
@@ -1522,7 +1522,7 @@ export async function withBrowserReadyUrl(preview, options = {}) {
   const clean = {
     ...preview,
     ...(preview.ownership ? { handle: ownedRunHandle(preview), receipt: path.join(path.dirname(preview.ownership.root), '.receipts', `${preview.ownership.runId}.json`) } : {}),
-    freshUrl: `${origin}/?fresh=${Date.now()}#/timeline`,
+    freshUrl: `${origin}/timeline?fresh=${Date.now()}`,
     browserEnrollment: "cookie-or-pairing",
   };
   return options.pairBrowser === true

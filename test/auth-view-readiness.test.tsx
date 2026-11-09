@@ -349,7 +349,7 @@ describe('Approval review issue and action composition', () => {
     vi.stubGlobal('fetch', vi.fn(async (input: string) => {
       if (!input.startsWith('/api/spaces/resolve?')) throw new Error('no network in test');
       const ref = new URL(input, 'http://localhost').searchParams.get('ref')!.replace('issue:', '');
-      return { ok: true, json: async () => ({ resolved: true, entity: { id: ref, short_id: ref, project_ref: 'mandible', title: titles[ref] }, detail: { same_project: true } }) };
+      return { ok: true, json: async () => ({ status: 'resolved', entity: { id: ref, short_id: ref, project_key: 'mandible', title: titles[ref] }, detail: { same_project: true } }) };
     }));
     const request: AuthRequest = {
       ...pendingRequest,

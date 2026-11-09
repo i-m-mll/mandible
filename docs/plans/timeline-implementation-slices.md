@@ -174,6 +174,6 @@ Run at integration scope after worker merges:
 - `npm run build`
 - `git diff --check`
 - `git ls-files dist ui/dist node_modules | wc -l`
-- Browser verification on `#/timeline?project=mandible` for dense May 30 data,
+- Browser verification on `/timeline?project=mandible` for dense May 30 data,
   boundary events, sub-day zoom ticks, horizontal scroll bounds, inspector
   persistence, diagnostics, and refresh/refetch state stability.

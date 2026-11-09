@@ -10,7 +10,7 @@ import { setDb, type Db } from "../src/db.js";
 import { systemAction } from "../src/identity/resolver.js";
 import { addOrUpdateCheckout } from "../src/ledger/project-registry.js";
 import { parseAuthoredReferences } from "../src/ledger/authored-references.js";
-import type { ResolveRefResponse } from "../src/contracts.js";
+import { RESOLVER_MATCH_LIMIT, type ResolveRefResponse } from "../src/contracts.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import { registerSpacesRoutes } from "../src/routes/spaces.js";
 import { Router } from "../src/server.js";
@@ -382,6 +382,46 @@ describe("seed-from-filter", () => {
 });
 
 describe("unified ref resolver", () => {
+  it("resolves each app-path entity kind to one of resolved, not_found, or ambiguous with resolvable candidates", async () => {
+    const human = createUser(db, { slug: "path-operator", kind: "human", display_name: "Path Operator" });
+    setSetting(db, "user.operator_id", human.id);
+    const unique = createLedgerIssue(db, { project_id: PROJECT_ID, alias: 'fedcba9', title: 'Unique' });
+    createLedgerIssue(db, { project_id: PROJECT_ID, alias: 'abc1234', title: 'First' });
+    createLedgerIssue(db, { project_id: OTHER_PROJECT_ID, alias: 'abc1234', title: 'Second' });
+    const insertAuth = db.prepare(`INSERT INTO auth_requests (id, command, title, repo, created_at, updated_at, expires_at)
+      VALUES (?, 'true', 'Merge', 'spaces-test', 1, ?, 9999999999999)`);
+    const authIds = Array.from({ length: RESOLVER_MATCH_LIMIT + 2 }, (_, index) =>
+      `2257522a-${String(index).padStart(4, "0")}-467b-b3f8-491aea66754c`);
+    authIds.forEach((id, index) => insertAuth.run(id, (index * 7919) % 1000));
+    const insertBriefing = db.prepare("INSERT INTO briefings (id, briefing_key, title, created_at, updated_at) VALUES (?, ?, ?, 1, 1)");
+    const briefingIds = ["75e6ecb5-9927-4687-a8d5-34f8c030ad0c", "75e6ecb5-1111-4687-a8d5-34f8c030ad0c"];
+    briefingIds.forEach((id, index) => insertBriefing.run(id, `b${index}`, `Briefing ${index}`));
+    const hashes = ["abcdef1" + "1".repeat(57), "abcdef1" + "2".repeat(57)];
+    hashes.forEach((hash) => insertArtifact(hash, hash));
+    const resolve = async (kind: string, ref: string) =>
+      (await checkedResolve(`/api/refs/resolve?kind=${kind}&ref=${encodeURIComponent(ref)}`)).resolution;
+
+    const cases: Array<[kind: string, resolved: string, missing: string, colliding: string, total: number]> = [
+      ["issue", unique.short_id, "0000000", "abc1234", 2],
+      ["auth", authIds[0], "ffffffff", "2257522a", authIds.length],
+      ["briefing", briefingIds[0], "ffffffff", "75e6ecb5", 2],
+      ["artifact", `artifact-blob:${hashes[0]}`, `artifact-blob:${"9".repeat(64)}`, "artifact-blob:abcdef1", 2],
+    ];
+    for (const [kind, resolved, missing, colliding, total] of cases) {
+      expect(await resolve(kind, resolved), kind).toMatchObject({ status: "resolved" });
+      expect(await resolve(kind, missing), kind).toMatchObject({ status: "not_found", entity: null });
+      const collision = await resolve(kind, colliding);
+      expect(collision, kind).toMatchObject({ status: "ambiguous", entity: null, total });
+      const matches = collision.status === "ambiguous" ? collision.matches : [];
+      expect(matches.length, kind).toBe(Math.min(total, RESOLVER_MATCH_LIMIT));
+      expect(matches.every((match) => match.kind === kind), kind).toBe(true);
+      const times = matches.map((match) => match.updated_at);
+      expect(times, kind).toEqual([...times].sort((a, b) => b - a));
+      const opened = await Promise.all(matches.map(async (match) => (await resolve(kind, match.ref)).entity?.id));
+      expect(new Set(opened).size, kind).toBe(matches.length);
+    }
+  });
+
   it("resolves Board and Collection refs with active facts in the containing Space context", async () => {
     const first = createLedgerIssue(db, { project_id: PROJECT_ID, alias: 'abc1234', title: 'First' });
     const second = createLedgerIssue(db, { project_id: OTHER_PROJECT_ID, alias: 'abc1234', title: 'Second' });
@@ -402,11 +442,11 @@ describe("unified ref resolver", () => {
     };
     const result = await resolve(PROJECT_ID);
     const aliasRef = cardRefString({ ...item, ref_uri: 'issue:abc1234' });
-    expect(result).toMatchObject({ resolved: true, entity: { id: first.id, worker_status: 'blocked', labels: ['active'] } });
-    expect(await resolve(PROJECT_ID, itemRefString({ ...item, ref_uri: aliasRef }))).toMatchObject({ resolved: true, entity: { id: first.id } });
-    expect(await resolve(OTHER_PROJECT_ID, aliasRef)).toMatchObject({ resolved: true, entity: { id: second.id } });
-    expect(await resolve(undefined, aliasRef)).toMatchObject({ resolved: false, error: 'ambiguous', entity: null });
-    expect(await resolve(undefined, 'issue:missing')).toMatchObject({ resolved: false, error: 'not_found', entity: null });
+    expect(result).toMatchObject({ status: "resolved", entity: { id: first.id, worker_status: 'blocked', labels: ['active'] } });
+    expect(await resolve(PROJECT_ID, itemRefString({ ...item, ref_uri: aliasRef }))).toMatchObject({ status: "resolved", entity: { id: first.id } });
+    expect(await resolve(OTHER_PROJECT_ID, aliasRef)).toMatchObject({ status: "resolved", entity: { id: second.id } });
+    expect(await resolve(undefined, aliasRef)).toMatchObject({ status: 'ambiguous', entity: null });
+    expect(await resolve(undefined, 'issue:missing')).toMatchObject({ status: 'not_found', entity: null });
     await call('POST', `/api/spaces/${spaceId}/occurrences`, { item_id: item.id, renderer: 'board' });
     const packet = (await call('GET', `/api/spaces/${spaceId}`)).body as Parameters<typeof buildSpaceViewModel>[0];
     const projected = projectBoard(buildSpaceViewModel(packet), EMPTY_BOARD_METADATA, { [item.id]: issueFactsFromEntity(item.id, result.entity) });
@@ -417,22 +457,22 @@ describe("unified ref resolver", () => {
     const issueId = createIssue(PROJECT_ID, "Qualified");
     const shortId = new LedgerStore(db).getIssue(issueId).short_id;
     type Resolution = {
-      resolution: { resolved: boolean; entity: { id?: string; project_ref?: string } | null; detail?: { same_project?: boolean } };
+      resolution: { status: string; entity: { id?: string; project_key?: string } | null; detail?: { same_project?: boolean } };
     };
     const resolve = async (ref: string, project: string) =>
       ((await call("GET", `/api/refs/resolve?ref=${encodeURIComponent(ref)}&project=${project}`)).body as Resolution).resolution;
 
     expect(await resolve(`issue:spaces-test/${shortId}`, OTHER_PROJECT_ID)).toMatchObject({
-      resolved: true,
-      entity: { id: issueId, project_ref: "spaces-test" },
+      status: "resolved",
+      entity: { id: issueId, project_key: "spaces-test" },
       detail: { same_project: false },
     });
     expect(await resolve(`issue:${shortId}`, "spaces-test")).toMatchObject({
-      resolved: true,
+      status: "resolved",
       detail: { same_project: true },
     });
-    expect((await resolve(`issue:spaces-test/${shortId}`, PROJECT_ID)).resolved).toBe(true);
-    expect((await resolve(`issue:other-project/${shortId}`, PROJECT_ID)).resolved).toBe(false);
+    expect((await resolve(`issue:spaces-test/${shortId}`, PROJECT_ID)).status).toBe("resolved");
+    expect((await resolve(`issue:other-project/${shortId}`, PROJECT_ID)).status).toBe("not_found");
   });
 
   it("resolves issue, comment, artifact, mandible, and repo refs to typed results", async () => {
@@ -446,52 +486,52 @@ describe("unified ref resolver", () => {
 
     const issueRes = await call("GET", `/api/spaces/resolve?ref=issue:${issueId}`);
     expect(issueRes.status).toBe(200);
-    expect((issueRes.body as { resolution: { kind: string; resolved: boolean } }).resolution).toMatchObject({
+    expect((issueRes.body as { resolution: { kind: string; status: string } }).resolution).toMatchObject({
       kind: "issue",
-      resolved: true,
+      status: "resolved",
     });
 
     const commentRes = await call("GET", `/api/spaces/resolve?ref=comment:${comment.id}`);
-    expect((commentRes.body as { resolution: { kind: string; resolved: boolean } }).resolution).toMatchObject({
+    expect((commentRes.body as { resolution: { kind: string; status: string } }).resolution).toMatchObject({
       kind: "comment",
-      resolved: true,
+      status: "resolved",
     });
 
-    type Resolution = { resolution: { kind: string; resolved: boolean; entity: { id?: string } | null } };
+    type Resolution = { resolution: { kind: string; status: string; entity: { id?: string } | null } };
     const resolve = async (ref: string) =>
       ((await call("GET", `/api/spaces/resolve?ref=${encodeURIComponent(ref)}`)).body as Resolution).resolution;
     expect(await resolve(`issue:${issueId}#${comment.ordinal}`)).toMatchObject({
       kind: "comment",
-      resolved: true,
+      status: "resolved",
       entity: { id: comment.id },
     });
     expect(await resolve(`comment:${issueId}#${comment.ordinal}`)).toMatchObject({
       kind: "comment",
-      resolved: true,
+      status: "resolved",
       entity: { id: comment.id },
     });
-    expect(await resolve(`issue:${issueId}#0`)).toMatchObject({ kind: "issue", resolved: true, entity: { id: issueId } });
-    expect(await resolve(`issue:${issueId}#99`)).toMatchObject({ kind: "comment", resolved: false });
+    expect(await resolve(`issue:${issueId}#0`)).toMatchObject({ kind: "issue", status: "resolved", entity: { id: issueId } });
+    expect(await resolve(`issue:${issueId}#99`)).toMatchObject({ kind: "comment", status: "not_found" });
 
     const artifactRes = await call("GET", `/api/spaces/resolve?ref=artifact-blob:${artifactHash}`);
-    expect((artifactRes.body as { resolution: { kind: string; resolved: boolean } }).resolution).toMatchObject({
+    expect((artifactRes.body as { resolution: { kind: string; status: string } }).resolution).toMatchObject({
       kind: "artifact",
-      resolved: true,
+      status: "resolved",
     });
 
     const legacyArtifactRes = await call("GET", `/api/spaces/resolve?ref=artifact:sha256:${artifactHash}`);
-    expect((legacyArtifactRes.body as { resolution: { kind: string; resolved: boolean; detail?: { resolution?: { status?: string } } } }).resolution).toMatchObject({
+    expect((legacyArtifactRes.body as { resolution: { kind: string; status: string; detail?: { resolution?: { status?: string } } } }).resolution).toMatchObject({
       kind: "artifact",
-      resolved: false,
+      status: "not_found",
     });
 
     const mandibleRes = await call(
       "GET",
-      `/api/refs/resolve?ref=${encodeURIComponent(`mandible:///issues?issue=${issueId}`)}`,
+      `/api/refs/resolve?ref=${encodeURIComponent(`mandible:///issue/${issueId}`)}`,
     );
-    expect((mandibleRes.body as { resolution: { kind: string; resolved: boolean } }).resolution).toMatchObject({
+    expect((mandibleRes.body as { resolution: { kind: string; status: string } }).resolution).toMatchObject({
       kind: "issue",
-      resolved: true,
+      status: "resolved",
     });
 
     const repoRes = await call("GET", `/api/spaces/resolve?ref=${encodeURIComponent("repo://mandible/missing.txt")}`);
@@ -506,12 +546,12 @@ describe("unified ref resolver", () => {
       VALUES (?, 'true', 'Merge feature/x', 'spaces-test', 1, 1, 9999999999999)`);
     ids.forEach(id => insert.run(id));
     const resolve = async (ref: string) => (await checkedResolve(`/api/refs/resolve?ref=${encodeURIComponent(ref)}`)).resolution;
-    expect(await resolve(`auth:${ids[0]}`)).toMatchObject({ kind: "auth", resolved: true, entity: { id: "2257522a-3", title: "Merge feature/x" } });
-    expect(await resolve("auth:2257522a-4")).toMatchObject({ resolved: true, entity: { id: "2257522a-4" } });
-    expect(await resolve("auth:2257522a")).toMatchObject({ kind: "auth", resolved: false, error: "ambiguous", entity: null });
-    expect(await resolve("auth:ffffffff")).toMatchObject({ kind: "auth", resolved: false, error: "not_found", entity: null });
-    expect(await resolve(`mandible:///auth?request=${ids[0]}`)).toMatchObject({ kind: "auth", resolved: true, entity: { id: "2257522a-3" } });
-    expect(await resolve(`mandible:///auth?request=${ids[0]}&issue=missing`)).toMatchObject({ kind: "auth", resolved: true });
+    expect(await resolve(`auth:${ids[0]}`)).toMatchObject({ kind: "auth", status: "resolved", entity: { id: "2257522a-3", title: "Merge feature/x" } });
+    expect(await resolve("auth:2257522a-4")).toMatchObject({ status: "resolved", entity: { id: "2257522a-4" } });
+    expect(await resolve("auth:2257522a")).toMatchObject({ kind: "auth", status: "ambiguous", entity: null });
+    expect(await resolve("auth:ffffffff")).toMatchObject({ kind: "auth", status: "not_found", entity: null });
+    expect(await resolve(`mandible:///auth/${ids[0]}`)).toMatchObject({ kind: "auth", status: "resolved", entity: { id: "2257522a-3" } });
+    expect(await resolve(`mandible:///auth/${ids[0]}?issue=missing`)).toMatchObject({ kind: "auth", status: "resolved" });
     const refs = parseAuthoredReferences("See [auth:2257522a-3], not [auth:spaces-test/2257522a-4], `[auth:2257522a-4]`, or \n```\n[auth:2257522a-4]\n```\n[link](https://example.test/[auth:2257522a-4]).");
     expect(refs.map(ref => [ref.kind, ref.target])).toEqual([["auth", "2257522a-3"]]);
     const store = new LedgerStore(db);
@@ -542,12 +582,12 @@ describe("unified ref resolver", () => {
       expect(response.status, JSON.stringify(response.body)).toBe(200);
       return (response.body as ResolveRefResponse).resolution;
     };
-    expect(await resolve("briefing:75e6ecb5-9")).toMatchObject({ kind: "briefing", resolved: true,
+    expect(await resolve("briefing:75e6ecb5-9")).toMatchObject({ kind: "briefing", status: "resolved",
       entity: { id: "75e6ecb5-9", ref: "briefing:75e6ecb5-9", title: "Current Briefing" } });
-    expect(await resolve("briefing:75e6ecb5")).toMatchObject({ kind: "briefing", resolved: false, error: "ambiguous", entity: null });
-    expect(await resolve("briefing:8d34a5d3")).toMatchObject({ resolved: true, entity: { id: "8d34a5d3", title: "Legacy Briefing" } });
-    expect(await resolve(`briefing:${legacy}`)).toMatchObject({ resolved: true, entity: { ref: "briefing:8d34a5d3" } });
-    expect(await resolve("briefing:ffffffff")).toMatchObject({ kind: "briefing", resolved: false, error: "not_found", entity: null });
+    expect(await resolve("briefing:75e6ecb5")).toMatchObject({ kind: "briefing", status: "ambiguous", entity: null });
+    expect(await resolve("briefing:8d34a5d3")).toMatchObject({ status: "resolved", entity: { id: "8d34a5d3", title: "Legacy Briefing" } });
+    expect(await resolve(`briefing:${legacy}`)).toMatchObject({ status: "resolved", entity: { ref: "briefing:8d34a5d3" } });
+    expect(await resolve("briefing:ffffffff")).toMatchObject({ kind: "briefing", status: "not_found", entity: null });
     const refs = parseAuthoredReferences("See [briefing:8d34a5d3], not [briefing:spaces-test/8d34a5d3] or `[briefing:75e6ecb5-9]`.");
     expect(refs.map(ref => [ref.kind, ref.target])).toEqual([["briefing", "8d34a5d3"]]);
     const store = new LedgerStore(db);
@@ -563,17 +603,17 @@ describe("unified ref resolver", () => {
     db.prepare(`INSERT INTO auth_requests (id, command, title, created_at, updated_at, expires_at)
       VALUES (?, 'true', 'Hidden metadata', 1, 1, 9999999999999)`).run(id);
     const resolve = async () => (await checkedResolve(`/api/spaces/resolve?ref=auth:${id}`)).resolution;
-    expect(await resolve()).toMatchObject({ resolved: true, entity: { id: "2257522a", title: "Hidden metadata" } });
+    expect(await resolve()).toMatchObject({ status: "resolved", entity: { id: "2257522a", title: "Hidden metadata" } });
     db.prepare("UPDATE auth_requests SET repo = 'unknown-project'").run();
-    expect(await resolve()).toMatchObject({ resolved: true, entity: { id: "2257522a", title: "Hidden metadata" } });
+    expect(await resolve()).toMatchObject({ status: "resolved", entity: { id: "2257522a", title: "Hidden metadata" } });
     db.prepare("UPDATE ledger_projects SET display_name = 'Shared'").run();
     db.prepare("UPDATE auth_requests SET repo = 'Shared'").run();
-    expect(await resolve()).toMatchObject({ resolved: true, entity: { id: "2257522a", title: "Hidden metadata" } });
+    expect(await resolve()).toMatchObject({ status: "resolved", entity: { id: "2257522a", title: "Hidden metadata" } });
     db.prepare("UPDATE auth_requests SET repo = ?, target_repo_root = ?").run(PROJECT_ID, OTHER_PROJECT_ID);
-    expect(await resolve()).toMatchObject({ resolved: true, entity: { id: "2257522a", title: "Hidden metadata" } });
+    expect(await resolve()).toMatchObject({ status: "resolved", entity: { id: "2257522a", title: "Hidden metadata" } });
     addOrUpdateCheckout(db, PROJECT_ID, { root: "/fixture/approval-checkout", name: "Approval checkout", default_branch: "main" });
     db.prepare("UPDATE auth_requests SET repo = NULL, target_repo_root = ?").run("/fixture/approval-checkout");
-    expect(await resolve()).toMatchObject({ resolved: true, entity: { id: "2257522a" } });
+    expect(await resolve()).toMatchObject({ status: "resolved", entity: { id: "2257522a" } });
   });
 });
 

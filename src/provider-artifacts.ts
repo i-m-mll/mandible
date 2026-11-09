@@ -27,6 +27,7 @@ import {
   emptyArtifactIdentityPayload,
   failedArtifactIdentity,
   formatCompactArtifactId,
+  type ArtifactIdentityCandidate,
   type ArtifactIdentityResolution,
   type ArtifactRequestedKind,
   type ArtifactResolutionMode,
@@ -591,7 +592,12 @@ const MIN_ARTIFACT_ID_PREFIX_LENGTH = MIN_ARTIFACT_HASH_PREFIX_LENGTH;
 
 type PrefixLookupResult<T> =
   | { status: "resolved"; value: T }
-  | { status: "ambiguous" | "unresolved" | "unsupported"; value: null };
+  | { status: "ambiguous"; value: null; matches: string[] }
+  | { status: "unresolved" | "unsupported"; value: null };
+
+function lookupCandidates(lookup: PrefixLookupResult<unknown>, target_type: CanonicalArtifactTargetType): ArtifactIdentityCandidate[] {
+  return lookup.status === "ambiguous" ? lookup.matches.map((id) => ({ target_type, id })) : [];
+}
 
 function artifactHashRefFromRef(ref: string): ArtifactHashRefParse | null {
   const trimmed = ref.trim();
@@ -3801,12 +3807,12 @@ function artifactLookup<T>(
   load: (id: string) => T | null,
 ): PrefixLookupResult<T> {
   if (!artifactIdentityTablesExist(db)) return { status: "unsupported", value: null };
-  const resolved = resolveId(db, kind, key);
+  const resolved = resolveId(db, kind, key, { allMatches: true });
   if (resolved.ok) {
     const value = load(resolved.id);
     return value ? { status: "resolved", value } : { status: "unresolved", value: null };
   }
-  if (resolved.error === "ambiguous") return { status: "ambiguous", value: null };
+  if (resolved.error === "ambiguous") return { status: "ambiguous", value: null, matches: resolved.matches };
   return { status: key.length < MIN_ARTIFACT_ID_PREFIX_LENGTH ? "unsupported" : "unresolved", value: null };
 }
 
@@ -4032,6 +4038,7 @@ type ArtifactResolutionInput = Omit<ReturnType<typeof makeResolutionBase>, "logi
   artifact_blob: ArtifactBlobRecord | null;
   alias: ArtifactAliasRecord | null;
   warnings: string[];
+  candidates?: ArtifactIdentityCandidate[];
 };
 
 function artifactIdentityFromRecords(input: ArtifactResolutionInput): ArtifactIdentityResolution {
@@ -4059,7 +4066,7 @@ function artifactIdentityFromRecords(input: ArtifactResolutionInput): ArtifactId
       ?? (requestedIdentityKind(ref) === "logical" ? "artifact"
         : ["pinned-version", "series"].includes(requestedIdentityKind(ref)) ? "artifact_version"
           : requestedIdentityKind(ref) === "blob" ? "artifact_blob" : null),
-    logical_artifact: input.logical_artifact, artifact_version: null, artifact_blob: null });
+    logical_artifact: input.logical_artifact, artifact_version: null, artifact_blob: null, candidates: input.candidates ?? [] });
 }
 
 /** Historical HTTP fields are owned by the provider API boundary. */
@@ -4081,6 +4088,7 @@ function resolutionForCanonicalVersion(
       status: lookup.status,
       target_type: "artifact_version",
       target_id: null,
+      candidates: lookupCandidates(lookup, "artifact_version"),
       warnings: lookup.status === "unsupported" ? ["artifact_version_prefix_too_short"] : [`artifact_version_${lookup.status}`],
     });
   }
@@ -4113,6 +4121,7 @@ function resolutionForLogicalArtifact(
       status: lookup.status,
       target_type: "artifact",
       target_id: null,
+      candidates: lookupCandidates(lookup, "artifact"),
       warnings: lookup.status === "unsupported" ? ["artifact_prefix_too_short"] : [`artifact_${lookup.status}`],
     });
   }
@@ -4146,6 +4155,7 @@ function resolutionForArtifactBlob(
       status: lookup.status,
       target_type: "artifact_blob",
       target_id: null,
+      candidates: lookupCandidates(lookup, "artifact_blob"),
       warnings: [
         ...legacyWarnings,
         ...(lookup.status === "unsupported" ? ["artifact_blob_prefix_too_short"] : [`artifact_blob_${lookup.status}`]),
@@ -4207,6 +4217,7 @@ function resolutionForArtifactSeries(db: Db, ref: string): ArtifactIdentityResol
       ...base,
       status: lookup.status,
       target_id: null,
+      candidates: lookupCandidates(lookup, "artifact"),
       warnings: lookup.status === "unsupported"
         ? ["artifact_series_prefix_too_short"]
         : [`artifact_series_${lookup.status}`],
@@ -4297,6 +4308,10 @@ function resolveArtifactIdentityRef(db: Db, ref: string): ArtifactIdentityResolu
           ...makeResolutionBase(ref),
           status: "ambiguous",
           target_id: null,
+          candidates: [
+            ...(logicalLookup.status === "resolved" ? [{ target_type: "artifact" as const, id: logicalLookup.value.id }] : lookupCandidates(logicalLookup, "artifact")),
+            ...(blobLookup.status === "resolved" ? [{ target_type: "artifact_blob" as const, id: blobLookup.value.id }] : lookupCandidates(blobLookup, "artifact_blob")),
+          ],
           warnings: ["artifact_identity_ambiguous"],
         });
       }

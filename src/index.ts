@@ -94,7 +94,7 @@ import { validatePreviewWritableRoots } from "./security/effect-policy.js";
 import {
   authorizeManagedSessionWebSocket,
 } from "./client-auth/authz.js";
-import { registerRedirectRoutes } from "./routes/redirects.js";
+import { registerDesktopHandoffRoute } from "./routes/desktop-handoff.js";
 import { registerTrashRoutes } from "./routes/trash.js";
 import { startTrashGcScheduler, stopTrashGcScheduler } from "./trash-service.js";
 import { registerWorkflowRoutes } from "./routes/workflows.js";
@@ -393,7 +393,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // Issue: 708dc4c — client-auth token mint/list, mode toggle, and telemetry.
   registerClientAuthRoutes(router, clientAuth);
   registerWorkflowRoutes(router);
-  registerRedirectRoutes(router);
+  registerDesktopHandoffRoute(router);
   registerConversationRoutes(router, ledgerReader, sessionRegistry);
   registerConversationControlRoutes(router, conversationControl, { db, instance });
   registerConversationCustodyRoutes(router, db);

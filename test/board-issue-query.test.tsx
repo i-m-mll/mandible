@@ -26,7 +26,7 @@ function Facts({ value, name }: { value: ReturnType<typeof model>; name: string 
   return <div data-testid={name}>{JSON.stringify({ facts, errors: failed.length, pending })}</div>;
 }
 function result(ref: string, status = 'none') {
-  return new Response(JSON.stringify({ resolution: { ref, kind: 'issue', resolved: true, entity: { id: ref.replace('issue:', ''), worker_status: status, kind: 'bug', labels: [] } } }));
+  return new Response(JSON.stringify({ resolution: { ref, kind: 'issue', status: 'resolved', entity: { id: ref.replace('issue:', ''), worker_status: status, kind: 'bug', labels: [] } } }));
 }
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -130,7 +130,7 @@ describe('Board issue Query lifecycle', () => {
     const fetcher = vi.fn(async () => {
       if (mode === 'pending') return pending.promise;
       return mode === 'ambiguous'
-        ? new Response(JSON.stringify({ resolution: { ref: 'issue:alias', kind: 'issue', resolved: false, entity: null, error: 'ambiguous' } }))
+        ? new Response(JSON.stringify({ resolution: { ref: 'issue:alias', kind: 'issue', status: 'ambiguous', entity: null, matches: [] } }))
         : result(`issue:${id}`, 'blocked');
     });
     vi.stubGlobal('fetch', fetcher);
@@ -235,7 +235,7 @@ describe('Board issue Query lifecycle', () => {
   it('verifies a warm alias even when structural sharing and the clock leave its payload timestamp unchanged', async () => {
     vi.useFakeTimers();
     const id = canonical('a');
-    const payload = { ref: `issue:${id}`, kind: 'issue', resolved: true, entity: { id, worker_status: 'none', kind: 'bug', labels: [] } };
+    const payload = { ref: `issue:${id}`, kind: 'issue', status: 'resolved', entity: { id, worker_status: 'none', kind: 'bug', labels: [] } };
     const key = boardIssueKey('issue:alias', 'space-project');
     queryClient.setQueryData(key, payload);
     const timestamp = queryClient.getQueryState(key)!.dataUpdatedAt;

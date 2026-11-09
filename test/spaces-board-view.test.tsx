@@ -143,7 +143,7 @@ function stubFetch(state: {
           resolution: {
             ref,
             kind: 'issue',
-            resolved: ws !== undefined,
+            status: ws !== undefined ? 'resolved' : 'not_found',
             entity: ws !== undefined ? { id: refId, worker_status: ws, kind: 'feature' } : null,
           },
         }),
@@ -291,7 +291,7 @@ describe('SpaceBoardRenderer', () => {
               resolution: {
                 ref: 'issue:iss1',
                 kind: 'issue',
-                resolved: true,
+                status: 'resolved',
                 entity: { id: 'iss1', worker_status: 'none', kind: 'feature' },
               },
             }),
@@ -449,7 +449,7 @@ describe('SpaceBoardRenderer', () => {
       expect(url.pathname).toBe('/api/spaces/resolve');
       expect(url.searchParams.get('project')).toBeNull(); // canonical IDs are globally keyed
       const id = url.searchParams.get('ref')!.replace('issue:', '');
-      return new Response(JSON.stringify({ resolution: { ref: `issue:${id}`, kind: 'issue', resolved: true, entity: id === a ? entity : { id: b, worker_status: 'none', kind: 'feature', labels: [] } } }));
+      return new Response(JSON.stringify({ resolution: { ref: `issue:${id}`, kind: 'issue', status: 'resolved', entity: id === a ? entity : { id: b, worker_status: 'none', kind: 'feature', labels: [] } } }));
     });
     vi.stubGlobal('fetch', fetcher);
     const props = { projectId: 'sidebar-project', spaceId: 'sp1', renderer: 'board' as const, factPacket: packet as unknown as SpaceFactPacket };
@@ -537,10 +537,10 @@ describe('SpaceBoardRenderer', () => {
     const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
       const ref = new URL(url, 'http://test').searchParams.get('ref');
       expect(new URL(url, 'http://test').searchParams.get('project')).toBe('prj1');
-      if (ref === 'issue:replacement') return new Response(JSON.stringify({ resolution: { ref, kind: 'issue', resolved: true, entity: { id: 'replacement', worker_status: 'done' } } }));
+      if (ref === 'issue:replacement') return new Response(JSON.stringify({ resolution: { ref, kind: 'issue', status: 'resolved', entity: { id: 'replacement', worker_status: 'done' } } }));
       if (mode === 'error') throw new Error('Temporary failure');
       if (mode === 'pending') { oldSignal = init?.signal as AbortSignal; return pending.promise; }
-      return new Response(JSON.stringify({ resolution: { ref, kind: 'issue', resolved: mode !== 'negative', entity: mode === 'negative' ? null : { id: 'canonical', worker_status: 'blocked' }, error: mode === 'negative' ? 'ambiguous' : undefined } }));
+      return new Response(JSON.stringify({ resolution: { ref, kind: 'issue', status: mode === 'negative' ? 'ambiguous' : 'resolved', entity: mode === 'negative' ? null : { id: 'canonical', worker_status: 'blocked' }, matches: [] } }));
     });
     vi.stubGlobal('fetch', fetcher);
     const props = { projectId: 'sidebar-other', spaceId: 'sp1', renderer: 'board' as const, factPacket: packet as unknown as SpaceFactPacket };
@@ -570,7 +570,7 @@ describe('SpaceBoardRenderer', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(1); });
     expect(oldSignal?.aborted).toBe(true);
     expect(location()).toBe('worker_status:done');
-    await act(async () => { pending.resolve(new Response(JSON.stringify({ resolution: { resolved: true, kind: 'issue', entity: { worker_status: 'blocked' } } }))); await vi.advanceTimersByTimeAsync(1); });
+    await act(async () => { pending.resolve(new Response(JSON.stringify({ resolution: { status: 'resolved', kind: 'issue', entity: { worker_status: 'blocked' } } }))); await vi.advanceTimersByTimeAsync(1); });
     expect(location()).toBe('worker_status:done');
     expect(fetcher.mock.calls.every(([url]) => url.startsWith('/api/spaces/resolve?'))).toBe(true);
     vi.useRealTimers();
@@ -594,7 +594,7 @@ describe('SpaceBoardRenderer', () => {
       expect(blocked().scrollTop).toBe(0);
       ui.rerender(<Surface {...props} factPacket={packet as unknown as SpaceFactPacket} />);
       expect(blocked().scrollTop).toBe(0);
-      response.resolve(new Response(JSON.stringify({ resolution: { resolved: true, kind: 'issue', entity: { id: 'a', worker_status: 'blocked' } } })));
+      response.resolve(new Response(JSON.stringify({ resolution: { status: 'resolved', kind: 'issue', entity: { id: 'a', worker_status: 'blocked' } } })));
       await waitFor(() => expect(within(blocked()).getByText('Delayed card')).toBeTruthy());
       expect(blocked().scrollTop).toBe(88);
       fireEvent.wheel(blocked()); blocked().scrollTop = 42; fireEvent.scroll(blocked());

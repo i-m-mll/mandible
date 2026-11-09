@@ -8,7 +8,7 @@ import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import { registerIssueRoutes } from "../src/routes/issues.js";
 import { registerProjectRoutes } from "../src/routes/projects.js";
-import { resolveLedgerIssueLinkFromDb } from "../src/routes/redirects.js";
+import { registerSpacesRoutes } from "../src/routes/spaces.js";
 import { Router } from "../src/server.js";
 import { createUser, setupOperator } from "../src/users/store.js";
 import { addGrant } from "../src/permissions/store.js";
@@ -233,11 +233,11 @@ describe("canonical project_key round-trip", () => {
     return { project, issue };
   }
 
-  it("/r/issue redirect resolves the canonical project_key as repo, not work_repo_id", () => {
+  it("resolves an issue path ref to the canonical project_key, not work_repo_id", async () => {
     const { issue } = seedFeedbax();
-    const resolved = resolveLedgerIssueLinkFromDb(db, issue.short_id);
-    expect(resolved.ok).toBe(true);
-    expect(resolved.ok && resolved.repoId).toBe("feedbax");
+    registerSpacesRoutes(router);
+    const response = await router.invoke({ method: "GET", url: `/api/refs/resolve?kind=issue&ref=${issue.short_id}` });
+    expect(response.body).toMatchObject({ resolution: { status: "resolved", entity: { project_key: "feedbax" } } });
   });
 
   it("filters lifecycle and resolution independently of free-form labels", async () => {

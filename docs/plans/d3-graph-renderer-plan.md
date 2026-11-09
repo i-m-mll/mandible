@@ -418,18 +418,17 @@ useEffect(() => {
 
 #### onNavigate handler
 
-The view receives no routing props — navigation is done by updating `window.location.hash`:
+The view receives no routing props — navigation goes through the app's `navigateTo(path)`:
 ```typescript
 const handleNavigate = (type: GraphNodeType, id: string, repoId?: string) => {
   if (type === 'issue' && repoId) {
-    window.location.hash = `#/issues?repo=${encodeURIComponent(repoId)}&issue=${encodeURIComponent(id)}`;
+    navigateTo(appPath({ kind: 'entity', entity: 'issue', ref: `${repoId}/${id}` }));
   } else if (type === 'session') {
-    window.location.hash = `#/sessions?session=${encodeURIComponent(id)}`;
+    navigateTo(`/console?session=${encodeURIComponent(id)}`);
   } else if (type === 'auth_request') {
-    window.location.hash = `#/auth`;
-    // auth view doesn't currently support deep-link by id, so just navigate to auth tab
+    navigateTo(appPath({ kind: 'entity', entity: 'auth', ref: id }));
   } else if (type === 'branch') {
-    window.location.hash = `#/work${repoId ? '?repo=' + encodeURIComponent(repoId) : ''}`;
+    navigateTo(`/work${repoId ? '?repo=' + encodeURIComponent(repoId) : ''}`);
   }
 };
 ```
@@ -651,7 +650,7 @@ Note: `--accent-purple` must be added inside the existing `:root { }` block, not
 Add graph route. Changes:
 1. Import `GraphView` from `'./views/graph'`
 2. Add `'graph'` to the `Route['tab']` union type
-3. Add `'graph'` to the `parseHashRoute` valid tabs array
+3. Add `'graph'` to the route table's view tabs (`src/app-routes.ts`)
 4. Add `{route.tab === 'graph' && <GraphView />}` in the render
 5. Add a nav link (suggest adding to the overflow menu alongside Work/Review/Logs, not the main tabs)
 
@@ -673,10 +672,10 @@ Add graph route. Changes:
 
 | Node type | `onNavigate` call | Result |
 |-----------|-------------------|--------|
-| `issue` | `('issue', node.id, node.repo)` | `#/issues?repo=…&issue=…` |
-| `session` | `('session', node.id)` | `#/sessions?session=…` |
-| `auth_request` | `('auth_request', node.id)` | `#/auth` |
-| `branch` | `('branch', node.id, node.repo)` | `#/work?repo=…` |
+| `issue` | `('issue', node.id, node.repo)` | `/issue/<repo>/<id>` |
+| `session` | `('session', node.id)` | `/console?session=…` |
+| `auth_request` | `('auth_request', node.id)` | `/auth/<id>` |
+| `branch` | `('branch', node.id, node.repo)` | `/work?repo=…` |
 
 ---
 

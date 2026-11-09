@@ -1996,7 +1996,7 @@ export class LedgerStore {
    * of those qualified as `<project>/<ref>`. A qualifier names the project the
    * issue must belong to and takes precedence over `options.project_id`.
    */
-  resolveIssueRef(ref: string, options: { project_id?: string } = {}): ResolveIssueRefResult {
+  resolveIssueRef(ref: string, options: { project_id?: string; allMatches?: boolean } = {}): ResolveIssueRefResult {
     const trimmed = ref.trim();
     if (!trimmed) {
       return { ok: false, error: "not_found" };
@@ -2009,9 +2009,9 @@ export class LedgerStore {
           ? { ok: false, error: "ambiguous", matches: project.candidates }
           : { ok: false, error: "not_found" };
       }
-      return resolveId(this.db, "issue", qualified[2], { scope: project.project.id });
+      return resolveId(this.db, "issue", qualified[2], { scope: project.project.id, allMatches: options.allMatches });
     }
-    return resolveId(this.db, "issue", trimmed, options.project_id ? { scope: options.project_id } : {});
+    return resolveId(this.db, "issue", trimmed, { ...(options.project_id ? { scope: options.project_id } : {}), allMatches: options.allMatches });
   }
 
   getIssue(id: string): LedgerIssue {
