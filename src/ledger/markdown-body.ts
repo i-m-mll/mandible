@@ -3,6 +3,7 @@ import { LedgerStore } from "./store.js";
 import type { LedgerActorInput } from "./types.js";
 import { resolveProjectIds } from "./project-registry.js";
 import { rewriteHashAppLinks, type AppLinkRewrite } from "./app-link-rewrite.js";
+import { resolveId, shortRef } from "../entity-refs.js";
 
 export const MARKDOWN_BODY_ESCAPE_POLICY_SETTING = "ledger.markdown_body_escape_policy";
 export const DEFAULT_MARKDOWN_BODY_ESCAPE_POLICY: MarkdownBodyEscapePolicy = "warn";
@@ -149,12 +150,16 @@ export function auditEscapedMarkdownBodies(
 ): MarkdownBodyAuditResult {
   const findings: MarkdownBodyAuditFinding[] = [];
   const ruleSet = new Set(rules);
+  const shortAuthRef = (ref: string): string => {
+    const resolved = resolveId(db, "auth_request", ref);
+    return resolved.ok ? shortRef(db, "auth_request", resolved.id) : ref;
+  };
   const issueIds = resolveMarkdownBodyAuditIssueIds(db, scope);
   const includeComments = scope.include_comments ?? true;
   const commentIds = new Set(scope.comment_ids ?? []);
 
   for (const row of listIssueBodyRows(db, issueIds)) {
-    addFinding(findings, ruleSet, {
+    addFinding(findings, ruleSet, shortAuthRef, {
       entity_type: "issue",
       entity_id: row.id,
       issue_id: row.id,
@@ -168,7 +173,7 @@ export function auditEscapedMarkdownBodies(
 
   if (includeComments || commentIds.size > 0) {
     for (const row of listCommentBodyRows(db, issueIds, commentIds)) {
-      addFinding(findings, ruleSet, {
+      addFinding(findings, ruleSet, shortAuthRef, {
         entity_type: "comment",
         entity_id: row.id,
         issue_id: row.issue_id,
@@ -263,6 +268,7 @@ function replaceOutsideMarkdownCode(body: string, replace: (segment: string) => 
 function addFinding(
   findings: MarkdownBodyAuditFinding[],
   rules: ReadonlySet<MarkdownNormalizationRule>,
+  shortAuthRef: (ref: string) => string,
   row: {
     entity_type: MarkdownBodyAuditEntityType;
     entity_id: string;
@@ -280,7 +286,7 @@ function addFinding(
   const linkRewrites: AppLinkRewrite[] = [];
   const normalized = rules.has("app-links")
     ? replaceOutsideMarkdownCode(unescaped, (segment) => {
-      const rewritten = rewriteHashAppLinks(segment);
+      const rewritten = rewriteHashAppLinks(segment, shortAuthRef);
       linkRewrites.push(...rewritten.rewrites);
       return rewritten.text;
     })

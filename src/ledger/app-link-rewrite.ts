@@ -19,28 +19,35 @@ export interface AppLinkRewrite {
 }
 
 /** Rewrite fragment-routed app URLs and `mandible:///<view>?…` deep links into path routes. */
-export function rewriteHashAppLinks(segment: string): { text: string; rewrites: AppLinkRewrite[] } {
+export function rewriteHashAppLinks(
+  segment: string,
+  shortAuthRef: (ref: string) => string = (ref) => ref,
+): { text: string; rewrites: AppLinkRewrite[] } {
   const rewrites: AppLinkRewrite[] = [];
   const text = segment.replace(HASH_ROUTE_URL, (match: string, view: string, rawQuery: string | undefined, offset: number) => {
     if (!VIEW_PATHS.has(view) || /^[\w/#%<…-]/.test(segment.slice(offset + match.length))) return match;
     const trailing = rawQuery?.match(TRAILING_PROSE)?.[0] ?? "";
     const query = new URLSearchParams((rawQuery ?? "").slice(1, rawQuery ? rawQuery.length - trailing.length : 0));
     const prefix = match.startsWith("mandible:") ? "mandible://" : APP_ORIGIN;
-    const rewritten = `${prefix}${pathFor(view, query)}${trailing}`;
+    const rewritten = `${prefix}${pathFor(view, query, shortAuthRef)}${trailing}`;
     rewrites.push({ from: match, to: rewritten });
     return rewritten;
   });
   return { text, rewrites };
 }
 
-function pathFor(view: string, query: URLSearchParams): string {
-  const entity = takeEntity(view, query);
+function pathFor(view: string, query: URLSearchParams, shortAuthRef: (ref: string) => string): string {
+  const entity = takeEntity(view, query, shortAuthRef);
   const path = entity ? `/${entity.kind}/${entity.ref}` : `/${view}`;
   const rest = query.toString();
   return rest ? `${path}?${rest}` : path;
 }
 
-function takeEntity(view: string, query: URLSearchParams): { kind: string; ref: string } | null {
+function takeEntity(
+  view: string,
+  query: URLSearchParams,
+  shortAuthRef: (ref: string) => string,
+): { kind: string; ref: string } | null {
   switch (view) {
     case "issues": {
       const issue = take(query, "issue");
@@ -53,7 +60,7 @@ function takeEntity(view: string, query: URLSearchParams): { kind: string; ref: 
     }
     case "auth": {
       const request = take(query, "request");
-      return request ? { kind: "auth", ref: pathRef(request) } : null;
+      return request ? { kind: "auth", ref: pathRef(shortAuthRef(request)) } : null;
     }
     case "artifacts": {
       const series = take(query, "series");
