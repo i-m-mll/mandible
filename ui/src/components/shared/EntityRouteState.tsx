@@ -90,14 +90,14 @@ export function EntityRouteState({ kind, resolution }: { kind: EntityKind; resol
     case 'not_found':
       return (
         <RouteStatePane>
-          <RouteStateCard heading={<>{label} ID <code>{resolution.ref}</code> was not found.</>} />
+          <RouteStateCard heading={<>{label} ID <code className="detail-pane-header__display-ref">{resolution.ref}</code> was not found.</>} />
         </RouteStatePane>
       );
     case 'ambiguous': {
       const more = resolution.total - resolution.matches.length;
       return (
         <RouteStatePane>
-          <RouteStateCard heading={<>{label} ID <code>{resolution.ref}</code> is ambiguous. Please choose one of the following:</>}>
+          <RouteStateCard heading={<>{label} ID <code className="detail-pane-header__display-ref">{resolution.ref}</code> is ambiguous. Please choose one of the following:</>}>
             <div className="ledger-child-list" role="list">
               {resolution.matches.map((match) => (
                 <a
@@ -126,7 +126,7 @@ export function EntityRouteState({ kind, resolution }: { kind: EntityKind; resol
 export function RouteNotFound({ path }: { path: string }): JSX.Element {
   return (
     <RouteStatePane>
-      <RouteStateCard heading={<>Page <code>{path}</code> was not found.</>} />
+      <RouteStateCard heading={<>Page <code className="detail-pane-header__display-ref">{path}</code> was not found.</>} />
     </RouteStatePane>
   );
 }
