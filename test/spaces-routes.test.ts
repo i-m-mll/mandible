@@ -388,6 +388,10 @@ describe("unified ref resolver", () => {
     const unique = createLedgerIssue(db, { project_id: PROJECT_ID, alias: 'fedcba9', title: 'Unique' });
     createLedgerIssue(db, { project_id: PROJECT_ID, alias: 'abc1234', title: 'First' });
     createLedgerIssue(db, { project_id: OTHER_PROJECT_ID, alias: 'abc1234', title: 'Second' });
+    const twins = ["prj_00spaces_twin_a_unique", "prj_00spaces_twin_b_unique"];
+    twins.forEach((id) => seedProject(id, "Twin"));
+    createLedgerIssue(db, { project_id: twins[0], alias: 'aaa1111', title: 'Only in one twin' });
+    twins.forEach((id, index) => createLedgerIssue(db, { project_id: id, alias: 'bbb2222', title: `Twin ${index}` }));
     const insertAuth = db.prepare(`INSERT INTO auth_requests (id, command, title, repo, created_at, updated_at, expires_at)
       VALUES (?, 'true', 'Merge', 'spaces-test', 1, ?, 9999999999999)`);
     const authIds = Array.from({ length: RESOLVER_MATCH_LIMIT + 2 }, (_, index) =>
@@ -403,6 +407,7 @@ describe("unified ref resolver", () => {
 
     const cases: Array<[kind: string, resolved: string, missing: string, colliding: string, total: number]> = [
       ["issue", unique.short_id, "0000000", "abc1234", 2],
+      ["issue", "Twin/aaa1111", "Twin/ccc3333", "Twin/bbb2222", 2],
       ["auth", authIds[0], "ffffffff", "2257522a", authIds.length],
       ["briefing", briefingIds[0], "ffffffff", "75e6ecb5", 2],
       ["artifact", `artifact-blob:${hashes[0]}`, `artifact-blob:${"9".repeat(64)}`, "artifact-blob:abcdef1", 2],

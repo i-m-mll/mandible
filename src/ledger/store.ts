@@ -1994,7 +1994,8 @@ export class LedgerStore {
   /**
    * Resolve an issue ref: a full id, short id, alias, or unique prefix, or any
    * of those qualified as `<project>/<ref>`. A qualifier names the project the
-   * issue must belong to and takes precedence over `options.project_id`.
+   * issue must belong to and takes precedence over `options.project_id`; a
+   * qualifier that could mean several projects resolves the ref in each.
    */
   resolveIssueRef(ref: string, options: { project_id?: string; allMatches?: boolean } = {}): ResolveIssueRefResult {
     const trimmed = ref.trim();
@@ -2004,12 +2005,22 @@ export class LedgerStore {
     const qualified = /^([^/#\s]+)\/([^/#\s]+)$/.exec(trimmed);
     if (qualified) {
       const project = resolveProjectRef(this.db, qualified[1]);
-      if (!project.ok) {
-        return project.reason === "ambiguous"
-          ? { ok: false, error: "ambiguous", matches: project.candidates }
-          : { ok: false, error: "not_found" };
+      if (!project.ok && project.reason === "unknown") return { ok: false, error: "not_found" };
+      const projectIds = project.ok
+        ? [project.project.id]
+        : project.candidates.flatMap((candidate) => {
+          const resolved = resolveProjectRef(this.db, candidate);
+          return resolved.ok ? [resolved.project.id] : [];
+        });
+      const matches = new Set<string>();
+      for (const projectId of projectIds) {
+        const resolved = resolveId(this.db, "issue", qualified[2], { scope: projectId, allMatches: options.allMatches });
+        if (resolved.ok) matches.add(resolved.id);
+        else if (resolved.error === "ambiguous") resolved.matches.forEach((match) => matches.add(match));
       }
-      return resolveId(this.db, "issue", qualified[2], { scope: project.project.id, allMatches: options.allMatches });
+      if (matches.size === 0) return { ok: false, error: "not_found" };
+      if (matches.size === 1) return { ok: true, id: [...matches][0] };
+      return { ok: false, error: "ambiguous", matches: [...matches].sort() };
     }
     return resolveId(this.db, "issue", trimmed, { ...(options.project_id ? { scope: options.project_id } : {}), allMatches: options.allMatches });
   }
