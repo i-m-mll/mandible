@@ -1,5 +1,5 @@
 import { moveSidebarItem, reconcileSidebarOrder } from './components/shared/sidebar-order';
-import { parseAppPath } from '../../src/app-routes';
+import { parseAppPath, viewHref, type ViewTab } from '../../src/app-routes';
 
 export const APP_RAIL_ORDER_SETTING_KEY = 'app_rail_order';
 export const APP_RAIL_ORDER_VERSION = 1 as const;
@@ -27,13 +27,13 @@ export function hasExplicitStartupDestination(pathname: string): boolean {
 
 export function startupRailDestination(
   pathname: string,
-  primary: readonly string[],
-  secondary: readonly string[],
+  primary: readonly ViewTab[],
+  secondary: readonly ViewTab[],
   showSecondary: boolean,
 ): string | null {
   if (hasExplicitStartupDestination(pathname)) return null;
   const first = primary[0] ?? (showSecondary ? secondary[0] : undefined);
-  return first ? `/${first}` : null;
+  return first ? viewHref(first) : null;
 }
 
 function isStringArray(value: unknown): value is string[] {

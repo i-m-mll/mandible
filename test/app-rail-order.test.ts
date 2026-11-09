@@ -13,10 +13,11 @@ import {
   startupRailDestination,
   writeAppRailPreviewOrder,
 } from '../ui/src/app-rail-order';
+import type { ViewTab } from '../src/app-routes';
 
 describe('app rail order preference', () => {
   it('starts at the first visible saved destination while preserving explicit routes', () => {
-    const primary = reconcileAppRailOrder(['console', 'auth', 'issues'], ['issues', 'console']);
+    const primary = reconcileAppRailOrder(['console', 'auth', 'issues'], ['issues', 'console']) as ViewTab[];
     expect(startupRailDestination('/', primary, ['graph'], false)).toBe('/issues');
     expect(startupRailDestination('/auth/abc', primary, ['graph'], false)).toBeNull();
     expect(startupRailDestination('/', [], ['graph'], false)).toBeNull();
