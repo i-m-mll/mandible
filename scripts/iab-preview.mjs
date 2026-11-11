@@ -992,7 +992,7 @@ function previewLogSegments(dbPath) {
 }
 
 function previewOwnedOutputs(dbName, keepSegments = 5) {
-  const interactive = [dbName, `${dbName}-wal`, `${dbName}-shm`, `${dbName}.manifest.json`, "artifacts", "rich-briefing-demo-artifacts", "agents-review-artifacts", "settings", "config", "conversations", "agent-rpc", "operational", "operational-logs.db", "operational-logs.db-wal", "operational-logs.db-shm"];
+  const interactive = [dbName, `${dbName}-wal`, `${dbName}-shm`, `${dbName}.manifest.json`, "artifacts", "chat-attachments", "rich-briefing-demo-artifacts", "agents-review-artifacts", "settings", "config", "conversations", "agent-rpc", "operational", "operational-logs.db", "operational-logs.db-wal", "operational-logs.db-shm"];
   const generated = [".snapshot-work", "stdout.log", "stderr.log", "run.sh", "mandible.pid", "cli", "preview-browser-enrollment.json", "current.db"];
   for (let segment = 1; segment <= keepSegments; segment++) generated.push(`stdout.log.${segment}`, `stderr.log.${segment}`);
   return [...interactive.map(path => ({ path, kind: "interactive" })), ...generated.map(path => ({ path, kind: "generated" }))];

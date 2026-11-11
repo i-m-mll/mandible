@@ -372,6 +372,8 @@ async function exercisePreviewLifecycle(legacy = false) {
     assert.equal(fs.readFileSync(preference, 'utf8'), 'private preference');
     const retained = new SqliteDatabase(last.db); assert.equal(retained.prepare('SELECT value FROM settings WHERE key = ?').get('private-edit').value, 'keep'); retained.close();
     const route = `${publicRoot}/${last.ownership.instanceId}/api/health`;
+    fs.mkdirSync(path.join(last.previewRoot, 'chat-attachments', 'attachment-1'), { recursive: true });
+    fs.writeFileSync(path.join(last.previewRoot, 'chat-attachments', 'attachment-1', 'note.txt'), 'staged to a Chat in the preview');
     const teardown = { ...last.handle, revision: last.ownership.revision, outcome: 'assessed', disposition: 'discard', summary: 'Owned fixture complete', effects };
     const cleaned = await finalizePreview(teardown); assert.equal(cleaned.ok, true); assert.equal((await fetch(route)).status, 404);
     if (foreignProcess) {
