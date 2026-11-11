@@ -140,6 +140,15 @@ export function previewPaths(branch) {
   return { root, metadata: path.join(root, 'metadata.json') };
 }
 
+/** The metadata of the preview recorded for `branch`, or null when its root records none or another branch's. */
+export function recordedPreview(branch) {
+  let text;
+  try { text = fs.readFileSync(previewPaths(branch).metadata, 'utf8'); }
+  catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+  const metadata = JSON.parse(text);
+  return metadata.branch === branch ? metadata : null;
+}
+
 export function withPreviewLifecycle(branch, operation) {
   return withOwnedRunLock(previewPaths(branch).root, operation);
 }

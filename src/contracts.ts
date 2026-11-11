@@ -500,6 +500,7 @@ export const AUTH_REQUEST_ACTION_KINDS = [
   "checkpoint_add",
   "link_add",
   "briefing_group_promote",
+  "preview_teardown",
 ] as const;
 export type AuthRequestActionKind = (typeof AUTH_REQUEST_ACTION_KINDS)[number];
 export type AuthRequestActionState = "staged" | "applied" | "failed" | "skipped_stale" | "vetoed";

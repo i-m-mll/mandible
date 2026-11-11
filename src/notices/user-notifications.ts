@@ -34,7 +34,7 @@ export function raiseUserNotification(
       )`,
   ).run(id, subject.kind, subject.id, userId, raisedAt, text, subject.kind, subject.id);
   if (inserted.changes === 0) return false;
-  broadcast(DOMAIN_EVENTS.NOTIFICATION_CHANGED, { id });
+  db.afterCommit(() => broadcast(DOMAIN_EVENTS.NOTIFICATION_CHANGED, { id }));
   return true;
 }
 

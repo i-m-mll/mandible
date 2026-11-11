@@ -727,7 +727,7 @@ async function isAncestor(repoRoot: string, ancestor: string, descendant: string
  * or a synthetic merge reproduces the target's exact tree. `git cherry` is not
  * enough because it ignores merge-resolution tree changes.
  */
-async function proveMergedInto(repoRoot: string, branchTip: string, target: string): Promise<MergeEvidence> {
+export async function proveMergedInto(repoRoot: string, branchTip: string, target: string): Promise<MergeEvidence> {
   const targetOid = await branchOid(repoRoot, target);
   if (!targetOid) throw new TrashServiceError(`merge target not found: ${target}`, "target_not_found", 404);
   if (await isAncestor(repoRoot, branchTip, targetOid)) return "merged";

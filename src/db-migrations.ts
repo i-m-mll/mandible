@@ -8,7 +8,8 @@ import { migrateLocalAuthorizationEvidence } from "./local-authorization-migrati
 import { WORK_UNIT_ASSIGNMENT_SCHEMA_SQL, seedLegacyAssignmentTargets, EXACT_AGENT_WORK_UNIT_SCHEMA_SQL, recoverHistoricalExactAssignments } from "./work-unit-assignment-schema.js";
 import { CHILD_RETENTION_SCHEMA_SQL } from "./conversations/retention-schema.js";
 import { AUTH_HOOK_EXECUTIONS_TABLE_SQL, AUTH_HOOK_EXECUTIONS_INDEX_SQL } from './auth-hook-schema.js';
-import { LEDGER_ORIGIN_SCHEMA_SQL, MANAGED_SESSION_ORIGIN_INDEX_SQL } from "./ledger-origin-schema.js";
+import { AUTH_REQUEST_ACTIONS_ORIGIN_MIGRATION_SQL, LEDGER_ORIGIN_SCHEMA_SQL, MANAGED_SESSION_ORIGIN_INDEX_SQL } from "./ledger-origin-schema.js";
+import { AUTH_REQUEST_ACTIONS_REBUILD_SQL } from "./auth-actions-schema.js";
 import { SPACE_PUBLICATION_AUTH_SCHEMA_SQL } from "./spaces/publication-auth-schema.js";
 import { SPACE_PUBLICATION_SCHEMA_SQL } from "./spaces/publication-schema.js";
 import { artifactDescriptiveMetadataJson } from "./artifact-metadata.js";
@@ -2215,7 +2216,7 @@ export const MIGRATIONS: readonly Migration[] = [
   ] },
   { version: 217, name: "issue_event_read_indexes", statements: [...ISSUE_EVENT_READ_INDEX_SQL] },
   { version: 218, name: "auth_request_history_index", statements: [AUTH_REQUEST_HISTORY_INDEX_SQL] },
-  { version: 219, name: "specialized_ledger_request_origin", statements: [...LEDGER_ORIGIN_SCHEMA_SQL, MANAGED_SESSION_ORIGIN_INDEX_SQL] },
+  { version: 219, name: "specialized_ledger_request_origin", statements: [...LEDGER_ORIGIN_SCHEMA_SQL, AUTH_REQUEST_ACTIONS_ORIGIN_MIGRATION_SQL, MANAGED_SESSION_ORIGIN_INDEX_SQL] },
   { version: 220, name: "indexed_child_retention", statements: [...CHILD_RETENTION_SCHEMA_SQL] },
   { version: 221, name: "auth_prerequisite_sets", statements: [...AUTH_PREREQUISITE_SCHEMA_SQL] },
   { version: 222, name: "failed_delivery_retirement", statements: [
@@ -2279,6 +2280,7 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 234, name: "historical_project_roots", statements: HISTORICAL_PROJECT_ROOTS_SCHEMA_SQL },
   { version: 235, name: "interface_notes", statements: [...INTERFACE_NOTES_SCHEMA_SQL] },
   { version: 236, name: "notifications", statements: [...NOTIFICATIONS_SCHEMA_SQL] },
+  { version: 237, name: "preview_teardown_action", statements: [...AUTH_REQUEST_ACTIONS_REBUILD_SQL], requires_foreign_keys_off: true },
 ];
 
 /**

@@ -1,4 +1,4 @@
-import { requestOriginFromMetadata, withRequestOriginMetadata, withRequestOrigin } from "./request-origin.js";
+import { currentRequestOrigin, requestOriginFromMetadata, withRequestOriginMetadata, withRequestOrigin, type RequestOrigin } from "./request-origin.js";
 import { createHash } from "node:crypto";
 import type {
   ManagedReminder,
@@ -25,6 +25,7 @@ import { LedgerStore } from "./ledger/store.js";
 import { SYSTEM_USER_ID } from "./users/store.js";
 import { ulid } from "./users/ids.js";
 import { resolveId } from "./entity-refs.js";
+import { raiseReminderNotice } from "./notices/reminder-notices.js";
 import { raiseUserNotification } from "./notices/user-notifications.js";
 
 export class ManagedReminderError extends Error {
@@ -282,7 +283,7 @@ function appendAuditEvent(
 
 function capabilityFor(
   db: Db,
-  reminder: { taskId: string; revisionId: string; projectId: string; createdByUserId: string },
+  reminder: { taskId: string; revisionId: string; projectId: string; createdByUserId: string; origin: RequestOrigin | null },
 ): ReminderDatabaseCapability {
   return {
     evaluatePredicate(payload, now): ReminderEvaluationEvidence | null {
@@ -361,6 +362,7 @@ function capabilityFor(
       );
       if (inserted.changes === 0) return false;
       raiseUserNotification(db, { kind: "reminder", id: reminder.taskId }, payload.message, now);
+      raiseReminderNotice(db, { taskId: reminder.taskId, message: payload.message }, reminder.origin, now);
       const updated = db.prepare(
         `UPDATE managed_tasks
             SET lifecycle = 'completed', completed_at = ?, updated_at = ?
@@ -457,6 +459,7 @@ export function createManagedReminder(
         revisionId,
         projectId: project.id,
         createdByUserId: actor.userId,
+        origin: currentRequestOrigin(),
       }),
       payload,
       now,
@@ -550,6 +553,7 @@ export function reconcileManagedReminders(db: Db, now: number = Date.now()): {
           revisionId: task.active_revision_id,
           projectId: task.project_id,
           createdByUserId: task.created_by_user_id,
+          origin,
         }),
         parseStoredReminderPayload(revision.payload_json),
         now,
