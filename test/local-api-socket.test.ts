@@ -186,7 +186,6 @@ describe('owner-only local API socket', () => {
       operation: { id, effects, reportingCategory: null, requestSchema: null } });
     router.post('/api/sessions/register', (req, res) => { seen.push({ identity: req.client_identity, body: req.body as Record<string, unknown> }); res.json({}); },
       operation('hook.register', ['process:external']));
-    router.get('/api/inbox/global', (_req, res) => res.json({}), operation('hook.inbox', ['ledger:read']));
     const hook = spawn('bash', [path.resolve('hooks/session-start.sh')], { env: { ...process.env, MANDIBLE_SOCKET: socketPath,
       CLAUDE_CODE_SESSION_ID: 'claude-session-1', CLAUDE_PID: String(process.pid) } });
     let stderr = ''; hook.stderr.on('data', (chunk) => { stderr += chunk; });
@@ -206,8 +205,6 @@ describe('owner-only local API socket', () => {
     addBinding(db, codexAgent.id, { binding_type: 'provider_session_env', value: 'CODEX_THREAD_ID' });
     const registry = new SessionRegistry(db, () => undefined);
     registerSessionRoutes(router, registry);
-    router.get('/api/inbox/global', (_req, res) => res.json({}),
-      { fileRpc: 'allow', operation: { id: 'hook.inbox', effects: ['ledger:read'], reportingCategory: null, requestSchema: null } });
     const wrapped = 'wrapped-coordinator';
     // Ownership follows the process tree: the hook's parent stands in for the
     // nested agent, and its grandparent for the wrapped one.

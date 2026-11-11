@@ -125,11 +125,6 @@ const RESUME_CONFLICT_LABELS: Record<string, string> = {
   auto_fork: 'Auto-fork (create new conversation)',
   allow_concurrent: 'Allow concurrent (resume in-place)',
 };
-// Bug: cbbb3d9 — auto-resume policy for work-unit continuations
-const AUTO_RESUME_POLICIES = ['manual'];
-const AUTO_RESUME_LABELS: Record<string, string> = {
-  manual: 'Manual (user clicks Resume)',
-};
 const MARKDOWN_BODY_ESCAPE_POLICIES = ['warn', 'reject', 'allow'];
 const DESKTOP_DAEMON_MODES: DesktopDaemonLaunchMode[] = ['on_demand', 'manual'];
 const INSTRUCTION_TARGET_MODES = ['managed-block', 'standalone'] as const;
@@ -150,7 +145,6 @@ const SETTINGS_SECTIONS = {
   chatDefaults: { id: 'settings-chat-defaults', title: 'Chat defaults' },
   childCleanup: { id: 'settings-child-cleanup', title: 'Child chat cleanup' },
   conversationBranching: { id: 'settings-conversation-branching', title: 'Conversation Branching' },
-  workQueue: { id: 'settings-work-queue', title: 'Work Queue' },
   issues: { id: 'settings-issues', title: 'Issues' },
   appearance: { id: 'settings-appearance', title: 'Appearance' },
   auth: { id: 'auth-settings', title: 'Approvals' },
@@ -1817,37 +1811,6 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             >
               {RESUME_CONFLICT_POLICIES.map((p) => (
                 <option key={p} value={p}>{RESUME_CONFLICT_LABELS[p] ?? p}</option>
-              ))}
-            </NativeSelect>
-          </div>
-        </div>
-      </SettingsSectionShell>,
-
-      <SettingsSectionShell key={SETTINGS_SECTIONS.workQueue.id} section={SETTINGS_SECTIONS.workQueue}>
-        <SettingsSectionHeader
-          section={SETTINGS_SECTIONS.workQueue}
-          description="How to handle work-unit continuations (handoff notes from ended sessions)."
-        />
-
-        <div className="settings-view__section-body">
-          <div className="settings-view__select-row" data-settings-searchable>
-            <div className="settings-view__select-info">
-              <span className="settings-view__select-label">Auto-resume policy</span>
-              <span className="settings-view__select-desc">
-                When a session ends with a continuation, how should the work be resumed?
-              </span>
-            </div>
-            <NativeSelect
-              className="settings-view__select"
-              value={settings.auto_resume_policy ?? 'manual'}
-              onChange={async (e) => {
-                try {
-                  await saveSetting('auto_resume_policy', (e.target as HTMLSelectElement).value);
-                } catch { /* ignore */ }
-              }}
-            >
-              {AUTO_RESUME_POLICIES.map((p) => (
-                <option key={p} value={p}>{AUTO_RESUME_LABELS[p] ?? p}</option>
               ))}
             </NativeSelect>
           </div>

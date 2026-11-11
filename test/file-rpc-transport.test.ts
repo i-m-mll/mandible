@@ -121,11 +121,6 @@ const legacyAllowedRoutes: Array<[method: "GET" | "POST" | "PATCH" | "PUT" | "DE
   ["POST", "/api/auth/request/:id/actions"],
   ["PUT", "/api/auth/request/:id/actions/:actionId"],
   ["DELETE", "/api/auth/request/:id/actions/:actionId"],
-  ["GET", "/api/inbox"],
-  ["GET", "/api/inbox/global"],
-  ["GET", "/api/inbox/undelivered"],
-  ["POST", "/api/inbox/:type/:id/ack"],
-  ["POST", "/api/inbox/delivered/:id"],
   ["GET", "/api/artifacts"],
   ["GET", "/api/artifacts/resolve"],
   ["GET", "/api/artifacts/logical"],
@@ -323,13 +318,12 @@ describe("file RPC transport", () => {
       expect(receipts).toHaveLength(2);
       expect(JSON.parse(receipts[0].request_origin_json)).toMatchObject({ provider: "codex", agent_id: "successor", session_id: null });
       expect((await take("3")).status).toBe(0);
-      db.prepare("UPDATE work_units SET continuation = ? WHERE id = ?").run("Retain existing handoff notes", id);
       const abandon = (generation: string) => invoke("successor", ["work-unit", "abandon", "--id", id,
         "--expected-generation", generation, "--reason", "Removed branch with no unique work"]);
       expect((await abandon("3")).status).not.toBe(0);
       const abandoned = await abandon("4");
       expect(abandoned.status, abandoned.stderr).toBe(0);
-      expect(read()).toMatchObject({ state: "abandoned", continuation: "Retain existing handoff notes" });
+      expect(read()).toMatchObject({ state: "abandoned" });
       expect(db.prepare("SELECT count(*) AS count FROM work_units WHERE ledger_issue_id = ? AND state IN ('open', 'committed')").get(issue.id)).toEqual({ count: 0 });
       expect(db.prepare("SELECT status FROM ledger_issues WHERE id = ?").get(issue.id)).toEqual({ status: "open" });
       const history = db.prepare("SELECT payload_json FROM ledger_events WHERE entity_type = 'work_unit' AND entity_id = ?").all(id) as Array<{ payload_json: string }>;
@@ -519,11 +513,6 @@ describe("file RPC transport", () => {
     expect(allowsFileRpcRoute("POST", "/api/ledger/issues/abc/checkpoints")).toBe(true);
     expect(allowsFileRpcRoute("POST", "/api/ledger/relationships")).toBe(true);
     expect(allowsFileRpcRoute("POST", "/api/ledger/relationships/unlink")).toBe(true);
-    expect(allowsFileRpcRoute("GET", "/api/inbox")).toBe(true);
-    expect(allowsFileRpcRoute("GET", "/api/inbox/global")).toBe(true);
-    expect(allowsFileRpcRoute("GET", "/api/inbox/undelivered")).toBe(true);
-    expect(allowsFileRpcRoute("POST", "/api/inbox/auth_result/auth-1/ack")).toBe(true);
-    expect(allowsFileRpcRoute("POST", "/api/inbox/delivered/auth-1")).toBe(true);
     expect(allowsFileRpcRoute("GET", "/api/sessions/by-pid/1234")).toBe(true);
     expect(allowsFileRpcRoute("POST", "/api/sessions/register")).toBe(true);
     expect(allowsFileRpcRoute("PATCH", "/api/sessions/session-1")).toBe(true);
@@ -543,7 +532,7 @@ describe("file RPC transport", () => {
   it("keeps the daemon-backed CLI route examples available over file RPC", () => {
     const examples: Array<[string, string, string]> = [
       ["GET", "/api/issues", "issue list/auth alias lookup"],
-      ["POST", "/api/issues/mandible", "issue new/inbox add"],
+      ["POST", "/api/issues/mandible", "issue new"],
       ["GET", "/api/ledger/issues/abc", "issue show/report/title"],
       ["PATCH", "/api/ledger/issues/abc", "issue close/open/description edit"],
       ["POST", "/api/ledger/issues/abc/comments", "issue comment add"],
@@ -563,8 +552,6 @@ describe("file RPC transport", () => {
       ["POST", "/api/artifacts/bundles", "artifact bundle create"],
       ["GET", "/api/artifacts/bundles/bundle-1", "artifact bundle show/check"],
       ["POST", "/api/artifacts/bundles/bundle-1/members", "artifact bundle add"],
-      ["GET", "/api/inbox", "inbox check/default"],
-      ["POST", "/api/inbox/auth_result/auth-1/ack", "inbox ack"],
       ["GET", "/api/sessions/by-pid/1234", "task lookup"],
       ["PATCH", "/api/sessions/session-1", "task update"],
       ["POST", "/api/sessions/register", "wrap register"],

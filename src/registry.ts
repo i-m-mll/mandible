@@ -1,5 +1,4 @@
 import { exactAgentRef, parseExactAgentRef } from "./ambient-provider-identity.js";
-import { mutateWorkUnit } from "./work-unit-history.js";
 import { DOMAIN_EVENTS } from "./contracts.js";
 import { execFile } from "node:child_process";
 import crypto from "node:crypto";
@@ -171,7 +170,6 @@ export interface NavMetadataUpdate {
 export interface SessionUpdate {
   task?: string | null;
   status?: SessionStatus;
-  continuation?: string | null;
   pinned?: number | null;
 }
 
@@ -251,8 +249,6 @@ interface SessionRow {
   parent_id: string | null;
   agent_type: string | null;
   pinned: number | null;
-  continuation: string | null;
-  continuation_acked_by: string | null;
   description: string | null;
   conversation_id: string | null;
   created_at: string;
@@ -533,8 +529,6 @@ function toSession(row: SessionRow, attributionResolver: AttributionReadResolver
     parent_id: row.parent_id ?? null,
     agent_type: row.agent_type ?? null,
     pinned: row.pinned ?? 0,
-    continuation: row.continuation ?? null,
-    continuation_acked_by: row.continuation_acked_by ?? null,
     description: row.description ?? null,
     conversation_id: row.conversation_id ?? null,
     created_at: row.created_at,
@@ -857,20 +851,17 @@ export class SessionRegistry {
       .prepare(
         `UPDATE sessions SET
           task = COALESCE(?, task),
-          continuation = COALESCE(?, continuation),
           pinned = COALESCE(?, pinned),
           status = ?,
           updated_at = ?,
           ended_at = ?
         WHERE id = ?`,
       )
-      .run(update.task ?? null, update.continuation ?? null, pinned, status, now, endedAt, id);
+      .run(update.task ?? null, pinned, status, now, endedAt, id);
 
     const updated = this.getSession(id);
     if (updated) {
       if (status === "ended" || status === "dead") {
-        // Bug: cbbb3d9 — transfer continuation to work unit on session end
-        this.transferContinuationToWorkUnit(updated);
         broadcast(DOMAIN_EVENTS.SESSION_ENDED, updated);
         this.announce(updated);
       } else {
@@ -1224,51 +1215,6 @@ export class SessionRegistry {
     }
   }
 
-  /**
-   * Transfer a session's continuation to linked work units when the session ends.
-   * Bug: cbbb3d9 — session-to-work-unit continuation transfer
-   */
-  private transferContinuationToWorkUnit(session: Session): void {
-    if (!session.continuation) {
-      return;
-    }
-    try {
-      // Find issues linked to this session under its row id or provider id
-      const links = this.db
-        .prepare(
-          "SELECT DISTINCT issue_id FROM ledger_session_issue_links WHERE session_id IN (?, ?)"
-        )
-        .all(session.id, session.conversation_id ?? session.id) as Array<{ issue_id: string }>;
-
-      if (links.length === 0) {
-        return;
-      }
-
-      const now = Date.now();
-      for (const link of links) {
-        // Find open/committed work unit for this issue
-        const wu = this.db
-          .prepare(
-            `SELECT id FROM work_units
-             WHERE ledger_issue_id = ? AND state IN ('open', 'committed')
-             ORDER BY created_at DESC LIMIT 1`
-          )
-          .get(link.issue_id) as { id: string } | undefined;
-
-        if (wu) {
-          mutateWorkUnit(this.db, wu.id, () => this.db
-            .prepare(
-              `UPDATE work_units SET continuation = ?, continuation_by = ?, continuation_at = ?
-               WHERE id = ? AND (continuation_at IS NULL OR continuation_at < ?)`
-            )
-            .run(session.continuation, session.id, now, wu.id, now));
-        }
-      }
-    } catch {
-      // Non-critical — best effort transfer
-    }
-  }
-
   private ensureLiveness(session: Session, readStart: PidStartReader = cachedPidStartTime): Session {
     if (session.status !== "active") {
       return session;
@@ -1282,8 +1228,6 @@ export class SessionRegistry {
       .prepare("UPDATE sessions SET status = ?, ended_at = ?, updated_at = ? WHERE id = ?")
       .run("dead", now, now, session.id);
     const updated = { ...session, status: "dead" as SessionStatus, ended_at: now, updated_at: now };
-    // Bug: cbbb3d9 — transfer continuation to work unit on session death
-    this.transferContinuationToWorkUnit(updated);
     broadcast(DOMAIN_EVENTS.SESSION_ENDED, updated);
     this.announce(updated);
     return updated;

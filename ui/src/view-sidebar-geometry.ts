@@ -16,7 +16,6 @@ export const VIEW_SIDEBAR_GEOMETRY = {
   briefing: { storageKey: 'sidebar-width:briefing', defaultWidth: 360, minWidth: 230 },
   console: { storageKey: 'sidebar-width:conversations', defaultWidth: 320, minWidth: 190 },
   graph: { storageKey: 'mandible_graph_sidebar_width:v1', defaultWidth: 320, minWidth: 260 },
-  inbox: { storageKey: 'sidebar-width:inbox', defaultWidth: 400, minWidth: 190 },
   issues: { storageKey: 'sidebar-width:issues', defaultWidth: 420, minWidth: 280 },
   spaces: { storageKey: 'sidebar-width:spaces', defaultWidth: 300, minWidth: 220 },
   tasks: { storageKey: 'sidebar-width:tasks', defaultWidth: 340, minWidth: 240 },

@@ -3392,50 +3392,6 @@
         ]
       }
     },
-    "inbox": {
-      "route": ["inbox"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-        ]
-      }
-    },
-    "inbox.check": {
-      "route": ["inbox", "check"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-        ]
-      }
-    },
-    "inbox.add": {
-      "route": ["inbox", "add"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-          {"kind": "argument","name": "text","value": {"type": "string"}}
-        ]
-      }
-    },
-    "inbox.ack": {
-      "route": ["inbox", "ack"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-          {"kind": "argument","name": "type","value": {"type": "enum","values": ["continuation","auth_result"]}},
-          {"kind": "argument","name": "id","value": {"type": "string"}}
-        ]
-      }
-    },
-    "inbox.watch": {
-      "route": ["inbox", "watch"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-          {"kind": "argument","name": "request-id","value": {"type": "string"}}
-        ]
-      }
-    },
     "claude-integration.install": {
       "route": ["claude-integration", "install"],
       "grammar": {

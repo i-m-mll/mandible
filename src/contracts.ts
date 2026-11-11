@@ -77,10 +77,10 @@ export const DOMAIN_EVENTS = Object.freeze({
   DAEMON_RELOADED: "daemon:reloaded",
   DASHBOARD_BADGES: "dashboard:badges",
   HEARTBEAT: "heartbeat",
-  INBOX_ACKNOWLEDGED: "inbox:acknowledged",
   INTERFACE_NOTE_CHANGED: INTERFACE_NOTE_CHANGED_EVENT,
   MANDIBLE_REBUILDING: "mandible:rebuilding",
   MANDIBLE_REBUILD_FAILED: "mandible:rebuild-failed",
+  NOTIFICATION_CHANGED: "notification:changed",
   PUSH_AUTH_COMPLETE: "push:auth:complete",
   PUSH_AUTH_PENDING: "push:auth:pending",
   PUSH_COMPLETE: "push:complete",
@@ -128,7 +128,8 @@ export const WORK_SCAN_SKIP_WINDOW_MS = 30_000;
 const BADGE_COUNT = z.number().int().nonnegative();
 export const DASHBOARD_BADGE_COUNTS = z.object({
   auth: BADGE_COUNT,
-  inbox: BADGE_COUNT,
+  /** Unread notifications for the user; session notices never count. */
+  notifications: BADGE_COUNT,
   work: BADGE_COUNT,
   /** Latest Briefing rounds with no frozen submission from any member. */
   briefing: BADGE_COUNT,
@@ -139,11 +140,9 @@ export const DASHBOARD_BADGE_COUNTS = z.object({
 }).strict();
 export type DashboardBadgeCounts = z.infer<typeof DASHBOARD_BADGE_COUNTS>;
 
-export const INBOX_ACKNOWLEDGED_PAYLOAD = z.object({
-  kind: z.enum(["continuation", "auth_result", "hook_alert", "managed_reminder_occurrence", "delivered", "all"]),
-  id: z.string().min(1).nullable(),
-}).strict();
-export type InboxAcknowledged = z.infer<typeof INBOX_ACKNOWLEDGED_PAYLOAD>;
+/** A notification-log row was raised, delivered or read. */
+export const NOTIFICATION_CHANGED_PAYLOAD = z.object({ id: z.string().min(1) }).strict();
+export type NotificationChanged = z.infer<typeof NOTIFICATION_CHANGED_PAYLOAD>;
 
 export type EventPayload<E extends MandibleEventType> =
   E extends typeof DOMAIN_EVENTS.AUTH_RESOLVED ? AuthResolvedPayload
@@ -154,7 +153,7 @@ export type EventPayload<E extends MandibleEventType> =
     ? { parent_id: string; child: import("./types.js").Session }
   : E extends typeof DOMAIN_EVENTS.WORK_SCAN_COMPLETED ? WorkScanSummary
   : E extends typeof DOMAIN_EVENTS.DASHBOARD_BADGES ? DashboardBadgeCounts
-  : E extends typeof DOMAIN_EVENTS.INBOX_ACKNOWLEDGED ? InboxAcknowledged
+  : E extends typeof DOMAIN_EVENTS.NOTIFICATION_CHANGED ? NotificationChanged
   : E extends typeof DOMAIN_EVENTS.INTERFACE_NOTE_CHANGED ? InterfaceNoteChangedPayload
   : E extends typeof DOMAIN_EVENTS.WORK_REPO_SCANNED ? WorkRepoScan
   : E extends `briefing:group-${string}` ? { group_id: string; [key: string]: unknown }
@@ -618,9 +617,6 @@ export type WorkUnit = {
   provider_session_id: string | null;
   worker_provider: string | null;
   worker_provider_session_id: string | null;
-  continuation: string | null;
-  continuation_by: string | null;
-  continuation_at: number | null;
   created_at: number;
   activated_at: number | null;
   last_commit_at: number | null;
@@ -2559,7 +2555,7 @@ const eventPayloadSchemas = new Map<MandibleEventType, z.ZodType>([
   [DOMAIN_EVENTS.CONVERSATION_UPDATED, scopedChange("id")],
   [DOMAIN_EVENTS.WORK_SCAN_COMPLETED, WORK_SCAN_PAYLOAD],
   [DOMAIN_EVENTS.DASHBOARD_BADGES, DASHBOARD_BADGE_COUNTS],
-  [DOMAIN_EVENTS.INBOX_ACKNOWLEDGED, INBOX_ACKNOWLEDGED_PAYLOAD],
+  [DOMAIN_EVENTS.NOTIFICATION_CHANGED, NOTIFICATION_CHANGED_PAYLOAD],
   [DOMAIN_EVENTS.INTERFACE_NOTE_CHANGED, z.object({ ids: z.array(z.string().min(1)), issue_id: z.string().min(1).nullable() }).strict()],
   [DOMAIN_EVENTS.WORK_REPO_SCANNED, WORK_REPO_SCAN_PAYLOAD],
   ...[DOMAIN_EVENTS.SESSION_REGISTERED, DOMAIN_EVENTS.SESSION_UPDATED, DOMAIN_EVENTS.SESSION_ENDED,

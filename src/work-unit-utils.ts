@@ -2,7 +2,7 @@ import { normalizeAmbientProviderIdentity, parseExactAgentRef } from "./ambient-
 import { parseAssignmentTarget } from "./work-unit-assignment.js";
 // Bug: f3dbb3e — shared work-unit liveness computation.
 // Canonical mapWorkUnitRow, computeWorkUnitLiveness, and enrichWithLiveness used by
-// both routes/work-units.ts and routes/inbox.ts (and routes/issues.ts).
+// both routes/work-units.ts and routes/issues.ts.
 
 import { getDb, type Db } from "./db.js";
 import type { SessionManager } from "./session-manager.js";
@@ -38,9 +38,6 @@ export function mapWorkUnitRow(row: Record<string, unknown>): WorkUnit {
     provider_session_id: normalizeWorkUnitSessionId(row.provider_session_id),
     worker_provider: typeof row.worker_provider === "string" ? row.worker_provider : null,
     worker_provider_session_id: normalizeWorkUnitSessionId(row.worker_provider_session_id),
-    continuation: typeof row.continuation === "string" ? row.continuation : null,
-    continuation_by: typeof row.continuation_by === "string" ? row.continuation_by : null,
-    continuation_at: typeof row.continuation_at === "number" ? row.continuation_at : null,
     created_at: Number(row.created_at ?? 0),
     activated_at: typeof row.activated_at === "number" ? row.activated_at : null,
     last_commit_at: typeof row.last_commit_at === "number" ? row.last_commit_at : null,

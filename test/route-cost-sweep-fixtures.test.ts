@@ -146,7 +146,7 @@ it("requires usable settings, destination routes, and enough distinct per-pass e
       INSERT INTO settings VALUES ('user.operator_id', 'operator');
       INSERT INTO settings VALUES (' CLIENT_AUTH.secret ', 'secret');
       INSERT INTO settings VALUES ('console_pinned_sessions', 'private');
-      CREATE TABLE auth_requests (id TEXT, delivered_at TEXT, acknowledged_by TEXT, status TEXT, updated_at INTEGER);
+      CREATE TABLE notifications (id TEXT, recipient_kind TEXT, delivered_at INTEGER, raised_at INTEGER);
       CREATE TABLE webhook_events (id TEXT, status TEXT);
     `);
     expect(plan("GET", "/api/settings/:key")).toEqual({ kind: "skip", reason: "no generic settings keys in the ledger" });
@@ -178,8 +178,7 @@ it("requires usable settings, destination routes, and enough distinct per-pass e
     }
 
     const perPass = [
-      ["/api/inbox/delivered/:id", "undelivered auth results for all passes"],
-      ["/api/inbox/:type/:id/ack", "unacknowledged auth results for all passes"],
+      ["/api/notifications/:id/read", "unread user notifications for all passes"],
       ["/api/webhooks/:id/dismiss", "pending webhook events for all passes"],
     ];
     for (let count = 0; count <= 2; count++) {
@@ -199,7 +198,7 @@ it("requires usable settings, destination routes, and enough distinct per-pass e
           }
         }
       }
-      db.prepare("INSERT INTO auth_requests VALUES (?, NULL, NULL, 'completed', ?)").run(`entity-${count}`, -count);
+      db.prepare("INSERT INTO notifications VALUES (?, 'user', NULL, ?)").run(`entity-${count}`, -count);
       db.prepare("INSERT INTO webhook_events VALUES (?, 'pending')").run(`entity-${count}`);
     }
   } finally {

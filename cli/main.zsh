@@ -7,7 +7,6 @@
 #   wrap [--app NAME] -- <cmd>      Session lifecycle wrapper
 #   task <description>               Set session task status
 #   reminder <subcommand>            Create, show, list, and cancel reminders
-#   inbox [check|ack|watch|add]      Manage session inbox
 #   issue <subcommand>               Issue operations (close, comment, show, refs, markdown)
 #   changes --project <ref>          Read the bounded ledger change feed
 #   umbrella status <id>             Print coordinator fact packet
@@ -104,7 +103,6 @@ case "${1:-}" in
   wrap)    shift; exec "$MANDIBLE_CLI_DIR/wrap.sh" "$@" ;;
   task)    shift; exec "$MANDIBLE_CLI_DIR/task.sh" "$@" ;;
   reminder) shift; exec "$MANDIBLE_CLI_DIR/reminder.sh" "$@" ;;
-  inbox)   shift; exec "$MANDIBLE_CLI_DIR/inbox.sh" "$@" ;;
   issue)   shift; exec "$MANDIBLE_CLI_DIR/issue.sh" "$@" ;;
   changes) shift; exec "$MANDIBLE_CLI_DIR/changes.sh" "$@" ;;
   umbrella) shift; exec "$MANDIBLE_CLI_DIR/umbrella.sh" "$@" ;;

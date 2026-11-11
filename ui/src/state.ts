@@ -1,6 +1,5 @@
 import { servedBackendGeneration } from './boot-instance';
 import type { AuthRequest } from './views/auth';
-import type { InboxData } from './views/inbox';
 import type { IssueRepoSummary } from './views/issues';
 import type { SessionIdentityMismatch } from './types/session';
 import type { WorkBranch, WorkRepo } from './views/work';
@@ -120,13 +119,9 @@ type AppState = {
   daemonReload: DaemonReloadInfo | null;
   settings: Record<string, string>;
   settingsLoadError: string | null;
-  inboxData: InboxData | null;
-  inboxLoading: boolean;
-  inboxLoadError: string | null;
   consoleSessions: ConsoleSession[];
   consoleActiveSessionId: string | null;
   consoleUnreadBadge: number;
-  selectedInboxItemId: string | null;
 };
 
 type Action =
@@ -151,14 +146,6 @@ type Action =
   | { type: 'setSettings'; settings: Record<string, string> }
   | { type: 'setSettingsLoadError'; error: string | null }
   | { type: 'updateSetting'; key: string; value: string }
-  | { type: 'setInboxData'; data: InboxData }
-  | { type: 'setInboxLoading'; loading: boolean }
-  | { type: 'setInboxLoadError'; error: string }
-  | { type: 'ackInboxContinuation'; sessionId: string }
-  | { type: 'ackInboxAuthResult'; requestId: string }
-  | { type: 'ackInboxManagedReminderOccurrence'; occurrenceId: string }
-  | { type: 'ackAllInboxItems' }
-  | { type: 'setSelectedInboxItemId'; id: string | null }
   | { type: 'setConsoleSessions'; sessions: ConsoleSession[] }
   | { type: 'upsertConsoleSession'; session: ConsoleSession }
   | { type: 'removeConsoleSession'; sessionId: string }
@@ -193,13 +180,9 @@ const initialState: AppState = {
   daemonReload: null,
   settings: {},
   settingsLoadError: null,
-  inboxData: null,
-  inboxLoading: false,
-  inboxLoadError: null,
   consoleSessions: [],
   consoleActiveSessionId: null,
   consoleUnreadBadge: 0,
-  selectedInboxItemId: null,
 };
 
 function getAuthId(request: AuthRequest): string {
@@ -361,67 +344,6 @@ function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, settingsLoadError: action.error };
     case 'updateSetting':
       return { ...state, settings: { ...state.settings, [action.key]: action.value } };
-    case 'setInboxData':
-      return { ...state, inboxData: action.data, inboxLoading: false, inboxLoadError: null };
-    case 'setInboxLoading':
-      return {
-        ...state,
-        inboxLoading: action.loading,
-        inboxLoadError: action.loading ? null : state.inboxLoadError,
-      };
-    case 'setInboxLoadError':
-      return { ...state, inboxLoading: false, inboxLoadError: action.error };
-    case 'ackInboxContinuation': {
-      if (!state.inboxData) return state;
-      const continuations = state.inboxData.continuations.filter(
-        (c) => c.session_id !== action.sessionId,
-      );
-      const inboxData = {
-        ...state.inboxData,
-        continuations,
-        total: continuations.length + state.inboxData.auth_results.length + state.inboxData.open_issues.length
-          + (state.inboxData.managed_reminder_occurrences?.length ?? 0),
-      };
-      return { ...state, inboxData };
-    }
-    case 'ackInboxAuthResult': {
-      if (!state.inboxData) return state;
-      const auth_results = state.inboxData.auth_results.filter(
-        (r) => r.id !== action.requestId,
-      );
-      const inboxData = {
-        ...state.inboxData,
-        auth_results,
-        total: state.inboxData.continuations.length + auth_results.length + state.inboxData.open_issues.length
-          + (state.inboxData.managed_reminder_occurrences?.length ?? 0),
-      };
-      return { ...state, inboxData };
-    }
-    case 'ackInboxManagedReminderOccurrence': {
-      if (!state.inboxData) return state;
-      const managed_reminder_occurrences = (state.inboxData.managed_reminder_occurrences ?? [])
-        .filter((occurrence) => occurrence.id !== action.occurrenceId);
-      const inboxData = {
-        ...state.inboxData,
-        managed_reminder_occurrences,
-        total: state.inboxData.continuations.length + state.inboxData.auth_results.length
-          + state.inboxData.open_issues.length + managed_reminder_occurrences.length,
-      };
-      return { ...state, inboxData };
-    }
-    case 'ackAllInboxItems': {
-      if (!state.inboxData) return state;
-      const inboxData = {
-        ...state.inboxData,
-        continuations: [],
-        auth_results: [],
-        managed_reminder_occurrences: [],
-        total: state.inboxData.open_issues.length,
-      };
-      return { ...state, inboxData, selectedInboxItemId: null };
-    }
-    case 'setSelectedInboxItemId':
-      return { ...state, selectedInboxItemId: action.id };
     case 'setConsoleSessions':
       return { ...state, consoleSessions: action.sessions };
     case 'upsertConsoleSession': {
@@ -469,7 +391,6 @@ function appReducer(state: AppState, action: AppAction): AppState {
 function selectBadgeCounts(state: AppState): {
   auth: number;
   work: number;
-  inbox: number;
   console: number;
 } {
   const authQueue = Array.isArray(state.authQueue) ? state.authQueue : [];
@@ -477,16 +398,6 @@ function selectBadgeCounts(state: AppState): {
     state.workBranches && typeof state.workBranches === 'object'
       ? Object.values(state.workBranches)
       : [];
-  const inboxData = state.inboxData as Partial<InboxData> | null;
-  const inboxContinuations = Array.isArray(inboxData?.continuations)
-    ? inboxData.continuations.length
-    : 0;
-  const inboxAuthResults = Array.isArray(inboxData?.auth_results)
-    ? inboxData.auth_results.length
-    : 0;
-  const inboxReminderOccurrences = Array.isArray(inboxData?.managed_reminder_occurrences)
-    ? inboxData.managed_reminder_occurrences.length
-    : 0;
   const consoleUnreadBadge =
     typeof state.consoleUnreadBadge === 'number' ? state.consoleUnreadBadge : 0;
 
@@ -506,9 +417,8 @@ function selectBadgeCounts(state: AppState): {
     });
     return total + dirtyBranches.length;
   }, 0);
-  const inbox = inboxContinuations + inboxAuthResults + inboxReminderOccurrences;
   const console = consoleUnreadBadge;
-  return { auth, work, inbox, console };
+  return { auth, work, console };
 }
 
 function applySSEEvent(state: AppState, payload: SSEPayload): AppState {
@@ -716,7 +626,7 @@ function withoutLegacyAppRailOrder(settings: Record<string, string> | undefined)
 type CachedFields = Pick<
   AppState,
   'authQueue' | 'authHistory' | 'workRepos' | 'workBranches' | 'issueRepos'
-  | 'inboxData' | 'consoleSessions' | 'settings' | 'selectedAuthId' | 'selectedInboxItemId'
+  | 'consoleSessions' | 'settings' | 'selectedAuthId'
 >;
 
 // Bug: 9860b1c, b794add — Filter stale resolved auth items on cache load so they
@@ -796,8 +706,6 @@ function saveCachedState(state: AppState): void {
       workRepos: state.workRepos,
       workBranches: state.workBranches,
       issueRepos: state.issueRepos,
-      inboxData: state.inboxData,
-      selectedInboxItemId: state.selectedInboxItemId,
       consoleSessions: state.consoleSessions,
       settings: withoutLegacyAppRailOrder(state.settings),
     };

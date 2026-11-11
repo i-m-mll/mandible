@@ -673,7 +673,7 @@ function MandibleReminderDetail({ item }: { item: MandibleTaskInventoryItem }): 
       <section className="tasks-section">
         <h3 className="tasks-section__title">Immutable predicate</h3>
         <PredicateFacts predicate={reminder.revision.payload.predicate} />
-        <p className="tasks-note">Read-only first-party reminder. Mandible records one bounded inbox occurrence and does not execute external effects.</p>
+        <p className="tasks-note">Read-only first-party reminder. Mandible records one occurrence, notifies you once, and does not execute external effects.</p>
       </section>
       <section className="tasks-section">
         <h3 className="tasks-section__title">Lifecycle</h3>

@@ -51,7 +51,8 @@ import { registerIssueRoutes } from "./routes/issues.js";
 import { registerInterfaceNoteRoutes } from "./routes/interface-notes.js";
 import { interfaceNotesHome, relaySourceNoteEvents } from "./interface-notes/source.js";
 import { registerLedgerChangeRoutes } from "./routes/ledger-changes.js";
-import { registerInboxRoutes } from "./routes/inbox.js";
+import { registerNotificationRoutes } from "./routes/notifications.js";
+import { raiseOpenUserNotifications } from "./notices/user-notifications.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerUserSettingsRoutes } from "./routes/user-settings.js";
 import { registerHostUserPreferencesRoutes } from "./routes/host-user-preferences.js";
@@ -317,7 +318,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   const notesHome = interfaceNotesHome(instance);
   registerInterfaceNoteRoutes(router, db, notesHome);
   registerLedgerChangeRoutes(router, db);
-  // Bug: 8a281b3 — inbox routes moved after sessionManager creation for liveness overlay
   registerSettingsRoutes(router, instance.role);
   registerUserSettingsRoutes(router, db);
   registerHostUserPreferencesRoutes(router, new HostUserPreferencesStore(instance.user_preferences_root));
@@ -368,7 +368,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   issueDeps.sessionManager = sessionManager;
   issueDeps.conversationControl = conversationControl;
   registerWorkUnitRoutes(router, sessionManager, logger, { authQueue });
-  registerInboxRoutes(router, sessionManager, authQueue, workScanner, ledgerReader);
+  raiseOpenUserNotifications(db);
+  registerNotificationRoutes(router, db);
   registerDashboardRoutes(router, db);
   const detachDashboardBadgePublisher = attachDashboardBadgePublisher(sse, () => readDashboardBadgeCounts(db), logger);
   registerConsoleRoutes(router, sessionManager);

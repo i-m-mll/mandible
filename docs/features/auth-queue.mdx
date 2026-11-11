@@ -165,7 +165,7 @@ The dashboard and `mandible auth list` display the auth queue with all active re
 
 **Approve** (`POST /api/auth/request/:id/approve`) — Verifies a fresh action-bound operator signature before starting execution. The request remains pending on failed, cancelled, expired, or changed proof. **Cancel signing** stops the pending challenge without rejecting the request. Output streams after execution starts.
 
-**Reject** (`POST /api/auth/request/:id/reject`) — Declines the request with an optional reason. The result is delivered to the agent's inbox.
+**Reject** (`POST /api/auth/request/:id/reject`) — Declines the request with an optional reason. The submitting session is notified.
 
 **Skip** (`POST /api/auth/request/:id/skip`) — Moves the request to the back of the queue without rejecting it. Useful when you want to approve a different request first.
 
@@ -283,7 +283,8 @@ A required-hook failure:
 - leaves the merge successful and the queue unblocked;
 - **withholds deferred issue closures** until convergence completes;
 - notifies the originating session (`auth:convergence` SSE event) and creates
-  exactly one deduplicated inbox alert keyed by (request, hook);
+  exactly one deduplicated alert keyed by (request, hook), with one
+  notification for you;
 - preserves the hook output and full attempt history on the request;
 - does **not** create a ledger issue. An issue is for a repairable defect, not
   for every transient host failure.
@@ -324,7 +325,7 @@ The daemon resolves references and stores a sorted, deduplicated set. New submis
 
 ## Proven sibling supersession on success
 
-When a merge request completes successfully, Mandible marks only proven same-project, same-target, same-head siblings `superseded` and links them to the successful request. It also revalidates the remaining pending merge requests for the repo against the new target head. Requests that now conflict move to `needs_rebase`, broadcast an auth result, and appear in the submitting session's inbox.
+When a merge request completes successfully, Mandible marks only proven same-project, same-target, same-head siblings `superseded` and links them to the successful request. It also revalidates the remaining pending merge requests for the repo against the new target head. Requests that now conflict move to `needs_rebase`, broadcast an auth result, and notify the submitting session.
 
 ## Work Unit Resolution
 
@@ -348,7 +349,7 @@ This ensures the queue never gets permanently stuck, even after unclean daemon r
 
 ## Result Delivery
 
-After an auth request resolves (completed, rejected, withdrawn, superseded, expired), the result is broadcast via SSE (`auth:resolved` event) and delivered to the submitting agent's inbox. The next time the agent starts a session, the session-start hook picks up inbox items and surfaces the result.
+After an auth request resolves (completed, rejected, withdrawn, superseded, expired), the result is broadcast via SSE (`auth:resolved` event) and recorded as a notification for the submitting session; see [Notifications](/features/notifications).
 
 ## SSE Events
 

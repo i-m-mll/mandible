@@ -30,8 +30,7 @@ Selecting an issue shows:
 - **Work unit status** — if the issue has an assigned work unit, this line shows the branch, assignment state (committed/assigned), and agent liveness (active, idle, or unassigned).
 - **Action buttons**:
   - *Open in Console* — if an SDK session is actively working on this issue.
-  - *Resume Work* — if a continuation (handoff note) exists but no agent is running. Spawns a new SDK session from the Console.
-  - *Start Agent* — if no session or continuation exists. Also spawns an SDK session.
+  - *Resume Work* — if no agent is running. Spawns a new SDK session from the Console for the issue's single assigned work unit.
 - **Description** — the issue body, rendered as Markdown.
 - **Activity timeline** — a chronological feed of comments, session starts, auth request submissions, and handoff notes, all interleaved by timestamp.
 - **Related entities** — linked sessions, auth requests, and conversations shown as clickable pills that navigate to their respective tabs.
@@ -39,7 +38,7 @@ Selecting an issue shows:
 
 ## Deep linking
 
-Other tabs (Auth, Inbox, Conversations) link to issues with issue pills, which show the issue id, its project when it differs from the surrounding one, and its title. Clicking a pill navigates to the Issues tab with the correct repo and issue pre-selected. If the issue scanner's cache is cold, Mandible triggers a rescan automatically.
+Other tabs (Auth, Notifications, Conversations) link to issues with issue pills, which show the issue id, its project when it differs from the surrounding one, and its title. Clicking a pill navigates to the Issues tab with the correct repo and issue pre-selected. If the issue scanner's cache is cold, Mandible triggers a rescan automatically.
 
 ## CLI
 

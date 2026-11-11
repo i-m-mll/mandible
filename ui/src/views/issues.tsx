@@ -879,7 +879,7 @@ export function IssuesView({
     setActionInFlight(true);
     try {
       const units = visibleLedgerIssueDetail?.work_units.filter(unit => unit.assigned_session_id && ['open', 'committed'].includes(unit.state)) ?? [];
-      if (units.length !== 1) throw new Error('Select an exact assigned work unit in Inbox before resuming.');
+      if (units.length !== 1) throw new Error('This issue has no single assigned work unit to resume.');
       const result = await spawnIssueAgent(selectedRepoId, selectedIssueId, units[0]);
       navigateTo(viewHref('console', { conversation: result.conversation_id }));
     } catch (error) {

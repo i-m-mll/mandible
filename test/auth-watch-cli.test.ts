@@ -16,7 +16,7 @@ beforeEach(() => {
 });
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
 
-async function watch(mode: 'sse' | 'poll' | 'inbox', statuses: string[]) {
+async function watch(mode: 'sse' | 'poll', statuses: string[]) {
   let reads = 0;
   const server = http.createServer((req, res) => {
     res.setHeader('Content-Type', 'application/json');
@@ -37,7 +37,7 @@ async function watch(mode: 'sse' | 'poll' | 'inbox', statuses: string[]) {
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const port = (server.address() as { port: number }).port;
   try {
-    const args = mode === 'inbox' ? ['inbox', 'watch', 'watch123'] : ['auth', 'request', '--type', 'config-change', '--command', 'true', '--cwd', root, '--repo', path.basename(root), '--title', 'Watch fixture', '--issue', 'fixture', '--message', 'Apply fixture settings.'];
+    const args = ['auth', 'request', '--type', 'config-change', '--command', 'true', '--cwd', root, '--repo', path.basename(root), '--title', 'Watch fixture', '--issue', 'fixture', '--message', 'Apply fixture settings.'];
     const result = await new Promise<{ code: number | null; output: string }>((resolve, reject) => {
       const child = spawn(path.join(process.cwd(), 'bin/mandible'), args, {
         cwd: root, env: { ...process.env, MANDIBLE_BASE: `http://127.0.0.1:${port}`, PATH: `${root}/adapters:${process.env.PATH}`, MANDIBLE_HTTP_RETRIES: '0' },
@@ -94,7 +94,7 @@ it.each(['bash', 'zsh'])('%s reports delivery outcomes through the shared shell 
   });
 });
 
-it.each(['sse', 'poll', 'inbox'] as const)('%s propagates terminal delivery results', async mode => {
+it.each(['sse', 'poll'] as const)('%s propagates terminal delivery results', async mode => {
   const statuses = mode === 'sse' ? ['completed', 'failed', 'needs_rebase'] : ['completed', 'failed', 'future_status'];
   for (const status of statuses) {
     const result = await watch(mode, [status]);
@@ -106,13 +106,6 @@ it.each(['sse', 'poll', 'inbox'] as const)('%s propagates terminal delivery resu
       expect(result.output).toMatch(/\b42\b/);
     }
   }
-});
-
-it('inbox waits through every in-flight state until delivery', async () => {
-  const result = await watch('inbox', ['pending', 'approved', 'executing', 'completed']);
-  expect(result.code, result.output).toBe(0);
-  expect(result.output).toContain('completed');
-  expect(result.reads).toBe(4);
 });
 
 it.each(['pending', 'approved', 'executing'])('final poll reports %s as in flight without claiming delivery', async status => {

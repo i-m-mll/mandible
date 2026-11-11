@@ -1,0 +1,55 @@
+---
+title: Notifications
+description: The log of every notification Mandible raises for you or for an agent session.
+---
+
+# Notifications
+
+Mandible records every notification it raises, for you or for an agent session, in one log. The Notifications view shows that log newest first, so you can go back and see what was said, to whom, and when.
+
+## What raises a notification
+
+| Subject | Recipient | Raised when |
+|---|---|---|
+| Credential leak | You | The credential scan finds an active credential in a conversation. |
+| Convergence failure | You | A required post-merge hook exhausts its attempts. |
+| Reminder | You | A reminder created with `mandible reminder create` fires. |
+| Auth request | The submitting session | The request resolves. |
+
+A fact raises at most one notification for you. Facts that were already open when Mandible was upgraded, or that were recorded before an operator was configured, are raised once at the next daemon start.
+
+The fact itself stays where it was recorded: the credential-leak alert in `webhook_events`, the convergence alert in `auth_hook_alerts`, the reminder occurrence in `managed_task_occurrences`. A notification is the record that someone was told.
+
+## The view
+
+Each row shows:
+
+- the recipient: you, or the session's provider and short ID, linking to that session;
+- the subject, linking to the auth request, the conversation that holds the leaked credential, or the reminder's task;
+- the text;
+- when it was raised, and when it was read (for you) or delivered (for a session).
+
+A session notification that was never delivered is shown as `undelivered`. That is ordinary state: it records that nobody was told, and it does not count toward any badge.
+
+An unread notification for you carries a dot and a **Mark read** action. The rail badge counts your unread notifications and nothing else.
+
+## API
+
+### `GET /api/notifications`
+
+Lists notifications newest first.
+
+| Query | Description |
+|---|---|
+| `recipient_kind` | `user` or `session` |
+| `undelivered` | `true` for rows not yet read or delivered, `false` for the rest |
+| `before` | Only rows raised before this time (ms since epoch) |
+| `limit` | Page size, at most 200 (default 100) |
+
+The response is `{ notifications, next_before }`. Each notification has `id`, `subject` (`{ kind, id }`), `recipient` (`{ kind: "user", user_id }` or `{ kind: "session", provider, session_id, responsible_agent_ref }`), `raised_at`, `delivered_at`, `text` and `target`, the entity the subject opens (`{ kind: "auth_request" | "conversation" | "reminder", id }` or `null`). `next_before` is the `before` value for the next older page, or `null` on the last page.
+
+### `POST /api/notifications/:id/read`
+
+Marks one of your notifications read and returns it. Only the operator can read; reading again keeps the first read time. A session notification returns `409`; an unknown ID returns `404`.
+
+Mandible broadcasts `notification:changed` (`{ id }`) whenever a notification is raised or read.

@@ -15,13 +15,16 @@ describe("dashboard badge aggregate", () => {
   });
 
   afterEach(() => {
-    db.exec("DELETE FROM sessions; DELETE FROM auth_requests; DELETE FROM branches; DELETE FROM work_repos;");
+    db.exec("DELETE FROM notifications; DELETE FROM auth_requests; DELETE FROM branches; DELETE FROM work_repos;");
   });
 
   it("counts only badge-relevant records from cached database state", async () => {
     db.prepare(
-      "INSERT INTO sessions (id, app, status, continuation) VALUES (?, ?, ?, ?)",
-    ).run("ended", "codex", "ended", "resume me");
+      `INSERT INTO notifications (id, subject_kind, subject_id, recipient_kind, recipient_provider, recipient_id, responsible_agent_ref, raised_at, delivered_at, digest, text)
+       VALUES ('unread', 'reminder', 'r1', 'user', NULL, 'u', NULL, 1, NULL, NULL, 'Unread'),
+              ('read', 'reminder', 'r2', 'user', NULL, 'u', NULL, 1, 2, NULL, 'Read'),
+              ('undelivered', 'auth_request', 'a1', 'session', 'codex', 's', 'codex:s', 1, NULL, 'd', 'Undelivered')`,
+    ).run();
     db.prepare(
       `INSERT INTO auth_requests
        (id, command, title, status, created_at, updated_at, expires_at, resolved_at)
@@ -43,7 +46,7 @@ describe("dashboard badge aggregate", () => {
 
     expect(readDashboardBadgeCounts(db)).toEqual({
       auth: 2,
-      inbox: 3,
+      notifications: 1,
       work: 1,
       briefing: 0,
       incidents: 0,
@@ -92,7 +95,7 @@ describe("dashboard badge publisher", () => {
       observe: (observer: (type: MandibleEventType) => void) => { observers.push(observer); return () => undefined; },
       broadcast: (event: { data: unknown }) => { pushed.push(event.data); },
     };
-    let counts: DashboardBadgeCounts = { auth: 1, inbox: 0, work: 0, briefing: 0, incidents: 0, tasks: 0 };
+    let counts: DashboardBadgeCounts = { auth: 1, notifications: 0, work: 0, briefing: 0, incidents: 0, tasks: 0 };
     const read = vi.fn(() => counts);
     attachDashboardBadgePublisher(sse as never, read, () => undefined);
     const emit = (type: MandibleEventType) => observers.forEach((observer) => observer(type));

@@ -382,7 +382,7 @@ describe("durable hook execution state (issue 27241e6)", () => {
     }
   });
 
-  it("creates exactly one deduplicated inbox alert per (request, hook)", async () => {
+  it("creates exactly one deduplicated alert and notification per (request, hook)", async () => {
     const db = plainDb();
     const dir = tempDir("mandible-hook-alert-");
     try {
@@ -419,6 +419,9 @@ describe("durable hook execution state (issue 27241e6)", () => {
       expect(alerts[0].hook_id).toBe(hook.id);
       expect(String(alerts[0].detail)).toContain("merged but not live");
       expect(alerts[0].acknowledged_at).toBeNull();
+      expect(db.prepare("SELECT subject_kind, subject_id, recipient_kind, text FROM notifications").all()).toEqual([
+        { subject_kind: "convergence_failure", subject_id: alerts[0].id, recipient_kind: "user", text: alerts[0].detail },
+      ]);
 
       // No ledger issue is manufactured for a hook failure.
       expect(

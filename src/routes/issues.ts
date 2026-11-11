@@ -2131,7 +2131,6 @@ export function registerIssueRoutes(
       workUnit = {
         branch: wu.branch,
         state: wu.state,
-        continuation: wu.continuation,
         assigned_session_id: wu.assigned_session_id,
         ledger_issue_id: wu.ledger_issue_id,
         liveness,
@@ -2322,7 +2321,7 @@ export function registerIssueRoutes(
       if (!await control.ownsController(conversation.id, snapshot.value.ownership.generation)) return sendJson(res, 409, { error: "assigned_controller_unavailable" });
       if (JSON.stringify(readUnit()) !== JSON.stringify(row)) return sendJson(res, 409, { error: "assignment_changed_during_resume" });
     }
-    sendJson(res, 200, { conversation_id: conversation.id, work_unit_id: row.id, continuation: row.continuation,
+    sendJson(res, 200, { conversation_id: conversation.id, work_unit_id: row.id,
       branch: row.branch, cwd: checkout, custody_generation: row.custody_generation });
   }), { operation: { id: "post:/api/issues/:repoId/:issueId/spawn", effects: ["ledger:write", "files:production", "process:external"], requestSchema: null, reportingCategory: "issues" }, fileRpc: "deny" });
 

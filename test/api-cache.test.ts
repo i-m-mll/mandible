@@ -54,16 +54,15 @@ describe('dashboard API GET cache', () => {
     expect((await api.getChatShownProjectsPreference({ warm: true })).revision).toBe(2);
   });
 
-  it.each(['one', 'all', 'event'])('expires inbox data after acknowledgement: %s', async (mode) => {
-    let acknowledged = false;
+  it.each(['read', 'event'])('expires notifications after a read mark: %s', async (mode) => {
+    let read = false;
     const fetch = vi.fn(async (_url, init) => jsonResponse(init?.method === 'POST'
-      ? (acknowledged = true, {}) : { total: acknowledged ? 0 : 1 }));
+      ? (read = true, {}) : { notifications: read ? [] : [{ id: 'one' }], next_before: null }));
     vi.stubGlobal('fetch', fetch);
-    expect((await api.getInboxGlobal()).total).toBe(1);
-    if (mode === 'one') await api.acknowledgeInboxItem('continuation', 'one');
-    else if (mode === 'all') await api.ackAllInbox();
-    else { acknowledged = true; api.invalidateDashboardApiCacheForEvent('inbox:acknowledged'); }
-    expect((await api.getInboxGlobal()).total).toBe(0);
+    expect((await api.getNotifications()).notifications).toHaveLength(1);
+    if (mode === 'read') await api.markNotificationRead('one');
+    else { read = true; api.invalidateDashboardApiCacheForEvent('notification:changed'); }
+    expect((await api.getNotifications()).notifications).toHaveLength(0);
   });
 
   it('resync invalidates GET, detail, and TanStack data without dropping retained values', async () => {
@@ -72,12 +71,12 @@ describe('dashboard API GET cache', () => {
     queryClient.setQueryData(['gap'], { value: 1 });
     const fetch = vi.fn(async () => jsonResponse({ total: 1 }));
     vi.stubGlobal('fetch', fetch);
-    await api.getInboxGlobal();
+    await api.getNotifications();
     api.invalidateDashboardCaches();
     expect(readPersistedDetail('timeline', 'one')).toEqual({ rows: [] });
     expect(queryClient.getQueryData(['gap'])).toEqual({ value: 1 });
     expect(queryClient.getQueryState(['gap'])?.isInvalidated).toBe(true);
-    await api.getInboxGlobal();
+    await api.getNotifications();
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 

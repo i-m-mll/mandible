@@ -18,7 +18,7 @@ deletion are not supplied. Merge-only flags are refused on this path, and `--com
 cannot override a merge request. Existing approval and execution permissions still apply.
 
 
-This guide walks through the complete lifecycle of an authenticated operation, from the moment an agent finishes work on a feature branch to the result being delivered back to the agent's inbox.
+This guide walks through the complete lifecycle of an authenticated operation, from the moment an agent finishes work on a feature branch to the result being delivered back to the agent's session.
 
 ## 1. Agent Completes Work on a Feature Branch
 
@@ -41,7 +41,7 @@ mandible auth request feature/add-dark-mode \
 
 For merges, the `mandible auth request` CLI automatically detects the protected branch and repository, computes diff stats, runs Mandible's read-only merge preflight, checks for duplicate requests, and submits everything to the Mandible API. Use `--issue` for reference-only issue context and `--closes-issue` only for issues the merge should close. To replace reviewed bytes, pass `--supersedes <request>` and carry every staged action identically or dispose it with repeatable `--drop-superseded-action <ordinal>:<reason>`.
 
-The `--no-watch` flag is standard — it means the CLI exits after submission rather than watching for the result via SSE. Auth results are delivered asynchronously via the inbox.
+The `--no-watch` flag is standard — it means the CLI exits after submission rather than watching for the result via SSE. Auth results reach the submitting session asynchronously as a notification.
 
 `change-message.md` holds the agent-authored change message: an outcome line,
 then a short `Why:` paragraph, and an optional `Caveats:` section for any
@@ -245,22 +245,15 @@ The result is delivered to the agent via two channels:
 
 The `auth:resolved` event is broadcast immediately. Any dashboard client or SSE listener connected at that moment receives it.
 
-### Inbox (Asynchronous)
+### Session notification
 
-The result is placed in the Mandible inbox for the session that submitted the request. The next time the agent starts a session, the session-start hook calls `mandible inbox` and picks up the result:
-
-```
-Auth request completed: Merge feature/add-dark-mode: dark mode support
-Status: success (exit_code 0)
-```
-
-This asynchronous delivery model means the agent doesn't need to be running when the merge happens. It can submit the request and shut down. The result will be waiting when it comes back.
+The result is also recorded as a notification for the session that submitted the request, so the agent does not need to be running when the merge happens. Every such notification, delivered or not, appears in the [Notifications](/features/notifications) view.
 
 ## What If Something Goes Wrong?
 
 ### Merge Conflict
 
-If the merge has conflicts, the command exits with a non-zero code. The request is marked `failed` with the non-zero `exit_code`, its `failure_reason` summarizes the cause, and the error output shows the conflict details. If another approved merge invalidates a still-pending request before approval, Mandible moves that request to `needs_rebase` and delivers the result to the submitting session's inbox. The user or agent can:
+If the merge has conflicts, the command exits with a non-zero code. The request is marked `failed` with the non-zero `exit_code`, its `failure_reason` summarizes the cause, and the error output shows the conflict details. If another approved merge invalidates a still-pending request before approval, Mandible moves that request to `needs_rebase` and notifies the submitting session. The user or agent can:
 - Have the agent resolve conflicts on the feature branch.
 - Retry the request after resolution.
 
@@ -274,7 +267,7 @@ If the Mandible daemon is killed mid-execution (e.g., by its own post-merge hook
 
 ### Request Expires
 
-If nobody acts on a request for 24 hours, it expires automatically. The agent receives an expiry notification in its inbox. It can resubmit if the work is still relevant.
+If nobody acts on a request for 24 hours, it expires automatically. The submitting session is notified of the expiry. It can resubmit if the work is still relevant.
 
 ## Checking Status Manually
 
