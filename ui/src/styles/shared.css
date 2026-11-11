@@ -120,7 +120,8 @@ tr:last-child td {
   color: var(--text-muted);
 }
 
-.overlay-close-button {
+.overlay-close-button,
+.detail-pane-modal__header-action {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -134,12 +135,14 @@ tr:last-child td {
   cursor: pointer;
 }
 
-.overlay-close-button:is(:hover, :focus-visible) {
+.overlay-close-button:is(:hover, :focus-visible),
+.detail-pane-modal__header-action:is(:hover, :focus-visible) {
   background: var(--neutral-alpha-08);
   color: var(--chrome-icon-hover-direct);
 }
 
-.overlay-close-button .app-icon {
+.overlay-close-button .app-icon,
+.detail-pane-modal__header-action .app-icon {
   width: 18px;
   height: 18px;
 }

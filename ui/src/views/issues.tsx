@@ -23,6 +23,7 @@ import { renderInlineMarkdown } from '../lib/markdown';
 import { hashKey } from "@tanstack/preact-query";
 import { queryClient } from "../query/client";
 import { issueDetailOptions, issueInitialDetailOptions, publishIssueDetail, refreshIssueDetail, detailQueryData } from "../query/details";
+import { removeInterfaceNoteFromComment } from "../annotation/interfaceNotesApi";
 import { useProjectionQuery } from "../query/useProjectionQuery";
 import { useSidebarListNavigation } from '../hooks/useSidebarListNavigation';
 import { useAppShell, useViewActive } from '../app-shell';
@@ -1113,6 +1114,10 @@ export function IssuesView({
               fullLoadFailed={detailLoadFailed}
               actionInFlight={actionInFlight}
               onAddComment={handleAddCommentBody}
+              onRemoveNote={async (noteId, commentId) => {
+                await removeInterfaceNoteFromComment(noteId, commentId);
+                await refreshIssueDetail(detailOptions);
+              }}
               onUpdateWorkNotes={handleUpdateWorkNotes}
               onSetStatus={(status, resolution) => status === 'open' ? handleReopenIssue() : handleCloseIssue(resolution)}
               onStartAgent={handleStartAgent}

@@ -320,6 +320,12 @@
   gap: 12px;
 }
 
+.detail-pane-modal__header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .artifact-detail__modal-header h3,
 .detail-pane-modal__header h3 {
   margin: 0;

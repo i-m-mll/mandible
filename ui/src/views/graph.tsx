@@ -31,7 +31,8 @@ import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { AppOperationalNoticeOutlet, useRegisterAppRightSidebar } from '../app-shell';
 import { useAppRightSidebarState } from '../right-sidebar-state';
 import { queryClient } from '../query/client';
-import { issueDetailOptions, queryErrorMessage, detailQueryData, publishIssueDetail } from '../query/details';
+import { issueDetailOptions, queryErrorMessage, detailQueryData, publishIssueDetail, refreshIssueDetail } from '../query/details';
+import { removeInterfaceNoteFromComment } from '../annotation/interfaceNotesApi';
 import { useViewActive } from '../app-shell';
 import { graphOptions } from "../query/graph";
 import { useProjectionQuery } from "../query/useProjectionQuery";
@@ -775,6 +776,10 @@ export function GraphDetailPane({
               onAddComment={async (body) => {
                 const next = await addLedgerIssueComment(ledgerIssueId, body);
                 await publishIssueDetail(detailOptions.queryKey, next);
+              }}
+              onRemoveNote={async (noteId, commentId) => {
+                await removeInterfaceNoteFromComment(noteId, commentId);
+                await refreshIssueDetail(detailOptions);
               }}
               onAddToSpace={() => setSpacePickerOpen(true)}
             />
