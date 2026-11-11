@@ -115,7 +115,7 @@ export async function main(options) {
       }
       throw error;
     }
-  });
+  }, { recoverStale: true });
   return result;
 }
 

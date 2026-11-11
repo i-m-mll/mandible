@@ -41,6 +41,10 @@ const ALLOWED_UNREACHABLE = new Set([
   // Documented exemplar of the per-component CSS ownership rule; referenced by
   // views/spaces/README.md and SpacesViewShell.css rather than imported.
   'ui/src/views/spaces/space-view.css',
+  // Committed contract for the interface-notes lanes (issue 2bcbe30), imported
+  // by the toolbar host, the Send menu and the issue view as they land. Remove
+  // this entry with the first importer.
+  'ui/src/annotation/interfaceNotesApi.ts',
 ]);
 
 function isCode(absolutePath) {
