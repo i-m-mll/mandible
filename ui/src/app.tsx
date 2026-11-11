@@ -168,6 +168,8 @@ import { applyConversationSse } from './query/conversationSse';
 import { AgentationHost } from './annotation/AgentationHost';
 import { startInterfaceNotes } from './annotation/interfaceNotesStore';
 import { AgentationToggleButton } from './annotation/AgentationToggleButton';
+import { InterfaceNotesMenu } from './annotation/InterfaceNotesMenu';
+import { INTERFACE_NOTES_PROJECT_SETTING } from '../../src/interface-notes/contract';
 import type { ConversationAppendPayload } from './query/conversationData';
 import {
   APP_RAIL_ORDER_SETTING_KEY,
@@ -2921,6 +2923,7 @@ function App(): JSX.Element {
             />
           ) : null}
         </AppFrame>
+        <InterfaceNotesMenu receivingProject={state.settings[INTERFACE_NOTES_PROJECT_SETTING]?.trim() || null} />
       </AppShellProvider>
       {agentationVisible && <AgentationHost />}
     </>

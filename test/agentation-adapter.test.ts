@@ -6,6 +6,11 @@ const note = (id: string): Annotation => ({
   id, comment: `Fix ${id}`, elementPath: 'button', timestamp: 1,
   x: 10, y: 20, element: 'button',
 });
+const viewport = { width: 800, height: 600 };
+const staged = async (annotations: Annotation[], pageUrl: string) => {
+  const { agentationAttachment, stageAnnotationAttachments } = await import('../ui/src/annotation/agentationAdapter');
+  return stageAnnotationAttachments(annotations.map((annotation, index) => agentationAttachment(annotation, index + 1, pageUrl, viewport)));
+};
 describe('Agentation to selected Chat draft', () => {
   const entries = new Map<string, string>();
   beforeEach(() => {
@@ -19,7 +24,6 @@ describe('Agentation to selected Chat draft', () => {
 
   it('stages text-only notes in an inactive selected Chat without changing existing draft content', async () => {
     const store = await import('../ui/src/chat/attachmentDrafts');
-    const { stageAgentationAnnotations } = await import('../ui/src/annotation/agentationAdapter');
     store.setDraftText('chat-a', 'Existing text');
     store.addDraftAttachments('chat-a', [{ kind: 'file', file: {
       id: 'file-1', name: 'a.txt', media_type: 'text/plain', byte_length: 1, sha256: 'a',
@@ -27,8 +31,8 @@ describe('Agentation to selected Chat draft', () => {
     store.registerWritableChatTarget('chat-a', false);
     expect(store.getWritableChatTarget()).toBeNull();
 
-    expect(stageAgentationAnnotations([note('a'), note('b')], '/timeline', { width: 800, height: 600 }))
-      .toEqual({ target: 'chat-a', addedIds: ['a', 'b'] });
+    expect(await staged([note('a'), note('b')], '/timeline'))
+      .toEqual({ ok: true, value: { target: 'chat-a', addedIds: ['a', 'b'] } });
     const draft = store.getConversationDraft('chat-a');
     expect(draft.text).toBe('Existing text');
     expect(draft.attachments.map((item) => item.kind)).toEqual(['file', 'annotation', 'annotation']);
@@ -37,26 +41,22 @@ describe('Agentation to selected Chat draft', () => {
       { id: 'b', text: 'Fix b', target: { url: '/timeline', selector: 'button' } },
     ]);
     expect(draft.attachments.slice(1).every((item) => !('screenshot' in item))).toBe(true);
-    expect(stageAgentationAnnotations([note('a'), note('b')], '/timeline', { width: 800, height: 600 }))
-      .toEqual({ target: 'chat-a', addedIds: [] });
+    expect(await staged([note('a'), note('b')], '/timeline'))
+      .toEqual({ ok: true, value: { target: 'chat-a', addedIds: [] } });
     expect(store.getConversationDraft('chat-a').attachments).toHaveLength(3);
   });
 
   it('preserves notes and drafts when there is no writable selection or storage fails', async () => {
     const store = await import('../ui/src/chat/attachmentDrafts');
-    const { stageAgentationAnnotations } = await import('../ui/src/annotation/agentationAdapter');
-    expect(() => stageAgentationAnnotations([note('a')], '/timeline', { width: 800, height: 600 }))
-      .toThrow('Select a writable Chat');
+    expect(await staged([note('a')], '/timeline')).toMatchObject({ ok: false, error: expect.stringContaining('Select a writable Chat') });
     store.registerWritableChatTarget('chat-a', false);
     vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => { throw new Error('quota'); } });
-    expect(() => stageAgentationAnnotations([note('a')], '/timeline', { width: 800, height: 600 }))
-      .toThrow('quota');
+    expect(await staged([note('a')], '/timeline')).toEqual({ ok: false, error: 'quota' });
     expect(store.getConversationDraft('chat-a').attachments).toHaveLength(0);
   });
 
   it('keeps Agentation element context on each individual draft attachment', async () => {
     const store = await import('../ui/src/chat/attachmentDrafts');
-    const { stageAgentationAnnotations } = await import('../ui/src/annotation/agentationAdapter');
     store.registerWritableChatTarget('chat-a', false);
     const detailed: Annotation = {
       ...note('context'), comment: 'Tighten the spacing', element: 'button',
@@ -64,7 +64,7 @@ describe('Agentation to selected Chat draft', () => {
       sourceFile: 'ui/src/views/conversations.tsx', reactComponents: 'ChatComposer',
       cssClasses: 'send primary', computedStyles: 'padding: 8px; gap: 4px',
     };
-    stageAgentationAnnotations([detailed], '/chat', { width: 800, height: 600 });
+    await staged([detailed], '/chat');
     expect(store.getConversationDraft('chat-a').attachments[0]).toMatchObject({
       kind: 'annotation', text: 'Tighten the spacing', target: {
         url: '/chat', selector: 'main > button.send', element: 'button',

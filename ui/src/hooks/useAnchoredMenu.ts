@@ -10,6 +10,8 @@ export type UseAnchoredMenuOptions = {
   menuRef: RefObject<HTMLElement>;
   focusRef?: RefObject<HTMLElement>;
   onDismiss: () => void;
+  /** Handles Escape in place of dismissing, for a menu that steps back from an inner state. */
+  onEscape?: () => void;
   placement?: AnchoredMenuPlacement;
   gap?: number;
   gutter?: number;
@@ -38,6 +40,7 @@ export function useAnchoredMenu({
   menuRef,
   focusRef,
   onDismiss,
+  onEscape,
   placement = 'bottom-end',
   gap = 6,
   gutter = 8,
@@ -50,6 +53,8 @@ export function useAnchoredMenu({
   const positionKeyRef = useRef('');
   const dismissRef = useRef(onDismiss);
   dismissRef.current = onDismiss;
+  const escapeRef = useRef(onEscape);
+  escapeRef.current = onEscape;
 
   useLayoutEffect(() => {
     if (!open || !active) return undefined;
@@ -137,6 +142,10 @@ export function useAnchoredMenu({
       const focusedMenu = (event.target as Element | null)?.closest?.('.app-anchored-menu');
       if (focusedMenu && focusedMenu !== menu && menu.contains(focusedMenu)) return;
       event.preventDefault();
+      if (escapeRef.current) {
+        escapeRef.current();
+        return;
+      }
       dismissRef.current();
       (focusRef?.current ?? anchor).focus({ preventScroll: true });
     };
