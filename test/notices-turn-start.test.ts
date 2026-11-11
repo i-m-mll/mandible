@@ -14,6 +14,7 @@ import { NoticeLog } from "../src/notices/log.js";
 import { createOutcomeReporter } from "../src/notices/report.js";
 import { renderNotice } from "../src/notices/render.js";
 import { withRequestOrigin } from "../src/request-origin.js";
+import { SseManager, setSseManager } from "../src/sse.js";
 import { getOperator } from "../src/users/store.js";
 import { AUTH_COMMAND_REVIEW, createLedgerProject, createMigratedDb } from "./helpers/auth-queue-fixtures.js";
 
@@ -118,6 +119,28 @@ it("raises a second notice when the report changes after delivery, and only then
   expect(deliver()).toEqual([`Mandible: auth ${id.slice(0, 8)} completed. All follow-ups done: 1 hook passed.`]);
   log.raise(id, { kind: "change" });
   expect(deliver()).toEqual([]);
+});
+
+it("broadcasts each change to a session notice once it commits", () => {
+  const id = randomUUID();
+  db.prepare(`INSERT INTO auth_requests (id, type, command, title, status, output, created_at, updated_at, expires_at)
+    VALUES (?, 'command', 'true', 'Fixture', 'completed', '', 1, 1, 2)`).run(id);
+  const log = new NoticeLog(db, createOutcomeReporter(db), () => ({ owner_user_id: user.id, responsibility_session_id: "agent:claude:s6:s6", work_unit_id: null }));
+  const manager = new SseManager();
+  const changed: Array<{ id: string; committed: boolean }> = [];
+  manager.observeEvents((event) => {
+    if (event.type === "notification:changed") changed.push({ id: (event.data as { id: string }).id, committed: !db.inTransaction });
+  });
+  setSseManager(manager);
+  try {
+    log.raise(id, { kind: "transition", actor: null });
+    const owed = log.collect("claude", "s6");
+    log.delivered(owed.map((notice) => notice.id));
+    expect(changed).toEqual([{ id: owed[0].id, committed: true }, { id: owed[0].id, committed: true }, { id: owed[0].id, committed: true }]);
+  } finally {
+    setSseManager(null);
+    manager.closeAll();
+  }
 });
 
 function runHook(socket: string, payload: unknown): Promise<{ code: number | null; stdout: string; stderr: string }> {
