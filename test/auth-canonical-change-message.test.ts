@@ -143,7 +143,6 @@ function runMerge(
     "prompt_confirm() { printf 'y'; }",
     "run_merge_preflight() { :; }",
     "persist_atomic_marker() { printf '%s\\n' \"$1\" >&2; }",
-    "cleanup_merged_worktrees() { :; }",
     "collect_declared_issues() { :; }",
     "main feature/canonical --into main",
   ].join("\n");
@@ -872,15 +871,5 @@ describe("auth merge canonical message consumption", () => {
     } finally {
       await server.close();
     }
-  });
-});
-
-describe("commit prose cannot select issue closures", () => {
-  useGitRepo();
-
-  it("ignores historical closure text during merge cleanup", () => {
-    git(["-c", "commit.gpgsign=false", "merge", "--no-ff", "-m",
-      "Merge feature/canonical: outcome\n\nCloses-Mandible-Issue: abc1234", "feature/canonical"]);
-    expect(sourceHelper('collect_cleanup_issue_ids', { MANDIBLE_AUTH_REQUEST_ID: "" }, repo).trim()).toBe("");
   });
 });

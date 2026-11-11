@@ -3073,8 +3073,7 @@
         "kind": "sequence",
         "items": [
           {"kind": "repeat","item": {"kind": "argument","name": "source-branch","value": {"type": "string"}},"min": 1},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--into"],"values": [{"kind": "argument","name": "branch","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--preserve-head-branch"],"values": []}]}}
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--into"],"values": [{"kind": "argument","name": "branch","value": {"type": "string"}}]}]}}
         ]
       }
     },
