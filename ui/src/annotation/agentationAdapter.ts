@@ -4,6 +4,10 @@ import { addDraftAttachments, getConversationDraft, getSelectedWritableChatTarge
 
 type ChatAnnotation = Extract<ChatAttachment, { kind: 'annotation' }>;
 
+export function agentationText(annotation: AgentationAnnotation): string {
+  return annotation.comment || annotation.selectedText || annotation.placement?.text || annotation.rearrange?.label || '';
+}
+
 export function agentationAttachment(annotation: AgentationAnnotation, ordinal: number, pageUrl: string, viewport: { width: number; height: number }): ChatAnnotation {
   const box = annotation.boundingBox;
   const field = (value: string | undefined): string | undefined => value?.trim().slice(0, 2_000) || undefined;
@@ -11,7 +15,7 @@ export function agentationAttachment(annotation: AgentationAnnotation, ordinal: 
     kind: 'annotation',
     id: annotation.id,
     ordinal,
-    text: annotation.comment || annotation.selectedText || annotation.placement?.text || annotation.rearrange?.label || '',
+    text: agentationText(annotation),
     target: {
       url: annotation.url || pageUrl,
       ...(field(annotation.elementPath) ? { selector: field(annotation.elementPath) } : {}),

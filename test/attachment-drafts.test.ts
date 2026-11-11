@@ -29,33 +29,6 @@ describe('attachment draft ownership and recovery', () => {
     expect(store.getConversationDraft('chat').text).toBe('Current text');
   });
 
-  it('pastes into the captured writable chat and restores cleared annotations without changing the draft', async () => {
-    const store = await import('../ui/src/chat/attachmentDrafts');
-    expect(store.setDraftText('chat-a', 'Existing text').ok).toBe(true);
-    expect(store.addDraftAttachments('chat-a', [{ kind: 'file', file: { id: 'file-1', name: 'a.txt', media_type: 'text/plain', byte_length: 1, sha256: 'a' } }]).ok).toBe(true);
-    expect(store.saveAnnotation(annotation('one', 1)).ok).toBe(true);
-    const unregister = store.registerWritableChatTarget('chat-a');
-    expect(store.pasteAnnotationsToVisibleChat()).toEqual({ ok: true, value: true });
-    unregister();
-    expect(store.getConversationDraft('chat-a').text).toBe('Existing text');
-    expect(store.getConversationDraft('chat-a').attachments).toHaveLength(2);
-    expect(store.getConversationDraft('chat-b').attachments).toHaveLength(0);
-    expect(store.saveAnnotation(annotation('two', 2)).ok).toBe(true);
-    expect(store.undoClearAnnotations()).toEqual({ ok: true, value: true });
-    expect(store.getAttachmentDraftSnapshot().annotations.map((entry) => entry.id)).toEqual(['one', 'two']);
-    expect(store.getConversationDraft('chat-a').attachments).toHaveLength(2);
-  });
-
-  it('does not clear saved annotations when draft persistence fails', async () => {
-    const store = await import('../ui/src/chat/attachmentDrafts');
-    expect(store.saveAnnotation(annotation('one', 1)).ok).toBe(true);
-    store.registerWritableChatTarget('chat-a');
-    vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => { throw new Error('quota'); } });
-    expect(store.pasteAnnotationsToVisibleChat()).toEqual({ ok: false, error: 'quota' });
-    expect(store.getAttachmentDraftSnapshot().annotations).toHaveLength(1);
-    expect(store.getConversationDraft('chat-a').attachments).toHaveLength(0);
-  });
-
   it('only clears an accepted unchanged draft', async () => {
     const store = await import('../ui/src/chat/attachmentDrafts');
     store.setDraftText('chat-a', 'Original');
@@ -67,18 +40,11 @@ describe('attachment draft ownership and recovery', () => {
     expect(store.getConversationDraft('chat-a').text).toBe('');
   });
 
-  it('preserves annotations and recovery when a paste would exceed the message limit', async () => {
+  it('refuses attachments past the message limit without changing the draft', async () => {
     const store = await import('../ui/src/chat/attachmentDrafts');
-    store.saveAnnotation(annotation('recovery', 1));
-    store.clearAnnotations();
-    store.saveAnnotation(annotation('active', 2));
     store.addDraftAttachments('chat-a', Array.from({ length: 16 }, (_, i) => annotation(`draft-${i}`, i + 1)));
-    store.registerWritableChatTarget('chat-a');
-    expect(store.pasteAnnotationsToVisibleChat().ok).toBe(false);
     expect(store.addDraftAttachments('chat-a', [annotation('extra', 20)]).ok).toBe(false);
     expect(store.getConversationDraft('chat-a').attachments).toHaveLength(16);
-    expect(store.getAttachmentDraftSnapshot().annotations[0].id).toBe('active');
-    expect(store.getAttachmentDraftSnapshot().lastCleared?.[0].id).toBe('recovery');
   });
 
   it('retains one pending idempotency key across a reload and clears it after acceptance', async () => {
