@@ -84,6 +84,7 @@ export const METADATA_BACKUP_TABLES = [
   // parents restore first.
   "auth_hook_executions",
   "auth_hook_alerts",
+  "notifications",
   "message_params",
   "providers",
   "artifact_blob",

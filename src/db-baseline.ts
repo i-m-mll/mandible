@@ -1,6 +1,7 @@
 import { GLOBAL_GRANT_SCHEMA_SQL, GLOBAL_GRANT_INDEX_SQL } from "./permissions/schema.js";
 import { HISTORICAL_PROJECT_ROOTS_SCHEMA_SQL } from "./ledger/historical-root-schema.js";
 import { INTERFACE_NOTES_SCHEMA_SQL } from "./interface-notes/schema.js";
+import { NOTIFICATIONS_SCHEMA_SQL } from "./notices/schema.js";
 import { RESPONSIBILITY_SCHEMA_SQL } from "./responsibility-schema.js";
 import { WORK_UNIT_ASSIGNMENT_SCHEMA_SQL, EXACT_AGENT_WORK_UNIT_SCHEMA_SQL } from "./work-unit-assignment-schema.js";
 import { AUTH_HOOK_EXECUTIONS_TABLE_SQL, AUTH_HOOK_EXECUTIONS_INDEX_SQL } from './auth-hook-schema.js';
@@ -33,7 +34,7 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-migration-convergence.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 235;
+export const BASELINE_SCHEMA_VERSION = 236;
 
 export const AUTH_REQUEST_HISTORY_INDEX_SQL =
   `CREATE INDEX idx_auth_requests_history ON auth_requests(resolved_at DESC)
@@ -930,6 +931,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   ...ISSUE_SEARCH_SCHEMA_SQL,
   ...PROTECTED_BASE_AUDIT_SCHEMA_SQL,
   ...INTERFACE_NOTES_SCHEMA_SQL,
+  ...NOTIFICATIONS_SCHEMA_SQL,
 ];
 
 const DEFAULT_SETTINGS: ReadonlyArray<readonly [string, string]> = [
