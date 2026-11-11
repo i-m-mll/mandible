@@ -334,6 +334,12 @@ After resolution, Mandible archives reliably linked terminal Codex worker thread
 
 This closes the loop between the auth queue, the issue tracker, and the work-unit lifecycle.
 
+## Merged-branch removal
+
+The last merge finalizer step, `remove_merged_branches`, removes every local branch the merge landed, with its worktree, through the [trash service](../trash-custody.md). Its candidates are the head branch (unless the stored command ends in `--preserve-head-branch`), the head's `<head>__*` children, and the branches of this repository's work units that the request closes or that the merge resolved by ancestry. No agent removes a merged worktree by hand.
+
+Each branch's result is recorded in `merge_finalizer_state.remove_merged_branches.output` as `removed` (proven merged, nothing unique), `trashed` (proven merged, unique bytes kept in reversible custody), or `kept` with a reason: `not_merged`, `protected`, `app_managed`, `preview_running` or `trash_refused`. The candidate list is written before the first removal and each result as it lands, so a daemon restart resumes the pending entries. A branch kept for `preview_running` or `trash_refused` is retried by the daemon's 30-second maintenance pass, and its record is rewritten when the result changes; the others are left to their owner. A preview instance's copied ledger removes and retries nothing.
+
 ## Stuck Request Recovery
 
 Mandible automatically recovers requests that get stuck due to daemon crashes or other interruptions. On startup, it examines incomplete requests and determines whether they actually succeeded (by checking for merge evidence in the output) or should be marked as failed. During runtime, a periodic check catches requests that have been stuck too long and marks them as interrupted.
