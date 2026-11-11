@@ -236,6 +236,9 @@ async function createOrReusePreview(options) {
     worktree = plannedWorktreePath(repoRoot, worktreeHostRoot, branch);
   }
 
+  // Checked before anything is allocated. A worktree that does not exist yet is created from a commit.
+  if (fs.existsSync(worktree)) assertCommittedSource(worktree);
+
   // A dead preview is replaceable, but its port is browser identity: keeping
   // it preserves origin-scoped UI state and lets the existing IAB tab recover
   // on reload. Capture that identity before stale-cache cleanup removes bytes.
@@ -291,7 +294,6 @@ async function createOrReusePreview(options) {
   ownership.acquisition.worktree = { ...ownership.acquisition.worktree, path: worktree, state: 'acquired', identity: { dev: worktreeStat.dev, ino: worktreeStat.ino } };
   ownership.revision++;
   saveOwnedMetadata(preview.metadata, { branch, worktree, previewRoot: preview.root, sourceDb, db: dbCopy, ownership });
-  assertCommittedSource(worktree);
   if (!options.noBuild) {
     if (options.effects?.build) await options.effects.build(worktree);
     else { ensureDependencies(worktree); runBun(worktree, ["run", "--bun", "build"]); }

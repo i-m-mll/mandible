@@ -39,7 +39,9 @@ function forwarded(db: Db, socketPath: string, access: "read" | "write"): RouteH
   return async (req, res) => {
     if (access === "read") requireIdentity(req);
     else requireOperator(db, req);
-    const result = await forwardToSource(socketPath, req.method, req.url, req.body);
+    // The path this router matched, so the source can only ever be asked for an interface-notes route.
+    const { pathname, search } = new URL(req.url, "http://localhost");
+    const result = await forwardToSource(socketPath, req.method, pathname + search, req.body);
     if (!result.ok) return sendFailure(res, result.error);
     const { status, body } = result.value;
     if (body === "") {

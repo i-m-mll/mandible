@@ -16,12 +16,12 @@ import type { InterfaceNote, InterfaceNoteChangedPayload } from "../src/interfac
 import { relaySourceNoteEvents } from "../src/interface-notes/source.js";
 import { startLocalApiSocket } from "../src/local-api-socket.js";
 import { registerInterfaceNoteRoutes } from "../src/routes/interface-notes.js";
-import { PRODUCTION_EFFECTS } from "../src/security/effect-policy.js";
+import { PRODUCTION_EFFECTS, STANDARD_PREVIEW_EFFECTS } from "../src/security/effect-policy.js";
 import { createLocalSocketServer, createServer, Router } from "../src/server.js";
 import { SseManager, setSseManager } from "../src/sse.js";
 import type { InstanceInfo } from "../src/types.js";
 import { createUser, getOperator, setupOperator } from "../src/users/store.js";
-import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
+import { authenticatedTestIdentity, authenticatedTestRouter } from "./helpers/authenticated-router.js";
 import { createLedgerIssue, createLedgerProject, migratedFileDb } from "./helpers/ledger-fixtures.js";
 
 let root: string;
@@ -132,6 +132,24 @@ it("refuses an agent of the preview before anything reaches the source", async (
   expect((await call(agent, "POST", "/api/interface-notes", input("a", "From an agent"))).status).toBe(403);
   expect((await call(agent, "GET", "/api/interface-notes")).status).toBe(200);
   expect(sourceNotes()).toEqual([]);
+});
+
+it("refuses a session whose ceiling lacks notes:source, as a production instance without the effect signs it", async () => {
+  const instance: InstanceInfo = { ...sourceInstance(), role: "preview", instance_id: "preview-0123456789abcdef",
+    allowed_effects: STANDARD_PREVIEW_EFFECTS, preview_root: root, db_path: path.join(root, "copy.db"), source_db_path: path.join(root, "source.db") };
+  const operator = getOperator(copy)!;
+  const session = (effects: InstanceInfo["allowed_effects"]) => {
+    const identity = { ...authenticatedTestIdentity(operator), effect_ceiling: effects };
+    const router = new Router({ instance, clientAuth: { authenticate: () => identity, mode: () => "strict", recordUnattributedWrite: () => undefined } });
+    registerInterfaceNoteRoutes(router, copy, { kind: "source", socketPath });
+    return router;
+  };
+  const ungranted = session(STANDARD_PREVIEW_EFFECTS.filter((effect) => effect !== "notes:source"));
+  expect(await call(ungranted, "POST", "/api/interface-notes", input("a", "Not granted"))).toMatchObject({ status: 403, body: { error: "effect_forbidden" } });
+  expect((await call(ungranted, "GET", "/api/interface-notes")).status).toBe(403);
+  expect(sourceNotes()).toEqual([]);
+  expect((await call(session(STANDARD_PREVIEW_EFFECTS), "POST", "/api/interface-notes", input("a", "Granted"))).status).toBe(201);
+  expect(sourceNotes()).toMatchObject([{ id: "a" }]);
 });
 
 it("reports an unreachable source so the toolbar keeps the write pending", async () => {

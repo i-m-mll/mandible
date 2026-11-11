@@ -27,15 +27,15 @@ const FORWARD_TIMEOUT_MS = 15_000;
 const RELAY_RECONNECT_MS = 1_000;
 
 /**
- * Send one interface-notes request to the source instance unchanged. The request
- * carries no agent markers, so the source attributes it to its operator; callers
- * must have established that the requester is the operator.
+ * Send one interface-notes request to the source instance. The request carries no
+ * agent markers, so the source attributes it to its operator; callers must have
+ * established that the requester is the operator for a write.
  */
-export function forwardToSource(socketPath: string, method: string, url: string, body: unknown): Promise<InterfaceNoteResult<SourceResponse>> {
+export function forwardToSource(socketPath: string, method: string, path: string, body: unknown): Promise<InterfaceNoteResult<SourceResponse>> {
   const payload = body === undefined || body === null ? null : JSON.stringify(body);
   return new Promise((resolve) => {
     const request = http.request({
-      socketPath, method, path: url, timeout: FORWARD_TIMEOUT_MS,
+      socketPath, method, path, timeout: FORWARD_TIMEOUT_MS,
       headers: payload === null ? {} : { "content-type": "application/json", "content-length": Buffer.byteLength(payload) },
     }, (response) => {
       const chunks: Buffer[] = [];
