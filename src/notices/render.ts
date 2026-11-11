@@ -12,7 +12,9 @@ const BRANCH_REASONS: Record<BranchKeptReason, (base: string) => string> = {
   trash_refused: () => "removal refused",
 };
 
-const STATE_LABELS: Record<Exclude<OutcomeStep["state"], "done" | "skipped">, string> = {
+type UnfinishedState = Exclude<OutcomeStep["state"], "done" | "skipped">;
+
+const STATE_LABELS: Record<UnfinishedState, string> = {
   pending: "Pending", failed: "Failed", withheld: "Withheld", kept: "Kept",
 };
 
@@ -48,7 +50,15 @@ function member(step: OutcomeStep): string {
 
 function reason(step: OutcomeStep, base: string): string | null {
   if (step.kind === "branch_removal" && step.reason) return BRANCH_REASONS[step.reason](base);
+  if (step.kind === "preview_teardown" && step.reason === "not_merged") return BRANCH_REASONS.not_merged(base);
   return step.reason?.replaceAll("_", " ") ?? null;
+}
+
+/** A teardown's members are branch names, like branch removal's; its label says which. */
+function label(step: OutcomeStep, unfinished: UnfinishedState, base: string): string {
+  const state = step.kind === "preview_teardown" ? `${STATE_LABELS[unfinished]} teardown` : STATE_LABELS[unfinished];
+  const why = reason(step, base);
+  return why ? `${state}, ${why}` : state;
 }
 
 /**
@@ -57,23 +67,24 @@ function reason(step: OutcomeStep, base: string): string | null {
  * request's base branch, named by the "commits not in" reason.
  */
 export function renderNotice(report: OutcomeReport, responsibleAgent: AmbientProviderIdentity, base: string): string {
-  const done = { issues: 0, branches: 0, hooks: 0 };
+  const done = { issues: 0, branches: 0, previews: 0, hooks: 0 };
   const groups = new Map<string, string[]>();
   for (const step of report.steps) {
     if (step.state === "skipped") continue;
     if (step.state === "done") {
       if (step.kind === "action" && step.action === "issue_close") done.issues++;
       else if (step.kind === "branch_removal") done.branches++;
+      else if (step.kind === "preview_teardown") done.previews++;
       else if (step.kind === "hook") done.hooks++;
       continue;
     }
-    const why = reason(step, base);
-    const label = why ? `${STATE_LABELS[step.state]}, ${why}` : STATE_LABELS[step.state];
-    groups.set(label, [...groups.get(label) ?? [], member(step)]);
+    const group = label(step, step.state, base);
+    groups.set(group, [...groups.get(group) ?? [], member(step)]);
   }
   const counts = [
     done.issues ? count(done.issues, "issue closed", "issues closed") : null,
     done.branches ? count(done.branches, "branch and worktree removed", "branches and worktrees removed") : null,
+    done.previews ? count(done.previews, "preview torn down", "previews torn down") : null,
     done.hooks ? count(done.hooks, "hook passed", "hooks passed") : null,
   ].filter((part): part is string => part !== null);
   let first = `Mandible: auth ${short(report.request_id)} ${status(report)}.`;

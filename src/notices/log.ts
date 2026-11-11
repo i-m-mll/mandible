@@ -34,12 +34,14 @@ interface LatestRow {
   responsible_agent_ref: string;
 }
 
-interface OwedRow { id: string; subject_id: string; recipient_id: string; responsible_agent_ref: string }
+type OwedRow =
+  | { id: string; subject_kind: "auth_request"; subject_id: string; recipient_id: string; responsible_agent_ref: string; text: string | null }
+  | { id: string; subject_kind: "reminder"; subject_id: string; recipient_id: string; responsible_agent_ref: string; text: string };
 
 /**
- * The session half of the notification log for approval requests: raising a
- * notice when a request's outcome changes, and handing the owed notices to the
- * session that answers for the request at the start of its next turn.
+ * The session half of the notification log: raising a notice when an approval
+ * request's outcome changes, and handing every owed notice, a fired reminder's
+ * included, to its session at the start of the session's next turn.
  */
 export class NoticeLog {
   private readonly owed: SqliteStatement;
@@ -51,7 +53,7 @@ export class NoticeLog {
     private readonly holder: (requestId: string) => RequestHolder | null,
     private readonly now: () => number = Date.now,
   ) {
-    this.owed = db.prepare(`SELECT id, subject_id, recipient_id, responsible_agent_ref FROM notifications
+    this.owed = db.prepare(`SELECT id, subject_kind, subject_id, recipient_id, responsible_agent_ref, text FROM notifications
       WHERE recipient_provider = ? AND recipient_id = ? AND delivered_at IS NULL AND recipient_kind = 'session'
       ORDER BY raised_at, rowid`);
     this.latest = db.prepare(`SELECT id, delivered_at, digest, recipient_provider, recipient_id, responsible_agent_ref
@@ -97,6 +99,7 @@ export class NoticeLog {
     const rows = this.owed.all(provider, sessionId) as OwedRow[];
     if (rows.length === 0) return [];
     return this.db.transaction(() => rows.flatMap((row) => {
+      if (row.subject_kind === "reminder") return [{ id: row.id, text: row.text }];
       const report = this.reporter(row.subject_id);
       if (!report) return [];
       const holder = parseExactAgentRef(row.responsible_agent_ref);
@@ -115,11 +118,11 @@ export class NoticeLog {
    */
   delivered(ids: readonly string[]): void {
     const mark = this.db.prepare(`UPDATE notifications SET delivered_at = ?
-      WHERE id = ? AND recipient_kind = 'session' AND delivered_at IS NULL AND text IS NOT NULL RETURNING subject_id`);
+      WHERE id = ? AND recipient_kind = 'session' AND delivered_at IS NULL AND text IS NOT NULL RETURNING subject_kind, subject_id`);
     this.db.transaction(() => {
       for (const id of ids) {
-        const row = mark.get(this.now(), id) as { subject_id: string } | undefined;
-        if (row) this.raise(row.subject_id, { kind: "change" });
+        const row = mark.get(this.now(), id) as { subject_kind: string; subject_id: string } | undefined;
+        if (row?.subject_kind === "auth_request") this.raise(row.subject_id, { kind: "change" });
       }
     }).immediate();
   }

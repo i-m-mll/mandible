@@ -13,6 +13,9 @@ import type { BranchKeptReason, OutcomeReport, OutcomeStep } from "../src/notice
 import { NoticeLog } from "../src/notices/log.js";
 import { createOutcomeReporter } from "../src/notices/report.js";
 import { renderNotice } from "../src/notices/render.js";
+import { MANAGED_REMINDER_SCHEMA } from "../src/contracts.js";
+import { parseManagedReminderCreateRequest } from "../src/managed-reminder-parser.js";
+import { createManagedReminder, reconcileManagedReminders } from "../src/managed-reminders.js";
 import { withRequestOrigin } from "../src/request-origin.js";
 import { getOperator } from "../src/users/store.js";
 import { AUTH_COMMAND_REVIEW, createLedgerProject, createMigratedDb } from "./helpers/auth-queue-fixtures.js";
@@ -47,6 +50,27 @@ More: mandible auth show a6e526bf`);
   expect(renderNotice(failed, { provider: "claude", agent_id: "a9", session_id: "s1" }, "main")).toBe(`Mandible: auth 01234567 failed: exit 3. (submitted by agent a9)
 Failed, timed out (12): h0 h1 h2 h3 h4 h5 h6 h7 h8 h9 +2 more
 More: mandible auth show 01234567`);
+});
+
+it("renders declared preview teardowns: done as a count, the rest grouped by state and reason", () => {
+  const teardown = (name: string, state: OutcomeStep["state"], reason: string | null): OutcomeStep =>
+    ({ kind: "preview_teardown", branch: name, state, reason });
+  const report = (steps: OutcomeStep[]): OutcomeReport => ({ request_id: "a6e526bf-0000-4000-8000-000000000000", type: "merge",
+    status: "completed", merge_commit: "fdd818f8".padEnd(40, "0"), reason: null, steps: [branch("done/0", "done", null), ...steps] });
+  expect(renderNotice(report([teardown("p/1", "done", null), teardown("p/2", "skipped", "vetoed")]), MAIN, "main"))
+    .toBe("Mandible: auth a6e526bf merged as fdd818f8. All follow-ups done: 1 branch and worktree removed, 1 preview torn down.");
+  expect(renderNotice(report([
+    teardown("p/1", "done", null), teardown("p/2", "done", null),
+    teardown("p/3", "withheld", "awaiting_convergence"), teardown("p/4", "pending", null),
+    teardown("p/5", "kept", "not_merged"), teardown("p/6", "failed", "gateway refused"),
+    branch("p/5", "kept", "preview_running"),
+  ]), MAIN, "main")).toBe(`Mandible: auth a6e526bf merged as fdd818f8. Done: 1 branch and worktree removed, 2 previews torn down.
+Withheld teardown, awaiting convergence (1): p/3
+Pending teardown (1): p/4
+Kept teardown, commits not in main (1): p/5
+Failed teardown, gateway refused (1): p/6
+Kept, preview running (1): p/5
+More: mandible auth show a6e526bf`);
 });
 
 let db: Db;
@@ -118,6 +142,35 @@ it("raises a second notice when the report changes after delivery, and only then
   expect(deliver()).toEqual([`Mandible: auth ${id.slice(0, 8)} completed. All follow-ups done: 1 hook passed.`]);
   log.raise(id, { kind: "change" });
   expect(deliver()).toEqual([]);
+});
+
+it("tells a fired reminder to the root session of the agent that armed it, once, beside the user's row", () => {
+  const at = "2026-12-01T00:00:00.000Z";
+  const arm = (key: string, message: string) => createManagedReminder(db, parseManagedReminderCreateRequest({
+    schema: MANAGED_REMINDER_SCHEMA, idempotency_key: key, project: "p", message, predicate: { kind: "at", at },
+  }), { userId: user.id, evidenceMethod: "session_claim" }, { now: Date.parse(at) - 1000, projectId: repo }).reminder.id;
+  const subagent = withRequestOrigin({ provider: "claude", agent_id: "a7", session_id: "s7" }, () => arm("r1", "Check\nthe merge"));
+  const main = withRequestOrigin({ provider: "claude", agent_id: null, session_id: "s9" }, () => arm("r2", "Main"));
+  const codex = withRequestOrigin({ provider: "codex", agent_id: "t8", session_id: "r8" }, () => arm("r3", "Codex"));
+  const outside = arm("r4", "Outside");
+  expect(texts("claude", "s7")).toEqual([]);
+  expect(reconcileManagedReminders(db, Date.parse(at)).fired).toBe(4);
+
+  const short = (id: string) => id.slice(0, 21);
+  const deliver = (provider: "claude" | "codex", session: string) => {
+    const owed = queue.notices!.collect(provider, session);
+    queue.notices!.delivered(owed.map((notice) => notice.id));
+    return owed.map((notice) => notice.text);
+  };
+  expect(deliver("claude", "s7")).toEqual([`Mandible: reminder ${short(subagent)} fired: Check the merge (armed by agent a7)`]);
+  expect(deliver("claude", "s9")).toEqual([`Mandible: reminder ${short(main)} fired: Main`]);
+  expect(deliver("codex", "t8")).toEqual([]);
+  expect(deliver("codex", "r8")).toEqual([`Mandible: reminder ${short(codex)} fired: Codex (armed by agent t8)`]);
+  expect([deliver("claude", "s7"), deliver("claude", "s9"), deliver("codex", "r8")]).toEqual([[], [], []]);
+  expect(db.prepare("SELECT subject_id, recipient_kind FROM notifications ORDER BY subject_id, recipient_kind").all()).toEqual([
+    ...[subagent, main, codex].flatMap((id) => [{ subject_id: id, recipient_kind: "session" }, { subject_id: id, recipient_kind: "user" }]),
+    { subject_id: outside, recipient_kind: "user" },
+  ].sort((a, b) => a.subject_id.localeCompare(b.subject_id) || a.recipient_kind.localeCompare(b.recipient_kind)));
 });
 
 function runHook(socket: string, payload: unknown): Promise<{ code: number | null; stdout: string; stderr: string }> {
