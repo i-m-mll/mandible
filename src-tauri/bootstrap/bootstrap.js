@@ -16,7 +16,6 @@
   let pollTimer = null;
   let autoStartAttempted = skipAutoStart;
   let navigationPending = false;
-  let channelReconciled = false;
 
   function hasTauri() {
     return Boolean(window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke);
@@ -93,10 +92,6 @@
     }
 
     try {
-      if (!channelReconciled) {
-        await invoke("daemon_reconcile_channel");
-        channelReconciled = true;
-      }
       const status = await invoke("daemon_status");
       updateStatus(status);
       if (navigationFailed) {

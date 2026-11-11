@@ -93,7 +93,7 @@ function mergeMandibleClaudeHookSettingsWithMetadata(
       ? [...hooks[eventName] as unknown[]]
       : [];
     const matcher: ClaudeHookMatcher = {
-      matcher: eventName === "PreToolUse" ? "Bash|mcp__mandible__.*" : "",
+      matcher: eventName === "PreToolUse" ? "Bash" : "",
       hooks: [{ type: "command", command, timeout: HOOK_TIMEOUT_SECONDS }],
     };
     hooks[eventName] = appendHookMatcher(existingMatchers, matcher);

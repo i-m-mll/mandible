@@ -109,7 +109,6 @@ function atomicInvocation(
     "prompt_confirm() { printf 'y'; }",
     "run_merge_preflight() { :; }",
     ...(stubCheckpoint ? ["persist_atomic_marker() { printf '%s\\n' \"$1\" >&2; }"] : []),
-    "cleanup_merged_worktrees() { :; }",
     "collect_declared_issues() { :; }",
     "main feature/atomic --into main",
   ].join("\n");
@@ -529,8 +528,7 @@ describe("atomic auth merge", () => {
       `source ${JSON.stringify(AUTH_MERGE)}`,
       "prompt_confirm() { printf 'y'; }",
       "run_merge_preflight() { :; }",
-      "cleanup_merged_worktrees() { :; }",
-      "collect_declared_issues() { :; }",
+        "collect_declared_issues() { :; }",
       `main ${mainArgs}`,
     ].join("\n");
     return spawnSync("bash", ["-c", snippet], {

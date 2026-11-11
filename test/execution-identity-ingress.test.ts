@@ -7,7 +7,6 @@ import { exactAgentRef, parseExactAgentRef, resolveAmbientProviderIdentity, norm
 import { startStubDaemon, scratchDir, runCli } from "./helpers/cli-process.js";
 import { mergeMandibleClaudeHookSettings } from "../src/claude-hook-settings.js";
 import { currentRequestOrigin, requestOriginForRequest, withRequestOrigin } from "../src/request-origin.js";
-import { withChannelExecutionContext, ambientHeaders } from "../channel-server/transport.js";
 const run = promisify(execFile);
 
 describe("exact execution ingress", () => {
@@ -115,13 +114,8 @@ describe("exact execution ingress", () => {
     expect(requestOriginForRequest({ local_managed_identity: managed }, () => ({ status: 'unknown' }))).toBeNull();
   });
 
-  it("isolates channel calls and deferred origins while retaining session-only managed evidence", async () => {
-    const a = { provider: "claude", agent_id: "a", session_id: "root" }, b = { ...a, agent_id: "b" };
-    const results = await Promise.all([a, b].map(context => withChannelExecutionContext(context, async () => {
-      await Promise.resolve();
-      return JSON.parse(ambientHeaders()["X-Mandible-Execution-Context"]);
-    })));
-    expect(results).toEqual([a, b]);
+  it("isolates deferred origins while retaining session-only managed evidence", async () => {
+    const a = { provider: "claude", agent_id: "a", session_id: "root" };
     expect(requestOriginForRequest({ ambient_identity: a, local_managed_identity: { app_name: "claude", session_id: "wrapper" } }, () => ({ status: "resolved", origin: { ...a, agent_id: null } }))).toEqual(a);
     const saved = await withRequestOrigin(a, async () => { await Promise.resolve(); return JSON.stringify(currentRequestOrigin()); });
     expect(currentRequestOrigin()).toBeNull();

@@ -147,8 +147,7 @@ export function registerAuthRoutes(
         return;
       }
       try {
-        // Issue 08a5f04 — legacy submitters (MCP channel server, raw API
-        // clients) omit base_branch entirely; `mandible auth merge <branch>`
+        // Issue 08a5f04 — legacy submitters (raw API clients) omit base_branch entirely; `mandible auth merge <branch>`
         // has always meant "into the detected protected branch". Resolve that
         // default here so execution-context resolution (which validates the
         // base as protected, existing, and behind the head) can run. All

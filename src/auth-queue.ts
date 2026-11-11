@@ -50,6 +50,7 @@ import {
   classifyGitFailure,
   describeGitFailure,
   isAuthMergeCommand,
+  preservesHeadBranch,
   liveCommitRefReader,
   readCommitRefs,
   resolveAuthMergeExecutionContext,
@@ -91,6 +92,8 @@ import {
   type RecomputeRefusal,
 } from "./auth-recompute-refusal.js";
 import { canonicalRepoKeyForPath, observeRepoIdentities, RepoIdentityReadSetChanged, type RepoIdentityObservation } from "./repo-identity.js";
+import { REMOVE_MERGED_BRANCHES_STEP } from "./notices/contract.js";
+import { checkoutTopLevel, isRetriedKeptBranch, listLandedBranches, removeLandedBranch, type BranchRemoval, type MergeLanding } from "./merged-branch-removal.js";
 import {
   auditProtectedBase,
   describeBaseAuditFindings,
@@ -214,6 +217,7 @@ export const FINALIZER_STEP_NAMES = [
   "auto_dismiss_duplicates",
   "resolve_ancestry_work_units",
   "archive_worker_threads",
+  REMOVE_MERGED_BRANCHES_STEP,
 ] as const;
 type FinalizerStepName = (typeof FINALIZER_STEP_NAMES)[number];
 // Issue 75f52ac — per-step output persisted alongside step state. The terminal
@@ -224,6 +228,8 @@ type FinalizerStepName = (typeof FINALIZER_STEP_NAMES)[number];
 type FinalizerStepOutput = {
   resolved_work_unit_ids?: string[];
   archived_thread_count?: number;
+  /** `BRANCH_REMOVAL_OUTPUT`, written as each branch resolves. */
+  branches?: BranchRemoval[];
 };
 type FinalizerStepState = {
   state: "pending" | "done" | "failed";
@@ -1195,6 +1201,7 @@ export class AuthQueue {
         if (this.finalizerQueue.idle) {
           this.generatedStorage?.enqueue();
           (await this.sweepSuccessfulMergeFinalizers());
+          void this.retryKeptBranches();
           // Issue fbf2a58 — periodic backstop for merges whose finalization was
           // lost while the queue was idle (mirrors the startup reconciliation).
               // Issue 27241e6 — same backstop for unfinished hook convergence.
@@ -4200,7 +4207,6 @@ export class AuthQueue {
     if (request.execution_mode === "remote" || !isAuthMergeCommand(request)) return undefined;
     this.enforceCanonicalMergeCommand(request);
     const args = ["auth", "merge", request.head_branch!, "--into", request.base_branch!];
-    if (request.command.endsWith(" --preserve-head-branch")) args.push("--preserve-head-branch");
     return args;
   }
 
@@ -5896,7 +5902,7 @@ export class AuthQueue {
       throw new Error(`atomic recovery proof failed: ${detail}`);
     }
     this.assertExecution(request.id, execution);
-    const marker = await this.runRecoveredAtomicCleanup(refreshed, mergeSha);
+    const marker = await this.recoveredAtomicMergeReceipt(refreshed, mergeSha);
     this.assertExecution(request.id, execution);
     this.handleOutput({
       request_id: refreshed.id,
@@ -5918,27 +5924,18 @@ export class AuthQueue {
     await this.afterConvergenceHook(this.requireRequest(refreshed.id));
   }
 
-  private async runRecoveredAtomicCleanup(request: AuthRequest, mergeSha: string): Promise<string> {
-    if (!request.head_branch || !request.base_branch) throw new Error("Atomic recovery requires exact branch metadata.");
+  private async recoveredAtomicMergeReceipt(request: AuthRequest, mergeSha: string): Promise<string> {
     const script = join(process.env.MANDIBLE_CLI_DIR ?? join(process.cwd(), "cli"), "auth-merge.sh");
     if (!existsSync(script)) {
-      throw new Error(`auth merge cleanup helper is unavailable at ${script}`);
+      throw new Error(`auth merge receipt helper is unavailable at ${script}`);
     }
-    const preserve = /(^|\s)--preserve-head-branch(?:\s|$)/.test(request.command) ? "1" : "0";
-    const issueIds = [...new Set([
-      ...(request.issue_closures ?? []),
-    ])].join("\n");
     const result = await execFileAsync(
       "bash",
       [
         "-c",
-        'source "$1"; record_auth_merge_result "$6" "$7"; cleanup_merged_worktrees "$2" "$3" "$4" "$5"',
+        'source "$1"; record_auth_merge_result "$2" "$3"',
         "mandible-atomic-recovery",
         script,
-        request.head_branch,
-        preserve,
-        request.base_branch,
-        issueIds,
         request.merge_preflight_base_sha ?? "",
         mergeSha,
       ],
@@ -6656,6 +6653,10 @@ export class AuthQueue {
           return { archived_thread_count: archiveResult.archived };
         },
       },
+      {
+        name: REMOVE_MERGED_BRANCHES_STEP,
+        run: async () => ({ branches: await this.removeLandedBranches(finalized, state) }),
+      },
     ];
 
     for (const step of steps) {
@@ -6686,11 +6687,13 @@ export class AuthQueue {
       } catch (err) {
         const attempts = (entry?.attempts ?? 0) + 1;
         const message = err instanceof Error ? err.message : String(err);
+        const progress = state[step.name]?.output;
         state[step.name] = {
           state: attempts >= FINALIZER_MAX_ATTEMPTS ? "failed" : "pending",
           attempts,
           error: message,
           at: this.now(),
+          ...(progress ? { output: progress } : {}),
         };
         authLog("warn", "auth_finalizer_step_failed", {
           subsystem: "auth",
@@ -6791,6 +6794,125 @@ export class AuthQueue {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  /**
+   * The merge finalizer's branch-removal step. The candidate list is written
+   * before the first removal and each result as it lands, so a restart resumes
+   * the pending entries instead of rediscovering branches already removed.
+   */
+  private async removeLandedBranches(request: AuthRequest, state: FinalizerState): Promise<BranchRemoval[]> {
+    if (request.type !== "merge") return [];
+    this.requireExternalEffects("Merged-branch removal");
+    const landing = await this.mergeLanding(request);
+    const entry = state[REMOVE_MERGED_BRANCHES_STEP];
+    const branches = entry?.output?.branches ?? await listLandedBranches(
+      landing.checkoutRoot,
+      request.head_branch ?? null,
+      preservesHeadBranch(request),
+      await this.landedWorkUnitBranches(request, state.resolve_ancestry_work_units?.output?.resolved_work_unit_ids ?? []),
+    );
+    const record = () => {
+      state[REMOVE_MERGED_BRANCHES_STEP] = { state: "pending", attempts: entry?.attempts ?? 0, at: this.now(), output: { branches } };
+      this.writeFinalizerState(request.id, state);
+    };
+    record();
+    for (const [index, branch] of branches.entries()) {
+      if (branch.result !== "pending") continue;
+      if (this.disposed || !this.isDbOpen()) throw new Error("auth queue closed during merged-branch removal");
+      branches[index] = await this.removeLandedBranch(request, landing, branch);
+      record();
+    }
+    return branches;
+  }
+
+  private async removeLandedBranch(request: AuthRequest, landing: MergeLanding, branch: BranchRemoval): Promise<BranchRemoval> {
+    const { entry, error } = await removeLandedBranch(this.db, landing, branch);
+    if (error) {
+      authLog("warn", "auth_merged_branch_refused", { subsystem: "auth", auth_request_id: request.id, branch: branch.branch, error });
+    }
+    return entry;
+  }
+
+  private async mergeLanding(request: AuthRequest): Promise<MergeLanding> {
+    const cwd = request.cwd ?? request.target_repo_root;
+    if (!cwd || !request.base_branch) throw new Error("merged-branch removal requires the merge checkout and target branch");
+    return { checkoutRoot: await checkoutTopLevel(cwd), target: request.base_branch, issueRefs: request.issue_closures ?? [] };
+  }
+
+  /** Branches of this repository's work units that the request closes or resolved by ancestry. */
+  private async landedWorkUnitBranches(request: AuthRequest, ancestryIds: readonly string[]): Promise<string[]> {
+    if (!this.tableExists("work_units")) return [];
+    const issueRefs = this.explicitClosureIssueRefs(request);
+    const ancestry = new Set(ancestryIds);
+    const rows = (this.db.prepare("SELECT id, issue_id, ledger_issue_id, repo_id, branch FROM work_units WHERE branch IS NOT NULL")
+      .all() as Array<{ id: string; issue_id: string | null; ledger_issue_id: string | null; repo_id: string; branch: string }>)
+      .filter(row => ancestry.has(row.id) || this.workUnitMatchesIssueRefs(row, issueRefs));
+    if (rows.length === 0) return [];
+    const identity = await observeRepoIdentities(this.db, [request.repo, ...rows.map(row => row.repo_id)],
+      [request.target_repo_root, request.cwd, ...rows.map(row => row.repo_id)], this.phaseAbort.signal);
+    const repoRoots = this.authRequestRepoRoots(request);
+    const requestKeys = this.canonicalKeysForRequest(request, identity);
+    return rows
+      .filter(row => this.workUnitRepoMatchesRequest(row.repo_id, request, repoRoots, requestKeys, identity))
+      .map(row => row.branch);
+  }
+
+  private keptBranchRetry: Promise<void> | null = null;
+
+  /**
+   * Retry every finalized merge's branches kept for a running preview or a
+   * trash refusal, and rewrite the step's output through `writeFinalizerState`
+   * when a result changes. Runs from the idle maintenance tick.
+   */
+  private retryKeptBranches(): Promise<void> {
+    if (!this.allowExternalEffects || this.disposed) return Promise.resolve();
+    this.keptBranchRetry ??= this.retryKeptBranchesNow()
+      .catch(error => { if (!this.disposed) authLog("warn", "auth_kept_branch_retry_failed", { subsystem: "auth", error: errorMessage(error) }); })
+      .finally(() => { this.keptBranchRetry = null; });
+    return this.keptBranchRetry;
+  }
+
+  private async retryKeptBranchesNow(): Promise<void> {
+    const finishObservation = this.beginObservation();
+    try {
+      const rows = this.db.prepare(
+        `SELECT * FROM auth_requests
+          WHERE type = 'merge' AND status = 'completed' AND merge_finalized_at IS NOT NULL
+            AND json_valid(merge_finalizer_state)
+            AND EXISTS (
+              SELECT 1 FROM json_each(merge_finalizer_state, '$.${REMOVE_MERGED_BRANCHES_STEP}.output.branches') AS branch
+               WHERE json_extract(branch.value, '$.result') = 'kept'
+                 AND json_extract(branch.value, '$.reason') IN ('preview_running', 'trash_refused'))
+          ORDER BY created_at`,
+      ).all() as Record<string, unknown>[];
+      for (const row of rows) {
+        const request = mapRow(row);
+        const state = this.readFinalizerState(request.id);
+        const entry = state[REMOVE_MERGED_BRANCHES_STEP];
+        const branches = entry?.output?.branches;
+        if (!entry || !branches) continue;
+        let landing: MergeLanding;
+        try { landing = await this.mergeLanding(request); }
+        catch (error) {
+          authLog("warn", "auth_kept_branch_retry_failed", { subsystem: "auth", auth_request_id: request.id, error: errorMessage(error) });
+          continue;
+        }
+        let changed = false;
+        for (const [index, branch] of branches.entries()) {
+          if (!isRetriedKeptBranch(branch)) continue;
+          if (this.disposed || !this.isDbOpen()) return;
+          const next = await this.removeLandedBranch(request, landing, branch);
+          if (JSON.stringify(next) === JSON.stringify(branch)) continue;
+          branches[index] = next;
+          changed = true;
+        }
+        if (changed) {
+          state[REMOVE_MERGED_BRANCHES_STEP] = { ...entry, at: this.now(), output: { branches } };
+          this.writeFinalizerState(request.id, state);
+        }
+      }
+    } finally { finishObservation(); }
   }
 
   private beginObservation(): () => void {

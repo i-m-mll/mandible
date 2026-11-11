@@ -4,8 +4,10 @@
 custody. Tracked and untracked changes go into the snapshot commit under
 `refs/mandible/trash/<id>`, which restore makes the branch tip.
 
-Every post-merge branch removal (actor `auth-merge`) goes through the same
-routine with `--merged-into <target>`. The service first proves the branch is
+Every post-merge branch removal goes through the same routine with
+`--merged-into <target>`; its one caller is the daemon's merge finalizer (actor
+`merge-finalizer`, see [Merged-branch removal](features/auth-queue.mdx#merged-branch-removal)).
+The service first proves the branch is
 merged into the target or tree-equivalent to it, and refuses otherwise. A
 proven branch whose worktree has no tracked or untracked changes and no kept
 ignored files is removed outright: no entry and no refs are created, and the

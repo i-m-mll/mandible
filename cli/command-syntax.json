@@ -13,7 +13,6 @@
     "hook.statusline": {"route":["hook","statusline"],"grammar":{"kind":"sequence","items":[]}},
     "hook.session-execution": {"route":["hook","session-execution"],"grammar":{"kind":"sequence","items":[{"kind":"argument","name":"provider","value":{"type":"enum","values":["claude","codex"]}}]}},
     "hook.notices": {"route":["hook","notices"],"grammar":{"kind":"sequence","items":[{"kind":"argument","name":"provider","value":{"type":"enum","values":["claude","codex"]}}]}},
-    "channel": {"route":["channel"],"grammar":{"kind":"sequence","items":[]}},
     "git-guard": {"route":["git-guard"],"grammar":{"kind":"sequence","items":[{"kind":"argument","name":"phase","value":{"type":"enum","values":["prepared","committed","aborted"]}}]}},
     "changes": {
       "route": ["changes"],
@@ -3074,8 +3073,7 @@
         "kind": "sequence",
         "items": [
           {"kind": "repeat","item": {"kind": "argument","name": "source-branch","value": {"type": "string"}},"min": 1},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--into"],"values": [{"kind": "argument","name": "branch","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--preserve-head-branch"],"values": []}]}}
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--into"],"values": [{"kind": "argument","name": "branch","value": {"type": "string"}}]}]}}
         ]
       }
     },

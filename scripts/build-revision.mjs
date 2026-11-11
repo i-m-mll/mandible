@@ -7,7 +7,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-export const SOURCE_PATHS = ["package.json", ".bun-version", "bun.lock", "bunfig.toml", "tsconfig.json", "src", "channel-server", "ui", "scripts", "bin", "cli", "config", "src-tauri"];
+export const SOURCE_PATHS = ["package.json", ".bun-version", "bun.lock", "bunfig.toml", "tsconfig.json", "src", "ui", "scripts", "bin", "cli", "config", "src-tauri"];
 
 export function isBuildSourcePath(file) {
   return SOURCE_PATHS.some(source => file === source || file.startsWith(`${source}/`));
