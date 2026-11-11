@@ -33,5 +33,5 @@ export function raiseReminderNotice(
     responsible_agent_ref, raised_at, digest, text) VALUES (?, 'reminder', ?, 'session', ?, ?, ?, ?, ?, ?)`)
     .run(id, reminder.taskId, origin.provider, session, exactAgentRef(agent), raisedAt,
       createHash("sha256").update(text).digest("hex"), text);
-  broadcast(DOMAIN_EVENTS.NOTIFICATION_CHANGED, { id });
+  db.afterCommit(() => broadcast(DOMAIN_EVENTS.NOTIFICATION_CHANGED, { id }));
 }

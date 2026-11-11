@@ -17,6 +17,7 @@ import { MANAGED_REMINDER_SCHEMA } from "../src/contracts.js";
 import { parseManagedReminderCreateRequest } from "../src/managed-reminder-parser.js";
 import { createManagedReminder, reconcileManagedReminders } from "../src/managed-reminders.js";
 import { withRequestOrigin } from "../src/request-origin.js";
+import { SseManager, setSseManager } from "../src/sse.js";
 import { getOperator } from "../src/users/store.js";
 import { AUTH_COMMAND_REVIEW, createLedgerProject, createMigratedDb } from "./helpers/auth-queue-fixtures.js";
 
@@ -142,6 +143,44 @@ it("raises a second notice when the report changes after delivery, and only then
   expect(deliver()).toEqual([`Mandible: auth ${id.slice(0, 8)} completed. All follow-ups done: 1 hook passed.`]);
   log.raise(id, { kind: "change" });
   expect(deliver()).toEqual([]);
+});
+
+it("broadcasts each change to a session notice once it commits, and each once", () => {
+  const id = randomUUID();
+  db.prepare(`INSERT INTO auth_requests (id, type, command, title, status, output, created_at, updated_at, expires_at)
+    VALUES (?, 'command', 'true', 'Fixture', 'completed', '', 1, 1, 2)`).run(id);
+  const log = new NoticeLog(db, createOutcomeReporter(db), () => ({ owner_user_id: user.id, responsibility_session_id: "agent:claude:s6:s6", work_unit_id: null }));
+  const manager = new SseManager();
+  const changed: Array<{ id: string; committed: boolean }> = [];
+  manager.observeEvents((event) => {
+    if (event.type === "notification:changed") changed.push({ id: (event.data as { id: string }).id, committed: !db.inTransaction });
+  });
+  setSseManager(manager);
+  try {
+    log.raise(id, { kind: "transition", actor: null });
+    const owed = log.collect("claude", "s6");
+    log.delivered(owed.map((notice) => notice.id));
+    expect(changed).toEqual([{ id: owed[0].id, committed: true }, { id: owed[0].id, committed: true }, { id: owed[0].id, committed: true }]);
+
+    changed.length = 0;
+    const at = "2026-12-01T00:00:00.000Z";
+    withRequestOrigin({ provider: "claude", agent_id: null, session_id: "s6" }, () => createManagedReminder(db, parseManagedReminderCreateRequest({
+      schema: MANAGED_REMINDER_SCHEMA, idempotency_key: "broadcast", project: "p", message: "Fire", predicate: { kind: "at", at },
+    }), { userId: user.id, evidenceMethod: "session_claim" }, { now: Date.parse(at) - 1000, projectId: repo }));
+    reconcileManagedReminders(db, Date.parse(at));
+    const rows = db.prepare("SELECT id, recipient_kind FROM notifications WHERE subject_kind = 'reminder'").all() as Array<{ id: string; recipient_kind: string }>;
+    const reminder = log.collect("claude", "s6");
+    log.delivered(reminder.map((notice) => notice.id));
+    const session = rows.find((row) => row.recipient_kind === "session")!.id;
+    const user_ = rows.find((row) => row.recipient_kind === "user")!.id;
+    expect(reminder.map((notice) => notice.id)).toEqual([session]);
+    expect(changed.sort((a, b) => a.id.localeCompare(b.id))).toEqual([
+      { id: session, committed: true }, { id: session, committed: true }, { id: user_, committed: true },
+    ].sort((a, b) => a.id.localeCompare(b.id)));
+  } finally {
+    setSseManager(null);
+    manager.closeAll();
+  }
 });
 
 it("tells a fired reminder to the root session of the agent that armed it, once, beside the user's row", () => {

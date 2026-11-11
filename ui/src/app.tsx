@@ -2725,7 +2725,7 @@ function App(): JSX.Element {
             />
           );
         })())}
-        {renderTabPanel('notifications', <LazyNotificationsView instance={instanceInfo} />)}
+        {renderTabPanel('notifications', <LazyNotificationsView instance={instanceInfo} unread={dashboardBadges?.notifications ?? 0} />)}
         {renderTabPanel('console', (() => {
           const tabRoute = routeForTab('console', route, tabRouteSnapshots);
           return (

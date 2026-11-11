@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { normalizeAmbientProviderIdentity, parseExactAgentRef, type AmbientProviderIdentity } from "../ambient-provider-identity.js";
+import { DOMAIN_EVENTS } from "../contracts.js";
 import type { Db } from "../db.js";
 import type { SqliteStatement } from "../sqlite.js";
 import { holdsResponsibility, type ResponsibilityActor } from "../responsibility.js";
 import { resolveSessionAlias } from "../session-liveness.js";
+import { broadcast } from "../sse.js";
 import { NOTICE_PROVIDERS, outcomeReportDigest, type NoticeProvider, type OutcomeReporter } from "./contract.js";
 import { renderNotice } from "./render.js";
 
@@ -71,16 +73,17 @@ export class NoticeLog {
     const holder = this.holder(requestId);
     const undelivered = latest && latest.delivered_at === null ? latest : null;
     if (cause.kind === "transition" && cause.actor && holder && holdsResponsibility(this.db, holder, cause.actor)) {
-      if (undelivered) this.db.prepare("DELETE FROM notifications WHERE id = ?").run(undelivered.id);
+      if (undelivered) this.remove(undelivered.id);
       return;
     }
     const recipient = holder ? this.recipient(requestId, holder) : null;
     if (undelivered) {
-      if (!recipient) this.db.prepare("DELETE FROM notifications WHERE id = ?").run(undelivered.id);
+      if (!recipient) this.remove(undelivered.id);
       else if (recipient.provider !== undelivered.recipient_provider || recipient.session_id !== undelivered.recipient_id
         || recipient.agent_ref !== undelivered.responsible_agent_ref) {
         this.db.prepare("UPDATE notifications SET recipient_provider = ?, recipient_id = ?, responsible_agent_ref = ? WHERE id = ?")
           .run(recipient.provider, recipient.session_id, recipient.agent_ref, undelivered.id);
+        this.changed(undelivered.id);
       }
       return;
     }
@@ -89,9 +92,11 @@ export class NoticeLog {
       const report = this.reporter(requestId);
       if (!report || outcomeReportDigest(report) === latest.digest) return;
     }
+    const id = randomUUID();
     this.db.prepare(`INSERT INTO notifications (id, subject_kind, subject_id, recipient_kind, recipient_provider,
       recipient_id, responsible_agent_ref, raised_at) VALUES (?, 'auth_request', ?, 'session', ?, ?, ?, ?)`)
-      .run(randomUUID(), requestId, recipient.provider, recipient.session_id, recipient.agent_ref, this.now());
+      .run(id, requestId, recipient.provider, recipient.session_id, recipient.agent_ref, this.now());
+    this.changed(id);
   }
 
   /** The notices owed to one session, rendered now. Nothing owed is one indexed read. */
@@ -108,6 +113,7 @@ export class NoticeLog {
         { base_branch: string | null } | undefined)?.base_branch ?? "base";
       const text = renderNotice(report, { ...holder, session_id: row.recipient_id }, base);
       this.db.prepare("UPDATE notifications SET digest = ?, text = ? WHERE id = ?").run(outcomeReportDigest(report), text, row.id);
+      this.changed(row.id);
       return [{ id: row.id, text }];
     })).immediate();
   }
@@ -122,9 +128,20 @@ export class NoticeLog {
     this.db.transaction(() => {
       for (const id of ids) {
         const row = mark.get(this.now(), id) as { subject_kind: string; subject_id: string } | undefined;
-        if (row?.subject_kind === "auth_request") this.raise(row.subject_id, { kind: "change" });
+        if (!row) continue;
+        this.changed(id);
+        if (row.subject_kind === "auth_request") this.raise(row.subject_id, { kind: "change" });
       }
     }).immediate();
+  }
+
+  private remove(id: string): void {
+    this.db.prepare("DELETE FROM notifications WHERE id = ?").run(id);
+    this.changed(id);
+  }
+
+  private changed(id: string): void {
+    this.db.afterCommit(() => broadcast(DOMAIN_EVENTS.NOTIFICATION_CHANGED, { id }));
   }
 
   private recipient(requestId: string, holder: RequestHolder): Recipient | null {

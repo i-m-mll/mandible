@@ -137,10 +137,11 @@ export const NOTIFICATION_LIST_QUERY = z.object({
   limit: z.coerce.number().int().min(1).max(200).optional(),
 });
 
-/** `read` is `POST`: the user's read mark on a user notification. */
+/** `read` and `read_all` are `POST`: the user's read mark on one user notification, or on all of them. */
 export const NOTICE_ROUTES = {
   collect: "/api/notices/collect",
   delivered: "/api/notices/delivered",
   list: "/api/notifications",
   read: "/api/notifications/:id/read",
+  read_all: "/api/notifications/read",
 } as const;

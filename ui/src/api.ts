@@ -18,7 +18,7 @@ import type { Query } from '@tanstack/preact-query';
 import type { FullTextSearchPending, FullTextSearchResponse } from '../../src/conversations/full-text-search-contract';
 import { FullTextSearchError, isFullTextSearchTerminal, readFullTextSearch, type SearchReadOptions, type SearchSnapshot } from './query/fullTextSearch';
 import type { ChatAttachment } from '../../src/conversation-control/attachments';
-import type { NotificationListItem, NotificationListResponse } from '../../src/notices/notification-log';
+import type { NotificationListItem, NotificationListResponse, ReadAllResult } from '../../src/notices/notification-log';
 import type { GraphEdge, GraphNode, GraphMode, GraphPayload } from './types/graph';
 import type { ProjectTimelineInput, ProjectTimelinePage, ProjectTimelineProjection } from './types/timeline';
 import { mergeTimelinePages, sameTimelineRows } from '../../src/timeline-pages';
@@ -1421,7 +1421,7 @@ export async function getPushStatus(): Promise<unknown> {
 
 // ── Notifications API ──
 
-export type { NotificationListItem, NotificationListResponse };
+export type { NotificationListItem, NotificationListResponse, ReadAllResult };
 
 export async function getNotifications(
   options: { before?: number; signal?: AbortSignal } = {},
@@ -1434,6 +1434,12 @@ export async function markNotificationRead(id: string): Promise<NotificationList
   const response = await apiPost(`/api/notifications/${encodeURIComponent(id)}/read`, {});
   invalidateApiGetCache('/api/notifications');
   return await response.json() as NotificationListItem;
+}
+
+export async function markAllNotificationsRead(): Promise<ReadAllResult> {
+  const response = await apiPost('/api/notifications/read', {});
+  invalidateApiGetCache('/api/notifications');
+  return await response.json() as ReadAllResult;
 }
 
 export async function getSessionIssues(sessionId: string): Promise<unknown[]> {

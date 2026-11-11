@@ -102,3 +102,21 @@ it("lists every notification newest first, and only the user's read mark moves t
   const again = await router.invoke({ method: "POST", url: `/api/notifications/${leakRow.id}/read`, body: {} });
   expect((again.body as { delivered_at: number }).delivered_at).toBe(readAt);
 });
+
+it("marks all of the user's unread notifications read in one action, for the operator only", async () => {
+  const operator = setupOperator(db, { slug: "operator", display_name: "Operator" }, NOW);
+  openConvergenceAlert();
+  leak();
+  raiseOpenUserNotifications(db);
+  sessionNotice("undelivered", NOW + 3000, null);
+  const agent = createUser(db, { slug: "agent", kind: "agent", display_name: "Agent" }, NOW);
+  expect((await routes(agent).invoke({ method: "POST", url: "/api/notifications/read", body: {} })).status).toBe(403);
+  expect(countUnreadUserNotifications(db)).toBe(2);
+
+  const read = await routes(operator).invoke({ method: "POST", url: "/api/notifications/read", body: {} });
+  expect(read.status).toBe(200);
+  expect((read.body as { ids: string[] }).ids).toHaveLength(2);
+  expect(countUnreadUserNotifications(db)).toBe(0);
+  expect(db.prepare("SELECT delivered_at FROM notifications WHERE recipient_kind = 'session'").get()).toEqual({ delivered_at: null });
+  expect((await routes(operator).invoke({ method: "POST", url: "/api/notifications/read", body: {} })).body).toMatchObject({ ids: [] });
+});

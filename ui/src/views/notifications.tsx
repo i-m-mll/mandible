@@ -4,6 +4,7 @@ import type { NotificationTarget } from '../../../src/notices/notification-log';
 import {
   canPerformOperation,
   getNotifications,
+  markAllNotificationsRead,
   markNotificationRead,
   type InstanceInfo,
   type NotificationListItem,
@@ -54,7 +55,7 @@ function targetLink(target: NotificationTarget): { href: string; label: string }
     case 'conversation':
       return { href: viewHref('console', { conversation: target.id }), label: `conversation:${shortRouteId(target.id)}` };
     case 'reminder':
-      return { href: viewHref('tasks', { task: `mandible-reminder:${target.id}` }), label: `reminder:${shortRouteId(target.id)}` };
+      return { href: viewHref('tasks', { task: `mandible-reminder:${target.id}` }), label: shortRouteId(target.id) };
   }
 }
 
@@ -133,7 +134,13 @@ function NotificationRow({
   );
 }
 
-export function NotificationsView({ instance = null }: { instance?: InstanceInfo | null }): JSX.Element {
+export function NotificationsView({
+  instance = null,
+  unread = 0,
+}: {
+  instance?: InstanceInfo | null;
+  unread?: number;
+}): JSX.Element {
   const [log, setLog] = useState<NotificationLog | null>(null);
   const [error, setError] = useState<string | null>(null);
   const loadingOlder = useRef(false);
@@ -198,13 +205,40 @@ export function NotificationsView({ instance = null }: { instance?: InstanceInfo
     }
   }, []);
 
+  const readAll = useCallback(async () => {
+    try {
+      const { ids, read_at: readAt } = await markAllNotificationsRead();
+      const marked = new Set(ids);
+      setLog((current) => current && {
+        ...current,
+        rows: current.rows.map((row) => (marked.has(row.id) ? { ...row, delivered_at: readAt } : row)),
+      });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }, []);
+
+  const canReadAll = unread > 0 && canPerformOperation(instance, 'POST', '/api/notifications/read');
+
   return (
     <DetailPaneShell
       className="notifications-view"
       bodyClassName="notifications-view__body"
       bodyRef={bodyRef}
       headerPlacement="frame"
-      header={<DetailPaneHeader variant="compact" title="Notifications" />}
+      header={(
+        <DetailPaneHeader
+          variant="compact"
+          title="Notifications"
+          actions={canReadAll ? (
+            <span className="contextual-action-group contextual-action-group--persistent">
+              <ContextualAction aria-label="Mark all read" {...appTip('Mark all read')} onClick={() => void readAll()}>
+                <Icon name="markAllRead" size={14} />
+              </ContextualAction>
+            </span>
+          ) : null}
+        />
+      )}
       notice={error ? (
         <DetailPaneNotice severity="error" density="compact" source="notifications-load" title="Notifications could not be loaded">
           {error}

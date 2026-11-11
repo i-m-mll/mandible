@@ -41,6 +41,27 @@ const DB_SNAPSHOT_PATTERN = /^mandible-\d{8}-\d{6}\.db$/;
 // be removed. Deliberately anchored so no label outside it can ever match.
 const LEGACY_PREVIEW_LABEL_PATTERN = /^bio\.mll\.mandible\.preview\./;
 const DB_SNAPSHOT_ARTIFACT_PATTERN = /^mandible-\d{8}-\d{6}\.db(?:-(?:wal|shm)|\.manifest\.json|\.partial-\d+(?:-(?:journal|wal|shm))?|\.manifest\.json\.partial-\d+)?$/;
+const LIFECYCLE_REQUIRED = {
+  status: ['--root', '--run-id'],
+  stop: ['--root', '--run-id', '--revision'],
+  refresh: ['--root', '--run-id', '--revision'],
+  teardown: ['--root', '--run-id', '--revision'],
+  finalize: ['--root', '--run-id', '--revision'],
+};
+const LIFECYCLE_ARGUMENT_TEXT = { '--root': '--root <preview-root>', '--run-id': '--run-id <id>', '--revision': '--revision <n>' };
+const TEARDOWN_OPTIONS = '--outcome accepted|assessed|failed|abandoned|investigating --summary <text> [--converged] [--disposition discard|transferred --destination <verified-copy> --transfer-reference <accepted-output-ref>] [--review-by <ISO-time>]';
+
+function lifecycleSynopsis(commandName) {
+  const required = LIFECYCLE_REQUIRED[commandName].map((flag) => LIFECYCLE_ARGUMENT_TEXT[flag]).join(' ');
+  const teardown = commandName === 'teardown' || commandName === 'finalize' ? ` ${TEARDOWN_OPTIONS}` : '';
+  return `bun run iab-preview -- ${commandName} ${required}${teardown} [--json]`;
+}
+
+function missingLifecycleArguments(commandName, args) {
+  const present = { '--root': args.root, '--run-id': args.runId, '--revision': args.revision };
+  return LIFECYCLE_REQUIRED[commandName].filter((flag) => present[flag] === undefined);
+}
+
 if (process.argv[1] && canonicalPath(process.argv[1]) === canonicalPath(fileURLToPath(import.meta.url))) {
   await runCli();
 }
@@ -55,6 +76,12 @@ async function runCli() {
 
   if (args.help) {
     printUsage(command);
+    return;
+  }
+  const missing = LIFECYCLE_REQUIRED[command] ? missingLifecycleArguments(command, args) : [];
+  if (missing.length) {
+    console.error(`${command} requires ${missing.join(', ')}\nUsage: ${lifecycleSynopsis(command)}`);
+    process.exitCode = 2;
     return;
   }
 
@@ -945,8 +972,8 @@ function requireValue(argv, index, flag) {
 }
 
 function printUsage(commandName = "preview") {
-  if (['status', 'stop', 'refresh', 'teardown', 'finalize'].includes(commandName)) {
-    console.log(`Usage: bun run iab-preview -- ${commandName} --root <preview-root> --run-id <id> [--revision <n>] [--outcome accepted|assessed|failed|abandoned|investigating --summary <text>] [--converged] [--disposition discard|transferred --destination <verified-copy> --transfer-reference <accepted-output-ref>] [--review-by <ISO-time>] [--json]\nLive mutations require the current revision. Stop retains interactive data. Teardown/finalize stops exact consumers, retires the public route and removes disposed bytes. Completed teardown retries resolve the retained exact run receipt.`);
+  if (LIFECYCLE_REQUIRED[commandName]) {
+    console.log(`Usage: ${lifecycleSynopsis(commandName)}\nLive mutations require the current revision. Stop retains interactive data. Teardown/finalize stops exact consumers, retires the public route and removes disposed bytes. Completed teardown retries resolve the retained exact run receipt.`);
     return;
   }
   if (commandName === "seed-agents-review") {
@@ -1009,6 +1036,10 @@ Options:
   --pair-browser   Mint one bounded pairing URL for a new browser profile.
   --dry-run        Resolve the plan without creating a DB copy or starting a daemon.
   -h, --help       Show this help.
+
+Lifecycle commands, for a run created above (its result's handle gives the root and run id; status gives the current revision):
+${['status', 'stop', 'refresh', 'teardown'].map((name) => `  ${lifecycleSynopsis(name)}`).join('\n')}
+  Run any of them with --help for details.
 
 Default integration branch:
   integration/mandible-iab-preview-<yyyymmdd>-<protected-short-sha>

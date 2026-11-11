@@ -106,3 +106,16 @@ export function markUserNotificationRead(db: Db, id: string, now: number = Date.
   const row = db.prepare(`${SELECT} WHERE n.id = ?`).get(id) as NotificationRow;
   return { ok: true, notification: item(row), changed };
 }
+
+export interface ReadAllResult {
+  ids: string[];
+  read_at: number;
+}
+
+/** Marks every unread notification for the user read at one time. */
+export function markUserNotificationsRead(db: Db, userId: string, now: number = Date.now()): ReadAllResult {
+  const ids = (db.prepare(
+    "UPDATE notifications SET delivered_at = ? WHERE recipient_kind = 'user' AND recipient_id = ? AND delivered_at IS NULL RETURNING id",
+  ).all(now, userId) as Array<{ id: string }>).map((row) => row.id);
+  return { ids, read_at: now };
+}
