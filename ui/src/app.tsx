@@ -1586,6 +1586,7 @@ function App(): JSX.Element {
       client.on('ledger:issue:reopened', ledgerHandler),
       client.on('ledger:comment:created', ledgerHandler),
       client.on('ledger:comment:updated', ledgerHandler),
+      client.on('ledger:comment:deleted', ledgerHandler),
       client.on('ledger:label:updated', ledgerHandler),
       client.on('daemon:reloaded', daemonHandler),
       client.on('console:session:created', handler),

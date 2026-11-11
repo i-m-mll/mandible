@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Db } from "../db.js";
 import { getDbPath } from "../db.js";
-import { MAX_ATTACHMENT_BYTES, MAX_MESSAGE_ATTACHMENTS, type AnnotationTarget, type ChatAttachment, type StoredAttachmentFile } from "./attachments.js";
+import { MAX_ANNOTATION_TEXT, MAX_ATTACHMENT_BYTES, MAX_MESSAGE_ATTACHMENTS, type AnnotationTarget, type ChatAttachment, type StoredAttachmentFile } from "./attachments.js";
 
 type Row = StoredAttachmentFile;
 
@@ -39,6 +39,42 @@ function checkMedia(name: string, mediaType: string, bytes: Buffer): void {
   }
   if (!plainText(bytes)) throw new AttachmentValidationError("Text/code attachment is not valid UTF-8 text");
 }
+
+/** The text of an annotation, as Chat attachments and interface notes accept it. */
+export function validatedAnnotationText(value: unknown): string {
+  if (typeof value !== "string" || !value.trim() || value.length > MAX_ANNOTATION_TEXT) {
+    throw new AttachmentValidationError("Annotation metadata is invalid");
+  }
+  return value;
+}
+
+/** The element context of an annotation, rebuilt from only its known fields. */
+export function validatedAnnotationTarget(value: unknown): AnnotationTarget {
+  const target = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  const rect = target?.rect as Record<string, unknown> | null;
+  const viewport = target?.viewport as Record<string, unknown> | null;
+  const finite = (v: unknown) => typeof v === "number" && Number.isFinite(v);
+  if (!target || typeof target.url !== "string" || !target.url || target.url.length > 2_000
+      || !rect || ![rect.x, rect.y, rect.width, rect.height].every(finite) || (rect.width as number) < 0 || (rect.height as number) < 0
+      || !viewport || ![viewport.width, viewport.height].every(finite) || (viewport.width as number) <= 0 || (viewport.height as number) <= 0
+      || ANNOTATION_TEXT_FIELDS.some((key) => target[key] !== undefined && (typeof target[key] !== "string" || (target[key] as string).length > 2_000))) {
+    throw new AttachmentValidationError("Annotation metadata is invalid");
+  }
+  const canonical: AnnotationTarget = {
+    url: target.url,
+    rect: { x: rect.x as number, y: rect.y as number, width: rect.width as number, height: rect.height as number },
+    viewport: { width: viewport.width as number, height: viewport.height as number },
+  };
+  for (const key of ANNOTATION_TEXT_FIELDS) {
+    if (typeof target[key] === "string") canonical[key] = target[key] as string;
+  }
+  return canonical;
+}
+
+const ANNOTATION_TEXT_FIELDS = [
+  "selector", "element_text", "element", "source_file", "react_components", "css_classes",
+  "computed_styles", "selected_text", "nearby_text", "revision",
+] as const satisfies ReadonlyArray<Exclude<keyof AnnotationTarget, "url" | "rect" | "viewport">>;
 
 export class ChatAttachmentStore {
   private readonly root: string;
@@ -111,39 +147,15 @@ export class ChatAttachmentStore {
         return { kind: attachment.kind, file };
       }
       if (attachment.kind !== "annotation") throw new AttachmentValidationError("Unsupported attachment kind");
-      const target = attachment.target as Record<string, unknown> | null;
-      const rect = target?.rect as Record<string, unknown> | null;
-      const viewport = target?.viewport as Record<string, unknown> | null;
-      const finite = (v: unknown) => typeof v === "number" && Number.isFinite(v);
       if (typeof attachment.id !== "string" || !attachment.id || attachment.id.length > 128
-          || !Number.isSafeInteger(attachment.ordinal) || (attachment.ordinal as number) < 1
-          || typeof attachment.text !== "string" || !attachment.text.trim() || attachment.text.length > 10_000
-          || !target || typeof target.url !== "string" || !target.url || target.url.length > 2_000
-          || !rect || ![rect.x, rect.y, rect.width, rect.height].every(finite) || (rect.width as number) < 0 || (rect.height as number) < 0
-          || !viewport || ![viewport.width, viewport.height].every(finite) || (viewport.width as number) <= 0 || (viewport.height as number) <= 0
-          || [target.selector, target.element_text, target.revision, target.element, target.source_file,
-            target.react_components, target.css_classes, target.computed_styles, target.selected_text,
-            target.nearby_text].some((v) => v !== undefined && (typeof v !== "string" || v.length > 2_000))) {
+          || !Number.isSafeInteger(attachment.ordinal) || (attachment.ordinal as number) < 1) {
         throw new AttachmentValidationError("Annotation metadata is invalid");
       }
+      const text = validatedAnnotationText(attachment.text);
+      const canonicalTarget = validatedAnnotationTarget(attachment.target);
       const screenshot = attachment.screenshot === undefined ? undefined : resolveFile(attachment.screenshot);
       if (screenshot && !screenshot.media_type.startsWith("image/")) throw new AttachmentValidationError("Annotation screenshot must be an image");
-      const canonicalTarget: AnnotationTarget = {
-        url: target.url as string,
-        rect: { x: rect.x as number, y: rect.y as number, width: rect.width as number, height: rect.height as number },
-        viewport: { width: viewport.width as number, height: viewport.height as number },
-        ...(typeof target.selector === "string" ? { selector: target.selector } : {}),
-        ...(typeof target.element_text === "string" ? { element_text: target.element_text } : {}),
-        ...(typeof target.element === "string" ? { element: target.element } : {}),
-        ...(typeof target.source_file === "string" ? { source_file: target.source_file } : {}),
-        ...(typeof target.react_components === "string" ? { react_components: target.react_components } : {}),
-        ...(typeof target.css_classes === "string" ? { css_classes: target.css_classes } : {}),
-        ...(typeof target.computed_styles === "string" ? { computed_styles: target.computed_styles } : {}),
-        ...(typeof target.selected_text === "string" ? { selected_text: target.selected_text } : {}),
-        ...(typeof target.nearby_text === "string" ? { nearby_text: target.nearby_text } : {}),
-        ...(typeof target.revision === "string" ? { revision: target.revision } : {}),
-      };
-      return { kind: "annotation", id: attachment.id, ordinal: attachment.ordinal as number, text: attachment.text,
+      return { kind: "annotation", id: attachment.id, ordinal: attachment.ordinal as number, text,
         target: canonicalTarget, ...(screenshot ? { screenshot } : {}) };
     });
   }

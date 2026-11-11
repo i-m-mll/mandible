@@ -1,5 +1,6 @@
 import * as z from "zod";
 import { LEDGER_EVENT_VALUES, type LedgerDomainEvent } from "./ledger/event-contract.js";
+import { INTERFACE_NOTE_CHANGED_EVENT, type InterfaceNoteChangedPayload } from "./interface-notes/contract.js";
 import { SPACE_EVENTS, SPACE_EVENT_VALUES } from "./spaces/events.js";
 // Shared API/UI contracts. Keep this module dependency-light so daemon and
 // browser UI code can import its types without dragging in runtime services.
@@ -79,6 +80,7 @@ export const DOMAIN_EVENTS = Object.freeze({
   DASHBOARD_BADGES: "dashboard:badges",
   HEARTBEAT: "heartbeat",
   INBOX_ACKNOWLEDGED: "inbox:acknowledged",
+  INTERFACE_NOTE_CHANGED: INTERFACE_NOTE_CHANGED_EVENT,
   MANDIBLE_REBUILDING: "mandible:rebuilding",
   MANDIBLE_REBUILD_FAILED: "mandible:rebuild-failed",
   PUSH_AUTH_COMPLETE: "push:auth:complete",
@@ -155,6 +157,7 @@ export type EventPayload<E extends MandibleEventType> =
   : E extends typeof DOMAIN_EVENTS.WORK_SCAN_COMPLETED ? WorkScanSummary
   : E extends typeof DOMAIN_EVENTS.DASHBOARD_BADGES ? DashboardBadgeCounts
   : E extends typeof DOMAIN_EVENTS.INBOX_ACKNOWLEDGED ? InboxAcknowledged
+  : E extends typeof DOMAIN_EVENTS.INTERFACE_NOTE_CHANGED ? InterfaceNoteChangedPayload
   : E extends typeof DOMAIN_EVENTS.WORK_REPO_SCANNED ? WorkRepoScan
   : E extends `briefing:group-${string}` ? { group_id: string; [key: string]: unknown }
   : E extends `briefing:bundle-${string}` ? { bundle_id: string; [key: string]: unknown }
@@ -2567,6 +2570,7 @@ const eventPayloadSchemas = new Map<MandibleEventType, z.ZodType>([
   [DOMAIN_EVENTS.WORK_SCAN_COMPLETED, WORK_SCAN_PAYLOAD],
   [DOMAIN_EVENTS.DASHBOARD_BADGES, DASHBOARD_BADGE_COUNTS],
   [DOMAIN_EVENTS.INBOX_ACKNOWLEDGED, INBOX_ACKNOWLEDGED_PAYLOAD],
+  [DOMAIN_EVENTS.INTERFACE_NOTE_CHANGED, z.object({ ids: z.array(z.string().min(1)), issue_id: z.string().min(1).nullable() }).strict()],
   [DOMAIN_EVENTS.WORK_REPO_SCANNED, WORK_REPO_SCAN_PAYLOAD],
   ...[DOMAIN_EVENTS.SESSION_REGISTERED, DOMAIN_EVENTS.SESSION_UPDATED, DOMAIN_EVENTS.SESSION_ENDED,
     ].map((event): [MandibleEventType, z.ZodType] => [event, scopedChange("id")]),

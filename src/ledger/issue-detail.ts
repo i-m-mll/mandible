@@ -1,4 +1,6 @@
 import { displayIssueId } from "./issue-graph.js";
+import { listIssueInterfaceNotes } from "../interface-notes/read.js";
+import type { InterfaceNote } from "../interface-notes/contract.js";
 import type { Db } from "../db.js";
 import { tableExists } from "../db-introspection.js";
 import {
@@ -126,6 +128,14 @@ export function buildLedgerIssueDetailProjectionWithProfile(
     : measure("comments", () => (
         db.prepare("SELECT * FROM ledger_comments WHERE issue_id = ? ORDER BY created_at").all(issueId) as LedgerComment[]
       ));
+  const notesByComment = measure("interface_notes", () => {
+    const grouped = new Map<string, InterfaceNote[]>();
+    for (const note of listIssueInterfaceNotes(db, issueId)) {
+      if (note.owner.kind !== "comment") continue;
+      grouped.set(note.owner.comment_id, [...grouped.get(note.owner.comment_id) ?? [], note]);
+    }
+    return grouped;
+  });
   const comments = rawComments
     .filter((comment) => comment.deleted_at === null)
     .map((comment) => ({
@@ -143,6 +153,7 @@ export function buildLedgerIssueDetailProjectionWithProfile(
       source: comment.source,
       created_at: comment.created_at,
       updated_at: comment.updated_at,
+      notes: notesByComment.get(comment.id) ?? [],
     }));
   const rawCheckpoints = stage === "initial"
     ? []
@@ -295,6 +306,7 @@ function buildInitialTimeline(
       source: comment.source,
       created_at: comment.created_at,
       updated_at: comment.updated_at,
+      notes: comment.notes,
     })),
   ];
 }
@@ -728,6 +740,7 @@ function buildTimeline(
       source: comment.source,
       created_at: comment.created_at,
       updated_at: comment.updated_at,
+      notes: comment.notes,
     });
   }
 

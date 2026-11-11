@@ -989,6 +989,7 @@ function fallbackTimeline(detail: LedgerIssueDetailProjection): LedgerIssueTimel
       source: comment.source,
       created_at: comment.created_at,
       updated_at: comment.updated_at,
+      notes: comment.notes,
     })),
     ...(detail.checkpoints ?? []).map((checkpoint) => ({
       id: checkpoint.id,

@@ -1,4 +1,4 @@
-import { annotationAttachmentText, type AnnotationTarget, type ChatAttachment } from "../conversation-control/attachments.js";
+import { annotationAttachmentText, MAX_ANNOTATION_TEXT, type AnnotationTarget, type ChatAttachment } from "../conversation-control/attachments.js";
 
 /**
  * Interface notes: annotations made with the Agentation toolbar on Mandible's own
@@ -96,16 +96,18 @@ export const INTERFACE_NOTE_ERRORS = {
   note_filed: 409,
   /** DELETE from a comment: that comment does not own the note. */
   note_owner_mismatch: 409,
-  /** POST, PATCH: the text, target or pin fails validation. */
+  /** POST, PATCH: the text, target or pin fails validation; POST file: the request is malformed. */
   invalid_note: 400,
   /** POST file: the issue ref does not resolve. */
   issue_not_found: 404,
   /** POST file with `new_issue`: `interface_notes_project` is unset or does not resolve. */
   receiving_project_unset: 409,
+  /** POST file: every listed note was filed or deleted meanwhile; no comment or issue is created. */
+  nothing_to_file: 409,
 } as const;
 export type InterfaceNoteErrorCode = keyof typeof INTERFACE_NOTE_ERRORS;
 
-export const MAX_INTERFACE_NOTE_TEXT = 10_000;
+export const MAX_INTERFACE_NOTE_TEXT = MAX_ANNOTATION_TEXT;
 
 /** The attachment shape every pill, preview, Chat draft and text renderer consumes. */
 export function interfaceNoteAttachment(note: InterfaceNote, ordinal: number): Extract<ChatAttachment, { kind: "annotation" }> {

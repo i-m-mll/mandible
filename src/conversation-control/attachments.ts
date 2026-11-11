@@ -30,6 +30,7 @@ export type ChatAttachment =
 
 export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 export const MAX_MESSAGE_ATTACHMENTS = 16;
+export const MAX_ANNOTATION_TEXT = 10_000;
 
 /** The one text form of an annotation, for providers and for comments that carry interface notes. */
 export function annotationAttachmentText(attachment: Extract<ChatAttachment, { kind: "annotation" }>): string {

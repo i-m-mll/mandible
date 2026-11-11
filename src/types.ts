@@ -465,6 +465,8 @@ export interface GitBugIssue {
   /** Canonical source issue ids for every active parent-child edge. */
   parent_ids?: string[];
   parent_relationships?: GitBugIssueParentRelationship[];
+  /** Present only on `GET /api/issues?has_notes=true`: the interface notes the issue carries and when they last changed. */
+  interface_notes?: { count: number; last_at: number };
 }
 
 export interface GitBugIssueParentRelationship {
