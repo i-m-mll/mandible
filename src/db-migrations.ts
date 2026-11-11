@@ -31,7 +31,6 @@ import {
   CONVERSATION_SIDEBAR_INDEX_SQL,
   PROJECT_ISSUE_READ_INDEX_SQL,
   ARTIFACT_BLOB_CONTENT_HASH_INDEX_SQL,
-  AUTH_REQUEST_UNACKNOWLEDGED_INDEX_SQL,
   AUTH_REQUEST_HISTORY_INDEX_SQL,
   GRAPH_READ_INDEX_SQL,
   ISSUE_EVENT_READ_INDEX_SQL,
@@ -39,7 +38,7 @@ import {
   USER_SETTINGS_SCHEMA_SQL,
 } from "./db-baseline.js";
 import type { Db } from "./db.js";
-import { AUTH_SNAPSHOT_SHAPE_V212, authRequestSnapshot } from "./auth-request-snapshot.js";
+import { AUTH_SNAPSHOT_SHAPE_V212, AUTH_SNAPSHOT_SHAPE_V221, AUTH_SNAPSHOT_SHAPE_V238, authRequestSnapshot } from "./auth-request-snapshot.js";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { CONVERSATION_CONTROL_SCHEMA_V163_SQL, CONVERSATION_CONTROL_PENDING_IDENTITY_MIGRATION_SQL, CONVERSATION_CONTROL_KNOWN_OWNERSHIP_MIGRATION_SQL } from "./conversation-control/schema.js";
@@ -2209,7 +2208,9 @@ export const MIGRATIONS: readonly Migration[] = [
   ] },
   { version: 213, name: "project_issue_read_indexes", statements: [...PROJECT_ISSUE_READ_INDEX_SQL] },
   { version: 214, name: "artifact_blob_content_hash_index", statements: [ARTIFACT_BLOB_CONTENT_HASH_INDEX_SQL] },
-  { version: 215, name: "auth_request_unacknowledged_index", statements: [AUTH_REQUEST_UNACKNOWLEDGED_INDEX_SQL] },
+  { version: 215, name: "auth_request_unacknowledged_index", statements: [
+    "CREATE INDEX idx_auth_requests_unacknowledged ON auth_requests(status) WHERE acknowledged_by IS NULL",
+  ] },
   { version: 216, name: "graph_read_indexes", statements: [
     "DROP INDEX idx_ledger_comments_issue_created",
     ...GRAPH_READ_INDEX_SQL,
@@ -2281,6 +2282,55 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 235, name: "interface_notes", statements: [...INTERFACE_NOTES_SCHEMA_SQL] },
   { version: 236, name: "notifications", statements: [...NOTIFICATIONS_SCHEMA_SQL] },
   { version: 237, name: "preview_teardown_action", statements: [...AUTH_REQUEST_ACTIONS_REBUILD_SQL], requires_foreign_keys_off: true },
+  { version: 238, name: "retire_delivery_columns", statements: [
+    // Requests whose latest revision still matches their row get one revision
+    // in the shape without these columns, so lifecycle compare-and-swap keeps
+    // holding. An approved or executing request keeps its frozen approval as
+    // its latest revision, which the runtime handoff proof binds.
+    `CREATE TEMP TABLE auth_snapshot_rebase AS
+       SELECT r.id FROM auth_requests r
+       JOIN auth_request_lifecycle_events e ON e.auth_request_id = r.id
+        AND e.revision = (SELECT MAX(revision) FROM auth_request_lifecycle_events WHERE auth_request_id = r.id)
+       WHERE r.status NOT IN ('approved', 'executing')
+         AND e.snapshot_sha256 = mandible_sha256(mandible_auth_request_snapshot_v221(r.id))`,
+    "DROP INDEX idx_auth_requests_target_session",
+    "DROP INDEX idx_auth_requests_conversation_id",
+    "DROP INDEX idx_auth_requests_unacknowledged",
+    "DROP INDEX sessions_channel_idx",
+    "ALTER TABLE auth_requests DROP COLUMN acknowledged_by",
+    "ALTER TABLE auth_requests DROP COLUMN target_session_id",
+    "ALTER TABLE auth_requests DROP COLUMN delivered_at",
+    "ALTER TABLE auth_requests DROP COLUMN conversation_id",
+    "ALTER TABLE sessions DROP COLUMN continuation",
+    "ALTER TABLE sessions DROP COLUMN continuation_acked_by",
+    "ALTER TABLE sessions DROP COLUMN channel_connected_at",
+    "ALTER TABLE sessions DROP COLUMN channel_last_tool_call",
+    "ALTER TABLE work_units DROP COLUMN continuation",
+    "ALTER TABLE work_units DROP COLUMN continuation_by",
+    "ALTER TABLE work_units DROP COLUMN continuation_at",
+    "ALTER TABLE console_sessions DROP COLUMN channel_enabled",
+    "DELETE FROM settings WHERE key IN ('inbox.project_grace_days', 'inbox.global_grace_days')",
+    `WITH rebased AS (
+       SELECT r.id, ar.status, ar.custody_work_unit_id, wu.custody_generation,
+         mandible_auth_request_snapshot_v238(r.id) AS snapshot_json,
+         (SELECT MAX(revision) + 1 FROM auth_request_lifecycle_events WHERE auth_request_id = r.id) AS revision
+       FROM temp.auth_snapshot_rebase r
+       JOIN auth_requests ar ON ar.id = r.id
+       LEFT JOIN work_units wu ON wu.id = ar.custody_work_unit_id
+     )
+     INSERT INTO auth_request_lifecycle_events (
+       id, auth_request_id, revision, event_type, prior_status, next_status,
+       snapshot_json, snapshot_sha256, reason, custody_work_unit_id, custody_generation,
+       authority_path, occurred_at
+     )
+     SELECT lower(hex(randomblob(16))), id, revision, 'revised', status, status,
+       snapshot_json, mandible_sha256(snapshot_json),
+       'Schema v238 removed the retired delivery columns from the request snapshot.',
+       custody_work_unit_id, CASE WHEN custody_work_unit_id IS NULL THEN NULL ELSE custody_generation END,
+       'legacy', CAST(unixepoch('subsec') * 1000 AS INTEGER)
+     FROM rebased`,
+    "DROP TABLE temp.auth_snapshot_rebase",
+  ] },
 ];
 
 /**
@@ -2548,8 +2598,10 @@ export function migrate(db: Db, through: number = CURRENT_SCHEMA_VERSION): void 
   db.function("mandible_artifact_metadata", { deterministic: true }, artifactDescriptiveMetadataJson);
   db.function("mandible_sha256", { deterministic: true }, (value: unknown) =>
     createHash("sha256").update(String(value)).digest("hex"));
-  // v212 reclassifies rows at the v212 schema, so it hashes the v212 shape.
+  // Each migration that writes revisions hashes the shape of its own schema version.
   db.function("mandible_auth_request_snapshot_v212", {}, (id: unknown) => authRequestSnapshot(db, String(id), AUTH_SNAPSHOT_SHAPE_V212));
+  db.function("mandible_auth_request_snapshot_v221", {}, (id: unknown) => authRequestSnapshot(db, String(id), AUTH_SNAPSHOT_SHAPE_V221));
+  db.function("mandible_auth_request_snapshot_v238", {}, (id: unknown) => authRequestSnapshot(db, String(id), AUTH_SNAPSHOT_SHAPE_V238));
   assertMigrationSequence();
   if (BASELINE_SCHEMA_VERSION !== CURRENT_SCHEMA_VERSION) {
     throw new Error(
