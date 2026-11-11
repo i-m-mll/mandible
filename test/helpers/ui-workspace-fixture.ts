@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, vi } from 'vitest';
 import { h } from 'preact';
 import { fixtureView, finishUiFixtures, jsonFixture, StrictUiFixture, type FixtureHandler } from './strict-ui-fixture';
 import { USER_SETTING_KEYS, type UserSettingKey } from '../../src/contracts';
+import { INTERFACE_NOTE_ROUTES } from '../../src/interface-notes/contract';
 import type { UserSettingSnapshot } from '../../src/user-settings';
 import type { AppThemePreference } from '../../ui/src/api';
 
@@ -316,6 +317,7 @@ export function appStartupFixtures(): FixtureHandler[] {
   return [
     { name: 'app settings', method: 'GET', path: '/api/settings', respond: () => jsonFixture({}) },
     { name: 'cold health', method: 'GET', path: '/api/health', respond: () => jsonFixture({ ready: true, warm: false }) },
+    { name: 'interface notes', method: 'GET', path: INTERFACE_NOTE_ROUTES.collection, respond: () => jsonFixture({ notes: [] }) },
     { name: 'dashboard badges', method: 'GET', path: '/api/dashboard/badges', respond: () => jsonFixture({ auth: 3, briefing: 2, inbox: 1, work: 0, incidents: 0, tasks: 0 }) },
     { name: 'app theme', method: 'GET', path: '/api/host-preferences/app-theme', respond: () => jsonFixture({ version: 1, key: 'app_theme', value: null, revision: 0 } satisfies AppThemePreference) },
     ...Object.values(USER_SETTING_KEYS).map(key => ({

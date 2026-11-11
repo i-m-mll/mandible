@@ -165,7 +165,8 @@ import {
 import { normalizeSidebarGroupLimit } from './components/shared/sidebar-group-settings';
 import { queryClient } from './query/client';
 import { applyConversationSse } from './query/conversationSse';
-import { AgentationPreview } from './annotation/AgentationPreview';
+import { AgentationHost } from './annotation/AgentationHost';
+import { startInterfaceNotes } from './annotation/interfaceNotesStore';
 import { AgentationToggleButton } from './annotation/AgentationToggleButton';
 import type { ConversationAppendPayload } from './query/conversationData';
 import {
@@ -544,6 +545,7 @@ function App(): JSX.Element {
   const [clientAccess, setClientAccess] = useState(getClientAccessState);
   const [accessEverReady, setAccessEverReady] = useState(clientAccess.phase === 'ready');
   const accessReady = clientAccess.phase === 'ready';
+  useEffect(() => (accessReady ? startInterfaceNotes() : undefined), [accessReady]);
   useEffect(() => {
     const unsubscribe = subscribeClientAccessState((next) => {
       setClientAccess(next);
@@ -2919,7 +2921,7 @@ function App(): JSX.Element {
           ) : null}
         </AppFrame>
       </AppShellProvider>
-      {agentationVisible && <AgentationPreview />}
+      {agentationVisible && <AgentationHost />}
     </>
   );
 }

@@ -15,7 +15,7 @@ export const detailKeys = {
 
 export function detailKeysForEvent(type: string) {
   const families: (typeof detailKeys.issues | typeof detailKeys.artifacts)[] = [];
-  if (/^(ledger:|session:|console:session:|work:|push:|conversation:|space:|artifact:|briefing:|auth:)/.test(type) && type !== 'auth:output') {
+  if (/^(ledger:|interface_note:|session:|console:session:|work:|push:|conversation:|space:|artifact:|briefing:|auth:)/.test(type) && type !== 'auth:output') {
     families.push(detailKeys.issues);
   }
   if (type.startsWith('artifact:') || type === 'briefing:round-published') families.push(detailKeys.artifacts);
