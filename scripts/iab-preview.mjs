@@ -10,7 +10,7 @@ import { installedRuntimeEnvironment, readInstalledRelease, releaseFile } from '
 import { probeJson } from './local-runtime.mjs';
 import https from 'node:https';
 import { localCaPaths } from './local-ca-trust.mjs';
-import { trackedSourceDigest } from './build-revision.mjs';
+import { SOURCE_PATHS, trackedSourceDigest } from './build-revision.mjs';
 import http from "node:http";
 import net from "node:net";
 import os from "node:os";
@@ -291,6 +291,7 @@ async function createOrReusePreview(options) {
   ownership.acquisition.worktree = { ...ownership.acquisition.worktree, path: worktree, state: 'acquired', identity: { dev: worktreeStat.dev, ino: worktreeStat.ino } };
   ownership.revision++;
   saveOwnedMetadata(preview.metadata, { branch, worktree, previewRoot: preview.root, sourceDb, db: dbCopy, ownership });
+  assertCommittedSource(worktree);
   if (!options.noBuild) {
     if (options.effects?.build) await options.effects.build(worktree);
     else { ensureDependencies(worktree); runBun(worktree, ["run", "--bun", "build"]); }
@@ -1377,6 +1378,7 @@ async function ensurePreviewLifecycle(metadata, preview, options, observedHealth
 }
 
 async function refreshExistingPreview(existing, details) {
+  assertCommittedSource(details.worktree);
   const preview = previewPaths(details.branch);
   if (!existing.ownership || !ownedRunIdentityMatches(preview.root, existing.ownership)) throw new Error("Refresh requires exact owned run custody");
   for (const consumer of existing.ownership.consumers ?? []) {
@@ -2451,6 +2453,13 @@ function run(command, commandArgs, options = {}) {
   }
 
   return result;
+}
+
+/** A preview's revision names the commit it was built from, so it is built only from committed sources. */
+function assertCommittedSource(worktree) {
+  const status = git(["status", "--porcelain", "--untracked-files=all", "--", ...SOURCE_PATHS], { cwd: worktree });
+  const dirty = status.stdout.split("\n").filter(Boolean).map((line) => line.slice(3));
+  if (dirty.length) throw new Error(`Refusing preview build: commit these changes in ${worktree} first: ${dirty.join(", ")}`);
 }
 
 function git(commandArgs, options = {}) {

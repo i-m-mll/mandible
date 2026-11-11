@@ -343,7 +343,10 @@ async function exercisePreviewLifecycle(legacy = false) {
     staleReporting.refreshedAt = '2000-01-01T00:00:00.000Z';
     staleReporting.status = 'refreshed'; staleReporting.ok = true;
     saveOwnedMetadata(metadataFile, staleReporting);
-    fs.writeFileSync(path.join(repository, 'src', 'candidate.txt'), 'candidate'); git(['add', '.']); git(['commit', '-m', 'next candidate']);
+    fs.writeFileSync(path.join(repository, 'src', 'candidate.txt'), 'candidate');
+    fs.appendFileSync(path.join(repository, 'src', 'index.ts'), '\n// candidate edit\n');
+    await assert.rejects(main(options), /commit these changes in .* first: src\/index\.ts, src\/candidate\.txt$/);
+    git(['add', '.']); git(['commit', '-m', 'next candidate']);
     failReload = 2;
     await assert.rejects(main(options), /Refresh failed/);
     last = read(path.join(original.previewRoot, 'metadata.json'));
