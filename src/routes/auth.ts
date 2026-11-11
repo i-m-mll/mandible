@@ -1046,9 +1046,6 @@ function parseAuthRequestPayload(body: Record<string, unknown>): AuthRequestInpu
     issues: parseStringArray(body.issues),
     depends_on_ids: body.depends_on_ids as string[] | undefined,
     execution_mode: executionMode,
-    // Bug: 4e32923 — accept scoping fields from the CLI; null/missing means
-    // legacy behaviour (broadcast on resolution, no tier-1 ownership).
-    target_session_id: typeof body.target_session_id === "string" ? body.target_session_id : null,
     target_repo_root: typeof body.target_repo_root === "string" ? body.target_repo_root : null,
     // Bug: 6d7411b — conversation_id for cross-resume matching
     conversation_id: typeof body.conversation_id === "string" ? body.conversation_id : null,

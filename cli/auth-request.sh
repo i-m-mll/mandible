@@ -262,19 +262,9 @@ case "$auth_type" in
     ;;
 esac
 
-# --- Bug: 4e32923 — scoped delivery fields ---
-# target_session_id: the Mandible session that owns this request (so the MCP
-# channel server can forward the auth:resolved event only to it).
-# target_repo_root: the protected-branch worktree path. Used for tier-2 inbox
-# scoping (any session in the same project) once the project grace window passes.
-target_session_id="${MANDIBLE_SESSION_ID:-}"
-# Requester attribution uses the provider-native session id already carried by
-# the CLI's allowlisted ambient identity contract. Keep this distinct from the
-# Mandible target session above, which only scopes resolution notifications.
+# Requester attribution uses the provider-native session id carried by the
+# CLI's allowlisted ambient identity contract.
 requester_session_id=$(api_current_agent_ref)
-# Bug: 6d7411b — conversation_id persists across Claude Code resumes, unlike
-# MANDIBLE_SESSION_ID which is regenerated on each channel-server restart.
-# Stored alongside the auth request so the new session can match on it.
 conversation_id="${CLAUDE_CODE_SESSION_ID:-}"
 
 # --- Build issue relationship JSON arrays ---
@@ -346,7 +336,6 @@ payload=$(jq -nc \
   --arg expected_custody_generation "$expected_custody_generation" \
   --argjson superseded_action_dispositions "$superseded_action_dispositions_json" \
   --arg session_id "$requester_session_id" \
-  --arg target_session_id "$target_session_id" \
   --arg target_repo_root "$target_repo_root" \
   --arg conversation_id "$conversation_id" \
   --arg space_publication_id "$space_publication_id" \
@@ -377,7 +366,6 @@ payload=$(jq -nc \
     expected_custody_generation: (if $expected_custody_generation == "" then null else ($expected_custody_generation | tonumber) end),
     superseded_action_dispositions: $superseded_action_dispositions,
     session_id: (if $session_id == "" then null else $session_id end),
-    target_session_id: (if $target_session_id == "" then null else $target_session_id end),
     target_repo_root: (if $target_repo_root == "" then null else $target_repo_root end),
     conversation_id: (if $conversation_id == "" then null else $conversation_id end),
     protected_root_dirty_action: $protected_root_dirty_action

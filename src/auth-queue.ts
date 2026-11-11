@@ -2064,9 +2064,7 @@ export class AuthQueue {
         output: "",
         error: null,
         acknowledged_by: null,
-        // Bug: 4e32923 — scope auth result delivery to the originating session +
-        // its repo root, with null falling back to legacy broadcast behaviour.
-        target_session_id: payload.target_session_id ?? null,
+        target_session_id: null,
         target_repo_root: payload.target_repo_root ?? null,
         delivered_at: null,
         // Bug: 6d7411b — conversation_id persists across Claude Code resumes
@@ -5686,14 +5684,13 @@ export class AuthQueue {
               // auth result (the merge already succeeded).
               if (result.exit_code === 0 && (await this.successfulMergeEvidenceFailure(this.requireRequest(request.id))) === null) await this.runPostSuccessHooks(request);
               // Store result and broadcast auth:resolved BEFORE scheduling
-              // any self-rebuild exit, so the channel server receives the
-              // SSE event while the daemon is still alive.
+              // any self-rebuild exit, while the daemon is still alive.
               (await this.storeExecutionResult(request.id, result, null, execution));
               // Bug: 87dfff0 — after hooks complete (build finished), schedule
               // a graceful exit so launchd respawns with the new code.
               // Bug: 03d6cb0 — delay increased to 2s (from 0.5s) and moved
               // after storeExecutionResult so the auth:resolved SSE broadcast
-              // has time to reach the channel server before the daemon exits.
+              // has time to reach clients before the daemon exits.
               if (this.disposed || !this.isDbOpen()) return;
               const completed = this.requireRequest(request.id);
               if (completed.status !== "completed") return;
@@ -6035,16 +6032,12 @@ export class AuthQueue {
       convergence: convergence.state,
     });
 
-    // Notify the originating session (and every other listener) that the
-    // merged/live distinction moved. The channel server filters this by
-    // target_session_id exactly as it filters auth:resolved.
     this.broadcast({
       event: DOMAIN_EVENTS.AUTH_CONVERGENCE,
       data: {
         request_id: request.id,
         convergence: convergence.state,
         hooks: convergence.hooks,
-        target_session_id: request.target_session_id ?? null,
         conversation_id: request.conversation_id ?? null,
         repo: request.repo ?? null,
         head_branch: request.head_branch ?? null,
@@ -6333,8 +6326,7 @@ export class AuthQueue {
       }
     }
     // Issue ff784d8 — the exact restart tail starts immediately before exit,
-    // after durable result publication and drain. Disconnected channels replay
-    // undelivered results on reconnect.
+    // after durable result publication and drain.
     if (admitted && await this.hookManager.admittedDrainIdentity(selfRequestId) !== admitted) {
       this.activeConvergenceDrain = null;
       if (!this.failedConvergenceDrain) this._rebuilding = false;
@@ -6517,7 +6509,7 @@ export class AuthQueue {
 
     this.assertObservation(finalized.id, directObservation);
 
-    // Stage 2 complete — consumers (channel server, UI) observe resolved
+    // Stage 2 complete — consumers (UI) observe resolved
     // ledger/work-unit state here. Shape/semantics unchanged from before.
     this.broadcast({ event: DOMAIN_EVENTS.AUTH_RESOLVED, data: this.buildResolvedPayload(finalized) });
 
@@ -8484,16 +8476,8 @@ export class AuthQueue {
       error: request.error,
       error_output: errorOutput,
       resolved_at: request.resolved_at,
-      // Bug: 4e32923 — include title and head_branch so the channel-server
-      // can build a meaningful `notifications/claude/channel` payload without
-      // a follow-up fetch. Pre-existing logging-message formatter already
-      // reads these fields; they were missing from the payload before.
       title: request.title ?? null,
       head_branch: request.head_branch ?? null,
-      // Bug: 4e32923 — emit owner session id so the MCP channel server can
-      // filter auth:resolved events to only the originating session (and
-      // legacy unscoped rows still broadcast via target_session_id == null).
-      target_session_id: request.target_session_id,
       // Bug: 6d7411b — emit conversation_id so the channel server can match
       // events across session restarts within the same conversation.
       conversation_id: request.conversation_id,

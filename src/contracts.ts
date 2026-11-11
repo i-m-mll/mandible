@@ -247,7 +247,6 @@ export const AUTH_RESOLVED_PAYLOAD = z.object({
   resolved_at: z.number().nullable(),
   title: z.string().nullable(),
   head_branch: z.string().nullable(),
-  target_session_id: z.string().min(1).nullable(),
   conversation_id: z.string().min(1).nullable(),
 }).passthrough().superRefine((payload, ctx) => {
   const outcome = computeAuthRequestOutcome(payload.status);
