@@ -270,5 +270,3 @@ describe("auth merge Mandible preflight", () => {
   });
 
 });
-
-// Child issue 8921e84: docs-branch promotion via a short-lived proxy branch.

@@ -18,8 +18,16 @@ const STATE_LABELS: Record<UnfinishedState, string> = {
   pending: "Pending", failed: "Failed", withheld: "Withheld", kept: "Kept",
 };
 
+const MAX_REASON = 120;
+
 function short(id: string): string {
   return id.slice(0, 8);
+}
+
+/** A reason as one bounded line; the request itself holds the rest. */
+function brief(text: string): string {
+  const line = text.replace(/\s+/g, " ").trim();
+  return line.length > MAX_REASON ? `${line.slice(0, MAX_REASON - 1)}…` : line;
 }
 
 function count(n: number, one: string, many: string): string {
@@ -27,7 +35,7 @@ function count(n: number, one: string, many: string): string {
 }
 
 function status(report: OutcomeReport): string {
-  const why = (prefix: string) => report.reason ? `${prefix}: ${report.reason}` : prefix;
+  const why = (prefix: string) => report.reason ? `${prefix}: ${brief(report.reason)}` : prefix;
   switch (report.status) {
     case "completed": return report.merge_commit ? `merged as ${short(report.merge_commit)}` : "completed";
     case "rejected": return why("rejected");
@@ -51,7 +59,7 @@ function member(step: OutcomeStep): string {
 function reason(step: OutcomeStep, base: string): string | null {
   if (step.kind === "branch_removal" && step.reason) return BRANCH_REASONS[step.reason](base);
   if (step.kind === "preview_teardown" && step.reason === "not_merged") return BRANCH_REASONS.not_merged(base);
-  return step.reason?.replaceAll("_", " ") ?? null;
+  return step.reason ? brief(step.reason.replaceAll("_", " ")) : null;
 }
 
 /** A teardown's members are branch names, like branch removal's; its label says which. */

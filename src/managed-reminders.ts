@@ -155,28 +155,6 @@ function occurrenceFromRow(row: OccurrenceRow | undefined): ManagedReminderOccur
   };
 }
 
-/** A reminder's occurrences: the durable record that it fired. */
-export function listManagedReminderOccurrences(
-  db: Db,
-  filter: { projectId?: string } = {},
-): ManagedReminderOccurrence[] {
-  const clauses: string[] = [];
-  const params: unknown[] = [];
-  if (filter.projectId) {
-    clauses.push("task.project_id = ?");
-    params.push(filter.projectId);
-  }
-  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-  const rows = db.prepare(
-    `SELECT occurrence.*
-       FROM managed_task_occurrences occurrence
-       JOIN managed_tasks task ON task.id = occurrence.task_id
-      ${where}
-      ORDER BY occurrence.created_at DESC, occurrence.id DESC`,
-  ).all(...params) as OccurrenceRow[];
-  return rows.map((row) => occurrenceFromRow(row) as ManagedReminderOccurrence);
-}
-
 function reminderFromRow(db: Db, row: ReminderJoinedRow): ManagedReminder {
   const occurrence = db.prepare(
     `SELECT * FROM managed_task_occurrences

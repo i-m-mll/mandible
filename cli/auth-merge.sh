@@ -43,12 +43,6 @@ usage() {
   mandible_command_help auth merge
 }
 
-# Promotion proxy branches (promote/docs/<ts>) are deliberately disposable: a
-# proxy is cut from the long-lived docs-branch head purely to feed the auth
-# queue, so the post-merge worktree cleanup tears down only the proxy, never the
-# long-lived docs worktree. The proxy therefore takes the NORMAL cleanup path
-# (no preserve flag); the guards below exist to protect the docs worktree if a
-# docs branch is ever merged directly. See child issue 8921e84.
 
 strip_ansi() {
   printf "%s" "$1" | sed -E 's/\x1B\[[0-9;]*m//g'

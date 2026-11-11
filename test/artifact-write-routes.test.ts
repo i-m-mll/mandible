@@ -18,7 +18,7 @@ import { saveArtifactDraft, getArtifactDraft } from "../src/provider-artifacts.j
 import { recordArtifactVersion } from "./helpers/artifact-http-write-fixtures.js";
 import { getArtifactCurrentSource } from "../src/artifact-source.js";
 import { resolveInstanceInfo } from "../src/instance-policy.js";
-import { STANDARD_PREVIEW_EFFECTS, validatePreviewWritableRoots } from "../src/security/effect-policy.js";
+import { validatePreviewWritableRoots } from "../src/security/effect-policy.js";
 import { readArtifactBytesFull } from "../src/artifact-content.js";
 import { registerProviderRoutes } from "../src/routes/providers.js";
 import { createUser, setupOperator } from "../src/users/store.js";
@@ -116,7 +116,6 @@ describe("artifact write authorization", () => {
         MANDIBLE_PUBLIC_ORIGIN: "https://preview-0123456789abcdef.mandible.localhost:19421",
         MANDIBLE_BACKEND_GENERATION: "preview-test",
         MANDIBLE_PREVIEW_ROOT: previewRoot,
-        MANDIBLE_ALLOWED_EFFECTS: JSON.stringify(STANDARD_PREVIEW_EFFECTS),
         MANDIBLE_ARTIFACT_DIR: previewCas,
         MANDIBLE_USER_PREFERENCES_DIR: previewPreferences,
         MANDIBLE_INSTANCE_SOURCE_ARTIFACT_DIR: sourceCas,

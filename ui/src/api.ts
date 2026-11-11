@@ -997,11 +997,6 @@ export async function patchSession(sessionId: string, body: Record<string, unkno
   return parseMaybeJson(response);
 }
 
-export async function getAuthQueue<T>(): Promise<T[]> {
-  const payload = await cachedApiGetJson<ApiList<T>>('/api/auth/queue', WARMED_ROUTE_GET_OPTIONS);
-  return normalizeList(payload);
-}
-
 export async function refreshAuthQueue<T>(signal?: AbortSignal): Promise<T[]> {
   invalidateApiGetCache((key) => key === cacheKeyForGet('/api/auth/queue'));
   const payload = await cachedApiGetJson<ApiList<T>>('/api/auth/queue', { ...WARMED_ROUTE_GET_OPTIONS, signal });

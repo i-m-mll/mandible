@@ -181,17 +181,6 @@ export function getBoolSetting(key: string, defaultValue: boolean): boolean {
   return row.value === "true";
 }
 
-/** Get an integer setting with fallback default. */
-export function getIntSetting(key: string, defaultValue: number): number {
-  const db = getDb();
-  const row = db
-    .prepare("SELECT value FROM settings WHERE key = ?")
-    .get(key) as { value: string } | undefined;
-  if (!row) return defaultValue;
-  const parsed = parseInt(row.value, 10);
-  return Number.isFinite(parsed) ? parsed : defaultValue;
-}
-
 /** Get a string setting with fallback default. */
 export function getStrSetting(key: string, defaultValue: string): string {
   const db = getDb();

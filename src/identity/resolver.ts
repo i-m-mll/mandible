@@ -270,7 +270,7 @@ export function resolveProviderSessionAttributionResult(
 }
 
 /**
- * Resolve an auth/inbox session reference using the same fail-closed binding
+ * Resolve an auth session reference using the same fail-closed binding
  * rules as live session writes. The session id itself is a
  * `provider_session_env` signal; when the Mandible session row exists, its app
  * is an additional claim that must resolve to the same user.

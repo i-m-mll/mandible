@@ -2310,6 +2310,9 @@ export const MIGRATIONS: readonly Migration[] = [
     "ALTER TABLE work_units DROP COLUMN continuation_at",
     "ALTER TABLE console_sessions DROP COLUMN channel_enabled",
     "DELETE FROM settings WHERE key IN ('inbox.project_grace_days', 'inbox.global_grace_days')",
+    // The Notifications view takes the Inbox view's saved place in the app rail.
+    `UPDATE user_settings SET value = replace(value, '"inbox"', '"notifications"'), revision = revision + 1
+      WHERE key = 'app_rail_order' AND instr(value, '"inbox"') > 0`,
     `WITH rebased AS (
        SELECT r.id, ar.status, ar.custody_work_unit_id, wu.custody_generation,
          mandible_auth_request_snapshot_v238(r.id) AS snapshot_json,

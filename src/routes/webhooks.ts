@@ -178,22 +178,6 @@ function tryRouteByBranch(
     }
   }
 
-  // Then check tracked sessions (third-class: external agents)
-  const db = getDb();
-  const trackedSession = db
-    .prepare(
-      `SELECT id FROM sessions
-       WHERE branch = ? AND status = 'active'
-       ORDER BY updated_at DESC LIMIT 1`
-    )
-    .get(branch) as { id: string } | undefined;
-
-  if (trackedSession) {
-    // Found an active tracked session on the branch, but we can't send
-    // prompts to third-class sessions — queue as inbox item instead
-    return null;
-  }
-
   return null;
 }
 

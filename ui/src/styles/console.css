@@ -110,52 +110,6 @@
   border-top: 1px solid rgba(77,163,255,0.18);
 }
 
-/* ── View toggle ── */
-
-.view-toggle {
-  display: inline-flex;
-  border: 1px solid var(--neutral-alpha-10);
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.view-toggle__btn {
-  padding: 4px 12px;
-  background: transparent;
-  border: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  font-size: 12px;
-  font-family: var(--font-sans);
-  transition: background 0.15s ease, color 0.15s ease;
-}
-
-.view-toggle__btn--active {
-  background: var(--bg-card);
-  color: var(--accent-blue);
-}
-
-.view-toggle__btn:hover:not(.view-toggle__btn--active) {
-  background: var(--neutral-alpha-04);
-  color: var(--text-primary);
-}
-
-/* Bug: b5e1c51 — Events tab button with badge support */
-.view-toggle__btn--events {
-  position: relative;
-}
-
-.view-toggle__badge {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent-blue);
-  pointer-events: none;
-}
-
 /* ── Tab twin (segmented Chat + History button in tab bar) ── */
 
 .tab-twin {

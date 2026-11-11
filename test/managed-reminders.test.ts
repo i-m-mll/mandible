@@ -8,7 +8,6 @@ import {
   cancelManagedReminder,
   createManagedReminder,
   getManagedReminder,
-  listManagedReminderOccurrences,
   reconcileManagedReminders,
 } from "../src/managed-reminders.js";
 import { countUnreadUserNotifications, raiseOpenUserNotifications } from "../src/notices/user-notifications.js";
@@ -91,7 +90,6 @@ describe("managed reminder service", () => {
       created_by_user_id: userId,
       fired_by_user_id: SYSTEM_USER_ID,
     });
-    expect(listManagedReminderOccurrences(db, { projectId })).toHaveLength(1);
     expect(db.prepare("SELECT COUNT(*) AS count FROM managed_task_revisions").get())
       .toEqual({ count: 1 });
     expect(db.prepare(
