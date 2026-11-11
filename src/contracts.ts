@@ -247,7 +247,6 @@ export const AUTH_RESOLVED_PAYLOAD = z.object({
   resolved_at: z.number().nullable(),
   title: z.string().nullable(),
   head_branch: z.string().nullable(),
-  conversation_id: z.string().min(1).nullable(),
 }).passthrough().superRefine((payload, ctx) => {
   const outcome = computeAuthRequestOutcome(payload.status);
   if (outcome === null) {
@@ -573,11 +572,7 @@ export type AuthRequest = {
   exit_code: number | null;
   output: string;
   error: string | null;
-  acknowledged_by: string | null;
-  target_session_id: string | null;
   target_repo_root: string | null;
-  delivered_at: number | null;
-  conversation_id: string | null;
   approval_source: "manual" | "auto_lease" | string;
   approval_lease_id: string | null;
 };

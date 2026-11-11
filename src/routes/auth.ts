@@ -1047,8 +1047,6 @@ function parseAuthRequestPayload(body: Record<string, unknown>): AuthRequestInpu
     depends_on_ids: body.depends_on_ids as string[] | undefined,
     execution_mode: executionMode,
     target_repo_root: typeof body.target_repo_root === "string" ? body.target_repo_root : null,
-    // Bug: 6d7411b — conversation_id for cross-resume matching
-    conversation_id: typeof body.conversation_id === "string" ? body.conversation_id : null,
     actions: body.actions === undefined ? undefined : body.actions as AuthRequestInput["actions"],
     supersedes_request_id: typeof body.supersedes_request_id === "string" ? body.supersedes_request_id : null,
     superseded_action_dispositions: Array.isArray(body.superseded_action_dispositions)

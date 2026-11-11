@@ -42,7 +42,7 @@ import { startDaemon } from "../src/index.js";
 import { checkHealth } from "../src/lifecycle.js";
 import { readArtifactBytesFull } from "../src/artifact-content.js";
 import { appendAuthLifecycleEvent, listAuthExecutionAttempts, listAuthLifecycleEvents } from "../src/auth-lifecycle.js";
-import { AUTH_SNAPSHOT_SHAPE_V220, authRequestSnapshot, authSnapshotDigest } from "../src/auth-request-snapshot.js";
+import { AUTH_SNAPSHOT_SHAPE_V220, AUTH_SNAPSHOT_SHAPE_V221, authRequestSnapshot, authSnapshotDigest } from "../src/auth-request-snapshot.js";
 import { buildMetadataBackupSql } from "../src/ledger/backup.js";
 import { readLedgerChangeFeed } from "../src/ledger/change-feed.js";
 import { addProject } from "../src/ledger/project-registry.js";
@@ -1134,8 +1134,9 @@ describe("v212 failed execution state", () => {
       expect(events[1]).toMatchObject({
         revision: 2, event_type: "revised", prior_status: "completed", next_status: "failed", authority_path: "legacy",
       });
-      expect(events[1].snapshot_sha256).toBe(authSnapshotDigest(authRequestSnapshot(db, "failed-request")));
-      expect(listAuthLifecycleEvents(db, "merged-request")).toHaveLength(1);
+      expect(JSON.parse(events[1].snapshot_json).request.status).toBe("failed");
+      expect(events.at(-1)!.snapshot_sha256).toBe(authSnapshotDigest(authRequestSnapshot(db, "failed-request")));
+      expect(listAuthLifecycleEvents(db, "merged-request").map((event) => event.next_status)).not.toContain("failed");
       expect(listAuthExecutionAttempts(db, "failed-request")).toEqual([{
         revision: 1, occurred_at: 2, result: "failed", exit_code: 1,
         failure_reason: "signing failed: user presence not confirmed; no ref changed",
@@ -1143,6 +1144,45 @@ describe("v212 failed execution state", () => {
       appendAuthLifecycleEvent(db, { requestId: "failed-request", eventType: "failed", priorStatus: "executing", nextStatus: "failed", occurredAt: 3 });
       expect(() => db.prepare("UPDATE auth_request_lifecycle_events SET reason = 'x'").run()).toThrow("immutable");
       expect(() => db.prepare("DELETE FROM auth_request_lifecycle_events").run()).toThrow("immutable");
+      expect(db.pragma("foreign_key_check")).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("v238 delivery column retirement", () => {
+  it("rebases the snapshot only where compare-and-swap held, keeping frozen approvals and every historical digest", () => {
+    const db = migrateFixtureThrough(237);
+    try {
+      const insert = db.prepare(`INSERT INTO auth_requests (id, command, title, status, created_at, updated_at, expires_at,
+        target_session_id, conversation_id, acknowledged_by) VALUES (?, 'mandible auth merge feature/x --into main', ?, ?, 1, 2, 3, 'old-session', 'old-conversation', ?)`);
+      const record = (id: string, nextStatus: string) => {
+        const snapshot = authRequestSnapshot(db, id, AUTH_SNAPSHOT_SHAPE_V221);
+        db.prepare(`INSERT INTO auth_request_lifecycle_events (id, auth_request_id, revision, event_type, next_status,
+          snapshot_json, snapshot_sha256, occurred_at) VALUES (?, ?, 1, 'submitted', ?, ?, ?, 1)`)
+          .run(`${id}-receipt`, id, nextStatus, snapshot, authSnapshotDigest(snapshot));
+      };
+      insert.run("pending-request", "Pending", "pending", null);
+      record("pending-request", "pending");
+      insert.run("executing-request", "Executing", "executing", null);
+      record("executing-request", "executing");
+      insert.run("drifted-request", "Drifted", "completed", null);
+      record("drifted-request", "completed");
+      db.prepare("UPDATE auth_requests SET delivered_at = 5, acknowledged_by = 'session-1' WHERE id = 'drifted-request'").run();
+      const before = db.prepare("SELECT * FROM auth_request_lifecycle_events ORDER BY auth_request_id, revision").all();
+
+      migrate(db);
+
+      const after = db.prepare("SELECT * FROM auth_request_lifecycle_events ORDER BY auth_request_id, revision").all() as Array<{ snapshot_json: string; snapshot_sha256: string }>;
+      for (const event of after) expect(sha256(event.snapshot_json)).toBe(event.snapshot_sha256);
+      for (const event of before) expect(after).toContainEqual(event);
+      const pending = listAuthLifecycleEvents(db, "pending-request");
+      expect(pending).toHaveLength(2);
+      expect(pending[1]).toMatchObject({ revision: 2, event_type: "revised", prior_status: "pending", next_status: "pending", authority_path: "legacy" });
+      expect(pending[1].snapshot_sha256).toBe(authSnapshotDigest(authRequestSnapshot(db, "pending-request")));
+      expect(listAuthLifecycleEvents(db, "executing-request")).toHaveLength(1);
+      expect(listAuthLifecycleEvents(db, "drifted-request")).toHaveLength(1);
       expect(db.pragma("foreign_key_check")).toEqual([]);
     } finally {
       db.close();
@@ -1251,12 +1291,12 @@ it("preserves pending review bytes and lifecycle history when prerequisite sets 
       VALUES ('preserved-event', 'pending-preserved', 1, 'submitted', NULL, 'pending', ?, ?, 'system', 2)`).run(snapshot, digest);
     const row = db.prepare("SELECT * FROM auth_requests WHERE id = 'pending-preserved'").get() as Record<string, unknown>;
     const history = db.prepare("SELECT * FROM auth_request_lifecycle_events WHERE auth_request_id = 'pending-preserved'").all();
-    migrate(db);
+    migrate(db, 221);
     const { depends_on_ids, ...after } = db.prepare("SELECT * FROM auth_requests WHERE id = 'pending-preserved'").get() as Record<string, unknown>;
     expect(depends_on_ids).toBeNull();
     expect(after).toEqual(row);
-    expect(authRequestSnapshot(db, "pending-preserved")).toBe(snapshot);
-    expect(authSnapshotDigest(authRequestSnapshot(db, "pending-preserved"))).toBe(digest);
+    expect(authRequestSnapshot(db, "pending-preserved", AUTH_SNAPSHOT_SHAPE_V221)).toBe(snapshot);
+    expect(authSnapshotDigest(authRequestSnapshot(db, "pending-preserved", AUTH_SNAPSHOT_SHAPE_V221))).toBe(digest);
     expect(db.prepare("SELECT * FROM auth_request_lifecycle_events WHERE auth_request_id = 'pending-preserved'").all()).toEqual(history);
   } finally { db.close(); }
 });
@@ -1276,7 +1316,7 @@ it("migrates responsibility without changing reviewed candidates, approval evide
     const request = db.prepare("SELECT * FROM auth_requests WHERE id = 'reviewed-request'").get();
     const history = listAuthLifecycleEvents(db, "reviewed-request");
     const reviewed = authRequestSnapshot(db, "reviewed-request");
-    migrate(db);
+    migrate(db, 227);
     expect(db.prepare("SELECT * FROM auth_requests WHERE id = 'reviewed-request'").get()).toEqual(request);
     expect(authRequestSnapshot(db, "reviewed-request")).toBe(reviewed);
     expect(listAuthLifecycleEvents(db, "reviewed-request")).toEqual(history);

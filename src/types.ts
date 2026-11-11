@@ -213,9 +213,6 @@ export interface Session {
   ended_at: string | null;
   // Bug: e01653d — real user activity time from JSONL transcript mtime
   last_active: string | null;
-  // Bug: 0b454df — channel-connected session tracking
-  channel_connected_at: number | null;
-  channel_last_tool_call: number | null;
   owner_user_id: string | null;
   owner?: ReadUserIdentity | null;
   // Issue 499c148 — set when this session's client token and its session
@@ -308,12 +305,8 @@ export interface AuthRequest {
   exit_code: number | null;
   output: string;
   error: string | null;
-  acknowledged_by: string | null;
-  target_session_id: string | null;
+  /** The protected checkout the merge runs in. */
   target_repo_root: string | null;
-  delivered_at: number | null;
-  // Bug: 6d7411b — conversation_id persists across Claude Code resumes
-  conversation_id: string | null;
   approval_source: "manual" | "auto_lease" | string;
   approval_lease_id: string | null;
   clearance_use_id?: string | null;
@@ -416,8 +409,6 @@ export interface AuthRequestInput {
   depends_on_ids?: string[];
   execution_mode?: AuthExecutionMode;
   target_repo_root?: string | null;
-  // Bug: 6d7411b — conversation_id persists across Claude Code resumes
-  conversation_id?: string | null;
   actions?: AuthRequestActionInput[];
   /** Verified request-boundary provenance; route-owned, never caller-authored. */
   requester_evidence_method?: string | null;

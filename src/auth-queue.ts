@@ -177,13 +177,12 @@ const RECENT_RESOLVED_MS = 60 * 60 * 1000; // Show resolved items for 1 hour
 
 /**
  * Issue cc8fe29 — every return to `pending` clears the previous attempt's
- * result together with its inbox delivery and acknowledgement watermarks, so
- * the next result is delivered as new. Parameters: expires_at, updated_at.
+ * result. Parameters: expires_at, updated_at.
  */
 const RETURN_TO_PENDING_ASSIGNMENTS =
   "status = 'pending', resolved_at = NULL, approved_at = NULL, approved_by_user_id = NULL, " +
   "execution_evidence_id = NULL, approval_source = 'manual', approval_lease_id = NULL, " +
-  "exit_code = NULL, error = NULL, output = '', delivered_at = NULL, acknowledged_by = NULL, " +
+  "exit_code = NULL, error = NULL, output = '', " +
   "expires_at = ?, updated_at = ?";
 
 
@@ -2064,12 +2063,7 @@ export class AuthQueue {
         exit_code: null,
         output: "",
         error: null,
-        acknowledged_by: null,
-        target_session_id: null,
         target_repo_root: payload.target_repo_root ?? null,
-        delivered_at: null,
-        // Bug: 6d7411b — conversation_id persists across Claude Code resumes
-        conversation_id: payload.conversation_id ?? null,
         approval_source: "manual",
         approval_lease_id: null,
         clearance_use_id: null,
@@ -2130,11 +2124,7 @@ export class AuthQueue {
         exit_code,
         output,
         error,
-        acknowledged_by,
-        target_session_id,
         target_repo_root,
-        delivered_at,
-        conversation_id,
         approval_source,
         approval_lease_id,
         clearance_use_id,
@@ -2192,11 +2182,7 @@ export class AuthQueue {
         @exit_code,
         @output,
         @error,
-        @acknowledged_by,
-        @target_session_id,
         @target_repo_root,
-        @delivered_at,
-        @conversation_id,
         @approval_source,
         @approval_lease_id,
         @clearance_use_id,
@@ -5691,7 +5677,7 @@ export class AuthQueue {
               // a graceful exit so launchd respawns with the new code.
               // Bug: 03d6cb0 — delay increased to 2s (from 0.5s) and moved
               // after storeExecutionResult so the auth:resolved SSE broadcast
-              // has time to reach clients before the daemon exits.
+              // has time to reach subscribers before the daemon exits.
               if (this.disposed || !this.isDbOpen()) return;
               const completed = this.requireRequest(request.id);
               if (completed.status !== "completed") return;
@@ -6039,7 +6025,6 @@ export class AuthQueue {
         request_id: request.id,
         convergence: convergence.state,
         hooks: convergence.hooks,
-        conversation_id: request.conversation_id ?? null,
         repo: request.repo ?? null,
         head_branch: request.head_branch ?? null,
         title: request.title ?? null,
@@ -6510,7 +6495,7 @@ export class AuthQueue {
 
     this.assertObservation(finalized.id, directObservation);
 
-    // Stage 2 complete — consumers (UI) observe resolved
+    // Stage 2 complete — consumers (UI, notices) observe resolved
     // ledger/work-unit state here. Shape/semantics unchanged from before.
     this.broadcast({ event: DOMAIN_EVENTS.AUTH_RESOLVED, data: this.buildResolvedPayload(finalized) });
 
@@ -7471,7 +7456,7 @@ export class AuthQueue {
     // approving human is carried as the authorizer in the attached evidence.
     const actor = {
       actor_type: "agent" as const,
-      actor_id: request.session_id ?? request.target_session_id ?? null,
+      actor_id: request.session_id ?? null,
       author_display: "Mandible auth action",
       attribution: this.finalizationAttribution(request),
     };
@@ -8052,7 +8037,7 @@ export class AuthQueue {
     const batch = new AncestryBatch();
     const retirementBefore = now - this.workUnitAbandonedScanRetentionMs;
     const readRetirement = () => this.workUnitsHaveRetirementColumn()
-      ? (this.db.prepare("SELECT * FROM work_units WHERE state = 'abandoned' AND merge_scan_retired_at IS NULL AND COALESCE(last_commit_at, continuation_at, activated_at, created_at) < ? ORDER BY id").all(retirementBefore) as Record<string, unknown>[]).map(row => ["id", "repo_id", "branch", "state", "last_commit_at", "continuation_at", "activated_at", "created_at", "auth_request_id", "owner_user_id", "responsibility_session_id", "custody_generation", "resolved_at"].map(key => row[key] ?? null))
+      ? (this.db.prepare("SELECT * FROM work_units WHERE state = 'abandoned' AND merge_scan_retired_at IS NULL AND COALESCE(last_commit_at, activated_at, created_at) < ? ORDER BY id").all(retirementBefore) as Record<string, unknown>[]).map(row => ["id", "repo_id", "branch", "state", "last_commit_at", "activated_at", "created_at", "auth_request_id", "owner_user_id", "responsibility_session_id", "custody_generation", "resolved_at"].map(key => row[key] ?? null))
       : [];
     const retirementState = JSON.stringify(readRetirement());
     const scan = await this.workUnitsMergedByRequest(completed, batch);
@@ -8095,7 +8080,7 @@ export class AuthQueue {
           const retired = this.db.prepare(
             `UPDATE work_units SET merge_scan_retired_at = ?
              WHERE state = 'abandoned' AND merge_scan_retired_at IS NULL
-               AND COALESCE(last_commit_at, continuation_at, activated_at, created_at) < ?`
+               AND COALESCE(last_commit_at, activated_at, created_at) < ?`
           ).run(now, retireCutoff);
           if (retired.changes > 0) {
             authLog("info", "auth_work_units_scan_retired", {
@@ -8528,9 +8513,6 @@ export class AuthQueue {
       resolved_at: request.resolved_at,
       title: request.title ?? null,
       head_branch: request.head_branch ?? null,
-      // Bug: 6d7411b — emit conversation_id so the channel server can match
-      // events across session restarts within the same conversation.
-      conversation_id: request.conversation_id,
       execution_evidence_id: request.execution_evidence_id,
       signature_verification: this.signatureVerificationForRequest(request),
       // Issue 27241e6 — merged is not the same as live. Consumers that treat

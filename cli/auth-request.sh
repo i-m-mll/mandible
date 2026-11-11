@@ -270,10 +270,9 @@ case "$auth_type" in
     ;;
 esac
 
-# Requester attribution uses the provider-native session id carried by the
-# CLI's allowlisted ambient identity contract.
+# Requester attribution uses the provider-native session id already carried by
+# the CLI's allowlisted ambient identity contract.
 requester_session_id=$(api_current_agent_ref)
-conversation_id="${CLAUDE_CODE_SESSION_ID:-}"
 
 # --- Build issue relationship JSON arrays ---
 # Bug: 7b83c1f — reference-only issues are distinct from close-on-merge issues.
@@ -353,7 +352,6 @@ payload=$(jq -nc \
   --argjson superseded_action_dispositions "$superseded_action_dispositions_json" \
   --arg session_id "$requester_session_id" \
   --arg target_repo_root "$target_repo_root" \
-  --arg conversation_id "$conversation_id" \
   --arg space_publication_id "$space_publication_id" \
   --argjson issue_references "$issue_references_json" \
   --argjson issue_closures "$issue_closures_json" \
@@ -383,7 +381,6 @@ payload=$(jq -nc \
     superseded_action_dispositions: $superseded_action_dispositions,
     session_id: (if $session_id == "" then null else $session_id end),
     target_repo_root: (if $target_repo_root == "" then null else $target_repo_root end),
-    conversation_id: (if $conversation_id == "" then null else $conversation_id end),
     protected_root_dirty_action: $protected_root_dirty_action
   } + (if $supersedes_request_id != "" and ($depends_on_ids | length) == 0 then {} else {depends_on_ids:$depends_on_ids} end)
     + (if $space_publication_id == "" then {} else {space_publication_id:$space_publication_id} end)')

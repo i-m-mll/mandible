@@ -589,7 +589,7 @@ describe("work unit routes", () => {
     db.prepare(`UPDATE conversations SET parent_source='claude_code',parent_session_id=?,parent_conversation_id='retained-parent',
       opening_lineage='child',opening_line=? WHERE id='retained-chat'`)
       .run(parentNative, `[mandible child parent=claude:${parentNative} parent-role=coordinator role=worker]`);
-    mutateWorkUnit(db, units[0]!, () => db.prepare("UPDATE work_units SET continuation = ? WHERE id = ?").run("Keep responsibility", units[0]));
+    mutateWorkUnit(db, units[0]!, () => db.prepare("UPDATE work_units SET parent_branch = ? WHERE id = ?").run("integration/retained", units[0]));
     const bound = db.prepare("SELECT * FROM work_units WHERE id = ?").get(units[0]) as Record<string, unknown>;
     expect(bound.worker_provider).toBe("claude_code");
     expect(hasArchivedResponsibility(db, bound)).toBe(true);
