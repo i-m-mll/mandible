@@ -96,7 +96,6 @@ export async function stageAppPayload(contents) {
   copy(path.join(root, 'scripts/bundle-services.json'), path.join(resources, 'scripts/bundle-services.json'));
   stageBundleServices(contents, buildBundleService(root));
   const runtime = run('/bin/sh', [path.join(root, 'scripts/bun-runtime.sh')]);
-  run(runtime, ['build', path.join(root, 'channel-server/index.ts'), '--target', 'bun', '--outfile', path.join(resources, 'channel/bridge.mjs')]);
   fs.mkdirSync(path.join(resources, 'handoff'), { recursive: true });
   for (const [source, name] of [['scripts/runtime-handoff.mjs', 'helper.mjs']]) {
     run(runtime, ['build', path.join(root, source), '--target', 'bun', '--outfile', path.join(resources, 'handoff', name)]);
@@ -139,7 +138,7 @@ esac
     layout: { kind: 'macos-app', roots: { resources: '.', executables: '../MacOS', libraries: '../Frameworks', agents: '../Library/LaunchAgents' } },
     target: `${process.platform}-${process.arch}`, provenance: { ...provenance, summary: commitInfo[0], date: commitInfo[1], bun_revision: run(runtime, ['--revision']) },
     qualification: { bun_sha256: hash(runtime), sqlite_sha256: hash(sqlite), caddy_sha256: hash(caddy) },
-    entrypoints: { daemon: 'dist/index.js', cli: 'bin/mandible', channel: 'channel/bridge.mjs', controller: 'scripts/local-runtime.mjs', trustSetup: 'scripts/local-ca-trust.mjs', service: 'scripts/bundle-service.mjs' },
+    entrypoints: { daemon: 'dist/index.js', cli: 'bin/mandible', controller: 'scripts/local-runtime.mjs', trustSetup: 'scripts/local-ca-trust.mjs', service: 'scripts/bundle-service.mjs' },
     resources: { ...Object.fromEntries(['backend', 'gateway'].map(role => [`${role}Agent`, `../Library/LaunchAgents/${bundleServiceLabel(role)}.plist`])), mandibleSkill: 'cli/skills/mandible/SKILL.md' },
     serviceExecutables: { backend: 'bun', gateway: 'caddy' }, serviceControlProtocol: 2, native, signing };
   fs.writeFileSync(path.join(resources, 'release.json'), `${JSON.stringify(inventoryRelease(resources, release), null, 2)}\n`);

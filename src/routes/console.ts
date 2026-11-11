@@ -21,7 +21,7 @@ import {
 
 // Bug: 81c9d85 — enrich ConsoleSession with is_processing from SDKBackend state
 function requireTerminalMutation(res: ResponseLike, session: { meta: ConsoleSession }): boolean {
-  if (session.meta.backend_type === "pty" && !session.meta.channel_enabled) return true;
+  if (session.meta.backend_type === "pty") return true;
   sendJson(res, 410, { error: "conversation_control_required", provider_session_id: session.meta.provider_session_id, message: "Use this conversation in Chats for managed operations." });
   return false;
 }
@@ -194,7 +194,7 @@ export function registerConsoleRoutes(
   // ------------------------------------------------------------------
   server.post("/api/console/sessions", globalCapabilityRoute("spawn_console", async (_req, res) => {
     const body = (_req.body ?? {}) as Record<string, unknown>;
-    if (body.backend_type && body.backend_type !== "pty" || body.provider_session_id || body.channel_enabled || body.transport_lane && body.transport_lane !== "pty") {
+    if (body.backend_type && body.backend_type !== "pty" || body.provider_session_id || body.transport_lane && body.transport_lane !== "pty") {
       return sendJson(res, 422, { error: "managed_conversation_required", message: "Create Claude and Codex Chats through conversation-spawns." });
     }
     if (typeof body.command !== "string" || !body.command.trim() || body.args !== undefined && (!Array.isArray(body.args) || !body.args.every((value) => typeof value === "string"))) {

@@ -409,16 +409,6 @@ export function checkLiveness(session: Session, readStart: PidStartReader = cach
     return "dead";
   }
 
-  // Bug: 0b454df — channel-connected sessions: liveness is based on tool call
-  // freshness rather than PID, since the MCP channel server runs in a separate
-  // process that Mandible doesn't own. If channel_connected_at is set but there
-  // is no PID, use channel_last_tool_call for staleness.
-  if (session.channel_connected_at && !session.pid) {
-    const lastToolCall = session.channel_last_tool_call ?? session.channel_connected_at;
-    const CHANNEL_STALE_MS = 5 * 60 * 1000; // 5 minutes
-    return (Date.now() - lastToolCall) < CHANNEL_STALE_MS ? "alive" : "dead";
-  }
-
   if (!session.pid) {
     const updatedAt = new Date(session.updated_at).getTime();
     const ageMs = Date.now() - updatedAt;

@@ -1,9 +1,8 @@
 import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 /**
  * Scoped auth-result delivery (Bug: 4e32923): the inbox tiers (owner, project
- * after its grace window, global after its grace window), the channel-server
- * filter that delivers only to the owning session, the undelivered route and
- * startup catch-up, the server-evidence checks on auth merge submission, and
+ * after its grace window, global after its grace window), the undelivered
+ * route, the server-evidence checks on auth merge submission, and
  * acknowledgement attribution.
  */
 
@@ -244,8 +243,6 @@ describe("inbox tier query (auth_results)", () => {
 
 // --- Delivered endpoint tests -------------------------------------------
 
-// --- Channel-server filter tests ----------------------------------------
-
 // --- Undelivered endpoint + startup catch-up tests ----------------------
 
 describe("GET /api/inbox/undelivered (Bug: 4e32923)", () => {
@@ -342,110 +339,6 @@ describe("GET /api/inbox/undelivered (Bug: 4e32923)", () => {
     expect(rows.map((r) => r.id)).toEqual(["r-conv-match"]);
   });
 
-});
-
-describe("channel-server startup catch-up (Bug: 4e32923)", () => {
-  it("fetches undelivered rows, sends channel events, and marks each delivered", async () => {
-    const mod = await import("../src/channel/catchup.js");
-    const sent: Array<{ method?: string; params?: unknown }> = [];
-    const delivered: string[] = [];
-    const mockServer = {
-      notification: async (notif: { method?: string; params?: unknown }) => {
-        sent.push(notif);
-      },
-    } as unknown as Parameters<typeof mod.runStartupCatchUp>[0]["mcpServer"];
-
-    await mod.runStartupCatchUp({
-      sessionId: "session-A",
-      mcpServer: mockServer,
-      fetchUndelivered: async (id) => {
-        expect(id).toBe("session-A");
-        return [
-          {
-            id: "r1",
-            head_branch: "feature/x",
-            status: "completed",
-            exit_code: 0,
-            resolved_at: 1,
-            title: "Merge feature/x",
-            target_session_id: "session-A",
-          },
-          {
-            id: "r2",
-            head_branch: "feature/y",
-            status: "rejected",
-            exit_code: 1,
-            resolved_at: 2,
-            title: "Merge feature/y",
-            target_session_id: "session-A",
-          },
-        ];
-      },
-      markDelivered: async (id) => {
-        delivered.push(id);
-      },
-      log: () => {},
-    });
-
-    expect(sent.map((n) => n.method)).toEqual([
-      "notifications/claude/channel",
-      "notifications/claude/channel",
-    ]);
-    expect(delivered).toEqual(["r1", "r2"]);
-    // The first channel event should encode the branch and status.
-    const firstParams = sent[0].params as { content: string; meta: Record<string, string> };
-    expect(firstParams.content).toContain("feature/x");
-    expect(firstParams.meta.status).toBe("completed");
-  });
-
-  // Bug: 6d7411b — startup catch-up passes conversation_id to fetchUndelivered
-
-  it("continues replaying when a single markDelivered call fails", async () => {
-    const mod = await import("../src/channel/catchup.js");
-    const sent: unknown[] = [];
-    const delivered: string[] = [];
-    const logs: string[] = [];
-    const mockServer = {
-      notification: async (notif: unknown) => {
-        sent.push(notif);
-      },
-    } as unknown as Parameters<typeof mod.runStartupCatchUp>[0]["mcpServer"];
-
-    await mod.runStartupCatchUp({
-      sessionId: "session-A",
-      mcpServer: mockServer,
-      fetchUndelivered: async () => [
-        {
-          id: "r1",
-          head_branch: null,
-          status: "completed",
-          exit_code: 0,
-          resolved_at: 1,
-          title: null,
-          target_session_id: "session-A",
-        },
-        {
-          id: "r2",
-          head_branch: null,
-          status: "completed",
-          exit_code: 0,
-          resolved_at: 2,
-          title: null,
-          target_session_id: "session-A",
-        },
-      ],
-      markDelivered: async (id) => {
-        if (id === "r1") throw new Error("transient");
-        delivered.push(id);
-      },
-      log: (line) => logs.push(line),
-    });
-    // Both events were sent regardless.
-    expect(sent).toHaveLength(2);
-    // Only r2 marked delivered (r1 raised); r1 will resurface next start.
-    expect(delivered).toEqual(["r2"]);
-    expect(logs.join("")).toContain("r1");
-  });
 });
 
 // --- CLI submission payload test ----------------------------------------

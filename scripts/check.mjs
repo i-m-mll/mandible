@@ -53,7 +53,7 @@ const checks = {
   // grep treats a file with a NUL byte as binary and reports no match, so one
   // pasted separator silently blinds every grep-based audit (issue ee0055a).
   'source files contain no NUL bytes'() {
-    const files = ['src', 'ui/src', 'cli', 'channel-server', 'scripts', 'test', 'docs'].flatMap((root) =>
+    const files = ['src', 'ui/src', 'cli', 'scripts', 'test', 'docs'].flatMap((root) =>
       walk(root, (file) => TEXT_EXTENSIONS.has(path.extname(file))),
     );
     if (files.length < 200) return [`walked only ${files.length} files; the walk is broken`];

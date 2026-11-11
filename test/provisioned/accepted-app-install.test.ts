@@ -186,15 +186,13 @@ const file=path.join(process.env.HOME,'.cache/mandible',role+'.json');
 const pulse=()=>{const active=path.join(process.env.HOME,'.mandible/config/local-sessions/handoff-active.json');if(fs.existsSync(active)){const owner=JSON.parse(fs.readFileSync(active));const handoff=JSON.parse(fs.readFileSync(owner.journal));if(handoff.acknowledgedAt&&handoff.bridgeInstalled&&handoff.attempt?.effects.prepare?.completedAt&&handoff.binding.oldProcess.pid===process.pid)process.exit(0);}const next=file+'.'+process.pid;fs.writeFileSync(next,JSON.stringify({pid:process.pid,generation:release.provenance.commit,role,root,at:Date.now()}));fs.renameSync(next,file);};
 pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInterval(timer);process.exit(0);});
 `);
-      fs.mkdirSync(path.join(resources, 'channel'));
-      fs.copyFileSync(path.join(candidateApp, 'Contents/Resources', candidateRelease.entrypoints.channel), path.join(resources, 'channel/bridge.mjs'));
       const native = { bun: '../MacOS/mandible-bun', caddy: '../MacOS/mandible-caddy', serviceHelper: '../MacOS/mandible-service' };
-      const files = Object.fromEntries(['foreground.mjs', 'service-fixture.json', 'channel/bridge.mjs', ...Object.values(native)].map(relative => [relative, installedFileIdentity(path.resolve(resources, relative))]));
+      const files = Object.fromEntries(['foreground.mjs', 'service-fixture.json', ...Object.values(native)].map(relative => [relative, installedFileIdentity(path.resolve(resources, relative))]));
       checkDeadline(`generation ${pin} inventory`);
       fs.writeFileSync(path.join(resources, 'release.json'), JSON.stringify({ schema: 'mandible-installed-release@1', version: String(index + 1), target: `${process.platform}-${process.arch}`,
         layout: { kind: 'macos-app', roots: { resources: '.', executables: '../MacOS', agents: '../Library/LaunchAgents' } },
-        provenance: { commit: candidate.pin_sha, source_digest: pin.repeat(64) }, entrypoints: { daemon: 'foreground.mjs', service: 'foreground.mjs', channel: 'channel/bridge.mjs' },
-        qualification: { bun_sha256: candidateRelease.qualification.bun_sha256 }, channelRuntimePolicy: candidateRelease.channelRuntimePolicy, serviceExecutables: { backend: 'bun', gateway: 'caddy' }, ...(index ? { serviceControlProtocol: 2 } : {}), native, files }));
+        provenance: { commit: candidate.pin_sha, source_digest: pin.repeat(64) }, entrypoints: { daemon: 'foreground.mjs', service: 'foreground.mjs' },
+        qualification: { bun_sha256: candidateRelease.qualification.bun_sha256 }, serviceExecutables: { backend: 'bun', gateway: 'caddy' }, ...(index ? { serviceControlProtocol: 2 } : {}), native, files }));
       signer.sign(built, null, true, identifier);
       verifyNativeAppSignatures(built, signer, { native });
       const evidence = path.join(root, `evidence-${pin}`);

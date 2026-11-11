@@ -870,8 +870,6 @@ export interface ConsoleSession {
    * non-Claude sessions.
    */
   anthropic_billing?: AnthropicBillingPosture | null;
-  /** Bug: b5aba0e — channel-enabled PTY: launch with MCP channel server connectivity. */
-  channel_enabled: boolean;
   owner_user_id: string | null;
   owner?: ReadUserIdentity | null;
   /**
@@ -907,14 +905,12 @@ export interface ConsoleSessionInput {
   mandible_session_id?: string | null;
   provider_session_id?: string | null;
   resume_at_message?: string | null;
-  /** Bug: b5aba0e — channel-enabled PTY: launch with MCP channel server connectivity. */
-  channel_enabled?: boolean;
 }
 
-export type ConsoleTransportLane = 'sdk' | 'pty' | 'channel' | 'acp' | 'spawn';
+export type ConsoleTransportLane = 'sdk' | 'pty' | 'acp' | 'spawn';
 
 export interface ConsoleTransportBadge {
-  label: 'SDK' | 'PTY' | 'Channel' | 'ACP' | 'Spawn';
+  label: 'SDK' | 'PTY' | 'ACP' | 'Spawn';
   title: string;
 }
 

@@ -49,19 +49,18 @@ describe("conversation external navigation", () => {
       nav_extra: { iterm_session_id: "w0t1p0:STALE" },
       conversation_id: "ended-provider-id",
     });
-    // What the channel server registers for a Console SDK session: a live
-    // Claude row with no terminal attachment.
+    // A live Claude row with no terminal attachment.
     registry.registerSession({
-      id: "channel-id",
+      id: "unattached-id",
       app: "claude",
       status: "active",
-      conversation_id: "channel-provider-id",
+      conversation_id: "unattached-provider-id",
     });
 
     const capabilities = projectConversationExternalNavigation(db, [
       { id: "native", source: "claude_code", session_id: "claude-provider-id" },
       { id: "ended", source: "claude_code", session_id: "ended-provider-id" },
-      { id: "channel", source: "claude_code", session_id: "channel-provider-id" },
+      { id: "unattached", source: "claude_code", session_id: "unattached-provider-id" },
     ]);
     expect(capabilities.get("native")).toEqual({
       kind: "claude-native-background",
@@ -71,7 +70,7 @@ describe("conversation external navigation", () => {
       label: "Go to terminal",
     });
     expect(capabilities.has("ended")).toBe(false);
-    expect(capabilities.has("channel")).toBe(false);
+    expect(capabilities.has("unattached")).toBe(false);
   });
 
   it("fails closed when Claude terminal custody is ambiguous and navigates only the projected id", () => {

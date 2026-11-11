@@ -74,7 +74,7 @@ describe("session and work-unit ownership", () => {
       .toEqual(["claude-code", "codex", "gemini"]);
   });
 
-  it("binds registry, channel, and discovery app registrations and fails conflicts closed", () => {
+  it("binds registry and discovery app registrations and fails conflicts closed", () => {
     setupAgentUsers(db);
     const logger = vi.fn();
     const registry = new SessionRegistry(db, logger);
@@ -83,10 +83,10 @@ describe("session and work-unit ownership", () => {
     const gemini = getUserBySlug(db, "gemini")!;
 
     registry.registerSession({ id: "registry-codex", app: "codex" });
-    registry.registerSession({ id: "channel-claude", app: "claude" });
+    registry.registerSession({ id: "registry-claude", app: "claude" });
     registry.registerSession({ id: "registry-gemini", app: "gemini" });
     expect(owner("sessions", "registry-codex")).toBe(codex.id);
-    expect(owner("sessions", "channel-claude")).toBe(claude.id);
+    expect(owner("sessions", "registry-claude")).toBe(claude.id);
     expect(owner("sessions", "registry-gemini")).toBe(gemini.id);
 
     const worker = createUser(db, {

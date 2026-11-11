@@ -109,7 +109,7 @@ describe("provider-first conversation spawn authority", () => {
       initial_message: "Old prompt",
       placement: { project_id: null, checkout_id: null },
       topology: { kind: "top-level" },
-      command: { name: "gemini", backend_type: "acp", transport_lane: "acp", channel_enabled: false, run_options: {} },
+      command: { name: "gemini", backend_type: "acp", transport_lane: "acp", run_options: {} },
     };
     db.prepare(`INSERT INTO conversation_spawn_requests
       (id, schema_version, idempotency_key, request_digest, request_json, provider, project_id, checkout_id,

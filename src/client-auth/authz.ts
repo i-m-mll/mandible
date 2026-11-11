@@ -60,7 +60,7 @@ export function isLocalHumanRequest(req: RequestLike): boolean {
  *       the resolved agent with `session_claim` evidence. It has no protected
  *       credential authority.
  *   (c) Otherwise, if the request carries an ambient provider signal (the
- *       `X-Mandible-Ambient-Provider*` headers the CLI and MCP channel send on
+ *       `X-Mandible-Ambient-Provider*` headers the CLI sends on
  *       mutating calls), resolve that provider to the agent user that owns its
  *       session env keys via the same fail-closed binding machinery the
  *       auth-request lane uses. A single owning agent yields `session_claim`

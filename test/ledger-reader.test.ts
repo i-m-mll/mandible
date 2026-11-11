@@ -5,7 +5,6 @@ import path from "node:path";
 import { expect, it, vi } from "vitest";
 import { workerLedgerReaderPool } from "../src/ledger-reads/index.js";
 import { workUnitLivenessFromSnapshot } from "../src/work-unit-utils.js";
-import { getChannelRegistry } from "../src/channel-registry.js";
 import type { SessionManager } from "../src/session-manager.js";
 
 it("keeps a one-second ledger read off the main loop and transports worker errors", async () => {
@@ -42,9 +41,6 @@ it("reads current Inbox and lineage ledger snapshots on workers while retaining 
   const dbPath = path.join(root, "ledger.db");
   const db = migratedFileDb(dbPath);
   const reader = workerLedgerReaderPool(dbPath, { size: 1 });
-  const channels = getChannelRegistry();
-  const channelConnected = vi.spyOn(channels, "isChannelConnected").mockReturnValue(false);
-  const channelAlive = vi.spyOn(channels, "isAlive").mockReturnValue(false);
   try {
     db.prepare("INSERT INTO sessions (id, app, status, branch, continuation, ended_at) VALUES ('ended', 'claude', 'ended', 'feature/a', 'handoff', '2026-10-01')").run();
     db.prepare("INSERT INTO sessions (id, app, status, branch) VALUES ('active', 'claude', 'active', 'feature/b')").run();
@@ -71,10 +67,6 @@ it("reads current Inbox and lineage ledger snapshots on workers while retaining 
       expect(live(unit)).toMatchObject({ state: 'live', is_processing: true });
       backend.isProcessing = false;
       expect(live(unit)).toMatchObject({ state: 'live', is_processing: false });
-      channelConnected.mockReturnValue(true);
-      expect(live(unit)).toMatchObject({ state: 'stopped', agent_status: 'stale' });
-      channelAlive.mockReturnValue(true);
-      expect(live(unit)).toMatchObject({ state: 'live', agent_status: 'active' });
       expect(prepare).not.toHaveBeenCalled();
     } finally { prepare.mockRestore(); }
 
@@ -85,7 +77,6 @@ it("reads current Inbox and lineage ledger snapshots on workers while retaining 
     db.prepare("UPDATE conversations SET opening_lineage = 'none', parent_source = NULL, parent_session_id = NULL WHERE source = 'codex'").run();
     expect((await reader.run("lineage_gaps", { since: null, source: 'codex' })).gaps).toEqual([]);
   } finally {
-    channelConnected.mockRestore(); channelAlive.mockRestore();
     await reader.close(); db.close(); fs.rmSync(root, { recursive: true, force: true });
   }
 });

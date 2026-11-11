@@ -196,11 +196,11 @@ describe("Claude hook routes", () => {
       INSERT INTO console_sessions (
         id, label, command, args_json, provider_session_id, cwd, env_json,
         cols, rows, status, auto_restart, is_operator, interaction_mode,
-        created_at, updated_at, backend_type, channel_enabled
+        created_at, updated_at, backend_type
       ) VALUES (
         'console-1', 'Claude', 'claude', '[]', 'claude-provider-1', ?, '{}',
         120, 30, 'running', 0, 0, 'both',
-        1, 1, 'pty', 0
+        1, 1, 'pty'
       )
     `).run(tempDir);
 
@@ -232,11 +232,11 @@ describe("Claude hook routes", () => {
       INSERT INTO console_sessions (
         id, label, command, args_json, provider_session_id, cwd, env_json,
         cols, rows, status, auto_restart, is_operator, interaction_mode,
-        created_at, updated_at, backend_type, channel_enabled
+        created_at, updated_at, backend_type
       ) VALUES (
         'console-telemetry', 'Claude', 'claude', '[]', 'claude-provider-telemetry', ?, '{}',
         120, 30, 'running', 0, 0, 'both',
-        1, 1, 'pty', 0
+        1, 1, 'pty'
       )
     `).run(tempDir);
 
@@ -370,7 +370,7 @@ describe("Claude hook settings", () => {
     const publicHook = '"${MANDIBLE_APP_PATH:-/Applications/Mandible.app}/Contents/Resources/bin/mandible" hook pre-tool-use';
     const chain = `"$HOME"/.dotfiles/bin/claude-hook-chain '"$HOME"/.dotfiles/bin/agent-bash-guard --claude' '${publicHook}'`;
     const withPreToolUse = (...commands: string[]) => ({
-      hooks: { PreToolUse: [{ matcher: "Bash|mcp__mandible__.*", hooks: commands.map((command) => ({ type: "command", command, timeout: 5 })) }] },
+      hooks: { PreToolUse: [{ matcher: "Bash", hooks: commands.map((command) => ({ type: "command", command, timeout: 5 })) }] },
     });
     const preToolUseCommands = (settings: unknown) => (
       (settings as { hooks: { PreToolUse?: Array<{ hooks: Array<{ command: string }> }> } }).hooks.PreToolUse ?? []

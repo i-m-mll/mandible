@@ -12,7 +12,6 @@ The manifest contains version, target, source commit/digest, commit summary/date
 | --- | --- |
 | `daemon` | Built daemon with its worker module tree |
 | `cli` | Public command dispatcher |
-| `channel` | Built MCP channel subprocess |
 | `controller` | Shared lifecycle controller |
 | `trustSetup` | Narrow local trust setup controller |
 | `service` | Native service launcher, supplied by the lifecycle lane |

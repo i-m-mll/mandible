@@ -12,10 +12,6 @@ import {
   type SessionListOptions,
   type SessionUpdate,
 } from "../registry.js";
-import {
-  getChannelRegistry,
-  getChannelConnectedSessionsFromDb,
-} from "../channel-registry.js";
 import { linkSessionToLedgerIssue } from "../ledger/operational-links.js";
 import type { WorkScanner } from "../work-scanner.js";
 import type { ResponseLike, RouteRegistrar } from "../server.js";
@@ -295,73 +291,6 @@ export function registerSessionRoutes(
     const ids = registry.getPinnedSessionIds();
     sendJson(res, 200, { ids });
   }, { operation: { id: "get:/api/sessions/pinned", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
-
-  // Bug: 0b454df — list channel-connected sessions
-  server.get("/api/sessions/channel-connected", (_req, res) => {
-    const channelRegistry = getChannelRegistry();
-    const inMemory = channelRegistry.getAll();
-
-    // Merge in-memory state with DB-persisted state for resilience
-    const dbSessions = getChannelConnectedSessionsFromDb();
-
-    const combined = dbSessions.map((dbRow) => {
-      const live = inMemory.find((s) => s.session_id === dbRow.id);
-      return {
-        ...dbRow,
-        is_alive: live ? channelRegistry.isAlive(dbRow.id) : false,
-        tools_called: live?.tools_called ?? [],
-        last_tool_call_in_memory: live?.last_tool_call ?? null,
-      };
-    });
-
-    // Add any in-memory sessions not yet in DB (transient race)
-    for (const live of inMemory) {
-      if (!dbSessions.some((d) => d.id === live.session_id)) {
-        combined.push({
-          id: live.session_id,
-          app: "claude",
-          status: "active",
-          branch: live.branch,
-          cwd: live.cwd,
-          channel_connected_at: live.connected_at,
-          channel_last_tool_call: live.last_tool_call,
-          is_alive: channelRegistry.isAlive(live.session_id),
-          tools_called: live.tools_called,
-          last_tool_call_in_memory: live.last_tool_call,
-          identity_mismatch: null,
-        });
-      }
-    }
-
-    sendJson(res, 200, { sessions: combined });
-  }, { operation: { id: "get:/api/sessions/channel-connected", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
-
-  // Bug: 0b454df — record a channel tool call for liveness tracking
-  server.post("/api/sessions/:id/channel-tool-call", (req, res) => {
-    const rawId = req.params.id;
-    if (!rawId) {
-      sendJson(res, 400, { error: "Missing session id" });
-      return;
-    }
-    const id = resolveSessionId(rawId, res);
-    if (!id) return;
-
-    // Bug: 7ab2f3e — Accept optional tool_input/tool_output for event bridge
-    const body = readBody<{ tool_name?: string; tool_input?: unknown; tool_output?: unknown }>(req);
-    const toolName = body.tool_name ?? "unknown";
-
-    const channelRegistry = getChannelRegistry();
-
-    // Get current session branch/cwd from DB
-    const session = registry.getSession(id);
-    channelRegistry.register(id, session?.cwd ?? null, session?.branch ?? null);
-    channelRegistry.recordToolCall(id, toolName, body.tool_input, body.tool_output);
-
-    // Issue 499c148 — channel sessions reach the daemon here on every tool call,
-    // so a token swapped mid-session is caught without waiting for a re-register.
-    const identityWarning = checkSessionIdentity(getDb(), id, req.client_identity);
-    sendJson(res, 200, { ok: true, identity_warning: identityWarning });
-  }, { operation: { id: "post:/api/sessions/:id/channel-tool-call", effects: ["process:external"], requestSchema: null, reportingCategory: "sessions" }, fileRpc: "deny" });
 
   server.get("/api/sessions/by-pid/:pid", (req, res) => {
     const pidStr = req.params.pid;
