@@ -1,5 +1,11 @@
 import type { InstanceRole } from "../types.js";
 
+/**
+ * Append new effects at the end. An installation's production registration is brought up to
+ * date only when its saved ceiling is a prefix of this list (`reconcileMainRegistration` in
+ * scripts/local-runtime.mjs); until then production does not hold a new effect, and neither
+ * does the browser context it signs for a preview.
+ */
 export const EFFECTS = [
   "ledger:read",
   "ledger:write",

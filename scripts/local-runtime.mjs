@@ -63,7 +63,12 @@ function gatewayLabel() { return defaultInstallation().gatewayLabel; }
 const HEALTH_TIMEOUT_MS = 900;
 const OPERATION_TIMEOUT_MS = 4500;
 const BODY_LIMIT = 256 * 1024;
-const MIGRATABLE_MAIN_EFFECT = "preferences:instance";
+/**
+ * The production default ceiling is every effect, and effects are only ever appended
+ * (EFFECTS in src/security/operation-policy.ts). So every earlier production default is a
+ * proper prefix of the current one that reaches the last effect of the first default.
+ */
+const FIRST_MAIN_DEFAULT_LAST_EFFECT = "maintenance:shared";
 const installedResources = handoffControl ? null : process.env.MANDIBLE_RELEASE_ROOT;
 const installedModule = installedResources ? await import('./installed-release.mjs') : null;
 const installedRelease = () => installedModule?.readInstalledRelease(installedResources);
@@ -1464,10 +1469,11 @@ export function reconcileMainRegistration(authority, instance, backendOrigin) {
       || existing.public_origin !== instance.public_origin) {
       throw new Error("The registered production instance belongs to another installation or origin.");
     }
-    const previousCanonicalEffects = instance.allowed_effects.filter((effect) => effect !== MIGRATABLE_MAIN_EFFECT);
-    const isExactPriorDefault = instance.allowed_effects.includes(MIGRATABLE_MAIN_EFFECT)
-      && sameEffectList(existing.effect_ceiling, previousCanonicalEffects);
-    if (isExactPriorDefault) {
+    const registered = existing.effect_ceiling;
+    const isEarlierDefault = registered.length < instance.allowed_effects.length
+      && registered.includes(FIRST_MAIN_DEFAULT_LAST_EFFECT)
+      && sameEffectList(registered, instance.allowed_effects.slice(0, registered.length));
+    if (isEarlierDefault) {
       authority.registerInstance({ ...existing, effect_ceiling: instance.allowed_effects });
       return true;
     }

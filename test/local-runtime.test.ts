@@ -183,9 +183,11 @@ describe("supervised runtime readiness", () => {
 });
 
 describe("production registration reconciliation", () => {
-  it("adds the new effect to an exact prior production default while preserving registration fields", () => {
+  // The ceilings that installations registered before `preferences:instance` and before `notes:source`.
+  const firstDefault = ["ledger:read", "ledger:write", "files:preview", "files:production", "auth:protected", "auth:credentials",
+    "process:external", "provider:send", "network:publish", "delivery:background", "maintenance:shared"];
+  const registration = (effectCeiling: readonly string[]) => {
     const instance = productionInstance();
-    const previousDefault = instance.allowed_effects.filter((effect) => effect !== "preferences:instance");
     const existing = {
       instance_id: "production",
       installation_id: instance.installation_id,
@@ -193,42 +195,32 @@ describe("production registration reconciliation", () => {
       public_origin: instance.public_origin,
       backend_origin: "http://127.0.0.1:29420",
       backend_generation: "b".repeat(40),
-      effect_ceiling: previousDefault,
+      effect_ceiling: effectCeiling,
       writable_roots: ["/preserved/root"],
     };
     const registrations: unknown[] = [];
     const authority = {
       instance: () => existing,
-      registerInstance: (registration: unknown) => registrations.push(registration),
+      registerInstance: (registered: unknown) => registrations.push(registered),
     };
+    return { instance, existing, registrations, changed: reconcileMainRegistration(authority, instance, "http://127.0.0.1:29420") };
+  };
 
-    expect(reconcileMainRegistration(authority, instance, "http://127.0.0.1:29420")).toBe(true);
-
+  it.each([
+    ["the first default", firstDefault],
+    ["the default before notes:source", [...firstDefault, "preferences:instance"]],
+  ])("brings %s up to the current production ceiling while preserving registration fields", (_name, earlier) => {
+    const { instance, existing, registrations, changed } = registration(earlier);
+    expect(changed).toBe(true);
     expect(registrations).toEqual([{ ...existing, effect_ceiling: instance.allowed_effects }]);
   });
 
-  it("keeps a deliberately narrowed production ceiling unchanged", () => {
-    const instance = productionInstance();
-    const previousDefault = instance.allowed_effects.filter((effect) => effect !== "preferences:instance");
-    const narrowed = previousDefault.filter((effect) => effect !== "maintenance:shared");
-    const existing = {
-      instance_id: "production",
-      installation_id: instance.installation_id,
-      role: "main",
-      public_origin: instance.public_origin,
-      backend_origin: "http://127.0.0.1:29420",
-      backend_generation: "b".repeat(40),
-      effect_ceiling: narrowed,
-      writable_roots: ["/preserved/root"],
-    };
-    const registrations: unknown[] = [];
-    const authority = {
-      instance: () => existing,
-      registerInstance: (registration: unknown) => registrations.push(registration),
-    };
-
-    expect(reconcileMainRegistration(authority, instance, "http://127.0.0.1:29420")).toBe(false);
-
+  it.each([
+    ["narrowed", firstDefault.filter((effect) => effect !== "provider:send")],
+    ["current", productionInstance().allowed_effects],
+  ])("leaves a %s production ceiling unchanged", (_name, ceiling) => {
+    const { registrations, changed } = registration(ceiling);
+    expect(changed).toBe(false);
     expect(registrations).toEqual([]);
   });
 });
