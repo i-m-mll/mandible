@@ -60,6 +60,9 @@
 #   --promote-briefing <group> <expected-base> <proposal>
 #                           After successful convergence, promote the exact
 #                           active proposal to this Briefing group's Base
+#   --teardown-preview <branch>
+#                           Once the merge is live, tear down the preview recorded
+#                           for this landed branch, discarding its data (repeatable)
 #   --command <command>     Exact shell command for a non-merge request; reviewed before execution
 #   --type <type>           Auth request type (default: merge; options: merge, commit, force-push, branch-delete, config-change, data-delete)
 #   --handoff <text>        Post-merge handoff note for next session
@@ -131,6 +134,7 @@ expected_custody_generation=""
 SUPERSEDED_ACTION_DISPOSITIONS=()
 ISSUE_REFERENCES=()
 ISSUE_CLOSURES=()
+TEARDOWN_PREVIEW_BRANCHES=()
 repo=""
 cwd_override=""
 target_override=""
@@ -144,7 +148,7 @@ promote_briefing_group=""
 promote_briefing_expected_base=""
 promote_briefing_proposal=""
 
-binding=$(mandible_bind_main_arguments "@auth request" '{"space_publication_id":{"option":"space-publication"},"title":{"option":"title"},"auth_type":{"option":"type"},"command":{"option":"command"},"command_set":{"option":"command","constant":"1"},"change_message_text":{"option":"message"},"change_message_set":[{"option":"message","constant":"1"},{"option":"message-file","constant":"1"}],"change_message_file":{"option":"message-file"},"verification_text":{"option":"verification"},"diff_summary":{"option":"diff-summary"},"post_merge_handoff":{"option":"handoff"},"dirty_policy":{"option":"dirty-policy"},"dirty_branch_prefix":{"option":"dirty-branch-prefix"},"DEPENDS_ON_IDS":{"option":"depends-on","array":true},"supersedes_request_id":{"option":"supersedes"},"expected_revision":{"option":"expected-revision"},"expected_custody_generation":{"option":"expected-custody-generation"},"SUPERSEDED_ACTION_DISPOSITIONS":{"option":"drop-superseded-action","array":true},"ISSUE_REFERENCES":{"option":["issue","ref-issue","references-issue"],"array":true},"ISSUE_CLOSURES":{"option":["closes-issue","close-issue"],"array":true},"promote_briefing_group":{"option":"promote-briefing","valueIndex":0},"promote_briefing_expected_base":{"option":"promote-briefing","valueIndex":1},"promote_briefing_proposal":{"option":"promote-briefing","valueIndex":2},"repo":{"option":"repo"},"cwd_override":{"option":"cwd"},"target_override":{"option":"target"},"timeout":{"option":"timeout"},"no_watch":{"option":"no-watch","constant":"1"},"force":{"option":["force","f"],"constant":"true"},"branch":{"position":0}}' "$@") || exit $?
+binding=$(mandible_bind_main_arguments "@auth request" '{"space_publication_id":{"option":"space-publication"},"title":{"option":"title"},"auth_type":{"option":"type"},"command":{"option":"command"},"command_set":{"option":"command","constant":"1"},"change_message_text":{"option":"message"},"change_message_set":[{"option":"message","constant":"1"},{"option":"message-file","constant":"1"}],"change_message_file":{"option":"message-file"},"verification_text":{"option":"verification"},"diff_summary":{"option":"diff-summary"},"post_merge_handoff":{"option":"handoff"},"dirty_policy":{"option":"dirty-policy"},"dirty_branch_prefix":{"option":"dirty-branch-prefix"},"DEPENDS_ON_IDS":{"option":"depends-on","array":true},"supersedes_request_id":{"option":"supersedes"},"expected_revision":{"option":"expected-revision"},"expected_custody_generation":{"option":"expected-custody-generation"},"SUPERSEDED_ACTION_DISPOSITIONS":{"option":"drop-superseded-action","array":true},"ISSUE_REFERENCES":{"option":["issue","ref-issue","references-issue"],"array":true},"ISSUE_CLOSURES":{"option":["closes-issue","close-issue"],"array":true},"promote_briefing_group":{"option":"promote-briefing","valueIndex":0},"promote_briefing_expected_base":{"option":"promote-briefing","valueIndex":1},"promote_briefing_proposal":{"option":"promote-briefing","valueIndex":2},"TEARDOWN_PREVIEW_BRANCHES":{"option":"teardown-preview","array":true},"repo":{"option":"repo"},"cwd_override":{"option":"cwd"},"target_override":{"option":"target"},"timeout":{"option":"timeout"},"no_watch":{"option":"no-watch","constant":"1"},"force":{"option":["force","f"],"constant":"true"},"branch":{"position":0}}' "$@") || exit $?
 eval "$binding"
 # The daemon resolves a relative path against its own working directory.
 [[ -z "$cwd_override" ]] || cwd_override=$(api_resolve_user_path "$cwd_override")
@@ -175,6 +179,10 @@ if [[ "$auth_type" == *[[:space:]]* || " $valid_types " != *" $auth_type "* ]]; 
 fi
 if [[ -n "$promote_briefing_group" && "$auth_type" != "merge" ]]; then
   echo "Error: --promote-briefing requires --type merge" >&2
+  exit 2
+fi
+if [[ ${#TEARDOWN_PREVIEW_BRANCHES[@]} -gt 0 && "$auth_type" != "merge" ]]; then
+  echo "Error: --teardown-preview requires --type merge" >&2
   exit 2
 fi
 if [[ "$auth_type" == "merge" ]]; then
@@ -299,16 +307,17 @@ actions_json=$(jq -nc --argjson closures "$issue_closures_json" '
     payload: {}
   })
 ')
+# Actions about no issue are filed under the request's first referenced issue, else its first closure.
+action_target_issue=""
+if [[ ${#ISSUE_REFERENCES[@]} -gt 0 ]]; then
+  action_target_issue="${ISSUE_REFERENCES[0]}"
+else
+  action_target_issue="${ISSUE_CLOSURES[0]}"
+fi
 if [[ -n "$promote_briefing_group" ]]; then
-  promotion_target_issue=""
-  if [[ ${#ISSUE_REFERENCES[@]} -gt 0 ]]; then
-    promotion_target_issue="${ISSUE_REFERENCES[0]}"
-  else
-    promotion_target_issue="${ISSUE_CLOSURES[0]}"
-  fi
   actions_json=$(jq -nc \
     --argjson actions "$actions_json" \
-    --arg target_issue_ref "$promotion_target_issue" \
+    --arg target_issue_ref "$action_target_issue" \
     --arg group_ref "$promote_briefing_group" \
     --arg expected_base_bundle_ref "$promote_briefing_expected_base" \
     --arg proposal_bundle_ref "$promote_briefing_proposal" '
@@ -321,6 +330,13 @@ if [[ -n "$promote_briefing_group" ]]; then
           proposal_bundle_ref: $proposal_bundle_ref
         }
       }]
+    ')
+fi
+if [[ ${#TEARDOWN_PREVIEW_BRANCHES[@]} -gt 0 ]]; then
+  actions_json=$(printf '%s\n' "${TEARDOWN_PREVIEW_BRANCHES[@]}" | jq -R . | jq -sc \
+    --argjson actions "$actions_json" \
+    --arg target_issue_ref "$action_target_issue" '
+      $actions + map({ kind: "preview_teardown", target_issue_ref: $target_issue_ref, payload: { branch: . } })
     ')
 fi
 

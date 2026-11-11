@@ -341,6 +341,18 @@ The last merge finalizer step, `remove_merged_branches`, removes every local bra
 
 Each branch's result is recorded in `merge_finalizer_state.remove_merged_branches.output` as `removed` (proven merged, nothing unique), `trashed` (proven merged, unique bytes kept in reversible custody), or `kept` with a reason: `not_merged`, `protected`, `app_managed`, `preview_running` or `trash_refused`. The candidate list is written before the first removal and each result as it lands, so a daemon restart resumes the pending entries. A branch kept for `preview_running` or `trash_refused` is retried by the daemon's 30-second maintenance pass, and its record is rewritten when the result changes; the others are left to their owner. A preview instance's copied ledger removes and retries nothing.
 
+## Declared preview teardown
+
+A merge request can declare that the preview hosted by a branch it lands is torn down once the merge is live: `mandible auth request <branch> ... --teardown-preview <preview-branch>` (repeatable), or `mandible auth action add <request> --kind preview_teardown --issue <id> --branch <preview-branch>`. The declaration is a staged action of kind `preview_teardown` with payload `{ "branch": "<preview-branch>" }`, one per branch per request, accepted only on a merge request and only for a branch whose preview root records a preview. The approval shows it as a `Tear down preview` row the reviewer can veto; approving the request is the owner's discard of that preview's interactive data. A request without the declaration, or with it vetoed, leaves the preview running and its branch kept as `preview_running`.
+
+The action is withheld while convergence is pending or failed, like an issue closure. Once convergence no longer holds it, the request's one teardown runner takes each staged declaration in order, outside the ledger transaction and without delaying closures or other requests:
+
+1. No preview recorded for the branch: the action is `applied` with `No preview on <branch>`.
+2. The branch still exists and is not proven merged into the merge target: the action is `failed` with `not_merged`, and the preview keeps running. The report shows it as kept.
+3. Otherwise the preview's recorded run is torn down in a supervised subprocess (`scripts/preview-teardown.mjs`) as `accepted`, converged, with disposition `discard` and the summary `Merged by auth <id> as <merge>`. A cleaned run makes the action `applied` with its run ID; anything else makes it `failed` with the first line of the reason.
+
+The teardown leaves the worktree: the receipt's `worktreeDisposition` records that the merge finalizer removes it. When every declaration has settled, the runner retries the branches kept for a running preview, so the branch and its worktree are removed then rather than at the next maintenance pass. A daemon stopped during a teardown leaves the action staged; the start-up pass runs it again and the teardown resumes from the run's recorded intent. A preview instance's copied ledger executes no teardown.
+
 ## Stuck Request Recovery
 
 Mandible automatically recovers requests that get stuck due to daemon crashes or other interruptions. On startup, it examines incomplete requests and determines whether they actually succeeded (by checking for merge evidence in the output) or should be marked as failed. During runtime, a periodic check catches requests that have been stuck too long and marks them as interrupted.

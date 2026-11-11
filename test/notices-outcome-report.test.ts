@@ -100,6 +100,38 @@ it("reports each consequent action of a settled request with its state, stably",
   }
 });
 
+it("reports each declared preview teardown, withheld until the merge is live", () => {
+  const db = createMigratedDb({ operator: { slug: "outcome-report-teardown" } });
+  try {
+    const merge = insertRequest(db, { status: "completed", output: `MANDIBLE_MERGE_RESULT ${JSON.stringify({ merge_sha: MERGE_SHA })}` });
+    const declared: Array<[string, string, string | null]> = [
+      ["feature/done", "applied", "Torn down run r1"],
+      ["feature/vetoed", "vetoed", null],
+      ["feature/unlanded", "failed", "not_merged"],
+      ["feature/broken", "failed", "cleanup refused"],
+      ["feature/waiting", "staged", null],
+    ];
+    declared.forEach(([branch, state, detail], ordinal) => db.prepare(
+      `INSERT INTO auth_request_actions (id, auth_request_id, ordinal, kind, target_issue_ref, payload, state, outcome_detail, staged_at, updated_at)
+       VALUES (?, ?, ?, 'preview_teardown', '1111111', ?, ?, ?, 1, 1)`,
+    ).run(randomUUID(), merge, ordinal, JSON.stringify({ branch }), state, detail));
+    insertHook(db, merge, "rebuild", "pending", null);
+    const teardowns = () => Object.fromEntries(createOutcomeReporter(db)(merge)!.steps
+      .flatMap(step => step.kind === "preview_teardown" ? [[step.branch, `${step.state} ${step.reason}`]] : []));
+    expect(teardowns()).toEqual({
+      "feature/done": "done null",
+      "feature/vetoed": "skipped vetoed",
+      "feature/unlanded": "kept not_merged",
+      "feature/broken": "failed cleanup refused",
+      "feature/waiting": "withheld awaiting_convergence",
+    });
+    db.prepare("UPDATE auth_hook_executions SET state = 'complete', exit_code = 0 WHERE auth_request_id = ?").run(merge);
+    expect(teardowns()["feature/waiting"]).toBe("pending null");
+  } finally {
+    db.close();
+  }
+});
+
 it("serves the report through `mandible auth show`", async () => {
   const dir = fs.mkdtempSync(path.join(testRuntimeRoot, "outcome-report-cli-"));
   const db = createMigratedDb({ operator: { slug: "outcome-report-cli" } });

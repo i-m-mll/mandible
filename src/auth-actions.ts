@@ -17,6 +17,7 @@ import type {
 import { parseJsonObject } from "./row-coerce.js";
 import { resolveId } from "./entity-refs.js";
 import { assertAcceptedReleaseAvailable } from '../scripts/accepted-release.mjs';
+import { recordedPreview } from '../scripts/preview-custody.mjs';
 
 /**
  * Whether a staged action must be withheld when convergence has not completed.
@@ -35,6 +36,7 @@ export const WITHHOLD_UNTIL_CONVERGED: Record<AuthRequestActionKind, boolean> = 
   checkpoint_add: false,
   link_add: false,
   briefing_group_promote: true,
+  preview_teardown: true,
 };
 
 const VALID_ACTION_KINDS: readonly AuthRequestActionKind[] = AUTH_REQUEST_ACTION_KINDS;
@@ -178,7 +180,7 @@ function updateAuthRequestActionLocked(
   now: number,
 ): AuthRequestAction {
   const existing = requireAuthAction(db, request.id, actionId);
-  const action = validateAuthActionForRequest(db, request, normalizeAuthActionInput(input));
+  const action = validateAuthActionForRequest(db, request, normalizeAuthActionInput(input), existing.id);
   db.prepare(
     `UPDATE auth_request_actions
      SET kind = ?, target_issue_ref = ?, payload = ?, target_digest = ?, updated_at = ?
@@ -199,10 +201,15 @@ function validateAuthActionForRequest(
   db: Db,
   request: AuthRequest,
   action: AuthRequestActionInput,
+  replacedActionId: string | null = null,
 ): AuthRequestActionInput {
   if (action.kind === 'checkpoint_add' && action.payload.kind === 'accepted-release') {
     const selection = action.payload.payload as { reference?: string } | undefined;
     assertAcceptedReleaseAvailable(selection?.reference ?? '');
+  }
+  if (action.kind === "preview_teardown") {
+    validatePreviewTeardown(db, request, String(action.payload.branch), replacedActionId);
+    return action;
   }
   if (action.kind !== "briefing_group_promote") return action;
   if (request.type !== "merge") {
@@ -227,6 +234,23 @@ function validateAuthActionForRequest(
       throw new AuthActionValidationError(error.message, error.status);
     }
     throw error;
+  }
+}
+
+/** A declared teardown names a branch's recorded preview, once per merge request. */
+function validatePreviewTeardown(db: Db, request: AuthRequest, branch: string, replacedActionId: string | null): void {
+  if (request.type !== "merge") {
+    throw new AuthActionValidationError("preview_teardown requires a merge auth request");
+  }
+  const declared = db.prepare(
+    `SELECT 1 FROM auth_request_actions
+     WHERE auth_request_id = ? AND kind = 'preview_teardown' AND json_extract(payload, '$.branch') = ? AND id IS NOT ?`,
+  ).get(request.id, branch, replacedActionId);
+  if (declared) {
+    throw new AuthActionValidationError(`preview_teardown is already declared for ${branch}`, 409);
+  }
+  if (!recordedPreview(branch)) {
+    throw new AuthActionValidationError(`no preview is recorded for ${branch}`, 404);
   }
 }
 
@@ -315,6 +339,9 @@ function normalizePayload(kind: AuthRequestActionKind, payload: unknown): Record
         ),
         proposal_bundle_ref: requireNonEmptyString(record.proposal_bundle_ref, "proposal_bundle_ref"),
       };
+    case "preview_teardown":
+      rejectUnexpectedKeys(record, ["branch"], kind);
+      return { branch: requireNonEmptyString(record.branch, "branch").replace(/^refs\/heads\//, "") };
   }
 }
 

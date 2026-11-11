@@ -8,7 +8,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import SqliteDatabase from "../src/sqlite.ts";
 import { setSetting } from "../src/client-auth/settings-kv.js";
 import { addCredential, setupOperator } from "../src/users/store.js";
-import { reloadLocalFrontDoor, sanitizePreviewDatabase } from "../scripts/iab-preview.mjs";
+import { sanitizePreviewDatabase } from "../scripts/iab-preview.mjs";
+import { reloadLocalFrontDoor } from "../scripts/preview-teardown.mjs";
 
 const roots = new Set<string>();
 afterEach(() => { for (const root of roots) fs.rmSync(root, { recursive: true, force: true }); roots.clear(); });

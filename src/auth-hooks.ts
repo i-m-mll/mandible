@@ -269,7 +269,7 @@ export function authHookCommandDigest(command: string): string {
  * request is not going to converge on its own, and saying "pending" would be
  * the same dishonesty this issue exists to remove.
  */
-export function convergenceStateFromRuns(runs: readonly AuthHookRun[]): AuthConvergenceState {
+export function convergenceStateFromRuns(runs: readonly Pick<AuthHookRun, "state" | "required">[]): AuthConvergenceState {
   if (runs.length === 0) return "none";
   if (runs.some((run) => run.required && (run.state === "failed" || run.state === "retired"))) return "failed";
   if (runs.some((run) => run.state === "pending" || run.state === "running")) return "pending";

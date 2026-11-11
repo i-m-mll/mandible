@@ -52,6 +52,7 @@ mandible auth request <branch> --title <text> [--issue <id>]... [--closes-issue 
 mandible auth request --type <type> --command <command> --cwd <path> --repo <ref> --title <text> --issue <id>
   [--type merge|commit|force-push|branch-delete|config-change|data-delete]
   [--promote-briefing GROUP EXPECTED-BASE PROPOSAL]
+  [--teardown-preview BRANCH]...
   [--diff-summary T] [--handoff T] [--repo R]
   [--cwd P] [--target B] [--depends-on ID] [--dirty-policy block|allow-untracked|stash|branch-off]
   [--supersedes ID] [--drop-superseded-action ORDINAL:REASON]...

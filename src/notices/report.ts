@@ -1,5 +1,7 @@
+import { convergenceStateFromRuns } from "../auth-hooks.js";
 import { FINALIZER_STEP_NAMES } from "../auth-queue.js";
 import { extractSuccessfulMergeCommitSha } from "../auth-signature-verification.js";
+import { TEARDOWN_NOT_MERGED } from "../declared-preview-teardown.js";
 import type { Db } from "../db.js";
 import { shortRef } from "../entity-refs.js";
 import {
@@ -29,6 +31,8 @@ interface ActionRow {
   kind: string;
   issue: string;
   state: "staged" | "applied" | "failed" | "vetoed" | "skipped_stale";
+  branch: string | null;
+  outcome_detail: string | null;
 }
 
 interface HookRow {
@@ -86,6 +90,26 @@ function actionStep(row: ActionRow, status: NoticeStatus): OutcomeStep {
   }
 }
 
+/**
+ * A declared preview teardown. Staged on a completed merge it waits on
+ * convergence like a withheld closure, and is pending once convergence no
+ * longer holds it.
+ */
+function previewTeardownStep(row: ActionRow, status: NoticeStatus, convergenceHolds: boolean): OutcomeStep {
+  const step = (state: OutcomeStepState, reason: string | null): OutcomeStep =>
+    ({ kind: "preview_teardown", branch: row.branch ?? "", state, reason });
+  switch (row.state) {
+    case "applied": return step("done", null);
+    case "failed": return row.outcome_detail === TEARDOWN_NOT_MERGED ? step("kept", TEARDOWN_NOT_MERGED) : step("failed", firstLine(row.outcome_detail));
+    case "vetoed":
+    case "skipped_stale": return step("skipped", row.state);
+    case "staged":
+      if (status === "completed") return convergenceHolds ? step("withheld", "awaiting_convergence") : step("pending", null);
+      if (status === "needs_rebase") return step("withheld", "needs_rebase");
+      return step("skipped", status);
+  }
+}
+
 function hookStep(row: HookRow): OutcomeStep {
   const step = (state: OutcomeStepState, reason: string | null): OutcomeStep =>
     ({ kind: "hook", hook_id: row.hook_id, required: row.required === 1, state, reason });
@@ -133,7 +157,8 @@ export function createOutcomeReporter(db: Db): OutcomeReporter {
      WHERE auth_request_id = ? AND event_type = 'rejected' ORDER BY revision DESC LIMIT 1`,
   );
   const actionsQuery = db.prepare(
-    `SELECT a.kind, COALESCE(i.short_id, a.target_issue_ref) AS issue, a.state
+    `SELECT a.kind, COALESCE(i.short_id, a.target_issue_ref) AS issue, a.state,
+            json_extract(a.payload, '$.branch') AS branch, a.outcome_detail
      FROM auth_request_actions a LEFT JOIN ledger_issues i ON i.id = a.target_issue_ref
      WHERE a.auth_request_id = ? ORDER BY a.ordinal, a.staged_at, a.id`,
   );
@@ -154,10 +179,15 @@ export function createOutcomeReporter(db: Db): OutcomeReporter {
       reason = shortRef(db, "auth_request", request.superseded_by_request_id);
     }
 
+    const hooks = hooksQuery.all(request.id) as HookRow[];
+    const convergence = convergenceStateFromRuns(hooks.map((hook) => ({ state: hook.state, required: hook.required === 1 })));
+    const convergenceHolds = convergence === "pending" || convergence === "failed";
     const steps: OutcomeStep[] = [
-      ...(actionsQuery.all(request.id) as ActionRow[]).map((row) => actionStep(row, status)),
+      ...(actionsQuery.all(request.id) as ActionRow[]).map((row) => row.kind === "preview_teardown"
+        ? previewTeardownStep(row, status, convergenceHolds)
+        : actionStep(row, status)),
       ...(completedMerge ? finalizerSteps(request) : []),
-      ...(hooksQuery.all(request.id) as HookRow[]).map(hookStep),
+      ...hooks.map(hookStep),
     ].sort(compareSteps);
 
     return {

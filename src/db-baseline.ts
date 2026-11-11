@@ -5,6 +5,7 @@ import { NOTIFICATIONS_SCHEMA_SQL } from "./notices/schema.js";
 import { RESPONSIBILITY_SCHEMA_SQL } from "./responsibility-schema.js";
 import { WORK_UNIT_ASSIGNMENT_SCHEMA_SQL, EXACT_AGENT_WORK_UNIT_SCHEMA_SQL } from "./work-unit-assignment-schema.js";
 import { AUTH_HOOK_EXECUTIONS_TABLE_SQL, AUTH_HOOK_EXECUTIONS_INDEX_SQL } from './auth-hook-schema.js';
+import { AUTH_REQUEST_ACTIONS_INDEX_SQL, AUTH_REQUEST_ACTIONS_TABLE_SQL } from "./auth-actions-schema.js";
 import { CHILD_RETENTION_SCHEMA_SQL } from "./conversations/retention-schema.js";
 import { LEDGER_ORIGIN_SCHEMA_SQL, MANAGED_SESSION_ORIGIN_INDEX_SQL } from "./ledger-origin-schema.js";
 import { SPACE_PUBLICATION_AUTH_SCHEMA_SQL } from "./spaces/publication-auth-schema.js";
@@ -34,7 +35,7 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-migration-convergence.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 236;
+export const BASELINE_SCHEMA_VERSION = 237;
 
 export const AUTH_REQUEST_HISTORY_INDEX_SQL =
   `CREATE INDEX idx_auth_requests_history ON auth_requests(resolved_at DESC)
@@ -427,7 +428,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE TABLE auth_hooks (\n        id            TEXT PRIMARY KEY,\n        repo_pattern  TEXT NOT NULL DEFAULT '*',\n        auth_type     TEXT NOT NULL DEFAULT 'merge',\n        command       TEXT NOT NULL,\n        label         TEXT NOT NULL DEFAULT '',\n        enabled       INTEGER NOT NULL DEFAULT 1,\n        builtin       INTEGER NOT NULL DEFAULT 0,\n        position      INTEGER NOT NULL DEFAULT 0,\n        created_at    INTEGER NOT NULL,\n        updated_at    INTEGER NOT NULL\n      , required INTEGER NOT NULL DEFAULT 1)",
   "CREATE TABLE auth_hook_alerts (\n        id                TEXT PRIMARY KEY,\n        auth_request_id   TEXT NOT NULL,\n        hook_id           TEXT NOT NULL,\n        hook_label        TEXT NOT NULL DEFAULT '',\n        session_id        TEXT,\n        repo              TEXT,\n        detail            TEXT NOT NULL DEFAULT '',\n        created_at        INTEGER NOT NULL,\n        updated_at        INTEGER NOT NULL,\n        acknowledged_at   INTEGER,\n        acknowledged_by   TEXT,\n        UNIQUE(auth_request_id, hook_id)\n      )",
   AUTH_HOOK_EXECUTIONS_TABLE_SQL,
-  "CREATE TABLE \"auth_request_actions\" (\n        id TEXT PRIMARY KEY,\n        auth_request_id TEXT NOT NULL REFERENCES auth_requests(id) ON DELETE CASCADE,\n        ordinal INTEGER NOT NULL,\n        kind TEXT NOT NULL CHECK(kind IN ('comment_add','issue_close','worker_status_set','label_add','label_rm','checkpoint_add','link_add','briefing_group_promote')),\n        target_issue_ref TEXT NOT NULL,\n        payload TEXT NOT NULL,\n        state TEXT NOT NULL DEFAULT 'staged' CHECK(state IN ('staged','applied','failed','vetoed','skipped_stale')),\n        target_digest TEXT,\n        staged_at INTEGER NOT NULL,\n        updated_at INTEGER NOT NULL,\n        applied_at INTEGER,\n        outcome_detail TEXT\n      )",
+  AUTH_REQUEST_ACTIONS_TABLE_SQL,
   "CREATE TABLE auth_requests (\n  id            TEXT PRIMARY KEY,\n  session_id    TEXT,\n  command       TEXT NOT NULL,\n  title         TEXT NOT NULL,\n  cwd           TEXT,\n  diff_summary  TEXT,\n  spec_content  TEXT,\n  status        TEXT NOT NULL DEFAULT 'pending',\n  created_at    INTEGER NOT NULL,\n  updated_at    INTEGER NOT NULL,\n  approved_at   INTEGER,\n  resolved_at   INTEGER,\n  skipped_at    INTEGER,\n  expires_at    INTEGER NOT NULL,\n  exit_code     INTEGER,\n  output        TEXT NOT NULL DEFAULT '',\n  error         TEXT\n, repo TEXT, base_branch TEXT, head_branch TEXT, files_changed INTEGER DEFAULT 0, additions INTEGER DEFAULT 0, deletions INTEGER DEFAULT 0, execution_mode TEXT NOT NULL DEFAULT 'daemon', commit_message TEXT, last_executed_at INTEGER, acknowledged_by TEXT, post_merge_handoff TEXT, issue_ids TEXT, depends_on_id TEXT, issues TEXT, type TEXT NOT NULL DEFAULT 'merge', target_session_id TEXT, target_repo_root TEXT, delivered_at INTEGER, conversation_id TEXT, approval_source TEXT NOT NULL DEFAULT 'manual', approval_lease_id TEXT, issue_references TEXT, issue_closures TEXT, merge_preflight_base_sha TEXT, merge_preflight_queue_fingerprint TEXT, merge_head_sha TEXT, merge_finalized_at INTEGER, requested_by_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT, approved_by_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT, execution_evidence_id TEXT REFERENCES attribution_evidence(id) ON DELETE SET NULL, merge_finalizer_state TEXT, merge_candidate_tree_sha TEXT, merge_candidate_pin_sha TEXT, merge_atomic_enabled INTEGER NOT NULL DEFAULT 0, commit_message_digest TEXT, supersedes_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT, superseded_by_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT)",
   ...AUTH_REQUEST_LIFECYCLE_EVENTS_SCHEMA_SQL,
   ...WORK_UNIT_CUSTODY_EVENTS_SCHEMA_SQL,
@@ -552,8 +553,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE INDEX idx_auth_hook_alerts_open\n        ON auth_hook_alerts(acknowledged_at, created_at DESC)",
   AUTH_HOOK_EXECUTIONS_INDEX_SQL,
   "CREATE INDEX idx_auth_hooks_repo_type\n        ON auth_hooks(repo_pattern, auth_type)",
-  "CREATE INDEX idx_auth_request_actions_request_ordinal\n        ON auth_request_actions(auth_request_id, ordinal)",
-  "CREATE INDEX idx_auth_request_actions_state\n        ON auth_request_actions(state, auth_request_id)",
+  ...AUTH_REQUEST_ACTIONS_INDEX_SQL,
   "CREATE INDEX idx_auth_requests_conversation_id\n        ON auth_requests(conversation_id) WHERE conversation_id IS NOT NULL",
   "CREATE INDEX idx_auth_requests_approved_by_user\n        ON auth_requests(approved_by_user_id) WHERE approved_by_user_id IS NOT NULL",
   "CREATE INDEX idx_auth_requests_execution_evidence\n        ON auth_requests(execution_evidence_id) WHERE execution_evidence_id IS NOT NULL",
@@ -1155,7 +1155,6 @@ export function createFreshSchemaBaseline(db: Db, schemaVersion: number): void {
     db.exec(AUTH_PROTECTED_ROOT_DIRTY_ACTION_COLUMN_SQL);
     for (const statement of AUTH_PREREQUISITE_SCHEMA_SQL) db.exec(statement);
     db.exec("ALTER TABLE work_units ADD COLUMN custody_generation INTEGER NOT NULL DEFAULT 0 CHECK(custody_generation >= 0)");
-    db.exec("ALTER TABLE auth_request_actions ADD COLUMN replacement_action_id TEXT REFERENCES auth_request_actions(id) ON DELETE RESTRICT");
     for (const statement of WORKER_THREAD_ARCHIVES_SCHEMA_SQL) db.exec(statement);
     for (const statement of LEDGER_ORIGIN_SCHEMA_SQL) db.exec(statement);
     db.exec(MANAGED_SESSION_ORIGIN_INDEX_SQL);
