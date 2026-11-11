@@ -178,7 +178,10 @@ function OpenMenu({ request: opened, receivingProject }: { request: MenuRequest;
   useLayoutEffect(() => {
     if (!visible) return;
     if (title === null) focusItem(menuRef.current, 'first');
-    else titleRef.current?.focus({ preventScroll: true });
+    else {
+      titleRef.current?.focus({ preventScroll: true });
+      titleRef.current?.select();
+    }
   }, [visible, title === null]);
 
   const file = async (destination: InterfaceNoteDestination) => {
