@@ -35,6 +35,17 @@ export function listLedgerOpenIssues(
   })));
 }
 
+function issuesByProject(db: Db, issueIds: string[]): Map<string, LedgerIssue[]> {
+  const grouped = new Map<string, LedgerIssue[]>();
+  for (const ids of chunk(issueIds, IN_CLAUSE_CHUNK)) {
+    const rows = db.prepare(
+      `SELECT * FROM ledger_issues WHERE deleted_at IS NULL AND id IN (${ids.map(() => "?").join(",")})`,
+    ).all(...ids) as LedgerIssue[];
+    for (const issue of rows) grouped.set(issue.project_id, [...grouped.get(issue.project_id) ?? [], issue]);
+  }
+  return grouped;
+}
+
 function chunk<T>(items: T[], size: number): T[][] {
   const chunks: T[][] = [];
   for (let index = 0; index < items.length; index += size) {
@@ -48,26 +59,27 @@ function chunk<T>(items: T[], size: number): T[][] {
  *
  * The projection is backed exclusively by the canonical ledger. Work scanner
  * data only supplies checkout display metadata for the route response.
- */
-/**
+ *
  * With `hasNotes`, each project lists only the issues that carry interface
- * notes, with their `interface_notes` count, most recently annotated first.
+ * notes, with their `interface_notes` count, most recently annotated first;
+ * only those issues are read.
  */
 export function listLedgerIssueSummaries(
   db: Db,
   workScanner: Pick<WorkScanner, "getRepos">,
   options: { hasNotes?: boolean } = {},
 ): IssueRepoSummary[] {
+  const notes = options.hasNotes ? interfaceNoteStatsByIssue(db) : null;
+  if (notes?.size === 0) return [];
+  const noted = notes ? issuesByProject(db, [...notes.keys()]) : null;
   const checkouts = representativeCheckouts(listCheckouts(db, workScanner.getRepos()));
   const store = new LedgerStore(db);
-  const notes = options.hasNotes ? interfaceNoteStatsByIssue(db) : null;
   const summaries: IssueRepoSummary[] = [];
   for (const checkout of checkouts) {
-    const projectIssues = store.listIssues({ project_id: checkout.project_id });
     const issues = notes
-      ? buildProjectIssueSummaries(db, checkout, projectIssues.filter((issue) => notes.has(issue.id)), notes)
+      ? buildProjectIssueSummaries(db, checkout, noted!.get(checkout.project_id) ?? [], notes)
         .sort((a, b) => b.interface_notes!.last_at - a.interface_notes!.last_at)
-      : buildProjectIssueSummaries(db, checkout, projectIssues);
+      : buildProjectIssueSummaries(db, checkout, store.listIssues({ project_id: checkout.project_id }));
     if (issues.length === 0) continue;
     summaries.push({
       repo_id: checkout.repo_id,

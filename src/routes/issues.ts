@@ -1770,7 +1770,7 @@ export function registerIssueRoutes(
       sendJson(res, 400, { error: "body or author_display is required" });
       return;
     }
-    const owner = db.prepare("SELECT issue_id FROM ledger_comments WHERE id = ?")
+    const owner = db.prepare("SELECT issue_id FROM ledger_comments WHERE id = ? AND deleted_at IS NULL")
       .get(commentId) as { issue_id: string } | undefined;
     if (!owner) {
       sendJson(res, 404, { error: "comment not found" });

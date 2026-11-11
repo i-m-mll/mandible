@@ -221,8 +221,10 @@ function OpenMenu({ request: opened, receivingProject }: { request: MenuRequest;
   };
 
   const inert = busy || unfiled.length === 0;
-  const loaded = loadedId ? (loadedDetail?.ref === loadedId ? loadedDetail : { ref: loadedId, id: loadedId, title: '' }) : null;
-  const recentShown = recent.filter((issue) => issue.id !== loaded?.id);
+  const loaded = loadedId
+    ? (loadedDetail?.ref === loadedId ? loadedDetail : recent.find((issue) => issue.ref === loadedId) ?? { ref: loadedId, id: loadedId, title: '' })
+    : null;
+  const recentShown = recent.filter((issue) => issue.ref !== loadedId && issue.id !== loaded?.id);
   const count = `${unfiled.length} ${unfiled.length === 1 ? 'note' : 'notes'}`;
 
   return (

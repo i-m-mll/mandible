@@ -168,6 +168,7 @@ import { applyConversationSse } from './query/conversationSse';
 import { AgentationHost } from './annotation/AgentationHost';
 import { startInterfaceNotes } from './annotation/interfaceNotesStore';
 import { AgentationToggleButton } from './annotation/AgentationToggleButton';
+import { setToolbarVisible, useToolbarVisible } from './annotation/toolbarView';
 import { InterfaceNotesMenu } from './annotation/InterfaceNotesMenu';
 import { INTERFACE_NOTES_PROJECT_SETTING } from '../../src/interface-notes/contract';
 import type { ConversationAppendPayload } from './query/conversationData';
@@ -536,14 +537,7 @@ function RebuildingSplash({
 }
 
 function App(): JSX.Element {
-  const [agentationVisible, setAgentationVisible] = useState(() => {
-    try { return window.localStorage.getItem('mandible.agentation.visible:v1') === 'true'; }
-    catch { return false; }
-  });
-  useEffect(() => {
-    try { window.localStorage.setItem('mandible.agentation.visible:v1', String(agentationVisible)); }
-    catch { /* Annotation availability does not depend on view preference storage. */ }
-  }, [agentationVisible]);
+  const agentationVisible = useToolbarVisible();
   const [clientAccess, setClientAccess] = useState(getClientAccessState);
   const [accessEverReady, setAccessEverReady] = useState(clientAccess.phase === 'ready');
   const accessReady = clientAccess.phase === 'ready';
@@ -2676,7 +2670,7 @@ function App(): JSX.Element {
                 <AgentationToggleButton
                   visible={agentationVisible}
                   expandedRail={railDisplayMode === 'both'}
-                  onToggle={() => setAgentationVisible(visible => !visible)}
+                  onToggle={() => setToolbarVisible(!agentationVisible)}
                 />
                 {renderRailItem({
                   tab: 'settings',

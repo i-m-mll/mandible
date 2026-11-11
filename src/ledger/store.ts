@@ -1022,12 +1022,12 @@ export class LedgerStore {
     };
   }
 
-  /** Publish a committed record after an enclosing mutation transaction succeeds. */
   /** Publish once the outermost transaction commits, so a store write composed into a larger one never announces a rollback. */
   private emitAfterCommit(emitted: LedgerSsePayload[]): void {
     if (emitted.length > 0) this.db.afterCommit(() => emitLedgerEvents(emitted, this.broadcaster));
   }
 
+  /** Publish a committed record after an enclosing mutation transaction succeeds. */
   notifyEvent(event: LedgerEvent): void {
     if (this.db.inTransaction) throw new Error("Ledger event notification requires a committed transaction");
     emitLedgerEvents([{ event, payload: parseJsonObject(event.payload_json) }], this.broadcaster);
@@ -2087,7 +2087,7 @@ export class LedgerStore {
       ...issue,
       aliases: this.listAliases(id),
       comments: this.db.prepare(
-        "SELECT * FROM ledger_comments WHERE issue_id = ? ORDER BY created_at",
+        "SELECT * FROM ledger_comments WHERE issue_id = ? AND deleted_at IS NULL ORDER BY created_at",
       ).all(id) as LedgerComment[],
       checkpoints: this.listIssueCheckpoints(id),
       labels: this.db.prepare(

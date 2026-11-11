@@ -14,6 +14,7 @@ import {
 import { navigateTo, viewHref } from '../../routing';
 import { interfaceNoteAttachment, interfaceNotePagePath, type InterfaceNote } from '../../../../src/interface-notes/contract';
 import { setLoadedIssue, useInterfaceNotes } from '../../annotation/interfaceNotesStore';
+import { revealToolbarPins } from '../../annotation/toolbarView';
 import { AttachmentPill, AttachmentPillRow, AttachmentPreviewModal } from '../shared/AttachmentPill';
 import { DetailPaneNotice } from '../shared/DetailPaneNotice';
 import { appTip } from '../shared/AppHoverTips';
@@ -248,6 +249,7 @@ export function LedgerIssueDetail({
       return;
     }
     navigateTo(interfaceNotePagePath(note));
+    revealToolbarPins();
   };
   const hidePins = async () => {
     setNoteError(null);
