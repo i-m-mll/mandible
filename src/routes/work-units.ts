@@ -41,7 +41,7 @@ import {
 } from "../work-unit-custody.js";
 import { entityRefs, shortRef } from "../entity-refs.js";
 
-// Bug: a247bc3 — work-unit CRUD for inbox workqueue
+// Bug: a247bc3 — work-unit CRUD
 // Bug: 8a281b3 — liveness overlay, PATCH, GET /:id
 // Bug: f3dbb3e — shared liveness computation extracted to work-unit-utils.ts
 
@@ -91,9 +91,6 @@ interface PatchInput {
   reason?: string;
   state?: string;
   assigned_session_id?: string | null;
-  continuation?: string | null;
-  continuation_by?: string | null;
-  continuation_at?: number | null;
   auth_request_id?: string | null;
   provider?: string | null;
   provider_session_id?: string | null;
@@ -920,21 +917,6 @@ export function registerWorkUnitRoutes(
       params.push(assigned ? serializeAssignmentTarget(assignmentTargetForSession(db, assigned, ambientIdentity)) : null);
       updates.push("assigned_session_id = ?");
       params.push(normalizeWorkUnitSessionId(body.assigned_session_id));
-    }
-
-    if ("continuation" in body) {
-      updates.push("continuation = ?");
-      params.push(body.continuation ?? null);
-    }
-
-    if ("continuation_by" in body) {
-      updates.push("continuation_by = ?");
-      params.push(body.continuation_by ?? null);
-    }
-
-    if ("continuation_at" in body) {
-      updates.push("continuation_at = ?");
-      params.push(body.continuation_at ?? null);
     }
 
     if ("auth_request_id" in body) {

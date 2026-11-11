@@ -1,7 +1,7 @@
 import { DOMAIN_EVENTS, type DashboardBadgeCounts, type MandibleEventType } from "./contracts.js";
 import { getDb, type Db } from "./db.js";
 import { countOperationalIncidents } from "./operational-incidents.js";
-import { countGlobalInboxBadge } from "./routes/inbox.js";
+import { countUnreadUserNotifications } from "./notices/user-notifications.js";
 import type { SseManager } from "./sse.js";
 import { countActiveTaskActivationConditions } from "./task-inventory.js";
 import type { Logger } from "./types.js";
@@ -10,7 +10,7 @@ export function readDashboardBadgeCounts(db: Db = getDb()): DashboardBadgeCounts
   const count = (sql: string) => Number((db.prepare(sql).get() as { count: number }).count);
   return {
     auth: count("SELECT COUNT(*) AS count FROM auth_requests WHERE status IN ('pending', 'needs_rebase')"),
-    inbox: countGlobalInboxBadge(db),
+    notifications: countUnreadUserNotifications(db),
     work: count(
       `SELECT COUNT(*) AS count
        FROM branches AS branch
@@ -48,7 +48,7 @@ const COUNT_NEUTRAL_EVENTS: ReadonlySet<MandibleEventType> = new Set<MandibleEve
 export const DASHBOARD_BADGE_PUSH_DELAY_MS = 500;
 
 function sameCounts(a: DashboardBadgeCounts, b: DashboardBadgeCounts): boolean {
-  return a.auth === b.auth && a.inbox === b.inbox && a.work === b.work
+  return a.auth === b.auth && a.notifications === b.notifications && a.work === b.work
     && a.briefing === b.briefing && a.incidents === b.incidents && a.tasks === b.tasks;
 }
 

@@ -83,7 +83,7 @@ describe("visible-first dashboard boot", () => {
       if (url === "/api/client-auth/whoami") return operatorSession();
       if (url === "/api/issues") return jsonResponse({ repos: [] });
       if (url === "/api/settings") return jsonResponse({});
-      if (url === "/api/dashboard/badges") return jsonResponse({ auth: 3, inbox: 2, work: 1, briefing: 0, incidents: 0, tasks: 0 });
+      if (url === "/api/dashboard/badges") return jsonResponse({ auth: 3, notifications: 2, work: 1, briefing: 0, incidents: 0, tasks: 0 });
       if (url === "/api/health") {
         return jsonResponse({
           status: "ok",
@@ -99,7 +99,7 @@ describe("visible-first dashboard boot", () => {
     render(h(App, {}));
     await waitFor(() => expect(requests).toContain("/api/dashboard/badges"));
     await waitFor(() => expect(screen.getByLabelText("Approvals").textContent).toContain("3"));
-    expect(screen.getByLabelText("Inbox").textContent).toContain("2");
+    expect(screen.getByLabelText("Notifications").textContent).toContain("2");
     expect(screen.getByLabelText("Projects").textContent).toContain("1");
 
     expect(requests.indexOf("/api/issues")).toBeLessThan(requests.indexOf("/api/dashboard/badges"));
@@ -107,7 +107,7 @@ describe("visible-first dashboard boot", () => {
     expect(requests.some((url) => url.startsWith("/api/auth/history"))).toBe(false);
     expect(requests).not.toContain("/api/work/repos");
     expect(requests.some((url) => url.startsWith("/api/conversations"))).toBe(false);
-    expect(requests).not.toContain("/api/inbox/global");
+    expect(requests).not.toContain("/api/notifications");
     expect(requests).not.toContain("/api/console/sessions");
 
     window.history.pushState(null, "", "/work");
@@ -129,7 +129,7 @@ describe("visible-first dashboard boot", () => {
       requests.push(url);
       if (url === "/api/client-auth/whoami") return operatorSession();
       if (url === "/api/issues") return jsonResponse({ repos: [] });
-      if (url === "/api/dashboard/badges") return jsonResponse({ auth: 3, inbox: 0, work: 0, briefing: 0, incidents: 0, tasks: 0 });
+      if (url === "/api/dashboard/badges") return jsonResponse({ auth: 3, notifications: 0, work: 0, briefing: 0, incidents: 0, tasks: 0 });
       if (url === "/api/health") {
         return jsonResponse({ status: "ok", ready: true, startup_commit: { hash: "test" }, instance: structuredClone(instance) });
       }
@@ -161,7 +161,7 @@ describe("visible-first dashboard boot", () => {
     expect(settingsReads()).toBe(settingsAfterMount);
     expect(badgeReads()).toBe(1);
 
-    source.emit("message", { type: "dashboard:badges", data: { auth: 4, inbox: 0, work: 0, briefing: 0, incidents: 0, tasks: 0 } });
+    source.emit("message", { type: "dashboard:badges", data: { auth: 4, notifications: 0, work: 0, briefing: 0, incidents: 0, tasks: 0 } });
     await waitUntilPasses(() => expect(screen.getByLabelText("Approvals").textContent).toContain("4"));
     expect(badgeReads()).toBe(1);
   });
@@ -174,7 +174,7 @@ describe("visible-first dashboard boot", () => {
       requests.push(url);
       if (url === "/api/client-auth/whoami") return operatorSession();
       if (url === "/api/issues") return jsonResponse({ repos: [] });
-      if (url === "/api/dashboard/badges") return jsonResponse({ auth: 0, inbox: 0, work: 0, briefing: 0, incidents: 0, tasks: 0 });
+      if (url === "/api/dashboard/badges") return jsonResponse({ auth: 0, notifications: 0, work: 0, briefing: 0, incidents: 0, tasks: 0 });
       if (url === "/api/health") {
         return jsonResponse({ status: "ok", ready: true, startup_commit: { hash: "test" } });
       }

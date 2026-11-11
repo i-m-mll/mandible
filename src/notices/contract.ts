@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { z } from "zod";
+import * as z from "zod";
 import { canonicalJson } from "../canonical-json.js";
 import type { AuthRequestStatus } from "../contracts.js";
 

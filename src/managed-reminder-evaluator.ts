@@ -8,7 +8,7 @@ export interface ReminderEvaluationEvidence {
 /** The evaluator can observe predicates and append only the bounded first-party effect. */
 export interface ReminderDatabaseCapability {
   evaluatePredicate(payload: ManagedReminderPayload, now: number): ReminderEvaluationEvidence | null;
-  appendInboxOccurrence(evaluation: ReminderEvaluationEvidence, now: number): boolean;
+  appendOccurrence(evaluation: ReminderEvaluationEvidence, now: number): boolean;
 }
 
 export function evaluateManagedReminder(
@@ -17,5 +17,5 @@ export function evaluateManagedReminder(
   now: number,
 ): boolean {
   const evaluation = capability.evaluatePredicate(payload, now);
-  return evaluation ? capability.appendInboxOccurrence(evaluation, now) : false;
+  return evaluation ? capability.appendOccurrence(evaluation, now) : false;
 }

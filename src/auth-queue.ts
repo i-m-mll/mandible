@@ -3531,37 +3531,6 @@ export class AuthQueue {
     return listAuthLifecycleEvents(this.db, request.id);
   }
 
-  /**
-   * Bug: 4e32923 — mark an auth request as delivered to the owning session via
-   * the MCP channel server. Once set, the row drops out of the owner's tier-1
-   * inbox and won't escalate to tiers 2/3. Idempotent: re-delivery is a no-op
-   * (existing delivered_at is preserved). Returns true if a row was updated,
-   * false if the request is unknown.
-   */
-  markDelivered(id: string): boolean {
-    const resolved = resolveId(this.db, "auth_request", id);
-    if (!resolved.ok) {
-      return false;
-    }
-    const now = this.now();
-    const result = this.db
-      .prepare(
-        "UPDATE auth_requests SET delivered_at = ?, updated_at = ? " +
-          "WHERE id = ? AND delivered_at IS NULL"
-      )
-      .run(now, now, resolved.id);
-    // changes === 0 either means unknown id or already delivered; both are
-    // acceptable terminal states for an idempotent endpoint, so we return
-    // true so long as the row exists.
-    if (result.changes === 0) {
-      const exists = this.db
-        .prepare("SELECT 1 FROM auth_requests WHERE id = ?")
-        .get(resolved.id);
-      return exists != null;
-    }
-    return true;
-  }
-
   private custodyAuthority(request: Pick<AuthRequest, "custody_work_unit_id">): unknown {
     return request.custody_work_unit_id ? this.db.prepare(
       "SELECT id, issue_id, ledger_issue_id, auth_request_id, repo_id, branch, kind, state, owner_user_id, responsibility_session_id, custody_generation, resolved_at FROM work_units WHERE id = ?",
@@ -5993,7 +5962,7 @@ export class AuthQueue {
       if (run.state === "failed" && run.required) {
         // One alert per (request, hook). The unique key in auth_hook_alerts is
         // the dedup, so a hook that fails on every attempt still produces
-        // exactly one inbox entry. No ledger issue is created: an issue is for
+        // exactly one alert and one notification. No ledger issue is created: an issue is for
         // a repairable defect, not for every transient host failure.
         try {
           this.hookManager.recordFailureAlert(
@@ -8320,8 +8289,7 @@ export class AuthQueue {
 
   // Consumers should use `outcome` to determine the terminal result of a request;
   // `status` is reserved for lifecycle state (pending → executing → completed, etc.).
-  // The mapping itself is canonical in contracts.ts — routes/inbox.ts derives the
-  // same fact and previously carried its own copy.
+  // The mapping itself is canonical in contracts.ts.
   private computeOutcome(request: AuthRequest): AuthRequestOutcome {
     return computeAuthRequestOutcome(request.status);
   }

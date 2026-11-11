@@ -198,21 +198,6 @@ export const mandibleSet = {
       <path d="M12 13v8" />
       <path d="m7.5 5.5 9 5" />
     </svg>),
-  inbox: svgIcon(<svg viewBox="-0.5 -4 25 25" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <defs>
-        <clipPath id="tab-inbox-bot-head">
-          <path clipRule="evenodd" d="M-5-5h34v34H-5z M8.55 1H15.45A2 2 0 0 1 17.45 3V6.5A2 2 0 0 1 15.45 8.5H8.55A2 2 0 0 1 6.55 6.5V3A2 2 0 0 1 8.55 1Z" />
-        </clipPath>
-      </defs>
-      <g clipPath="url(#tab-inbox-bot-head)">
-        <path d="M5.45 4.11 L2 11v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 3H7.24a2 2 0 0 0-1.79 1.11z" />
-        <polyline points="22 11 16 11 14 14 10 14 8 11 2 11" />
-      </g>
-      <rect x="6.55" y="1" width="10.9" height="7.5" rx="2" />
-      <line x1="9.95" y1="3.3" x2="9.95" y2="5.8" />
-      <line x1="14.05" y1="3.3" x2="14.05" y2="5.8" />
-      <path d="M12 1V-2.5H9.3" />
-    </svg>),
   auth: svgIcon(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10" />
       <path d="m9 12 2 2 4-4" />

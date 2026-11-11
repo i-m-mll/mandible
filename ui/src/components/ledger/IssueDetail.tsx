@@ -25,7 +25,6 @@ import type {
   LedgerIssueDetailProjection,
   LedgerIssueDetailRelationship,
   LedgerIssueDetailSession,
-  LedgerIssueDetailWorkUnit,
   LedgerIssueSummaryRef,
   LedgerIssueTimelineEntry,
 } from '../../api';
@@ -202,7 +201,6 @@ export function LedgerIssueDetail({
   const liveSession = detail.sessions.find((session) => session.liveness === 'live') ?? null;
   const activeSessions = detail.sessions.filter((session) => session.liveness !== 'stopped');
   const historicalSessions = detail.sessions.filter((session) => session.liveness === 'stopped');
-  const primaryWorkUnit = detail.work_units[0] ?? null;
   const timeline = detail.timeline ?? fallbackTimeline(detail);
   const associatedArtifacts = detail.associated_artifacts ?? [];
   const displayLabels = detail.labels;
@@ -520,7 +518,6 @@ export function LedgerIssueDetail({
               busy={busy}
               detail={detail}
               liveSession={liveSession}
-              primaryWorkUnit={primaryWorkUnit}
               onToggle={() => setActionsOpen((prev) => !prev)}
               onClose={() => setActionsOpen(false)}
               onStartAgent={isInitialDetail ? undefined : onStartAgent}
@@ -806,7 +803,6 @@ function IssueActionsMenu({
   busy,
   detail,
   liveSession,
-  primaryWorkUnit,
   onToggle,
   onClose,
   onStartAgent,
@@ -825,7 +821,6 @@ function IssueActionsMenu({
   busy: boolean;
   detail: LedgerIssueDetailProjection;
   liveSession: LedgerIssueDetailSession | null;
-  primaryWorkUnit: LedgerIssueDetailWorkUnit | null;
   onToggle: () => void;
   onClose: () => void;
   onStartAgent?: () => Promise<void> | void;
@@ -890,7 +885,7 @@ function IssueActionsMenu({
               disabled={busy}
               onClick={() => closeAfter(() => void onStartAgent())}
             >
-              {primaryWorkUnit?.continuation ? 'Resume Work' : 'Start Agent'}
+              Resume Work
             </button>
           )}
           {onLaunchAgent && (

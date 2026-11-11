@@ -1,0 +1,87 @@
+/* Notifications view: the notification log, newest first. */
+
+.notification-log {
+  list-style: none;
+  margin: 0;
+  padding: 0 var(--detail-content-inline-inset) 24px;
+}
+
+.notification-row {
+  position: relative;
+  padding: 10px 0 10px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.notification-row--unread::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 17px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.notification-row__meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 22px;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.notification-row__recipient {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-secondary);
+  text-decoration: none;
+}
+
+.notification-row__recipient--session:hover {
+  color: var(--text-primary);
+}
+
+.notification-row__provider-mark {
+  width: 12px;
+  height: 12px;
+  flex: none;
+}
+
+.notification-row__ref {
+  font-family: var(--font-mono);
+}
+
+.notification-row__subject {
+  font-family: var(--font-mono);
+}
+
+.notification-row__times {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.notification-row__arrow {
+  color: var(--text-subtle);
+}
+
+.notification-row__state {
+  color: var(--text-subtle);
+}
+
+.notification-row__text {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-primary);
+  font-size: var(--detail-content-size);
+}
+
+.notification-row:not(.notification-row--unread) .notification-row__text {
+  color: var(--text-secondary);
+}

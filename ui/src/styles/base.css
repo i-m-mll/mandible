@@ -778,8 +778,7 @@ a {
 }
 
 .app-content--view-sidebar .auth-sidebar-layout,
-.app-content--view-sidebar .artifacts-view,
-.app-content--view-sidebar .inbox-sidebar-layout {
+.app-content--view-sidebar .artifacts-view {
   height: 100%;
   margin: 0;
 }

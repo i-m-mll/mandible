@@ -23,6 +23,7 @@ import { loadOrCreatePepper } from "./client-auth/secret-store.js";
 import { API_TOKEN_PREFIX, fingerprintForToken } from "./client-auth/tokens.js";
 import { getDaemonLogger } from "./daemon-log.js";
 import type { Db } from "./db.js";
+import { raiseUserNotification } from "./notices/user-notifications.js";
 import { revokeCredential } from "./users/store.js";
 import { parseJsonObject } from "./row-coerce.js";
 
@@ -451,6 +452,7 @@ export function recordCredentialLeak(
       location.branch ?? null,
       now,
     );
+  if (result.changes > 0) raiseUserNotification(db, { kind: "credential_leak", id: eventId }, leakTitle(leak), now);
 
   return {
     event_id: eventId,

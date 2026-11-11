@@ -15,7 +15,7 @@ The public command retains the existing CLI grammar, argument boundaries, stdin/
 | `mandible identity exec -- <command> [args...]` | Scope inherited identity and export `MANDIBLE_EXECUTION_CONTEXT` plus exact `MANDIBLE_AGENT_REF`, then exec outside the installed runtime with the same PID, streams and exit status |
 | `mandible settings read` | Settings JSON from `/api/settings` through the CLI local transport and identity |
 | `mandible hook pre-tool-use` | Claude PreToolUse JSON on stdin; return per-call Bash or Mandible MCP `updatedInput`, preserving permission decisions |
-| `mandible hook session-start` | Project the native Claude ID into `CLAUDE_ENV_FILE`, attach the process and navigation metadata, and summarize escalated inbox items |
+| `mandible hook session-start` | Project the native Claude ID into `CLAUDE_ENV_FILE`, and attach the process and navigation metadata |
 | `mandible hook session-end` | End this native Claude session without ending an inherited parent |
 | `mandible hook subagent-start` | Register the child and open an optional configured transcript pane |
 | `mandible hook subagent-stop` | End the child and write an existing transcript directory’s completion sentinel |

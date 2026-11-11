@@ -119,8 +119,7 @@ mandible instructions post-export get
 mandible instructions post-export set <command>
 mandible instructions post-export clear
 
-## INBOX / TASK / MISC
-mandible inbox [check|add "text"|ack <type> <id>|watch <request-id>]
+## TASK / MISC
 mandible task "<description>" | --clear
 mandible help | -h | --help
 mandible auth help | -h | --help | ""   → shows auth subcommand list (does NOT error)
@@ -199,7 +198,6 @@ daemon or file-RPC spool is unavailable can pass `--graceful` or set
 - `mandible logs -h|--help|help` → prints logs usage, exits 0
 - `mandible conversations -h|--help|help` → prints conversations usage, exits 0
 - `mandible artifact -h|--help|help` → prints artifact usage, exits 0
-- `mandible inbox --help|-h` → prints inbox usage, exits 0
 
 ## `issue report` exit codes
 

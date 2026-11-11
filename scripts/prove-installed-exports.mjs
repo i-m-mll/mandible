@@ -53,8 +53,6 @@ const router = new Router({ clientAuth: auth, instance });
 const registry = new SessionRegistry(db, () => undefined);
 registerSessionRoutes(router, registry);
 registerSettingsRoutes(router);
-router.get('/api/inbox/global', (_req, res) => res.json({ auth_results: [{ tier: 1 }, { tier: 2 }], continuations: [], work_units: [] }),
-  { fileRpc: 'allow', operation: { id: 'fixture.inbox', effects: ['ledger:read'], reportingCategory: null, requestSchema: null } });
 const serverOptions = { db, sse: new SseManager(), logger: () => undefined, version: 'test', router,
   getStartupInfo: () => null, instance, clientAuth: auth };
 createServer(serverOptions);
@@ -99,7 +97,7 @@ try {
     CLAUDE_PID: String(process.pid), CLAUDE_ENV_FILE: envFile, TERM_PROGRAM: 'WezTerm', WEZTERM_PANE_ID: 'pane-7', ZELLIJ: 'fixture-session' };
   const payload = { session_id: session, cwd: scratch, branch: 'feature/proof', worktree: scratch,
     nav_session: 'terminal-session', nav_tab: 'terminal-tab', nav_pane_id: 'pane-7' };
-  assert.match(success(await run(['hook', 'session-start'], JSON.stringify(payload), hookEnv)), /Mandible inbox: 1 item\(s\).*1 auth result/);
+  assert.equal(success(await run(['hook', 'session-start'], JSON.stringify(payload), hookEnv)), '');
   assert.deepEqual(db.prepare('SELECT id,pid,conversation_id,status,terminal,nav_session,nav_tab,nav_pane_id FROM sessions WHERE id=?').get(session),
     { id: session, pid: process.pid, conversation_id: session, status: 'active', terminal: 'wezterm', nav_session: 'terminal-session', nav_tab: 'terminal-tab', nav_pane_id: 'pane-7' });
   const projection = success(await run(['-c', '. "$1"; printf "%s|%s|%s" "${MANDIBLE_SESSION_ID:-}" "$CLAUDE_CODE_SESSION_ID" "${CODEX_THREAD_ID:-}"', 'fixture', envFile], '', hookEnv, '/bin/bash'));
@@ -136,6 +134,6 @@ try {
   assert.notEqual(db.prepare('SELECT status FROM sessions WHERE id=?').get('stale-parent').status, 'ended');
   process.stdout.write(`${JSON.stringify({ passed: true, commit: release.provenance.commit, source_digest: release.provenance.source_digest,
     evidence: ['identity exec and wrap launch their command outside the installed runtime', 'identity exec retains PID, argument boundaries, stdin/stdout/stderr and exit status while removing stale managed identity',
-      'concurrent installed per-call Claude child/root projections and exact identity exec refs', 'settings read over authenticated private socket', 'lifecycle native ID environment projection, process attachment, navigation and filtered inbox',
+      'concurrent installed per-call Claude child/root projections and exact identity exec refs', 'settings read over authenticated private socket', 'lifecycle native ID environment projection, process attachment and navigation',
       'subagent registration/end and session end preserve parent ownership', 'checkout, developer stores and ambient developer tools denied'], scratch }, null, 2)}\n`);
 } finally { await closeSocket(); db.close(); }

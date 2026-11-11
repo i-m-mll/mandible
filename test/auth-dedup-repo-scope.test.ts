@@ -33,7 +33,7 @@ let testRequesterUserId = "";
 let testRequesterCredentialId = "";
 const tempRoots: string[] = [];
 
-// Minimal registrar mirroring test/inbox-scoping.test.ts: injects an
+// Minimal registrar: injects an
 // authenticated client identity so POST /api/auth/request reaches the handler.
 class TestRouteResponse implements ResponseLike {
   statusCode = 200;

@@ -140,7 +140,7 @@ it("keeps the first cold merge submission responsive through real identity obser
   } finally { observation.trace = false; hold.release(); await pending.catch(() => undefined); await queue.dispose(); db.close(); }
 });
 
-it.each(["custody", "registry", "continuation"])("binds original submission authority across cold identity observation: %s", async change => {
+it.each(["custody", "registry", "unchanged"])("binds original submission authority across cold identity observation: %s", async change => {
   const repo = createAuthCheckRepo();
   const db = createMigratedDb();
   setDb(db);
@@ -170,18 +170,18 @@ it.each(["custody", "registry", "continuation"])("binds original submission auth
   try {
     await hold.reached(pending);
     if (change === "registry") addOrUpdateCheckout(db, otherProject.id, { root: repo, name: "Explicit reassociation", default_branch: "main" });
-    else {
+    else if (change === "custody") {
       const response = await router.invoke({ method: "PATCH", url: "/api/work-units/submission-unit", body: {
-        expected_generation: 1, ...(change === "custody" ? { state: "abandoned", reason: "Retire delivery during submission observation" } : { continuation: "Continue the same authority" }),
+        expected_generation: 1, state: "abandoned", reason: "Retire delivery during submission observation",
       } });
       expect(response.status, JSON.stringify(response.body)).toBe(200);
     }
     hold.release();
-    if (change === "continuation") {
+    if (change === "unchanged") {
       const request = await pending;
       expect(request.status).toBe("pending");
-      expect(db.prepare("SELECT auth_request_id,continuation FROM work_units WHERE id = 'submission-unit'").get())
-        .toEqual({ auth_request_id: request.id, continuation: "Continue the same authority" });
+      expect(db.prepare("SELECT auth_request_id FROM work_units WHERE id = 'submission-unit'").get())
+        .toEqual({ auth_request_id: request.id });
     } else {
       await expect(pending).rejects.toMatchObject({ code: change === "custody" ? "custody_conflict" : "lifecycle_conflict" });
       expect(db.prepare("SELECT COUNT(*) AS count FROM auth_requests").get()).toEqual({ count: 0 });
@@ -191,7 +191,7 @@ it.each(["custody", "registry", "continuation"])("binds original submission auth
   } finally { hold.release(); await pending.catch(() => undefined); await queue.dispose(); db.close(); }
 });
 
-it.each(["continuation", "authority"])("validates bound custody at cold admission and accepts its owned resolution successor: %s", async change => {
+it.each(["unchanged", "authority"])("validates bound custody at cold admission and accepts its owned resolution successor: %s", async change => {
   const repo = createAuthCheckRepo();
   const db = createMigratedDb();
   setDb(db);
@@ -205,8 +205,6 @@ it.each(["continuation", "authority"])("validates bound custody at cold admissio
   db.prepare(`INSERT INTO work_units (id,issue_id,ledger_issue_id,repo_id,branch,kind,state,created_at,owner_user_id,responsibility_session_id,custody_generation)
     VALUES ('bound-unit','c0570d2',?,?,?,'solo','committed',0,?,?,1)`)
     .run(issue.id, project.project_key, branch, operator.id, null);
-  const router = authenticatedTestRouter(operator, { credentialId: credential.id });
-  registerWorkUnitRoutes(router, {} as never);
   const enteredExecutor = barrier();
   const releaseExecutor = barrier();
   const admissionEntered = barrier();
@@ -239,10 +237,7 @@ it.each(["continuation", "authority"])("validates bound custody at cold admissio
   try {
     await Promise.race([admissionEntered.promise, approval.then(() => { throw new Error("Approval completed before admission"); })]);
     await hold!.reached(approval);
-    if (change === "continuation") {
-      const response = await router.invoke({ method: "PATCH", url: "/api/work-units/bound-unit", body: { expected_generation: 1, continuation: "Continue without changing authority" } });
-      expect(response.status, JSON.stringify(response.body)).toBe(200);
-    } else {
+    if (change === "authority") {
       const replacement = addCredential(db, operator.id, { type: "api_token", fingerprint: "replacement-bound-owner" });
       // Storage adversary isolates a credential change without a generation increment.
       db.prepare("UPDATE work_units SET responsibility_session_id = ? WHERE id = 'bound-unit'").run(replacement.id);

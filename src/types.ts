@@ -210,8 +210,6 @@ export interface Session {
   created_at: string;
   updated_at: string;
   pinned: number;
-  continuation: string | null;
-  continuation_acked_by: string | null;
   ended_at: string | null;
   // Bug: e01653d — real user activity time from JSONL transcript mtime
   last_active: string | null;

@@ -947,10 +947,10 @@ mod tests {
     #[test]
     fn dashboard_load_completion_accepts_only_the_canonical_origin() {
         assert!(is_dashboard_origin(
-            &tauri::Url::parse("https://app.mandible.localhost:19420/inbox").unwrap()
+            &tauri::Url::parse("https://app.mandible.localhost:19420/notifications").unwrap()
         ));
         assert!(!is_dashboard_origin(
-            &tauri::Url::parse("https://app.mandible.localhost:19421/inbox").unwrap()
+            &tauri::Url::parse("https://app.mandible.localhost:19421/notifications").unwrap()
         ));
     }
     #[test]

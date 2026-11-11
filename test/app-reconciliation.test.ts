@@ -191,7 +191,7 @@ describe('app shell', () => {
         return putResponse;
       }
       if (url === '/api/dashboard/badges') {
-        return Promise.resolve(new Response(JSON.stringify({ auth: 0, briefing: 0, inbox: 0, work: 0, incidents: 0, tasks: 0 }), {
+        return Promise.resolve(new Response(JSON.stringify({ auth: 0, briefing: 0, notifications: 0, work: 0, incidents: 0, tasks: 0 }), {
           headers: { 'content-type': 'application/json' },
         }));
       }
@@ -279,7 +279,7 @@ describe('app shell', () => {
         }), { headers: { 'content-type': 'application/json' } }));
       }
       if (url === '/api/dashboard/badges') {
-        return Promise.resolve(new Response(JSON.stringify({ auth: 0, briefing: 0, inbox: 0, work: 0, incidents: 0, tasks: 0 })));
+        return Promise.resolve(new Response(JSON.stringify({ auth: 0, briefing: 0, notifications: 0, work: 0, incidents: 0, tasks: 0 })));
       }
       return Promise.resolve(new Response(JSON.stringify([])));
     }));
@@ -453,7 +453,7 @@ describe('app shell', () => {
 
     await waitFor(() => expect(railGroupLinks(container, 'primary')[0]?.dataset.railItem).toBe('console'));
     expect(railGroupLinks(container, 'primary').slice(-3).map((link) => link.dataset.railItem))
-      .toEqual(['inbox', 'work', 'tasks']);
+      .toEqual(['notifications', 'work', 'tasks']);
     expect(settings.getCalls).not.toHaveBeenCalled();
     expect(settings.putCalls).not.toHaveBeenCalled();
   });
@@ -510,14 +510,6 @@ describe('app shell', () => {
           comments: ['Detail loaded before sidebar list'],
           stage: url.includes('stage=initial') ? 'initial' : 'full',
         })), { status: 200, headers: { 'Content-Type': 'application/json' } }));
-      }
-      if (url === '/api/inbox/global') {
-        return Promise.resolve(new Response(JSON.stringify({
-          continuations: [],
-          auth_results: [],
-          open_issues: [],
-          total: 0,
-        }), { headers: { 'Content-Type': 'application/json' } }));
       }
       if (url.startsWith('/api/conversations')) {
         return Promise.resolve(new Response(JSON.stringify({ conversations: [], total: 0 }), {
