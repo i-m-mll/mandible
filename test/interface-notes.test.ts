@@ -30,7 +30,7 @@ let clock: number;
 function register(target: Router): Router {
   const repo = { id: "notes", name: "notes", root, exists: true, default_branch: "main", excluded: false, user_modified: false, last_scanned_at: null };
   registerIssueRoutes(target, { getRepos: () => [repo], getRepoById: () => repo, getBranches: () => [] } as never, undefined, inlineLedgerReader());
-  registerInterfaceNoteRoutes(target, db);
+  registerInterfaceNoteRoutes(target, db, { kind: "local" });
   return target;
 }
 

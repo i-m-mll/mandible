@@ -1,5 +1,11 @@
 import type { InstanceRole } from "../types.js";
 
+/**
+ * Append new effects at the end. An installation's production registration is brought up to
+ * date only when its saved ceiling is a prefix of this list (`reconcileMainRegistration` in
+ * scripts/local-runtime.mjs); until then production does not hold a new effect, and neither
+ * does the browser context it signs for a preview.
+ */
 export const EFFECTS = [
   "ledger:read",
   "ledger:write",
@@ -13,16 +19,19 @@ export const EFFECTS = [
   "delivery:background",
   "maintenance:shared",
   "preferences:instance",
+  "notes:source",
 ] as const;
 
 export type Effect = (typeof EFFECTS)[number];
 
 export const PRODUCTION_EFFECTS: readonly Effect[] = EFFECTS;
+/** `notes:source`: write interface notes to the instance this preview was copied from. */
 export const STANDARD_PREVIEW_EFFECTS: readonly Effect[] = [
   "ledger:read",
   "ledger:write",
   "files:preview",
   "preferences:instance",
+  "notes:source",
 ];
 
 export type Operation = {
@@ -54,6 +63,7 @@ export function isInlineManagedArtifactByteRequest(mode: "ingest" | "snapshot", 
 
 export interface OperationContext {
   instanceRole: InstanceRole;
+  instanceEffects: readonly Effect[];
   body: unknown;
   params: Readonly<Record<string, string>>;
 }
@@ -72,4 +82,14 @@ export function resolveOperation(descriptor: OperationDescriptor, context: Opera
     throw new Error(`Invalid effects from operation ${descriptor.id}`);
   }
   return { id: descriptor.id, effects, operatorPresence: descriptor.operatorPresence };
+}
+
+/** Whether an instance keeps interface notes in the instance it was copied from rather than in its own ledger. */
+export function keepsNotesInSource(instance: { role: InstanceRole; allowed_effects: readonly Effect[] }): boolean {
+  return instance.role === "preview" && instance.allowed_effects.includes("notes:source");
+}
+
+/** The effects of an interface-notes route: `local` where notes are kept in the own ledger. */
+export function interfaceNoteEffects(context: OperationContext, local: "ledger:read" | "ledger:write"): readonly Effect[] {
+  return keepsNotesInSource({ role: context.instanceRole, allowed_effects: context.instanceEffects }) ? ["notes:source"] : [local];
 }

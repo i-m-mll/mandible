@@ -475,7 +475,7 @@ export class Router implements RouteRegistrar {
 
   resolveRequestOperation(method: string, requestUrl: string, body?: unknown) {
     const match = this.matchRoute(method.toUpperCase(), new URL(requestUrl, "http://localhost").pathname);
-    return match ? resolveOperation(match.route.options.operation, { instanceRole: this.instance.role, body, params: match.params }) : null;
+    return match ? resolveOperation(match.route.options.operation, { instanceRole: this.instance.role, instanceEffects: this.instance.allowed_effects, body, params: match.params }) : null;
   }
 
   operationCatalog(version: string) {
@@ -699,7 +699,7 @@ export class Router implements RouteRegistrar {
       // credential effect ceilings; treating an omitted test/internal
       // transport as file-RPC would invent a remote caller that does not exist.
       if (gate && transport !== "in-process") {
-        const operation = resolveOperation(route.options.operation, { instanceRole: this.instance.role, body, params });
+        const operation = resolveOperation(route.options.operation, { instanceRole: this.instance.role, instanceEffects: this.instance.allowed_effects, body, params });
         const effectDecision = authorizeEffects(this.instance, clientIdentity, operation);
         if (!effectDecision.allowed) {
           response.status(effectDecision.code === "authentication_required" ? 401 : 403).json({
@@ -747,7 +747,7 @@ export class Router implements RouteRegistrar {
       try {
         this.ingress.add(request);
         if (gate && transport !== "in-process") {
-          await gate.authorizeProtectedMutation?.(request, resolveOperation(route.options.operation, { instanceRole: this.instance.role, body, params }));
+          await gate.authorizeProtectedMutation?.(request, resolveOperation(route.options.operation, { instanceRole: this.instance.role, instanceEffects: this.instance.allowed_effects, body, params }));
         }
         const origin = requestOriginForRequest(request, this.options.clientAuth?.resolveManagedOrigin?.bind(this.options.clientAuth));
         await withRequestOrigin(origin, () => withLedgerMutationActor({

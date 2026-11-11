@@ -10,7 +10,7 @@ import { installedRuntimeEnvironment, readInstalledRelease, releaseFile } from '
 import { probeJson } from './local-runtime.mjs';
 import https from 'node:https';
 import { localCaPaths } from './local-ca-trust.mjs';
-import { trackedSourceDigest } from './build-revision.mjs';
+import { SOURCE_PATHS, trackedSourceDigest } from './build-revision.mjs';
 import http from "node:http";
 import net from "node:net";
 import os from "node:os";
@@ -25,6 +25,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const require = createRequire(import.meta.url);
 const { liveDbPath } = require("../cli/mandible-paths.cjs");
 import SqliteDatabase from "../src/sqlite.ts";
+import { effectsForInstance } from "../src/security/effect-policy.ts";
 import { conversationStructureCachePath, CONVERSATION_STRUCTURE_CACHE_VERSION } from "../src/conversations/structure-cache-path.ts";
 import { projectConversationCache } from "../src/conversations/structure-cache.ts";
 
@@ -234,6 +235,9 @@ async function createOrReusePreview(options) {
     }
     worktree = plannedWorktreePath(repoRoot, worktreeHostRoot, branch);
   }
+
+  // Checked before anything is allocated. A worktree that does not exist yet is created from a commit.
+  if (fs.existsSync(worktree)) assertCommittedSource(worktree);
 
   // A dead preview is replaceable, but its port is browser identity: keeping
   // it preserves origin-scoped UI state and lets the existing IAB tab recover
@@ -991,7 +995,7 @@ function previewLogSegments(dbPath) {
 }
 
 function previewOwnedOutputs(dbName, keepSegments = 5) {
-  const interactive = [dbName, `${dbName}-wal`, `${dbName}-shm`, `${dbName}.manifest.json`, "artifacts", "rich-briefing-demo-artifacts", "agents-review-artifacts", "settings", "config", "conversations", "agent-rpc", "operational", "operational-logs.db", "operational-logs.db-wal", "operational-logs.db-shm"];
+  const interactive = [dbName, `${dbName}-wal`, `${dbName}-shm`, `${dbName}.manifest.json`, "artifacts", "chat-attachments", "rich-briefing-demo-artifacts", "agents-review-artifacts", "settings", "config", "conversations", "agent-rpc", "operational", "operational-logs.db", "operational-logs.db-wal", "operational-logs.db-shm"];
   const generated = [".snapshot-work", "stdout.log", "stderr.log", "run.sh", "mandible.pid", "cli", "preview-browser-enrollment.json", "current.db"];
   for (let segment = 1; segment <= keepSegments; segment++) generated.push(`stdout.log.${segment}`, `stderr.log.${segment}`);
   return [...interactive.map(path => ({ path, kind: "interactive" })), ...generated.map(path => ({ path, kind: "generated" }))];
@@ -1376,6 +1380,7 @@ async function ensurePreviewLifecycle(metadata, preview, options, observedHealth
 }
 
 async function refreshExistingPreview(existing, details) {
+  assertCommittedSource(details.worktree);
   const preview = previewPaths(details.branch);
   if (!existing.ownership || !ownedRunIdentityMatches(preview.root, existing.ownership)) throw new Error("Refresh requires exact owned run custody");
   for (const consumer of existing.ownership.consumers ?? []) {
@@ -1862,9 +1867,7 @@ function previewIsolationEnv(previewRoot, sourceDb) {
     MANDIBLE_INSTANCE_SOURCE_ARTIFACT_DIR: path.resolve(
       process.env.MANDIBLE_ARTIFACT_DIR?.trim() || path.join(mandibleHome(), "artifacts"),
     ),
-    MANDIBLE_ALLOWED_EFFECTS: JSON.stringify([
-      "ledger:read", "ledger:write", "files:preview", "preferences:instance",
-    ]),
+    MANDIBLE_ALLOWED_EFFECTS: JSON.stringify(effectsForInstance("preview", sourceDb)),
     MANDIBLE_WRITABLE_ROOTS: JSON.stringify([previewRoot]),
     // Recyclable writable state stays under the preview root. Client-auth is
     // the deliberate exception: its authority id, pepper, and bounded session
@@ -2311,7 +2314,8 @@ function readHealth(port) {
 function hasExpectedPreviewPolicy(health) {
   return health?.instance?.role === "preview" &&
     Array.isArray(health.instance.allowed_effects) &&
-    health.instance.allowed_effects.join(",") === "ledger:read,ledger:write,files:preview,preferences:instance";
+    typeof health.instance.source_db_path === "string" &&
+    health.instance.allowed_effects.join(",") === effectsForInstance("preview", health.instance.source_db_path).join(",");
 }
 
 function hasExpectedPreviewFileRpc(metadata, health, previewRoot) {
@@ -2451,6 +2455,13 @@ function run(command, commandArgs, options = {}) {
   }
 
   return result;
+}
+
+/** A preview's revision names the commit it was built from, so it is built only from committed sources. */
+function assertCommittedSource(worktree) {
+  const status = git(["status", "--porcelain", "--untracked-files=all", "--", ...SOURCE_PATHS], { cwd: worktree });
+  const dirty = status.stdout.split("\n").filter(Boolean).map((line) => line.slice(3));
+  if (dirty.length) throw new Error(`Refusing preview build: commit these changes in ${worktree} first: ${dirty.join(", ")}`);
 }
 
 function git(commandArgs, options = {}) {

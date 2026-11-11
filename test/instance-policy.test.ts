@@ -7,8 +7,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { HostUserPreferencesStore } from "../src/host-user-preferences.js";
 import { isPersistentIabPreviewBranch } from "../src/auth-preview-policy.js";
 import { resolveInstanceInfo } from "../src/instance-policy.js";
-import { authorizeEffects, STANDARD_PREVIEW_EFFECTS, validatePreviewWritableRoots } from "../src/security/effect-policy.js";
-import { openDb } from "../src/db.js";
+import { authorizeEffects, effectsForInstance, STANDARD_PREVIEW_EFFECTS, validatePreviewWritableRoots } from "../src/security/effect-policy.js";
+import { openDb, PRODUCTION_DB_PATH } from "../src/db.js";
 import { readUserSetting, writeUserSetting } from "../src/user-settings.js";
 
 import { registeredOperationRouter } from "./helpers/registered-operation-router.js";
@@ -47,7 +47,7 @@ function preview(overrides: NodeJS.ProcessEnv = {}) {
       MANDIBLE_PUBLIC_ORIGIN: "https://preview-0123456789abcdef.mandible.localhost:19421",
       MANDIBLE_BACKEND_GENERATION: "preview-1",
       MANDIBLE_PREVIEW_ROOT: root,
-      MANDIBLE_ALLOWED_EFFECTS: JSON.stringify(STANDARD_PREVIEW_EFFECTS),
+      MANDIBLE_ALLOWED_EFFECTS: JSON.stringify(effectsForInstance("preview", source)),
       MANDIBLE_ARTIFACT_DIR: artifacts,
       MANDIBLE_USER_PREFERENCES_DIR: userPreferences,
       MANDIBLE_INSTANCE_SOURCE_ARTIFACT_DIR: sourceArtifacts,
@@ -79,6 +79,13 @@ describe("instance effect policy", () => {
     }
   });
 
+  it("writes interface notes to the source instance only from a copy of the live ledger", () => {
+    expect(effectsForInstance("preview", PRODUCTION_DB_PATH)).toContain("notes:source");
+    expect(preview().allowed_effects).not.toContain("notes:source");
+    expect(() => preview({ MANDIBLE_ALLOWED_EFFECTS: JSON.stringify(STANDARD_PREVIEW_EFFECTS) }))
+      .toThrow("exceeds the role's effect ceiling");
+  });
+
   it("defaults production to a stable HTTPS identity", () => {
     expect(resolveInstanceInfo({ env: {} })).toMatchObject({
       role: "main", instance_id: "production", public_origin: "https://app.mandible.localhost:19420",
@@ -87,7 +94,7 @@ describe("instance effect policy", () => {
 
   it("requires preview identity and an isolated copied database", () => {
     expect(() => resolveInstanceInfo({ env: { MANDIBLE_INSTANCE_ROLE: "preview" } })).toThrow();
-    expect(preview()).toMatchObject({ role: "preview", allowed_effects: STANDARD_PREVIEW_EFFECTS });
+    expect(preview()).toMatchObject({ role: "preview" });
     expect(() => preview({ MANDIBLE_PUBLIC_ORIGIN: "http://preview.invalid:19421" })).toThrow("registered HTTPS origin");
   });
 
@@ -260,7 +267,7 @@ describe("instance effect policy", () => {
         MANDIBLE_BACKEND_GENERATION: "preview-1",
         MANDIBLE_PREVIEW_ROOT: previewRoot,
         MANDIBLE_USER_PREFERENCES_DIR: userPreferences,
-        MANDIBLE_ALLOWED_EFFECTS: JSON.stringify(STANDARD_PREVIEW_EFFECTS),
+        MANDIBLE_ALLOWED_EFFECTS: JSON.stringify(effectsForInstance("preview", source)),
       },
       dbPath: copy,
       sourceDbPath: source,

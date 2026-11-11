@@ -74,7 +74,7 @@ export function resolveInstanceInfo(options: {
   if (role === "preview" && writableRoots.some((root) => !isPathAtOrWithinRoot(root, resolvedPreviewRoot))) {
     throw new Error("Preview writable roots must remain beneath the registered preview root.");
   }
-  const allowedEffects = parseAllowedEffects(env.MANDIBLE_ALLOWED_EFFECTS, role);
+  const allowedEffects = parseAllowedEffects(env.MANDIBLE_ALLOWED_EFFECTS, effectsForInstance(role, resolvedSourceDbPath));
 
   return {
     role,
@@ -179,8 +179,7 @@ function parseWritableRoots(raw: string | undefined, previewRoot: string | null,
   return role === "preview" && previewRoot ? [previewRoot] : [];
 }
 
-function parseAllowedEffects(raw: string | undefined, role: InstanceRole): readonly Effect[] {
-  const defaults = effectsForInstance(role);
+function parseAllowedEffects(raw: string | undefined, defaults: readonly Effect[]): readonly Effect[] {
   if (!raw?.trim()) return defaults;
   const parsed = JSON.parse(raw) as unknown;
   if (!Array.isArray(parsed) || parsed.some((value) => !defaults.includes(value as Effect))) {

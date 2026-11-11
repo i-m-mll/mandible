@@ -6,7 +6,7 @@ import type { RegisteredOperationMetadata } from "../../scripts/registered-opera
 import * as z from "zod";
 import { documentArtifactImportEffects, documentHistoryImportEffects } from "../../src/security/document-import-effects.js";
 import { Router } from "../../src/server.js";
-import { isInlineManagedArtifactByteRequest, type OperationDescriptor } from "../../src/security/operation-policy.js";
+import { interfaceNoteEffects, isInlineManagedArtifactByteRequest, type OperationDescriptor } from "../../src/security/operation-policy.js";
 import type { InstanceInfo } from "../../src/types.js";
 import { CHILD_RETENTION_SETTINGS_SCHEMA } from "../../src/conversations/retention-contract.js";
 import { INTEGRATION_ACTION } from "../../src/optional-integrations.js";
@@ -22,10 +22,10 @@ const noDatabase = () => { throw new Error("Persisted import effects require an 
 function descriptorFactory(prepared: PreparedOperationRouter): DescriptorFactory {
   const cached = factories.get(prepared);
   if (cached) return cached;
-  const evaluate = new Function("z", "isInlineManagedArtifactByteRequest", "documentArtifactImportEffects", "documentHistoryImportEffects", "getDb", "discoverModels", "CHILD_RETENTION_SETTINGS_SCHEMA", "INTEGRATION_ACTION", "RepairOptionsSchema", "CHANNEL_CONTEXT_SCHEMA", "DOMAIN_EVENT_SCHEMA", "HistoricalRootRequestSchema",
+  const evaluate = new Function("z", "isInlineManagedArtifactByteRequest", "documentArtifactImportEffects", "documentHistoryImportEffects", "getDb", "discoverModels", "CHILD_RETENTION_SETTINGS_SCHEMA", "INTEGRATION_ACTION", "RepairOptionsSchema", "CHANNEL_CONTEXT_SCHEMA", "DOMAIN_EVENT_SCHEMA", "HistoricalRootRequestSchema", "interfaceNoteEffects",
     prepared.descriptorFactoryBody);
   const factory: DescriptorFactory = discoverModels => evaluate(z, isInlineManagedArtifactByteRequest,
-    documentArtifactImportEffects, documentHistoryImportEffects, noDatabase, discoverModels, CHILD_RETENTION_SETTINGS_SCHEMA, INTEGRATION_ACTION, RepairOptionsSchema, CHANNEL_CONTEXT_SCHEMA, DOMAIN_EVENT_SCHEMA, HistoricalRootRequestSchema);
+    documentArtifactImportEffects, documentHistoryImportEffects, noDatabase, discoverModels, CHILD_RETENTION_SETTINGS_SCHEMA, INTEGRATION_ACTION, RepairOptionsSchema, CHANNEL_CONTEXT_SCHEMA, DOMAIN_EVENT_SCHEMA, HistoricalRootRequestSchema, interfaceNoteEffects);
   factories.set(prepared, factory);
   return factory;
 }

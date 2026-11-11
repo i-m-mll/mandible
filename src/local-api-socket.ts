@@ -15,10 +15,18 @@ export function localApiSocketPath(instance: Pick<InstanceInfo, "role" | "instan
     }
     return override;
   }
-  const directory = path.join(env.HOME || getUserHome(), ".cache", "mandible", "local-api");
-  const name = instance.role === "main" ? "production"
-    : `preview-${createHash("sha256").update(instance.instance_id).digest("hex").slice(0, 16)}`;
-  return path.join(directory, `${name}.sock`);
+  if (instance.role === "main") return productionLocalApiSocketPath(env);
+  const name = `preview-${createHash("sha256").update(instance.instance_id).digest("hex").slice(0, 16)}`;
+  return path.join(localApiDirectory(env), `${name}.sock`);
+}
+
+/** The socket the production instance listens on, whatever this process's own socket is. */
+export function productionLocalApiSocketPath(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(localApiDirectory(env), "production.sock");
+}
+
+function localApiDirectory(env: NodeJS.ProcessEnv): string {
+  return path.join(env.HOME || getUserHome(), ".cache", "mandible", "local-api");
 }
 
 export function requirePrivateDirectory(directory: string, leaf = true): void {

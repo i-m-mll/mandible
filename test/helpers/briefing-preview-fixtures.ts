@@ -4,7 +4,7 @@ import path from 'node:path';
 import SqliteDatabase from '../../src/sqlite';
 import { type Db } from '../../src/db';
 import type { ClientAuthGate, ResolvedClientIdentity } from '../../src/server';
-import { PRODUCTION_EFFECTS, STANDARD_PREVIEW_EFFECTS } from '../../src/security/effect-policy';
+import { effectsForInstance, PRODUCTION_EFFECTS } from '../../src/security/effect-policy';
 
 export class UiRoundTripGate implements ClientAuthGate {
   constructor(private readonly db: Db) {}
@@ -51,7 +51,7 @@ export function exactTestInstanceEnv(role: 'test' | 'preview', details: {
     MANDIBLE_BACKEND_GENERATION: 'test-generation',
     ...(details.previewRoot ? {
       MANDIBLE_PREVIEW_ROOT: details.previewRoot,
-      MANDIBLE_ALLOWED_EFFECTS: JSON.stringify(STANDARD_PREVIEW_EFFECTS),
+      MANDIBLE_ALLOWED_EFFECTS: JSON.stringify(effectsForInstance('preview', null)),
       MANDIBLE_WRITABLE_ROOTS: JSON.stringify([details.previewRoot]),
       MANDIBLE_ARTIFACT_DIR: path.join(details.previewRoot, 'artifacts'),
       MANDIBLE_INSTANCE_SOURCE_ARTIFACT_DIR: path.join(details.sourceRoot!, 'artifacts'),

@@ -51,7 +51,7 @@ beforeEach(() => {
   const repo = { id: 'notes', name: 'notes', root, exists: true, default_branch: 'main', excluded: false, user_modified: false, last_scanned_at: null };
   const router = authenticatedTestRouter(setupOperator(db, { display_name: 'Operator' }));
   registerIssueRoutes(router, { getRepos: () => [repo], getRepoById: () => repo, getBranches: () => [] } as never, undefined, inlineLedgerReader());
-  registerInterfaceNoteRoutes(router, db);
+  registerInterfaceNoteRoutes(router, db, { kind: 'local' });
   daemon.router = router;
   db.prepare('INSERT INTO settings (key, value, updated_at) VALUES (?, ?, 1)').run(INTERFACE_NOTES_PROJECT_SETTING, 'notes');
   vi.resetModules();
