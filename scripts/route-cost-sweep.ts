@@ -434,6 +434,13 @@ const WRITES: Record<string, RouteEntry> = {
   "POST /api/conversations/ingest": () => "parses provider log files in the live home directory",
   "PATCH /api/conversations/:id": (fx) => [post("star", `/api/conversations/${fx.bigConversation}`, { starred: true })],
   "POST /api/chat-attachments": () => "stores attachment bytes outside the ledger",
+  "POST /api/interface-notes": () => [post("new note", "/api/interface-notes", (pass: number) => ({
+    id: `${SWEEP_TAG}-${pass}`, text: `${SWEEP_TAG} note`, pin: { id: `${SWEEP_TAG}-${pass}`, comment: "" },
+    target: { url: "https://app.mandible.localhost/issues", rect: { x: 0, y: 0, width: 1, height: 1 }, viewport: { width: 800, height: 600 } },
+  }))],
+  "PATCH /api/interface-notes/:id": () => `${NOT_DRIVEN}needs a note created earlier in the same pass`,
+  "DELETE /api/interface-notes/:id": () => `${NOT_DRIVEN}needs a note created earlier in the same pass`,
+  "POST /api/interface-notes/file": () => `${NOT_DRIVEN}needs notes created earlier in the same pass`,
 
   "PUT /api/settings/:key": () => "some keys also write the dotfiles configuration",
   "PUT /api/settings/child-retention": () => [post("child retention defaults", "/api/settings/child-retention", DEFAULT_CHILD_RETENTION_SETTINGS)],

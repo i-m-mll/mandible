@@ -8,6 +8,7 @@ import { projectionKeys } from './query/projectionKeys';
 import { readRestartSnapshot, writeRestartSnapshot } from './query/snapshots';
 import { browserResourceKeys, browserResourceKeysForEvent, refreshBrowserResources } from './query/browserResources';
 import { LIST_ENVELOPE_KEYS } from '../../src/contracts';
+import { INTERFACE_NOTE_CHANGED_EVENT } from "../../src/interface-notes/contract";
 import type { ResolveRefResponse, SessionDescendant, SessionSummary } from '../../src/contracts';
 import type { EntityKind } from '../../src/app-routes';
 export type { SessionDescendant, SessionSummary } from '../../src/contracts';
@@ -814,9 +815,9 @@ export function invalidateDashboardApiCacheForEvent(type: string, data?: unknown
     invalidateApiGetCache('/api/work/');
     invalidateApiGetCache('/api/inbox');
     invalidateCrossEntityProjections(type, data);
-  } else if (type.startsWith('ledger:')) {
-    // Covers ledger:issue:*, ledger:comment:*, ledger:label:*, and other
-    // ledger:* events; all can change an issue list row or detail projection.
+  } else if (type.startsWith('ledger:') || type === INTERFACE_NOTE_CHANGED_EVENT) {
+    // Covers ledger:issue:*, ledger:comment:*, ledger:label:*, other ledger:*
+    // events and interface-note writes; all can change an issue list row or detail projection.
     invalidateApiGetCache('/api/issues');
     invalidateApiGetCache('/api/ledger');
     invalidateApiGetCache('/api/inbox');

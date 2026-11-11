@@ -8,7 +8,7 @@ export function AnnotationPreviewContent({ annotation, screenshotUrl }: {
 }): JSX.Element {
   return <>
     <p>{annotation.text}</p>
-    <dl className="conv-compose__annotation-context">
+    <dl className="attachment-preview__context">
       {annotationContextFields(annotation.target).map(({ label, value }) => <div key={label}>
         <dt>{label}</dt><dd>{value}</dd>
       </div>)}

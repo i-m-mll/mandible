@@ -1,6 +1,7 @@
 import { exactAgentRef } from "./ambient-provider-identity.js";
 import { GLOBAL_GRANT_SCHEMA_SQL, GLOBAL_GRANT_INDEX_SQL } from "./permissions/schema.js";
 import { HISTORICAL_PROJECT_ROOTS_SCHEMA_SQL } from "./ledger/historical-root-schema.js";
+import { INTERFACE_NOTES_SCHEMA_SQL } from "./interface-notes/schema.js";
 import { RESPONSIBILITY_SCHEMA_SQL } from "./responsibility-schema.js";
 import { migrateLocalAuthorizationEvidence } from "./local-authorization-migration.js";
 import { WORK_UNIT_ASSIGNMENT_SCHEMA_SQL, seedLegacyAssignmentTargets, EXACT_AGENT_WORK_UNIT_SCHEMA_SQL, recoverHistoricalExactAssignments } from "./work-unit-assignment-schema.js";
@@ -2275,6 +2276,7 @@ export const MIGRATIONS: readonly Migration[] = [
   ] },
   { version: 233, name: "exact_agent_work_unit_identity", statements: EXACT_AGENT_WORK_UNIT_SCHEMA_SQL },
   { version: 234, name: "historical_project_roots", statements: HISTORICAL_PROJECT_ROOTS_SCHEMA_SQL },
+  { version: 235, name: "interface_notes", statements: [...INTERFACE_NOTES_SCHEMA_SQL] },
 ];
 
 /**

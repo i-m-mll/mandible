@@ -74,11 +74,9 @@ import { applyConversationSse } from '../query/conversationSse';
 import { DetailPaneMenuTrigger } from '../components/shared/DetailPaneMenuTrigger';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
-import { OverflowFade } from '../components/shared/OverflowFade';
 import { type ChatAttachment } from '../../../src/conversation-control/attachments';
-import { attachmentContentUrl } from '../chat/attachmentApi';
 import { importAttachmentBatch } from '../chat/attachmentImport';
-import { AnnotationPreviewContent } from '../chat/AnnotationPreviewContent';
+import { AttachmentPill, AttachmentPillRow, AttachmentPreviewModal, attachmentKey } from '../components/shared/AttachmentPill';
 import {
   activateDraftAttachmentHighlights, adoptLegacyConsoleDraft, clearAcceptedDraft, getAttachmentDraftSnapshot,
   getDraftAttachmentHighlights,
@@ -86,7 +84,6 @@ import {
   savePendingSubmitIntent, setDraftText, subscribeAttachmentDrafts,
   subscribeDraftAttachmentHighlights, type DraftSubmitIntent,
 } from '../chat/attachmentDrafts';
-import { browserSessionFetch } from '../client-auth-token';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { TerminalPane } from '../components/console/TerminalPane';
 import { ManagedConversationStopButton, ManagedConversationControlActions, ManagedConversationControlFields, useManagedConversationControlState } from '../chat/ManagedConversationControls';
@@ -1313,7 +1310,6 @@ export function ConversationDetail({
   const attachmentImportQueueRef = useRef<Promise<void>>(Promise.resolve());
   const pendingAttachmentImportsRef = useRef(0);
   const [attachmentPreview, setAttachmentPreview] = useState<ChatAttachment | null>(null);
-  const [attachmentPreviewText, setAttachmentPreviewText] = useState<string | null>(null);
   const attachmentPickerRef = useRef<HTMLInputElement>(null);
   const [continueBusy, setContinueBusy] = useState(false);
   const [continueError, setContinueError] = useState<string | null>(null);
@@ -2223,22 +2219,6 @@ export function ConversationDetail({
     importFiles(event.dataTransfer.files);
   }, [importFiles]);
 
-  useEffect(() => {
-    if (!attachmentPreview || attachmentPreview.kind === 'annotation' || attachmentPreview.kind === 'image') {
-      setAttachmentPreviewText(null);
-      return undefined;
-    }
-    let active = true;
-    void browserSessionFetch(attachmentContentUrl(attachmentPreview.file))
-      .then(async (response) => {
-        if (!response.ok) throw new Error(`Preview unavailable (${response.status}).`);
-        return response.text();
-      })
-      .then((content) => { if (active) setAttachmentPreviewText(content.slice(0, 20000)); })
-      .catch((error) => { if (active) setAttachmentPreviewText(error instanceof Error ? error.message : String(error)); });
-    return () => { active = false; };
-  }, [attachmentPreview]);
-
   const managedControlState = useManagedConversationControlState(control);
   const hasRunOptions = Boolean(control && ['claude_code', 'codex'].includes(control.provider));
   const runOptionsGeometry = useIntrinsicOverflowGroup(hasRunOptions && Boolean(conversation) && !notFound, `${control?.revision ?? ''}`);
@@ -2616,21 +2596,15 @@ export function ConversationDetail({
       <div className="conv-compose" data-detail-pane-overlay-visual>
         <ManagedConversationControlActions state={managedControlState} />
         {draftAttachments.length > 0 && (
-          <OverflowFade direction="horizontal" className="conv-compose__attachment-overflow">
-            <div className="conv-compose__attachments" aria-label="Draft attachments">
-              {draftAttachments.map((attachment, index) => {
-                const label = attachment.kind === 'annotation' ? `Annotation ${attachment.ordinal}` : attachment.file.name;
-                return <div className={`conv-compose__attachment${attachment.kind === 'annotation' && highlightedAttachmentIds.has(attachment.id) ? ' conv-compose__attachment--new' : ''}`} key={`${attachment.kind}:${attachment.kind === 'annotation' ? attachment.id : attachment.file.id}:${index}`}>
-                  <button type="button" className="conv-compose__attachment-body" title={label} onClick={() => setAttachmentPreview(attachment)}>
-                    <span aria-hidden="true"><Icon name={attachment.kind === 'annotation' ? 'attachmentAnnotation' : attachment.kind === 'image' ? 'attachmentImage' : 'attachmentFile'} /></span>
-                    <span className="conv-compose__attachment-name">{label}</span>
-                  </button>
-                  <button type="button" className="conv-compose__attachment-remove" aria-label={`Remove ${label}`} title={`Remove ${label}`}
-                    disabled={Boolean(submitIntent && submitIntent.state !== 'failed')} onClick={() => { const result = removeDraftAttachment(conversationId, index); if (!result.ok) setContinueError(result.error); }}><Icon name="dismiss" /></button>
-                </div>;
-              })}
-            </div>
-          </OverflowFade>
+          <AttachmentPillRow label="Draft attachments">
+            {draftAttachments.map((attachment, index) => (
+              <AttachmentPill key={`${attachmentKey(attachment)}:${index}`} attachment={attachment}
+                highlighted={attachment.kind === 'annotation' && highlightedAttachmentIds.has(attachment.id)}
+                onOpen={() => setAttachmentPreview(attachment)}
+                removeDisabled={Boolean(submitIntent && submitIntent.state !== 'failed')}
+                onRemove={() => { const result = removeDraftAttachment(conversationId, index); if (!result.ok) setContinueError(result.error); }} />
+            ))}
+          </AttachmentPillRow>
         )}
         <form id={`conversation-compose-${conversation.id}`} className="conv-compose__form" onSubmit={handleContinueSubmit}>
           <textarea
@@ -2712,12 +2686,7 @@ export function ConversationDetail({
             {renderRunOptionFields()}
           </div>
         )}
-        <DetailPaneModal open={Boolean(attachmentPreview)} onClose={() => setAttachmentPreview(null)}
-          titleId="chat-attachment-preview-title" title={attachmentPreview?.kind === 'annotation' ? `Annotation ${attachmentPreview.ordinal}` : attachmentPreview?.file.name ?? 'Attachment'}
-          closeLabel="Close attachment preview" className="conv-compose__preview-modal" panelClassName="conv-compose__preview">
-          {attachmentPreview?.kind === 'annotation' ? <AnnotationPreviewContent annotation={attachmentPreview} screenshotUrl={attachmentContentUrl} /> : attachmentPreview?.kind === 'image' ? <img src={attachmentContentUrl(attachmentPreview.file)} alt={attachmentPreview.file.name} />
-            : <pre>{attachmentPreviewText ?? 'Loading preview…'}</pre>}
-        </DetailPaneModal>
+        <AttachmentPreviewModal attachment={attachmentPreview} onClose={() => setAttachmentPreview(null)} />
       </div>
       );
 

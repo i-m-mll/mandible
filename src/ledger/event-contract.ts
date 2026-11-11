@@ -7,6 +7,7 @@ export const LEDGER_EVENT_SSE_TYPES = Object.freeze({
   "issue.reopened": "ledger:issue:reopened",
   "comment.created": "ledger:comment:created",
   "comment.updated": "ledger:comment:updated",
+  "comment.deleted": "ledger:comment:deleted",
   "label.updated": "ledger:label:updated",
   "relationship.upserted": "ledger:relationship:upserted",
   "relationship.deleted": "ledger:relationship:deleted",

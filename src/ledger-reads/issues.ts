@@ -5,7 +5,7 @@ import { listLedgerIssueSummaries } from "../ledger/issue-projection.js";
 
 function filterIssueSummaries(
   summaries: IssueRepoSummary[],
-  filters: { repo?: string; status?: string; resolution?: string; label?: string },
+  filters: { repo?: string; status?: string; resolution?: string; label?: string; has_notes?: boolean },
 ): IssueRepoSummary[] {
   let filtered = summaries;
 
@@ -52,5 +52,8 @@ export function issueSummaries(db: Db, params: {
   repos: RepoInfo[];
   filters: Parameters<typeof filterIssueSummaries>[1];
 }) {
-  return filterIssueSummaries(listLedgerIssueSummaries(db, { getRepos: () => params.repos }), params.filters);
+  return filterIssueSummaries(
+    listLedgerIssueSummaries(db, { getRepos: () => params.repos }, { hasNotes: params.filters.has_notes === true }),
+    params.filters,
+  );
 }

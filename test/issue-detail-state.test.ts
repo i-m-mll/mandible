@@ -37,6 +37,7 @@ describe('LedgerIssueDetail', () => {
         {
           id: 'com_1',
           body: '<script>alert(1)</script>Comment',
+          notes: [],
           author: { id: null, type: 'agent', display: 'Codex' },
           source: 'session',
           created_at: Date.now(),
@@ -107,6 +108,7 @@ describe('LedgerIssueDetail', () => {
         {
           id: 'com_1',
           body: 'Local [comment:#com_1]',
+          notes: [],
           author: { id: null, type: 'agent', display: 'Codex' },
           source: 'session',
           created_at: Date.now(),
@@ -177,6 +179,7 @@ describe('LedgerIssueDetail', () => {
         {
           id: 'com_1',
           body: 'Implemented on branch.\\n\\nCommit:\\n- abc1234 — summary',
+          notes: [],
           author: { id: null, type: 'agent', display: 'Codex' },
           source: 'session',
           created_at: Date.now(),

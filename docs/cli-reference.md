@@ -13,7 +13,7 @@ mandible umbrella manifest refresh <umbrella> [--json]
 mandible issue parent-role status <umbrella> [--json]
 mandible issue parent-role assume <umbrella> --reason T --expected-checkpoint ID|none [--session S] [--json]
 mandible issue parent-role release <umbrella> --reason T --expected-checkpoint ID|none [--json]
-mandible issue triage [--status open|closed|all] [--resolution R] [--kind K] [--priority P] [--label L] [--repo R] [--stale-days N] [--limit N] [--json]
+mandible issue triage [--status open|closed|all] [--resolution R] [--kind K] [--priority P] [--label L] [--repo R] [--stale-days N] [--limit N] [--notes] [--json]
 mandible issue search <words>... [--repo R] [--status open|closed|all] [--limit N] [--json]  # titles, bodies, comments; all projects
 mandible issue heads <id>... [--json]
 mandible issue changed --since-manifest <file> [--json]

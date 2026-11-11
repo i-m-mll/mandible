@@ -6,6 +6,7 @@ import type { LedgerReader } from "../ledger-reads/index.js";
 import { existsSync } from "node:fs";
 import { WorkScanner } from "../work-scanner.js";
 import { getDb, type Db } from "../db.js";
+import { commentCarriesInterfaceNotes } from "../interface-notes/read.js";
 import { tableExists } from "../db-introspection.js";
 import {
   resolveSessionAlias,
@@ -926,6 +927,7 @@ export function registerIssueRoutes(
     const statusFilter = getQueryParam(req, "status");
     const resolutionFilter = getQueryParam(req, "resolution");
     const labelFilter = getQueryParam(req, "label");
+    const hasNotes = getQueryParam(req, "has_notes") === "true";
     if (statusFilter && !["all", "open", "closed"].includes(statusFilter)) {
       sendJson(res, 400, { error: "status must be open, closed, or all; use resolution=delivered instead of status=merged" });
       return;
@@ -937,7 +939,7 @@ export function registerIssueRoutes(
     try {
       const summaries = await reader.run("issue_summaries", {
         repos: workScanner.getRepos(),
-        filters: { repo: repoFilter, status: statusFilter, resolution: resolutionFilter, label: labelFilter },
+        filters: { repo: repoFilter, status: statusFilter, resolution: resolutionFilter, label: labelFilter, has_notes: hasNotes },
       });
       sendJson(res, 200, summaries);
     } catch (error) {
@@ -1768,10 +1770,14 @@ export function registerIssueRoutes(
       sendJson(res, 400, { error: "body or author_display is required" });
       return;
     }
-    const owner = db.prepare("SELECT issue_id FROM ledger_comments WHERE id = ?")
+    const owner = db.prepare("SELECT issue_id FROM ledger_comments WHERE id = ? AND deleted_at IS NULL")
       .get(commentId) as { issue_id: string } | undefined;
     if (!owner) {
       sendJson(res, 404, { error: "comment not found" });
+      return;
+    }
+    if (patch.body !== undefined && commentCarriesInterfaceNotes(db, commentId)) {
+      sendJson(res, 409, { error: "comment_body_generated", message: "This comment's body is generated from its interface notes; edit the notes instead." });
       return;
     }
 

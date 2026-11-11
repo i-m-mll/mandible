@@ -435,7 +435,8 @@ a {
   color: var(--accent-blue);
 }
 
-:root[data-theme='light'] .app-rail__badge.tab-badge--auth {
+:root[data-theme='light'] .app-rail__badge.tab-badge--auth,
+:root[data-theme='light'] .app-rail__badge.tab-badge--pending {
   background: rgba(154, 91, 0, 0.2);
   color: var(--accent-yellow);
 }
@@ -484,7 +485,8 @@ a {
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.9);
 }
 
-:root[data-theme='light'] .app-shell--rail-icons .app-rail__badge.tab-badge--auth {
+:root[data-theme='light'] .app-shell--rail-icons .app-rail__badge.tab-badge--auth,
+:root[data-theme='light'] .app-shell--rail-icons .app-rail__badge.tab-badge--pending {
   background: rgba(154, 91, 0, 0.88);
   color: #fff;
 }
@@ -622,7 +624,8 @@ a {
   font-size: calc(12px + var(--chrome-text-increment, 0px));
 }
 
-.tab-badge--auth {
+.tab-badge--auth,
+.tab-badge--pending {
   background: rgba(245, 192, 92, 0.2);
   color: var(--accent-yellow);
 }

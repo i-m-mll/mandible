@@ -3091,6 +3091,7 @@
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--repo"],"values": [{"kind": "argument","name": "repo","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--stale-days"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 0}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--limit"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 1}}]}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--notes"],"values": []}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
         ]
       }

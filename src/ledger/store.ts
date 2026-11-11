@@ -532,7 +532,7 @@ export class LedgerStore {
     });
 
     const issue = run();
-    emitLedgerEvents(emitted, this.broadcaster);
+    this.emitAfterCommit(emitted);
     return issue;
   }
 
@@ -657,7 +657,7 @@ export class LedgerStore {
     });
 
     const issue = run();
-    emitLedgerEvents(emitted, this.broadcaster);
+    this.emitAfterCommit(emitted);
     return issue;
   }
 
@@ -821,7 +821,7 @@ export class LedgerStore {
     });
 
     const issue = run();
-    emitLedgerEvents(emitted, this.broadcaster);
+    this.emitAfterCommit(emitted);
     return { changed: true, issue };
   }
 
@@ -878,7 +878,7 @@ export class LedgerStore {
     });
 
     const issue = run();
-    emitLedgerEvents(emitted, this.broadcaster);
+    this.emitAfterCommit(emitted);
     return issue;
   }
 
@@ -929,7 +929,7 @@ export class LedgerStore {
     });
 
     const issue = run();
-    emitLedgerEvents(emitted, this.broadcaster);
+    this.emitAfterCommit(emitted);
     return issue;
   }
 
@@ -986,7 +986,7 @@ export class LedgerStore {
     if (!row) {
       throw new Error(`Failed to add branch ${trimmedBranch} for issue ${issueId}`);
     }
-    emitLedgerEvents(emitted, this.broadcaster);
+    this.emitAfterCommit(emitted);
     return row;
   }
 
@@ -1016,10 +1016,15 @@ export class LedgerStore {
         occurred_at: now,
       }))();
       if (input.notify !== false) {
-        emitLedgerEvents([{ event, payload: input.payload ?? { entity_id: input.entity_id } }], this.broadcaster);
+        this.emitAfterCommit([{ event, payload: input.payload ?? { entity_id: input.entity_id } }]);
       }
       return event;
     };
+  }
+
+  /** Publish once the outermost transaction commits, so a store write composed into a larger one never announces a rollback. */
+  private emitAfterCommit(emitted: LedgerSsePayload[]): void {
+    if (emitted.length > 0) this.db.afterCommit(() => emitLedgerEvents(emitted, this.broadcaster));
   }
 
   /** Publish a committed record after an enclosing mutation transaction succeeds. */
@@ -1133,7 +1138,7 @@ export class LedgerStore {
     });
 
     const comment = run();
-    emitLedgerEvents(emitted, this.broadcaster);
+    this.emitAfterCommit(emitted);
     return comment;
   }
 
@@ -1187,7 +1192,7 @@ export class LedgerStore {
     });
 
     const checkpoint = run();
-    emitLedgerEvents(emitted, this.broadcaster);
+    this.emitAfterCommit(emitted);
     return checkpoint;
   }
 
@@ -1272,7 +1277,7 @@ export class LedgerStore {
     });
 
     const comment = run();
-    emitLedgerEvents(emitted, this.broadcaster);
+    this.emitAfterCommit(emitted);
     return { changed: true, comment };
   }
 
@@ -1355,7 +1360,50 @@ export class LedgerStore {
     });
 
     const comment = run();
-    emitLedgerEvents(emitted, this.broadcaster);
+    this.emitAfterCommit(emitted);
+    return comment;
+  }
+
+  /** Soft-delete a comment: it leaves every projection, and the references its body made are withdrawn. */
+  softDeleteComment(id: string, actorInput: LedgerActorInput & { source?: LedgerEventSource }): LedgerComment {
+    const existing = this.getComment(id);
+    if (existing.deleted_at !== null) return existing;
+    const issue = this.requireIssue(existing.issue_id);
+    const actor = this.resolveActor(actorInput);
+    const source = actorInput.source ?? "mandible";
+    const emitted: LedgerSsePayload[] = [];
+    const now = Date.now();
+    const run = this.db.transaction(() => {
+      this.db.prepare("UPDATE ledger_comments SET deleted_at = ?, updated_at = ? WHERE id = ?").run(now, now, id);
+      const payload = { issue_id: existing.issue_id, comment_id: id, ordinal: existing.ordinal };
+      const event = this.insertEvent({
+        entity_type: "comment",
+        entity_id: id,
+        event_type: "comment.deleted",
+        actor_id: actor.actor_id,
+        actor_type: actor.actor_type,
+        actor_user_id: actor.actor_user_id,
+        evidence_method: actor.evidence_method,
+        evidence_id: actor.evidence_id,
+        source,
+        payload,
+        project_id: issue.project_id,
+        occurred_at: now,
+      });
+      emitted.push({ event, payload });
+      this.applyTextIssueReferences({
+        source_issue_id: existing.issue_id,
+        source_entity_type: "comment",
+        source_entity_id: id,
+        body: "",
+        source,
+        actor,
+      }, emitted);
+      this.degradeCommentTargetRelationshipEdges(id, { actor: actorInput, source, occurred_at: now });
+      return this.getComment(id);
+    });
+    const comment = run();
+    this.emitAfterCommit(emitted);
     return comment;
   }
 
@@ -1421,7 +1469,7 @@ export class LedgerStore {
     });
 
     const event = run();
-    emitLedgerEvents(emitted, this.broadcaster);
+    this.emitAfterCommit(emitted);
     return event;
   }
 
@@ -1490,7 +1538,7 @@ export class LedgerStore {
     });
 
     const result = run();
-    emitLedgerEvents(emitted, this.broadcaster);
+    this.emitAfterCommit(emitted);
     return result;
   }
 
@@ -1582,7 +1630,7 @@ export class LedgerStore {
     });
 
     const relationship = run();
-    emitLedgerEvents(emitted, this.broadcaster);
+    this.emitAfterCommit(emitted);
     return relationship;
   }
 
@@ -1726,7 +1774,7 @@ export class LedgerStore {
     });
 
     const edges = run();
-    emitLedgerEvents(emitted, this.broadcaster);
+    this.emitAfterCommit(emitted);
     return { action_id: actionId, edges };
   }
 
@@ -1797,7 +1845,7 @@ export class LedgerStore {
     });
 
     const edges = run();
-    emitLedgerEvents(emitted, this.broadcaster);
+    this.emitAfterCommit(emitted);
     return { action_id: actionId, edges };
   }
 
@@ -1919,14 +1967,14 @@ export class LedgerStore {
     });
 
     const degraded = run();
-    emitLedgerEvents(emitted, this.broadcaster);
+    this.emitAfterCommit(emitted);
     return degraded;
   }
 
   reconcileTextIssueReferences(input: ReconcileTextIssueReferencesInput): void {
     const emitted: LedgerSsePayload[] = [];
     this.db.transaction(() => this.applyTextIssueReferences(input, emitted))();
-    emitLedgerEvents(emitted, this.broadcaster);
+    this.emitAfterCommit(emitted);
   }
 
   /** Runs inside the caller's transaction so the text write and its derived references commit together. */
@@ -2039,7 +2087,7 @@ export class LedgerStore {
       ...issue,
       aliases: this.listAliases(id),
       comments: this.db.prepare(
-        "SELECT * FROM ledger_comments WHERE issue_id = ? ORDER BY created_at",
+        "SELECT * FROM ledger_comments WHERE issue_id = ? AND deleted_at IS NULL ORDER BY created_at",
       ).all(id) as LedgerComment[],
       checkpoints: this.listIssueCheckpoints(id),
       labels: this.db.prepare(

@@ -165,8 +165,12 @@ import {
 import { normalizeSidebarGroupLimit } from './components/shared/sidebar-group-settings';
 import { queryClient } from './query/client';
 import { applyConversationSse } from './query/conversationSse';
-import { AgentationPreview } from './annotation/AgentationPreview';
+import { AgentationHost } from './annotation/AgentationHost';
+import { startInterfaceNotes } from './annotation/interfaceNotesStore';
 import { AgentationToggleButton } from './annotation/AgentationToggleButton';
+import { setToolbarVisible, useToolbarVisible } from './annotation/toolbarView';
+import { InterfaceNotesMenu } from './annotation/InterfaceNotesMenu';
+import { INTERFACE_NOTES_PROJECT_SETTING } from '../../src/interface-notes/contract';
 import type { ConversationAppendPayload } from './query/conversationData';
 import {
   APP_RAIL_ORDER_SETTING_KEY,
@@ -533,17 +537,11 @@ function RebuildingSplash({
 }
 
 function App(): JSX.Element {
-  const [agentationVisible, setAgentationVisible] = useState(() => {
-    try { return window.localStorage.getItem('mandible.agentation.visible:v1') === 'true'; }
-    catch { return false; }
-  });
-  useEffect(() => {
-    try { window.localStorage.setItem('mandible.agentation.visible:v1', String(agentationVisible)); }
-    catch { /* Annotation availability does not depend on view preference storage. */ }
-  }, [agentationVisible]);
+  const agentationVisible = useToolbarVisible();
   const [clientAccess, setClientAccess] = useState(getClientAccessState);
   const [accessEverReady, setAccessEverReady] = useState(clientAccess.phase === 'ready');
   const accessReady = clientAccess.phase === 'ready';
+  useEffect(() => (accessReady ? startInterfaceNotes() : undefined), [accessReady]);
   useEffect(() => {
     const unsubscribe = subscribeClientAccessState((next) => {
       setClientAccess(next);
@@ -1584,6 +1582,7 @@ function App(): JSX.Element {
       client.on('ledger:issue:reopened', ledgerHandler),
       client.on('ledger:comment:created', ledgerHandler),
       client.on('ledger:comment:updated', ledgerHandler),
+      client.on('ledger:comment:deleted', ledgerHandler),
       client.on('ledger:label:updated', ledgerHandler),
       client.on('daemon:reloaded', daemonHandler),
       client.on('console:session:created', handler),
@@ -2671,7 +2670,7 @@ function App(): JSX.Element {
                 <AgentationToggleButton
                   visible={agentationVisible}
                   expandedRail={railDisplayMode === 'both'}
-                  onToggle={() => setAgentationVisible(visible => !visible)}
+                  onToggle={() => setToolbarVisible(!agentationVisible)}
                 />
                 {renderRailItem({
                   tab: 'settings',
@@ -2918,8 +2917,9 @@ function App(): JSX.Element {
             />
           ) : null}
         </AppFrame>
+        <InterfaceNotesMenu receivingProject={state.settings[INTERFACE_NOTES_PROJECT_SETTING]?.trim() || null} />
       </AppShellProvider>
-      {agentationVisible && <AgentationPreview />}
+      {agentationVisible && <AgentationHost />}
     </>
   );
 }

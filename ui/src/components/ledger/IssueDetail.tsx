@@ -11,7 +11,13 @@ import {
   resourceRefHref,
   versionDetailHref,
 } from '../../resource-refs';
-import { viewHref } from '../../routing';
+import { navigateTo, viewHref } from '../../routing';
+import { interfaceNoteAttachment, interfaceNotePagePath, type InterfaceNote } from '../../../../src/interface-notes/contract';
+import { setLoadedIssue, useInterfaceNotes } from '../../annotation/interfaceNotesStore';
+import { revealToolbarPins } from '../../annotation/toolbarView';
+import { AttachmentPill, AttachmentPillRow, AttachmentPreviewModal } from '../shared/AttachmentPill';
+import { DetailPaneNotice } from '../shared/DetailPaneNotice';
+import { appTip } from '../shared/AppHoverTips';
 import type {
   LedgerIssueDetailAssociatedArtifact,
   LedgerIssueDetailArtifactLink,
@@ -136,7 +142,11 @@ export type LedgerIssueDetailProps = {
   // project scope + ref); IssueDetail only renders the entry point so the
   // graph/issue surfaces stay pickers rather than Space editors.
   onAddToSpace?: () => void;
+  /** Removes a filed interface note from the comment that carries it; without it, note pills have no remove control. */
+  onRemoveNote?: (noteId: string, commentId: string) => Promise<void>;
 };
+
+type NotePreview = { note: InterfaceNote; ordinal: number };
 
 export function LedgerIssueDetail({
   detail,
@@ -152,6 +162,7 @@ export function LedgerIssueDetail({
   onOpenEntity,
   onShowChildren,
   onAddToSpace,
+  onRemoveNote,
 }: LedgerIssueDetailProps): JSX.Element {
   const [commentText, setCommentText] = useState('');
   const [commentSaveError, setCommentSaveError] = useState<string | null>(null);
@@ -175,6 +186,10 @@ export function LedgerIssueDetail({
   // session-manager work-unit path.
   const [launchAgentOpen, setLaunchAgentOpen] = useState(false);
   const [localBusy, setLocalBusy] = useState(false);
+  const [notePreview, setNotePreview] = useState<NotePreview | null>(null);
+  const [noteError, setNoteError] = useState<string | null>(null);
+  const [removingNotes, setRemovingNotes] = useState<ReadonlySet<string>>(new Set());
+  const { loadedIssue } = useInterfaceNotes();
   const headerRef = useRef<HTMLElement>(null);
   const workNotesDetailIdRef = useRef(detail.id);
   const workNotesDraftsRef = useRef(new Map<string, WorkNotesDraft>());
@@ -201,6 +216,10 @@ export function LedgerIssueDetail({
     fullLoadFailed ||
     (isInitialDetail && detail.timeline_partial === true)
   );
+  const projectRef = issueProjectRef(detail);
+  const issueRef = `${projectRef}/${detail.display_id}`;
+  const issueNotes = detail.comments.flatMap((comment) => comment.notes);
+  const pinsLoaded = loadedIssue?.id === issueRef;
   const hasIssueMetadata = Boolean(
     detail.source !== 'mandible' ||
     detail.author.type !== 'mandible_user' ||
@@ -216,9 +235,42 @@ export function LedgerIssueDetail({
     onStartAgent ||
     onShowChildren ||
     onAddToSpace ||
-    hasIssueWorkNotes,
+    hasIssueWorkNotes ||
+    issueNotes.length > 0 ||
+    pinsLoaded,
   );
-  const projectRef = issueProjectRef(detail);
+
+  const showPins = async (note: InterfaceNote) => {
+    setNotePreview(null);
+    setNoteError(null);
+    const result = await setLoadedIssue(issueRef);
+    if (!result.ok) {
+      setNoteError(result.error);
+      return;
+    }
+    navigateTo(interfaceNotePagePath(note));
+    revealToolbarPins();
+  };
+  const hidePins = async () => {
+    setNoteError(null);
+    const result = await setLoadedIssue(null);
+    if (!result.ok) setNoteError(result.error);
+  };
+  const removeNote = onRemoveNote ? async (note: InterfaceNote, commentId: string) => {
+    setNoteError(null);
+    setRemovingNotes((current) => new Set(current).add(note.id));
+    try {
+      await onRemoveNote(note.id, commentId);
+    } catch (error) {
+      setNoteError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setRemovingNotes((current) => {
+        const next = new Set(current);
+        next.delete(note.id);
+        return next;
+      });
+    }
+  } : undefined;
 
   useEffect(() => {
     setCommentSaveError(null);
@@ -226,6 +278,8 @@ export function LedgerIssueDetail({
     setRelationshipsExpanded(false);
     setArtifactsExpanded(false);
     setWorkNotesOpen(false);
+    setNotePreview(null);
+    setNoteError(null);
   }, [detail.id]);
 
   useEffect(() => {
@@ -299,6 +353,23 @@ export function LedgerIssueDetail({
 
   const overlays = (
     <>
+      <AttachmentPreviewModal
+        attachment={notePreview ? interfaceNoteAttachment(notePreview.note, notePreview.ordinal) : null}
+        onClose={() => setNotePreview(null)}
+        excludeAboveRef={headerRef}
+        scrollOwnerSelector={ISSUE_DETAIL_SCROLL_OWNER_SELECTORS}
+        actions={notePreview ? (
+          <button
+            type="button"
+            className="detail-pane-modal__header-action"
+            aria-label="Show pin"
+            {...appTip('Show pin')}
+            onClick={() => void showPins(notePreview.note)}
+          >
+            <Icon name="showNotePin" />
+          </button>
+        ) : undefined}
+      />
       <DetailPaneModal
         open={metadataOpen}
         onClose={() => setMetadataOpen(false)}
@@ -461,6 +532,8 @@ export function LedgerIssueDetail({
               onShowWorkNotes={hasIssueWorkNotes ? () => setWorkNotesOpen(true) : undefined}
               onShowAuthEvidence={detail.auth_requests.length > 0 ? () => setAuthEvidenceOpen(true) : undefined}
               onShowChildren={umbrellaChildren.length > 0 ? onShowChildren : undefined}
+              onShowPins={issueNotes.length > 0 && !pinsLoaded ? () => void showPins(issueNotes[0]!) : undefined}
+              onHidePins={pinsLoaded ? () => void hidePins() : undefined}
             />
           ) : undefined}
           actionsLabel="Issue header actions"
@@ -509,9 +582,18 @@ export function LedgerIssueDetail({
         )}
 
         <section className="ledger-issue-detail__section">
+          {noteError && <DetailPaneNotice severity="error" source="issue:interface-notes">{noteError}</DetailPaneNotice>}
           <div className="ledger-comment-list ledger-timeline-list">
             {timelineEntries.map((entry) => (
-              <TimelineEntryCard key={entry.id} entry={entry} detail={detail} onOpenEntity={onOpenEntity} />
+              <TimelineEntryCard
+                key={entry.id}
+                entry={entry}
+                detail={detail}
+                onOpenEntity={onOpenEntity}
+                onOpenNote={(note, ordinal) => setNotePreview({ note, ordinal })}
+                onRemoveNote={removeNote}
+                removingNotes={removingNotes}
+              />
             ))}
           </div>
           {shouldShowFullDetailLoading && (
@@ -736,6 +818,8 @@ function IssueActionsMenu({
   onShowWorkNotes,
   onShowAuthEvidence,
   onShowChildren,
+  onShowPins,
+  onHidePins,
 }: {
   open: boolean;
   busy: boolean;
@@ -753,6 +837,8 @@ function IssueActionsMenu({
   onShowWorkNotes?: () => void;
   onShowAuthEvidence?: () => void;
   onShowChildren?: (issue: LedgerIssueDetailProjection) => void;
+  onShowPins?: () => void;
+  onHidePins?: () => void;
 }): JSX.Element {
   const [closeResolutionOpen, setCloseResolutionOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -850,6 +936,26 @@ function IssueActionsMenu({
               onClick={() => closeAfter(onAddToSpace)}
             >
               Add to Space
+            </button>
+          )}
+          {onShowPins && (
+            <button
+              type="button"
+              className="ledger-issue-actions-menu__item"
+              role="menuitem"
+              onClick={() => closeAfter(onShowPins)}
+            >
+              Show pins
+            </button>
+          )}
+          {onHidePins && (
+            <button
+              type="button"
+              className="ledger-issue-actions-menu__item"
+              role="menuitem"
+              onClick={() => closeAfter(onHidePins)}
+            >
+              Hide pins
             </button>
           )}
           {onShowMetadata && (
@@ -989,6 +1095,7 @@ function fallbackTimeline(detail: LedgerIssueDetailProjection): LedgerIssueTimel
       source: comment.source,
       created_at: comment.created_at,
       updated_at: comment.updated_at,
+      notes: comment.notes,
     })),
     ...(detail.checkpoints ?? []).map((checkpoint) => ({
       id: checkpoint.id,
@@ -1035,10 +1142,16 @@ function TimelineEntryCard({
   entry,
   detail,
   onOpenEntity,
+  onOpenNote,
+  onRemoveNote,
+  removingNotes,
 }: {
   entry: RenderTimelineEntry;
   detail: LedgerIssueDetailProjection;
   onOpenEntity?: LedgerIssueDetailProps['onOpenEntity'];
+  onOpenNote: (note: InterfaceNote, ordinal: number) => void;
+  onRemoveNote?: (note: InterfaceNote, commentId: string) => Promise<void>;
+  removingNotes: ReadonlySet<string>;
 }): JSX.Element {
   if (entry.kind === 'auth') {
     return (
@@ -1150,7 +1263,21 @@ function TimelineEntryCard({
           <MetadataRows rows={isBody ? bodyMetadataRows(entry) : commentMetadataRows(entry)} />
         </MetadataDisclosure>
       </div>
-      <LedgerRenderedBody className="ledger-comment-card__body spec-panel" source={entry.body} empty={isBody ? 'No description.' : ''} detail={detail} />
+      {entry.kind === 'comment' && entry.notes.length > 0 ? (
+        <AttachmentPillRow label="Interface notes" className="ledger-comment-card__notes">
+          {entry.notes.map((note, index) => (
+            <AttachmentPill
+              key={note.id}
+              attachment={interfaceNoteAttachment(note, index + 1)}
+              onOpen={() => onOpenNote(note, index + 1)}
+              onRemove={onRemoveNote ? () => void onRemoveNote(note, entry.comment_id) : undefined}
+              removeDisabled={removingNotes.has(note.id)}
+            />
+          ))}
+        </AttachmentPillRow>
+      ) : (
+        <LedgerRenderedBody className="ledger-comment-card__body spec-panel" source={entry.body} empty={isBody ? 'No description.' : ''} detail={detail} />
+      )}
     </div>
   );
 }
