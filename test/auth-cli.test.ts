@@ -137,8 +137,8 @@ it('retires a failed delivery with guarded explicit intent and displays truthful
   const id = '12345678-1234-4123-8123-123456789abc';
   const { env, responder } = fileRpc(({ method }) => ({ status: 200, body: method === 'POST'
     ? { request_id: id, retirement: { state: 'retired', cleanup: 'pending' } }
-    : { id, status: 'completed', title: 'Failed delivery', command: 'merge', convergence: { state: 'failed', hooks: [
-      { hook_id: 'builtin-mandible-rebuild', label: 'Runtime update', required: true, state: 'retired', failure: 'Original pre-install failure' },
+    : { id, status: 'completed', title: 'Failed delivery', command: 'merge', outcome_report: { steps: [
+      { kind: 'hook', hook_id: 'builtin-mandible-rebuild', required: true, state: 'skipped', reason: 'retired' },
     ] } } }));
   cleanups.push(() => responder.stop());
   const result = await runCli(['auth', 'retire-delivery', id, '--reason', 'Replaced by corrected delivery', '--expected-revision', '4', '--expected-custody-generation', '2'], { env });
@@ -148,7 +148,7 @@ it('retires a failed delivery with guarded explicit intent and displays truthful
     body: { reason: 'Replaced by corrected delivery', expected_revision: 4, expected_custody_generation: 2, operator_recovery: false } });
   const show = await runCli(['auth', 'show', id], { env });
   expect(show.status, show.stderr).toBe(0);
-  expect(show.stdout).toContain('Runtime update [retired]: Original pre-install failure');
+  expect(show.stdout).toMatch(/hook skipped, retired \(1\): builtin-mandible-rebuild/);
 });
 
 describe("auth handoff verification", () => {
