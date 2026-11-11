@@ -539,6 +539,7 @@ function formatActionKind(kind: AuthRequestAction['kind']): string {
     case 'checkpoint_add': return 'Checkpoint';
     case 'link_add': return 'Link issue';
     case 'briefing_group_promote': return 'Promote Briefing Base';
+    case 'preview_teardown': return 'Tear down preview';
     default:
       // Render rather than throw — a newer daemon must not blank this pane —
       // but bind to `never` so a new kind is a build error here, not a raw
@@ -579,6 +580,8 @@ function actionPayloadSummary(action: AuthRequestAction, preview = true): string
       const group = String(payload.group_ref ?? '');
       return `Promote ${proposal} to Base of ${group} (replacing ${base})`;
     }
+    case 'preview_teardown':
+      return String(payload.branch ?? '');
     default:
       return exhausted(action.kind, JSON.stringify(payload));
   }

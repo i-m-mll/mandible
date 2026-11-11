@@ -23,6 +23,7 @@ json_payload_from_options() {
   local target="$9"
   local link_type="${10}"
   local note="${11}"
+  local branch="${12}"
 
   if [[ -n "$payload_json" ]]; then
     jq -e 'type == "object"' >/dev/null <<<"$payload_json" || {
@@ -64,6 +65,10 @@ json_payload_from_options() {
         target: $target
       } + (if $type == "" then {} else {type:$type} end) + (if $note == "" then {} else {note:$note} end)'
       ;;
+    preview_teardown)
+      [[ -n "$branch" ]] || { echo "Error: --branch is required for preview_teardown" >&2; exit 2; }
+      jq -nc --arg branch "$branch" '{branch:$branch}'
+      ;;
     *)
       echo "Error: unknown action kind '$kind'" >&2
       exit 2
@@ -95,18 +100,19 @@ parse_action_options() {
   target=""
   link_type=""
   note=""
+  branch=""
 
   local binding
   local -a selector=("$request_id")
   [[ "$subcommand" != "edit" ]] || selector+=("$action_id")
-  binding=$(mandible_bind_arguments "auth.action.${subcommand}" '{"json":{"option":"json","inert":true},"kind":{"option":"kind"},"issue":{"option":["issue","target-issue"]},"payload_json":{"option":"payload-json"},"body":{"option":"body"},"reason_comment":{"option":"reason-comment"},"status_value":{"option":"status"},"label":{"option":"label"},"checkpoint_kind":{"option":"checkpoint-kind"},"checkpoint_payload_json":{"option":"checkpoint-payload-json"},"target":{"option":"target"},"link_type":{"option":"type"},"note":{"option":"note"},"expected_revision":{"option":"expected-revision"},"expected_custody_generation":{"option":"expected-custody-generation"}}' "${selector[@]}" "$@") || return $?
+  binding=$(mandible_bind_arguments "auth.action.${subcommand}" '{"json":{"option":"json","inert":true},"kind":{"option":"kind"},"issue":{"option":["issue","target-issue"]},"payload_json":{"option":"payload-json"},"body":{"option":"body"},"reason_comment":{"option":"reason-comment"},"status_value":{"option":"status"},"label":{"option":"label"},"checkpoint_kind":{"option":"checkpoint-kind"},"checkpoint_payload_json":{"option":"checkpoint-payload-json"},"target":{"option":"target"},"link_type":{"option":"type"},"note":{"option":"note"},"branch":{"option":"branch"},"expected_revision":{"option":"expected-revision"},"expected_custody_generation":{"option":"expected-custody-generation"}}' "${selector[@]}" "$@") || return $?
   eval "$binding"
 }
 
 print_action_human() {
   api_jq_human '
     .actions[]? |
-    "[\(mandible_display_id)] #\(.ordinal) \(.kind) \(.target_issue_ref) \(.state) digest=\((.target_digest // "-") | mandible_short_id)"
+    "[\(mandible_display_id)] #\(.ordinal) \(.kind) \(.target_issue_ref)\(if .kind == "preview_teardown" then " \(.payload.branch)" else "" end) \(.state) digest=\((.target_digest // "-") | mandible_short_id)"
   '
 }
 
@@ -140,7 +146,7 @@ case "$subcommand" in
     [[ -n "$request_id" ]] || { echo "Usage: $(mandible_command_syntax auth.action.add)" >&2; exit 2; }
     shift
     parse_action_options "$@"
-    payload=$(json_payload_from_options "$kind" "$payload_json" "$body" "$reason_comment" "$status_value" "$label" "$checkpoint_kind" "$checkpoint_payload_json" "$target" "$link_type" "$note")
+    payload=$(json_payload_from_options "$kind" "$payload_json" "$body" "$reason_comment" "$status_value" "$label" "$checkpoint_kind" "$checkpoint_payload_json" "$target" "$link_type" "$note" "$branch")
     body_json=$(build_action_body "$kind" "$issue" "$payload")
     api_send POST "/api/auth/request/${request_id}/actions" "$body_json"
     ;;
@@ -150,7 +156,7 @@ case "$subcommand" in
     [[ -n "$request_id" && -n "$action_id" ]] || { echo "Usage: $(mandible_command_syntax auth.action.edit)" >&2; exit 2; }
     shift 2
     parse_action_options "$@"
-    payload=$(json_payload_from_options "$kind" "$payload_json" "$body" "$reason_comment" "$status_value" "$label" "$checkpoint_kind" "$checkpoint_payload_json" "$target" "$link_type" "$note")
+    payload=$(json_payload_from_options "$kind" "$payload_json" "$body" "$reason_comment" "$status_value" "$label" "$checkpoint_kind" "$checkpoint_payload_json" "$target" "$link_type" "$note" "$branch")
     body_json=$(build_action_body "$kind" "$issue" "$payload")
     api_send PUT "/api/auth/request/${request_id}/actions/${action_id}" "$body_json"
     ;;

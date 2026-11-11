@@ -77,7 +77,7 @@ export async function listLandedBranches(
   }));
 }
 
-async function branchExists(root: string, branch: string): Promise<boolean> {
+export async function branchExists(root: string, branch: string): Promise<boolean> {
   try {
     await gitLines(root, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]);
     return true;

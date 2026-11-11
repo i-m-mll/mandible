@@ -105,7 +105,8 @@ import { scheduleResolvedWorkerArchive } from "./conversations/retention.js";
 import type { ConversationSource } from "./parsers/types.js";
 import { getDaemonLogger } from "./daemon-log.js";
 import { getDb } from "./db.js";
-import { resolveId } from "./entity-refs.js";
+import { resolveId, shortRef } from "./entity-refs.js";
+import { tearDownDeclaredPreview, type DeclaredTeardownOutcome } from "./declared-preview-teardown.js";
 import type { RestartAvailabilityLifecycle } from "./restart-availability.js";
 import {
   applyAuthRequestLedgerCompletion,
@@ -1280,7 +1281,7 @@ export class AuthQueue {
     const authority = this.closeClearanceAuthority();
     const operations = Promise.allSettled([
       this.startupRecovery, this.expiryReconciliation, ...this.phaseRuns, ...this.observations, ...this.queuedAdmissions,
-      this.finalizerQueue.drain(), this.acceptanceRuns?.stop(), this.generatedStorage?.stop(),
+      this.finalizerQueue.drain(), this.acceptanceRuns?.stop(), this.generatedStorage?.stop(), ...this.previewTeardowns.values(),
     ]);
     const scopedExecutions = async () => {
       await operations;
@@ -7367,6 +7368,7 @@ export class AuthQueue {
     // deferred actions (comments, worker status, labels) record what happened
     // and still run before convergence completes.
     const withheld: string[] = [];
+    let teardownsDue = false;
     await forEachInEventLoopSlices(actions, (snapshot) => {
       guard();
       const state = hasPersistedActions
@@ -7385,6 +7387,10 @@ export class AuthQueue {
       }
       if (withholdClosures && WITHHOLD_UNTIL_CONVERGED[action.kind]) {
         withheld.push(action.target_issue_ref);
+        return;
+      }
+      if (action.kind === "preview_teardown") {
+        teardownsDue = true;
         return;
       }
       try {
@@ -7412,6 +7418,7 @@ export class AuthQueue {
         });
       }
     });
+    if (teardownsDue) this.startPreviewTeardowns(request);
     if (withheld.length > 0) {
       authLog("info", "auth_issue_closures_withheld", {
         subsystem: "auth",
@@ -7550,6 +7557,8 @@ export class AuthQueue {
         });
         break;
       }
+      case "preview_teardown":
+        throw new Error("preview_teardown runs in the request's teardown runner, not in a ledger transaction");
       case "briefing_group_promote": {
         if (!request.merge_head_sha) {
           throw new Error("Completed merge request is missing its exact merge head");
@@ -7598,6 +7607,47 @@ export class AuthQueue {
       applied_at: null,
       outcome_detail: null,
     }));
+  }
+
+  private readonly previewTeardowns = new Map<string, Promise<void>>();
+
+  /**
+   * Hand a completed merge's staged teardown declarations to its one runner.
+   * Only an instance with external effects tears previews down; a preview's
+   * copy of the ledger leaves the actions staged.
+   */
+  private startPreviewTeardowns(request: AuthRequest): void {
+    if (!this.allowExternalEffects || this.disposed || this.previewTeardowns.has(request.id)) return;
+    const run = this.runPreviewTeardowns(request)
+      .catch(error => { if (!this.disposed) authLog("warn", "auth_preview_teardown_failed", { subsystem: "auth", auth_request_id: request.id, error: errorMessage(error) }); })
+      .finally(() => { this.previewTeardowns.delete(request.id); });
+    this.previewTeardowns.set(request.id, run);
+  }
+
+  /**
+   * Tear down each declared preview in order and record its outcome, then
+   * retry the branches kept for a running preview. A teardown interrupted by
+   * disposal records nothing, so the next start runs it again.
+   */
+  private async runPreviewTeardowns(request: AuthRequest): Promise<void> {
+    const mergeSha = extractSuccessfulMergeCommitSha(request.output)?.slice(0, 8) ?? "an unrecorded commit";
+    const summary = `Merged by auth ${shortRef(this.db, "auth_request", request.id)} as ${mergeSha}`;
+    let landing: MergeLanding | null = null;
+    for (const action of listAuthRequestActions(this.db, request.id)) {
+      if (action.kind !== "preview_teardown" || action.state !== "staged") continue;
+      let outcome: DeclaredTeardownOutcome;
+      try {
+        landing ??= await this.mergeLanding(request);
+        outcome = await tearDownDeclaredPreview(landing, String(action.payload.branch), summary, this.phaseAbort.signal);
+      } catch (error) {
+        if (this.disposed) return;
+        outcome = { state: "failed", detail: (error instanceof Error ? error.message : String(error)).split(/\r?\n/, 1)[0] ?? "" };
+      }
+      if (this.disposed || !this.isDbOpen()) return;
+      this.recordActionOutcome(action.id, outcome.state, outcome.detail, outcome.state === "applied" ? this.now() : null);
+    }
+    await this.keptBranchRetry;
+    await this.retryKeptBranches();
   }
 
   private recordActionOutcome(
