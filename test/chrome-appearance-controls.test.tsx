@@ -15,6 +15,9 @@ function stubChromeSettingsFetch(): void {
   stubRailSettingsFetch(undefined, false, [{
     name: 'child retention settings', method: 'GET', path: '/api/settings/child-retention',
     respond: () => jsonFixture(DEFAULT_CHILD_RETENTION_SETTINGS),
+  }, {
+    name: 'projects for the interface notes setting', method: 'GET', path: '/api/projects',
+    respond: () => jsonFixture({ projects: [] }),
   }]);
 }
 
