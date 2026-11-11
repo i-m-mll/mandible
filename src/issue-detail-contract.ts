@@ -1,4 +1,5 @@
 import type { ArtifactRecord, SessionSummary, WorkUnit, WorkUnitLiveness } from "./contracts.js";
+import type { InterfaceNote } from "./interface-notes/contract.js";
 import type { AttributionReadProjection, ReadUserIdentity } from "./identity/contracts.js";
 import type {
   LedgerActorType, LedgerEventSource, LedgerIssueBranchRole, LedgerIssueKind,
@@ -30,6 +31,8 @@ export interface LedgerIssueDetailComment {
   source: LedgerEventSource;
   created_at: number;
   updated_at: number | null;
+  /** The interface notes the comment carries, in comment order; its body is their generated text form. */
+  notes: InterfaceNote[];
 }
 
 export interface LedgerIssueDetailCheckpoint {
@@ -73,6 +76,7 @@ export type LedgerIssueTimelineEntry =
       source: LedgerEventSource;
       created_at: number;
       updated_at: number | null;
+      notes: InterfaceNote[];
     }
   | {
       id: string;

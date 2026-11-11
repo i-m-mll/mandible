@@ -456,10 +456,11 @@ cmd_triage() {
   local stale_days=""
   local limit=50
   local json=0
+  local notes=0
   local repo=""
 
   local binding
-  binding=$(mandible_bind_arguments "issue.triage" '{"status":{"option":"status"},"resolution":{"option":"resolution"},"label":{"option":"label"},"kind":{"option":"kind"},"priority":{"option":"priority"},"repo":{"option":"repo"},"stale_days":{"option":"stale-days"},"limit":{"option":"limit"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
+  binding=$(mandible_bind_arguments "issue.triage" '{"status":{"option":"status"},"resolution":{"option":"resolution"},"label":{"option":"label"},"kind":{"option":"kind"},"priority":{"option":"priority"},"repo":{"option":"repo"},"stale_days":{"option":"stale-days"},"limit":{"option":"limit"},"notes":{"option":"notes","constant":"1"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
   eval "$binding"
 
   case "$status" in
@@ -485,7 +486,9 @@ cmd_triage() {
     root=$(urlencode "$inferred_repo")
   fi
   query="repo=${root}&status=$(urlencode "$status")"
+  if [[ "$notes" == "1" ]]; then query="${query}&has_notes=true"; fi
   api_get "/api/issues?${query}" | jq \
+    --argjson notes "$notes" \
     --arg label_filter "$label" \
     --arg resolution_filter "$resolution" \
     --arg kind_filter "$kind" \
@@ -510,7 +513,7 @@ cmd_triage() {
         | select($priority_filter == "" or .priority == $priority_filter)
         | select((stale_cutoff == null) or (epoch(.updated_at) <= stale_cutoff))
       ]
-      | sort_by(.updated_at // "")
+      | if $notes == 1 then sort_by(-(.interface_notes.last_at // 0)) else sort_by(.updated_at // "") end
       | .[0:$limit]
       | if $json then .
         else .[] | "\(.display_id // .short_id // .id)\t\(.status)\t\(.kind // "unknown")\t\(.priority)\t\(.resolution // "-")\t\(.repo_name)\t\(.updated_at // "-")\t\((.labels // []) | join(","))\t\(.title)"

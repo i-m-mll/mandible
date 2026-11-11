@@ -13,6 +13,7 @@ const LEDGER_BACKUP_TABLES = [
   "ledger_issue_aliases",
   "issue_branches",
   "ledger_comments",
+  "interface_notes",
   "ledger_issue_checkpoints",
   "ledger_body_revisions",
   "ledger_labels",

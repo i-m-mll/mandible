@@ -1,4 +1,5 @@
 import { displayIssueId, listIssueHierarchyEdges } from "./issue-graph.js";
+import { interfaceNoteStatsByIssue } from "../interface-notes/read.js";
 import type { Db } from "../db.js";
 import type {
   GitBugComment,
@@ -48,19 +49,25 @@ function chunk<T>(items: T[], size: number): T[][] {
  * The projection is backed exclusively by the canonical ledger. Work scanner
  * data only supplies checkout display metadata for the route response.
  */
+/**
+ * With `hasNotes`, each project lists only the issues that carry interface
+ * notes, with their `interface_notes` count, most recently annotated first.
+ */
 export function listLedgerIssueSummaries(
   db: Db,
   workScanner: Pick<WorkScanner, "getRepos">,
+  options: { hasNotes?: boolean } = {},
 ): IssueRepoSummary[] {
   const checkouts = representativeCheckouts(listCheckouts(db, workScanner.getRepos()));
   const store = new LedgerStore(db);
+  const notes = options.hasNotes ? interfaceNoteStatsByIssue(db) : null;
   const summaries: IssueRepoSummary[] = [];
   for (const checkout of checkouts) {
-    const issues = buildProjectIssueSummaries(
-      db,
-      checkout,
-      store.listIssues({ project_id: checkout.project_id }),
-    );
+    const projectIssues = store.listIssues({ project_id: checkout.project_id });
+    const issues = notes
+      ? buildProjectIssueSummaries(db, checkout, projectIssues.filter((issue) => notes.has(issue.id)), notes)
+        .sort((a, b) => b.interface_notes!.last_at - a.interface_notes!.last_at)
+      : buildProjectIssueSummaries(db, checkout, projectIssues);
     if (issues.length === 0) continue;
     summaries.push({
       repo_id: checkout.repo_id,
@@ -90,6 +97,7 @@ function buildProjectIssueSummaries(
   db: Db,
   checkout: CheckoutProjection,
   issues: LedgerIssue[],
+  notes: ReadonlyMap<string, { count: number; last_at: number }> | null = null,
 ): GitBugIssue[] {
   if (issues.length === 0) return [];
   const issueIds = issues.map((issue) => issue.id);
@@ -108,6 +116,7 @@ function buildProjectIssueSummaries(
     author: issue.author_display,
     created_at: new Date(issue.created_at).toISOString(),
     ...(parentByIssue.get(issue.id) ? parentProjection(parentByIssue.get(issue.id)!) : {}),
+    ...(notes?.has(issue.id) ? { interface_notes: notes.get(issue.id)! } : {}),
   }));
 }
 
