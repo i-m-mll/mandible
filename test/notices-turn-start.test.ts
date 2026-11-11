@@ -5,7 +5,9 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { afterEach, beforeEach, expect, it } from "vitest";
+import type { HookCallback, Options } from "@anthropic-ai/claude-agent-sdk";
 import { AuthQueue } from "../src/auth-queue.js";
+import { ClaudeSdkTransport } from "../src/conversation-control/claude-sdk-transport.js";
 import { setDb, type Db } from "../src/db.js";
 import type { BranchKeptReason, OutcomeReport, OutcomeStep } from "../src/notices/contract.js";
 import { NoticeLog } from "../src/notices/log.js";
@@ -158,5 +160,33 @@ it("prints owed notices and confirms them; a subagent prints nothing; an absent 
   } finally {
     server.close();
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it("tells a Mandible-hosted Claude chat in process unless its settings already run the hook", async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "notices-chat-"));
+  const delivered: string[][] = [];
+  const notices = { collect: () => [{ id: "n1", text: "Mandible: auth 01234567 expired." }], delivered: (ids: readonly string[]) => { delivered.push([...ids]); } };
+  const hooks = async () => {
+    let options: Options | undefined;
+    const transport = new ClaudeSdkTransport({ kind: "start", conversation_id: "c", generation: 1, controller_instance_id: "i", cwd,
+      runtime_options: { setting_sources: ["project"] } }, { startup: async (input) => { options = input.options; throw new Error("stop"); } }, notices);
+    await expect(transport.start()).rejects.toThrow("stop");
+    return (options!.hooks!.UserPromptSubmit ?? []).flatMap((matcher) => matcher.hooks) as HookCallback[];
+  };
+  const signal = new AbortController().signal;
+  const prompt = (agent_id?: string) => ({ hook_event_name: "UserPromptSubmit", session_id: "s1", transcript_path: "", cwd, prompt: "", ...(agent_id ? { agent_id } : {}) });
+  try {
+    const [, told] = await hooks();
+    expect(await told!(prompt("a1") as never, undefined, { signal })).toEqual({});
+    expect(delivered).toEqual([]);
+    expect(await told!(prompt() as never, undefined, { signal }))
+      .toEqual({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: "Mandible: auth 01234567 expired." } });
+    expect(delivered).toEqual([["n1"]]);
+    fs.mkdirSync(path.join(cwd, ".claude"));
+    fs.writeFileSync(path.join(cwd, ".claude", "settings.json"), JSON.stringify({ hooks: { UserPromptSubmit: [{ matcher: "", hooks: [{ type: "command", command: "mandible hook notices claude" }] }] } }));
+    expect(await hooks()).toHaveLength(1);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
   }
 });
