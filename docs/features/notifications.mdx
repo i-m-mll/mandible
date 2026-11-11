@@ -31,7 +31,7 @@ Each row shows:
 
 A session notification that was never delivered is shown as `undelivered`. That is ordinary state: it records that nobody was told, and it does not count toward any badge.
 
-An unread notification for you carries a dot and a **Mark read** action. The rail badge counts your unread notifications and nothing else.
+An unread notification for you carries a dot and a **Mark read** action; **Mark all read** in the header marks every unread notification for you read at once. The rail badge counts your unread notifications and nothing else.
 
 ## API
 
@@ -52,4 +52,8 @@ The response is `{ notifications, next_before }`. Each notification has `id`, `s
 
 Marks one of your notifications read and returns it. Only the operator can read; reading again keeps the first read time. A session notification returns `409`; an unknown ID returns `404`.
 
-Mandible broadcasts `notification:changed` (`{ id }`) whenever a notification is raised or read.
+### `POST /api/notifications/read`
+
+Marks every unread notification for you read at one time and returns `{ ids, read_at }`: the notifications it marked and the read time. Only the operator can read.
+
+Mandible broadcasts `notification:changed` (`{ id }`) whenever a notification is raised, rendered, delivered or read.

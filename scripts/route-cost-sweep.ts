@@ -352,6 +352,7 @@ const WRITES: Record<string, RouteEntry> = {
     const unread = fixtureRows("unread user notifications for all passes", fx.unreadNotifications, passes);
     return [post("unread", (pass) => `/api/notifications/${unread[pass - 1]}/read`, {})];
   },
+  "POST /api/notifications/read": () => [post("all", "/api/notifications/read", {})],
 
   "PATCH /api/console/sessions/:id/options": () => LIVE_CONSOLE,
   "POST /api/console/sessions/:id/permission/:requestId": () => LIVE_CONSOLE,
