@@ -1,5 +1,6 @@
 import { Icon } from '../components/icons/Icon';
 import { appTip } from '../components/shared/AppHoverTips';
+import { openInterfaceNotesMenuAt } from './InterfaceNotesMenu';
 import { useInterfaceNotes } from './interfaceNotesStore';
 
 type AgentationToggleButtonProps = {
@@ -26,6 +27,10 @@ export function AgentationToggleButton({ visible, expandedRail, onToggle }: Agen
       aria-pressed={visible}
       {...appTip(tip, 'right')}
       onClick={onToggle}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        openInterfaceNotesMenuAt(event.currentTarget);
+      }}
     >
       <span className="app-rail__icon">
         <Icon name="annotate" size={18} />
